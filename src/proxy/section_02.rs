@@ -670,13 +670,10 @@ async fn send_pool_request_with_failover(
         if responses_total_timeout_started_at.is_none() && no_available_wait_deadline.is_some() {
             responses_total_timeout_started_at = pre_attempt_total_timeout_started_at;
         }
-        reserve_pool_routing_account(state.as_ref(), &reservation_key, &account);
         timeout_route_failover_pending = false;
 
         excluded_ids.push(account.account_id);
-        attempted_account_ids.insert(account.account_id);
-        distinct_account_count = attempted_account_ids.len();
-        let distinct_account_index = distinct_account_count as i64;
+        let dispatch_distinct_account_count = attempted_account_ids.len().saturating_add(1);
         let upstream_route_key = account.upstream_route_key();
         let api_key_target_url = match &account.auth {
             PoolResolvedAuth::ApiKey { .. } => {
@@ -709,13 +706,13 @@ async fn send_pool_request_with_failover(
         let same_account_attempt_budget = pool_same_account_attempt_budget(
             original_uri,
             &method,
-            distinct_account_count,
+            dispatch_distinct_account_count,
             initial_same_account_attempts,
         );
         let overload_same_account_attempt_budget = pool_overload_same_account_attempt_budget(
             original_uri,
             &method,
-            distinct_account_count,
+            dispatch_distinct_account_count,
             same_account_attempt_budget,
         );
         let group_upstream_429_max_retries = account.effective_group_upstream_429_max_retries();
@@ -723,6 +720,7 @@ async fn send_pool_request_with_failover(
             .saturating_add(group_upstream_429_max_retries);
         let mut group_upstream_429_retry_count = 0_u8;
         let mut first_response_attempt_started_at = None;
+        let mut account_registered_for_dispatch = false;
 
         for same_account_attempt in 0..same_account_attempt_loop_budget {
             if original_uri.path() == "/v1/responses" && first_response_attempt_started_at.is_none()
@@ -887,15 +885,22 @@ async fn send_pool_request_with_failover(
                                 continue 'account_loop;
                             }
                         };
-                    attempt_count += 1;
-                    attempt_index = attempt_count as i64;
-                    attempt_started_at = shanghai_now_string();
                     let mut request = client.request(
                         method.clone(),
                         api_key_target_url
                             .clone()
                             .expect("api key pool route should always have an upstream url"),
                     );
+                    if !account_registered_for_dispatch {
+                        reserve_pool_routing_account(state.as_ref(), &reservation_key, &account);
+                        attempted_account_ids.insert(account.account_id);
+                        distinct_account_count = attempted_account_ids.len();
+                        account_registered_for_dispatch = true;
+                    }
+                    let distinct_account_index = distinct_account_count as i64;
+                    attempt_count += 1;
+                    attempt_index = attempt_count as i64;
+                    attempt_started_at = shanghai_now_string();
                     let forwarded_content_length = headers
                         .get(header::CONTENT_LENGTH)
                         .and_then(|value| value.to_str().ok())
@@ -1342,40 +1347,9 @@ async fn send_pool_request_with_failover(
                             }
                         };
                     let oauth_body = match &prepared_request_body.snapshot {
-                        PoolReplayBodySnapshot::File { size, .. }
-                            if original_uri.path() == "/v1/responses"
-                                && *size > OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES =>
+                        snapshot @ (PoolReplayBodySnapshot::Empty | PoolReplayBodySnapshot::Memory(_))
+                            if original_uri.path() == "/v1/responses" =>
                         {
-                            store_pool_failover_error(
-                                &mut last_error,
-                                &mut preserve_sticky_owner_terminal_error,
-                                PoolUpstreamError {
-                                account: Some(account.clone()),
-                                status: StatusCode::PAYLOAD_TOO_LARGE,
-                                message: format!(
-                                    "oauth /v1/responses request body exceeds {} bytes rewrite limit",
-                                    OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES
-                                ),
-                                failure_kind: PROXY_FAILURE_BODY_TOO_LARGE,
-                                connect_latency_ms: 0.0,
-                                upstream_error_code: None,
-                                upstream_error_message: None,
-                                upstream_request_id: None,
-                                oauth_responses_debug: None,
-                                attempt_summary: pool_attempt_summary(
-                                    attempt_count,
-                                    distinct_account_count,
-                                    Some(PROXY_FAILURE_BODY_TOO_LARGE.to_string()),
-                                ),
-                                requested_service_tier: attempted_requested_service_tier.clone(),
-                                request_body_for_capture:
-                                    attempted_request_body_for_capture.clone(),
-                                },
-                            );
-                            exhausted_accounts_all_rate_limited = false;
-                            continue 'account_loop;
-                        }
-                        snapshot if original_uri.path() == "/v1/responses" => {
                             oauth_bridge::OauthUpstreamRequestBody::Bytes(
                                 snapshot.to_bytes().await.map_err(|err| PoolUpstreamError {
                                     account: Some(account.clone()),
@@ -1426,12 +1400,35 @@ async fn send_pool_request_with_failover(
                                         requested_service_tier:
                                             attempted_requested_service_tier.clone(),
                                         request_body_for_capture:
-                                            attempted_request_body_for_capture.clone(),
+                                        attempted_request_body_for_capture.clone(),
                                     })?,
                             ),
+                            request_is_stream: if original_uri.path() == "/v1/responses" {
+                                snapshot
+                                    .extract_request_stream_flag(
+                                        headers
+                                            .get(header::CONTENT_ENCODING)
+                                            .and_then(|value| value.to_str().ok()),
+                                    )
+                                    .await
+                            } else {
+                                None
+                            },
+                            snapshot_kind: if original_uri.path() == "/v1/responses" {
+                                Some(pool_request_snapshot_kind(snapshot))
+                            } else {
+                                None
+                            },
                             body: snapshot.to_reqwest_body(),
                         },
                     };
+                    if !account_registered_for_dispatch {
+                        reserve_pool_routing_account(state.as_ref(), &reservation_key, &account);
+                        attempted_account_ids.insert(account.account_id);
+                        distinct_account_count = attempted_account_ids.len();
+                        account_registered_for_dispatch = true;
+                    }
+                    let distinct_account_index = distinct_account_count as i64;
                     attempt_count += 1;
                     attempt_index = attempt_count as i64;
                     attempt_started_at = shanghai_now_string();
@@ -2186,4 +2183,3 @@ async fn send_pool_request_with_failover(
         }
     }
 }
-

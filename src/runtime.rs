@@ -106,13 +106,7 @@ pub(crate) async fn run() -> Result<()> {
     let upstream_accounts = Arc::new(UpstreamAccountsRuntime::from_env()?);
     let (tx, _rx) = broadcast::channel(128);
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
-    let proxy_request_semaphore = Arc::new(Semaphore::new(
-        config.proxy_request_concurrency_limit,
-    ));
-    let proxy_raw_async_writer_limit =
-        DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS.max(
-            config.proxy_request_concurrency_limit.saturating_mul(2),
-        );
+    let proxy_raw_async_writer_limit = DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS;
     let shutdown = CancellationToken::new();
 
     let state = Arc::new(AppState {
@@ -128,10 +122,7 @@ pub(crate) async fn run() -> Result<()> {
         startup_ready: Arc::new(AtomicBool::new(false)),
         shutdown: shutdown.clone(),
         semaphore: semaphore.clone(),
-        proxy_request_semaphore,
         proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
-        proxy_request_queue_total: Arc::new(AtomicU64::new(0)),
-        proxy_request_rejected_total: Arc::new(AtomicU64::new(0)),
         proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit)),
         proxy_model_settings,
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),

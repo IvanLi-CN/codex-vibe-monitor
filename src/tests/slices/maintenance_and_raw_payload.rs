@@ -333,7 +333,6 @@ async fn test_state_from_config_with_pool_no_available_wait(
 
     let http_clients = HttpClients::build(&config).expect("http clients");
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
-    let _proxy_request_semaphore = Arc::new(Semaphore::new(config.proxy_request_concurrency_limit));
     let (broadcaster, _rx) = broadcast::channel(16);
     let pricing_catalog = load_pricing_catalog(&pool)
         .await
@@ -351,10 +350,7 @@ async fn test_state_from_config_with_pool_no_available_wait(
         startup_ready: Arc::new(AtomicBool::new(startup_ready)),
         shutdown: CancellationToken::new(),
         semaphore,
-        proxy_request_semaphore: Arc::new(Semaphore::new(config.proxy_request_concurrency_limit)),
         proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
-        proxy_request_queue_total: Arc::new(AtomicU64::new(0)),
-        proxy_request_rejected_total: Arc::new(AtomicU64::new(0)),
         proxy_raw_async_semaphore: Arc::new(Semaphore::new(
             DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
         )),
@@ -401,10 +397,7 @@ fn clone_state_with_upstream_accounts(
         startup_ready: state.startup_ready.clone(),
         shutdown: state.shutdown.clone(),
         semaphore: state.semaphore.clone(),
-        proxy_request_semaphore: state.proxy_request_semaphore.clone(),
         proxy_request_in_flight: state.proxy_request_in_flight.clone(),
-        proxy_request_queue_total: state.proxy_request_queue_total.clone(),
-        proxy_request_rejected_total: state.proxy_request_rejected_total.clone(),
         proxy_raw_async_semaphore: state.proxy_raw_async_semaphore.clone(),
         proxy_model_settings: state.proxy_model_settings.clone(),
         proxy_model_settings_update_lock: state.proxy_model_settings_update_lock.clone(),
@@ -442,10 +435,7 @@ fn clone_state_with_pool_group_429_retry_delay_override(
         startup_ready: state.startup_ready.clone(),
         shutdown: state.shutdown.clone(),
         semaphore: state.semaphore.clone(),
-        proxy_request_semaphore: state.proxy_request_semaphore.clone(),
         proxy_request_in_flight: state.proxy_request_in_flight.clone(),
-        proxy_request_queue_total: state.proxy_request_queue_total.clone(),
-        proxy_request_rejected_total: state.proxy_request_rejected_total.clone(),
         proxy_raw_async_semaphore: state.proxy_raw_async_semaphore.clone(),
         proxy_model_settings: state.proxy_model_settings.clone(),
         proxy_model_settings_update_lock: state.proxy_model_settings_update_lock.clone(),
@@ -477,7 +467,6 @@ async fn test_state_from_existing_pool(
 
     let http_clients = HttpClients::build(&config).expect("http clients");
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
-    let _proxy_request_semaphore = Arc::new(Semaphore::new(config.proxy_request_concurrency_limit));
     let (broadcaster, _rx) = broadcast::channel(16);
     let pricing_catalog = load_pricing_catalog(&pool)
         .await
@@ -495,10 +484,7 @@ async fn test_state_from_existing_pool(
         startup_ready: Arc::new(AtomicBool::new(startup_ready)),
         shutdown: CancellationToken::new(),
         semaphore,
-        proxy_request_semaphore: Arc::new(Semaphore::new(config.proxy_request_concurrency_limit)),
         proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
-        proxy_request_queue_total: Arc::new(AtomicU64::new(0)),
-        proxy_request_rejected_total: Arc::new(AtomicU64::new(0)),
         proxy_raw_async_semaphore: Arc::new(Semaphore::new(
             DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
         )),

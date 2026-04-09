@@ -732,6 +732,8 @@ struct ProxyPayloadSummary<'a> {
     oauth_prompt_cache_header_forwarded: Option<bool>,
     oauth_request_body_prefix_fingerprint: Option<&'a str>,
     oauth_request_body_prefix_bytes: Option<usize>,
+    oauth_request_body_snapshot_kind: Option<&'a str>,
+    oauth_responses_body_mode: Option<&'a str>,
     oauth_responses_rewrite: Option<&'a oauth_bridge::OauthResponsesRewriteSummary>,
     service_tier: Option<&'a str>,
     stream_terminal_event: Option<&'a str>,
@@ -777,6 +779,8 @@ fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
         oauth_prompt_cache_header_forwarded,
         oauth_request_body_prefix_fingerprint,
         oauth_request_body_prefix_bytes,
+        oauth_request_body_snapshot_kind,
+        oauth_responses_body_mode,
         oauth_responses_rewrite,
         service_tier,
         stream_terminal_event,
@@ -820,6 +824,8 @@ fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
         "oauthPromptCacheHeaderForwarded": oauth_prompt_cache_header_forwarded,
         "oauthRequestBodyPrefixFingerprint": oauth_request_body_prefix_fingerprint,
         "oauthRequestBodyPrefixBytes": oauth_request_body_prefix_bytes,
+        "oauthRequestBodySnapshotKind": oauth_request_body_snapshot_kind,
+        "oauthResponsesBodyMode": oauth_responses_body_mode,
         "oauthResponsesRewrite": oauth_responses_rewrite,
         "serviceTier": service_tier,
         "streamTerminalEvent": stream_terminal_event,
@@ -1380,6 +1386,8 @@ fn build_running_proxy_capture_record(
             oauth_prompt_cache_header_forwarded: None,
             oauth_request_body_prefix_fingerprint: None,
             oauth_request_body_prefix_bytes: None,
+            oauth_request_body_snapshot_kind: None,
+            oauth_responses_body_mode: None,
             oauth_responses_rewrite: None,
             service_tier: None,
             stream_terminal_event: None,
@@ -1797,4 +1805,3 @@ fn merge_response_capture_reason(
     };
     response_info.usage_missing_reason = Some(combined_reason);
 }
-

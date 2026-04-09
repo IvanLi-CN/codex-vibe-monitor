@@ -95,10 +95,7 @@ async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
-        proxy_request_semaphore: Arc::new(Semaphore::new(config.proxy_request_concurrency_limit)),
         proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
-        proxy_request_queue_total: Arc::new(AtomicU64::new(0)),
-        proxy_request_rejected_total: Arc::new(AtomicU64::new(0)),
         proxy_raw_async_semaphore: Arc::new(Semaphore::new(
             DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
         )),
@@ -1175,6 +1172,11 @@ async fn spawn_oauth_codex_capture_upstream() -> (String, JoinHandle<()>) {
 
 async fn oauth_codex_responses_capture_upstream(request: axum::extract::Request) -> Response {
     let path = request.uri().path().to_string();
+    let request_content_encoding = request
+        .headers()
+        .get(http_header::CONTENT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     let mut forwarded_header_names = request
         .headers()
         .keys()
@@ -1231,36 +1233,56 @@ async fn oauth_codex_responses_capture_upstream(request: axum::extract::Request)
         .get("originator")
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
+    let response_mode = request
+        .headers()
+        .get("x-test-response-mode")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     let body = to_bytes(request.into_body(), usize::MAX)
         .await
         .expect("read oauth codex responses capture request body");
-    let body_value: Value = serde_json::from_slice(&body).expect("decode oauth capture body");
-    let completed_event = serde_json::json!({
-        "type": "response.completed",
-        "response": {
-            "id": "resp_oauth_capture",
-            "model": "gpt-5.4",
-            "status": "completed",
-            "path": path,
-            "authorization": authorization,
-            "chatgptAccountId": chatgpt_account_id,
-            "xOpenAiPromptCacheKeyHeader": x_openai_prompt_cache_key_header,
-            "promptCacheKeyHeader": prompt_cache_key_header,
-            "clientTraceId": client_trace_id,
-            "sessionIdHeader": session_id,
-            "traceparentHeader": traceparent,
-            "xClientRequestIdHeader": x_client_request_id,
-            "xCodexTurnMetadataHeader": x_codex_turn_metadata,
-            "originatorHeader": originator,
-            "forwardedHeaderNames": forwarded_header_names,
-            "received": body_value,
-            "usage": {
-                "input_tokens": 12,
-                "output_tokens": 3,
-                "total_tokens": 15,
-            }
+    let (decoded_body, decode_error) =
+        crate::decode_response_payload_for_usage(&body, request_content_encoding.as_deref());
+    assert!(
+        decode_error.is_none(),
+        "decode oauth capture body: {:?}",
+        decode_error
+    );
+    let body_value: Value =
+        serde_json::from_slice(decoded_body.as_ref()).expect("decode oauth capture body");
+    let completed_response = serde_json::json!({
+        "id": "resp_oauth_capture",
+        "model": "gpt-5.4",
+        "status": "completed",
+        "path": path,
+        "authorization": authorization,
+        "chatgptAccountId": chatgpt_account_id,
+        "xOpenAiPromptCacheKeyHeader": x_openai_prompt_cache_key_header,
+        "promptCacheKeyHeader": prompt_cache_key_header,
+        "clientTraceId": client_trace_id,
+        "sessionIdHeader": session_id,
+        "traceparentHeader": traceparent,
+        "xClientRequestIdHeader": x_client_request_id,
+        "xCodexTurnMetadataHeader": x_codex_turn_metadata,
+        "originatorHeader": originator,
+        "forwardedHeaderNames": forwarded_header_names,
+        "received": body_value,
+        "usage": {
+            "input_tokens": 12,
+            "output_tokens": 3,
+            "total_tokens": 15,
         }
     });
+    let completed_event = serde_json::json!({
+        "type": "response.completed",
+        "response": completed_response,
+    });
+
+    if response_mode.as_deref() == Some("json") {
+        return (StatusCode::OK, Json(completed_response)).into_response();
+    }
 
     (
         StatusCode::OK,

@@ -1077,6 +1077,27 @@ fn app_config_from_sources_reads_proxy_timeout_envs() {
 }
 
 #[test]
+fn app_config_from_sources_ignores_invalid_deprecated_proxy_request_concurrency_envs() {
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
+    let _env = EnvVarGuard::set(&[
+        (ENV_PROXY_REQUEST_CONCURRENCY_LIMIT, Some("0")),
+        (ENV_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS, Some("not-a-number")),
+    ]);
+
+    let config = AppConfig::from_sources(&CliArgs::default())
+        .expect("invalid deprecated proxy request concurrency envs should be ignored");
+
+    assert_eq!(
+        config.proxy_request_concurrency_limit,
+        DEFAULT_PROXY_REQUEST_CONCURRENCY_LIMIT
+    );
+    assert_eq!(
+        config.proxy_request_concurrency_wait_timeout,
+        Duration::from_millis(DEFAULT_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS)
+    );
+}
+
+#[test]
 fn app_config_from_sources_rejects_zero_pool_upstream_responses_attempt_timeout() {
     let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
     let _env = EnvVarGuard::set(&[(ENV_POOL_UPSTREAM_RESPONSES_ATTEMPT_TIMEOUT_SECS, Some("0"))]);
@@ -2397,4 +2418,3 @@ impl DatabaseError for FakeSqliteCodeDatabaseError {
 fn write_backfill_response_payload(path: &Path) {
     write_backfill_response_payload_with_service_tier(path, None);
 }
-
