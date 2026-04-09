@@ -269,7 +269,7 @@ describe('useTimeseries refresh coordination helpers', () => {
     expect(getTimeseriesRemountCacheKey('today', { bucket: '1m' })).toBe(
       JSON.stringify(['today', '1m', null, false]),
     )
-    expect(readTimeseriesRemountCache('today', { bucket: '1m' })).toEqual({
+    expect(readTimeseriesRemountCache('today', { bucket: '1m' }, 12_346)).toEqual({
       data: response,
       cachedAt: 12_345,
     })
@@ -288,11 +288,23 @@ describe('useTimeseries refresh coordination helpers', () => {
       },
       1_000,
     )
-    expect(readTimeseriesRemountCache('current')).toBeNull()
+    expect(readTimeseriesRemountCache('current', undefined, 1_001)).toBeNull()
   })
 
   it('reuses remount cache only inside the ttl window', () => {
     expect(shouldReuseTimeseriesRemountCache(5_000, 5_000 + TIMESERIES_REMOUNT_CACHE_TTL_MS - 1)).toBe(true)
     expect(shouldReuseTimeseriesRemountCache(5_000, 5_000 + TIMESERIES_REMOUNT_CACHE_TTL_MS)).toBe(false)
+  })
+
+  it('does not hydrate from stale timeseries remount cache entries', () => {
+    const response: TimeseriesResponse = {
+      rangeStart: '2026-04-08T00:00:00Z',
+      rangeEnd: '2026-04-08T00:01:00Z',
+      bucketSeconds: 60,
+      points: [],
+    }
+    writeTimeseriesRemountCache('today', { bucket: '1m' }, response, 2_000)
+
+    expect(readTimeseriesRemountCache('today', { bucket: '1m' }, 2_000 + TIMESERIES_REMOUNT_CACHE_TTL_MS)).toBeNull()
   })
 })

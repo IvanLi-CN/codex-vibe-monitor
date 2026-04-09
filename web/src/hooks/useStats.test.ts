@@ -160,7 +160,7 @@ describe('useSummary unsupported window fallback', () => {
     writeSummaryRemountCache('today', undefined, summary, 1_000)
 
     expect(getSummaryRemountCacheKey('today')).toBe('today::default')
-    expect(readSummaryRemountCache('today')).toEqual({
+    expect(readSummaryRemountCache('today', undefined, 1_001)).toEqual({
       stats: summary,
       cachedAt: 1_000,
     })
@@ -180,11 +180,24 @@ describe('useSummary unsupported window fallback', () => {
       },
       1_000,
     )
-    expect(readSummaryRemountCache('current')).toBeNull()
+    expect(readSummaryRemountCache('current', undefined, 1_001)).toBeNull()
   })
 
   it('treats remount cache as reusable only inside the ttl window', () => {
     expect(shouldReuseSummaryRemountCache(10_000, 10_000 + SUMMARY_REMOUNT_CACHE_TTL_MS - 1)).toBe(true)
     expect(shouldReuseSummaryRemountCache(10_000, 10_000 + SUMMARY_REMOUNT_CACHE_TTL_MS)).toBe(false)
+  })
+
+  it('does not hydrate from stale summary remount cache entries', () => {
+    const summary = {
+      totalCount: 12,
+      successCount: 10,
+      failureCount: 2,
+      totalCost: 0.5,
+      totalTokens: 120,
+    }
+    writeSummaryRemountCache('today', undefined, summary, 1_000)
+
+    expect(readSummaryRemountCache('today', undefined, 1_000 + SUMMARY_REMOUNT_CACHE_TTL_MS)).toBeNull()
   })
 })

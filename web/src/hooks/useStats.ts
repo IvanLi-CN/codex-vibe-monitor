@@ -54,9 +54,16 @@ export function shouldEnableSummaryRemountCache(window: string) {
   return window !== 'current'
 }
 
-export function readSummaryRemountCache(window: string, limit?: number) {
+export function readSummaryRemountCache(
+  window: string,
+  limit?: number,
+  now = Date.now(),
+  ttlMs = SUMMARY_REMOUNT_CACHE_TTL_MS,
+) {
   if (!shouldEnableSummaryRemountCache(window)) return null
-  return summaryRemountCache.get(getSummaryRemountCacheKey(window, limit)) ?? null
+  const cached = summaryRemountCache.get(getSummaryRemountCacheKey(window, limit))
+  if (!cached) return null
+  return shouldReuseSummaryRemountCache(cached.cachedAt, now, ttlMs) ? cached : null
 }
 
 export function writeSummaryRemountCache(

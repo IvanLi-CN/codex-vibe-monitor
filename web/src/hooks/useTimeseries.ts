@@ -111,9 +111,16 @@ export function shouldEnableTimeseriesRemountCache(range: string) {
   return range !== 'current'
 }
 
-export function readTimeseriesRemountCache(range: string, options?: UseTimeseriesOptions) {
+export function readTimeseriesRemountCache(
+  range: string,
+  options?: UseTimeseriesOptions,
+  now = Date.now(),
+  ttlMs = TIMESERIES_REMOUNT_CACHE_TTL_MS,
+) {
   if (!shouldEnableTimeseriesRemountCache(range)) return null
-  return timeseriesRemountCache.get(getTimeseriesRemountCacheKey(range, options)) ?? null
+  const cached = timeseriesRemountCache.get(getTimeseriesRemountCacheKey(range, options))
+  if (!cached) return null
+  return shouldReuseTimeseriesRemountCache(cached.cachedAt, now, ttlMs) ? cached : null
 }
 
 export function writeTimeseriesRemountCache(
