@@ -8653,6 +8653,14 @@ async fn recover_pool_upstream_request_attempts_with_scope(
                     error_message = COALESCE(error_message, ?5)
                 WHERE status = ?6
                   AND finished_at IS NULL
+                  AND NOT EXISTS (
+                        SELECT 1
+                        FROM codex_invocations inv
+                        WHERE inv.source = ?7
+                          AND inv.invoke_id = pool_upstream_request_attempts.invoke_id
+                          AND inv.occurred_at = pool_upstream_request_attempts.occurred_at
+                          AND LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending')
+                  )
                 RETURNING id, invoke_id, occurred_at
                 "#,
             )
@@ -8662,6 +8670,7 @@ async fn recover_pool_upstream_request_attempts_with_scope(
             .bind(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED)
             .bind(POOL_ATTEMPT_INTERRUPTED_MESSAGE)
             .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING)
+            .bind(SOURCE_PROXY)
             .fetch_all(pool)
             .await?
         }
@@ -8679,6 +8688,14 @@ async fn recover_pool_upstream_request_attempts_with_scope(
                   AND status = ?7
                   AND finished_at IS NULL
                   AND LOWER(TRIM(COALESCE(phase, ''))) IN ('connecting', 'sending_request', 'waiting_first_byte')
+                  AND NOT EXISTS (
+                        SELECT 1
+                        FROM codex_invocations inv
+                        WHERE inv.source = ?8
+                          AND inv.invoke_id = pool_upstream_request_attempts.invoke_id
+                          AND inv.occurred_at = pool_upstream_request_attempts.occurred_at
+                          AND LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending')
+                  )
                 RETURNING id, invoke_id, occurred_at
                 "#,
             )
@@ -8689,6 +8706,7 @@ async fn recover_pool_upstream_request_attempts_with_scope(
             .bind(POOL_ATTEMPT_INTERRUPTED_MESSAGE)
             .bind(attempt_id)
             .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING)
+            .bind(SOURCE_PROXY)
             .fetch_all(pool)
             .await?
         }
@@ -8704,6 +8722,14 @@ async fn recover_pool_upstream_request_attempts_with_scope(
                 WHERE status = ?1
                   AND finished_at IS NULL
                   AND LOWER(TRIM(COALESCE(phase, ''))) IN ('connecting', 'sending_request', 'waiting_first_byte')
+                  AND NOT EXISTS (
+                        SELECT 1
+                        FROM codex_invocations inv
+                        WHERE inv.source = ?2
+                          AND inv.invoke_id = pool_upstream_request_attempts.invoke_id
+                          AND inv.occurred_at = pool_upstream_request_attempts.occurred_at
+                          AND LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending')
+                  )
                   AND NOT EXISTS (
                         SELECT 1
                         FROM codex_invocations inv
