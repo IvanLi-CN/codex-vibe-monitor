@@ -332,6 +332,7 @@ pub(crate) struct PoolUpstreamResponse {
     pub(crate) first_byte_latency_ms: f64,
     pub(crate) first_chunk: Option<Bytes>,
     pub(crate) pending_attempt_record: Option<PendingPoolAttemptRecord>,
+    pub(crate) deferred_early_phase_cleanup_guard: Option<PoolEarlyPhaseOrphanCleanupGuard>,
     pub(crate) attempt_summary: PoolAttemptSummary,
     pub(crate) requested_service_tier: Option<String>,
     pub(crate) request_body_for_capture: Option<Bytes>,
@@ -673,6 +674,15 @@ struct PoolEarlyPhaseOrphanCleanupGuard {
     state: Arc<AppState>,
     pending_attempt_record: PendingPoolAttemptRecord,
     armed: bool,
+}
+
+impl std::fmt::Debug for PoolEarlyPhaseOrphanCleanupGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PoolEarlyPhaseOrphanCleanupGuard")
+            .field("pending_attempt_record", &self.pending_attempt_record)
+            .field("armed", &self.armed)
+            .finish()
+    }
 }
 
 impl PoolEarlyPhaseOrphanCleanupGuard {
@@ -3582,21 +3592,43 @@ async fn send_pool_request_with_failover(
                 }
             };
 
-            if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
-                && let Err(err) = advance_pool_upstream_request_attempt_phase(
-                    state.as_ref(),
+            let mut deferred_early_phase_cleanup_guard = None;
+            if let Some(pending_attempt_record) = pending_attempt_record.as_ref() {
+                match update_pool_upstream_request_attempt_phase(
+                    &state.pool,
                     pending_attempt_record,
                     POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE,
                 )
                 .await
-            {
-                warn!(
-                    invoke_id = %pending_attempt_record.invoke_id,
-                    error = %err,
-                    "failed to advance pool attempt into streaming phase"
-                );
+                {
+                    Ok(phase_persisted) => {
+                        if phase_persisted
+                            && let Err(err) = broadcast_pool_upstream_attempts_snapshot(
+                                state.as_ref(),
+                                &pending_attempt_record.invoke_id,
+                            )
+                            .await
+                        {
+                            warn!(
+                                invoke_id = %pending_attempt_record.invoke_id,
+                                error = %err,
+                                "failed to broadcast pool attempt streaming phase snapshot"
+                            );
+                        }
+                        disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
+                    }
+                    Err(err) => {
+                        warn!(
+                            invoke_id = %pending_attempt_record.invoke_id,
+                            error = %err,
+                            "failed to persist pool attempt streaming phase; deferring early-phase cleanup guard to terminal stream handling"
+                        );
+                        deferred_early_phase_cleanup_guard = early_phase_cleanup_guard.take();
+                    }
+                }
+            } else {
+                disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
             }
-            disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
 
             let compact_support_observation =
                 classify_compact_support_observation(original_uri, Some(status), None);
@@ -3645,6 +3677,7 @@ async fn send_pool_request_with_failover(
                         .and_then(|value| value.reason.clone());
                     pending
                 }),
+                deferred_early_phase_cleanup_guard,
                 attempt_summary: pool_attempt_summary(attempt_count, distinct_account_count, None),
                 requested_service_tier: attempted_requested_service_tier,
                 request_body_for_capture: attempted_request_body_for_capture,
@@ -5135,6 +5168,7 @@ async fn proxy_openai_v1_capture_target(
         attempt_already_recorded,
         final_attempt_update,
         pending_pool_attempt_record,
+        deferred_pool_early_phase_cleanup_guard,
         pending_pool_attempt_summary,
         upstream_attempt_started_at,
         upstream_attempt_started_at_utc,
@@ -5169,6 +5203,7 @@ async fn proxy_openai_v1_capture_target(
                 true,
                 None,
                 response.pending_attempt_record,
+                response.deferred_early_phase_cleanup_guard,
                 response.attempt_summary,
                 None,
                 Some(response.attempt_started_at_utc),
@@ -5353,6 +5388,7 @@ async fn proxy_openai_v1_capture_target(
                 None,
                 response.attempt_recorded,
                 response.attempt_update,
+                None,
                 None,
                 PoolAttemptSummary::default(),
                 Some(response.attempt_started_at),
@@ -5726,6 +5762,8 @@ async fn proxy_openai_v1_capture_target(
     let attempt_already_recorded_for_task = attempt_already_recorded;
     let final_attempt_update_for_task = final_attempt_update;
     let pending_pool_attempt_record_for_task = pending_pool_attempt_record.clone();
+    let mut deferred_pool_early_phase_cleanup_guard_for_task =
+        deferred_pool_early_phase_cleanup_guard;
     let pending_pool_attempt_summary_for_task = pending_pool_attempt_summary.clone();
     let prefetched_first_chunk_for_task = prefetched_first_chunk;
     let prefetched_ttfb_ms_for_task = prefetched_ttfb_ms;
@@ -6190,6 +6228,10 @@ async fn proxy_openai_v1_capture_target(
                     invoke_id = %pending_attempt_record.invoke_id,
                     error = %err,
                     "failed to persist final pool attempt"
+                );
+            } else {
+                disarm_pool_early_phase_cleanup_guard(
+                    &mut deferred_pool_early_phase_cleanup_guard_for_task,
                 );
             }
             if let Err(err) = broadcast_pool_upstream_attempts_snapshot(
@@ -8655,47 +8697,95 @@ async fn recover_pool_upstream_request_attempts_with_scope(
             compact_started_before,
             default_started_before,
         } => {
-            sqlx::query_as::<_, RecoveredPoolAttemptRow>(
+            let candidates = sqlx::query_as::<_, RecoveredPoolAttemptRow>(
                 r#"
-                UPDATE pool_upstream_request_attempts
-                SET
-                    finished_at = COALESCE(finished_at, ?1),
-                    status = ?2,
-                    phase = ?3,
-                    failure_kind = COALESCE(failure_kind, ?4),
-                    error_message = COALESCE(error_message, ?5)
-                WHERE status = ?6
+                SELECT id, invoke_id, occurred_at
+                FROM pool_upstream_request_attempts
+                WHERE status = ?1
                   AND finished_at IS NULL
                   AND LOWER(TRIM(COALESCE(phase, ''))) IN ('connecting', 'sending_request', 'waiting_first_byte')
+                  AND NOT EXISTS (
+                        SELECT 1
+                        FROM codex_invocations inv
+                        WHERE inv.source = ?2
+                          AND inv.invoke_id = pool_upstream_request_attempts.invoke_id
+                          AND inv.occurred_at = pool_upstream_request_attempts.occurred_at
+                          AND COALESCE(inv.t_upstream_ttfb_ms, 0) > 0
+                  )
                   AND (
                         started_at IS NULL
                         OR (
                             endpoint = '/v1/responses'
-                            AND started_at <= ?7
+                            AND started_at <= ?3
                         )
                         OR (
                             endpoint = '/v1/responses/compact'
-                            AND started_at <= ?8
+                            AND started_at <= ?4
                         )
                         OR (
                             COALESCE(endpoint, '') NOT IN ('/v1/responses', '/v1/responses/compact')
-                            AND started_at <= ?9
+                            AND started_at <= ?5
                         )
                   )
-                RETURNING id, invoke_id, occurred_at
                 "#,
             )
-            .bind(finished_at)
-            .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE)
-            .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED)
-            .bind(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED)
-            .bind(POOL_ATTEMPT_INTERRUPTED_MESSAGE)
             .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING)
+            .bind(SOURCE_PROXY)
             .bind(responses_started_before)
             .bind(compact_started_before)
             .bind(default_started_before)
             .fetch_all(pool)
-            .await?
+            .await?;
+            if candidates.is_empty() {
+                Vec::new()
+            } else {
+                let candidate_ids = candidates.iter().map(|row| row.id).collect::<Vec<_>>();
+                let mut query = QueryBuilder::<Sqlite>::new(
+                    r#"
+                    UPDATE pool_upstream_request_attempts
+                    SET
+                        finished_at = COALESCE(finished_at, "#,
+                );
+                query.push_bind(&finished_at);
+                query.push(
+                    r#"),
+                        status = "#,
+                );
+                query.push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE);
+                query.push(
+                    r#",
+                        phase = "#,
+                );
+                query.push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED);
+                query.push(
+                    r#",
+                        failure_kind = COALESCE(failure_kind, "#,
+                );
+                query.push_bind(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED);
+                query.push(
+                    r#"),
+                        error_message = COALESCE(error_message, "#,
+                );
+                query.push_bind(POOL_ATTEMPT_INTERRUPTED_MESSAGE);
+                query.push(
+                    r#")
+                    WHERE id IN ("#,
+                );
+                let mut separated = query.separated(", ");
+                for id in candidate_ids {
+                    separated.push_bind(id);
+                }
+                separated.push_unseparated(")");
+                query.push(
+                    r#"
+                    RETURNING id, invoke_id, occurred_at
+                    "#,
+                );
+                query
+                    .build_query_as::<RecoveredPoolAttemptRow>()
+                    .fetch_all(pool)
+                    .await?
+            }
         }
     };
 

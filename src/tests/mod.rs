@@ -47589,6 +47589,7 @@ async fn recover_stale_pool_early_phase_orphans_runtime_only_recovers_stale_earl
             stale_started.as_str(),
             POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST,
             true,
+            0.0,
         ),
         (
             "fresh-early-phase",
@@ -47596,6 +47597,15 @@ async fn recover_stale_pool_early_phase_orphans_runtime_only_recovers_stale_earl
             fresh_started.as_str(),
             POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST,
             false,
+            0.0,
+        ),
+        (
+            "stale-early-phase-post-first-byte",
+            "2026-03-23 21:10:25",
+            stale_started.as_str(),
+            POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_WAITING_FIRST_BYTE,
+            false,
+            120.0,
         ),
         (
             "stale-streaming-phase",
@@ -47603,10 +47613,11 @@ async fn recover_stale_pool_early_phase_orphans_runtime_only_recovers_stale_earl
             stale_started.as_str(),
             POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE,
             false,
+            120.0,
         ),
     ];
 
-    for (invoke_id, occurred_at, started_at, phase, _) in cases {
+    for (invoke_id, occurred_at, started_at, phase, _, ttfb_ms) in cases {
         let running_record = build_running_proxy_capture_record(
             invoke_id,
             occurred_at,
@@ -47627,8 +47638,8 @@ async fn recover_stale_pool_early_phase_orphans_runtime_only_recovers_stale_earl
             None,
             10.0,
             2.0,
-            0.0,
-            0.0,
+            5.0,
+            ttfb_ms,
         );
         persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
             .await
@@ -47655,6 +47666,20 @@ async fn recover_stale_pool_early_phase_orphans_runtime_only_recovers_stale_earl
             .await
             .expect("advance attempt into target phase");
     }
+
+    let post_first_byte_ttfb = sqlx::query_scalar::<_, Option<f64>>(
+        r#"
+        SELECT t_upstream_ttfb_ms
+        FROM codex_invocations
+        WHERE invoke_id = 'stale-early-phase-post-first-byte'
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load stale post-first-byte invocation ttfb");
+    assert_eq!(post_first_byte_ttfb, Some(120.0));
 
     let outcome = recover_stale_pool_early_phase_orphans_runtime(state.as_ref())
         .await
@@ -47726,6 +47751,42 @@ async fn recover_stale_pool_early_phase_orphans_runtime_only_recovers_stale_earl
         fresh_attempt.1.as_deref(),
         Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST)
     );
+
+    let post_first_byte_attempt = sqlx::query_as::<_, (String, Option<String>)>(
+        r#"
+        SELECT status, phase
+        FROM pool_upstream_request_attempts
+        WHERE invoke_id = 'stale-early-phase-post-first-byte'
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load stale post-first-byte attempt");
+    assert_eq!(
+        post_first_byte_attempt.0,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING
+    );
+    assert_eq!(
+        post_first_byte_attempt.1.as_deref(),
+        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_WAITING_FIRST_BYTE)
+    );
+
+    let post_first_byte_invocation = sqlx::query_as::<_, (String, Option<String>)>(
+        r#"
+        SELECT status, failure_kind
+        FROM codex_invocations
+        WHERE invoke_id = 'stale-early-phase-post-first-byte'
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load stale post-first-byte invocation");
+    assert_eq!(post_first_byte_invocation.0, INVOCATION_STATUS_RUNNING);
+    assert_eq!(post_first_byte_invocation.1, None);
 
     let streaming_attempt = sqlx::query_as::<_, (String, Option<String>)>(
         r#"
