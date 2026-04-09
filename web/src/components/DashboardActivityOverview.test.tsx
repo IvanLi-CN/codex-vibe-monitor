@@ -183,8 +183,27 @@ function clickTab(label: string) {
   })
 }
 
+function getPanel(testId: string) {
+  return host?.querySelector(`[data-testid="${testId}"]`)
+}
+
+function getPanelText(panelTestId: string, childTestId: string) {
+  return getPanel(panelTestId)?.querySelector(`[data-testid="${childTestId}"]`)?.textContent
+}
+
+function getFirstSeenSummaryWindows() {
+  const seen = new Set<string>()
+  const ordered: string[] = []
+  for (const [window] of hookMocks.useSummary.mock.calls) {
+    if (typeof window !== 'string' || seen.has(window)) continue
+    seen.add(window)
+    ordered.push(window)
+  }
+  return ordered
+}
+
 describe('DashboardActivityOverview', () => {
-  it('loads only the active range and keeps per-range metric memory across all four tabs', () => {
+  it('loads each range lazily and keeps visited panels mounted with per-range metric memory', () => {
     installSummaryMocks()
 
     render(<DashboardActivityOverview />)
@@ -212,41 +231,48 @@ describe('DashboardActivityOverview', () => {
     clickTab('History')
     expect(hookMocks.useSummary.mock.calls.every(([window]) => window === 'today')).toBe(true)
     expect(hookMocks.useTimeseries.mock.calls.every(([window]) => window === 'today')).toBe(true)
-    expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
+    expect(getPanel('dashboard-activity-range-today')?.getAttribute('data-active')).toBe('false')
+    expect(getPanel('dashboard-activity-range-usage')?.getAttribute('data-active')).toBe('true')
+    expect(getPanelText('dashboard-activity-range-usage', 'usage-calendar')).toBe(
       'metric:totalCount;surface:false;toggle:false;meta:false',
     )
     clickTab('Tokens')
-    expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
+    expect(getPanelText('dashboard-activity-range-usage', 'usage-calendar')).toBe(
       'metric:totalTokens;surface:false;toggle:false;meta:false',
     )
 
     clickTab('7 Days')
-    expect(hookMocks.useSummary).toHaveBeenLastCalledWith('7d')
-    expect(host?.querySelector('[data-testid="stats-cards"]')?.textContent).toBe('total:700')
-    expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe('metric:totalCount')
+    const sevenDayPanel = getPanel('dashboard-activity-range-7d')
+    expect(sevenDayPanel?.getAttribute('data-active')).toBe('true')
+    expect(getPanel('dashboard-activity-range-usage')?.getAttribute('data-active')).toBe('false')
+    expect(getPanelText('dashboard-activity-range-7d', 'stats-cards')).toBe('total:700')
+    expect(getPanelText('dashboard-activity-range-7d', 'heatmap-7d')).toBe('metric:totalCount')
     clickTab('Cost')
-    expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe('metric:totalCost')
+    expect(getPanelText('dashboard-activity-range-7d', 'heatmap-7d')).toBe('metric:totalCost')
 
     clickTab('24 Hours')
-    expect(hookMocks.useSummary).toHaveBeenLastCalledWith('1d')
-    expect(host?.querySelector('[data-testid="stats-cards"]')?.textContent).toBe('total:100')
-    expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toBe('metric:totalCount')
+    expect(getPanel('dashboard-activity-range-1d')?.getAttribute('data-active')).toBe('true')
+    expect(getPanelText('dashboard-activity-range-1d', 'stats-cards')).toBe('total:100')
+    expect(getPanelText('dashboard-activity-range-1d', 'heatmap-24h')).toBe('metric:totalCount')
     clickTab('Tokens')
-    expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toBe('metric:totalTokens')
+    expect(getPanelText('dashboard-activity-range-1d', 'heatmap-24h')).toBe('metric:totalTokens')
 
     clickTab('Today')
-    expect(hookMocks.useSummary).toHaveBeenLastCalledWith('today')
-    expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent).toBe(
+    expect(getPanel('dashboard-activity-range-today')?.getAttribute('data-active')).toBe('true')
+    expect(getPanel('dashboard-activity-range-7d')).toBe(sevenDayPanel)
+    expect(getPanel('dashboard-activity-range-7d')?.getAttribute('data-active')).toBe('false')
+    expect(getPanelText('dashboard-activity-range-today', 'dashboard-today-activity-chart-mock')).toBe(
       'metric:totalCost',
     )
     clickTab('History')
-    expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
+    expect(getPanelText('dashboard-activity-range-usage', 'usage-calendar')).toBe(
       'metric:totalTokens;surface:false;toggle:false;meta:false',
     )
     clickTab('7 Days')
-    expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe('metric:totalCost')
+    expect(getPanel('dashboard-activity-range-7d')).toBe(sevenDayPanel)
+    expect(getPanelText('dashboard-activity-range-7d', 'heatmap-7d')).toBe('metric:totalCost')
     clickTab('24 Hours')
-    expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toBe('metric:totalTokens')
+    expect(getPanelText('dashboard-activity-range-1d', 'heatmap-24h')).toBe('metric:totalTokens')
   })
 
   it('restores the last active range from localStorage and falls back to today on invalid values', () => {
@@ -277,15 +303,15 @@ describe('DashboardActivityOverview', () => {
     installSummaryMocks()
 
     render(<DashboardActivityOverview />)
-    expect(hookMocks.useSummary.mock.calls.map(([window]) => window)).toEqual(['today'])
+    expect(getFirstSeenSummaryWindows()).toEqual(['today'])
 
     clickTab('7 Days')
-    expect(hookMocks.useSummary.mock.calls.map(([window]) => window)).toEqual(['today', '7d'])
+    expect(getFirstSeenSummaryWindows()).toEqual(['today', '7d'])
 
     clickTab('24 Hours')
-    expect(hookMocks.useSummary.mock.calls.map(([window]) => window)).toEqual(['today', '7d', '1d'])
+    expect(getFirstSeenSummaryWindows()).toEqual(['today', '7d', '1d'])
 
     clickTab('History')
-    expect(hookMocks.useSummary.mock.calls.map(([window]) => window)).toEqual(['today', '7d', '1d'])
+    expect(getFirstSeenSummaryWindows()).toEqual(['today', '7d', '1d'])
   })
 })
