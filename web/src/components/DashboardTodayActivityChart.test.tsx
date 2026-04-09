@@ -114,10 +114,10 @@ describe('DashboardTodayActivityChart', () => {
       label: '23:59',
       chartSuccessCount: null,
       chartFailureCountNegative: null,
+      cumulativeCost: null,
+      cumulativeTokens: null,
       chartCumulativeCost: null,
       chartCumulativeTokens: null,
-      cumulativeCost: 1.25,
-      cumulativeTokens: 320,
     })
   })
 

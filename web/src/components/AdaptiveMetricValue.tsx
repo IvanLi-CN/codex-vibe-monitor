@@ -4,6 +4,7 @@ import { AnimatedDigits } from './AnimatedDigits'
 export type AdaptiveMetricValueKind = 'number' | 'currency'
 
 const ADAPTIVE_METRIC_COMPACT_GUTTER_PX = 12
+const COMPACT_SUFFIX_LOCALE = 'en-US'
 
 interface AdaptiveMetricValueProps {
   value: number
@@ -18,8 +19,15 @@ function createMetricFormatter(
   kind: AdaptiveMetricValueKind,
   compact: boolean,
 ) {
+  // Product choice: zh dashboards use short-scale suffixes like `1.31B`
+  // for overflow fallback because they are materially shorter than localized compact units.
+  const compactLocale =
+    compact && localeTag.toLowerCase().startsWith('zh')
+      ? COMPACT_SUFFIX_LOCALE
+      : localeTag
+
   if (kind === 'currency') {
-    return new Intl.NumberFormat(compact ? 'en-US' : localeTag, {
+    return new Intl.NumberFormat(compactLocale, {
       style: 'currency',
       currency: 'USD',
       notation: compact ? 'compact' : 'standard',
@@ -27,7 +35,7 @@ function createMetricFormatter(
     })
   }
 
-  return new Intl.NumberFormat(compact ? 'en-US' : localeTag, {
+  return new Intl.NumberFormat(compactLocale, {
     notation: compact ? 'compact' : 'standard',
     maximumFractionDigits: 2,
   })
@@ -82,10 +90,12 @@ export function AdaptiveMetricValue({
 
   useLayoutEffect(() => {
     const container = containerRef.current
+    const measure = measureRef.current
     if (!container) return undefined
 
+    window.addEventListener('resize', evaluateOverflow)
+
     if (typeof ResizeObserver === 'undefined') {
-      window.addEventListener('resize', evaluateOverflow)
       return () => {
         window.removeEventListener('resize', evaluateOverflow)
       }
@@ -95,9 +105,13 @@ export function AdaptiveMetricValue({
       evaluateOverflow()
     })
     observer.observe(container)
+    if (measure) {
+      observer.observe(measure)
+    }
 
     return () => {
       observer.disconnect()
+      window.removeEventListener('resize', evaluateOverflow)
     }
   }, [evaluateOverflow])
 

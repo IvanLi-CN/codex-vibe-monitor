@@ -161,6 +161,7 @@ export function usePromptCacheConversations(
         knownConversationHistoryRef.current,
         response,
         Object.keys(nextLiveRecordsByKey),
+        getPromptCacheConversationVisibleLimit(requestedSelection),
       );
       authoritativeStatsRef.current = response;
       knownConversationHistoryRef.current = nextKnownConversationHistory;

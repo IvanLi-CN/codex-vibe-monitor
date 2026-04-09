@@ -573,6 +573,7 @@ export function mergePromptCacheConversationHistory(
   current: PromptCacheConversationHistoryByKey,
   stats: PromptCacheConversationsResponse | null,
   pinnedPromptCacheKeys: Iterable<string> = [],
+  retainedInactiveLimit = 0,
 ) {
   if (!stats) return current;
 
@@ -589,6 +590,35 @@ export function mergePromptCacheConversationHistory(
     const existing = current[promptCacheKey];
     if (!existing) continue;
     next[promptCacheKey] = existing;
+  }
+
+  if (retainedInactiveLimit > 0) {
+    const retainedInactiveEntries = Object.entries(current)
+      .filter(([promptCacheKey]) => !(promptCacheKey in next))
+      .sort(([leftPromptCacheKey, left], [rightPromptCacheKey, right]) => {
+        const leftLastActivityEpoch =
+          parseOccurredAtEpoch(left.lastActivityAt) ?? Number.MIN_SAFE_INTEGER;
+        const rightLastActivityEpoch =
+          parseOccurredAtEpoch(right.lastActivityAt) ?? Number.MIN_SAFE_INTEGER;
+        if (leftLastActivityEpoch !== rightLastActivityEpoch) {
+          return rightLastActivityEpoch - leftLastActivityEpoch;
+        }
+
+        const leftCreatedAtEpoch =
+          parseOccurredAtEpoch(left.createdAt) ?? Number.MIN_SAFE_INTEGER;
+        const rightCreatedAtEpoch =
+          parseOccurredAtEpoch(right.createdAt) ?? Number.MIN_SAFE_INTEGER;
+        if (leftCreatedAtEpoch !== rightCreatedAtEpoch) {
+          return rightCreatedAtEpoch - leftCreatedAtEpoch;
+        }
+
+        return rightPromptCacheKey.localeCompare(leftPromptCacheKey);
+      })
+      .slice(0, retainedInactiveLimit);
+
+    for (const [promptCacheKey, history] of retainedInactiveEntries) {
+      next[promptCacheKey] = history;
+    }
   }
 
   const currentKeys = Object.keys(current);

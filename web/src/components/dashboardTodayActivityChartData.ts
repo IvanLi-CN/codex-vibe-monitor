@@ -15,8 +15,8 @@ export interface DashboardTodayMinuteDatum {
   totalCount: number
   totalCost: number
   totalTokens: number
-  cumulativeCost: number
-  cumulativeTokens: number
+  cumulativeCost: number | null
+  cumulativeTokens: number | null
   chartCumulativeCost: number | null
   chartCumulativeTokens: number | null
 }
@@ -110,8 +110,8 @@ export function buildTodayMinuteChartData(
       totalCount,
       totalCost,
       totalTokens,
-      cumulativeCost,
-      cumulativeTokens,
+      cumulativeCost: isFuture ? null : cumulativeCost,
+      cumulativeTokens: isFuture ? null : cumulativeTokens,
       chartCumulativeCost: isFuture ? null : cumulativeCost,
       chartCumulativeTokens: isFuture ? null : cumulativeTokens,
     })
