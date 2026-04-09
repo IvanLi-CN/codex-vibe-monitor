@@ -1,0 +1,1254 @@
+describe("UpstreamAccountCreatePage imported oauth", () => {
+  function createImportedOauthFixture(index: number) {
+    const email = `mailbox-${index}@duckmail.sbs`;
+    const fileName = `${email}.json`;
+    const content = JSON.stringify({
+      type: "codex",
+      email,
+      account_id: `acct_${index}`,
+      expired: "2026-03-20T00:00:00.000Z",
+      access_token: "access",
+      refresh_token: "refresh",
+      id_token: "header.payload.signature",
+    });
+    const file = new File([content], fileName, {
+      type: "application/json",
+      lastModified: index,
+    });
+    return {
+      file,
+      content,
+      fileName,
+      email,
+      chatgptAccountId: `acct_${index}`,
+    };
+  }
+
+  function getImportedOauthSourceId(
+    fixture: { file: File },
+    selectionIndex = 0,
+  ) {
+    return `${fixture.file.name}:${fixture.file.size}:${fixture.file.lastModified}:${selectionIndex}`;
+  }
+
+  function buildImportedOauthRow(
+    sourceId: string,
+    fileName: string,
+    email: string,
+    accountId: string,
+    status:
+      | "ok"
+      | "ok_exhausted"
+      | "invalid"
+      | "error"
+      | "duplicate_in_input" = "ok",
+    detail: string | null = null,
+  ) {
+    return {
+      sourceId,
+      fileName,
+      email,
+      chatgptAccountId: accountId,
+      displayName: email,
+      tokenExpiresAt: "2026-03-20T00:00:00.000Z",
+      matchedAccount: null,
+      status,
+      detail,
+      attempts: 1,
+    };
+  }
+
+  function getImportedOauthResultRowsText() {
+    return Array.from(document.querySelectorAll("tbody tr")).map(
+      (row) => row.textContent ?? "",
+    );
+  }
+
+  function buildPendingImportedOauthSnapshot(
+    items: Array<{ sourceId: string; fileName: string }>,
+  ): ImportedOauthValidationResponse {
+    return {
+      inputFiles: items.length,
+      uniqueInInput: items.length,
+      duplicateInInput: 0,
+      rows: items.map((item) => ({
+        sourceId: item.sourceId,
+        fileName: item.fileName,
+        email: null,
+        chatgptAccountId: null,
+        displayName: null,
+        tokenExpiresAt: null,
+        matchedAccount: null,
+        status: "pending" as const,
+        detail: null,
+        attempts: 0,
+      })),
+    };
+  }
+
+  function installImportedOauthValidationJobFlow(
+    options: {
+      jobId?: string;
+      rowsBySourceId?: Record<string, ReturnType<typeof buildImportedOauthRow>>;
+      finalEvent?: "completed" | "failed" | "cancelled";
+      finalError?: string;
+      stepwise?: boolean;
+    } = {},
+  ) {
+    const {
+      jobId = "job-1",
+      rowsBySourceId = {},
+      finalEvent = "completed",
+      finalError = "Validation job failed",
+      stepwise = false,
+    } = options;
+    let controller: {
+      source: MockValidationEventSource;
+      pendingSnapshot: ReturnType<typeof buildPendingImportedOauthSnapshot>;
+      currentRows: ReturnType<typeof buildPendingImportedOauthSnapshot>["rows"];
+      emitSnapshot: () => void;
+      emitRow: (sourceId: string) => void;
+      complete: () => void;
+      fail: (error?: string) => void;
+      cancel: () => void;
+    } | null = null;
+
+    const startImportedOauthValidationJob = vi
+      .fn()
+      .mockImplementation(
+        async ({
+          items,
+        }: {
+          items: Array<{ sourceId: string; fileName: string }>;
+        }) => {
+          const pendingSnapshot = buildPendingImportedOauthSnapshot(items);
+          const source = new MockValidationEventSource();
+          const currentRows: ImportedOauthValidationRow[] = [
+            ...pendingSnapshot.rows,
+          ];
+          controller = {
+            source,
+            pendingSnapshot,
+            currentRows,
+            emitSnapshot() {
+              source.emit("snapshot", {
+                snapshot: pendingSnapshot,
+                counts: buildImportedOauthValidationCounts(currentRows),
+              });
+            },
+            emitRow(sourceId: string) {
+              const nextRow = rowsBySourceId[sourceId];
+              if (!nextRow) {
+                throw new Error(`missing validation row for ${sourceId}`);
+              }
+              const index = currentRows.findIndex(
+                (row) => row.sourceId === sourceId,
+              );
+              if (index >= 0) {
+                currentRows[index] = {
+                  ...nextRow,
+                };
+              }
+              source.emit("row", {
+                row: nextRow,
+                counts: buildImportedOauthValidationCounts(currentRows),
+              });
+            },
+            complete() {
+              source.emit("completed", {
+                snapshot: {
+                  inputFiles: pendingSnapshot.inputFiles,
+                  uniqueInInput: currentRows.length,
+                  duplicateInInput: currentRows.filter(
+                    (row) => row.status === "duplicate_in_input",
+                  ).length,
+                  rows: currentRows,
+                },
+                counts: buildImportedOauthValidationCounts(currentRows),
+              });
+            },
+            fail(error = finalError) {
+              source.emit("failed", {
+                snapshot: {
+                  inputFiles: pendingSnapshot.inputFiles,
+                  uniqueInInput: currentRows.length,
+                  duplicateInInput: currentRows.filter(
+                    (row) => row.status === "duplicate_in_input",
+                  ).length,
+                  rows: currentRows,
+                },
+                counts: buildImportedOauthValidationCounts(currentRows),
+                error,
+              });
+            },
+            cancel() {
+              source.emit("cancelled", {
+                snapshot: {
+                  inputFiles: pendingSnapshot.inputFiles,
+                  uniqueInInput: currentRows.length,
+                  duplicateInInput: currentRows.filter(
+                    (row) => row.status === "duplicate_in_input",
+                  ).length,
+                  rows: currentRows,
+                },
+                counts: buildImportedOauthValidationCounts(currentRows),
+              });
+            },
+          };
+
+          apiMocks.createImportedOauthValidationJobEventSource.mockReturnValue(
+            source as unknown as EventSource,
+          );
+
+          if (!stepwise) {
+            window.setTimeout(() => {
+              controller?.emitSnapshot();
+              items.forEach((item) => controller?.emitRow(item.sourceId));
+              if (finalEvent === "failed") {
+                controller?.fail();
+              } else if (finalEvent === "cancelled") {
+                controller?.cancel();
+              } else {
+                controller?.complete();
+              }
+            }, 0);
+          }
+
+          return {
+            jobId,
+            snapshot: pendingSnapshot,
+          };
+        },
+      );
+    const stopImportedOauthValidationJob = vi.fn().mockResolvedValue(undefined);
+
+    mockUpstreamAccounts({
+      startImportedOauthValidationJob,
+      stopImportedOauthValidationJob,
+    });
+
+    return {
+      startImportedOauthValidationJob,
+      stopImportedOauthValidationJob,
+      getController: () => {
+        if (!controller) {
+          throw new Error("validation controller not initialized");
+        }
+        return controller;
+      },
+    };
+  }
+
+  it("opens import mode from the query string and validates selected files", async () => {
+    const fixture = createImportedOauthFixture(1);
+    const sourceId = getImportedOauthSourceId(fixture);
+    const { startImportedOauthValidationJob } =
+      installImportedOauthValidationJobFlow({
+        rowsBySourceId: {
+          [sourceId]: buildImportedOauthRow(
+            sourceId,
+            fixture.fileName,
+            fixture.email,
+            fixture.chatgptAccountId,
+          ),
+        },
+      });
+    mockUpstreamAccounts({
+      startImportedOauthValidationJob,
+    });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    expect(host?.textContent).toContain("Import Codex OAuth JSON");
+
+    const fileInput = host?.querySelector('input[name="importOauthFiles"]');
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error("missing import file input");
+    }
+
+    await setFileInputFiles(fileInput, [fixture.file]);
+    await flushAsync();
+
+    clickButton(/validate and review/i);
+    await flushAsync();
+    await flushTimers();
+    await flushAsync();
+
+    expect(startImportedOauthValidationJob).toHaveBeenCalledWith({
+      ...expectedGroupSelection(TEST_REQUIRED_GROUP_NAME, {
+        includeConcurrencyLimit: false,
+      }),
+      items: [
+        expect.objectContaining({
+          fileName: fixture.fileName,
+          sourceId,
+          content: fixture.content,
+        }),
+      ],
+    });
+    expect(document.body.textContent).toContain("Import validation");
+    expect(document.body.textContent).toContain(fixture.fileName);
+  });
+
+  it("auto-validates a pasted credential and adds it to the queue", async () => {
+    const fixture = createImportedOauthFixture(1);
+    const runImportedOauthValidation = vi.fn().mockResolvedValue({
+      inputFiles: 1,
+      uniqueInInput: 1,
+      duplicateInInput: 0,
+      rows: [
+        buildImportedOauthRow(
+          "pasted:1",
+          "Pasted credential #1.json",
+          fixture.email,
+          fixture.chatgptAccountId,
+        ),
+      ],
+    });
+    mockUpstreamAccounts({ runImportedOauthValidation });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    const pasteField = host?.querySelector(
+      'textarea[name="importOauthPasteDraft"]',
+    );
+    if (!(pasteField instanceof HTMLTextAreaElement)) {
+      throw new Error("missing import paste textarea");
+    }
+
+    await pasteIntoField(pasteField, fixture.content);
+    await flushAsync();
+    await flushAsync();
+
+    expect(runImportedOauthValidation).toHaveBeenCalledWith({
+      groupName: TEST_REQUIRED_GROUP_NAME,
+      groupBoundProxyKeys: [...TEST_REQUIRED_BOUND_PROXY_KEYS],
+      items: [
+        {
+          sourceId: "pasted:1",
+          fileName: "Pasted credential #1.json",
+          content: fixture.content,
+        },
+      ],
+    });
+    expect(pasteField.value).toBe("");
+    expect(pageTextContent()).toContain("Pasted credential #1.json");
+  });
+
+  it("keeps pasted content editable after failed pre-validation and retries only on explicit action", async () => {
+    const invalidFixture = createImportedOauthFixture(1);
+    const fixedFixture = createImportedOauthFixture(2);
+    const runImportedOauthValidation = vi
+      .fn()
+      .mockResolvedValueOnce({
+        inputFiles: 1,
+        uniqueInInput: 1,
+        duplicateInInput: 0,
+        rows: [
+          buildImportedOauthRow(
+            "pasted:1",
+            "Pasted credential #1.json",
+            invalidFixture.email,
+            invalidFixture.chatgptAccountId,
+            "invalid",
+            "Broken credential",
+          ),
+        ],
+      })
+      .mockResolvedValueOnce({
+        inputFiles: 1,
+        uniqueInInput: 1,
+        duplicateInInput: 0,
+        rows: [
+          buildImportedOauthRow(
+            "pasted:1",
+            "Pasted credential #1.json",
+            fixedFixture.email,
+            fixedFixture.chatgptAccountId,
+          ),
+        ],
+      });
+    mockUpstreamAccounts({ runImportedOauthValidation });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    const pasteField = host?.querySelector(
+      'textarea[name="importOauthPasteDraft"]',
+    );
+    if (!(pasteField instanceof HTMLTextAreaElement)) {
+      throw new Error("missing import paste textarea");
+    }
+
+    await pasteIntoField(pasteField, invalidFixture.content);
+    await flushAsync();
+    await flushAsync();
+
+    expect(runImportedOauthValidation).toHaveBeenCalledTimes(1);
+    expect(pageTextContent()).toContain("Broken credential");
+    expect(pasteField.value).toBe(invalidFixture.content);
+
+    setFieldValue(pasteField, fixedFixture.content);
+    await flushAsync();
+
+    expect(runImportedOauthValidation).toHaveBeenCalledTimes(1);
+
+    clickButton(/validate and add to queue/i);
+    await flushAsync();
+    await flushAsync();
+
+    expect(runImportedOauthValidation).toHaveBeenCalledTimes(2);
+    expect(runImportedOauthValidation.mock.calls[1]?.[0]).toEqual({
+      groupName: TEST_REQUIRED_GROUP_NAME,
+      groupBoundProxyKeys: [...TEST_REQUIRED_BOUND_PROXY_KEYS],
+      items: [
+        {
+          sourceId: "pasted:1",
+          fileName: "Pasted credential #1.json",
+          content: fixedFixture.content,
+        },
+      ],
+    });
+    expect(pasteField.value).toBe("");
+    expect(pageTextContent()).toContain("Pasted credential #1.json");
+  });
+
+  it("rejects non-single-object pasted content before network validation", async () => {
+    const runImportedOauthValidation = vi.fn();
+    mockUpstreamAccounts({ runImportedOauthValidation });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    const pasteField = host?.querySelector(
+      'textarea[name="importOauthPasteDraft"]',
+    );
+    if (!(pasteField instanceof HTMLTextAreaElement)) {
+      throw new Error("missing import paste textarea");
+    }
+
+    await pasteIntoField(pasteField, '[{"type":"codex"}]');
+    await flushAsync();
+
+    expect(runImportedOauthValidation).not.toHaveBeenCalled();
+    expect(pageTextContent()).toContain(
+      "Paste exactly one credential JSON object.",
+    );
+    expect(pasteField.value).toBe('[{"type":"codex"}]');
+  });
+
+  it("replaces the paste editor content on every new paste", async () => {
+    const firstDraft = '[{"type":"codex","email":"first@duckmail.sbs"}]';
+    const secondDraft = '[{"type":"codex","email":"second@duckmail.sbs"}]';
+
+    mockUpstreamAccounts({ runImportedOauthValidation: vi.fn() });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    const pasteField = host?.querySelector(
+      'textarea[name="importOauthPasteDraft"]',
+    );
+    if (!(pasteField instanceof HTMLTextAreaElement)) {
+      throw new Error("missing import paste textarea");
+    }
+
+    await pasteIntoField(pasteField, firstDraft);
+    await flushAsync();
+    expect(pasteField.value).toBe(firstDraft);
+
+    await pasteIntoField(pasteField, secondDraft);
+    await flushAsync();
+    expect(pasteField.value).toBe(secondDraft);
+    expect(pasteField.value).not.toBe(firstDraft);
+  });
+
+  it("ignores stale paste validation results after the queue is cleared", async () => {
+    const queuedFixture = createImportedOauthFixture(1);
+    const pastedFixture = createImportedOauthFixture(2);
+    let resolveValidation:
+      | ((value: ImportedOauthValidationResponse) => void)
+      | null = null;
+    const runImportedOauthValidation = vi.fn().mockImplementation(
+      () =>
+        new Promise<ImportedOauthValidationResponse>((resolve) => {
+          resolveValidation = resolve;
+        }),
+    );
+    mockUpstreamAccounts({ runImportedOauthValidation });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    const fileInput = host?.querySelector('input[name="importOauthFiles"]');
+    const pasteField = host?.querySelector(
+      'textarea[name="importOauthPasteDraft"]',
+    );
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error("missing import file input");
+    }
+    if (!(pasteField instanceof HTMLTextAreaElement)) {
+      throw new Error("missing import paste textarea");
+    }
+
+    await setFileInputFiles(fileInput, [queuedFixture.file]);
+    await flushAsync();
+
+    await pasteIntoField(pasteField, pastedFixture.content);
+    await flushAsync();
+
+    clickButton(/clear selection/i);
+    await flushAsync();
+
+    if (!resolveValidation) {
+      throw new Error("missing paste validation resolver");
+    }
+    const completeValidation: (value: ImportedOauthValidationResponse) => void =
+      resolveValidation;
+    completeValidation({
+      inputFiles: 1,
+      uniqueInInput: 1,
+      duplicateInInput: 0,
+      rows: [
+        buildImportedOauthRow(
+          "pasted:1",
+          "Pasted credential #1.json",
+          pastedFixture.email,
+          pastedFixture.chatgptAccountId,
+        ),
+      ],
+    });
+    await flushAsync();
+    await flushAsync();
+
+    expect(pageTextContent()).not.toContain(queuedFixture.fileName);
+    expect(pageTextContent()).not.toContain("Pasted credential #1.json");
+  });
+
+  it("assigns unique file source ids across overlapping file selections", async () => {
+    const firstFixture = createImportedOauthFixture(1);
+    const secondFixture = createImportedOauthFixture(2);
+    const firstSourceId = getImportedOauthSourceId(firstFixture, 0);
+    const secondSourceId = getImportedOauthSourceId(secondFixture, 1);
+    let resolveFirstFileText: (() => void) | null = null;
+    Object.defineProperty(firstFixture.file, "text", {
+      configurable: true,
+      value: vi.fn(
+        () =>
+          new Promise<string>((resolve) => {
+            resolveFirstFileText = () => resolve(firstFixture.content);
+          }),
+      ),
+    });
+    Object.defineProperty(secondFixture.file, "text", {
+      configurable: true,
+      value: vi.fn().mockResolvedValue(secondFixture.content),
+    });
+
+    const { startImportedOauthValidationJob } =
+      installImportedOauthValidationJobFlow({
+        rowsBySourceId: {
+          [firstSourceId]: buildImportedOauthRow(
+            firstSourceId,
+            firstFixture.fileName,
+            firstFixture.email,
+            firstFixture.chatgptAccountId,
+          ),
+          [secondSourceId]: buildImportedOauthRow(
+            secondSourceId,
+            secondFixture.fileName,
+            secondFixture.email,
+            secondFixture.chatgptAccountId,
+          ),
+        },
+      });
+    mockUpstreamAccounts({ startImportedOauthValidationJob });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    const fileInput = host?.querySelector('input[name="importOauthFiles"]');
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error("missing import file input");
+    }
+
+    await setFileInputFiles(fileInput, [firstFixture.file]);
+    await setFileInputFiles(fileInput, [secondFixture.file]);
+    if (!resolveFirstFileText) {
+      throw new Error("missing delayed file text resolver");
+    }
+    const completeFirstFileText: () => void = resolveFirstFileText;
+    completeFirstFileText();
+    await flushAsync();
+    await flushAsync();
+
+    clickButton(/validate and review/i);
+    await flushAsync();
+    await flushTimers();
+    await flushAsync();
+
+    const request = startImportedOauthValidationJob.mock.calls[0]?.[0];
+    if (!request) {
+      throw new Error("missing validation request");
+    }
+    expect(request.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceId: firstSourceId,
+          fileName: firstFixture.fileName,
+          content: firstFixture.content,
+        }),
+        expect.objectContaining({
+          sourceId: secondSourceId,
+          fileName: secondFixture.fileName,
+          content: secondFixture.content,
+        }),
+      ]),
+    );
+    expect(
+      new Set(request.items.map((item: { sourceId: string }) => item.sourceId))
+        .size,
+    ).toBe(2);
+  });
+
+  it("keeps pasted credentials alongside selected files for the existing bulk validation flow", async () => {
+    const pastedFixture = createImportedOauthFixture(1);
+    const fileFixture = createImportedOauthFixture(2);
+    const fileSourceId = getImportedOauthSourceId(fileFixture, 0);
+    const runImportedOauthValidation = vi.fn().mockResolvedValue({
+      inputFiles: 1,
+      uniqueInInput: 1,
+      duplicateInInput: 0,
+      rows: [
+        buildImportedOauthRow(
+          "pasted:1",
+          "Pasted credential #1.json",
+          pastedFixture.email,
+          pastedFixture.chatgptAccountId,
+        ),
+      ],
+    });
+    const { startImportedOauthValidationJob } =
+      installImportedOauthValidationJobFlow({
+        rowsBySourceId: {
+          "pasted:1": buildImportedOauthRow(
+            "pasted:1",
+            "Pasted credential #1.json",
+            pastedFixture.email,
+            pastedFixture.chatgptAccountId,
+          ),
+          [fileSourceId]: buildImportedOauthRow(
+            fileSourceId,
+            fileFixture.fileName,
+            fileFixture.email,
+            fileFixture.chatgptAccountId,
+          ),
+        },
+      });
+    mockUpstreamAccounts({
+      runImportedOauthValidation,
+      startImportedOauthValidationJob,
+    });
+    render("/account-pool/upstream-accounts/new?mode=import");
+    const fileInput = host?.querySelector('input[name="importOauthFiles"]');
+    const pasteField = host?.querySelector(
+      'textarea[name="importOauthPasteDraft"]',
+    );
+    if (!(pasteField instanceof HTMLTextAreaElement)) {
+      throw new Error("missing import paste textarea");
+    }
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error("missing import file input");
+    }
+
+    await pasteIntoField(pasteField, pastedFixture.content);
+    await flushAsync();
+    await flushAsync();
+
+    await setFileInputFiles(fileInput, [fileFixture.file]);
+    await flushAsync();
+
+    expect(pageTextContent()).toContain("Pasted credential #1.json");
+    expect(pageTextContent()).toContain(fileFixture.fileName);
+
+    clickButton(/validate and review/i);
+    await flushAsync();
+    await flushTimers();
+    await flushAsync();
+
+    expect(startImportedOauthValidationJob).toHaveBeenCalledWith({
+      ...expectedGroupSelection(TEST_REQUIRED_GROUP_NAME, {
+        includeConcurrencyLimit: false,
+      }),
+      items: [
+        {
+          sourceId: "pasted:1",
+          fileName: "Pasted credential #1.json",
+          content: pastedFixture.content,
+        },
+        expect.objectContaining({
+          sourceId: fileSourceId,
+          fileName: fileFixture.fileName,
+          content: fileFixture.content,
+        }),
+      ],
+    });
+  });
+
+  it("uses the latest node shunt setting when starting imported oauth validation", async () => {
+    const fixture = createImportedOauthFixture(1);
+    const sourceId = getImportedOauthSourceId(fixture);
+    const groups = TEST_GROUP_SUMMARIES.map((group) => ({
+      ...group,
+      boundProxyKeys: [...group.boundProxyKeys],
+    }));
+    const { startImportedOauthValidationJob } =
+      installImportedOauthValidationJobFlow({
+        rowsBySourceId: {
+          [sourceId]: buildImportedOauthRow(
+            sourceId,
+            fixture.fileName,
+            fixture.email,
+            fixture.chatgptAccountId,
+          ),
+        },
+      });
+    mockUpstreamAccounts({
+      startImportedOauthValidationJob,
+      groups,
+    });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    setComboboxValue('input[name="importGroupName"]', TEST_REQUIRED_GROUP_NAME);
+    await flushAsync();
+
+    const fileInput = host?.querySelector('input[name="importOauthFiles"]');
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error("missing import file input");
+    }
+
+    await setFileInputFiles(fileInput, [fixture.file]);
+    await flushAsync();
+
+    const importGroup = groups.find(
+      (group) => group.groupName === TEST_REQUIRED_GROUP_NAME,
+    );
+    if (!importGroup) {
+      throw new Error("missing import group summary");
+    }
+    importGroup.nodeShuntEnabled = true;
+
+    clickButton(/Add tag/i);
+    await flushAsync();
+    const vipOption = Array.from(
+      document.body.querySelectorAll("[cmdk-item]"),
+    ).find((candidate) => (candidate.textContent || "").includes("vip"));
+    if (!(vipOption instanceof HTMLElement)) {
+      throw new Error("missing vip tag option");
+    }
+    act(() => {
+      vipOption.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    clickButton(/validate and review/i);
+    await flushAsync();
+    await flushTimers();
+    await flushAsync();
+
+    expect(startImportedOauthValidationJob).toHaveBeenCalledWith({
+      ...expectedGroupSelection(TEST_REQUIRED_GROUP_NAME, {
+        includeConcurrencyLimit: false,
+      }),
+      groupNodeShuntEnabled: true,
+      items: [
+        expect.objectContaining({
+          fileName: fixture.fileName,
+          sourceId,
+          content: fixture.content,
+        }),
+      ],
+    });
+  });
+
+  it("allows imported oauth validation for node-shunt groups with only unavailable bound nodes", async () => {
+    const fixture = createImportedOauthFixture(1);
+    const sourceId = getImportedOauthSourceId(fixture);
+    const groups = TEST_GROUP_SUMMARIES.map((group) =>
+      group.groupName === TEST_REQUIRED_GROUP_NAME
+        ? {
+            ...group,
+            boundProxyKeys: ["stale-node"],
+            nodeShuntEnabled: true,
+          }
+        : {
+            ...group,
+            boundProxyKeys: [...group.boundProxyKeys],
+          },
+    );
+    const { startImportedOauthValidationJob } =
+      installImportedOauthValidationJobFlow({
+        rowsBySourceId: {
+          [sourceId]: buildImportedOauthRow(
+            sourceId,
+            fixture.fileName,
+            fixture.email,
+            fixture.chatgptAccountId,
+          ),
+        },
+      });
+    mockUpstreamAccounts({
+      startImportedOauthValidationJob,
+      groups,
+    });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    setComboboxValue('input[name="importGroupName"]', TEST_REQUIRED_GROUP_NAME);
+    await flushAsync();
+
+    const fileInput = host?.querySelector('input[name="importOauthFiles"]');
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error("missing import file input");
+    }
+
+    await setFileInputFiles(fileInput, [fixture.file]);
+    await flushAsync();
+
+    clickButton(/validate and review/i);
+    await flushAsync();
+    await flushTimers();
+    await flushAsync();
+
+    expect(startImportedOauthValidationJob).toHaveBeenCalledWith({
+      groupName: TEST_REQUIRED_GROUP_NAME,
+      groupBoundProxyKeys: ["stale-node"],
+      groupNodeShuntEnabled: true,
+      items: [
+        expect.objectContaining({
+          fileName: fixture.fileName,
+          sourceId,
+          content: fixture.content,
+        }),
+      ],
+    });
+    expect(pageTextContent()).not.toContain(
+      `Group "${TEST_REQUIRED_GROUP_NAME}" does not have any selectable bound proxy nodes.`,
+    );
+  });
+
+  it("removes imported rows from the validation list without navigating away", async () => {
+    const importedFixture = createImportedOauthFixture(1);
+    const pendingFixture = createImportedOauthFixture(2);
+    const importedSourceId = getImportedOauthSourceId(importedFixture, 0);
+    const pendingSourceId = getImportedOauthSourceId(pendingFixture, 1);
+    const { startImportedOauthValidationJob } =
+      installImportedOauthValidationJobFlow({
+        rowsBySourceId: {
+          [importedSourceId]: buildImportedOauthRow(
+            importedSourceId,
+            importedFixture.fileName,
+            importedFixture.email,
+            importedFixture.chatgptAccountId,
+          ),
+          [pendingSourceId]: buildImportedOauthRow(
+            pendingSourceId,
+            pendingFixture.fileName,
+            pendingFixture.email,
+            pendingFixture.chatgptAccountId,
+            "invalid",
+            "Broken credential",
+          ),
+        },
+      });
+    const importOauthAccounts = vi.fn().mockResolvedValue({
+      summary: {
+        inputFiles: 2,
+        selectedFiles: 1,
+        created: 1,
+        updatedExisting: 0,
+        failed: 0,
+      },
+      results: [
+        {
+          sourceId: importedSourceId,
+          fileName: importedFixture.fileName,
+          email: importedFixture.email,
+          chatgptAccountId: importedFixture.chatgptAccountId,
+          accountId: 77,
+          status: "created",
+          detail: null,
+          matchedAccount: null,
+        },
+      ],
+    });
+    mockUpstreamAccounts({
+      startImportedOauthValidationJob,
+      importOauthAccounts,
+    });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    const fileInput = host?.querySelector('input[name="importOauthFiles"]');
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error("missing import file input");
+    }
+
+    await setFileInputFiles(fileInput, [
+      importedFixture.file,
+      pendingFixture.file,
+    ]);
+    await flushAsync();
+
+    clickButton(/validate and review/i);
+    await flushAsync();
+    await flushTimers();
+    await flushAsync();
+    await flushAsync();
+
+    clickBodyButton(/import usable files/i);
+    await flushAsync();
+
+    const importPayload = importOauthAccounts.mock.calls[0]?.[0];
+    expect(importPayload).toBeDefined();
+    expect(importPayload.items).toHaveLength(1);
+    expect(importPayload.selectedSourceIds).toEqual([importedSourceId]);
+    expect(importPayload.groupName).toBe(TEST_REQUIRED_GROUP_NAME);
+    expect(importPayload.groupBoundProxyKeys).toEqual(
+      TEST_REQUIRED_BOUND_PROXY_KEYS,
+    );
+    expect(importPayload.groupNote).toBeUndefined();
+    expect(importPayload.tagIds).toEqual([]);
+
+    expect(document.body.textContent).not.toContain(importedFixture.fileName);
+    expect(document.body.textContent).toContain(pendingFixture.fileName);
+    expect(document.body.textContent).toContain("Broken credential");
+    expect(navigateMock).not.toHaveBeenCalled();
+  });
+
+  it("paginates validation results after every 100 rows", async () => {
+    const fixtures = Array.from({ length: 130 }, (_, index) =>
+      createImportedOauthFixture(index + 1),
+    );
+    const { startImportedOauthValidationJob } =
+      installImportedOauthValidationJobFlow({
+        rowsBySourceId: Object.fromEntries(
+          fixtures.map((fixture, index) => {
+            const sourceId = getImportedOauthSourceId(fixture, index);
+            return [
+              sourceId,
+              buildImportedOauthRow(
+                sourceId,
+                fixture.fileName,
+                fixture.email,
+                fixture.chatgptAccountId,
+              ),
+            ];
+          }),
+        ),
+      });
+    mockUpstreamAccounts({ startImportedOauthValidationJob });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    const fileInput = host?.querySelector('input[name="importOauthFiles"]');
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error("missing import file input");
+    }
+
+    await setFileInputFiles(
+      fileInput,
+      fixtures.map((fixture) => fixture.file),
+    );
+    await flushAsync();
+
+    clickButton(/validate and review/i);
+    await flushAsync();
+    await flushTimers();
+    await flushAsync();
+
+    const pageOneRows = getImportedOauthResultRowsText().join("\n");
+    expect(startImportedOauthValidationJob).toHaveBeenCalledTimes(1);
+    expect(
+      startImportedOauthValidationJob.mock.calls[0]?.[0]?.items,
+    ).toHaveLength(130);
+    expect(pageOneRows).toContain("mailbox-1@duckmail.sbs.json");
+    expect(pageOneRows).toContain("mailbox-100@duckmail.sbs.json");
+    expect(pageOneRows).not.toContain("mailbox-101@duckmail.sbs.json");
+    expect(document.body.textContent).toContain("Page 1 / 2");
+
+    clickBodyButton(/^next$/i);
+    await flushAsync();
+
+    const pageTwoRows = getImportedOauthResultRowsText().join("\n");
+    expect(pageTwoRows).toContain("mailbox-101@duckmail.sbs.json");
+    expect(pageTwoRows).toContain("mailbox-130@duckmail.sbs.json");
+    expect(pageTwoRows).not.toContain("mailbox-1@duckmail.sbs.json");
+    expect(document.body.textContent).toContain("Page 2 / 2");
+  });
+
+  it("updates validation progress one row at a time through SSE events", async () => {
+    const fixtures = Array.from({ length: 3 }, (_, index) =>
+      createImportedOauthFixture(index + 1),
+    );
+    const rowsBySourceId = Object.fromEntries(
+      fixtures.map((fixture, index) => {
+        const sourceId = getImportedOauthSourceId(fixture, index);
+        return [
+          sourceId,
+          buildImportedOauthRow(
+            sourceId,
+            fixture.fileName,
+            fixture.email,
+            fixture.chatgptAccountId,
+          ),
+        ];
+      }),
+    );
+    const { startImportedOauthValidationJob, getController } =
+      installImportedOauthValidationJobFlow({
+        rowsBySourceId,
+        stepwise: true,
+      });
+    mockUpstreamAccounts({ startImportedOauthValidationJob });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    const fileInput = host?.querySelector('input[name="importOauthFiles"]');
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error("missing import file input");
+    }
+
+    await setFileInputFiles(
+      fileInput,
+      fixtures.map((fixture) => fixture.file),
+    );
+    await flushAsync();
+
+    clickButton(/validate and review/i);
+    await flushAsync();
+    await flushTimers();
+    await flushAsync();
+
+    const controller = getController();
+    controller.emitSnapshot();
+    await flushAsync();
+    expect(document.body.textContent).toContain("Checked 0 of 3");
+
+    controller.emitRow(getImportedOauthSourceId(fixtures[0]!, 0));
+    await flushAsync();
+    expect(document.body.textContent).toContain("Checked 1 of 3");
+
+    controller.emitRow(getImportedOauthSourceId(fixtures[1]!, 1));
+    await flushAsync();
+    expect(document.body.textContent).toContain("Checked 2 of 3");
+
+    controller.emitRow(getImportedOauthSourceId(fixtures[2]!, 2));
+    controller.complete();
+    await flushAsync();
+    expect(document.body.textContent).toContain("Checked 3 of 3");
+  });
+
+  it("closes the dialog and cancels the active validation job while checking", async () => {
+    const fixture = createImportedOauthFixture(1);
+    const sourceId = getImportedOauthSourceId(fixture);
+    const {
+      startImportedOauthValidationJob,
+      stopImportedOauthValidationJob,
+      getController,
+    } = installImportedOauthValidationJobFlow({
+      rowsBySourceId: {
+        [sourceId]: buildImportedOauthRow(
+          sourceId,
+          fixture.fileName,
+          fixture.email,
+          fixture.chatgptAccountId,
+        ),
+      },
+      stepwise: true,
+    });
+    mockUpstreamAccounts({
+      startImportedOauthValidationJob,
+      stopImportedOauthValidationJob,
+    });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    const fileInput = host?.querySelector('input[name="importOauthFiles"]');
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error("missing import file input");
+    }
+
+    await setFileInputFiles(fileInput, [fixture.file]);
+    await flushAsync();
+
+    clickButton(/validate and review/i);
+    await flushAsync();
+
+    getController().emitSnapshot();
+    await flushAsync();
+    expect(document.body.textContent).toContain("Import validation");
+
+    clickBodyButton(/^close$/i);
+    await flushAsync();
+
+    expect(stopImportedOauthValidationJob).toHaveBeenCalledWith("job-1");
+    expect(document.body.textContent).not.toContain("Import validation");
+  });
+
+  it("imports validated oauth rows in batches of 100 and clears the dialog when all batches succeed", async () => {
+    const fixtures = Array.from({ length: 130 }, (_, index) =>
+      createImportedOauthFixture(index + 1),
+    );
+    const { startImportedOauthValidationJob } =
+      installImportedOauthValidationJobFlow({
+        rowsBySourceId: Object.fromEntries(
+          fixtures.map((fixture, index) => {
+            const sourceId = getImportedOauthSourceId(fixture, index);
+            return [
+              sourceId,
+              buildImportedOauthRow(
+                sourceId,
+                fixture.fileName,
+                fixture.email,
+                fixture.chatgptAccountId,
+              ),
+            ];
+          }),
+        ),
+      });
+    const importOauthAccounts = vi
+      .fn()
+      .mockImplementation(async ({ items, selectedSourceIds }) => ({
+        summary: {
+          inputFiles: items.length,
+          selectedFiles: selectedSourceIds.length,
+          created: selectedSourceIds.length,
+          updatedExisting: 0,
+          failed: 0,
+        },
+        results: selectedSourceIds.map((sourceId: string) => {
+          const item = items.find(
+            (candidate: { sourceId: string }) =>
+              candidate.sourceId === sourceId,
+          );
+          return {
+            sourceId,
+            fileName: item?.fileName ?? sourceId,
+            email: item?.fileName?.replace(/\\.json$/i, "") ?? sourceId,
+            chatgptAccountId: `acct_${sourceId}`,
+            accountId: 1,
+            status: "created",
+            detail: null,
+            matchedAccount: null,
+          };
+        }),
+      }));
+    mockUpstreamAccounts({
+      startImportedOauthValidationJob,
+      importOauthAccounts,
+    });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    const fileInput = host?.querySelector('input[name="importOauthFiles"]');
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error("missing import file input");
+    }
+
+    await setFileInputFiles(
+      fileInput,
+      fixtures.map((fixture) => fixture.file),
+    );
+    await flushAsync();
+
+    clickButton(/validate and review/i);
+    await flushAsync();
+    await flushTimers();
+    await flushAsync();
+    await flushAsync();
+
+    clickBodyButton(/import usable files/i);
+    await flushAsync();
+
+    expect(importOauthAccounts).toHaveBeenCalledTimes(2);
+    expect(importOauthAccounts.mock.calls[0]?.[0]?.items).toHaveLength(100);
+    expect(
+      importOauthAccounts.mock.calls[0]?.[0]?.selectedSourceIds,
+    ).toHaveLength(100);
+    expect(importOauthAccounts.mock.calls[0]?.[0]?.validationJobId).toBe(
+      "job-1",
+    );
+    expect(importOauthAccounts.mock.calls[1]?.[0]?.items).toHaveLength(30);
+    expect(
+      importOauthAccounts.mock.calls[1]?.[0]?.selectedSourceIds,
+    ).toHaveLength(30);
+    expect(importOauthAccounts.mock.calls[1]?.[0]?.validationJobId).toBe(
+      "job-1",
+    );
+    expect(document.body.textContent).not.toContain("Import validation");
+    expect(navigateMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps failed import batches in the list after earlier batches succeed", async () => {
+    const fixtures = Array.from({ length: 130 }, (_, index) =>
+      createImportedOauthFixture(index + 1),
+    );
+    const { startImportedOauthValidationJob } =
+      installImportedOauthValidationJobFlow({
+        rowsBySourceId: Object.fromEntries(
+          fixtures.map((fixture, index) => {
+            const sourceId = getImportedOauthSourceId(fixture, index);
+            return [
+              sourceId,
+              buildImportedOauthRow(
+                sourceId,
+                fixture.fileName,
+                fixture.email,
+                fixture.chatgptAccountId,
+              ),
+            ];
+          }),
+        ),
+      });
+    const importOauthAccounts = vi
+      .fn()
+      .mockImplementationOnce(async ({ items, selectedSourceIds }) => ({
+        summary: {
+          inputFiles: items.length,
+          selectedFiles: selectedSourceIds.length,
+          created: selectedSourceIds.length,
+          updatedExisting: 0,
+          failed: 0,
+        },
+        results: selectedSourceIds.map((sourceId: string) => ({
+          sourceId,
+          fileName: `${sourceId}.json`,
+          email: sourceId,
+          chatgptAccountId: `acct_${sourceId}`,
+          accountId: 1,
+          status: "created",
+          detail: null,
+          matchedAccount: null,
+        })),
+      }))
+      .mockRejectedValueOnce(new Error("Import batch exploded"));
+    mockUpstreamAccounts({
+      startImportedOauthValidationJob,
+      importOauthAccounts,
+    });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    const fileInput = host?.querySelector('input[name="importOauthFiles"]');
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error("missing import file input");
+    }
+
+    await setFileInputFiles(
+      fileInput,
+      fixtures.map((fixture) => fixture.file),
+    );
+    await flushAsync();
+
+    clickButton(/validate and review/i);
+    await flushAsync();
+    await flushTimers();
+    await flushAsync();
+    await flushAsync();
+
+    clickBodyButton(/import usable files/i);
+    await flushAsync();
+
+    expect(importOauthAccounts).toHaveBeenCalledTimes(2);
+    expect(document.body.textContent).toContain("Import batch exploded");
+    expect(document.body.textContent).not.toContain(
+      "mailbox-1@duckmail.sbs.json",
+    );
+    expect(document.body.textContent).toContain(
+      "mailbox-101@duckmail.sbs.json",
+    );
+    expect(document.body.textContent).not.toContain("Page 1 / 2");
+  });
+});

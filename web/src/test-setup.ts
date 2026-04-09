@@ -17,6 +17,12 @@ if (!('ResizeObserver' in globalThis)) {
   })
 }
 
+Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
+  configurable: true,
+  writable: true,
+  value: true,
+})
+
 // Iconify schedules async DOM updates that outlive jsdom teardown in Vitest.
 // Replace it with a stable test double so UI tests stay deterministic.
 vi.mock('@iconify/react', () => {
