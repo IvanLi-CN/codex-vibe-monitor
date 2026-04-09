@@ -24,7 +24,9 @@ export function buildTodayMinuteChartData(
   const localeTag = options?.localeTag ?? 'en-US'
   const fallbackNow = options?.now ?? new Date()
   const anchor = floorToMinute(parseDateInput(response?.rangeEnd) ?? fallbackNow)
-  const start = startOfLocalDay(anchor)
+  const start = floorToMinute(
+    parseDateInput(response?.rangeStart) ?? new Date(anchor.getTime() - 24 * 60 * 60_000),
+  )
 
   const startMs = start.getTime()
   const endMs = anchor.getTime()
@@ -109,13 +111,6 @@ export function buildTodayMinuteChartData(
 
   return data
 }
-
-function startOfLocalDay(date: Date) {
-  const next = new Date(date)
-  next.setHours(0, 0, 0, 0)
-  return next
-}
-
 function floorToMinute(date: Date) {
   const next = new Date(date)
   next.setSeconds(0, 0)

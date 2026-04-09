@@ -96,16 +96,16 @@ describe('DashboardTodayActivityChart', () => {
     })
   })
 
-  it('always expands today charts from the local midnight even when the API rangeStart is UTC', () => {
+  it('preserves the explicit rolling 24-hour range instead of forcing local midnight expansion', () => {
     const data = buildTodayMinuteChartData(
       {
-        rangeStart: '2026-04-08T00:00:00.000Z',
+        rangeStart: '2026-04-07T00:03:00.000Z',
         rangeEnd: '2026-04-08T00:03:00.000Z',
         bucketSeconds: 60,
         points: [
           {
-            bucketStart: '2026-04-08T00:00:00.000Z',
-            bucketEnd: '2026-04-08T00:00:59.000Z',
+            bucketStart: '2026-04-07T00:03:00.000Z',
+            bucketEnd: '2026-04-07T00:03:59.000Z',
             totalCount: 2,
             successCount: 2,
             failureCount: 0,
@@ -115,24 +115,24 @@ describe('DashboardTodayActivityChart', () => {
         ],
       },
       {
-        now: new Date(2026, 3, 8, 8, 3, 0),
+        now: new Date('2026-04-08T00:03:00.000Z'),
         localeTag: 'en-US',
       },
     )
 
+    const explicitRangeStart = new Date('2026-04-07T00:03:00.000Z')
     const localRangeEnd = new Date('2026-04-08T00:03:00.000Z')
-    const localMidnight = new Date(localRangeEnd)
-    localMidnight.setHours(0, 0, 0, 0)
     const labelFormatter = new Intl.DateTimeFormat('en-US', {
       hour: '2-digit',
       minute: '2-digit',
       hour12: false,
       hourCycle: 'h23',
     })
+    const expectedHeadLabel = labelFormatter.format(explicitRangeStart).replace(/(^|\D)24:(\d{2})/g, '$100:$2')
     const expectedTailLabel = labelFormatter.format(localRangeEnd).replace(/(^|\D)24:(\d{2})/g, '$100:$2')
 
-    expect(data[0]?.label).toBe('00:00')
-    expect(data[0]?.epochMs).toBe(localMidnight.getTime())
+    expect(data[0]?.label).toBe(expectedHeadLabel)
+    expect(data[0]?.epochMs).toBe(explicitRangeStart.getTime())
     expect(data.at(-1)?.label).toBe(expectedTailLabel)
   })
 

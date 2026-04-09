@@ -18,7 +18,7 @@
 
 - Dashboard 页面删除独立的顶部 `TodayStatsOverview` 卡，只保留合并后的 `DashboardActivityOverview`。
 - `活动总览` 范围切换升级为 `今日 / 24 小时 / 7 日 / 历史` 四段，并新增 localStorage 记忆最近一次访问的范围。
-- `今日` 范围顶部嵌入 5 个 KPI；下方图表随统一 metric toggle 切换：`次数` 显示成功正柱 / 失败负柱，`金额 / Tokens` 显示本地自然日累计面积图。
+- `今日` 范围顶部嵌入 5 个 KPI；下方图表随统一 metric toggle 切换：`次数` 显示成功正柱 / 失败负柱，`金额 / Tokens` 显示最近 24 小时滚动窗口的累计面积图。
 - `24 小时 / 7 日 / 历史` 维持现有热力图 / 日历形态，仅共享头部 metric toggle，并保持按视图记忆 metric 行为不回退。
 - `活动总览` 的非激活范围改为按需挂载与按需请求：默认进入 Dashboard 只加载当前页签，未访问的 `24 小时 / 7 日 / 历史` 不再首屏预取，也不再常驻隐藏面板。
 - Dashboard 工作中对话的 prompt-cache 会话工作集必须有界：authoritative 刷新后只保留“当前响应中的 key + 仍有 live record 的 key”，selection 切换或卸载后释放旧工作集。
@@ -55,7 +55,7 @@
 - Given 查看 `活动总览` 范围切换，When 进入页面，Then 显示 `今日 / 24 小时 / 7 日 / 历史` 四段；首次进入默认 `今日`，之后优先恢复最近一次访问的范围；localStorage 值非法时回退到 `今日`。
 - Given 处于 `今日` 视图，When 查看总览内容，Then 顶部显示 5 个 KPI、下方显示一张分钟级图表；`24 小时 / 7 日` 仍显示既有 KPI + 热力图；`历史` 仍只显示半年日历。
 - Given `今日` 视图切到 `次数`，When 查看图表，Then 成功柱位于 0 轴上方、失败柱位于 0 轴下方，tooltip 同时给出成功 / 失败 / 总数。
-- Given `今日` 视图切到 `金额` 或 `Tokens`，When 查看图表，Then 图表切换为本地自然日累计面积图；未来分钟不渲染，缺失分钟补 0 以保持曲线连续。
+- Given `今日` 视图切到 `金额` 或 `Tokens`，When 查看图表，Then 图表切换为最近 24 小时滚动窗口的累计面积图；未来分钟不渲染，缺失分钟补 0 以保持曲线连续。
 - Given 在四个范围间切换 `次数 / 金额 / Tokens`，When 来回切换范围，Then 每个范围仍保留各自上次选中的 metric。
 - Given 默认进入 `/dashboard`，When 页面首次完成 hydration，Then 仅当前 active range 对应的数据请求会首屏触发，未访问的隐藏范围不会提前发起 summary / timeseries 请求。
 - Given 已切到其他 prompt-cache selection 或离开页面，When 旧 selection 的 authoritative / live 数据不再属于当前工作集，Then 旧 key 会被释放，不再随着历史唯一 `promptCacheKey` 数量单调增长。
@@ -107,9 +107,9 @@
 
 ## 方案概述（Approach, high-level）
 
-- 复用现有 `useSummary('today')` 与 `useTimeseries('today', { bucket: '1m' })`，不动后端 API，仅在前端把“今日”作为总览的第四个内嵌视图。
+- 复用现有 `useSummary('today')` 与 `useTimeseries('1d', { bucket: '1m' })`，不动后端 API，仅在前端把“今日”作为总览的第四个内嵌视图；今日 KPI 继续沿用自然日 summary，而图表改用滚动 24 小时时序。
 - `TodayStatsOverview` 通过 `showSurface / showHeader / showDayBadge` 拆成可复用内容层，使它既能作为独立卡，也能作为总览内嵌 KPI 区块。
-- `DashboardTodayActivityChart` 负责将分钟序列补齐到“本地自然日 00:00 -> 当前分钟”，`次数` 模式用正负柱对齐成功 / 失败语义，`金额 / Tokens` 模式将每分钟增量累积为面积图。
+- `DashboardTodayActivityChart` 负责将分钟序列补齐到“最近 24 小时滚动窗口”，`次数` 模式用正负柱对齐成功 / 失败语义，`金额 / Tokens` 模式将每分钟增量累积为面积图。
 - `DashboardActivityOverview` 继续保留按范围记忆 metric 的行为，并新增最近访问范围的 localStorage 恢复；非法或不可用值统一回退到 `today`。
 - `DashboardActivityOverview` 的各范围面板改成只在 active range 时挂载，并把对应 summary / timeseries 请求下沉到面板内部，避免隐藏页签常驻 hook / timer / 请求。
 - `usePromptCacheConversations` 通过 bounded history + live-record pinning 维护当前工作集；authoritative 刷新、selection 切换与卸载都会主动裁剪旧 key，防止长时间停留时因历史 churn 导致内存累积。
@@ -119,7 +119,7 @@
 - 风险：分钟级图表点数明显多于现有热力图，若 Storybook / build 使用不稳定的时间源，会导致快照或视觉证据难以复现；因此必须使用固定 mock 时间轴。
 - 风险：`今日` 视图现在默认显示 KPI + 图表，如果 `TodayStatsOverview` 嵌入模式仍保留独立标题，会与总览标题重复；本轮通过隐藏内层 header 避免重复语义。
 - 风险：localStorage 恢复若未做白名单校验，会把历史无效值带入初始渲染；本轮必须在 helper 层做硬回退。
-- 假设：`今日` 的时间轴按浏览器本地时区自然日处理，而不是固定 UTC 日切。
+- 假设：`今日` 页签中的 KPI 仍按浏览器本地时区自然日 summary 统计，但下方分钟图表统一展示最近 24 小时滚动窗口，而不是固定 UTC 或本地 00:00 日切。
 - 假设：视觉证据继续采用 Storybook 稳定 mock，不截真实线上数据页面。
 
 ## 变更记录（Change log）
@@ -131,6 +131,7 @@
 - 2026-04-08: 根据 review-proof 修复 `today + 1m` 长驻会话跨午夜不自动刷新旧日数据的问题；今日视图现在会在本地下一次自然日边界强制静默重拉，并把本地补丁窗口约束回当前自然日。
 - 2026-04-09: 为 Dashboard 长时间放置崩溃问题补充前端性能硬化：`DashboardActivityOverview` 改为按需挂载 / 按需请求非激活范围，`usePromptCacheConversations` 与 prompt-cache history 改成仅保留当前工作集，并补齐高 churn / selection 切换回归测试。
 - 2026-04-09: 修复 Dashboard KPI 数值溢出；当卡片宽度不足以容纳完整值时，前端会自动切换到紧凑记数法（如 `1.31B`），并保留完整值 tooltip。
+- 2026-04-09: 将 `今日` 页签的分钟图从“本地 00:00 -> 当前时间”改成“最近 24 小时滚动窗口”；今日 KPI 仍保留自然日 summary，避免图表只显示到当天当前时刻。
 
 ## Visual Evidence
 

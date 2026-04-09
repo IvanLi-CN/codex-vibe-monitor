@@ -8,7 +8,7 @@ import {
 } from './DashboardActivityOverview'
 
 type SummaryKey = 'today' | '1d' | '7d'
-type TimeseriesKey = 'today:1m' | '1d:1m' | '7d:1h' | '6mo:1d'
+type TimeseriesKey = '1d:1m' | '7d:1h' | '6mo:1d'
 type PersistedRange = 'today' | '1d' | '7d' | 'usage' | null
 type WindowWithDashboardFetchLog = Window & {
   __dashboardOverviewFetchLog__?: string[]
@@ -31,36 +31,6 @@ function jsonResponse(body: unknown) {
 
 function createSummary(totalCount: number, successCount: number, failureCount: number, totalCost: number, totalTokens: number) {
   return { totalCount, successCount, failureCount, totalCost, totalTokens }
-}
-
-function buildTodayMinutePoints() {
-  const rangeStart = new Date('2026-04-08T00:00:00+08:00')
-  const rangeEnd = new Date('2026-04-08T12:24:00+08:00')
-  const points: Array<Record<string, number | string>> = []
-
-  for (let minute = 0; minute <= 12 * 60 + 24; minute += 1) {
-    const bucketStart = new Date(rangeStart.getTime() + minute * 60_000)
-    const bucketEnd = new Date(bucketStart.getTime() + 60_000)
-    const totalCount = minute % 11 === 0 ? 0 : (minute % 4) + (minute % 9 === 0 ? 2 : 0)
-    const failureCount = totalCount > 0 && minute % 13 === 0 ? 1 : 0
-    const successCount = Math.max(totalCount - failureCount, 0)
-    points.push({
-      bucketStart: bucketStart.toISOString(),
-      bucketEnd: bucketEnd.toISOString(),
-      totalCount,
-      successCount,
-      failureCount,
-      totalTokens: totalCount * 420,
-      totalCost: Number((totalCount * 0.0195).toFixed(4)),
-    })
-  }
-
-  return {
-    rangeStart: rangeStart.toISOString(),
-    rangeEnd: rangeEnd.toISOString(),
-    bucketSeconds: 60,
-    points,
-  }
 }
 
 function build24HourPoints() {
@@ -155,8 +125,7 @@ const SUMMARY_FIXTURES: Record<SummaryKey, ReturnType<typeof createSummary>> = {
   '7d': createSummary(182904, 171240, 11664, 8422.18, 21640351742),
 }
 
-const TIMESERIES_FIXTURES: Record<TimeseriesKey, ReturnType<typeof buildTodayMinutePoints> | ReturnType<typeof build24HourPoints> | ReturnType<typeof buildHourlyPoints> | ReturnType<typeof buildDailyPoints>> = {
-  'today:1m': buildTodayMinutePoints(),
+const TIMESERIES_FIXTURES: Record<TimeseriesKey, ReturnType<typeof build24HourPoints> | ReturnType<typeof buildHourlyPoints> | ReturnType<typeof buildDailyPoints>> = {
   '1d:1m': build24HourPoints(),
   '7d:1h': buildHourlyPoints(),
   '6mo:1d': buildDailyPoints(),
@@ -355,7 +324,7 @@ export const LoadsRangesOnDemand: Story = {
     await waitFor(() => {
       const fetchLog = windowWithFetchLog.__dashboardOverviewFetchLog__ ?? []
       expect(fetchLog).toContain('/api/stats/summary?window=today')
-      expect(fetchLog).toContain('/api/stats/timeseries?range=today&bucket=1m')
+      expect(fetchLog).toContain('/api/stats/timeseries?range=1d&bucket=1m')
       expect(fetchLog.some((entry) => entry.includes('window=1d'))).toBe(false)
       expect(fetchLog.some((entry) => entry.includes('window=7d'))).toBe(false)
     })

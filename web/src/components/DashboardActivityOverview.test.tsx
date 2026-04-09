@@ -191,7 +191,7 @@ describe('DashboardActivityOverview', () => {
 
     expect(host?.textContent).toContain('Activity Overview')
     expect(hookMocks.useSummary.mock.calls.every(([window]) => window === 'today')).toBe(true)
-    expect(hookMocks.useTimeseries.mock.calls.every(([window]) => window === 'today')).toBe(true)
+    expect(hookMocks.useTimeseries.mock.calls.every(([window]) => window === '1d')).toBe(true)
     expect(host?.querySelector('[data-testid="dashboard-activity-range-today"]')?.getAttribute('data-active')).toBe('true')
     expect(host?.querySelector('[data-testid="dashboard-activity-range-1d"]')).toBeNull()
     expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')).toBeNull()
@@ -211,7 +211,7 @@ describe('DashboardActivityOverview', () => {
 
     clickTab('History')
     expect(hookMocks.useSummary.mock.calls.every(([window]) => window === 'today')).toBe(true)
-    expect(hookMocks.useTimeseries.mock.calls.every(([window]) => window === 'today')).toBe(true)
+    expect(hookMocks.useTimeseries.mock.calls.every(([window]) => window === '1d')).toBe(true)
     expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
       'metric:totalCount;surface:false;toggle:false;meta:false',
     )

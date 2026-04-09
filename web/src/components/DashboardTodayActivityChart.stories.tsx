@@ -3,11 +3,11 @@ import { I18nProvider } from '../i18n'
 import { DashboardTodayActivityChart } from './DashboardTodayActivityChart'
 
 const sampleResponse = {
-  rangeStart: '2026-04-08T00:00:00+08:00',
+  rangeStart: '2026-04-07T12:24:00+08:00',
   rangeEnd: '2026-04-08T12:24:00+08:00',
   bucketSeconds: 60,
-  points: Array.from({ length: 140 }, (_, index) => {
-    const bucketStart = new Date('2026-04-08T00:00:00+08:00')
+  points: Array.from({ length: 288 }, (_, index) => {
+    const bucketStart = new Date('2026-04-07T12:24:00+08:00')
     bucketStart.setMinutes(bucketStart.getMinutes() + index * 5)
     const bucketEnd = new Date(bucketStart.getTime() + 60_000)
     const totalCount = index % 7 === 0 ? 0 : (index % 5) + 1
@@ -79,8 +79,8 @@ export const TokensCumulative: Story = {
 export const EmptyState: Story = {
   args: {
     response: {
-      rangeStart: '2026-04-08T00:00:00+08:00',
-      rangeEnd: '2026-04-08T00:00:00+08:00',
+      rangeStart: '2026-04-07T12:24:00+08:00',
+      rangeEnd: '2026-04-08T12:24:00+08:00',
       bucketSeconds: 60,
       points: [],
     },
