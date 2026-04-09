@@ -2365,7 +2365,10 @@ export function SharedUpstreamAccountDetailDrawer({
           );
         }
         notifyMotherChange(response);
-        const responseDraft = buildDraft(response);
+        const responseDraft = filterAccountDraftTagIds(
+          buildDraft(response),
+          new Set(tagItems.map((tag) => tag.id)),
+        );
         if (
           selectedIdRef.current === source.id &&
           activeDraftSessionKeyRef.current != null

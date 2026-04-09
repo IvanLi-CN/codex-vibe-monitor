@@ -764,6 +764,60 @@ describe("SharedUpstreamAccountDetailDrawer edit drafts", () => {
     expect(document.body.textContent).not.toContain("burst-safe")
   })
 
+  it("filters deleted tag ids out of late save responses", async () => {
+    const saveRequest = deferred<any>()
+    const saveAccount = vi.fn().mockImplementation(() => saveRequest.promise)
+    const tagVip = defaultPoolTags[0]
+    const tagBurstSafe = defaultPoolTags[1]
+    let poolTagsState = {
+      items: [tagVip, tagBurstSafe],
+      writesEnabled: true,
+      isLoading: false,
+      error: null,
+      query: {},
+      refresh: vi.fn(),
+      updateQuery: vi.fn(),
+      createTag: vi.fn(),
+      updateTag: vi.fn(),
+      deleteTag: vi.fn(),
+    }
+    hookMocks.usePoolTags.mockImplementation(() => poolTagsState)
+    hookMocks.useUpstreamAccounts.mockReturnValue(
+      createApiKeyHookState({
+        items: [createApiKeyItem(8, "Gateway Key")],
+        selectedId: 8,
+        detail: createApiKeyDetail(createApiKeyItem(8, "Gateway Key"), {
+          tags: [tagVip, tagBurstSafe],
+        }),
+        saveAccount,
+      }),
+    )
+
+    renderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+    clickButton(/Save changes/i)
+    await flushAsync()
+
+    poolTagsState = {
+      ...poolTagsState,
+      items: [tagVip],
+    }
+    rerenderDetailDrawer(8)
+    await flushAsync()
+
+    saveRequest.resolve(
+      createApiKeyDetail(createApiKeyItem(8, "Gateway Key"), {
+        tags: [tagVip, tagBurstSafe],
+      }),
+    )
+    await flushAsync()
+
+    expect(document.body.textContent).toContain("vip")
+    expect(document.body.textContent).not.toContain("burst-safe")
+  })
+
   it("reopens with the saved detail after the save completes while the drawer is closed", async () => {
     const saveRequest = deferred<any>()
     const saveAccount = vi.fn().mockImplementation(() => saveRequest.promise)
