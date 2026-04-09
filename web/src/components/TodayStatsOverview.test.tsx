@@ -26,12 +26,33 @@ vi.mock('../i18n', () => ({
 
 let host: HTMLDivElement | null = null
 let root: Root | null = null
+let metricContainerWidth = 640
 
 beforeAll(() => {
   Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
     configurable: true,
     writable: true,
     value: true,
+  })
+
+  Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+    configurable: true,
+    get() {
+      if ((this as HTMLElement).dataset.adaptiveMetricContainer === 'true') {
+        return metricContainerWidth
+      }
+      return 0
+    },
+  })
+
+  Object.defineProperty(HTMLElement.prototype, 'scrollWidth', {
+    configurable: true,
+    get() {
+      if ((this as HTMLElement).dataset.adaptiveMetricMeasure === 'true') {
+        return (this.textContent?.length ?? 0) * 16
+      }
+      return 0
+    },
   })
 })
 
@@ -42,6 +63,7 @@ afterEach(() => {
   host?.remove()
   host = null
   root = null
+  metricContainerWidth = 640
 })
 
 function render(ui: React.ReactNode) {
@@ -119,5 +141,28 @@ describe('TodayStatsOverview', () => {
     expect(host?.textContent).not.toContain('Accumulated in natural day')
     expect(host?.textContent).not.toContain('Today')
     expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(5)
+  })
+
+  it('switches to compact notation when the full metric value would overflow', () => {
+    metricContainerWidth = 180
+
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 12474,
+          successCount: 9949,
+          failureCount: 2525,
+          totalCost: 539.42,
+          totalTokens: 1314275579,
+        }}
+        loading={false}
+        error={null}
+      />,
+    )
+
+    const totalTokensValue = host?.querySelector('[data-testid="today-stats-value-total-tokens"]')
+    expect(totalTokensValue?.getAttribute('data-compact')).toBe('true')
+    expect(totalTokensValue?.textContent).toContain('1.31B')
+    expect(totalTokensValue?.getAttribute('title')).toBe('1,314,275,579')
   })
 })

@@ -6,7 +6,7 @@ const sampleResponse = {
   rangeStart: '2026-04-08T00:00:00+08:00',
   rangeEnd: '2026-04-08T12:24:00+08:00',
   bucketSeconds: 60,
-  points: Array.from({ length: 140 }, (_, index) => {
+  points: Array.from({ length: 149 }, (_, index) => {
     const bucketStart = new Date('2026-04-08T00:00:00+08:00')
     bucketStart.setMinutes(bucketStart.getMinutes() + index * 5)
     const bucketEnd = new Date(bucketStart.getTime() + 60_000)
@@ -80,7 +80,7 @@ export const EmptyState: Story = {
   args: {
     response: {
       rangeStart: '2026-04-08T00:00:00+08:00',
-      rangeEnd: '2026-04-08T00:00:00+08:00',
+      rangeEnd: '2026-04-08T12:24:00+08:00',
       bucketSeconds: 60,
       points: [],
     },

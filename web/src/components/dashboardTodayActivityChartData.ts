@@ -10,11 +10,15 @@ export interface DashboardTodayMinuteDatum {
   successCount: number
   failureCount: number
   failureCountNegative: number
+  chartSuccessCount: number | null
+  chartFailureCountNegative: number | null
   totalCount: number
   totalCost: number
   totalTokens: number
-  cumulativeCost: number
-  cumulativeTokens: number
+  cumulativeCost: number | null
+  cumulativeTokens: number | null
+  chartCumulativeCost: number | null
+  chartCumulativeTokens: number | null
 }
 
 export function buildTodayMinuteChartData(
@@ -25,9 +29,10 @@ export function buildTodayMinuteChartData(
   const fallbackNow = options?.now ?? new Date()
   const anchor = floorToMinute(parseDateInput(response?.rangeEnd) ?? fallbackNow)
   const start = startOfLocalDay(anchor)
+  const end = endOfLocalDay(anchor)
 
   const startMs = start.getTime()
-  const endMs = anchor.getTime()
+  const endMs = end.getTime()
   if (endMs < startMs) return []
 
   const timeFormatter = new Intl.DateTimeFormat(localeTag, {
@@ -82,6 +87,7 @@ export function buildTodayMinuteChartData(
 
   for (let epochMs = startMs, index = 0; epochMs <= endMs; epochMs += MINUTE_MS, index += 1) {
     const point = pointMap.get(epochMs)
+    const isFuture = epochMs > anchor.getTime()
     const successCount = point?.successCount ?? 0
     const failureCount = point?.failureCount ?? 0
     const totalCount = point?.totalCount ?? successCount + failureCount
@@ -99,11 +105,15 @@ export function buildTodayMinuteChartData(
       successCount,
       failureCount,
       failureCountNegative: failureCount > 0 ? -failureCount : 0,
+      chartSuccessCount: isFuture ? null : successCount,
+      chartFailureCountNegative: isFuture ? null : (failureCount > 0 ? -failureCount : 0),
       totalCount,
       totalCost,
       totalTokens,
-      cumulativeCost,
-      cumulativeTokens,
+      cumulativeCost: isFuture ? null : cumulativeCost,
+      cumulativeTokens: isFuture ? null : cumulativeTokens,
+      chartCumulativeCost: isFuture ? null : cumulativeCost,
+      chartCumulativeTokens: isFuture ? null : cumulativeTokens,
     })
   }
 
@@ -113,6 +123,12 @@ export function buildTodayMinuteChartData(
 function startOfLocalDay(date: Date) {
   const next = new Date(date)
   next.setHours(0, 0, 0, 0)
+  return next
+}
+
+function endOfLocalDay(date: Date) {
+  const next = new Date(date)
+  next.setHours(23, 59, 0, 0)
   return next
 }
 

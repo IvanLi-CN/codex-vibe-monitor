@@ -65,6 +65,7 @@ function ChartTooltipContent({
   if (!active || !point) return null
 
   const rows = renderValue(point)
+  if (rows.length === 0) return null
 
   return (
     <div
@@ -160,32 +161,52 @@ export function DashboardTodayActivityChart({ response, loading, error, metric }
   const chartData = data.length > 0 ? data : buildTodayMinuteChartData(response, { localeTag })
   const animate = chartData.length <= 800
   const chartMode = metric === 'totalCount' ? 'count-bars' : 'cumulative-area'
-  const renderCountTooltip = (point: DashboardTodayMinuteDatum) => [
-    {
-      label: countSeriesNames.success,
-      value: formatCountValue(point.successCount, countUnit, numberFormatter),
-      color: chartColors.success,
-    },
-    {
-      label: countSeriesNames.failures,
-      value: formatCountValue(point.failureCount, countUnit, numberFormatter),
-      color: chartColors.failure,
-    },
-    {
-      label: countSeriesNames.total,
-      value: formatCountValue(point.totalCount, countUnit, numberFormatter),
-      color: chartColors.accent,
-    },
-  ]
+  const renderCountTooltip = (point: DashboardTodayMinuteDatum) =>
+    point.chartSuccessCount == null || point.chartFailureCountNegative == null
+      ? []
+      : [
+          {
+            label: countSeriesNames.success,
+            value: formatCountValue(point.chartSuccessCount, countUnit, numberFormatter),
+            color: chartColors.success,
+          },
+          {
+            label: countSeriesNames.failures,
+            value: formatCountValue(Math.abs(point.chartFailureCountNegative), countUnit, numberFormatter),
+            color: chartColors.failure,
+          },
+          {
+            label: countSeriesNames.total,
+            value: formatCountValue(
+              point.chartSuccessCount + Math.abs(point.chartFailureCountNegative),
+              countUnit,
+              numberFormatter,
+            ),
+            color: chartColors.accent,
+          },
+        ]
   const renderAreaTooltip = (point: DashboardTodayMinuteDatum) => [
-    {
-      label: areaSeriesName,
-      value:
-        metric === 'totalCost'
-          ? currencyFormatter.format(point.cumulativeCost)
-          : formatTokensShort(point.cumulativeTokens, localeTag),
-      color: chartColors.accent,
-    },
+    ...(
+      metric === 'totalCost'
+        ? point.cumulativeCost == null
+          ? []
+          : [
+              {
+                label: areaSeriesName,
+                value: currencyFormatter.format(point.cumulativeCost),
+                color: chartColors.accent,
+              },
+            ]
+        : point.cumulativeTokens == null
+          ? []
+          : [
+              {
+                label: areaSeriesName,
+                value: formatTokensShort(point.cumulativeTokens, localeTag),
+                color: chartColors.accent,
+              },
+            ]
+    ),
   ]
 
   return (
@@ -239,14 +260,14 @@ export function DashboardTodayActivityChart({ response, loading, error, metric }
               <Legend wrapperStyle={{ color: chartColors.axisText }} />
               <ReferenceLine y={0} stroke={chartColors.gridLine} />
               <Bar
-                dataKey="successCount"
+                dataKey="chartSuccessCount"
                 name={countSeriesNames.success}
                 fill={chartColors.success}
                 radius={[3, 3, 0, 0]}
                 isAnimationActive={animate}
               />
               <Bar
-                dataKey="failureCountNegative"
+                dataKey="chartFailureCountNegative"
                 name={countSeriesNames.failures}
                 fill={chartColors.failure}
                 radius={[0, 0, 3, 3]}
@@ -297,7 +318,7 @@ export function DashboardTodayActivityChart({ response, loading, error, metric }
               />
               <Area
                 type="monotone"
-                dataKey={metric === 'totalCost' ? 'cumulativeCost' : 'cumulativeTokens'}
+                dataKey={metric === 'totalCost' ? 'chartCumulativeCost' : 'chartCumulativeTokens'}
                 name={areaSeriesName}
                 stroke={chartColors.accent}
                 fill={chartColors.accentFill}
