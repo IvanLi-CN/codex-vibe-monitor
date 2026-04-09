@@ -1381,7 +1381,8 @@ export function SharedUpstreamAccountDetailDrawer({
       pendingSaveSession != null &&
       pendingSaveSession.accountId === accountId &&
       pendingSaveSession.sessionKey != null &&
-      pendingSaveSession.sessionKey !== activeDraftSessionKey;
+      pendingSaveSession.sessionKey !== activeDraftSessionKey &&
+      areAccountDraftsEqual(nextBaseline, pendingSaveSession.fallbackDraft);
 
     const recentSaveResponseGuard = recentSaveResponseGuardRef.current;
     const shouldIgnoreRecentSaveResponse =

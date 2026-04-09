@@ -698,6 +698,51 @@ describe("SharedUpstreamAccountDetailDrawer edit drafts", () => {
     expect((noteInput as HTMLTextAreaElement).value).toBe("Saved note")
   })
 
+  it("lets a reopened session follow fresher detail while an older save is still pending", async () => {
+    const saveRequest = deferred<any>()
+    const saveAccount = vi.fn().mockImplementation(() => saveRequest.promise)
+    let state = createApiKeyHookState({
+      items: [createApiKeyItem(8, "Gateway Key")],
+      selectedId: 8,
+      detail: createApiKeyDetail(createApiKeyItem(8, "Gateway Key"), {
+        note: "Original note",
+      }),
+      saveAccount,
+    })
+    hookMocks.useUpstreamAccounts.mockImplementation(() => state)
+
+    renderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+    setInputValue('input[name="detailDisplayName"]', "Pending save draft")
+    clickButton(/Save changes/i)
+    await flushAsync()
+
+    rerenderDetailDrawer(8, { open: false })
+    await flushAsync()
+    rerenderDetailDrawer(8)
+    await flushAsync()
+
+    state = {
+      ...state,
+      detail: createApiKeyDetail(createApiKeyItem(8, "Refreshed Gateway Key"), {
+        note: "Refreshed note",
+      }),
+    }
+    rerenderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+
+    const displayNameInput = document.body.querySelector(
+      'input[name="detailDisplayName"]',
+    )
+    const noteInput = document.body.querySelector('textarea[name="detailNote"]')
+    expect((displayNameInput as HTMLInputElement).value).toBe("Refreshed Gateway Key")
+    expect((noteInput as HTMLTextAreaElement).value).toBe("Refreshed note")
+  })
+
   it("ignores an older save response after switching away and back to the same account", async () => {
     const saveRequest = deferred<any>()
     const saveAccount = vi.fn().mockImplementation(() => saveRequest.promise)
