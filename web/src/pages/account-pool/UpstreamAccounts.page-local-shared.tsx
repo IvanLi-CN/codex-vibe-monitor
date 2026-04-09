@@ -1184,6 +1184,7 @@ export function SharedUpstreamAccountDetailDrawer({
   onClose,
 }: SharedUpstreamAccountDetailDrawerProps) {
   const { t, locale } = useTranslation();
+  const location = useLocation();
   const navigate = useNavigate();
   const { openUpstreamAccount } = useUpstreamAccountDetailRoute();
   const {
@@ -1279,9 +1280,43 @@ export function SharedUpstreamAccountDetailDrawer({
   const activeDraftSessionKeyRef = useRef<string | null>(null);
   const draftBaselineRef = useRef<AccountDraft>(buildDraft(null));
   const latestServerDraftRef = useRef<AccountDraft>(buildDraft(null));
-  const previousDraftAccountIdRef = useRef<number | null>(accountId);
-  const wasDrawerOpenRef = useRef(open);
-  const [draftSessionVersion, setDraftSessionVersion] = useState(0);
+  const draftSessionSnapshotRef = useRef({
+    open,
+    accountId,
+    locationKey: location.key,
+    version: 0,
+  });
+  let draftSessionVersion = draftSessionSnapshotRef.current.version;
+  if (
+    draftSessionSnapshotRef.current.open !== open ||
+    draftSessionSnapshotRef.current.accountId !== accountId ||
+    draftSessionSnapshotRef.current.locationKey !== location.key
+  ) {
+    const closedActiveSession =
+      draftSessionSnapshotRef.current.open && !open;
+    const openedVisibleSession =
+      !draftSessionSnapshotRef.current.open && open;
+    const switchedVisibleAccount =
+      draftSessionSnapshotRef.current.open &&
+      open &&
+      draftSessionSnapshotRef.current.accountId !== accountId;
+    const navigatedVisibleSession =
+      open && draftSessionSnapshotRef.current.locationKey !== location.key;
+    if (
+      closedActiveSession ||
+      openedVisibleSession ||
+      switchedVisibleAccount ||
+      navigatedVisibleSession
+    ) {
+      draftSessionVersion += 1;
+    }
+    draftSessionSnapshotRef.current = {
+      open,
+      accountId,
+      locationKey: location.key,
+      version: draftSessionVersion,
+    };
+  }
   const activeDraftSessionKey =
     open && accountId != null ? `${draftSessionVersion}:${accountId}` : null;
 
@@ -1303,32 +1338,6 @@ export function SharedUpstreamAccountDetailDrawer({
     if (missingDetailAccountId !== accountId) return;
     onClose({ replace: true });
   }, [accountId, missingDetailAccountId, onClose, open]);
-
-  useEffect(() => {
-    if (wasDrawerOpenRef.current && !open) {
-      draftSessionKeyRef.current = null;
-      draftBaselineRef.current = buildDraft(null);
-      latestServerDraftRef.current = buildDraft(null);
-      setDraftSessionVersion((current) => current + 1);
-    }
-    wasDrawerOpenRef.current = open;
-  }, [open]);
-
-  useEffect(() => {
-    const previousAccountId = previousDraftAccountIdRef.current;
-    if (
-      open &&
-      previousAccountId != null &&
-      accountId != null &&
-      previousAccountId !== accountId
-    ) {
-      draftSessionKeyRef.current = null;
-      draftBaselineRef.current = buildDraft(null);
-      latestServerDraftRef.current = buildDraft(null);
-      setDraftSessionVersion((current) => current + 1);
-    }
-    previousDraftAccountIdRef.current = accountId;
-  }, [accountId, open]);
 
   useEffect(() => {
     const nextBaseline = buildDraft(detail?.id === accountId ? detail : null);

@@ -23,7 +23,9 @@ import {
   vi,
 } from "vitest";
 import {
+  createMemoryRouter,
   MemoryRouter,
+  RouterProvider,
   Route,
   Routes,
   type InitialEntry,
@@ -1088,6 +1090,8 @@ Object.assign(scope, {
   it,
   vi,
   MemoryRouter,
+  createMemoryRouter,
+  RouterProvider,
   Route,
   Routes,
   SystemNotificationProvider,
