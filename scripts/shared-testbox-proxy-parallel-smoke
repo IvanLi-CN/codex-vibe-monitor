@@ -96,11 +96,16 @@ printf '== compose project ==\n%s\n' "$COMPOSE_PROJECT"
 ssh -o BatchMode=yes "$TESTBOX" "mkdir -p '$REMOTE_RUN'"
 rsync -az --delete \
   --exclude '.git/' \
+  --exclude '.env' \
+  --exclude '.env.*' \
   --exclude 'node_modules/' \
   --exclude 'target/' \
+  --exclude '*.db' \
+  --exclude '*.db-*' \
   --exclude 'web/node_modules/' \
   --exclude 'web/dist/' \
   --exclude 'data/' \
+  --exclude 'logs/' \
   "$REPO_ROOT/" "$TESTBOX:$REMOTE_RUN/"
 
 ssh -o BatchMode=yes "$TESTBOX" env \

@@ -415,52 +415,62 @@ impl AppConfig {
         let proxy_request_concurrency_limit =
             match env::var(ENV_PROXY_REQUEST_CONCURRENCY_LIMIT) {
                 Ok(value) => {
-                    let parsed = value.parse::<usize>().with_context(|| {
-                        format!(
-                            "invalid {ENV_PROXY_REQUEST_CONCURRENCY_LIMIT}: {value}"
-                        )
-                    })?;
-                    if parsed == 0 {
-                        bail!("{ENV_PROXY_REQUEST_CONCURRENCY_LIMIT} must be > 0");
+                    match value.parse::<usize>() {
+                        Ok(parsed) if parsed > 0 => warn!(
+                            configured_limit = parsed,
+                            "{ENV_PROXY_REQUEST_CONCURRENCY_LIMIT} is deprecated and ignored for /v1/* admission"
+                        ),
+                        Ok(_) => warn!(
+                            configured_value = %value,
+                            "{ENV_PROXY_REQUEST_CONCURRENCY_LIMIT} is deprecated and ignored for /v1/* admission; invalid value ignored"
+                        ),
+                        Err(err) => warn!(
+                            configured_value = %value,
+                            parse_error = %err,
+                            "{ENV_PROXY_REQUEST_CONCURRENCY_LIMIT} is deprecated and ignored for /v1/* admission; invalid value ignored"
+                        ),
                     }
-                    warn!(
-                        configured_limit = parsed,
-                        "{ENV_PROXY_REQUEST_CONCURRENCY_LIMIT} is deprecated and ignored for /v1/* admission"
-                    );
                     DEFAULT_PROXY_REQUEST_CONCURRENCY_LIMIT
                 }
                 Err(env::VarError::NotPresent) => DEFAULT_PROXY_REQUEST_CONCURRENCY_LIMIT,
                 Err(err) => {
-                    return Err(anyhow!(
-                        "failed to read {ENV_PROXY_REQUEST_CONCURRENCY_LIMIT}: {err}"
-                    ));
+                    warn!(
+                        error = %err,
+                        "{ENV_PROXY_REQUEST_CONCURRENCY_LIMIT} is deprecated and ignored for /v1/* admission; unreadable value ignored"
+                    );
+                    DEFAULT_PROXY_REQUEST_CONCURRENCY_LIMIT
                 }
             };
         let proxy_request_concurrency_wait_timeout = match env::var(
             ENV_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS,
         ) {
             Ok(value) => {
-                let parsed = value.parse::<u64>().with_context(|| {
-                    format!(
-                        "invalid {ENV_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS}: {value}"
-                    )
-                })?;
-                if parsed == 0 {
-                    bail!("{ENV_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS} must be > 0");
+                match value.parse::<u64>() {
+                    Ok(parsed) if parsed > 0 => warn!(
+                        configured_wait_timeout_ms = parsed,
+                        "{ENV_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS} is deprecated and ignored for /v1/* admission"
+                    ),
+                    Ok(_) => warn!(
+                        configured_value = %value,
+                        "{ENV_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS} is deprecated and ignored for /v1/* admission; invalid value ignored"
+                    ),
+                    Err(err) => warn!(
+                        configured_value = %value,
+                        parse_error = %err,
+                        "{ENV_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS} is deprecated and ignored for /v1/* admission; invalid value ignored"
+                    ),
                 }
-                warn!(
-                    configured_wait_timeout_ms = parsed,
-                    "{ENV_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS} is deprecated and ignored for /v1/* admission"
-                );
                 Duration::from_millis(DEFAULT_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS)
             }
             Err(env::VarError::NotPresent) => {
                 Duration::from_millis(DEFAULT_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS)
             }
             Err(err) => {
-                return Err(anyhow!(
-                    "failed to read {ENV_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS}: {err}"
-                ));
+                warn!(
+                    error = %err,
+                    "{ENV_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS} is deprecated and ignored for /v1/* admission; unreadable value ignored"
+                );
+                Duration::from_millis(DEFAULT_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS)
             }
         };
         let proxy_enforce_stream_include_usage = parse_bool_env_var(
