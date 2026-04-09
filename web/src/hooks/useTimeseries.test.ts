@@ -1,21 +1,32 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import type { TimeseriesResponse } from '../lib/api'
 import {
+  clearTimeseriesRemountCache,
   TIMESERIES_OPEN_RESYNC_COOLDOWN_MS,
+  TIMESERIES_REMOUNT_CACHE_TTL_MS,
   TIMESERIES_RECORDS_RESYNC_THROTTLE_MS,
   applyRecordsToCurrentDayBucket,
   applyRecordsToTimeseries,
   getCurrentDayBucketEndEpoch,
   getLocalDayStartEpoch,
   getNextLocalDayStartEpoch,
+  getTimeseriesRemountCacheKey,
   getTimeseriesRecordsResyncDelay,
   mergePendingTimeseriesSilentOption,
+  readTimeseriesRemountCache,
   resolveTimeseriesSyncPolicy,
+  shouldEnableTimeseriesRemountCache,
+  shouldReuseTimeseriesRemountCache,
   shouldPatchCurrentDayBucketOnRecordsEvent,
   shouldResyncForCurrentDayBucket,
   shouldResyncOnRecordsEvent,
   shouldTriggerTimeseriesOpenResync,
+  writeTimeseriesRemountCache,
 } from './useTimeseries'
+
+afterEach(() => {
+  clearTimeseriesRemountCache()
+})
 
 describe('useTimeseries records sync strategy', () => {
   it('uses explicit local incremental policy for dashboard 24h heatmap', () => {
@@ -243,5 +254,45 @@ describe('useTimeseries refresh coordination helpers', () => {
       ),
     ).toBe(false)
     expect(shouldTriggerTimeseriesOpenResync(30_000, 30_250, true)).toBe(true)
+  })
+
+  it('stores remount cache entries by range and options', () => {
+    const response: TimeseriesResponse = {
+      rangeStart: '2026-04-08T00:00:00Z',
+      rangeEnd: '2026-04-08T00:01:00Z',
+      bucketSeconds: 60,
+      points: [],
+    }
+
+    writeTimeseriesRemountCache('today', { bucket: '1m' }, response, 12_345)
+
+    expect(getTimeseriesRemountCacheKey('today', { bucket: '1m' })).toBe(
+      JSON.stringify(['today', '1m', null, false]),
+    )
+    expect(readTimeseriesRemountCache('today', { bucket: '1m' })).toEqual({
+      data: response,
+      cachedAt: 12_345,
+    })
+  })
+
+  it('disables remount caching for current timeseries', () => {
+    expect(shouldEnableTimeseriesRemountCache('current')).toBe(false)
+    writeTimeseriesRemountCache(
+      'current',
+      undefined,
+      {
+        rangeStart: '2026-04-08T00:00:00Z',
+        rangeEnd: '2026-04-08T00:01:00Z',
+        bucketSeconds: 60,
+        points: [],
+      },
+      1_000,
+    )
+    expect(readTimeseriesRemountCache('current')).toBeNull()
+  })
+
+  it('reuses remount cache only inside the ttl window', () => {
+    expect(shouldReuseTimeseriesRemountCache(5_000, 5_000 + TIMESERIES_REMOUNT_CACHE_TTL_MS - 1)).toBe(true)
+    expect(shouldReuseTimeseriesRemountCache(5_000, 5_000 + TIMESERIES_REMOUNT_CACHE_TTL_MS)).toBe(false)
   })
 })

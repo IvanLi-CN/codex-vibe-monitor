@@ -34,6 +34,14 @@ interface UpdateContext {
 
 export const TIMESERIES_RECORDS_RESYNC_THROTTLE_MS = 3_000
 export const TIMESERIES_OPEN_RESYNC_COOLDOWN_MS = 3_000
+export const TIMESERIES_REMOUNT_CACHE_TTL_MS = 30_000
+
+interface TimeseriesRemountCacheEntry {
+  data: TimeseriesResponse
+  cachedAt: number
+}
+
+const timeseriesRemountCache = new Map<string, TimeseriesRemountCacheEntry>()
 
 export function resolveTimeseriesSyncPolicy(range: string, options?: UseTimeseriesOptions): TimeseriesSyncPolicy {
   const rangeSeconds = parseRangeSpec(range)
@@ -90,6 +98,49 @@ export function shouldTriggerTimeseriesOpenResync(lastResyncAt: number, now: num
   return now - lastResyncAt >= TIMESERIES_OPEN_RESYNC_COOLDOWN_MS
 }
 
+export function getTimeseriesRemountCacheKey(range: string, options?: UseTimeseriesOptions) {
+  return JSON.stringify([
+    range,
+    options?.bucket ?? null,
+    options?.settlementHour ?? null,
+    options?.preferServerAggregation ?? false,
+  ])
+}
+
+export function shouldEnableTimeseriesRemountCache(range: string) {
+  return range !== 'current'
+}
+
+export function readTimeseriesRemountCache(range: string, options?: UseTimeseriesOptions) {
+  if (!shouldEnableTimeseriesRemountCache(range)) return null
+  return timeseriesRemountCache.get(getTimeseriesRemountCacheKey(range, options)) ?? null
+}
+
+export function writeTimeseriesRemountCache(
+  range: string,
+  options: UseTimeseriesOptions | undefined,
+  data: TimeseriesResponse,
+  cachedAt = Date.now(),
+) {
+  if (!shouldEnableTimeseriesRemountCache(range)) return
+  timeseriesRemountCache.set(getTimeseriesRemountCacheKey(range, options), {
+    data,
+    cachedAt,
+  })
+}
+
+export function clearTimeseriesRemountCache() {
+  timeseriesRemountCache.clear()
+}
+
+export function shouldReuseTimeseriesRemountCache(
+  cachedAt: number,
+  now: number,
+  ttlMs = TIMESERIES_REMOUNT_CACHE_TTL_MS,
+) {
+  return now - cachedAt < ttlMs
+}
+
 export function mergePendingTimeseriesSilentOption(existingSilent: boolean | null, incomingSilent: boolean) {
   return (existingSilent ?? true) && incomingSilent
 }
@@ -130,13 +181,16 @@ function createSeededTimeseries(range: string, bucket?: string) {
 }
 
 export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
-  const [data, setData] = useState<TimeseriesResponse | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
+  const initialCachedTimeseries = readTimeseriesRemountCache(range, options)
+  const [data, setData] = useState<TimeseriesResponse | null>(
+    () => initialCachedTimeseries?.data ?? null,
+  )
+  const [isLoading, setIsLoading] = useState(() => initialCachedTimeseries == null)
   const [error, setError] = useState<string | null>(null)
   const bucket = options?.bucket
   const settlementHour = options?.settlementHour
   const preferServerAggregation = options?.preferServerAggregation ?? false
-  const hasHydratedRef = useRef(false)
+  const hasHydratedRef = useRef(initialCachedTimeseries != null)
   const activeLoadCountRef = useRef(0)
   const pendingLoadRef = useRef<PendingLoad | null>(null)
   const pendingOpenResyncRef = useRef(false)
@@ -216,6 +270,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
       } else {
         dataRef.current = response
         setData(response)
+        writeTimeseriesRemountCache(range, normalizedOptions, response)
       }
 
       hasHydratedRef.current = true
@@ -333,19 +388,29 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
   }, [load])
 
   useEffect(() => {
+    const cachedTimeseries = readTimeseriesRemountCache(range, normalizedOptions)
     requestSeqRef.current += 1
     activeRequestControllerRef.current?.abort()
     activeRequestControllerRef.current = null
-    hasHydratedRef.current = false
+    setData(cachedTimeseries?.data ?? null)
+    setError(null)
+    setIsLoading(cachedTimeseries == null)
+    hasHydratedRef.current = cachedTimeseries != null
     pendingOpenResyncRef.current = false
     lastRecordsRefreshAtRef.current = 0
     lastOpenResyncAtRef.current = 0
     localRevisionRef.current = 0
-    dataRef.current = null
+    dataRef.current = cachedTimeseries?.data ?? null
     clearPendingLoad()
     clearPendingRefreshTimer()
     clearDayRolloverTimer()
-    void load({ force: true })
+    if (!cachedTimeseries) {
+      void load({ force: true })
+      return
+    }
+    if (!shouldReuseTimeseriesRemountCache(cachedTimeseries.cachedAt, Date.now())) {
+      void load({ silent: true, force: true })
+    }
   }, [clearDayRolloverTimer, clearPendingLoad, clearPendingRefreshTimer, load, options?.bucket, options?.preferServerAggregation, options?.settlementHour, range])
 
   useEffect(() => {
@@ -376,6 +441,9 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
           if (next !== current) {
             dataRef.current = next
             localRevisionRef.current += 1
+            if (next) {
+              writeTimeseriesRemountCache(range, normalizedOptions, next)
+            }
           }
           return next
         })
@@ -392,6 +460,9 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
         if (next !== current) {
           dataRef.current = next
           localRevisionRef.current += 1
+          if (next) {
+            writeTimeseriesRemountCache(range, normalizedOptions, next)
+          }
         }
         return next
       })
