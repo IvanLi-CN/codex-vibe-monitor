@@ -47307,6 +47307,113 @@ async fn recover_guard_dropped_pool_early_phase_orphan_without_persisted_attempt
 }
 
 #[tokio::test]
+async fn recover_guard_dropped_pool_early_phase_orphan_skips_streaming_response_attempt() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let invoke_id = "guard-skip-streaming-response";
+    let occurred_at = "2026-03-23 21:09:05";
+    let request_info = RequestCaptureInfo {
+        model: Some("gpt-5.4".to_string()),
+        is_stream: true,
+        ..RequestCaptureInfo::default()
+    };
+    let running_record = build_running_proxy_capture_record(
+        invoke_id,
+        occurred_at,
+        ProxyCaptureTarget::Responses,
+        &request_info,
+        Some("198.51.100.24"),
+        Some("sticky-guard-streaming"),
+        Some("pck-guard-streaming"),
+        true,
+        Some(account_id),
+        Some("Primary"),
+        Some("api_key_codex"),
+        Some("api.openai.com"),
+        None,
+        Some(1),
+        Some(1),
+        None,
+        None,
+        10.0,
+        2.0,
+        0.0,
+        0.0,
+    );
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
+        .await
+        .expect("persist running invocation");
+
+    let trace = PoolUpstreamAttemptTraceContext {
+        invoke_id: invoke_id.to_string(),
+        occurred_at: occurred_at.to_string(),
+        endpoint: "/v1/responses".to_string(),
+        sticky_key: Some("sticky-guard-streaming".to_string()),
+        requester_ip: Some("192.168.31.6".to_string()),
+    };
+    let pending = begin_pool_upstream_request_attempt(
+        &state.pool,
+        &trace,
+        account_id,
+        "route-primary",
+        1,
+        1,
+        1,
+        occurred_at,
+    )
+    .await;
+    advance_pool_upstream_request_attempt_phase(
+        state.as_ref(),
+        &pending,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE,
+    )
+    .await
+    .expect("advance attempt into streaming-response");
+
+    recover_guard_dropped_pool_early_phase_orphan(state.as_ref(), pending.clone())
+        .await
+        .expect("skip guard recovery after streaming-response");
+
+    let attempt = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+        r#"
+        SELECT status, phase, failure_kind
+        FROM pool_upstream_request_attempts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(pending.attempt_id.expect("pending attempt id"))
+    .fetch_one(&state.pool)
+    .await
+    .expect("load streaming attempt after dropped guard");
+    let invocation = sqlx::query_as::<_, (String, Option<String>)>(
+        r#"
+        SELECT status, failure_kind
+        FROM codex_invocations
+        WHERE invoke_id = ?1 AND occurred_at = ?2
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load invocation after dropped streaming guard");
+
+    assert_eq!(attempt.0, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING);
+    assert_eq!(
+        attempt.1.as_deref(),
+        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE)
+    );
+    assert_eq!(attempt.2, None);
+    assert_eq!(invocation.0, INVOCATION_STATUS_RUNNING);
+    assert_eq!(invocation.1, None);
+}
+
+#[tokio::test]
 async fn pool_early_phase_orphan_cleanup_guard_disarm_keeps_invocation_running_without_persisted_attempt_row()
  {
     let state = test_state_with_openai_base(

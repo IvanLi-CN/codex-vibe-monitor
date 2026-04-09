@@ -3582,8 +3582,6 @@ async fn send_pool_request_with_failover(
                 }
             };
 
-            disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
-
             if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                 && let Err(err) = advance_pool_upstream_request_attempt_phase(
                     state.as_ref(),
@@ -3598,6 +3596,7 @@ async fn send_pool_request_with_failover(
                     "failed to advance pool attempt into streaming phase"
                 );
             }
+            disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
 
             let compact_support_observation =
                 classify_compact_support_observation(original_uri, Some(status), None);
@@ -8945,12 +8944,50 @@ async fn recover_guard_dropped_pool_early_phase_orphan(
         None => Vec::new(),
     };
 
-    let selector = InvocationRecoverySelector::from(&pending_attempt_record);
-    let recovered_invocations = recover_proxy_invocations_with_scope(
-        &state.pool,
-        ProxyInvocationRecoveryScope::Selectors(std::slice::from_ref(&selector)),
-    )
-    .await?;
+    let skip_invocation_recovery = if pending_attempt_record.attempt_id.is_some()
+        && recovered_attempts.is_empty()
+    {
+        let current_phase = sqlx::query_as::<_, (Option<String>,)>(
+            r#"
+            SELECT phase
+            FROM pool_upstream_request_attempts
+            WHERE id = ?1
+            LIMIT 1
+            "#,
+        )
+        .bind(
+            pending_attempt_record
+                .attempt_id
+                .expect("attempt id checked above"),
+        )
+        .fetch_optional(&state.pool)
+        .await?
+        .and_then(|row| row.0);
+        current_phase.as_deref().is_some_and(|phase| {
+            phase
+                .trim()
+                .eq_ignore_ascii_case(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE)
+        })
+    } else {
+        false
+    };
+
+    let recovered_invocations = if skip_invocation_recovery {
+        info!(
+            invoke_id = %pending_attempt_record.invoke_id,
+            attempt_id = pending_attempt_record.attempt_id,
+            recovery_trigger = "drop_guard",
+            "skipping guard-based invocation recovery because attempt already entered streaming_response"
+        );
+        Vec::new()
+    } else {
+        let selector = InvocationRecoverySelector::from(&pending_attempt_record);
+        recover_proxy_invocations_with_scope(
+            &state.pool,
+            ProxyInvocationRecoveryScope::Selectors(std::slice::from_ref(&selector)),
+        )
+        .await?
+    };
 
     if recovered_attempts.is_empty() && recovered_invocations.is_empty() {
         return Ok(());
