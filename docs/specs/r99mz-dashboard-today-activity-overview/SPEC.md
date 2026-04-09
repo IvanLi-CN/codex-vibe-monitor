@@ -4,7 +4,7 @@
 
 - Status: 已实现，待 PR / CI / review-proof 收敛
 - Created: 2026-04-08
-- Last: 2026-04-08
+- Last: 2026-04-09
 
 ## 背景 / 问题陈述
 
@@ -22,6 +22,7 @@
 - `24 小时 / 7 日 / 历史` 维持现有热力图 / 日历形态，仅共享头部 metric toggle，并保持按视图记忆 metric 行为不回退。
 - `活动总览` 的非激活范围改为按需挂载与按需请求：默认进入 Dashboard 只加载当前页签，未访问的 `24 小时 / 7 日 / 历史` 不再首屏预取，也不再常驻隐藏面板。
 - Dashboard 工作中对话的 prompt-cache 会话工作集必须有界：authoritative 刷新后只保留“当前响应中的 key + 仍有 live record 的 key”，selection 切换或卸载后释放旧工作集。
+- Dashboard KPI 必须能识别卡片宽度不足导致的数值溢出，并自动切换到紧凑记数法（例如 `1.31B`）以保持布局稳定。
 - 补齐 Storybook、Vitest、spec 与视觉证据，并按 fast-track 路径收敛到 merge-ready。
 
 ### Non-goals
@@ -58,6 +59,7 @@
 - Given 在四个范围间切换 `次数 / 金额 / Tokens`，When 来回切换范围，Then 每个范围仍保留各自上次选中的 metric。
 - Given 默认进入 `/dashboard`，When 页面首次完成 hydration，Then 仅当前 active range 对应的数据请求会首屏触发，未访问的隐藏范围不会提前发起 summary / timeseries 请求。
 - Given 已切到其他 prompt-cache selection 或离开页面，When 旧 selection 的 authoritative / live 数据不再属于当前工作集，Then 旧 key 会被释放，不再随着历史唯一 `promptCacheKey` 数量单调增长。
+- Given KPI 卡片的完整数字在当前宽度下会溢出，When 组件完成布局测量，Then 卡片数值会自动切换为紧凑写法（如 `1.31B`），并通过 tooltip 保留完整值。
 - Given 运行前端验证命令，When 执行 `cd web && bun run test && bun run build && bun run build-storybook`，Then 命令通过。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
@@ -66,6 +68,7 @@
 
 - `今日` KPI 必须嵌入在总览内部，不新增重复 panel 层级，也不重新引入顶部独立今日卡。
 - `次数` 柱状图要清晰区分成功 / 失败语义，失败必须保留错误色；`金额 / Tokens` 面积图需要保持累计阅读语义。
+- KPI 数值在桌面单行布局下不得撑破卡片；超长数字应优先收敛为紧凑记数法而不是溢出裁切。
 - `历史` 继续沿用 `#7s4kw` 的半年日历外观，不重新引入重复标题 / 时区说明或月份标签重叠。
 
 ### Testing
@@ -127,11 +130,12 @@
 - 2026-04-08: 为 PR 收口修复跨平台午夜时间格式差异，强制分钟轴午夜显示为 `00:00`，并将今日图表数据构建逻辑拆出组件文件以满足 `react-refresh/only-export-components` lint 约束。
 - 2026-04-08: 根据 review-proof 修复 `today + 1m` 长驻会话跨午夜不自动刷新旧日数据的问题；今日视图现在会在本地下一次自然日边界强制静默重拉，并把本地补丁窗口约束回当前自然日。
 - 2026-04-09: 为 Dashboard 长时间放置崩溃问题补充前端性能硬化：`DashboardActivityOverview` 改为按需挂载 / 按需请求非激活范围，`usePromptCacheConversations` 与 prompt-cache history 改成仅保留当前工作集，并补齐高 churn / selection 切换回归测试。
+- 2026-04-09: 修复 Dashboard KPI 数值溢出；当卡片宽度不足以容纳完整值时，前端会自动切换到紧凑记数法（如 `1.31B`），并保留完整值 tooltip。
 
 ## Visual Evidence
 
 - Source: Storybook canvas（mock-only）
-- Validation: `cd /Users/ivan/.codex/worktrees/r99mz/codex-vibe-monitor/web && bun run test`、`bun run build`、`bun run build-storybook`
+- Validation: `cd /Users/ivan/.codex/worktrees/afc2/codex-vibe-monitor/web && bun run test`、`bun run build`、`bun run build-storybook`
 
 ### 1. 活动总览：今日 / 次数（成功正柱，失败负柱）
 

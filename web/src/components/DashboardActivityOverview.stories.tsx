@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, type ReactNode } from 'react'
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, userEvent, waitFor, within } from 'storybook/test'
 import { I18nProvider } from '../i18n'
@@ -225,13 +225,17 @@ function RangeStorageHarness({
   persistedRange: PersistedRange
   children: ReactNode
 }) {
+  const [ready, setReady] = useState(false)
+
   useLayoutEffect(() => {
+    setReady(false)
     const previousValue = window.localStorage.getItem(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY)
     if (persistedRange) {
       window.localStorage.setItem(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY, persistedRange)
     } else {
       window.localStorage.removeItem(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY)
     }
+    setReady(true)
 
     return () => {
       if (previousValue === null) {
@@ -239,10 +243,11 @@ function RangeStorageHarness({
       } else {
         window.localStorage.setItem(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY, previousValue)
       }
+      setReady(false)
     }
   }, [persistedRange])
 
-  return <>{children}</>
+  return ready ? <>{children}</> : null
 }
 
 const meta = {
@@ -273,7 +278,27 @@ export default meta
 
 type Story = StoryObj<typeof meta>
 
-export const TodayView: Story = {}
+export const TodayView: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await waitFor(() => {
+      expect(canvas.getByRole('tab', { name: /今日|today/i })).toHaveAttribute('aria-selected', 'true')
+      expect(canvas.getByTestId('today-stats-value-total-tokens')).toHaveAttribute('data-compact', 'true')
+    })
+  },
+}
+
+export const SevenDayView: Story = {
+  parameters: {
+    persistedRange: '7d',
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await waitFor(() => {
+      expect(canvas.getByRole('tab', { name: /7 日|7 days/i })).toHaveAttribute('aria-selected', 'true')
+    })
+  },
+}
 
 export const TodayCostCumulative: Story = {
   play: async ({ canvasElement }) => {
