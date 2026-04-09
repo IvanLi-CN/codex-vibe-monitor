@@ -1,0 +1,641 @@
+describe("SharedUpstreamAccountDetailDrawer edit drafts", () => {
+  function renderDetailDrawer(accountId: number, options?: { open?: boolean }) {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    rerenderDetailDrawer(accountId, options);
+  }
+
+  function rerenderDetailDrawer(accountId: number, options?: { open?: boolean }) {
+    act(() => {
+      root?.render(
+        <I18nProvider>
+          <SystemNotificationProvider>
+            <MemoryRouter>
+              <SharedUpstreamAccountDetailDrawer
+                accountId={accountId}
+                open={options?.open ?? true}
+                onClose={() => undefined}
+              />
+            </MemoryRouter>
+          </SystemNotificationProvider>
+        </I18nProvider>,
+      )
+    })
+  }
+
+  function createApiKeyItem(id: number, displayName: string) {
+    return {
+      id,
+      kind: "api_key_codex" as const,
+      provider: "codex" as const,
+      displayName,
+      groupName: "prod",
+      status: "active",
+      displayStatus: "active",
+      enabled: true,
+      isMother: false,
+      maskedApiKey: `sk-${id}••••`,
+      primaryWindow: null,
+      secondaryWindow: null,
+      credits: null,
+      localLimits: null,
+      tags: [],
+      effectiveRoutingRule: defaultEffectiveRoutingRule,
+    }
+  }
+
+  function createApiKeyDetail(
+    item: ReturnType<typeof createApiKeyItem>,
+    overrides: Record<string, unknown> = {},
+  ) {
+    return {
+      ...item,
+      history: [],
+      note: "Original note",
+      upstreamBaseUrl: `https://proxy.example.com/${item.id}`,
+      localLimits: {
+        primaryLimit: 100,
+        secondaryLimit: 1000,
+        limitUnit: "requests",
+      },
+      recentActions: [],
+      ...overrides,
+    }
+  }
+
+  function createApiKeyHookState(options?: {
+    items?: ReturnType<typeof createApiKeyItem>[]
+    selectedId?: number
+    detail?: Record<string, unknown> | null
+    saveAccount?: ReturnType<typeof vi.fn>
+    saveRouting?: ReturnType<typeof vi.fn>
+    runSync?: ReturnType<typeof vi.fn>
+    removeAccount?: ReturnType<typeof vi.fn>
+  }) {
+    const items = options?.items ?? [createApiKeyItem(8, "Gateway Key")]
+    const selectedId = options?.selectedId ?? items[0]?.id ?? null
+    const selectedSummary =
+      items.find((item) => item.id === selectedId) ?? items[0] ?? null
+    return {
+      items,
+      groups: [],
+      forwardProxyNodes: [],
+      hasUngroupedAccounts: false,
+      writesEnabled: true,
+      routing: {
+        writesEnabled: true,
+        apiKeyConfigured: true,
+        maskedApiKey: "pool-live••••",
+      },
+      selectedId,
+      selectedSummary,
+      detail:
+        options?.detail === undefined
+          ? selectedSummary
+            ? createApiKeyDetail(selectedSummary)
+            : null
+          : options.detail,
+      isLoading: false,
+      isDetailLoading: false,
+      listError: null,
+      detailError: null,
+      error: null,
+      missingDetailAccountId: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      beginOauthMailboxSession: vi.fn(),
+      beginOauthMailboxSessionForAddress: vi.fn(),
+      getOauthMailboxStatuses: vi.fn(),
+      removeOauthMailboxSession: vi.fn(),
+      getLoginSession: vi.fn(),
+      updateOauthLogin: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      runImportedOauthValidation: vi.fn(),
+      startImportedOauthValidationJob: vi.fn(),
+      stopImportedOauthValidationJob: vi.fn(),
+      importOauthAccounts: vi.fn(),
+      saveAccount: options?.saveAccount ?? vi.fn(),
+      saveRouting: options?.saveRouting ?? vi.fn(),
+      saveGroupNote: vi.fn(),
+      runBulkAction: vi.fn(),
+      startBulkSyncJob: vi.fn(),
+      getBulkSyncJob: vi.fn(),
+      stopBulkSyncJob: vi.fn(),
+      runSync: options?.runSync ?? vi.fn(),
+      removeAccount: options?.removeAccount ?? vi.fn(),
+      total: items.length,
+      page: 1,
+      pageSize: 20,
+      metrics: {
+        total: items.length,
+        oauth: 0,
+        apiKey: items.length,
+        attention: 0,
+      },
+    }
+  }
+
+  it("keeps pristine edit drafts in sync with same-account detail refreshes", async () => {
+    const items = [createApiKeyItem(8, "Gateway Key")]
+    let state = createApiKeyHookState({
+      items,
+      selectedId: 8,
+      detail: createApiKeyDetail(items[0], {
+        displayName: "Gateway Key",
+        note: "Gateway note",
+      }),
+    })
+    hookMocks.useUpstreamAccounts.mockImplementation(() => state)
+
+    renderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+
+    state = {
+      ...state,
+      detail: createApiKeyDetail(items[0], {
+        displayName: "Gateway Key refreshed",
+        note: "Gateway note refreshed",
+      }),
+    }
+    rerenderDetailDrawer(8)
+    await flushAsync()
+
+    const displayNameInput = document.body.querySelector(
+      'input[name="detailDisplayName"]',
+    )
+    const noteInput = document.body.querySelector('textarea[name="detailNote"]')
+    expect((displayNameInput as HTMLInputElement).value).toBe(
+      "Gateway Key refreshed",
+    )
+    expect((noteInput as HTMLTextAreaElement).value).toBe(
+      "Gateway note refreshed",
+    )
+  })
+
+  it("keeps unsaved edit fields during same-account detail refreshes", async () => {
+    const items = [createApiKeyItem(8, "Gateway Key")]
+    let state = createApiKeyHookState({ items, selectedId: 8 })
+    hookMocks.useUpstreamAccounts.mockImplementation(() => state)
+
+    renderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+    setInputValue('input[name="detailDisplayName"]', "Draft display name")
+
+    state = {
+      ...state,
+      detail: createApiKeyDetail(items[0], {
+        displayName: "Gateway Key refreshed",
+      }),
+    }
+    rerenderDetailDrawer(8)
+    await flushAsync()
+
+    const input = document.body.querySelector('input[name="detailDisplayName"]')
+    expect((input as HTMLInputElement).value).toBe("Draft display name")
+  })
+
+  it("preserves unsaved edit fields when leaving and returning to the edit tab", async () => {
+    hookMocks.useUpstreamAccounts.mockReturnValue(
+      createApiKeyHookState({
+        items: [createApiKeyItem(8, "Gateway Key")],
+        selectedId: 8,
+      }),
+    )
+
+    renderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+    setInputValue('textarea[name="detailNote"]', "Unsaved drawer note")
+
+    clickTab(/Overview/i)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+
+    const input = document.body.querySelector('textarea[name="detailNote"]')
+    expect((input as HTMLTextAreaElement).value).toBe("Unsaved drawer note")
+  })
+
+  it("resumes same-account refresh syncing after the user reverts their edits", async () => {
+    const items = [createApiKeyItem(8, "Gateway Key")]
+    let state = createApiKeyHookState({
+      items,
+      selectedId: 8,
+      detail: createApiKeyDetail(items[0], {
+        displayName: "Gateway Key",
+        note: "Gateway note",
+      }),
+    })
+    hookMocks.useUpstreamAccounts.mockImplementation(() => state)
+
+    renderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+    setInputValue('input[name="detailDisplayName"]', "Draft gateway rename")
+
+    state = {
+      ...state,
+      detail: createApiKeyDetail(items[0], {
+        displayName: "Gateway Key",
+        note: "Background note v2",
+      }),
+    }
+    rerenderDetailDrawer(8)
+    await flushAsync()
+
+    setInputValue('input[name="detailDisplayName"]', "Gateway Key")
+
+    state = {
+      ...state,
+      detail: createApiKeyDetail(items[0], {
+        displayName: "Gateway Key",
+        note: "Background note v3",
+      }),
+    }
+    rerenderDetailDrawer(8)
+    await flushAsync()
+
+    const displayNameInput = document.body.querySelector(
+      'input[name="detailDisplayName"]',
+    )
+    const noteInput = document.body.querySelector('textarea[name="detailNote"]')
+    expect((displayNameInput as HTMLInputElement).value).toBe("Gateway Key")
+    expect((noteInput as HTMLTextAreaElement).value).toBe("Background note v3")
+  })
+
+  it("resumes same-account refresh syncing after the user catches up to a skipped server snapshot", async () => {
+    const items = [createApiKeyItem(8, "Gateway Key")]
+    let state = createApiKeyHookState({
+      items,
+      selectedId: 8,
+      detail: createApiKeyDetail(items[0], {
+        displayName: "Gateway Key",
+        note: "Gateway note",
+      }),
+    })
+    hookMocks.useUpstreamAccounts.mockImplementation(() => state)
+
+    renderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+    setInputValue('input[name="detailDisplayName"]', "Draft gateway rename")
+
+    state = {
+      ...state,
+      detail: createApiKeyDetail(items[0], {
+        displayName: "Gateway Key",
+        note: "Background note v2",
+      }),
+    }
+    rerenderDetailDrawer(8)
+    await flushAsync()
+
+    setInputValue('input[name="detailDisplayName"]', "Gateway Key")
+    setInputValue('textarea[name="detailNote"]', "Background note v2")
+
+    state = {
+      ...state,
+      detail: createApiKeyDetail(items[0], {
+        displayName: "Gateway Key",
+        note: "Background note v3",
+      }),
+    }
+    rerenderDetailDrawer(8)
+    await flushAsync()
+
+    const displayNameInput = document.body.querySelector(
+      'input[name="detailDisplayName"]',
+    )
+    const noteInput = document.body.querySelector('textarea[name="detailNote"]')
+    expect((displayNameInput as HTMLInputElement).value).toBe("Gateway Key")
+    expect((noteInput as HTMLTextAreaElement).value).toBe("Background note v3")
+  })
+
+  it("rebuilds the draft when the drawer switches to a different account", async () => {
+    const items = [
+      createApiKeyItem(8, "Gateway Key"),
+      createApiKeyItem(9, "Backup Key"),
+    ]
+    let state = createApiKeyHookState({
+      items,
+      selectedId: 8,
+      detail: createApiKeyDetail(items[0], {
+        displayName: "Gateway Key",
+        note: "Gateway note",
+      }),
+    })
+    hookMocks.useUpstreamAccounts.mockImplementation(() => state)
+
+    renderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+    setInputValue('input[name="detailDisplayName"]', "Draft gateway rename")
+
+    state = {
+      ...state,
+      selectedId: 9,
+      selectedSummary: items[1],
+      detail: createApiKeyDetail(items[1], {
+        displayName: "Backup Key",
+        note: "Backup note",
+      }),
+    }
+    rerenderDetailDrawer(9)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+
+    const displayNameInput = document.body.querySelector(
+      'input[name="detailDisplayName"]',
+    )
+    const noteInput = document.body.querySelector('textarea[name="detailNote"]')
+    expect((displayNameInput as HTMLInputElement).value).toBe("Backup Key")
+    expect((noteInput as HTMLTextAreaElement).value).toBe("Backup note")
+  })
+
+  it("reseeds the current draft from the save response and clears rotate api key input", async () => {
+    const saveAccount = vi.fn().mockResolvedValue({
+      ...createApiKeyDetail(createApiKeyItem(8, "Saved Gateway Key"), {
+        note: "Saved note",
+      }),
+      maskedApiKey: "sk-saved••••",
+    })
+    hookMocks.useUpstreamAccounts.mockReturnValue(
+      createApiKeyHookState({
+        items: [createApiKeyItem(8, "Gateway Key")],
+        selectedId: 8,
+        detail: createApiKeyDetail(createApiKeyItem(8, "Gateway Key"), {
+          note: "Original note",
+          upstreamBaseUrl: "https://proxy.example.com/original",
+        }),
+        saveAccount,
+      }),
+    )
+
+    renderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+    setInputValue('input[name="detailDisplayName"]', "  Saved Gateway Key  ")
+    setInputValue('input[name="detailRotateApiKey"]', "sk-rotated")
+    clickButton(/Save changes/i)
+    await flushAsync()
+    await flushAsync()
+
+    const displayNameInput = document.body.querySelector(
+      'input[name="detailDisplayName"]',
+    )
+    const rotateInput = document.body.querySelector(
+      'input[name="detailRotateApiKey"]',
+    )
+    expect(saveAccount).toHaveBeenCalledWith(
+      8,
+      expect.objectContaining({
+        displayName: "Saved Gateway Key",
+        apiKey: "sk-rotated",
+      }),
+    )
+    expect((displayNameInput as HTMLInputElement).value).toBe(
+      "Saved Gateway Key",
+    )
+    expect((rotateInput as HTMLInputElement).value).toBe("")
+  })
+
+  it("does not overwrite edits typed after save was clicked", async () => {
+    const saveRequest = deferred<any>()
+    const saveAccount = vi.fn().mockImplementation(() => saveRequest.promise)
+    hookMocks.useUpstreamAccounts.mockReturnValue(
+      createApiKeyHookState({
+        items: [createApiKeyItem(8, "Gateway Key")],
+        selectedId: 8,
+        detail: createApiKeyDetail(createApiKeyItem(8, "Gateway Key"), {
+          note: "Original note",
+          upstreamBaseUrl: "https://proxy.example.com/original",
+        }),
+        saveAccount,
+      }),
+    )
+
+    renderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+    setInputValue('textarea[name="detailNote"]', "Note before save")
+    setInputValue('input[name="detailRotateApiKey"]', "sk-rotated")
+    clickButton(/Save changes/i)
+    await flushAsync()
+
+    setInputValue('textarea[name="detailNote"]', "Edited after save")
+
+    saveRequest.resolve({
+      ...createApiKeyDetail(createApiKeyItem(8, "Gateway Key"), {
+        note: "Saved note",
+        upstreamBaseUrl: "https://proxy.example.com/saved",
+      }),
+      maskedApiKey: "sk-saved••••",
+    })
+    await flushAsync()
+    await flushAsync()
+
+    const noteInput = document.body.querySelector('textarea[name="detailNote"]')
+    const rotateInput = document.body.querySelector(
+      'input[name="detailRotateApiKey"]',
+    )
+    expect((noteInput as HTMLTextAreaElement).value).toBe("Edited after save")
+    expect((rotateInput as HTMLInputElement).value).toBe("")
+  })
+
+  it("ignores an older save response after the drawer closes and reopens for the same account", async () => {
+    const saveRequest = deferred<any>()
+    const saveAccount = vi.fn().mockImplementation(() => saveRequest.promise)
+    hookMocks.useUpstreamAccounts.mockReturnValue(
+      createApiKeyHookState({
+        items: [createApiKeyItem(8, "Gateway Key")],
+        selectedId: 8,
+        detail: createApiKeyDetail(createApiKeyItem(8, "Gateway Key"), {
+          note: "Original note",
+          upstreamBaseUrl: "https://proxy.example.com/original",
+        }),
+        saveAccount,
+      }),
+    )
+
+    renderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+    setInputValue('input[name="detailDisplayName"]', "Pending save draft")
+    clickButton(/Save changes/i)
+    await flushAsync()
+
+    rerenderDetailDrawer(8, { open: false })
+    await flushAsync()
+    rerenderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+    setInputValue('input[name="detailDisplayName"]', "Reopened draft")
+
+    saveRequest.resolve({
+      ...createApiKeyDetail(createApiKeyItem(8, "Saved Gateway Key"), {
+        note: "Saved note",
+        upstreamBaseUrl: "https://proxy.example.com/saved",
+      }),
+      maskedApiKey: "sk-saved••••",
+    })
+    await flushAsync()
+
+    const displayNameInput = document.body.querySelector(
+      'input[name="detailDisplayName"]',
+    )
+    expect((displayNameInput as HTMLInputElement).value).toBe("Reopened draft")
+  })
+
+  it("ignores an older save response after switching away and back to the same account", async () => {
+    const saveRequest = deferred<any>()
+    const saveAccount = vi.fn().mockImplementation(() => saveRequest.promise)
+    const items = [
+      createApiKeyItem(8, "Gateway Key"),
+      createApiKeyItem(9, "Backup Key"),
+    ]
+    let state = createApiKeyHookState({
+      items,
+      selectedId: 8,
+      detail: createApiKeyDetail(items[0], {
+        note: "Gateway note",
+      }),
+      saveAccount,
+    })
+    hookMocks.useUpstreamAccounts.mockImplementation(() => state)
+
+    renderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+    setInputValue('input[name="detailDisplayName"]', "Pending save draft")
+    clickButton(/Save changes/i)
+    await flushAsync()
+
+    state = {
+      ...state,
+      selectedId: 9,
+      selectedSummary: items[1],
+      detail: createApiKeyDetail(items[1], {
+        note: "Backup note",
+      }),
+    }
+    rerenderDetailDrawer(9)
+    await flushAsync()
+
+    state = {
+      ...state,
+      selectedId: 8,
+      selectedSummary: items[0],
+      detail: createApiKeyDetail(items[0], {
+        note: "Gateway note",
+      }),
+    }
+    rerenderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+    setInputValue('input[name="detailDisplayName"]', "Returned draft")
+
+    saveRequest.resolve({
+      ...createApiKeyDetail(createApiKeyItem(8, "Saved Gateway Key"), {
+        note: "Saved note",
+        upstreamBaseUrl: "https://proxy.example.com/saved",
+      }),
+      maskedApiKey: "sk-saved••••",
+    })
+    await flushAsync()
+
+    const displayNameInput = document.body.querySelector(
+      'input[name="detailDisplayName"]',
+    )
+    expect((displayNameInput as HTMLInputElement).value).toBe("Returned draft")
+  })
+
+  it("ignores an older save response that resolves in the account-switch render gap", async () => {
+    const saveRequest = deferred<any>()
+    const saveAccount = vi.fn().mockImplementation(() => saveRequest.promise)
+    const items = [
+      createApiKeyItem(8, "Gateway Key"),
+      createApiKeyItem(9, "Backup Key"),
+    ]
+    let state = createApiKeyHookState({
+      items,
+      selectedId: 8,
+      detail: createApiKeyDetail(items[0], {
+        note: "Original note",
+      }),
+      saveAccount,
+    })
+    hookMocks.useUpstreamAccounts.mockImplementation(() => state)
+
+    renderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+    setInputValue('input[name="detailDisplayName"]', "Pending save draft")
+    clickButton(/Save changes/i)
+    await flushAsync()
+
+    state = {
+      ...state,
+      selectedId: 9,
+      selectedSummary: items[1],
+      detail: createApiKeyDetail(items[1], {
+        note: "Backup note",
+      }),
+    }
+
+    await act(async () => {
+      root?.render(
+        <I18nProvider>
+          <SystemNotificationProvider>
+            <MemoryRouter>
+              <SharedUpstreamAccountDetailDrawer
+                accountId={9}
+                open
+                onClose={() => undefined}
+              />
+            </MemoryRouter>
+          </SystemNotificationProvider>
+        </I18nProvider>,
+      )
+      saveRequest.resolve({
+        ...createApiKeyDetail(createApiKeyItem(8, "Saved Gateway Key"), {
+          note: "Saved note",
+          upstreamBaseUrl: "https://proxy.example.com/saved",
+        }),
+        maskedApiKey: "sk-saved••••",
+      })
+      await Promise.resolve()
+    })
+
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+
+    const displayNameInput = document.body.querySelector(
+      'input[name="detailDisplayName"]',
+    )
+    const noteInput = document.body.querySelector('textarea[name="detailNote"]')
+    expect((displayNameInput as HTMLInputElement).value).toBe("Backup Key")
+    expect((noteInput as HTMLTextAreaElement).value).toBe("Backup note")
+  })
+})

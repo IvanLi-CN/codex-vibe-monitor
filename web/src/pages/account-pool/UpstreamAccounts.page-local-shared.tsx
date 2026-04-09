@@ -123,6 +123,48 @@ type AccountDraft = {
   apiKey: string;
 };
 
+function areAccountDraftTagIdsEqual(left: number[], right: number[]): boolean {
+  if (left.length !== right.length) return false;
+  const leftSorted = [...left].sort((a, b) => a - b);
+  const rightSorted = [...right].sort((a, b) => a - b);
+  return leftSorted.every((tagId, index) => tagId === rightSorted[index]);
+}
+
+function areAccountDraftsEqual(
+  left: AccountDraft,
+  right: AccountDraft,
+): boolean {
+  return (
+    left.displayName === right.displayName &&
+    left.groupName === right.groupName &&
+    left.isMother === right.isMother &&
+    left.note === right.note &&
+    left.upstreamBaseUrl === right.upstreamBaseUrl &&
+    left.localPrimaryLimit === right.localPrimaryLimit &&
+    left.localSecondaryLimit === right.localSecondaryLimit &&
+    left.localLimitUnit === right.localLimitUnit &&
+    left.apiKey === right.apiKey &&
+    areAccountDraftTagIdsEqual(left.tagIds, right.tagIds)
+  );
+}
+
+function mergeDraftAfterAccountSave(
+  current: AccountDraft,
+  saveStartedDraft: AccountDraft,
+  responseDraft: AccountDraft,
+): AccountDraft {
+  if (areAccountDraftsEqual(current, saveStartedDraft)) {
+    return responseDraft;
+  }
+  if (saveStartedDraft.apiKey && current.apiKey === saveStartedDraft.apiKey) {
+    return {
+      ...current,
+      apiKey: responseDraft.apiKey,
+    };
+  }
+  return current;
+}
+
 type RoutingDraft = {
   apiKey: string;
   maskedApiKey: string | null;
@@ -558,6 +600,22 @@ function buildDraft(detail: UpstreamAccountDetail | null): AccountDraft {
     localLimitUnit: detail?.localLimits?.limitUnit ?? "requests",
     apiKey: "",
   };
+}
+
+function filterAccountDraftTagIds(
+  draft: AccountDraft,
+  validTagIds: Set<number>,
+): AccountDraft {
+  const nextTagIds = draft.tagIds.filter((tagId) => validTagIds.has(tagId));
+  return nextTagIds.length === draft.tagIds.length
+    ? draft
+    : { ...draft, tagIds: nextTagIds };
+}
+
+function removeAccountDraftTagId(draft: AccountDraft, tagId: number) {
+  return draft.tagIds.includes(tagId)
+    ? { ...draft, tagIds: draft.tagIds.filter((value) => value !== tagId) }
+    : draft;
 }
 
 export function resolveRoutingMaintenance(
@@ -1267,15 +1325,20 @@ export function SharedUpstreamAccountDetailDrawer({
   const routeAccountIdRef = useRef<number | null>(accountId);
   const drawerOpenRef = useRef(open);
   const accountRecordsRequestSeqRef = useRef(0);
+  const draftSessionKeyRef = useRef<string | null>(null);
+  const activeDraftSessionKeyRef = useRef<string | null>(null);
+  const draftBaselineRef = useRef<AccountDraft>(buildDraft(null));
+  const latestServerDraftRef = useRef<AccountDraft>(buildDraft(null));
+  const previousDraftAccountIdRef = useRef<number | null>(accountId);
+  const wasDrawerOpenRef = useRef(open);
+  const [draftSessionVersion, setDraftSessionVersion] = useState(0);
+  const activeDraftSessionKey =
+    open && accountId != null ? `${draftSessionVersion}:${accountId}` : null;
 
-  useEffect(() => {
-    selectedIdRef.current = selectedId;
-  }, [selectedId]);
-
-  useEffect(() => {
-    routeAccountIdRef.current = accountId;
-    drawerOpenRef.current = open;
-  }, [accountId, open]);
+  selectedIdRef.current = selectedId;
+  routeAccountIdRef.current = accountId;
+  drawerOpenRef.current = open;
+  activeDraftSessionKeyRef.current = activeDraftSessionKey;
 
   useEffect(() => {
     if (open && accountId != null) {
@@ -1292,8 +1355,66 @@ export function SharedUpstreamAccountDetailDrawer({
   }, [accountId, missingDetailAccountId, onClose, open]);
 
   useEffect(() => {
-    setDraft(buildDraft(detail));
-  }, [detail]);
+    if (wasDrawerOpenRef.current && !open) {
+      draftSessionKeyRef.current = null;
+      draftBaselineRef.current = buildDraft(null);
+      latestServerDraftRef.current = buildDraft(null);
+      setDraftSessionVersion((current) => current + 1);
+    }
+    wasDrawerOpenRef.current = open;
+  }, [open]);
+
+  useEffect(() => {
+    const previousAccountId = previousDraftAccountIdRef.current;
+    if (
+      open &&
+      previousAccountId != null &&
+      accountId != null &&
+      previousAccountId !== accountId
+    ) {
+      draftSessionKeyRef.current = null;
+      draftBaselineRef.current = buildDraft(null);
+      latestServerDraftRef.current = buildDraft(null);
+      setDraftSessionVersion((current) => current + 1);
+    }
+    previousDraftAccountIdRef.current = accountId;
+  }, [accountId, open]);
+
+  useEffect(() => {
+    const nextBaseline = buildDraft(detail?.id === accountId ? detail : null);
+    if (activeDraftSessionKey == null) {
+      draftSessionKeyRef.current = null;
+      draftBaselineRef.current = nextBaseline;
+      latestServerDraftRef.current = nextBaseline;
+      return;
+    }
+
+    const previousBaseline = draftBaselineRef.current;
+    const previousLatestServerDraft = latestServerDraftRef.current;
+    const shouldSeedDraft =
+      draftSessionKeyRef.current !== activeDraftSessionKey;
+    draftSessionKeyRef.current = activeDraftSessionKey;
+    latestServerDraftRef.current = nextBaseline;
+    setDraft((current) => {
+      const matchesSeedBaseline = areAccountDraftsEqual(
+        current,
+        previousBaseline,
+      );
+      const matchesLatestServerDraft = areAccountDraftsEqual(
+        current,
+        previousLatestServerDraft,
+      );
+      if (
+        shouldSeedDraft ||
+        matchesSeedBaseline ||
+        matchesLatestServerDraft
+      ) {
+        draftBaselineRef.current = nextBaseline;
+        return nextBaseline;
+      }
+      return current;
+    });
+  }, [accountId, activeDraftSessionKey, detail]);
 
   useEffect(() => {
     if (!open) {
@@ -1360,14 +1481,15 @@ export function SharedUpstreamAccountDetailDrawer({
 
   useEffect(() => {
     const validTagIds = new Set(tagItems.map((tag) => tag.id));
-    setDraft((current) => {
-      const nextTagIds = current.tagIds.filter((tagId) =>
-        validTagIds.has(tagId),
-      );
-      return nextTagIds.length === current.tagIds.length
-        ? current
-        : { ...current, tagIds: nextTagIds };
-    });
+    draftBaselineRef.current = filterAccountDraftTagIds(
+      draftBaselineRef.current,
+      validTagIds,
+    );
+    latestServerDraftRef.current = filterAccountDraftTagIds(
+      latestServerDraftRef.current,
+      validTagIds,
+    );
+    setDraft((current) => filterAccountDraftTagIds(current, validTagIds));
   }, [tagItems]);
 
   const availableGroups = useMemo(() => {
@@ -1814,10 +1936,15 @@ export function SharedUpstreamAccountDetailDrawer({
       setPageCreatedTagIds((current) =>
         current.filter((value) => value !== tagId),
       );
-      setDraft((current) => ({
-        ...current,
-        tagIds: current.tagIds.filter((value) => value !== tagId),
-      }));
+      draftBaselineRef.current = removeAccountDraftTagId(
+        draftBaselineRef.current,
+        tagId,
+      );
+      latestServerDraftRef.current = removeAccountDraftTagId(
+        latestServerDraftRef.current,
+        tagId,
+      );
+      setDraft((current) => removeAccountDraftTagId(current, tagId));
     },
     [deleteTag],
   );
@@ -2144,6 +2271,8 @@ export function SharedUpstreamAccountDetailDrawer({
     async (source: UpstreamAccountDetail) => {
       if (source.kind === "api_key_codex" && draftUpstreamBaseUrlError) return;
       if (hasBusyAccountAction(busyAction, source.id)) return;
+      const saveDraftSessionKey = activeDraftSessionKey;
+      const saveStartedDraft = draft;
       setActionError((current) => {
         const nextMessages = { ...current.accountMessages };
         delete nextMessages[source.id];
@@ -2198,8 +2327,21 @@ export function SharedUpstreamAccountDetailDrawer({
           );
         }
         notifyMotherChange(response);
-        if (selectedIdRef.current === source.id) {
-          setDraft((current) => ({ ...current, apiKey: "" }));
+        if (
+          selectedIdRef.current === source.id &&
+          saveDraftSessionKey != null &&
+          activeDraftSessionKeyRef.current === saveDraftSessionKey
+        ) {
+          const responseDraft = buildDraft(response);
+          draftBaselineRef.current = responseDraft;
+          latestServerDraftRef.current = responseDraft;
+          setDraft((current) =>
+            mergeDraftAfterAccountSave(
+              current,
+              saveStartedDraft,
+              responseDraft,
+            ),
+          );
         }
         if (partialWarning) {
           setActionError((current) => ({
@@ -2228,6 +2370,7 @@ export function SharedUpstreamAccountDetailDrawer({
       }
     },
     [
+      activeDraftSessionKey,
       busyAction,
       draft,
       draftUpstreamBaseUrlError,

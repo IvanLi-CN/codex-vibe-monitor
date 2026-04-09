@@ -113,6 +113,7 @@
 - 若当前正显示的账号删除成功后紧接着列表刷新失败，页面仍必须立刻把选中项与 detail 从被删账号收口到 fallback（或空态），不得继续停留在已删除账号的幽灵详情上。
 - 账号自己的保存/同步成功必须清掉该账号自己的 detail 错误缓存，即使成功返回时用户已经切到别的账号。
 - 若用户在账号 A 的保存进行中切换到账号 B 并编辑 B 的详情草稿，A 的保存成功回包不得重置 B 当前未提交的草稿字段（例如 API Key 轮换输入框）。
+- 账号详情抽屉一旦进入当前账号的编辑会话，未提交草稿只允许在“切换到别的账号 / 当前账号保存成功 / 抽屉关闭后重开”这三类边界被重置；同账号的静默 detail refresh、SSE 触发 refresh、open-resync 或从其它页签切走再切回，都不得把草稿字段回填成旧值。
 - 保存/同步成功一旦落地，就必须立即使该账号更早发出的 in-flight detail reload 失效；即使后续列表刷新仍在进行，旧 reload 也不得趁机把 detail 回写成旧快照。
 - refresh 进行中若用户切换到别的账号，refresh 在列表返回后仍必须按最终收口后的当前选中账号补拉 detail；不得因为 refresh 启动时捕获的是旧 `selectedId` 就跳过这次 detail 刷新。
 - 多个 list/refresh 请求并发时，只有最新仍有效的那一次允许回写 `items/groups/routing/selectedId/listError`；较早发出的旧列表成功/失败结果一律视为过期，不得覆盖较新的列表状态。
@@ -189,6 +190,7 @@
 - Given 用户在 refresh 进行中从账号 A 切到账号 B，When refresh 的列表响应稍后返回并把最终选中账号收口到 B，Then 页面仍必须补拉 B 的 detail，而不是停留在切换前或切换时的旧 detail。
 - Given 用户先手动触发一次 refresh，随后同一账号的保存/同步/删除又触发了更新的列表刷新，When 较早那次 refresh 更晚返回，Then 页面只能保留较新的列表状态，旧 refresh 不得把 `items/groups/routing/selectedId` 回写成旧快照。
 - Given 账号 A 的保存/同步/删除在后台完成时用户已经切到账号 B，When 动作成功后的列表刷新完成，Then 页面仍必须补拉 B 的最新 detail，避免右侧继续停留在 B 的旧 detail 快照。
+- Given 用户正在账号 A 的 `编辑` 页签里修改字段但尚未保存，When 同账号的静默 refresh/detail reload/SSE open-resync 返回旧详情，Then 页面继续保留这份未提交草稿，不得把输入框回填成旧值；只有切换账号、当前账号保存成功或抽屉关闭后重开时，才允许重建草稿。
 - 新建账号页顶部的全局错误提示只允许承载创建流程自己的错误或 list 级错误；详情页背景 detail 错误不得冒泡成创建页的通用错误横幅。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
@@ -227,6 +229,7 @@
 - 2026-03-20：补充账号级 actor 串行与后台维护去重约束，明确维护只允许阻塞同一账号、无关账号启停在维护竞争下需以 `1 秒内完成服务端提交` 为目标，并新增对应的 Rust 并发回归测试要求。
 - 2026-04-01：将号池活跃 sticky 共享窗口从 30 分钟统一收敛为 5 分钟，`workStatus=working` 与 `activeConversationCount` 继续共用同一时间口径，且不引入新的 API、schema 或配置项。
 - 2026-03-23：把上游账号列表的混合 `displayStatus` 读模型拆成 `workStatus` / `enableStatus` / `healthStatus` / `syncState` 四个维度，列表筛选同步拆成 `工作状态`、`启用状态`、`账号状态` 三组服务端交集筛选，并锁定“不新增持久化状态列”的实现边界。
+- 2026-04-09：补充详情抽屉编辑会话的草稿冻结约束，明确同账号静默 refresh / detail reload / SSE open-resync 只能更新只读详情展示，不得覆盖当前未提交的编辑字段；保存成功则必须立即用最新响应重播种草稿。
 
 ## Visual Evidence
 

@@ -7,8 +7,10 @@ import suite3 from "./UpstreamAccounts.sync-state-isolation.txt?raw";
 import suite4 from "./UpstreamAccounts.oauth-recovery.txt?raw";
 import suite5 from "./UpstreamAccounts.api-key-details.txt?raw";
 import suite6 from "./UpstreamAccounts.delete-confirmation.txt?raw";
+import suite7 from "./UpstreamAccounts.edit-drafts.txt?raw";
 
 /** @vitest-environment jsdom */
+import * as React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
@@ -28,7 +30,9 @@ import {
 } from "react-router-dom";
 import { SystemNotificationProvider } from "../../components/ui/system-notifications";
 import { I18nProvider } from "../../i18n";
-import UpstreamAccountsPage from "./UpstreamAccounts";
+import UpstreamAccountsPage, {
+  SharedUpstreamAccountDetailDrawer,
+} from "./UpstreamAccounts";
 import type { EffectiveRoutingRule, TagSummary } from "../../lib/api";
 
 type UpstreamAccountsHookValue = ReturnType<
@@ -1074,6 +1078,7 @@ function mockRosterFreshnessPage(options?: {
 const scope: Record<string, unknown> = {};
 Object.assign(scope, {
   act,
+  React,
   createRoot,
   afterEach,
   beforeAll,
@@ -1088,6 +1093,7 @@ Object.assign(scope, {
   SystemNotificationProvider,
   I18nProvider,
   UpstreamAccountsPage,
+  SharedUpstreamAccountDetailDrawer,
   UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY,
   LOCALE_STORAGE_KEY,
   navigateMock,
@@ -1136,8 +1142,8 @@ Object.defineProperties(scope, {
 const evalChunk = (chunk: string) => {
   const { outputText } = ts.transpileModule(chunk, {
     compilerOptions: {
-      jsx: ts.JsxEmit.ReactJSX,
-      module: ts.ModuleKind.CommonJS,
+      jsx: ts.JsxEmit.React,
+      module: ts.ModuleKind.None,
       target: ts.ScriptTarget.ES2020,
     },
     fileName: "suite.tsx",
@@ -1151,3 +1157,4 @@ evalChunk(suite3);
 evalChunk(suite4);
 evalChunk(suite5);
 evalChunk(suite6);
+evalChunk(suite7);
