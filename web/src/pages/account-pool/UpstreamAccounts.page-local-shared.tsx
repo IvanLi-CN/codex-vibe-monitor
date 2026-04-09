@@ -2345,23 +2345,31 @@ export function SharedUpstreamAccountDetailDrawer({
         }
         notifyMotherChange(response);
         const responseDraft = buildDraft(response);
-        const previousRecentSaveResponseGuard =
-          recentSaveResponseGuardRef.current;
-        if (previousRecentSaveResponseGuard != null) {
-          clearTimeout(previousRecentSaveResponseGuard.timeoutId);
+        if (
+          selectedIdRef.current === source.id &&
+          activeDraftSessionKeyRef.current != null
+        ) {
+          const previousRecentSaveResponseGuard =
+            recentSaveResponseGuardRef.current;
+          if (previousRecentSaveResponseGuard != null) {
+            clearTimeout(previousRecentSaveResponseGuard.timeoutId);
+          }
+          const recentSaveResponseGuard = {
+            accountId: source.id,
+            sessionKey: saveDraftSessionKey,
+            draft: responseDraft,
+            fallbackDraft: pendingSaveSession.fallbackDraft,
+            timeoutId: setTimeout(() => {
+              if (
+                recentSaveResponseGuardRef.current ===
+                recentSaveResponseGuard
+              ) {
+                recentSaveResponseGuardRef.current = null;
+              }
+            }, 0),
+          };
+          recentSaveResponseGuardRef.current = recentSaveResponseGuard;
         }
-        const recentSaveResponseGuard = {
-          accountId: source.id,
-          sessionKey: saveDraftSessionKey,
-          draft: responseDraft,
-          fallbackDraft: pendingSaveSession.fallbackDraft,
-          timeoutId: setTimeout(() => {
-            if (recentSaveResponseGuardRef.current === recentSaveResponseGuard) {
-              recentSaveResponseGuardRef.current = null;
-            }
-          }, 0),
-        };
-        recentSaveResponseGuardRef.current = recentSaveResponseGuard;
         if (
           selectedIdRef.current === source.id &&
           saveDraftSessionKey != null &&

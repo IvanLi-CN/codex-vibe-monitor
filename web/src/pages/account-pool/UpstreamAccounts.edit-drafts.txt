@@ -650,6 +650,54 @@ describe("SharedUpstreamAccountDetailDrawer edit drafts", () => {
     expect((displayNameInput as HTMLInputElement).value).toBe("Gateway Key")
   })
 
+  it("reopens with the saved detail after the save completes while the drawer is closed", async () => {
+    const saveRequest = deferred<any>()
+    const saveAccount = vi.fn().mockImplementation(() => saveRequest.promise)
+    const savedDetail = createApiKeyDetail(createApiKeyItem(8, "Saved Gateway Key"), {
+      note: "Saved note",
+    })
+    let state = createApiKeyHookState({
+      items: [createApiKeyItem(8, "Gateway Key")],
+      selectedId: 8,
+      detail: createApiKeyDetail(createApiKeyItem(8, "Gateway Key"), {
+        note: "Original note",
+      }),
+      saveAccount,
+    })
+    hookMocks.useUpstreamAccounts.mockImplementation(() => state)
+
+    renderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+    setInputValue('input[name="detailDisplayName"]', "Pending save draft")
+    clickButton(/Save changes/i)
+    await flushAsync()
+
+    rerenderDetailDrawer(8, { open: false })
+    await flushAsync()
+
+    state = {
+      ...state,
+      detail: savedDetail,
+    }
+    rerenderDetailDrawer(8, { open: false })
+    saveRequest.resolve(savedDetail)
+    await flushAsync()
+
+    rerenderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+
+    const displayNameInput = document.body.querySelector(
+      'input[name="detailDisplayName"]',
+    )
+    const noteInput = document.body.querySelector('textarea[name="detailNote"]')
+    expect((displayNameInput as HTMLInputElement).value).toBe("Saved Gateway Key")
+    expect((noteInput as HTMLTextAreaElement).value).toBe("Saved note")
+  })
+
   it("ignores an older save response after switching away and back to the same account", async () => {
     const saveRequest = deferred<any>()
     const saveAccount = vi.fn().mockImplementation(() => saveRequest.promise)
