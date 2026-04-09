@@ -106,7 +106,6 @@ pub(crate) async fn run() -> Result<()> {
     let upstream_accounts = Arc::new(UpstreamAccountsRuntime::from_env()?);
     let (tx, _rx) = broadcast::channel(128);
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
-    let proxy_raw_async_writer_limit = DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS;
     let shutdown = CancellationToken::new();
 
     let state = Arc::new(AppState {
@@ -122,8 +121,6 @@ pub(crate) async fn run() -> Result<()> {
         startup_ready: Arc::new(AtomicBool::new(false)),
         shutdown: shutdown.clone(),
         semaphore: semaphore.clone(),
-        proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
-        proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit)),
         proxy_model_settings,
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy,
@@ -140,6 +137,7 @@ pub(crate) async fn run() -> Result<()> {
         )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
         pool_group_429_retry_delay_override: None,
         pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
         upstream_accounts,
