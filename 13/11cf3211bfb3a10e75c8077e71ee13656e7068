@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.45.10",
+  "base_stable_version": "1.45.9",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-09T21:35:55Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.45.10",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "97ff04183490cbd68a6fc2ba2ef19047673c481a",
+  "pr_number": 311,
+  "pr_title": "fix(web): preserve upstream account edit drafts during refresh",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.45.10",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.45.10",
+  "target_sha": "1311cf3211bfb3a10e75c8077e71ee13656e7068",
+  "type_label": "type:patch"
+}
