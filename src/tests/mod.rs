@@ -14879,6 +14879,20 @@ async fn pool_retry_upstream(
         .into_response()
 }
 
+async fn pool_retry_upstream_after_body_read(
+    State(state): State<PoolRetryUpstreamState>,
+    request: axum::extract::Request,
+) -> Response {
+    // Responses-family live-body retries need the upstream to consume the full upload before
+    // replying; otherwise CI can race into a transport send error instead of the intended
+    // retryable HTTP failure.
+    let (parts, body) = request.into_parts();
+    let _body = to_bytes(body, usize::MAX)
+        .await
+        .expect("read pool retry upstream request body");
+    pool_retry_upstream(State(state), parts.headers).await
+}
+
 async fn pool_rate_limit_responses_upstream(
     State(state): State<PoolRateLimitResponsesUpstreamState>,
     headers: HeaderMap,
@@ -15941,6 +15955,40 @@ async fn spawn_pool_retry_upstream(
         axum::serve(listener, app)
             .await
             .expect("pool retry upstream should run");
+    });
+    (format!("http://{addr}"), attempts, handle)
+}
+
+async fn spawn_pool_retry_upstream_after_body_read(
+    fail_before_success: &[(&str, usize)],
+) -> (
+    String,
+    Arc<StdMutex<HashMap<String, usize>>>,
+    JoinHandle<()>,
+) {
+    let attempts = Arc::new(StdMutex::new(HashMap::new()));
+    let fail_before_success = Arc::new(
+        fail_before_success
+            .iter()
+            .map(|(authorization, failures)| ((*authorization).to_string(), *failures))
+            .collect::<HashMap<_, _>>(),
+    );
+    let app = Router::new()
+        .route("/v1/responses", post(pool_retry_upstream_after_body_read))
+        .with_state(PoolRetryUpstreamState {
+            attempts: attempts.clone(),
+            fail_before_success,
+        });
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind draining pool retry upstream");
+    let addr = listener
+        .local_addr()
+        .expect("draining pool retry upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("draining pool retry upstream should run");
     });
     (format!("http://{addr}"), attempts, handle)
 }
@@ -25137,7 +25185,7 @@ async fn proxy_openai_v1_via_pool_live_retry_ignores_late_file_backed_sticky_rou
     drop(probe_state);
 
     let (upstream_base, attempts, upstream_handle) =
-        spawn_pool_retry_upstream(&[(expected_default_authorization, 1)]).await;
+        spawn_pool_retry_upstream_after_body_read(&[(expected_default_authorization, 1)]).await;
 
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
