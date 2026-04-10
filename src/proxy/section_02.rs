@@ -1362,40 +1362,6 @@ async fn send_pool_request_with_failover(
                             }
                         };
                     let oauth_body = match &prepared_request_body.snapshot {
-                        PoolReplayBodySnapshot::File { size, .. }
-                            if original_uri.path() == "/v1/responses"
-                                && *size > OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES =>
-                        {
-                            store_pool_failover_error(
-                                &mut last_error,
-                                &mut preserve_sticky_owner_terminal_error,
-                                PoolUpstreamError {
-                                account: Some(account.clone()),
-                                status: StatusCode::PAYLOAD_TOO_LARGE,
-                                message: format!(
-                                    "oauth /v1/responses request body exceeds {} bytes rewrite limit",
-                                    OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES
-                                ),
-                                failure_kind: PROXY_FAILURE_BODY_TOO_LARGE,
-                                connect_latency_ms: 0.0,
-                                upstream_error_code: None,
-                                upstream_error_message: None,
-                                upstream_request_id: None,
-                                oauth_responses_debug: None,
-                                attempt_summary: pool_attempt_summary(
-                                    attempt_count,
-                                    distinct_account_count,
-                                    Some(PROXY_FAILURE_BODY_TOO_LARGE.to_string()),
-                                ),
-                                requested_service_tier: attempted_requested_service_tier.clone(),
-                                request_body_for_capture:
-                                    attempted_request_body_for_capture.clone(),
-                                },
-                            );
-                            release_pool_routing_reservation(state.as_ref(), &reservation_key);
-                            exhausted_accounts_all_rate_limited = false;
-                            continue 'account_loop;
-                        }
                         snapshot @ (PoolReplayBodySnapshot::Empty
                         | PoolReplayBodySnapshot::Memory(_))
                             if original_uri.path() == "/v1/responses" =>

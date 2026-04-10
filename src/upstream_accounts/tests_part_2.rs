@@ -110,6 +110,7 @@
         });
         let http_clients = HttpClients::build(&config).expect("build http clients");
         let (broadcaster, _) = broadcast::channel(8);
+        let proxy_raw_async_writer_limit = proxy_raw_async_writer_limit(&config);
         let state = Arc::new(AppState {
             config,
             pool: test_pool().await,
@@ -125,6 +126,7 @@
             startup_ready: Arc::new(AtomicBool::new(true)),
             shutdown: CancellationToken::new(),
             semaphore: Arc::new(Semaphore::new(4)),
+            proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit)),
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
             forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(

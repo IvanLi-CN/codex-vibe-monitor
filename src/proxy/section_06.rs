@@ -2333,14 +2333,28 @@ struct AsyncStreamingRawPayloadWriter {
 }
 
 impl AsyncStreamingRawPayloadWriter {
-    fn new(config: &AppConfig, invoke_id: &str, kind: &'static str) -> Self {
-        let path = config
+    fn new(state: &AppState, invoke_id: &str, kind: &'static str) -> Self {
+        let Ok(permit) = state.proxy_raw_async_semaphore.clone().try_acquire_owned() else {
+            return Self {
+                tx: None,
+                meta_rx: None,
+                observed_size_bytes: 0,
+                local_truncated_reason: Some(
+                    RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED.to_string(),
+                ),
+                local_truncated: true,
+            };
+        };
+
+        let path = state
+            .config
             .resolved_proxy_raw_dir()
             .join(format!("{invoke_id}-{kind}.bin"));
-        let max_bytes = config.proxy_raw_max_bytes;
+        let max_bytes = state.config.proxy_raw_max_bytes;
         let (tx, mut rx) = mpsc::channel::<Bytes>(ASYNC_STREAMING_RAW_WRITER_QUEUE_CAPACITY);
         let (meta_tx, meta_rx) = oneshot::channel();
         tokio::spawn(async move {
+            let _permit = permit;
             let meta = write_streaming_raw_payload_to_file(path, max_bytes, &mut rx).await;
             let _ = meta_tx.send(meta);
         });

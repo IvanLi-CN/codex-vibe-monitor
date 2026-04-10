@@ -125,6 +125,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout() {
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
@@ -204,6 +205,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout_with_
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(

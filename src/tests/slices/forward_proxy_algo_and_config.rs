@@ -222,6 +222,39 @@ fn forward_proxy_manager_v2_keeps_two_positive_weights() {
     assert_eq!(positive_count, 1);
 }
 
+#[tokio::test]
+async fn async_streaming_raw_payload_writer_respects_global_backpressure_semaphore() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let mut permits = Vec::new();
+    while let Ok(permit) = state.proxy_raw_async_semaphore.clone().try_acquire_owned() {
+        permits.push(permit);
+    }
+    assert!(
+        !permits.is_empty(),
+        "expected raw payload async semaphore to expose permits"
+    );
+    assert_eq!(state.proxy_raw_async_semaphore.available_permits(), 0);
+
+    let mut writer =
+        AsyncStreamingRawPayloadWriter::new(state.as_ref(), "invoke-backpressure", "response");
+    writer.append(b"hello");
+    let meta = writer.finish().await;
+
+    assert!(meta.path.is_none());
+    assert_eq!(meta.size_bytes, 5);
+    assert!(meta.truncated);
+    assert_eq!(
+        meta.truncated_reason.as_deref(),
+        Some(RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED)
+    );
+
+    drop(permits);
+}
+
 #[test]
 fn legacy_bound_proxy_keys_still_route_to_matching_stable_endpoints() {
     let legacy_proxy_url = "http://127.0.0.1:7890";

@@ -704,70 +704,6 @@ async fn pool_route_oauth_responses_timeout_switches_to_alternate_route() {
 }
 
 #[tokio::test]
-async fn pool_route_large_oauth_responses_falls_back_to_api_key_account() {
-    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
-    let state =
-        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
-            .await;
-    let oauth_id =
-        insert_test_pool_oauth_account(&state, "Oversized Responses OAuth", "oauth-oversized")
-            .await;
-    let api_key_id =
-        insert_test_pool_api_key_account(&state, "Fallback API Key", "upstream-fallback").await;
-    let temp_file = Arc::new(PoolReplayTempFile {
-        path: build_pool_replay_temp_path(626262),
-    });
-    let body = vec![b'x'; OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES + 1];
-    tokio::fs::write(&temp_file.path, &body)
-        .await
-        .expect("write oversized oauth responses body");
-
-    let upstream = send_pool_request_with_failover(
-        state.clone(),
-        626262,
-        Method::POST,
-        &"/v1/responses?mode=delay".parse().expect("valid uri"),
-        &HeaderMap::from_iter([(
-            http_header::CONTENT_TYPE,
-            HeaderValue::from_static("application/json"),
-        )]),
-        Some(PoolReplayBodySnapshot::File {
-            temp_file,
-            size: body.len(),
-        }),
-        Duration::from_secs(5),
-        None,
-        None,
-        None,
-        None,
-        PoolFailoverProgress::default(),
-        1,
-    )
-    .await
-    .expect("api key account should handle oversized oauth responses body");
-
-    assert_eq!(upstream.account.account_id, api_key_id);
-    let selected_at: Vec<(i64, Option<String>)> = sqlx::query_as(
-        r#"
-        SELECT id, last_selected_at
-        FROM pool_upstream_accounts
-        WHERE id IN (?1, ?2)
-        ORDER BY id
-        "#,
-    )
-    .bind(oauth_id)
-    .bind(api_key_id)
-    .fetch_all(&state.pool)
-    .await
-    .expect("load selected timestamps");
-    assert_eq!(selected_at.len(), 2);
-    assert_eq!(selected_at[0], (oauth_id, None));
-    assert!(selected_at[1].1.is_some());
-
-    upstream_handle.abort();
-}
-
-#[tokio::test]
 async fn pool_route_oauth_compact_stream_timeout_does_not_cap_send_phase_before_first_byte() {
     let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
         .lock()
@@ -846,7 +782,7 @@ async fn pool_route_oauth_compact_stream_timeout_does_not_cap_send_phase_before_
 }
 
 #[tokio::test]
-async fn pool_route_oauth_responses_rejects_large_file_backed_rewrite_body() {
+async fn pool_route_oauth_responses_large_file_backed_body_passthroughs_without_rewrite_limit() {
     let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
         .lock()
         .await;
@@ -893,7 +829,7 @@ async fn pool_route_oauth_responses_rejects_large_file_backed_rewrite_body() {
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
     };
 
-    let err = send_pool_request_with_failover(
+    let upstream = send_pool_request_with_failover(
         state,
         515151,
         Method::POST,
@@ -915,14 +851,32 @@ async fn pool_route_oauth_responses_rejects_large_file_backed_rewrite_body() {
         1,
     )
     .await
-    .expect_err("oversized oauth responses body should be rejected");
+    .expect("oversized oauth responses body should stay on oauth route");
 
-    assert_eq!(err.status, StatusCode::PAYLOAD_TOO_LARGE);
-    assert!(
-        err.message
-            .contains("oauth /v1/responses request body exceeds"),
-        "unexpected oversized oauth responses error: {}",
-        err.message
+    assert_eq!(upstream.account.account_id, account_id);
+    assert_eq!(upstream.response.status(), StatusCode::OK);
+    let mut response_body = upstream.first_chunk.clone().unwrap_or_default().to_vec();
+    response_body.extend_from_slice(
+        &upstream
+            .response
+            .into_bytes()
+            .await
+            .expect("read oauth passthrough response"),
+    );
+    let payload: Value =
+        serde_json::from_slice(&response_body).expect("decode oauth passthrough response");
+    assert_eq!(
+        payload["path"].as_str(),
+        Some("/backend-api/codex/responses")
+    );
+    assert_eq!(payload["bodyLength"].as_u64(), Some(body.len() as u64));
+    let request_debug = upstream
+        .oauth_responses_debug
+        .expect("oauth responses debug should be present");
+    assert_eq!(request_debug.request_body_snapshot_kind, Some("file"));
+    assert_eq!(
+        request_debug.responses_body_mode,
+        Some("large_body_passthrough")
     );
 
     upstream_handle.abort();
@@ -1541,6 +1495,7 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(

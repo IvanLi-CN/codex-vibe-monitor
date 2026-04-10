@@ -106,6 +106,8 @@ pub(crate) async fn run() -> Result<()> {
     let upstream_accounts = Arc::new(UpstreamAccountsRuntime::from_env()?);
     let (tx, _rx) = broadcast::channel(128);
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
+    let proxy_raw_async_semaphore =
+        Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config)));
     let shutdown = CancellationToken::new();
 
     let state = Arc::new(AppState {
@@ -121,6 +123,7 @@ pub(crate) async fn run() -> Result<()> {
         startup_ready: Arc::new(AtomicBool::new(false)),
         shutdown: shutdown.clone(),
         semaphore: semaphore.clone(),
+        proxy_raw_async_semaphore,
         proxy_model_settings,
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy,

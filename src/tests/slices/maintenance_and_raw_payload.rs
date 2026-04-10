@@ -350,6 +350,7 @@ async fn test_state_from_config_with_pool_no_available_wait(
         startup_ready: Arc::new(AtomicBool::new(startup_ready)),
         shutdown: CancellationToken::new(),
         semaphore,
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
@@ -394,6 +395,7 @@ fn clone_state_with_upstream_accounts(
         startup_ready: state.startup_ready.clone(),
         shutdown: state.shutdown.clone(),
         semaphore: state.semaphore.clone(),
+        proxy_raw_async_semaphore: state.proxy_raw_async_semaphore.clone(),
         proxy_model_settings: state.proxy_model_settings.clone(),
         proxy_model_settings_update_lock: state.proxy_model_settings_update_lock.clone(),
         forward_proxy: state.forward_proxy.clone(),
@@ -431,6 +433,7 @@ fn clone_state_with_pool_group_429_retry_delay_override(
         startup_ready: state.startup_ready.clone(),
         shutdown: state.shutdown.clone(),
         semaphore: state.semaphore.clone(),
+        proxy_raw_async_semaphore: state.proxy_raw_async_semaphore.clone(),
         proxy_model_settings: state.proxy_model_settings.clone(),
         proxy_model_settings_update_lock: state.proxy_model_settings_update_lock.clone(),
         forward_proxy: state.forward_proxy.clone(),
@@ -479,6 +482,7 @@ async fn test_state_from_existing_pool(
         startup_ready: Arc::new(AtomicBool::new(startup_ready)),
         shutdown: CancellationToken::new(),
         semaphore,
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(

@@ -776,6 +776,7 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings {
             hijack_enabled: true,
             merge_upstream_enabled: true,

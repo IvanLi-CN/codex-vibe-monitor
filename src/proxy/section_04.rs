@@ -1044,7 +1044,7 @@ async fn proxy_openai_v1_capture_target(
         let mut stream_started_at: Option<Instant> = None;
         let mut response_preview = RawResponsePreviewBuffer::default();
         let mut response_raw_writer =
-            AsyncStreamingRawPayloadWriter::new(&state_for_task.config, &invoke_id_for_task, "response");
+            AsyncStreamingRawPayloadWriter::new(state_for_task.as_ref(), &invoke_id_for_task, "response");
         let mut stream_response_parser = StreamResponsePayloadChunkParser::default();
         let mut nonstream_parse_buffer = (!response_is_event_stream_for_task).then(|| {
             BoundedResponseParseBuffer::new(BOUNDED_NON_STREAM_RESPONSE_PARSE_LIMIT_BYTES)

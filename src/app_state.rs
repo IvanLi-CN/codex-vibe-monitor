@@ -12,6 +12,7 @@ struct AppState {
     startup_ready: Arc<AtomicBool>,
     shutdown: CancellationToken,
     semaphore: Arc<Semaphore>,
+    proxy_raw_async_semaphore: Arc<Semaphore>,
     proxy_model_settings: Arc<RwLock<ProxyModelSettings>>,
     proxy_model_settings_update_lock: Arc<Mutex<()>>,
     forward_proxy: Arc<Mutex<ForwardProxyManager>>,
