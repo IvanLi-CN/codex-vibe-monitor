@@ -1982,6 +1982,48 @@
         );
     }
 
+    #[tokio::test]
+    async fn refresh_pool_routing_runtime_cache_clears_stale_cache_after_decrypt_failure() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        save_pool_routing_api_key(&state.pool, crypto_key, "pool-live-key")
+            .await
+            .expect("seed pool api key");
+
+        let cache = refresh_pool_routing_runtime_cache(state.as_ref())
+            .await
+            .expect("populate runtime cache");
+        assert_eq!(cache.api_key.as_deref(), Some("pool-live-key"));
+
+        sqlx::query(
+            r#"
+            UPDATE pool_routing_settings
+            SET encrypted_api_key = ?1
+            WHERE id = ?2
+            "#,
+        )
+        .bind("not-a-valid-ciphertext")
+        .bind(POOL_SETTINGS_SINGLETON_ID)
+        .execute(&state.pool)
+        .await
+        .expect("poison encrypted api key");
+
+        assert!(
+            refresh_pool_routing_runtime_cache(state.as_ref())
+                .await
+                .is_err(),
+            "refresh should fail once the stored api key becomes unreadable"
+        );
+        assert!(
+            state.pool_routing_runtime_cache.lock().await.is_none(),
+            "failed refreshes should clear any previously cached routing settings"
+        );
+    }
+
     fn maintenance_candidates(
         id: i64,
         status: &str,
