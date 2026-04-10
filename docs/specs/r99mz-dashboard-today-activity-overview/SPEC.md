@@ -79,13 +79,14 @@
 ### Testing
 
 - Frontend targeted tests:
-  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bunx vitest run src/components/DashboardTodayActivityChart.test.tsx src/components/TodayStatsOverview.test.tsx src/components/DashboardActivityOverview.test.tsx src/pages/Dashboard.test.tsx src/hooks/useTimeseries.test.ts`
+  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bunx vitest run src/components/DashboardTodayActivityChart.test.tsx src/components/TodayStatsOverview.test.tsx src/components/DashboardActivityOverview.test.tsx src/pages/Dashboard.test.tsx src/hooks/useTimeseries.test.ts src/hooks/useTimeseries.integration.test.tsx`
 - Backend targeted tests:
   - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test timeseries_and_summary_do_not_treat_running_rows_with_failure_metadata_as_failures -- --nocapture`
   - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test invocation_hourly_rollup_ignores_running_and_pending_for_failure_counts -- --nocapture`
   - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test invocation_hourly_rollup_excludes_structured_legacy_http_200_failures_from_ttfb_samples -- --nocapture`
   - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test all_time_summary_preserves_archived_history_when_rollup_failures_are_stale -- --nocapture`
   - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test all_time_summary_repair_preserves_pruned_materialized_archives -- --nocapture`
+  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test all_time_summary_repair_replays_existing_materialized_archives_when_others_are_pruned -- --nocapture`
 - Storybook build:
   - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run build-storybook`
 
@@ -153,15 +154,16 @@
 - 2026-04-10: 根据 fresh review 继续收口本地 live patch 稳定性：`useTimeseries` 现在把近期终态 delta 连同其受 TTL / 上限约束的去重元数据一起写入 remount cache，并在复水后继续吸收 duplicate SSE；同时活跃会话里的 tracked delta 仍会按 TTL / 上限裁剪，避免长时间停留页面时 `liveRecordDeltaRef` 单调增长。
 - 2026-04-10: 根据 round16 review 继续收口 `今日 / 次数` tooltip 与 all-time summary repair：当 minute bucket 含有 `running/pending` 残差时，tooltip 现在会显式展示 `进行中`，不再让 `总数` 与成功/失败小计失配；同时 summary repair 仅在 materialized 归档文件真实缺失时保留既有 rollup 历史，避免已 prune 的旧归档触发全量重建失败，而文件仍在时继续重放归档以修正陈旧 failure 计数。
 - 2026-04-10: 为清除 PR freshness gate，同步最新 `main` 到当前修复分支，并补齐 `PromptCacheConversationsQuery` 新增分页字段在 prompt-cache 回归测试里的构造参数；本 spec 的功能范围与验收口径保持不变，验证基线刷新到同步后的最新 head。
+- 2026-04-10: 根据 fresh review 继续收口 remount-cache 与 mixed materialized archive repair：`useTimeseries` 的 silent refresh 现在只回填近期终态 delta 触达的 bucket，并保留 TTL/上限约束内的 settled delta 去重记忆，避免复水后 duplicate settled SSE 再次叠加；summary repair 在 mixed preserve 路径下按 bucket/source 仅清一次既有 rollup，再跨归档批次重放现存 materialized archive，避免旧 failure 值无法修复或同桶多批次重放时发生双算/漏算。
 
 ## Visual Evidence
 
 - Storybook覆盖=通过
 - 视觉证据目标源=storybook_canvas（mock-only）
-- Validation: `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run test && bun run build && bun run build-storybook`；`cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo check && cargo test prompt_cache_conversations_cache_reuses_recent_result_within_ttl -- --nocapture && cargo test all_time_summary_preserves_archived_history_when_rollup_failures_are_stale -- --nocapture && cargo test all_time_summary_repair_preserves_pruned_materialized_archives -- --nocapture && cargo test all_time_summary_repair_does_not_advance_shared_live_cursor_without_hourly_sync -- --nocapture && cargo test all_time_summary_rollup_repair_counts_mixed_case_success_status -- --nocapture && cargo test all_time_summary_missing_summary_markers_do_not_replay_materialized_archives -- --nocapture`
+- Validation: `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bunx vitest run src/hooks/useTimeseries.test.ts src/hooks/useTimeseries.integration.test.tsx && bun run test && bun run build && bun run build-storybook`；`cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo check && cargo test all_time_summary_preserves_archived_history_when_rollup_failures_are_stale -- --nocapture && cargo test all_time_summary_missing_summary_markers_do_not_replay_materialized_archives -- --nocapture && cargo test all_time_summary_repair_preserves_pruned_materialized_archives -- --nocapture && cargo test all_time_summary_repair_replays_existing_materialized_archives_when_others_are_pruned -- --nocapture`
 - Story id: `dashboard-dashboardtodayactivitychart--count-bars-dense-pairing`
 - Scenario: `今日 / 次数` 高密度 minute bucket，对齐验证 success / in-flight / failure 共用同一时间槽位并围绕 0 轴展开。
-- Evidence note: 验证柱子不再左右错位；`running/pending` 与其临时失败元数据不会把 failure 柱短时拉长后再回落；带 in-flight 残差的 minute bucket 会在 tooltip 中额外解释 `进行中` 数量。
+- Evidence note: 验证柱子不再左右错位；`running/pending` 与其临时失败元数据不会把 failure 柱短时拉长后再回落；带 in-flight 残差的 minute bucket 会在 tooltip 中额外解释 `进行中` 数量；本轮 fresh review 收口未改变该 Storybook 画面语义，仅将同一截图继续绑定到收敛后的最新本地验证 head。
 - 聊天回图=已展示（本轮使用本地裁剪后的 Storybook canvas 截图完成 owner review）
 - 证据落盘=未落盘（本次未提交新的截图文件，避免在未获主人截图提交授权前把 refreshed capture 推上远端）
 - Stale evidence handling: 本节已移除旧的静态图片引用，避免在本轮 `今日 / 次数` 语义变更后继续保留过期截图引用。

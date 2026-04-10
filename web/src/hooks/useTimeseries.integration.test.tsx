@@ -342,6 +342,14 @@ describe("useTimeseries remount cache hydration", () => {
 
     silentRefresh.resolve(response);
     await flushAsync();
+
+    emitRecords([settledRecord]);
+
+    expect(text("total")).toBe("1");
+    expect(text("success")).toBe("0");
+    expect(text("failure")).toBe("1");
+    expect(text("tokens")).toBe("22");
+    expect(text("cost")).toBe("0.18");
   });
 
   it("keeps the fetched chart data visible when in-flight seeding fails", async () => {

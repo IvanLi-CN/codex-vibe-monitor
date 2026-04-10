@@ -633,6 +633,140 @@ export function trackTimeseriesLiveRecordDelta(
   );
 }
 
+function mergePreservedSettledLiveRecordDeltas(
+  seededLiveRecordDeltas: Map<string, LiveRecordDelta>,
+  previousLiveRecordDeltas: ReadonlyMap<string, LiveRecordDelta>,
+  previousSettledLiveRecordUpdatedAt: ReadonlyMap<string, number>,
+  now = Date.now(),
+  ttlMs = TIMESERIES_SETTLED_LIVE_DELTA_TTL_MS,
+  maxEntries = MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS,
+) {
+  const nextLiveRecordDeltas = new Map(seededLiveRecordDeltas);
+  const nextSettledLiveRecordUpdatedAt = new Map(previousSettledLiveRecordUpdatedAt);
+  const preservedLiveRecordDeltas = cloneLiveRecordDeltaMap(previousLiveRecordDeltas);
+
+  pruneTrackedTimeseriesLiveRecordDeltas(
+    preservedLiveRecordDeltas,
+    nextSettledLiveRecordUpdatedAt,
+    now,
+    ttlMs,
+    maxEntries,
+  );
+
+  for (const [key, delta] of preservedLiveRecordDeltas) {
+    if (!nextSettledLiveRecordUpdatedAt.has(key)) {
+      continue;
+    }
+    if (!nextLiveRecordDeltas.has(key)) {
+      nextLiveRecordDeltas.set(key, cloneLiveRecordDelta(delta));
+    }
+  }
+
+  return {
+    liveRecordDeltas: nextLiveRecordDeltas,
+    settledLiveRecordUpdatedAt: nextSettledLiveRecordUpdatedAt,
+  };
+}
+
+function restoreMissingSettledDeltaView(
+  response: TimeseriesResponse,
+  current: TimeseriesResponse | null,
+  liveRecordDeltas: ReadonlyMap<string, LiveRecordDelta>,
+  settledLiveRecordUpdatedAt: ReadonlyMap<string, number>,
+) {
+  if (!current || settledLiveRecordUpdatedAt.size === 0) {
+    return response;
+  }
+
+  const restoredBucketStarts = new Set<string>();
+  for (const key of settledLiveRecordUpdatedAt.keys()) {
+    const delta = liveRecordDeltas.get(key);
+    if (delta) {
+      restoredBucketStarts.add(delta.bucketStart);
+    }
+  }
+  if (restoredBucketStarts.size === 0) {
+    return response;
+  }
+
+  const currentPoints = new Map(
+    current.points.map((point) => [point.bucketStart, point]),
+  );
+  const responsePoints = new Map(
+    response.points.map((point) => [point.bucketStart, { ...point }]),
+  );
+  let changed = false;
+
+  for (const bucketStart of restoredBucketStarts) {
+    const currentPoint = currentPoints.get(bucketStart);
+    if (!currentPoint) {
+      continue;
+    }
+    const responsePoint = responsePoints.get(bucketStart);
+    const totalCountDiff = Math.max(
+      0,
+      currentPoint.totalCount - (responsePoint?.totalCount ?? 0),
+    );
+    const successCountDiff = Math.max(
+      0,
+      currentPoint.successCount - (responsePoint?.successCount ?? 0),
+    );
+    const failureCountDiff = Math.max(
+      0,
+      currentPoint.failureCount - (responsePoint?.failureCount ?? 0),
+    );
+    const totalTokensDiff = Math.max(
+      0,
+      currentPoint.totalTokens - (responsePoint?.totalTokens ?? 0),
+    );
+    const totalCostDiff = Math.max(
+      0,
+      currentPoint.totalCost - (responsePoint?.totalCost ?? 0),
+    );
+
+    if (
+      totalCountDiff === 0 &&
+      successCountDiff === 0 &&
+      failureCountDiff === 0 &&
+      totalTokensDiff === 0 &&
+      totalCostDiff === 0
+    ) {
+      continue;
+    }
+
+    const nextPoint = responsePoint ?? {
+      bucketStart: currentPoint.bucketStart,
+      bucketEnd: currentPoint.bucketEnd,
+      totalCount: 0,
+      successCount: 0,
+      failureCount: 0,
+      totalTokens: 0,
+      totalCost: 0,
+    };
+    nextPoint.bucketEnd = currentPoint.bucketEnd;
+    nextPoint.totalCount += totalCountDiff;
+    nextPoint.successCount += successCountDiff;
+    nextPoint.failureCount += failureCountDiff;
+    nextPoint.totalTokens += totalTokensDiff;
+    nextPoint.totalCost += totalCostDiff;
+    responsePoints.set(bucketStart, nextPoint);
+    changed = true;
+  }
+
+  if (!changed) {
+    return response;
+  }
+
+  return {
+    ...response,
+    points: Array.from(responsePoints.values()).sort((left, right) => {
+      const leftEpoch = parseIsoEpoch(left.bucketStart) ?? 0;
+      const rightEpoch = parseIsoEpoch(right.bucketStart) ?? 0;
+      return leftEpoch - rightEpoch;
+    }),
+  };
+}
+
 function adjustTimeseriesPoint(
   point: TimeseriesPoint,
   delta: LiveRecordDelta,
@@ -1066,17 +1200,39 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
             pendingLoadRef.current = { silent: true, waiters: [] };
           }
         } else {
-          liveRecordDeltaRef.current = seededLiveRecordDeltas;
-          settledLiveRecordUpdatedAtRef.current = new Map();
+          const preservedSettledLiveDeltas =
+            syncPolicy.mode !== "server"
+              ? mergePreservedSettledLiveRecordDeltas(
+                  seededLiveRecordDeltas,
+                  liveRecordDeltaRef.current,
+                  settledLiveRecordUpdatedAtRef.current,
+                )
+                : {
+                    liveRecordDeltas: seededLiveRecordDeltas,
+                    settledLiveRecordUpdatedAt: new Map<string, number>(),
+                  };
+          const responseWithPreservedSettledDeltas =
+            syncPolicy.mode !== "server"
+              ? restoreMissingSettledDeltaView(
+                  response,
+                  dataRef.current,
+                  preservedSettledLiveDeltas.liveRecordDeltas,
+                  preservedSettledLiveDeltas.settledLiveRecordUpdatedAt,
+                )
+              : response;
+          liveRecordDeltaRef.current =
+            preservedSettledLiveDeltas.liveRecordDeltas;
+          settledLiveRecordUpdatedAtRef.current =
+            preservedSettledLiveDeltas.settledLiveRecordUpdatedAt;
           untrackedInFlightCountsRef.current = untrackedInFlightCounts;
-          dataRef.current = response;
-          setData(response);
+          dataRef.current = responseWithPreservedSettledDeltas;
+          setData(responseWithPreservedSettledDeltas);
           writeTimeseriesRemountCache(
             range,
             normalizedOptions,
-            response,
+            responseWithPreservedSettledDeltas,
             Date.now(),
-            seededLiveRecordDeltas,
+            liveRecordDeltaRef.current,
             settledLiveRecordUpdatedAtRef.current,
             untrackedInFlightCounts,
           );
