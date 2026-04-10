@@ -259,22 +259,8 @@ fn build_pool_routing_runtime_cache(
 pub(crate) async fn refresh_pool_routing_runtime_cache(
     state: &AppState,
 ) -> Result<PoolRoutingRuntimeCache> {
-    let row = match load_pool_routing_settings_seeded(&state.pool, &state.config).await {
-        Ok(row) => row,
-        Err(err) => {
-            let mut runtime_cache = state.pool_routing_runtime_cache.lock().await;
-            *runtime_cache = None;
-            return Err(err);
-        }
-    };
-    let cache = match build_pool_routing_runtime_cache(state, &row) {
-        Ok(cache) => cache,
-        Err(err) => {
-            let mut runtime_cache = state.pool_routing_runtime_cache.lock().await;
-            *runtime_cache = None;
-            return Err(err);
-        }
-    };
+    let row = load_pool_routing_settings_seeded(&state.pool, &state.config).await?;
+    let cache = build_pool_routing_runtime_cache(state, &row)?;
     let mut runtime_cache = state.pool_routing_runtime_cache.lock().await;
     *runtime_cache = Some(cache.clone());
     Ok(cache)

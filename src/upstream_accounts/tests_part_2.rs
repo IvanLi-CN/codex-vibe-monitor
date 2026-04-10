@@ -1983,7 +1983,7 @@
     }
 
     #[tokio::test]
-    async fn refresh_pool_routing_runtime_cache_clears_stale_cache_after_decrypt_failure() {
+    async fn refresh_pool_routing_runtime_cache_preserves_last_good_cache_after_decrypt_failure() {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
         let crypto_key = state
             .upstream_accounts
@@ -2018,9 +2018,11 @@
                 .is_err(),
             "refresh should fail once the stored api key becomes unreadable"
         );
-        assert!(
-            state.pool_routing_runtime_cache.lock().await.is_none(),
-            "failed refreshes should clear any previously cached routing settings"
+        let cached = state.pool_routing_runtime_cache.lock().await.clone();
+        assert_eq!(
+            cached.as_ref().and_then(|value| value.api_key.as_deref()),
+            Some("pool-live-key"),
+            "failed refreshes should keep the last working routing cache in memory"
         );
     }
 
