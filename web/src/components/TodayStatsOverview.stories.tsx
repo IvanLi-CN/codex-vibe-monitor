@@ -4,6 +4,7 @@ import { expect, waitFor, within } from 'storybook/test'
 import { I18nProvider } from '../i18n'
 import type { StatsResponse } from '../lib/api'
 import { TodayStatsOverview } from './TodayStatsOverview'
+import type { DashboardTodayRateSnapshot } from './dashboardTodayRateSnapshot'
 
 const sampleStats: StatsResponse = {
   totalCount: 2184,
@@ -11,6 +12,13 @@ const sampleStats: StatsResponse = {
   failureCount: 35,
   totalCost: 12.47,
   totalTokens: 842190,
+}
+
+const sampleRate: DashboardTodayRateSnapshot = {
+  tokensPerMinute: 1000,
+  costPerMinute: 0.1,
+  windowMinutes: 5,
+  available: true,
 }
 
 const meta = {
@@ -40,6 +48,7 @@ type Story = StoryObj<typeof meta>
 export const Populated: Story = {
   args: {
     stats: sampleStats,
+    rate: sampleRate,
     loading: false,
     error: null,
   },
@@ -48,6 +57,7 @@ export const Populated: Story = {
 export const DesktopSingleRow: Story = {
   args: {
     stats: sampleStats,
+    rate: sampleRate,
     loading: false,
     error: null,
   },
@@ -61,6 +71,66 @@ export const DesktopSingleRow: Story = {
 export const EmbeddedTodayTab: Story = {
   args: {
     stats: sampleStats,
+    rate: sampleRate,
+    loading: false,
+    error: null,
+    showSurface: false,
+    showHeader: false,
+    showDayBadge: false,
+  },
+  parameters: {
+    viewport: {
+      defaultViewport: 'desktop1440',
+    },
+  },
+}
+
+export const RateLoading: Story = {
+  args: {
+    stats: sampleStats,
+    rate: null,
+    loading: false,
+    rateLoading: true,
+    error: null,
+    showSurface: false,
+    showHeader: false,
+    showDayBadge: false,
+  },
+  parameters: {
+    viewport: {
+      defaultViewport: 'desktop1440',
+    },
+  },
+}
+
+export const RateUnavailable: Story = {
+  args: {
+    stats: sampleStats,
+    rate: null,
+    loading: false,
+    rateLoading: false,
+    rateError: 'timeseries failed',
+    error: null,
+    showSurface: false,
+    showHeader: false,
+    showDayBadge: false,
+  },
+  parameters: {
+    viewport: {
+      defaultViewport: 'desktop1440',
+    },
+  },
+}
+
+export const ZeroRate: Story = {
+  args: {
+    stats: sampleStats,
+    rate: {
+      tokensPerMinute: 0,
+      costPerMinute: 0,
+      windowMinutes: 0,
+      available: true,
+    },
     loading: false,
     error: null,
     showSurface: false,
@@ -83,6 +153,7 @@ export const OverflowFallback: Story = {
       totalCost: 539.42,
       totalTokens: 1314275579,
     },
+    rate: sampleRate,
     loading: false,
     error: null,
     showSurface: false,
@@ -107,6 +178,7 @@ export const OverflowFallback: Story = {
 export const Loading: Story = {
   args: {
     stats: null,
+    rate: null,
     loading: true,
     error: null,
   },
@@ -115,6 +187,12 @@ export const Loading: Story = {
 export const Empty: Story = {
   args: {
     stats: null,
+    rate: {
+      tokensPerMinute: 0,
+      costPerMinute: 0,
+      windowMinutes: 0,
+      available: true,
+    },
     loading: false,
     error: null,
   },
@@ -123,6 +201,7 @@ export const Empty: Story = {
 export const LoadError: Story = {
   args: {
     stats: null,
+    rate: null,
     loading: false,
     error: 'Request failed: 500 unable to open database file',
   },
@@ -141,6 +220,15 @@ function buildAnimatedStats(step: number): StatsResponse {
     failureCount,
     totalCost,
     totalTokens,
+  }
+}
+
+function buildAnimatedRate(step: number): DashboardTodayRateSnapshot {
+  return {
+    tokensPerMinute: 1000 + step * 27,
+    costPerMinute: Number((0.1 + step * 0.006).toFixed(3)),
+    windowMinutes: 5,
+    available: true,
   }
 }
 
@@ -170,6 +258,7 @@ function LiveTickerPreview() {
   }, [ready])
 
   const stats = useMemo(() => buildAnimatedStats(step), [step])
+  const rate = useMemo(() => buildAnimatedRate(step), [step])
 
   return (
     <div className="space-y-3">
@@ -177,7 +266,7 @@ function LiveTickerPreview() {
         <span>Live demo auto-updates every 1.4s</span>
         <span className="font-semibold text-primary">Tick #{step}</span>
       </div>
-      <TodayStatsOverview stats={ready ? stats : null} loading={!ready} error={null} />
+      <TodayStatsOverview stats={ready ? stats : null} rate={ready ? rate : null} loading={!ready} error={null} />
     </div>
   )
 }
@@ -185,6 +274,7 @@ function LiveTickerPreview() {
 export const LiveTicker: Story = {
   args: {
     stats: null,
+    rate: null,
     loading: true,
     error: null,
   },
@@ -197,22 +287,37 @@ function StateGalleryPreview() {
       <div className="section-heading">
         <h2 className="section-title">Today stats states</h2>
         <p className="section-description">
-          Desktop preview keeps all five KPI tiles on one row while preserving loading and failure states.
+          Desktop preview keeps all six KPI tiles on one row while preserving loading, partial fallback, and failure states.
         </p>
       </div>
       <div className="grid gap-6">
         <div className="space-y-3">
           <div className="text-sm font-semibold text-base-content/70">Populated</div>
-          <TodayStatsOverview stats={sampleStats} loading={false} error={null} />
+          <TodayStatsOverview stats={sampleStats} rate={sampleRate} loading={false} error={null} />
+        </div>
+        <div className="space-y-3">
+          <div className="text-sm font-semibold text-base-content/70">Rate loading</div>
+          <TodayStatsOverview stats={sampleStats} rate={null} loading={false} rateLoading error={null} />
+        </div>
+        <div className="space-y-3">
+          <div className="text-sm font-semibold text-base-content/70">Rate unavailable</div>
+          <TodayStatsOverview
+            stats={sampleStats}
+            rate={null}
+            loading={false}
+            rateError="timeseries failed"
+            error={null}
+          />
         </div>
         <div className="space-y-3">
           <div className="text-sm font-semibold text-base-content/70">Loading</div>
-          <TodayStatsOverview stats={null} loading error={null} />
+          <TodayStatsOverview stats={null} rate={null} loading error={null} />
         </div>
         <div className="space-y-3">
           <div className="text-sm font-semibold text-base-content/70">Load error</div>
           <TodayStatsOverview
             stats={null}
+            rate={null}
             loading={false}
             error="Request failed: 500 unable to open database file"
           />
@@ -225,6 +330,7 @@ function StateGalleryPreview() {
 export const StateGallery: Story = {
   args: {
     stats: sampleStats,
+    rate: sampleRate,
     loading: false,
     error: null,
   },

@@ -5,11 +5,17 @@ import { getBrowserTimeZone } from '../lib/timeZone'
 import { AdaptiveMetricValue, type AdaptiveMetricValueKind } from './AdaptiveMetricValue'
 import { Alert } from './ui/alert'
 import { Badge } from './ui/badge'
+import type { DashboardTodayRateSnapshot } from './dashboardTodayRateSnapshot'
+
+const RATE_UNAVAILABLE_PLACEHOLDER = '—'
 
 export interface TodayStatsOverviewProps {
   stats: StatsResponse | null
   loading: boolean
   error?: string | null
+  rate?: DashboardTodayRateSnapshot | null
+  rateLoading?: boolean
+  rateError?: string | null
   showSurface?: boolean
   showHeader?: boolean
   showDayBadge?: boolean
@@ -17,12 +23,14 @@ export interface TodayStatsOverviewProps {
 
 interface MetricTileProps {
   label: string
-  value: number
+  value?: number
   localeTag: string
   loading: boolean
   kind?: AdaptiveMetricValueKind
   toneClass?: string
   valueTestId?: string
+  displayText?: string
+  subdued?: boolean
 }
 
 function MetricTile({
@@ -33,6 +41,8 @@ function MetricTile({
   kind = 'number',
   toneClass,
   valueTestId,
+  displayText,
+  subdued = false,
 }: MetricTileProps) {
   return (
     <div
@@ -42,6 +52,17 @@ function MetricTile({
       <div className="text-xs font-semibold uppercase tracking-[0.14em] text-base-content/65">{label}</div>
       {loading ? (
         <div className="mt-2 h-8 w-28 animate-pulse rounded bg-base-300/65" />
+      ) : displayText != null ? (
+        <div
+          data-testid={valueTestId}
+          className={cn(
+            'mt-2 min-w-0 overflow-hidden whitespace-nowrap text-2xl font-semibold leading-tight lg:text-[1.85rem]',
+            subdued ? 'text-base-content/55' : 'text-base-content',
+            toneClass,
+          )}
+        >
+          {displayText}
+        </div>
       ) : (
         <div
           className={cn(
@@ -50,7 +71,7 @@ function MetricTile({
           )}
         >
           <AdaptiveMetricValue
-            value={value}
+            value={value ?? 0}
             localeTag={localeTag}
             kind={kind}
             data-testid={valueTestId}
@@ -65,6 +86,9 @@ export function TodayStatsOverview({
   stats,
   loading,
   error,
+  rate,
+  rateLoading = false,
+  rateError = null,
   showSurface = true,
   showHeader = true,
   showDayBadge = true,
@@ -73,11 +97,14 @@ export function TodayStatsOverview({
   const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
   const timeZone = getBrowserTimeZone()
 
-  const totalCount = stats?.totalCount ?? 0
   const successCount = stats?.successCount ?? 0
   const failureCount = stats?.failureCount ?? 0
   const totalCost = stats?.totalCost ?? 0
   const totalTokens = stats?.totalTokens ?? 0
+
+  const rateUnavailable = !loading && !rateLoading && rateError != null
+  const tokensPerMinute = rate?.tokensPerMinute ?? 0
+  const costPerMinute = rate?.costPerMinute ?? 0
 
   const content = (
     <>
@@ -100,15 +127,27 @@ export function TodayStatsOverview({
       ) : (
         <div
           data-testid="today-stats-metrics-grid"
-          className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5"
+          className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-6"
         >
           <MetricTile
-            label={t('stats.cards.totalCalls')}
-            value={totalCount}
+            label={t('dashboard.today.tokensPerMinute5m')}
+            value={tokensPerMinute}
             localeTag={localeTag}
-            loading={loading}
+            loading={loading || rateLoading}
             toneClass="text-primary"
-            valueTestId="today-stats-value-total-calls"
+            valueTestId="today-stats-value-tpm"
+            displayText={rateUnavailable ? RATE_UNAVAILABLE_PLACEHOLDER : undefined}
+            subdued={rateUnavailable}
+          />
+          <MetricTile
+            label={t('dashboard.today.costPerMinute5m')}
+            value={costPerMinute}
+            localeTag={localeTag}
+            loading={loading || rateLoading}
+            kind="currency"
+            valueTestId="today-stats-value-cost-per-minute"
+            displayText={rateUnavailable ? RATE_UNAVAILABLE_PLACEHOLDER : undefined}
+            subdued={rateUnavailable}
           />
           <MetricTile
             label={t('stats.cards.success')}
