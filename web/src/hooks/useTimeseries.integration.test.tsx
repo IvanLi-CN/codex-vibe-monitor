@@ -203,7 +203,7 @@ describe("useTimeseries remount cache hydration", () => {
     const runningRecord = createRunningRecord();
     const settledRecord = createSettledRecord();
     const silentRefresh: { resolve: (value: TimeseriesResponse) => void } = {
-      resolve: (_value: TimeseriesResponse) => {
+      resolve: () => {
         throw new Error("expected silent refresh resolver");
       },
     };
