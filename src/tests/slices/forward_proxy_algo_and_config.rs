@@ -1250,7 +1250,16 @@ fn store_raw_payload_file_anchors_relative_dir_to_database_parent() {
     config.database_path = db_root.join("codex_vibe_monitor.db");
     config.proxy_raw_dir = PathBuf::from("proxy_raw_payloads");
 
-    let meta = store_raw_payload_file(&config, "proxy-test", "request", b"{\"ok\":true}");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build current-thread runtime");
+    let meta = runtime.block_on(store_raw_payload_file(
+        &config,
+        "proxy-test",
+        "request",
+        b"{\"ok\":true}",
+    ));
     let expected = db_root.join("proxy_raw_payloads/proxy-test-request.bin");
 
     assert_eq!(

@@ -356,7 +356,7 @@ fn estimate_proxy_cost(
     (Some(cost), true, price_version)
 }
 
-fn store_raw_payload_file(
+async fn store_raw_payload_file(
     config: &AppConfig,
     invoke_id: &str,
     kind: &str,
@@ -385,7 +385,7 @@ fn store_raw_payload_file(
 
     let raw_dir = config.resolved_proxy_raw_dir();
 
-    if let Err(err) = fs::create_dir_all(&raw_dir) {
+    if let Err(err) = tokio::fs::create_dir_all(&raw_dir).await {
         meta.truncated = true;
         meta.truncated_reason = Some(format!("write_failed:{err}"));
         return meta;
@@ -393,7 +393,7 @@ fn store_raw_payload_file(
 
     let filename = format!("{invoke_id}-{kind}.bin");
     let path = raw_dir.join(filename);
-    match fs::File::create(&path).and_then(|mut f| f.write_all(content)) {
+    match tokio::fs::write(&path, content).await {
         Ok(_) => {
             meta.path = Some(path.to_string_lossy().to_string());
         }

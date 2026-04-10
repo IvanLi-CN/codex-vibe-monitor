@@ -25,6 +25,8 @@ async fn proxy_openai_v1_inner(
             retry_after_secs: None,
         })?;
     if !pool_route_active {
+        // `/v1/*` is pool-only; non-pool traffic must stop here instead of reviving the
+        // removed reverse-proxy/direct path.
         return Err(ProxyErrorResponse {
             status: StatusCode::UNAUTHORIZED,
             message: "pool route key missing or invalid".to_string(),
@@ -141,6 +143,12 @@ async fn proxy_openai_v1_capture_target(
     pool_route_active: bool,
     runtime_timeouts: PoolRoutingTimeoutSettingsResolved,
 ) -> Result<Response, (StatusCode, String)> {
+    if !pool_route_active {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "pool route key missing or invalid".to_string(),
+        ));
+    }
     let capture_started = Instant::now();
     let pool_routing_reservation_key = build_pool_routing_reservation_key(proxy_request_id);
     let occurred_at_utc = Utc::now();
@@ -168,7 +176,8 @@ async fn proxy_openai_v1_capture_target(
                 &invoke_id,
                 "request",
                 &read_err.partial_body,
-            );
+            )
+            .await;
             let usage = ParsedUsage::default();
             let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
                 &state.pricing_catalog,
@@ -436,7 +445,8 @@ async fn proxy_openai_v1_capture_target(
                     &invoke_id,
                     "request",
                     request_body_for_capture.as_ref(),
-                );
+                )
+                .await;
                 let usage = ParsedUsage::default();
                 let (billing_service_tier, pricing_mode) =
                     resolve_proxy_billing_service_tier_and_pricing_mode_for_account(
@@ -629,7 +639,8 @@ async fn proxy_openai_v1_capture_target(
                     &invoke_id,
                     "request",
                     base_request_bytes_for_capture.as_ref(),
-                );
+                )
+                .await;
                 let proxy_attempt_update = record_forward_proxy_attempt(
                     state.clone(),
                     err.selected_proxy.clone(),
@@ -752,7 +763,8 @@ async fn proxy_openai_v1_capture_target(
             .as_ref()
             .unwrap_or(&base_request_bytes_for_capture)
             .as_ref(),
-    );
+    )
+    .await;
 
     let upstream_status = upstream_response.status();
     let location_base_url = location_rewrite_upstream_base(

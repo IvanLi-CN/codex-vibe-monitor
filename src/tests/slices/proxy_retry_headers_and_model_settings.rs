@@ -1382,6 +1382,40 @@ async fn broadcast_quota_if_changed_skips_duplicate_payloads() {
 }
 
 #[tokio::test]
+async fn capture_targets_reject_non_pool_requests_before_proxying() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://example.invalid").expect("valid upstream base url"),
+    )
+    .await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::new(),
+        Body::from(
+            serde_json::to_vec(&json!({
+                "model": "gpt-5.4",
+                "input": "hello",
+                "stream": false
+            }))
+            .expect("serialize request body"),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy error body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode proxy error payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some("pool route key missing or invalid")
+    );
+}
+
+#[tokio::test]
 #[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn read_request_body_timeout_returns_408() {
     #[derive(sqlx::FromRow)]
