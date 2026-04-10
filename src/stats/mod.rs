@@ -5,6 +5,8 @@ const STATS_TERMINAL_STATUS_SQL: &str =
     "(LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending'))";
 pub(crate) const INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET: &str =
     "codex_invocations_summary_rollup_v2_live_cursor";
+const MISSING_INVOCATION_ARCHIVE_REPAIR_PREFIX: &str =
+    "completed invocation archive is missing during summary rollup repair";
 
 #[derive(Debug)]
 pub(crate) enum SummaryWindow {
@@ -25,6 +27,14 @@ fn stats_success_failure_select_sql() -> String {
         terminal_status = STATS_TERMINAL_STATUS_SQL,
         resolved_failure = crate::api::INVOCATION_RESOLVED_FAILURE_CLASS_SQL,
     )
+}
+
+fn is_missing_invocation_summary_archive_error(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .to_string()
+            .contains(MISSING_INVOCATION_ARCHIVE_REPAIR_PREFIX)
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -912,7 +922,8 @@ async fn rebuild_invocation_summary_rollups_from_archive_batch(
     let archive_path = PathBuf::from(&archive_row.file_path);
     if !archive_path.exists() {
         bail!(
-            "completed invocation archive is missing during summary rollup repair: {}",
+            "{}: {}",
+            MISSING_INVOCATION_ARCHIVE_REPAIR_PREFIX,
             archive_row.file_path
         );
     }
@@ -1372,6 +1383,22 @@ pub(crate) async fn ensure_invocation_summary_rollups_ready(pool: &Pool<Sqlite>)
     repair_invocation_summary_rollups(pool).await?;
     backfill_missing_invocation_summary_archive_rollups(pool).await?;
     Ok(())
+}
+
+pub(crate) async fn ensure_invocation_summary_rollups_ready_best_effort(
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    match ensure_invocation_summary_rollups_ready(pool).await {
+        Ok(()) => Ok(()),
+        Err(err) if is_missing_invocation_summary_archive_error(&err) => {
+            warn!(
+                error = %err,
+                "skipping invocation summary rollup repair because an archive batch file is missing; reusing current rollups for historical range queries"
+            );
+            Ok(())
+        }
+        Err(err) => Err(err),
+    }
 }
 
 async fn query_invocation_all_time_rollup_totals(

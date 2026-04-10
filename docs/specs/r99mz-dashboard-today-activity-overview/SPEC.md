@@ -87,6 +87,8 @@
 - Backend targeted tests:
   - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test timeseries_and_summary_do_not_treat_running_rows_with_failure_metadata_as_failures -- --nocapture`
   - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test timeseries_and_summary_count_completed_rows_as_success -- --nocapture`
+  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test timeseries_hourly_backed_ignores_missing_exact_archive_batch -- --nocapture`
+  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test all_time_summary_missing_archive_does_not_mark_repair_complete -- --nocapture`
   - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test prompt_cache_last24h_requests_keep_null_status_rows_neutral -- --nocapture`
   - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test prompt_cache_last24h_requests_treat_running_rows_with_error_text_as_failures -- --nocapture`
   - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test prompt_cache_last24h_requests_treat_pending_rows_with_failure_kind_as_failures -- --nocapture`
@@ -174,6 +176,7 @@
 - 2026-04-10: 根据最新 fresh review 再统一 downstream-only failure metadata：`INVOCATION_RESOLVED_FAILURE_CLASS_SQL` 的 legacy `success / http_200 / blank-status` 快路径现在会同时检查 `downstreamErrorMessage`，避免仅靠 downstream 错误文本支撑的旧记录被误判成 success/neutral；前端 `useTimeseries` 的 live classifier 也把 `downstreamErrorMessage` 视为显式失败元数据，因此 today minute chart 不会再把这类实时记录短暂画成绿色。
 - 2026-04-10: 根据最新 fresh review 再补 exact/live aggregate 读取：`query_invocation_aggregate_records_from_live_range*` 现在直接投影 `INVOCATION_FAILURE_KIND_SQL` 与 `INVOCATION_RESOLVED_FAILURE_CLASS_SQL`，并按 resolved class 重新计算 `is_actionable`，所以 current/live summary、today exact bucket 与 full-hour tail replay 不会再漏掉仅存在于 `payload.downstreamErrorMessage` 的 legacy 失败元数据。
 - 2026-04-10: 根据最新 fresh review 再统一 `completed` success-like 口径：`resolve_failure_classification`、`INVOCATION_RESOLVED_FAILURE_CLASS_SQL`、recent/exact summary helper、hourly rollup success-like 判定与 `query_combined_totals` 现在都会把无失败元数据的 `status='completed'` 视为成功，从而让 Dashboard summary、今日次数图、TTFB 样本与 invocation summary 不再把常见成功终态漏算成 failure 或 missing sample。
+- 2026-04-10: 为修复 PR 收敛阶段暴露的 historical range regression，hourly-backed `timeseries` / duration-summary / failure-summary 读取 archived 数据前改为 best-effort rollup refresh：若只遇到“archive manifest 已存在但文件被移除”的缺失批次，会复用当前已存在的 hourly rollup 返回范围结果而不是直接 500；但 `window=all` 的严格 summary repair 仍保留 missing archive fail-fast，不会把 repair marker 误标完成。
 
 ## Visual Evidence
 
@@ -185,6 +188,7 @@
 - Evidence note: 验证柱子不再左右错位；`running/pending` 与其临时失败元数据不会把 failure 柱短时拉长后再回落；图表只会为显式 `inFlightCount` 绘制中性 `进行中` 正柱，legacy neutral residual 不再被误画成进行中；本轮 `completed` success-like 修复未改变该画面的结构与像素语义，因此继续沿用已回传的本地 Storybook canvas 证据，未额外声称 fresh devtools 重截。
 - Live patch note: 最新收口额外验证了 `running/pending` seed 的跨页同快照一致性，以及“新到达但同桶”的 settled 记录不会错误吞掉旧 placeholder；anonymous placeholder 只允许回收 authoritative `snapshotId` 之前的同桶记录，而 authoritative refresh 会把仍在 TTL 内的 tracked live deltas 合并回 fresh response；当匿名 placeholder 独占 bucket 时，终态 SSE 也会把 provisional token/cost 直接修正到最终值；`current-day-local` 模式仅抓取当前日 bucket 的 in-flight seed，不再为长范围日历扫描整段窗口。
 - Repair note: 最新收口额外验证了 all-time summary repair 在 mixed preserve 场景下会补回被 boundary archive 重放清空的历史 live rows，并确保“只缺 failure replay marker”的归档回填不会误删已有正确的 `invocation_rollup_hourly` 总数；同时历史 hourly-backed timeseries / summary / failure 读取 archived rollup 前会先 refresh rollup，再冻结同一个 `snapshotId`，并对 `rollup_live_cursor < id <= snapshotId` 的 full-hour tail 做 exact replay，不再在升级后继续暴露陈旧 failure counts。
+- Missing-archive note: 当 historical range query 只碰到“manifest 指向的 exact archive 文件已不存在”这一类缺失批次时，本轮额外验证会退化为复用当前 hourly rollup，而不是把 `今日 / 24 小时 / 7 日 / 历史` 之外的长范围图表 / 汇总直接打成 500；与之对应，`window=all` 仍保持 strict repair 语义，确保真正的全量汇总修复不会静默吞掉缺失归档。
 - Prompt-cache note: blank/null `status` 且缺少失败元数据的历史 prompt-cache 记录现在会带 `outcome=neutral`，keyed chart 与表格统一使用中性色呈现，不再误标成 error 红线。
 - 聊天回图=已展示（本轮使用本地裁剪后的 Storybook canvas 截图完成 owner review）
 - 证据落盘=未落盘（本次未提交新的截图文件，避免在未获主人截图提交授权前把 refreshed capture 推上远端）

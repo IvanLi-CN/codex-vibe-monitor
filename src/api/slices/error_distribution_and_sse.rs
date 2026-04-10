@@ -793,7 +793,7 @@ pub(crate) async fn fetch_error_distribution(
             shanghai_retention_cutoff(state.config.invocation_max_days),
         )?;
         if range_plan.full_hour_range.is_some() {
-            ensure_invocation_summary_rollups_ready(&state.pool).await?;
+            ensure_invocation_summary_rollups_ready_best_effort(&state.pool).await?;
         }
         let (hourly_rows, exact_records) = if range_plan.full_hour_range.is_some() {
                 let mut tx = state.pool.begin().await?;
@@ -1191,7 +1191,7 @@ pub(crate) async fn fetch_failure_summary(
             shanghai_retention_cutoff(state.config.invocation_max_days),
         )?;
         if range_plan.full_hour_range.is_some() {
-            ensure_invocation_summary_rollups_ready(&state.pool).await?;
+            ensure_invocation_summary_rollups_ready_best_effort(&state.pool).await?;
         }
         let (hourly_rows, exact_records) = if range_plan.full_hour_range.is_some() {
                 let mut tx = state.pool.begin().await?;

@@ -600,7 +600,7 @@ pub(crate) async fn query_hourly_backed_summary_since_with_config(
     let now = Utc::now();
     let range_plan = build_hourly_rollup_exact_range_plan(start, now, retention_cutoff)?;
     if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
-        ensure_invocation_summary_rollups_ready(pool).await?;
+        ensure_invocation_summary_rollups_ready_best_effort(pool).await?;
         let mut tx = pool.begin().await?;
         let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
         let rollup_live_cursor =
@@ -3130,7 +3130,7 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
     }
 
     let (snapshot_id, hourly_rows, exact_records) = if range_plan.full_hour_range.is_some() {
-        ensure_invocation_summary_rollups_ready(&state.pool).await?;
+        ensure_invocation_summary_rollups_ready_best_effort(&state.pool).await?;
             let mut tx = state.pool.begin().await?;
             let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
             let rollup_live_cursor =
