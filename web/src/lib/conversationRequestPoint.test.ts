@@ -2,6 +2,18 @@ import { describe, expect, it } from "vitest";
 import { resolvePromptCacheInvocationOutcome } from "./conversationRequestPoint";
 
 describe("resolvePromptCacheInvocationOutcome", () => {
+  it("treats running rows with explicit failure metadata as failures", () => {
+    expect(
+      resolvePromptCacheInvocationOutcome({
+        status: "running",
+        failureClass: "service_failure",
+        failureKind: undefined,
+        errorMessage: "",
+        downstreamErrorMessage: "",
+      }),
+    ).toBe("failure");
+  });
+
   it("treats completed live rows with error messages as failures", () => {
     expect(
       resolvePromptCacheInvocationOutcome({
@@ -10,6 +22,18 @@ describe("resolvePromptCacheInvocationOutcome", () => {
         failureKind: undefined,
         errorMessage: "upstream parse failed",
         downstreamErrorMessage: undefined,
+      }),
+    ).toBe("failure");
+  });
+
+  it("treats pending rows with failure-kind metadata as failures", () => {
+    expect(
+      resolvePromptCacheInvocationOutcome({
+        status: "pending",
+        failureClass: undefined,
+        failureKind: "upstream_response_failed",
+        errorMessage: "",
+        downstreamErrorMessage: "",
       }),
     ).toBe("failure");
   });

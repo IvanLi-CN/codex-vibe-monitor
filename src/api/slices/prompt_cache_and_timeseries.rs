@@ -105,17 +105,17 @@ fn invocation_point_outcome(
     error_message: Option<&str>,
     failure_class: Option<&str>,
 ) -> &'static str {
-    if invocation_status_is_in_flight(status) {
-        return "in_flight";
-    }
     if invocation_point_is_success(status, error_message, failure_class) {
         return "success";
     }
-    if failure_class
+    let failure_class_is_none = failure_class
         .map(str::trim)
         .unwrap_or_default()
-        .eq_ignore_ascii_case("none")
-    {
+        .eq_ignore_ascii_case("none");
+    if failure_class_is_none {
+        if invocation_status_is_in_flight(status) {
+            return "in_flight";
+        }
         return "neutral";
     }
     "failure"

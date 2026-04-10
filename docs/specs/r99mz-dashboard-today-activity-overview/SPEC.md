@@ -162,6 +162,7 @@
 - 2026-04-10: merge-path freshness sync 实际落到当前收敛 head 后，再次完成 `web` 全量 `test/build/build-storybook` 与 targeted cargo 回归；本 spec 与 `docs/specs/README.md` 同步刷新到这次 mainline 兼容收口后的最新事实，不扩展功能范围。
 - 2026-04-10: 根据 fresh review 新一轮阻塞项继续收口 neutral / in-flight 语义：`今日 / 次数` 图现在只消费显式 `inFlightCount`，不再把 `totalCount - successCount - failureCount` 的 legacy 中性残差误画成 `进行中`；prompt-cache blank/null 历史行新增 `outcome=neutral`，会在 keyed chart / 表格里保持中性色而不是错误红色；前后端对应测试、全量 `web` 验证与 targeted cargo 回归已刷新到当前本地 head。
 - 2026-04-10: 根据最新 fresh review 继续收口 live prompt-cache 失败呈现：`resolvePromptCacheInvocationOutcome` 现在会优先尊重 `errorMessage` / `downstreamErrorMessage` / `failureKind` 等显式错误元数据，再决定 success/neutral fallback，避免刚结算但 `failureClass` 尚未回填的 live 记录在下一次 authoritative refresh 前短暂误显示为成功或中性。
+- 2026-04-10: 根据最新 fresh review 再补齐 `failure metadata > in_flight` 优先级：无论 authoritative `last24hRequests` 还是 live SSE merge，只要 `running/pending` 行已经带有明确失败元数据，就会立即产出 `outcome=failure` 并保持失败色；只有既无失败元数据、又仍处于 `running/pending` 的记录才继续显示为 `in_flight`。
 
 ## Visual Evidence
 

@@ -60,10 +60,6 @@ export function resolvePromptCacheInvocationOutcome(
   >,
 ): ConversationRequestOutcome {
   const status = normalizeStatus(record.status);
-  if (status === "running" || status === "pending") {
-    return "in_flight";
-  }
-
   const failureClass = normalizeFailureClass(record.failureClass);
   if (failureClass != null && failureClass !== "none") {
     return "failure";
@@ -78,6 +74,10 @@ export function resolvePromptCacheInvocationOutcome(
     (failureKind != null && failureKind !== "none")
   ) {
     return "failure";
+  }
+
+  if (status === "running" || status === "pending") {
+    return "in_flight";
   }
 
   if (
