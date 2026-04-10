@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.46.0",
+  "base_stable_version": "1.45.12",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-10T17:55:16Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.46.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "7a0c65ac7da7943391566261720482604e36615b",
+  "pr_number": 320,
+  "pr_title": "feat: virtualize dashboard working conversations",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.46.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.46.0",
+  "target_sha": "6b3cfe4c17c0fa2eb86f19570d89733ca63bc5b7",
+  "type_label": "type:minor"
+}
