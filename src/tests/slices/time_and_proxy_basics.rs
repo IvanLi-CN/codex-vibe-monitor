@@ -97,7 +97,7 @@ impl Drop for EnvVarGuard {
 }
 
 #[test]
-fn app_config_from_sources_honors_proxy_request_concurrency_envs() {
+fn app_config_from_sources_ignores_proxy_request_concurrency_envs() {
     let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
     let _env = EnvVarGuard::set(&[
         (ENV_PROXY_REQUEST_CONCURRENCY_LIMIT, Some("7")),
@@ -107,10 +107,13 @@ fn app_config_from_sources_honors_proxy_request_concurrency_envs() {
     let config = AppConfig::from_sources(&CliArgs::default())
         .expect("proxy request concurrency envs should parse");
 
-    assert_eq!(config.proxy_request_concurrency_limit, 7);
+    assert_eq!(
+        config.proxy_request_concurrency_limit,
+        DEFAULT_PROXY_REQUEST_CONCURRENCY_LIMIT
+    );
     assert_eq!(
         config.proxy_request_concurrency_wait_timeout,
-        Duration::from_millis(3456)
+        Duration::from_millis(DEFAULT_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS)
     );
 }
 
