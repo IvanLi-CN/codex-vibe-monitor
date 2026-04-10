@@ -1264,6 +1264,8 @@ async fn pool_openai_v1_responses_fast_fill_missing_transport_failure_persists_r
     struct PersistedRow {
         status: Option<String>,
         error_message: Option<String>,
+        downstream_status_code: Option<i64>,
+        downstream_error_message: Option<String>,
         payload: Option<String>,
         request_raw_path: Option<String>,
     }
@@ -1336,7 +1338,13 @@ async fn pool_openai_v1_responses_fast_fill_missing_transport_failure_persists_r
     wait_for_codex_invocations(&state.pool, 1).await;
     let row = sqlx::query_as::<_, PersistedRow>(
         r#"
-        SELECT status, error_message, payload, request_raw_path
+        SELECT
+            status,
+            error_message,
+            CAST(json_extract(payload, '$.downstreamStatusCode') AS INTEGER) AS downstream_status_code,
+            json_extract(payload, '$.downstreamErrorMessage') AS downstream_error_message,
+            payload,
+            request_raw_path
         FROM codex_invocations
         ORDER BY id DESC
         LIMIT 1
@@ -1346,11 +1354,17 @@ async fn pool_openai_v1_responses_fast_fill_missing_transport_failure_persists_r
     .await
     .expect("load failed large fast row");
     assert_eq!(row.status.as_deref(), Some("http_502"));
+    assert_eq!(row.downstream_status_code, None);
     assert!(
-        row.error_message
-            .as_deref()
-            .is_some_and(|message| { message.contains("[failed_contact_upstream]") })
+        row.error_message.as_deref().is_some_and(|message| {
+            message.contains("failed to contact upstream")
+                && !message.starts_with("[failed_contact_upstream]")
+                && !message.contains("pool upstream responded with 502")
+        }),
+        "unexpected canonical transport error: {:?}",
+        row
     );
+    assert_eq!(row.downstream_error_message, None);
 
     let payload: Value = serde_json::from_str(
         row.payload
@@ -1363,6 +1377,8 @@ async fn pool_openai_v1_responses_fast_fill_missing_transport_failure_persists_r
         payload["failureKind"].as_str(),
         Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM)
     );
+    assert!(payload["downstreamStatusCode"].is_null());
+    assert!(payload["downstreamErrorMessage"].is_null());
 
     let request_raw = read_proxy_raw_bytes(
         row.request_raw_path
