@@ -261,18 +261,13 @@ function patchConversationWithRecord(
       cost: previewCost,
     });
   }
-  const nextRequestCount = conversation.requestCount + requestCountDelta;
   const nextVisibleLastInFlightAt = resolveVisibleLastInFlightAt(
     nextRecentInvocations,
   );
-  const existingPreviewWasInFlight =
-    existingPreview != null && isInFlightStatus(existingPreview.status);
   const shouldPreserveHiddenInFlightAnchor =
     nextVisibleLastInFlightAt == null &&
     conversation.lastInFlightAt != null &&
-    (!existingPreviewWasInFlight ||
-      isInFlightStatus(record.status) ||
-      nextRequestCount > nextRecentInvocations.length);
+    isInFlightStatus(record.status);
   const lastInFlightAt = shouldPreserveHiddenInFlightAnchor
     ? (conversation.lastInFlightAt ?? null)
     : (nextVisibleLastInFlightAt ?? null);

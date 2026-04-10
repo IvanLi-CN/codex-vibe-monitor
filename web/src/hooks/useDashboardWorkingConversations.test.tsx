@@ -1245,31 +1245,31 @@ describe("useDashboardWorkingConversations", () => {
     expect(text("last-in-flight-at")).toBe("");
   });
 
-  it("preserves lastInFlightAt when compact previews can still hide older running work", async () => {
+  it("preserves lastInFlightAt when compact previews still hide a running record update", async () => {
     apiMocks.fetchPromptCacheConversationsPage.mockResolvedValueOnce(
       createResponseWithConversations([
         createConversation("pck-live", {
           requestCount: 4,
           recentInvocations: [
             createPreview({
-              id: 2,
-              invokeId: "invoke-visible-running",
-              occurredAt: "2026-04-10T03:07:00Z",
-              status: "running",
-              totalTokens: 0,
-              cost: 0,
+              id: 4,
+              invokeId: "invoke-visible-completed-newer",
+              occurredAt: "2026-04-10T03:09:00Z",
+              status: "completed",
+              totalTokens: 60,
+              cost: 0.2,
             }),
             createPreview({
-              id: 1,
-              invokeId: "invoke-terminal",
-              occurredAt: "2026-04-10T03:06:00Z",
+              id: 3,
+              invokeId: "invoke-visible-completed-older",
+              occurredAt: "2026-04-10T03:08:00Z",
               status: "completed",
-              totalTokens: 30,
-              cost: 0.12,
+              totalTokens: 50,
+              cost: 0.18,
             }),
           ],
-          lastActivityAt: "2026-04-10T03:07:00Z",
-          lastTerminalAt: "2026-04-10T03:06:00Z",
+          lastActivityAt: "2026-04-10T03:09:00Z",
+          lastTerminalAt: "2026-04-10T03:09:00Z",
           lastInFlightAt: "2026-04-10T03:07:00Z",
         }),
       ]),
@@ -1282,8 +1282,60 @@ describe("useDashboardWorkingConversations", () => {
     act(() => {
       emitRecords([
         createRecord("pck-live", {
-          id: 3,
-          invokeId: "invoke-visible-running",
+          id: 5,
+          invokeId: "invoke-hidden-running",
+          occurredAt: "2026-04-10T03:07:00Z",
+          status: "running",
+          totalTokens: 0,
+          cost: 0,
+        }),
+      ]);
+    });
+
+    expect(text("conversation-keys")).toBe("pck-live");
+    expect(text("preview-status")).toBe("completed");
+    expect(text("last-in-flight-at")).toBe("2026-04-10T03:07:00Z");
+  });
+
+  it("clears hidden lastInFlightAt when a compact-hidden running invoke completes", async () => {
+    apiMocks.fetchPromptCacheConversationsPage.mockResolvedValueOnce(
+      createResponseWithConversations([
+        createConversation("pck-live", {
+          requestCount: 4,
+          recentInvocations: [
+            createPreview({
+              id: 4,
+              invokeId: "invoke-visible-completed-newer",
+              occurredAt: "2026-04-10T03:09:00Z",
+              status: "completed",
+              totalTokens: 60,
+              cost: 0.2,
+            }),
+            createPreview({
+              id: 3,
+              invokeId: "invoke-visible-completed-older",
+              occurredAt: "2026-04-10T03:08:00Z",
+              status: "completed",
+              totalTokens: 50,
+              cost: 0.18,
+            }),
+          ],
+          lastActivityAt: "2026-04-10T03:09:00Z",
+          lastTerminalAt: "2026-04-10T03:09:00Z",
+          lastInFlightAt: "2026-04-10T03:07:00Z",
+        }),
+      ]),
+    );
+
+    render(<Probe />);
+    await flushAsync();
+    await flushAsync();
+
+    act(() => {
+      emitRecords([
+        createRecord("pck-live", {
+          id: 5,
+          invokeId: "invoke-hidden-running",
           occurredAt: "2026-04-10T03:07:00Z",
           status: "completed",
           totalTokens: 40,
@@ -1293,8 +1345,7 @@ describe("useDashboardWorkingConversations", () => {
     });
 
     expect(text("conversation-keys")).toBe("pck-live");
-    expect(text("preview-status")).toBe("completed");
-    expect(text("last-in-flight-at")).toBe("2026-04-10T03:07:00Z");
+    expect(text("last-in-flight-at")).toBe("");
   });
 
   it("keeps the server nextCursor pinned after SSE reorders loaded rows", async () => {

@@ -1391,6 +1391,43 @@ async fn prompt_cache_conversations_activity_minutes_paginated_compact_can_scrol
     assert!(second_page.has_more);
     assert_eq!(second_page.snapshot_at.as_deref(), Some(first_snapshot.as_str()));
 
+    let last_visible_row_cursor = first_page
+        .conversations
+        .last()
+        .and_then(|conversation| conversation.cursor.clone())
+        .expect("last visible row cursor");
+    let Json(second_page_from_row_cursor) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(20),
+            cursor: Some(last_visible_row_cursor),
+            snapshot_at: Some(first_snapshot.clone()),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("second page from row cursor should succeed");
+
+    assert_eq!(
+        second_page_from_row_cursor
+            .conversations
+            .iter()
+            .map(|conversation| conversation.prompt_cache_key.as_str())
+            .collect::<Vec<_>>(),
+        second_page
+            .conversations
+            .iter()
+            .map(|conversation| conversation.prompt_cache_key.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        second_page_from_row_cursor.next_cursor,
+        second_page.next_cursor
+    );
+
     let Json(third_page) = fetch_prompt_cache_conversations(
         State(state),
         Query(PromptCacheConversationsQuery {
@@ -1570,17 +1607,153 @@ async fn prompt_cache_conversations_activity_minutes_paginated_preserves_sort_an
     );
 }
 
-#[test]
-fn prompt_cache_conversations_omitted_snapshot_floors_to_storage_precision() {
-    let snapshot_at = resolve_prompt_cache_conversation_snapshot_at(None)
-        .expect("omitted snapshotAt should resolve");
-    assert!(
-        snapshot_at.timestamp_subsec_nanos() == 0,
-        "omitted snapshotAt should floor to the persisted second"
+#[tokio::test]
+async fn prompt_cache_conversations_paginated_cursors_support_prompt_cache_keys_with_pipes() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        key: &str,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(10_i64)
+        .bind(0.01_f64)
+        .bind(
+            json!({
+                "promptCacheKey": key,
+                "routeMode": "pool",
+                "model": "gpt-5.4",
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .execute(pool)
+        .await
+        .expect("insert paginated pipe-key row");
+    }
+
+    insert_row(
+        &state.pool,
+        "working-pipe-head",
+        now - ChronoDuration::seconds(5),
+        "pipe|head",
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-pipe-tail",
+        now - ChronoDuration::seconds(10),
+        "pipe|tail",
+    )
+    .await;
+
+    let Json(first_page) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: None,
+            snapshot_at: None,
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("first pipe-key page should succeed");
+
+    assert_eq!(
+        first_page.conversations[0].prompt_cache_key,
+        "pipe|head"
     );
+    let snapshot_at = first_page
+        .snapshot_at
+        .clone()
+        .expect("pipe-key snapshotAt");
+    let next_cursor = first_page
+        .next_cursor
+        .clone()
+        .expect("pipe-key nextCursor");
+    let row_cursor = first_page.conversations[0]
+        .cursor
+        .clone()
+        .expect("pipe-key row cursor");
+
+    let Json(second_page) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: Some(next_cursor),
+            snapshot_at: Some(snapshot_at.clone()),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("second pipe-key page should succeed");
+
+    assert_eq!(
+        second_page.conversations[0].prompt_cache_key,
+        "pipe|tail"
+    );
+
+    let Json(second_page_from_row_cursor) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: Some(row_cursor),
+            snapshot_at: Some(snapshot_at),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("second pipe-key row-cursor page should succeed");
+
+    assert_eq!(
+        second_page_from_row_cursor.conversations[0].prompt_cache_key,
+        "pipe|tail"
+    );
+}
+
+#[test]
+fn prompt_cache_conversations_omitted_snapshot_preserves_current_precision() {
+    let precise_now = Utc
+        .timestamp_opt(1_744_298_800, 456_000_000)
+        .single()
+        .expect("valid precise utc instant");
+    let snapshot_at = resolve_prompt_cache_conversation_snapshot_at_with_default(None, precise_now)
+        .expect("omitted snapshotAt should resolve");
+    assert_eq!(snapshot_at, precise_now);
     assert_eq!(
         db_occurred_at_upper_bound(snapshot_at),
-        db_occurred_at_lower_bound(snapshot_at)
+        db_occurred_at_lower_bound(
+            precise_now
+                + ChronoDuration::seconds(1)
+        )
     );
 }
 
@@ -1856,7 +2029,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes
     .expect("first same-second snapshot page should succeed");
 
     assert_eq!(first_page.conversations.len(), 1);
-    let expected_snapshot_at = format_utc_iso(snapshot_second);
+    let expected_snapshot_at = format_utc_iso_precise(requested_snapshot_at);
     assert_eq!(
         first_page.conversations[0].prompt_cache_key,
         "working-same-second-head"
