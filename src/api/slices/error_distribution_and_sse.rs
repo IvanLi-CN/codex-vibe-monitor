@@ -533,6 +533,9 @@ fn classify_invocation_failure_with_kind(
     let status_norm = status.unwrap_or_default().trim().to_ascii_lowercase();
     let err = error_message.unwrap_or_default().trim();
     let err_lower = err.to_ascii_lowercase();
+    let explicit_failure_kind = explicit_failure_kind
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
 
     if status_norm == "success" && err.is_empty() {
         return FailureClassification {
@@ -548,10 +551,15 @@ fn classify_invocation_failure_with_kind(
             is_actionable: false,
         };
     }
+    if status_norm.is_empty() && err.is_empty() && explicit_failure_kind.is_none() {
+        return FailureClassification {
+            failure_kind: None,
+            failure_class: FailureClass::None,
+            is_actionable: false,
+        };
+    }
 
     let failure_kind = explicit_failure_kind
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .or_else(|| extract_failure_kind_prefix(err))
         .or_else(|| derive_failure_kind(&status_norm, err, &err_lower));
