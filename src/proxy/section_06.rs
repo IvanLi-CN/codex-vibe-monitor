@@ -1875,14 +1875,14 @@ async fn persist_proxy_capture_runtime_record(
     pool: &Pool<Sqlite>,
     record: ProxyCaptureRecord,
 ) -> Result<Option<ApiInvocation>> {
-    let failure = classify_invocation_failure(
+    let failure = resolve_failure_classification(
         Some(record.status.as_str()),
         record.error_message.as_deref(),
+        record.failure_kind.as_deref(),
+        None,
+        None,
     );
-    let failure_kind = record
-        .failure_kind
-        .clone()
-        .or_else(|| failure.failure_kind.clone());
+    let failure_kind = failure.failure_kind.clone();
     let t_req_read_ms = nullable_runtime_timing_value(record.timings.t_req_read_ms);
     let t_req_parse_ms = nullable_runtime_timing_value(record.timings.t_req_parse_ms);
     let t_upstream_connect_ms = nullable_runtime_timing_value(record.timings.t_upstream_connect_ms);

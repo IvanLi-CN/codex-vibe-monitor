@@ -658,6 +658,151 @@ fn classify_invocation_failure_marks_downstream_closed_as_client_abort() {
     assert_eq!(result.failure_kind.as_deref(), Some("downstream_closed"));
 }
 
+#[tokio::test]
+async fn persist_proxy_capture_runtime_record_preserves_downstream_closed_as_client_abort() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct InvocationRow {
+        status: Option<String>,
+        failure_kind: Option<String>,
+        failure_class: Option<String>,
+        is_actionable: Option<i64>,
+    }
+
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    ensure_schema(&pool).await.expect("ensure schema");
+
+    let persisted = persist_proxy_capture_runtime_record(
+        &pool,
+        ProxyCaptureRecord {
+            invoke_id: "proxy-test-downstream-closed-runtime".to_string(),
+            occurred_at: "2026-04-10 00:00:00".to_string(),
+            model: Some("gpt-5.4".to_string()),
+            usage: ParsedUsage::default(),
+            cost: None,
+            cost_estimated: false,
+            price_version: None,
+            status: "failed".to_string(),
+            error_message: None,
+            failure_kind: Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED.to_string()),
+            payload: None,
+            raw_response: "{}".to_string(),
+            req_raw: RawPayloadMeta::default(),
+            resp_raw: RawPayloadMeta::default(),
+            timings: StageTimings {
+                t_total_ms: 0.0,
+                t_req_read_ms: 0.0,
+                t_req_parse_ms: 0.0,
+                t_upstream_connect_ms: 0.0,
+                t_upstream_ttfb_ms: 0.0,
+                t_upstream_stream_ms: 0.0,
+                t_resp_parse_ms: 0.0,
+                t_persist_ms: 0.0,
+            },
+        },
+    )
+    .await
+    .expect("persist runtime record")
+    .expect("persisted invocation should be returned");
+
+    assert_eq!(persisted.failure_class.as_deref(), Some("client_abort"));
+    assert_eq!(persisted.is_actionable, Some(false));
+
+    let row = sqlx::query_as::<_, InvocationRow>(
+        r#"
+        SELECT status, failure_kind, failure_class, is_actionable
+        FROM codex_invocations
+        WHERE invoke_id = ?1
+        "#,
+    )
+    .bind("proxy-test-downstream-closed-runtime")
+    .fetch_one(&pool)
+    .await
+    .expect("load persisted runtime invocation");
+
+    assert_eq!(row.status.as_deref(), Some("failed"));
+    assert_eq!(
+        row.failure_kind.as_deref(),
+        Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED)
+    );
+    assert_eq!(row.failure_class.as_deref(), Some("client_abort"));
+    assert_eq!(row.is_actionable, Some(0));
+}
+
+#[tokio::test]
+async fn persist_proxy_capture_record_preserves_downstream_closed_as_client_abort() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct InvocationRow {
+        status: Option<String>,
+        failure_kind: Option<String>,
+        failure_class: Option<String>,
+        is_actionable: Option<i64>,
+    }
+
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    ensure_schema(&pool).await.expect("ensure schema");
+
+    let persisted = persist_proxy_capture_record(
+        &pool,
+        Instant::now(),
+        ProxyCaptureRecord {
+            invoke_id: "proxy-test-downstream-closed-terminal".to_string(),
+            occurred_at: "2026-04-10 00:00:00".to_string(),
+            model: Some("gpt-5.4".to_string()),
+            usage: ParsedUsage::default(),
+            cost: None,
+            cost_estimated: false,
+            price_version: None,
+            status: "failed".to_string(),
+            error_message: None,
+            failure_kind: Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED.to_string()),
+            payload: None,
+            raw_response: "{}".to_string(),
+            req_raw: RawPayloadMeta::default(),
+            resp_raw: RawPayloadMeta::default(),
+            timings: StageTimings {
+                t_total_ms: 0.0,
+                t_req_read_ms: 0.0,
+                t_req_parse_ms: 0.0,
+                t_upstream_connect_ms: 0.0,
+                t_upstream_ttfb_ms: 0.0,
+                t_upstream_stream_ms: 0.0,
+                t_resp_parse_ms: 0.0,
+                t_persist_ms: 0.0,
+            },
+        },
+    )
+    .await
+    .expect("persist terminal record")
+    .expect("persisted invocation should be returned");
+
+    assert_eq!(persisted.failure_class.as_deref(), Some("client_abort"));
+    assert_eq!(persisted.is_actionable, Some(false));
+
+    let row = sqlx::query_as::<_, InvocationRow>(
+        r#"
+        SELECT status, failure_kind, failure_class, is_actionable
+        FROM codex_invocations
+        WHERE invoke_id = ?1
+        "#,
+    )
+    .bind("proxy-test-downstream-closed-terminal")
+    .fetch_one(&pool)
+    .await
+    .expect("load persisted terminal invocation");
+
+    assert_eq!(row.status.as_deref(), Some("failed"));
+    assert_eq!(
+        row.failure_kind.as_deref(),
+        Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED)
+    );
+    assert_eq!(row.failure_class.as_deref(), Some("client_abort"));
+    assert_eq!(row.is_actionable, Some(0));
+}
+
 #[test]
 fn proxy_capture_invocation_status_marks_downstream_closed_as_failed() {
     assert_eq!(

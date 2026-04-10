@@ -793,14 +793,14 @@ async fn persist_proxy_capture_record(
     capture_started: Instant,
     mut record: ProxyCaptureRecord,
 ) -> Result<Option<ApiInvocation>> {
-    let failure = classify_invocation_failure(
+    let failure = resolve_failure_classification(
         Some(record.status.as_str()),
         record.error_message.as_deref(),
+        record.failure_kind.as_deref(),
+        None,
+        None,
     );
-    let failure_kind = record
-        .failure_kind
-        .clone()
-        .or_else(|| failure.failure_kind.clone());
+    let failure_kind = failure.failure_kind.clone();
     let persist_started = Instant::now();
     let created_at = format_utc_iso_millis(Utc::now());
 
