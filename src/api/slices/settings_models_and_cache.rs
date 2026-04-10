@@ -976,6 +976,8 @@ pub(crate) struct PromptCacheConversationAggregateRow {
 pub(crate) struct PromptCacheConversationEventRow {
     pub(crate) occurred_at: String,
     pub(crate) status: String,
+    pub(crate) error_message: Option<String>,
+    pub(crate) failure_class: Option<String>,
     pub(crate) request_tokens: i64,
     pub(crate) prompt_cache_key: String,
 }

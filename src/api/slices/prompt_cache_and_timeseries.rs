@@ -68,6 +68,32 @@ fn effective_range_for_hourly_rollup_plan(
     Ok(range.filter(|value| value.start < value.end))
 }
 
+fn invocation_status_is_success_like(status: Option<&str>, error_message: Option<&str>) -> bool {
+    let normalized_status = status.map(str::trim).unwrap_or_default();
+    let error_message_empty = error_message.map(str::trim).is_none_or(str::is_empty);
+
+    normalized_status.eq_ignore_ascii_case("success")
+        || (normalized_status.eq_ignore_ascii_case("http_200") && error_message_empty)
+}
+
+fn invocation_status_counts_toward_terminal_totals(status: Option<&str>) -> bool {
+    let normalized_status = status.map(str::trim).unwrap_or_default();
+    !normalized_status.eq_ignore_ascii_case("running")
+        && !normalized_status.eq_ignore_ascii_case("pending")
+}
+
+fn invocation_point_is_success(
+    status: Option<&str>,
+    error_message: Option<&str>,
+    failure_class: Option<&str>,
+) -> bool {
+    invocation_status_is_success_like(status, error_message)
+        && failure_class
+            .map(str::trim)
+            .unwrap_or_default()
+            .eq_ignore_ascii_case("none")
+}
+
 async fn load_pool_attempt_account_names(
     pool: &Pool<Sqlite>,
     records: &mut [ApiPoolUpstreamRequestAttempt],
@@ -247,14 +273,13 @@ fn add_invocation_record_to_summary_totals(
         record.failure_class.as_deref(),
         record.is_actionable,
     );
-    if record
-        .status
-        .as_deref()
-        .is_some_and(|status| status.eq_ignore_ascii_case("success"))
+    if invocation_status_is_success_like(record.status.as_deref(), record.error_message.as_deref())
         && classification.failure_class == FailureClass::None
     {
         totals.success_count += 1;
-    } else if classification.failure_class != FailureClass::None {
+    } else if invocation_status_counts_toward_terminal_totals(record.status.as_deref())
+        && classification.failure_class != FailureClass::None
+    {
         totals.failure_count += 1;
     }
     totals.total_tokens += record.total_tokens.unwrap_or_default();
@@ -706,7 +731,11 @@ pub(crate) async fn build_prompt_cache_conversations_response(
         } else {
             status
         };
-        let is_success = status.eq_ignore_ascii_case("success");
+        let is_success = invocation_point_is_success(
+            Some(&status),
+            row.error_message.as_deref(),
+            row.failure_class.as_deref(),
+        );
         let request_tokens = row.request_tokens.max(0);
         let points = grouped_events.entry(row.prompt_cache_key).or_default();
         let cumulative_tokens = points
@@ -1308,9 +1337,11 @@ pub(crate) async fn query_prompt_cache_conversation_events(
 
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT occurred_at, COALESCE(status, 'unknown') AS status, \
-         COALESCE(total_tokens, 0) AS request_tokens, ",
+         error_message, ",
     );
     query
+        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(" AS failure_class, COALESCE(total_tokens, 0) AS request_tokens, ")
         .push(KEY_EXPR)
         .push(
             " AS prompt_cache_key \
@@ -1551,17 +1582,23 @@ pub(crate) async fn fetch_timeseries(
             record.failure_class.as_deref(),
             record.is_actionable,
         );
-        if record
-            .status
-            .as_deref()
-            .is_some_and(|status| status.eq_ignore_ascii_case("success"))
-            && classification.failure_class == FailureClass::None
-        {
+        let is_success_like = invocation_status_is_success_like(
+            record.status.as_deref(),
+            record.error_message.as_deref(),
+        ) && classification.failure_class == FailureClass::None;
+        if is_success_like {
             entry.success_count += 1;
-        } else if classification.failure_class != FailureClass::None {
+        } else if invocation_status_counts_toward_terminal_totals(record.status.as_deref())
+            && classification.failure_class != FailureClass::None
+        {
             entry.failure_count += 1;
         }
-        entry.record_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms);
+        let latency_status = if is_success_like {
+            Some("success")
+        } else {
+            record.status.as_deref()
+        };
+        entry.record_ttfb_sample(latency_status, record.t_upstream_ttfb_ms);
         entry.record_first_response_byte_total_sample(
             record.t_req_read_ms,
             record.t_req_parse_ms,
@@ -1874,17 +1911,23 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
                 record.failure_class.as_deref(),
                 record.is_actionable,
             );
-            if record
-                .status
-                .as_deref()
-                .is_some_and(|status| status.eq_ignore_ascii_case("success"))
-                && classification.failure_class == FailureClass::None
-            {
+            let is_success_like = invocation_status_is_success_like(
+                record.status.as_deref(),
+                record.error_message.as_deref(),
+            ) && classification.failure_class == FailureClass::None;
+            if is_success_like {
                 entry.success_count += 1;
-            } else if classification.failure_class != FailureClass::None {
+            } else if invocation_status_counts_toward_terminal_totals(record.status.as_deref())
+                && classification.failure_class != FailureClass::None
+            {
                 entry.failure_count += 1;
             }
-            entry.record_exact_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms);
+            let latency_status = if is_success_like {
+                Some("success")
+            } else {
+                record.status.as_deref()
+            };
+            entry.record_exact_ttfb_sample(latency_status, record.t_upstream_ttfb_ms);
             entry.record_exact_first_response_byte_total_sample(
                 record.t_req_read_ms,
                 record.t_req_parse_ms,

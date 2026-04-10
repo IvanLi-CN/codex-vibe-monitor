@@ -513,6 +513,9 @@ pub(crate) fn derive_failure_kind(status_norm: &str, err: &str, err_lower: &str)
     if err_lower.contains("please provide an api key") {
         return Some("api_key_missing".to_string());
     }
+    if status_norm == "http_200" && err.is_empty() {
+        return None;
+    }
     if status_norm.starts_with("http_") {
         return Some(status_norm.to_string());
     }
@@ -595,7 +598,9 @@ fn classify_invocation_failure_with_kind(
         || is_http_5xx
     {
         FailureClass::ServiceFailure
-    } else if status_norm == "success" {
+    } else if status_norm == "success"
+        || (status_norm == "http_200" && err.is_empty() && failure_kind_lower.is_empty())
+    {
         FailureClass::None
     } else {
         // Conservative fallback: unknown non-success records are treated as service-impacting.

@@ -1305,8 +1305,7 @@ const baseTranslations = {
     "stats.parallelWork.loading": "Loading parallel-work buckets…",
     "stats.parallelWork.empty": "No complete buckets yet.",
     "stats.parallelWork.windowToggleAria": "Select parallel-work window",
-    "stats.parallelWork.detailsTooltipLabel":
-      "Explain {{title}} details",
+    "stats.parallelWork.detailsTooltipLabel": "Explain {{title}} details",
     "stats.parallelWork.chartAria": "{{title}} trend",
     "stats.parallelWork.samples":
       "{{complete}} complete buckets · {{active}} active buckets",
@@ -1759,6 +1758,7 @@ const baseTranslations = {
     "chart.totalTokens": "Total tokens",
     "chart.totalCost": "Cost (USD)",
     "chart.totalCount": "Calls",
+    "chart.inFlight": "In flight",
     "unit.calls": "calls",
     "quota.status.expired.badge": "Expired",
   },
@@ -2966,8 +2966,7 @@ const baseTranslations = {
     "stats.parallelWork.loading": "正在加载并行工作 bucket…",
     "stats.parallelWork.empty": "还没有可统计的完整 bucket。",
     "stats.parallelWork.windowToggleAria": "切换并行工作统计窗口",
-    "stats.parallelWork.detailsTooltipLabel":
-      "查看“{{title}}”说明",
+    "stats.parallelWork.detailsTooltipLabel": "查看“{{title}}”说明",
     "stats.parallelWork.chartAria": "{{title}} 趋势",
     "stats.parallelWork.samples":
       "{{complete}} 个完整 bucket · {{active}} 个活跃 bucket",
@@ -3411,6 +3410,7 @@ const baseTranslations = {
     "chart.totalTokens": "总 Tokens",
     "chart.totalCost": "成本（美元）",
     "chart.totalCount": "次数",
+    "chart.inFlight": "进行中",
     "unit.calls": "次",
     "quota.status.expired.badge": "已到期",
   },

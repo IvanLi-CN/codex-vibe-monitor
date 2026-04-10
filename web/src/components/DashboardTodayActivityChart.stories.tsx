@@ -86,7 +86,8 @@ export const CountBarsDensePairing: Story = {
         const bucketEnd = new Date(bucketStart.getTime() + 60_000);
         const failureCount = index % 6 === 0 ? 3 : index % 3 === 0 ? 2 : 1;
         const successCount = 4 + (index % 5);
-        const totalCount = successCount + failureCount;
+        const inFlightCount = index % 8 === 0 ? 2 : index % 5 === 0 ? 1 : 0;
+        const totalCount = successCount + failureCount + inFlightCount;
         return {
           bucketStart: bucketStart.toISOString(),
           bucketEnd: bucketEnd.toISOString(),

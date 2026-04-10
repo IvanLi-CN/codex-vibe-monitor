@@ -692,7 +692,56 @@ async fn timeseries_includes_first_byte_avg_and_p95_for_success_samples() {
 }
 
 #[tokio::test]
-async fn timeseries_and_summary_do_not_treat_running_rows_as_failures() {
+async fn timeseries_includes_legacy_http_200_success_like_ttfb_samples() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::minutes(5))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    insert_timeseries_invocation(
+        &state.pool,
+        "ttfb-legacy-http-200",
+        &occurred_at,
+        "http_200",
+        Some(250.0),
+    )
+    .await;
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "1h".to_string(),
+            bucket: Some("15m".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch timeseries for legacy http_200");
+    let bucket = response
+        .points
+        .iter()
+        .find(|point| point.total_count >= 1)
+        .expect("should include populated bucket");
+
+    assert_eq!(bucket.success_count, 1);
+    assert_eq!(bucket.first_byte_sample_count, 1);
+    assert_f64_close(
+        bucket.first_byte_avg_ms.expect("avg should be present"),
+        250.0,
+    );
+    assert_f64_close(
+        bucket.first_byte_p95_ms.expect("p95 should be present"),
+        250.0,
+    );
+}
+
+#[tokio::test]
+async fn timeseries_and_summary_do_not_treat_running_rows_with_failure_metadata_as_failures() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -703,14 +752,58 @@ async fn timeseries_and_summary_do_not_treat_running_rows_as_failures() {
             .naive_local(),
     );
 
-    insert_timeseries_invocation(&state.pool, "timeseries-success", &occurred_at, "success", Some(80.0))
-        .await;
-    insert_timeseries_invocation(&state.pool, "timeseries-running", &occurred_at, "running", Some(120.0))
-        .await;
-    insert_timeseries_invocation(&state.pool, "timeseries-pending", &occurred_at, "pending", Some(160.0))
-        .await;
-    insert_timeseries_invocation(&state.pool, "timeseries-failed", &occurred_at, "failed", Some(240.0))
-        .await;
+    insert_timeseries_invocation(
+        &state.pool,
+        "timeseries-success",
+        &occurred_at,
+        "success",
+        Some(80.0),
+    )
+    .await;
+    insert_timeseries_invocation(
+        &state.pool,
+        "timeseries-running",
+        &occurred_at,
+        "running",
+        Some(120.0),
+    )
+    .await;
+    insert_timeseries_invocation(
+        &state.pool,
+        "timeseries-pending",
+        &occurred_at,
+        "pending",
+        Some(160.0),
+    )
+    .await;
+    insert_timeseries_invocation(
+        &state.pool,
+        "timeseries-failed",
+        &occurred_at,
+        "failed",
+        Some(240.0),
+    )
+    .await;
+    sqlx::query(
+        "UPDATE codex_invocations SET failure_kind = ?1, failure_class = ?2, error_message = ?3 WHERE invoke_id = ?4",
+    )
+    .bind("upstream_response_failed")
+    .bind("service_failure")
+    .bind("[upstream_response_failed] upstream response stream reported failure")
+    .bind("timeseries-running")
+    .execute(&state.pool)
+    .await
+    .expect("annotate running row with failure metadata");
+    sqlx::query(
+        "UPDATE codex_invocations SET failure_kind = ?1, failure_class = ?2, error_message = ?3 WHERE invoke_id = ?4",
+    )
+    .bind("downstream_closed")
+    .bind("client_abort")
+    .bind("[downstream_closed] downstream closed while streaming upstream response")
+    .bind("timeseries-pending")
+    .execute(&state.pool)
+    .await
+    .expect("annotate pending row with failure metadata");
 
     let Json(summary) = fetch_summary(
         State(state.clone()),
@@ -746,6 +839,804 @@ async fn timeseries_and_summary_do_not_treat_running_rows_as_failures() {
     assert_eq!(bucket.total_count, 4);
     assert_eq!(bucket.success_count, 1);
     assert_eq!(bucket.failure_count, 1);
+}
+
+#[tokio::test]
+async fn all_time_summary_ignores_stale_rollup_failure_counts_for_running_rows() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::minutes(5))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+
+    insert_timeseries_invocation(
+        &state.pool,
+        "summary-all-success",
+        &occurred_at,
+        "success",
+        Some(80.0),
+    )
+    .await;
+    insert_timeseries_invocation(
+        &state.pool,
+        "summary-all-running",
+        &occurred_at,
+        "running",
+        Some(120.0),
+    )
+    .await;
+    insert_timeseries_invocation(
+        &state.pool,
+        "summary-all-pending",
+        &occurred_at,
+        "pending",
+        Some(160.0),
+    )
+    .await;
+    insert_timeseries_invocation(
+        &state.pool,
+        "summary-all-failed",
+        &occurred_at,
+        "failed",
+        Some(240.0),
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&occurred_at)
+        .expect("bucket start epoch should be derivable");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0, 0, ?8)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(4_i64)
+    .bind(1_i64)
+    .bind(3_i64)
+    .bind(40_i64)
+    .bind(0.4_f64)
+    .bind("[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&state.pool)
+    .await
+    .expect("seed stale invocation rollup counts");
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)
+        VALUES (?1, ?2, datetime('now'))
+        ON CONFLICT(dataset) DO UPDATE SET
+            cursor_id = excluded.cursor_id,
+            updated_at = datetime('now')
+        "#,
+    )
+    .bind("codex_invocations")
+    .bind(4_i64)
+    .execute(&state.pool)
+    .await
+    .expect("mark invocation rollup progress as caught up");
+
+    let Json(summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch all-time summary with stale rollup counts");
+
+    assert_eq!(summary.total_count, 4);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 1);
+}
+
+#[tokio::test]
+async fn all_time_summary_preserves_archived_history_when_rollup_failures_are_stale() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("archived success time"),
+    );
+    let archived_pending_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(15))
+            .expect("archived pending time"),
+    );
+    let archived_failed_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("archived failed time"),
+    );
+
+    seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-all-archived-stale-rollup",
+        &[
+            (
+                1_i64,
+                "summary-all-archived-success",
+                archived_success_at.as_str(),
+                SOURCE_PROXY,
+                "success",
+                10_i64,
+                0.10_f64,
+                Some(100.0),
+            ),
+            (
+                2_i64,
+                "summary-all-archived-pending",
+                archived_pending_at.as_str(),
+                SOURCE_PROXY,
+                "pending",
+                10_i64,
+                0.10_f64,
+                Some(110.0),
+            ),
+            (
+                3_i64,
+                "summary-all-archived-failed",
+                archived_failed_at.as_str(),
+                SOURCE_PROXY,
+                "failed",
+                10_i64,
+                0.10_f64,
+                Some(120.0),
+            ),
+        ],
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET historical_rollups_materialized_at = datetime('now')
+        WHERE dataset = 'codex_invocations'
+        "#,
+    )
+    .execute(&state.pool)
+    .await
+    .expect("mark archived invocation batch as materialized");
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_success_at)
+        .expect("bucket start epoch should be derivable");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0, 0, ?8)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(3_i64)
+    .bind(1_i64)
+    .bind(2_i64)
+    .bind(30_i64)
+    .bind(0.30_f64)
+    .bind("[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&state.pool)
+    .await
+    .expect("seed stale archived invocation rollup counts");
+
+    let live_occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::minutes(10))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id,
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            total_tokens,
+            cost,
+            t_upstream_ttfb_ms,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind(10_i64)
+    .bind("summary-all-live-success")
+    .bind(&live_occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(10_i64)
+    .bind(0.01_f64)
+    .bind(130.0_f64)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert live invocation row");
+
+    let Json(summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch all-time summary with archived history present");
+
+    assert_eq!(summary.total_count, 4);
+    assert_eq!(summary.success_count, 2);
+    assert_eq!(summary.failure_count, 1);
+    assert_eq!(summary.total_tokens, 40);
+    assert!((summary.total_cost - 0.31).abs() < 1e-9);
+
+    let repair_marker_cursor: i64 =
+        sqlx::query_scalar("SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1")
+            .bind("codex_invocations_summary_rollup_v2")
+            .fetch_one(&state.pool)
+            .await
+            .expect("load archived all-time summary repair marker");
+    assert_eq!(repair_marker_cursor, 1);
+    let repair_live_cursor: i64 =
+        sqlx::query_scalar("SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1")
+            .bind("codex_invocations_summary_rollup_v2_live_cursor")
+            .fetch_one(&state.pool)
+            .await
+            .expect("load archived all-time summary repair live cursor");
+    assert_eq!(repair_live_cursor, 10);
+    let invocation_rollup_cursor = sqlx::query_scalar::<_, i64>(
+        "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
+    )
+    .bind("codex_invocations")
+    .fetch_one(&state.pool)
+    .await
+    .expect("load invocation hourly rollup live cursor after repair");
+    assert_eq!(invocation_rollup_cursor, 10);
+
+    let Json(summary_repeat) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("repeat all-time summary after rollup repair");
+
+    assert_eq!(summary_repeat.total_count, 4);
+    assert_eq!(summary_repeat.success_count, 2);
+    assert_eq!(summary_repeat.failure_count, 1);
+    assert_eq!(summary_repeat.total_tokens, 40);
+    assert!((summary_repeat.total_cost - 0.31).abs() < 1e-9);
+
+    let live_tail_occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::minutes(3))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id,
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            total_tokens,
+            cost,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(11_i64)
+    .bind("summary-all-live-tail-failed")
+    .bind(&live_tail_occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind("failed")
+    .bind(5_i64)
+    .bind(0.05_f64)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert post-repair live tail invocation row");
+
+    let Json(summary_with_live_tail) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch all-time summary with post-repair live tail");
+
+    assert_eq!(summary_with_live_tail.total_count, 5);
+    assert_eq!(summary_with_live_tail.success_count, 2);
+    assert_eq!(summary_with_live_tail.failure_count, 2);
+    assert_eq!(summary_with_live_tail.total_tokens, 45);
+    assert!((summary_with_live_tail.total_cost - 0.36).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn all_time_summary_missing_archive_does_not_mark_repair_complete() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("archived success time"),
+    );
+    let archive_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-all-missing-archive",
+        &[(
+            1_i64,
+            "summary-all-missing-archive-success",
+            archived_success_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_success_at)
+        .expect("bucket start epoch should be derivable");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0, 0, ?8)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(99_i64)
+    .bind(99_i64)
+    .bind(0_i64)
+    .bind(990_i64)
+    .bind(9.9_f64)
+    .bind("[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&state.pool)
+    .await
+    .expect("seed stale invocation rollup counts before failed repair");
+
+    fs::remove_file(&archive_path).expect("remove archived invocation batch from disk");
+
+    let response = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect_err("missing archive should fail all-time summary repair")
+    .into_response();
+    assert_eq!(response.status().as_u16(), 500);
+
+    let repair_marker_cursor = sqlx::query_scalar::<_, i64>(
+        "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
+    )
+    .bind("codex_invocations_summary_rollup_v2")
+    .fetch_optional(&state.pool)
+    .await
+    .expect("load missing-archive repair marker");
+    assert_eq!(repair_marker_cursor, None);
+
+    let rollup_total_count: i64 =
+        sqlx::query_scalar("SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly")
+            .fetch_one(&state.pool)
+            .await
+            .expect("load rollup total count after failed repair");
+    assert_eq!(rollup_total_count, 99);
+}
+
+#[tokio::test]
+async fn all_time_summary_missing_summary_markers_do_not_replay_materialized_archives() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("archived success time"),
+    );
+    let archived_failed_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("archived failed time"),
+    );
+
+    let archive_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-all-marker-only-backfill",
+        &[
+            (
+                1_i64,
+                "summary-all-marker-only-success",
+                archived_success_at.as_str(),
+                SOURCE_PROXY,
+                "success",
+                10_i64,
+                0.10_f64,
+                Some(100.0),
+            ),
+            (
+                2_i64,
+                "summary-all-marker-only-failed",
+                archived_failed_at.as_str(),
+                SOURCE_PROXY,
+                "failed",
+                10_i64,
+                0.20_f64,
+                Some(120.0),
+            ),
+        ],
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET historical_rollups_materialized_at = datetime('now')
+        WHERE dataset = 'codex_invocations'
+          AND file_path = ?1
+        "#,
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .execute(&state.pool)
+    .await
+    .expect("mark archived invocation batch as already materialized");
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_success_at)
+        .expect("bucket start epoch should be derivable");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0, 0, ?8)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(2_i64)
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(20_i64)
+    .bind(0.30_f64)
+    .bind("[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&state.pool)
+    .await
+    .expect("seed pre-materialized summary rollups");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_failure_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            failure_class,
+            is_actionable,
+            error_category,
+            failure_count,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind("service_failure")
+    .bind(1_i64)
+    .bind("upstream_response_failed")
+    .bind(1_i64)
+    .execute(&state.pool)
+    .await
+    .expect("seed pre-materialized failure rollups");
+
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)
+        VALUES (?1, ?2, datetime('now'))
+        ON CONFLICT(dataset) DO UPDATE SET
+            cursor_id = excluded.cursor_id,
+            updated_at = datetime('now')
+        "#,
+    )
+    .bind("codex_invocations_summary_rollup_v2")
+    .bind(1_i64)
+    .execute(&state.pool)
+    .await
+    .expect("mark summary repair as complete");
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)
+        VALUES (?1, ?2, datetime('now'))
+        ON CONFLICT(dataset) DO UPDATE SET
+            cursor_id = excluded.cursor_id,
+            updated_at = datetime('now')
+        "#,
+    )
+    .bind("codex_invocations_summary_rollup_v2_live_cursor")
+    .bind(0_i64)
+    .execute(&state.pool)
+    .await
+    .expect("seed summary repair live cursor");
+
+    let Json(summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch all-time summary with missing summary replay markers");
+
+    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 1);
+    assert_eq!(summary.total_tokens, 20);
+    assert!((summary.total_cost - 0.30).abs() < 1e-9);
+
+    let replayed_targets = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE dataset = 'codex_invocations' AND file_path = ?1 AND target IN (?2, ?3)",
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load repaired summary replay markers");
+    assert_eq!(replayed_targets, 2);
+
+    let rollup_total_count: i64 =
+        sqlx::query_scalar("SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly")
+            .fetch_one(&state.pool)
+            .await
+            .expect("load rollup total count after metadata-only marker repair");
+    assert_eq!(
+        rollup_total_count, 2,
+        "missing summary replay markers on already-materialized archives must not double-count archived invocations",
+    );
+}
+
+#[tokio::test]
+async fn all_time_summary_repair_does_not_advance_shared_live_cursor_without_hourly_sync() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("archived success time"),
+    );
+
+    seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-all-repair-no-shared-cursor",
+        &[(
+            1_i64,
+            "summary-all-repair-archived-success",
+            archived_success_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+
+    let live_occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::minutes(10))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id,
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            total_tokens,
+            cost,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(10_i64)
+    .bind("summary-all-repair-live-success")
+    .bind(&live_occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(10_i64)
+    .bind(0.01_f64)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert live invocation row");
+
+    let totals = query_combined_totals(
+        &state.pool,
+        state.config.crs_stats.as_ref(),
+        StatsFilter::All,
+        InvocationSourceScope::All,
+    )
+    .await
+    .expect("query all-time totals through summary repair path");
+
+    assert_eq!(totals.total_count, 2);
+    assert_eq!(totals.success_count, 2);
+    assert_eq!(totals.failure_count, 0);
+    assert_eq!(totals.total_tokens, 20);
+    assert!((totals.total_cost - 0.11).abs() < 1e-9);
+
+    let shared_cursor = sqlx::query_scalar::<_, i64>(
+        "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
+    )
+    .bind("codex_invocations")
+    .fetch_optional(&state.pool)
+    .await
+    .expect("load shared invocation hourly rollup cursor after summary repair");
+    assert_eq!(
+        shared_cursor, None,
+        "summary repair must not advance the shared codex_invocations live cursor outside hourly sync",
+    );
+
+    let repair_live_cursor: i64 =
+        sqlx::query_scalar("SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1")
+            .bind("codex_invocations_summary_rollup_v2_live_cursor")
+            .fetch_one(&state.pool)
+            .await
+            .expect("load summary repair live cursor");
+    assert_eq!(repair_live_cursor, 10);
+}
+
+#[tokio::test]
+async fn all_time_summary_rollup_repair_counts_mixed_case_success_status() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("archived success time"),
+    );
+
+    seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-all-mixed-case-success",
+        &[(
+            1_i64,
+            "summary-all-mixed-case-success",
+            archived_success_at.as_str(),
+            SOURCE_PROXY,
+            "Success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch all-time summary with mixed-case archived success");
+
+    assert_eq!(summary.total_count, 1);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 0);
 }
 
 #[tokio::test]
@@ -2414,6 +3305,420 @@ async fn invocation_hourly_rollup_ignores_null_status_for_success_failure_counts
     assert_f64_close(row.total_cost, 0.07);
 }
 
+#[tokio::test]
+async fn invocation_hourly_rollup_ignores_running_and_pending_for_failure_counts() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    let bucket_start_epoch = invocation_bucket_start_epoch(&occurred_at)
+        .expect("bucket start epoch should be derivable");
+    let mut tx = state.pool.begin().await.expect("begin transaction");
+    upsert_invocation_hourly_rollups_tx(
+        tx.as_mut(),
+        &[
+            InvocationHourlySourceRecord {
+                id: 1,
+                occurred_at: occurred_at.clone(),
+                source: SOURCE_PROXY.to_string(),
+                status: Some("success".to_string()),
+                detail_level: DETAIL_LEVEL_FULL.to_string(),
+                total_tokens: Some(7),
+                cost: Some(0.07),
+                error_message: None,
+                failure_kind: None,
+                failure_class: None,
+                is_actionable: None,
+                payload: None,
+                t_total_ms: None,
+                t_req_read_ms: None,
+                t_req_parse_ms: None,
+                t_upstream_connect_ms: None,
+                t_upstream_ttfb_ms: None,
+                t_upstream_stream_ms: None,
+                t_resp_parse_ms: None,
+                t_persist_ms: None,
+            },
+            InvocationHourlySourceRecord {
+                id: 2,
+                occurred_at: occurred_at.clone(),
+                source: SOURCE_PROXY.to_string(),
+                status: Some("running".to_string()),
+                detail_level: DETAIL_LEVEL_FULL.to_string(),
+                total_tokens: Some(9),
+                cost: Some(0.09),
+                error_message: Some(
+                    "[upstream_response_failed] upstream response stream reported failure"
+                        .to_string(),
+                ),
+                failure_kind: Some("upstream_response_failed".to_string()),
+                failure_class: Some("service_failure".to_string()),
+                is_actionable: Some(1),
+                payload: None,
+                t_total_ms: None,
+                t_req_read_ms: None,
+                t_req_parse_ms: None,
+                t_upstream_connect_ms: None,
+                t_upstream_ttfb_ms: None,
+                t_upstream_stream_ms: None,
+                t_resp_parse_ms: None,
+                t_persist_ms: None,
+            },
+            InvocationHourlySourceRecord {
+                id: 3,
+                occurred_at: occurred_at.clone(),
+                source: SOURCE_PROXY.to_string(),
+                status: Some("pending".to_string()),
+                detail_level: DETAIL_LEVEL_FULL.to_string(),
+                total_tokens: Some(11),
+                cost: Some(0.11),
+                error_message: Some(
+                    "[downstream_closed] downstream closed while streaming upstream response"
+                        .to_string(),
+                ),
+                failure_kind: Some("downstream_closed".to_string()),
+                failure_class: Some("client_abort".to_string()),
+                is_actionable: Some(0),
+                payload: None,
+                t_total_ms: None,
+                t_req_read_ms: None,
+                t_req_parse_ms: None,
+                t_upstream_connect_ms: None,
+                t_upstream_ttfb_ms: None,
+                t_upstream_stream_ms: None,
+                t_resp_parse_ms: None,
+                t_persist_ms: None,
+            },
+            InvocationHourlySourceRecord {
+                id: 4,
+                occurred_at,
+                source: SOURCE_PROXY.to_string(),
+                status: Some("failed".to_string()),
+                detail_level: DETAIL_LEVEL_FULL.to_string(),
+                total_tokens: Some(13),
+                cost: Some(0.13),
+                error_message: Some("upstream stream error".to_string()),
+                failure_kind: Some("upstream_stream_error".to_string()),
+                failure_class: None,
+                is_actionable: Some(1),
+                payload: None,
+                t_total_ms: None,
+                t_req_read_ms: None,
+                t_req_parse_ms: None,
+                t_upstream_connect_ms: None,
+                t_upstream_ttfb_ms: None,
+                t_upstream_stream_ms: None,
+                t_resp_parse_ms: None,
+                t_persist_ms: None,
+            },
+        ],
+        &INVOCATION_HOURLY_ROLLUP_TARGETS,
+    )
+    .await
+    .expect("upsert hourly rollup source rows");
+    tx.commit().await.expect("commit transaction");
+
+    let rows = query_invocation_hourly_rollup_range(
+        &state.pool,
+        bucket_start_epoch,
+        bucket_start_epoch + 3_600,
+        InvocationSourceScope::ProxyOnly,
+    )
+    .await
+    .expect("query hourly rollup range");
+    let row = rows.first().expect("rollup row should exist");
+    assert_eq!(row.total_count, 4);
+    assert_eq!(row.success_count, 1);
+    assert_eq!(row.failure_count, 1);
+    assert_eq!(row.total_tokens, 40);
+    assert_f64_close(row.total_cost, 0.4);
+}
+
+#[tokio::test]
+async fn invocation_hourly_rollup_excludes_structured_legacy_http_200_failures_from_ttfb_samples() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    let bucket_start_epoch = invocation_bucket_start_epoch(&occurred_at)
+        .expect("bucket start epoch should be derivable");
+    let mut tx = state.pool.begin().await.expect("begin transaction");
+    upsert_invocation_hourly_rollups_tx(
+        tx.as_mut(),
+        &[
+            InvocationHourlySourceRecord {
+                id: 11,
+                occurred_at: occurred_at.clone(),
+                source: SOURCE_PROXY.to_string(),
+                status: Some("http_200".to_string()),
+                detail_level: DETAIL_LEVEL_FULL.to_string(),
+                total_tokens: Some(10),
+                cost: Some(0.10),
+                error_message: Some("".to_string()),
+                failure_kind: None,
+                failure_class: None,
+                is_actionable: None,
+                payload: None,
+                t_total_ms: None,
+                t_req_read_ms: None,
+                t_req_parse_ms: None,
+                t_upstream_connect_ms: None,
+                t_upstream_ttfb_ms: Some(120.0),
+                t_upstream_stream_ms: None,
+                t_resp_parse_ms: None,
+                t_persist_ms: None,
+            },
+            InvocationHourlySourceRecord {
+                id: 12,
+                occurred_at,
+                source: SOURCE_PROXY.to_string(),
+                status: Some("http_200".to_string()),
+                detail_level: DETAIL_LEVEL_FULL.to_string(),
+                total_tokens: Some(20),
+                cost: Some(0.20),
+                error_message: Some("".to_string()),
+                failure_kind: Some("upstream_response_failed".to_string()),
+                failure_class: Some("service_failure".to_string()),
+                is_actionable: Some(1),
+                payload: None,
+                t_total_ms: None,
+                t_req_read_ms: None,
+                t_req_parse_ms: None,
+                t_upstream_connect_ms: None,
+                t_upstream_ttfb_ms: Some(840.0),
+                t_upstream_stream_ms: None,
+                t_resp_parse_ms: None,
+                t_persist_ms: None,
+            },
+        ],
+        &INVOCATION_HOURLY_ROLLUP_TARGETS,
+    )
+    .await
+    .expect("upsert hourly rollup source rows");
+    tx.commit().await.expect("commit transaction");
+
+    let rows = query_invocation_hourly_rollup_range(
+        &state.pool,
+        bucket_start_epoch,
+        bucket_start_epoch + 3_600,
+        InvocationSourceScope::ProxyOnly,
+    )
+    .await
+    .expect("query hourly rollup range");
+    let row = rows.first().expect("rollup row should exist");
+    assert_eq!(row.total_count, 2);
+    assert_eq!(row.success_count, 1);
+    assert_eq!(row.failure_count, 1);
+    assert_eq!(row.first_byte_sample_count, 1);
+    assert_f64_close(row.first_byte_sum_ms, 120.0);
+}
+
+#[tokio::test]
+async fn combined_totals_ignore_null_status_for_success_failure_counts() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id,
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            total_tokens,
+            cost,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(201_i64)
+    .bind("summary-null-status")
+    .bind(&occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind(Option::<String>::None)
+    .bind(7_i64)
+    .bind(0.07_f64)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert null-status invocation row");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id,
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            total_tokens,
+            cost,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(202_i64)
+    .bind("summary-success")
+    .bind(&occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(11_i64)
+    .bind(0.11_f64)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert success invocation row");
+
+    let totals = query_combined_totals(
+        &state.pool,
+        None,
+        StatsFilter::All,
+        InvocationSourceScope::ProxyOnly,
+    )
+    .await
+    .expect("query combined totals");
+    assert_eq!(totals.total_count, 2);
+    assert_eq!(totals.success_count, 1);
+    assert_eq!(totals.failure_count, 0);
+    assert_eq!(totals.total_tokens, 18);
+    assert_f64_close(totals.total_cost, 0.18);
+}
+
+#[tokio::test]
+async fn combined_totals_count_legacy_null_status_failures_when_error_metadata_exists() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id,
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            error_message,
+            failure_kind,
+            total_tokens,
+            cost,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+    )
+    .bind(204_i64)
+    .bind("summary-null-status-failure")
+    .bind(&occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind(Option::<String>::None)
+    .bind("upstream exploded")
+    .bind("unknown_future_failure_kind")
+    .bind(5_i64)
+    .bind(0.05_f64)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert legacy null-status failure row");
+
+    let totals = query_combined_totals(
+        &state.pool,
+        None,
+        StatsFilter::All,
+        InvocationSourceScope::ProxyOnly,
+    )
+    .await
+    .expect("query combined totals");
+    assert_eq!(totals.total_count, 1);
+    assert_eq!(totals.success_count, 0);
+    assert_eq!(totals.failure_count, 1);
+    assert_eq!(totals.total_tokens, 5);
+    assert_f64_close(totals.total_cost, 0.05);
+}
+
+#[tokio::test]
+async fn combined_totals_treat_legacy_http_200_without_error_as_success() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id,
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            total_tokens,
+            cost,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(203_i64)
+    .bind("summary-http-200-success-like")
+    .bind(&occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind("http_200")
+    .bind(9_i64)
+    .bind(0.09_f64)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert legacy http_200 invocation row");
+
+    let totals = query_combined_totals(
+        &state.pool,
+        None,
+        StatsFilter::All,
+        InvocationSourceScope::ProxyOnly,
+    )
+    .await
+    .expect("query combined totals");
+    assert_eq!(totals.total_count, 1);
+    assert_eq!(totals.success_count, 1);
+    assert_eq!(totals.failure_count, 0);
+    assert_eq!(totals.total_tokens, 9);
+    assert_f64_close(totals.total_cost, 0.09);
+}
+
+#[test]
+fn resolve_failure_classification_keeps_unknown_legacy_http_200_failure_kinds_actionable() {
+    let classification = resolve_failure_classification(
+        Some("http_200"),
+        Some(""),
+        Some("unknown_future_failure_kind"),
+        None,
+        None,
+    );
+
+    assert_eq!(classification.failure_class, FailureClass::ServiceFailure);
+    assert_eq!(
+        classification.failure_kind.as_deref(),
+        Some("unknown_future_failure_kind"),
+    );
+    assert!(classification.is_actionable);
+}
+
 #[test]
 fn invocation_archive_pruned_success_details_require_empty_legacy_http_200_error_message() {
     let failed_legacy_http_200 = InvocationHourlySourceRecord {
@@ -2468,5 +3773,32 @@ fn invocation_archive_pruned_success_details_require_empty_legacy_http_200_error
     assert!(
         invocation_archive_has_pruned_success_details(&[success_like_legacy_http_200]),
         "legacy http_200 rows with an empty error message should still count as pruned success-like rows",
+    );
+
+    let structured_failure_legacy_http_200 = InvocationHourlySourceRecord {
+        id: 3,
+        occurred_at: "2026-03-28 00:00:00".to_string(),
+        source: SOURCE_PROXY.to_string(),
+        status: Some("http_200".to_string()),
+        detail_level: DETAIL_LEVEL_STRUCTURED_ONLY.to_string(),
+        total_tokens: None,
+        cost: None,
+        error_message: Some("   ".to_string()),
+        failure_kind: Some("upstream_response_failed".to_string()),
+        failure_class: Some("service_failure".to_string()),
+        is_actionable: Some(1),
+        payload: None,
+        t_total_ms: None,
+        t_req_read_ms: None,
+        t_req_parse_ms: None,
+        t_upstream_connect_ms: None,
+        t_upstream_ttfb_ms: None,
+        t_upstream_stream_ms: None,
+        t_resp_parse_ms: None,
+        t_persist_ms: None,
+    };
+    assert!(
+        !invocation_archive_has_pruned_success_details(&[structured_failure_legacy_http_200]),
+        "legacy http_200 rows with structured failure metadata must not be treated as pruned successes",
     );
 }

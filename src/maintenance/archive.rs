@@ -47,6 +47,12 @@ fn classify_raw_compression_alert(
     }
 }
 
+fn invocation_status_counts_toward_terminal_totals(status: Option<&str>) -> bool {
+    let normalized_status = status.map(str::trim).unwrap_or_default();
+    !normalized_status.eq_ignore_ascii_case("running")
+        && !normalized_status.eq_ignore_ascii_case("pending")
+}
+
 async fn load_raw_compression_backlog_snapshot(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
@@ -2086,14 +2092,27 @@ fn accumulate_invocation_hourly_overall_rollups(
                 ..InvocationHourlyRollupDelta::default()
             });
         overall_entry.total_count += 1;
-        match row.status.as_deref() {
-            Some("success") => overall_entry.success_count += 1,
-            Some(_) => overall_entry.failure_count += 1,
-            None => {}
+        let classification = resolve_failure_classification(
+            row.status.as_deref(),
+            row.error_message.as_deref(),
+            row.failure_kind.as_deref(),
+            row.failure_class.as_deref(),
+            row.is_actionable,
+        );
+        let has_terminal_status =
+            invocation_status_counts_toward_terminal_totals(row.status.as_deref());
+        let is_success_like = invocation_status_is_success_like(
+            row.status.as_deref(),
+            row.error_message.as_deref(),
+        ) && classification.failure_class == FailureClass::None;
+        if is_success_like {
+            overall_entry.success_count += 1;
+        } else if has_terminal_status && classification.failure_class != FailureClass::None {
+            overall_entry.failure_count += 1;
         }
         overall_entry.total_tokens += row.total_tokens.unwrap_or_default();
         overall_entry.total_cost += row.cost.unwrap_or_default();
-        if row.status.as_deref() == Some("success")
+        if is_success_like
             && let Some(ttfb_ms) = row.t_upstream_ttfb_ms
             && ttfb_ms.is_finite()
             && ttfb_ms > 0.0
@@ -2166,7 +2185,9 @@ async fn upsert_invocation_hourly_rollups_tx(
                 row.failure_class.as_deref(),
                 row.is_actionable,
             );
-            if classification.failure_class != FailureClass::None {
+            if invocation_status_counts_toward_terminal_totals(row.status.as_deref())
+                && classification.failure_class != FailureClass::None
+            {
                 let error_category =
                     categorize_error(row.error_message.as_deref().unwrap_or_default());
                 *failures
@@ -2665,11 +2686,19 @@ fn invocation_archive_target_needs_full_payload(target: &str) -> bool {
 
 fn invocation_archive_has_pruned_success_details(rows: &[InvocationHourlySourceRecord]) -> bool {
     rows.iter().any(|row| {
+        let classification = resolve_failure_classification(
+            row.status.as_deref(),
+            row.error_message.as_deref(),
+            row.failure_kind.as_deref(),
+            row.failure_class.as_deref(),
+            row.is_actionable,
+        );
         row.detail_level != DETAIL_LEVEL_FULL
             && invocation_status_is_success_like(
                 row.status.as_deref(),
                 row.error_message.as_deref(),
             )
+            && classification.failure_class == FailureClass::None
     })
 }
 
@@ -3258,4 +3287,3 @@ async fn backfill_invocation_rollup_hourly_from_sources(pool: &Pool<Sqlite>) -> 
 
     Ok(overall.len())
 }
-

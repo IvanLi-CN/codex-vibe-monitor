@@ -1,5 +1,11 @@
 use crate::*;
 
+const STATS_SUCCESS_LIKE_SQL: &str = "(LOWER(TRIM(COALESCE(status, ''))) = 'success' OR (LOWER(TRIM(COALESCE(status, ''))) = 'http_200' AND TRIM(COALESCE(error_message, '')) = ''))";
+const STATS_TERMINAL_STATUS_SQL: &str =
+    "(LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending'))";
+const INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET: &str =
+    "codex_invocations_summary_rollup_v2_live_cursor";
+
 #[derive(Debug)]
 pub(crate) enum SummaryWindow {
     All,
@@ -11,10 +17,12 @@ pub(crate) enum SummaryWindow {
 fn stats_success_failure_select_sql() -> String {
     format!(
         "COUNT(*) AS total_count, \
-         COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(status, ''))) = 'success' AND {resolved_failure} = 'none' THEN 1 ELSE 0 END), 0) AS success_count, \
-         COALESCE(SUM(CASE WHEN {resolved_failure} IN ('service_failure', 'client_failure', 'client_abort') THEN 1 ELSE 0 END), 0) AS failure_count, \
+         COALESCE(SUM(CASE WHEN {success_like} AND {resolved_failure} = 'none' THEN 1 ELSE 0 END), 0) AS success_count, \
+         COALESCE(SUM(CASE WHEN {terminal_status} AND {resolved_failure} IN ('service_failure', 'client_failure', 'client_abort') THEN 1 ELSE 0 END), 0) AS failure_count, \
          COALESCE(SUM(cost), 0.0) AS total_cost, \
          COALESCE(SUM(total_tokens), 0) AS total_tokens",
+        success_like = STATS_SUCCESS_LIKE_SQL,
+        terminal_status = STATS_TERMINAL_STATUS_SQL,
         resolved_failure = crate::api::INVOCATION_RESOLVED_FAILURE_CLASS_SQL,
     )
 }
@@ -720,95 +728,466 @@ pub(crate) async fn query_stats_row(
     }
 }
 
+#[derive(Debug, FromRow)]
+struct ArchiveBatchPathRow {
+    file_path: String,
+    historical_rollups_materialized_at: Option<String>,
+    needs_overall: Option<i64>,
+    needs_failures: Option<i64>,
+}
+
+const INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DATASET: &str = "codex_invocations_summary_rollup_v2";
+const INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DONE: i64 = 1;
+const INVOCATION_SUMMARY_ROLLUP_TARGETS: [&str; 2] = [
+    HOURLY_ROLLUP_TARGET_INVOCATIONS,
+    HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
+];
+
+async fn load_invocation_hourly_source_rows_after_id(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    start_after_id: i64,
+    source_scope: InvocationSourceScope,
+    limit: i64,
+) -> Result<Vec<InvocationHourlySourceRecord>> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            id,
+            occurred_at,
+            source,
+            status,
+            detail_level,
+            total_tokens,
+            cost,
+            error_message,
+            failure_kind,
+            failure_class,
+            is_actionable,
+            payload,
+            t_total_ms,
+            t_req_read_ms,
+            t_req_parse_ms,
+            t_upstream_connect_ms,
+            t_upstream_ttfb_ms,
+            t_upstream_stream_ms,
+            t_resp_parse_ms,
+            t_persist_ms
+        FROM codex_invocations
+        WHERE id >
+        "#,
+    );
+    query.push_bind(start_after_id);
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" ORDER BY id ASC LIMIT ").push_bind(limit);
+    query
+        .build_query_as::<InvocationHourlySourceRecord>()
+        .fetch_all(executor)
+        .await
+        .map_err(Into::into)
+}
+
+async fn load_completed_invocation_archive_paths(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+) -> Result<Vec<ArchiveBatchPathRow>> {
+    sqlx::query_as::<_, ArchiveBatchPathRow>(
+        r#"
+        SELECT
+            file_path,
+            historical_rollups_materialized_at,
+            NULL AS needs_overall,
+            NULL AS needs_failures
+        FROM archive_batches
+        WHERE dataset = 'codex_invocations'
+          AND status = ?1
+        ORDER BY month_key ASC, created_at ASC, id ASC
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .fetch_all(executor)
+    .await
+    .map_err(Into::into)
+}
+
+async fn load_invocation_archives_missing_summary_rollup_markers(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+) -> Result<Vec<ArchiveBatchPathRow>> {
+    sqlx::query_as::<_, ArchiveBatchPathRow>(
+        r#"
+        SELECT
+            batches.file_path,
+            batches.historical_rollups_materialized_at,
+            CASE
+                WHEN EXISTS(
+                    SELECT 1
+                    FROM hourly_rollup_archive_replay AS replay
+                    WHERE replay.target = ?2
+                      AND replay.dataset = 'codex_invocations'
+                      AND replay.file_path = batches.file_path
+                ) THEN 0
+                ELSE 1
+            END AS needs_overall,
+            CASE
+                WHEN EXISTS(
+                    SELECT 1
+                    FROM hourly_rollup_archive_replay AS replay
+                    WHERE replay.target = ?3
+                      AND replay.dataset = 'codex_invocations'
+                      AND replay.file_path = batches.file_path
+                ) THEN 0
+                ELSE 1
+            END AS needs_failures
+        FROM archive_batches AS batches
+        WHERE batches.dataset = 'codex_invocations'
+          AND batches.status = ?1
+          AND (
+            NOT EXISTS(
+                SELECT 1
+                FROM hourly_rollup_archive_replay AS replay
+                WHERE replay.target = ?2
+                  AND replay.dataset = 'codex_invocations'
+                  AND replay.file_path = batches.file_path
+            )
+            OR NOT EXISTS(
+                SELECT 1
+                FROM hourly_rollup_archive_replay AS replay
+                WHERE replay.target = ?3
+                  AND replay.dataset = 'codex_invocations'
+                  AND replay.file_path = batches.file_path
+            )
+          )
+        ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES)
+    .fetch_all(executor)
+    .await
+    .map_err(Into::into)
+}
+
+async fn rebuild_invocation_summary_rollups_from_archive_batch(
+    tx: &mut SqliteConnection,
+    archive_row: &ArchiveBatchPathRow,
+    source_scope: InvocationSourceScope,
+    seen_ids: &mut HashSet<i64>,
+    targets: &[&str],
+) -> Result<()> {
+    if targets.is_empty() {
+        return Ok(());
+    }
+
+    let archive_path = PathBuf::from(&archive_row.file_path);
+    if !archive_path.exists() {
+        bail!(
+            "completed invocation archive is missing during summary rollup repair: {}",
+            archive_row.file_path
+        );
+    }
+
+    let mut cursor_id = 0_i64;
+    let temp_path = PathBuf::from(format!(
+        "{}.{}.sqlite",
+        archive_path.display(),
+        retention_temp_suffix()
+    ));
+    if temp_path.exists() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+    inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
+    let archive_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&sqlite_url_for_path(&temp_path))
+        .await
+        .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
+
+    loop {
+        let mut rows = load_invocation_hourly_source_rows_after_id(
+            &archive_pool,
+            cursor_id,
+            source_scope,
+            BACKFILL_BATCH_SIZE,
+        )
+        .await?;
+        if rows.is_empty() {
+            break;
+        }
+        cursor_id = rows.last().map(|row| row.id).unwrap_or(cursor_id);
+        rows.retain(|row| seen_ids.insert(row.id));
+        if rows.is_empty() {
+            continue;
+        }
+        upsert_invocation_hourly_rollups_tx(tx, &rows, targets).await?;
+    }
+
+    archive_pool.close().await;
+    drop(temp_cleanup);
+
+    for target in targets {
+        mark_hourly_rollup_archive_replayed_tx(
+            tx,
+            target,
+            HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            &archive_row.file_path,
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn rebuild_invocation_summary_rollups_from_live_rows(
+    tx: &mut SqliteConnection,
+    source_scope: InvocationSourceScope,
+    seen_ids: &mut HashSet<i64>,
+    targets: &[&str],
+) -> Result<i64> {
+    let mut cursor_id = 0_i64;
+    loop {
+        let mut rows = load_invocation_hourly_source_rows_after_id(
+            &mut *tx,
+            cursor_id,
+            source_scope,
+            BACKFILL_BATCH_SIZE,
+        )
+        .await?;
+        if rows.is_empty() {
+            break;
+        }
+        cursor_id = rows.last().map(|row| row.id).unwrap_or(cursor_id);
+        rows.retain(|row| seen_ids.insert(row.id));
+        if rows.is_empty() {
+            continue;
+        }
+        upsert_invocation_hourly_rollups_tx(tx, &rows, targets).await?;
+    }
+    Ok(cursor_id)
+}
+
+async fn hourly_rollup_progress_exists(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    dataset: &str,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT 1 FROM hourly_rollup_live_progress WHERE dataset = ?1 LIMIT 1",
+    )
+    .bind(dataset)
+    .fetch_optional(executor)
+    .await?
+    .is_some())
+}
+
+async fn repair_invocation_summary_rollups(pool: &Pool<Sqlite>) -> Result<()> {
+    if load_hourly_rollup_live_progress(pool, INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DATASET)
+        .await?
+        >= INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DONE
+        && hourly_rollup_progress_exists(
+            pool,
+            INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET,
+        )
+        .await?
+    {
+        return Ok(());
+    }
+
+    let mut tx = pool.begin().await?;
+    if load_hourly_rollup_live_progress_tx(
+        tx.as_mut(),
+        INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DATASET,
+    )
+    .await?
+        >= INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DONE
+        && hourly_rollup_progress_exists(
+            tx.as_mut(),
+            INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET,
+        )
+        .await?
+    {
+        tx.rollback().await?;
+        return Ok(());
+    }
+
+    sqlx::query("DELETE FROM invocation_rollup_hourly")
+        .execute(tx.as_mut())
+        .await?;
+    sqlx::query("DELETE FROM invocation_failure_rollup_hourly")
+        .execute(tx.as_mut())
+        .await?;
+
+    let archive_rows = load_completed_invocation_archive_paths(tx.as_mut()).await?;
+    let mut seen_ids = HashSet::new();
+    for archive_row in &archive_rows {
+        rebuild_invocation_summary_rollups_from_archive_batch(
+            tx.as_mut(),
+            archive_row,
+            InvocationSourceScope::All,
+            &mut seen_ids,
+            &INVOCATION_SUMMARY_ROLLUP_TARGETS,
+        )
+        .await?;
+    }
+    let live_cursor_id = rebuild_invocation_summary_rollups_from_live_rows(
+        tx.as_mut(),
+        InvocationSourceScope::All,
+        &mut seen_ids,
+        &INVOCATION_SUMMARY_ROLLUP_TARGETS,
+    )
+    .await?;
+    save_hourly_rollup_live_progress_tx(
+        tx.as_mut(),
+        INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET,
+        live_cursor_id,
+    )
+    .await?;
+    save_hourly_rollup_live_progress_tx(
+        tx.as_mut(),
+        INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DATASET,
+        INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DONE,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn backfill_missing_invocation_summary_archive_rollups(pool: &Pool<Sqlite>) -> Result<()> {
+    let archive_rows = load_invocation_archives_missing_summary_rollup_markers(pool).await?;
+    if archive_rows.is_empty() {
+        return Ok(());
+    }
+
+    let mut tx = pool.begin().await?;
+    let archive_rows = load_invocation_archives_missing_summary_rollup_markers(tx.as_mut()).await?;
+    if archive_rows.is_empty() {
+        tx.rollback().await?;
+        return Ok(());
+    }
+
+    let mut seen_ids = HashSet::new();
+    for archive_row in &archive_rows {
+        let mut targets = Vec::new();
+        if archive_row.needs_overall.unwrap_or_default() != 0 {
+            targets.push(HOURLY_ROLLUP_TARGET_INVOCATIONS);
+        }
+        if archive_row.needs_failures.unwrap_or_default() != 0 {
+            targets.push(HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES);
+        }
+        if targets.is_empty() {
+            continue;
+        }
+        if archive_row.historical_rollups_materialized_at.is_some() {
+            for target in &targets {
+                mark_hourly_rollup_archive_replayed_tx(
+                    tx.as_mut(),
+                    target,
+                    HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                    &archive_row.file_path,
+                )
+                .await?;
+            }
+            continue;
+        }
+        rebuild_invocation_summary_rollups_from_archive_batch(
+            tx.as_mut(),
+            archive_row,
+            InvocationSourceScope::All,
+            &mut seen_ids,
+            &targets,
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn query_invocation_all_time_rollup_totals(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+) -> Result<StatsTotals> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            COALESCE(SUM(total_count), 0) AS total_count,
+            COALESCE(SUM(success_count), 0) AS success_count,
+            COALESCE(SUM(failure_count), 0) AS failure_count,
+            COALESCE(SUM(total_cost), 0.0) AS total_cost,
+            COALESCE(SUM(total_tokens), 0) AS total_tokens
+        FROM invocation_rollup_hourly
+        WHERE 1 = 1
+        "#,
+    );
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    let mut totals = StatsTotals::from(query.build_query_as::<StatsRow>().fetch_one(pool).await?);
+    let live_progress_cursor =
+        load_hourly_rollup_live_progress(pool, HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
+    let repair_live_cursor = load_hourly_rollup_live_progress(
+        pool,
+        INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET,
+    )
+    .await?;
+    let tail_cursor = live_progress_cursor.max(repair_live_cursor);
+    if tail_cursor <= 0 {
+        return Ok(totals);
+    }
+
+    let tail_query = match source_scope {
+        InvocationSourceScope::ProxyOnly => format!(
+            "SELECT {} FROM codex_invocations WHERE id > ?1 AND source = ?2",
+            stats_success_failure_select_sql()
+        ),
+        InvocationSourceScope::All => format!(
+            "SELECT {} FROM codex_invocations WHERE id > ?1",
+            stats_success_failure_select_sql()
+        ),
+    };
+    let tail = match source_scope {
+        InvocationSourceScope::ProxyOnly => {
+            sqlx::query_as::<_, StatsRow>(&tail_query)
+                .bind(tail_cursor)
+                .bind(SOURCE_PROXY)
+                .fetch_one(pool)
+                .await?
+        }
+        InvocationSourceScope::All => {
+            sqlx::query_as::<_, StatsRow>(&tail_query)
+                .bind(tail_cursor)
+                .fetch_one(pool)
+                .await?
+        }
+    };
+    totals = totals.add(StatsTotals::from(tail));
+    Ok(totals)
+}
+
 pub(crate) async fn query_invocation_totals(
     pool: &Pool<Sqlite>,
     filter: StatsFilter,
     source_scope: InvocationSourceScope,
 ) -> Result<StatsTotals> {
     if matches!(filter, StatsFilter::All) {
-        let mut totals = query_invocation_hourly_rollup_totals(pool, source_scope).await?;
-        let last_row_id = sqlx::query_scalar::<_, i64>(
-            r#"
-            SELECT cursor_id
-            FROM hourly_rollup_live_progress
-            WHERE dataset = 'codex_invocations'
-            LIMIT 1
-            "#,
-        )
-        .fetch_optional(pool)
-        .await?
-        .unwrap_or_default();
-        let tail = match source_scope {
-            InvocationSourceScope::ProxyOnly => {
-                let query = format!(
-                    "SELECT {} FROM codex_invocations WHERE id > ?1 AND source = ?2",
-                    stats_success_failure_select_sql()
-                );
-                sqlx::query_as::<_, StatsRow>(&query)
-                    .bind(last_row_id)
-                    .bind(SOURCE_PROXY)
-                    .fetch_one(pool)
-                    .await?
-            }
-            InvocationSourceScope::All => {
-                let query = format!(
-                    "SELECT {} FROM codex_invocations WHERE id > ?1",
-                    stats_success_failure_select_sql()
-                );
-                sqlx::query_as::<_, StatsRow>(&query)
-                    .bind(last_row_id)
-                    .fetch_one(pool)
-                    .await?
-            }
-        };
-        totals = totals.add(StatsTotals::from(tail));
-        return Ok(totals);
+        let archive_rows = load_completed_invocation_archive_paths(pool).await?;
+        if archive_rows.is_empty() {
+            return Ok(StatsTotals::from(
+                query_stats_row(pool, StatsFilter::All, source_scope).await?,
+            ));
+        }
+
+        // Once invocation archives exist, `window=all` must use repaired hourly rollups instead of
+        // rescanning every archive on each request. The one-time repair rebuilds overall/failure
+        // rollup tables from authoritative archive + live sources, then subsequent requests only
+        // backfill newly archived batches that are still missing summary markers.
+        repair_invocation_summary_rollups(pool).await?;
+        backfill_missing_invocation_summary_archive_rollups(pool).await?;
+        return query_invocation_all_time_rollup_totals(pool, source_scope).await;
     }
 
     Ok(StatsTotals::from(
         query_stats_row(pool, filter, source_scope).await?,
     ))
-}
-
-pub(crate) async fn query_invocation_hourly_rollup_totals(
-    pool: &Pool<Sqlite>,
-    source_scope: InvocationSourceScope,
-) -> Result<StatsTotals> {
-    let row = match source_scope {
-        InvocationSourceScope::ProxyOnly => {
-            sqlx::query_as::<_, StatsRow>(
-                r#"
-                SELECT
-                    COALESCE(SUM(total_count), 0) AS total_count,
-                    COALESCE(SUM(success_count), 0) AS success_count,
-                    COALESCE(SUM(failure_count), 0) AS failure_count,
-                    COALESCE(SUM(total_cost), 0.0) AS total_cost,
-                    COALESCE(SUM(total_tokens), 0) AS total_tokens
-                FROM invocation_rollup_hourly
-                WHERE source = ?1
-                "#,
-            )
-            .bind(SOURCE_PROXY)
-            .fetch_one(pool)
-            .await?
-        }
-        InvocationSourceScope::All => {
-            sqlx::query_as::<_, StatsRow>(
-                r#"
-                SELECT
-                    COALESCE(SUM(total_count), 0) AS total_count,
-                    COALESCE(SUM(success_count), 0) AS success_count,
-                    COALESCE(SUM(failure_count), 0) AS failure_count,
-                    COALESCE(SUM(total_cost), 0.0) AS total_cost,
-                    COALESCE(SUM(total_tokens), 0) AS total_tokens
-                FROM invocation_rollup_hourly
-                "#,
-            )
-            .fetch_one(pool)
-            .await?
-        }
-    };
-    Ok(StatsTotals::from(row))
 }
 
 pub(crate) async fn query_invocation_hourly_rollup_range(

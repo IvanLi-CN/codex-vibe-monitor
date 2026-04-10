@@ -38,7 +38,10 @@ export class ApiRequestError extends Error {
   }
 }
 
-function buildRequestError(response: Response, rawText: string): ApiRequestError {
+function buildRequestError(
+  response: Response,
+  rawText: string,
+): ApiRequestError {
   const compactText = rawText.replace(/\s+/g, " ").trim();
   const detail = (compactText || response.statusText || "").slice(0, 220);
   return new ApiRequestError(
@@ -49,7 +52,10 @@ function buildRequestError(response: Response, rawText: string): ApiRequestError
   );
 }
 
-export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
+export async function fetchJson<T>(
+  path: string,
+  init?: RequestInit,
+): Promise<T> {
   const response = await fetch(withBase(path), {
     headers: {
       "Content-Type": "application/json",
@@ -466,6 +472,7 @@ export interface InvocationRecordsQuery {
   maxTotalMs?: number;
   suggestField?: InvocationSuggestionField;
   suggestQuery?: string;
+  signal?: AbortSignal;
 }
 
 export interface InvocationTokenSummary {
@@ -782,6 +789,7 @@ export async function fetchInvocationRecords(query: InvocationRecordsQuery) {
   appendInvocationRecordsQuery(search, query);
   return fetchJson<InvocationRecordsResponse>(
     `/api/invocations?${search.toString()}`,
+    { signal: query.signal },
   );
 }
 
@@ -1646,7 +1654,8 @@ function normalizePromptCacheConversationInvocationPreview(
         ? payload.serviceTier.trim()
         : undefined,
     billingServiceTier:
-      typeof payload.billingServiceTier === "string" && payload.billingServiceTier.trim()
+      typeof payload.billingServiceTier === "string" &&
+      payload.billingServiceTier.trim()
         ? payload.billingServiceTier.trim()
         : undefined,
     tReqReadMs: normalizeFiniteNumber(payload.tReqReadMs),
@@ -1855,7 +1864,9 @@ function normalizePoolRoutingTimeoutSettings(
   };
 }
 
-export function normalizeCompactSupportState(raw: unknown): CompactSupportState {
+export function normalizeCompactSupportState(
+  raw: unknown,
+): CompactSupportState {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const status =
     payload.status === "supported" || payload.status === "unsupported"
@@ -1946,7 +1957,6 @@ function normalizeSettingsPayload(raw: unknown): SettingsPayload {
     pricing: normalizePricingSettings(payload.pricing),
   };
 }
-
 
 export async function fetchVersion(): Promise<VersionResponse> {
   return fetchJson<VersionResponse>("/api/version");

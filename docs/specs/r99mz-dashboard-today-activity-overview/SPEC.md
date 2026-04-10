@@ -19,6 +19,7 @@
 - Dashboard 页面删除独立的顶部 `TodayStatsOverview` 卡，只保留合并后的 `DashboardActivityOverview`。
 - `活动总览` 范围切换升级为 `今日 / 24 小时 / 7 日 / 历史` 四段，并新增 localStorage 记忆最近一次访问的范围。
 - `今日` 范围顶部嵌入 5 个 KPI；下方图表随统一 metric toggle 切换：`次数` 显示成功正柱 / 失败负柱，`金额 / Tokens` 显示“今日整天 24 小时横轴”的累计面积图。
+- `今日 / 次数` 的前后端统计口径必须一致：成功 / 失败柱共享同一时间槽位，`running/pending` 及其瞬时失败元数据不会在初载、live patch 或归档 rollup 中被临时算作失败。
 - `24 小时 / 7 日 / 历史` 维持现有热力图 / 日历形态，仅共享头部 metric toggle，并保持按视图记忆 metric 行为不回退。
 - `活动总览` 的非激活范围改为按需挂载与按需请求：默认进入 Dashboard 只加载当前页签，未访问的 `24 小时 / 7 日 / 历史` 不再首屏预取，也不再常驻隐藏面板。
 - Dashboard 工作中对话的 prompt-cache 会话工作集必须有界：authoritative 刷新后只保留“当前响应中的 key + 仍有 live record 的 key”，selection 切换或卸载后释放旧工作集。
@@ -27,10 +28,9 @@
 
 ### Non-goals
 
-- 不修改 Rust 后端、`/api/stats/*` 响应结构、SSE 协议或统计口径。
+- 不新增统计 API、数据库 schema 或 SSE 协议字段；后端改动仅限于现有 summary / timeseries / rollup 的口径校正与 live/archive 一致性修复。
 - 不把 `24 小时 / 7 日 / 历史` 的可视化统一重写成折线 / 面积图；它们继续沿用现有热力图 / 日历方案。
 - 不把每个范围的 metric 选择写入 localStorage；本轮只持久化最近一次访问的范围。
-- 不自动 merge 或执行 post-merge cleanup。
 
 ## 范围（Scope）
 
@@ -40,7 +40,10 @@
 - `web/src/components/DashboardActivityOverview.tsx`：新增 `today` 范围、范围持久化与嵌入式今日面板。
 - `web/src/components/TodayStatsOverview.tsx`：支持嵌入模式，便于在“今日”页签内复用 KPI 行。
 - `web/src/components/DashboardTodayActivityChart.tsx`：新增分钟级今日图表组件，负责柱状 / 累计面积两种模式。
+- `web/src/hooks/useTimeseries.ts` 与相关 API typings：修正 live patch、in-flight seed 分页快照与 remount/live delta 去重，避免同一 invocation 在今日次数图中重复累计。
+- `src/api/slices/prompt_cache_and_timeseries.rs`、`src/api/slices/invocations_and_summary.rs`、`src/stats/mod.rs`、`src/maintenance/archive.rs`：统一 `running/pending`、legacy `http_200` 与 archive rollup 的 success/failure/TTFB 统计口径。
 - `web/src/components/*.stories.tsx`、相关 Vitest：补齐四段切换、今日图表、页面级 Dashboard 的稳定 Storybook 与回归覆盖。
+- `src/tests/slices/pool_failover_window_*.rs`：补齐 summary / timeseries / hourly rollup / archive 相关回归测试。
 - `docs/specs/README.md` 与本 spec：登记新 follow-up，并承载后续视觉证据。
 
 ### Out of scope
@@ -55,6 +58,8 @@
 - Given 查看 `活动总览` 范围切换，When 进入页面，Then 显示 `今日 / 24 小时 / 7 日 / 历史` 四段；首次进入默认 `今日`，之后优先恢复最近一次访问的范围；localStorage 值非法时回退到 `今日`。
 - Given 处于 `今日` 视图，When 查看总览内容，Then 顶部显示 5 个 KPI、下方显示一张分钟级图表；`24 小时 / 7 日` 仍显示既有 KPI + 热力图；`历史` 仍只显示半年日历。
 - Given `今日` 视图切到 `次数`，When 查看图表，Then 每个时间桶的成功 / 失败柱共享同一 X 槽位，成功柱位于 0 轴上方、失败柱位于 0 轴下方，tooltip 同时给出成功 / 失败 / 总数。
+- Given `今日 / 次数` 存在 `running/pending` live row 或带失败元数据的临时态，When 页面初载、silent refresh、SSE 多次更新或数据归档后重新读取，Then 这些非终态记录都不会被计入 failure；只有终态失败才会进入失败柱与失败汇总。
+- Given in-flight seed 需要跨多页抓取 `running/pending` 记录，When 前端顺序拉取后续页，Then 所有页都复用第一页返回的 `snapshotId`，不会因底层集合变化而重复或漏算 seeded live delta。
 - Given `今日` 视图切到 `金额` 或 `Tokens`，When 查看图表，Then 图表切换为“今日整天 24 小时横轴”的累计面积图；未来分钟不渲染，缺失分钟补 0 以保持曲线连续。
 - Given 在四个范围间切换 `次数 / 金额 / Tokens`，When 来回切换范围，Then 每个范围仍保留各自上次选中的 metric。
 - Given 默认进入 `/dashboard`，When 页面首次完成 hydration，Then 仅当前 active range 对应的数据请求会首屏触发，未访问的隐藏范围不会提前发起 summary / timeseries 请求。
@@ -75,6 +80,11 @@
 
 - Frontend targeted tests:
   - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bunx vitest run src/components/DashboardTodayActivityChart.test.tsx src/components/TodayStatsOverview.test.tsx src/components/DashboardActivityOverview.test.tsx src/pages/Dashboard.test.tsx src/hooks/useTimeseries.test.ts`
+- Backend targeted tests:
+  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test timeseries_and_summary_do_not_treat_running_rows_with_failure_metadata_as_failures -- --nocapture`
+  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test invocation_hourly_rollup_ignores_running_and_pending_for_failure_counts -- --nocapture`
+  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test invocation_hourly_rollup_excludes_structured_legacy_http_200_failures_from_ttfb_samples -- --nocapture`
+  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test all_time_summary_preserves_archived_history_when_rollup_failures_are_stale -- --nocapture`
 - Storybook build:
   - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run build-storybook`
 
@@ -83,6 +93,7 @@
 - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run test`
 - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run build`
 - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run build-storybook`
+- `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test timeseries_and_summary_do_not_treat_running_rows_with_failure_metadata_as_failures -- --nocapture && cargo test invocation_hourly_rollup_ignores_running_and_pending_for_failure_counts -- --nocapture && cargo test invocation_hourly_rollup_excludes_structured_legacy_http_200_failures_from_ttfb_samples -- --nocapture && cargo test all_time_summary_preserves_archived_history_when_rollup_failures_are_stale -- --nocapture`
 - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun -e 'import { mergePromptCacheConversationHistory } from "./src/lib/promptCacheLive.ts"; /* high-churn boundedness smoke */'`
 
 ## 文档更新（Docs to Update）
@@ -103,16 +114,17 @@
 - [x] M3: 实现 `DashboardTodayActivityChart` 与 `TodayStatsOverview` 嵌入模式，接入今日 summary / timeseries。
 - [x] M4: 补齐 Dashboard / ActivityOverview / Today chart / Today KPI 的 Storybook 与 Vitest 覆盖。
 - [x] M5: 完成本地全量验证与视觉证据归档。
-- [ ] M6: fast-track 推进到 PR merge-ready。
+- [ ] M6: fast-track 推进到 merge+cleanup。
 
 ## 方案概述（Approach, high-level）
 
 - 复用现有 `useSummary('today')` 与 `useTimeseries('today', { bucket: '1m' })`，不动后端 API，仅在前端把“今日”作为总览的第四个内嵌视图；今日 KPI 与图表都保持“今日”语义，但图表横轴扩展为整天 24 小时。
 - `TodayStatsOverview` 通过 `showSurface / showHeader / showDayBadge` 拆成可复用内容层，使它既能作为独立卡，也能作为总览内嵌 KPI 区块。
-- `DashboardTodayActivityChart` 负责将分钟序列补齐到“本地自然日 00:00 -> 23:59”的完整横轴，`次数` 模式用正负柱对齐成功 / 失败语义，`金额 / Tokens` 模式将每分钟增量累积为面积图；当前时刻之后的未来分钟只保留横轴空间，不渲染柱 / 面积。
+- `DashboardTodayActivityChart` 负责将分钟序列补齐到“本地自然日 00:00 -> 23:59”的完整横轴，`次数` 模式用重叠 category slot 的正负柱对齐成功 / 失败语义，`金额 / Tokens` 模式将每分钟增量累积为面积图；当前时刻之后的未来分钟只保留横轴空间，不渲染柱 / 面积。
 - `DashboardActivityOverview` 继续保留按范围记忆 metric 的行为，并新增最近访问范围的 localStorage 恢复；非法或不可用值统一回退到 `today`。
 - `DashboardActivityOverview` 的各范围面板改成只在 active range 时挂载，并把对应 summary / timeseries 请求下沉到面板内部，避免隐藏页签常驻 hook / timer / 请求。
 - `usePromptCacheConversations` 通过 bounded history + live-record pinning 维护当前工作集；authoritative 刷新、selection 切换与卸载都会主动裁剪旧 key，防止长时间停留时因历史 churn 导致内存累积。
+- `useTimeseries` 对同一 invocation 的 live delta 采用“减旧加新”，并在 in-flight seed 跨页抓取时固定第一页 `snapshotId`；后端 summary / timeseries / archive rollup 统一把非终态从 failure 口径中排除，同时让 legacy `http_200` 的 success-like / latency 规则在 live 与 archive 路径保持一致。
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
@@ -134,36 +146,17 @@
 - 2026-04-09: 修正 `今日` 页签分钟图的时间语义：保留“今日”自然日范围，但将横轴扩展为当天完整 24 小时；当前时刻之后的未来分钟不渲染，从而避免图表只占用 `00:00 -> 当前时间` 的前半段宽度。
 - 2026-04-09: 刷新 Storybook 证据夹具与截图，确保 `今日 / 金额` 图的累计终值与 KPI 总成本一致，不再出现 `US$539.42` KPI 对应 `US$58` 曲线终点的错图。
 - 2026-04-10: 修复 `今日 / 次数` 柱状图的双系列对位与 live failure 口径：成功 / 失败柱现在通过重叠 category slot 共用同一时间槽位并围绕 0 轴对称渲染；前后端 live 聚合同时排除 `running/pending` 的临时失败计数，避免失败柱短时异常拉长后再回落。
+- 2026-04-10: 根据 fresh review 继续补齐稳定性修复：前端 in-flight seed 分页改为复用第一页 `snapshotId`，避免多页 `running/pending` 抓取在高 churn 下重复或漏算；同一 invocation 的 live patch 继续维持“减旧加新”而不是反复叠加。
+- 2026-04-10: 对齐 authoritative/live/archive 三条统计路径：`src/api/slices/prompt_cache_and_timeseries.rs`、`src/stats/mod.rs` 与 `src/maintenance/archive.rs` 统一把带失败元数据的 `running/pending` 排除在 failure 汇总之外，并让 structured legacy `http_200` failure 不再误入 archived success-like TTFB / pruned-success 判定。
 
 ## Visual Evidence
 
-- Source: Storybook canvas（mock-only）
-- Validation: `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run test`、`bun run build`、`bun run build-storybook`
-
-### 1. 活动总览：今日 / 次数（成功正柱，失败负柱）
-
-![活动总览：今日 / 次数](./assets/dashboard-today-activity-chart-count-paired.png)
-
-### 2. 活动总览：今日 / 金额累计
-
-![活动总览：今日 / 金额累计](./assets/dashboard-activity-overview-today-cost.png)
-
-### 3. KPI 溢出紧凑记数法
-
-![KPI 溢出紧凑记数法](./assets/today-stats-overflow.png)
-
-### 4. 活动总览：历史
-
-![活动总览：历史](./assets/dashboard-activity-overview-history.png)
-
-### 5. Dashboard 页面默认态
-
-![Dashboard 页面默认态](./assets/dashboard-page-default.png)
-
-### 6. 活动总览：按需加载后的今日默认态
-
-![活动总览：按需加载后的今日默认态](./assets/dashboard-activity-overview-lazy-today.png)
-
-### 7. 活动总览：按需加载后的 7 日态
-
-![活动总览：按需加载后的 7 日态](./assets/dashboard-activity-overview-lazy-7d.png)
+- Storybook覆盖=通过
+- 视觉证据目标源=storybook_canvas（mock-only）
+- Validation: `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run test`、`bun run build`、`bun run build-storybook`；`cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test timeseries_and_summary_do_not_treat_running_rows_with_failure_metadata_as_failures -- --nocapture && cargo test invocation_hourly_rollup_ignores_running_and_pending_for_failure_counts -- --nocapture && cargo test invocation_hourly_rollup_excludes_structured_legacy_http_200_failures_from_ttfb_samples -- --nocapture && cargo test all_time_summary_preserves_archived_history_when_rollup_failures_are_stale -- --nocapture`
+- Story id: `dashboard-dashboardtodayactivitychart--count-bars-dense-pairing`
+- Scenario: `今日 / 次数` 高密度 minute bucket，对齐验证 success / in-flight / failure 共用同一时间槽位并围绕 0 轴展开。
+- Evidence note: 验证柱子不再左右错位；`running/pending` 与其临时失败元数据不会把 failure 柱短时拉长后再回落。
+- 聊天回图=已展示（本轮使用本地裁剪后的 Storybook canvas 截图完成 owner review）
+- 证据落盘=未落盘（本次未提交新的截图文件，避免在未获主人截图提交授权前把 refreshed capture 推上远端）
+- Stale evidence handling: 本节已移除旧的静态图片引用，避免在本轮 `今日 / 次数` 语义变更后继续保留过期截图引用。

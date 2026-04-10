@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it } from "vitest";
-import type { TimeseriesResponse } from "../lib/api";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ApiInvocation, TimeseriesResponse } from "../lib/api";
 import {
   clearTimeseriesRemountCache,
   TIMESERIES_OPEN_RESYNC_COOLDOWN_MS,
@@ -7,6 +7,7 @@ import {
   TIMESERIES_RECORDS_RESYNC_THROTTLE_MS,
   applyRecordsToCurrentDayBucket,
   applyRecordsToTimeseries,
+  fetchAllInvocationRecordPages,
   getCurrentDayBucketEndEpoch,
   getLocalDayStartEpoch,
   getNextLocalDayStartEpoch,
@@ -15,12 +16,17 @@ import {
   mergePendingTimeseriesSilentOption,
   readTimeseriesRemountCache,
   resolveTimeseriesSyncPolicy,
+  resolveCurrentDayLiveSeedEpoch,
   shouldEnableTimeseriesRemountCache,
   shouldReuseTimeseriesRemountCache,
   shouldPatchCurrentDayBucketOnRecordsEvent,
   shouldResyncForCurrentDayBucket,
   shouldResyncOnRecordsEvent,
   shouldTriggerTimeseriesOpenResync,
+  seedCurrentDayLiveRecordDeltas,
+  seedTimeseriesLiveRecordDeltas,
+  upsertCurrentDayLiveRecord,
+  upsertTimeseriesLiveRecord,
   writeTimeseriesRemountCache,
 } from "./useTimeseries";
 
@@ -151,7 +157,7 @@ describe("useTimeseries current-day bucket patching", () => {
     });
   });
 
-  it("does not treat running or pending snapshots as temporary failures", () => {
+  it("does not treat running or pending snapshots with failure metadata as temporary failures", () => {
     const next = applyRecordsToCurrentDayBucket(
       base,
       [
@@ -160,6 +166,10 @@ describe("useTimeseries current-day bucket patching", () => {
           invokeId: "today-running",
           occurredAt: "2026-03-06T08:31:00Z",
           status: "running",
+          errorMessage:
+            "[upstream_response_failed] upstream response stream reported failure",
+          failureKind: "upstream_response_failed",
+          failureClass: "service_failure",
           totalTokens: 0,
           cost: 0,
           createdAt: "2026-03-06T08:31:00Z",
@@ -169,6 +179,10 @@ describe("useTimeseries current-day bucket patching", () => {
           invokeId: "today-pending",
           occurredAt: "2026-03-06T08:32:00Z",
           status: "pending",
+          errorMessage:
+            "[downstream_closed] downstream closed while streaming upstream response",
+          failureKind: "downstream_closed",
+          failureClass: "client_abort",
           totalTokens: 0,
           cost: 0,
           createdAt: "2026-03-06T08:32:00Z",
@@ -182,6 +196,121 @@ describe("useTimeseries current-day bucket patching", () => {
       successCount: 1,
       failureCount: 0,
     });
+  });
+
+  it("treats legacy http_200 rows without errors as success-like", () => {
+    const next = applyRecordsToCurrentDayBucket(
+      base,
+      [
+        {
+          id: 5,
+          invokeId: "today-http-200-success-like",
+          occurredAt: "2026-03-06T08:33:00Z",
+          status: "http_200",
+          downstreamStatusCode: 200,
+          totalTokens: 15,
+          cost: 0.15,
+          createdAt: "2026-03-06T08:33:00Z",
+        },
+        {
+          id: 6,
+          invokeId: "today-http-200-failed",
+          occurredAt: "2026-03-06T08:34:00Z",
+          status: "http_200",
+          errorMessage: "upstream parse failed",
+          totalTokens: 9,
+          cost: 0.09,
+          createdAt: "2026-03-06T08:34:00Z",
+        },
+      ],
+      Math.floor(Date.parse("2026-03-06T12:00:00Z") / 1000),
+    );
+
+    expect(next?.points[1]).toMatchObject({
+      totalCount: 3,
+      successCount: 2,
+      failureCount: 1,
+      totalTokens: 124,
+      totalCost: 0.74,
+    });
+  });
+
+  it("replaces a seeded current-day in-flight delta when the same invocation settles", () => {
+    const runningRecord = {
+      id: 30,
+      invokeId: "today-running",
+      occurredAt: "2026-03-06T08:31:00Z",
+      status: "running",
+      totalTokens: 0,
+      cost: 0,
+      createdAt: "2026-03-06T08:31:00Z",
+    };
+    const settledRecord = {
+      ...runningRecord,
+      status: "success",
+      totalTokens: 25,
+      cost: 0.2,
+    };
+    const current: TimeseriesResponse = {
+      ...base,
+      points: [
+        base.points[0],
+        {
+          ...base.points[1],
+          totalCount: 2,
+          successCount: 1,
+          failureCount: 0,
+          totalTokens: 125,
+          totalCost: 0.5,
+        },
+      ],
+    };
+
+    const seeded = seedCurrentDayLiveRecordDeltas(
+      current,
+      [runningRecord],
+      Math.floor(Date.parse("2026-03-06T12:00:00Z") / 1000),
+    );
+    const result = upsertCurrentDayLiveRecord(
+      current,
+      settledRecord,
+      seeded.get("today-running-2026-03-06T08:31:00Z") ?? null,
+      Math.floor(Date.parse("2026-03-06T12:00:00Z") / 1000),
+    );
+
+    expect(result.next?.points[1]).toMatchObject({
+      totalCount: 2,
+      successCount: 2,
+      failureCount: 0,
+      totalTokens: 150,
+      totalCost: 0.7,
+    });
+  });
+
+  it("seeds current-day in-flight deltas from the active day instead of the next bucket boundary", () => {
+    const runningRecord = {
+      id: 31,
+      invokeId: "today-running-seed",
+      occurredAt: "2026-03-06T08:31:00Z",
+      status: "running",
+      totalTokens: 0,
+      cost: 0,
+      createdAt: "2026-03-06T08:31:00Z",
+    };
+
+    const seeded = seedCurrentDayLiveRecordDeltas(
+      base,
+      [runningRecord],
+      resolveCurrentDayLiveSeedEpoch(base),
+    );
+
+    expect(seeded.get("today-running-seed-2026-03-06T08:31:00Z")).toMatchObject(
+      {
+        totalCount: 1,
+        successCount: 0,
+        failureCount: 0,
+      },
+    );
   });
 
   it("requests a full resync when the current day is no longer covered", () => {
@@ -297,7 +426,7 @@ describe("useTimeseries natural-day range patching", () => {
     expect(previousDayStart.getTime()).toBeLessThan(currentDayStart.getTime());
   });
 
-  it("counts running local live records toward totals without painting them as failures", () => {
+  it("counts running local live records toward totals without painting provisional failure metadata as failures", () => {
     const current: TimeseriesResponse = {
       rangeStart: new Date(2026, 3, 8, 0, 0, 0)
         .toISOString()
@@ -319,6 +448,10 @@ describe("useTimeseries natural-day range patching", () => {
             .toISOString()
             .replace(/\.\d{3}Z$/, "Z"),
           status: "running",
+          errorMessage:
+            "[upstream_response_failed] upstream response stream reported failure",
+          failureKind: "upstream_response_failed",
+          failureClass: "service_failure",
           totalTokens: 0,
           cost: 0,
           createdAt: new Date(2026, 3, 8, 0, 1, 15)
@@ -336,6 +469,268 @@ describe("useTimeseries natural-day range patching", () => {
       totalCount: 1,
       successCount: 0,
       failureCount: 0,
+    });
+  });
+
+  it("keeps a running SSE row with provisional failure metadata out of local failure buckets", () => {
+    const current: TimeseriesResponse = {
+      rangeStart: new Date(2026, 3, 8, 0, 0, 0)
+        .toISOString()
+        .replace(/\.\d{3}Z$/, "Z"),
+      rangeEnd: new Date(2026, 3, 8, 0, 3, 0)
+        .toISOString()
+        .replace(/\.\d{3}Z$/, "Z"),
+      bucketSeconds: 60,
+      points: [],
+    };
+
+    const result = upsertTimeseriesLiveRecord(
+      current,
+      {
+        id: 12,
+        invokeId: "live-running-sse",
+        occurredAt: new Date(2026, 3, 8, 0, 1, 30)
+          .toISOString()
+          .replace(/\.\d{3}Z$/, "Z"),
+        status: "running",
+        errorMessage:
+          "[upstream_response_failed] upstream response stream reported failure",
+        failureKind: "upstream_response_failed",
+        failureClass: "service_failure",
+        totalTokens: 0,
+        cost: 0,
+        createdAt: new Date(2026, 3, 8, 0, 1, 30)
+          .toISOString()
+          .replace(/\.\d{3}Z$/, "Z"),
+      },
+      null,
+      {
+        range: "today",
+        bucketSeconds: 60,
+      },
+    );
+
+    expect(result.next?.points[0]).toMatchObject({
+      totalCount: 1,
+      successCount: 0,
+      failureCount: 0,
+      totalTokens: 0,
+      totalCost: 0,
+    });
+  });
+
+  it("replaces a seeded in-flight local delta when the same invocation settles", () => {
+    const current: TimeseriesResponse = {
+      rangeStart: new Date(2026, 3, 8, 0, 0, 0)
+        .toISOString()
+        .replace(/\.\d{3}Z$/, "Z"),
+      rangeEnd: new Date(2026, 3, 8, 0, 3, 0)
+        .toISOString()
+        .replace(/\.\d{3}Z$/, "Z"),
+      bucketSeconds: 60,
+      points: [
+        {
+          bucketStart: new Date(2026, 3, 8, 0, 1, 0)
+            .toISOString()
+            .replace(/\.\d{3}Z$/, "Z"),
+          bucketEnd: new Date(2026, 3, 8, 0, 2, 0)
+            .toISOString()
+            .replace(/\.\d{3}Z$/, "Z"),
+          totalCount: 1,
+          successCount: 0,
+          failureCount: 0,
+          totalTokens: 0,
+          totalCost: 0,
+        },
+      ],
+    };
+    const runningRecord = {
+      id: 41,
+      invokeId: "live-running",
+      occurredAt: new Date(2026, 3, 8, 0, 1, 15)
+        .toISOString()
+        .replace(/\.\d{3}Z$/, "Z"),
+      status: "running",
+      totalTokens: 0,
+      cost: 0,
+      createdAt: new Date(2026, 3, 8, 0, 1, 15)
+        .toISOString()
+        .replace(/\.\d{3}Z$/, "Z"),
+    };
+    const settledRecord = {
+      ...runningRecord,
+      status: "failed",
+      totalTokens: 22,
+      cost: 0.18,
+      errorMessage: "upstream stream error",
+      failureKind: "upstream_stream_error",
+    };
+
+    const seeded = seedTimeseriesLiveRecordDeltas(current, [runningRecord], {
+      range: "today",
+      bucketSeconds: 60,
+    });
+    const result = upsertTimeseriesLiveRecord(
+      current,
+      settledRecord,
+      seeded.get(settledRecord.invokeId + "-" + settledRecord.occurredAt) ??
+        null,
+      {
+        range: "today",
+        bucketSeconds: 60,
+      },
+    );
+
+    expect(result.next?.points[0]).toMatchObject({
+      totalCount: 1,
+      successCount: 0,
+      failureCount: 1,
+      totalTokens: 22,
+      totalCost: 0.18,
+    });
+  });
+
+  it("adds settled token and cost totals when a counts-only placeholder shares a bucket with other requests", () => {
+    const current: TimeseriesResponse = {
+      rangeStart: "2026-03-08T00:00:00Z",
+      rangeEnd: "2026-03-08T00:03:00Z",
+      bucketSeconds: 60,
+      points: [
+        {
+          bucketStart: "2026-03-08T00:01:00Z",
+          bucketEnd: "2026-03-08T00:02:00Z",
+          totalCount: 2,
+          successCount: 1,
+          failureCount: 0,
+          totalTokens: 100,
+          totalCost: 1,
+        },
+      ],
+    };
+    const settledRecord: ApiInvocation = {
+      id: 77,
+      invokeId: "counts-only-shared-bucket",
+      occurredAt: "2026-03-08T00:01:15Z",
+      status: "success",
+      totalTokens: 22,
+      cost: 0.18,
+      createdAt: "2026-03-08T00:01:15Z",
+    };
+
+    const result = upsertTimeseriesLiveRecord(
+      current,
+      settledRecord,
+      {
+        bucketStart: "2026-03-08T00:01:00Z",
+        bucketEnd: "2026-03-08T00:02:00Z",
+        bucketStartEpoch: Date.parse("2026-03-08T00:01:00Z") / 1000,
+        bucketEndEpoch: Date.parse("2026-03-08T00:02:00Z") / 1000,
+        totalCount: 1,
+        successCount: 0,
+        failureCount: 0,
+        totalTokens: 0,
+        totalCost: 0,
+        countsOnly: true,
+      },
+      {
+        range: "today",
+        bucketSeconds: 60,
+      },
+    );
+
+    expect(result.next?.points[0]).toMatchObject({
+      totalCount: 2,
+      successCount: 2,
+      failureCount: 0,
+      totalTokens: 122,
+      totalCost: 1.18,
+    });
+  });
+});
+
+describe("useTimeseries in-flight seeding pagination", () => {
+  it("pages through all in-flight records against the first page snapshot", async () => {
+    const fetchPage = vi
+      .fn()
+      .mockResolvedValueOnce({
+        snapshotId: 1,
+        total: 3,
+        page: 1,
+        pageSize: 2,
+        records: [
+          {
+            id: 1,
+            invokeId: "running-1",
+            occurredAt: "2026-03-08T00:01:15Z",
+            status: "running",
+            totalTokens: 0,
+            cost: 0,
+            createdAt: "2026-03-08T00:01:15Z",
+          },
+          {
+            id: 2,
+            invokeId: "running-2",
+            occurredAt: "2026-03-08T00:01:30Z",
+            status: "running",
+            totalTokens: 0,
+            cost: 0,
+            createdAt: "2026-03-08T00:01:30Z",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        snapshotId: 1,
+        total: 3,
+        page: 2,
+        pageSize: 2,
+        records: [
+          {
+            id: 3,
+            invokeId: "running-3",
+            occurredAt: "2026-03-08T00:01:45Z",
+            status: "running",
+            totalTokens: 0,
+            cost: 0,
+            createdAt: "2026-03-08T00:01:45Z",
+          },
+        ],
+      });
+
+    const records = await fetchAllInvocationRecordPages(
+      {
+        from: "2026-03-08T00:00:00Z",
+        to: "2026-03-08T00:03:00Z",
+        status: "running",
+        sortBy: "occurredAt",
+        sortOrder: "desc",
+      },
+      fetchPage,
+      2,
+    );
+
+    expect(records.map((record) => record.invokeId)).toEqual([
+      "running-1",
+      "running-2",
+      "running-3",
+    ]);
+    expect(fetchPage).toHaveBeenNthCalledWith(1, {
+      from: "2026-03-08T00:00:00Z",
+      to: "2026-03-08T00:03:00Z",
+      status: "running",
+      sortBy: "occurredAt",
+      sortOrder: "desc",
+      page: 1,
+      pageSize: 2,
+    });
+    expect(fetchPage).toHaveBeenNthCalledWith(2, {
+      from: "2026-03-08T00:00:00Z",
+      to: "2026-03-08T00:03:00Z",
+      status: "running",
+      sortBy: "occurredAt",
+      sortOrder: "desc",
+      page: 2,
+      pageSize: 2,
+      snapshotId: 1,
     });
   });
 });
@@ -376,16 +771,48 @@ describe("useTimeseries refresh coordination helpers", () => {
       bucketSeconds: 60,
       points: [],
     };
+    const liveRecordDeltas = new Map([
+      [
+        "invoke-1-2026-04-08T00:00:30Z",
+        {
+          bucketStart: "2026-04-08T00:00:00Z",
+          bucketEnd: "2026-04-08T00:01:00Z",
+          bucketStartEpoch: 1_744_070_400,
+          bucketEndEpoch: 1_744_070_460,
+          totalCount: 1,
+          successCount: 0,
+          failureCount: 0,
+          totalTokens: 0,
+          totalCost: 0,
+        },
+      ],
+    ]);
 
-    writeTimeseriesRemountCache("1d", { bucket: "1m" }, response, 12_345);
+    writeTimeseriesRemountCache(
+      "1d",
+      { bucket: "1m" },
+      response,
+      12_345,
+      liveRecordDeltas,
+    );
 
     expect(getTimeseriesRemountCacheKey("1d", { bucket: "1m" })).toBe(
       JSON.stringify(["1d", "1m", null, false]),
     );
-    expect(readTimeseriesRemountCache("1d", { bucket: "1m" }, 12_346)).toEqual({
+    const cached = readTimeseriesRemountCache("1d", { bucket: "1m" }, 12_346);
+    expect(cached).toEqual({
       data: response,
       cachedAt: 12_345,
+      liveRecordDeltas,
+      untrackedInFlightCounts: new Map(),
     });
+    expect(cached?.data).not.toBe(response);
+    expect(cached?.liveRecordDeltas).not.toBe(liveRecordDeltas);
+    liveRecordDeltas.get("invoke-1-2026-04-08T00:00:30Z")!.failureCount = 99;
+    expect(
+      cached?.liveRecordDeltas.get("invoke-1-2026-04-08T00:00:30Z")
+        ?.failureCount,
+    ).toBe(0);
   });
 
   it("disables remount caching for current and today timeseries", () => {
