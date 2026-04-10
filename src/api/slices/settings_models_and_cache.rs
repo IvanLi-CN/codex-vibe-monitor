@@ -169,6 +169,7 @@ pub(crate) struct TimeseriesResponse {
     pub(crate) range_start: String,
     pub(crate) range_end: String,
     pub(crate) bucket_seconds: i64,
+    pub(crate) snapshot_id: i64,
     pub(crate) effective_bucket: String,
     pub(crate) available_buckets: Vec<String>,
     pub(crate) bucket_limited_to_daily: bool,

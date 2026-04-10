@@ -240,6 +240,34 @@ describe("useTimeseries current-day bucket patching", () => {
     });
   });
 
+  it("ignores downstream-only metadata when classifying live outcomes", () => {
+    const next = applyRecordsToCurrentDayBucket(
+      base,
+      [
+        {
+          id: 7,
+          invokeId: "today-success-downstream-only",
+          occurredAt: "2026-03-06T08:33:30Z",
+          status: "success",
+          downstreamStatusCode: 502,
+          downstreamErrorMessage: "socket closed after response",
+          totalTokens: 15,
+          cost: 0.15,
+          createdAt: "2026-03-06T08:33:30Z",
+        },
+      ],
+      Math.floor(Date.parse("2026-03-06T12:00:00Z") / 1000),
+    );
+
+    expect(next?.points[1]).toMatchObject({
+      totalCount: 2,
+      successCount: 2,
+      failureCount: 0,
+      totalTokens: 115,
+      totalCost: 0.65,
+    });
+  });
+
   it("replaces a seeded current-day in-flight delta when the same invocation settles", () => {
     const runningRecord = {
       id: 30,
@@ -290,6 +318,62 @@ describe("useTimeseries current-day bucket patching", () => {
       totalTokens: 150,
       totalCost: 0.7,
     });
+  });
+
+  it("subtracts a pre-midnight placeholder from its original bucket when it settles after midnight", () => {
+    const current: TimeseriesResponse = {
+      ...base,
+      points: [
+        {
+          ...base.points[0],
+          totalCount: 5,
+          successCount: 3,
+          failureCount: 1,
+          totalTokens: 400,
+          totalCost: 2,
+        },
+        base.points[1],
+      ],
+    };
+    const previousDelta = {
+      recordId: 40,
+      bucketStart: base.points[0].bucketStart,
+      bucketEnd: base.points[0].bucketEnd,
+      bucketStartEpoch: Math.floor(Date.parse(base.points[0].bucketStart) / 1000),
+      bucketEndEpoch: Math.floor(Date.parse(base.points[0].bucketEnd) / 1000),
+      totalCount: 1,
+      successCount: 0,
+      failureCount: 0,
+      totalTokens: 0,
+      totalCost: 0,
+      countsOnly: true,
+    };
+    const settledRecord = {
+      id: 40,
+      invokeId: "overnight-running",
+      occurredAt: "2026-03-05T23:59:30Z",
+      status: "success",
+      totalTokens: 10,
+      cost: 0.1,
+      createdAt: "2026-03-05T23:59:30Z",
+    };
+
+    const result = upsertCurrentDayLiveRecord(
+      current,
+      settledRecord,
+      previousDelta,
+      Math.floor(Date.parse("2026-03-06T00:01:00Z") / 1000),
+    );
+
+    expect(result.delta).toBeNull();
+    expect(result.next?.points[0]).toMatchObject({
+      totalCount: 4,
+      successCount: 3,
+      failureCount: 1,
+      totalTokens: 400,
+      totalCost: 2,
+    });
+    expect(result.next?.points[1]).toEqual(base.points[1]);
   });
 
   it("seeds current-day in-flight deltas from the active day instead of the next bucket boundary", () => {
@@ -651,6 +735,63 @@ describe("useTimeseries natural-day range patching", () => {
       totalCost: 1.18,
     });
   });
+
+  it("reconciles provisional token and cost totals when an anonymous placeholder bucket settles", () => {
+    const current: TimeseriesResponse = {
+      rangeStart: "2026-03-08T00:00:00Z",
+      rangeEnd: "2026-03-08T00:03:00Z",
+      bucketSeconds: 60,
+      points: [
+        {
+          bucketStart: "2026-03-08T00:01:00Z",
+          bucketEnd: "2026-03-08T00:02:00Z",
+          totalCount: 1,
+          successCount: 0,
+          failureCount: 0,
+          totalTokens: 10,
+          totalCost: 0.05,
+        },
+      ],
+    };
+    const settledRecord: ApiInvocation = {
+      id: 78,
+      invokeId: "counts-only-standalone-bucket",
+      occurredAt: "2026-03-08T00:01:15Z",
+      status: "success",
+      totalTokens: 22,
+      cost: 0.18,
+      createdAt: "2026-03-08T00:01:15Z",
+    };
+
+    const result = upsertTimeseriesLiveRecord(
+      current,
+      settledRecord,
+      {
+        bucketStart: "2026-03-08T00:01:00Z",
+        bucketEnd: "2026-03-08T00:02:00Z",
+        bucketStartEpoch: Date.parse("2026-03-08T00:01:00Z") / 1000,
+        bucketEndEpoch: Date.parse("2026-03-08T00:02:00Z") / 1000,
+        totalCount: 1,
+        successCount: 0,
+        failureCount: 0,
+        totalTokens: 0,
+        totalCost: 0,
+        countsOnly: true,
+      },
+      {
+        range: "today",
+        bucketSeconds: 60,
+      },
+    );
+
+    expect(result.delta?.totalTokens).toBe(12);
+    expect(result.delta?.totalCost ?? 0).toBeCloseTo(0.13);
+    expect(result.next?.points[0]?.totalCount).toBe(1);
+    expect(result.next?.points[0]?.successCount).toBe(1);
+    expect(result.next?.points[0]?.failureCount).toBe(0);
+    expect(result.next?.points[0]?.totalTokens).toBe(22);
+    expect(result.next?.points[0]?.totalCost ?? 0).toBeCloseTo(0.18);
+  });
 });
 
 describe("useTimeseries in-flight seeding pagination", () => {
@@ -782,6 +923,7 @@ describe("useTimeseries in-flight seeding pagination", () => {
         rangeStart: "2026-03-08T00:00:00Z",
         rangeEnd: "2026-03-08T00:03:00Z",
         bucketSeconds: 60,
+        snapshotId: 9,
         points: [],
       },
       undefined,
@@ -801,6 +943,7 @@ describe("useTimeseries in-flight seeding pagination", () => {
       page: 1,
       pageSize: 500,
       signal: undefined,
+      snapshotId: 9,
     });
     expect(fetchPage).toHaveBeenNthCalledWith(2, {
       from: "2026-03-08T00:00:00Z",
@@ -893,7 +1036,7 @@ describe("useTimeseries refresh coordination helpers", () => {
       liveRecordDeltas,
       settledLiveRecordUpdatedAt,
       untrackedInFlightCounts: new Map(),
-      untrackedInFlightClaimUpperBoundMs: 12_300,
+      untrackedInFlightClaimSnapshotId: 12_300,
     });
     expect(cached?.data).not.toBe(response);
     expect(cached?.liveRecordDeltas).not.toBe(liveRecordDeltas);
@@ -941,6 +1084,9 @@ describe("useTimeseries refresh coordination helpers", () => {
   });
 
   it("reuses remount cache only inside the ttl window", () => {
+    expect(TIMESERIES_REMOUNT_CACHE_TTL_MS).toBeGreaterThanOrEqual(
+      TIMESERIES_SETTLED_LIVE_DELTA_TTL_MS,
+    );
     expect(
       shouldReuseTimeseriesRemountCache(
         5_000,
@@ -969,6 +1115,53 @@ describe("useTimeseries refresh coordination helpers", () => {
         "1d",
         { bucket: "1m" },
         2_000 + TIMESERIES_REMOUNT_CACHE_TTL_MS,
+      ),
+    ).toBeNull();
+  });
+
+  it("preserves remount cache across the settled live-delta dedupe window", () => {
+    const response: TimeseriesResponse = {
+      rangeStart: "2026-04-08T00:00:00Z",
+      rangeEnd: "2026-04-08T00:01:00Z",
+      bucketSeconds: 60,
+      points: [],
+    };
+    writeTimeseriesRemountCache(
+      "1d",
+      { bucket: "1m" },
+      response,
+      2_000,
+      new Map([
+        [
+          "invoke-1",
+          {
+            bucketStart: "2026-04-08T00:00:00Z",
+            bucketEnd: "2026-04-08T00:01:00Z",
+            bucketStartEpoch: 1_744_070_400,
+            bucketEndEpoch: 1_744_070_460,
+            totalCount: 1,
+            successCount: 1,
+            failureCount: 0,
+            totalTokens: 10,
+            totalCost: 0.1,
+          },
+        ],
+      ]),
+      new Map([["invoke-1", 2_000]]),
+    );
+
+    expect(
+      readTimeseriesRemountCache(
+        "1d",
+        { bucket: "1m" },
+        2_000 + TIMESERIES_SETTLED_LIVE_DELTA_TTL_MS - 1,
+      ),
+    ).not.toBeNull();
+    expect(
+      readTimeseriesRemountCache(
+        "1d",
+        { bucket: "1m" },
+        2_000 + TIMESERIES_SETTLED_LIVE_DELTA_TTL_MS,
       ),
     ).toBeNull();
   });

@@ -1463,7 +1463,7 @@ pub(crate) async fn fetch_invocation_summary(
     let totals_sql = format!(
         "SELECT \
          COUNT(*) AS total_count, \
-         COALESCE(SUM(CASE WHEN {resolved_failure} = 'none' AND {status_norm} = 'success' THEN 1 ELSE 0 END), 0) AS success_count, \
+         COALESCE(SUM(CASE WHEN {resolved_failure} = 'none' AND ({status_norm} = 'success' OR ({status_norm} = 'http_200' AND LOWER(TRIM(COALESCE(error_message, ''))) = '')) THEN 1 ELSE 0 END), 0) AS success_count, \
          COALESCE(SUM(CASE WHEN {resolved_failure} IN ('service_failure', 'client_failure', 'client_abort') THEN 1 ELSE 0 END), 0) AS failure_count, \
          COALESCE(SUM(total_tokens), 0) AS total_tokens, \
          COALESCE(SUM(cost), 0.0) AS total_cost, \
@@ -1771,13 +1771,13 @@ struct ExactUtcRange {
 }
 
 #[derive(Debug, Default)]
-struct HourlyRollupExactRangePlan {
+pub(crate) struct HourlyRollupExactRangePlan {
     full_hour_range: Option<(i64, i64)>,
     live_exact_ranges: Vec<ExactUtcRange>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
-struct InvocationAggregateRecord {
+pub(crate) struct InvocationAggregateRecord {
     id: i64,
     occurred_at: String,
     status: Option<String>,

@@ -56,6 +56,14 @@ export async function fetchJson<T>(
   path: string,
   init?: RequestInit,
 ): Promise<T> {
+  const { data } = await fetchJsonResponse<T>(path, init);
+  return data;
+}
+
+async function fetchJsonResponse<T>(
+  path: string,
+  init?: RequestInit,
+): Promise<{ data: T; response: Response }> {
   const response = await fetch(withBase(path), {
     headers: {
       "Content-Type": "application/json",
@@ -69,15 +77,18 @@ export async function fetchJson<T>(
   }
 
   if (response.status === 204) {
-    return undefined as T;
+    return { data: undefined as T, response };
   }
 
   const rawText = await response.text();
   if (!rawText.trim()) {
-    return undefined as T;
+    return { data: undefined as T, response };
   }
 
-  return JSON.parse(rawText) as T;
+  return {
+    data: JSON.parse(rawText) as T,
+    response,
+  };
 }
 
 export async function ensureJsonRequestOk(response: Response): Promise<void> {
@@ -609,6 +620,7 @@ export interface TimeseriesResponse {
   rangeStart: string;
   rangeEnd: string;
   bucketSeconds: number;
+  snapshotId?: number;
   effectiveBucket?: string;
   availableBuckets?: string[];
   bucketLimitedToDaily?: boolean;
@@ -1185,6 +1197,7 @@ function normalizeTimeseriesResponse(raw: unknown): TimeseriesResponse {
       typeof payload.rangeStart === "string" ? payload.rangeStart : "",
     rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
     bucketSeconds: normalizeFiniteNumber(payload.bucketSeconds) ?? 3600,
+    snapshotId: normalizeFiniteNumber(payload.snapshotId) ?? undefined,
     effectiveBucket:
       typeof payload.effectiveBucket === "string"
         ? payload.effectiveBucket

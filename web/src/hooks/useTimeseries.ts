@@ -42,6 +42,7 @@ interface UpdateContext {
 type LiveRecordOutcome = "success" | "failure" | "pending";
 
 interface LiveRecordDelta {
+  recordId?: number;
   bucketStart: string;
   bucketEnd: string;
   bucketStartEpoch: number;
@@ -56,8 +57,11 @@ interface LiveRecordDelta {
 
 export const TIMESERIES_RECORDS_RESYNC_THROTTLE_MS = 3_000;
 export const TIMESERIES_OPEN_RESYNC_COOLDOWN_MS = 3_000;
-export const TIMESERIES_REMOUNT_CACHE_TTL_MS = 30_000;
 export const TIMESERIES_SETTLED_LIVE_DELTA_TTL_MS = 60_000;
+export const TIMESERIES_REMOUNT_CACHE_TTL_MS = Math.max(
+  30_000,
+  TIMESERIES_SETTLED_LIVE_DELTA_TTL_MS,
+);
 export const MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS = 1_024;
 const TIMESERIES_IN_FLIGHT_SEED_PAGE_SIZE = 500;
 const TIMESERIES_IN_FLIGHT_STATUSES = ["running", "pending"] as const;
@@ -68,7 +72,7 @@ interface TimeseriesRemountCacheEntry {
   liveRecordDeltas: Map<string, LiveRecordDelta>;
   settledLiveRecordUpdatedAt: Map<string, number>;
   untrackedInFlightCounts: Map<string, number>;
-  untrackedInFlightClaimUpperBoundMs: number | null;
+  untrackedInFlightClaimSnapshotId: number | null;
 }
 
 const timeseriesRemountCache = new Map<string, TimeseriesRemountCacheEntry>();
@@ -114,8 +118,7 @@ function cloneTimeseriesRemountCacheEntry(entry: TimeseriesRemountCacheEntry) {
       entry.settledLiveRecordUpdatedAt,
     ),
     untrackedInFlightCounts: new Map(entry.untrackedInFlightCounts),
-    untrackedInFlightClaimUpperBoundMs:
-      entry.untrackedInFlightClaimUpperBoundMs,
+    untrackedInFlightClaimSnapshotId: entry.untrackedInFlightClaimSnapshotId,
   };
 }
 
@@ -239,7 +242,7 @@ export function writeTimeseriesRemountCache(
   liveRecordDeltas?: ReadonlyMap<string, LiveRecordDelta> | null,
   settledLiveRecordUpdatedAt?: ReadonlyMap<string, number> | null,
   untrackedInFlightCounts?: ReadonlyMap<string, number> | null,
-  untrackedInFlightClaimUpperBoundMs?: number | null,
+  untrackedInFlightClaimSnapshotId?: number | null,
 ) {
   if (!shouldEnableTimeseriesRemountCache(range)) return;
   timeseriesRemountCache.set(getTimeseriesRemountCacheKey(range, options), {
@@ -250,8 +253,8 @@ export function writeTimeseriesRemountCache(
       settledLiveRecordUpdatedAt,
     ),
     untrackedInFlightCounts: new Map(untrackedInFlightCounts),
-    untrackedInFlightClaimUpperBoundMs:
-      untrackedInFlightClaimUpperBoundMs ?? null,
+    untrackedInFlightClaimSnapshotId:
+      untrackedInFlightClaimSnapshotId ?? null,
   });
 }
 
@@ -323,16 +326,10 @@ function createSeededTimeseries(range: string, bucket?: string) {
 function normalizeLiveRecordOutcome(record: ApiInvocation): LiveRecordOutcome {
   const status = record.status?.trim().toLowerCase() ?? "";
   const failureClass = record.failureClass?.trim().toLowerCase() ?? "";
-  const hasFailureDownstreamStatus =
-    typeof record.downstreamStatusCode === "number" &&
-    Number.isFinite(record.downstreamStatusCode) &&
-    (record.downstreamStatusCode < 200 || record.downstreamStatusCode >= 300);
   const hasFailureMetadata =
     (failureClass.length > 0 && failureClass !== "none") ||
     (record.failureKind?.trim().length ?? 0) > 0 ||
-    (record.errorMessage?.trim().length ?? 0) > 0 ||
-    (record.downstreamErrorMessage?.trim().length ?? 0) > 0 ||
-    hasFailureDownstreamStatus;
+    (record.errorMessage?.trim().length ?? 0) > 0;
 
   if (status === "success" || status === "http_200") {
     return hasFailureMetadata ? "failure" : "success";
@@ -351,6 +348,7 @@ function createLiveRecordDelta(
 ): LiveRecordDelta {
   const outcome = normalizeLiveRecordOutcome(record);
   return {
+    recordId: record.id,
     bucketStart: formatEpochToIso(bucketStartEpoch),
     bucketEnd: formatEpochToIso(bucketEndEpoch),
     bucketStartEpoch,
@@ -397,28 +395,17 @@ function buildUntrackedInFlightCounts(
 
 function claimUntrackedInFlightDelta(
   record: ApiInvocation,
-  current: TimeseriesResponse,
   nextDelta: LiveRecordDelta | null,
   untrackedInFlightCounts: Map<string, number>,
-  claimUpperBoundMs: number | null,
+  claimSnapshotId: number | null,
 ) {
   if (!nextDelta) {
     return null;
   }
-  const createdAtEpoch = Date.parse(record.createdAt);
   if (
-    claimUpperBoundMs != null &&
-    Number.isFinite(createdAtEpoch) &&
-    createdAtEpoch > claimUpperBoundMs
-  ) {
-    return null;
-  }
-  const occurredEpoch = parseIsoEpoch(record.occurredAt);
-  const currentRangeEndEpoch = parseIsoEpoch(current.rangeEnd);
-  if (
-    occurredEpoch != null &&
-    currentRangeEndEpoch != null &&
-    occurredEpoch > currentRangeEndEpoch
+    claimSnapshotId != null &&
+    Number.isFinite(record.id) &&
+    record.id > claimSnapshotId
   ) {
     return null;
   }
@@ -439,6 +426,15 @@ function claimUntrackedInFlightDelta(
   });
 }
 
+function resolveUntrackedInFlightClaimSnapshotId(
+  response: Pick<TimeseriesResponse, "snapshotId">,
+) {
+  return typeof response.snapshotId === "number" &&
+    Number.isFinite(response.snapshotId)
+    ? response.snapshotId
+    : null;
+}
+
 function createCountsOnlyLiveRecordDelta(
   delta: LiveRecordDelta,
 ): LiveRecordDelta {
@@ -453,7 +449,7 @@ function createCountsOnlyLiveRecordDelta(
   };
 }
 
-function shouldKeepCountsOnlyDelta(
+function reconcileCountsOnlyDelta(
   previousDelta: LiveRecordDelta | null,
   nextDelta: LiveRecordDelta | null,
   currentPoint: Pick<
@@ -462,22 +458,26 @@ function shouldKeepCountsOnlyDelta(
   > | null,
 ) {
   if (!previousDelta?.countsOnly || !nextDelta) {
-    return false;
+    return nextDelta;
   }
   if (nextDelta.successCount === 0 && nextDelta.failureCount === 0) {
-    return true;
+    return createCountsOnlyLiveRecordDelta(nextDelta);
   }
   if (!currentPoint) {
-    return false;
+    return nextDelta;
   }
   const bucketOnlyContainsPlaceholder =
     currentPoint.totalCount === previousDelta.totalCount &&
     currentPoint.successCount === previousDelta.successCount &&
     currentPoint.failureCount === previousDelta.failureCount;
   if (!bucketOnlyContainsPlaceholder) {
-    return false;
+    return nextDelta;
   }
-  return currentPoint.totalTokens !== 0 || currentPoint.totalCost !== 0;
+  return {
+    ...nextDelta,
+    totalTokens: nextDelta.totalTokens - currentPoint.totalTokens,
+    totalCost: nextDelta.totalCost - currentPoint.totalCost,
+  };
 }
 
 interface FetchAllInvocationRecordPagesResult {
@@ -491,13 +491,18 @@ export async function fetchTimeseriesInFlightRecords(
   fetchPage: (
     query: InvocationRecordsQuery,
   ) => Promise<InvocationRecordsResponse> = fetchInvocationRecords,
+  rangeOverride?: { from: string; to: string } | null,
 ) {
   const [firstStatus, ...remainingStatuses] = TIMESERIES_IN_FLIGHT_STATUSES;
+  const rangeFrom = rangeOverride?.from ?? current.rangeStart;
+  const rangeTo = rangeOverride?.to ?? current.rangeEnd;
+  const initialSnapshotId =
+    typeof current.snapshotId === "number" ? current.snapshotId : undefined;
   const batches: ApiInvocation[][] = [];
   const firstBatch = await fetchAllInvocationRecordPagesWithSnapshot(
     {
-      from: current.rangeStart,
-      to: current.rangeEnd,
+      from: rangeFrom,
+      to: rangeTo,
       status: firstStatus,
       sortBy: "occurredAt",
       sortOrder: "desc",
@@ -505,6 +510,7 @@ export async function fetchTimeseriesInFlightRecords(
     },
     fetchPage,
     TIMESERIES_IN_FLIGHT_SEED_PAGE_SIZE,
+    initialSnapshotId,
   );
   batches.push(firstBatch.records);
 
@@ -512,8 +518,8 @@ export async function fetchTimeseriesInFlightRecords(
   for (const status of remainingStatuses) {
     const batch = await fetchAllInvocationRecordPagesWithSnapshot(
       {
-        from: current.rangeStart,
-        to: current.rangeEnd,
+        from: rangeFrom,
+        to: rangeTo,
         status,
         sortBy: "occurredAt",
         sortOrder: "desc",
@@ -611,6 +617,7 @@ function sameLiveRecordDelta(
   return (
     left.bucketStart === right.bucketStart &&
     left.bucketEnd === right.bucketEnd &&
+    left.recordId === right.recordId &&
     left.totalCount === right.totalCount &&
     left.successCount === right.successCount &&
     left.failureCount === right.failureCount &&
@@ -692,16 +699,19 @@ export function trackTimeseriesLiveRecordDelta(
   );
 }
 
-function mergePreservedSettledLiveRecordDeltas(
+function mergeFreshResponseLiveRecordDeltas(
   seededLiveRecordDeltas: Map<string, LiveRecordDelta>,
   previousLiveRecordDeltas: ReadonlyMap<string, LiveRecordDelta>,
   previousSettledLiveRecordUpdatedAt: ReadonlyMap<string, number>,
+  snapshotId: number | undefined,
   now = Date.now(),
   ttlMs = TIMESERIES_SETTLED_LIVE_DELTA_TTL_MS,
   maxEntries = MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS,
 ) {
   const nextLiveRecordDeltas = new Map(seededLiveRecordDeltas);
-  const nextSettledLiveRecordUpdatedAt = new Map(previousSettledLiveRecordUpdatedAt);
+  const nextSettledLiveRecordUpdatedAt = new Map(
+    previousSettledLiveRecordUpdatedAt,
+  );
   const preservedLiveRecordDeltas = cloneLiveRecordDeltaMap(previousLiveRecordDeltas);
 
   pruneTrackedTimeseriesLiveRecordDeltas(
@@ -713,11 +723,18 @@ function mergePreservedSettledLiveRecordDeltas(
   );
 
   for (const [key, delta] of preservedLiveRecordDeltas) {
-    if (!nextSettledLiveRecordUpdatedAt.has(key)) {
+    if (nextSettledLiveRecordUpdatedAt.has(key)) {
+      nextLiveRecordDeltas.set(key, cloneLiveRecordDelta(delta));
       continue;
     }
-    if (!nextLiveRecordDeltas.has(key)) {
+
+    if (
+      typeof snapshotId === "number" &&
+      typeof delta.recordId === "number" &&
+      delta.recordId > snapshotId
+    ) {
       nextLiveRecordDeltas.set(key, cloneLiveRecordDelta(delta));
+      continue;
     }
   }
 
@@ -727,22 +744,18 @@ function mergePreservedSettledLiveRecordDeltas(
   };
 }
 
-function restoreMissingSettledDeltaView(
+function restoreMissingTrackedDeltaView(
   response: TimeseriesResponse,
   current: TimeseriesResponse | null,
   liveRecordDeltas: ReadonlyMap<string, LiveRecordDelta>,
-  settledLiveRecordUpdatedAt: ReadonlyMap<string, number>,
 ) {
-  if (!current || settledLiveRecordUpdatedAt.size === 0) {
+  if (!current || liveRecordDeltas.size === 0) {
     return response;
   }
 
   const restoredBucketStarts = new Set<string>();
-  for (const key of settledLiveRecordUpdatedAt.keys()) {
-    const delta = liveRecordDeltas.get(key);
-    if (delta) {
-      restoredBucketStarts.add(delta.bucketStart);
-    }
+  for (const delta of liveRecordDeltas.values()) {
+    restoredBucketStarts.add(delta.bucketStart);
   }
   if (restoredBucketStarts.size === 0) {
     return response;
@@ -912,29 +925,28 @@ export function upsertCurrentDayLiveRecord(
   }
 
   let nextDelta = buildCurrentDayLiveRecordDelta(record, currentBucket);
-  if (
-    nextDelta &&
-    shouldKeepCountsOnlyDelta(previousDelta, nextDelta, currentBucket)
-  ) {
-    nextDelta = createCountsOnlyLiveRecordDelta(nextDelta);
-  }
+  nextDelta = reconcileCountsOnlyDelta(previousDelta, nextDelta, currentBucket);
   if (sameLiveRecordDelta(previousDelta, nextDelta)) {
     return { next: current, delta: nextDelta };
   }
 
   const nextPoints = current.points.map((point) => ({ ...point }));
-  const point = nextPoints.find(
-    (item) => item.bucketStart === currentBucket.bucketStart,
-  );
-  if (!point) {
-    return { next: current, delta: previousDelta };
-  }
-
   if (previousDelta) {
-    adjustTimeseriesPoint(point, previousDelta, -1);
+    const previousPoint = nextPoints.find(
+      (item) => item.bucketStart === previousDelta.bucketStart,
+    );
+    if (previousPoint) {
+      adjustTimeseriesPoint(previousPoint, previousDelta, -1);
+    }
   }
   if (nextDelta) {
-    adjustTimeseriesPoint(point, nextDelta, 1);
+    const nextPoint = nextPoints.find(
+      (item) => item.bucketStart === nextDelta.bucketStart,
+    );
+    if (!nextPoint) {
+      return { next: current, delta: previousDelta };
+    }
+    adjustTimeseriesPoint(nextPoint, nextDelta, 1);
   }
 
   return {
@@ -1010,6 +1022,20 @@ export function resolveCurrentDayLiveSeedEpoch(
   return nowEpochSeconds;
 }
 
+export function resolveCurrentDayLiveSeedRange(
+  current: TimeseriesResponse,
+  nowEpochSeconds = resolveCurrentDayLiveSeedEpoch(current),
+) {
+  const currentBucket = getCurrentDayBucket(current, nowEpochSeconds);
+  if (!currentBucket) {
+    return null;
+  }
+  return {
+    from: currentBucket.bucketStart,
+    to: currentBucket.bucketEnd,
+  };
+}
+
 async function loadSeededLiveRecordDeltas(
   current: TimeseriesResponse,
   syncMode: TimeseriesSyncMode,
@@ -1020,12 +1046,22 @@ async function loadSeededLiveRecordDeltas(
     return new Map<string, LiveRecordDelta>();
   }
 
-  const inFlightRecords = await fetchTimeseriesInFlightRecords(current, signal);
   if (syncMode === "current-day-local") {
     const seedEpoch = resolveCurrentDayLiveSeedEpoch(current);
+    const seedRange = resolveCurrentDayLiveSeedRange(current, seedEpoch);
+    if (!seedRange) {
+      return new Map<string, LiveRecordDelta>();
+    }
+    const inFlightRecords = await fetchTimeseriesInFlightRecords(
+      current,
+      signal,
+      fetchInvocationRecords,
+      seedRange,
+    );
     return seedCurrentDayLiveRecordDeltas(current, inFlightRecords, seedEpoch);
   }
 
+  const inFlightRecords = await fetchTimeseriesInFlightRecords(current, signal);
   return seedTimeseriesLiveRecordDeltas(current, inFlightRecords, context);
 }
 
@@ -1045,12 +1081,7 @@ export function upsertTimeseriesLiveRecord(
       ) ?? null)
     : null;
   let nextDelta = buildTimeseriesLiveRecordDelta(record, current, context);
-  if (
-    nextDelta &&
-    shouldKeepCountsOnlyDelta(previousDelta, nextDelta, currentPoint)
-  ) {
-    nextDelta = createCountsOnlyLiveRecordDelta(nextDelta);
-  }
+  nextDelta = reconcileCountsOnlyDelta(previousDelta, nextDelta, currentPoint);
   if (sameLiveRecordDelta(previousDelta, nextDelta)) {
     return { next: current, delta: nextDelta };
   }
@@ -1178,8 +1209,8 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
   const untrackedInFlightCountsRef = useRef<Map<string, number>>(
     initialCachedTimeseries?.untrackedInFlightCounts ?? new Map(),
   );
-  const untrackedInFlightClaimUpperBoundRef = useRef<number | null>(
-    initialCachedTimeseries?.untrackedInFlightClaimUpperBoundMs ?? null,
+  const untrackedInFlightClaimSnapshotIdRef = useRef<number | null>(
+    initialCachedTimeseries?.untrackedInFlightClaimSnapshotId ?? null,
   );
 
   const normalizedOptions = useMemo<UseTimeseriesOptions>(
@@ -1218,8 +1249,6 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
       activeLoadCountRef.current += 1;
       const requestSeq = requestSeqRef.current + 1;
       requestSeqRef.current = requestSeq;
-      const baselineLocalRevision = localRevisionRef.current;
-      const loadStartedAt = Date.now();
       const controller = new AbortController();
       activeRequestControllerRef.current = controller;
       const shouldShowLoading = !(silent && hasHydratedRef.current);
@@ -1264,59 +1293,45 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
           return;
         }
 
-        const shouldPreserveLocallyPatchedData =
-          syncPolicy.mode !== "server" &&
-          baselineLocalRevision !== localRevisionRef.current;
-
-        if (shouldPreserveLocallyPatchedData) {
-          if (pendingLoadRef.current) {
-            pendingLoadRef.current.silent = mergePendingTimeseriesSilentOption(
-              pendingLoadRef.current.silent,
-              true,
-            );
-          } else {
-            pendingLoadRef.current = { silent: true, waiters: [] };
-          }
-        } else {
-          const preservedSettledLiveDeltas =
-            syncPolicy.mode !== "server"
-              ? mergePreservedSettledLiveRecordDeltas(
-                  seededLiveRecordDeltas,
-                  liveRecordDeltaRef.current,
-                  settledLiveRecordUpdatedAtRef.current,
-                )
-                : {
-                    liveRecordDeltas: seededLiveRecordDeltas,
-                    settledLiveRecordUpdatedAt: new Map<string, number>(),
-                  };
-          const responseWithPreservedSettledDeltas =
-            syncPolicy.mode !== "server"
-              ? restoreMissingSettledDeltaView(
-                  response,
-                  dataRef.current,
-                  preservedSettledLiveDeltas.liveRecordDeltas,
-                  preservedSettledLiveDeltas.settledLiveRecordUpdatedAt,
-                )
-              : response;
-          liveRecordDeltaRef.current =
-            preservedSettledLiveDeltas.liveRecordDeltas;
-          settledLiveRecordUpdatedAtRef.current =
-            preservedSettledLiveDeltas.settledLiveRecordUpdatedAt;
-          untrackedInFlightCountsRef.current = untrackedInFlightCounts;
-          untrackedInFlightClaimUpperBoundRef.current = loadStartedAt;
-          dataRef.current = responseWithPreservedSettledDeltas;
-          setData(responseWithPreservedSettledDeltas);
-          writeTimeseriesRemountCache(
-            range,
-            normalizedOptions,
-            responseWithPreservedSettledDeltas,
-            Date.now(),
-            liveRecordDeltaRef.current,
-            settledLiveRecordUpdatedAtRef.current,
-            untrackedInFlightCounts,
-            loadStartedAt,
-          );
-        }
+        const mergedLiveRecordDeltas =
+          syncPolicy.mode !== "server"
+            ? mergeFreshResponseLiveRecordDeltas(
+                seededLiveRecordDeltas,
+                liveRecordDeltaRef.current,
+                settledLiveRecordUpdatedAtRef.current,
+                response.snapshotId,
+              )
+            : {
+                liveRecordDeltas: seededLiveRecordDeltas,
+                settledLiveRecordUpdatedAt: new Map<string, number>(),
+              };
+        const responseWithPreservedLiveDeltas =
+          syncPolicy.mode !== "server"
+            ? restoreMissingTrackedDeltaView(
+                response,
+                dataRef.current,
+                mergedLiveRecordDeltas.liveRecordDeltas,
+              )
+            : response;
+        const claimSnapshotId =
+          resolveUntrackedInFlightClaimSnapshotId(response);
+        liveRecordDeltaRef.current = mergedLiveRecordDeltas.liveRecordDeltas;
+        settledLiveRecordUpdatedAtRef.current =
+          mergedLiveRecordDeltas.settledLiveRecordUpdatedAt;
+        untrackedInFlightCountsRef.current = untrackedInFlightCounts;
+        untrackedInFlightClaimSnapshotIdRef.current = claimSnapshotId;
+        dataRef.current = responseWithPreservedLiveDeltas;
+        setData(responseWithPreservedLiveDeltas);
+        writeTimeseriesRemountCache(
+          range,
+          normalizedOptions,
+          responseWithPreservedLiveDeltas,
+          Date.now(),
+          liveRecordDeltaRef.current,
+          settledLiveRecordUpdatedAtRef.current,
+          untrackedInFlightCounts,
+          claimSnapshotId,
+        );
 
         hasHydratedRef.current = true;
         setError(null);
@@ -1352,7 +1367,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
         liveRecordDeltaRef.current = new Map();
         settledLiveRecordUpdatedAtRef.current = new Map();
         untrackedInFlightCountsRef.current = new Map();
-        untrackedInFlightClaimUpperBoundRef.current = null;
+        untrackedInFlightClaimSnapshotIdRef.current = null;
         dataRef.current = fallback;
         setData(fallback);
         hasHydratedRef.current = true;
@@ -1487,8 +1502,8 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
       cachedTimeseries?.settledLiveRecordUpdatedAt ?? new Map();
     untrackedInFlightCountsRef.current =
       cachedTimeseries?.untrackedInFlightCounts ?? new Map();
-    untrackedInFlightClaimUpperBoundRef.current =
-      cachedTimeseries?.untrackedInFlightClaimUpperBoundMs ?? null;
+    untrackedInFlightClaimSnapshotIdRef.current =
+      cachedTimeseries?.untrackedInFlightClaimSnapshotId ?? null;
     clearPendingLoad();
     clearPendingRefreshTimer();
     clearDayRolloverTimer();
@@ -1541,12 +1556,11 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
               (next != null
                 ? claimUntrackedInFlightDelta(
                     record,
-                    next,
                     currentBucket != null
                       ? buildCurrentDayLiveRecordDelta(record, currentBucket)
                       : null,
                     untrackedInFlightCountsRef.current,
-                    untrackedInFlightClaimUpperBoundRef.current,
+                    untrackedInFlightClaimSnapshotIdRef.current,
                   )
                 : null);
             const result = upsertCurrentDayLiveRecord(
@@ -1576,7 +1590,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
                 liveRecordDeltaRef.current,
                 settledLiveRecordUpdatedAtRef.current,
                 untrackedInFlightCountsRef.current,
-                untrackedInFlightClaimUpperBoundRef.current,
+                untrackedInFlightClaimSnapshotIdRef.current,
               );
             }
           }
@@ -1595,14 +1609,13 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
             trackedDelta ??
             claimUntrackedInFlightDelta(
               record,
-              next,
               buildTimeseriesLiveRecordDelta(record, next, {
                 range,
                 bucketSeconds: next.bucketSeconds,
                 settlementHour: normalizedOptions.settlementHour,
               }),
               untrackedInFlightCountsRef.current,
-              untrackedInFlightClaimUpperBoundRef.current,
+              untrackedInFlightClaimSnapshotIdRef.current,
             );
           const result = upsertTimeseriesLiveRecord(
             next,
@@ -1635,7 +1648,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
               liveRecordDeltaRef.current,
               settledLiveRecordUpdatedAtRef.current,
               untrackedInFlightCountsRef.current,
-              untrackedInFlightClaimUpperBoundRef.current,
+              untrackedInFlightClaimSnapshotIdRef.current,
             );
           }
         }
@@ -1701,7 +1714,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
       clearPendingRefreshTimer();
       clearDayRolloverTimer();
       pendingOpenResyncRef.current = false;
-      untrackedInFlightClaimUpperBoundRef.current = null;
+      untrackedInFlightClaimSnapshotIdRef.current = null;
     },
     [clearDayRolloverTimer, clearPendingLoad, clearPendingRefreshTimer],
   );

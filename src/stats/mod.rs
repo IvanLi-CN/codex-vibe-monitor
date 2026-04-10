@@ -3,7 +3,7 @@ use crate::*;
 const STATS_SUCCESS_LIKE_SQL: &str = "(LOWER(TRIM(COALESCE(status, ''))) = 'success' OR (LOWER(TRIM(COALESCE(status, ''))) = 'http_200' AND TRIM(COALESCE(error_message, '')) = ''))";
 const STATS_TERMINAL_STATUS_SQL: &str =
     "(LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending'))";
-const INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET: &str =
+pub(crate) const INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET: &str =
     "codex_invocations_summary_rollup_v2_live_cursor";
 
 #[derive(Debug)]
@@ -736,6 +736,33 @@ struct ArchiveBatchPathRow {
     needs_failures: Option<i64>,
 }
 
+#[derive(Debug, Default)]
+struct ClearedSummaryRollupBuckets {
+    overall: HashSet<(i64, String)>,
+    failures: HashSet<(i64, String)>,
+}
+
+impl ClearedSummaryRollupBuckets {
+    fn targets_to_clear_for_bucket(
+        &mut self,
+        key: &(i64, String),
+        requested_targets: &[&str],
+    ) -> Vec<&'static str> {
+        let mut targets = Vec::new();
+        if requested_targets.contains(&HOURLY_ROLLUP_TARGET_INVOCATIONS)
+            && self.overall.insert(key.clone())
+        {
+            targets.push(HOURLY_ROLLUP_TARGET_INVOCATIONS);
+        }
+        if requested_targets.contains(&HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES)
+            && self.failures.insert(key.clone())
+        {
+            targets.push(HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES);
+        }
+        targets
+    }
+}
+
 const INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DATASET: &str = "codex_invocations_summary_rollup_v2";
 const INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DONE: i64 = 1;
 const INVOCATION_SUMMARY_ROLLUP_TARGETS: [&str; 2] = [
@@ -873,7 +900,7 @@ async fn rebuild_invocation_summary_rollups_from_archive_batch(
     archive_row: &ArchiveBatchPathRow,
     source_scope: InvocationSourceScope,
     seen_ids: &mut HashSet<i64>,
-    cleared_rollup_buckets: &mut HashSet<(i64, String)>,
+    cleared_rollup_buckets: &mut ClearedSummaryRollupBuckets,
     targets: &[&str],
     replace_existing_rollups: bool,
 ) -> Result<()> {
@@ -926,10 +953,13 @@ async fn rebuild_invocation_summary_rollups_from_archive_batch(
             for row in &rows {
                 let bucket_start_epoch = summary_rollup_bucket_start_epoch(&row.occurred_at)?;
                 let key = (bucket_start_epoch, row.source.clone());
-                if !cleared_rollup_buckets.insert(key.clone()) {
+                let targets_to_clear =
+                    cleared_rollup_buckets.targets_to_clear_for_bucket(&key, targets);
+                if targets_to_clear.is_empty() {
                     continue;
                 }
-                delete_invocation_summary_rollup_bucket_tx(tx, key.0, &key.1, targets).await?;
+                delete_invocation_summary_rollup_bucket_tx(tx, key.0, &key.1, &targets_to_clear)
+                    .await?;
             }
         }
         upsert_invocation_hourly_rollups_tx(tx, &rows, targets).await?;
@@ -982,6 +1012,89 @@ async fn delete_invocation_summary_rollup_bucket_tx(
         .await?;
     }
     Ok(())
+}
+
+async fn load_live_invocation_summary_rows_for_cleared_buckets_up_to_id(
+    tx: &mut SqliteConnection,
+    cleared_rollup_buckets: &HashSet<(i64, String)>,
+    source_scope: InvocationSourceScope,
+    end_at_id: i64,
+) -> Result<Vec<InvocationHourlySourceRecord>> {
+    if cleared_rollup_buckets.is_empty() || end_at_id <= 0 {
+        return Ok(Vec::new());
+    }
+
+    let min_bucket_epoch = cleared_rollup_buckets
+        .iter()
+        .map(|(bucket_start_epoch, _)| *bucket_start_epoch)
+        .min()
+        .ok_or_else(|| anyhow!("missing minimum cleared summary rollup bucket epoch"))?;
+    let max_bucket_epoch = cleared_rollup_buckets
+        .iter()
+        .map(|(bucket_start_epoch, _)| *bucket_start_epoch)
+        .max()
+        .ok_or_else(|| anyhow!("missing maximum cleared summary rollup bucket epoch"))?;
+    let min_bucket_start = Utc
+        .timestamp_opt(min_bucket_epoch, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid minimum cleared summary rollup bucket epoch"))?;
+    let max_bucket_end = Utc
+        .timestamp_opt(max_bucket_epoch + 3_600, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid maximum cleared summary rollup bucket epoch"))?;
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            id,
+            occurred_at,
+            source,
+            status,
+            detail_level,
+            total_tokens,
+            cost,
+            error_message,
+            failure_kind,
+            failure_class,
+            is_actionable,
+            payload,
+            t_total_ms,
+            t_req_read_ms,
+            t_req_parse_ms,
+            t_upstream_connect_ms,
+            t_upstream_ttfb_ms,
+            t_upstream_stream_ms,
+            t_resp_parse_ms,
+            t_persist_ms
+        FROM codex_invocations
+        WHERE id <=
+        "#,
+    );
+    query
+        .push_bind(end_at_id)
+        .push(" AND occurred_at >= ")
+        .push_bind(db_occurred_at_lower_bound(min_bucket_start))
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_lower_bound(max_bucket_end));
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" ORDER BY id ASC");
+
+    let rows = query
+        .build_query_as::<InvocationHourlySourceRecord>()
+        .fetch_all(&mut *tx)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .filter(|row| {
+            summary_rollup_bucket_start_epoch(&row.occurred_at)
+                .map(|bucket_start_epoch| {
+                    cleared_rollup_buckets.contains(&(bucket_start_epoch, row.source.clone()))
+                })
+                .unwrap_or(false)
+        })
+        .collect())
 }
 
 async fn rebuild_invocation_summary_rollups_from_live_rows(
@@ -1090,7 +1203,7 @@ async fn repair_invocation_summary_rollups(pool: &Pool<Sqlite>) -> Result<()> {
     }
 
     let mut seen_ids = HashSet::new();
-    let mut cleared_rollup_buckets = HashSet::new();
+    let mut cleared_rollup_buckets = ClearedSummaryRollupBuckets::default();
     for archive_row in &archive_rows {
         let preserve_materialized_archive =
             archive_row.historical_rollups_materialized_at.is_some()
@@ -1108,6 +1221,22 @@ async fn repair_invocation_summary_rollups(pool: &Pool<Sqlite>) -> Result<()> {
             &mut cleared_rollup_buckets,
             &INVOCATION_SUMMARY_ROLLUP_TARGETS,
             preserve_materialized_archives,
+        )
+        .await?;
+    }
+    let mut restored_live_rows = load_live_invocation_summary_rows_for_cleared_buckets_up_to_id(
+        tx.as_mut(),
+        &cleared_rollup_buckets.overall,
+        InvocationSourceScope::All,
+        shared_live_cursor,
+    )
+    .await?;
+    restored_live_rows.retain(|row| !seen_ids.contains(&row.id));
+    if !restored_live_rows.is_empty() {
+        upsert_invocation_hourly_rollups_tx(
+            tx.as_mut(),
+            &restored_live_rows,
+            &INVOCATION_SUMMARY_ROLLUP_TARGETS,
         )
         .await?;
     }
@@ -1152,20 +1281,25 @@ async fn backfill_missing_invocation_summary_archive_rollups(pool: &Pool<Sqlite>
         return Ok(());
     }
 
+    let shared_live_cursor =
+        load_hourly_rollup_live_progress_tx(tx.as_mut(), HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
     let mut seen_ids = HashSet::new();
-    let mut cleared_rollup_buckets = HashSet::new();
+    let mut cleared_rollup_buckets = ClearedSummaryRollupBuckets::default();
     for archive_row in &archive_rows {
+        let needs_overall = archive_row.needs_overall.unwrap_or_default() != 0;
+        let needs_failures = archive_row.needs_failures.unwrap_or_default() != 0;
         let mut targets = Vec::new();
-        if archive_row.needs_overall.unwrap_or_default() != 0 {
+        if needs_overall {
             targets.push(HOURLY_ROLLUP_TARGET_INVOCATIONS);
         }
-        if archive_row.needs_failures.unwrap_or_default() != 0 {
+        if needs_failures {
             targets.push(HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES);
         }
         if targets.is_empty() {
             continue;
         }
-        if archive_row.historical_rollups_materialized_at.is_some() {
+        let archive_path = PathBuf::from(&archive_row.file_path);
+        if archive_row.historical_rollups_materialized_at.is_some() && !archive_path.exists() {
             for target in &targets {
                 mark_hourly_rollup_archive_replayed_tx(
                     tx.as_mut(),
@@ -1184,11 +1318,58 @@ async fn backfill_missing_invocation_summary_archive_rollups(pool: &Pool<Sqlite>
             &mut seen_ids,
             &mut cleared_rollup_buckets,
             &targets,
-            false,
+            true,
+        )
+        .await?;
+    }
+    let mut restored_overall_live_rows =
+        load_live_invocation_summary_rows_for_cleared_buckets_up_to_id(
+            tx.as_mut(),
+            &cleared_rollup_buckets.overall,
+            InvocationSourceScope::All,
+            shared_live_cursor,
+        )
+        .await?;
+    restored_overall_live_rows.retain(|row| !seen_ids.contains(&row.id));
+    if !restored_overall_live_rows.is_empty() {
+        upsert_invocation_hourly_rollups_tx(
+            tx.as_mut(),
+            &restored_overall_live_rows,
+            &[HOURLY_ROLLUP_TARGET_INVOCATIONS],
+        )
+        .await?;
+    }
+    let mut restored_failure_live_rows =
+        load_live_invocation_summary_rows_for_cleared_buckets_up_to_id(
+            tx.as_mut(),
+            &cleared_rollup_buckets.failures,
+            InvocationSourceScope::All,
+            shared_live_cursor,
+        )
+        .await?;
+    restored_failure_live_rows.retain(|row| !seen_ids.contains(&row.id));
+    if !restored_failure_live_rows.is_empty() {
+        upsert_invocation_hourly_rollups_tx(
+            tx.as_mut(),
+            &restored_failure_live_rows,
+            &[HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES],
         )
         .await?;
     }
     tx.commit().await?;
+    Ok(())
+}
+
+pub(crate) async fn ensure_invocation_summary_rollups_ready(pool: &Pool<Sqlite>) -> Result<()> {
+    if load_completed_invocation_archive_paths(pool)
+        .await?
+        .is_empty()
+    {
+        return Ok(());
+    }
+
+    repair_invocation_summary_rollups(pool).await?;
+    backfill_missing_invocation_summary_archive_rollups(pool).await?;
     Ok(())
 }
 
@@ -1259,8 +1440,10 @@ pub(crate) async fn query_invocation_totals(
     source_scope: InvocationSourceScope,
 ) -> Result<StatsTotals> {
     if matches!(filter, StatsFilter::All) {
-        let archive_rows = load_completed_invocation_archive_paths(pool).await?;
-        if archive_rows.is_empty() {
+        if load_completed_invocation_archive_paths(pool)
+            .await?
+            .is_empty()
+        {
             return Ok(StatsTotals::from(
                 query_stats_row(pool, StatsFilter::All, source_scope).await?,
             ));
@@ -1270,8 +1453,7 @@ pub(crate) async fn query_invocation_totals(
         // rescanning every archive on each request. The one-time repair rebuilds overall/failure
         // rollup tables from authoritative archive + live sources, then subsequent requests only
         // backfill newly archived batches that are still missing summary markers.
-        repair_invocation_summary_rollups(pool).await?;
-        backfill_missing_invocation_summary_archive_rollups(pool).await?;
+        ensure_invocation_summary_rollups_ready(pool).await?;
         return query_invocation_all_time_rollup_totals(pool, source_scope).await;
     }
 

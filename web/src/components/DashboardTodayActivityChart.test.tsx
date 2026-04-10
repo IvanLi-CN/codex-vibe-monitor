@@ -126,6 +126,7 @@ describe("DashboardTodayActivityChart", () => {
       inFlightCount: 0,
       failureCountNegative: -1,
       chartSuccessCount: 2,
+      chartInFlightCount: 0,
       chartFailureCountNegative: -1,
       totalCount: 3,
       cumulativeCost: 0.5,
@@ -141,6 +142,7 @@ describe("DashboardTodayActivityChart", () => {
       cumulativeCost: 0.5,
       cumulativeTokens: 120,
       chartSuccessCount: 0,
+      chartInFlightCount: 0,
       chartFailureCountNegative: 0,
       chartCumulativeCost: 0.5,
       chartCumulativeTokens: 120,
@@ -153,6 +155,7 @@ describe("DashboardTodayActivityChart", () => {
       cumulativeCost: 1.25,
       cumulativeTokens: 320,
       chartSuccessCount: 4,
+      chartInFlightCount: 0,
       chartFailureCountNegative: 0,
       chartCumulativeCost: 1.25,
       chartCumulativeTokens: 320,
@@ -165,6 +168,7 @@ describe("DashboardTodayActivityChart", () => {
       cumulativeCost: 1.25,
       cumulativeTokens: 320,
       chartSuccessCount: 0,
+      chartInFlightCount: 0,
       chartFailureCountNegative: 0,
       chartCumulativeCost: 1.25,
       chartCumulativeTokens: 320,
@@ -172,6 +176,7 @@ describe("DashboardTodayActivityChart", () => {
     expect(data.at(-1)).toMatchObject({
       label: "23:59",
       chartSuccessCount: null,
+      chartInFlightCount: null,
       chartFailureCountNegative: null,
       cumulativeCost: null,
       cumulativeTokens: null,
@@ -226,7 +231,7 @@ describe("DashboardTodayActivityChart", () => {
     expect(data.at(-1)?.chartCumulativeCost).toBeNull();
   });
 
-  it("does not infer a third series from residual neutral totals", () => {
+  it("derives an in-flight series from residual neutral totals", () => {
     const data = buildTodayMinuteChartData(
       {
         rangeStart: "2026-04-08 00:00:00",
@@ -256,6 +261,7 @@ describe("DashboardTodayActivityChart", () => {
       failureCount: 1,
       inFlightCount: 1,
       chartSuccessCount: 1,
+      chartInFlightCount: 1,
       chartFailureCountNegative: -1,
     });
   });
@@ -304,6 +310,7 @@ describe("DashboardTodayActivityChart", () => {
     expect(html).toContain('data-bar-gap="-100%"');
     expect(html).not.toContain('data-testid="area-chart"');
     expect(html).toContain('data-data-key="chartSuccessCount"');
+    expect(html).toContain('data-data-key="chartInFlightCount"');
     expect(html).toContain('data-data-key="chartFailureCountNegative"');
     expect(html).toContain('data-stack-id="positive"');
     expect(html).not.toContain(

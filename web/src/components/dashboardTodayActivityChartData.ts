@@ -12,6 +12,7 @@ export interface DashboardTodayMinuteDatum {
   inFlightCount: number;
   failureCountNegative: number;
   chartSuccessCount: number | null;
+  chartInFlightCount: number | null;
   chartFailureCountNegative: number | null;
   totalCount: number;
   totalCost: number;
@@ -120,6 +121,7 @@ export function buildTodayMinuteChartData(
       inFlightCount,
       failureCountNegative: failureCount > 0 ? -failureCount : 0,
       chartSuccessCount: isFuture ? null : successCount,
+      chartInFlightCount: isFuture ? null : inFlightCount,
       chartFailureCountNegative: isFuture
         ? null
         : failureCount > 0

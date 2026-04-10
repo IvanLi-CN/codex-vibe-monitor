@@ -130,6 +130,7 @@ function createBaseTimeseries(
     rangeStart: "2026-03-01T00:00:00Z",
     rangeEnd: "2026-03-08T00:00:00Z",
     bucketSeconds: 3600,
+    snapshotId: 100,
     ...responseOverrides,
     points: [
       {
@@ -194,6 +195,17 @@ function Probe() {
       <div data-testid="failure">{String(point?.failureCount ?? 0)}</div>
       <div data-testid="tokens">{String(point?.totalTokens ?? 0)}</div>
       <div data-testid="cost">{String(point?.totalCost ?? 0)}</div>
+    </div>
+  );
+}
+
+function CurrentDayProbe() {
+  const { isLoading, error } = useTimeseries("6mo", { bucket: "1d" });
+
+  return (
+    <div>
+      <div data-testid="loading">{isLoading ? "true" : "false"}</div>
+      <div data-testid="error">{error ?? ""}</div>
     </div>
   );
 }
@@ -274,9 +286,11 @@ describe("useTimeseries remount cache hydration", () => {
   it("does not let a new post-load record consume an older anonymous in-flight placeholder from the same bucket", async () => {
     const response = createBaseTimeseries(undefined, {
       rangeEnd: "2026-03-07T23:45:00Z",
+      snapshotId: 100,
     });
     const newSettledRecord: ApiInvocation = {
       ...createSettledRecord(),
+      id: 101,
       invokeId: "new-after-load",
       occurredAt: "2026-03-07T23:46:00Z",
       createdAt: "2026-03-07T23:46:00Z",
@@ -301,9 +315,12 @@ describe("useTimeseries remount cache hydration", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-07T23:50:00Z"));
 
-    const response = createBaseTimeseries();
+    const response = createBaseTimeseries(undefined, {
+      snapshotId: 100,
+    });
     const newSettledRecord: ApiInvocation = {
       ...createSettledRecord(),
+      id: 101,
       invokeId: "same-bucket-after-load",
       occurredAt: "2026-03-07T23:55:00Z",
       createdAt: "2026-03-07T23:55:00Z",
@@ -323,6 +340,36 @@ describe("useTimeseries remount cache hydration", () => {
     expect(text("tokens")).toBe("22");
     expect(text("cost")).toBe("0.18");
     expect(apiMocks.fetchTimeseries).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the authoritative snapshotId instead of response timing when reclaiming old placeholders", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-07T23:49:55Z"));
+
+    const response = createBaseTimeseries(undefined, {
+      snapshotId: 100,
+    });
+    const settledRecord: ApiInvocation = {
+      ...createSettledRecord(),
+      id: 99,
+      invokeId: "server-clock-placeholder",
+      occurredAt: "2026-03-07T23:49:58Z",
+      createdAt: "2026-03-07T23:49:58Z",
+    };
+
+    apiMocks.fetchTimeseries.mockResolvedValue(response);
+    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsPage([]));
+
+    render(<Probe />);
+    await flushAsync();
+
+    emitRecords([settledRecord]);
+
+    expect(text("total")).toBe("1");
+    expect(text("success")).toBe("0");
+    expect(text("failure")).toBe("1");
+    expect(text("tokens")).toBe("22");
+    expect(text("cost")).toBe("0.18");
   });
 
   it("rehydrates recent settled deltas across remounts to absorb duplicate SSE deliveries", async () => {
@@ -442,6 +489,69 @@ describe("useTimeseries remount cache hydration", () => {
     expect(text("cost")).toBe("0");
   });
 
+  it("commits authoritative refreshes even when SSE patches land during the load", async () => {
+    const initialResponse = createBaseTimeseries();
+    const refreshedResponse = createBaseTimeseries(
+      {
+        totalCount: 2,
+        successCount: 1,
+        failureCount: 1,
+        totalTokens: 30,
+        totalCost: 0.25,
+      },
+      {
+        snapshotId: 12,
+      },
+    );
+    const settledRecord = createSettledRecord();
+    const silentRefresh: { resolve: (value: TimeseriesResponse) => void } = {
+      resolve: () => {
+        throw new Error("expected silent refresh resolver");
+      },
+    };
+
+    apiMocks.fetchTimeseries
+      .mockResolvedValueOnce(initialResponse)
+      .mockImplementationOnce(
+        () =>
+          new Promise<TimeseriesResponse>((resolve) => {
+            silentRefresh.resolve = resolve as (
+              value: TimeseriesResponse,
+            ) => void;
+          }),
+      )
+      .mockResolvedValue(refreshedResponse);
+    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsPage([]));
+
+    render(<Probe />);
+    await flushAsync();
+
+    unmountCurrent();
+
+    render(<Probe />);
+    await flushAsync(1);
+
+    emitRecords([settledRecord]);
+
+    expect(text("total")).toBe("1");
+    expect(text("success")).toBe("0");
+    expect(text("failure")).toBe("1");
+    expect(text("tokens")).toBe("22");
+    expect(text("cost")).toBe("0.18");
+
+    silentRefresh.resolve(refreshedResponse);
+    await flushAsync();
+
+    expect(text("loading")).toBe("false");
+    expect(text("error")).toBe("");
+    expect(text("total")).toBe("2");
+    expect(text("success")).toBe("1");
+    expect(text("failure")).toBe("1");
+    expect(text("tokens")).toBe("30");
+    expect(text("cost")).toBe("0.25");
+    expect(apiMocks.fetchTimeseries).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps the fetched chart data visible when in-flight seeding fails", async () => {
     const response = createBaseTimeseries({
       totalTokens: 10,
@@ -468,7 +578,69 @@ describe("useTimeseries remount cache hydration", () => {
 
     expect(text("total")).toBe("1");
     expect(text("failure")).toBe("1");
-    expect(text("tokens")).toBe("10");
-    expect(text("cost")).toBe("0.1");
+    expect(text("tokens")).toBe("22");
+    expect(text("cost")).toBe("0.18");
+  });
+
+  it("restricts current-day local seed queries to the active day bucket", async () => {
+    apiMocks.fetchTimeseries.mockResolvedValue({
+      rangeStart: "2026-03-01T00:00:00Z",
+      rangeEnd: "2026-03-08T00:00:00Z",
+      bucketSeconds: 86_400,
+      snapshotId: 1,
+      points: [
+        {
+          bucketStart: "2026-03-06T00:00:00Z",
+          bucketEnd: "2026-03-07T00:00:00Z",
+          totalCount: 0,
+          successCount: 0,
+          failureCount: 0,
+          totalTokens: 0,
+          totalCost: 0,
+        },
+        {
+          bucketStart: "2026-03-07T00:00:00Z",
+          bucketEnd: "2026-03-08T00:00:00Z",
+          totalCount: 1,
+          successCount: 0,
+          failureCount: 0,
+          totalTokens: 0,
+          totalCost: 0,
+        },
+      ],
+    });
+    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsPage([]));
+
+    render(<CurrentDayProbe />);
+    await flushAsync();
+
+    expect(text("loading")).toBe("false");
+    expect(text("error")).toBe("");
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2);
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        from: "2026-03-07T00:00:00Z",
+        to: "2026-03-08T00:00:00Z",
+        status: "running",
+        sortBy: "occurredAt",
+        sortOrder: "desc",
+        page: 1,
+        pageSize: 500,
+      }),
+    );
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        from: "2026-03-07T00:00:00Z",
+        to: "2026-03-08T00:00:00Z",
+        status: "pending",
+        sortBy: "occurredAt",
+        sortOrder: "desc",
+        page: 1,
+        pageSize: 500,
+        snapshotId: 1,
+      }),
+    );
   });
 });

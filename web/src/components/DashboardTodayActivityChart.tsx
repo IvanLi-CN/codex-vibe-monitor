@@ -169,7 +169,11 @@ export function DashboardTodayActivityChart({
   const countAxisBound = useMemo(() => {
     const maxValue = data.reduce(
       (current, item) =>
-        Math.max(current, item.successCount, item.failureCount),
+        Math.max(
+          current,
+          item.successCount + item.inFlightCount,
+          item.failureCount,
+        ),
       0,
     );
     return Math.max(1, maxValue);
@@ -343,6 +347,14 @@ export function DashboardTodayActivityChart({
                 name={countSeriesNames.success}
                 stackId="positive"
                 fill={chartColors.success}
+                radius={[0, 0, 0, 0]}
+                isAnimationActive={animate}
+              />
+              <Bar
+                dataKey="chartInFlightCount"
+                name={countSeriesNames.inFlight}
+                stackId="positive"
+                fill={chartColors.accent}
                 radius={[3, 3, 0, 0]}
                 isAnimationActive={animate}
               />

@@ -57,7 +57,7 @@
 - Given 打开 Dashboard，When 查看页面顶部，Then 不再存在独立的 `today-stats-overview-card` 外层卡片，“今日”能力只出现在 `活动总览` 内。
 - Given 查看 `活动总览` 范围切换，When 进入页面，Then 显示 `今日 / 24 小时 / 7 日 / 历史` 四段；首次进入默认 `今日`，之后优先恢复最近一次访问的范围；localStorage 值非法时回退到 `今日`。
 - Given 处于 `今日` 视图，When 查看总览内容，Then 顶部显示 5 个 KPI、下方显示一张分钟级图表；`24 小时 / 7 日` 仍显示既有 KPI + 热力图；`历史` 仍只显示半年日历。
-- Given `今日` 视图切到 `次数`，When 查看图表，Then 每个时间桶的成功 / 失败柱共享同一 X 槽位，成功柱位于 0 轴上方、失败柱位于 0 轴下方；tooltip 至少给出成功 / 失败 / 总数，并在 `running/pending` 使 `totalCount > successCount + failureCount` 时额外展示 `进行中` 计数。
+- Given `今日` 视图切到 `次数`，When 查看图表，Then 每个时间桶的成功 / 失败柱共享同一 X 槽位，成功柱位于 0 轴上方、失败柱位于 0 轴下方；当 `running/pending` 使 `totalCount > successCount + failureCount` 时，图表会在同一正半轴槽位额外绘制中性 `进行中` 柱，并且 tooltip 至少给出成功 / 失败 / 进行中 / 总数。
 - Given `今日 / 次数` 存在 `running/pending` live row、带失败元数据的临时态，或 legacy blank/null status 行缺少失败元数据，When 页面初载、silent refresh、SSE 多次更新或数据归档后重新读取，Then 这些非终态 / 中性 legacy 记录都不会被计入 failure；只有终态失败或带明确失败元数据的 legacy 行才会进入失败柱与失败汇总。
 - Given in-flight seed 需要跨多页抓取 `running/pending` 记录，When 前端顺序拉取后续页，Then 所有页都复用第一页返回的 `snapshotId`，不会因底层集合变化而重复或漏算 seeded live delta。
 - Given `今日` 视图切到 `金额` 或 `Tokens`，When 查看图表，Then 图表切换为“今日整天 24 小时横轴”的累计面积图；未来分钟不渲染，缺失分钟补 0 以保持曲线连续。
@@ -158,16 +158,21 @@
 - 2026-04-10: 根据 fresh review 继续收口 remount-cache 与 mixed materialized archive repair：`useTimeseries` 的 silent refresh 现在只回填近期终态 delta 触达的 bucket，并保留 TTL/上限约束内的 settled delta 去重记忆，避免复水后 duplicate settled SSE 再次叠加；summary repair 在 mixed preserve 路径下按 bucket/source 仅清一次既有 rollup，再跨归档批次重放现存 materialized archive，避免旧 failure 值无法修复或同桶多批次重放时发生双算/漏算。
 - 2026-04-10: 根据 fresh review 最后一轮阻塞项继续收口：mixed preserve repair 现在会对所有需要重放的现存 archive（不区分 materialized / non-materialized）按 bucket/source 先清旧值再重建，避免部分 repair 重试把旧 rollup 累加成双算；`useTimeseries` 的 silent refresh 也会跳过已滑出新 `rangeStart/rangeEnd` 的 settled bucket，不再把窗口左边界外的旧点短暂塞回图里。
 - 2026-04-10: 根据 fresh review 最后一轮继续收口前端 live seed：`running/pending` 的 seed 现在统一复用同一个第一页 `snapshotId`，避免状态在两次分页快照之间迁移时被漏抓；匿名 in-flight placeholder 只允许被“创建于 authoritative load 之前”的同桶记录回收，避免新到达的同桶 invocation 错吞旧 placeholder 并把分钟柱长期低估。
+- 2026-04-10: 根据 fresh review 继续收口 archived all-time summary repair：mixed preserve 路径会把被 archive 重放清空过的 boundary bucket 内、且 `shared_live_cursor` 之前的 live rows 重新灌回 hourly rollup，避免 archive/live 同小时交界在 repair 后丢失已落盘的 live 计数；仅缺失 failure replay marker 的归档回填现在只修复 failure 侧 replay 状态，不再误删已有正确的 `invocation_rollup_hourly` 总数。
+- 2026-04-10: 根据 latest review 继续收口历史 hourly 视图与今日图表呈现：`/api/timeseries`、hourly-backed summary 与 failure rollup 读取 archived hourly 数据前都会先触发同一条 summary repair/backfill 路径，避免升级后长范围图表继续读取陈旧 failure counts；同时 `今日 / 次数` 图会把 `running/pending` 残差直接画成中性 `进行中` 正柱，不再只藏在 tooltip 里；anonymous placeholder 只允许消费 authoritative `snapshotId` 之前的旧记录，而 authoritative refresh 会把仍在 TTL 内的 tracked live deltas 合并回 fresh response，避免静默重载期间被新 SSE 或本地时钟漂移打出双算。
+- 2026-04-10: 根据 merge 前最后一轮 review 继续收口本地 live patch：当匿名 in-flight placeholder 独占 bucket 且 authoritative 数据已带 provisional token/cost 时，终态 SSE 现在会把该 bucket 直接修正到最终 token/cost，而不是继续停留在 provisional 值；`current-day-local` 的 seed 抓取也缩到“当前自然日 bucket”本身，不再在 `1d bucket + 长范围` 视图里分页扫描整段历史窗口的 `running/pending` 记录。
+- 2026-04-10: 根据 fresh review 最后一轮继续补齐 authoritative/live 对账：hourly-backed summary / timeseries / failure 读取在 rollup refresh 之后统一冻结同一个 `snapshotId`，再对 `rollup_live_cursor < id <= snapshotId` 的 full-hour tail 做 exact replay，确保 archived rollup 与 live rows 落在同一 cutoff；`fetch_invocation_summary` 也把 legacy `http_200` success-like 行重新计入 `success_count`，避免 records summary undercount。
 
 ## Visual Evidence
 
 - Storybook覆盖=通过
 - 视觉证据目标源=storybook_canvas（mock-only）
-- Validation: `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bunx vitest run src/hooks/useTimeseries.test.ts src/hooks/useTimeseries.integration.test.tsx src/components/DashboardTodayActivityChart.test.tsx && bun run test && bun run build && bun run build-storybook`；`cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo check && cargo test all_time_summary_missing_archive_does_not_mark_repair_complete -- --nocapture && cargo test all_time_summary_repair_replays_existing_materialized_archives_when_others_are_pruned -- --nocapture && cargo test all_time_summary_repair_rebuilds_non_materialized_archives_when_others_are_pruned -- --nocapture`
+- Validation: `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run test -- src/hooks/useTimeseries.test.ts src/hooks/useTimeseries.integration.test.tsx src/components/DashboardTodayActivityChart.test.tsx && bun run build && bun run build-storybook`；`cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo fmt --all && cargo test fetch_invocation_summary_normalizes_top_level_success_and_failure_counts -- --nocapture && cargo test hourly_backed_summary_replays_pre_cutoff_full_hour_live_rows_after_rollup_cursor -- --nocapture && cargo test timeseries_hourly_backed_repairs_stale_archived_rollup_counts_before_querying -- --nocapture && cargo check`
 - Story id: `dashboard-dashboardtodayactivitychart--count-bars-dense-pairing`
 - Scenario: `今日 / 次数` 高密度 minute bucket，对齐验证 success / in-flight / failure 共用同一时间槽位并围绕 0 轴展开。
-- Evidence note: 验证柱子不再左右错位；`running/pending` 与其临时失败元数据不会把 failure 柱短时拉长后再回落；带 in-flight 残差的 minute bucket 会在 tooltip 中额外解释 `进行中` 数量；本轮 fresh review 最后两项收口未改变该 Storybook 画面语义，仅在 rebuilt Storybook 上重新绑定到最新本地验证 head。
-- Live patch note: 最新收口额外验证了 `running/pending` seed 的跨页同快照一致性，以及“新到达但同桶”的 settled 记录不会错误吞掉旧 placeholder。
+- Evidence note: 验证柱子不再左右错位；`running/pending` 与其临时失败元数据不会把 failure 柱短时拉长后再回落；带 in-flight 残差的 minute bucket 现在会直接绘制中性 `进行中` 正柱，并在 tooltip 中同步解释数量；本轮 rebuilt Storybook 已重新绑定到最新本地验证 head。
+- Live patch note: 最新收口额外验证了 `running/pending` seed 的跨页同快照一致性，以及“新到达但同桶”的 settled 记录不会错误吞掉旧 placeholder；anonymous placeholder 只允许回收 authoritative `snapshotId` 之前的同桶记录，而 authoritative refresh 会把仍在 TTL 内的 tracked live deltas 合并回 fresh response；当匿名 placeholder 独占 bucket 时，终态 SSE 也会把 provisional token/cost 直接修正到最终值；`current-day-local` 模式仅抓取当前日 bucket 的 in-flight seed，不再为长范围日历扫描整段窗口。
+- Repair note: 最新收口额外验证了 all-time summary repair 在 mixed preserve 场景下会补回被 boundary archive 重放清空的历史 live rows，并确保“只缺 failure replay marker”的归档回填不会误删已有正确的 `invocation_rollup_hourly` 总数；同时历史 hourly-backed timeseries / summary / failure 读取 archived rollup 前会先 refresh rollup，再冻结同一个 `snapshotId`，并对 `rollup_live_cursor < id <= snapshotId` 的 full-hour tail 做 exact replay，不再在升级后继续暴露陈旧 failure counts。
 - 聊天回图=已展示（本轮使用本地裁剪后的 Storybook canvas 截图完成 owner review）
 - 证据落盘=未落盘（本次未提交新的截图文件，避免在未获主人截图提交授权前把 refreshed capture 推上远端）
 - Stale evidence handling: 本节已移除旧的静态图片引用，避免在本轮 `今日 / 次数` 语义变更后继续保留过期截图引用。

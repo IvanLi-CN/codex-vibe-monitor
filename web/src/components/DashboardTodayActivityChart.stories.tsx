@@ -84,9 +84,22 @@ export const CountBarsDensePairing: Story = {
         const bucketStart = new Date("2026-04-08T00:00:00+08:00");
         bucketStart.setMinutes(bucketStart.getMinutes() + index * 4);
         const bucketEnd = new Date(bucketStart.getTime() + 60_000);
-        const failureCount = index % 6 === 0 ? 3 : index % 3 === 0 ? 2 : 1;
-        const successCount = 4 + (index % 5);
-        const inFlightCount = index % 8 === 0 ? 2 : index % 5 === 0 ? 1 : 0;
+        const inFlightOnlyBucket = index % 11 === 0;
+        const failureCount = inFlightOnlyBucket
+          ? 0
+          : index % 6 === 0
+            ? 3
+            : index % 3 === 0
+              ? 2
+              : 1;
+        const successCount = inFlightOnlyBucket ? 0 : 4 + (index % 5);
+        const inFlightCount = inFlightOnlyBucket
+          ? 3
+          : index % 8 === 0
+            ? 2
+            : index % 5 === 0
+              ? 1
+              : 0;
         const totalCount = successCount + failureCount + inFlightCount;
         return {
           bucketStart: bucketStart.toISOString(),

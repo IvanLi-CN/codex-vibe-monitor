@@ -1555,6 +1555,29 @@ async fn fetch_invocation_summary_normalizes_top_level_success_and_failure_count
             invoke_id,
             occurred_at,
             source,
+            status,
+            error_message,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind("summary-http-200-success")
+    .bind("2026-03-10 09:00:30")
+    .bind(SOURCE_PROXY)
+    .bind("http_200")
+    .bind("")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert legacy http_200 success row");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
             error_message,
             raw_response
         )
@@ -1599,8 +1622,8 @@ async fn fetch_invocation_summary_normalizes_top_level_success_and_failure_count
         .await
         .expect("summary query should succeed");
 
-    assert_eq!(summary.total_count, 3);
-    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.total_count, 4);
+    assert_eq!(summary.success_count, 2);
     assert_eq!(summary.failure_count, 2);
     assert_eq!(summary.exception.failure_count, 2);
     assert_eq!(summary.exception.service_failure_count, 2);

@@ -196,11 +196,16 @@ pub(crate) async fn query_pool_attempt_records_from_live(
     Ok(records)
 }
 
-async fn query_invocation_aggregate_records_from_live_range(
-    pool: &Pool<Sqlite>,
+async fn query_invocation_aggregate_records_from_live_range_executor<'e, E>(
+    executor: E,
     range: ExactUtcRange,
     source_scope: InvocationSourceScope,
-) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
+    start_after_id: Option<i64>,
+    snapshot_id: Option<i64>,
+) -> Result<Vec<InvocationAggregateRecord>, ApiError>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT \
             id, occurred_at, status, total_tokens, cost, error_message, failure_kind, \
@@ -214,15 +219,55 @@ async fn query_invocation_aggregate_records_from_live_range(
         .push_bind(db_occurred_at_lower_bound(range.start))
         .push(" AND occurred_at < ")
         .push_bind(db_occurred_at_upper_bound(range.end));
+    if let Some(start_after_id) = start_after_id {
+        query.push(" AND id > ").push_bind(start_after_id);
+    }
+    if let Some(snapshot_id) = snapshot_id {
+        query.push(" AND id <= ").push_bind(snapshot_id);
+    }
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
     query.push(" ORDER BY occurred_at ASC, id ASC");
     query
         .build_query_as::<InvocationAggregateRecord>()
-        .fetch_all(pool)
+        .fetch_all(executor)
         .await
         .map_err(Into::into)
+}
+
+async fn query_invocation_aggregate_records_from_live_range(
+    pool: &Pool<Sqlite>,
+    range: ExactUtcRange,
+    source_scope: InvocationSourceScope,
+    start_after_id: Option<i64>,
+    snapshot_id: Option<i64>,
+) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
+    query_invocation_aggregate_records_from_live_range_executor(
+        pool,
+        range,
+        source_scope,
+        start_after_id,
+        snapshot_id,
+    )
+    .await
+}
+
+async fn query_invocation_aggregate_records_from_live_range_tx(
+    tx: &mut SqliteConnection,
+    range: ExactUtcRange,
+    source_scope: InvocationSourceScope,
+    start_after_id: Option<i64>,
+    snapshot_id: Option<i64>,
+) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
+    query_invocation_aggregate_records_from_live_range_executor(
+        &mut *tx,
+        range,
+        source_scope,
+        start_after_id,
+        snapshot_id,
+    )
+    .await
 }
 
 fn extend_unique_invocation_records(
@@ -241,6 +286,7 @@ async fn query_invocation_exact_records(
     pool: &Pool<Sqlite>,
     range_plan: &HourlyRollupExactRangePlan,
     source_scope: InvocationSourceScope,
+    snapshot_id: i64,
 ) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
     let mut records = Vec::new();
     let mut seen_ids = HashSet::new();
@@ -249,7 +295,14 @@ async fn query_invocation_exact_records(
         extend_unique_invocation_records(
             &mut records,
             &mut seen_ids,
-            query_invocation_aggregate_records_from_live_range(pool, *range, source_scope).await?,
+            query_invocation_aggregate_records_from_live_range(
+                pool,
+                *range,
+                source_scope,
+                None,
+                Some(snapshot_id),
+            )
+            .await?,
         );
     }
 
@@ -259,6 +312,149 @@ async fn query_invocation_exact_records(
             .then_with(|| left.id.cmp(&right.id))
     });
     Ok(records)
+}
+
+pub(crate) async fn query_invocation_exact_records_tx(
+    tx: &mut SqliteConnection,
+    range_plan: &HourlyRollupExactRangePlan,
+    source_scope: InvocationSourceScope,
+    snapshot_id: i64,
+) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
+    let mut records = Vec::new();
+    let mut seen_ids = HashSet::new();
+
+    for range in &range_plan.live_exact_ranges {
+        extend_unique_invocation_records(
+            &mut records,
+            &mut seen_ids,
+            query_invocation_aggregate_records_from_live_range_tx(
+                &mut *tx,
+                *range,
+                source_scope,
+                None,
+                Some(snapshot_id),
+            )
+            .await?,
+        );
+    }
+
+    records.sort_by(|left, right| {
+        left.occurred_at
+            .cmp(&right.occurred_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(records)
+}
+
+pub(crate) async fn query_invocation_full_hour_tail_records_tx(
+    tx: &mut SqliteConnection,
+    range_plan: &HourlyRollupExactRangePlan,
+    source_scope: InvocationSourceScope,
+    rollup_live_cursor: i64,
+    snapshot_id: i64,
+) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
+    if snapshot_id <= rollup_live_cursor {
+        return Ok(Vec::new());
+    }
+    let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range else {
+        return Ok(Vec::new());
+    };
+    let range = ExactUtcRange {
+        start: Utc
+            .timestamp_opt(range_start_epoch, 0)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid full-hour tail start epoch")))?,
+        end: Utc
+            .timestamp_opt(range_end_epoch, 0)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid full-hour tail end epoch")))?,
+    };
+    query_invocation_aggregate_records_from_live_range_tx(
+        &mut *tx,
+        range,
+        source_scope,
+        Some(rollup_live_cursor),
+        Some(snapshot_id),
+    )
+    .await
+}
+
+pub(crate) async fn load_invocation_summary_rollup_live_cursor_tx(
+    tx: &mut SqliteConnection,
+) -> Result<i64> {
+    Ok(
+        load_hourly_rollup_live_progress_tx(tx, HOURLY_ROLLUP_DATASET_INVOCATIONS)
+            .await?
+            .max(
+                load_hourly_rollup_live_progress_tx(
+                    tx,
+                    INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET,
+                )
+                .await?,
+            ),
+    )
+}
+
+pub(crate) async fn resolve_invocation_snapshot_id_tx(
+    tx: &mut SqliteConnection,
+    source_scope: InvocationSourceScope,
+) -> Result<i64, ApiError> {
+    #[derive(Debug, FromRow)]
+    struct SnapshotRow {
+        snapshot_id: Option<i64>,
+    }
+
+    let mut query =
+        QueryBuilder::new("SELECT MAX(id) AS snapshot_id FROM codex_invocations WHERE 1 = 1");
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+
+    let row = query.build_query_as::<SnapshotRow>().fetch_one(&mut *tx).await?;
+    Ok(row.snapshot_id.unwrap_or(0))
+}
+
+async fn query_invocation_hourly_rollup_range_tx(
+    tx: &mut SqliteConnection,
+    range_start_epoch: i64,
+    range_end_epoch: i64,
+    source_scope: InvocationSourceScope,
+) -> Result<Vec<InvocationHourlyRollupRecord>, ApiError> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            bucket_start_epoch,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram,
+            first_response_byte_total_sample_count,
+            first_response_byte_total_sum_ms,
+            first_response_byte_total_max_ms,
+            first_response_byte_total_histogram
+        FROM invocation_rollup_hourly
+        WHERE bucket_start_epoch >=
+        "#,
+    );
+    query.push_bind(range_start_epoch);
+    query
+        .push(" AND bucket_start_epoch < ")
+        .push_bind(range_end_epoch);
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" ORDER BY bucket_start_epoch ASC");
+
+    query
+        .build_query_as::<InvocationHourlyRollupRecord>()
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(Into::into)
 }
 
 fn add_invocation_record_to_summary_totals(
@@ -328,8 +524,13 @@ pub(crate) async fn query_hourly_backed_summary_since_with_config(
     let now = Utc::now();
     let range_plan = build_hourly_rollup_exact_range_plan(start, now, retention_cutoff)?;
     if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
-        let rows = query_invocation_hourly_rollup_range(
-            pool,
+        ensure_invocation_summary_rollups_ready(pool).await?;
+        let mut tx = pool.begin().await?;
+        let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
+        let rollup_live_cursor =
+            load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
+        let rows = query_invocation_hourly_rollup_range_tx(
+            tx.as_mut(),
             range_start_epoch,
             range_end_epoch,
             source_scope,
@@ -342,10 +543,29 @@ pub(crate) async fn query_hourly_backed_summary_since_with_config(
             totals.total_tokens += row.total_tokens;
             totals.total_cost += row.total_cost;
         }
-    }
-    let exact_records = query_invocation_exact_records(pool, &range_plan, source_scope).await?;
-    for record in &exact_records {
-        add_invocation_record_to_summary_totals(&mut totals, record);
+        let mut exact_records =
+            query_invocation_exact_records_tx(tx.as_mut(), &range_plan, source_scope, snapshot_id)
+                .await?;
+        exact_records.extend(
+            query_invocation_full_hour_tail_records_tx(
+                tx.as_mut(),
+                &range_plan,
+                source_scope,
+                rollup_live_cursor,
+                snapshot_id,
+            )
+            .await?,
+        );
+        for record in &exact_records {
+            add_invocation_record_to_summary_totals(&mut totals, record);
+        }
+    } else {
+        let snapshot_id = resolve_invocation_snapshot_id(pool, source_scope).await?;
+        let exact_records =
+            query_invocation_exact_records(pool, &range_plan, source_scope, snapshot_id).await?;
+        for record in &exact_records {
+            add_invocation_record_to_summary_totals(&mut totals, record);
+        }
     }
     let relay_totals =
         if let Some(effective_range) = effective_range_for_hourly_rollup_plan(&range_plan)? {
@@ -2484,6 +2704,7 @@ pub(crate) async fn fetch_timeseries(
     ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
+    let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
     let bucket_selection = resolve_timeseries_bucket_selection(
         &params,
@@ -2526,6 +2747,8 @@ pub(crate) async fn fetch_timeseries(
             end: end_dt,
         },
         source_scope,
+        None,
+        Some(snapshot_id),
     )
     .await?;
 
@@ -2661,6 +2884,7 @@ pub(crate) async fn fetch_timeseries(
             format_utc_iso(end)
         },
         bucket_seconds,
+        snapshot_id,
         effective_bucket: bucket_selection.effective_bucket,
         available_buckets: bucket_selection.available_buckets,
         bucket_limited_to_daily: bucket_selection.bucket_limited_to_daily,
@@ -2818,54 +3042,80 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
         bucket_cursor = next_reporting_bucket_epoch(bucket_cursor, bucket_seconds, reporting_tz)?;
     }
 
-    if let Some((hourly_cursor, hourly_end_epoch)) = range_plan.full_hour_range {
-        let rows = query_invocation_hourly_rollup_range(
-            &state.pool,
-            hourly_cursor,
-            hourly_end_epoch,
-            source_scope,
-        )
-        .await?;
-        for row in rows {
-            let bucket_epoch =
-                align_reporting_bucket_epoch(row.bucket_start_epoch, bucket_seconds, reporting_tz)?;
-            let entry = aggregates.entry(bucket_epoch).or_default();
-            entry.total_count += row.total_count;
-            entry.success_count += row.success_count;
-            entry.failure_count += row.failure_count;
-            entry.total_tokens += row.total_tokens;
-            entry.total_cost += row.total_cost;
-            entry.first_byte_sample_count += row.first_byte_sample_count;
-            entry.first_byte_ttfb_sum_ms += row.first_byte_sum_ms;
-            entry.first_byte_histogram = if entry.first_byte_histogram.is_empty() {
-                decode_approx_histogram(&row.first_byte_histogram)
+    let (snapshot_id, hourly_rows, exact_records) = if range_plan.full_hour_range.is_some() {
+        ensure_invocation_summary_rollups_ready(&state.pool).await?;
+            let mut tx = state.pool.begin().await?;
+            let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
+            let rollup_live_cursor =
+                load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
+            let (hourly_cursor, hourly_end_epoch) = range_plan
+                .full_hour_range
+                .expect("full_hour_range is present when hourly rollups are enabled");
+            let hourly_rows = query_invocation_hourly_rollup_range_tx(
+                tx.as_mut(),
+                hourly_cursor,
+                hourly_end_epoch,
+                source_scope,
+            )
+            .await?;
+            let mut exact_records =
+                query_invocation_exact_records_tx(tx.as_mut(), &range_plan, source_scope, snapshot_id)
+                    .await?;
+            exact_records.extend(
+                query_invocation_full_hour_tail_records_tx(
+                    tx.as_mut(),
+                    &range_plan,
+                    source_scope,
+                    rollup_live_cursor,
+                    snapshot_id,
+                )
+                .await?,
+            );
+            (snapshot_id, hourly_rows, exact_records)
+    } else {
+        let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
+        let exact_records =
+            query_invocation_exact_records(&state.pool, &range_plan, source_scope, snapshot_id)
+                .await?;
+        (snapshot_id, Vec::new(), exact_records)
+    };
+
+    for row in hourly_rows {
+        let bucket_epoch =
+            align_reporting_bucket_epoch(row.bucket_start_epoch, bucket_seconds, reporting_tz)?;
+        let entry = aggregates.entry(bucket_epoch).or_default();
+        entry.total_count += row.total_count;
+        entry.success_count += row.success_count;
+        entry.failure_count += row.failure_count;
+        entry.total_tokens += row.total_tokens;
+        entry.total_cost += row.total_cost;
+        entry.first_byte_sample_count += row.first_byte_sample_count;
+        entry.first_byte_ttfb_sum_ms += row.first_byte_sum_ms;
+        entry.first_byte_histogram = if entry.first_byte_histogram.is_empty() {
+            decode_approx_histogram(&row.first_byte_histogram)
+        } else {
+            let mut merged = entry.first_byte_histogram.clone();
+            merge_approx_histogram_into(
+                &mut merged,
+                &decode_approx_histogram(&row.first_byte_histogram),
+            )?;
+            merged
+        };
+        entry.first_response_byte_total_sample_count +=
+            row.first_response_byte_total_sample_count;
+        entry.first_response_byte_total_sum_ms += row.first_response_byte_total_sum_ms;
+        entry.first_response_byte_total_histogram =
+            if entry.first_response_byte_total_histogram.is_empty() {
+                decode_approx_histogram(&row.first_response_byte_total_histogram)
             } else {
-                let mut merged = entry.first_byte_histogram.clone();
+                let mut merged = entry.first_response_byte_total_histogram.clone();
                 merge_approx_histogram_into(
                     &mut merged,
-                    &decode_approx_histogram(&row.first_byte_histogram),
+                    &decode_approx_histogram(&row.first_response_byte_total_histogram),
                 )?;
                 merged
             };
-            entry.first_response_byte_total_sample_count +=
-                row.first_response_byte_total_sample_count;
-            entry.first_response_byte_total_sum_ms += row.first_response_byte_total_sum_ms;
-            entry.first_response_byte_total_histogram =
-                if entry.first_response_byte_total_histogram.is_empty() {
-                    decode_approx_histogram(&row.first_response_byte_total_histogram)
-                } else {
-                    let mut merged = entry.first_response_byte_total_histogram.clone();
-                    merge_approx_histogram_into(
-                        &mut merged,
-                        &decode_approx_histogram(&row.first_response_byte_total_histogram),
-                    )?;
-                    merged
-                };
-        }
     }
-
-    let exact_records =
-        query_invocation_exact_records(&state.pool, &range_plan, source_scope).await?;
     for record in exact_records {
         let Some(occurred_utc) = parse_to_utc_datetime(&record.occurred_at) else {
             continue;
@@ -2977,6 +3227,7 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
             format_utc_iso(end)
         },
         bucket_seconds,
+        snapshot_id,
         effective_bucket: bucket_selection.effective_bucket,
         available_buckets: bucket_selection.available_buckets,
         bucket_limited_to_daily: bucket_selection.bucket_limited_to_daily,
