@@ -752,6 +752,18 @@ function chunkDashboardWorkingConversationRows(
   return rows;
 }
 
+interface DashboardWorkingConversationAnchorCardElement extends HTMLElement {
+  __dashboardWorkingConversationAnchorKey?: string;
+}
+
+function readDashboardWorkingConversationAnchorKey(card: HTMLElement) {
+  return (
+    (card as DashboardWorkingConversationAnchorCardElement)
+      .__dashboardWorkingConversationAnchorKey ?? ""
+  )
+    .trim();
+}
+
 function captureVisibleCardAnchor(container: HTMLDivElement) {
   const containerRect = container.getBoundingClientRect();
   const cards = Array.from(
@@ -762,8 +774,10 @@ function captureVisibleCardAnchor(container: HTMLDivElement) {
   for (const card of cards) {
     const rect = card.getBoundingClientRect();
     if (rect.bottom <= containerRect.top) continue;
+    const anchorKey = readDashboardWorkingConversationAnchorKey(card);
+    if (!anchorKey) continue;
     return {
-      conversationSequenceId: card.dataset.conversationSequenceId ?? "",
+      anchorKey,
       top: rect.top - containerRect.top,
     };
   }
@@ -792,8 +806,8 @@ export function DashboardWorkingConversationsSection({
     null,
   );
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const pendingAnchorRef = useRef<{
-    conversationSequenceId: string;
+  const visibleAnchorRef = useRef<{
+    anchorKey: string;
     top: number;
   } | null>(null);
   const loadMoreRequestPendingRef = useRef(false);
@@ -836,10 +850,8 @@ export function DashboardWorkingConversationsSection({
     [localeTag],
   );
   const countBadgeValue = totalMatched ?? cards.length;
-  const cssColumnCount = useMemo(
-    () => resolveDashboardWorkingConversationCssColumnCount(scrollElement),
-    [scrollElement, containerWidth, viewportWidth],
-  );
+  const cssColumnCount =
+    resolveDashboardWorkingConversationCssColumnCount(scrollElement);
   const columnCount =
     cssColumnCount ??
     resolveDashboardWorkingConversationColumnCount(
@@ -963,6 +975,7 @@ export function DashboardWorkingConversationsSection({
       maybeLoadMore("mount");
     }, 0);
     const handleScroll = () => {
+      visibleAnchorRef.current = captureVisibleCardAnchor(container);
       maybeLoadMore("scroll");
     };
     container.addEventListener("scroll", handleScroll, { passive: true });
@@ -978,17 +991,13 @@ export function DashboardWorkingConversationsSection({
 
   useLayoutEffect(() => {
     const container = scrollRef.current;
-    const pendingAnchor = pendingAnchorRef.current;
-    if (container && pendingAnchor?.conversationSequenceId) {
+    const pendingAnchor = visibleAnchorRef.current;
+    if (container && pendingAnchor?.anchorKey) {
       const anchoredCard = Array.from(
         container.querySelectorAll<HTMLElement>(
           '[data-testid="dashboard-working-conversation-card"]',
         ),
-      ).find(
-        (card) =>
-          card.dataset.conversationSequenceId ===
-          pendingAnchor.conversationSequenceId,
-      );
+      ).find((card) => readDashboardWorkingConversationAnchorKey(card) === pendingAnchor.anchorKey);
       if (anchoredCard) {
         const containerRect = container.getBoundingClientRect();
         const nextTop =
@@ -999,11 +1008,9 @@ export function DashboardWorkingConversationsSection({
         }
       }
     }
-    pendingAnchorRef.current = null;
-    return () => {
-      if (!scrollRef.current) return;
-      pendingAnchorRef.current = captureVisibleCardAnchor(scrollRef.current);
-    };
+    visibleAnchorRef.current = container
+      ? captureVisibleCardAnchor(container)
+      : null;
   }, [cards, columnCount]);
 
   if (error && cards.length === 0) {
@@ -1132,6 +1139,13 @@ export function DashboardWorkingConversationsSection({
                         return (
                           <article
                             key={card.promptCacheKey}
+                            ref={(node) => {
+                              if (!node) return;
+                              (
+                                node as DashboardWorkingConversationAnchorCardElement
+                              ).__dashboardWorkingConversationAnchorKey =
+                                card.promptCacheKey;
+                            }}
                             data-testid="dashboard-working-conversation-card"
                             data-conversation-sequence-id={displaySequenceId}
                             className={cn(

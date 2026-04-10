@@ -8,7 +8,10 @@ import type {
   PromptCacheConversationInvocationPreview,
   PromptCacheConversationsResponse,
 } from "../lib/api";
-import { mapPromptCacheConversationsToDashboardCards } from "../lib/dashboardWorkingConversations";
+import {
+  mapPromptCacheConversationsToDashboardCards,
+  type DashboardWorkingConversationCardModel,
+} from "../lib/dashboardWorkingConversations";
 import { DashboardWorkingConversationsSection } from "./DashboardWorkingConversationsSection";
 
 const virtualizerMocks = vi.hoisted(() => ({
@@ -161,7 +164,31 @@ function renderSection(
     }) => void;
   },
 ) {
-  const cards = mapPromptCacheConversationsToDashboardCards(response);
+  return renderSectionWithCards(
+    mapPromptCacheConversationsToDashboardCards(response),
+    options,
+  );
+}
+
+function renderSectionWithCards(
+  cards: DashboardWorkingConversationCardModel[],
+  options?: {
+    error?: string | null;
+    isLoading?: boolean;
+    isLoadingMore?: boolean;
+    hasMore?: boolean;
+    totalMatched?: number;
+    onLoadMore?: () => void;
+    setRefreshTargetCount?: (count: number) => void;
+    onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+    onOpenInvocation?: (selection: {
+      slotKind: "current" | "previous";
+      conversationSequenceId: string;
+      promptCacheKey: string;
+      invocation: { record: { invokeId: string } };
+    }) => void;
+  },
+) {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -205,10 +232,34 @@ function rerenderSection(
     }) => void;
   },
 ) {
+  return rerenderSectionWithCards(
+    mapPromptCacheConversationsToDashboardCards(response),
+    options,
+  );
+}
+
+function rerenderSectionWithCards(
+  cards: DashboardWorkingConversationCardModel[],
+  options?: {
+    error?: string | null;
+    isLoading?: boolean;
+    isLoadingMore?: boolean;
+    hasMore?: boolean;
+    totalMatched?: number;
+    onLoadMore?: () => void;
+    setRefreshTargetCount?: (count: number) => void;
+    onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+    onOpenInvocation?: (selection: {
+      slotKind: "current" | "previous";
+      conversationSequenceId: string;
+      promptCacheKey: string;
+      invocation: { record: { invokeId: string } };
+    }) => void;
+  },
+) {
   if (!root) {
     throw new Error("renderSection must run before rerenderSection");
   }
-  const cards = mapPromptCacheConversationsToDashboardCards(response);
   act(() => {
     root?.render(
       <I18nProvider>
@@ -940,5 +991,128 @@ describe("DashboardWorkingConversationsSection", () => {
     virtualizerMocks.rowIndexes = [0, 1, 2];
     rerenderSection(response, { setRefreshTargetCount });
     expect(setRefreshTargetCount).toHaveBeenLastCalledWith(20);
+  });
+
+  it("keeps scroll-anchor compensation stable when display ids are renumbered by a new collision", () => {
+    const baseCards = mapPromptCacheConversationsToDashboardCards(
+      createResponse([
+        createConversation("hidden-before", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-hidden-before",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "completed",
+          }),
+        ]),
+        createConversation("stable-anchor", [
+          createPreview({
+            id: 2,
+            invokeId: "invoke-stable-anchor",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+          }),
+        ]),
+        createConversation("new-head", [
+          createPreview({
+            id: 3,
+            invokeId: "invoke-new-head",
+            occurredAt: "2026-04-04T10:06:00Z",
+            status: "running",
+          }),
+        ]),
+      ]),
+    );
+
+    const initialCards = [
+      {
+        ...baseCards[0]!,
+        promptCacheKey: "hidden-before",
+        normalizedPromptCacheKey: "hidden-before",
+        conversationSequenceId: "WC-COLLIDE-A",
+      },
+      {
+        ...baseCards[1]!,
+        promptCacheKey: "stable-anchor",
+        normalizedPromptCacheKey: "stable-anchor",
+        conversationSequenceId: "WC-COLLIDE-B",
+      },
+    ] satisfies DashboardWorkingConversationCardModel[];
+
+    const nextCards = [
+      {
+        ...baseCards[2]!,
+        promptCacheKey: "new-head",
+        normalizedPromptCacheKey: "new-head",
+        conversationSequenceId: "WC-COLLIDE-A",
+      },
+      {
+        ...baseCards[0]!,
+        promptCacheKey: "hidden-before",
+        normalizedPromptCacheKey: "hidden-before",
+        conversationSequenceId: "WC-COLLIDE-A-1",
+      },
+      {
+        ...baseCards[1]!,
+        promptCacheKey: "stable-anchor",
+        normalizedPromptCacheKey: "stable-anchor",
+        conversationSequenceId: "WC-COLLIDE-B-1",
+      },
+    ] satisfies DashboardWorkingConversationCardModel[];
+
+    const rectFor = (top: number, height = 160) =>
+      ({
+        x: 0,
+        y: top,
+        top,
+        bottom: top + height,
+        left: 0,
+        right: 1200,
+        width: 1200,
+        height,
+        toJSON: () => ({}),
+      }) satisfies DOMRect;
+
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        if (
+          this.getAttribute("data-testid") ===
+          "dashboard-working-conversations-grid"
+        ) {
+          return rectFor(0, 600);
+        }
+        if (
+          this.getAttribute("data-testid") ===
+          "dashboard-working-conversation-card"
+        ) {
+          switch (this.getAttribute("data-conversation-sequence-id")) {
+            case "COLLIDE-A":
+              return rectFor(-220);
+            case "COLLIDE-B":
+              return rectFor(40);
+            case "COLLIDE-A-1":
+              return rectFor(-20);
+            case "COLLIDE-B-1":
+              return rectFor(220);
+            default:
+              return rectFor(720);
+          }
+        }
+        return rectFor(0, 0);
+      },
+    );
+
+    renderSectionWithCards(initialCards);
+
+    const grid = host?.querySelector(
+      '[data-testid="dashboard-working-conversations-grid"]',
+    );
+    if (!(grid instanceof HTMLDivElement)) {
+      throw new Error("missing working conversations grid");
+    }
+    grid.scrollTop = 300;
+
+    rerenderSectionWithCards(nextCards);
+
+    expect(grid.scrollTop).toBe(480);
   });
 });
