@@ -159,6 +159,7 @@ export function DashboardTodayActivityChart({
     () => ({
       success: t("stats.cards.success"),
       failures: t("stats.cards.failures"),
+      inFlight: t("chart.inFlight"),
       total: t("chart.totalCount"),
     }),
     [t],
@@ -214,6 +215,19 @@ export function DashboardTodayActivityChart({
             ),
             color: chartColors.failure,
           },
+          ...(point.inFlightCount > 0
+            ? [
+                {
+                  label: countSeriesNames.inFlight,
+                  value: formatCountValue(
+                    point.inFlightCount,
+                    countUnit,
+                    numberFormatter,
+                  ),
+                  color: chartColors.accent,
+                },
+              ]
+            : []),
           {
             label: countSeriesNames.total,
             value: formatCountValue(

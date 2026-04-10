@@ -944,8 +944,9 @@ async fn rebuild_invocation_summary_rollups_from_live_rows(
     source_scope: InvocationSourceScope,
     seen_ids: &mut HashSet<i64>,
     targets: &[&str],
+    start_after_id: i64,
 ) -> Result<i64> {
-    let mut cursor_id = 0_i64;
+    let mut cursor_id = start_after_id;
     loop {
         let mut rows = load_invocation_hourly_source_rows_after_id(
             &mut *tx,
@@ -965,6 +966,22 @@ async fn rebuild_invocation_summary_rollups_from_live_rows(
         upsert_invocation_hourly_rollups_tx(tx, &rows, targets).await?;
     }
     Ok(cursor_id)
+}
+
+async fn mark_materialized_invocation_summary_archive_replayed_tx(
+    tx: &mut SqliteConnection,
+    archive_row: &ArchiveBatchPathRow,
+) -> Result<()> {
+    for target in INVOCATION_SUMMARY_ROLLUP_TARGETS {
+        mark_hourly_rollup_archive_replayed_tx(
+            tx,
+            target,
+            HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            &archive_row.file_path,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 async fn hourly_rollup_progress_exists(
@@ -1010,16 +1027,32 @@ async fn repair_invocation_summary_rollups(pool: &Pool<Sqlite>) -> Result<()> {
         return Ok(());
     }
 
-    sqlx::query("DELETE FROM invocation_rollup_hourly")
-        .execute(tx.as_mut())
-        .await?;
-    sqlx::query("DELETE FROM invocation_failure_rollup_hourly")
-        .execute(tx.as_mut())
-        .await?;
-
     let archive_rows = load_completed_invocation_archive_paths(tx.as_mut()).await?;
+    let preserve_materialized_archives = archive_rows.iter().any(|archive_row| {
+        archive_row.historical_rollups_materialized_at.is_some()
+            && !PathBuf::from(&archive_row.file_path).exists()
+    });
+    let shared_live_cursor =
+        load_hourly_rollup_live_progress_tx(tx.as_mut(), HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
+
+    if !preserve_materialized_archives {
+        sqlx::query("DELETE FROM invocation_rollup_hourly")
+            .execute(tx.as_mut())
+            .await?;
+        sqlx::query("DELETE FROM invocation_failure_rollup_hourly")
+            .execute(tx.as_mut())
+            .await?;
+    }
+
     let mut seen_ids = HashSet::new();
     for archive_row in &archive_rows {
+        if preserve_materialized_archives
+            && archive_row.historical_rollups_materialized_at.is_some()
+        {
+            mark_materialized_invocation_summary_archive_replayed_tx(tx.as_mut(), archive_row)
+                .await?;
+            continue;
+        }
         rebuild_invocation_summary_rollups_from_archive_batch(
             tx.as_mut(),
             archive_row,
@@ -1034,12 +1067,17 @@ async fn repair_invocation_summary_rollups(pool: &Pool<Sqlite>) -> Result<()> {
         InvocationSourceScope::All,
         &mut seen_ids,
         &INVOCATION_SUMMARY_ROLLUP_TARGETS,
+        if preserve_materialized_archives {
+            shared_live_cursor
+        } else {
+            0
+        },
     )
     .await?;
     save_hourly_rollup_live_progress_tx(
         tx.as_mut(),
         INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET,
-        live_cursor_id,
+        live_cursor_id.max(shared_live_cursor),
     )
     .await?;
     save_hourly_rollup_live_progress_tx(

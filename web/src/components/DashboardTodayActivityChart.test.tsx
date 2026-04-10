@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 import { DashboardTodayActivityChart } from "./DashboardTodayActivityChart";
 import { buildTodayMinuteChartData } from "./dashboardTodayActivityChartData";
 
+let latestChartData: Array<Record<string, unknown>> = [];
+
 vi.mock("recharts", () => ({
   ResponsiveContainer: ({ children }: { children: ReactNode }) => (
     <div data-testid="responsive">{children}</div>
@@ -11,7 +13,35 @@ vi.mock("recharts", () => ({
   CartesianGrid: () => <div data-testid="grid" />,
   XAxis: () => <div data-testid="x-axis" />,
   YAxis: () => <div data-testid="y-axis" />,
-  Tooltip: () => <div data-testid="tooltip" />,
+  Tooltip: ({
+    content,
+  }: {
+    content?: (props: {
+      active: boolean;
+      label: number;
+      payload: Array<{ payload: Record<string, unknown> }>;
+    }) => ReactNode;
+  }) => {
+    const point =
+      latestChartData.find(
+        (item) =>
+          typeof item.inFlightCount === "number" && Number(item.inFlightCount) > 0,
+      ) ??
+      latestChartData.find(
+        (item) => typeof item.chartSuccessCount === "number",
+      );
+    return (
+      <div data-testid="tooltip">
+        {point
+          ? content?.({
+              active: true,
+              label: Number(point.index ?? 0),
+              payload: [{ payload: point }],
+            })
+          : null}
+      </div>
+    );
+  },
   Legend: () => <div data-testid="legend" />,
   ReferenceLine: () => <div data-testid="reference-line" />,
   Area: () => <div data-testid="area-series" />,
@@ -28,14 +58,19 @@ vi.mock("recharts", () => ({
   ComposedChart: ({
     children,
     barGap,
+    data,
   }: {
     children: ReactNode;
     barGap?: string | number;
-  }) => (
-    <div data-testid="composed-chart" data-bar-gap={String(barGap ?? "")}>
-      {children}
-    </div>
-  ),
+    data?: Array<Record<string, unknown>>;
+  }) => {
+    latestChartData = data ?? [];
+    return (
+      <div data-testid="composed-chart" data-bar-gap={String(barGap ?? "")}>
+        {children}
+      </div>
+    );
+  },
 }));
 
 vi.mock("../i18n", () => ({
@@ -88,6 +123,7 @@ describe("DashboardTodayActivityChart", () => {
     expect(data[0]).toMatchObject({
       successCount: 2,
       failureCount: 1,
+      inFlightCount: 0,
       failureCountNegative: -1,
       chartSuccessCount: 2,
       chartFailureCountNegative: -1,
@@ -100,6 +136,7 @@ describe("DashboardTodayActivityChart", () => {
     expect(data[1]).toMatchObject({
       successCount: 0,
       failureCount: 0,
+      inFlightCount: 0,
       totalCount: 0,
       cumulativeCost: 0.5,
       cumulativeTokens: 120,
@@ -111,6 +148,7 @@ describe("DashboardTodayActivityChart", () => {
     expect(data[2]).toMatchObject({
       successCount: 4,
       failureCount: 0,
+      inFlightCount: 0,
       totalCount: 4,
       cumulativeCost: 1.25,
       cumulativeTokens: 320,
@@ -122,6 +160,7 @@ describe("DashboardTodayActivityChart", () => {
     expect(data[3]).toMatchObject({
       successCount: 0,
       failureCount: 0,
+      inFlightCount: 0,
       totalCount: 0,
       cumulativeCost: 1.25,
       cumulativeTokens: 320,
@@ -215,9 +254,38 @@ describe("DashboardTodayActivityChart", () => {
       totalCount: 3,
       successCount: 1,
       failureCount: 1,
+      inFlightCount: 1,
       chartSuccessCount: 1,
       chartFailureCountNegative: -1,
     });
+  });
+
+  it("shows in-flight calls in the count tooltip when total exceeds success plus failures", () => {
+    const html = renderToStaticMarkup(
+      <DashboardTodayActivityChart
+        response={{
+          ...response,
+          points: [
+            {
+              bucketStart: "2026-04-08 00:00:00",
+              bucketEnd: "2026-04-08 00:00:59",
+              totalCount: 4,
+              successCount: 2,
+              failureCount: 1,
+              totalTokens: 120,
+              totalCost: 0.5,
+            },
+          ],
+        }}
+        loading={false}
+        error={null}
+        metric="totalCount"
+      />,
+    );
+
+    expect(html).toContain("chart.inFlight");
+    expect(html).toContain("1 unit.calls");
+    expect(html).toContain("4 unit.calls");
   });
 
   it("renders count mode as a composed chart with split success and failure bars", () => {

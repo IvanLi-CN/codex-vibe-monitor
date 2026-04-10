@@ -57,7 +57,7 @@
 - Given 打开 Dashboard，When 查看页面顶部，Then 不再存在独立的 `today-stats-overview-card` 外层卡片，“今日”能力只出现在 `活动总览` 内。
 - Given 查看 `活动总览` 范围切换，When 进入页面，Then 显示 `今日 / 24 小时 / 7 日 / 历史` 四段；首次进入默认 `今日`，之后优先恢复最近一次访问的范围；localStorage 值非法时回退到 `今日`。
 - Given 处于 `今日` 视图，When 查看总览内容，Then 顶部显示 5 个 KPI、下方显示一张分钟级图表；`24 小时 / 7 日` 仍显示既有 KPI + 热力图；`历史` 仍只显示半年日历。
-- Given `今日` 视图切到 `次数`，When 查看图表，Then 每个时间桶的成功 / 失败柱共享同一 X 槽位，成功柱位于 0 轴上方、失败柱位于 0 轴下方，tooltip 同时给出成功 / 失败 / 总数。
+- Given `今日` 视图切到 `次数`，When 查看图表，Then 每个时间桶的成功 / 失败柱共享同一 X 槽位，成功柱位于 0 轴上方、失败柱位于 0 轴下方；tooltip 至少给出成功 / 失败 / 总数，并在 `running/pending` 使 `totalCount > successCount + failureCount` 时额外展示 `进行中` 计数。
 - Given `今日 / 次数` 存在 `running/pending` live row、带失败元数据的临时态，或 legacy blank/null status 行缺少失败元数据，When 页面初载、silent refresh、SSE 多次更新或数据归档后重新读取，Then 这些非终态 / 中性 legacy 记录都不会被计入 failure；只有终态失败或带明确失败元数据的 legacy 行才会进入失败柱与失败汇总。
 - Given in-flight seed 需要跨多页抓取 `running/pending` 记录，When 前端顺序拉取后续页，Then 所有页都复用第一页返回的 `snapshotId`，不会因底层集合变化而重复或漏算 seeded live delta。
 - Given `今日` 视图切到 `金额` 或 `Tokens`，When 查看图表，Then 图表切换为“今日整天 24 小时横轴”的累计面积图；未来分钟不渲染，缺失分钟补 0 以保持曲线连续。
@@ -85,6 +85,7 @@
   - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test invocation_hourly_rollup_ignores_running_and_pending_for_failure_counts -- --nocapture`
   - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test invocation_hourly_rollup_excludes_structured_legacy_http_200_failures_from_ttfb_samples -- --nocapture`
   - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test all_time_summary_preserves_archived_history_when_rollup_failures_are_stale -- --nocapture`
+  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test all_time_summary_repair_preserves_pruned_materialized_archives -- --nocapture`
 - Storybook build:
   - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run build-storybook`
 
@@ -150,15 +151,16 @@
 - 2026-04-10: 对齐 authoritative/live/archive 三条统计路径：`src/api/slices/prompt_cache_and_timeseries.rs`、`src/stats/mod.rs` 与 `src/maintenance/archive.rs` 统一把带失败元数据的 `running/pending` 排除在 failure 汇总之外，并让 structured legacy `http_200` failure 不再误入 archived success-like TTFB / pruned-success 判定。
 - 2026-04-10: 根据 fresh review 继续收口 legacy 空状态语义：blank/null `status` 且缺少失败元数据的历史行现在保持中性，不再在 summary / timeseries / archive rollup 中被误算为 failure；只有带明确失败元数据的 legacy 行才会保留失败统计。
 - 2026-04-10: 根据 fresh review 继续收口本地 live patch 稳定性：`useTimeseries` 现在把近期终态 delta 连同其受 TTL / 上限约束的去重元数据一起写入 remount cache，并在复水后继续吸收 duplicate SSE；同时活跃会话里的 tracked delta 仍会按 TTL / 上限裁剪，避免长时间停留页面时 `liveRecordDeltaRef` 单调增长。
+- 2026-04-10: 根据 round16 review 继续收口 `今日 / 次数` tooltip 与 all-time summary repair：当 minute bucket 含有 `running/pending` 残差时，tooltip 现在会显式展示 `进行中`，不再让 `总数` 与成功/失败小计失配；同时 summary repair 仅在 materialized 归档文件真实缺失时保留既有 rollup 历史，避免已 prune 的旧归档触发全量重建失败，而文件仍在时继续重放归档以修正陈旧 failure 计数。
 
 ## Visual Evidence
 
 - Storybook覆盖=通过
 - 视觉证据目标源=storybook_canvas（mock-only）
-- Validation: `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run test`、`bun run build`、`bun run build-storybook`；`cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test timeseries_and_summary_do_not_treat_running_rows_with_failure_metadata_as_failures -- --nocapture && cargo test invocation_hourly_rollup_ignores_running_and_pending_for_failure_counts -- --nocapture && cargo test invocation_hourly_rollup_excludes_structured_legacy_http_200_failures_from_ttfb_samples -- --nocapture && cargo test all_time_summary_preserves_archived_history_when_rollup_failures_are_stale -- --nocapture`
+- Validation: `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run test && bun run build && bun run build-storybook`；`cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test all_time_summary_preserves_archived_history_when_rollup_failures_are_stale -- --nocapture && cargo test all_time_summary_repair_preserves_pruned_materialized_archives -- --nocapture && cargo test all_time_summary_repair_does_not_advance_shared_live_cursor_without_hourly_sync -- --nocapture && cargo test all_time_summary_rollup_repair_counts_mixed_case_success_status -- --nocapture && cargo test all_time_summary_missing_summary_markers_do_not_replay_materialized_archives -- --nocapture`
 - Story id: `dashboard-dashboardtodayactivitychart--count-bars-dense-pairing`
 - Scenario: `今日 / 次数` 高密度 minute bucket，对齐验证 success / in-flight / failure 共用同一时间槽位并围绕 0 轴展开。
-- Evidence note: 验证柱子不再左右错位；`running/pending` 与其临时失败元数据不会把 failure 柱短时拉长后再回落。
+- Evidence note: 验证柱子不再左右错位；`running/pending` 与其临时失败元数据不会把 failure 柱短时拉长后再回落；带 in-flight 残差的 minute bucket 会在 tooltip 中额外解释 `进行中` 数量。
 - 聊天回图=已展示（本轮使用本地裁剪后的 Storybook canvas 截图完成 owner review）
 - 证据落盘=未落盘（本次未提交新的截图文件，避免在未获主人截图提交授权前把 refreshed capture 推上远端）
 - Stale evidence handling: 本节已移除旧的静态图片引用，避免在本轮 `今日 / 次数` 语义变更后继续保留过期截图引用。

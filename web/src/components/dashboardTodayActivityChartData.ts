@@ -9,6 +9,7 @@ export interface DashboardTodayMinuteDatum {
   tooltipLabel: string;
   successCount: number;
   failureCount: number;
+  inFlightCount: number;
   failureCountNegative: number;
   chartSuccessCount: number | null;
   chartFailureCountNegative: number | null;
@@ -100,6 +101,7 @@ export function buildTodayMinuteChartData(
       point?.totalCount ?? successCount + failureCount,
       successCount + failureCount,
     );
+    const inFlightCount = Math.max(totalCount - successCount - failureCount, 0);
     const totalCost = point?.totalCost ?? 0;
     const totalTokens = point?.totalTokens ?? 0;
     cumulativeCost += totalCost;
@@ -115,6 +117,7 @@ export function buildTodayMinuteChartData(
       ),
       successCount,
       failureCount,
+      inFlightCount,
       failureCountNegative: failureCount > 0 ? -failureCount : 0,
       chartSuccessCount: isFuture ? null : successCount,
       chartFailureCountNegative: isFuture

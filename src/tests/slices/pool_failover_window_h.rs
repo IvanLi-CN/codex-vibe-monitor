@@ -1486,6 +1486,174 @@ async fn all_time_summary_missing_summary_markers_do_not_replay_materialized_arc
 }
 
 #[tokio::test]
+async fn all_time_summary_repair_preserves_pruned_materialized_archives() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(460))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("archived success time"),
+    );
+
+    let archive_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-all-materialized-pruned-history",
+        &[(
+            1_i64,
+            "summary-all-materialized-pruned-success",
+            archived_success_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET historical_rollups_materialized_at = datetime('now')
+        WHERE dataset = 'codex_invocations'
+          AND file_path = ?1
+        "#,
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .execute(&state.pool)
+    .await
+    .expect("mark archived invocation batch as already materialized");
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_success_at)
+        .expect("bucket start epoch should be derivable");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0, 0, ?8)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(10_i64)
+    .bind(0.10_f64)
+    .bind("[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&state.pool)
+    .await
+    .expect("seed pre-materialized summary rollups");
+
+    fs::remove_file(&archive_path).expect("prune materialized archive file");
+
+    let live_occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::minutes(10))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id,
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            total_tokens,
+            cost,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(10_i64)
+    .bind("summary-all-materialized-pruned-live-success")
+    .bind(&live_occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(10_i64)
+    .bind(0.01_f64)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert live invocation row");
+
+    let Json(summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch all-time summary with pruned materialized archives");
+
+    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.success_count, 2);
+    assert_eq!(summary.failure_count, 0);
+    assert_eq!(summary.total_tokens, 20);
+    assert!((summary.total_cost - 0.11).abs() < 1e-9);
+
+    let replayed_targets = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE dataset = 'codex_invocations' AND file_path = ?1 AND target IN (?2, ?3)",
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load repaired summary replay markers for pruned archive");
+    assert_eq!(replayed_targets, 2);
+
+    let repair_marker_cursor = sqlx::query_scalar::<_, i64>(
+        "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
+    )
+    .bind("codex_invocations_summary_rollup_v2")
+    .fetch_optional(&state.pool)
+    .await
+    .expect("load summary repair marker");
+    assert_eq!(repair_marker_cursor, Some(1));
+
+    let repair_live_cursor = sqlx::query_scalar::<_, i64>(
+        "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
+    )
+    .bind("codex_invocations_summary_rollup_v2_live_cursor")
+    .fetch_one(&state.pool)
+    .await
+    .expect("load summary repair live cursor");
+    assert_eq!(repair_live_cursor, 10);
+
+    let rollup_total_count: i64 =
+        sqlx::query_scalar("SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly")
+            .fetch_one(&state.pool)
+            .await
+            .expect("load rollup total count after repair");
+    assert_eq!(rollup_total_count, 2);
+}
+
+#[tokio::test]
 async fn all_time_summary_repair_does_not_advance_shared_live_cursor_without_hourly_sync() {
     let mut config = test_config();
     config.openai_upstream_base_url =
@@ -1494,7 +1662,7 @@ async fn all_time_summary_repair_does_not_advance_shared_live_cursor_without_hou
     let state = test_state_from_config(config, true).await;
 
     let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
-        - ChronoDuration::days(10))
+        - ChronoDuration::days(430))
     .and_hms_opt(8, 0, 0)
     .expect("valid archived local hour");
     let archived_success_at = format_naive(
@@ -1597,7 +1765,7 @@ async fn all_time_summary_rollup_repair_counts_mixed_case_success_status() {
     let state = test_state_from_config(config, true).await;
 
     let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
-        - ChronoDuration::days(10))
+        - ChronoDuration::days(400))
     .and_hms_opt(8, 0, 0)
     .expect("valid archived local hour");
     let archived_success_at = format_naive(
