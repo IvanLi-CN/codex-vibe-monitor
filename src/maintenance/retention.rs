@@ -943,11 +943,12 @@ async fn compress_cold_proxy_raw_payload_lane(
     );
 
     let mut summary = RawCompressionPassSummary::default();
+    let mut rows_processed = 0usize;
     let mut last_seen_occurred_at: Option<String> = None;
     let mut last_seen_id = 0_i64;
 
-    while summary.files_considered < batch_limit {
-        let remaining = (batch_limit - summary.files_considered) as i64;
+    while rows_processed < batch_limit {
+        let remaining = (batch_limit - rows_processed) as i64;
         let candidates = sqlx::query_as::<_, InvocationRawCompressionFieldCandidate>(&sql)
             .bind(&cutoff)
             .bind(&archive_cutoff)
@@ -967,6 +968,7 @@ async fn compress_cold_proxy_raw_payload_lane(
         for candidate in candidates {
             last_seen_occurred_at = Some(candidate.occurred_at.clone());
             last_seen_id = candidate.id;
+            rows_processed += 1;
 
             let outcome = match maybe_compress_proxy_raw_path(
                 pool,
@@ -1032,13 +1034,13 @@ async fn compress_cold_proxy_raw_payload_lane(
             summary.bytes_after += outcome.bytes_after;
             summary.estimated_bytes_after += outcome.estimated_bytes_after;
 
-            if summary.files_considered >= batch_limit {
+            if rows_processed >= batch_limit {
                 break;
             }
         }
     }
 
-    let hit_batch_limit = summary.files_considered >= batch_limit;
+    let hit_batch_limit = rows_processed >= batch_limit;
     Ok((summary, hit_batch_limit))
 }
 

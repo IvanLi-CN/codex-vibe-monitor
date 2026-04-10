@@ -684,6 +684,73 @@ async fn retention_cold_compression_scans_batches_in_occurred_at_order() {
 }
 
 #[tokio::test]
+async fn retention_cold_compression_budget_counts_missing_rows() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("retention-cold-compress-missing-budget").await;
+    config.proxy_raw_hot_secs = 60;
+    config.proxy_raw_compression = RawCompressionCodec::Gzip;
+    config.retention_batch_rows = 1;
+
+    let missing = config.proxy_raw_dir.join("budget-missing.bin");
+    let good = config.proxy_raw_dir.join("budget-good.bin");
+    fs::write(&good, b"good").expect("write good raw");
+
+    insert_retention_invocation(
+        &pool,
+        "budget-missing",
+        &shanghai_local_days_ago(4, 8, 0, 0),
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        Some(&missing),
+        None,
+        Some(10),
+        Some(0.01),
+    )
+    .await;
+    insert_retention_invocation(
+        &pool,
+        "budget-good",
+        &shanghai_local_days_ago(3, 8, 0, 0),
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        Some(&good),
+        None,
+        Some(10),
+        Some(0.01),
+    )
+    .await;
+
+    let summary = compress_cold_proxy_raw_payloads_with_budget(
+        &pool,
+        &config,
+        config.database_path.parent(),
+        false,
+        Some(Duration::ZERO),
+    )
+    .await
+    .expect("run cold compression with zero catchup budget");
+
+    assert_eq!(summary.files_considered, 0);
+    assert_eq!(summary.files_compressed, 0);
+    assert!(good.exists(), "second row should not be compressed once budget is spent");
+    assert!(!PathBuf::from(format!("{}.gz", good.display())).exists());
+
+    let stored_path: Option<String> =
+        sqlx::query_scalar("SELECT request_raw_path FROM codex_invocations WHERE invoke_id = ?1")
+            .bind("budget-good")
+            .fetch_one(&pool)
+            .await
+            .expect("load good row path after budgeted run");
+    assert_eq!(stored_path.as_deref(), Some(good.to_string_lossy().as_ref()));
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn maintenance_raw_compression_cli_supports_dry_run_and_live_modes() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("maintenance-raw-compression-cli").await;
