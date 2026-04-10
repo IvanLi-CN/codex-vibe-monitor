@@ -58,7 +58,7 @@
 - Given 查看 `活动总览` 范围切换，When 进入页面，Then 显示 `今日 / 24 小时 / 7 日 / 历史` 四段；首次进入默认 `今日`，之后优先恢复最近一次访问的范围；localStorage 值非法时回退到 `今日`。
 - Given 处于 `今日` 视图，When 查看总览内容，Then 顶部显示 5 个 KPI、下方显示一张分钟级图表；`24 小时 / 7 日` 仍显示既有 KPI + 热力图；`历史` 仍只显示半年日历。
 - Given `今日` 视图切到 `次数`，When 查看图表，Then 每个时间桶的成功 / 失败柱共享同一 X 槽位，成功柱位于 0 轴上方、失败柱位于 0 轴下方，tooltip 同时给出成功 / 失败 / 总数。
-- Given `今日 / 次数` 存在 `running/pending` live row 或带失败元数据的临时态，When 页面初载、silent refresh、SSE 多次更新或数据归档后重新读取，Then 这些非终态记录都不会被计入 failure；只有终态失败才会进入失败柱与失败汇总。
+- Given `今日 / 次数` 存在 `running/pending` live row、带失败元数据的临时态，或 legacy blank/null status 行缺少失败元数据，When 页面初载、silent refresh、SSE 多次更新或数据归档后重新读取，Then 这些非终态 / 中性 legacy 记录都不会被计入 failure；只有终态失败或带明确失败元数据的 legacy 行才会进入失败柱与失败汇总。
 - Given in-flight seed 需要跨多页抓取 `running/pending` 记录，When 前端顺序拉取后续页，Then 所有页都复用第一页返回的 `snapshotId`，不会因底层集合变化而重复或漏算 seeded live delta。
 - Given `今日` 视图切到 `金额` 或 `Tokens`，When 查看图表，Then 图表切换为“今日整天 24 小时横轴”的累计面积图；未来分钟不渲染，缺失分钟补 0 以保持曲线连续。
 - Given 在四个范围间切换 `次数 / 金额 / Tokens`，When 来回切换范围，Then 每个范围仍保留各自上次选中的 metric。
@@ -148,6 +148,7 @@
 - 2026-04-10: 修复 `今日 / 次数` 柱状图的双系列对位与 live failure 口径：成功 / 失败柱现在通过重叠 category slot 共用同一时间槽位并围绕 0 轴对称渲染；前后端 live 聚合同时排除 `running/pending` 的临时失败计数，避免失败柱短时异常拉长后再回落。
 - 2026-04-10: 根据 fresh review 继续补齐稳定性修复：前端 in-flight seed 分页改为复用第一页 `snapshotId`，避免多页 `running/pending` 抓取在高 churn 下重复或漏算；同一 invocation 的 live patch 继续维持“减旧加新”而不是反复叠加。
 - 2026-04-10: 对齐 authoritative/live/archive 三条统计路径：`src/api/slices/prompt_cache_and_timeseries.rs`、`src/stats/mod.rs` 与 `src/maintenance/archive.rs` 统一把带失败元数据的 `running/pending` 排除在 failure 汇总之外，并让 structured legacy `http_200` failure 不再误入 archived success-like TTFB / pruned-success 判定。
+- 2026-04-10: 根据 fresh review 继续收口 legacy 空状态语义：blank/null `status` 且缺少失败元数据的历史行现在保持中性，不再在 summary / timeseries / archive rollup 中被误算为 failure；只有带明确失败元数据的 legacy 行才会保留失败统计。
 
 ## Visual Evidence
 
