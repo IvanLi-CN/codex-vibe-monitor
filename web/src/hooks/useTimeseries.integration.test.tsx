@@ -352,6 +352,67 @@ describe("useTimeseries remount cache hydration", () => {
     expect(text("cost")).toBe("0.18");
   });
 
+  it("does not restore settled buckets that fall out of range after a silent refresh", async () => {
+    const response = createBaseTimeseries({
+      bucketStart: "2026-03-01T00:00:00Z",
+      bucketEnd: "2026-03-01T01:00:00Z",
+    });
+    const shiftedResponse: TimeseriesResponse = {
+      ...response,
+      rangeStart: "2026-03-01T01:00:00Z",
+      rangeEnd: "2026-03-08T01:00:00Z",
+      points: [],
+    };
+    const settledRecord: ApiInvocation = {
+      ...createSettledRecord(),
+      invokeId: "range-edge-settled",
+      occurredAt: "2026-03-01T00:30:00Z",
+      createdAt: "2026-03-01T00:30:00Z",
+    };
+    const silentRefresh: { resolve: (value: TimeseriesResponse) => void } = {
+      resolve: () => {
+        throw new Error("expected silent refresh resolver");
+      },
+    };
+
+    apiMocks.fetchTimeseries
+      .mockResolvedValueOnce(response)
+      .mockImplementationOnce(
+        () =>
+          new Promise<TimeseriesResponse>((resolve) => {
+            silentRefresh.resolve = resolve as (
+              value: TimeseriesResponse,
+            ) => void;
+          }),
+      );
+    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsPage([]));
+
+    render(<Probe />);
+    await flushAsync();
+
+    emitRecords([settledRecord]);
+    expect(text("total")).toBe("1");
+    expect(text("failure")).toBe("1");
+
+    unmountCurrent();
+
+    render(<Probe />);
+    await flushAsync(1);
+
+    expect(text("loading")).toBe("false");
+    expect(text("total")).toBe("1");
+    expect(text("failure")).toBe("1");
+
+    silentRefresh.resolve(shiftedResponse);
+    await flushAsync();
+
+    expect(text("total")).toBe("0");
+    expect(text("success")).toBe("0");
+    expect(text("failure")).toBe("0");
+    expect(text("tokens")).toBe("0");
+    expect(text("cost")).toBe("0");
+  });
+
   it("keeps the fetched chart data visible when in-flight seeding fails", async () => {
     const response = createBaseTimeseries({
       totalTokens: 10,

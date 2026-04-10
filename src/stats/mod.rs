@@ -1107,8 +1107,7 @@ async fn repair_invocation_summary_rollups(pool: &Pool<Sqlite>) -> Result<()> {
             &mut seen_ids,
             &mut cleared_rollup_buckets,
             &INVOCATION_SUMMARY_ROLLUP_TARGETS,
-            preserve_materialized_archives
-                && archive_row.historical_rollups_materialized_at.is_some(),
+            preserve_materialized_archives,
         )
         .await?;
     }

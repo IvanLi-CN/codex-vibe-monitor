@@ -695,11 +695,26 @@ function restoreMissingSettledDeltaView(
   const responsePoints = new Map(
     response.points.map((point) => [point.bucketStart, { ...point }]),
   );
+  const responseRangeStartEpoch = parseIsoEpoch(response.rangeStart);
+  const responseRangeEndEpoch = parseIsoEpoch(response.rangeEnd);
   let changed = false;
 
   for (const bucketStart of restoredBucketStarts) {
     const currentPoint = currentPoints.get(bucketStart);
     if (!currentPoint) {
+      continue;
+    }
+    const currentBucketStartEpoch = parseIsoEpoch(currentPoint.bucketStart);
+    const currentBucketEndEpoch = parseIsoEpoch(currentPoint.bucketEnd);
+    if (
+      responseRangeStartEpoch != null &&
+      responseRangeEndEpoch != null &&
+      responseRangeEndEpoch > responseRangeStartEpoch &&
+      currentBucketStartEpoch != null &&
+      currentBucketEndEpoch != null &&
+      (currentBucketEndEpoch <= responseRangeStartEpoch ||
+        currentBucketStartEpoch >= responseRangeEndEpoch)
+    ) {
       continue;
     }
     const responsePoint = responsePoints.get(bucketStart);
