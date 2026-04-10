@@ -1297,6 +1297,59 @@ describe("useDashboardWorkingConversations", () => {
     expect(text("last-in-flight-at")).toBe("2026-04-10T03:07:00Z");
   });
 
+  it("preserves hidden lastInFlightAt when a newer terminal preview lands", async () => {
+    apiMocks.fetchPromptCacheConversationsPage.mockResolvedValueOnce(
+      createResponseWithConversations([
+        createConversation("pck-live", {
+          requestCount: 4,
+          recentInvocations: [
+            createPreview({
+              id: 4,
+              invokeId: "invoke-visible-completed-newer",
+              occurredAt: "2026-04-10T03:09:00Z",
+              status: "completed",
+              totalTokens: 60,
+              cost: 0.2,
+            }),
+            createPreview({
+              id: 3,
+              invokeId: "invoke-visible-completed-older",
+              occurredAt: "2026-04-10T03:08:00Z",
+              status: "completed",
+              totalTokens: 50,
+              cost: 0.18,
+            }),
+          ],
+          lastActivityAt: "2026-04-10T03:09:00Z",
+          lastTerminalAt: "2026-04-10T03:09:00Z",
+          lastInFlightAt: "2026-04-10T03:07:00Z",
+        }),
+      ]),
+    );
+
+    render(<Probe />);
+    await flushAsync();
+    await flushAsync();
+
+    act(() => {
+      emitRecords([
+        createRecord("pck-live", {
+          id: 5,
+          invokeId: "invoke-visible-completed-latest",
+          occurredAt: "2026-04-10T03:10:00Z",
+          status: "completed",
+          totalTokens: 70,
+          cost: 0.24,
+        }),
+      ]);
+    });
+
+    expect(text("conversation-keys")).toBe("pck-live");
+    expect(text("preview-invoke-id")).toBe("invoke-visible-completed-latest");
+    expect(text("last-terminal-at")).toBe("2026-04-10T03:10:00Z");
+    expect(text("last-in-flight-at")).toBe("2026-04-10T03:07:00Z");
+  });
+
   it("clears hidden lastInFlightAt when a compact-hidden running invoke completes", async () => {
     apiMocks.fetchPromptCacheConversationsPage.mockResolvedValueOnce(
       createResponseWithConversations([

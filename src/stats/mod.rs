@@ -1132,6 +1132,10 @@ pub(crate) fn format_utc_iso(dt: DateTime<Utc>) -> String {
     dt.to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
+pub(crate) fn format_utc_iso_millis(dt: DateTime<Utc>) -> String {
+    dt.to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
 pub(crate) fn format_utc_iso_precise(dt: DateTime<Utc>) -> String {
     dt.to_rfc3339_opts(SecondsFormat::AutoSi, true)
 }

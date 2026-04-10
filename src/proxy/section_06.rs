@@ -1097,6 +1097,7 @@ async fn persist_proxy_capture_runtime_record(
     let t_req_parse_ms = nullable_runtime_timing_value(record.timings.t_req_parse_ms);
     let t_upstream_connect_ms = nullable_runtime_timing_value(record.timings.t_upstream_connect_ms);
     let t_upstream_ttfb_ms = nullable_runtime_timing_value(record.timings.t_upstream_ttfb_ms);
+    let created_at = format_utc_iso_millis(Utc::now());
     let mut tx = pool.begin().await?;
     let insert_result = sqlx::query(
         r#"
@@ -1135,11 +1136,12 @@ async fn persist_proxy_capture_runtime_record(
             t_upstream_ttfb_ms,
             t_upstream_stream_ms,
             t_resp_parse_ms,
-            t_persist_ms
+            t_persist_ms,
+            created_at
         )
         VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
-            ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35
+            ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36
         )
         "#,
     )
@@ -1178,6 +1180,7 @@ async fn persist_proxy_capture_runtime_record(
     .bind(None::<f64>)
     .bind(None::<f64>)
     .bind(None::<f64>)
+    .bind(created_at)
     .execute(tx.as_mut())
     .await?;
 

@@ -264,12 +264,15 @@ function patchConversationWithRecord(
   const nextVisibleLastInFlightAt = resolveVisibleLastInFlightAt(
     nextRecentInvocations,
   );
+  const currentHiddenLastInFlightAt = conversation.lastInFlightAt ?? null;
+  const normalizedRecordOccurredAt = record.occurredAt?.trim() ?? "";
   const shouldPreserveHiddenInFlightAnchor =
     nextVisibleLastInFlightAt == null &&
-    conversation.lastInFlightAt != null &&
-    isInFlightStatus(record.status);
+    currentHiddenLastInFlightAt != null &&
+    (isInFlightStatus(record.status) ||
+      normalizedRecordOccurredAt !== currentHiddenLastInFlightAt);
   const lastInFlightAt = shouldPreserveHiddenInFlightAnchor
-    ? (conversation.lastInFlightAt ?? null)
+    ? currentHiddenLastInFlightAt
     : (nextVisibleLastInFlightAt ?? null);
 
   const nextConversation = {

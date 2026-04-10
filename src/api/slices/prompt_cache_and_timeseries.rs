@@ -704,8 +704,10 @@ async fn query_prompt_cache_conversation_snapshot_boundary_row_id_ceiling(
     pool: &Pool<Sqlite>,
     snapshot_boundary_second_start: &str,
     snapshot_upper_bound: &str,
+    snapshot_at: DateTime<Utc>,
     source_scope: InvocationSourceScope,
 ) -> Result<Option<i64>> {
+    let snapshot_created_at_upper_bound = format_utc_iso_precise(snapshot_at);
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT MAX(id) AS max_id \
          FROM codex_invocations \
@@ -714,7 +716,10 @@ async fn query_prompt_cache_conversation_snapshot_boundary_row_id_ceiling(
     query
         .push_bind(snapshot_boundary_second_start)
         .push(" AND occurred_at < ")
-        .push_bind(snapshot_upper_bound);
+        .push_bind(snapshot_upper_bound)
+        .push(" AND julianday(created_at) <= julianday(")
+        .push_bind(snapshot_created_at_upper_bound)
+        .push(")");
 
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
@@ -750,6 +755,7 @@ async fn resolve_prompt_cache_conversation_snapshot_filter(
             pool,
             &snapshot_boundary_second_start,
             &snapshot_upper_bound,
+            snapshot_at,
             source_scope,
         )
         .await?

@@ -1963,15 +1963,16 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes
         pool: &Pool<Sqlite>,
         invoke_id: &str,
         occurred_at: DateTime<Utc>,
+        created_at: DateTime<Utc>,
         key: &str,
         total_tokens: i64,
     ) {
         sqlx::query(
             r#"
             INSERT INTO codex_invocations (
-                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, created_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             "#,
         )
         .bind(invoke_id)
@@ -1991,6 +1992,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes
             .to_string(),
         )
         .bind("{}")
+        .bind(format_utc_iso_millis(created_at))
         .execute(pool)
         .await
         .expect("insert paginated same-second row");
@@ -2000,6 +2002,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes
         &state.pool,
         "working-same-second-head",
         snapshot_second - ChronoDuration::seconds(5),
+        snapshot_second - ChronoDuration::seconds(5),
         "working-same-second-head",
         20,
     )
@@ -2008,8 +2011,18 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes
         &state.pool,
         "working-same-second-tail",
         snapshot_second - ChronoDuration::seconds(15),
+        snapshot_second - ChronoDuration::seconds(15),
         "working-same-second-tail",
         10,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-same-second-preexisting-post",
+        snapshot_second,
+        requested_snapshot_at + ChronoDuration::milliseconds(200),
+        "working-same-second-preexisting-post",
+        888,
     )
     .await;
 
@@ -2029,6 +2042,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes
     .expect("first same-second snapshot page should succeed");
 
     assert_eq!(first_page.conversations.len(), 1);
+    assert_eq!(first_page.total_matched, Some(2));
     let expected_snapshot_at = format_utc_iso_precise(requested_snapshot_at);
     assert_eq!(
         first_page.conversations[0].prompt_cache_key,
@@ -2043,6 +2057,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes
         &state.pool,
         "working-same-second-post",
         snapshot_second,
+        requested_snapshot_at + ChronoDuration::milliseconds(400),
         "working-same-second-post",
         999,
     )
@@ -2074,6 +2089,14 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes
             .conversations
             .iter()
             .all(|conversation| conversation.prompt_cache_key != "working-same-second-post")
+    );
+    assert!(
+        second_page
+            .conversations
+            .iter()
+            .all(|conversation| {
+                conversation.prompt_cache_key != "working-same-second-preexisting-post"
+            })
     );
 }
 

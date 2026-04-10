@@ -1585,7 +1585,7 @@ fn codex_invocations_create_sql(table_name: &str) -> String {
             t_upstream_stream_ms REAL,
             t_resp_parse_ms REAL,
             t_persist_ms REAL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            created_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')),
             UNIQUE(invoke_id, occurred_at)
         )
         "#,
