@@ -74,6 +74,9 @@ pub(crate) async fn update_pool_routing_settings(
             timeout_updates.as_ref(),
         )
         .await?;
+        refresh_pool_routing_runtime_cache(state.as_ref())
+            .await
+            .map_err(internal_error_tuple)?;
     }
     if payload.maintenance.is_some() {
         save_pool_routing_maintenance_settings(&state.pool, merged_maintenance)

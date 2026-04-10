@@ -144,11 +144,13 @@ pub(crate) async fn run() -> Result<()> {
         )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
         pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
         pool_group_429_retry_delay_override: None,
         pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
         upstream_accounts,
     });
+    refresh_pool_routing_runtime_cache(state.as_ref()).await?;
 
     let signal_listener = spawn_shutdown_signal_listener(state.shutdown.clone());
 

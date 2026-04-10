@@ -1678,17 +1678,19 @@ async fn proxy_openai_v1_capture_target(
             disarm_pool_invocation_cleanup_guard(&mut stream_invocation_cleanup_guard);
         }
         if terminal_invocation_persisted
+            && final_attempt_persisted
             && deferred_pool_early_phase_cleanup_guard_for_task.is_some()
         {
-            if !final_attempt_persisted {
-                info!(
-                    proxy_request_id,
-                    "terminal invocation persisted before final pool attempt state; suppressing deferred orphan recovery to avoid rewriting a completed request as interrupted"
-                );
-            }
             finalize_deferred_pool_early_phase_cleanup_guard_after_terminal_invocation(
                 &mut deferred_pool_early_phase_cleanup_guard_for_task,
                 terminal_invocation_persisted,
+            );
+        } else if terminal_invocation_persisted
+            && deferred_pool_early_phase_cleanup_guard_for_task.is_some()
+        {
+            info!(
+                proxy_request_id,
+                "terminal invocation persisted before final pool attempt state; keeping deferred orphan recovery armed until the pending attempt row is repaired"
             );
         }
     });

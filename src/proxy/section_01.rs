@@ -391,7 +391,7 @@ async fn resolve_proxy_request_timeouts(
     pool_route_active: bool,
 ) -> Result<PoolRoutingTimeoutSettingsResolved> {
     if pool_route_active {
-        resolve_pool_routing_timeouts(&state.pool, &state.config).await
+        Ok(load_pool_routing_runtime_cache(state).await?.timeouts)
     } else {
         Ok(pool_routing_timeouts_from_config(&state.config))
     }
