@@ -37,15 +37,15 @@ function parseEpoch(value: string | null | undefined) {
 }
 
 function isRecordWithinSnapshotBoundary(
-  recordOccurredAt: string | null | undefined,
+  record: Pick<ApiInvocation, "createdAt" | "occurredAt">,
   snapshotAt: string | null | undefined,
 ) {
   const snapshotAtEpoch = parseEpoch(snapshotAt);
-  const recordOccurredAtEpoch = parseEpoch(recordOccurredAt);
-  if (snapshotAtEpoch == null || recordOccurredAtEpoch == null) {
+  const recordCreatedAtEpoch = parseEpoch(record.createdAt ?? record.occurredAt);
+  if (snapshotAtEpoch == null || recordCreatedAtEpoch == null) {
     return false;
   }
-  return recordOccurredAtEpoch < snapshotAtEpoch;
+  return recordCreatedAtEpoch <= snapshotAtEpoch;
 }
 
 function isInFlightStatus(status: string | null | undefined) {
@@ -218,10 +218,7 @@ function patchConversationWithRecord(
     typeof existingPreview?.cost === "number" ? existingPreview.cost : 0;
   const existingPatched =
     patchedPostSnapshotInvocations.get(record.invokeId) ?? null;
-  const isWithinSnapshotRecord = isRecordWithinSnapshotBoundary(
-    record.occurredAt,
-    snapshotAt,
-  );
+  const isWithinSnapshotRecord = isRecordWithinSnapshotBoundary(record, snapshotAt);
   const isPostSnapshotRecord = snapshotAt != null && !isWithinSnapshotRecord;
   const isVisibleAfterPatch = nextRecentInvocations.some(
     (candidate) => getPreviewStableKey(candidate) === previewStableKey,

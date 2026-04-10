@@ -26,9 +26,9 @@ async fn prompt_cache_conversations_include_recent_upstream_account_summaries() 
         sqlx::query(
             r#"
             INSERT INTO codex_invocations (
-                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, created_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             "#,
         )
         .bind(invoke_id)
@@ -41,6 +41,7 @@ async fn prompt_cache_conversations_include_recent_upstream_account_summaries() 
         .bind(cost)
         .bind(payload.to_string())
         .bind("{}")
+        .bind(format_utc_iso_millis(occurred_at))
         .execute(pool)
         .await
         .expect("insert invocation row");
@@ -1867,6 +1868,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_respect_requested
             .to_string(),
         )
         .bind("{}")
+        .bind(format_utc_iso_millis(occurred_at))
         .execute(pool)
         .await
         .expect("insert paginated snapshot row");
@@ -2254,6 +2256,139 @@ async fn prompt_cache_conversations_activity_minutes_paginated_whole_second_snap
 }
 
 #[tokio::test]
+async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes_late_persisted_pre_snapshot_occurrence(
+) {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let current_hour_start = Utc
+        .timestamp_opt(align_bucket_epoch(Utc::now().timestamp(), 3_600, 0), 0)
+        .single()
+        .expect("current hour start should be valid");
+    let snapshot_second = current_hour_start + ChronoDuration::minutes(28);
+    let requested_snapshot_at = snapshot_second + ChronoDuration::milliseconds(123);
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        created_at: DateTime<Utc>,
+        key: &str,
+        total_tokens: i64,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(format!("{invoke_id}-{}", created_at.timestamp_millis()))
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(total_tokens)
+        .bind(0.01_f64)
+        .bind(
+            json!({
+                "promptCacheKey": key,
+                "routeMode": "pool",
+                "model": "gpt-5.4",
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .bind(format_utc_iso_millis(created_at))
+        .execute(pool)
+        .await
+        .expect("insert late-persisted snapshot row");
+    }
+
+    insert_row(
+        &state.pool,
+        "working-late-persist-head",
+        snapshot_second - ChronoDuration::seconds(5),
+        snapshot_second - ChronoDuration::seconds(5),
+        "working-late-persist-head",
+        20,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-late-persist-tail",
+        snapshot_second - ChronoDuration::seconds(15),
+        snapshot_second - ChronoDuration::seconds(15),
+        "working-late-persist-tail",
+        10,
+    )
+    .await;
+
+    let Json(first_page) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: None,
+            snapshot_at: Some(requested_snapshot_at.to_rfc3339()),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("first late-persist snapshot page should succeed");
+
+    assert_eq!(first_page.conversations.len(), 1);
+    assert_eq!(first_page.total_matched, Some(2));
+    assert_eq!(
+        first_page.conversations[0].prompt_cache_key,
+        "working-late-persist-head"
+    );
+
+    insert_row(
+        &state.pool,
+        "working-late-persist-post",
+        snapshot_second - ChronoDuration::seconds(10),
+        requested_snapshot_at + ChronoDuration::milliseconds(400),
+        "working-late-persist-post",
+        999,
+    )
+    .await;
+
+    let Json(second_page) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: first_page.next_cursor.clone(),
+            snapshot_at: first_page.snapshot_at.clone(),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("second late-persist snapshot page should succeed");
+
+    assert_eq!(second_page.total_matched, Some(2));
+    assert_eq!(second_page.conversations.len(), 1);
+    assert_eq!(
+        second_page.conversations[0].prompt_cache_key,
+        "working-late-persist-tail"
+    );
+    assert!(
+        second_page
+            .conversations
+            .iter()
+            .all(|conversation| conversation.prompt_cache_key != "working-late-persist-post")
+    );
+}
+
+#[tokio::test]
 async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_preserves_previous_hour_lifetime_totals()
 {
     let state = test_state_with_openai_base(
@@ -2277,9 +2412,9 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_preserve
         sqlx::query(
             r#"
             INSERT INTO codex_invocations (
-                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, created_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             "#,
         )
         .bind(invoke_id)
@@ -2299,6 +2434,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_preserve
             .to_string(),
         )
         .bind("{}")
+        .bind(format_utc_iso_millis(occurred_at))
         .execute(pool)
         .await
         .expect("insert paginated previous-hour row");
@@ -2424,9 +2560,9 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_keeps_hy
         sqlx::query(
             r#"
             INSERT INTO codex_invocations (
-                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, created_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             "#,
         )
         .bind(invoke_id)
@@ -2439,6 +2575,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_keeps_hy
         .bind(cost)
         .bind(payload.to_string())
         .bind("{}")
+        .bind(format_utc_iso_millis(occurred_at))
         .execute(pool)
         .await
         .expect("insert paginated snapshot hydration row");

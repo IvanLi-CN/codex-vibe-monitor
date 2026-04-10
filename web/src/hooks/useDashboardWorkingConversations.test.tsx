@@ -1103,7 +1103,7 @@ describe("useDashboardWorkingConversations", () => {
     expect(apiMocks.fetchPromptCacheConversationsPage).toHaveBeenCalledTimes(2);
   });
 
-  it("treats same-second SSE records as post-snapshot aggregate updates without forcing a refetch", async () => {
+  it("treats late-persisted same-second SSE records as post-snapshot aggregate updates without forcing a refetch", async () => {
     apiMocks.fetchPromptCacheConversationsPage
       .mockResolvedValueOnce(
         createResponseWithConversations([
@@ -1176,6 +1176,7 @@ describe("useDashboardWorkingConversations", () => {
           id: 3,
           invokeId: "invoke-3",
           occurredAt: "2026-04-10T02:05:00Z",
+          createdAt: "2026-04-10T02:05:00.200Z",
           status: "completed",
           totalTokens: 30,
           cost: 0.12,

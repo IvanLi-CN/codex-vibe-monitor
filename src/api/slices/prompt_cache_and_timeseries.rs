@@ -700,10 +700,8 @@ fn build_prompt_cache_conversation_cursor(
     )
 }
 
-async fn query_prompt_cache_conversation_snapshot_boundary_row_id_ceiling(
+async fn query_prompt_cache_conversation_snapshot_row_id_ceiling(
     pool: &Pool<Sqlite>,
-    snapshot_boundary_second_start: &str,
-    snapshot_upper_bound: &str,
     snapshot_at: DateTime<Utc>,
     source_scope: InvocationSourceScope,
 ) -> Result<Option<i64>> {
@@ -711,13 +709,9 @@ async fn query_prompt_cache_conversation_snapshot_boundary_row_id_ceiling(
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT MAX(id) AS max_id \
          FROM codex_invocations \
-         WHERE occurred_at >= ",
+         WHERE julianday(created_at) <= julianday(",
     );
     query
-        .push_bind(snapshot_boundary_second_start)
-        .push(" AND occurred_at < ")
-        .push_bind(snapshot_upper_bound)
-        .push(" AND julianday(created_at) <= julianday(")
         .push_bind(snapshot_created_at_upper_bound)
         .push(")");
 
@@ -735,20 +729,13 @@ async fn resolve_prompt_cache_conversation_snapshot_filter(
     source_scope: InvocationSourceScope,
     cursor_snapshot_boundary_row_id_ceiling: Option<i64>,
 ) -> Result<PromptCacheConversationSnapshotFilter> {
-    let snapshot_boundary_second_start = db_occurred_at_lower_bound(
-        Utc.timestamp_opt(snapshot_at.timestamp(), 0)
-            .single()
-            .ok_or_else(|| anyhow!("invalid snapshotAt boundary second"))?,
-    );
     let snapshot_upper_bound = db_occurred_at_lower_bound(
         snapshot_at + ChronoDuration::seconds(1),
     );
     let snapshot_boundary_row_id_ceiling = Some(match cursor_snapshot_boundary_row_id_ceiling {
         Some(value) => value,
-        None => query_prompt_cache_conversation_snapshot_boundary_row_id_ceiling(
+        None => query_prompt_cache_conversation_snapshot_row_id_ceiling(
             pool,
-            &snapshot_boundary_second_start,
-            &snapshot_upper_bound,
             snapshot_at,
             source_scope,
         )
@@ -757,7 +744,6 @@ async fn resolve_prompt_cache_conversation_snapshot_filter(
     });
     Ok(PromptCacheConversationSnapshotFilter {
         snapshot_upper_bound,
-        snapshot_boundary_second_start: Some(snapshot_boundary_second_start),
         snapshot_boundary_row_id_ceiling,
     })
 }
@@ -874,14 +860,12 @@ pub(crate) struct PromptCacheConversationHydrationSnapshot<'a> {
     snapshot_upper_bound: &'a str,
     snapshot_hour_start_epoch: i64,
     snapshot_hour_start_bound: &'a str,
-    snapshot_boundary_second_start: Option<&'a str>,
     snapshot_boundary_row_id_ceiling: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct PromptCacheConversationSnapshotFilter {
     snapshot_upper_bound: String,
-    snapshot_boundary_second_start: Option<String>,
     snapshot_boundary_row_id_ceiling: Option<i64>,
 }
 
@@ -890,9 +874,6 @@ impl PromptCacheConversationSnapshotFilter {
         self.snapshot_upper_bound.as_str()
     }
 
-    fn boundary_second_start(&self) -> Option<&str> {
-        self.snapshot_boundary_second_start.as_deref()
-    }
 }
 
 fn push_snapshot_invocation_visibility_clause(
@@ -903,35 +884,19 @@ fn push_snapshot_invocation_visibility_clause(
 ) {
     if let Some(snapshot) = snapshot {
         let snapshot_upper_bound = snapshot.snapshot_upper_bound().to_string();
-        if let (Some(boundary_second_start), Some(row_id_ceiling)) = (
-            snapshot.boundary_second_start().map(str::to_string),
-            snapshot.snapshot_boundary_row_id_ceiling,
-        ) {
-            query
-                .push("(")
-                .push(occurred_at_expr)
-                .push(" < ")
-                .push_bind(boundary_second_start.clone())
-                .push(" OR (")
-                .push(occurred_at_expr)
-                .push(" >= ")
-                .push_bind(boundary_second_start)
-                .push(" AND ")
-                .push(occurred_at_expr)
-                .push(" < ")
-                .push_bind(snapshot_upper_bound)
-                .push(" AND ")
-                .push(id_expr)
-                .push(" <= ")
-                .push_bind(row_id_ceiling)
-                .push("))");
-            return;
-        }
-
         query
+            .push("(")
             .push(occurred_at_expr)
             .push(" < ")
             .push_bind(snapshot_upper_bound);
+        if let Some(row_id_ceiling) = snapshot.snapshot_boundary_row_id_ceiling {
+            query
+                .push(" AND ")
+                .push(id_expr)
+                .push(" <= ")
+                .push_bind(row_id_ceiling);
+        }
+        query.push(")");
     }
 }
 
@@ -1323,7 +1288,6 @@ pub(crate) async fn build_prompt_cache_conversations_response_for_request(
         snapshot_upper_bound: snapshot_filter.snapshot_upper_bound(),
         snapshot_hour_start_epoch,
         snapshot_hour_start_bound: &snapshot_hour_start_bound,
-        snapshot_boundary_second_start: snapshot_filter.boundary_second_start(),
         snapshot_boundary_row_id_ceiling: snapshot_filter.snapshot_boundary_row_id_ceiling,
     };
     let mut conversations = hydrate_prompt_cache_conversations(
@@ -2148,9 +2112,6 @@ pub(crate) async fn query_prompt_cache_conversation_events(
     if let Some(snapshot) = snapshot {
         let snapshot_filter = PromptCacheConversationSnapshotFilter {
             snapshot_upper_bound: snapshot.snapshot_upper_bound.to_string(),
-            snapshot_boundary_second_start: snapshot
-                .snapshot_boundary_second_start
-                .map(ToOwned::to_owned),
             snapshot_boundary_row_id_ceiling: snapshot.snapshot_boundary_row_id_ceiling,
         };
         push_snapshot_invocation_visibility_clause(
@@ -2263,9 +2224,6 @@ pub(crate) async fn query_prompt_cache_conversation_recent_invocations(
     if let Some(snapshot) = snapshot {
         let snapshot_filter = PromptCacheConversationSnapshotFilter {
             snapshot_upper_bound: snapshot.snapshot_upper_bound.to_string(),
-            snapshot_boundary_second_start: snapshot
-                .snapshot_boundary_second_start
-                .map(ToOwned::to_owned),
             snapshot_boundary_row_id_ceiling: snapshot.snapshot_boundary_row_id_ceiling,
         };
         query.push(" AND ");
@@ -2381,9 +2339,6 @@ pub(crate) async fn query_prompt_cache_conversation_upstream_account_summaries_a
         .push(" AND ");
     let snapshot_filter = PromptCacheConversationSnapshotFilter {
         snapshot_upper_bound: snapshot.snapshot_upper_bound.to_string(),
-        snapshot_boundary_second_start: snapshot
-            .snapshot_boundary_second_start
-            .map(ToOwned::to_owned),
         snapshot_boundary_row_id_ceiling: snapshot.snapshot_boundary_row_id_ceiling,
     };
     push_snapshot_invocation_visibility_clause(
