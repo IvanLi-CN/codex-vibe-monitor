@@ -12,8 +12,9 @@ vi.mock('../i18n', () => ({
         'dashboard.today.title': 'Today summary',
         'dashboard.today.subtitle': `Accumulated in natural day (${values?.timezone ?? 'UTC'})`,
         'dashboard.today.dayBadge': 'Today',
+        'dashboard.today.tokensPerMinute5m': 'TPM (5m avg)',
+        'dashboard.today.costPerMinute5m': 'Cost/min (5m avg)',
         'stats.cards.loadError': 'Load error',
-        'stats.cards.totalCalls': 'Calls',
         'stats.cards.success': 'Success',
         'stats.cards.failures': 'Failures',
         'stats.cards.totalCost': 'Cost',
@@ -76,7 +77,7 @@ function render(ui: React.ReactNode) {
 }
 
 describe('TodayStatsOverview', () => {
-  it('uses a five-tile desktop grid without a prominent total card', () => {
+  it('uses a six-tile desktop grid with TPM and cost-per-minute leading metrics', () => {
     render(
       <TodayStatsOverview
         stats={{
@@ -86,16 +87,23 @@ describe('TodayStatsOverview', () => {
           totalCost: 539.42,
           totalTokens: 1314275579,
         }}
+        rate={{
+          tokensPerMinute: 1000,
+          costPerMinute: 0.1,
+          windowMinutes: 5,
+          available: true,
+        }}
         loading={false}
         error={null}
       />,
     )
 
     const grid = host?.querySelector('[data-testid="today-stats-metrics-grid"]')
-    expect(grid?.className).toContain('lg:grid-cols-5')
-    expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(5)
+    expect(grid?.className).toContain('lg:grid-cols-6')
+    expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(6)
     expect(host?.textContent).toContain('Today summary')
-    expect(host?.innerHTML).not.toContain('sm:col-span-2')
+    expect(host?.textContent).toContain('TPM (5m avg)')
+    expect(host?.textContent).toContain('Cost/min (5m avg)')
   })
 
   it('supports embedded mode without rendering the outer surface panel', () => {
@@ -108,6 +116,12 @@ describe('TodayStatsOverview', () => {
           totalCost: 1.28,
           totalTokens: 4096,
         }}
+        rate={{
+          tokensPerMinute: 320,
+          costPerMinute: 0.13,
+          windowMinutes: 5,
+          available: true,
+        }}
         loading={false}
         error={null}
         showSurface={false}
@@ -116,7 +130,7 @@ describe('TodayStatsOverview', () => {
 
     expect(host?.querySelector('.surface-panel')).toBeNull()
     expect(host?.querySelector('[data-testid="today-stats-overview-card"]')).not.toBeNull()
-    expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(5)
+    expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(6)
   })
 
   it('hides the heading block when used inside the overview today tab', () => {
@@ -129,6 +143,12 @@ describe('TodayStatsOverview', () => {
           totalCost: 0.52,
           totalTokens: 2080,
         }}
+        rate={{
+          tokensPerMinute: 416,
+          costPerMinute: 0.1,
+          windowMinutes: 5,
+          available: true,
+        }}
         loading={false}
         error={null}
         showSurface={false}
@@ -140,7 +160,53 @@ describe('TodayStatsOverview', () => {
     expect(host?.textContent).not.toContain('Today summary')
     expect(host?.textContent).not.toContain('Accumulated in natural day')
     expect(host?.textContent).not.toContain('Today')
-    expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(5)
+    expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(6)
+  })
+
+  it('renders partial loading only for rate tiles while summary metrics stay visible', () => {
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 88,
+          successCount: 80,
+          failureCount: 8,
+          totalCost: 2.1,
+          totalTokens: 8000,
+        }}
+        rate={null}
+        loading={false}
+        rateLoading
+        error={null}
+      />,
+    )
+
+    expect(host?.querySelector('[data-testid="today-stats-value-tpm"]')).toBeNull()
+    expect(host?.querySelector('[data-testid="today-stats-value-cost-per-minute"]')).toBeNull()
+    expect(host?.querySelector('[data-testid="today-stats-value-success"]')?.textContent).toContain('80')
+    expect(host?.querySelector('[data-testid="today-stats-value-failures"]')?.textContent).toContain('8')
+  })
+
+  it('shows unavailable placeholders for rate tiles when timeseries loading fails', () => {
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 88,
+          successCount: 80,
+          failureCount: 8,
+          totalCost: 2.1,
+          totalTokens: 8000,
+        }}
+        rate={null}
+        loading={false}
+        rateLoading={false}
+        rateError="timeseries failed"
+        error={null}
+      />,
+    )
+
+    expect(host?.querySelector('[data-testid="today-stats-value-tpm"]')?.textContent).toBe('—')
+    expect(host?.querySelector('[data-testid="today-stats-value-cost-per-minute"]')?.textContent).toBe('—')
+    expect(host?.querySelector('[data-testid="today-stats-value-success"]')?.textContent).toContain('80')
   })
 
   it('switches to compact notation when the full metric value would overflow', () => {
@@ -154,6 +220,12 @@ describe('TodayStatsOverview', () => {
           failureCount: 2525,
           totalCost: 539.42,
           totalTokens: 1314275579,
+        }}
+        rate={{
+          tokensPerMinute: 1000,
+          costPerMinute: 0.1,
+          windowMinutes: 5,
+          available: true,
         }}
         loading={false}
         error={null}

@@ -8,6 +8,7 @@ import { DashboardTodayActivityChart } from './DashboardTodayActivityChart'
 import { Last24hTenMinuteHeatmap, type MetricKey } from './Last24hTenMinuteHeatmap'
 import { StatsCards } from './StatsCards'
 import { TodayStatsOverview } from './TodayStatsOverview'
+import { buildDashboardTodayRateSnapshot } from './dashboardTodayRateSnapshot'
 import { SegmentedControl, SegmentedControlItem } from './ui/segmented-control'
 import { UsageCalendar } from './UsageCalendar'
 import { WeeklyHourlyHeatmap } from './WeeklyHourlyHeatmap'
@@ -60,6 +61,7 @@ function DashboardTodayRangePanel({ metric }: { metric: MetricKey }) {
     error: summaryError,
   } = useSummary('today')
   const { data, isLoading, error } = useTimeseries('today', { bucket: '1m' })
+  const rate = useMemo(() => buildDashboardTodayRateSnapshot(data), [data])
 
   return (
     <div
@@ -71,6 +73,9 @@ function DashboardTodayRangePanel({ metric }: { metric: MetricKey }) {
         stats={summary}
         loading={summaryLoading}
         error={summaryError}
+        rate={rate}
+        rateLoading={isLoading}
+        rateError={error}
         showSurface={false}
         showHeader={false}
         showDayBadge={false}
