@@ -1262,8 +1262,114 @@ async fn capture_target_pool_route_marks_response_failed_stream_as_route_failure
 }
 
 #[tokio::test]
+async fn capture_target_pool_route_keeps_late_logical_failure_when_downstream_disconnects() {
+    #[derive(sqlx::FromRow)]
+    struct InvocationRow {
+        status: Option<String>,
+        error_message: Option<String>,
+        failure_kind: Option<String>,
+    }
+
+    #[derive(sqlx::FromRow)]
+    struct AttemptRow {
+        status: String,
+        failure_kind: Option<String>,
+        error_message: Option<String>,
+    }
+
+    let (upstream_base, _attempts, upstream_handle) = spawn_pool_late_response_failed_upstream().await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    record_pool_route_success(
+        &state.pool,
+        account_id,
+        Utc::now(),
+        Some("sticky-cap-disconnect"),
+        None,
+    )
+    .await
+    .expect("seed sticky route");
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "stream": true,
+        "input": "hello",
+        "stickyKey": "sticky-cap-disconnect"
+    }))
+    .expect("serialize request body");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(request_body),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    drop(response);
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+
+    let invocation = sqlx::query_as::<_, InvocationRow>(
+        r#"
+        SELECT status, error_message, failure_kind
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load latest invocation");
+    assert_eq!(invocation.status.as_deref(), Some("http_200"));
+    assert_eq!(
+        invocation.failure_kind.as_deref(),
+        Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
+    );
+    assert!(
+        invocation
+            .error_message
+            .as_deref()
+            .is_some_and(|value| value.contains("upstream_response_failed"))
+    );
+
+    let attempt = sqlx::query_as::<_, AttemptRow>(
+        r#"
+        SELECT status, failure_kind, error_message
+        FROM pool_upstream_request_attempts
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load latest pool attempt");
+    assert_eq!(attempt.status, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE);
+    assert_eq!(
+        attempt.failure_kind.as_deref(),
+        Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
+    );
+    assert!(
+        attempt
+            .error_message
+            .as_deref()
+            .is_some_and(|value| value.contains("upstream_response_failed"))
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn capture_target_pool_route_marks_server_overloaded_after_forward_as_retryable_without_cooldown()
- {
+{
     #[derive(sqlx::FromRow)]
     struct RouteStateRow {
         status: String,

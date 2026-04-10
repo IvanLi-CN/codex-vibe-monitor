@@ -263,6 +263,10 @@ impl ProxyUpstreamResponseBody {
     }
 }
 
+const RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED: &str =
+    "async_backpressure_dropped";
+const ASYNC_STREAMING_RAW_WRITER_QUEUE_CAPACITY: usize = 8;
+
 fn pool_upstream_timeout_message(total_timeout: Duration, phase: &str) -> String {
     format!(
         "request timed out after {}ms while {phase}",
@@ -940,6 +944,70 @@ fn proxy_capture_response_status_is_success(
     logical_stream_failure: bool,
 ) -> bool {
     !logical_stream_failure && proxy_forward_response_status_is_success(status, stream_error)
+}
+
+fn proxy_capture_is_pure_downstream_close(
+    status: StatusCode,
+    stream_error: bool,
+    logical_stream_failure: bool,
+    downstream_closed: bool,
+) -> bool {
+    downstream_closed
+        && status.is_success()
+        && !stream_error
+        && !logical_stream_failure
+}
+
+fn proxy_capture_invocation_failure_kind(
+    status: StatusCode,
+    stream_error: bool,
+    logical_stream_failure: bool,
+    pure_downstream_closed: bool,
+) -> Option<&'static str> {
+    if stream_error {
+        Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
+    } else if logical_stream_failure {
+        Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
+    } else if pure_downstream_closed {
+        Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED)
+    } else if status == StatusCode::TOO_MANY_REQUESTS {
+        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
+    } else if status.is_server_error() {
+        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX)
+    } else {
+        None
+    }
+}
+
+fn proxy_capture_invocation_status(
+    status: StatusCode,
+    has_error_message: bool,
+    pure_downstream_closed: bool,
+) -> String {
+    if pure_downstream_closed {
+        "failed".to_string()
+    } else if status.is_success() && !has_error_message {
+        "success".to_string()
+    } else {
+        format!("http_{}", status.as_u16())
+    }
+}
+
+fn pool_capture_attempt_status(
+    status: StatusCode,
+    stream_error: bool,
+    logical_stream_failure: bool,
+    pure_downstream_closed: bool,
+) -> &'static str {
+    if pure_downstream_closed {
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
+    } else if stream_error {
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
+    } else if !status.is_success() || logical_stream_failure {
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
+    } else {
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
+    }
 }
 
 fn proxy_forward_response_failure_kind(

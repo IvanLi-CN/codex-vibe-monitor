@@ -626,6 +626,71 @@ fn classify_invocation_failure_marks_downstream_closed_as_client_abort() {
 }
 
 #[test]
+fn proxy_capture_invocation_status_marks_downstream_closed_as_failed() {
+    assert_eq!(
+        proxy_capture_invocation_status(StatusCode::OK, false, true),
+        "failed"
+    );
+    assert_eq!(
+        proxy_capture_invocation_status(StatusCode::OK, false, false),
+        "success"
+    );
+    assert_eq!(
+        proxy_capture_invocation_status(StatusCode::OK, true, false),
+        "http_200"
+    );
+}
+
+#[test]
+fn proxy_capture_is_pure_downstream_close_requires_a_clean_upstream_success() {
+    assert!(proxy_capture_is_pure_downstream_close(
+        StatusCode::OK,
+        false,
+        false,
+        true,
+    ));
+    assert!(!proxy_capture_is_pure_downstream_close(
+        StatusCode::BAD_GATEWAY,
+        false,
+        false,
+        true,
+    ));
+    assert!(!proxy_capture_is_pure_downstream_close(
+        StatusCode::OK,
+        true,
+        false,
+        true,
+    ));
+    assert!(!proxy_capture_is_pure_downstream_close(
+        StatusCode::OK,
+        false,
+        true,
+        true,
+    ));
+}
+
+#[test]
+fn proxy_capture_invocation_failure_kind_prefers_logical_stream_failure_over_disconnect() {
+    let pure_downstream_closed =
+        proxy_capture_is_pure_downstream_close(StatusCode::OK, false, true, true);
+    assert!(!pure_downstream_closed);
+    assert_eq!(
+        proxy_capture_invocation_failure_kind(StatusCode::OK, false, true, pure_downstream_closed),
+        Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
+    );
+}
+
+#[test]
+fn pool_capture_attempt_status_keeps_late_disconnect_after_logical_failure_as_http_failure() {
+    let pure_downstream_closed =
+        proxy_capture_is_pure_downstream_close(StatusCode::OK, false, true, true);
+    assert_eq!(
+        pool_capture_attempt_status(StatusCode::OK, false, true, pure_downstream_closed),
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
+    );
+}
+
+#[test]
 fn classify_invocation_failure_marks_invalid_key_as_client_failure() {
     let result = classify_invocation_failure(Some("http_401"), Some("Invalid API key format"));
     assert_eq!(result.failure_class, FailureClass::ClientFailure);
