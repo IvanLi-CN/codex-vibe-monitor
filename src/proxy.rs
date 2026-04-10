@@ -1321,6 +1321,46 @@ impl PoolReplayBodySnapshot {
             }
         }
     }
+
+    async fn extract_request_stream_flag(&self, content_encoding: Option<&str>) -> Option<bool> {
+        #[derive(serde::Deserialize)]
+        struct StreamFlagProjection {
+            #[serde(default)]
+            stream: Option<bool>,
+        }
+
+        fn parse_stream_flag_from_bytes(bytes: &[u8]) -> Option<bool> {
+            serde_json::from_slice::<StreamFlagProjection>(bytes)
+                .ok()
+                .and_then(|projection| projection.stream)
+        }
+
+        fn parse_stream_flag_from_reader<R: std::io::Read>(reader: R) -> Option<bool> {
+            serde_json::from_reader::<R, StreamFlagProjection>(reader)
+                .ok()
+                .and_then(|projection| projection.stream)
+        }
+
+        match self {
+            Self::Empty => None,
+            Self::Memory(bytes) => {
+                let (decoded, _) = decode_response_payload(bytes.as_ref(), content_encoding, true);
+                parse_stream_flag_from_bytes(decoded.as_ref())
+            }
+            Self::File { temp_file, .. } => {
+                let path = temp_file.path.clone();
+                let content_encoding = content_encoding.map(str::to_string);
+                tokio::task::spawn_blocking(move || {
+                    let reader = open_decoded_response_reader(&path, content_encoding.as_deref())
+                        .ok()?;
+                    parse_stream_flag_from_reader(std::io::BufReader::new(reader))
+                })
+                .await
+                .ok()
+                .flatten()
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2986,7 +3026,10 @@ async fn send_pool_request_with_failover(
                             exhausted_accounts_all_rate_limited = false;
                             continue 'account_loop;
                         }
-                        snapshot if original_uri.path() == "/v1/responses" => {
+                        snapshot @ (PoolReplayBodySnapshot::Empty
+                        | PoolReplayBodySnapshot::Memory(_))
+                            if original_uri.path() == "/v1/responses" =>
+                        {
                             oauth_bridge::OauthUpstreamRequestBody::Bytes(
                                 snapshot.to_bytes().await.map_err(|err| PoolUpstreamError {
                                     account: Some(account.clone()),
@@ -3037,9 +3080,25 @@ async fn send_pool_request_with_failover(
                                         requested_service_tier:
                                             attempted_requested_service_tier.clone(),
                                         request_body_for_capture:
-                                            attempted_request_body_for_capture.clone(),
+                                        attempted_request_body_for_capture.clone(),
                                     })?,
                             ),
+                            request_is_stream: if original_uri.path() == "/v1/responses" {
+                                snapshot
+                                    .extract_request_stream_flag(
+                                        headers
+                                            .get(header::CONTENT_ENCODING)
+                                            .and_then(|value| value.to_str().ok()),
+                                    )
+                                    .await
+                            } else {
+                                None
+                            },
+                            snapshot_kind: if original_uri.path() == "/v1/responses" {
+                                Some(pool_request_snapshot_kind(snapshot))
+                            } else {
+                                None
+                            },
                             body: snapshot.to_reqwest_body(),
                         },
                     };
@@ -5229,6 +5288,8 @@ async fn proxy_openai_v1_capture_target(
                     oauth_prompt_cache_header_forwarded: None,
                     oauth_request_body_prefix_fingerprint: None,
                     oauth_request_body_prefix_bytes: None,
+                    oauth_request_body_snapshot_kind: None,
+                    oauth_responses_body_mode: None,
                     oauth_responses_rewrite: None,
                     service_tier: None,
                     stream_terminal_event: None,
@@ -5518,6 +5579,14 @@ async fn proxy_openai_v1_capture_target(
                             .oauth_responses_debug
                             .as_ref()
                             .and_then(|debug| debug.request_body_prefix_bytes),
+                        oauth_request_body_snapshot_kind: err
+                            .oauth_responses_debug
+                            .as_ref()
+                            .and_then(|debug| debug.request_body_snapshot_kind),
+                        oauth_responses_body_mode: err
+                            .oauth_responses_debug
+                            .as_ref()
+                            .and_then(|debug| debug.responses_body_mode),
                         oauth_responses_rewrite: err
                             .oauth_responses_debug
                             .as_ref()
@@ -5679,6 +5748,8 @@ async fn proxy_openai_v1_capture_target(
                         oauth_prompt_cache_header_forwarded: None,
                         oauth_request_body_prefix_fingerprint: None,
                         oauth_request_body_prefix_bytes: None,
+                        oauth_request_body_snapshot_kind: None,
+                        oauth_responses_body_mode: None,
                         oauth_responses_rewrite: None,
                         service_tier: None,
                         stream_terminal_event: None,
@@ -5831,6 +5902,8 @@ async fn proxy_openai_v1_capture_target(
                     oauth_prompt_cache_header_forwarded: None,
                     oauth_request_body_prefix_fingerprint: None,
                     oauth_request_body_prefix_bytes: None,
+                    oauth_request_body_snapshot_kind: None,
+                    oauth_responses_body_mode: None,
                     oauth_responses_rewrite: None,
                     service_tier: None,
                     stream_terminal_event: None,
@@ -6542,6 +6615,12 @@ async fn proxy_openai_v1_capture_target(
             oauth_request_body_prefix_bytes: oauth_responses_debug_for_task
                 .as_ref()
                 .and_then(|debug| debug.request_body_prefix_bytes),
+            oauth_request_body_snapshot_kind: oauth_responses_debug_for_task
+                .as_ref()
+                .and_then(|debug| debug.request_body_snapshot_kind),
+            oauth_responses_body_mode: oauth_responses_debug_for_task
+                .as_ref()
+                .and_then(|debug| debug.responses_body_mode),
             oauth_responses_rewrite: oauth_responses_debug_for_task
                 .as_ref()
                 .map(|debug| &debug.rewrite),
@@ -10142,6 +10221,8 @@ struct ProxyPayloadSummary<'a> {
     oauth_prompt_cache_header_forwarded: Option<bool>,
     oauth_request_body_prefix_fingerprint: Option<&'a str>,
     oauth_request_body_prefix_bytes: Option<usize>,
+    oauth_request_body_snapshot_kind: Option<&'a str>,
+    oauth_responses_body_mode: Option<&'a str>,
     oauth_responses_rewrite: Option<&'a oauth_bridge::OauthResponsesRewriteSummary>,
     service_tier: Option<&'a str>,
     stream_terminal_event: Option<&'a str>,
@@ -10187,6 +10268,8 @@ fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
         oauth_prompt_cache_header_forwarded,
         oauth_request_body_prefix_fingerprint,
         oauth_request_body_prefix_bytes,
+        oauth_request_body_snapshot_kind,
+        oauth_responses_body_mode,
         oauth_responses_rewrite,
         service_tier,
         stream_terminal_event,
@@ -10230,6 +10313,8 @@ fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
         "oauthPromptCacheHeaderForwarded": oauth_prompt_cache_header_forwarded,
         "oauthRequestBodyPrefixFingerprint": oauth_request_body_prefix_fingerprint,
         "oauthRequestBodyPrefixBytes": oauth_request_body_prefix_bytes,
+        "oauthRequestBodySnapshotKind": oauth_request_body_snapshot_kind,
+        "oauthResponsesBodyMode": oauth_responses_body_mode,
         "oauthResponsesRewrite": oauth_responses_rewrite,
         "serviceTier": service_tier,
         "streamTerminalEvent": stream_terminal_event,
@@ -10816,6 +10901,8 @@ fn build_running_proxy_capture_record(
             oauth_prompt_cache_header_forwarded: None,
             oauth_request_body_prefix_fingerprint: None,
             oauth_request_body_prefix_bytes: None,
+            oauth_request_body_snapshot_kind: None,
+            oauth_responses_body_mode: None,
             oauth_responses_rewrite: None,
             service_tier: None,
             stream_terminal_event: None,

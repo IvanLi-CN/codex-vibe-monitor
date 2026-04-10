@@ -23421,6 +23421,14 @@ async fn pool_route_oauth_responses_sends_uuid_account_header_and_persists_obser
     assert_eq!(payload_json["endpoint"].as_str(), Some("/v1/responses"));
     assert_eq!(payload_json["oauthFingerprintVersion"].as_str(), Some("v1"));
     assert_eq!(payload_json["oauthPromptCacheHeaderForwarded"], true);
+    assert_eq!(
+        payload_json["oauthRequestBodySnapshotKind"].as_str(),
+        Some("memory")
+    );
+    assert_eq!(
+        payload_json["oauthResponsesBodyMode"].as_str(),
+        Some("small_body_rewrite")
+    );
     assert!(
         payload_json["oauthForwardedHeaderCount"]
             .as_u64()
@@ -25285,6 +25293,8 @@ async fn oauth_streaming_passthrough_backfills_body_prefix_from_replay_status() 
         prompt_cache_header_forwarded: false,
         request_body_prefix_fingerprint: None,
         request_body_prefix_bytes: None,
+        request_body_snapshot_kind: None,
+        responses_body_mode: None,
         rewrite: oauth_bridge::OauthResponsesRewriteSummary::default(),
     });
     let (status_tx, status_rx) = watch::channel(PoolReplayBodyStatus::Reading);
@@ -25679,10 +25689,130 @@ async fn pool_route_oauth_observability_omits_fingerprints_without_crypto_key() 
     assert!(request_debug.forwarded_header_fingerprints.is_none());
     assert!(request_debug.request_body_prefix_fingerprint.is_none());
     assert!(request_debug.request_body_prefix_bytes.is_none());
+    assert_eq!(request_debug.request_body_snapshot_kind, Some("memory"));
+    assert_eq!(
+        request_debug.responses_body_mode,
+        Some("small_body_rewrite")
+    );
     let serialized_debug = serde_json::to_string(&request_debug).expect("serialize request debug");
     assert!(
         !serialized_debug.contains("session-no-crypto"),
         "request debug should not leak raw header values"
+    );
+
+    upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn pool_route_large_oauth_responses_file_backed_body_passthroughs_non_stream_sse() {
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_responses_capture_upstream().await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_oauth_account(&state, "Large Responses OAuth", "oauth-large").await;
+    let temp_file = Arc::new(PoolReplayTempFile {
+        path: build_pool_replay_temp_path(626262),
+    });
+    let body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "stream": false,
+        "max_output_tokens": 256,
+        "input": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 4096),
+    }))
+    .expect("serialize large oauth responses body");
+    tokio::fs::write(&temp_file.path, &body)
+        .await
+        .expect("write large oauth responses body");
+
+    let account = PoolResolvedAccount {
+        account_id,
+        display_name: "Large Responses OAuth".to_string(),
+        kind: "oauth_codex".to_string(),
+        auth: PoolResolvedAuth::Oauth {
+            access_token: "oauth-large".to_string(),
+            chatgpt_account_id: Some("org_test".to_string()),
+        },
+        upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
+            .expect("oauth upstream base url"),
+        routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        group_name: Some(test_required_group_name().to_string()),
+        bound_proxy_keys: test_required_group_bound_proxy_keys(),
+        forward_proxy_scope: ForwardProxyRouteScope::from_group_binding(
+            Some(test_required_group_name()),
+            test_required_group_bound_proxy_keys(),
+        ),
+        group_upstream_429_retry_enabled: false,
+        group_upstream_429_max_retries: 0,
+        fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+    };
+
+    let upstream = send_pool_request_with_failover(
+        state,
+        626262,
+        Method::POST,
+        &"/v1/responses".parse().expect("valid uri"),
+        &HeaderMap::from_iter([(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )]),
+        Some(PoolReplayBodySnapshot::File {
+            temp_file,
+            size: body.len(),
+        }),
+        Duration::from_secs(5),
+        None,
+        None,
+        None,
+        Some(account),
+        PoolFailoverProgress::default(),
+        1,
+    )
+    .await
+    .expect("large oauth responses body should stay on oauth route");
+
+    assert_eq!(upstream.account.account_id, account_id);
+    assert_eq!(upstream.response.status(), StatusCode::OK);
+    let mut response_body = upstream.first_chunk.clone().unwrap_or_default().to_vec();
+    response_body.extend_from_slice(
+        &upstream
+            .response
+            .into_bytes()
+            .await
+            .expect("read oauth passthrough response"),
+    );
+    let payload: Value =
+        serde_json::from_slice(&response_body).expect("decode oauth passthrough response");
+    assert_eq!(
+        payload["received"]["stream"].as_bool(),
+        Some(false),
+        "non-stream requests should preserve the original stream flag on large file-backed bodies",
+    );
+    assert_eq!(payload["received"]["max_output_tokens"].as_i64(), Some(256));
+    assert!(payload["received"].get("instructions").is_none());
+    assert!(payload["received"].get("store").is_none());
+    let request_debug = upstream
+        .oauth_responses_debug
+        .expect("oauth responses debug should be present");
+    assert_eq!(
+        request_debug.responses_body_mode,
+        Some("large_body_passthrough")
+    );
+    assert_eq!(request_debug.request_body_snapshot_kind, Some("file"));
+    assert_eq!(
+        request_debug.rewrite,
+        oauth_bridge::OauthResponsesRewriteSummary::default()
     );
 
     upstream_handle.abort();
