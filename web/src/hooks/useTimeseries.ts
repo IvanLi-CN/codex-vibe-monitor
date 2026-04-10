@@ -57,6 +57,8 @@ interface LiveRecordDelta {
 export const TIMESERIES_RECORDS_RESYNC_THROTTLE_MS = 3_000;
 export const TIMESERIES_OPEN_RESYNC_COOLDOWN_MS = 3_000;
 export const TIMESERIES_REMOUNT_CACHE_TTL_MS = 30_000;
+export const TIMESERIES_SETTLED_LIVE_DELTA_TTL_MS = 60_000;
+export const MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS = 1_024;
 const TIMESERIES_IN_FLIGHT_SEED_PAGE_SIZE = 500;
 const TIMESERIES_IN_FLIGHT_STATUSES = ["running", "pending"] as const;
 
@@ -64,6 +66,7 @@ interface TimeseriesRemountCacheEntry {
   data: TimeseriesResponse;
   cachedAt: number;
   liveRecordDeltas: Map<string, LiveRecordDelta>;
+  settledLiveRecordUpdatedAt: Map<string, number>;
   untrackedInFlightCounts: Map<string, number>;
 }
 
@@ -95,11 +98,20 @@ function cloneLiveRecordDeltaMap(
   return cloned;
 }
 
+function cloneSettledLiveRecordUpdatedAtMap(
+  settledLiveRecordUpdatedAt?: ReadonlyMap<string, number> | null,
+) {
+  return new Map(settledLiveRecordUpdatedAt);
+}
+
 function cloneTimeseriesRemountCacheEntry(entry: TimeseriesRemountCacheEntry) {
   return {
     data: cloneTimeseriesResponse(entry.data),
     cachedAt: entry.cachedAt,
     liveRecordDeltas: cloneLiveRecordDeltaMap(entry.liveRecordDeltas),
+    settledLiveRecordUpdatedAt: cloneSettledLiveRecordUpdatedAtMap(
+      entry.settledLiveRecordUpdatedAt,
+    ),
     untrackedInFlightCounts: new Map(entry.untrackedInFlightCounts),
   };
 }
@@ -222,6 +234,7 @@ export function writeTimeseriesRemountCache(
   data: TimeseriesResponse,
   cachedAt = Date.now(),
   liveRecordDeltas?: ReadonlyMap<string, LiveRecordDelta> | null,
+  settledLiveRecordUpdatedAt?: ReadonlyMap<string, number> | null,
   untrackedInFlightCounts?: ReadonlyMap<string, number> | null,
 ) {
   if (!shouldEnableTimeseriesRemountCache(range)) return;
@@ -229,6 +242,9 @@ export function writeTimeseriesRemountCache(
     data: cloneTimeseriesResponse(data),
     cachedAt,
     liveRecordDeltas: cloneLiveRecordDeltaMap(liveRecordDeltas),
+    settledLiveRecordUpdatedAt: cloneSettledLiveRecordUpdatedAtMap(
+      settledLiveRecordUpdatedAt,
+    ),
     untrackedInFlightCounts: new Map(untrackedInFlightCounts),
   });
 }
@@ -545,6 +561,78 @@ function sameLiveRecordDelta(
   );
 }
 
+function isPendingLiveRecord(record: ApiInvocation) {
+  return normalizeLiveRecordOutcome(record) === "pending";
+}
+
+export function pruneTrackedTimeseriesLiveRecordDeltas(
+  liveRecordDeltas: Map<string, LiveRecordDelta>,
+  settledLiveRecordUpdatedAt: Map<string, number>,
+  now = Date.now(),
+  ttlMs = TIMESERIES_SETTLED_LIVE_DELTA_TTL_MS,
+  maxEntries = MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS,
+) {
+  for (const [key, updatedAt] of settledLiveRecordUpdatedAt) {
+    if (now - updatedAt < ttlMs) continue;
+    settledLiveRecordUpdatedAt.delete(key);
+    liveRecordDeltas.delete(key);
+  }
+
+  const overflow = settledLiveRecordUpdatedAt.size - maxEntries;
+  if (overflow <= 0) {
+    return;
+  }
+
+  const oldestSettledEntries = Array.from(settledLiveRecordUpdatedAt.entries())
+    .sort((left, right) => left[1] - right[1])
+    .slice(0, overflow);
+
+  for (const [key] of oldestSettledEntries) {
+    settledLiveRecordUpdatedAt.delete(key);
+    liveRecordDeltas.delete(key);
+  }
+}
+
+export function trackTimeseriesLiveRecordDelta(
+  liveRecordDeltas: Map<string, LiveRecordDelta>,
+  settledLiveRecordUpdatedAt: Map<string, number>,
+  key: string,
+  record: ApiInvocation,
+  delta: LiveRecordDelta | null,
+  now = Date.now(),
+  ttlMs = TIMESERIES_SETTLED_LIVE_DELTA_TTL_MS,
+  maxEntries = MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS,
+) {
+  pruneTrackedTimeseriesLiveRecordDeltas(
+    liveRecordDeltas,
+    settledLiveRecordUpdatedAt,
+    now,
+    ttlMs,
+    maxEntries,
+  );
+
+  if (!delta) {
+    liveRecordDeltas.delete(key);
+    settledLiveRecordUpdatedAt.delete(key);
+    return;
+  }
+
+  liveRecordDeltas.set(key, delta);
+  if (isPendingLiveRecord(record)) {
+    settledLiveRecordUpdatedAt.delete(key);
+    return;
+  }
+
+  settledLiveRecordUpdatedAt.set(key, now);
+  pruneTrackedTimeseriesLiveRecordDeltas(
+    liveRecordDeltas,
+    settledLiveRecordUpdatedAt,
+    now,
+    ttlMs,
+    maxEntries,
+  );
+}
+
 function adjustTimeseriesPoint(
   point: TimeseriesPoint,
   delta: LiveRecordDelta,
@@ -744,8 +832,9 @@ export function upsertTimeseriesLiveRecord(
   }
 
   const currentPoint = previousDelta
-    ? current.points.find((point) => point.bucketStart === previousDelta.bucketStart) ??
-      null
+    ? (current.points.find(
+        (point) => point.bucketStart === previousDelta.bucketStart,
+      ) ?? null)
     : null;
   let nextDelta = buildTimeseriesLiveRecordDelta(record, current, context);
   if (
@@ -875,6 +964,9 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
   const liveRecordDeltaRef = useRef<Map<string, LiveRecordDelta>>(
     initialLiveRecordDeltas,
   );
+  const settledLiveRecordUpdatedAtRef = useRef<Map<string, number>>(
+    initialCachedTimeseries?.settledLiveRecordUpdatedAt ?? new Map(),
+  );
   const untrackedInFlightCountsRef = useRef<Map<string, number>>(
     initialCachedTimeseries?.untrackedInFlightCounts ?? new Map(),
   );
@@ -975,6 +1067,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
           }
         } else {
           liveRecordDeltaRef.current = seededLiveRecordDeltas;
+          settledLiveRecordUpdatedAtRef.current = new Map();
           untrackedInFlightCountsRef.current = untrackedInFlightCounts;
           dataRef.current = response;
           setData(response);
@@ -984,6 +1077,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
             response,
             Date.now(),
             seededLiveRecordDeltas,
+            settledLiveRecordUpdatedAtRef.current,
             untrackedInFlightCounts,
           );
         }
@@ -1020,6 +1114,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
           normalizedOptions.bucket,
         );
         liveRecordDeltaRef.current = new Map();
+        settledLiveRecordUpdatedAtRef.current = new Map();
         dataRef.current = fallback;
         setData(fallback);
         hasHydratedRef.current = true;
@@ -1150,6 +1245,8 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
     dataRef.current = cachedTimeseries?.data ?? null;
     liveRecordDeltaRef.current =
       cachedTimeseries?.liveRecordDeltas ?? new Map();
+    settledLiveRecordUpdatedAtRef.current =
+      cachedTimeseries?.settledLiveRecordUpdatedAt ?? new Map();
     untrackedInFlightCountsRef.current =
       cachedTimeseries?.untrackedInFlightCounts ?? new Map();
     clearPendingLoad();
@@ -1165,9 +1262,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
     clearPendingLoad,
     clearPendingRefreshTimer,
     load,
-    options?.bucket,
-    options?.preferServerAggregation,
-    options?.settlementHour,
+    normalizedOptions,
     range,
   ]);
 
@@ -1219,11 +1314,13 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
               nowEpochSeconds,
             );
             next = result.next;
-            if (result.delta) {
-              liveRecordDeltaRef.current.set(key, result.delta);
-            } else {
-              liveRecordDeltaRef.current.delete(key);
-            }
+            trackTimeseriesLiveRecordDelta(
+              liveRecordDeltaRef.current,
+              settledLiveRecordUpdatedAtRef.current,
+              key,
+              record,
+              result.delta,
+            );
           }
           if (next !== current) {
             dataRef.current = next;
@@ -1235,6 +1332,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
                 next,
                 Date.now(),
                 liveRecordDeltaRef.current,
+                settledLiveRecordUpdatedAtRef.current,
                 untrackedInFlightCountsRef.current,
               );
             }
@@ -1272,11 +1370,13 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
             },
           );
           next = result.next ?? next;
-          if (result.delta) {
-            liveRecordDeltaRef.current.set(key, result.delta);
-          } else {
-            liveRecordDeltaRef.current.delete(key);
-          }
+          trackTimeseriesLiveRecordDelta(
+            liveRecordDeltaRef.current,
+            settledLiveRecordUpdatedAtRef.current,
+            key,
+            record,
+            result.delta,
+          );
         }
         if (next !== current) {
           dataRef.current = next;
@@ -1288,6 +1388,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
               next,
               Date.now(),
               liveRecordDeltaRef.current,
+              settledLiveRecordUpdatedAtRef.current,
               untrackedInFlightCountsRef.current,
             );
           }
@@ -1297,6 +1398,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
     });
     return unsubscribe;
   }, [
+    normalizedOptions,
     normalizedOptions.bucket,
     normalizedOptions.settlementHour,
     range,

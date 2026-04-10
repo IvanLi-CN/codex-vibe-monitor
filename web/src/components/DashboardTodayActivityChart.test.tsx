@@ -87,11 +87,9 @@ describe("DashboardTodayActivityChart", () => {
     expect(data).toHaveLength(24 * 60);
     expect(data[0]).toMatchObject({
       successCount: 2,
-      inFlightCount: 0,
       failureCount: 1,
       failureCountNegative: -1,
       chartSuccessCount: 2,
-      chartInFlightCount: 0,
       chartFailureCountNegative: -1,
       totalCount: 3,
       cumulativeCost: 0.5,
@@ -101,39 +99,33 @@ describe("DashboardTodayActivityChart", () => {
     });
     expect(data[1]).toMatchObject({
       successCount: 0,
-      inFlightCount: 0,
       failureCount: 0,
       totalCount: 0,
       cumulativeCost: 0.5,
       cumulativeTokens: 120,
       chartSuccessCount: 0,
-      chartInFlightCount: 0,
       chartFailureCountNegative: 0,
       chartCumulativeCost: 0.5,
       chartCumulativeTokens: 120,
     });
     expect(data[2]).toMatchObject({
       successCount: 4,
-      inFlightCount: 0,
       failureCount: 0,
       totalCount: 4,
       cumulativeCost: 1.25,
       cumulativeTokens: 320,
       chartSuccessCount: 4,
-      chartInFlightCount: 0,
       chartFailureCountNegative: 0,
       chartCumulativeCost: 1.25,
       chartCumulativeTokens: 320,
     });
     expect(data[3]).toMatchObject({
       successCount: 0,
-      inFlightCount: 0,
       failureCount: 0,
       totalCount: 0,
       cumulativeCost: 1.25,
       cumulativeTokens: 320,
       chartSuccessCount: 0,
-      chartInFlightCount: 0,
       chartFailureCountNegative: 0,
       chartCumulativeCost: 1.25,
       chartCumulativeTokens: 320,
@@ -141,7 +133,6 @@ describe("DashboardTodayActivityChart", () => {
     expect(data.at(-1)).toMatchObject({
       label: "23:59",
       chartSuccessCount: null,
-      chartInFlightCount: null,
       chartFailureCountNegative: null,
       cumulativeCost: null,
       cumulativeTokens: null,
@@ -196,7 +187,7 @@ describe("DashboardTodayActivityChart", () => {
     expect(data.at(-1)?.chartCumulativeCost).toBeNull();
   });
 
-  it("preserves in-flight totals so pending activity stays visible in count mode", () => {
+  it("does not infer a third series from residual neutral totals", () => {
     const data = buildTodayMinuteChartData(
       {
         rangeStart: "2026-04-08 00:00:00",
@@ -223,10 +214,8 @@ describe("DashboardTodayActivityChart", () => {
     expect(data[1]).toMatchObject({
       totalCount: 3,
       successCount: 1,
-      inFlightCount: 1,
       failureCount: 1,
       chartSuccessCount: 1,
-      chartInFlightCount: 1,
       chartFailureCountNegative: -1,
     });
   });
@@ -247,7 +236,6 @@ describe("DashboardTodayActivityChart", () => {
     expect(html).toContain('data-bar-gap="-100%"');
     expect(html).not.toContain('data-testid="area-chart"');
     expect(html).toContain('data-data-key="chartSuccessCount"');
-    expect(html).toContain('data-data-key="chartInFlightCount"');
     expect(html).toContain('data-data-key="chartFailureCountNegative"');
     expect(html).toContain('data-stack-id="positive"');
     expect(html).not.toContain(

@@ -213,7 +213,9 @@ describe("useTimeseries remount cache hydration", () => {
       .mockImplementationOnce(
         () =>
           new Promise<TimeseriesResponse>((resolve) => {
-            silentRefresh.resolve = resolve as (value: TimeseriesResponse) => void;
+            silentRefresh.resolve = resolve as (
+              value: TimeseriesResponse,
+            ) => void;
           }),
       );
     apiMocks.fetchInvocationRecords.mockImplementation(async ({ status }) =>
@@ -269,12 +271,9 @@ describe("useTimeseries remount cache hydration", () => {
   });
 
   it("does not let a new post-load record consume an older anonymous in-flight placeholder from the same bucket", async () => {
-    const response = createBaseTimeseries(
-      undefined,
-      {
-        rangeEnd: "2026-03-07T23:45:00Z",
-      },
-    );
+    const response = createBaseTimeseries(undefined, {
+      rangeEnd: "2026-03-07T23:45:00Z",
+    });
     const newSettledRecord: ApiInvocation = {
       ...createSettledRecord(),
       invokeId: "new-after-load",
@@ -295,6 +294,54 @@ describe("useTimeseries remount cache hydration", () => {
     expect(text("failure")).toBe("1");
     expect(text("tokens")).toBe("22");
     expect(text("cost")).toBe("0.18");
+  });
+
+  it("rehydrates recent settled deltas across remounts to absorb duplicate SSE deliveries", async () => {
+    const response = createBaseTimeseries();
+    const settledRecord = createSettledRecord();
+    const silentRefresh: { resolve: (value: TimeseriesResponse) => void } = {
+      resolve: () => {
+        throw new Error("expected silent refresh resolver");
+      },
+    };
+
+    apiMocks.fetchTimeseries
+      .mockResolvedValueOnce(response)
+      .mockImplementationOnce(
+        () =>
+          new Promise<TimeseriesResponse>((resolve) => {
+            silentRefresh.resolve = resolve as (
+              value: TimeseriesResponse,
+            ) => void;
+          }),
+      );
+    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsPage([]));
+
+    render(<Probe />);
+    await flushAsync();
+
+    emitRecords([settledRecord]);
+    expect(text("failure")).toBe("1");
+
+    unmountCurrent();
+
+    render(<Probe />);
+    await flushAsync(1);
+
+    expect(text("loading")).toBe("false");
+    expect(text("total")).toBe("1");
+    expect(text("failure")).toBe("1");
+
+    emitRecords([settledRecord]);
+
+    expect(text("total")).toBe("1");
+    expect(text("success")).toBe("0");
+    expect(text("failure")).toBe("1");
+    expect(text("tokens")).toBe("22");
+    expect(text("cost")).toBe("0.18");
+
+    silentRefresh.resolve(response);
+    await flushAsync();
   });
 
   it("keeps the fetched chart data visible when in-flight seeding fails", async () => {

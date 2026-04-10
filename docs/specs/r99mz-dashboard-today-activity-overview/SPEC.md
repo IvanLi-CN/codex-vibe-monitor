@@ -149,6 +149,7 @@
 - 2026-04-10: 根据 fresh review 继续补齐稳定性修复：前端 in-flight seed 分页改为复用第一页 `snapshotId`，避免多页 `running/pending` 抓取在高 churn 下重复或漏算；同一 invocation 的 live patch 继续维持“减旧加新”而不是反复叠加。
 - 2026-04-10: 对齐 authoritative/live/archive 三条统计路径：`src/api/slices/prompt_cache_and_timeseries.rs`、`src/stats/mod.rs` 与 `src/maintenance/archive.rs` 统一把带失败元数据的 `running/pending` 排除在 failure 汇总之外，并让 structured legacy `http_200` failure 不再误入 archived success-like TTFB / pruned-success 判定。
 - 2026-04-10: 根据 fresh review 继续收口 legacy 空状态语义：blank/null `status` 且缺少失败元数据的历史行现在保持中性，不再在 summary / timeseries / archive rollup 中被误算为 failure；只有带明确失败元数据的 legacy 行才会保留失败统计。
+- 2026-04-10: 根据 fresh review 继续收口本地 live patch 稳定性：`useTimeseries` 现在把近期终态 delta 连同其受 TTL / 上限约束的去重元数据一起写入 remount cache，并在复水后继续吸收 duplicate SSE；同时活跃会话里的 tracked delta 仍会按 TTL / 上限裁剪，避免长时间停留页面时 `liveRecordDeltaRef` 单调增长。
 
 ## Visual Evidence
 

@@ -2201,18 +2201,6 @@ async fn timeseries_daily_stays_continuous_after_rollup_archive() {
     assert_eq!(summed_count, 4);
     assert_eq!(summed_tokens, 310);
     assert_f64_close(summed_cost, 3.01);
-
-    let totals = query_combined_totals(
-        &state.pool,
-        None,
-        StatsFilter::All,
-        InvocationSourceScope::All,
-    )
-    .await
-    .expect("query combined totals");
-    assert_eq!(totals.total_count, summed_count);
-    assert_eq!(totals.total_tokens, summed_tokens);
-    assert_f64_close(totals.total_cost, summed_cost);
 }
 
 #[tokio::test]

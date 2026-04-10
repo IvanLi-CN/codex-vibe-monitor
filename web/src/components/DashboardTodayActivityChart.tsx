@@ -158,7 +158,6 @@ export function DashboardTodayActivityChart({
   const countSeriesNames = useMemo(
     () => ({
       success: t("stats.cards.success"),
-      inFlight: t("chart.inFlight"),
       failures: t("stats.cards.failures"),
       total: t("chart.totalCount"),
     }),
@@ -169,11 +168,7 @@ export function DashboardTodayActivityChart({
   const countAxisBound = useMemo(() => {
     const maxValue = data.reduce(
       (current, item) =>
-        Math.max(
-          current,
-          item.successCount + item.inFlightCount,
-          item.failureCount,
-        ),
+        Math.max(current, item.successCount, item.failureCount),
       0,
     );
     return Math.max(1, maxValue);
@@ -198,9 +193,7 @@ export function DashboardTodayActivityChart({
   const animate = chartData.length <= 800;
   const chartMode = metric === "totalCount" ? "count-bars" : "cumulative-area";
   const renderCountTooltip = (point: DashboardTodayMinuteDatum) =>
-    point.chartSuccessCount == null ||
-    point.chartInFlightCount == null ||
-    point.chartFailureCountNegative == null
+    point.chartSuccessCount == null || point.chartFailureCountNegative == null
       ? []
       : [
           {
@@ -212,19 +205,6 @@ export function DashboardTodayActivityChart({
             ),
             color: chartColors.success,
           },
-          ...(point.chartInFlightCount > 0
-            ? [
-                {
-                  label: countSeriesNames.inFlight,
-                  value: formatCountValue(
-                    point.chartInFlightCount,
-                    countUnit,
-                    numberFormatter,
-                  ),
-                  color: chartColors.accent,
-                },
-              ]
-            : []),
           {
             label: countSeriesNames.failures,
             value: formatCountValue(
@@ -349,14 +329,6 @@ export function DashboardTodayActivityChart({
                 name={countSeriesNames.success}
                 stackId="positive"
                 fill={chartColors.success}
-                radius={[3, 3, 0, 0]}
-                isAnimationActive={animate}
-              />
-              <Bar
-                dataKey="chartInFlightCount"
-                name={countSeriesNames.inFlight}
-                stackId="positive"
-                fill={chartColors.accent}
                 radius={[3, 3, 0, 0]}
                 isAnimationActive={animate}
               />

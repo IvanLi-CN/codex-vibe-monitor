@@ -2,9 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApiInvocation, TimeseriesResponse } from "../lib/api";
 import {
   clearTimeseriesRemountCache,
+  MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS,
   TIMESERIES_OPEN_RESYNC_COOLDOWN_MS,
   TIMESERIES_REMOUNT_CACHE_TTL_MS,
   TIMESERIES_RECORDS_RESYNC_THROTTLE_MS,
+  TIMESERIES_SETTLED_LIVE_DELTA_TTL_MS,
   applyRecordsToCurrentDayBucket,
   applyRecordsToTimeseries,
   fetchAllInvocationRecordPages,
@@ -25,6 +27,8 @@ import {
   shouldTriggerTimeseriesOpenResync,
   seedCurrentDayLiveRecordDeltas,
   seedTimeseriesLiveRecordDeltas,
+  trackTimeseriesLiveRecordDelta,
+  pruneTrackedTimeseriesLiveRecordDeltas,
   upsertCurrentDayLiveRecord,
   upsertTimeseriesLiveRecord,
   writeTimeseriesRemountCache,
@@ -787,6 +791,9 @@ describe("useTimeseries refresh coordination helpers", () => {
         },
       ],
     ]);
+    const settledLiveRecordUpdatedAt = new Map([
+      ["invoke-1-2026-04-08T00:00:30Z", 12_340],
+    ]);
 
     writeTimeseriesRemountCache(
       "1d",
@@ -794,6 +801,7 @@ describe("useTimeseries refresh coordination helpers", () => {
       response,
       12_345,
       liveRecordDeltas,
+      settledLiveRecordUpdatedAt,
     );
 
     expect(getTimeseriesRemountCacheKey("1d", { bucket: "1m" })).toBe(
@@ -804,15 +812,21 @@ describe("useTimeseries refresh coordination helpers", () => {
       data: response,
       cachedAt: 12_345,
       liveRecordDeltas,
+      settledLiveRecordUpdatedAt,
       untrackedInFlightCounts: new Map(),
     });
     expect(cached?.data).not.toBe(response);
     expect(cached?.liveRecordDeltas).not.toBe(liveRecordDeltas);
+    expect(cached?.settledLiveRecordUpdatedAt).not.toBe(
+      settledLiveRecordUpdatedAt,
+    );
     liveRecordDeltas.get("invoke-1-2026-04-08T00:00:30Z")!.failureCount = 99;
     expect(
       cached?.liveRecordDeltas.get("invoke-1-2026-04-08T00:00:30Z")
         ?.failureCount,
     ).toBe(0);
+    settledLiveRecordUpdatedAt.set("invoke-2", 999);
+    expect(cached?.settledLiveRecordUpdatedAt.has("invoke-2")).toBe(false);
   });
 
   it("disables remount caching for current and today timeseries", () => {
@@ -877,5 +891,166 @@ describe("useTimeseries refresh coordination helpers", () => {
         2_000 + TIMESERIES_REMOUNT_CACHE_TTL_MS,
       ),
     ).toBeNull();
+  });
+
+  it("prunes stale settled live deltas while preserving in-flight ones", () => {
+    const pendingRecord: ApiInvocation = {
+      id: 81,
+      invokeId: "pending-live",
+      occurredAt: "2026-04-08T00:00:10Z",
+      status: "running",
+      totalTokens: 0,
+      cost: 0,
+      createdAt: "2026-04-08T00:00:10Z",
+    };
+    const settledRecord: ApiInvocation = {
+      id: 82,
+      invokeId: "settled-live",
+      occurredAt: "2026-04-08T00:00:20Z",
+      status: "failed",
+      totalTokens: 22,
+      cost: 0.18,
+      errorMessage: "upstream timed out",
+      failureKind: "upstream_timeout",
+      createdAt: "2026-04-08T00:00:20Z",
+    };
+    const pendingDelta = {
+      bucketStart: "2026-04-08T00:00:00Z",
+      bucketEnd: "2026-04-08T00:01:00Z",
+      bucketStartEpoch: 1_744_070_400,
+      bucketEndEpoch: 1_744_070_460,
+      totalCount: 1,
+      successCount: 0,
+      failureCount: 0,
+      totalTokens: 0,
+      totalCost: 0,
+    };
+    const settledDelta = {
+      bucketStart: "2026-04-08T00:00:00Z",
+      bucketEnd: "2026-04-08T00:01:00Z",
+      bucketStartEpoch: 1_744_070_400,
+      bucketEndEpoch: 1_744_070_460,
+      totalCount: 1,
+      successCount: 0,
+      failureCount: 1,
+      totalTokens: 22,
+      totalCost: 0.18,
+    };
+
+    const liveRecordDeltas = new Map<string, typeof pendingDelta>();
+    const settledLiveRecordUpdatedAt = new Map<string, number>();
+
+    trackTimeseriesLiveRecordDelta(
+      liveRecordDeltas,
+      settledLiveRecordUpdatedAt,
+      "pending-live-2026-04-08T00:00:10Z",
+      pendingRecord,
+      pendingDelta,
+      10_000,
+    );
+    trackTimeseriesLiveRecordDelta(
+      liveRecordDeltas,
+      settledLiveRecordUpdatedAt,
+      "settled-live-2026-04-08T00:00:20Z",
+      settledRecord,
+      settledDelta,
+      10_000,
+    );
+
+    expect(liveRecordDeltas.get("pending-live-2026-04-08T00:00:10Z")).toEqual(
+      pendingDelta,
+    );
+    expect(liveRecordDeltas.get("settled-live-2026-04-08T00:00:20Z")).toEqual(
+      settledDelta,
+    );
+    expect(settledLiveRecordUpdatedAt.size).toBe(1);
+    expect(
+      settledLiveRecordUpdatedAt.has("pending-live-2026-04-08T00:00:10Z"),
+    ).toBe(false);
+    expect(
+      settledLiveRecordUpdatedAt.has("settled-live-2026-04-08T00:00:20Z"),
+    ).toBe(true);
+
+    pruneTrackedTimeseriesLiveRecordDeltas(
+      liveRecordDeltas,
+      settledLiveRecordUpdatedAt,
+      10_000 + TIMESERIES_SETTLED_LIVE_DELTA_TTL_MS + 1,
+    );
+
+    expect(liveRecordDeltas.has("pending-live-2026-04-08T00:00:10Z")).toBe(
+      true,
+    );
+    expect(liveRecordDeltas.has("settled-live-2026-04-08T00:00:20Z")).toBe(
+      false,
+    );
+    expect(settledLiveRecordUpdatedAt.size).toBe(0);
+  });
+
+  it("caps tracked settled live deltas to the newest bounded window", () => {
+    const liveRecordDeltas = new Map<
+      string,
+      {
+        bucketStart: string;
+        bucketEnd: string;
+        bucketStartEpoch: number;
+        bucketEndEpoch: number;
+        totalCount: number;
+        successCount: number;
+        failureCount: number;
+        totalTokens: number;
+        totalCost: number;
+      }
+    >();
+    const settledLiveRecordUpdatedAt = new Map<string, number>();
+
+    const createSettledRecord = (invokeId: string): ApiInvocation => ({
+      id: Number.parseInt(invokeId.replace(/\D/g, ""), 10) || 1,
+      invokeId,
+      occurredAt: "2026-04-08T00:00:20Z",
+      status: "failed",
+      totalTokens: 1,
+      cost: 0.01,
+      errorMessage: "upstream timed out",
+      failureKind: "upstream_timeout",
+      createdAt: "2026-04-08T00:00:20Z",
+    });
+    const createDelta = (index: number) => ({
+      bucketStart: "2026-04-08T00:00:00Z",
+      bucketEnd: "2026-04-08T00:01:00Z",
+      bucketStartEpoch: 1_744_070_400,
+      bucketEndEpoch: 1_744_070_460,
+      totalCount: 1,
+      successCount: 0,
+      failureCount: 1,
+      totalTokens: index,
+      totalCost: index / 100,
+    });
+
+    for (
+      let index = 0;
+      index <= MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS;
+      index += 1
+    ) {
+      const key = `settled-${index}`;
+      trackTimeseriesLiveRecordDelta(
+        liveRecordDeltas,
+        settledLiveRecordUpdatedAt,
+        key,
+        createSettledRecord(key),
+        createDelta(index),
+        1_000 + index,
+        TIMESERIES_SETTLED_LIVE_DELTA_TTL_MS,
+        MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS,
+      );
+    }
+
+    expect(settledLiveRecordUpdatedAt.size).toBe(
+      MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS,
+    );
+    expect(liveRecordDeltas.size).toBe(MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS);
+    expect(liveRecordDeltas.has("settled-0")).toBe(false);
+    expect(
+      liveRecordDeltas.has(`settled-${MAX_TRACKED_SETTLED_LIVE_RECORD_DELTAS}`),
+    ).toBe(true);
   });
 });
