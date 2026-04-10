@@ -1268,6 +1268,7 @@ async fn capture_target_pool_route_keeps_late_logical_failure_when_downstream_di
         status: Option<String>,
         error_message: Option<String>,
         failure_kind: Option<String>,
+        payload: Option<String>,
     }
 
     #[derive(sqlx::FromRow)]
@@ -1320,7 +1321,7 @@ async fn capture_target_pool_route_keeps_late_logical_failure_when_downstream_di
 
     let invocation = sqlx::query_as::<_, InvocationRow>(
         r#"
-        SELECT status, error_message, failure_kind
+        SELECT status, error_message, failure_kind, payload
         FROM codex_invocations
         ORDER BY id DESC
         LIMIT 1
@@ -1339,6 +1340,19 @@ async fn capture_target_pool_route_keeps_late_logical_failure_when_downstream_di
             .error_message
             .as_deref()
             .is_some_and(|value| value.contains("upstream_response_failed"))
+    );
+    let invocation_payload: Value = serde_json::from_str(
+        invocation
+            .payload
+            .as_deref()
+            .expect("latest invocation payload should exist"),
+    )
+    .expect("decode latest invocation payload");
+    assert_eq!(invocation_payload["downstreamStatusCode"].as_i64(), Some(200));
+    assert!(
+        invocation_payload["downstreamErrorMessage"]
+            .as_str()
+            .is_some_and(|value| value.contains("downstream closed while streaming upstream response"))
     );
 
     let attempt = sqlx::query_as::<_, AttemptRow>(

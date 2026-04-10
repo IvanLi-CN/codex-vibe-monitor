@@ -1831,3 +1831,88 @@ async fn pool_route_oauth_passthrough_streams_without_eager_prebuffering() {
     upstream_handle.abort();
     oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
 }
+
+#[tokio::test]
+async fn pool_route_oauth_responses_replay_body_keeps_request_started_total_timeout_without_wait() {
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) =
+        spawn_oauth_codex_delayed_headers_upstream(Duration::from_millis(250)).await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.pool_upstream_responses_total_timeout = Duration::from_millis(90);
+    config.openai_proxy_request_read_timeout = Duration::from_millis(500);
+    config.openai_proxy_handshake_timeout = Duration::from_millis(400);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_oauth_account(&state, "Timeout OAuth", "oauth-timeout").await;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx
+            .send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5.4\",")))
+            .await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let _ = tx
+            .send(Ok(Bytes::from_static(
+                b"\"stream\":false,\"input\":\"hello\"}",
+            )))
+            .await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let started = Instant::now();
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6420,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-sticky-key"),
+                HeaderValue::from_static("sticky-oauth-replay-timeout"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+    )
+    .await;
+    let elapsed = started.elapsed();
+
+    let (status, message) = response.expect_err("oauth replay request should hit total timeout");
+    assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
+    assert_eq!(
+        message,
+        pool_total_timeout_exhausted_message(Duration::from_millis(90)),
+        "unexpected oauth replay timeout error: {message}"
+    );
+    assert!(
+        elapsed >= Duration::from_millis(70),
+        "request should spend time buffering before exhausting the shared budget, elapsed={elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(180),
+        "replay send should keep the total timeout anchored at request start, elapsed={elapsed:?}"
+    );
+
+    upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}

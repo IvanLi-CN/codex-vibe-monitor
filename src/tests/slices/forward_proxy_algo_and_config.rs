@@ -691,6 +691,25 @@ fn pool_capture_attempt_status_keeps_late_disconnect_after_logical_failure_as_ht
 }
 
 #[test]
+fn should_prebuffer_for_body_sticky_probe_respects_memory_threshold() {
+    assert!(should_prebuffer_for_body_sticky_probe(
+        false,
+        Some("application/json"),
+        Some(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES),
+    ));
+    assert!(!should_prebuffer_for_body_sticky_probe(
+        false,
+        Some("application/json"),
+        Some(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 1),
+    ));
+    assert!(!should_prebuffer_for_body_sticky_probe(
+        true,
+        Some("application/json"),
+        Some(128),
+    ));
+}
+
+#[test]
 fn classify_invocation_failure_marks_invalid_key_as_client_failure() {
     let result = classify_invocation_failure(Some("http_401"), Some("Invalid API key format"));
     assert_eq!(result.failure_class, FailureClass::ClientFailure);

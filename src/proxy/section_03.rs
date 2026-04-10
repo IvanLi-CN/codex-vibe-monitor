@@ -100,6 +100,21 @@ fn pool_account_supports_live_request_body(account: &PoolResolvedAccount, origin
     }
 }
 
+fn should_prebuffer_for_body_sticky_probe(
+    has_header_sticky_key: bool,
+    content_type: Option<&str>,
+    body_size_hint_exact: Option<usize>,
+) -> bool {
+    !has_header_sticky_key
+        && content_type.is_some_and(|value| {
+            value
+                .to_ascii_lowercase()
+                .starts_with("application/json")
+        })
+        && body_size_hint_exact
+            .is_some_and(|value| value <= POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES)
+}
+
 async fn send_pool_request_live_first_attempt(
     state: Arc<AppState>,
     proxy_request_id: u64,
@@ -911,17 +926,17 @@ async fn proxy_openai_v1_via_pool(
         .exact()
         .and_then(|value| usize::try_from(value).ok());
     let (upstream, sticky_key) = if request_may_have_body(&method, &headers) {
-        let should_prebuffer_for_body_sticky = header_sticky_key.is_none()
-            && headers
+        let should_prebuffer_for_body_sticky = should_prebuffer_for_body_sticky_probe(
+            header_sticky_key.is_some(),
+            headers
                 .get(header::CONTENT_TYPE)
-                .and_then(|value| value.to_str().ok())
-                .is_some_and(|value| value.to_ascii_lowercase().starts_with("application/json"))
-            && headers
+                .and_then(|value| value.to_str().ok()),
+            headers
                 .get(header::CONTENT_LENGTH)
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| value.parse::<usize>().ok())
-                .or(body_size_hint_exact)
-                .is_some_and(|value| value <= body_limit);
+                .or(body_size_hint_exact),
+        );
 
         if should_prebuffer_for_body_sticky {
             let request_body_bytes = read_request_body_with_limit(
@@ -1692,12 +1707,8 @@ async fn proxy_openai_v1_via_pool(
                     body_sticky_key.as_deref(),
                     Some(initial_account),
                     PoolFailoverProgress {
-                        responses_total_timeout_started_at: if no_available_wait_deadline.is_some()
-                        {
-                            responses_total_timeout_started_at_from_request
-                        } else {
-                            None
-                        },
+                        responses_total_timeout_started_at:
+                            responses_total_timeout_started_at_from_request,
                         no_available_wait_deadline,
                         ..PoolFailoverProgress::default()
                     },
