@@ -597,6 +597,16 @@ async fn pool_route_oauth_responses_timeout_switches_to_alternate_route() {
     }
 
     #[derive(sqlx::FromRow)]
+    struct AttemptRow {
+        status: String,
+        http_status: Option<i64>,
+        downstream_http_status: Option<i64>,
+        failure_kind: Option<String>,
+        error_message: Option<String>,
+        downstream_error_message: Option<String>,
+    }
+
+    #[derive(sqlx::FromRow)]
     struct RouteStateRow {
         last_action_reason_code: Option<String>,
         last_action_http_status: Option<i64>,
@@ -726,6 +736,53 @@ async fn pool_route_oauth_responses_timeout_switches_to_alternate_route() {
     assert_eq!(
         oauth_route_state.last_route_failure_kind.as_deref(),
         Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM)
+    );
+    let failed_attempt = sqlx::query_as::<_, AttemptRow>(
+        r#"
+        SELECT
+            status,
+            http_status,
+            downstream_http_status,
+            failure_kind,
+            error_message,
+            downstream_error_message
+        FROM pool_upstream_request_attempts
+        WHERE invoke_id = (
+            SELECT invoke_id
+            FROM codex_invocations
+            ORDER BY id DESC
+            LIMIT 1
+        )
+          AND status != ?1
+        ORDER BY id ASC
+        LIMIT 1
+        "#,
+    )
+    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load oauth timeout failed attempt");
+    assert_eq!(
+        failed_attempt.status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
+    );
+    assert_eq!(failed_attempt.http_status, None);
+    assert_eq!(failed_attempt.downstream_http_status, Some(502));
+    assert_eq!(
+        failed_attempt.failure_kind.as_deref(),
+        Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT)
+    );
+    assert!(
+        failed_attempt
+            .error_message
+            .as_deref()
+            .is_some_and(|value| !value.contains("pool upstream responded with 502"))
+    );
+    assert!(
+        failed_attempt
+            .downstream_error_message
+            .as_deref()
+            .is_some_and(|value| value.contains("pool upstream responded with 502"))
     );
 
     slow_upstream_handle.abort();

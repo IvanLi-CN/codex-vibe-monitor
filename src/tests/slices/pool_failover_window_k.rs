@@ -2167,6 +2167,102 @@ async fn finalize_pool_upstream_request_attempt_updates_pending_row_in_place() {
 }
 
 #[tokio::test]
+async fn insert_pool_upstream_terminal_attempt_preserves_oauth_transport_normalization() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let trace = PoolUpstreamAttemptTraceContext {
+        invoke_id: "terminal-oauth-transport-normalization".to_string(),
+        occurred_at: "2026-03-23 20:49:06".to_string(),
+        endpoint: "/v1/responses".to_string(),
+        sticky_key: Some("sticky-terminal-oauth".to_string()),
+        requester_ip: Some("192.168.31.6".to_string()),
+    };
+
+    insert_pool_upstream_terminal_attempt(
+        &state.pool,
+        &trace,
+        &PoolUpstreamError {
+            account: None,
+            status: StatusCode::BAD_GATEWAY,
+            message: "pool upstream responded with 502: oauth codex upstream handshake timed out"
+                .to_string(),
+            canonical_error_message: Some(
+                "oauth codex upstream handshake timed out".to_string(),
+            ),
+            failure_kind: PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED,
+            connect_latency_ms: 0.0,
+            upstream_error_code: None,
+            upstream_error_message: None,
+            downstream_error_message: Some(
+                "pool upstream responded with 502: oauth codex upstream handshake timed out"
+                    .to_string(),
+            ),
+            upstream_request_id: Some("req_oauth_terminal_1".to_string()),
+            oauth_responses_debug: None,
+            attempt_summary: PoolAttemptSummary::default(),
+            requested_service_tier: None,
+            request_body_for_capture: None,
+        },
+        2,
+        1,
+        PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED,
+    )
+    .await
+    .expect("insert terminal attempt");
+
+    let row = sqlx::query_as::<
+        _,
+        (
+            String,
+            Option<i64>,
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ),
+    >(
+        r#"
+        SELECT
+            status,
+            http_status,
+            downstream_http_status,
+            failure_kind,
+            error_message,
+            downstream_error_message,
+            upstream_request_id
+        FROM pool_upstream_request_attempts
+        WHERE invoke_id = ?1
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind("terminal-oauth-transport-normalization")
+    .fetch_one(&state.pool)
+    .await
+    .expect("load terminal oauth transport attempt");
+
+    assert_eq!(row.0, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL);
+    assert_eq!(row.1, None);
+    assert_eq!(row.2, Some(502));
+    assert_eq!(
+        row.3.as_deref(),
+        Some(PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED)
+    );
+    assert_eq!(
+        row.4.as_deref(),
+        Some("oauth codex upstream handshake timed out")
+    );
+    assert_eq!(
+        row.5.as_deref(),
+        Some("pool upstream responded with 502: oauth codex upstream handshake timed out")
+    );
+    assert_eq!(row.6.as_deref(), Some("req_oauth_terminal_1"));
+}
+
+#[tokio::test]
 async fn broadcast_pool_upstream_attempts_snapshot_emits_pending_attempts() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -2345,10 +2441,12 @@ async fn insert_and_broadcast_pool_upstream_terminal_attempt_emits_final_snapsho
         account: None,
         status: StatusCode::BAD_GATEWAY,
         message: "pool budget exhausted after failover".to_string(),
+        canonical_error_message: None,
         failure_kind: PROXY_FAILURE_POOL_MAX_DISTINCT_ACCOUNTS_EXHAUSTED,
         connect_latency_ms: 0.0,
         upstream_error_code: None,
         upstream_error_message: None,
+        downstream_error_message: None,
         upstream_request_id: Some("req_terminal_123".to_string()),
         oauth_responses_debug: None,
         attempt_summary: pool_attempt_summary(

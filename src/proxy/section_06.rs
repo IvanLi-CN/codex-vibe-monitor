@@ -1292,6 +1292,15 @@ async fn insert_pool_upstream_terminal_attempt(
         .account
         .as_ref()
         .map(|account| account.upstream_route_key());
+    let (http_status, downstream_http_status) = if final_error.downstream_error_message.is_some() {
+        (None, Some(final_error.status))
+    } else {
+        (Some(final_error.status), None)
+    };
+    let canonical_error_message = final_error
+        .canonical_error_message
+        .as_deref()
+        .unwrap_or(final_error.message.as_str());
     insert_pool_upstream_request_attempt(
         pool,
         trace,
@@ -1307,11 +1316,11 @@ async fn insert_pool_upstream_terminal_attempt(
         Some(finished_at.as_str()),
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
         Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED),
-        Some(final_error.status),
-        None,
+        http_status,
+        downstream_http_status,
         Some(failure_kind),
-        Some(final_error.message.as_str()),
-        None,
+        Some(canonical_error_message),
+        final_error.downstream_error_message.as_deref(),
         None,
         None,
         None,
