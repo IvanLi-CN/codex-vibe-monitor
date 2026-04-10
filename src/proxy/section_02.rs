@@ -1698,18 +1698,33 @@ async fn send_pool_request_with_failover(
                         sleep(retry_delay).await;
                         continue;
                     }
-                if let Err(route_err) = record_pool_route_http_failure(
-                    &state.pool,
-                    account.account_id,
-                    &account.kind,
-                    sticky_key,
-                    status,
-                    &route_error_message,
-                    trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
-                )
-                .await
-                {
-                    warn!(account_id = account.account_id, error = %route_err, "failed to record pool upstream http failure");
+                let route_failure_result = if oauth_transport_failure_kind.is_some() {
+                    record_pool_route_transport_failure(
+                        &state.pool,
+                        account.account_id,
+                        sticky_key,
+                        &route_error_message,
+                        trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                    )
+                    .await
+                } else {
+                    record_pool_route_http_failure(
+                        &state.pool,
+                        account.account_id,
+                        &account.kind,
+                        sticky_key,
+                        status,
+                        &route_error_message,
+                        trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                    )
+                    .await
+                };
+                if let Err(route_err) = route_failure_result {
+                    warn!(
+                        account_id = account.account_id,
+                        error = %route_err,
+                        "failed to record pool live-attempt failure"
+                    );
                 }
                 if let Some(observation) = compact_support_observation.as_ref()
                     && let Err(observation_err) = record_compact_support_observation(

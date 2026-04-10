@@ -596,6 +596,13 @@ async fn pool_route_oauth_responses_timeout_switches_to_alternate_route() {
         payload: Option<String>,
     }
 
+    #[derive(sqlx::FromRow)]
+    struct RouteStateRow {
+        last_action_reason_code: Option<String>,
+        last_action_http_status: Option<i64>,
+        last_route_failure_kind: Option<String>,
+    }
+
     let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
         .lock()
         .await;
@@ -697,6 +704,29 @@ async fn pool_route_oauth_responses_timeout_switches_to_alternate_route() {
         Some(2)
     );
     assert!(persisted_payload["poolAttemptTerminalReason"].is_null());
+    let oauth_route_state = sqlx::query_as::<_, RouteStateRow>(
+        r#"
+        SELECT
+            last_action_reason_code,
+            last_action_http_status,
+            last_route_failure_kind
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(oauth_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load oauth timeout route state");
+    assert_eq!(
+        oauth_route_state.last_action_reason_code.as_deref(),
+        Some("transport_failure")
+    );
+    assert_eq!(oauth_route_state.last_action_http_status, Some(502));
+    assert_eq!(
+        oauth_route_state.last_route_failure_kind.as_deref(),
+        Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM)
+    );
 
     slow_upstream_handle.abort();
     fast_upstream_handle.abort();
