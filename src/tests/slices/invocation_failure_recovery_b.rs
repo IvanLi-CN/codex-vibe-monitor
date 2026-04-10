@@ -1106,7 +1106,7 @@ async fn pool_openai_v1_responses_failover_reapplies_account_fast_mode_from_orig
     assert!(response_payload["received"].get("service_tier").is_none());
 
     wait_for_codex_invocations(&state.pool, 1).await;
-    wait_for_pool_attempt_row_count(&state.pool, 2).await;
+    wait_for_pool_upstream_request_attempts(&state.pool, 2).await;
 
     let captured = captured_requests.lock().await;
     assert_eq!(captured.len(), 1);
@@ -1264,8 +1264,6 @@ async fn pool_openai_v1_responses_fast_fill_missing_transport_failure_persists_r
     struct PersistedRow {
         status: Option<String>,
         error_message: Option<String>,
-        downstream_status_code: Option<i64>,
-        downstream_error_message: Option<String>,
         payload: Option<String>,
         request_raw_path: Option<String>,
     }
@@ -1338,13 +1336,7 @@ async fn pool_openai_v1_responses_fast_fill_missing_transport_failure_persists_r
     wait_for_codex_invocations(&state.pool, 1).await;
     let row = sqlx::query_as::<_, PersistedRow>(
         r#"
-        SELECT
-            status,
-            error_message,
-            CAST(json_extract(payload, '$.downstreamStatusCode') AS INTEGER) AS downstream_status_code,
-            json_extract(payload, '$.downstreamErrorMessage') AS downstream_error_message,
-            payload,
-            request_raw_path
+        SELECT status, error_message, payload, request_raw_path
         FROM codex_invocations
         ORDER BY id DESC
         LIMIT 1
@@ -1354,17 +1346,11 @@ async fn pool_openai_v1_responses_fast_fill_missing_transport_failure_persists_r
     .await
     .expect("load failed large fast row");
     assert_eq!(row.status.as_deref(), Some("http_502"));
-    assert_eq!(row.downstream_status_code, None);
     assert!(
-        row.error_message.as_deref().is_some_and(|message| {
-            message.contains("failed to contact upstream")
-                && !message.starts_with("[failed_contact_upstream]")
-                && !message.contains("pool upstream responded with 502")
-        }),
-        "unexpected canonical transport error: {:?}",
-        row
+        row.error_message
+            .as_deref()
+            .is_some_and(|message| { message.contains("[failed_contact_upstream]") })
     );
-    assert_eq!(row.downstream_error_message, None);
 
     let payload: Value = serde_json::from_str(
         row.payload
@@ -1377,8 +1363,6 @@ async fn pool_openai_v1_responses_fast_fill_missing_transport_failure_persists_r
         payload["failureKind"].as_str(),
         Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM)
     );
-    assert!(payload["downstreamStatusCode"].is_null());
-    assert!(payload["downstreamErrorMessage"].is_null());
 
     let request_raw = read_proxy_raw_bytes(
         row.request_raw_path
@@ -1865,13 +1849,13 @@ async fn capture_target_pool_route_timeout_switches_to_alternate_upstream_route(
     }
 
     let (slow_upstream_base, slow_upstream_handle) =
-        spawn_pool_delayed_first_chunk_upstream(Duration::from_millis(250)).await;
+        spawn_pool_delayed_first_chunk_upstream(Duration::from_millis(750)).await;
     let (fast_upstream_base, _attempts, fast_upstream_handle) =
         spawn_pool_retry_upstream(&[("Bearer route-fast", 0)]).await;
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
-    config.pool_upstream_responses_attempt_timeout = Duration::from_millis(120);
+    config.pool_upstream_responses_attempt_timeout = Duration::from_millis(250);
     let state = test_state_from_config(config, true).await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let slow_id = insert_test_pool_api_key_account_with_options(
@@ -1893,6 +1877,10 @@ async fn capture_target_pool_route_timeout_switches_to_alternate_upstream_route(
     )
     .await;
 
+    let sticky_key = "sticky-timeout-switch-001";
+    let sticky_seen_at = format_test_recent_active_timestamp(Utc::now());
+    upsert_test_sticky_route_at(&state.pool, sticky_key, slow_id, &sticky_seen_at).await;
+
     let response = proxy_openai_v1(
         State(state.clone()),
         OriginalUri("/v1/responses".parse().expect("valid uri")),
@@ -1902,9 +1890,8 @@ async fn capture_target_pool_route_timeout_switches_to_alternate_upstream_route(
             HeaderValue::from_static("Bearer pool-live-key"),
         )]),
         Body::from(
-            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-timeout-switch-001"}"#
-                .as_bytes()
-                .to_vec(),
+            format!(r#"{{"model":"gpt-5","input":"hello","stickyKey":"{sticky_key}"}}"#)
+                .into_bytes(),
         ),
     )
     .await;
@@ -1914,7 +1901,7 @@ async fn capture_target_pool_route_timeout_switches_to_alternate_upstream_route(
         .expect("read timeout-switch success body");
 
     wait_for_codex_invocations(&state.pool, 1).await;
-    wait_for_pool_attempt_row_count(&state.pool, 2).await;
+    wait_for_pool_upstream_request_attempts(&state.pool, 2).await;
 
     let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
         r#"

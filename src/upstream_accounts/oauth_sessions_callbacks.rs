@@ -2006,4 +2006,3 @@ fn parse_manual_oauth_callback(
     }
     Ok(query)
 }
-

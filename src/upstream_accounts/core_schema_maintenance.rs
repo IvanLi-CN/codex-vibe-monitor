@@ -763,4 +763,3 @@ async fn sqlite_table_exists(pool: &Pool<Sqlite>, table_name: &str) -> Result<bo
     .await?
         > 0)
 }
-

@@ -258,12 +258,10 @@ fn build_pool_total_timeout_exhausted_error(
         account: None,
         status: StatusCode::GATEWAY_TIMEOUT,
         message: pool_total_timeout_exhausted_message(total_timeout),
-        canonical_error_message: None,
         failure_kind: PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED,
         connect_latency_ms: 0.0,
         upstream_error_code: None,
         upstream_error_message: None,
-        downstream_error_message: None,
         upstream_request_id: None,
         oauth_responses_debug: None,
         attempt_summary: PoolAttemptSummary::default(),
@@ -1803,4 +1801,3 @@ fn upstream_account_id_from_payload(payload: Option<&str>) -> Option<i64> {
     let value = serde_json::from_str::<Value>(payload).ok()?;
     value.get("upstreamAccountId").and_then(json_value_to_i64)
 }
-

@@ -1892,4 +1892,3 @@ fn login_session_required_forward_proxy_scope(
         decode_group_bound_proxy_keys_json(row.group_bound_proxy_keys_json.as_deref()),
     )
 }
-

@@ -776,10 +776,6 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
-        proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
-        proxy_raw_async_semaphore: Arc::new(Semaphore::new(
-            DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
-        )),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings {
             hijack_enabled: true,
             merge_upstream_enabled: true,
@@ -804,6 +800,7 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
         )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         pool_group_429_retry_delay_override: None,
         pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
@@ -2401,4 +2398,3 @@ fn pool_same_account_attempt_budget_limits_follow_up_accounts_for_responses_fami
         2
     );
 }
-

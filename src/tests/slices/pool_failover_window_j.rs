@@ -2505,4 +2505,3 @@ async fn ensure_schema_backfill_deduplicates_detail_prune_archives() {
 
     cleanup_temp_test_dir(&temp_dir);
 }
-

@@ -95,10 +95,6 @@ async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
-        proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
-        proxy_raw_async_semaphore: Arc::new(Semaphore::new(
-            DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
-        )),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
@@ -118,6 +114,7 @@ async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
         )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         pool_group_429_retry_delay_override: None,
         pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
@@ -327,20 +324,6 @@ async fn pool_retry_upstream(
         })),
     )
         .into_response()
-}
-
-async fn pool_retry_upstream_after_body_read(
-    State(state): State<PoolRetryUpstreamState>,
-    request: axum::extract::Request,
-) -> Response {
-    // Responses-family live-body retries need the upstream to consume the full upload before
-    // replying; otherwise slower runners can race into a transport error instead of the intended
-    // retryable HTTP failure.
-    let (parts, body) = request.into_parts();
-    let _body = to_bytes(body, usize::MAX)
-        .await
-        .expect("read pool retry upstream request body");
-    pool_retry_upstream(State(state), parts.headers).await
 }
 
 async fn pool_rate_limit_responses_upstream(
@@ -1172,11 +1155,6 @@ async fn spawn_oauth_codex_capture_upstream() -> (String, JoinHandle<()>) {
 
 async fn oauth_codex_responses_capture_upstream(request: axum::extract::Request) -> Response {
     let path = request.uri().path().to_string();
-    let request_content_encoding = request
-        .headers()
-        .get(http_header::CONTENT_ENCODING)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string);
     let mut forwarded_header_names = request
         .headers()
         .keys()
@@ -1233,56 +1211,36 @@ async fn oauth_codex_responses_capture_upstream(request: axum::extract::Request)
         .get("originator")
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
-    let response_mode = request
-        .headers()
-        .get("x-test-response-mode")
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
     let body = to_bytes(request.into_body(), usize::MAX)
         .await
         .expect("read oauth codex responses capture request body");
-    let (decoded_body, decode_error) =
-        crate::decode_response_payload_for_usage(&body, request_content_encoding.as_deref());
-    assert!(
-        decode_error.is_none(),
-        "decode oauth capture body: {:?}",
-        decode_error
-    );
-    let body_value: Value =
-        serde_json::from_slice(decoded_body.as_ref()).expect("decode oauth capture body");
-    let completed_response = serde_json::json!({
-        "id": "resp_oauth_capture",
-        "model": "gpt-5.4",
-        "status": "completed",
-        "path": path,
-        "authorization": authorization,
-        "chatgptAccountId": chatgpt_account_id,
-        "xOpenAiPromptCacheKeyHeader": x_openai_prompt_cache_key_header,
-        "promptCacheKeyHeader": prompt_cache_key_header,
-        "clientTraceId": client_trace_id,
-        "sessionIdHeader": session_id,
-        "traceparentHeader": traceparent,
-        "xClientRequestIdHeader": x_client_request_id,
-        "xCodexTurnMetadataHeader": x_codex_turn_metadata,
-        "originatorHeader": originator,
-        "forwardedHeaderNames": forwarded_header_names,
-        "received": body_value,
-        "usage": {
-            "input_tokens": 12,
-            "output_tokens": 3,
-            "total_tokens": 15,
-        }
-    });
+    let body_value: Value = serde_json::from_slice(&body).expect("decode oauth capture body");
     let completed_event = serde_json::json!({
         "type": "response.completed",
-        "response": completed_response,
+        "response": {
+            "id": "resp_oauth_capture",
+            "model": "gpt-5.4",
+            "status": "completed",
+            "path": path,
+            "authorization": authorization,
+            "chatgptAccountId": chatgpt_account_id,
+            "xOpenAiPromptCacheKeyHeader": x_openai_prompt_cache_key_header,
+            "promptCacheKeyHeader": prompt_cache_key_header,
+            "clientTraceId": client_trace_id,
+            "sessionIdHeader": session_id,
+            "traceparentHeader": traceparent,
+            "xClientRequestIdHeader": x_client_request_id,
+            "xCodexTurnMetadataHeader": x_codex_turn_metadata,
+            "originatorHeader": originator,
+            "forwardedHeaderNames": forwarded_header_names,
+            "received": body_value,
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 3,
+                "total_tokens": 15,
+            }
+        }
     });
-
-    if response_mode.as_deref() == Some("json") {
-        return (StatusCode::OK, Json(completed_response)).into_response();
-    }
 
     (
         StatusCode::OK,
@@ -1430,40 +1388,6 @@ async fn spawn_pool_retry_upstream(
         axum::serve(listener, app)
             .await
             .expect("pool retry upstream should run");
-    });
-    (format!("http://{addr}"), attempts, handle)
-}
-
-async fn spawn_pool_retry_upstream_after_body_read(
-    fail_before_success: &[(&str, usize)],
-) -> (
-    String,
-    Arc<StdMutex<HashMap<String, usize>>>,
-    JoinHandle<()>,
-) {
-    let attempts = Arc::new(StdMutex::new(HashMap::new()));
-    let fail_before_success = Arc::new(
-        fail_before_success
-            .iter()
-            .map(|(authorization, failures)| ((*authorization).to_string(), *failures))
-            .collect::<HashMap<_, _>>(),
-    );
-    let app = Router::new()
-        .route("/v1/responses", post(pool_retry_upstream_after_body_read))
-        .with_state(PoolRetryUpstreamState {
-            attempts: attempts.clone(),
-            fail_before_success,
-        });
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind draining pool retry upstream");
-    let addr = listener
-        .local_addr()
-        .expect("draining pool retry upstream addr");
-    let handle = tokio::spawn(async move {
-        axum::serve(listener, app)
-            .await
-            .expect("draining pool retry upstream should run");
     });
     (format!("http://{addr}"), attempts, handle)
 }

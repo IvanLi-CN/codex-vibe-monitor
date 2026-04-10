@@ -6,25 +6,55 @@ async fn proxy_openai_v1_inner(
     method: Method,
     headers: HeaderMap,
     body: Body,
-    target_url: Url,
     peer_ip: Option<IpAddr>,
-    pool_route_active: bool,
-    runtime_timeouts: PoolRoutingTimeoutSettingsResolved,
-    mut proxy_request_permit: Option<ProxyRequestConcurrencyPermit>,
 ) -> Result<Response, ProxyErrorResponse> {
-    let proxy_request_concurrency_wait_timeout =
-        state.config.proxy_request_concurrency_wait_timeout;
-    let pool_route_missing_error = || ProxyErrorResponse {
-        status: StatusCode::UNAUTHORIZED,
-        message: PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE.to_string(),
-        cvm_id: None,
-        retry_after_secs: None,
-    };
+    let pool_route_active = request_matches_pool_route(state.as_ref(), &headers)
+        .await
+        .map_err(|err| ProxyErrorResponse {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: format!("failed to resolve pool routing settings: {err}"),
+            cvm_id: None,
+            retry_after_secs: None,
+        })?;
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), pool_route_active)
+        .await
+        .map_err(|err| ProxyErrorResponse {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: format!("failed to resolve pool routing timeouts: {err}"),
+            cvm_id: None,
+            retry_after_secs: None,
+        })?;
+    if !pool_route_active {
+        return Err(ProxyErrorResponse {
+            status: StatusCode::UNAUTHORIZED,
+            message: "pool route key missing or invalid".to_string(),
+            cvm_id: None,
+            retry_after_secs: None,
+        });
+    }
+    let target_url =
+        build_proxy_upstream_url(&state.config.openai_upstream_base_url, &original_uri).map_err(
+            |err| {
+                let status = if err.to_string().contains(PROXY_DOT_SEGMENT_PATH_NOT_ALLOWED)
+                    || err.to_string().contains(PROXY_INVALID_REQUEST_TARGET)
+                    || err
+                        .to_string()
+                        .contains("failed to parse proxy upstream url")
+                {
+                    StatusCode::BAD_REQUEST
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                };
+                ProxyErrorResponse {
+                    status,
+                    message: format!("failed to build upstream url: {err}"),
+                    cvm_id: None,
+                    retry_after_secs: None,
+                }
+            },
+        )?;
 
     if method == Method::GET && is_models_list_path(original_uri.path()) {
-        if !pool_route_active {
-            return Err(pool_route_missing_error());
-        }
         return proxy_openai_v1_via_pool(
             state,
             proxy_request_id,
@@ -33,15 +63,10 @@ async fn proxy_openai_v1_inner(
             headers,
             body,
             runtime_timeouts,
-            proxy_request_permit.take(),
         )
         .await
         .map_err(|(status, message)| ProxyErrorResponse {
-            retry_after_secs: retry_after_secs_for_proxy_error(
-                status,
-                &message,
-                Some(proxy_request_concurrency_wait_timeout),
-            ),
+            retry_after_secs: retry_after_secs_for_proxy_error(status, &message),
             status,
             message,
             cvm_id: None,
@@ -49,9 +74,6 @@ async fn proxy_openai_v1_inner(
     }
 
     if let Some(target) = capture_target_for_request(original_uri.path(), &method) {
-        if !pool_route_active {
-            return Err(pool_route_missing_error());
-        }
         let tracked_invoke_id = invoke_id.clone();
         return proxy_openai_v1_capture_target(
             state,
@@ -65,23 +87,14 @@ async fn proxy_openai_v1_inner(
             peer_ip,
             pool_route_active,
             runtime_timeouts,
-            proxy_request_permit.take(),
         )
         .await
         .map_err(|(status, message)| ProxyErrorResponse {
-            retry_after_secs: retry_after_secs_for_proxy_error(
-                status,
-                &message,
-                Some(proxy_request_concurrency_wait_timeout),
-            ),
+            retry_after_secs: retry_after_secs_for_proxy_error(status, &message),
             status,
             message,
             cvm_id: Some(tracked_invoke_id),
         });
-    }
-
-    if !pool_route_active {
-        return Err(pool_route_missing_error());
     }
 
     return proxy_openai_v1_via_pool(
@@ -92,15 +105,10 @@ async fn proxy_openai_v1_inner(
         headers,
         body,
         runtime_timeouts,
-        proxy_request_permit.take(),
     )
     .await
     .map_err(|(status, message)| ProxyErrorResponse {
-        retry_after_secs: retry_after_secs_for_proxy_error(
-            status,
-            &message,
-            Some(proxy_request_concurrency_wait_timeout),
-        ),
+        retry_after_secs: retry_after_secs_for_proxy_error(status, &message),
         status,
         message,
         cvm_id: None,
@@ -132,17 +140,8 @@ async fn proxy_openai_v1_capture_target(
     peer_ip: Option<IpAddr>,
     pool_route_active: bool,
     runtime_timeouts: PoolRoutingTimeoutSettingsResolved,
-    mut proxy_request_permit: Option<ProxyRequestConcurrencyPermit>,
 ) -> Result<Response, (StatusCode, String)> {
     let capture_started = Instant::now();
-    let proxy_request_permit = take_or_acquire_proxy_request_concurrency_permit(
-        &mut proxy_request_permit,
-        state.as_ref(),
-        proxy_request_id,
-        &Method::POST,
-        original_uri,
-    )
-    .await;
     let pool_routing_reservation_key = build_pool_routing_reservation_key(proxy_request_id);
     let occurred_at_utc = Utc::now();
     let occurred_at = format_naive(occurred_at_utc.with_timezone(&Shanghai).naive_local());
@@ -164,15 +163,12 @@ async fn proxy_openai_v1_capture_target(
         Err(read_err) => {
             let t_req_read_ms = elapsed_ms(req_read_started);
             let request_info = RequestCaptureInfo::default();
-            drop(proxy_request_permit);
-            let req_raw = spawn_raw_payload_file_write(
-                state.as_ref(),
+            let req_raw = store_raw_payload_file(
+                &state.config,
                 &invoke_id,
                 "request",
-                Bytes::from(read_err.partial_body.clone()),
-            )
-            .finish()
-            .await;
+                &read_err.partial_body,
+            );
             let usage = ParsedUsage::default();
             let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
                 &state.pricing_catalog,
@@ -253,8 +249,6 @@ async fn proxy_openai_v1_capture_target(
                     stream_terminal_event: None,
                     upstream_error_code: None,
                     upstream_error_message: None,
-                    downstream_status_code: None,
-                    downstream_error_message: None,
                     upstream_request_id: None,
                     response_content_encoding: None,
                     proxy_display_name: None,
@@ -336,9 +330,11 @@ async fn proxy_openai_v1_capture_target(
         0.0,
         0.0,
     );
-    if let Err(err) =
-        persist_and_broadcast_proxy_capture_runtime_snapshot(state.as_ref(), initial_running_record)
-            .await
+    if let Err(err) = persist_and_broadcast_proxy_capture_runtime_snapshot(
+        state.as_ref(),
+        initial_running_record,
+    )
+    .await
     {
         warn!(
             ?err,
@@ -364,6 +360,13 @@ async fn proxy_openai_v1_capture_target(
     let first_byte_timeout =
         pool_upstream_first_chunk_timeout(&runtime_timeouts, &original_uri, &Method::POST);
     let stream_timeout = proxy_capture_target_stream_timeout(&runtime_timeouts, capture_target);
+    let mut pool_invocation_cleanup_guard = pool_route_active.then(|| {
+        PoolInvocationCleanupGuard::new(
+            state.clone(),
+            InvocationRecoverySelector::new(invoke_id.clone(), occurred_at.clone()),
+            "request_drop_guard",
+        )
+    });
     let (
         selected_proxy,
         pool_account,
@@ -374,6 +377,8 @@ async fn proxy_openai_v1_capture_target(
         attempt_already_recorded,
         final_attempt_update,
         pending_pool_attempt_record,
+        deferred_pool_early_phase_cleanup_guard,
+        live_pool_attempt_activity_lease,
         pending_pool_attempt_summary,
         upstream_attempt_started_at,
         upstream_attempt_started_at_utc,
@@ -381,7 +386,7 @@ async fn proxy_openai_v1_capture_target(
         final_requested_service_tier,
         upstream_response,
     ) = if pool_route_active {
-        let upstream_result = send_pool_request_with_failover(
+        match send_pool_request_with_failover(
             state.clone(),
             proxy_request_id,
             Method::POST,
@@ -396,8 +401,8 @@ async fn proxy_openai_v1_capture_target(
             PoolFailoverProgress::default(),
             POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
         )
-        .await;
-        match upstream_result {
+        .await
+        {
             Ok(response) => (
                 None,
                 Some(response.account),
@@ -408,6 +413,8 @@ async fn proxy_openai_v1_capture_target(
                 true,
                 None,
                 response.pending_attempt_record,
+                response.deferred_early_phase_cleanup_guard,
+                response.live_attempt_activity_lease,
                 response.attempt_summary,
                 None,
                 Some(response.attempt_started_at_utc),
@@ -424,15 +431,12 @@ async fn proxy_openai_v1_capture_target(
                     .request_body_for_capture
                     .clone()
                     .unwrap_or_else(|| base_request_bytes_for_capture.clone());
-                drop(proxy_request_permit);
-                let req_raw = spawn_raw_payload_file_write(
-                    state.as_ref(),
+                let req_raw = store_raw_payload_file(
+                    &state.config,
                     &invoke_id,
                     "request",
-                    request_body_for_capture,
-                )
-                .finish()
-                .await;
+                    request_body_for_capture.as_ref(),
+                );
                 let usage = ParsedUsage::default();
                 let (billing_service_tier, pricing_mode) =
                     resolve_proxy_billing_service_tier_and_pricing_mode_for_account(
@@ -450,11 +454,7 @@ async fn proxy_openai_v1_capture_target(
                         pricing_mode,
                     )
                     .await;
-                let canonical_error_message = err
-                    .canonical_error_message
-                    .as_deref()
-                    .unwrap_or(err.message.as_str());
-                let error_message = canonical_error_message.to_string();
+                let error_message = format!("[{}] {}", err.failure_kind, err.message);
                 let pool_proxy_display_name = resolve_invocation_proxy_display_name(None);
                 let record = ProxyCaptureRecord {
                     invoke_id,
@@ -549,11 +549,6 @@ async fn proxy_openai_v1_capture_target(
                         stream_terminal_event: None,
                         upstream_error_code: err.upstream_error_code.as_deref(),
                         upstream_error_message: err.upstream_error_message.as_deref(),
-                        downstream_status_code: err
-                            .downstream_error_message
-                            .as_ref()
-                            .map(|_| err.status),
-                        downstream_error_message: err.downstream_error_message.as_deref(),
                         upstream_request_id: err.upstream_request_id.as_deref(),
                         response_content_encoding: None,
                         proxy_display_name: pool_proxy_display_name.as_deref(),
@@ -581,17 +576,23 @@ async fn proxy_openai_v1_capture_target(
                         t_persist_ms: 0.0,
                     },
                 };
-                if let Err(err) =
+                let terminal_invocation_persisted = if let Err(err) =
                     persist_and_broadcast_proxy_capture(state.as_ref(), capture_started, record)
                         .await
                 {
                     warn!(proxy_request_id, error = %err, "failed to persist proxy capture record");
+                    false
+                } else {
+                    true
+                };
+                if terminal_invocation_persisted {
+                    disarm_pool_invocation_cleanup_guard(&mut pool_invocation_cleanup_guard);
                 }
                 return Err((err.status, err.message));
             }
         }
     } else {
-        let upstream_result = send_forward_proxy_request_with_429_retry(
+        match send_forward_proxy_request_with_429_retry(
             state.clone(),
             Method::POST,
             target_url,
@@ -601,8 +602,8 @@ async fn proxy_openai_v1_capture_target(
             Some(capture_target),
             proxy_settings.upstream_429_max_retries,
         )
-        .await;
-        match upstream_result {
+        .await
+        {
             Ok(response) => (
                 Some(response.selected_proxy),
                 None,
@@ -613,6 +614,8 @@ async fn proxy_openai_v1_capture_target(
                 response.attempt_recorded,
                 response.attempt_update,
                 None,
+                None,
+                None,
                 PoolAttemptSummary::default(),
                 Some(response.attempt_started_at),
                 None,
@@ -621,15 +624,12 @@ async fn proxy_openai_v1_capture_target(
                 response.response,
             ),
             Err(err) => {
-                drop(proxy_request_permit);
-                let req_raw = spawn_raw_payload_file_write(
-                    state.as_ref(),
+                let req_raw = store_raw_payload_file(
+                    &state.config,
                     &invoke_id,
                     "request",
-                    base_request_bytes_for_capture.clone(),
-                )
-                .finish()
-                .await;
+                    base_request_bytes_for_capture.as_ref(),
+                );
                 let proxy_attempt_update = record_forward_proxy_attempt(
                     state.clone(),
                     err.selected_proxy.clone(),
@@ -709,8 +709,6 @@ async fn proxy_openai_v1_capture_target(
                         stream_terminal_event: None,
                         upstream_error_code: None,
                         upstream_error_message: None,
-                        downstream_status_code: None,
-                        downstream_error_message: None,
                         upstream_request_id: None,
                         response_content_encoding: None,
                         proxy_display_name: Some(err.selected_proxy.display_name.as_str()),
@@ -746,14 +744,15 @@ async fn proxy_openai_v1_capture_target(
     request_info.requested_service_tier = final_requested_service_tier
         .clone()
         .or(request_info.requested_service_tier);
-    let mut req_raw_pending = Some(spawn_raw_payload_file_write(
-        state.as_ref(),
+    let req_raw = store_raw_payload_file(
+        &state.config,
         &invoke_id,
         "request",
         final_request_body_for_capture
-            .clone()
-            .unwrap_or_else(|| base_request_bytes_for_capture.clone()),
-    ));
+            .as_ref()
+            .unwrap_or(&base_request_bytes_for_capture)
+            .as_ref(),
+    );
 
     let upstream_status = upstream_response.status();
     let location_base_url = location_rewrite_upstream_base(
@@ -798,12 +797,6 @@ async fn proxy_openai_v1_capture_target(
             )
             .await;
             let proxy_display_name = resolve_invocation_proxy_display_name(selected_proxy.as_ref());
-            drop(proxy_request_permit);
-            let req_raw = req_raw_pending
-                .take()
-                .expect("request raw capture should be pending before redirect normalization")
-                .finish()
-                .await;
             let record = ProxyCaptureRecord {
                 invoke_id,
                 occurred_at,
@@ -870,8 +863,6 @@ async fn proxy_openai_v1_capture_target(
                     stream_terminal_event: None,
                     upstream_error_code: None,
                     upstream_error_message: None,
-                    downstream_status_code: None,
-                    downstream_error_message: None,
                     upstream_request_id: None,
                     response_content_encoding: Some(
                         summarize_response_content_encoding(
@@ -986,9 +977,7 @@ async fn proxy_openai_v1_capture_target(
 
     let state_for_task = state.clone();
     let request_info_for_task = request_info.clone();
-    let req_raw_pending_for_task = req_raw_pending
-        .take()
-        .expect("request raw capture should still be pending when response stream starts");
+    let req_raw_for_task = req_raw.clone();
     let invoke_id_for_task = invoke_id.clone();
     let occurred_at_for_task = occurred_at.clone();
     let upstream_content_encoding_for_task = upstream_content_encoding.clone();
@@ -1003,6 +992,9 @@ async fn proxy_openai_v1_capture_target(
     let attempt_already_recorded_for_task = attempt_already_recorded;
     let final_attempt_update_for_task = final_attempt_update;
     let pending_pool_attempt_record_for_task = pending_pool_attempt_record.clone();
+    let mut deferred_pool_early_phase_cleanup_guard_for_task =
+        deferred_pool_early_phase_cleanup_guard;
+    let live_pool_attempt_activity_lease_for_task = live_pool_attempt_activity_lease;
     let pending_pool_attempt_summary_for_task = pending_pool_attempt_summary.clone();
     let prefetched_first_chunk_for_task = prefetched_first_chunk;
     let prefetched_ttfb_ms_for_task = prefetched_ttfb_ms;
@@ -1011,30 +1003,28 @@ async fn proxy_openai_v1_capture_target(
     let first_byte_timeout_for_task = first_byte_timeout;
     let stream_timeout_for_task = stream_timeout;
     let response_is_event_stream_for_task = response_is_event_stream;
-    let proxy_request_permit_for_task = proxy_request_permit;
     let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
-    let response = response_builder
-        .body(Body::from_stream(ReceiverStream::new(rx)))
-        .map_err(|err| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to build proxy response: {err}"),
-            )
-        })?;
 
     tokio::spawn(async move {
+        let _live_pool_attempt_activity_lease_for_task = live_pool_attempt_activity_lease_for_task;
+        let mut stream_invocation_cleanup_guard = pool_account_for_task.as_ref().map(|_| {
+            PoolInvocationCleanupGuard::new(
+                state_for_task.clone(),
+                InvocationRecoverySelector::new(
+                    invoke_id_for_task.clone(),
+                    occurred_at_for_task.clone(),
+                ),
+                "stream_invocation_drop_guard",
+            )
+        });
         let mut stream = upstream_response.into_bytes_stream();
         let ttfb_started = Instant::now();
         let stream_started = Instant::now();
-        let mut proxy_request_permit_for_task = Some(proxy_request_permit_for_task);
         let mut t_upstream_ttfb_ms = prefetched_ttfb_ms_for_task;
         let mut stream_started_at: Option<Instant> = None;
         let mut response_preview = RawResponsePreviewBuffer::default();
-        let mut response_raw_writer = AsyncStreamingRawPayloadWriter::new(
-            state_for_task.as_ref(),
-            &invoke_id_for_task,
-            "response",
-        );
+        let mut response_raw_writer =
+            StreamingRawPayloadWriter::new(&state_for_task.config, &invoke_id_for_task, "response");
         let mut stream_response_parser = StreamResponsePayloadChunkParser::default();
         let mut nonstream_parse_buffer = (!response_is_event_stream_for_task).then(|| {
             BoundedResponseParseBuffer::new(BOUNDED_NON_STREAM_RESPONSE_PARSE_LIMIT_BYTES)
@@ -1045,8 +1035,8 @@ async fn proxy_openai_v1_capture_target(
         let mut forwarded_bytes = 0usize;
 
         if let Some(chunk) = prefetched_first_chunk_for_task {
-            let chunk_for_raw = chunk.clone();
             response_preview.append(&chunk);
+            response_raw_writer.append(&chunk).await;
             stream_response_parser.ingest_bytes(&chunk);
             if let Some(buffer) = nonstream_parse_buffer.as_mut() {
                 buffer.append(&chunk);
@@ -1057,7 +1047,6 @@ async fn proxy_openai_v1_capture_target(
             if !downstream_closed && tx.send(Ok(chunk)).await.is_err() {
                 downstream_closed = true;
             }
-            response_raw_writer.append(chunk_for_raw).await;
         }
 
         loop {
@@ -1137,7 +1126,6 @@ async fn proxy_openai_v1_capture_target(
             };
             match next_chunk {
                 Ok(chunk) => {
-                    let chunk_for_raw = chunk.clone();
                     if stream_started_at.is_none() {
                         t_upstream_ttfb_ms = upstream_attempt_started_at_for_task
                             .map(elapsed_ms)
@@ -1158,8 +1146,12 @@ async fn proxy_openai_v1_capture_target(
                             pool_account_for_task
                                 .as_ref()
                                 .map(|account| account.display_name.as_str()),
-                            payload_summary_upstream_account_kind(pool_account_for_task.as_ref()),
-                            payload_summary_upstream_base_url_host(pool_account_for_task.as_ref()),
+                            payload_summary_upstream_account_kind(
+                                pool_account_for_task.as_ref(),
+                            ),
+                            payload_summary_upstream_base_url_host(
+                                pool_account_for_task.as_ref(),
+                            ),
                             selected_proxy_display_name_for_task.as_deref(),
                             pool_account_for_task
                                 .as_ref()
@@ -1188,6 +1180,7 @@ async fn proxy_openai_v1_capture_target(
                         }
                     }
                     response_preview.append(&chunk);
+                    response_raw_writer.append(&chunk).await;
                     stream_response_parser.ingest_bytes(&chunk);
                     if let Some(buffer) = nonstream_parse_buffer.as_mut() {
                         buffer.append(&chunk);
@@ -1197,7 +1190,6 @@ async fn proxy_openai_v1_capture_target(
                     if !downstream_closed && tx.send(Ok(chunk)).await.is_err() {
                         downstream_closed = true;
                     }
-                    response_raw_writer.append(chunk_for_raw).await;
                 }
                 Err(err) => {
                     let msg = format!("upstream stream error: {err}");
@@ -1210,7 +1202,6 @@ async fn proxy_openai_v1_capture_target(
             }
         }
         drop(tx);
-        drop(proxy_request_permit_for_task.take());
 
         let terminal_state = if stream_error.is_some() {
             PROXY_STREAM_TERMINAL_ERROR
@@ -1241,7 +1232,6 @@ async fn proxy_openai_v1_capture_target(
         }
 
         let t_upstream_stream_ms = stream_started_at.map(elapsed_ms).unwrap_or(0.0);
-        let req_raw = req_raw_pending_for_task.finish().await;
         let resp_raw = response_raw_writer.finish().await;
         let preview_bytes = response_preview.as_slice().to_vec();
         let raw_response_preview = response_preview.into_preview();
@@ -1292,21 +1282,12 @@ async fn proxy_openai_v1_capture_target(
             response_info.usage_missing_reason = Some("upstream_stream_error".to_string());
         }
 
-        let had_stream_error = stream_error.is_some();
-        let had_logical_stream_failure = response_info.stream_terminal_event.is_some();
-        let pure_downstream_closed = proxy_capture_is_pure_downstream_close(
-            upstream_status,
-            had_stream_error,
-            had_logical_stream_failure,
-            downstream_closed,
-        );
-
-        let invocation_failure_kind = if had_stream_error {
+        let failure_kind = if stream_error.is_some() {
             Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
-        } else if had_logical_stream_failure {
-            Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
-        } else if pure_downstream_closed {
+        } else if downstream_closed {
             Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED)
+        } else if response_info.stream_terminal_event.is_some() {
+            Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
         } else if upstream_status == StatusCode::TOO_MANY_REQUESTS {
             Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
         } else if upstream_status.is_server_error() {
@@ -1314,9 +1295,16 @@ async fn proxy_openai_v1_capture_target(
         } else {
             None
         };
+        let had_stream_error = stream_error.is_some();
+        let had_logical_stream_failure = response_info.stream_terminal_event.is_some();
 
         let error_message = if let Some(err) = stream_error {
             Some(format!("[{}] {err}", PROXY_FAILURE_UPSTREAM_STREAM_ERROR))
+        } else if downstream_closed {
+            Some(format!(
+                "[{}] downstream closed while streaming upstream response",
+                PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED
+            ))
         } else if response_info.stream_terminal_event.is_some() {
             Some(format_upstream_response_failed_message(&response_info))
         } else if !upstream_status.is_success() {
@@ -1327,30 +1315,22 @@ async fn proxy_openai_v1_capture_target(
         } else {
             None
         };
-        let downstream_error_message = if downstream_closed {
-            Some(format!(
-                "[{}] downstream closed while streaming upstream response",
-                PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED
-            ))
+        let status = if upstream_status.is_success() && error_message.is_none() {
+            "success".to_string()
         } else {
-            None
+            format!("http_{}", upstream_status.as_u16())
         };
-        let status = proxy_capture_invocation_status(
-            upstream_status,
-            error_message.is_some(),
-            pure_downstream_closed,
-        );
         let pending_pool_attempt_terminal_reason = if pool_account_for_task.is_none() {
             None
         } else if had_stream_error {
             Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR.to_string())
-        } else if had_logical_stream_failure {
-            Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED.to_string())
-        } else if pure_downstream_closed {
+        } else if downstream_closed {
             Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED.to_string())
+        } else if response_info.stream_terminal_event.is_some() {
+            Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED.to_string())
         } else if !upstream_status.is_success() {
             Some(
-                invocation_failure_kind
+                failure_kind
                     .unwrap_or(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
                     .to_string(),
             )
@@ -1392,7 +1372,7 @@ async fn proxy_openai_v1_capture_target(
                     had_stream_error,
                     had_logical_stream_failure,
                 );
-                let route_result = if pool_route_success || pure_downstream_closed {
+                let route_result = if pool_route_success {
                     consume_pool_routing_reservation(
                         state_for_task.as_ref(),
                         &reservation_key_for_task,
@@ -1460,36 +1440,24 @@ async fn proxy_openai_v1_capture_target(
             }
             ForwardProxyAttemptUpdate::default()
         };
+        let mut final_attempt_persisted = false;
         if let Some(pending_attempt_record) = pending_pool_attempt_record_for_task.as_ref() {
             let finished_at = shanghai_now_string();
-            let attempt_status = if pure_downstream_closed {
-                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
-            } else if had_stream_error {
+            let attempt_status = if had_stream_error || downstream_closed {
                 POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
             } else if !upstream_status.is_success() || had_logical_stream_failure {
                 POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
             } else {
                 POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
             };
-            let attempt_failure_kind = if pure_downstream_closed {
-                None
-            } else {
-                invocation_failure_kind
-            };
-            if let Err(err) = finalize_pool_upstream_request_attempt(
+            final_attempt_persisted = match finalize_pool_upstream_request_attempt(
                 &state_for_task.pool,
                 pending_attempt_record,
                 finished_at.as_str(),
                 attempt_status,
                 Some(upstream_status),
-                if downstream_closed {
-                    Some(upstream_status)
-                } else {
-                    None
-                },
-                attempt_failure_kind,
+                failure_kind,
                 error_message.as_deref(),
-                downstream_error_message.as_deref(),
                 Some(t_upstream_connect_ms),
                 Some(t_upstream_ttfb_ms),
                 Some(t_upstream_stream_ms),
@@ -1499,12 +1467,16 @@ async fn proxy_openai_v1_capture_target(
             )
             .await
             {
-                warn!(
+                Ok(()) => true,
+                Err(err) => {
+                    warn!(
                     invoke_id = %pending_attempt_record.invoke_id,
                     error = %err,
                     "failed to persist final pool attempt"
                 );
-            }
+                    false
+                }
+            };
             if let Err(err) = broadcast_pool_upstream_attempts_snapshot(
                 state_for_task.as_ref(),
                 &pending_attempt_record.invoke_id,
@@ -1544,7 +1516,7 @@ async fn proxy_openai_v1_capture_target(
             response_model: response_info.model.as_deref(),
             usage_missing_reason: response_info.usage_missing_reason.as_deref(),
             request_parse_error: request_info_for_task.parse_error.as_deref(),
-            failure_kind: invocation_failure_kind,
+            failure_kind,
             requester_ip: requester_ip_for_task.as_deref(),
             upstream_scope: if pool_account_for_task.is_some() {
                 INVOCATION_UPSTREAM_SCOPE_INTERNAL
@@ -1610,12 +1582,6 @@ async fn proxy_openai_v1_capture_target(
             stream_terminal_event: response_info.stream_terminal_event.as_deref(),
             upstream_error_code: response_info.upstream_error_code.as_deref(),
             upstream_error_message: response_info.upstream_error_message.as_deref(),
-            downstream_status_code: if downstream_closed {
-                Some(upstream_status)
-            } else {
-                None
-            },
-            downstream_error_message: downstream_error_message.as_deref(),
             upstream_request_id: response_info.upstream_request_id.as_deref(),
             response_content_encoding: Some(response_content_encoding.as_str()),
             proxy_display_name: selected_proxy_display_name.as_deref(),
@@ -1645,10 +1611,10 @@ async fn proxy_openai_v1_capture_target(
             price_version,
             status,
             error_message,
-            failure_kind: invocation_failure_kind.map(|kind| kind.to_string()),
+            failure_kind: failure_kind.map(|kind| kind.to_string()),
             payload: Some(payload),
             raw_response: raw_response_preview,
-            req_raw,
+            req_raw: req_raw_for_task,
             resp_raw,
             timings: StageTimings {
                 t_total_ms: 0.0,
@@ -1662,15 +1628,37 @@ async fn proxy_openai_v1_capture_target(
             },
         };
 
-        if let Err(err) =
+        let terminal_invocation_persisted = if let Err(err) =
             persist_and_broadcast_proxy_capture(state_for_task.as_ref(), capture_started, record)
                 .await
         {
             warn!(proxy_request_id, error = %err, "failed to persist proxy capture record");
+            false
+        } else {
+            true
+        };
+        if terminal_invocation_persisted {
+            disarm_pool_invocation_cleanup_guard(&mut stream_invocation_cleanup_guard);
+        }
+        if final_attempt_persisted
+            && terminal_invocation_persisted
+            && deferred_pool_early_phase_cleanup_guard_for_task.is_some()
+        {
+            complete_deferred_pool_early_phase_cleanup_guard(
+                &mut deferred_pool_early_phase_cleanup_guard_for_task,
+            );
         }
     });
+    disarm_pool_invocation_cleanup_guard(&mut pool_invocation_cleanup_guard);
 
-    Ok(response)
+    response_builder
+        .body(Body::from_stream(ReceiverStream::new(rx)))
+        .map_err(|err| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to build proxy response: {err}"),
+            )
+        })
 }
 
 async fn read_request_body_with_limit(

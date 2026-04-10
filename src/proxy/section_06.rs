@@ -57,10 +57,8 @@ async fn insert_pool_upstream_request_attempt(
     status: &str,
     phase: Option<&str>,
     http_status: Option<StatusCode>,
-    downstream_http_status: Option<StatusCode>,
     failure_kind: Option<&str>,
     error_message: Option<&str>,
-    downstream_error_message: Option<&str>,
     connect_latency_ms: Option<f64>,
     first_byte_latency_ms: Option<f64>,
     stream_latency_ms: Option<f64>,
@@ -87,10 +85,8 @@ async fn insert_pool_upstream_request_attempt(
             status,
             phase,
             http_status,
-            downstream_http_status,
             failure_kind,
             error_message,
-            downstream_error_message,
             connect_latency_ms,
             first_byte_latency_ms,
             stream_latency_ms,
@@ -99,7 +95,7 @@ async fn insert_pool_upstream_request_attempt(
             compact_support_reason
         )
         VALUES (
-            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24
         )
         "#,
     )
@@ -119,10 +115,8 @@ async fn insert_pool_upstream_request_attempt(
     .bind(status)
     .bind(phase)
     .bind(http_status.map(|value| i64::from(value.as_u16())))
-    .bind(downstream_http_status.map(|value| i64::from(value.as_u16())))
     .bind(failure_kind)
     .bind(error_message)
-    .bind(downstream_error_message)
     .bind(connect_latency_ms)
     .bind(first_byte_latency_ms)
     .bind(stream_latency_ms)
@@ -156,8 +150,6 @@ async fn begin_pool_upstream_request_attempt(
         None,
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
         Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_CONNECTING),
-        None,
-        None,
         None,
         None,
         None,
@@ -215,11 +207,48 @@ async fn update_pool_upstream_request_attempt_phase(
         UPDATE pool_upstream_request_attempts
         SET phase = ?2
         WHERE id = ?1
+          AND status = ?3
+          AND finished_at IS NULL
           AND COALESCE(phase, '') <> ?2
         "#,
     )
     .bind(attempt_id)
     .bind(phase)
+    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected() > 0)
+}
+
+async fn persist_pool_upstream_request_attempt_first_byte_progress(
+    pool: &Pool<Sqlite>,
+    pending: &PendingPoolAttemptRecord,
+    connect_latency_ms: f64,
+    first_byte_latency_ms: f64,
+) -> Result<bool> {
+    let Some(attempt_id) = pending.attempt_id else {
+        return Ok(false);
+    };
+
+    let result = sqlx::query(
+        r#"
+        UPDATE pool_upstream_request_attempts
+        SET
+            connect_latency_ms = CASE
+                WHEN connect_latency_ms IS NULL OR connect_latency_ms < ?2 THEN ?2
+                ELSE connect_latency_ms
+            END,
+            first_byte_latency_ms = CASE
+                WHEN first_byte_latency_ms IS NULL OR first_byte_latency_ms < ?3 THEN ?3
+                ELSE first_byte_latency_ms
+            END
+        WHERE id = ?1
+        "#,
+    )
+    .bind(attempt_id)
+    .bind(connect_latency_ms)
+    .bind(first_byte_latency_ms)
     .execute(pool)
     .await?;
 
@@ -238,80 +267,432 @@ async fn advance_pool_upstream_request_attempt_phase(
     broadcast_pool_upstream_attempts_snapshot(state, &pending.invoke_id).await
 }
 
-async fn recover_orphaned_pool_upstream_request_attempts(pool: &Pool<Sqlite>) -> Result<u64> {
-    let finished_at = shanghai_now_string();
-    let result = sqlx::query(
-        r#"
-        UPDATE pool_upstream_request_attempts
-        SET
-            finished_at = COALESCE(finished_at, ?1),
-            status = ?2,
-            phase = ?3,
-            failure_kind = COALESCE(failure_kind, ?4),
-            error_message = COALESCE(error_message, ?5)
-        WHERE status = ?6
-          AND finished_at IS NULL
-        "#,
-    )
-    .bind(finished_at)
-    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE)
-    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED)
-    .bind(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED)
-    .bind(POOL_ATTEMPT_INTERRUPTED_MESSAGE)
-    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING)
-    .execute(pool)
-    .await?;
-
-    Ok(result.rows_affected())
+enum PoolAttemptRecoveryScope<'a> {
+    AllPending,
+    SpecificEarlyPhase { attempt_id: i64 },
+    StaleEarlyPhase {
+        responses_started_before: &'a str,
+        compact_started_before: &'a str,
+        default_started_before: &'a str,
+    },
 }
 
-async fn recover_orphaned_proxy_invocations(pool: &Pool<Sqlite>) -> Result<u64> {
+async fn recover_pool_upstream_request_attempts_with_scope(
+    pool: &Pool<Sqlite>,
+    scope: PoolAttemptRecoveryScope<'_>,
+) -> Result<Vec<RecoveredPoolAttemptRow>> {
     let mut tx = pool.begin().await?;
-    let rows = sqlx::query_as::<_, PersistedInvocationIdentityRow>(
+    let recovered = recover_pool_upstream_request_attempts_with_scope_tx(tx.as_mut(), scope).await?;
+    tx.commit().await?;
+    Ok(recovered)
+}
+
+async fn recover_pool_upstream_request_attempts_with_scope_tx(
+    tx: &mut SqliteConnection,
+    scope: PoolAttemptRecoveryScope<'_>,
+) -> Result<Vec<RecoveredPoolAttemptRow>> {
+    let finished_at = shanghai_now_string();
+    let recovered = match scope {
+        PoolAttemptRecoveryScope::AllPending => {
+            sqlx::query_as::<_, RecoveredPoolAttemptRow>(
+                r#"
+                UPDATE pool_upstream_request_attempts
+                SET
+                    finished_at = COALESCE(finished_at, ?1),
+                    status = ?2,
+                    phase = ?3,
+                    failure_kind = COALESCE(failure_kind, ?4),
+                    error_message = COALESCE(error_message, ?5)
+                WHERE status = ?6
+                  AND finished_at IS NULL
+                RETURNING id, invoke_id, occurred_at, sticky_key, upstream_account_id
+                "#,
+            )
+            .bind(finished_at)
+            .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE)
+            .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED)
+            .bind(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED)
+            .bind(POOL_ATTEMPT_INTERRUPTED_MESSAGE)
+            .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING)
+            .fetch_all(&mut *tx)
+            .await?
+        }
+        PoolAttemptRecoveryScope::SpecificEarlyPhase { attempt_id } => {
+            sqlx::query_as::<_, RecoveredPoolAttemptRow>(
+                r#"
+                UPDATE pool_upstream_request_attempts
+                SET
+                    finished_at = COALESCE(finished_at, ?1),
+                    status = ?2,
+                    phase = ?3,
+                    failure_kind = COALESCE(failure_kind, ?4),
+                    error_message = COALESCE(error_message, ?5)
+                WHERE id = ?6
+                  AND status = ?7
+                  AND finished_at IS NULL
+                  AND LOWER(TRIM(COALESCE(phase, ''))) IN ('connecting', 'sending_request', 'waiting_first_byte')
+                RETURNING id, invoke_id, occurred_at, sticky_key, upstream_account_id
+                "#,
+            )
+            .bind(finished_at)
+            .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE)
+            .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED)
+            .bind(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED)
+            .bind(POOL_ATTEMPT_INTERRUPTED_MESSAGE)
+            .bind(attempt_id)
+            .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING)
+            .fetch_all(&mut *tx)
+            .await?
+        }
+        PoolAttemptRecoveryScope::StaleEarlyPhase {
+            responses_started_before,
+            compact_started_before,
+            default_started_before,
+        } => {
+            let candidates = load_stale_pool_upstream_request_attempt_candidate_rows_tx(
+                tx,
+                responses_started_before,
+                compact_started_before,
+                default_started_before,
+            )
+            .await?;
+            if candidates.is_empty() {
+                Vec::new()
+            } else {
+                let candidate_ids = candidates.iter().map(|row| row.id).collect::<Vec<_>>();
+                recover_stale_pool_upstream_request_attempt_candidates_tx(
+                    tx,
+                    &candidate_ids,
+                    &finished_at,
+                    responses_started_before,
+                    compact_started_before,
+                    default_started_before,
+                )
+                .await?
+            }
+        }
+    };
+
+    Ok(recovered)
+}
+
+async fn load_stale_pool_upstream_request_attempt_candidate_rows_tx(
+    tx: &mut SqliteConnection,
+    responses_started_before: &str,
+    compact_started_before: &str,
+    default_started_before: &str,
+) -> Result<Vec<RecoveredPoolAttemptRow>> {
+    sqlx::query_as::<_, RecoveredPoolAttemptRow>(
         r#"
-        SELECT id, status
-        FROM codex_invocations
-        WHERE source = ?1
-          AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
-        ORDER BY id ASC
+        SELECT id, invoke_id, occurred_at, sticky_key, upstream_account_id
+        FROM pool_upstream_request_attempts
+        WHERE status = ?1
+          AND finished_at IS NULL
+          AND LOWER(TRIM(COALESCE(phase, ''))) IN ('connecting', 'sending_request', 'waiting_first_byte')
+          AND COALESCE(first_byte_latency_ms, 0) <= 0
+          AND NOT EXISTS (
+                SELECT 1
+                FROM codex_invocations inv
+                WHERE inv.source = ?2
+                  AND inv.invoke_id = pool_upstream_request_attempts.invoke_id
+                  AND inv.occurred_at = pool_upstream_request_attempts.occurred_at
+                  AND COALESCE(inv.t_upstream_ttfb_ms, 0) > 0
+          )
+          AND (
+                started_at IS NULL
+                OR (
+                    endpoint = '/v1/responses'
+                    AND started_at <= ?3
+                )
+                OR (
+                    endpoint = '/v1/responses/compact'
+                    AND started_at <= ?4
+                )
+                OR (
+                    COALESCE(endpoint, '') NOT IN ('/v1/responses', '/v1/responses/compact')
+                    AND started_at <= ?5
+                )
+          )
         "#,
     )
+    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING)
     .bind(SOURCE_PROXY)
-    .fetch_all(tx.as_mut())
-    .await?;
+    .bind(responses_started_before)
+    .bind(compact_started_before)
+    .bind(default_started_before)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(Into::into)
+}
 
-    if rows.is_empty() {
-        tx.commit().await?;
-        return Ok(0);
+async fn recover_stale_pool_upstream_request_attempt_candidates_tx(
+    tx: &mut SqliteConnection,
+    candidate_ids: &[i64],
+    finished_at: &str,
+    responses_started_before: &str,
+    compact_started_before: &str,
+    default_started_before: &str,
+) -> Result<Vec<RecoveredPoolAttemptRow>> {
+    if candidate_ids.is_empty() {
+        return Ok(Vec::new());
     }
 
-    let affected = sqlx::query(
-        r#"
-        UPDATE codex_invocations
-        SET status = ?1,
-            error_message = ?2,
-            failure_kind = ?3,
-            failure_class = ?4,
-            is_actionable = 1
-        WHERE source = ?5
-          AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
-        "#,
-    )
-    .bind(INVOCATION_STATUS_INTERRUPTED)
-    .bind(INVOCATION_INTERRUPTED_MESSAGE)
-    .bind(PROXY_FAILURE_INVOCATION_INTERRUPTED)
-    .bind(FAILURE_CLASS_SERVICE)
-    .bind(SOURCE_PROXY)
-    .execute(tx.as_mut())
-    .await?
-    .rows_affected();
+    let mut recovered = Vec::new();
+    for chunk in candidate_ids.chunks(POOL_ATTEMPT_RECOVERY_SELECTOR_BATCH_SIZE) {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            r#"
+            UPDATE pool_upstream_request_attempts
+            SET
+                finished_at = COALESCE(finished_at, "#,
+        );
+        query.push_bind(finished_at);
+        query.push(
+            r#"),
+                status = "#,
+        );
+        query.push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE);
+        query.push(
+            r#",
+                phase = "#,
+        );
+        query.push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED);
+        query.push(
+            r#",
+                failure_kind = COALESCE(failure_kind, "#,
+        );
+        query.push_bind(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED);
+        query.push(
+            r#"),
+                error_message = COALESCE(error_message, "#,
+        );
+        query.push_bind(POOL_ATTEMPT_INTERRUPTED_MESSAGE);
+        query.push(
+            r#")
+            WHERE id IN ("#,
+        );
+        let mut separated = query.separated(", ");
+        for id in chunk {
+            separated.push_bind(id);
+        }
+        separated.push_unseparated(")");
+        query.push(
+            r#"
+              AND status = "#,
+        );
+        query.push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING);
+        query.push(
+            r#"
+              AND finished_at IS NULL
+              AND LOWER(TRIM(COALESCE(phase, ''))) IN ('connecting', 'sending_request', 'waiting_first_byte')
+              AND COALESCE(first_byte_latency_ms, 0) <= 0
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM codex_invocations inv
+                    WHERE inv.source = "#,
+        );
+        query.push_bind(SOURCE_PROXY);
+        query.push(
+            r#"
+                      AND inv.invoke_id = pool_upstream_request_attempts.invoke_id
+                      AND inv.occurred_at = pool_upstream_request_attempts.occurred_at
+                      AND COALESCE(inv.t_upstream_ttfb_ms, 0) > 0
+              )
+              AND (
+                    started_at IS NULL
+                    OR (
+                        endpoint = '/v1/responses'
+                        AND started_at <= "#,
+        );
+        query.push_bind(responses_started_before);
+        query.push(
+            r#"
+                    )
+                    OR (
+                        endpoint = '/v1/responses/compact'
+                        AND started_at <= "#,
+        );
+        query.push_bind(compact_started_before);
+        query.push(
+            r#"
+                    )
+                    OR (
+                        COALESCE(endpoint, '') NOT IN ('/v1/responses', '/v1/responses/compact')
+                        AND started_at <= "#,
+        );
+        query.push_bind(default_started_before);
+        query.push(
+            r#"
+                    )
+              )
+            RETURNING id, invoke_id, occurred_at, sticky_key, upstream_account_id
+            "#,
+        );
+        recovered.extend(
+            query
+                .build_query_as::<RecoveredPoolAttemptRow>()
+                .fetch_all(&mut *tx)
+                .await?,
+        );
+    }
 
-    if affected > 0 {
+    Ok(recovered)
+}
+
+#[cfg(test)]
+async fn recover_stale_pool_upstream_request_attempt_candidates(
+    pool: &Pool<Sqlite>,
+    candidate_ids: &[i64],
+    finished_at: &str,
+    responses_started_before: &str,
+    compact_started_before: &str,
+    default_started_before: &str,
+) -> Result<Vec<RecoveredPoolAttemptRow>> {
+    let mut tx = pool.begin().await?;
+    let recovered = recover_stale_pool_upstream_request_attempt_candidates_tx(
+        tx.as_mut(),
+        candidate_ids,
+        finished_at,
+        responses_started_before,
+        compact_started_before,
+        default_started_before,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(recovered)
+}
+
+async fn recover_orphaned_pool_upstream_request_attempts(pool: &Pool<Sqlite>) -> Result<u64> {
+    Ok(
+        recover_pool_upstream_request_attempts_with_scope(pool, PoolAttemptRecoveryScope::AllPending)
+            .await?
+            .len() as u64,
+    )
+}
+
+enum ProxyInvocationRecoveryScope<'a> {
+    AllInFlight,
+    Selectors(&'a [InvocationRecoverySelector]),
+}
+
+async fn recover_proxy_invocations_with_scope(
+    pool: &Pool<Sqlite>,
+    scope: ProxyInvocationRecoveryScope<'_>,
+) -> Result<Vec<RecoveredInvocationRow>> {
+    let mut tx = pool.begin().await?;
+    let rows = recover_proxy_invocations_with_scope_tx(tx.as_mut(), scope).await?;
+    tx.commit().await?;
+    Ok(rows)
+}
+
+async fn recover_proxy_invocations_with_scope_tx(
+    tx: &mut SqliteConnection,
+    scope: ProxyInvocationRecoveryScope<'_>,
+) -> Result<Vec<RecoveredInvocationRow>> {
+    let rows = match scope {
+        ProxyInvocationRecoveryScope::AllInFlight => {
+            sqlx::query_as::<_, RecoveredInvocationRow>(
+                r#"
+                UPDATE codex_invocations
+                SET status = ?1,
+                    error_message = ?2,
+                    failure_kind = ?3,
+                    failure_class = ?4,
+                    is_actionable = 1
+                WHERE source = ?5
+                  AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
+                RETURNING id, invoke_id, occurred_at
+                "#,
+            )
+            .bind(INVOCATION_STATUS_INTERRUPTED)
+            .bind(INVOCATION_INTERRUPTED_MESSAGE)
+            .bind(PROXY_FAILURE_INVOCATION_INTERRUPTED)
+            .bind(FAILURE_CLASS_SERVICE)
+            .bind(SOURCE_PROXY)
+            .fetch_all(&mut *tx)
+            .await?
+        }
+        ProxyInvocationRecoveryScope::Selectors(selectors) => {
+            let selectors: Vec<_> = selectors
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            if selectors.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            let mut recovered = Vec::new();
+            for chunk in selectors.chunks(PROXY_INVOCATION_RECOVERY_SELECTOR_BATCH_SIZE) {
+                let mut query = QueryBuilder::<Sqlite>::new(
+                    r#"
+                    UPDATE codex_invocations
+                    SET status = "#,
+                );
+                query.push_bind(INVOCATION_STATUS_INTERRUPTED);
+                query.push(
+                    r#",
+                        error_message = "#,
+                );
+                query.push_bind(INVOCATION_INTERRUPTED_MESSAGE);
+                query.push(
+                    r#",
+                        failure_kind = "#,
+                );
+                query.push_bind(PROXY_FAILURE_INVOCATION_INTERRUPTED);
+                query.push(
+                    r#",
+                        failure_class = "#,
+                );
+                query.push_bind(FAILURE_CLASS_SERVICE);
+                query.push(
+                    r#",
+                        is_actionable = 1
+                    WHERE source = "#,
+                );
+                query.push_bind(SOURCE_PROXY);
+                query.push(
+                    r#"
+                      AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
+                      AND (
+                    "#,
+                );
+                let mut first = true;
+                for selector in chunk {
+                    if !first {
+                        query.push(" OR ");
+                    }
+                    first = false;
+                    query.push("(");
+                    query.push("invoke_id = ");
+                    query.push_bind(&selector.invoke_id);
+                    query.push(" AND occurred_at = ");
+                    query.push_bind(&selector.occurred_at);
+                    query.push(")");
+                }
+                query.push(
+                    r#"
+                      )
+                    RETURNING id, invoke_id, occurred_at
+                    "#,
+                );
+                recovered.extend(
+                    query
+                        .build_query_as::<RecoveredInvocationRow>()
+                        .fetch_all(&mut *tx)
+                        .await?,
+                );
+            }
+            recovered
+        }
+    };
+
+    if !rows.is_empty() {
         let updated_ids: Vec<i64> = rows.iter().map(|row| row.id).collect();
-        recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &updated_ids).await?;
+        recompute_invocation_hourly_rollups_for_ids_tx(&mut *tx, &updated_ids).await?;
         if let Some(max_id) = updated_ids.iter().copied().max() {
             save_hourly_rollup_live_progress_tx(
-                tx.as_mut(),
+                &mut *tx,
                 HOURLY_ROLLUP_DATASET_INVOCATIONS,
                 max_id,
             )
@@ -319,8 +700,403 @@ async fn recover_orphaned_proxy_invocations(pool: &Pool<Sqlite>) -> Result<u64> 
         }
     }
 
+    Ok(rows)
+}
+
+async fn recover_orphaned_proxy_invocations(pool: &Pool<Sqlite>) -> Result<u64> {
+    Ok(
+        recover_proxy_invocations_with_scope(pool, ProxyInvocationRecoveryScope::AllInFlight)
+            .await?
+            .len() as u64,
+    )
+}
+
+fn stale_started_before_string(timeout: Duration, grace: Duration) -> String {
+    let cutoff = Utc::now().with_timezone(&Shanghai).naive_local()
+        - ChronoDuration::from_std(timeout + grace)
+            .expect("pool orphan recovery cutoff should fit chrono duration");
+    format_naive(cutoff)
+}
+
+async fn load_persisted_api_invocation(
+    pool: &Pool<Sqlite>,
+    invoke_id: &str,
+    occurred_at: &str,
+) -> Result<ApiInvocation> {
+    let mut tx = pool.begin().await?;
+    let invocation = load_persisted_api_invocation_tx(tx.as_mut(), invoke_id, occurred_at).await?;
     tx.commit().await?;
-    Ok(affected)
+    Ok(invocation)
+}
+
+async fn broadcast_recovered_proxy_invocations(
+    state: &AppState,
+    recovered: &[RecoveredInvocationRow],
+) -> Result<()> {
+    if recovered.is_empty() {
+        return Ok(());
+    }
+
+    let selectors: Vec<_> = recovered
+        .iter()
+        .map(|row| InvocationRecoverySelector::new(row.invoke_id.clone(), row.occurred_at.clone()))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let mut records = Vec::new();
+    for selector in selectors {
+        match load_persisted_api_invocation(&state.pool, &selector.invoke_id, &selector.occurred_at)
+            .await
+        {
+            Ok(record) => records.push(record),
+            Err(err) => {
+                warn!(
+                    invoke_id = %selector.invoke_id,
+                    occurred_at = %selector.occurred_at,
+                    error = %err,
+                    "failed to load recovered proxy invocation for runtime broadcast"
+                );
+            }
+        }
+    }
+
+    if records.is_empty() {
+        return Ok(());
+    }
+
+    if records.iter().any(|record| {
+        record
+            .prompt_cache_key
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+    }) {
+        invalidate_prompt_cache_conversations_cache(&state.prompt_cache_conversation_cache).await;
+    }
+
+    if state.broadcaster.receiver_count() == 0 {
+        return Ok(());
+    }
+
+    let summary_invoke_id = records[0].invoke_id.clone();
+    state
+        .broadcaster
+        .send(BroadcastPayload::Records { records })
+        .map_err(|err| anyhow!("failed to broadcast recovered proxy invocation records: {err}"))?;
+    broadcast_proxy_capture_follow_up(
+        &state.pool,
+        &state.broadcaster,
+        state.broadcast_state_cache.as_ref(),
+        state.config.crs_stats.as_ref(),
+        state.config.invocation_max_days,
+        &summary_invoke_id,
+    )
+    .await;
+
+    Ok(())
+}
+
+fn pool_routing_reservation_key_for_invoke_id(invoke_id: &str) -> Option<String> {
+    let request_id = invoke_id.strip_prefix("proxy-")?.split('-').next()?;
+    request_id
+        .parse::<u64>()
+        .ok()
+        .map(build_pool_routing_reservation_key)
+}
+
+fn pool_route_orphan_recovery_failure_message(recovery_trigger: &str) -> String {
+    format!(
+        "pool request was interrupted before completion and recovered via {recovery_trigger}"
+    )
+}
+
+async fn clean_up_pool_route_after_orphan_recovery(
+    state: &AppState,
+    invoke_id: &str,
+    sticky_key: Option<&str>,
+    upstream_account_id: Option<i64>,
+    recovery_trigger: &'static str,
+    record_route_failure: bool,
+) {
+    if let Some(reservation_key) = pool_routing_reservation_key_for_invoke_id(invoke_id) {
+        release_pool_routing_reservation(state, &reservation_key);
+    }
+
+    if !record_route_failure {
+        return;
+    }
+
+    let Some(account_id) = upstream_account_id else {
+        return;
+    };
+    let error_message = pool_route_orphan_recovery_failure_message(recovery_trigger);
+    if let Err(err) = record_pool_route_transport_failure(
+        &state.pool,
+        account_id,
+        sticky_key,
+        &error_message,
+        Some(invoke_id),
+    )
+    .await
+    {
+        warn!(
+            invoke_id,
+            account_id,
+            recovery_trigger,
+            error = %err,
+            "failed to record pool route transport failure during orphan recovery cleanup"
+        );
+    }
+}
+
+async fn clean_up_recovered_pool_routes(
+    state: &AppState,
+    recovered_attempts: &[RecoveredPoolAttemptRow],
+    recovered_invocations: &[RecoveredInvocationRow],
+    recovery_trigger: &'static str,
+) {
+    let recovered_invocation_keys = recovered_invocations
+        .iter()
+        .map(|row| (row.invoke_id.as_str(), row.occurred_at.as_str()))
+        .collect::<BTreeSet<_>>();
+    for row in recovered_attempts {
+        let record_route_failure = recovered_invocation_keys
+            .contains(&(row.invoke_id.as_str(), row.occurred_at.as_str()));
+        clean_up_pool_route_after_orphan_recovery(
+            state,
+            &row.invoke_id,
+            row.sticky_key.as_deref(),
+            row.upstream_account_id,
+            recovery_trigger,
+            record_route_failure,
+        )
+        .await;
+    }
+}
+
+async fn recover_guard_dropped_pool_early_phase_orphan(
+    state: &AppState,
+    pending_attempt_record: PendingPoolAttemptRecord,
+    first_byte_observed: bool,
+    terminal_outcome_observed: bool,
+) -> Result<()> {
+    if first_byte_observed && terminal_outcome_observed {
+        info!(
+            invoke_id = %pending_attempt_record.invoke_id,
+            attempt_id = pending_attempt_record.attempt_id,
+            first_byte_latency_ms = pending_attempt_record.first_byte_latency_ms,
+            recovery_trigger = "drop_guard",
+            "skipping guard-based orphan recovery because a terminal post-first-byte outcome was already observed"
+        );
+        return Ok(());
+    }
+    if first_byte_observed {
+        info!(
+            invoke_id = %pending_attempt_record.invoke_id,
+            attempt_id = pending_attempt_record.attempt_id,
+            first_byte_latency_ms = pending_attempt_record.first_byte_latency_ms,
+            recovery_trigger = "drop_guard",
+            "recovering post-first-byte orphan because the stream task ended before any terminal outcome was observed"
+        );
+    }
+
+    let mut tx = state.pool.begin().await?;
+    let recovered_attempts = match pending_attempt_record.attempt_id {
+        Some(attempt_id) => {
+            recover_pool_upstream_request_attempts_with_scope_tx(
+                tx.as_mut(),
+                PoolAttemptRecoveryScope::SpecificEarlyPhase { attempt_id },
+            )
+            .await?
+        }
+        None => Vec::new(),
+    };
+
+    let recovered_invocations = if pending_attempt_record.attempt_id.is_none()
+        || !recovered_attempts.is_empty()
+    {
+        let selector = InvocationRecoverySelector::from(&pending_attempt_record);
+        recover_proxy_invocations_with_scope_tx(
+            tx.as_mut(),
+            ProxyInvocationRecoveryScope::Selectors(std::slice::from_ref(&selector)),
+        )
+        .await?
+    } else {
+        Vec::new()
+    };
+    tx.commit().await?;
+
+    if recovered_attempts.is_empty() && recovered_invocations.is_empty() {
+        return Ok(());
+    }
+
+    let record_route_failure = !recovered_invocations.is_empty()
+        && (pending_attempt_record.attempt_id.is_none() || !recovered_attempts.is_empty());
+    clean_up_pool_route_after_orphan_recovery(
+        state,
+        &pending_attempt_record.invoke_id,
+        pending_attempt_record.sticky_key.as_deref(),
+        Some(pending_attempt_record.upstream_account_id),
+        "drop_guard",
+        record_route_failure,
+    )
+    .await;
+
+    if !recovered_attempts.is_empty()
+        && let Err(err) = broadcast_pool_upstream_attempts_snapshot(state, &pending_attempt_record.invoke_id).await
+    {
+        warn!(
+            invoke_id = %pending_attempt_record.invoke_id,
+            error = %err,
+            "failed to broadcast guard-recovered pool attempt snapshot"
+        );
+    }
+    broadcast_recovered_proxy_invocations(state, &recovered_invocations).await?;
+
+    info!(
+        invoke_id = %pending_attempt_record.invoke_id,
+        attempt_id = pending_attempt_record.attempt_id,
+        recovered_attempts = recovered_attempts.len(),
+        recovered_invocations = recovered_invocations.len(),
+        recovery_trigger = "drop_guard",
+        "recovered pool early-phase orphan after request future dropped"
+    );
+
+    Ok(())
+}
+
+async fn recover_guard_dropped_pool_invocation_orphan(
+    state: &AppState,
+    selector: InvocationRecoverySelector,
+    recovery_trigger: &'static str,
+) -> Result<()> {
+    let recovered_invocations = recover_proxy_invocations_with_scope(
+        &state.pool,
+        ProxyInvocationRecoveryScope::Selectors(std::slice::from_ref(&selector)),
+    )
+    .await?;
+
+    if recovered_invocations.is_empty() {
+        return Ok(());
+    }
+
+    info!(
+        invoke_id = %selector.invoke_id,
+        occurred_at = %selector.occurred_at,
+        recovered_invocations = recovered_invocations.len(),
+        recovery_trigger,
+        "recovered pool invocation orphan after request future dropped"
+    );
+
+    broadcast_recovered_proxy_invocations(state, &recovered_invocations).await
+}
+
+async fn recover_guard_dropped_pool_terminal_invocation_orphan(
+    state: &AppState,
+    selector: InvocationRecoverySelector,
+) -> Result<()> {
+    recover_guard_dropped_pool_invocation_orphan(
+        state,
+        selector,
+        "terminal_invocation_drop_guard",
+    )
+    .await
+}
+
+pub(crate) async fn recover_stale_pool_early_phase_orphans_runtime(
+    state: &AppState,
+) -> Result<PoolOrphanRecoveryOutcome> {
+    let timeouts = resolve_pool_routing_timeouts(&state.pool, &state.config).await?;
+    let responses_started_before = stale_started_before_string(
+        timeouts.responses_first_byte_timeout,
+        POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE,
+    );
+    let compact_started_before = stale_started_before_string(
+        timeouts.compact_first_byte_timeout,
+        POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE,
+    );
+    let default_started_before = stale_started_before_string(
+        timeouts.default_first_byte_timeout,
+        POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE,
+    );
+    let active_attempt_ids = state
+        .pool_live_attempt_ids
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .clone();
+    let mut tx = state.pool.begin().await?;
+    let stale_candidates = load_stale_pool_upstream_request_attempt_candidate_rows_tx(
+        tx.as_mut(),
+        &responses_started_before,
+        &compact_started_before,
+        &default_started_before,
+    )
+    .await?;
+    let candidate_ids = stale_candidates
+        .into_iter()
+        .filter(|row| !active_attempt_ids.contains(&row.id))
+        .map(|row| row.id)
+        .collect::<Vec<_>>();
+    let finished_at = shanghai_now_string();
+    let recovered_attempts = recover_stale_pool_upstream_request_attempt_candidates_tx(
+        tx.as_mut(),
+        &candidate_ids,
+        finished_at.as_str(),
+        &responses_started_before,
+        &compact_started_before,
+        &default_started_before,
+    )
+    .await?;
+    if recovered_attempts.is_empty() {
+        tx.commit().await?;
+        return Ok(PoolOrphanRecoveryOutcome::default());
+    }
+
+    let selectors: Vec<_> = recovered_attempts
+        .iter()
+        .map(|row| InvocationRecoverySelector::new(row.invoke_id.clone(), row.occurred_at.clone()))
+        .collect();
+    let recovered_invocations = recover_proxy_invocations_with_scope_tx(
+        tx.as_mut(),
+        ProxyInvocationRecoveryScope::Selectors(&selectors),
+    )
+    .await?;
+    tx.commit().await?;
+
+    clean_up_recovered_pool_routes(
+        state,
+        &recovered_attempts,
+        &recovered_invocations,
+        "runtime_sweeper",
+    )
+    .await;
+
+    for invoke_id in recovered_attempts
+        .iter()
+        .map(|row| row.invoke_id.as_str())
+        .collect::<BTreeSet<_>>()
+    {
+        if let Err(err) = broadcast_pool_upstream_attempts_snapshot(state, invoke_id).await {
+            warn!(
+                invoke_id,
+                error = %err,
+                "failed to broadcast stale pool orphan recovery snapshot"
+            );
+        }
+    }
+    broadcast_recovered_proxy_invocations(state, &recovered_invocations).await?;
+
+    let outcome = PoolOrphanRecoveryOutcome {
+        recovered_attempts: recovered_attempts.len(),
+        recovered_invocations: recovered_invocations.len(),
+    };
+    info!(
+        recovered_attempts = outcome.recovered_attempts,
+        recovered_invocations = outcome.recovered_invocations,
+        recovery_trigger = "runtime_sweeper",
+        "recovered stale pool early-phase orphans at runtime"
+    );
+
+    Ok(outcome)
 }
 
 async fn broadcast_pool_upstream_attempts_snapshot(
@@ -399,10 +1175,8 @@ async fn finalize_pool_upstream_request_attempt(
     finished_at: &str,
     status: &str,
     http_status: Option<StatusCode>,
-    downstream_http_status: Option<StatusCode>,
     failure_kind: Option<&str>,
     error_message: Option<&str>,
-    downstream_error_message: Option<&str>,
     connect_latency_ms: Option<f64>,
     first_byte_latency_ms: Option<f64>,
     stream_latency_ms: Option<f64>,
@@ -431,16 +1205,14 @@ async fn finalize_pool_upstream_request_attempt(
                 status = ?3,
                 phase = ?4,
                 http_status = ?5,
-                downstream_http_status = ?6,
-                failure_kind = ?7,
-                error_message = ?8,
-                downstream_error_message = ?9,
-                connect_latency_ms = ?10,
-                first_byte_latency_ms = ?11,
-                stream_latency_ms = ?12,
-                upstream_request_id = ?13,
-                compact_support_status = ?14,
-                compact_support_reason = ?15
+                failure_kind = ?6,
+                error_message = ?7,
+                connect_latency_ms = ?8,
+                first_byte_latency_ms = ?9,
+                stream_latency_ms = ?10,
+                upstream_request_id = ?11,
+                compact_support_status = ?12,
+                compact_support_reason = ?13
             WHERE id = ?1
             "#,
         )
@@ -449,10 +1221,8 @@ async fn finalize_pool_upstream_request_attempt(
         .bind(status)
         .bind(terminal_phase)
         .bind(http_status.map(|value| i64::from(value.as_u16())))
-        .bind(downstream_http_status.map(|value| i64::from(value.as_u16())))
         .bind(failure_kind)
         .bind(error_message)
-        .bind(downstream_error_message)
         .bind(connect_latency_ms)
         .bind(first_byte_latency_ms)
         .bind(stream_latency_ms)
@@ -480,10 +1250,8 @@ async fn finalize_pool_upstream_request_attempt(
         status,
         Some(terminal_phase),
         http_status,
-        downstream_http_status,
         failure_kind,
         error_message,
-        downstream_error_message,
         connect_latency_ms,
         first_byte_latency_ms,
         stream_latency_ms,
@@ -508,15 +1276,6 @@ async fn insert_pool_upstream_terminal_attempt(
         .account
         .as_ref()
         .map(|account| account.upstream_route_key());
-    let (http_status, downstream_http_status) = if final_error.downstream_error_message.is_some() {
-        (None, Some(final_error.status))
-    } else {
-        (Some(final_error.status), None)
-    };
-    let canonical_error_message = final_error
-        .canonical_error_message
-        .as_deref()
-        .unwrap_or(final_error.message.as_str());
     insert_pool_upstream_request_attempt(
         pool,
         trace,
@@ -532,11 +1291,9 @@ async fn insert_pool_upstream_terminal_attempt(
         Some(finished_at.as_str()),
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
         Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED),
-        http_status,
-        downstream_http_status,
+        Some(final_error.status),
         Some(failure_kind),
-        Some(canonical_error_message),
-        final_error.downstream_error_message.as_deref(),
+        Some(final_error.message.as_str()),
         None,
         None,
         None,
@@ -766,8 +1523,6 @@ struct ProxyPayloadSummary<'a> {
     stream_terminal_event: Option<&'a str>,
     upstream_error_code: Option<&'a str>,
     upstream_error_message: Option<&'a str>,
-    downstream_status_code: Option<StatusCode>,
-    downstream_error_message: Option<&'a str>,
     upstream_request_id: Option<&'a str>,
     response_content_encoding: Option<&'a str>,
     proxy_display_name: Option<&'a str>,
@@ -815,8 +1570,6 @@ fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
         stream_terminal_event,
         upstream_error_code,
         upstream_error_message,
-        downstream_status_code,
-        downstream_error_message,
         upstream_request_id,
         response_content_encoding,
         proxy_display_name,
@@ -862,8 +1615,6 @@ fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
         "streamTerminalEvent": stream_terminal_event,
         "upstreamErrorCode": upstream_error_code,
         "upstreamErrorMessage": upstream_error_message,
-        "downstreamStatusCode": downstream_status_code.map(|value| value.as_u16()),
-        "downstreamErrorMessage": downstream_error_message,
         "upstreamRequestId": upstream_request_id,
         "responseContentEncoding": response_content_encoding,
         "proxyDisplayName": proxy_display_name,
@@ -886,6 +1637,20 @@ fn invocation_status_is_in_flight(status: Option<&str>) -> bool {
     )
 }
 
+fn invocation_status_is_recoverable_proxy_interrupted(
+    status: Option<&str>,
+    failure_kind: Option<&str>,
+) -> bool {
+    status
+        .unwrap_or_default()
+        .trim()
+        .eq_ignore_ascii_case(INVOCATION_STATUS_INTERRUPTED)
+        && failure_kind
+            .unwrap_or_default()
+            .trim()
+            .eq_ignore_ascii_case(PROXY_FAILURE_INVOCATION_INTERRUPTED)
+}
+
 fn nullable_runtime_timing_value(value: f64) -> Option<f64> {
     (value.is_finite() && value > 0.0).then_some(value)
 }
@@ -894,6 +1659,7 @@ fn nullable_runtime_timing_value(value: f64) -> Option<f64> {
 struct PersistedInvocationIdentityRow {
     id: i64,
     status: Option<String>,
+    failure_kind: Option<String>,
 }
 
 async fn load_persisted_invocation_identity_tx(
@@ -903,7 +1669,7 @@ async fn load_persisted_invocation_identity_tx(
 ) -> Result<Option<PersistedInvocationIdentityRow>> {
     sqlx::query_as::<_, PersistedInvocationIdentityRow>(
         r#"
-        SELECT id, status
+        SELECT id, status, failure_kind
         FROM codex_invocations
         WHERE invoke_id = ?1 AND occurred_at = ?2
         ORDER BY id DESC
@@ -940,13 +1706,11 @@ async fn load_persisted_api_invocation_tx(
             cost,
             status,
             error_message,
-            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.downstreamStatusCode') END AS downstream_status_code,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.endpoint') END AS endpoint,
             COALESCE(CASE WHEN json_valid(payload) THEN json_extract(payload, '$.failureKind') END, failure_kind) AS failure_kind,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.streamTerminalEvent') END AS stream_terminal_event,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamErrorCode') END AS upstream_error_code,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamErrorMessage') END AS upstream_error_message,
-            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.downstreamErrorMessage') END AS downstream_error_message,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamRequestId') END AS upstream_request_id,
             failure_class,
             is_actionable,
@@ -1085,14 +1849,14 @@ async fn persist_proxy_capture_runtime_record(
     pool: &Pool<Sqlite>,
     record: ProxyCaptureRecord,
 ) -> Result<Option<ApiInvocation>> {
-    let failure = resolve_failure_classification(
+    let failure = classify_invocation_failure(
         Some(record.status.as_str()),
         record.error_message.as_deref(),
-        record.failure_kind.as_deref(),
-        None,
-        None,
     );
-    let failure_kind = failure.failure_kind.clone();
+    let failure_kind = record
+        .failure_kind
+        .clone()
+        .or_else(|| failure.failure_kind.clone());
     let t_req_read_ms = nullable_runtime_timing_value(record.timings.t_req_read_ms);
     let t_req_parse_ms = nullable_runtime_timing_value(record.timings.t_req_parse_ms);
     let t_upstream_connect_ms = nullable_runtime_timing_value(record.timings.t_upstream_connect_ms);
@@ -1237,7 +2001,12 @@ async fn persist_proxy_capture_runtime_record(
             tx.commit().await?;
             return Ok(None);
         };
-        if !invocation_status_is_in_flight(existing.status.as_deref()) {
+        let allow_terminal_repair = !invocation_status_is_in_flight(Some(record.status.as_str()))
+            && invocation_status_is_recoverable_proxy_interrupted(
+                existing.status.as_deref(),
+                existing.failure_kind.as_deref(),
+            );
+        if !invocation_status_is_in_flight(existing.status.as_deref()) && !allow_terminal_repair {
             tx.commit().await?;
             return Ok(None);
         }
@@ -1279,7 +2048,13 @@ async fn persist_proxy_capture_runtime_record(
                 t_resp_parse_ms = ?33,
                 t_persist_ms = ?34
             WHERE id = ?1
-              AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
+              AND (
+                    LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
+                    OR (
+                        LOWER(TRIM(COALESCE(status, ''))) = 'interrupted'
+                        AND LOWER(TRIM(COALESCE(failure_kind, ''))) = 'proxy_interrupted'
+                    )
+              )
             "#,
         )
         .bind(existing.id)
@@ -1431,8 +2206,6 @@ fn build_running_proxy_capture_record(
             stream_terminal_event: None,
             upstream_error_code: None,
             upstream_error_message: None,
-            downstream_status_code: None,
-            downstream_error_message: None,
             upstream_request_id: None,
             response_content_encoding,
             proxy_display_name,
@@ -1543,195 +2316,92 @@ impl BoundedResponseParseBuffer {
     }
 }
 
-enum PendingRawPayloadWrite {
-    Ready(RawPayloadMeta),
-    Task(JoinHandle<RawPayloadMeta>),
-}
-
-impl PendingRawPayloadWrite {
-    fn dropped(size_bytes: usize) -> Self {
-        Self::Ready(RawPayloadMeta {
-            path: None,
-            size_bytes: size_bytes as i64,
-            truncated: size_bytes > 0,
-            truncated_reason: (size_bytes > 0)
-                .then_some(RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED.to_string()),
-        })
-    }
-
-    async fn finish(self) -> RawPayloadMeta {
-        match self {
-            Self::Ready(meta) => meta,
-            Self::Task(handle) => match handle.await {
-                Ok(meta) => meta,
-                Err(err) => RawPayloadMeta {
-                    path: None,
-                    size_bytes: 0,
-                    truncated: true,
-                    truncated_reason: Some(format!("write_failed:{err}")),
-                },
-            },
-        }
-    }
-}
-
-fn spawn_raw_payload_file_write(
-    state: &AppState,
-    invoke_id: &str,
-    kind: &'static str,
-    bytes: Bytes,
-) -> PendingRawPayloadWrite {
-    if bytes.is_empty() {
-        return PendingRawPayloadWrite::Ready(RawPayloadMeta::default());
-    }
-
-    let Ok(permit) = state.proxy_raw_async_semaphore.clone().try_acquire_owned() else {
-        return PendingRawPayloadWrite::dropped(bytes.len());
-    };
-
-    let config = state.config.clone();
-    let invoke_id = invoke_id.to_string();
-    PendingRawPayloadWrite::Task(tokio::spawn(async move {
-        let _permit = permit;
-        store_raw_payload_file_async(&config, &invoke_id, kind, bytes).await
-    }))
-}
-
-struct AsyncStreamingRawPayloadWriter {
-    tx: Option<mpsc::Sender<Bytes>>,
-    meta_rx: Option<oneshot::Receiver<RawPayloadMeta>>,
-    observed_size_bytes: i64,
-    local_truncated_reason: Option<String>,
-    local_truncated: bool,
-}
-
-impl AsyncStreamingRawPayloadWriter {
-    fn new(state: &AppState, invoke_id: &str, kind: &'static str) -> Self {
-        let Ok(permit) = state.proxy_raw_async_semaphore.clone().try_acquire_owned() else {
-            return Self {
-                tx: None,
-                meta_rx: None,
-                observed_size_bytes: 0,
-                local_truncated_reason: Some(
-                    RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED.to_string(),
-                ),
-                local_truncated: true,
-            };
-        };
-
-        let path = state
-            .config
-            .resolved_proxy_raw_dir()
-            .join(format!("{invoke_id}-{kind}.bin"));
-        let max_bytes = state.config.proxy_raw_max_bytes;
-        let (tx, mut rx) = mpsc::channel::<Bytes>(ASYNC_STREAMING_RAW_WRITER_QUEUE_CAPACITY);
-        let (meta_tx, meta_rx) = oneshot::channel();
-        tokio::spawn(async move {
-            let _permit = permit;
-            let meta = write_streaming_raw_payload_to_file(path, max_bytes, &mut rx).await;
-            let _ = meta_tx.send(meta);
-        });
-
-        Self {
-            tx: Some(tx),
-            meta_rx: Some(meta_rx),
-            observed_size_bytes: 0,
-            local_truncated_reason: None,
-            local_truncated: false,
-        }
-    }
-
-    fn mark_async_backpressure_dropped(&mut self) {
-        self.local_truncated = true;
-        self.local_truncated_reason
-            .get_or_insert_with(|| RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED.to_string());
-        self.tx = None;
-    }
-
-    fn mark_writer_closed(&mut self, message: String) {
-        self.local_truncated = true;
-        self.local_truncated_reason
-            .get_or_insert_with(|| format!("write_failed:{message}"));
-        self.tx = None;
-    }
-
-    async fn append(&mut self, bytes: Bytes) {
-        if bytes.is_empty() {
-            return;
-        }
-        self.observed_size_bytes = self.observed_size_bytes.saturating_add(bytes.len() as i64);
-        let Some(tx) = self.tx.as_ref() else {
-            return;
-        };
-        match tx.try_send(bytes) {
-            Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(_)) => self.mark_async_backpressure_dropped(),
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                self.mark_writer_closed("async raw writer channel closed".to_string())
-            }
-        }
-    }
-
-    async fn finish(mut self) -> RawPayloadMeta {
-        self.tx.take();
-        let mut meta = match self.meta_rx.take() {
-            Some(meta_rx) => match meta_rx.await {
-                Ok(meta) => meta,
-                Err(err) => RawPayloadMeta {
-                    path: None,
-                    size_bytes: self.observed_size_bytes,
-                    truncated: true,
-                    truncated_reason: Some(format!("write_failed:{err}")),
-                },
-            },
-            None => RawPayloadMeta::default(),
-        };
-        meta.size_bytes = self.observed_size_bytes;
-        if self.local_truncated {
-            meta.truncated = true;
-            if meta.truncated_reason.is_none() {
-                meta.truncated_reason = self.local_truncated_reason;
-            }
-        }
-        meta
-    }
-}
-
-async fn write_streaming_raw_payload_to_file(
+struct StreamingRawPayloadWriter {
     path: PathBuf,
     max_bytes: Option<usize>,
-    rx: &mut mpsc::Receiver<Bytes>,
-) -> RawPayloadMeta {
-    let mut meta = RawPayloadMeta::default();
-    let Some(parent) = path.parent() else {
-        meta.truncated = true;
-        meta.truncated_reason = Some(format!(
-            "write_failed:raw payload path has no parent: {}",
-            path.display()
-        ));
-        return meta;
-    };
-    let mut file: Option<tokio::fs::File> = None;
-    let mut written_bytes = 0usize;
-    while let Some(bytes) = rx.recv().await {
-        if bytes.is_empty() {
-            continue;
-        }
-        meta.size_bytes = meta.size_bytes.saturating_add(bytes.len() as i64);
+    written_bytes: usize,
+    meta: RawPayloadMeta,
+    file: Option<tokio::fs::File>,
+}
 
-        let write_len = if let Some(limit) = max_bytes {
-            let remaining = limit.saturating_sub(written_bytes);
+impl StreamingRawPayloadWriter {
+    fn new(config: &AppConfig, invoke_id: &str, kind: &str) -> Self {
+        let path = config
+            .resolved_proxy_raw_dir()
+            .join(format!("{invoke_id}-{kind}.bin"));
+        Self {
+            path,
+            max_bytes: config.proxy_raw_max_bytes,
+            written_bytes: 0,
+            meta: RawPayloadMeta::default(),
+            file: None,
+        }
+    }
+
+    async fn ensure_file(&mut self) -> io::Result<()> {
+        if self.file.is_some() {
+            return Ok(());
+        }
+        let Some(parent) = self.path.parent() else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("raw payload path has no parent: {}", self.path.display()),
+            ));
+        };
+        tokio::fs::create_dir_all(parent).await?;
+        let file = tokio::fs::File::create(&self.path).await?;
+        self.meta.path = Some(self.path.to_string_lossy().to_string());
+        self.file = Some(file);
+        Ok(())
+    }
+
+    fn mark_max_bytes_exceeded(&mut self) {
+        self.meta.truncated = true;
+        self.meta
+            .truncated_reason
+            .get_or_insert_with(|| "max_bytes_exceeded".to_string());
+    }
+
+    async fn record_write_failure(&mut self, err: io::Error) {
+        self.meta.truncated = true;
+        self.meta.truncated_reason = Some(format!("write_failed:{err}"));
+        self.file = None;
+        if self.meta.path.is_some() {
+            let _ = tokio::fs::remove_file(&self.path).await;
+            self.meta.path = None;
+        }
+    }
+
+    async fn append(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+
+        self.meta.size_bytes = self.meta.size_bytes.saturating_add(bytes.len() as i64);
+
+        if self
+            .meta
+            .truncated_reason
+            .as_deref()
+            .is_some_and(|reason| reason.starts_with("write_failed:"))
+        {
+            return;
+        }
+
+        if let Err(err) = self.ensure_file().await {
+            self.record_write_failure(err).await;
+            return;
+        }
+
+        let write_len = if let Some(limit) = self.max_bytes {
+            let remaining = limit.saturating_sub(self.written_bytes);
             if remaining == 0 {
-                meta.truncated = true;
-                meta.truncated_reason
-                    .get_or_insert_with(|| "max_bytes_exceeded".to_string());
-                continue;
+                self.mark_max_bytes_exceeded();
+                return;
             }
             let write_len = remaining.min(bytes.len());
             if write_len < bytes.len() {
-                meta.truncated = true;
-                meta.truncated_reason
-                    .get_or_insert_with(|| "max_bytes_exceeded".to_string());
+                self.mark_max_bytes_exceeded();
             }
             write_len
         } else {
@@ -1739,52 +2409,26 @@ async fn write_streaming_raw_payload_to_file(
         };
 
         if write_len == 0 {
-            continue;
+            return;
         }
 
-        if file.is_none() {
-            if let Err(err) = tokio::fs::create_dir_all(parent).await {
-                meta.truncated = true;
-                meta.truncated_reason = Some(format!("write_failed:{err}"));
-                return meta;
+        if let Some(file) = self.file.as_mut() {
+            if let Err(err) = file.write_all(&bytes[..write_len]).await {
+                self.record_write_failure(err).await;
+                return;
             }
-            match tokio::fs::File::create(&path).await {
-                Ok(created) => {
-                    meta.path = Some(path.to_string_lossy().to_string());
-                    file = Some(created);
-                }
-                Err(err) => {
-                    meta.truncated = true;
-                    meta.truncated_reason = Some(format!("write_failed:{err}"));
-                    return meta;
-                }
-            }
+            self.written_bytes = self.written_bytes.saturating_add(write_len);
         }
+    }
 
-        if let Err(err) = file
-            .as_mut()
-            .expect("raw payload file should be opened before writing")
-            .write_all(&bytes[..write_len])
-            .await
+    async fn finish(mut self) -> RawPayloadMeta {
+        if let Some(file) = self.file.as_mut()
+            && let Err(err) = file.flush().await
         {
-            meta.truncated = true;
-            meta.truncated_reason = Some(format!("write_failed:{err}"));
-            let _ = tokio::fs::remove_file(&path).await;
-            meta.path = None;
-            return meta;
+            self.record_write_failure(err).await;
         }
-        written_bytes = written_bytes.saturating_add(write_len);
+        self.meta
     }
-
-    if let Some(file) = file.as_mut()
-        && let Err(err) = file.flush().await
-    {
-        meta.truncated = true;
-        meta.truncated_reason = Some(format!("write_failed:{err}"));
-        let _ = tokio::fs::remove_file(&path).await;
-        meta.path = None;
-    }
-    meta
 }
 
 fn build_raw_response_preview(bytes: &[u8]) -> String {

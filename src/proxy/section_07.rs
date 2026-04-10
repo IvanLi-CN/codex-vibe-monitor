@@ -177,60 +177,6 @@ fn summarize_pool_upstream_http_failure(
     )
 }
 
-struct NormalizedPoolFailureRecord {
-    attempt_status: &'static str,
-    upstream_http_status: Option<StatusCode>,
-    downstream_http_status: Option<StatusCode>,
-    canonical_error_message: String,
-    downstream_error_message: Option<String>,
-}
-
-fn default_oauth_transport_failure_message(failure_kind: &'static str) -> &'static str {
-    match failure_kind {
-        PROXY_FAILURE_FAILED_CONTACT_UPSTREAM => "failed to contact oauth codex upstream",
-        PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT => "oauth codex upstream handshake timed out",
-        PROXY_FAILURE_UPSTREAM_STREAM_ERROR => "oauth codex upstream stream error",
-        _ => "oauth codex upstream transport failure",
-    }
-}
-
-fn normalize_pool_upstream_failure_record(
-    status: StatusCode,
-    oauth_transport_failure_kind: Option<&'static str>,
-    message: &str,
-    upstream_error_message: Option<&str>,
-) -> NormalizedPoolFailureRecord {
-    if let Some(failure_kind) = oauth_transport_failure_kind {
-        let wrapped_prefix = format!("pool upstream responded with {}:", status.as_u16());
-        let canonical_error_message = upstream_error_message
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .or_else(|| {
-                message
-                    .strip_prefix(&wrapped_prefix)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-            })
-            .unwrap_or_else(|| default_oauth_transport_failure_message(failure_kind))
-            .to_string();
-        return NormalizedPoolFailureRecord {
-            attempt_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
-            upstream_http_status: None,
-            downstream_http_status: Some(status),
-            canonical_error_message,
-            downstream_error_message: Some(message.to_string()),
-        };
-    }
-
-    NormalizedPoolFailureRecord {
-        attempt_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
-        upstream_http_status: Some(status),
-        downstream_http_status: None,
-        canonical_error_message: message.to_string(),
-        downstream_error_message: None,
-    }
-}
-
 async fn estimate_proxy_cost_from_shared_catalog(
     catalog: &Arc<RwLock<PricingCatalog>>,
     model: Option<&str>,
@@ -410,11 +356,11 @@ fn estimate_proxy_cost(
     (Some(cost), true, price_version)
 }
 
-async fn store_raw_payload_file_async(
+fn store_raw_payload_file(
     config: &AppConfig,
     invoke_id: &str,
     kind: &str,
-    bytes: Bytes,
+    bytes: &[u8],
 ) -> RawPayloadMeta {
     let mut meta = RawPayloadMeta {
         path: None,
@@ -439,7 +385,7 @@ async fn store_raw_payload_file_async(
 
     let raw_dir = config.resolved_proxy_raw_dir();
 
-    if let Err(err) = tokio::fs::create_dir_all(&raw_dir).await {
+    if let Err(err) = fs::create_dir_all(&raw_dir) {
         meta.truncated = true;
         meta.truncated_reason = Some(format!("write_failed:{err}"));
         return meta;
@@ -447,7 +393,7 @@ async fn store_raw_payload_file_async(
 
     let filename = format!("{invoke_id}-{kind}.bin");
     let path = raw_dir.join(filename);
-    match tokio::fs::write(&path, content).await {
+    match fs::File::create(&path).and_then(|mut f| f.write_all(content)) {
         Ok(_) => {
             meta.path = Some(path.to_string_lossy().to_string());
         }
@@ -713,35 +659,6 @@ async fn persist_and_broadcast_proxy_capture(
                 continue;
             }
 
-            if DEFAULT_PROXY_SUMMARY_QUOTA_BROADCAST_DEBOUNCE_MS > 0 {
-                tokio::select! {
-                    _ = shutdown.cancelled() => {
-                        broadcast_proxy_capture_follow_up(
-                            &pool,
-                            &broadcaster,
-                            broadcast_state_cache.as_ref(),
-                            relay_config.as_ref(),
-                            invocation_max_days,
-                            &invoke_id,
-                        )
-                        .await;
-                        broadcast_running.store(false, Ordering::Release);
-                        info!(
-                            invoke_id = %invoke_id,
-                            "summary/quota broadcast worker flushed follow-up during debounce because shutdown is in progress"
-                        );
-                        break;
-                    }
-                    _ = sleep(Duration::from_millis(
-                        DEFAULT_PROXY_SUMMARY_QUOTA_BROADCAST_DEBOUNCE_MS,
-                    )) => {}
-                }
-                synced_seq = latest_broadcast_seq.load(Ordering::Acquire);
-                if broadcaster.receiver_count() == 0 {
-                    continue;
-                }
-            }
-
             let summaries = tokio::select! {
                 _ = shutdown.cancelled() => {
                     broadcast_proxy_capture_follow_up(
@@ -876,14 +793,14 @@ async fn persist_proxy_capture_record(
     capture_started: Instant,
     mut record: ProxyCaptureRecord,
 ) -> Result<Option<ApiInvocation>> {
-    let failure = resolve_failure_classification(
+    let failure = classify_invocation_failure(
         Some(record.status.as_str()),
         record.error_message.as_deref(),
-        record.failure_kind.as_deref(),
-        None,
-        None,
     );
-    let failure_kind = failure.failure_kind.clone();
+    let failure_kind = record
+        .failure_kind
+        .clone()
+        .or_else(|| failure.failure_kind.clone());
     let persist_started = Instant::now();
     let created_at = format_utc_iso_millis(Utc::now());
 
@@ -986,7 +903,12 @@ async fn persist_proxy_capture_record(
             tx.commit().await?;
             return Ok(None);
         };
-        if !invocation_status_is_in_flight(existing.status.as_deref()) {
+        let allow_terminal_repair = !invocation_status_is_in_flight(Some(record.status.as_str()))
+            && invocation_status_is_recoverable_proxy_interrupted(
+                existing.status.as_deref(),
+                existing.failure_kind.as_deref(),
+            );
+        if !invocation_status_is_in_flight(existing.status.as_deref()) && !allow_terminal_repair {
             tx.commit().await?;
             return Ok(None);
         }
@@ -1028,7 +950,13 @@ async fn persist_proxy_capture_record(
                 t_resp_parse_ms = ?33,
                 t_persist_ms = ?34
             WHERE id = ?1
-              AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
+              AND (
+                    LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
+                    OR (
+                        LOWER(TRIM(COALESCE(status, ''))) = 'interrupted'
+                        AND LOWER(TRIM(COALESCE(failure_kind, ''))) = 'proxy_interrupted'
+                    )
+              )
             "#,
         )
         .bind(existing.id)
