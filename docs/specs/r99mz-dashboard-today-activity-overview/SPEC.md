@@ -162,12 +162,13 @@
 - 2026-04-10: 根据 latest review 继续收口历史 hourly 视图与今日图表呈现：`/api/timeseries`、hourly-backed summary 与 failure rollup 读取 archived hourly 数据前都会先触发同一条 summary repair/backfill 路径，避免升级后长范围图表继续读取陈旧 failure counts；同时 `今日 / 次数` 图会把 `running/pending` 残差直接画成中性 `进行中` 正柱，不再只藏在 tooltip 里；anonymous placeholder 只允许消费 authoritative `snapshotId` 之前的旧记录，而 authoritative refresh 会把仍在 TTL 内的 tracked live deltas 合并回 fresh response，避免静默重载期间被新 SSE 或本地时钟漂移打出双算。
 - 2026-04-10: 根据 merge 前最后一轮 review 继续收口本地 live patch：当匿名 in-flight placeholder 独占 bucket 且 authoritative 数据已带 provisional token/cost 时，终态 SSE 现在会把该 bucket 直接修正到最终 token/cost，而不是继续停留在 provisional 值；`current-day-local` 的 seed 抓取也缩到“当前自然日 bucket”本身，不再在 `1d bucket + 长范围` 视图里分页扫描整段历史窗口的 `running/pending` 记录。
 - 2026-04-10: 根据 fresh review 最后一轮继续补齐 authoritative/live 对账：hourly-backed summary / timeseries / failure 读取在 rollup refresh 之后统一冻结同一个 `snapshotId`，再对 `rollup_live_cursor < id <= snapshotId` 的 full-hour tail 做 exact replay，确保 archived rollup 与 live rows 落在同一 cutoff；`fetch_invocation_summary` 也把 legacy `http_200` success-like 行重新计入 `success_count`，避免 records summary undercount。
+- 2026-04-10: merge-path freshness sync 实际落到当前收敛 head 后，再次完成 `web` 全量 `test/build/build-storybook` 与 targeted cargo 回归；本 spec 与 `docs/specs/README.md` 同步刷新到这次 mainline 兼容收口后的最新事实，不扩展功能范围。
 
 ## Visual Evidence
 
 - Storybook覆盖=通过
 - 视觉证据目标源=storybook_canvas（mock-only）
-- Validation: `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run test -- src/hooks/useTimeseries.test.ts src/hooks/useTimeseries.integration.test.tsx src/components/DashboardTodayActivityChart.test.tsx && bun run build && bun run build-storybook`；`cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo fmt --all && cargo test fetch_invocation_summary_normalizes_top_level_success_and_failure_counts -- --nocapture && cargo test hourly_backed_summary_replays_pre_cutoff_full_hour_live_rows_after_rollup_cursor -- --nocapture && cargo test timeseries_hourly_backed_repairs_stale_archived_rollup_counts_before_querying -- --nocapture && cargo check`
+- Validation: `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run test && bun run build && bun run build-storybook`；`cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test fetch_invocation_summary_normalizes_top_level_success_and_failure_counts -- --nocapture && cargo test hourly_backed_summary_replays_pre_cutoff_full_hour_live_rows_after_rollup_cursor -- --nocapture && cargo test timeseries_hourly_backed_repairs_stale_archived_rollup_counts_before_querying -- --nocapture && cargo check`
 - Story id: `dashboard-dashboardtodayactivitychart--count-bars-dense-pairing`
 - Scenario: `今日 / 次数` 高密度 minute bucket，对齐验证 success / in-flight / failure 共用同一时间槽位并围绕 0 轴展开。
 - Evidence note: 验证柱子不再左右错位；`running/pending` 与其临时失败元数据不会把 failure 柱短时拉长后再回落；带 in-flight 残差的 minute bucket 现在会直接绘制中性 `进行中` 正柱，并在 tooltip 中同步解释数量；本轮 rebuilt Storybook 已重新绑定到最新本地验证 head。
