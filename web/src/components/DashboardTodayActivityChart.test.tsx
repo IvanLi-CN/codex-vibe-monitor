@@ -25,7 +25,8 @@ vi.mock("recharts", () => ({
     const point =
       latestChartData.find(
         (item) =>
-          typeof item.inFlightCount === "number" && Number(item.inFlightCount) > 0,
+          typeof item.inFlightCount === "number" &&
+          Number(item.inFlightCount) > 0,
       ) ??
       latestChartData.find(
         (item) => typeof item.chartSuccessCount === "number",
@@ -231,7 +232,7 @@ describe("DashboardTodayActivityChart", () => {
     expect(data.at(-1)?.chartCumulativeCost).toBeNull();
   });
 
-  it("derives an in-flight series from residual neutral totals", () => {
+  it("uses explicit in-flight counts and leaves neutral residual totals unrendered", () => {
     const data = buildTodayMinuteChartData(
       {
         rangeStart: "2026-04-08 00:00:00",
@@ -241,9 +242,10 @@ describe("DashboardTodayActivityChart", () => {
           {
             bucketStart: "2026-04-08 00:01:00",
             bucketEnd: "2026-04-08 00:01:59",
-            totalCount: 3,
+            totalCount: 4,
             successCount: 1,
             failureCount: 1,
+            inFlightCount: 1,
             totalTokens: 90,
             totalCost: 0.2,
           },
@@ -256,7 +258,7 @@ describe("DashboardTodayActivityChart", () => {
     );
 
     expect(data[1]).toMatchObject({
-      totalCount: 3,
+      totalCount: 4,
       successCount: 1,
       failureCount: 1,
       inFlightCount: 1,
@@ -266,7 +268,7 @@ describe("DashboardTodayActivityChart", () => {
     });
   });
 
-  it("shows in-flight calls in the count tooltip when total exceeds success plus failures", () => {
+  it("shows in-flight calls in the count tooltip without inferring neutral residuals as running", () => {
     const html = renderToStaticMarkup(
       <DashboardTodayActivityChart
         response={{
@@ -275,9 +277,10 @@ describe("DashboardTodayActivityChart", () => {
             {
               bucketStart: "2026-04-08 00:00:00",
               bucketEnd: "2026-04-08 00:00:59",
-              totalCount: 4,
+              totalCount: 5,
               successCount: 2,
               failureCount: 1,
+              inFlightCount: 1,
               totalTokens: 120,
               totalCost: 0.5,
             },
@@ -291,7 +294,7 @@ describe("DashboardTodayActivityChart", () => {
 
     expect(html).toContain("chart.inFlight");
     expect(html).toContain("1 unit.calls");
-    expect(html).toContain("4 unit.calls");
+    expect(html).toContain("5 unit.calls");
   });
 
   it("renders count mode as a composed chart with split success and failure bars", () => {

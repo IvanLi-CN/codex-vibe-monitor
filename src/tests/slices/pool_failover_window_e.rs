@@ -2570,7 +2570,91 @@ async fn prompt_cache_conversations_groups_recent_keys_and_uses_history_totals()
     assert_eq!(key_a.last24h_requests[0].request_tokens, 20);
     assert_eq!(key_a.last24h_requests[0].cumulative_tokens, 20);
     assert!(key_a.last24h_requests[0].is_success);
+    assert_eq!(key_a.last24h_requests[0].outcome, "success");
     assert_eq!(key_a.last24h_requests[1].request_tokens, 30);
     assert_eq!(key_a.last24h_requests[1].cumulative_tokens, 50);
     assert!(!key_a.last24h_requests[1].is_success);
+    assert_eq!(key_a.last24h_requests[1].outcome, "failure");
+}
+
+#[tokio::test]
+async fn prompt_cache_last24h_requests_keep_null_status_rows_neutral() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+    let occurred_at = format_naive((now - ChronoDuration::minutes(20)).with_timezone(&Shanghai).naive_local());
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind("pck-neutral-success")
+    .bind(occurred_at.clone())
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(20_i64)
+    .bind(0.2_f64)
+    .bind(json!({ "promptCacheKey": "pck-neutral" }).to_string())
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert success prompt cache row");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response,
+            failure_class, error_message
+        )
+        VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind("pck-neutral-null-status")
+    .bind(format_naive(
+        (now - ChronoDuration::minutes(10))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    ))
+    .bind(SOURCE_PROXY)
+    .bind(15_i64)
+    .bind(0.15_f64)
+    .bind(json!({ "promptCacheKey": "pck-neutral" }).to_string())
+    .bind("{}")
+    .bind("none")
+    .bind("")
+    .execute(&state.pool)
+    .await
+    .expect("insert null-status prompt cache row");
+
+    let Json(response) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+            activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
+        }),
+    )
+    .await
+    .expect("prompt cache neutral conversation stats should succeed");
+
+    let conversation = response
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-neutral")
+        .expect("neutral prompt cache conversation should exist");
+    assert_eq!(conversation.last24h_requests.len(), 2);
+    assert_eq!(conversation.last24h_requests[0].outcome, "success");
+    assert_eq!(conversation.last24h_requests[1].status, "unknown");
+    assert!(!conversation.last24h_requests[1].is_success);
+    assert_eq!(conversation.last24h_requests[1].outcome, "neutral");
 }

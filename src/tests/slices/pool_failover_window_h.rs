@@ -908,6 +908,7 @@ async fn timeseries_and_summary_do_not_treat_running_rows_with_failure_metadata_
     assert_eq!(bucket.total_count, 4);
     assert_eq!(bucket.success_count, 1);
     assert_eq!(bucket.failure_count, 1);
+    assert_eq!(bucket.in_flight_count, 2);
 }
 
 #[tokio::test]

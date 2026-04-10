@@ -59,6 +59,7 @@ export function buildTodayMinuteChartData(
     {
       successCount: number;
       failureCount: number;
+      inFlightCount: number;
       totalCount: number;
       totalCost: number;
       totalTokens: number;
@@ -73,12 +74,14 @@ export function buildTodayMinuteChartData(
     const current = pointMap.get(bucketEpoch) ?? {
       successCount: 0,
       failureCount: 0,
+      inFlightCount: 0,
       totalCount: 0,
       totalCost: 0,
       totalTokens: 0,
     };
     current.successCount += point.successCount ?? 0;
     current.failureCount += point.failureCount ?? 0;
+    current.inFlightCount += Math.max(point.inFlightCount ?? 0, 0);
     current.totalCount += point.totalCount ?? 0;
     current.totalCost += point.totalCost ?? 0;
     current.totalTokens += point.totalTokens ?? 0;
@@ -98,11 +101,11 @@ export function buildTodayMinuteChartData(
     const isFuture = epochMs > anchor.getTime();
     const successCount = point?.successCount ?? 0;
     const failureCount = point?.failureCount ?? 0;
+    const inFlightCount = Math.max(point?.inFlightCount ?? 0, 0);
     const totalCount = Math.max(
-      point?.totalCount ?? successCount + failureCount,
-      successCount + failureCount,
+      point?.totalCount ?? successCount + failureCount + inFlightCount,
+      successCount + failureCount + inFlightCount,
     );
-    const inFlightCount = Math.max(totalCount - successCount - failureCount, 0);
     const totalCost = point?.totalCost ?? 0;
     const totalTokens = point?.totalTokens ?? 0;
     cumulativeCost += totalCost;

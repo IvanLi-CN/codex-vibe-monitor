@@ -82,6 +82,12 @@ fn invocation_status_counts_toward_terminal_totals(status: Option<&str>) -> bool
         && !normalized_status.eq_ignore_ascii_case("pending")
 }
 
+fn invocation_status_is_in_flight(status: Option<&str>) -> bool {
+    let normalized_status = status.map(str::trim).unwrap_or_default();
+    normalized_status.eq_ignore_ascii_case("running")
+        || normalized_status.eq_ignore_ascii_case("pending")
+}
+
 fn invocation_point_is_success(
     status: Option<&str>,
     error_message: Option<&str>,
@@ -92,6 +98,27 @@ fn invocation_point_is_success(
             .map(str::trim)
             .unwrap_or_default()
             .eq_ignore_ascii_case("none")
+}
+
+fn invocation_point_outcome(
+    status: Option<&str>,
+    error_message: Option<&str>,
+    failure_class: Option<&str>,
+) -> &'static str {
+    if invocation_status_is_in_flight(status) {
+        return "in_flight";
+    }
+    if invocation_point_is_success(status, error_message, failure_class) {
+        return "success";
+    }
+    if failure_class
+        .map(str::trim)
+        .unwrap_or_default()
+        .eq_ignore_ascii_case("none")
+    {
+        return "neutral";
+    }
+    "failure"
 }
 
 async fn load_pool_attempt_account_names(
@@ -1232,17 +1259,18 @@ async fn hydrate_prompt_cache_conversations(
     let mut grouped_events: HashMap<String, Vec<PromptCacheConversationRequestPointResponse>> =
         HashMap::new();
     for row in events {
-        let status = row.status.trim().to_string();
-        let status = if status.is_empty() {
+        let normalized_status = row.status.trim().to_string();
+        let display_status = if normalized_status.is_empty() {
             "unknown".to_string()
         } else {
-            status
+            normalized_status.clone()
         };
-        let is_success = invocation_point_is_success(
-            Some(&status),
+        let outcome = invocation_point_outcome(
+            Some(&normalized_status),
             row.error_message.as_deref(),
             row.failure_class.as_deref(),
-        );
+        )
+        .to_string();
         let request_tokens = row.request_tokens.max(0);
         let points = grouped_events.entry(row.prompt_cache_key).or_default();
         let cumulative_tokens = points
@@ -1252,8 +1280,9 @@ async fn hydrate_prompt_cache_conversations(
             + request_tokens;
         points.push(PromptCacheConversationRequestPointResponse {
             occurred_at: row.occurred_at,
-            status,
-            is_success,
+            status: display_status,
+            is_success: outcome == "success",
+            outcome,
             request_tokens,
             cumulative_tokens,
         });
@@ -2358,7 +2387,7 @@ pub(crate) async fn query_prompt_cache_conversation_events(
     const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
 
     let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT occurred_at, COALESCE(status, 'unknown') AS status, \
+        "SELECT occurred_at, COALESCE(status, '') AS status, \
          error_message, ",
     );
     query
@@ -2781,6 +2810,8 @@ pub(crate) async fn fetch_timeseries(
         ) && classification.failure_class == FailureClass::None;
         if is_success_like {
             entry.success_count += 1;
+        } else if invocation_status_is_in_flight(record.status.as_deref()) {
+            entry.in_flight_count += 1;
         } else if invocation_status_counts_toward_terminal_totals(record.status.as_deref())
             && classification.failure_class != FailureClass::None
         {
@@ -2863,6 +2894,7 @@ pub(crate) async fn fetch_timeseries(
             total_count: agg.total_count,
             success_count: agg.success_count,
             failure_count: agg.failure_count,
+            in_flight_count: agg.in_flight_count,
             total_tokens: agg.total_tokens,
             total_cost: agg.total_cost,
             first_byte_sample_count: agg.first_byte_sample_count,
@@ -3137,6 +3169,8 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
             ) && classification.failure_class == FailureClass::None;
             if is_success_like {
                 entry.success_count += 1;
+            } else if invocation_status_is_in_flight(record.status.as_deref()) {
+                entry.in_flight_count += 1;
             } else if invocation_status_counts_toward_terminal_totals(record.status.as_deref())
                 && classification.failure_class != FailureClass::None
             {
@@ -3206,6 +3240,7 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
             total_count: agg.total_count,
             success_count: agg.success_count,
             failure_count: agg.failure_count,
+            in_flight_count: agg.in_flight_count,
             total_tokens: agg.total_tokens,
             total_cost: agg.total_cost,
             first_byte_sample_count: agg.first_byte_sample_count,

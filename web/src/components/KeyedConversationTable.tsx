@@ -1,6 +1,10 @@
 import { useMemo } from "react";
 import { useTranslation } from "../i18n";
-import type { ConversationRequestPoint } from "../lib/api";
+import type {
+  ConversationRequestOutcome,
+  ConversationRequestPoint,
+} from "../lib/api";
+import { resolveConversationRequestPointOutcome } from "../lib/conversationRequestPoint";
 import {
   buildConversationSegments,
   FALLBACK_CELL,
@@ -53,7 +57,7 @@ interface ConversationChartSegment {
   startEpoch: number;
   endEpoch: number;
   cumulativeTokens: number;
-  isSuccess: boolean;
+  outcome: ConversationRequestOutcome;
   point: ConversationRequestPoint;
 }
 
@@ -68,6 +72,32 @@ interface ConversationChartGeometry {
 
 const CHART_WIDTH = 232;
 const CHART_HEIGHT = 48;
+
+function requestPointTooltipTone(point: ConversationRequestPoint) {
+  switch (resolveConversationRequestPointOutcome(point)) {
+    case "success":
+      return "success" as const;
+    case "failure":
+      return "error" as const;
+    case "in_flight":
+      return "accent" as const;
+    default:
+      return "neutral" as const;
+  }
+}
+
+function requestPointStrokeColor(outcome: ConversationRequestOutcome) {
+  switch (outcome) {
+    case "success":
+      return "oklch(var(--color-success) / 0.95)";
+    case "failure":
+      return "oklch(var(--color-error) / 0.92)";
+    case "in_flight":
+      return "oklch(var(--color-primary) / 0.88)";
+    default:
+      return "oklch(var(--color-base-content) / 0.58)";
+  }
+}
 
 function formatNumber(value: number, formatter: Intl.NumberFormat) {
   if (!Number.isFinite(value)) return FALLBACK_CELL;
@@ -155,7 +185,7 @@ function buildConversationTooltipData(
       {
         label: labels.status,
         value: point.status,
-        tone: point.isSuccess ? "success" : "error",
+        tone: requestPointTooltipTone(point),
       },
       {
         label: labels.requestTokens,
@@ -165,13 +195,15 @@ function buildConversationTooltipData(
       {
         label: labels.cumulativeTokens,
         value: numberFormatter.format(point.cumulativeTokens),
-        tone: point.isSuccess ? "success" : "error",
+        tone: requestPointTooltipTone(point),
       },
     ],
   };
 }
 
-export function ConversationSparkline<TConversation extends KeyedConversationRecord>({
+export function ConversationSparkline<
+  TConversation extends KeyedConversationRecord,
+>({
   conversation,
   rangeStart,
   rangeEnd,
@@ -288,11 +320,7 @@ export function ConversationSparkline<TConversation extends KeyedConversationRec
                     y1={segment.y}
                     x2={segment.x2}
                     y2={segment.y}
-                    stroke={
-                      segment.isSuccess
-                        ? "oklch(var(--color-success) / 0.95)"
-                        : "oklch(var(--color-error) / 0.92)"
-                    }
+                    stroke={requestPointStrokeColor(segment.outcome)}
                     strokeWidth={isActive ? "4" : "2.8"}
                     strokeLinecap="round"
                   />
@@ -301,11 +329,7 @@ export function ConversationSparkline<TConversation extends KeyedConversationRec
                       cx={segment.x1}
                       cy={segment.y}
                       r="3"
-                      fill={
-                        segment.isSuccess
-                          ? "oklch(var(--color-success) / 0.95)"
-                          : "oklch(var(--color-error) / 0.92)"
-                      }
+                      fill={requestPointStrokeColor(segment.outcome)}
                       stroke="oklch(var(--color-base-100) / 0.95)"
                       strokeWidth="1.2"
                     />

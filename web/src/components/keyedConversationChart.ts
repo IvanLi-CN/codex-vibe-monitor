@@ -1,4 +1,8 @@
-import type { ConversationRequestPoint } from "../lib/api";
+import type {
+  ConversationRequestOutcome,
+  ConversationRequestPoint,
+} from "../lib/api";
+import { resolveConversationRequestPointOutcome } from "../lib/conversationRequestPoint";
 
 export interface KeyedConversationChartRecord {
   last24hRequests: ConversationRequestPoint[];
@@ -8,7 +12,7 @@ interface ConversationChartSegment {
   startEpoch: number;
   endEpoch: number;
   cumulativeTokens: number;
-  isSuccess: boolean;
+  outcome: ConversationRequestOutcome;
   point: ConversationRequestPoint;
 }
 
@@ -69,7 +73,7 @@ export function buildConversationSegments(
       startEpoch,
       endEpoch,
       cumulativeTokens: Math.max(0, current.cumulativeTokens),
-      isSuccess: current.isSuccess,
+      outcome: resolveConversationRequestPointOutcome(current),
       point: current,
     });
   }

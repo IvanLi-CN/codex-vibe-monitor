@@ -606,6 +606,7 @@ export interface TimeseriesPoint {
   totalCount: number;
   successCount: number;
   failureCount: number;
+  inFlightCount?: number;
   totalTokens: number;
   totalCost: number;
   firstByteSampleCount?: number;
@@ -978,9 +979,16 @@ export interface ConversationRequestPoint {
   occurredAt: string;
   status: string;
   isSuccess: boolean;
+  outcome?: ConversationRequestOutcome | null;
   requestTokens: number;
   cumulativeTokens: number;
 }
+
+export type ConversationRequestOutcome =
+  | "success"
+  | "failure"
+  | "neutral"
+  | "in_flight";
 
 export type PromptCacheConversationRequestPoint = ConversationRequestPoint;
 
@@ -1174,6 +1182,7 @@ function normalizeTimeseriesPoint(raw: unknown): TimeseriesPoint | null {
     totalCount: normalizeFiniteNumber(payload.totalCount) ?? 0,
     successCount: normalizeFiniteNumber(payload.successCount) ?? 0,
     failureCount: normalizeFiniteNumber(payload.failureCount) ?? 0,
+    inFlightCount: normalizeFiniteNumber(payload.inFlightCount) ?? 0,
     totalTokens: normalizeFiniteNumber(payload.totalTokens) ?? 0,
     totalCost: normalizeFiniteNumber(payload.totalCost) ?? 0,
     firstByteSampleCount:
@@ -1725,9 +1734,13 @@ function normalizePromptCacheConversation(
     lastActivityAt:
       typeof payload.lastActivityAt === "string" ? payload.lastActivityAt : "",
     lastTerminalAt:
-      typeof payload.lastTerminalAt === "string" ? payload.lastTerminalAt : null,
+      typeof payload.lastTerminalAt === "string"
+        ? payload.lastTerminalAt
+        : null,
     lastInFlightAt:
-      typeof payload.lastInFlightAt === "string" ? payload.lastInFlightAt : null,
+      typeof payload.lastInFlightAt === "string"
+        ? payload.lastInFlightAt
+        : null,
     cursor: typeof payload.cursor === "string" ? payload.cursor : null,
     upstreamAccounts: upstreamAccountsRaw
       .map(normalizePromptCacheConversationUpstreamAccount)
@@ -1759,6 +1772,13 @@ function normalizeConversationRequestPoint(
     occurredAt,
     status: typeof payload.status === "string" ? payload.status : "unknown",
     isSuccess: payload.isSuccess === true,
+    outcome:
+      payload.outcome === "success" ||
+      payload.outcome === "failure" ||
+      payload.outcome === "neutral" ||
+      payload.outcome === "in_flight"
+        ? payload.outcome
+        : null,
     requestTokens: normalizeFiniteNumber(payload.requestTokens) ?? 0,
     cumulativeTokens: normalizeFiniteNumber(payload.cumulativeTokens) ?? 0,
   };
@@ -1963,7 +1983,8 @@ function normalizePromptCacheConversationsResponse(
     },
     totalMatched: normalizeFiniteNumber(payload.totalMatched) ?? null,
     hasMore: payload.hasMore === true,
-    nextCursor: typeof payload.nextCursor === "string" ? payload.nextCursor : null,
+    nextCursor:
+      typeof payload.nextCursor === "string" ? payload.nextCursor : null,
     conversations: conversationsRaw
       .map(normalizePromptCacheConversation)
       .filter((item): item is PromptCacheConversation => item != null),

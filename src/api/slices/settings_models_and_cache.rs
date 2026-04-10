@@ -267,6 +267,7 @@ pub(crate) struct TimeseriesPoint {
     pub(crate) total_count: i64,
     pub(crate) success_count: i64,
     pub(crate) failure_count: i64,
+    pub(crate) in_flight_count: i64,
     pub(crate) total_tokens: i64,
     pub(crate) total_cost: f64,
     pub(crate) first_byte_sample_count: i64,
@@ -638,6 +639,7 @@ pub(crate) struct PromptCacheConversationRequestPointResponse {
     pub(crate) occurred_at: String,
     pub(crate) status: String,
     pub(crate) is_success: bool,
+    pub(crate) outcome: String,
     pub(crate) request_tokens: i64,
     pub(crate) cumulative_tokens: i64,
 }

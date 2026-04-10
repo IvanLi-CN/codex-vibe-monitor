@@ -12,13 +12,15 @@ const sampleResponse = {
     const bucketEnd = new Date(bucketStart.getTime() + 60_000);
     const totalCount = index % 7 === 0 ? 0 : (index % 5) + 1;
     const failureCount = totalCount > 0 && index % 6 === 0 ? 1 : 0;
-    const successCount = Math.max(totalCount - failureCount, 0);
+    const inFlightCount = totalCount > 1 && index % 10 === 0 ? 1 : 0;
+    const successCount = Math.max(totalCount - failureCount - inFlightCount, 0);
     return {
       bucketStart: bucketStart.toISOString(),
       bucketEnd: bucketEnd.toISOString(),
       totalCount,
       successCount,
       failureCount,
+      inFlightCount,
       totalTokens: totalCount * 380,
       totalCost: Number((totalCount * 0.018).toFixed(4)),
     };
@@ -107,6 +109,7 @@ export const CountBarsDensePairing: Story = {
           totalCount,
           successCount,
           failureCount,
+          inFlightCount,
           totalTokens: totalCount * 420,
           totalCost: Number((totalCount * 0.021).toFixed(4)),
         };

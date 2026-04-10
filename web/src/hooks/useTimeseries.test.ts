@@ -200,6 +200,34 @@ describe("useTimeseries current-day bucket patching", () => {
       totalCount: 3,
       successCount: 1,
       failureCount: 0,
+      inFlightCount: 2,
+    });
+  });
+
+  it("keeps blank-status rows without failure metadata neutral instead of counting them as in-flight", () => {
+    const next = applyRecordsToCurrentDayBucket(
+      base,
+      [
+        {
+          id: 41,
+          invokeId: "today-neutral-blank-status",
+          occurredAt: "2026-03-06T08:34:00Z",
+          status: "",
+          failureClass: "none",
+          totalTokens: 9,
+          cost: 0.09,
+          createdAt: "2026-03-06T08:34:00Z",
+        },
+      ],
+      Math.floor(Date.parse("2026-03-06T12:00:00Z") / 1000),
+    );
+
+    expect(next?.points[1]).toMatchObject({
+      totalCount: 2,
+      successCount: 1,
+      failureCount: 0,
+      totalTokens: 109,
+      totalCost: 0.59,
     });
   });
 
@@ -339,11 +367,14 @@ describe("useTimeseries current-day bucket patching", () => {
       recordId: 40,
       bucketStart: base.points[0].bucketStart,
       bucketEnd: base.points[0].bucketEnd,
-      bucketStartEpoch: Math.floor(Date.parse(base.points[0].bucketStart) / 1000),
+      bucketStartEpoch: Math.floor(
+        Date.parse(base.points[0].bucketStart) / 1000,
+      ),
       bucketEndEpoch: Math.floor(Date.parse(base.points[0].bucketEnd) / 1000),
       totalCount: 1,
       successCount: 0,
       failureCount: 0,
+      inFlightCount: 1,
       totalTokens: 0,
       totalCost: 0,
       countsOnly: true,
@@ -717,6 +748,7 @@ describe("useTimeseries natural-day range patching", () => {
         totalCount: 1,
         successCount: 0,
         failureCount: 0,
+        inFlightCount: 1,
         totalTokens: 0,
         totalCost: 0,
         countsOnly: true,
@@ -748,6 +780,7 @@ describe("useTimeseries natural-day range patching", () => {
           totalCount: 1,
           successCount: 0,
           failureCount: 0,
+          inFlightCount: 1,
           totalTokens: 10,
           totalCost: 0.05,
         },
@@ -774,6 +807,7 @@ describe("useTimeseries natural-day range patching", () => {
         totalCount: 1,
         successCount: 0,
         failureCount: 0,
+        inFlightCount: 1,
         totalTokens: 0,
         totalCost: 0,
         countsOnly: true,
@@ -1006,6 +1040,7 @@ describe("useTimeseries refresh coordination helpers", () => {
           totalCount: 1,
           successCount: 0,
           failureCount: 0,
+          inFlightCount: 1,
           totalTokens: 0,
           totalCost: 0,
         },
@@ -1142,6 +1177,7 @@ describe("useTimeseries refresh coordination helpers", () => {
             totalCount: 1,
             successCount: 1,
             failureCount: 0,
+            inFlightCount: 0,
             totalTokens: 10,
             totalCost: 0.1,
           },
@@ -1195,6 +1231,7 @@ describe("useTimeseries refresh coordination helpers", () => {
       totalCount: 1,
       successCount: 0,
       failureCount: 0,
+      inFlightCount: 1,
       totalTokens: 0,
       totalCost: 0,
     };
@@ -1206,6 +1243,7 @@ describe("useTimeseries refresh coordination helpers", () => {
       totalCount: 1,
       successCount: 0,
       failureCount: 1,
+      inFlightCount: 0,
       totalTokens: 22,
       totalCost: 0.18,
     };
@@ -1270,6 +1308,7 @@ describe("useTimeseries refresh coordination helpers", () => {
         totalCount: number;
         successCount: number;
         failureCount: number;
+        inFlightCount: number;
         totalTokens: number;
         totalCost: number;
       }
@@ -1295,6 +1334,7 @@ describe("useTimeseries refresh coordination helpers", () => {
       totalCount: 1,
       successCount: 0,
       failureCount: 1,
+      inFlightCount: 0,
       totalTokens: index,
       totalCost: index / 100,
     });

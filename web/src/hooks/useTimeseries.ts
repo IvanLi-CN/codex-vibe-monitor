@@ -39,7 +39,7 @@ interface UpdateContext {
   settlementHour?: number;
 }
 
-type LiveRecordOutcome = "success" | "failure" | "pending";
+type LiveRecordOutcome = "success" | "failure" | "in_flight" | "neutral";
 
 interface LiveRecordDelta {
   recordId?: number;
@@ -50,6 +50,7 @@ interface LiveRecordDelta {
   totalCount: number;
   successCount: number;
   failureCount: number;
+  inFlightCount: number;
   totalTokens: number;
   totalCost: number;
   countsOnly?: boolean;
@@ -253,8 +254,7 @@ export function writeTimeseriesRemountCache(
       settledLiveRecordUpdatedAt,
     ),
     untrackedInFlightCounts: new Map(untrackedInFlightCounts),
-    untrackedInFlightClaimSnapshotId:
-      untrackedInFlightClaimSnapshotId ?? null,
+    untrackedInFlightClaimSnapshotId: untrackedInFlightClaimSnapshotId ?? null,
   });
 }
 
@@ -331,14 +331,14 @@ function normalizeLiveRecordOutcome(record: ApiInvocation): LiveRecordOutcome {
     (record.failureKind?.trim().length ?? 0) > 0 ||
     (record.errorMessage?.trim().length ?? 0) > 0;
 
-  if (status === "success" || status === "http_200") {
+  if (status === "success" || status === "completed" || status === "http_200") {
     return hasFailureMetadata ? "failure" : "success";
   }
   if (status === "running" || status === "pending") {
-    return "pending";
+    return "in_flight";
   }
   if (status.length > 0) return "failure";
-  return hasFailureMetadata ? "failure" : "pending";
+  return hasFailureMetadata ? "failure" : "neutral";
 }
 
 function createLiveRecordDelta(
@@ -356,14 +356,24 @@ function createLiveRecordDelta(
     totalCount: 1,
     successCount: outcome === "success" ? 1 : 0,
     failureCount: outcome === "failure" ? 1 : 0,
+    inFlightCount: outcome === "in_flight" ? 1 : 0,
     totalTokens: record.totalTokens ?? 0,
     totalCost: record.cost ?? 0,
   };
 }
 
 function getTimeseriesPointInFlightCount(
-  point: Pick<TimeseriesPoint, "totalCount" | "successCount" | "failureCount">,
+  point: Pick<
+    TimeseriesPoint,
+    "inFlightCount" | "totalCount" | "successCount" | "failureCount"
+  >,
 ) {
+  if (
+    typeof point.inFlightCount === "number" &&
+    Number.isFinite(point.inFlightCount)
+  ) {
+    return Math.max(point.inFlightCount, 0);
+  }
   return Math.max(
     point.totalCount - point.successCount - point.failureCount,
     0,
@@ -383,7 +393,7 @@ function buildUntrackedInFlightCounts(
   }
   for (const delta of liveRecordDeltas.values()) {
     const currentCount = remaining.get(delta.bucketStart) ?? 0;
-    const nextCount = currentCount - delta.totalCount;
+    const nextCount = currentCount - delta.inFlightCount;
     if (nextCount > 0) {
       remaining.set(delta.bucketStart, nextCount);
     } else {
@@ -423,6 +433,7 @@ function claimUntrackedInFlightDelta(
     ...nextDelta,
     successCount: 0,
     failureCount: 0,
+    inFlightCount: 1,
   });
 }
 
@@ -454,13 +465,22 @@ function reconcileCountsOnlyDelta(
   nextDelta: LiveRecordDelta | null,
   currentPoint: Pick<
     TimeseriesPoint,
-    "totalCount" | "successCount" | "failureCount" | "totalTokens" | "totalCost"
+    | "totalCount"
+    | "successCount"
+    | "failureCount"
+    | "inFlightCount"
+    | "totalTokens"
+    | "totalCost"
   > | null,
 ) {
   if (!previousDelta?.countsOnly || !nextDelta) {
     return nextDelta;
   }
-  if (nextDelta.successCount === 0 && nextDelta.failureCount === 0) {
+  if (
+    nextDelta.inFlightCount > 0 &&
+    nextDelta.successCount === 0 &&
+    nextDelta.failureCount === 0
+  ) {
     return createCountsOnlyLiveRecordDelta(nextDelta);
   }
   if (!currentPoint) {
@@ -469,7 +489,9 @@ function reconcileCountsOnlyDelta(
   const bucketOnlyContainsPlaceholder =
     currentPoint.totalCount === previousDelta.totalCount &&
     currentPoint.successCount === previousDelta.successCount &&
-    currentPoint.failureCount === previousDelta.failureCount;
+    currentPoint.failureCount === previousDelta.failureCount &&
+    getTimeseriesPointInFlightCount(currentPoint) ===
+      previousDelta.inFlightCount;
   if (!bucketOnlyContainsPlaceholder) {
     return nextDelta;
   }
@@ -621,6 +643,7 @@ function sameLiveRecordDelta(
     left.totalCount === right.totalCount &&
     left.successCount === right.successCount &&
     left.failureCount === right.failureCount &&
+    left.inFlightCount === right.inFlightCount &&
     left.totalTokens === right.totalTokens &&
     left.totalCost === right.totalCost &&
     (left.countsOnly ?? false) === (right.countsOnly ?? false)
@@ -628,7 +651,7 @@ function sameLiveRecordDelta(
 }
 
 function isPendingLiveRecord(record: ApiInvocation) {
-  return normalizeLiveRecordOutcome(record) === "pending";
+  return normalizeLiveRecordOutcome(record) === "in_flight";
 }
 
 export function pruneTrackedTimeseriesLiveRecordDeltas(
@@ -712,7 +735,9 @@ function mergeFreshResponseLiveRecordDeltas(
   const nextSettledLiveRecordUpdatedAt = new Map(
     previousSettledLiveRecordUpdatedAt,
   );
-  const preservedLiveRecordDeltas = cloneLiveRecordDeltaMap(previousLiveRecordDeltas);
+  const preservedLiveRecordDeltas = cloneLiveRecordDeltaMap(
+    previousLiveRecordDeltas,
+  );
 
   pruneTrackedTimeseriesLiveRecordDeltas(
     preservedLiveRecordDeltas,
@@ -802,6 +827,21 @@ function restoreMissingTrackedDeltaView(
       0,
       currentPoint.failureCount - (responsePoint?.failureCount ?? 0),
     );
+    const inFlightCountDiff = Math.max(
+      0,
+      getTimeseriesPointInFlightCount(currentPoint) -
+        getTimeseriesPointInFlightCount(
+          responsePoint ?? {
+            ...currentPoint,
+            totalCount: 0,
+            successCount: 0,
+            failureCount: 0,
+            inFlightCount: 0,
+            totalTokens: 0,
+            totalCost: 0,
+          },
+        ),
+    );
     const totalTokensDiff = Math.max(
       0,
       currentPoint.totalTokens - (responsePoint?.totalTokens ?? 0),
@@ -815,6 +855,7 @@ function restoreMissingTrackedDeltaView(
       totalCountDiff === 0 &&
       successCountDiff === 0 &&
       failureCountDiff === 0 &&
+      inFlightCountDiff === 0 &&
       totalTokensDiff === 0 &&
       totalCostDiff === 0
     ) {
@@ -827,6 +868,7 @@ function restoreMissingTrackedDeltaView(
       totalCount: 0,
       successCount: 0,
       failureCount: 0,
+      inFlightCount: 0,
       totalTokens: 0,
       totalCost: 0,
     };
@@ -834,6 +876,8 @@ function restoreMissingTrackedDeltaView(
     nextPoint.totalCount += totalCountDiff;
     nextPoint.successCount += successCountDiff;
     nextPoint.failureCount += failureCountDiff;
+    nextPoint.inFlightCount =
+      getTimeseriesPointInFlightCount(nextPoint) + inFlightCountDiff;
     nextPoint.totalTokens += totalTokensDiff;
     nextPoint.totalCost += totalCostDiff;
     responsePoints.set(bucketStart, nextPoint);
@@ -863,6 +907,10 @@ function adjustTimeseriesPoint(
   point.totalCount += sign * delta.totalCount;
   point.successCount += sign * delta.successCount;
   point.failureCount += sign * delta.failureCount;
+  point.inFlightCount = Math.max(
+    (point.inFlightCount ?? 0) + sign * delta.inFlightCount,
+    0,
+  );
   point.totalTokens += sign * delta.totalTokens;
   point.totalCost += sign * delta.totalCost;
 }
@@ -1101,6 +1149,7 @@ export function upsertTimeseriesLiveRecord(
       totalCount: 0,
       successCount: 0,
       failureCount: 0,
+      inFlightCount: 0,
       totalTokens: 0,
       totalCost: 0,
     };
@@ -1109,6 +1158,7 @@ export function upsertTimeseriesLiveRecord(
       point.totalCount === 0 &&
       point.successCount === 0 &&
       point.failureCount === 0 &&
+      getTimeseriesPointInFlightCount(point) === 0 &&
       point.totalTokens === 0 &&
       point.totalCost === 0;
     if (isEmpty) {
@@ -1812,6 +1862,8 @@ export function applyRecordsToCurrentDayBucket(
       nextBucket.successCount += 1;
     } else if (outcome === "failure") {
       nextBucket.failureCount += 1;
+    } else if (outcome === "in_flight") {
+      nextBucket.inFlightCount = (nextBucket.inFlightCount ?? 0) + 1;
     }
     nextBucket.totalTokens += record.totalTokens ?? 0;
     nextBucket.totalCost += record.cost ?? 0;
@@ -1887,6 +1939,7 @@ export function applyRecordsToTimeseries(
         totalCount: 0,
         successCount: 0,
         failureCount: 0,
+        inFlightCount: 0,
         totalTokens: 0,
         totalCost: 0,
       };
@@ -1900,6 +1953,8 @@ export function applyRecordsToTimeseries(
       point.successCount += 1;
     } else if (outcome === "failure") {
       point.failureCount += 1;
+    } else if (outcome === "in_flight") {
+      point.inFlightCount = (point.inFlightCount ?? 0) + 1;
     }
     point.totalTokens += record.totalTokens ?? 0;
     point.totalCost += record.cost ?? 0;
