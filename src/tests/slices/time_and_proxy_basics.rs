@@ -206,6 +206,38 @@ async fn proxy_openai_v1_invalid_pool_key_bypasses_admission_backpressure() {
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_models_rejects_non_pool_bearer_key() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://example.invalid").expect("valid upstream base url"),
+    )
+    .await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/models".parse().expect("valid uri")),
+        Method::GET,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer sk-direct-upstream"),
+        )]),
+        Body::empty(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let payload: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read non-pool models error body"),
+    )
+    .expect("decode non-pool models error payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE)
+    );
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_via_pool_keeps_in_flight_tracking_until_downstream_stream_finishes() {
     let app = Router::new().route(
         "/v1/responses",

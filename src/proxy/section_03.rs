@@ -1506,7 +1506,7 @@ async fn proxy_openai_v1_via_pool(
                         .map(|record| record.invoke_id.clone());
                     let t_upstream_connect_ms = upstream.connect_latency_ms;
                     let t_upstream_ttfb_ms = upstream.first_byte_latency_ms;
-                    let deferred_pool_early_phase_cleanup_guard =
+                    let mut deferred_pool_early_phase_cleanup_guard =
                         upstream.deferred_early_phase_cleanup_guard;
                     let live_pool_attempt_activity_lease = upstream.live_attempt_activity_lease;
                     let upstream_response = upstream.response;
@@ -1549,6 +1549,9 @@ async fn proxy_openai_v1_via_pool(
                             "pool upstream response first chunk ready"
                         );
                     } else {
+                        disarm_pool_early_phase_cleanup_guard(
+                            &mut deferred_pool_early_phase_cleanup_guard,
+                        );
                         consume_pool_routing_reservation(
                             state.as_ref(),
                             &pool_routing_reservation_key,
@@ -1779,7 +1782,7 @@ async fn proxy_openai_v1_via_pool(
         .map(|record| record.invoke_id.clone());
     let t_upstream_connect_ms = upstream.connect_latency_ms;
     let t_upstream_ttfb_ms = upstream.first_byte_latency_ms;
-    let deferred_pool_early_phase_cleanup_guard = upstream.deferred_early_phase_cleanup_guard;
+    let mut deferred_pool_early_phase_cleanup_guard = upstream.deferred_early_phase_cleanup_guard;
     let live_pool_attempt_activity_lease = upstream.live_attempt_activity_lease;
     let upstream_response = upstream.response;
     let rewritten_location = normalize_proxy_location_header(
@@ -1820,6 +1823,7 @@ async fn proxy_openai_v1_via_pool(
             "pool upstream response first chunk ready"
         );
     } else {
+        disarm_pool_early_phase_cleanup_guard(&mut deferred_pool_early_phase_cleanup_guard);
         consume_pool_routing_reservation(state.as_ref(), &pool_routing_reservation_key);
         if let Err(route_err) = record_pool_route_success(
             &state.pool,

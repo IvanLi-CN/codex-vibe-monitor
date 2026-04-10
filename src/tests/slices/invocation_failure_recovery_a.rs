@@ -1445,6 +1445,22 @@ async fn capture_target_pool_route_no_content_success_finalizes_pending_attempt(
     assert_eq!(attempt_row.4, None);
     assert_eq!(attempt_row.5, Some(primary_id));
 
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let invocation_row = sqlx::query_as::<_, (String, Option<String>)>(
+        r#"
+        SELECT status, failure_kind
+        FROM codex_invocations
+        WHERE invoke_id LIKE 'proxy-%'
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load no-content invocation row");
+    assert_eq!(invocation_row.0, "success");
+    assert_eq!(invocation_row.1, None);
+
     upstream_handle.abort();
 }
 
