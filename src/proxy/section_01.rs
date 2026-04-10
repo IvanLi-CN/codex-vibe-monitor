@@ -859,6 +859,16 @@ fn complete_deferred_pool_early_phase_cleanup_guard(
     disarm_pool_early_phase_cleanup_guard(guard);
 }
 
+fn finalize_deferred_pool_early_phase_cleanup_guard_after_terminal_invocation(
+    guard: &mut Option<PoolEarlyPhaseOrphanCleanupGuard>,
+    terminal_invocation_persisted: bool,
+) {
+    if !terminal_invocation_persisted || guard.is_none() {
+        return;
+    }
+    complete_deferred_pool_early_phase_cleanup_guard(guard);
+}
+
 fn disarm_pool_invocation_cleanup_guard(
     guard: &mut Option<PoolInvocationCleanupGuard>,
 ) {

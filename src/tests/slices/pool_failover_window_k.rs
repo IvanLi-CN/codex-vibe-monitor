@@ -4054,6 +4054,46 @@ async fn pool_early_phase_orphan_cleanup_guard_disarm_keeps_invocation_running_w
 }
 
 #[tokio::test]
+async fn finalize_deferred_pool_early_phase_cleanup_guard_after_terminal_invocation_marks_terminal_even_without_final_attempt_persist()
+{
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let pending = PendingPoolAttemptRecord {
+        attempt_id: Some(43),
+        invoke_id: "guard-complete-terminal-after-invocation".to_string(),
+        occurred_at: "2026-03-23 21:10:10".to_string(),
+        endpoint: "/v1/responses".to_string(),
+        sticky_key: Some("sticky-guard-complete-after-invocation".to_string()),
+        requester_ip: Some("192.168.31.6".to_string()),
+        upstream_account_id: 18,
+        upstream_route_key: "route-primary".to_string(),
+        attempt_index: 1,
+        distinct_account_index: 1,
+        same_account_retry_index: 1,
+        started_at: "2026-03-23 21:10:10".to_string(),
+        connect_latency_ms: 5.0,
+        first_byte_latency_ms: 12.0,
+        compact_support_status: None,
+        compact_support_reason: None,
+    };
+
+    let mut guard = Some(PoolEarlyPhaseOrphanCleanupGuard::new(state, pending));
+    guard
+        .as_mut()
+        .expect("guard should exist")
+        .mark_first_byte_observed(12.0);
+
+    finalize_deferred_pool_early_phase_cleanup_guard_after_terminal_invocation(&mut guard, true);
+
+    let guard = guard.expect("guard should still be present");
+    assert!(guard.first_byte_observed);
+    assert!(guard.terminal_outcome_observed);
+    assert!(!guard.armed);
+}
+
+#[tokio::test]
 async fn complete_deferred_pool_early_phase_cleanup_guard_marks_terminal_and_disarms() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
