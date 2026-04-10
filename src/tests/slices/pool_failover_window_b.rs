@@ -135,6 +135,80 @@ async fn proxy_openai_v1_body_only_sticky_stream_waits_only_once_before_503() {
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_chunked_json_without_header_sticky_uses_live_first_attempt() {
+    let mut config = test_config();
+    config.openai_proxy_request_read_timeout = Duration::from_millis(80);
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(80),
+            poll_interval: Duration::from_millis(10),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    let first_chunk = format!(
+        "{{\"model\":\"gpt-5\",\"input\":\"{}",
+        "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 256)
+    );
+    tokio::spawn(async move {
+        let _ = tx.send(Ok(Bytes::from(first_chunk))).await;
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        let _ = tx.send(Ok(Bytes::from_static(b"\"}"))).await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let started = Instant::now();
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        5342,
+        &"/v1/chat/completions".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+    )
+    .await
+    .expect("chunked via-pool request should succeed via live first attempt");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_millis(120),
+        "live first attempt should not wait for the entire chunked body, elapsed={elapsed:?}"
+    );
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read via-pool response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
+    assert_eq!(payload["authorization"], "Bearer upstream-primary");
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_header_sticky_stream_prefers_body_timeout_before_pool_wait() {
     let mut config = test_config();
     config.openai_upstream_base_url =
@@ -967,12 +1041,12 @@ async fn proxy_openai_v1_responses_streamed_body_counts_total_timeout_from_reque
     let (status, message) = response.expect_err("via-pool request should fail");
     assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
     assert!(
-        elapsed >= Duration::from_millis(160),
-        "request should wait for streamed body buffering before timing out, elapsed={elapsed:?}"
+        elapsed >= Duration::from_millis(70),
+        "responses total timeout should still start at request admission, elapsed={elapsed:?}"
     );
     assert!(
-        elapsed < Duration::from_millis(280),
-        "responses total timeout should include streamed body buffering, elapsed={elapsed:?}"
+        elapsed < Duration::from_millis(160),
+        "live first attempt should not wait for the entire streamed body before timing out, elapsed={elapsed:?}"
     );
     assert_eq!(
         message,

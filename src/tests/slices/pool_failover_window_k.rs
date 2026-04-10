@@ -4326,7 +4326,7 @@ async fn send_pool_request_with_failover_disarms_guard_after_streaming_phase_is_
 }
 
 #[tokio::test]
-async fn send_pool_request_with_failover_disarms_early_phase_guard_when_streaming_phase_was_not_persisted()
+async fn send_pool_request_with_failover_keeps_early_phase_guard_armed_when_streaming_phase_was_not_persisted()
  {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -4424,11 +4424,14 @@ async fn send_pool_request_with_failover_disarms_early_phase_guard_when_streamin
             .and_then(|pending| pending.attempt_id)
             .is_some()
     );
-    assert!(upstream.deferred_early_phase_cleanup_guard.is_none());
+    assert!(upstream.deferred_early_phase_cleanup_guard.is_some());
 
-    let attempt = sqlx::query_as::<_, (String, Option<String>)>(
+    drop(upstream);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let attempt = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
         r#"
-        SELECT status, phase
+        SELECT status, phase, failure_kind
         FROM pool_upstream_request_attempts
         WHERE invoke_id = ?1 AND occurred_at = ?2
         ORDER BY id DESC
@@ -4440,10 +4443,28 @@ async fn send_pool_request_with_failover_disarms_early_phase_guard_when_streamin
     .fetch_one(&state.pool)
     .await
     .expect("load attempt after suppressed streaming-phase update");
-    assert_eq!(attempt.0, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING);
-    assert_ne!(
-        attempt.1.as_deref(),
-        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE)
+    assert_eq!(attempt.0, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE);
+    assert_eq!(attempt.1.as_deref(), Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED));
+    assert_eq!(attempt.2.as_deref(), Some(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED));
+
+    let invocation = sqlx::query_as::<_, (String, Option<String>)>(
+        r#"
+        SELECT status, failure_kind
+        FROM codex_invocations
+        WHERE invoke_id = ?1 AND occurred_at = ?2
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load invocation after suppressed streaming-phase update");
+    assert_eq!(invocation.0, INVOCATION_STATUS_INTERRUPTED);
+    assert_eq!(
+        invocation.1.as_deref(),
+        Some(PROXY_FAILURE_INVOCATION_INTERRUPTED)
     );
 
     upstream_handle.abort();

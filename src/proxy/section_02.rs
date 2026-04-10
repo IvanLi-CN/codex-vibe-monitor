@@ -819,6 +819,7 @@ async fn send_pool_request_with_failover(
             {
                 Ok(prepared) => prepared,
                 Err(message) => {
+                    release_pool_routing_reservation(state.as_ref(), &reservation_key);
                     store_pool_failover_error(
                         &mut last_error,
                         &mut preserve_sticky_owner_terminal_error,
@@ -884,6 +885,7 @@ async fn send_pool_request_with_failover(
                                         .clone(),
                                     },
                                 );
+                                release_pool_routing_reservation(state.as_ref(), &reservation_key);
                                 exhausted_accounts_all_rate_limited = false;
                                 continue 'account_loop;
                             }
@@ -1354,6 +1356,7 @@ async fn send_pool_request_with_failover(
                                         .clone(),
                                     },
                                 );
+                                release_pool_routing_reservation(state.as_ref(), &reservation_key);
                                 exhausted_accounts_all_rate_limited = false;
                                 continue 'account_loop;
                             }
@@ -1389,6 +1392,7 @@ async fn send_pool_request_with_failover(
                                     attempted_request_body_for_capture.clone(),
                                 },
                             );
+                            release_pool_routing_reservation(state.as_ref(), &reservation_key);
                             exhausted_accounts_all_rate_limited = false;
                             continue 'account_loop;
                         }
@@ -2200,11 +2204,11 @@ async fn send_pool_request_with_failover(
                     POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE,
                 )
                 .await
-                {
-                    Ok(phase_persisted) => {
-                        if phase_persisted
-                            && let Err(err) = broadcast_pool_upstream_attempts_snapshot(
-                                state.as_ref(),
+                    {
+                        Ok(phase_persisted) => {
+                            if phase_persisted
+                                && let Err(err) = broadcast_pool_upstream_attempts_snapshot(
+                                    state.as_ref(),
                                 &pending_attempt_record.invoke_id,
                             )
                             .await
@@ -2221,8 +2225,12 @@ async fn send_pool_request_with_failover(
                                 attempt_id = pending_attempt_record.attempt_id,
                                 "streaming phase was not persisted; relying on invocation cleanup guards for post-first-byte recovery"
                             );
+                            if pending_attempt_record.attempt_id.is_some() {
+                                deferred_early_phase_cleanup_guard =
+                                    early_phase_cleanup_guard.take();
+                            }
                         }
-                        if pending_attempt_record.attempt_id.is_some() {
+                        if phase_persisted && pending_attempt_record.attempt_id.is_some() {
                             disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
                         }
                     }
@@ -2233,7 +2241,8 @@ async fn send_pool_request_with_failover(
                             "failed to persist pool attempt streaming phase; relying on invocation cleanup guards for post-first-byte recovery"
                         );
                         if pending_attempt_record.attempt_id.is_some() {
-                            disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
+                            deferred_early_phase_cleanup_guard =
+                                early_phase_cleanup_guard.take();
                         }
                     }
                 }
