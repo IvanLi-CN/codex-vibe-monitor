@@ -151,6 +151,59 @@ async fn acquire_proxy_request_concurrency_permit_times_out_when_limit_exceeded(
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_invalid_pool_key_bypasses_admission_backpressure() {
+    let mut config = test_config();
+    config.proxy_request_concurrency_limit = 1;
+    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(25);
+    let state = test_state_from_config(config, true).await;
+    let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
+
+    let permit =
+        acquire_proxy_request_concurrency_permit(state.as_ref(), 2001, &Method::POST, &uri)
+            .await
+            .expect("first request should occupy the only admission slot");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(uri),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer invalid-pool-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let payload: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read invalid pool key body"),
+    )
+    .expect("decode invalid pool key payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE)
+    );
+    assert_eq!(
+        state
+            .proxy_request_in_flight
+            .load(std::sync::atomic::Ordering::Acquire),
+        1,
+        "invalid pool keys should not consume an admission slot while another request is in flight"
+    );
+
+    drop(permit);
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_via_pool_keeps_in_flight_tracking_until_downstream_stream_finishes() {
     let app = Router::new().route(
         "/v1/responses",

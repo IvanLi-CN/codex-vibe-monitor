@@ -103,19 +103,7 @@ async fn proxy_openai_v1_common(
         );
     }
 
-    let proxy_request_permit = match acquire_proxy_request_concurrency_permit(
-        state.as_ref(),
-        proxy_request_id,
-        &method_for_log,
-        &uri_for_log,
-    )
-    .await
-    {
-        Ok(permit) => Some(permit),
-        Err(err) => return build_proxy_error_response(err, &invoke_id),
-    };
-
-    let (pool_route_active, runtime_timeouts) = match resolve_proxy_route_context_after_admission(
+    let runtime_timeouts = match resolve_proxy_route_context_for_request(
         state.as_ref(),
         proxy_request_id,
         &method_for_log,
@@ -133,10 +121,23 @@ async fn proxy_openai_v1_common(
                 status = %err.status,
                 error = %err.message,
                 elapsed_ms = started_at.elapsed().as_millis(),
-                "openai proxy request failed during route admission"
+                "openai proxy request failed during route validation"
             );
             return build_proxy_error_response(err, &invoke_id);
         }
+    };
+    let pool_route_active = true;
+
+    let proxy_request_permit = match acquire_proxy_request_concurrency_permit(
+        state.as_ref(),
+        proxy_request_id,
+        &method_for_log,
+        &uri_for_log,
+    )
+    .await
+    {
+        Ok(permit) => Some(permit),
+        Err(err) => return build_proxy_error_response(err, &invoke_id),
     };
 
     match proxy_openai_v1_inner(
@@ -330,14 +331,13 @@ async fn take_or_acquire_proxy_request_concurrency_permit(
     }
 }
 
-async fn resolve_proxy_route_context_after_admission(
+async fn resolve_proxy_route_context_for_request(
     state: &AppState,
     proxy_request_id: u64,
     method: &Method,
     original_uri: &Uri,
     headers: &HeaderMap,
-) -> Result<(bool, PoolRoutingTimeoutSettingsResolved), ProxyErrorResponse> {
-    let direct_timeouts = pool_routing_timeouts_from_config(&state.config);
+) -> Result<PoolRoutingTimeoutSettingsResolved, ProxyErrorResponse> {
     let pool_route_active = match request_matches_pool_route(state, headers).await {
         Ok(active) => active,
         Err(err) => {
@@ -358,11 +358,16 @@ async fn resolve_proxy_route_context_after_admission(
     };
 
     if !pool_route_active {
-        return Ok((false, direct_timeouts));
+        return Err(ProxyErrorResponse {
+            status: StatusCode::UNAUTHORIZED,
+            message: PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE.to_string(),
+            cvm_id: None,
+            retry_after_secs: None,
+        });
     }
 
     match resolve_proxy_request_timeouts(state, true).await {
-        Ok(timeouts) => Ok((true, timeouts)),
+        Ok(timeouts) => Ok(timeouts),
         Err(err) => {
             warn!(
                 proxy_request_id,

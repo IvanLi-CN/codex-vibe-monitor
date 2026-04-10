@@ -1219,6 +1219,8 @@ async fn capture_target_pool_route_marks_response_failed_stream_as_route_failure
 async fn capture_target_pool_route_keeps_late_logical_failure_when_downstream_disconnects() {
     #[derive(sqlx::FromRow)]
     struct InvocationRow {
+        invoke_id: String,
+        occurred_at: String,
         status: Option<String>,
         error_message: Option<String>,
         failure_kind: Option<String>,
@@ -1277,7 +1279,7 @@ async fn capture_target_pool_route_keeps_late_logical_failure_when_downstream_di
 
     let invocation = sqlx::query_as::<_, InvocationRow>(
         r#"
-        SELECT status, error_message, failure_kind, payload
+        SELECT invoke_id, occurred_at, status, error_message, failure_kind, payload
         FROM codex_invocations
         ORDER BY id DESC
         LIMIT 1
@@ -1308,6 +1310,20 @@ async fn capture_target_pool_route_keeps_late_logical_failure_when_downstream_di
     assert!(
         invocation_payload["downstreamErrorMessage"]
             .as_str()
+            .is_some_and(|value| value.contains("downstream closed while streaming upstream response"))
+    );
+    let reloaded = load_persisted_api_invocation(
+        &state.pool,
+        &invocation.invoke_id,
+        &invocation.occurred_at,
+    )
+    .await
+    .expect("reload persisted api invocation");
+    assert_eq!(reloaded.downstream_status_code, Some(200));
+    assert!(
+        reloaded
+            .downstream_error_message
+            .as_deref()
             .is_some_and(|value| value.contains("downstream closed while streaming upstream response"))
     );
 
