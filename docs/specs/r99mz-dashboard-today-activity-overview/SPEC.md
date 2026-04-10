@@ -157,15 +157,17 @@
 - 2026-04-10: 为清除 PR freshness gate，同步最新 `main` 到当前修复分支，并补齐 `PromptCacheConversationsQuery` 新增分页字段在 prompt-cache 回归测试里的构造参数；本 spec 的功能范围与验收口径保持不变，验证基线刷新到同步后的最新 head。
 - 2026-04-10: 根据 fresh review 继续收口 remount-cache 与 mixed materialized archive repair：`useTimeseries` 的 silent refresh 现在只回填近期终态 delta 触达的 bucket，并保留 TTL/上限约束内的 settled delta 去重记忆，避免复水后 duplicate settled SSE 再次叠加；summary repair 在 mixed preserve 路径下按 bucket/source 仅清一次既有 rollup，再跨归档批次重放现存 materialized archive，避免旧 failure 值无法修复或同桶多批次重放时发生双算/漏算。
 - 2026-04-10: 根据 fresh review 最后一轮阻塞项继续收口：mixed preserve repair 现在会对所有需要重放的现存 archive（不区分 materialized / non-materialized）按 bucket/source 先清旧值再重建，避免部分 repair 重试把旧 rollup 累加成双算；`useTimeseries` 的 silent refresh 也会跳过已滑出新 `rangeStart/rangeEnd` 的 settled bucket，不再把窗口左边界外的旧点短暂塞回图里。
+- 2026-04-10: 根据 fresh review 最后一轮继续收口前端 live seed：`running/pending` 的 seed 现在统一复用同一个第一页 `snapshotId`，避免状态在两次分页快照之间迁移时被漏抓；匿名 in-flight placeholder 只允许被“创建于 authoritative load 之前”的同桶记录回收，避免新到达的同桶 invocation 错吞旧 placeholder 并把分钟柱长期低估。
 
 ## Visual Evidence
 
 - Storybook覆盖=通过
 - 视觉证据目标源=storybook_canvas（mock-only）
-- Validation: `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bunx vitest run src/hooks/useTimeseries.integration.test.tsx && bun run test && bun run build && bun run build-storybook`；`cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo fmt --all && cargo check && cargo test all_time_summary_repair_replays_existing_materialized_archives_when_others_are_pruned -- --nocapture && cargo test all_time_summary_repair_rebuilds_non_materialized_archives_when_others_are_pruned -- --nocapture`
+- Validation: `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bunx vitest run src/hooks/useTimeseries.test.ts src/hooks/useTimeseries.integration.test.tsx src/components/DashboardTodayActivityChart.test.tsx && bun run test && bun run build && bun run build-storybook`；`cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo check && cargo test all_time_summary_missing_archive_does_not_mark_repair_complete -- --nocapture && cargo test all_time_summary_repair_replays_existing_materialized_archives_when_others_are_pruned -- --nocapture && cargo test all_time_summary_repair_rebuilds_non_materialized_archives_when_others_are_pruned -- --nocapture`
 - Story id: `dashboard-dashboardtodayactivitychart--count-bars-dense-pairing`
 - Scenario: `今日 / 次数` 高密度 minute bucket，对齐验证 success / in-flight / failure 共用同一时间槽位并围绕 0 轴展开。
 - Evidence note: 验证柱子不再左右错位；`running/pending` 与其临时失败元数据不会把 failure 柱短时拉长后再回落；带 in-flight 残差的 minute bucket 会在 tooltip 中额外解释 `进行中` 数量；本轮 fresh review 最后两项收口未改变该 Storybook 画面语义，仅在 rebuilt Storybook 上重新绑定到最新本地验证 head。
+- Live patch note: 最新收口额外验证了 `running/pending` seed 的跨页同快照一致性，以及“新到达但同桶”的 settled 记录不会错误吞掉旧 placeholder。
 - 聊天回图=已展示（本轮使用本地裁剪后的 Storybook canvas 截图完成 owner review）
 - 证据落盘=未落盘（本次未提交新的截图文件，避免在未获主人截图提交授权前把 refreshed capture 推上远端）
 - Stale evidence handling: 本节已移除旧的静态图片引用，避免在本轮 `今日 / 次数` 语义变更后继续保留过期截图引用。

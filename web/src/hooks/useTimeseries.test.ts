@@ -10,6 +10,7 @@ import {
   applyRecordsToCurrentDayBucket,
   applyRecordsToTimeseries,
   fetchAllInvocationRecordPages,
+  fetchTimeseriesInFlightRecords,
   getCurrentDayBucketEndEpoch,
   getLocalDayStartEpoch,
   getNextLocalDayStartEpoch,
@@ -737,6 +738,82 @@ describe("useTimeseries in-flight seeding pagination", () => {
       snapshotId: 1,
     });
   });
+
+  it("reuses one snapshot across running and pending seed queries", async () => {
+    const fetchPage = vi
+      .fn()
+      .mockResolvedValueOnce({
+        snapshotId: 9,
+        total: 1,
+        page: 1,
+        pageSize: 2,
+        records: [
+          {
+            id: 1,
+            invokeId: "running-1",
+            occurredAt: "2026-03-08T00:01:15Z",
+            status: "running",
+            totalTokens: 0,
+            cost: 0,
+            createdAt: "2026-03-08T00:01:15Z",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        snapshotId: 11,
+        total: 1,
+        page: 1,
+        pageSize: 2,
+        records: [
+          {
+            id: 2,
+            invokeId: "pending-1",
+            occurredAt: "2026-03-08T00:01:45Z",
+            status: "pending",
+            totalTokens: 0,
+            cost: 0,
+            createdAt: "2026-03-08T00:01:45Z",
+          },
+        ],
+      });
+
+    const records = await fetchTimeseriesInFlightRecords(
+      {
+        rangeStart: "2026-03-08T00:00:00Z",
+        rangeEnd: "2026-03-08T00:03:00Z",
+        bucketSeconds: 60,
+        points: [],
+      },
+      undefined,
+      fetchPage,
+    );
+
+    expect(records.map((record) => record.invokeId)).toEqual([
+      "running-1",
+      "pending-1",
+    ]);
+    expect(fetchPage).toHaveBeenNthCalledWith(1, {
+      from: "2026-03-08T00:00:00Z",
+      to: "2026-03-08T00:03:00Z",
+      status: "running",
+      sortBy: "occurredAt",
+      sortOrder: "desc",
+      page: 1,
+      pageSize: 500,
+      signal: undefined,
+    });
+    expect(fetchPage).toHaveBeenNthCalledWith(2, {
+      from: "2026-03-08T00:00:00Z",
+      to: "2026-03-08T00:03:00Z",
+      status: "pending",
+      sortBy: "occurredAt",
+      sortOrder: "desc",
+      page: 1,
+      pageSize: 500,
+      signal: undefined,
+      snapshotId: 9,
+    });
+  });
 });
 
 describe("useTimeseries refresh coordination helpers", () => {
@@ -802,6 +879,8 @@ describe("useTimeseries refresh coordination helpers", () => {
       12_345,
       liveRecordDeltas,
       settledLiveRecordUpdatedAt,
+      undefined,
+      12_300,
     );
 
     expect(getTimeseriesRemountCacheKey("1d", { bucket: "1m" })).toBe(
@@ -814,6 +893,7 @@ describe("useTimeseries refresh coordination helpers", () => {
       liveRecordDeltas,
       settledLiveRecordUpdatedAt,
       untrackedInFlightCounts: new Map(),
+      untrackedInFlightClaimUpperBoundMs: 12_300,
     });
     expect(cached?.data).not.toBe(response);
     expect(cached?.liveRecordDeltas).not.toBe(liveRecordDeltas);

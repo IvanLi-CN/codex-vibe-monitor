@@ -76,6 +76,7 @@ afterEach(() => {
   clearTimeseriesRemountCache();
   sseMocks.listeners.clear();
   sseMocks.openListeners.clear();
+  vi.useRealTimers();
   vi.clearAllMocks();
 });
 
@@ -294,6 +295,34 @@ describe("useTimeseries remount cache hydration", () => {
     expect(text("failure")).toBe("1");
     expect(text("tokens")).toBe("22");
     expect(text("cost")).toBe("0.18");
+  });
+
+  it("does not reclaim an older anonymous placeholder for a different same-bucket record created after load", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-07T23:50:00Z"));
+
+    const response = createBaseTimeseries();
+    const newSettledRecord: ApiInvocation = {
+      ...createSettledRecord(),
+      invokeId: "same-bucket-after-load",
+      occurredAt: "2026-03-07T23:55:00Z",
+      createdAt: "2026-03-07T23:55:00Z",
+    };
+
+    apiMocks.fetchTimeseries.mockResolvedValue(response);
+    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsPage([]));
+
+    render(<Probe />);
+    await flushAsync();
+
+    emitRecords([newSettledRecord]);
+
+    expect(text("total")).toBe("2");
+    expect(text("success")).toBe("0");
+    expect(text("failure")).toBe("1");
+    expect(text("tokens")).toBe("22");
+    expect(text("cost")).toBe("0.18");
+    expect(apiMocks.fetchTimeseries).toHaveBeenCalledTimes(1);
   });
 
   it("rehydrates recent settled deltas across remounts to absorb duplicate SSE deliveries", async () => {
