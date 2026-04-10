@@ -123,6 +123,10 @@ pub(crate) async fn run() -> Result<()> {
         startup_ready: Arc::new(AtomicBool::new(false)),
         shutdown: shutdown.clone(),
         semaphore: semaphore.clone(),
+        proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
+        proxy_request_concurrency_semaphore: Arc::new(Semaphore::new(
+            config.proxy_request_concurrency_limit,
+        )),
         proxy_raw_async_semaphore,
         proxy_model_settings,
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),

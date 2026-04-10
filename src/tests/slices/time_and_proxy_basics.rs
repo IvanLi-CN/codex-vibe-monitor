@@ -30,6 +30,7 @@ use std::{
     env,
     ffi::OsString,
     fs,
+    convert::Infallible,
     io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex as StdMutex, atomic::AtomicUsize},
@@ -39,6 +40,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{Mutex as AsyncMutex, Notify, Semaphore, broadcast};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use reqwest::Url;
 
 static APP_CONFIG_ENV_LOCK: once_cell::sync::Lazy<AsyncMutex<()>> =
     once_cell::sync::Lazy::new(|| AsyncMutex::new(()));
@@ -92,6 +94,151 @@ impl Drop for EnvVarGuard {
             }
         }
     }
+}
+
+#[test]
+fn app_config_from_sources_honors_proxy_request_concurrency_envs() {
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
+    let _env = EnvVarGuard::set(&[
+        (ENV_PROXY_REQUEST_CONCURRENCY_LIMIT, Some("7")),
+        (ENV_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS, Some("3456")),
+    ]);
+
+    let config = AppConfig::from_sources(&CliArgs::default())
+        .expect("proxy request concurrency envs should parse");
+
+    assert_eq!(config.proxy_request_concurrency_limit, 7);
+    assert_eq!(
+        config.proxy_request_concurrency_wait_timeout,
+        Duration::from_millis(3456)
+    );
+}
+
+#[tokio::test]
+async fn acquire_proxy_request_concurrency_permit_times_out_when_limit_exceeded() {
+    let mut config = test_config();
+    config.proxy_request_concurrency_limit = 1;
+    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(25);
+    let state = test_state_from_config(config, true).await;
+    let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
+
+    let permit =
+        acquire_proxy_request_concurrency_permit(state.as_ref(), 1001, &Method::POST, &uri)
+            .await
+            .expect("first request should acquire admission permit");
+    let err =
+        acquire_proxy_request_concurrency_permit(state.as_ref(), 1002, &Method::POST, &uri)
+            .await
+            .expect_err("second request should time out while admission slot is occupied");
+
+    assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(err.message, PROXY_REQUEST_CONCURRENCY_LIMIT_REACHED_MESSAGE);
+    assert_eq!(err.retry_after_secs, Some(1));
+    assert_eq!(
+        state
+            .proxy_request_in_flight
+            .load(std::sync::atomic::Ordering::Acquire),
+        1
+    );
+
+    drop(permit);
+    assert_eq!(
+        state
+            .proxy_request_in_flight
+            .load(std::sync::atomic::Ordering::Acquire),
+        0
+    );
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_via_pool_keeps_in_flight_tracking_until_downstream_stream_finishes() {
+    let app = Router::new().route(
+        "/v1/responses",
+        post(|| async move {
+            let stream = futures_util::stream::once(async {
+                Ok::<Bytes, Infallible>(Bytes::from_static(br#"{"phase":"streaming""#))
+            })
+            .chain(futures_util::stream::once(async move {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                Ok::<Bytes, Infallible>(Bytes::from_static(br#","done":true}"#))
+            }));
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(http_header::CONTENT_TYPE, "application/json")
+                .body(Body::from_stream(stream))
+                .expect("build streaming response")
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind streaming upstream");
+    let addr = listener.local_addr().expect("streaming upstream addr");
+    let upstream_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("streaming upstream should run");
+    });
+
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse(&format!("http://{addr}")).expect("valid streaming upstream base url");
+    config.proxy_request_concurrency_limit = 1;
+    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-stream-slot-key").await;
+    insert_test_pool_api_key_account(&state, "Streaming Slot", "route-stream-slot").await;
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        1003,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-stream-slot-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hi"}"#)),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("streaming via-pool request should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        state
+            .proxy_request_in_flight
+            .load(std::sync::atomic::Ordering::Acquire),
+        1,
+        "proxy request should remain in-flight until downstream streaming finishes"
+    );
+
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read streaming via-pool response");
+    assert_eq!(
+        body,
+        Bytes::from_static(br#"{"phase":"streaming","done":true}"#)
+    );
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(
+        state
+            .proxy_request_in_flight
+            .load(std::sync::atomic::Ordering::Acquire),
+        0,
+        "in-flight tracking should release after downstream streaming completes"
+    );
+
+    upstream_handle.abort();
 }
 
 #[test]

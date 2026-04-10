@@ -1228,8 +1228,10 @@ async fn capture_target_pool_route_keeps_late_logical_failure_when_downstream_di
     #[derive(sqlx::FromRow)]
     struct AttemptRow {
         status: String,
+        downstream_http_status: Option<i64>,
         failure_kind: Option<String>,
         error_message: Option<String>,
+        downstream_error_message: Option<String>,
     }
 
     let (upstream_base, _attempts, upstream_handle) = spawn_pool_late_response_failed_upstream().await;
@@ -1311,7 +1313,7 @@ async fn capture_target_pool_route_keeps_late_logical_failure_when_downstream_di
 
     let attempt = sqlx::query_as::<_, AttemptRow>(
         r#"
-        SELECT status, failure_kind, error_message
+        SELECT status, downstream_http_status, failure_kind, error_message, downstream_error_message
         FROM pool_upstream_request_attempts
         ORDER BY id DESC
         LIMIT 1
@@ -1321,6 +1323,7 @@ async fn capture_target_pool_route_keeps_late_logical_failure_when_downstream_di
     .await
     .expect("load latest pool attempt");
     assert_eq!(attempt.status, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE);
+    assert_eq!(attempt.downstream_http_status, Some(200));
     assert_eq!(
         attempt.failure_kind.as_deref(),
         Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
@@ -1330,6 +1333,12 @@ async fn capture_target_pool_route_keeps_late_logical_failure_when_downstream_di
             .error_message
             .as_deref()
             .is_some_and(|value| value.contains("upstream_response_failed"))
+    );
+    assert!(
+        attempt
+            .downstream_error_message
+            .as_deref()
+            .is_some_and(|value| value.contains("downstream closed while streaming upstream response"))
     );
 
     upstream_handle.abort();
@@ -1495,6 +1504,8 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
+        proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
+        proxy_request_concurrency_semaphore: Arc::new(Semaphore::new(config.proxy_request_concurrency_limit)),
         proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),

@@ -1,7 +1,5 @@
 #![recursion_limit = "256"]
 
-#[cfg(test)]
-use std::sync::atomic::AtomicUsize;
 use std::{
     borrow::Cow,
     collections::hash_map::DefaultHasher,
@@ -17,7 +15,7 @@ use std::{
     str::FromStr,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -61,7 +59,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     process::{Child, Command},
-    sync::{Mutex, RwLock, Semaphore, broadcast, mpsc, oneshot, watch},
+    sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, broadcast, mpsc, oneshot, watch},
     task::JoinHandle,
     time::{MissedTickBehavior, interval, sleep, timeout},
 };

@@ -65,6 +65,80 @@ async fn proxy_openai_v1_common(
         "openai proxy request started"
     );
 
+    let target_url =
+        match build_proxy_upstream_url(&state.config.openai_upstream_base_url, &original_uri) {
+            Ok(url) => url,
+            Err(err) => {
+                let status = if err.to_string().contains(PROXY_DOT_SEGMENT_PATH_NOT_ALLOWED)
+                    || err.to_string().contains(PROXY_INVALID_REQUEST_TARGET)
+                    || err
+                        .to_string()
+                        .contains("failed to parse proxy upstream url")
+                {
+                    StatusCode::BAD_REQUEST
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                };
+                return build_proxy_error_response(
+                    ProxyErrorResponse {
+                        status,
+                        message: format!("failed to build upstream url: {err}"),
+                        cvm_id: None,
+                        retry_after_secs: None,
+                    },
+                    &invoke_id,
+                );
+            }
+        };
+
+    if extract_bearer_token(&headers).is_none() {
+        return build_proxy_error_response(
+            ProxyErrorResponse {
+                status: StatusCode::UNAUTHORIZED,
+                message: PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE.to_string(),
+                cvm_id: None,
+                retry_after_secs: None,
+            },
+            &invoke_id,
+        );
+    }
+
+    let proxy_request_permit = match acquire_proxy_request_concurrency_permit(
+        state.as_ref(),
+        proxy_request_id,
+        &method_for_log,
+        &uri_for_log,
+    )
+    .await
+    {
+        Ok(permit) => Some(permit),
+        Err(err) => return build_proxy_error_response(err, &invoke_id),
+    };
+
+    let (pool_route_active, runtime_timeouts) = match resolve_proxy_route_context_after_admission(
+        state.as_ref(),
+        proxy_request_id,
+        &method_for_log,
+        &uri_for_log,
+        &headers,
+    )
+    .await
+    {
+        Ok(route_context) => route_context,
+        Err(err) => {
+            warn!(
+                proxy_request_id,
+                method = %method_for_log,
+                uri = %uri_for_log,
+                status = %err.status,
+                error = %err.message,
+                elapsed_ms = started_at.elapsed().as_millis(),
+                "openai proxy request failed during route admission"
+            );
+            return build_proxy_error_response(err, &invoke_id);
+        }
+    };
+
     match proxy_openai_v1_inner(
         state,
         proxy_request_id,
@@ -73,7 +147,11 @@ async fn proxy_openai_v1_common(
         method,
         headers,
         body,
+        target_url,
         peer_ip,
+        pool_route_active,
+        runtime_timeouts,
+        proxy_request_permit,
     )
     .await
     {
@@ -99,42 +177,7 @@ async fn proxy_openai_v1_common(
                 elapsed_ms = started_at.elapsed().as_millis(),
                 "openai proxy request failed"
             );
-            match err.cvm_id {
-                Some(cvm_id) => {
-                    let mut response = (
-                        err.status,
-                        Json(json!({ "error": err.message, "cvmId": cvm_id })),
-                    )
-                        .into_response();
-                    if let Ok(header_value) = HeaderValue::from_str(&invoke_id) {
-                        response
-                            .headers_mut()
-                            .insert(HeaderName::from_static(CVM_INVOKE_ID_HEADER), header_value);
-                    }
-                    if let Some(retry_after_secs) = err.retry_after_secs
-                        && let Ok(header_value) =
-                            HeaderValue::from_str(&retry_after_secs.to_string())
-                    {
-                        response
-                            .headers_mut()
-                            .insert(header::RETRY_AFTER, header_value);
-                    }
-                    response
-                }
-                None => {
-                    let mut response =
-                        (err.status, Json(json!({ "error": err.message }))).into_response();
-                    if let Some(retry_after_secs) = err.retry_after_secs
-                        && let Ok(header_value) =
-                            HeaderValue::from_str(&retry_after_secs.to_string())
-                    {
-                        response
-                            .headers_mut()
-                            .insert(header::RETRY_AFTER, header_value);
-                    }
-                    response
-                }
-            }
+            build_proxy_error_response(err, &invoke_id)
         }
     }
 }
@@ -145,6 +188,197 @@ struct ProxyErrorResponse {
     message: String,
     cvm_id: Option<String>,
     retry_after_secs: Option<u64>,
+}
+
+const PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE: &str = "pool route key missing or invalid";
+const PROXY_REQUEST_CONCURRENCY_LIMIT_REACHED_MESSAGE: &str =
+    "proxy request concurrency limit reached";
+
+fn build_proxy_error_response(err: ProxyErrorResponse, invoke_id: &str) -> Response {
+    match err.cvm_id {
+        Some(cvm_id) => {
+            let mut response = (
+                err.status,
+                Json(json!({ "error": err.message, "cvmId": cvm_id })),
+            )
+                .into_response();
+            if let Ok(header_value) = HeaderValue::from_str(invoke_id) {
+                response
+                    .headers_mut()
+                    .insert(HeaderName::from_static(CVM_INVOKE_ID_HEADER), header_value);
+            }
+            if let Some(retry_after_secs) = err.retry_after_secs
+                && let Ok(header_value) = HeaderValue::from_str(&retry_after_secs.to_string())
+            {
+                response
+                    .headers_mut()
+                    .insert(header::RETRY_AFTER, header_value);
+            }
+            response
+        }
+        None => {
+            let mut response = (err.status, Json(json!({ "error": err.message }))).into_response();
+            if let Some(retry_after_secs) = err.retry_after_secs
+                && let Ok(header_value) = HeaderValue::from_str(&retry_after_secs.to_string())
+            {
+                response
+                    .headers_mut()
+                    .insert(header::RETRY_AFTER, header_value);
+            }
+            response
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ProxyRequestConcurrencyPermit {
+    _semaphore_permit: OwnedSemaphorePermit,
+    in_flight: Arc<AtomicUsize>,
+}
+
+impl Drop for ProxyRequestConcurrencyPermit {
+    fn drop(&mut self) {
+        let _ = self.in_flight.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            Some(current.saturating_sub(1))
+        });
+    }
+}
+
+async fn acquire_proxy_request_concurrency_permit(
+    state: &AppState,
+    proxy_request_id: u64,
+    method: &Method,
+    original_uri: &Uri,
+) -> Result<ProxyRequestConcurrencyPermit, ProxyErrorResponse> {
+    let wait_timeout = state.config.proxy_request_concurrency_wait_timeout;
+    let started = Instant::now();
+    let permit = match timeout(
+        wait_timeout,
+        state.proxy_request_concurrency_semaphore.clone().acquire_owned(),
+    )
+    .await
+    {
+        Ok(Ok(permit)) => permit,
+        Ok(Err(err)) => {
+            warn!(
+                proxy_request_id,
+                method = %method,
+                uri = %original_uri,
+                error = %err,
+                "proxy request admission semaphore closed unexpectedly"
+            );
+            return Err(ProxyErrorResponse {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                message: "proxy request admission unavailable".to_string(),
+                cvm_id: None,
+                retry_after_secs: None,
+            });
+        }
+        Err(_) => {
+            warn!(
+                proxy_request_id,
+                method = %method,
+                uri = %original_uri,
+                wait_timeout_ms = wait_timeout.as_millis(),
+                "proxy request admission timed out"
+            );
+            return Err(ProxyErrorResponse {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                message: PROXY_REQUEST_CONCURRENCY_LIMIT_REACHED_MESSAGE.to_string(),
+                cvm_id: None,
+                retry_after_secs: retry_after_secs_for_proxy_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    PROXY_REQUEST_CONCURRENCY_LIMIT_REACHED_MESSAGE,
+                    Some(wait_timeout),
+                ),
+            });
+        }
+    };
+
+    let in_flight = state
+        .proxy_request_in_flight
+        .fetch_add(1, Ordering::AcqRel)
+        .saturating_add(1);
+    info!(
+        proxy_request_id,
+        method = %method,
+        uri = %original_uri,
+        in_flight,
+        configured_limit = state.config.proxy_request_concurrency_limit,
+        wait_elapsed_ms = started.elapsed().as_millis(),
+        "proxy request admitted"
+    );
+
+    Ok(ProxyRequestConcurrencyPermit {
+        _semaphore_permit: permit,
+        in_flight: state.proxy_request_in_flight.clone(),
+    })
+}
+
+async fn take_or_acquire_proxy_request_concurrency_permit(
+    permit: &mut Option<ProxyRequestConcurrencyPermit>,
+    state: &AppState,
+    proxy_request_id: u64,
+    method: &Method,
+    original_uri: &Uri,
+) -> Result<ProxyRequestConcurrencyPermit, (StatusCode, String)> {
+    match permit.take() {
+        Some(permit) => Ok(permit),
+        None => acquire_proxy_request_concurrency_permit(state, proxy_request_id, method, original_uri)
+            .await
+            .map_err(|err| (err.status, err.message)),
+    }
+}
+
+async fn resolve_proxy_route_context_after_admission(
+    state: &AppState,
+    proxy_request_id: u64,
+    method: &Method,
+    original_uri: &Uri,
+    headers: &HeaderMap,
+) -> Result<(bool, PoolRoutingTimeoutSettingsResolved), ProxyErrorResponse> {
+    let direct_timeouts = pool_routing_timeouts_from_config(&state.config);
+    let pool_route_active = match request_matches_pool_route(state, headers).await {
+        Ok(active) => active,
+        Err(err) => {
+            warn!(
+                proxy_request_id,
+                method = %method,
+                uri = %original_uri,
+                error = %err,
+                "failed to resolve pool route"
+            );
+            return Err(ProxyErrorResponse {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: format!("failed to resolve pool routing settings: {err}"),
+                cvm_id: None,
+                retry_after_secs: None,
+            });
+        }
+    };
+
+    if !pool_route_active {
+        return Ok((false, direct_timeouts));
+    }
+
+    match resolve_proxy_request_timeouts(state, true).await {
+        Ok(timeouts) => Ok((true, timeouts)),
+        Err(err) => {
+            warn!(
+                proxy_request_id,
+                method = %method,
+                uri = %original_uri,
+                error = %err,
+                "failed to resolve pool routing timeouts"
+            );
+            Err(ProxyErrorResponse {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: format!("failed to resolve pool routing timeouts: {err}"),
+                cvm_id: None,
+                retry_after_secs: None,
+            })
+        }
+    }
 }
 
 async fn resolve_proxy_request_timeouts(
@@ -438,9 +672,26 @@ fn build_pool_no_available_account_error(
     }
 }
 
-fn retry_after_secs_for_proxy_error(status: StatusCode, message: &str) -> Option<u64> {
-    (status == StatusCode::SERVICE_UNAVAILABLE && message == POOL_NO_AVAILABLE_ACCOUNT_MESSAGE)
-        .then_some(DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS)
+fn retry_after_secs_for_proxy_error(
+    status: StatusCode,
+    message: &str,
+    proxy_request_concurrency_wait_timeout: Option<Duration>,
+) -> Option<u64> {
+    if status != StatusCode::SERVICE_UNAVAILABLE {
+        return None;
+    }
+    if message == POOL_NO_AVAILABLE_ACCOUNT_MESSAGE {
+        return Some(DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS);
+    }
+    if message == PROXY_REQUEST_CONCURRENCY_LIMIT_REACHED_MESSAGE {
+        let wait_timeout = proxy_request_concurrency_wait_timeout?;
+        let secs = wait_timeout
+            .as_secs()
+            .saturating_add(u64::from(wait_timeout.subsec_nanos() > 0))
+            .max(1);
+        return Some(secs);
+    }
+    None
 }
 
 fn build_pool_degraded_only_error(

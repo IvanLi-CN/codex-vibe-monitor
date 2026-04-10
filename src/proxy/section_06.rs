@@ -57,8 +57,10 @@ async fn insert_pool_upstream_request_attempt(
     status: &str,
     phase: Option<&str>,
     http_status: Option<StatusCode>,
+    downstream_http_status: Option<StatusCode>,
     failure_kind: Option<&str>,
     error_message: Option<&str>,
+    downstream_error_message: Option<&str>,
     connect_latency_ms: Option<f64>,
     first_byte_latency_ms: Option<f64>,
     stream_latency_ms: Option<f64>,
@@ -85,8 +87,10 @@ async fn insert_pool_upstream_request_attempt(
             status,
             phase,
             http_status,
+            downstream_http_status,
             failure_kind,
             error_message,
+            downstream_error_message,
             connect_latency_ms,
             first_byte_latency_ms,
             stream_latency_ms,
@@ -95,7 +99,7 @@ async fn insert_pool_upstream_request_attempt(
             compact_support_reason
         )
         VALUES (
-            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
         )
         "#,
     )
@@ -115,8 +119,10 @@ async fn insert_pool_upstream_request_attempt(
     .bind(status)
     .bind(phase)
     .bind(http_status.map(|value| i64::from(value.as_u16())))
+    .bind(downstream_http_status.map(|value| i64::from(value.as_u16())))
     .bind(failure_kind)
     .bind(error_message)
+    .bind(downstream_error_message)
     .bind(connect_latency_ms)
     .bind(first_byte_latency_ms)
     .bind(stream_latency_ms)
@@ -150,6 +156,8 @@ async fn begin_pool_upstream_request_attempt(
         None,
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
         Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_CONNECTING),
+        None,
+        None,
         None,
         None,
         None,
@@ -1175,8 +1183,10 @@ async fn finalize_pool_upstream_request_attempt(
     finished_at: &str,
     status: &str,
     http_status: Option<StatusCode>,
+    downstream_http_status: Option<StatusCode>,
     failure_kind: Option<&str>,
     error_message: Option<&str>,
+    downstream_error_message: Option<&str>,
     connect_latency_ms: Option<f64>,
     first_byte_latency_ms: Option<f64>,
     stream_latency_ms: Option<f64>,
@@ -1205,14 +1215,16 @@ async fn finalize_pool_upstream_request_attempt(
                 status = ?3,
                 phase = ?4,
                 http_status = ?5,
-                failure_kind = ?6,
-                error_message = ?7,
-                connect_latency_ms = ?8,
-                first_byte_latency_ms = ?9,
-                stream_latency_ms = ?10,
-                upstream_request_id = ?11,
-                compact_support_status = ?12,
-                compact_support_reason = ?13
+                downstream_http_status = ?6,
+                failure_kind = ?7,
+                error_message = ?8,
+                downstream_error_message = ?9,
+                connect_latency_ms = ?10,
+                first_byte_latency_ms = ?11,
+                stream_latency_ms = ?12,
+                upstream_request_id = ?13,
+                compact_support_status = ?14,
+                compact_support_reason = ?15
             WHERE id = ?1
             "#,
         )
@@ -1221,8 +1233,10 @@ async fn finalize_pool_upstream_request_attempt(
         .bind(status)
         .bind(terminal_phase)
         .bind(http_status.map(|value| i64::from(value.as_u16())))
+        .bind(downstream_http_status.map(|value| i64::from(value.as_u16())))
         .bind(failure_kind)
         .bind(error_message)
+        .bind(downstream_error_message)
         .bind(connect_latency_ms)
         .bind(first_byte_latency_ms)
         .bind(stream_latency_ms)
@@ -1250,8 +1264,10 @@ async fn finalize_pool_upstream_request_attempt(
         status,
         Some(terminal_phase),
         http_status,
+        downstream_http_status,
         failure_kind,
         error_message,
+        downstream_error_message,
         connect_latency_ms,
         first_byte_latency_ms,
         stream_latency_ms,
@@ -1292,8 +1308,10 @@ async fn insert_pool_upstream_terminal_attempt(
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
         Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED),
         Some(final_error.status),
+        None,
         Some(failure_kind),
         Some(final_error.message.as_str()),
+        None,
         None,
         None,
         None,

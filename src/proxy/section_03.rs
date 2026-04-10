@@ -897,6 +897,7 @@ async fn proxy_openai_v1_via_pool(
     headers: HeaderMap,
     body: Body,
     runtime_timeouts: PoolRoutingTimeoutSettingsResolved,
+    mut proxy_request_permit: Option<ProxyRequestConcurrencyPermit>,
 ) -> Result<Response, (StatusCode, String)> {
     let request_started_at = Instant::now();
     let body_limit = state.config.openai_proxy_max_request_body_bytes;
@@ -921,6 +922,14 @@ async fn proxy_openai_v1_via_pool(
         )
     };
     let header_sticky_key = extract_sticky_key_from_headers(&headers);
+    let proxy_request_permit = take_or_acquire_proxy_request_concurrency_permit(
+        &mut proxy_request_permit,
+        state.as_ref(),
+        proxy_request_id,
+        &method,
+        original_uri,
+    )
+    .await?;
     let body_size_hint_exact = body
         .size_hint()
         .exact()
@@ -1565,18 +1574,21 @@ async fn proxy_openai_v1_via_pool(
                     let sticky_key_for_record = live_body_sticky_key.clone();
                     let invoke_id_for_record = upstream_invoke_id.clone();
                     let upstream_attempt_started_at_utc_for_record = upstream_attempt_started_at_utc;
+                    let proxy_request_permit_for_task = proxy_request_permit;
                     tokio::spawn(async move {
                         let mut forwarded_chunks = 0usize;
                         let mut forwarded_bytes = 0usize;
                         let stream_started_at = Instant::now();
                         let mut stream_error_message: Option<String> = None;
                         let mut downstream_closed = false;
+                        let mut proxy_request_permit_for_task = Some(proxy_request_permit_for_task);
 
                         if let Some(chunk) = first_chunk {
                             forwarded_chunks = forwarded_chunks.saturating_add(1);
                             forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
                             if tx.send(Ok(chunk)).await.is_err() {
                                 downstream_closed = true;
+                                let _ = proxy_request_permit_for_task.take();
                             }
                         }
 
@@ -1592,6 +1604,7 @@ async fn proxy_openai_v1_via_pool(
                                     forwarded_chunks = forwarded_chunks.saturating_add(1);
                                     forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
                                     if tx.send(Ok(chunk)).await.is_err() {
+                                        let _ = proxy_request_permit_for_task.take();
                                         break;
                                     }
                                 }
@@ -1603,6 +1616,7 @@ async fn proxy_openai_v1_via_pool(
                                 }
                             }
                         }
+                        drop(proxy_request_permit_for_task.take());
 
                         if let Some(message) = stream_error_message.as_deref() {
                             release_pool_routing_reservation(
@@ -1823,18 +1837,21 @@ async fn proxy_openai_v1_via_pool(
     let sticky_key_for_record = sticky_key.clone();
     let invoke_id_for_record = upstream_invoke_id.clone();
     let upstream_attempt_started_at_utc_for_record = upstream_attempt_started_at_utc;
+    let proxy_request_permit_for_task = proxy_request_permit;
     tokio::spawn(async move {
         let mut forwarded_chunks = 0usize;
         let mut forwarded_bytes = 0usize;
         let stream_started_at = Instant::now();
         let mut stream_error_message: Option<String> = None;
         let mut downstream_closed = false;
+        let mut proxy_request_permit_for_task = Some(proxy_request_permit_for_task);
 
         if let Some(chunk) = first_chunk {
             forwarded_chunks = forwarded_chunks.saturating_add(1);
             forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
             if tx.send(Ok(chunk)).await.is_err() {
                 downstream_closed = true;
+                let _ = proxy_request_permit_for_task.take();
             }
         }
 
@@ -1850,6 +1867,7 @@ async fn proxy_openai_v1_via_pool(
                     forwarded_chunks = forwarded_chunks.saturating_add(1);
                     forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
                     if tx.send(Ok(chunk)).await.is_err() {
+                        let _ = proxy_request_permit_for_task.take();
                         break;
                     }
                 }
@@ -1861,6 +1879,7 @@ async fn proxy_openai_v1_via_pool(
                 }
             }
         }
+        drop(proxy_request_permit_for_task.take());
 
         if let Some(message) = stream_error_message.as_deref() {
             release_pool_routing_reservation(

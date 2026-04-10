@@ -37,6 +37,7 @@ async fn proxy_openai_v1_via_pool_waits_for_initial_account_resolution_before_se
             ]),
             Body::from(r#"{"model":"gpt-5","messages":[]}"#.as_bytes().to_vec()),
             runtime_timeouts,
+            None,
         )
         .await
     });
@@ -117,6 +118,7 @@ async fn proxy_openai_v1_body_only_sticky_stream_waits_only_once_before_503() {
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -186,6 +188,7 @@ async fn proxy_openai_v1_chunked_json_without_header_sticky_uses_live_first_atte
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await
     .expect("chunked via-pool request should succeed via live first attempt");
@@ -262,6 +265,7 @@ async fn proxy_openai_v1_header_sticky_stream_prefers_body_timeout_before_pool_w
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -342,6 +346,7 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_body_timeout_over_rate_l
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -456,6 +461,7 @@ async fn proxy_openai_v1_header_sticky_stream_waits_for_blocked_policy_header_er
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -576,6 +582,7 @@ async fn proxy_openai_v1_header_sticky_stream_same_value_short_circuits_blocked_
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -661,6 +668,7 @@ async fn proxy_openai_v1_header_sticky_stream_waits_for_body_sticky_override_bef
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await
     .expect("via-pool request should succeed");
@@ -743,6 +751,7 @@ async fn proxy_openai_v1_header_sticky_responses_wait_timeout_respects_total_tim
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -822,6 +831,7 @@ async fn proxy_openai_v1_header_sticky_responses_total_timeout_short_circuits_bo
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -890,6 +900,7 @@ async fn proxy_openai_v1_responses_prebuffer_body_counts_total_timeout_from_requ
         ]),
         Body::from_stream(slow_body),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -968,6 +979,7 @@ async fn proxy_openai_v1_responses_prebuffer_body_wait_counts_total_timeout_from
         ]),
         Body::from_stream(slow_body),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -1034,6 +1046,7 @@ async fn proxy_openai_v1_responses_streamed_body_counts_total_timeout_from_reque
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -1191,6 +1204,7 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_pre_resolved_account_aft
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await
     .expect("via-pool request should succeed");
@@ -1283,6 +1297,7 @@ async fn proxy_openai_v1_header_sticky_stream_body_override_beats_rate_limited_h
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await
     .expect("via-pool request should succeed");
@@ -1411,6 +1426,7 @@ async fn proxy_openai_v1_header_sticky_stream_body_override_beats_blocked_policy
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await
     .expect("via-pool request should succeed");
@@ -1487,6 +1503,7 @@ async fn proxy_openai_v1_header_sticky_stream_prefers_body_too_large_before_pool
         ]),
         body,
         runtime_timeouts,
+        None,
     )
     .await;
 
@@ -1562,6 +1579,7 @@ async fn proxy_openai_v1_header_sticky_stream_waits_after_body_reroute_needs_acc
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await
     .expect("via-pool request should succeed");
@@ -1646,6 +1664,7 @@ async fn proxy_openai_v1_header_sticky_stream_reroute_preserves_original_wait_wi
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -1761,6 +1780,7 @@ async fn pool_route_oauth_passthrough_streams_without_eager_prebuffering() {
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         pool_routing_timeouts_from_config(&state.config),
+        None,
     )
     .await
     .expect("oauth pool passthrough response");
@@ -1893,6 +1913,7 @@ async fn pool_route_oauth_responses_replay_body_keeps_request_started_total_time
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
