@@ -417,47 +417,45 @@ async fn parallel_work_stats_zero_fill_and_exclude_current_minute_and_hour() {
     let now = Utc::now();
     let current_minute_epoch =
         align_reporting_bucket_epoch(now.timestamp(), 60, Shanghai).expect("align minute");
-    let current_minute = Utc
+    let inserted_current_minute = Utc
         .timestamp_opt(current_minute_epoch, 0)
         .single()
         .expect("current minute");
-    let previous_minute = current_minute - ChronoDuration::minutes(1);
-    let empty_minute = current_minute - ChronoDuration::minutes(2);
+    let inserted_previous_minute = inserted_current_minute - ChronoDuration::minutes(1);
 
     insert_parallel_work_invocation(
         &state.pool,
         "parallel-prev-minute",
-        previous_minute + ChronoDuration::seconds(10),
+        inserted_previous_minute + ChronoDuration::seconds(10),
         "pck-prev-minute",
     )
     .await;
     insert_parallel_work_invocation(
         &state.pool,
         "parallel-current-minute",
-        current_minute + ChronoDuration::seconds(10),
+        inserted_current_minute + ChronoDuration::seconds(10),
         "pck-current-minute",
     )
     .await;
 
     let current_hour_epoch =
         align_reporting_bucket_epoch(now.timestamp(), 3_600, Shanghai).expect("align hour");
-    let current_hour = Utc
+    let inserted_current_hour = Utc
         .timestamp_opt(current_hour_epoch, 0)
         .single()
         .expect("current hour");
-    let previous_hour = current_hour - ChronoDuration::hours(1);
-    let empty_hour = current_hour - ChronoDuration::hours(2);
+    let inserted_previous_hour = inserted_current_hour - ChronoDuration::hours(1);
 
     insert_parallel_work_prompt_cache_rollup_hourly_row(
         &state.pool,
-        previous_hour,
+        inserted_previous_hour,
         "pck-prev-hour",
         2,
     )
     .await;
     insert_parallel_work_prompt_cache_rollup_hourly_row(
         &state.pool,
-        current_hour,
+        inserted_current_hour,
         "pck-current-hour",
         2,
     )
@@ -472,17 +470,22 @@ async fn parallel_work_stats_zero_fill_and_exclude_current_minute_and_hour() {
     .await
     .expect("fetch parallel-work stats");
 
+    let response_current_minute = DateTime::parse_from_rfc3339(&response.minute7d.range_end)
+        .expect("parse minute range end")
+        .with_timezone(&Utc);
+    let response_previous_minute = response_current_minute - ChronoDuration::minutes(1);
+    let response_empty_minute = response_current_minute - ChronoDuration::minutes(3);
     let previous_minute_point = response
         .minute7d
         .points
         .iter()
-        .find(|point| point.bucket_start == format_utc_iso(previous_minute))
+        .find(|point| point.bucket_start == format_utc_iso(response_previous_minute))
         .expect("previous minute point");
     let empty_minute_point = response
         .minute7d
         .points
         .iter()
-        .find(|point| point.bucket_start == format_utc_iso(empty_minute))
+        .find(|point| point.bucket_start == format_utc_iso(response_empty_minute))
         .expect("empty minute point");
     assert_eq!(previous_minute_point.parallel_count, 1);
     assert_eq!(empty_minute_point.parallel_count, 0);
@@ -491,20 +494,25 @@ async fn parallel_work_stats_zero_fill_and_exclude_current_minute_and_hour() {
             .minute7d
             .points
             .iter()
-            .all(|point| point.bucket_start != format_utc_iso(current_minute))
+            .all(|point| point.bucket_start != response.minute7d.range_end)
     );
 
+    let response_current_hour = DateTime::parse_from_rfc3339(&response.hour30d.range_end)
+        .expect("parse hour range end")
+        .with_timezone(&Utc);
+    let response_previous_hour = response_current_hour - ChronoDuration::hours(1);
+    let response_empty_hour = response_current_hour - ChronoDuration::hours(3);
     let previous_hour_point = response
         .hour30d
         .points
         .iter()
-        .find(|point| point.bucket_start == format_utc_iso(previous_hour))
+        .find(|point| point.bucket_start == format_utc_iso(response_previous_hour))
         .expect("previous hour point");
     let empty_hour_point = response
         .hour30d
         .points
         .iter()
-        .find(|point| point.bucket_start == format_utc_iso(empty_hour))
+        .find(|point| point.bucket_start == format_utc_iso(response_empty_hour))
         .expect("empty hour point");
     assert_eq!(previous_hour_point.parallel_count, 1);
     assert_eq!(empty_hour_point.parallel_count, 0);
@@ -513,7 +521,7 @@ async fn parallel_work_stats_zero_fill_and_exclude_current_minute_and_hour() {
             .hour30d
             .points
             .iter()
-            .all(|point| point.bucket_start != format_utc_iso(current_hour))
+            .all(|point| point.bucket_start != response.hour30d.range_end)
     );
 }
 
@@ -2413,4 +2421,3 @@ fn invocation_archive_pruned_success_details_require_empty_legacy_http_200_error
         "legacy http_200 rows with an empty error message should still count as pruned success-like rows",
     );
 }
-

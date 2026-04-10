@@ -3,7 +3,7 @@
 use std::{
     borrow::Cow,
     collections::hash_map::DefaultHasher,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     convert::Infallible,
     env, fmt,
     future::Future,
@@ -144,6 +144,7 @@ const DEFAULT_OPENAI_UPSTREAM_BASE_URL: &str = "https://api.openai.com/";
 const DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_PROXY_REQUEST_CONCURRENCY_LIMIT: usize = 12;
 const DEFAULT_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS: u64 = 2_000;
+const DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS: usize = 32;
 const IMPORTED_OAUTH_ROUTE_MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 const DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS: u64 = 60;
 const DEFAULT_OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS: u64 = 300;
@@ -178,12 +179,10 @@ const STARTUP_BACKFILL_TASK_INVOCATION_SERVICE_TIER: &str = "invocation_service_
 const STARTUP_BACKFILL_TASK_REASONING_EFFORT: &str = "proxy_reasoning_effort_v1";
 const STARTUP_BACKFILL_TASK_FAILURE_CLASSIFICATION: &str = "failure_classification_v1";
 const DEFAULT_PROXY_RAW_MAX_BYTES: Option<usize> = None;
-const DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS: usize = 32;
 const DEFAULT_PROXY_PRICING_CATALOG_PATH: &str = "config/model-pricing.json";
 const DEFAULT_PROXY_RAW_DIR: &str = "proxy_raw_payloads";
 const DEFAULT_PROXY_RAW_COMPRESSION: RawCompressionCodec = RawCompressionCodec::Gzip;
 const DEFAULT_PROXY_RAW_HOT_SECS: u64 = 24 * 60 * 60;
-const DEFAULT_PROXY_SUMMARY_QUOTA_BROADCAST_DEBOUNCE_MS: u64 = 100;
 const RAW_RESPONSE_PREVIEW_LIMIT: usize = 16 * 1024;
 const BOUNDED_NON_STREAM_RESPONSE_PARSE_LIMIT_BYTES: usize = 256 * 1024;
 const STREAM_RESPONSE_LINE_BUFFER_LIMIT: usize = 256 * 1024;
@@ -258,6 +257,11 @@ const ENV_POOL_UPSTREAM_RESPONSES_TOTAL_TIMEOUT_SECS: &str =
     "POOL_UPSTREAM_RESPONSES_TOTAL_TIMEOUT_SECS";
 const LEGACY_ENV_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS: &str =
     "XY_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS";
+
+fn proxy_raw_async_writer_limit(config: &AppConfig) -> usize {
+    DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS
+        .max(config.proxy_request_concurrency_limit.saturating_mul(2))
+}
 const ENV_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS: &str = "STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS";
 const LEGACY_ENV_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS: &str =
     "XY_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS";

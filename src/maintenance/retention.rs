@@ -854,7 +854,7 @@ async fn compress_cold_proxy_raw_payloads_with_budget(
     };
 
     loop {
-        let (request_summary, request_rows) = compress_cold_proxy_raw_payload_lane(
+        let (request_summary, request_hit_batch_limit) = compress_cold_proxy_raw_payload_lane(
             pool,
             config,
             raw_path_fallback_root,
@@ -865,7 +865,7 @@ async fn compress_cold_proxy_raw_payloads_with_budget(
         .await?;
         accumulate_raw_compression_summary(&mut summary, request_summary);
 
-        let (response_summary, response_rows) = compress_cold_proxy_raw_payload_lane(
+        let (response_summary, response_hit_batch_limit) = compress_cold_proxy_raw_payload_lane(
             pool,
             config,
             raw_path_fallback_root,
@@ -876,7 +876,7 @@ async fn compress_cold_proxy_raw_payloads_with_budget(
         .await?;
         accumulate_raw_compression_summary(&mut summary, response_summary);
 
-        if request_rows == 0 && response_rows == 0 {
+        if !request_hit_batch_limit && !response_hit_batch_limit {
             break;
         }
         if dry_run {
@@ -910,7 +910,7 @@ async fn compress_cold_proxy_raw_payload_lane(
     dry_run: bool,
     field: RawPayloadField,
     batch_limit: usize,
-) -> Result<(RawCompressionPassSummary, usize)> {
+) -> Result<(RawCompressionPassSummary, bool)> {
     let cutoff = shanghai_local_cutoff_for_age_secs_string(config.proxy_raw_hot_secs);
     let prune_cutoff = shanghai_local_cutoff_string(config.invocation_success_full_days);
     let archive_cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
@@ -947,8 +947,8 @@ async fn compress_cold_proxy_raw_payload_lane(
     let mut last_seen_occurred_at: Option<String> = None;
     let mut last_seen_id = 0_i64;
 
-    while summary.files_considered < batch_limit {
-        let remaining = (batch_limit - summary.files_considered) as i64;
+    while rows_processed < batch_limit {
+        let remaining = (batch_limit - rows_processed) as i64;
         let candidates = sqlx::query_as::<_, InvocationRawCompressionFieldCandidate>(&sql)
             .bind(&cutoff)
             .bind(&archive_cutoff)
@@ -1034,13 +1034,14 @@ async fn compress_cold_proxy_raw_payload_lane(
             summary.bytes_after += outcome.bytes_after;
             summary.estimated_bytes_after += outcome.estimated_bytes_after;
 
-            if summary.files_considered >= batch_limit {
+            if rows_processed >= batch_limit {
                 break;
             }
         }
     }
 
-    Ok((summary, rows_processed))
+    let hit_batch_limit = rows_processed >= batch_limit;
+    Ok((summary, hit_batch_limit))
 }
 
 async fn maybe_compress_proxy_raw_path(

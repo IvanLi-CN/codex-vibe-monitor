@@ -1283,4 +1283,3 @@ fn internal_error_html(err: impl ToString) -> (StatusCode, String) {
         render_callback_page(false, "OAuth callback failed", &err.to_string()),
     )
 }
-

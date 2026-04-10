@@ -777,9 +777,7 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
         shutdown: CancellationToken::new(),
         semaphore,
         proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
-        proxy_raw_async_semaphore: Arc::new(Semaphore::new(
-            DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
-        )),
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings {
             hijack_enabled: true,
             merge_upstream_enabled: true,
@@ -804,6 +802,8 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
         )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
+        pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         pool_group_429_retry_delay_override: None,
         pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
@@ -1382,6 +1382,40 @@ async fn broadcast_quota_if_changed_skips_duplicate_payloads() {
         }
         other => panic!("unexpected payload: {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn capture_targets_reject_non_pool_requests_before_proxying() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://example.invalid").expect("valid upstream base url"),
+    )
+    .await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::new(),
+        Body::from(
+            serde_json::to_vec(&json!({
+                "model": "gpt-5.4",
+                "input": "hello",
+                "stream": false
+            }))
+            .expect("serialize request body"),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy error body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode proxy error payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some("pool route key missing or invalid")
+    );
 }
 
 #[tokio::test]
@@ -2235,6 +2269,61 @@ async fn pool_routing_settings_timeout_updates_succeed_without_crypto_key() {
 }
 
 #[tokio::test]
+async fn pool_routing_settings_timeout_updates_tolerate_invalid_cached_api_key_ciphertext() {
+    let state = test_state_from_config(test_config(), true).await;
+    sqlx::query(
+        r#"
+        UPDATE pool_routing_settings
+        SET encrypted_api_key = ?1,
+            masked_api_key = ?2
+        WHERE id = 1
+        "#,
+    )
+    .bind("not-a-valid-ciphertext")
+    .bind("sk-bad")
+    .execute(&state.pool)
+    .await
+    .expect("poison stored pool api key ciphertext");
+
+    {
+        let mut runtime_cache = state.pool_routing_runtime_cache.lock().await;
+        *runtime_cache = None;
+    }
+
+    let payload = UpdatePoolRoutingSettingsRequest {
+        api_key: None,
+        maintenance: None,
+        timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
+            responses_first_byte_timeout_secs: None,
+            compact_first_byte_timeout_secs: None,
+            responses_stream_timeout_secs: Some(375),
+            compact_stream_timeout_secs: None,
+        }),
+    };
+    let Json(response) =
+        update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(payload))
+            .await
+            .expect("timeout-only routing update should stay writable with invalid cached api key");
+    assert_eq!(response.timeouts.responses_stream_timeout_secs, 375);
+    assert!(
+        state.pool_routing_runtime_cache.lock().await.is_none(),
+        "best-effort refresh should keep lazy resolution when the stored key cannot be decrypted"
+    );
+
+    let persisted = sqlx::query_as::<_, (Option<i64>,)>(
+        r#"
+        SELECT responses_stream_timeout_secs
+        FROM pool_routing_settings
+        WHERE id = 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load updated timeout row");
+    assert_eq!(persisted.0, Some(375));
+}
+
+#[tokio::test]
 async fn pool_routing_settings_api_key_updates_require_crypto_key() {
     let state = test_state_from_config(test_config(), true).await;
     let _env_guard = EnvVarGuard::set(&[(ENV_UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET, None)]);
@@ -2401,4 +2490,3 @@ fn pool_same_account_attempt_budget_limits_follow_up_accounts_for_responses_fami
         2
     );
 }
-

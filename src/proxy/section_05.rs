@@ -1803,4 +1803,3 @@ fn upstream_account_id_from_payload(payload: Option<&str>) -> Option<i64> {
     let value = serde_json::from_str::<Value>(payload).ok()?;
     value.get("upstreamAccountId").and_then(json_value_to_i64)
 }
-

@@ -366,4 +366,3 @@ pub(crate) async fn get_upstream_account(
         .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
     Ok(Json(detail))
 }
-

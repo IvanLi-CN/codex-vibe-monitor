@@ -54,6 +54,7 @@ async fn proxy_openai_v1_common(
     let request_may_have_body = request_may_have_body(&method, &headers);
     let method_for_log = method.clone();
     let uri_for_log = original_uri.clone();
+
     info!(
         proxy_request_id,
         method = %method_for_log,
@@ -102,17 +103,7 @@ async fn proxy_openai_v1_common(
         );
     }
 
-    let proxy_request_permit = Some(
-        acquire_proxy_request_concurrency_permit(
-            state.as_ref(),
-            proxy_request_id,
-            &method_for_log,
-            &uri_for_log,
-        )
-        .await,
-    );
-
-    let (pool_route_active, runtime_timeouts) = match resolve_proxy_route_context_after_admission(
+    let runtime_timeouts = match resolve_proxy_route_context_for_request(
         state.as_ref(),
         proxy_request_id,
         &method_for_log,
@@ -130,11 +121,22 @@ async fn proxy_openai_v1_common(
                 status = %err.status,
                 error = %err.message,
                 elapsed_ms = started_at.elapsed().as_millis(),
-                "openai proxy request failed during route admission"
+                "openai proxy request failed during route validation"
             );
             return build_proxy_error_response(err, &invoke_id);
         }
     };
+    let pool_route_active = true;
+
+    let proxy_request_permit = Some(
+        acquire_proxy_request_concurrency_permit(
+            state.as_ref(),
+            proxy_request_id,
+            &method_for_log,
+            &uri_for_log,
+        )
+        .await,
+    );
 
     match proxy_openai_v1_inner(
         state,
@@ -179,7 +181,7 @@ async fn proxy_openai_v1_common(
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct ProxyErrorResponse {
     status: StatusCode,
     message: String,
@@ -188,10 +190,6 @@ struct ProxyErrorResponse {
 }
 
 const PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE: &str = "pool route key missing or invalid";
-const RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED: &str =
-    "async_backpressure_dropped";
-const ASYNC_STREAMING_RAW_WRITER_QUEUE_CAPACITY: usize = 8;
-
 fn build_proxy_error_response(err: ProxyErrorResponse, invoke_id: &str) -> Response {
     match err.cvm_id {
         Some(cvm_id) => {
@@ -258,6 +256,7 @@ async fn acquire_proxy_request_concurrency_permit(
         in_flight,
         "proxy request admitted"
     );
+
     ProxyRequestConcurrencyPermit {
         in_flight: state.proxy_request_in_flight.clone(),
     }
@@ -279,14 +278,13 @@ async fn take_or_acquire_proxy_request_concurrency_permit(
     }
 }
 
-async fn resolve_proxy_route_context_after_admission(
+async fn resolve_proxy_route_context_for_request(
     state: &AppState,
     proxy_request_id: u64,
     method: &Method,
     original_uri: &Uri,
     headers: &HeaderMap,
-) -> Result<(bool, PoolRoutingTimeoutSettingsResolved), ProxyErrorResponse> {
-    let direct_timeouts = pool_routing_timeouts_from_config(&state.config);
+) -> Result<PoolRoutingTimeoutSettingsResolved, ProxyErrorResponse> {
     let pool_route_active = match request_matches_pool_route(state, headers).await {
         Ok(active) => active,
         Err(err) => {
@@ -307,11 +305,16 @@ async fn resolve_proxy_route_context_after_admission(
     };
 
     if !pool_route_active {
-        return Ok((false, direct_timeouts));
+        return Err(ProxyErrorResponse {
+            status: StatusCode::UNAUTHORIZED,
+            message: PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE.to_string(),
+            cvm_id: None,
+            retry_after_secs: None,
+        });
     }
 
     match resolve_proxy_request_timeouts(state, true).await {
-        Ok(timeouts) => Ok((true, timeouts)),
+        Ok(timeouts) => Ok(timeouts),
         Err(err) => {
             warn!(
                 proxy_request_id,
@@ -335,7 +338,7 @@ async fn resolve_proxy_request_timeouts(
     pool_route_active: bool,
 ) -> Result<PoolRoutingTimeoutSettingsResolved> {
     if pool_route_active {
-        resolve_pool_routing_timeouts(&state.pool, &state.config).await
+        Ok(load_pool_routing_runtime_cache(state).await?.timeouts)
     } else {
         Ok(pool_routing_timeouts_from_config(&state.config))
     }
@@ -446,6 +449,10 @@ impl ProxyUpstreamResponseBody {
     }
 }
 
+const RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED: &str =
+    "async_backpressure_dropped";
+const ASYNC_STREAMING_RAW_WRITER_QUEUE_CAPACITY: usize = 8;
+
 fn pool_upstream_timeout_message(total_timeout: Duration, phase: &str) -> String {
     format!(
         "request timed out after {}ms while {phase}",
@@ -515,6 +522,8 @@ pub(crate) struct PoolUpstreamResponse {
     pub(crate) first_byte_latency_ms: f64,
     pub(crate) first_chunk: Option<Bytes>,
     pub(crate) pending_attempt_record: Option<PendingPoolAttemptRecord>,
+    pub(crate) deferred_early_phase_cleanup_guard: Option<PoolEarlyPhaseOrphanCleanupGuard>,
+    pub(crate) live_attempt_activity_lease: Option<PoolLiveAttemptActivityLease>,
     pub(crate) attempt_summary: PoolAttemptSummary,
     pub(crate) requested_service_tier: Option<String>,
     pub(crate) request_body_for_capture: Option<Bytes>,
@@ -624,7 +633,6 @@ fn build_pool_no_available_account_error(
 fn retry_after_secs_for_proxy_error(
     status: StatusCode,
     message: &str,
-    _proxy_request_concurrency_wait_timeout: Option<Duration>,
 ) -> Option<u64> {
     if status != StatusCode::SERVICE_UNAVAILABLE {
         return None;
@@ -809,6 +817,50 @@ struct PoolAttemptRuntimeSnapshotContext {
     t_req_parse_ms: f64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct InvocationRecoverySelector {
+    invoke_id: String,
+    occurred_at: String,
+}
+
+impl InvocationRecoverySelector {
+    fn new(invoke_id: impl Into<String>, occurred_at: impl Into<String>) -> Self {
+        Self {
+            invoke_id: invoke_id.into(),
+            occurred_at: occurred_at.into(),
+        }
+    }
+}
+
+impl From<&PendingPoolAttemptRecord> for InvocationRecoverySelector {
+    fn from(value: &PendingPoolAttemptRecord) -> Self {
+        Self::new(value.invoke_id.clone(), value.occurred_at.clone())
+    }
+}
+
+#[derive(Debug, Clone, FromRow)]
+#[allow(dead_code)]
+struct RecoveredPoolAttemptRow {
+    id: i64,
+    invoke_id: String,
+    occurred_at: String,
+    sticky_key: Option<String>,
+    upstream_account_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct RecoveredInvocationRow {
+    id: i64,
+    invoke_id: String,
+    occurred_at: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct PoolOrphanRecoveryOutcome {
+    pub(crate) recovered_attempts: usize,
+    pub(crate) recovered_invocations: usize,
+}
+
 const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING: &str = "pending";
 struct CompactSupportObservation {
     status: &'static str,
@@ -824,6 +876,212 @@ const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_WAITING_FIRST_BYTE: &str = "waiting_fi
 const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE: &str = "streaming_response";
 const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED: &str = "completed";
 const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED: &str = "failed";
+const POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE: Duration = Duration::from_secs(30);
+const POOL_ATTEMPT_RECOVERY_SELECTOR_BATCH_SIZE: usize = 400;
+const PROXY_INVOCATION_RECOVERY_SELECTOR_BATCH_SIZE: usize = 400;
+
+struct PoolEarlyPhaseOrphanCleanupGuard {
+    state: Arc<AppState>,
+    pending_attempt_record: PendingPoolAttemptRecord,
+    first_byte_observed: bool,
+    terminal_outcome_observed: bool,
+    armed: bool,
+}
+
+impl std::fmt::Debug for PoolEarlyPhaseOrphanCleanupGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PoolEarlyPhaseOrphanCleanupGuard")
+            .field("pending_attempt_record", &self.pending_attempt_record)
+            .field("armed", &self.armed)
+            .finish()
+    }
+}
+
+impl PoolEarlyPhaseOrphanCleanupGuard {
+    fn new(state: Arc<AppState>, pending_attempt_record: PendingPoolAttemptRecord) -> Self {
+        Self {
+            state,
+            pending_attempt_record,
+            first_byte_observed: false,
+            terminal_outcome_observed: false,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    fn mark_first_byte_observed(&mut self, first_byte_latency_ms: f64) {
+        self.first_byte_observed = true;
+        self.pending_attempt_record.first_byte_latency_ms = self
+            .pending_attempt_record
+            .first_byte_latency_ms
+            .max(first_byte_latency_ms);
+    }
+
+    fn mark_terminal_outcome_observed(&mut self) {
+        self.terminal_outcome_observed = true;
+    }
+}
+
+impl Drop for PoolEarlyPhaseOrphanCleanupGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+
+        let state = self.state.clone();
+        let pending_attempt_record = self.pending_attempt_record.clone();
+        let first_byte_observed = self.first_byte_observed;
+        let terminal_outcome_observed = self.terminal_outcome_observed;
+        tokio::spawn(async move {
+            if let Err(err) = recover_guard_dropped_pool_early_phase_orphan(
+                state.as_ref(),
+                pending_attempt_record,
+                first_byte_observed,
+                terminal_outcome_observed,
+            )
+            .await
+            {
+                warn!(error = %err, "failed to recover dropped pool early-phase orphan");
+            }
+        });
+    }
+}
+
+struct PoolInvocationCleanupGuard {
+    state: Arc<AppState>,
+    selector: InvocationRecoverySelector,
+    recovery_trigger: &'static str,
+    armed: bool,
+}
+
+impl std::fmt::Debug for PoolInvocationCleanupGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PoolInvocationCleanupGuard")
+            .field("selector", &self.selector)
+            .field("recovery_trigger", &self.recovery_trigger)
+            .field("armed", &self.armed)
+            .finish()
+    }
+}
+
+impl PoolInvocationCleanupGuard {
+    fn new(
+        state: Arc<AppState>,
+        selector: InvocationRecoverySelector,
+        recovery_trigger: &'static str,
+    ) -> Self {
+        Self {
+            state,
+            selector,
+            recovery_trigger,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PoolInvocationCleanupGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+
+        let state = self.state.clone();
+        let selector = self.selector.clone();
+        let recovery_trigger = self.recovery_trigger;
+        tokio::spawn(async move {
+            if let Err(err) = recover_guard_dropped_pool_invocation_orphan(
+                state.as_ref(),
+                selector,
+                recovery_trigger,
+            )
+            .await
+            {
+                warn!(error = %err, recovery_trigger, "failed to recover dropped pool invocation orphan");
+            }
+        });
+    }
+}
+
+struct PoolLiveAttemptActivityLease {
+    live_attempt_ids: Arc<std::sync::Mutex<HashSet<i64>>>,
+    attempt_id: i64,
+}
+
+impl std::fmt::Debug for PoolLiveAttemptActivityLease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PoolLiveAttemptActivityLease")
+            .field("attempt_id", &self.attempt_id)
+            .finish()
+    }
+}
+
+impl PoolLiveAttemptActivityLease {
+    fn new(state: Arc<AppState>, attempt_id: i64) -> Self {
+        {
+            let mut live_attempt_ids = state
+                .pool_live_attempt_ids
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            live_attempt_ids.insert(attempt_id);
+        }
+        Self {
+            live_attempt_ids: state.pool_live_attempt_ids.clone(),
+            attempt_id,
+        }
+    }
+}
+
+impl Drop for PoolLiveAttemptActivityLease {
+    fn drop(&mut self) {
+        let mut live_attempt_ids = self
+            .live_attempt_ids
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        live_attempt_ids.remove(&self.attempt_id);
+    }
+}
+
+fn disarm_pool_early_phase_cleanup_guard(
+    guard: &mut Option<PoolEarlyPhaseOrphanCleanupGuard>,
+) {
+    if let Some(guard) = guard.as_mut() {
+        guard.disarm();
+    }
+}
+
+fn complete_deferred_pool_early_phase_cleanup_guard(
+    guard: &mut Option<PoolEarlyPhaseOrphanCleanupGuard>,
+) {
+    if let Some(guard) = guard.as_mut() {
+        guard.mark_terminal_outcome_observed();
+    }
+    disarm_pool_early_phase_cleanup_guard(guard);
+}
+
+fn finalize_deferred_pool_early_phase_cleanup_guard_after_terminal_invocation(
+    guard: &mut Option<PoolEarlyPhaseOrphanCleanupGuard>,
+    terminal_invocation_persisted: bool,
+) {
+    if !terminal_invocation_persisted || guard.is_none() {
+        return;
+    }
+    complete_deferred_pool_early_phase_cleanup_guard(guard);
+}
+
+fn disarm_pool_invocation_cleanup_guard(
+    guard: &mut Option<PoolInvocationCleanupGuard>,
+) {
+    if let Some(guard) = guard.as_mut() {
+        guard.disarm();
+    }
+}
 const POOL_UPSTREAM_MAX_DISTINCT_ACCOUNTS: usize = 3;
 const POOL_UPSTREAM_RESPONSES_MAX_TIMEOUT_ROUTE_KEYS: usize = 3;
 
@@ -845,7 +1103,6 @@ enum PoolReplayBodySnapshot {
     File {
         temp_file: Arc<PoolReplayTempFile>,
         size: usize,
-        sticky_key: Option<String>,
     },
 }
 
@@ -892,28 +1149,66 @@ fn proxy_capture_response_status_is_success(
 }
 
 fn proxy_capture_is_pure_downstream_close(
-    upstream_status: StatusCode,
+    status: StatusCode,
     stream_error: bool,
     logical_stream_failure: bool,
     downstream_closed: bool,
 ) -> bool {
     downstream_closed
-        && upstream_status.is_success()
+        && status.is_success()
         && !stream_error
         && !logical_stream_failure
 }
 
+fn proxy_capture_invocation_failure_kind(
+    status: StatusCode,
+    stream_error: bool,
+    logical_stream_failure: bool,
+    pure_downstream_closed: bool,
+) -> Option<&'static str> {
+    if stream_error {
+        Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
+    } else if logical_stream_failure {
+        Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
+    } else if pure_downstream_closed {
+        Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED)
+    } else if status == StatusCode::TOO_MANY_REQUESTS {
+        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
+    } else if status.is_server_error() {
+        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX)
+    } else {
+        None
+    }
+}
+
 fn proxy_capture_invocation_status(
-    upstream_status: StatusCode,
+    status: StatusCode,
     has_error_message: bool,
-    downstream_closed: bool,
+    pure_downstream_closed: bool,
 ) -> String {
-    if downstream_closed {
+    if pure_downstream_closed {
         "failed".to_string()
-    } else if upstream_status.is_success() && !has_error_message {
+    } else if status.is_success() && !has_error_message {
         "success".to_string()
     } else {
-        format!("http_{}", upstream_status.as_u16())
+        format!("http_{}", status.as_u16())
+    }
+}
+
+fn pool_capture_attempt_status(
+    status: StatusCode,
+    stream_error: bool,
+    logical_stream_failure: bool,
+    pure_downstream_closed: bool,
+) -> &'static str {
+    if pure_downstream_closed {
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
+    } else if stream_error {
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
+    } else if !status.is_success() || logical_stream_failure {
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
+    } else {
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
     }
 }
 
@@ -1192,6 +1487,7 @@ enum PoolAccountResolutionWithWait {
 }
 
 const POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS: u8 = 3;
+const OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 impl PoolReplayBodyBuffer {
     fn new(proxy_request_id: u64) -> Self {
@@ -1243,9 +1539,6 @@ impl PoolReplayBodyBuffer {
             return Ok(PoolReplayBodySnapshot::File {
                 temp_file,
                 size: self.len,
-                sticky_key: best_effort_extract_sticky_key_from_request_body_prefix(
-                    &self.sticky_key_prefix_probe,
-                ),
             });
         }
 
@@ -1262,9 +1555,7 @@ impl PoolReplayBodySnapshot {
         match self {
             Self::Empty => reqwest::Body::from(Bytes::new()),
             Self::Memory(bytes) => reqwest::Body::from(bytes.clone()),
-            Self::File {
-                temp_file, size, ..
-            } => {
+            Self::File { temp_file, size } => {
                 let path = temp_file.path.clone();
                 let expected_size = *size;
                 let stream = stream::unfold(
@@ -1374,14 +1665,8 @@ struct PreparedPoolRequestBody {
     requested_service_tier: Option<String>,
 }
 
-fn pool_request_snapshot_preserves_content_length(
-    snapshot: &PoolReplayBodySnapshot,
-    forwarded_content_length: Option<usize>,
-) -> bool {
-    matches!(
-        snapshot,
-        PoolReplayBodySnapshot::File { size, .. } if forwarded_content_length == Some(*size)
-    )
+fn pool_request_snapshot_preserves_content_length(snapshot: &PoolReplayBodySnapshot) -> bool {
+    matches!(snapshot, PoolReplayBodySnapshot::File { .. })
 }
 
 fn pool_request_snapshot_kind(snapshot: &PoolReplayBodySnapshot) -> &'static str {
@@ -1405,7 +1690,6 @@ async fn prepare_pool_request_body_for_account(
     original_uri: &Uri,
     method: &Method,
     fast_mode_rewrite_mode: TagFastModeRewriteMode,
-    proxy_request_id: u64,
 ) -> Result<PreparedPoolRequestBody, String> {
     let capture_target = capture_target_for_request(original_uri.path(), method);
     let rewrite_required = capture_target.is_some_and(|target| target.allows_fast_mode_rewrite())
@@ -1476,41 +1760,10 @@ async fn prepare_pool_request_body_for_account(
     let rewritten_bytes = serde_json::to_vec(&value)
         .map(Bytes::from)
         .map_err(|err| format!("failed to serialize rewritten pool request body: {err}"))?;
-    let rewritten_snapshot = pool_request_snapshot_from_bytes(
-        rewritten_bytes.clone(),
-        match snapshot {
-            PoolReplayBodySnapshot::File { sticky_key, .. } => sticky_key,
-            _ => None,
-        },
-        proxy_request_id,
-    )
-    .await?;
     Ok(PreparedPoolRequestBody {
-        snapshot: rewritten_snapshot,
+        snapshot: PoolReplayBodySnapshot::Memory(rewritten_bytes.clone()),
         request_body_for_capture: Some(rewritten_bytes.clone()),
         requested_service_tier,
-    })
-}
-
-async fn pool_request_snapshot_from_bytes(
-    bytes: Bytes,
-    sticky_key: Option<String>,
-    proxy_request_id: u64,
-) -> Result<PoolReplayBodySnapshot, String> {
-    if bytes.len() <= POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES {
-        return Ok(PoolReplayBodySnapshot::Memory(bytes));
-    }
-
-    let temp_file = Arc::new(PoolReplayTempFile {
-        path: build_pool_replay_temp_path(proxy_request_id),
-    });
-    tokio::fs::write(&temp_file.path, &bytes)
-        .await
-        .map_err(|err| format!("failed to persist rewritten pool request body: {err}"))?;
-    Ok(PoolReplayBodySnapshot::File {
-        temp_file,
-        size: bytes.len(),
-        sticky_key,
     })
 }
 

@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 use tokio::time::{Instant, timeout};
-use tracing::info;
+use tracing::{info, warn};
 
 #[cfg(test)]
 use once_cell::sync::Lazy;
@@ -500,9 +500,31 @@ async fn oauth_responses(
         "forwarding oauth responses request"
     );
     let request_started = Instant::now();
+    info!(
+        account_id,
+        path = "/v1/responses",
+        timeout_ms = response_timeout.as_millis() as u64,
+        "oauth responses request send started"
+    );
     let upstream = match timeout(response_timeout, request.send()).await {
-        Ok(Ok(response)) => response,
+        Ok(Ok(response)) => {
+            info!(
+                account_id,
+                path = "/v1/responses",
+                upstream_status = %response.status(),
+                elapsed_ms = request_started.elapsed().as_millis() as u64,
+                "oauth responses request send returned upstream response"
+            );
+            response
+        }
         Ok(Err(err)) => {
+            warn!(
+                account_id,
+                path = "/v1/responses",
+                elapsed_ms = request_started.elapsed().as_millis() as u64,
+                error = %err,
+                "oauth responses request send returned upstream transport error"
+            );
             let mut response = error_response(
                 StatusCode::BAD_GATEWAY,
                 &format!("failed to contact oauth codex upstream: {err}"),
@@ -518,6 +540,13 @@ async fn oauth_responses(
             };
         }
         Err(_) => {
+            warn!(
+                account_id,
+                path = "/v1/responses",
+                timeout_ms = response_timeout.as_millis() as u64,
+                elapsed_ms = request_started.elapsed().as_millis() as u64,
+                "oauth responses request send timed out before upstream response"
+            );
             let message = format!(
                 "oauth codex upstream handshake timed out after {}ms",
                 response_timeout.as_millis()
@@ -1181,6 +1210,8 @@ fn error_response(status: StatusCode, message: &str, code: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{Json, Router, body::to_bytes, routing::post};
+    use tokio::net::TcpListener;
 
     #[test]
     fn transform_models_payload_maps_codex_catalog_to_openai_shape() {
@@ -1249,35 +1280,6 @@ mod tests {
             .expect("build request");
 
         assert!(request.headers().get("ChatGPT-Account-Id").is_none());
-    }
-
-    #[test]
-    fn bytes_response_from_headers_strips_transfer_encoding_on_buffered_body() {
-        let headers = HeaderMap::from_iter([
-            (
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-            (
-                header::TRANSFER_ENCODING,
-                HeaderValue::from_static("chunked"),
-            ),
-        ]);
-
-        let response = bytes_response_from_headers(
-            StatusCode::OK,
-            &headers,
-            Bytes::from_static(br#"{"status":"completed"}"#),
-        );
-
-        assert!(response.headers().get(header::TRANSFER_ENCODING).is_none());
-        assert_eq!(
-            response
-                .headers()
-                .get(header::CONTENT_TYPE)
-                .and_then(|value| value.to_str().ok()),
-            Some("application/json")
-        );
     }
 
     #[test]
@@ -1561,5 +1563,115 @@ mod tests {
         assert!(no_crypto.request_body_prefix_fingerprint.is_none());
         assert!(no_crypto.request_body_prefix_bytes.is_none());
         assert!(no_crypto.forwarded_header_fingerprints.is_none());
+        assert_eq!(debug.request_body_snapshot_kind, Some("memory"));
+        assert_eq!(debug.responses_body_mode, Some("small_body_rewrite"));
+    }
+
+    #[test]
+    fn bytes_response_from_headers_strips_transfer_encoding_on_buffered_body() {
+        let headers = HeaderMap::from_iter([
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+            (
+                header::TRANSFER_ENCODING,
+                HeaderValue::from_static("chunked"),
+            ),
+            (header::CONNECTION, HeaderValue::from_static("keep-alive")),
+        ]);
+
+        let response = bytes_response_from_headers(
+            StatusCode::OK,
+            &headers,
+            Bytes::from_static(br#"{"ok":true}"#),
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json")
+        );
+        assert!(response.headers().get(header::TRANSFER_ENCODING).is_none());
+        assert!(response.headers().get(header::CONNECTION).is_none());
+    }
+
+    #[tokio::test]
+    async fn oauth_responses_buffered_json_success_passthroughs_non_sse_payload() {
+        async fn oauth_json_upstream() -> Response {
+            (
+                StatusCode::OK,
+                [(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                )],
+                Json(json!({
+                    "id": "resp_json_123",
+                    "status": "completed",
+                    "output_text": "hello"
+                })),
+            )
+                .into_response()
+        }
+
+        let _guard = TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK.lock().await;
+        let app = Router::new().route("/backend-api/codex/responses", post(oauth_json_upstream));
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind oauth json upstream");
+        let addr = listener.local_addr().expect("oauth json upstream addr");
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("oauth json upstream should run");
+        });
+        set_test_oauth_codex_upstream_base_url(
+            Url::parse(&format!("http://{addr}/backend-api/codex"))
+                .expect("valid oauth upstream base url"),
+        )
+        .await;
+
+        let oauth_response = send_oauth_upstream_request(
+            &Client::new(),
+            Method::POST,
+            &"/v1/responses".parse().expect("valid uri"),
+            &HeaderMap::from_iter([(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            )]),
+            OauthUpstreamRequestBody::Bytes(Bytes::from_static(
+                br#"{"model":"gpt-5.4","stream":false,"input":"hello"}"#,
+            )),
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            Some(7),
+            "oauth-json",
+            Some("org_test"),
+            None,
+        )
+        .await;
+
+        assert_eq!(oauth_response.response.status(), StatusCode::OK);
+        assert_eq!(
+            oauth_response
+                .response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json")
+        );
+        let body = to_bytes(oauth_response.response.into_body(), usize::MAX)
+            .await
+            .expect("read oauth json response");
+        let payload: Value =
+            serde_json::from_slice(&body).expect("decode oauth json response payload");
+        assert_eq!(payload["id"], "resp_json_123");
+        assert_eq!(payload["status"], "completed");
+        assert_eq!(payload["output_text"], "hello");
+
+        handle.abort();
+        reset_test_oauth_codex_upstream_base_url().await;
     }
 }

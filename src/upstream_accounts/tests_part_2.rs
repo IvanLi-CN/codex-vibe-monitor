@@ -110,8 +110,9 @@
         });
         let http_clients = HttpClients::build(&config).expect("build http clients");
         let (broadcaster, _) = broadcast::channel(8);
+        let proxy_raw_async_writer_limit = proxy_raw_async_writer_limit(&config);
         let state = Arc::new(AppState {
-            config: config.clone(),
+            config,
             pool: test_pool().await,
             http_clients,
             broadcaster,
@@ -126,9 +127,7 @@
             shutdown: CancellationToken::new(),
             semaphore: Arc::new(Semaphore::new(4)),
             proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
-            proxy_raw_async_semaphore: Arc::new(Semaphore::new(
-                DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
-            )),
+            proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit)),
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
             forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
@@ -152,6 +151,8 @@
             )),
             maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
             pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
+            pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
             pool_group_429_retry_delay_override: None,
             pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
             hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
@@ -1943,6 +1944,86 @@
             .expect("load routing settings");
         assert!(stored.encrypted_api_key.is_some());
         assert_eq!(stored.secondary_sync_interval_secs, Some(2400));
+    }
+
+    #[tokio::test]
+    async fn warm_pool_routing_runtime_cache_best_effort_skips_invalid_encrypted_api_key() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        sqlx::query(
+            r#"
+            UPDATE pool_routing_settings
+            SET encrypted_api_key = ?1
+            WHERE id = ?2
+            "#,
+        )
+        .bind("not-a-valid-ciphertext")
+        .bind(POOL_SETTINGS_SINGLETON_ID)
+        .execute(&state.pool)
+        .await
+        .expect("poison encrypted api key");
+
+        {
+            let mut runtime_cache = state.pool_routing_runtime_cache.lock().await;
+            *runtime_cache = None;
+        }
+
+        assert!(
+            refresh_pool_routing_runtime_cache(state.as_ref())
+                .await
+                .is_err(),
+            "invalid ciphertext should still fail direct refresh"
+        );
+
+        warm_pool_routing_runtime_cache_best_effort(state.as_ref()).await;
+
+        assert!(
+            state.pool_routing_runtime_cache.lock().await.is_none(),
+            "best-effort startup warmup should leave the cache empty after decrypt failures"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_pool_routing_runtime_cache_preserves_last_good_cache_after_decrypt_failure() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        save_pool_routing_api_key(&state.pool, crypto_key, "pool-live-key")
+            .await
+            .expect("seed pool api key");
+
+        let cache = refresh_pool_routing_runtime_cache(state.as_ref())
+            .await
+            .expect("populate runtime cache");
+        assert_eq!(cache.api_key.as_deref(), Some("pool-live-key"));
+
+        sqlx::query(
+            r#"
+            UPDATE pool_routing_settings
+            SET encrypted_api_key = ?1
+            WHERE id = ?2
+            "#,
+        )
+        .bind("not-a-valid-ciphertext")
+        .bind(POOL_SETTINGS_SINGLETON_ID)
+        .execute(&state.pool)
+        .await
+        .expect("poison encrypted api key");
+
+        assert!(
+            refresh_pool_routing_runtime_cache(state.as_ref())
+                .await
+                .is_err(),
+            "refresh should fail once the stored api key becomes unreadable"
+        );
+        let cached = state.pool_routing_runtime_cache.lock().await.clone();
+        assert_eq!(
+            cached.as_ref().and_then(|value| value.api_key.as_deref()),
+            Some("pool-live-key"),
+            "failed refreshes should keep the last working routing cache in memory"
+        );
     }
 
     fn maintenance_candidates(

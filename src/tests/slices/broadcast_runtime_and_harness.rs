@@ -2446,4 +2446,3 @@ async fn pricing_settings_api_reads_and_persists_updates() {
     assert_eq!(pricing.input_per_1m, 8.8);
     assert_eq!(pricing.output_per_1m, 18.8);
 }
-

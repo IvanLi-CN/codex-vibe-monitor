@@ -236,6 +236,49 @@ pub(crate) async fn resolve_pool_routing_timeouts(
     Ok(resolve_pool_routing_timeouts_from_row(&row, config))
 }
 
+fn build_pool_routing_runtime_cache(
+    state: &AppState,
+    row: &PoolRoutingSettingsRow,
+) -> Result<PoolRoutingRuntimeCache> {
+    let api_key = match (
+        state.upstream_accounts.crypto_key.as_ref(),
+        row.encrypted_api_key.as_deref(),
+    ) {
+        (Some(crypto_key), Some(encrypted_api_key)) => {
+            Some(decrypt_secret_value(crypto_key, encrypted_api_key)?)
+        }
+        _ => None,
+    };
+
+    Ok(PoolRoutingRuntimeCache {
+        api_key,
+        timeouts: resolve_pool_routing_timeouts_from_row(row, &state.config),
+    })
+}
+
+pub(crate) async fn refresh_pool_routing_runtime_cache(
+    state: &AppState,
+) -> Result<PoolRoutingRuntimeCache> {
+    let row = load_pool_routing_settings_seeded(&state.pool, &state.config).await?;
+    let cache = build_pool_routing_runtime_cache(state, &row)?;
+    let mut runtime_cache = state.pool_routing_runtime_cache.lock().await;
+    *runtime_cache = Some(cache.clone());
+    Ok(cache)
+}
+
+pub(crate) async fn load_pool_routing_runtime_cache(
+    state: &AppState,
+) -> Result<PoolRoutingRuntimeCache> {
+    {
+        let runtime_cache = state.pool_routing_runtime_cache.lock().await;
+        if let Some(cache) = runtime_cache.as_ref() {
+            return Ok(cache.clone());
+        }
+    }
+
+    refresh_pool_routing_runtime_cache(state).await
+}
+
 async fn save_pool_routing_settings(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
@@ -380,15 +423,11 @@ async fn save_pool_routing_maintenance_settings(
 }
 
 pub(crate) async fn pool_api_key_matches(state: &AppState, api_key: &str) -> Result<bool> {
-    let Some(crypto_key) = state.upstream_accounts.crypto_key.as_ref() else {
+    let runtime_cache = load_pool_routing_runtime_cache(state).await?;
+    let Some(expected_api_key) = runtime_cache.api_key.as_deref() else {
         return Ok(false);
     };
-    let row = load_pool_routing_settings(&state.pool).await?;
-    let Some(encrypted_api_key) = row.encrypted_api_key.as_deref() else {
-        return Ok(false);
-    };
-    let decrypted = decrypt_secret_value(crypto_key, encrypted_api_key)?;
-    Ok(decrypted == api_key.trim())
+    Ok(expected_api_key == api_key.trim())
 }
 
 #[derive(Debug, Clone)]

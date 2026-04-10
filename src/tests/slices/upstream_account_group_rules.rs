@@ -445,6 +445,129 @@ async fn persist_proxy_capture_record_finalizes_existing_running_row_in_place() 
     assert_eq!(duplicate_count, 1);
 }
 
+#[tokio::test]
+async fn persist_proxy_capture_record_repairs_proxy_interrupted_recovery_row_with_terminal_result()
+{
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let request_info = RequestCaptureInfo {
+        model: Some("gpt-5.4".to_string()),
+        is_stream: true,
+        ..RequestCaptureInfo::default()
+    };
+    let invoke_id = "invoke-repair-interrupted-terminal";
+    let occurred_at = "2026-03-17 18:13:35";
+    let running_record = build_running_proxy_capture_record(
+        invoke_id,
+        occurred_at,
+        ProxyCaptureTarget::Responses,
+        &request_info,
+        Some("198.51.100.89"),
+        Some("sticky-repair-interrupted"),
+        Some("pck-repair-interrupted"),
+        true,
+        Some(17),
+        Some("pool-account-17"),
+        Some("api_key_codex"),
+        Some("api.openai.com"),
+        None,
+        Some(1),
+        Some(1),
+        None,
+        None,
+        12.0,
+        3.0,
+        99.0,
+        120.0,
+    );
+
+    let running = persist_proxy_capture_runtime_record(&state.pool, running_record)
+        .await
+        .expect("persist running record")
+        .expect("running record should be inserted");
+    sqlx::query(
+        r#"
+        UPDATE codex_invocations
+        SET status = ?2, failure_kind = ?3
+        WHERE id = ?1
+        "#,
+    )
+    .bind(running.id)
+    .bind(INVOCATION_STATUS_INTERRUPTED)
+    .bind(PROXY_FAILURE_INVOCATION_INTERRUPTED)
+    .execute(&state.pool)
+    .await
+    .expect("mark running row as proxy-interrupted recovery artifact");
+
+    let recovery_row = sqlx::query_as::<_, (String, Option<String>)>(
+        r#"
+        SELECT status, failure_kind
+        FROM codex_invocations
+        WHERE id = ?1
+        "#,
+    )
+    .bind(running.id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load recovery artifact row");
+    assert_eq!(recovery_row.0, INVOCATION_STATUS_INTERRUPTED);
+    assert_eq!(
+        recovery_row.1.as_deref(),
+        Some(PROXY_FAILURE_INVOCATION_INTERRUPTED)
+    );
+
+    let repairable_count = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM codex_invocations
+        WHERE id = ?1
+          AND (
+                LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
+                OR (
+                    LOWER(TRIM(COALESCE(status, ''))) = ?2
+                    AND LOWER(TRIM(COALESCE(failure_kind, ''))) = ?3
+                )
+          )
+        "#,
+    )
+    .bind(running.id)
+    .bind(INVOCATION_STATUS_INTERRUPTED)
+    .bind(PROXY_FAILURE_INVOCATION_INTERRUPTED)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count repairable rows");
+    assert_eq!(repairable_count, 1);
+
+    let mut tx = state.pool.begin().await.expect("begin verification tx");
+    let existing = load_persisted_invocation_identity_tx(tx.as_mut(), invoke_id, occurred_at)
+        .await
+        .expect("load persisted invocation identity")
+        .expect("persisted invocation identity should exist");
+    assert!(
+        invocation_status_is_recoverable_proxy_interrupted(
+            existing.status.as_deref(),
+            existing.failure_kind.as_deref(),
+        ),
+        "persisted invocation identity should be recognized as repairable interrupted state",
+    );
+    tx.commit().await.expect("commit verification tx");
+
+    let finalized = persist_proxy_capture_record(
+        &state.pool,
+        Instant::now(),
+        test_proxy_capture_record(invoke_id, occurred_at),
+    )
+    .await
+    .expect("finalize record")
+    .expect("terminal update should repair proxy-interrupted recovery row");
+
+    assert_eq!(finalized.id, running.id);
+    assert_eq!(finalized.status.as_deref(), Some("success"));
+    assert_eq!(finalized.failure_kind, None);
+}
+
 async fn seed_quota_snapshot(pool: &SqlitePool, captured_at: &str) {
     sqlx::query(
         r#"
@@ -2402,4 +2525,3 @@ fn same_origin_settings_write_allows_matching_origin_without_explicit_host_port(
     );
     assert!(is_same_origin_settings_write(&headers));
 }
-

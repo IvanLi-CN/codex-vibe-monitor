@@ -1874,8 +1874,9 @@
     ) -> Arc<AppState> {
         let http_clients = HttpClients::build(&config).expect("build http clients");
         let (broadcaster, _) = broadcast::channel(8);
+        let proxy_raw_async_writer_limit = proxy_raw_async_writer_limit(&config);
         Arc::new(AppState {
-            config: config.clone(),
+            config,
             pool: test_pool().await,
             http_clients,
             broadcaster,
@@ -1890,9 +1891,7 @@
             shutdown: CancellationToken::new(),
             semaphore: Arc::new(Semaphore::new(4)),
             proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
-            proxy_raw_async_semaphore: Arc::new(Semaphore::new(
-                DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
-            )),
+            proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit)),
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
             forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
@@ -1916,6 +1915,8 @@
             )),
             maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
             pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
+            pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
             pool_group_429_retry_delay_override: None,
             pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
             hourly_rollup_sync_lock: Arc::new(Mutex::new(())),

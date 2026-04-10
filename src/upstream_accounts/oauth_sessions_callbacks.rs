@@ -74,6 +74,17 @@ pub(crate) async fn update_pool_routing_settings(
             timeout_updates.as_ref(),
         )
         .await?;
+        if api_key.is_some() {
+            refresh_pool_routing_runtime_cache(state.as_ref())
+                .await
+                .map_err(internal_error_tuple)?;
+        } else {
+            refresh_pool_routing_runtime_cache_best_effort(
+                state.as_ref(),
+                "timeout-only settings update",
+            )
+            .await;
+        }
     }
     if payload.maintenance.is_some() {
         save_pool_routing_maintenance_settings(&state.pool, merged_maintenance)
@@ -2006,4 +2017,3 @@ fn parse_manual_oauth_callback(
     }
     Ok(query)
 }
-

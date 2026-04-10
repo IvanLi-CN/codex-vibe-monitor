@@ -2175,4 +2175,3 @@ async fn enrich_window_actual_usage_for_summaries(
     apply_window_actual_usage_to_summaries(items, &usage);
     Ok(())
 }
-
