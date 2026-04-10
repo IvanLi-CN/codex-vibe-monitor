@@ -2682,6 +2682,10 @@ fn test_config() -> AppConfig {
             DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS,
         ),
         openai_proxy_max_request_body_bytes: DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
+        proxy_request_concurrency_limit: DEFAULT_PROXY_REQUEST_CONCURRENCY_LIMIT,
+        proxy_request_concurrency_wait_timeout: Duration::from_millis(
+            DEFAULT_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS,
+        ),
         proxy_enforce_stream_include_usage: DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE,
         proxy_usage_backfill_on_startup: DEFAULT_PROXY_USAGE_BACKFILL_ON_STARTUP,
         proxy_raw_max_bytes: DEFAULT_PROXY_RAW_MAX_BYTES,
