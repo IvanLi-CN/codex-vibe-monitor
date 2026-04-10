@@ -1846,9 +1846,9 @@ async fn prompt_cache_conversations_activity_minutes_paginated_respect_requested
         sqlx::query(
             r#"
             INSERT INTO codex_invocations (
-                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, created_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             "#,
         )
         .bind(invoke_id)
