@@ -508,6 +508,74 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(rows[1]?.style.paddingBottom).toBe("0px");
   });
 
+  it("does not auto-load another page on first paint when the initial grid already overflows", () => {
+    vi.useFakeTimers();
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1700);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(700);
+    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(1680);
+    const onLoadMore = vi.fn();
+
+    renderSection(
+      createResponse(
+        Array.from({ length: 20 }, (_, index) =>
+          createConversation(`pck-overflow-${index + 1}`, [
+            createPreview({
+              id: index + 1,
+              invokeId: `invoke-overflow-${index + 1}`,
+              occurredAt: `2026-04-04T10:${String(59 - index).padStart(2, "0")}:00Z`,
+              status: "completed",
+            }),
+          ]),
+        ),
+      ),
+      {
+        hasMore: true,
+        onLoadMore,
+      },
+    );
+
+    act(() => {
+      vi.runAllTimers();
+    });
+
+    expect(onLoadMore).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it("backfills immediately on first paint when the initial grid is not scrollable yet", () => {
+    vi.useFakeTimers();
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1700);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(900);
+    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(640);
+    const onLoadMore = vi.fn();
+
+    renderSection(
+      createResponse(
+        Array.from({ length: 4 }, (_, index) =>
+          createConversation(`pck-underflow-${index + 1}`, [
+            createPreview({
+              id: index + 1,
+              invokeId: `invoke-underflow-${index + 1}`,
+              occurredAt: `2026-04-04T10:${String(59 - index).padStart(2, "0")}:00Z`,
+              status: "completed",
+            }),
+          ]),
+        ),
+      ),
+      {
+        hasMore: true,
+        onLoadMore,
+      },
+    );
+
+    act(() => {
+      vi.runAllTimers();
+    });
+
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
   it("falls back to downstream-facing diagnostics in the dashboard card summary", () => {
     renderSection(
       createResponse([

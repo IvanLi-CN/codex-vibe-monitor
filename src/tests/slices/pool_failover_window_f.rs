@@ -2101,6 +2101,159 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes
 }
 
 #[tokio::test]
+async fn prompt_cache_conversations_activity_minutes_paginated_whole_second_snapshot_excludes_post_snapshot_writes(
+) {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let current_hour_start = Utc
+        .timestamp_opt(align_bucket_epoch(Utc::now().timestamp(), 3_600, 0), 0)
+        .single()
+        .expect("current hour start should be valid");
+    let snapshot_second = current_hour_start + ChronoDuration::minutes(24);
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        created_at: DateTime<Utc>,
+        key: &str,
+        total_tokens: i64,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(format!("{invoke_id}-{}", created_at.timestamp_millis()))
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(total_tokens)
+        .bind(0.01_f64)
+        .bind(
+            json!({
+                "promptCacheKey": key,
+                "routeMode": "pool",
+                "model": "gpt-5.4",
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .bind(format_utc_iso_millis(created_at))
+        .execute(pool)
+        .await
+        .expect("insert whole-second snapshot row");
+    }
+
+    insert_row(
+        &state.pool,
+        "working-whole-second-head",
+        snapshot_second,
+        snapshot_second,
+        "working-whole-second-head",
+        20,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-whole-second-tail",
+        snapshot_second - ChronoDuration::seconds(15),
+        snapshot_second - ChronoDuration::seconds(15),
+        "working-whole-second-tail",
+        10,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-whole-second-preexisting-post",
+        snapshot_second,
+        snapshot_second + ChronoDuration::milliseconds(200),
+        "working-whole-second-preexisting-post",
+        888,
+    )
+    .await;
+
+    let Json(first_page) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: None,
+            snapshot_at: Some(format_utc_iso(snapshot_second)),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("first whole-second snapshot page should succeed");
+
+    assert_eq!(first_page.conversations.len(), 1);
+    assert_eq!(first_page.total_matched, Some(2));
+    assert_eq!(
+        first_page.conversations[0].prompt_cache_key,
+        "working-whole-second-head"
+    );
+    assert_eq!(
+        first_page.snapshot_at.as_deref(),
+        Some(format_utc_iso(snapshot_second).as_str())
+    );
+
+    insert_row(
+        &state.pool,
+        "working-whole-second-post",
+        snapshot_second,
+        snapshot_second + ChronoDuration::milliseconds(400),
+        "working-whole-second-post",
+        999,
+    )
+    .await;
+
+    let Json(second_page) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: first_page.next_cursor.clone(),
+            snapshot_at: first_page.snapshot_at.clone(),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("second whole-second snapshot page should succeed");
+
+    assert_eq!(second_page.total_matched, Some(2));
+    assert_eq!(second_page.conversations.len(), 1);
+    assert_eq!(
+        second_page.conversations[0].prompt_cache_key,
+        "working-whole-second-tail"
+    );
+    assert!(
+        second_page
+            .conversations
+            .iter()
+            .all(|conversation| conversation.prompt_cache_key != "working-whole-second-post")
+    );
+    assert!(
+        second_page
+            .conversations
+            .iter()
+            .all(|conversation| {
+                conversation.prompt_cache_key != "working-whole-second-preexisting-post"
+            })
+    );
+}
+
+#[tokio::test]
 async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_preserves_previous_hour_lifetime_totals()
 {
     let state = test_state_with_openai_base(

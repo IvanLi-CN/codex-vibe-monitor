@@ -796,6 +796,9 @@ export function DashboardWorkingConversationsSection({
     conversationSequenceId: string;
     top: number;
   } | null>(null);
+  const loadMoreRequestPendingRef = useRef(false);
+  const previousLoadingMoreRef = useRef(isLoadingMore);
+  const previousRowsLengthRef = useRef(cards.length);
   const setScrollContainerRef = useCallback((node: HTMLDivElement | null) => {
     scrollRef.current = node;
     setScrollElement(node);
@@ -929,19 +932,44 @@ export function DashboardWorkingConversationsSection({
   }, [scrollElement]);
 
   useEffect(() => {
+    if (
+      !hasMore ||
+      previousRowsLengthRef.current !== rows.length ||
+      (previousLoadingMoreRef.current && !isLoadingMore)
+    ) {
+      loadMoreRequestPendingRef.current = false;
+    }
+    previousRowsLengthRef.current = rows.length;
+    previousLoadingMoreRef.current = isLoadingMore;
+  }, [hasMore, isLoadingMore, rows.length]);
+
+  useEffect(() => {
     const container = scrollElement;
     if (!container || !hasMore || !onLoadMore) return;
-    const maybeLoadMore = () => {
-      if (isLoadingMore) return;
+    const maybeLoadMore = (trigger: "mount" | "scroll") => {
+      if (isLoadingMore || loadMoreRequestPendingRef.current) return;
+      const isScrollable = container.scrollHeight > container.clientHeight + 1;
+      if (trigger === "mount" && isScrollable) {
+        return;
+      }
       const remaining =
         container.scrollHeight - container.scrollTop - container.clientHeight;
-      if (remaining <= 960) {
+      if (remaining <= 320) {
+        loadMoreRequestPendingRef.current = true;
         onLoadMore();
       }
     };
-    maybeLoadMore();
-    container.addEventListener("scroll", maybeLoadMore, { passive: true });
-    return () => container.removeEventListener("scroll", maybeLoadMore);
+    const mountTimer = window.setTimeout(() => {
+      maybeLoadMore("mount");
+    }, 0);
+    const handleScroll = () => {
+      maybeLoadMore("scroll");
+    };
+    container.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      window.clearTimeout(mountTimer);
+      container.removeEventListener("scroll", handleScroll);
+    };
   }, [hasMore, isLoadingMore, onLoadMore, rows.length, scrollElement]);
 
   useEffect(() => {

@@ -735,19 +735,13 @@ async fn resolve_prompt_cache_conversation_snapshot_filter(
     source_scope: InvocationSourceScope,
     cursor_snapshot_boundary_row_id_ceiling: Option<i64>,
 ) -> Result<PromptCacheConversationSnapshotFilter> {
-    let snapshot_upper_bound = db_occurred_at_upper_bound(snapshot_at);
-    if snapshot_at.timestamp_subsec_nanos() == 0 {
-        return Ok(PromptCacheConversationSnapshotFilter {
-            snapshot_upper_bound,
-            snapshot_boundary_second_start: None,
-            snapshot_boundary_row_id_ceiling: None,
-        });
-    }
-
     let snapshot_boundary_second_start = db_occurred_at_lower_bound(
         Utc.timestamp_opt(snapshot_at.timestamp(), 0)
             .single()
             .ok_or_else(|| anyhow!("invalid snapshotAt boundary second"))?,
+    );
+    let snapshot_upper_bound = db_occurred_at_lower_bound(
+        snapshot_at + ChronoDuration::seconds(1),
     );
     let snapshot_boundary_row_id_ceiling = Some(match cursor_snapshot_boundary_row_id_ceiling {
         Some(value) => value,
