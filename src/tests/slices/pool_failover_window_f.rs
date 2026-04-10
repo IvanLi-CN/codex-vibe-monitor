@@ -26,9 +26,9 @@ async fn prompt_cache_conversations_include_recent_upstream_account_summaries() 
         sqlx::query(
             r#"
             INSERT INTO codex_invocations (
-                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, created_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             "#,
         )
         .bind(invoke_id)
@@ -41,6 +41,7 @@ async fn prompt_cache_conversations_include_recent_upstream_account_summaries() 
         .bind(cost)
         .bind(payload.to_string())
         .bind("{}")
+        .bind(format_utc_iso_millis(occurred_at))
         .execute(pool)
         .await
         .expect("insert invocation row");
@@ -119,6 +120,10 @@ async fn prompt_cache_conversations_include_recent_upstream_account_summaries() 
             limit: Some(20),
             activity_hours: None,
             activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
         }),
     )
     .await
@@ -427,6 +432,10 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
             limit: Some(20),
             activity_hours: None,
             activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
         }),
     )
     .await
@@ -556,6 +565,7 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
         InvocationSourceScope::ProxyOnly,
         &["pck-preview".to_string()],
         5,
+        None,
     )
     .await
     .expect("proxy-only recent invocation previews should succeed");
@@ -678,6 +688,10 @@ async fn prompt_cache_conversations_preserve_upstream_account_history_after_raw_
             limit: Some(20),
             activity_hours: None,
             activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
         }),
     )
     .await
@@ -754,6 +768,10 @@ async fn prompt_cache_conversations_keep_totals_when_recent_preview_is_empty() {
             limit: Some(20),
             activity_hours: None,
             activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
         }),
     )
     .await
@@ -831,6 +849,10 @@ async fn prompt_cache_conversations_count_mode_reports_inactive_recent_history_f
             limit: Some(20),
             activity_hours: None,
             activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
         }),
     )
     .await
@@ -914,6 +936,10 @@ async fn prompt_cache_conversations_count_mode_reports_all_skipped_newer_inactiv
             limit: Some(20),
             activity_hours: None,
             activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
         }),
     )
     .await
@@ -996,6 +1022,10 @@ async fn prompt_cache_conversations_count_mode_clamps_sparse_inactive_hidden_row
             limit: Some(20),
             activity_hours: None,
             activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
         }),
     )
     .await
@@ -1049,6 +1079,10 @@ async fn prompt_cache_conversations_activity_window_caps_results_to_fifty() {
             limit: None,
             activity_hours: Some(3),
             activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
         }),
     )
     .await
@@ -1066,6 +1100,66 @@ async fn prompt_cache_conversations_activity_window_caps_results_to_fifty() {
         Some(PromptCacheConversationImplicitFilterKind::CappedTo50)
     );
     assert_eq!(response.implicit_filter.filtered_count, 5);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_activity_minutes_legacy_path_still_caps_results_to_fifty() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    for index in 0..55 {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(format!("working-legacy-{index}"))
+        .bind(format_naive(
+            (now - ChronoDuration::seconds(index as i64 * 2))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(10)
+        .bind(0.01)
+        .bind(json!({ "promptCacheKey": format!("working-legacy-key-{index}") }).to_string())
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert working legacy row");
+    }
+
+    let Json(response) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
+        }),
+    )
+    .await
+    .expect("legacy activity-minutes prompt cache conversations should succeed");
+
+    assert_eq!(response.conversations.len(), 50);
+    assert_eq!(
+        response.implicit_filter.kind,
+        Some(PromptCacheConversationImplicitFilterKind::CappedTo50)
+    );
+    assert_eq!(response.implicit_filter.filtered_count, 5);
+    assert_eq!(response.total_matched, None);
+    assert!(!response.has_more);
+    assert_eq!(response.snapshot_at, None);
 }
 
 #[tokio::test]
@@ -1151,6 +1245,10 @@ async fn prompt_cache_conversations_activity_minutes_include_running_only_rows_a
             limit: None,
             activity_hours: None,
             activity_minutes: Some(5),
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
         }),
     )
     .await
@@ -1179,6 +1277,1614 @@ async fn prompt_cache_conversations_activity_minutes_include_running_only_rows_a
         .expect("pck-running should remain visible");
     assert_eq!(running.recent_invocations[0].status, "running");
     assert_eq!(running.recent_invocations[1].status, "success");
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_activity_minutes_paginated_compact_can_scroll_past_fifty_without_duplicates()
+ {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    for index in 0..55 {
+        let occurred_at = now - ChronoDuration::seconds(index as i64 * 2);
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(format!("working-page-{index}"))
+        .bind(format_naive(occurred_at.with_timezone(&Shanghai).naive_local()))
+        .bind(SOURCE_PROXY)
+        .bind(if index % 7 == 0 { "running" } else { "success" })
+        .bind(10 + index as i64)
+        .bind(0.01_f64)
+        .bind(
+            json!({
+                "promptCacheKey": format!("working-page-key-{index:02}"),
+                "routeMode": "pool",
+                "model": "gpt-5.4",
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert paginated working row");
+    }
+
+    let Json(first_page) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(20),
+            cursor: None,
+            snapshot_at: None,
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("first paginated working page should succeed");
+
+    let total_matched = first_page.total_matched.expect("first page total_matched");
+    assert_eq!(first_page.conversations.len(), 20);
+    assert!(total_matched > 50);
+    assert!(first_page.has_more);
+    assert_eq!(first_page.implicit_filter.kind, None);
+    assert_eq!(first_page.implicit_filter.filtered_count, 0);
+    let first_snapshot = first_page
+        .snapshot_at
+        .clone()
+        .expect("first page snapshot_at");
+    let first_next_cursor = first_page
+        .next_cursor
+        .clone()
+        .expect("first page next_cursor");
+    assert!(
+        first_page
+            .conversations
+            .iter()
+            .all(|conversation| conversation.upstream_accounts.is_empty())
+    );
+    assert!(
+        first_page
+            .conversations
+            .iter()
+            .all(|conversation| conversation.last24h_requests.is_empty())
+    );
+    assert!(
+        first_page
+            .conversations
+            .iter()
+            .all(|conversation| conversation.recent_invocations.len() <= 2)
+    );
+    assert!(
+        first_page
+            .conversations
+            .iter()
+            .all(|conversation| conversation.cursor.is_some())
+    );
+
+    let Json(second_page) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(20),
+            cursor: Some(first_next_cursor),
+            snapshot_at: Some(first_snapshot.clone()),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("second paginated working page should succeed");
+
+    assert_eq!(second_page.conversations.len(), 20);
+    assert_eq!(second_page.total_matched, Some(total_matched));
+    assert!(second_page.has_more);
+    assert_eq!(second_page.snapshot_at.as_deref(), Some(first_snapshot.as_str()));
+
+    let last_visible_row_cursor = first_page
+        .conversations
+        .last()
+        .and_then(|conversation| conversation.cursor.clone())
+        .expect("last visible row cursor");
+    let Json(second_page_from_row_cursor) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(20),
+            cursor: Some(last_visible_row_cursor),
+            snapshot_at: Some(first_snapshot.clone()),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("second page from row cursor should succeed");
+
+    assert_eq!(
+        second_page_from_row_cursor
+            .conversations
+            .iter()
+            .map(|conversation| conversation.prompt_cache_key.as_str())
+            .collect::<Vec<_>>(),
+        second_page
+            .conversations
+            .iter()
+            .map(|conversation| conversation.prompt_cache_key.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        second_page_from_row_cursor.next_cursor,
+        second_page.next_cursor
+    );
+
+    let Json(third_page) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(20),
+            cursor: second_page.next_cursor.clone(),
+            snapshot_at: Some(first_snapshot),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("third paginated working page should succeed");
+
+    assert_eq!(third_page.conversations.len(), (total_matched - 40) as usize);
+    assert_eq!(third_page.total_matched, Some(total_matched));
+    assert!(!third_page.has_more);
+    assert_eq!(third_page.next_cursor, None);
+
+    let all_keys = first_page
+        .conversations
+        .iter()
+        .chain(second_page.conversations.iter())
+        .chain(third_page.conversations.iter())
+        .map(|conversation| conversation.prompt_cache_key.clone())
+        .collect::<Vec<_>>();
+    let unique_keys = all_keys.iter().cloned().collect::<HashSet<_>>();
+
+    assert_eq!(all_keys.len(), total_matched as usize);
+    assert_eq!(unique_keys.len(), total_matched as usize);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_activity_minutes_paginated_preserves_sort_anchor_order() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        key: &str,
+        status: &str,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(42_i64)
+        .bind(0.01_f64)
+        .bind(
+            json!({
+                "promptCacheKey": key,
+                "routeMode": "pool",
+                "model": "gpt-5.4",
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .execute(pool)
+        .await
+        .expect("insert paginated working row");
+    }
+
+    insert_row(
+        &state.pool,
+        "working-reactivated-history",
+        now - ChronoDuration::hours(2),
+        "working-reactivated",
+        "success",
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-reactivated-current",
+        now - ChronoDuration::seconds(5),
+        "working-reactivated",
+        "success",
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-fresh",
+        now - ChronoDuration::seconds(20),
+        "working-fresh",
+        "success",
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-older",
+        now - ChronoDuration::seconds(40),
+        "working-older",
+        "success",
+    )
+    .await;
+
+    let Json(non_paginated) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
+        }),
+    )
+    .await
+    .expect("non-paginated working conversations should succeed");
+
+    let expected_order = non_paginated
+        .conversations
+        .iter()
+        .map(|conversation| conversation.prompt_cache_key.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        expected_order,
+        vec!["working-reactivated", "working-fresh", "working-older"]
+    );
+
+    let Json(first_page) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: None,
+            snapshot_at: None,
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("first paginated working page should succeed");
+
+    assert_eq!(first_page.conversations.len(), 1);
+    assert_eq!(
+        first_page.conversations[0].prompt_cache_key,
+        expected_order[0]
+    );
+
+    let Json(second_page) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: first_page.next_cursor.clone(),
+            snapshot_at: first_page.snapshot_at.clone(),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("second paginated working page should succeed");
+
+    assert_eq!(second_page.conversations.len(), 1);
+    assert_eq!(
+        second_page.conversations[0].prompt_cache_key,
+        expected_order[1]
+    );
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_paginated_cursors_support_prompt_cache_keys_with_pipes() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        key: &str,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(10_i64)
+        .bind(0.01_f64)
+        .bind(
+            json!({
+                "promptCacheKey": key,
+                "routeMode": "pool",
+                "model": "gpt-5.4",
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .execute(pool)
+        .await
+        .expect("insert paginated pipe-key row");
+    }
+
+    insert_row(
+        &state.pool,
+        "working-pipe-head",
+        now - ChronoDuration::seconds(5),
+        "pipe|head",
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-pipe-tail",
+        now - ChronoDuration::seconds(10),
+        "pipe|tail",
+    )
+    .await;
+
+    let Json(first_page) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: None,
+            snapshot_at: None,
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("first pipe-key page should succeed");
+
+    assert_eq!(
+        first_page.conversations[0].prompt_cache_key,
+        "pipe|head"
+    );
+    let snapshot_at = first_page
+        .snapshot_at
+        .clone()
+        .expect("pipe-key snapshotAt");
+    let next_cursor = first_page
+        .next_cursor
+        .clone()
+        .expect("pipe-key nextCursor");
+    let row_cursor = first_page.conversations[0]
+        .cursor
+        .clone()
+        .expect("pipe-key row cursor");
+
+    let Json(second_page) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: Some(next_cursor),
+            snapshot_at: Some(snapshot_at.clone()),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("second pipe-key page should succeed");
+
+    assert_eq!(
+        second_page.conversations[0].prompt_cache_key,
+        "pipe|tail"
+    );
+
+    let Json(second_page_from_row_cursor) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: Some(row_cursor),
+            snapshot_at: Some(snapshot_at),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("second pipe-key row-cursor page should succeed");
+
+    assert_eq!(
+        second_page_from_row_cursor.conversations[0].prompt_cache_key,
+        "pipe|tail"
+    );
+}
+
+#[test]
+fn prompt_cache_conversations_omitted_snapshot_preserves_current_precision() {
+    let precise_now = Utc
+        .timestamp_opt(1_744_298_800, 456_000_000)
+        .single()
+        .expect("valid precise utc instant");
+    let snapshot_at = resolve_prompt_cache_conversation_snapshot_at_with_default(None, precise_now)
+        .expect("omitted snapshotAt should resolve");
+    assert_eq!(snapshot_at, precise_now);
+    assert_eq!(
+        db_occurred_at_upper_bound(snapshot_at),
+        db_occurred_at_lower_bound(
+            precise_now
+                + ChronoDuration::seconds(1)
+        )
+    );
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_paginated_invalid_snapshot_at_returns_bad_request() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let err = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(20),
+            cursor: None,
+            snapshot_at: Some("not-a-timestamp".to_string()),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect_err("invalid snapshotAt should be rejected");
+
+    match err {
+        ApiError::BadRequest(inner) => {
+            assert!(inner.to_string().contains("invalid snapshotAt"));
+        }
+        other => panic!("expected bad request, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_paginated_invalid_cursor_returns_bad_request() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let err = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(20),
+            cursor: Some("not-base64".to_string()),
+            snapshot_at: Some(Utc::now().to_rfc3339()),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect_err("invalid cursor should be rejected");
+
+    match err {
+        ApiError::BadRequest(inner) => {
+            let message = inner.to_string();
+            assert!(
+                message.contains("invalid cursor"),
+                "unexpected error message: {message}"
+            );
+        }
+        other => panic!("expected bad request, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_activity_minutes_paginated_respect_requested_snapshot_totals()
+{
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let current_hour_start = Utc
+        .timestamp_opt(align_bucket_epoch(Utc::now().timestamp(), 3_600, 0), 0)
+        .single()
+        .expect("current hour start should be valid");
+    let snapshot_at = current_hour_start + ChronoDuration::minutes(20);
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        key: &str,
+        total_tokens: i64,
+        cost: f64,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(
+            json!({
+                "promptCacheKey": key,
+                "routeMode": "pool",
+                "model": "gpt-5.4",
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .bind(format_utc_iso_millis(occurred_at))
+        .execute(pool)
+        .await
+        .expect("insert paginated snapshot row");
+    }
+
+    insert_row(
+        &state.pool,
+        "working-snapshot-head-pre",
+        snapshot_at - ChronoDuration::seconds(5),
+        "working-snapshot-head",
+        20,
+        0.20,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-snapshot-target-pre",
+        snapshot_at - ChronoDuration::seconds(15),
+        "working-snapshot-target",
+        10,
+        0.10,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-snapshot-target-post",
+        snapshot_at + ChronoDuration::seconds(5),
+        "working-snapshot-target",
+        999,
+        9.99,
+    )
+    .await;
+
+    let snapshot_at_rfc3339 = snapshot_at.to_rfc3339();
+    let Json(first_page) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: None,
+            snapshot_at: Some(snapshot_at_rfc3339.clone()),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("first snapshot page should succeed");
+
+    assert_eq!(first_page.conversations.len(), 1);
+    assert_eq!(
+        first_page.conversations[0].prompt_cache_key,
+        "working-snapshot-head"
+    );
+
+    let Json(second_page) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: first_page.next_cursor.clone(),
+            snapshot_at: Some(snapshot_at_rfc3339),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("second snapshot page should succeed");
+
+    assert_eq!(second_page.conversations.len(), 1);
+    let target = &second_page.conversations[0];
+    assert_eq!(target.prompt_cache_key, "working-snapshot-target");
+    assert_eq!(target.request_count, 1);
+    assert_eq!(target.total_tokens, 10);
+    assert!((target.total_cost - 0.10).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes_same_second_post_snapshot_writes(
+) {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let current_hour_start = Utc
+        .timestamp_opt(align_bucket_epoch(Utc::now().timestamp(), 3_600, 0), 0)
+        .single()
+        .expect("current hour start should be valid");
+    let snapshot_second = current_hour_start + ChronoDuration::minutes(20);
+    let requested_snapshot_at = snapshot_second + ChronoDuration::milliseconds(123);
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        created_at: DateTime<Utc>,
+        key: &str,
+        total_tokens: i64,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(total_tokens)
+        .bind(0.01_f64)
+        .bind(
+            json!({
+                "promptCacheKey": key,
+                "routeMode": "pool",
+                "model": "gpt-5.4",
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .bind(format_utc_iso_millis(created_at))
+        .execute(pool)
+        .await
+        .expect("insert paginated same-second row");
+    }
+
+    insert_row(
+        &state.pool,
+        "working-same-second-head",
+        snapshot_second - ChronoDuration::seconds(5),
+        snapshot_second - ChronoDuration::seconds(5),
+        "working-same-second-head",
+        20,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-same-second-tail",
+        snapshot_second - ChronoDuration::seconds(15),
+        snapshot_second - ChronoDuration::seconds(15),
+        "working-same-second-tail",
+        10,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-same-second-preexisting-post",
+        snapshot_second,
+        requested_snapshot_at + ChronoDuration::milliseconds(200),
+        "working-same-second-preexisting-post",
+        888,
+    )
+    .await;
+
+    let Json(first_page) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: None,
+            snapshot_at: Some(requested_snapshot_at.to_rfc3339()),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("first same-second snapshot page should succeed");
+
+    assert_eq!(first_page.conversations.len(), 1);
+    assert_eq!(first_page.total_matched, Some(2));
+    let expected_snapshot_at = format_utc_iso_precise(requested_snapshot_at);
+    assert_eq!(
+        first_page.conversations[0].prompt_cache_key,
+        "working-same-second-head"
+    );
+    assert_eq!(
+        first_page.snapshot_at.as_deref(),
+        Some(expected_snapshot_at.as_str())
+    );
+
+    insert_row(
+        &state.pool,
+        "working-same-second-post",
+        snapshot_second,
+        requested_snapshot_at + ChronoDuration::milliseconds(400),
+        "working-same-second-post",
+        999,
+    )
+    .await;
+
+    let Json(second_page) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: first_page.next_cursor.clone(),
+            snapshot_at: first_page.snapshot_at.clone(),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("second same-second snapshot page should succeed");
+
+    assert_eq!(second_page.total_matched, Some(2));
+    assert_eq!(second_page.conversations.len(), 1);
+    assert_eq!(
+        second_page.conversations[0].prompt_cache_key,
+        "working-same-second-tail"
+    );
+    assert!(
+        second_page
+            .conversations
+            .iter()
+            .all(|conversation| conversation.prompt_cache_key != "working-same-second-post")
+    );
+    assert!(
+        second_page
+            .conversations
+            .iter()
+            .all(|conversation| {
+                conversation.prompt_cache_key != "working-same-second-preexisting-post"
+            })
+    );
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_activity_minutes_paginated_whole_second_snapshot_excludes_post_snapshot_writes(
+) {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let current_hour_start = Utc
+        .timestamp_opt(align_bucket_epoch(Utc::now().timestamp(), 3_600, 0), 0)
+        .single()
+        .expect("current hour start should be valid");
+    let snapshot_second = current_hour_start + ChronoDuration::minutes(24);
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        created_at: DateTime<Utc>,
+        key: &str,
+        total_tokens: i64,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(format!("{invoke_id}-{}", created_at.timestamp_millis()))
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(total_tokens)
+        .bind(0.01_f64)
+        .bind(
+            json!({
+                "promptCacheKey": key,
+                "routeMode": "pool",
+                "model": "gpt-5.4",
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .bind(format_utc_iso_millis(created_at))
+        .execute(pool)
+        .await
+        .expect("insert whole-second snapshot row");
+    }
+
+    insert_row(
+        &state.pool,
+        "working-whole-second-head",
+        snapshot_second,
+        snapshot_second,
+        "working-whole-second-head",
+        20,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-whole-second-tail",
+        snapshot_second - ChronoDuration::seconds(15),
+        snapshot_second - ChronoDuration::seconds(15),
+        "working-whole-second-tail",
+        10,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-whole-second-preexisting-post",
+        snapshot_second,
+        snapshot_second + ChronoDuration::milliseconds(200),
+        "working-whole-second-preexisting-post",
+        888,
+    )
+    .await;
+
+    let Json(first_page) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: None,
+            snapshot_at: Some(format_utc_iso(snapshot_second)),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("first whole-second snapshot page should succeed");
+
+    assert_eq!(first_page.conversations.len(), 1);
+    assert_eq!(first_page.total_matched, Some(2));
+    assert_eq!(
+        first_page.conversations[0].prompt_cache_key,
+        "working-whole-second-head"
+    );
+    assert_eq!(
+        first_page.snapshot_at.as_deref(),
+        Some(format_utc_iso(snapshot_second).as_str())
+    );
+
+    insert_row(
+        &state.pool,
+        "working-whole-second-post",
+        snapshot_second,
+        snapshot_second + ChronoDuration::milliseconds(400),
+        "working-whole-second-post",
+        999,
+    )
+    .await;
+
+    let Json(second_page) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: first_page.next_cursor.clone(),
+            snapshot_at: first_page.snapshot_at.clone(),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("second whole-second snapshot page should succeed");
+
+    assert_eq!(second_page.total_matched, Some(2));
+    assert_eq!(second_page.conversations.len(), 1);
+    assert_eq!(
+        second_page.conversations[0].prompt_cache_key,
+        "working-whole-second-tail"
+    );
+    assert!(
+        second_page
+            .conversations
+            .iter()
+            .all(|conversation| conversation.prompt_cache_key != "working-whole-second-post")
+    );
+    assert!(
+        second_page
+            .conversations
+            .iter()
+            .all(|conversation| {
+                conversation.prompt_cache_key != "working-whole-second-preexisting-post"
+            })
+    );
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes_late_persisted_pre_snapshot_occurrence(
+) {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let current_hour_start = Utc
+        .timestamp_opt(align_bucket_epoch(Utc::now().timestamp(), 3_600, 0), 0)
+        .single()
+        .expect("current hour start should be valid");
+    let snapshot_second = current_hour_start + ChronoDuration::minutes(28);
+    let requested_snapshot_at = snapshot_second + ChronoDuration::milliseconds(123);
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        created_at: DateTime<Utc>,
+        key: &str,
+        total_tokens: i64,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(format!("{invoke_id}-{}", created_at.timestamp_millis()))
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(total_tokens)
+        .bind(0.01_f64)
+        .bind(
+            json!({
+                "promptCacheKey": key,
+                "routeMode": "pool",
+                "model": "gpt-5.4",
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .bind(format_utc_iso_millis(created_at))
+        .execute(pool)
+        .await
+        .expect("insert late-persisted snapshot row");
+    }
+
+    insert_row(
+        &state.pool,
+        "working-late-persist-head",
+        snapshot_second - ChronoDuration::seconds(5),
+        snapshot_second - ChronoDuration::seconds(5),
+        "working-late-persist-head",
+        20,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-late-persist-tail",
+        snapshot_second - ChronoDuration::seconds(15),
+        snapshot_second - ChronoDuration::seconds(15),
+        "working-late-persist-tail",
+        10,
+    )
+    .await;
+
+    let Json(first_page) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: None,
+            snapshot_at: Some(requested_snapshot_at.to_rfc3339()),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("first late-persist snapshot page should succeed");
+
+    assert_eq!(first_page.conversations.len(), 1);
+    assert_eq!(first_page.total_matched, Some(2));
+    assert_eq!(
+        first_page.conversations[0].prompt_cache_key,
+        "working-late-persist-head"
+    );
+
+    insert_row(
+        &state.pool,
+        "working-late-persist-post",
+        snapshot_second - ChronoDuration::seconds(10),
+        requested_snapshot_at + ChronoDuration::milliseconds(400),
+        "working-late-persist-post",
+        999,
+    )
+    .await;
+
+    let Json(second_page) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: first_page.next_cursor.clone(),
+            snapshot_at: first_page.snapshot_at.clone(),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("second late-persist snapshot page should succeed");
+
+    assert_eq!(second_page.total_matched, Some(2));
+    assert_eq!(second_page.conversations.len(), 1);
+    assert_eq!(
+        second_page.conversations[0].prompt_cache_key,
+        "working-late-persist-tail"
+    );
+    assert!(
+        second_page
+            .conversations
+            .iter()
+            .all(|conversation| conversation.prompt_cache_key != "working-late-persist-post")
+    );
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_preserves_previous_hour_lifetime_totals()
+{
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let current_hour_start = Utc
+        .timestamp_opt(align_bucket_epoch(Utc::now().timestamp(), 3_600, 0), 0)
+        .single()
+        .expect("current hour start should be valid");
+    let snapshot_at = current_hour_start + ChronoDuration::minutes(3);
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        key: &str,
+        total_tokens: i64,
+        cost: f64,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(
+            json!({
+                "promptCacheKey": key,
+                "routeMode": "pool",
+                "model": "gpt-5.4",
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .bind(format_utc_iso_millis(occurred_at))
+        .execute(pool)
+        .await
+        .expect("insert paginated previous-hour row");
+    }
+
+    insert_row(
+        &state.pool,
+        "working-window-head",
+        snapshot_at - ChronoDuration::seconds(10),
+        "working-window-head",
+        20,
+        0.20,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-window-target-stale",
+        snapshot_at - ChronoDuration::minutes(33),
+        "working-window-target",
+        999,
+        9.99,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-window-target-pre",
+        snapshot_at - ChronoDuration::minutes(4),
+        "working-window-target",
+        10,
+        0.10,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-window-target-post",
+        snapshot_at + ChronoDuration::seconds(5),
+        "working-window-target",
+        777,
+        7.77,
+    )
+    .await;
+
+    let snapshot_at_rfc3339 = snapshot_at.to_rfc3339();
+    let Json(first_page) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: None,
+            snapshot_at: Some(snapshot_at_rfc3339.clone()),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("first lifetime snapshot page should succeed");
+
+    assert_eq!(first_page.conversations.len(), 1);
+    assert_eq!(
+        first_page.conversations[0].prompt_cache_key,
+        "working-window-head"
+    );
+
+    let Json(second_page) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: first_page.next_cursor.clone(),
+            snapshot_at: Some(snapshot_at_rfc3339),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("second lifetime snapshot page should succeed");
+
+    assert_eq!(second_page.conversations.len(), 1);
+    let target = &second_page.conversations[0];
+    assert_eq!(target.prompt_cache_key, "working-window-target");
+    assert_eq!(target.request_count, 2);
+    assert_eq!(target.total_tokens, 1_009);
+    assert!((target.total_cost - 10.09).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_keeps_hydrated_details_consistent()
+{
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let current_hour_start = Utc
+        .timestamp_opt(align_bucket_epoch(Utc::now().timestamp(), 3_600, 0), 0)
+        .single()
+        .expect("current hour start should be valid");
+    let snapshot_at = current_hour_start + ChronoDuration::minutes(20);
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        key: &str,
+        upstream_account_id: Option<i64>,
+        upstream_account_name: Option<&str>,
+        total_tokens: i64,
+        cost: f64,
+    ) {
+        let mut payload = json!({
+            "promptCacheKey": key,
+            "routeMode": "pool",
+            "model": "gpt-5.4",
+        });
+        if let Some(upstream_account_id) = upstream_account_id {
+            payload["upstreamAccountId"] = json!(upstream_account_id);
+        }
+        if let Some(upstream_account_name) = upstream_account_name {
+            payload["upstreamAccountName"] = json!(upstream_account_name);
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(payload.to_string())
+        .bind("{}")
+        .bind(format_utc_iso_millis(occurred_at))
+        .execute(pool)
+        .await
+        .expect("insert paginated snapshot hydration row");
+    }
+
+    insert_row(
+        &state.pool,
+        "working-snapshot-full-head-pre",
+        snapshot_at - ChronoDuration::seconds(5),
+        "working-snapshot-full-head",
+        Some(11),
+        Some("Head"),
+        20,
+        0.20,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-snapshot-full-target-pre",
+        snapshot_at - ChronoDuration::seconds(15),
+        "working-snapshot-full-target",
+        Some(1),
+        Some("Alpha"),
+        10,
+        0.10,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-snapshot-full-target-post",
+        snapshot_at + ChronoDuration::seconds(5),
+        "working-snapshot-full-target",
+        Some(2),
+        Some("Beta"),
+        999,
+        9.99,
+    )
+    .await;
+
+    let snapshot_at_rfc3339 = snapshot_at.to_rfc3339();
+    let Json(first_page) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: None,
+            snapshot_at: Some(snapshot_at_rfc3339.clone()),
+            detail: Some("full".to_string()),
+        }),
+    )
+    .await
+    .expect("first full snapshot page should succeed");
+
+    assert_eq!(first_page.conversations.len(), 1);
+    assert_eq!(
+        first_page.conversations[0].prompt_cache_key,
+        "working-snapshot-full-head"
+    );
+
+    let Json(second_page) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: first_page.next_cursor.clone(),
+            snapshot_at: Some(snapshot_at_rfc3339),
+            detail: Some("full".to_string()),
+        }),
+    )
+    .await
+    .expect("second full snapshot page should succeed");
+
+    assert_eq!(second_page.conversations.len(), 1);
+    let target = &second_page.conversations[0];
+    assert_eq!(target.prompt_cache_key, "working-snapshot-full-target");
+    assert_eq!(target.request_count, 1);
+    assert_eq!(target.total_tokens, 10);
+    assert!((target.total_cost - 0.10).abs() < 1e-9);
+    assert_eq!(target.recent_invocations.len(), 1);
+    assert_eq!(
+        target.recent_invocations[0].invoke_id,
+        "working-snapshot-full-target-pre"
+    );
+    assert_eq!(target.last24h_requests.len(), 1);
+    assert_eq!(target.last24h_requests[0].request_tokens, 10);
+    assert_eq!(target.last24h_requests[0].cumulative_tokens, 10);
+    assert_eq!(target.upstream_accounts.len(), 1);
+    assert_eq!(target.upstream_accounts[0].upstream_account_id, Some(1));
+    assert_eq!(
+        target.upstream_accounts[0].upstream_account_name.as_deref(),
+        Some("Alpha")
+    );
+    assert_eq!(target.upstream_accounts[0].request_count, 1);
+    assert_eq!(target.upstream_accounts[0].total_tokens, 10);
+    assert!((target.upstream_accounts[0].total_cost - 0.10).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_activity_minutes_paginated_keeps_running_and_pending_working_rows()
+{
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        key: &str,
+        status: &str,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(10)
+        .bind(0.01_f64)
+        .bind(json!({ "promptCacheKey": key, "routeMode": "pool" }).to_string())
+        .bind("{}")
+        .execute(pool)
+        .await
+        .expect("insert paginated working-semantics row");
+    }
+
+    insert_row(
+        &state.pool,
+        "working-recent-terminal",
+        now - ChronoDuration::minutes(4),
+        "working-recent-terminal",
+        "success",
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-running-terminal-old",
+        now - ChronoDuration::minutes(12),
+        "working-running",
+        "success",
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-running-live",
+        now - ChronoDuration::minutes(1),
+        "working-running",
+        "running",
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-pending-live",
+        now - ChronoDuration::minutes(2),
+        "working-pending",
+        "pending",
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-stale-terminal",
+        now - ChronoDuration::minutes(7),
+        "working-stale-terminal",
+        "success",
+    )
+    .await;
+
+    let Json(response) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(10),
+            cursor: None,
+            snapshot_at: None,
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("paginated working semantics response should succeed");
+
+    let prompt_cache_keys = response
+        .conversations
+        .iter()
+        .map(|conversation| conversation.prompt_cache_key.as_str())
+        .collect::<HashSet<_>>();
+    let running = response
+        .conversations
+        .iter()
+        .find(|conversation| conversation.prompt_cache_key == "working-running")
+        .expect("running working row should remain visible");
+    let pending = response
+        .conversations
+        .iter()
+        .find(|conversation| conversation.prompt_cache_key == "working-pending")
+        .expect("pending working row should remain visible");
+
+    assert_eq!(response.total_matched, Some(3));
+    assert!(prompt_cache_keys.contains("working-recent-terminal"));
+    assert!(prompt_cache_keys.contains("working-running"));
+    assert!(prompt_cache_keys.contains("working-pending"));
+    assert!(!prompt_cache_keys.contains("working-stale-terminal"));
+    assert!(running.last_terminal_at.is_none());
+    assert!(running.last_in_flight_at.is_some());
+    assert!(pending.last_terminal_at.is_none());
+    assert!(pending.last_in_flight_at.is_some());
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_activity_minutes_paginated_sorts_by_newer_in_flight_anchor() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        key: &str,
+        status: &str,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(10)
+        .bind(0.01_f64)
+        .bind(json!({ "promptCacheKey": key, "routeMode": "pool" }).to_string())
+        .bind("{}")
+        .execute(pool)
+        .await
+        .expect("insert mixed sort-anchor row");
+    }
+
+    insert_row(
+        &state.pool,
+        "working-mixed-terminal",
+        now - ChronoDuration::minutes(4),
+        "working-mixed",
+        "success",
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-mixed-running",
+        now - ChronoDuration::minutes(1),
+        "working-mixed",
+        "running",
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-terminal-only",
+        now - ChronoDuration::minutes(2),
+        "working-terminal-only",
+        "success",
+    )
+    .await;
+
+    let Json(response) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(10),
+            cursor: None,
+            snapshot_at: None,
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("paginated working response should succeed");
+
+    assert_eq!(
+        response
+            .conversations
+            .iter()
+            .map(|conversation| conversation.prompt_cache_key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["working-mixed", "working-terminal-only"]
+    );
 }
 
 #[tokio::test]
@@ -1250,6 +2956,10 @@ async fn prompt_cache_conversations_chart_window_caps_history_to_recent_24_hours
             limit: None,
             activity_hours: Some(1),
             activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
         }),
     )
     .await
@@ -1300,6 +3010,10 @@ async fn prompt_cache_conversation_timestamps_serialize_as_utc_iso() {
             limit: Some(20),
             activity_hours: None,
             activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
         }),
     )
     .await
@@ -1378,6 +3092,10 @@ async fn prompt_cache_conversations_cache_reuses_recent_result_within_ttl() {
             limit: Some(20),
             activity_hours: None,
             activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
         }),
     )
     .await
@@ -1416,6 +3134,10 @@ async fn prompt_cache_conversations_cache_reuses_recent_result_within_ttl() {
             limit: Some(20),
             activity_hours: None,
             activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
         }),
     )
     .await
@@ -1473,6 +3195,10 @@ async fn prompt_cache_conversations_cache_invalidation_exposes_new_proxy_capture
             limit: Some(20),
             activity_hours: None,
             activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
         }),
     )
     .await
@@ -1499,6 +3225,10 @@ async fn prompt_cache_conversations_cache_invalidation_exposes_new_proxy_capture
             limit: Some(20),
             activity_hours: None,
             activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
         }),
     )
     .await
@@ -1556,6 +3286,10 @@ async fn prompt_cache_conversations_cache_ignores_proxy_captures_without_prompt_
             limit: Some(20),
             activity_hours: None,
             activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
         }),
     )
     .await
@@ -1581,6 +3315,10 @@ async fn prompt_cache_conversations_cache_ignores_proxy_captures_without_prompt_
             limit: Some(20),
             activity_hours: None,
             activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
         }),
     )
     .await
@@ -1649,6 +3387,10 @@ async fn prompt_cache_conversations_cache_returns_under_sustained_invalidations(
                 limit: Some(20),
                 activity_hours: None,
                 activity_minutes: None,
+                page_size: None,
+                cursor: None,
+                snapshot_at: None,
+                detail: None,
             }),
         ),
     )
@@ -1713,6 +3455,10 @@ async fn prompt_cache_conversations_concurrent_requests_same_limit_do_not_stall(
                         limit: Some(20),
                         activity_hours: None,
                         activity_minutes: None,
+                        page_size: None,
+                        cursor: None,
+                        snapshot_at: None,
+                        detail: None,
                     }),
                 ),
             )

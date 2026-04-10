@@ -8,8 +8,38 @@ import type {
   PromptCacheConversationInvocationPreview,
   PromptCacheConversationsResponse,
 } from "../lib/api";
-import { mapPromptCacheConversationsToDashboardCards } from "../lib/dashboardWorkingConversations";
+import {
+  mapPromptCacheConversationsToDashboardCards,
+  type DashboardWorkingConversationCardModel,
+} from "../lib/dashboardWorkingConversations";
 import { DashboardWorkingConversationsSection } from "./DashboardWorkingConversationsSection";
+
+const virtualizerMocks = vi.hoisted(() => ({
+  rowIndexes: null as number[] | null,
+  totalSize: null as number | null,
+}));
+
+vi.mock("@tanstack/react-virtual", () => ({
+  useVirtualizer: ({ count }: { count: number }) => {
+    const rowIndexes =
+      virtualizerMocks.rowIndexes ??
+      Array.from({ length: count }, (_, index) => index);
+    return {
+      measureElement: () => undefined,
+      getVirtualItems: () =>
+        rowIndexes
+          .filter((index) => index >= 0 && index < count)
+          .map((index) => ({
+            key: index,
+            index,
+            start: index * 360,
+            size: 360,
+            end: index * 360 + 360,
+          })),
+      getTotalSize: () => virtualizerMocks.totalSize ?? count * 360,
+    };
+  },
+}));
 
 function createPreview(
   overrides: Partial<PromptCacheConversationInvocationPreview> & {
@@ -92,6 +122,7 @@ function createResponse(
 
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
+const originalResizeObserver = globalThis.ResizeObserver;
 
 beforeAll(() => {
   Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
@@ -108,12 +139,22 @@ afterEach(() => {
   host?.remove();
   host = null;
   root = null;
+  virtualizerMocks.rowIndexes = null;
+  virtualizerMocks.totalSize = null;
+  globalThis.ResizeObserver = originalResizeObserver;
   vi.restoreAllMocks();
 });
 
 function renderSection(
   response: PromptCacheConversationsResponse,
   options?: {
+    error?: string | null;
+    isLoading?: boolean;
+    isLoadingMore?: boolean;
+    hasMore?: boolean;
+    totalMatched?: number;
+    onLoadMore?: () => void;
+    setRefreshTargetCount?: (count: number) => void;
     onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
     onOpenInvocation?: (selection: {
       slotKind: "current" | "previous";
@@ -123,7 +164,31 @@ function renderSection(
     }) => void;
   },
 ) {
-  const cards = mapPromptCacheConversationsToDashboardCards(response);
+  return renderSectionWithCards(
+    mapPromptCacheConversationsToDashboardCards(response),
+    options,
+  );
+}
+
+function renderSectionWithCards(
+  cards: DashboardWorkingConversationCardModel[],
+  options?: {
+    error?: string | null;
+    isLoading?: boolean;
+    isLoadingMore?: boolean;
+    hasMore?: boolean;
+    totalMatched?: number;
+    onLoadMore?: () => void;
+    setRefreshTargetCount?: (count: number) => void;
+    onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+    onOpenInvocation?: (selection: {
+      slotKind: "current" | "previous";
+      conversationSequenceId: string;
+      promptCacheKey: string;
+      invocation: { record: { invokeId: string } };
+    }) => void;
+  },
+) {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -132,8 +197,81 @@ function renderSection(
       <I18nProvider>
         <DashboardWorkingConversationsSection
           cards={cards}
-          isLoading={false}
-          error={null}
+          totalMatched={options?.totalMatched}
+          hasMore={options?.hasMore}
+          isLoading={options?.isLoading ?? false}
+          isLoadingMore={options?.isLoadingMore}
+          error={options?.error ?? null}
+          onLoadMore={options?.onLoadMore}
+          setRefreshTargetCount={options?.setRefreshTargetCount}
+          onOpenUpstreamAccount={options?.onOpenUpstreamAccount}
+          onOpenInvocation={options?.onOpenInvocation}
+        />
+      </I18nProvider>,
+    );
+  });
+  return cards;
+}
+
+function rerenderSection(
+  response: PromptCacheConversationsResponse,
+  options?: {
+    error?: string | null;
+    isLoading?: boolean;
+    isLoadingMore?: boolean;
+    hasMore?: boolean;
+    totalMatched?: number;
+    onLoadMore?: () => void;
+    setRefreshTargetCount?: (count: number) => void;
+    onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+    onOpenInvocation?: (selection: {
+      slotKind: "current" | "previous";
+      conversationSequenceId: string;
+      promptCacheKey: string;
+      invocation: { record: { invokeId: string } };
+    }) => void;
+  },
+) {
+  return rerenderSectionWithCards(
+    mapPromptCacheConversationsToDashboardCards(response),
+    options,
+  );
+}
+
+function rerenderSectionWithCards(
+  cards: DashboardWorkingConversationCardModel[],
+  options?: {
+    error?: string | null;
+    isLoading?: boolean;
+    isLoadingMore?: boolean;
+    hasMore?: boolean;
+    totalMatched?: number;
+    onLoadMore?: () => void;
+    setRefreshTargetCount?: (count: number) => void;
+    onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+    onOpenInvocation?: (selection: {
+      slotKind: "current" | "previous";
+      conversationSequenceId: string;
+      promptCacheKey: string;
+      invocation: { record: { invokeId: string } };
+    }) => void;
+  },
+) {
+  if (!root) {
+    throw new Error("renderSection must run before rerenderSection");
+  }
+  act(() => {
+    root?.render(
+      <I18nProvider>
+        <DashboardWorkingConversationsSection
+          cards={cards}
+          totalMatched={options?.totalMatched}
+          hasMore={options?.hasMore}
+          isLoading={options?.isLoading ?? false}
+          isLoadingMore={options?.isLoadingMore}
+          error={options?.error ?? null}
+          onLoadMore={options?.onLoadMore}
+          setRefreshTargetCount={options?.setRefreshTargetCount}
           onOpenUpstreamAccount={options?.onOpenUpstreamAccount}
           onOpenInvocation={options?.onOpenInvocation}
         />
@@ -186,11 +324,40 @@ describe("DashboardWorkingConversationsSection", () => {
       cards[0]?.conversationSequenceId.replace(/^WC-/, "") ?? "",
     );
     expect(card.textContent).not.toContain("WC-");
-    expect(card.textContent).not.toContain("019d68a9-9c32-7482-a353-71e4b6265f09");
+    expect(card.textContent).not.toContain(
+      "019d68a9-9c32-7482-a353-71e4b6265f09",
+    );
     expect(card.getAttribute("data-prompt-cache-key")).toBeNull();
+    expect(card.getAttribute("data-anchor-prompt-cache-key")).toBeNull();
     expect(card.getAttribute("data-conversation-sequence-id")).toBe(
       cards[0]?.conversationSequenceId.replace(/^WC-/, ""),
     );
+  });
+
+  it("keeps rendered cards visible while surfacing a non-blocking error banner", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-inline-error", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-inline-error",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "running",
+          }),
+        ]),
+      ]),
+      {
+        error: "load more temporarily unavailable",
+      },
+    );
+
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-working-conversation-card"]',
+      ),
+    ).toBeTruthy();
+    expect(host?.textContent).toContain("load more temporarily unavailable");
+    expect(host?.textContent).toContain("运行中");
   });
 
   it("places reasoning effort between the model name and service-tier indicator", () => {
@@ -243,6 +410,221 @@ describe("DashboardWorkingConversationsSection", () => {
       reasoningEffort.compareDocumentPosition(fastIcon) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0);
+  });
+
+  it("keeps the virtualized viewport spanning the full responsive grid width", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-layout", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-layout",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+          }),
+        ]),
+      ]),
+    );
+
+    const grid = host?.querySelector(
+      '[data-testid="dashboard-working-conversations-grid"]',
+    );
+    if (!(grid instanceof HTMLDivElement)) {
+      throw new Error("missing working conversations grid");
+    }
+    const viewport = grid.firstElementChild;
+    if (!(viewport instanceof HTMLDivElement)) {
+      throw new Error("missing virtualized viewport");
+    }
+
+    expect(viewport.className).toContain("col-span-full");
+  });
+
+  it("rebinds width observation after the grid first mounts so wide layouts keep multi-column rendering", () => {
+    const observe = vi.fn();
+    const disconnect = vi.fn();
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1700);
+    globalThis.ResizeObserver = class {
+      observe = observe;
+      disconnect = disconnect;
+    } as unknown as typeof ResizeObserver;
+
+    renderSection(createResponse([]));
+    rerenderSection(
+      createResponse([
+        createConversation("pck-wide-mounted", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-wide-mounted",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+          }),
+        ]),
+      ]),
+    );
+
+    const grid = host?.querySelector(
+      '[data-testid="dashboard-working-conversations-grid"]',
+    );
+    if (!(grid instanceof HTMLDivElement)) {
+      throw new Error("missing working conversations grid");
+    }
+
+    const rowGrid = grid.querySelector(
+      '[data-testid="dashboard-working-conversations-row"] > div',
+    );
+    if (!(rowGrid instanceof HTMLDivElement)) {
+      throw new Error("missing row grid");
+    }
+
+    expect(observe).toHaveBeenCalledWith(grid);
+    expect(rowGrid.style.gridTemplateColumns).toBe("repeat(4, minmax(0, 1fr))");
+    expect(disconnect).not.toHaveBeenCalled();
+  });
+
+  it("prefers the resolved CSS grid track count over the narrower container width fallback", () => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1570);
+    const originalGetComputedStyle = window.getComputedStyle.bind(window);
+    vi.spyOn(window, "getComputedStyle").mockImplementation((element) => {
+      const styles = originalGetComputedStyle(element);
+      if (
+        element instanceof HTMLElement &&
+        element.dataset.testid === "dashboard-working-conversations-grid"
+      ) {
+        const mockedStyles = Object.create(styles) as CSSStyleDeclaration;
+        Object.defineProperty(mockedStyles, "gridTemplateColumns", {
+          configurable: true,
+          value: "1fr 1fr 1fr 1fr",
+        });
+        return mockedStyles;
+      }
+      return styles;
+    });
+
+    renderSection(
+      createResponse([
+        createConversation("pck-css-track-count", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-css-track-count",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+          }),
+          createPreview({
+            id: 2,
+            invokeId: "invoke-css-track-count-prev",
+            occurredAt: "2026-04-04T10:03:30Z",
+            status: "completed",
+          }),
+        ]),
+      ]),
+    );
+
+    const rowGrid = host?.querySelector(
+      '[data-testid="dashboard-working-conversations-row"] > div',
+    );
+    if (!(rowGrid instanceof HTMLDivElement)) {
+      throw new Error("missing row grid");
+    }
+
+    expect(rowGrid.style.gridTemplateColumns).toBe("repeat(4, minmax(0, 1fr))");
+  });
+
+  it("keeps a vertical gutter between virtualized rows", () => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1700);
+
+    renderSection(
+      createResponse(
+        Array.from({ length: 8 }, (_, index) =>
+          createConversation(`pck-vertical-gap-${index + 1}`, [
+            createPreview({
+              id: index + 1,
+              invokeId: `invoke-vertical-gap-${index + 1}`,
+              occurredAt: `2026-04-04T10:${String(59 - index).padStart(2, "0")}:00Z`,
+              status: "completed",
+            }),
+          ]),
+        ),
+      ),
+    );
+
+    const rows = host?.querySelectorAll<HTMLElement>(
+      '[data-testid="dashboard-working-conversations-row"]',
+    );
+    if (!rows || rows.length < 2) {
+      throw new Error("expected at least two virtualized rows");
+    }
+
+    expect(rows[0]?.style.paddingBottom).toBe("16px");
+    expect(rows[1]?.style.paddingBottom).toBe("0px");
+  });
+
+  it("does not auto-load another page on first paint when the initial grid already overflows", () => {
+    vi.useFakeTimers();
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1700);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(700);
+    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(1680);
+    const onLoadMore = vi.fn();
+
+    renderSection(
+      createResponse(
+        Array.from({ length: 20 }, (_, index) =>
+          createConversation(`pck-overflow-${index + 1}`, [
+            createPreview({
+              id: index + 1,
+              invokeId: `invoke-overflow-${index + 1}`,
+              occurredAt: `2026-04-04T10:${String(59 - index).padStart(2, "0")}:00Z`,
+              status: "completed",
+            }),
+          ]),
+        ),
+      ),
+      {
+        hasMore: true,
+        onLoadMore,
+      },
+    );
+
+    act(() => {
+      vi.runAllTimers();
+    });
+
+    expect(onLoadMore).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it("backfills immediately on first paint when the initial grid is not scrollable yet", () => {
+    vi.useFakeTimers();
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1700);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(900);
+    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(640);
+    const onLoadMore = vi.fn();
+
+    renderSection(
+      createResponse(
+        Array.from({ length: 4 }, (_, index) =>
+          createConversation(`pck-underflow-${index + 1}`, [
+            createPreview({
+              id: index + 1,
+              invokeId: `invoke-underflow-${index + 1}`,
+              occurredAt: `2026-04-04T10:${String(59 - index).padStart(2, "0")}:00Z`,
+              status: "completed",
+            }),
+          ]),
+        ),
+      ),
+      {
+        hasMore: true,
+        onLoadMore,
+      },
+    );
+
+    act(() => {
+      vi.runAllTimers();
+    });
+
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
   });
 
   it("falls back to downstream-facing diagnostics in the dashboard card summary", () => {
@@ -522,5 +904,215 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(grid?.className).toContain("xl:grid-cols-2");
     expect(grid?.className).toContain("2xl:grid-cols-3");
     expect(grid?.className).toContain("desktop1660:grid-cols-4");
+  });
+
+  it("renders only the virtualized rows instead of keeping every card mounted in the DOM", () => {
+    virtualizerMocks.rowIndexes = [0, 1, 2, 3];
+    virtualizerMocks.totalSize = 30 * 360;
+
+    renderSection(
+      createResponse(
+        Array.from({ length: 30 }, (_, index) =>
+          createConversation(`pck-virtual-${index + 1}`, [
+            createPreview({
+              id: index + 1,
+              invokeId: `invoke-virtual-${index + 1}`,
+              occurredAt: `2026-04-04T10:${String((59 - index) % 60).padStart(2, "0")}:00Z`,
+              status: index % 3 === 0 ? "running" : "completed",
+            }),
+          ]),
+        ),
+      ),
+    );
+
+    const renderedCards = host?.querySelectorAll(
+      '[data-testid="dashboard-working-conversation-card"]',
+    );
+    const renderedRows = host?.querySelectorAll(
+      '[data-testid="dashboard-working-conversations-row"]',
+    );
+
+    expect(renderedRows?.length).toBe(4);
+    expect(renderedCards?.length).toBe(4);
+    expect(renderedCards?.length).toBeLessThan(30);
+  });
+
+  it("keeps the pre-measure fallback bounded before virtual rows are available", () => {
+    virtualizerMocks.rowIndexes = [];
+    virtualizerMocks.totalSize = 30 * 360;
+
+    renderSection(
+      createResponse(
+        Array.from({ length: 30 }, (_, index) =>
+          createConversation(`pck-fallback-${index + 1}`, [
+            createPreview({
+              id: index + 1,
+              invokeId: `invoke-fallback-${index + 1}`,
+              occurredAt: `2026-04-04T10:${String((59 - index) % 60).padStart(2, "0")}:00Z`,
+              status: index % 2 === 0 ? "running" : "completed",
+            }),
+          ]),
+        ),
+      ),
+    );
+
+    const renderedCards = host?.querySelectorAll(
+      '[data-testid="dashboard-working-conversation-card"]',
+    );
+    const renderedRows = host?.querySelectorAll(
+      '[data-testid="dashboard-working-conversations-row"]',
+    );
+
+    expect(renderedRows?.length).toBeLessThan(30);
+    expect(renderedCards?.length).toBeLessThan(30);
+  });
+
+  it("reports the current virtualized depth instead of pinning refreshes to historical rows", () => {
+    const setRefreshTargetCount = vi.fn();
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1700);
+    virtualizerMocks.rowIndexes = [0, 1, 2, 3, 4, 5];
+
+    const response = createResponse(
+      Array.from({ length: 32 }, (_, index) =>
+        createConversation(`pck-depth-${index + 1}`, [
+          createPreview({
+            id: index + 1,
+            invokeId: `invoke-depth-${index + 1}`,
+            occurredAt: `2026-04-04T10:${String((59 - index) % 60).padStart(2, "0")}:00Z`,
+            status: "completed",
+          }),
+        ]),
+      ),
+    );
+
+    renderSection(response, { setRefreshTargetCount });
+    expect(setRefreshTargetCount).toHaveBeenLastCalledWith(24);
+
+    virtualizerMocks.rowIndexes = [0, 1, 2];
+    rerenderSection(response, { setRefreshTargetCount });
+    expect(setRefreshTargetCount).toHaveBeenLastCalledWith(20);
+  });
+
+  it("keeps scroll-anchor compensation stable when display ids are renumbered by a new collision", () => {
+    const baseCards = mapPromptCacheConversationsToDashboardCards(
+      createResponse([
+        createConversation("hidden-before", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-hidden-before",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "completed",
+          }),
+        ]),
+        createConversation("stable-anchor", [
+          createPreview({
+            id: 2,
+            invokeId: "invoke-stable-anchor",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+          }),
+        ]),
+        createConversation("new-head", [
+          createPreview({
+            id: 3,
+            invokeId: "invoke-new-head",
+            occurredAt: "2026-04-04T10:06:00Z",
+            status: "running",
+          }),
+        ]),
+      ]),
+    );
+
+    const initialCards = [
+      {
+        ...baseCards[0]!,
+        promptCacheKey: "hidden-before",
+        normalizedPromptCacheKey: "hidden-before",
+        conversationSequenceId: "WC-COLLIDE-A",
+      },
+      {
+        ...baseCards[1]!,
+        promptCacheKey: "stable-anchor",
+        normalizedPromptCacheKey: "stable-anchor",
+        conversationSequenceId: "WC-COLLIDE-B",
+      },
+    ] satisfies DashboardWorkingConversationCardModel[];
+
+    const nextCards = [
+      {
+        ...baseCards[2]!,
+        promptCacheKey: "new-head",
+        normalizedPromptCacheKey: "new-head",
+        conversationSequenceId: "WC-COLLIDE-A",
+      },
+      {
+        ...baseCards[0]!,
+        promptCacheKey: "hidden-before",
+        normalizedPromptCacheKey: "hidden-before",
+        conversationSequenceId: "WC-COLLIDE-A-1",
+      },
+      {
+        ...baseCards[1]!,
+        promptCacheKey: "stable-anchor",
+        normalizedPromptCacheKey: "stable-anchor",
+        conversationSequenceId: "WC-COLLIDE-B-1",
+      },
+    ] satisfies DashboardWorkingConversationCardModel[];
+
+    const rectFor = (top: number, height = 160) =>
+      ({
+        x: 0,
+        y: top,
+        top,
+        bottom: top + height,
+        left: 0,
+        right: 1200,
+        width: 1200,
+        height,
+        toJSON: () => ({}),
+      }) satisfies DOMRect;
+
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        if (
+          this.getAttribute("data-testid") ===
+          "dashboard-working-conversations-grid"
+        ) {
+          return rectFor(0, 600);
+        }
+        if (
+          this.getAttribute("data-testid") ===
+          "dashboard-working-conversation-card"
+        ) {
+          switch (this.getAttribute("data-conversation-sequence-id")) {
+            case "COLLIDE-A":
+              return rectFor(-220);
+            case "COLLIDE-B":
+              return rectFor(40);
+            case "COLLIDE-A-1":
+              return rectFor(-20);
+            case "COLLIDE-B-1":
+              return rectFor(220);
+            default:
+              return rectFor(720);
+          }
+        }
+        return rectFor(0, 0);
+      },
+    );
+
+    renderSectionWithCards(initialCards);
+
+    const grid = host?.querySelector(
+      '[data-testid="dashboard-working-conversations-grid"]',
+    );
+    if (!(grid instanceof HTMLDivElement)) {
+      throw new Error("missing working conversations grid");
+    }
+    grid.scrollTop = 300;
+
+    rerenderSectionWithCards(nextCards);
+
+    expect(grid.scrollTop).toBe(480);
   });
 });

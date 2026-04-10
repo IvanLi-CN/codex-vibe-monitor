@@ -1132,6 +1132,14 @@ pub(crate) fn format_utc_iso(dt: DateTime<Utc>) -> String {
     dt.to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
+pub(crate) fn format_utc_iso_millis(dt: DateTime<Utc>) -> String {
+    dt.to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+pub(crate) fn format_utc_iso_precise(dt: DateTime<Utc>) -> String {
+    dt.to_rfc3339_opts(SecondsFormat::AutoSi, true)
+}
+
 pub(crate) fn parse_to_utc_datetime(s: &str) -> Option<DateTime<Utc>> {
     if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
         return Some(dt.with_timezone(&Utc));

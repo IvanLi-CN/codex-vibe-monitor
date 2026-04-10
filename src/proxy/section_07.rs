@@ -885,6 +885,7 @@ async fn persist_proxy_capture_record(
     );
     let failure_kind = failure.failure_kind.clone();
     let persist_started = Instant::now();
+    let created_at = format_utc_iso_millis(Utc::now());
 
     let mut tx = pool.begin().await?;
     let insert_result = sqlx::query(
@@ -924,11 +925,12 @@ async fn persist_proxy_capture_record(
             t_upstream_ttfb_ms,
             t_upstream_stream_ms,
             t_resp_parse_ms,
-            t_persist_ms
+            t_persist_ms,
+            created_at
         )
         VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
-            ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35
+            ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36
         )
         "#,
     )
@@ -967,6 +969,7 @@ async fn persist_proxy_capture_record(
     .bind(record.timings.t_upstream_stream_ms)
     .bind(record.timings.t_resp_parse_ms)
     .bind(None::<f64>)
+    .bind(created_at)
     .execute(tx.as_mut())
     .await?;
 
