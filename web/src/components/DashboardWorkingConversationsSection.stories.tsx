@@ -89,11 +89,22 @@ function createPreview(
   };
 }
 
+function isInFlightStatus(status: string | null | undefined) {
+  const normalized = status?.trim().toLowerCase() ?? "";
+  return normalized === "running" || normalized === "pending";
+}
+
 function createConversation(
   promptCacheKey: string,
   recentInvocations: PromptCacheConversationInvocationPreview[],
   overrides: Partial<PromptCacheConversation> = {},
 ): PromptCacheConversation {
+  const lastInFlightPreview = recentInvocations.find((preview) =>
+    isInFlightStatus(preview.status),
+  );
+  const lastTerminalPreview = recentInvocations.find(
+    (preview) => !isInFlightStatus(preview.status),
+  );
   return {
     promptCacheKey,
     requestCount: overrides.requestCount ?? recentInvocations.length,
@@ -118,6 +129,11 @@ function createConversation(
       overrides.lastActivityAt ??
       recentInvocations[0]?.occurredAt ??
       "2026-04-04T10:00:00Z",
+    lastTerminalAt:
+      overrides.lastTerminalAt ?? lastTerminalPreview?.occurredAt ?? null,
+    lastInFlightAt:
+      overrides.lastInFlightAt ?? lastInFlightPreview?.occurredAt ?? null,
+    cursor: overrides.cursor ?? promptCacheKey,
     upstreamAccounts: overrides.upstreamAccounts ?? [],
     recentInvocations,
     last24hRequests: overrides.last24hRequests ?? [],
@@ -536,11 +552,153 @@ const wideDesktopResponse = createResponse([
   ]),
 ]);
 
+function buildVirtualizedLargeResponse(
+  prefix: string,
+  total: number,
+): PromptCacheConversationsResponse {
+  const conversations = Array.from({ length: total }, (_, index) => {
+    const currentAt = new Date(
+      Date.UTC(2026, 3, 4, 10, 59, 0) - index * 70_000,
+    ).toISOString();
+    const previousAt = new Date(Date.parse(currentAt) - 160_000).toISOString();
+    const inFlight =
+      index % 7 === 0 ? "running" : index % 5 === 0 ? "pending" : null;
+    const currentStatus =
+      inFlight ?? (index % 6 === 0 ? "http_429" : "completed");
+    return createConversation(
+      `${prefix}-${String(index + 1).padStart(3, "0")}`,
+      [
+        createPreview({
+          id: 2_000 + index * 2,
+          invokeId: `${prefix}-invoke-${index + 1}-current`,
+          occurredAt: currentAt,
+          status: currentStatus,
+          upstreamAccountName: `${prefix}-account-${(index % 9) + 1}@example.com`,
+          reasoningEffort: index % 2 === 0 ? "medium" : "high",
+          totalTokens: 280 + index * 7,
+          cost: Number((0.014 + index * 0.0006).toFixed(4)),
+          tTotalMs: inFlight ? null : 420 + index * 9,
+        }),
+        createPreview({
+          id: 2_001 + index * 2,
+          invokeId: `${prefix}-invoke-${index + 1}-previous`,
+          occurredAt: previousAt,
+          status: "completed",
+          model: "gpt-5.4-mini",
+          upstreamAccountName: `${prefix}-account-${(index % 9) + 1}@example.com`,
+          totalTokens: 180 + index * 5,
+          cost: Number((0.009 + index * 0.0004).toFixed(4)),
+          tTotalMs: 360 + index * 7,
+        }),
+      ],
+      {
+        createdAt: currentAt,
+        lastActivityAt: currentAt,
+        lastTerminalAt: inFlight ? previousAt : currentAt,
+        lastInFlightAt: inFlight ? currentAt : null,
+        cursor: `${prefix}-cursor-${index + 1}`,
+        requestCount: 12 + index,
+        totalTokens: 2_400 + index * 55,
+        totalCost: Number((0.12 + index * 0.006).toFixed(4)),
+      },
+    );
+  });
+
+  return createResponse(conversations);
+}
+
 function buildCards(response: PromptCacheConversationsResponse) {
   return mapPromptCacheConversationsToDashboardCards(response);
 }
 
-const createdAtDescendingOrderCards = buildCards(createdAtDescendingOrderResponse);
+const createdAtDescendingOrderCards = buildCards(
+  createdAtDescendingOrderResponse,
+);
+const virtualizedLargeDatasetResponse = buildVirtualizedLargeResponse(
+  "pck-virtual",
+  72,
+);
+const virtualizedLargeDatasetCards = buildCards(
+  virtualizedLargeDatasetResponse,
+);
+const headInsertBaseResponse = buildVirtualizedLargeResponse("pck-anchor", 56);
+
+function HeadInsertAnchorStory() {
+  const baseConversations = useMemo(
+    () => headInsertBaseResponse.conversations,
+    [],
+  );
+  const [cards, setCards] = useState(() =>
+    buildCards(createResponse(baseConversations)),
+  );
+  const [status, setStatus] = useState("waiting");
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setCards(
+        buildCards(
+          createResponse([
+            createConversation(
+              "pck-anchor-new-head",
+              [
+                createPreview({
+                  id: 9_991,
+                  invokeId: "invoke-anchor-new-head-current",
+                  occurredAt: "2026-04-04T11:00:12Z",
+                  status: "running",
+                  upstreamAccountName: "anchor-new-head@example.com",
+                  reasoningEffort: "high",
+                  tTotalMs: null,
+                }),
+                createPreview({
+                  id: 9_990,
+                  invokeId: "invoke-anchor-new-head-previous",
+                  occurredAt: "2026-04-04T10:58:02Z",
+                  status: "completed",
+                  model: "gpt-5.4-mini",
+                  upstreamAccountName: "anchor-new-head@example.com",
+                  totalTokens: 222,
+                  cost: 0.0142,
+                }),
+              ],
+              {
+                createdAt: "2026-04-04T11:00:12Z",
+                lastActivityAt: "2026-04-04T11:00:12Z",
+                lastTerminalAt: "2026-04-04T10:58:02Z",
+                lastInFlightAt: "2026-04-04T11:00:12Z",
+                cursor: "pck-anchor-new-head",
+                requestCount: 27,
+                totalTokens: 4_220,
+                totalCost: 0.2042,
+              },
+            ),
+            ...baseConversations,
+          ]),
+        ),
+      );
+      setStatus("prepended:pck-anchor-new-head");
+    }, 450);
+
+    return () => window.clearTimeout(timer);
+  }, [baseConversations]);
+
+  return (
+    <div data-testid="story-head-insert-anchor" className="space-y-3">
+      <div
+        data-testid="story-head-insert-status"
+        className="rounded-xl border border-base-300/75 bg-base-100/70 px-4 py-3 text-sm text-base-content/75"
+      >
+        Auto prepend status: <span className="font-mono">{status}</span>
+      </div>
+      <DashboardWorkingConversationsSection
+        cards={cards}
+        totalMatched={cards.length}
+        isLoading={false}
+        error={null}
+      />
+    </div>
+  );
+}
 
 function buildStoryMockData(response: PromptCacheConversationsResponse) {
   const recordsByInvokeId = new Map<string, ApiInvocation>();
@@ -1019,9 +1177,55 @@ export const StateGallery: Story = {
   },
 };
 
+export const LoadingState: Story = {
+  args: {
+    cards: [],
+    totalMatched: 0,
+    isLoading: true,
+    error: null,
+  },
+};
+
+export const EmptyState: Story = {
+  args: {
+    cards: [],
+    totalMatched: 0,
+    isLoading: false,
+    error: null,
+  },
+};
+
+export const ErrorState: Story = {
+  args: {
+    cards: [],
+    totalMatched: 0,
+    isLoading: false,
+    error: "Request failed: 503 working conversations snapshot unavailable",
+  },
+};
+
+export const Mobile390: Story = {
+  args: {
+    cards: buildCards(wideDesktopResponse),
+    totalMatched: wideDesktopResponse.conversations.length,
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    viewport: { defaultViewport: "mobile390" },
+    docs: {
+      description: {
+        story:
+          "Mobile viewport keeps the working-conversations section in a single column while preserving the compact header and dual-slot summary hierarchy.",
+      },
+    },
+  },
+};
+
 export const WideDesktop1660: Story = {
   args: {
     cards: buildCards(wideDesktopResponse),
+    totalMatched: wideDesktopResponse.conversations.length,
     isLoading: false,
     error: null,
   },
@@ -1033,6 +1237,101 @@ export const WideDesktop1660: Story = {
           "Wide desktop state gallery proving the 1660px shell now renders the working conversations section in four columns without horizontal overflow.",
       },
     },
+  },
+};
+
+export const VirtualizedLargeDataset: Story = {
+  args: {
+    cards: virtualizedLargeDatasetCards,
+    totalMatched: virtualizedLargeDatasetCards.length,
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: {
+        story:
+          "Large loaded working set proving the section keeps the DOM virtualized instead of mounting every card at once.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const container = await canvas.findByTestId(
+      "dashboard-working-conversations-grid",
+    );
+
+    await waitFor(() => {
+      const renderedCards = container.querySelectorAll(
+        '[data-testid="dashboard-working-conversation-card"]',
+      ).length;
+      expect(renderedCards).toBeGreaterThan(0);
+      expect(renderedCards).toBeLessThan(virtualizedLargeDatasetCards.length);
+    });
+  },
+};
+
+export const HeadInsertAnchorCompensation: Story = {
+  args: {
+    cards: [],
+    isLoading: false,
+    error: null,
+  },
+  render: () => <HeadInsertAnchorStory />,
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: {
+        story:
+          "Auto-prepends a fresh head card after the list has been scrolled, and the existing viewport anchor should stay visually pinned instead of jumping downward.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const container = await canvas.findByTestId(
+      "dashboard-working-conversations-grid",
+    );
+
+    container.scrollTop = 1_600;
+    container.dispatchEvent(new Event("scroll"));
+
+    let anchorCard: HTMLElement | undefined;
+    await waitFor(() => {
+      anchorCard = Array.from(
+        container.querySelectorAll<HTMLElement>(
+          '[data-testid="dashboard-working-conversation-card"]',
+        ),
+      ).find((candidate) => candidate.getBoundingClientRect().height > 0);
+      expect(anchorCard).toBeDefined();
+    });
+
+    const anchorSequenceId = anchorCard?.dataset.conversationSequenceId ?? "";
+    const containerRect = container.getBoundingClientRect();
+    const anchorTop =
+      (anchorCard?.getBoundingClientRect().top ?? 0) - containerRect.top;
+
+    await waitFor(() => {
+      expect(canvas.getByTestId("story-head-insert-status")).toHaveTextContent(
+        "prepended:pck-anchor-new-head",
+      );
+    });
+
+    await waitFor(() => {
+      const nextAnchor = Array.from(
+        container.querySelectorAll<HTMLElement>(
+          '[data-testid="dashboard-working-conversation-card"]',
+        ),
+      ).find(
+        (candidate) =>
+          candidate.dataset.conversationSequenceId === anchorSequenceId,
+      );
+      expect(nextAnchor).toBeDefined();
+      const nextTop =
+        (nextAnchor?.getBoundingClientRect().top ?? 0) - containerRect.top;
+      expect(Math.abs(nextTop - anchorTop)).toBeLessThanOrEqual(12);
+    });
   },
 };
 

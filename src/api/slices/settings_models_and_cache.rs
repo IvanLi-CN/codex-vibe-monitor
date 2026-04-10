@@ -399,11 +399,15 @@ impl QuotaSnapshotResponse {
 pub(crate) struct PromptCacheConversationsResponse {
     pub(crate) range_start: String,
     pub(crate) range_end: String,
+    pub(crate) snapshot_at: Option<String>,
     pub(crate) selection_mode: PromptCacheConversationSelectionMode,
     pub(crate) selected_limit: Option<i64>,
     pub(crate) selected_activity_hours: Option<i64>,
     pub(crate) selected_activity_minutes: Option<i64>,
     pub(crate) implicit_filter: PromptCacheConversationImplicitFilter,
+    pub(crate) total_matched: Option<i64>,
+    pub(crate) has_more: bool,
+    pub(crate) next_cursor: Option<String>,
     pub(crate) conversations: Vec<PromptCacheConversationResponse>,
 }
 
@@ -419,6 +423,40 @@ pub(crate) enum PromptCacheConversationSelection {
     Count(i64),
     ActivityWindowHours(i64),
     ActivityWindowMinutes(i64),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum PromptCacheConversationDetailLevel {
+    Full,
+    Compact,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct PromptCacheConversationsRequest {
+    pub(crate) selection: PromptCacheConversationSelection,
+    pub(crate) detail_level: PromptCacheConversationDetailLevel,
+    pub(crate) page_size: Option<i64>,
+    pub(crate) cursor: Option<String>,
+    pub(crate) snapshot_at: Option<String>,
+}
+
+impl PromptCacheConversationsRequest {
+    pub(crate) fn legacy(selection: PromptCacheConversationSelection) -> Self {
+        Self {
+            selection,
+            detail_level: PromptCacheConversationDetailLevel::Full,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+        }
+    }
+
+    pub(crate) fn uses_legacy_cache(&self) -> bool {
+        self.detail_level == PromptCacheConversationDetailLevel::Full
+            && self.page_size.is_none()
+            && self.cursor.is_none()
+            && self.snapshot_at.is_none()
+    }
 }
 
 impl PromptCacheConversationSelection {
@@ -517,6 +555,18 @@ pub(crate) struct PromptCacheConversationResponse {
     pub(crate) created_at: String,
     #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
     pub(crate) last_activity_at: String,
+    #[serde(
+        serialize_with = "serialize_opt_local_or_utc_to_utc_iso",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) last_terminal_at: Option<String>,
+    #[serde(
+        serialize_with = "serialize_opt_local_or_utc_to_utc_iso",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) last_in_flight_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cursor: Option<String>,
     pub(crate) upstream_accounts: Vec<PromptCacheConversationUpstreamAccountResponse>,
     pub(crate) recent_invocations: Vec<PromptCacheConversationInvocationPreviewResponse>,
     pub(crate) last24h_requests: Vec<PromptCacheConversationRequestPointResponse>,
@@ -964,6 +1014,12 @@ pub(crate) struct PromptCacheConversationAggregateRow {
     pub(crate) total_cost: f64,
     pub(crate) created_at: String,
     pub(crate) last_activity_at: String,
+    #[sqlx(default)]
+    pub(crate) sort_anchor_at: Option<String>,
+    #[sqlx(default)]
+    pub(crate) last_terminal_at: Option<String>,
+    #[sqlx(default)]
+    pub(crate) last_in_flight_at: Option<String>,
 }
 
 #[derive(Debug, FromRow)]
@@ -1085,6 +1141,10 @@ pub(crate) struct PromptCacheConversationsQuery {
     pub(crate) limit: Option<i64>,
     pub(crate) activity_hours: Option<i64>,
     pub(crate) activity_minutes: Option<i64>,
+    pub(crate) page_size: Option<i64>,
+    pub(crate) cursor: Option<String>,
+    pub(crate) snapshot_at: Option<String>,
+    pub(crate) detail: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -1015,12 +1015,16 @@ export interface PromptCacheConversation {
   totalCost: number;
   createdAt: string;
   lastActivityAt: string;
+  lastTerminalAt?: string | null;
+  lastInFlightAt?: string | null;
+  cursor?: string | null;
   upstreamAccounts: PromptCacheConversationUpstreamAccount[];
   recentInvocations: PromptCacheConversationInvocationPreview[];
   last24hRequests: PromptCacheConversationRequestPoint[];
 }
 
 export type PromptCacheConversationSelectionMode = "count" | "activityWindow";
+export type PromptCacheConversationDetailLevel = "full" | "compact";
 
 export type PromptCacheConversationImplicitFilterKind =
   | "inactiveOutside24h"
@@ -1039,12 +1043,24 @@ export type PromptCacheConversationSelection =
 export interface PromptCacheConversationsResponse {
   rangeStart: string;
   rangeEnd: string;
+  snapshotAt?: string | null;
   selectionMode: PromptCacheConversationSelectionMode;
   selectedLimit: number | null;
   selectedActivityHours: number | null;
   selectedActivityMinutes?: number | null;
   implicitFilter: PromptCacheConversationImplicitFilter;
+  totalMatched?: number | null;
+  hasMore?: boolean;
+  nextCursor?: string | null;
   conversations: PromptCacheConversation[];
+}
+
+export interface PromptCacheConversationPageQuery {
+  pageSize?: number;
+  cursor?: string | null;
+  snapshotAt?: string | null;
+  detail?: PromptCacheConversationDetailLevel;
+  signal?: AbortSignal;
 }
 
 export type StickyKeyConversationSelectionMode =
@@ -1674,6 +1690,11 @@ function normalizePromptCacheConversation(
     createdAt: typeof payload.createdAt === "string" ? payload.createdAt : "",
     lastActivityAt:
       typeof payload.lastActivityAt === "string" ? payload.lastActivityAt : "",
+    lastTerminalAt:
+      typeof payload.lastTerminalAt === "string" ? payload.lastTerminalAt : null,
+    lastInFlightAt:
+      typeof payload.lastInFlightAt === "string" ? payload.lastInFlightAt : null,
+    cursor: typeof payload.cursor === "string" ? payload.cursor : null,
     upstreamAccounts: upstreamAccountsRaw
       .map(normalizePromptCacheConversationUpstreamAccount)
       .filter(
@@ -1883,6 +1904,8 @@ function normalizePromptCacheConversationsResponse(
     rangeStart:
       typeof payload.rangeStart === "string" ? payload.rangeStart : "",
     rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
+    snapshotAt:
+      typeof payload.snapshotAt === "string" ? payload.snapshotAt : null,
     selectionMode: selectionModeRaw,
     selectedLimit:
       selectionModeRaw === "count"
@@ -1902,6 +1925,9 @@ function normalizePromptCacheConversationsResponse(
       filteredCount:
         normalizeFiniteNumber(implicitFilterPayload?.filteredCount) ?? 0,
     },
+    totalMatched: normalizeFiniteNumber(payload.totalMatched) ?? null,
+    hasMore: payload.hasMore === true,
+    nextCursor: typeof payload.nextCursor === "string" ? payload.nextCursor : null,
     conversations: conversationsRaw
       .map(normalizePromptCacheConversation)
       .filter((item): item is PromptCacheConversation => item != null),
@@ -2043,6 +2069,13 @@ export async function fetchPromptCacheConversations(
   selection: PromptCacheConversationSelection,
   signal?: AbortSignal,
 ) {
+  return fetchPromptCacheConversationsPage(selection, { signal });
+}
+
+export async function fetchPromptCacheConversationsPage(
+  selection: PromptCacheConversationSelection,
+  options: PromptCacheConversationPageQuery = {},
+) {
   const search = new URLSearchParams();
   if (selection.mode === "count") {
     search.set("limit", String(selection.limit));
@@ -2051,10 +2084,22 @@ export async function fetchPromptCacheConversations(
   } else {
     search.set("activityHours", String(selection.activityHours));
   }
+  if (options.pageSize != null) {
+    search.set("pageSize", String(options.pageSize));
+  }
+  if (options.cursor) {
+    search.set("cursor", options.cursor);
+  }
+  if (options.snapshotAt) {
+    search.set("snapshotAt", options.snapshotAt);
+  }
+  if (options.detail) {
+    search.set("detail", options.detail);
+  }
   const response = await fetchJson<unknown>(
     `/api/stats/prompt-cache-conversations?${search.toString()}`,
     {
-      signal,
+      signal: options.signal,
     },
   );
   return normalizePromptCacheConversationsResponse(response);
@@ -2141,4 +2186,3 @@ export async function fetchPerfStats(params?: PerfStatsQuery) {
 export async function fetchQuotaSnapshot() {
   return fetchJson<QuotaSnapshot>("/api/quota/latest");
 }
-

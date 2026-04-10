@@ -2795,6 +2795,10 @@ async fn prompt_cache_views_ignore_sticky_only_internal_keys() {
             limit: Some(20),
             activity_hours: None,
             activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
         }),
     )
     .await

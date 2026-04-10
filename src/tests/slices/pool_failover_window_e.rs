@@ -2355,6 +2355,10 @@ fn resolve_prompt_cache_conversation_selection_rejects_mutually_exclusive_params
         limit: Some(20),
         activity_hours: Some(3),
         activity_minutes: None,
+        page_size: None,
+        cursor: None,
+        snapshot_at: None,
+        detail: None,
     })
     .expect_err("selection should reject mutually exclusive params");
 
@@ -2373,6 +2377,10 @@ fn resolve_prompt_cache_conversation_selection_rejects_activity_hours_and_minute
         limit: None,
         activity_hours: Some(3),
         activity_minutes: Some(5),
+        page_size: None,
+        cursor: None,
+        snapshot_at: None,
+        detail: None,
     })
     .expect_err("selection should reject mixed hour and minute windows");
 
@@ -2503,6 +2511,10 @@ async fn prompt_cache_conversations_groups_recent_keys_and_uses_history_totals()
             limit: Some(20),
             activity_hours: None,
             activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
         }),
     )
     .await
@@ -2539,4 +2551,3 @@ async fn prompt_cache_conversations_groups_recent_keys_and_uses_history_totals()
     assert_eq!(key_a.last24h_requests[1].cumulative_tokens, 50);
     assert!(!key_a.last24h_requests[1].is_success);
 }
-

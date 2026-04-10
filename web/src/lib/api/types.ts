@@ -54,6 +54,8 @@ export type {
   PromptCacheConversation,
   PromptCacheConversationImplicitFilter,
   PromptCacheConversationsResponse,
+  PromptCacheConversationDetailLevel,
+  PromptCacheConversationPageQuery,
   StickyKeyConversationImplicitFilter,
   StickyKeyConversation,
   UpstreamStickyConversationsResponse,
