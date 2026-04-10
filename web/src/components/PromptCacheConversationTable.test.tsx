@@ -3,7 +3,15 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { act, type ComponentProps, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { I18nProvider } from "../i18n";
 import type {
   BroadcastPayload,
@@ -14,9 +22,8 @@ import type {
 import { PromptCacheConversationTable } from "./PromptCacheConversationTable";
 
 const apiMocks = vi.hoisted(() => ({
-  fetchUpstreamAccountDetail: vi.fn<
-    (accountId: number) => Promise<UpstreamAccountDetail>
-  >(),
+  fetchUpstreamAccountDetail:
+    vi.fn<(accountId: number) => Promise<UpstreamAccountDetail>>(),
   fetchInvocationRecords: vi.fn(),
 }));
 
@@ -26,7 +33,8 @@ const sseMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/api", async () => {
-  const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
+  const actual =
+    await vi.importActual<typeof import("../lib/api")>("../lib/api");
   return {
     ...actual,
     fetchUpstreamAccountDetail: apiMocks.fetchUpstreamAccountDetail,
@@ -128,9 +136,7 @@ describe("PromptCacheConversationTable", () => {
     act(() => {
       root?.render(
         <MemoryRouter>
-          <I18nProvider>
-            {element}
-          </I18nProvider>
+          <I18nProvider>{element}</I18nProvider>
         </MemoryRouter>,
       );
     });
@@ -151,11 +157,13 @@ describe("PromptCacheConversationTable", () => {
   }
 
   function findButtonByAriaLabel(label: string, index = 0) {
-    return Array.from(document.querySelectorAll("button")).filter(
-      (button): button is HTMLButtonElement =>
-        button.getAttribute("aria-label") === label ||
-        button.textContent?.includes(label) === true,
-    )[index] ?? null;
+    return (
+      Array.from(document.querySelectorAll("button")).filter(
+        (button): button is HTMLButtonElement =>
+          button.getAttribute("aria-label") === label ||
+          button.textContent?.includes(label) === true,
+      )[index] ?? null
+    );
   }
 
   function emitSseRecords(payload: BroadcastPayload) {
@@ -217,8 +225,25 @@ describe("PromptCacheConversationTable", () => {
               occurredAt: "2026-03-02T12:00:00Z",
               status: "failed",
               isSuccess: false,
+              outcome: "failure",
               requestTokens: 80,
               cumulativeTokens: 200,
+            },
+            {
+              occurredAt: "2026-03-02T14:00:00Z",
+              status: "unknown",
+              isSuccess: false,
+              outcome: "neutral",
+              requestTokens: 30,
+              cumulativeTokens: 230,
+            },
+            {
+              occurredAt: "2026-03-02T16:00:00Z",
+              status: "running",
+              isSuccess: false,
+              outcome: "in_flight",
+              requestTokens: 16,
+              cumulativeTokens: 246,
             },
           ],
         }),
@@ -237,6 +262,8 @@ describe("PromptCacheConversationTable", () => {
     expect(html).not.toContain("<title>");
     expect(html).toContain('stroke="oklch(var(--color-success) / 0.95)"');
     expect(html).toContain('stroke="oklch(var(--color-error) / 0.92)"');
+    expect(html).toContain('stroke="oklch(var(--color-base-content) / 0.58)"');
+    expect(html).toContain('stroke="oklch(var(--color-primary) / 0.88)"');
   });
 
   it("shares the 24h token chart scale across visible conversations", () => {
@@ -571,46 +598,49 @@ describe("PromptCacheConversationTable", () => {
   it("forwards prompt cache account clicks to the shared upstream account controller", async () => {
     const onOpenUpstreamAccount = vi.fn();
 
-    renderInteractive({
-      rangeStart: "2026-03-02T00:00:00Z",
-      rangeEnd: "2026-03-03T00:00:00Z",
-      selectionMode: "count",
-      selectedLimit: 50,
-      selectedActivityHours: null,
-      implicitFilter: { kind: null, filteredCount: 0 },
-      conversations: [
-        createConversation({
-          promptCacheKey: "pck-clickable-account",
-          requestCount: 12,
-          totalTokens: 3456,
-          totalCost: 1.2345,
-          createdAt: "2026-03-02T00:00:00Z",
-          lastActivityAt: "2026-03-02T16:00:00Z",
-          upstreamAccounts: [
-            {
-              upstreamAccountId: 101,
-              upstreamAccountName: "Pool Alpha",
-              requestCount: 5,
-              totalTokens: 1600,
-              totalCost: 0.56,
-              lastActivityAt: "2026-03-02T16:00:00Z",
-            },
-            {
-              upstreamAccountId: null,
-              upstreamAccountName: "匿名账号",
-              requestCount: 4,
-              totalTokens: 1200,
-              totalCost: 0.44,
-              lastActivityAt: "2026-03-02T15:00:00Z",
-            },
-          ],
-          last24hRequests: [],
-        }),
-      ],
-    }, { onOpenUpstreamAccount });
+    renderInteractive(
+      {
+        rangeStart: "2026-03-02T00:00:00Z",
+        rangeEnd: "2026-03-03T00:00:00Z",
+        selectionMode: "count",
+        selectedLimit: 50,
+        selectedActivityHours: null,
+        implicitFilter: { kind: null, filteredCount: 0 },
+        conversations: [
+          createConversation({
+            promptCacheKey: "pck-clickable-account",
+            requestCount: 12,
+            totalTokens: 3456,
+            totalCost: 1.2345,
+            createdAt: "2026-03-02T00:00:00Z",
+            lastActivityAt: "2026-03-02T16:00:00Z",
+            upstreamAccounts: [
+              {
+                upstreamAccountId: 101,
+                upstreamAccountName: "Pool Alpha",
+                requestCount: 5,
+                totalTokens: 1600,
+                totalCost: 0.56,
+                lastActivityAt: "2026-03-02T16:00:00Z",
+              },
+              {
+                upstreamAccountId: null,
+                upstreamAccountName: "匿名账号",
+                requestCount: 4,
+                totalTokens: 1200,
+                totalCost: 0.44,
+                lastActivityAt: "2026-03-02T15:00:00Z",
+              },
+            ],
+            last24hRequests: [],
+          }),
+        ],
+      },
+      { onOpenUpstreamAccount },
+    );
 
-    const trigger = Array.from(document.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Pool Alpha"),
+    const trigger = Array.from(document.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Pool Alpha"),
     );
     expect(trigger).toBeTruthy();
 
@@ -713,9 +743,9 @@ describe("PromptCacheConversationTable", () => {
       await Promise.resolve();
     });
 
-    const accountButtons = Array.from(document.querySelectorAll("button")).filter(
-      (button) => button.textContent?.includes("Pool Alpha"),
-    );
+    const accountButtons = Array.from(
+      document.querySelectorAll("button"),
+    ).filter((button) => button.textContent?.includes("Pool Alpha"));
     expect(accountButtons.length).toBeGreaterThan(0);
 
     const collapseButton = findButtonByAriaLabel("收起最近调用记录");

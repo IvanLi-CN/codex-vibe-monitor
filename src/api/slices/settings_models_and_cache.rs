@@ -169,6 +169,7 @@ pub(crate) struct TimeseriesResponse {
     pub(crate) range_start: String,
     pub(crate) range_end: String,
     pub(crate) bucket_seconds: i64,
+    pub(crate) snapshot_id: i64,
     pub(crate) effective_bucket: String,
     pub(crate) available_buckets: Vec<String>,
     pub(crate) bucket_limited_to_daily: bool,
@@ -266,6 +267,7 @@ pub(crate) struct TimeseriesPoint {
     pub(crate) total_count: i64,
     pub(crate) success_count: i64,
     pub(crate) failure_count: i64,
+    pub(crate) in_flight_count: i64,
     pub(crate) total_tokens: i64,
     pub(crate) total_cost: f64,
     pub(crate) first_byte_sample_count: i64,
@@ -637,6 +639,7 @@ pub(crate) struct PromptCacheConversationRequestPointResponse {
     pub(crate) occurred_at: String,
     pub(crate) status: String,
     pub(crate) is_success: bool,
+    pub(crate) outcome: String,
     pub(crate) request_tokens: i64,
     pub(crate) cumulative_tokens: i64,
 }
@@ -1032,6 +1035,10 @@ pub(crate) struct PromptCacheConversationAggregateRow {
 pub(crate) struct PromptCacheConversationEventRow {
     pub(crate) occurred_at: String,
     pub(crate) status: String,
+    pub(crate) error_message: Option<String>,
+    pub(crate) downstream_error_message: Option<String>,
+    pub(crate) failure_kind: Option<String>,
+    pub(crate) failure_class: Option<String>,
     pub(crate) request_tokens: i64,
     pub(crate) prompt_cache_key: String,
 }

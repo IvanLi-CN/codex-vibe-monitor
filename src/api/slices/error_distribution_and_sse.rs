@@ -513,6 +513,9 @@ pub(crate) fn derive_failure_kind(status_norm: &str, err: &str, err_lower: &str)
     if err_lower.contains("please provide an api key") {
         return Some("api_key_missing".to_string());
     }
+    if status_norm == "http_200" && err.is_empty() {
+        return None;
+    }
     if status_norm.starts_with("http_") {
         return Some(status_norm.to_string());
     }
@@ -530,8 +533,14 @@ fn classify_invocation_failure_with_kind(
     let status_norm = status.unwrap_or_default().trim().to_ascii_lowercase();
     let err = error_message.unwrap_or_default().trim();
     let err_lower = err.to_ascii_lowercase();
+    let explicit_failure_kind = explicit_failure_kind
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
 
-    if status_norm == "success" && err.is_empty() {
+    if (status_norm == "success" || status_norm == "completed")
+        && err.is_empty()
+        && explicit_failure_kind.is_none()
+    {
         return FailureClassification {
             failure_kind: None,
             failure_class: FailureClass::None,
@@ -545,10 +554,15 @@ fn classify_invocation_failure_with_kind(
             is_actionable: false,
         };
     }
+    if status_norm.is_empty() && err.is_empty() && explicit_failure_kind.is_none() {
+        return FailureClassification {
+            failure_kind: None,
+            failure_class: FailureClass::None,
+            is_actionable: false,
+        };
+    }
 
     let failure_kind = explicit_failure_kind
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .or_else(|| extract_failure_kind_prefix(err))
         .or_else(|| derive_failure_kind(&status_norm, err, &err_lower));
@@ -595,7 +609,12 @@ fn classify_invocation_failure_with_kind(
         || is_http_5xx
     {
         FailureClass::ServiceFailure
-    } else if status_norm == "success" {
+    } else if (status_norm == "success" || status_norm == "completed")
+        && err.is_empty()
+        && failure_kind_lower.is_empty()
+    {
+        FailureClass::None
+    } else if status_norm == "http_200" && err.is_empty() && failure_kind_lower.is_empty() {
         FailureClass::None
     } else {
         // Conservative fallback: unknown non-success records are treated as service-impacting.
@@ -722,6 +741,39 @@ pub(crate) struct FailureSummaryResponse {
     pub(crate) actionable_failure_rate: f64,
 }
 
+async fn query_invocation_failure_hourly_rollup_range_tx(
+    tx: &mut SqliteConnection,
+    range_start_epoch: i64,
+    range_end_epoch: i64,
+    source_scope: InvocationSourceScope,
+) -> Result<Vec<InvocationFailureHourlyRollupRecord>, ApiError> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            failure_class,
+            is_actionable,
+            error_category,
+            SUM(failure_count) AS failure_count
+        FROM invocation_failure_rollup_hourly
+        WHERE bucket_start_epoch >=
+        "#,
+    );
+    query.push_bind(range_start_epoch);
+    query
+        .push(" AND bucket_start_epoch < ")
+        .push_bind(range_end_epoch);
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" GROUP BY failure_class, is_actionable, error_category");
+
+    query
+        .build_query_as::<InvocationFailureHourlyRollupRecord>()
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(Into::into)
+}
+
 pub(crate) async fn fetch_error_distribution(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ErrorQuery>,
@@ -740,26 +792,63 @@ pub(crate) async fn fetch_error_distribution(
             display_end,
             shanghai_retention_cutoff(state.config.invocation_max_days),
         )?;
-        if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
-            let rows = query_invocation_failure_hourly_rollup_range(
-                &state.pool,
-                range_start_epoch,
-                range_end_epoch,
-                source_scope,
-            )
-            .await?;
-            for row in rows {
-                let Some(class) = FailureClass::from_db_str(&row.failure_class) else {
-                    continue;
-                };
-                if !failure_scope_matches(scope, class) {
-                    continue;
-                }
-                *counts.entry(row.error_category).or_default() += row.failure_count;
-            }
+        if range_plan.full_hour_range.is_some() {
+            ensure_invocation_summary_rollups_ready_best_effort(&state.pool).await?;
         }
-        let exact_records =
-            query_invocation_exact_records(&state.pool, &range_plan, source_scope).await?;
+        let (hourly_rows, exact_records) = if range_plan.full_hour_range.is_some() {
+                let mut tx = state.pool.begin().await?;
+                let snapshot_id =
+                    resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
+                let rollup_live_cursor =
+                    load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
+                let (range_start_epoch, range_end_epoch) = range_plan
+                    .full_hour_range
+                    .expect("full_hour_range is present when hourly rollups are enabled");
+                let hourly_rows = query_invocation_failure_hourly_rollup_range_tx(
+                    tx.as_mut(),
+                    range_start_epoch,
+                    range_end_epoch,
+                    source_scope,
+                )
+                .await?;
+                let mut exact_records = query_invocation_exact_records_tx(
+                    tx.as_mut(),
+                    &range_plan,
+                    source_scope,
+                    snapshot_id,
+                )
+                .await?;
+                exact_records.extend(
+                    query_invocation_full_hour_tail_records_tx(
+                        tx.as_mut(),
+                        &range_plan,
+                        source_scope,
+                        rollup_live_cursor,
+                        snapshot_id,
+                    )
+                    .await?,
+                );
+                (hourly_rows, exact_records)
+            } else {
+                let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
+                let exact_records = query_invocation_exact_records(
+                    &state.pool,
+                    &range_plan,
+                    source_scope,
+                    snapshot_id,
+                )
+                .await?;
+                (Vec::new(), exact_records)
+            };
+        for row in hourly_rows {
+            let Some(class) = FailureClass::from_db_str(&row.failure_class) else {
+                continue;
+            };
+            if !failure_scope_matches(scope, class) {
+                continue;
+            }
+            *counts.entry(row.error_category).or_default() += row.failure_count;
+        }
         for record in exact_records {
             let classification = resolve_failure_classification(
                 record.status.as_deref(),
@@ -1101,32 +1190,69 @@ pub(crate) async fn fetch_failure_summary(
             display_end,
             shanghai_retention_cutoff(state.config.invocation_max_days),
         )?;
-        if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
-            let rows = query_invocation_failure_hourly_rollup_range(
-                &state.pool,
-                range_start_epoch,
-                range_end_epoch,
-                source_scope,
-            )
-            .await?;
-            for row in rows {
-                let Some(class) = FailureClass::from_db_str(&row.failure_class) else {
-                    continue;
-                };
-                total_failures += row.failure_count;
-                match class {
-                    FailureClass::ServiceFailure => service_failure_count += row.failure_count,
-                    FailureClass::ClientFailure => client_failure_count += row.failure_count,
-                    FailureClass::ClientAbort => client_abort_count += row.failure_count,
-                    FailureClass::None => {}
-                }
-                if row.is_actionable != 0 {
-                    actionable_failure_count += row.failure_count;
-                }
+        if range_plan.full_hour_range.is_some() {
+            ensure_invocation_summary_rollups_ready_best_effort(&state.pool).await?;
+        }
+        let (hourly_rows, exact_records) = if range_plan.full_hour_range.is_some() {
+                let mut tx = state.pool.begin().await?;
+                let snapshot_id =
+                    resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
+                let rollup_live_cursor =
+                    load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
+                let (range_start_epoch, range_end_epoch) = range_plan
+                    .full_hour_range
+                    .expect("full_hour_range is present when hourly rollups are enabled");
+                let hourly_rows = query_invocation_failure_hourly_rollup_range_tx(
+                    tx.as_mut(),
+                    range_start_epoch,
+                    range_end_epoch,
+                    source_scope,
+                )
+                .await?;
+                let mut exact_records = query_invocation_exact_records_tx(
+                    tx.as_mut(),
+                    &range_plan,
+                    source_scope,
+                    snapshot_id,
+                )
+                .await?;
+                exact_records.extend(
+                    query_invocation_full_hour_tail_records_tx(
+                        tx.as_mut(),
+                        &range_plan,
+                        source_scope,
+                        rollup_live_cursor,
+                        snapshot_id,
+                    )
+                    .await?,
+                );
+                (hourly_rows, exact_records)
+            } else {
+                let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
+                let exact_records = query_invocation_exact_records(
+                    &state.pool,
+                    &range_plan,
+                    source_scope,
+                    snapshot_id,
+                )
+                .await?;
+                (Vec::new(), exact_records)
+            };
+        for row in hourly_rows {
+            let Some(class) = FailureClass::from_db_str(&row.failure_class) else {
+                continue;
+            };
+            total_failures += row.failure_count;
+            match class {
+                FailureClass::ServiceFailure => service_failure_count += row.failure_count,
+                FailureClass::ClientFailure => client_failure_count += row.failure_count,
+                FailureClass::ClientAbort => client_abort_count += row.failure_count,
+                FailureClass::None => {}
+            }
+            if row.is_actionable != 0 {
+                actionable_failure_count += row.failure_count;
             }
         }
-        let exact_records =
-            query_invocation_exact_records(&state.pool, &range_plan, source_scope).await?;
         for record in exact_records {
             let classification = resolve_failure_classification(
                 record.status.as_deref(),
@@ -1182,11 +1308,8 @@ pub(crate) async fn fetch_failure_summary(
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
-    query.push(" AND (status IS NULL OR status != 'success')");
-
     let rows: Vec<Row> = query.build_query_as().fetch_all(&state.pool).await?;
-    let total_failures = rows.len() as i64;
-
+    let mut total_failures = 0_i64;
     let mut service_failure_count = 0_i64;
     let mut client_failure_count = 0_i64;
     let mut client_abort_count = 0_i64;
@@ -1200,6 +1323,10 @@ pub(crate) async fn fetch_failure_summary(
             row.failure_class.as_deref(),
             row.is_actionable,
         );
+        if classification.failure_class == FailureClass::None {
+            continue;
+        }
+        total_failures += 1;
         match classification.failure_class {
             FailureClass::ServiceFailure => service_failure_count += 1,
             FailureClass::ClientFailure => client_failure_count += 1,
@@ -1249,6 +1376,8 @@ pub(crate) async fn fetch_perf_stats(
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
     if range_window.start < shanghai_retention_cutoff(state.config.invocation_max_days) {
+        let snapshot_id =
+            resolve_invocation_snapshot_id(&state.pool, InvocationSourceScope::ProxyOnly).await?;
         let range_plan = build_hourly_rollup_exact_range_plan(
             range_window.start,
             range_window.display_end,
@@ -1280,6 +1409,7 @@ pub(crate) async fn fetch_perf_stats(
             &state.pool,
             &range_plan,
             InvocationSourceScope::ProxyOnly,
+            snapshot_id,
         )
         .await?;
         for record in exact_records {

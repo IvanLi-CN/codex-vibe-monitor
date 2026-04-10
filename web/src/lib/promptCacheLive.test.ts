@@ -26,6 +26,15 @@ function createRequestPoint(
     occurredAt: overrides.occurredAt,
     status: overrides.status ?? "completed",
     isSuccess: overrides.isSuccess ?? true,
+    outcome:
+      overrides.outcome ??
+      ((overrides.status ?? "completed") === "running"
+        ? "in_flight"
+        : (overrides.status ?? "completed") === "unknown"
+          ? "neutral"
+          : (overrides.isSuccess ?? true)
+            ? "success"
+            : "failure"),
     requestTokens: overrides.requestTokens,
     cumulativeTokens: overrides.cumulativeTokens,
   };
@@ -301,9 +310,9 @@ describe("mergePromptCacheConversationsResponse", () => {
     expect(merged?.conversations.map((item) => item.promptCacheKey)).toContain(
       "pck-reactivated",
     );
-    expect(merged?.conversations.map((item) => item.promptCacheKey)).not.toContain(
-      "pck-visible-0",
-    );
+    expect(
+      merged?.conversations.map((item) => item.promptCacheKey),
+    ).not.toContain("pck-visible-0");
   });
 
   it("dedupes last24h request points when the same invocation is already present after resync", () => {
@@ -316,7 +325,9 @@ describe("mergePromptCacheConversationsResponse", () => {
     });
     const base = createResponse([
       createConversation("pck-live", {
-        recentInvocations: [buildPromptCachePreviewFromInvocation(authoritativeRecord)],
+        recentInvocations: [
+          buildPromptCachePreviewFromInvocation(authoritativeRecord),
+        ],
         last24hRequests: [
           createRequestPoint({
             occurredAt: "2026-03-10T02:30:00Z",
@@ -330,9 +341,7 @@ describe("mergePromptCacheConversationsResponse", () => {
     const merged = mergePromptCacheConversationsResponse(
       base,
       {
-        "pck-live": [
-          authoritativeRecord,
-        ],
+        "pck-live": [authoritativeRecord],
       },
       { mode: "count", limit: 2 },
       Date.parse("2026-03-10T03:00:00Z"),
@@ -358,7 +367,9 @@ describe("mergePromptCacheConversationsResponse", () => {
     const merged = mergePromptCacheConversationsResponse(
       createResponse([
         createConversation("pck-live-points", {
-          recentInvocations: [buildPromptCachePreviewFromInvocation(authoritativeRecord)],
+          recentInvocations: [
+            buildPromptCachePreviewFromInvocation(authoritativeRecord),
+          ],
           last24hRequests: [
             createRequestPoint({
               occurredAt: "2026-03-10T02:30:00Z",
@@ -421,8 +432,41 @@ describe("mergePromptCacheConversationsResponse", () => {
         occurredAt: "2026-03-10T02:45:00Z",
         status: "running",
         isSuccess: false,
+        outcome: "in_flight",
         requestTokens: 2400,
         cumulativeTokens: 2400,
+      }),
+    ]);
+  });
+
+  it("keeps blank-status live request points neutral instead of treating them as failures", () => {
+    const merged = mergePromptCacheConversationsResponse(
+      createResponse([createConversation("pck-neutral")]),
+      {
+        "pck-neutral": [
+          createLiveRecord({
+            id: 1102,
+            invokeId: "invoke-neutral",
+            occurredAt: "2026-03-10T02:46:00Z",
+            promptCacheKey: "pck-neutral",
+            status: "",
+            failureClass: "none",
+            totalTokens: 32,
+          }),
+        ],
+      },
+      { mode: "count", limit: 2 },
+      Date.parse("2026-03-10T03:00:00Z"),
+    );
+
+    expect(merged?.conversations[0]?.last24hRequests).toEqual([
+      createRequestPoint({
+        occurredAt: "2026-03-10T02:46:00Z",
+        status: "unknown",
+        isSuccess: false,
+        outcome: "neutral",
+        requestTokens: 32,
+        cumulativeTokens: 32,
       }),
     ]);
   });
@@ -471,9 +515,11 @@ describe("mergePromptCacheConversationsResponse", () => {
     expect(merged?.conversations.map((item) => item.promptCacheKey)).toContain(
       "pck-running-old",
     );
-    expect(merged?.conversations.find((item) => item.promptCacheKey === "pck-running-old")?.recentInvocations[0]?.status).toBe(
-      "running",
-    );
+    expect(
+      merged?.conversations.find(
+        (item) => item.promptCacheKey === "pck-running-old",
+      )?.recentInvocations[0]?.status,
+    ).toBe("running");
   });
 
   it("sorts the precise 5-minute dashboard window by conversation created time descending", () => {
@@ -607,10 +653,12 @@ describe("mergePromptCacheConversationsResponse", () => {
     expect(merged?.conversations.map((item) => item.promptCacheKey)).toContain(
       "pck-old-running",
     );
-    expect(merged?.conversations.map((item) => item.promptCacheKey)).not.toContain(
-      "pck-base-00",
+    expect(
+      merged?.conversations.map((item) => item.promptCacheKey),
+    ).not.toContain("pck-base-00");
+    expect(merged?.conversations.at(-1)?.promptCacheKey).toBe(
+      "pck-old-running",
     );
-    expect(merged?.conversations.at(-1)?.promptCacheKey).toBe("pck-old-running");
   });
 
   it("breaks capped working-set ties by createdAt descending after the shared anchor", () => {
@@ -693,9 +741,9 @@ describe("mergePromptCacheConversationsResponse", () => {
     expect(merged?.conversations.map((item) => item.promptCacheKey)).toContain(
       "pck-tie-newer",
     );
-    expect(merged?.conversations.map((item) => item.promptCacheKey)).not.toContain(
-      "pck-tie-older",
-    );
+    expect(
+      merged?.conversations.map((item) => item.promptCacheKey),
+    ).not.toContain("pck-tie-older");
   });
 });
 

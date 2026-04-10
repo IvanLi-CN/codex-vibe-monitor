@@ -2960,6 +2960,125 @@ async fn prompt_cache_conversations_chart_window_caps_history_to_recent_24_hours
 }
 
 #[tokio::test]
+async fn prompt_cache_conversation_activity_keeps_http_200_errors_out_of_success_points() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        status: &str,
+        error_message: Option<&str>,
+        failure_kind: Option<&str>,
+        failure_class: Option<&str>,
+        key: &str,
+        total_tokens: i64,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                error_message,
+                failure_kind,
+                failure_class,
+                total_tokens,
+                cost,
+                payload,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(error_message)
+        .bind(failure_kind)
+        .bind(failure_class)
+        .bind(total_tokens)
+        .bind(0.01)
+        .bind(json!({ "promptCacheKey": key }).to_string())
+        .bind("{}")
+        .execute(pool)
+        .await
+        .expect("insert invocation row");
+    }
+
+    insert_row(
+        &state.pool,
+        "http-200-success-like",
+        now - ChronoDuration::minutes(10),
+        "http_200",
+        None,
+        None,
+        None,
+        "http-200-activity",
+        10,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "http-200-failure-like",
+        now - ChronoDuration::minutes(5),
+        "http_200",
+        Some("upstream parse failed"),
+        None,
+        None,
+        "http-200-activity",
+        12,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "http-200-structured-failure",
+        now - ChronoDuration::minutes(1),
+        "http_200",
+        None,
+        Some("upstream_response_failed"),
+        Some("service_failure"),
+        "http-200-activity",
+        14,
+    )
+    .await;
+
+    let Json(response) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+            activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
+        }),
+    )
+    .await
+    .expect("prompt cache conversations should succeed");
+
+    let conversation = response
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "http-200-activity")
+        .expect("http-200-activity should be included");
+
+    assert_eq!(conversation.last24h_requests.len(), 3);
+    assert!(conversation.last24h_requests[0].is_success);
+    assert!(!conversation.last24h_requests[1].is_success);
+    assert!(!conversation.last24h_requests[2].is_success);
+}
+
+#[tokio::test]
 async fn prompt_cache_conversation_timestamps_serialize_as_utc_iso() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

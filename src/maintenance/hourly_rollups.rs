@@ -510,6 +510,7 @@ fn invocation_status_is_success_like(status: Option<&str>, error_message: Option
     let error_message_empty = error_message.map(str::trim).is_none_or(str::is_empty);
 
     normalized_status.eq_ignore_ascii_case("success")
+        || normalized_status.eq_ignore_ascii_case("completed")
         || (normalized_status.eq_ignore_ascii_case("http_200") && error_message_empty)
 }
 
@@ -518,7 +519,7 @@ fn invocation_status_is_success_like_sql(
     error_message_column: &str,
 ) -> String {
     format!(
-        "(LOWER(TRIM(COALESCE({status_column}, ''))) = 'success' OR (LOWER(TRIM(COALESCE({status_column}, ''))) = 'http_200' AND TRIM(COALESCE({error_message_column}, '')) = ''))"
+        "(LOWER(TRIM(COALESCE({status_column}, ''))) IN ('success', 'completed') OR (LOWER(TRIM(COALESCE({status_column}, ''))) = 'http_200' AND TRIM(COALESCE({error_message_column}, '')) = ''))"
     )
 }
 

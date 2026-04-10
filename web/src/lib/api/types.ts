@@ -48,6 +48,7 @@ export type {
   ForwardProxyLiveStatsResponse,
   ForwardProxyTimeseriesNode,
   ForwardProxyTimeseriesResponse,
+  ConversationRequestOutcome,
   ConversationRequestPoint,
   PromptCacheConversationUpstreamAccount,
   PromptCacheConversationInvocationPreview,

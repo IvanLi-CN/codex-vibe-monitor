@@ -252,6 +252,7 @@ describe("fetchTimeseries", () => {
                 totalCount: 11,
                 successCount: 10,
                 failureCount: 1,
+                inFlightCount: 2,
                 totalTokens: 193414,
                 totalCost: 0.0543,
                 firstByteSampleCount: 10,
@@ -267,6 +268,7 @@ describe("fetchTimeseries", () => {
                 totalCount: 0,
                 successCount: 0,
                 failureCount: 0,
+                inFlightCount: Number.NaN,
                 totalTokens: 0,
                 totalCost: 0,
                 firstResponseByteTotalSampleCount: Number.NaN,
@@ -283,12 +285,14 @@ describe("fetchTimeseries", () => {
     const response = await fetchTimeseries("1h", { bucket: "15m" });
     expect(response.bucketSeconds).toBe(900);
     expect(response.points).toHaveLength(2);
+    expect(response.points[0].inFlightCount).toBe(2);
     expect(response.points[0].firstResponseByteTotalSampleCount).toBe(10);
     expect(response.points[0].firstResponseByteTotalAvgMs).toBe(43890);
     expect(response.points[0].firstResponseByteTotalP95Ms).toBe(52340);
     expect(response.points[1].firstResponseByteTotalSampleCount).toBe(0);
     expect(response.points[1].firstResponseByteTotalAvgMs).toBeNull();
     expect(response.points[1].firstResponseByteTotalP95Ms).toBeNull();
+    expect(response.points[1].inFlightCount).toBe(0);
   });
 });
 
@@ -426,7 +430,10 @@ describe("fetchParallelWorkStats", () => {
     await fetchParallelWorkStats({ timeZone: "Asia/Kolkata" });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const firstArg = fetchMock.mock.calls.at(0)?.at(0) as RequestInfo | URL | undefined;
+    const firstArg = fetchMock.mock.calls.at(0)?.at(0) as
+      | RequestInfo
+      | URL
+      | undefined;
     expect(firstArg).toBeDefined();
     expect(String(firstArg)).toBe(
       "/api/stats/parallel-work?timeZone=Asia%2FKolkata",
@@ -479,7 +486,10 @@ describe("fetchParallelWorkStats", () => {
     await fetchParallelWorkStats({ timeZone: "Australia/Lord_Howe" });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const firstArg = fetchMock.mock.calls.at(0)?.at(0) as RequestInfo | URL | undefined;
+    const firstArg = fetchMock.mock.calls.at(0)?.at(0) as
+      | RequestInfo
+      | URL
+      | undefined;
     expect(firstArg).toBeDefined();
     expect(String(firstArg)).toBe(
       "/api/stats/parallel-work?timeZone=Australia%2FLord_Howe",
@@ -832,7 +842,11 @@ describe("settings normalization", () => {
               {
                 groupName: "production",
                 note: "Premium traffic",
-                boundProxyKeys: ["fpb_jp_edge_01", "fpb_sg_edge_02", "fpb_jp_edge_01"],
+                boundProxyKeys: [
+                  "fpb_jp_edge_01",
+                  "fpb_sg_edge_02",
+                  "fpb_jp_edge_01",
+                ],
                 upstream429RetryEnabled: true,
                 upstream429MaxRetries: 3,
               },
@@ -885,7 +899,9 @@ describe("settings normalization", () => {
     expect(response.groups[0].upstream429MaxRetries).toBe(3);
     expect(response.forwardProxyNodes ?? []).toHaveLength(2);
     expect(response.forwardProxyNodes?.[0]?.protocolLabel).toBe("HTTP");
-    expect(response.forwardProxyNodes?.[0]?.aliasKeys).toEqual(["fpn_jp_edge_runtime"]);
+    expect(response.forwardProxyNodes?.[0]?.aliasKeys).toEqual([
+      "fpn_jp_edge_runtime",
+    ]);
     expect(response.forwardProxyNodes?.[1]?.selectable).toBe(false);
     expect(response.forwardProxyNodes?.[1]?.protocolLabel).toBe("UNKNOWN");
     expect(response.forwardProxyNodes?.[1]?.displayName).toBe("历史东京中继");
@@ -942,7 +958,10 @@ describe("account pool frontend API helpers", () => {
     });
     vi.stubGlobal("fetch", fetchMock as typeof fetch);
 
-    await fetchInvocationRecords({ stickyKey: "sticky-001", upstreamAccountId: 42 });
+    await fetchInvocationRecords({
+      stickyKey: "sticky-001",
+      upstreamAccountId: 42,
+    });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -1637,6 +1656,7 @@ describe("account pool frontend API helpers", () => {
                     occurredAt: "2026-03-10T02:00:00Z",
                     status: "success",
                     isSuccess: true,
+                    outcome: "success",
                     requestTokens: 30,
                     cumulativeTokens: 30,
                   },
@@ -1665,6 +1685,9 @@ describe("account pool frontend API helpers", () => {
     expect(
       response.conversations[0]?.last24hRequests[0]?.cumulativeTokens,
     ).toBe(30);
+    expect(response.conversations[0]?.last24hRequests[0]?.outcome).toBe(
+      "success",
+    );
   });
 
   it("sends activity-window prompt cache conversation queries and normalizes metadata", async () => {
@@ -1760,9 +1783,9 @@ describe("account pool frontend API helpers", () => {
     expect(response.implicitFilter.kind).toBe("cappedTo50");
     expect(response.implicitFilter.filteredCount).toBe(7);
     expect(response.conversations[0]?.promptCacheKey).toBe("pck-001");
-    expect(response.conversations[0]?.upstreamAccounts[0]?.upstreamAccountName).toBe(
-      "Pool Alpha",
-    );
+    expect(
+      response.conversations[0]?.upstreamAccounts[0]?.upstreamAccountName,
+    ).toBe("Pool Alpha");
     expect(response.conversations[0]?.recentInvocations[0]?.invokeId).toBe(
       "invoke-17",
     );
@@ -1775,14 +1798,24 @@ describe("account pool frontend API helpers", () => {
     expect(response.conversations[0]?.recentInvocations[0]?.endpoint).toBe(
       "/v1/responses",
     );
-    expect(response.conversations[0]?.recentInvocations[0]?.source).toBe("proxy");
-    expect(response.conversations[0]?.recentInvocations[0]?.inputTokens).toBe(18);
-    expect(response.conversations[0]?.recentInvocations[0]?.outputTokens).toBe(12);
-    expect(response.conversations[0]?.recentInvocations[0]?.cacheInputTokens).toBe(6);
-    expect(response.conversations[0]?.recentInvocations[0]?.reasoningTokens).toBe(3);
-    expect(response.conversations[0]?.recentInvocations[0]?.reasoningEffort).toBe(
-      "high",
+    expect(response.conversations[0]?.recentInvocations[0]?.source).toBe(
+      "proxy",
     );
+    expect(response.conversations[0]?.recentInvocations[0]?.inputTokens).toBe(
+      18,
+    );
+    expect(response.conversations[0]?.recentInvocations[0]?.outputTokens).toBe(
+      12,
+    );
+    expect(
+      response.conversations[0]?.recentInvocations[0]?.cacheInputTokens,
+    ).toBe(6);
+    expect(
+      response.conversations[0]?.recentInvocations[0]?.reasoningTokens,
+    ).toBe(3);
+    expect(
+      response.conversations[0]?.recentInvocations[0]?.reasoningEffort,
+    ).toBe("high");
     expect(response.conversations[0]?.recentInvocations[0]?.failureKind).toBe(
       "upstream_response_failed",
     );
@@ -1794,7 +1827,9 @@ describe("account pool frontend API helpers", () => {
     ).toBe(
       "pool upstream responded with 502: failed to contact oauth codex upstream",
     );
-    expect(response.conversations[0]?.recentInvocations[0]?.isActionable).toBe(true);
+    expect(response.conversations[0]?.recentInvocations[0]?.isActionable).toBe(
+      true,
+    );
     expect(
       response.conversations[0]?.recentInvocations[0]?.responseContentEncoding,
     ).toBe("br");
@@ -1804,19 +1839,27 @@ describe("account pool frontend API helpers", () => {
     expect(response.conversations[0]?.recentInvocations[0]?.serviceTier).toBe(
       "scale",
     );
-    expect(response.conversations[0]?.recentInvocations[0]?.tReqReadMs).toBe(10);
-    expect(response.conversations[0]?.recentInvocations[0]?.tReqParseMs).toBe(11);
-    expect(response.conversations[0]?.recentInvocations[0]?.tUpstreamConnectMs).toBe(
-      12,
+    expect(response.conversations[0]?.recentInvocations[0]?.tReqReadMs).toBe(
+      10,
     );
-    expect(response.conversations[0]?.recentInvocations[0]?.tUpstreamTtfbMs).toBe(
-      13,
+    expect(response.conversations[0]?.recentInvocations[0]?.tReqParseMs).toBe(
+      11,
     );
-    expect(response.conversations[0]?.recentInvocations[0]?.tUpstreamStreamMs).toBe(
-      14,
+    expect(
+      response.conversations[0]?.recentInvocations[0]?.tUpstreamConnectMs,
+    ).toBe(12);
+    expect(
+      response.conversations[0]?.recentInvocations[0]?.tUpstreamTtfbMs,
+    ).toBe(13);
+    expect(
+      response.conversations[0]?.recentInvocations[0]?.tUpstreamStreamMs,
+    ).toBe(14);
+    expect(response.conversations[0]?.recentInvocations[0]?.tRespParseMs).toBe(
+      15,
     );
-    expect(response.conversations[0]?.recentInvocations[0]?.tRespParseMs).toBe(15);
-    expect(response.conversations[0]?.recentInvocations[0]?.tPersistMs).toBe(16);
+    expect(response.conversations[0]?.recentInvocations[0]?.tPersistMs).toBe(
+      16,
+    );
     expect(response.conversations[0]?.recentInvocations[0]?.tTotalMs).toBe(91);
   });
 

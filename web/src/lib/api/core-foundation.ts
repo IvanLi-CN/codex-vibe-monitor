@@ -38,7 +38,10 @@ export class ApiRequestError extends Error {
   }
 }
 
-function buildRequestError(response: Response, rawText: string): ApiRequestError {
+function buildRequestError(
+  response: Response,
+  rawText: string,
+): ApiRequestError {
   const compactText = rawText.replace(/\s+/g, " ").trim();
   const detail = (compactText || response.statusText || "").slice(0, 220);
   return new ApiRequestError(
@@ -49,7 +52,18 @@ function buildRequestError(response: Response, rawText: string): ApiRequestError
   );
 }
 
-export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
+export async function fetchJson<T>(
+  path: string,
+  init?: RequestInit,
+): Promise<T> {
+  const { data } = await fetchJsonResponse<T>(path, init);
+  return data;
+}
+
+async function fetchJsonResponse<T>(
+  path: string,
+  init?: RequestInit,
+): Promise<{ data: T; response: Response }> {
   const response = await fetch(withBase(path), {
     headers: {
       "Content-Type": "application/json",
@@ -63,15 +77,18 @@ export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T>
   }
 
   if (response.status === 204) {
-    return undefined as T;
+    return { data: undefined as T, response };
   }
 
   const rawText = await response.text();
   if (!rawText.trim()) {
-    return undefined as T;
+    return { data: undefined as T, response };
   }
 
-  return JSON.parse(rawText) as T;
+  return {
+    data: JSON.parse(rawText) as T,
+    response,
+  };
 }
 
 export async function ensureJsonRequestOk(response: Response): Promise<void> {
@@ -466,6 +483,7 @@ export interface InvocationRecordsQuery {
   maxTotalMs?: number;
   suggestField?: InvocationSuggestionField;
   suggestQuery?: string;
+  signal?: AbortSignal;
 }
 
 export interface InvocationTokenSummary {
@@ -588,6 +606,7 @@ export interface TimeseriesPoint {
   totalCount: number;
   successCount: number;
   failureCount: number;
+  inFlightCount?: number;
   totalTokens: number;
   totalCost: number;
   firstByteSampleCount?: number;
@@ -602,6 +621,7 @@ export interface TimeseriesResponse {
   rangeStart: string;
   rangeEnd: string;
   bucketSeconds: number;
+  snapshotId?: number;
   effectiveBucket?: string;
   availableBuckets?: string[];
   bucketLimitedToDaily?: boolean;
@@ -782,6 +802,7 @@ export async function fetchInvocationRecords(query: InvocationRecordsQuery) {
   appendInvocationRecordsQuery(search, query);
   return fetchJson<InvocationRecordsResponse>(
     `/api/invocations?${search.toString()}`,
+    { signal: query.signal },
   );
 }
 
@@ -958,9 +979,16 @@ export interface ConversationRequestPoint {
   occurredAt: string;
   status: string;
   isSuccess: boolean;
+  outcome?: ConversationRequestOutcome | null;
   requestTokens: number;
   cumulativeTokens: number;
 }
+
+export type ConversationRequestOutcome =
+  | "success"
+  | "failure"
+  | "neutral"
+  | "in_flight";
 
 export type PromptCacheConversationRequestPoint = ConversationRequestPoint;
 
@@ -1154,6 +1182,7 @@ function normalizeTimeseriesPoint(raw: unknown): TimeseriesPoint | null {
     totalCount: normalizeFiniteNumber(payload.totalCount) ?? 0,
     successCount: normalizeFiniteNumber(payload.successCount) ?? 0,
     failureCount: normalizeFiniteNumber(payload.failureCount) ?? 0,
+    inFlightCount: normalizeFiniteNumber(payload.inFlightCount) ?? 0,
     totalTokens: normalizeFiniteNumber(payload.totalTokens) ?? 0,
     totalCost: normalizeFiniteNumber(payload.totalCost) ?? 0,
     firstByteSampleCount:
@@ -1177,6 +1206,7 @@ function normalizeTimeseriesResponse(raw: unknown): TimeseriesResponse {
       typeof payload.rangeStart === "string" ? payload.rangeStart : "",
     rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
     bucketSeconds: normalizeFiniteNumber(payload.bucketSeconds) ?? 3600,
+    snapshotId: normalizeFiniteNumber(payload.snapshotId) ?? undefined,
     effectiveBucket:
       typeof payload.effectiveBucket === "string"
         ? payload.effectiveBucket
@@ -1662,7 +1692,8 @@ function normalizePromptCacheConversationInvocationPreview(
         ? payload.serviceTier.trim()
         : undefined,
     billingServiceTier:
-      typeof payload.billingServiceTier === "string" && payload.billingServiceTier.trim()
+      typeof payload.billingServiceTier === "string" &&
+      payload.billingServiceTier.trim()
         ? payload.billingServiceTier.trim()
         : undefined,
     tReqReadMs: normalizeFiniteNumber(payload.tReqReadMs),
@@ -1703,9 +1734,13 @@ function normalizePromptCacheConversation(
     lastActivityAt:
       typeof payload.lastActivityAt === "string" ? payload.lastActivityAt : "",
     lastTerminalAt:
-      typeof payload.lastTerminalAt === "string" ? payload.lastTerminalAt : null,
+      typeof payload.lastTerminalAt === "string"
+        ? payload.lastTerminalAt
+        : null,
     lastInFlightAt:
-      typeof payload.lastInFlightAt === "string" ? payload.lastInFlightAt : null,
+      typeof payload.lastInFlightAt === "string"
+        ? payload.lastInFlightAt
+        : null,
     cursor: typeof payload.cursor === "string" ? payload.cursor : null,
     upstreamAccounts: upstreamAccountsRaw
       .map(normalizePromptCacheConversationUpstreamAccount)
@@ -1737,6 +1772,13 @@ function normalizeConversationRequestPoint(
     occurredAt,
     status: typeof payload.status === "string" ? payload.status : "unknown",
     isSuccess: payload.isSuccess === true,
+    outcome:
+      payload.outcome === "success" ||
+      payload.outcome === "failure" ||
+      payload.outcome === "neutral" ||
+      payload.outcome === "in_flight"
+        ? payload.outcome
+        : null,
     requestTokens: normalizeFiniteNumber(payload.requestTokens) ?? 0,
     cumulativeTokens: normalizeFiniteNumber(payload.cumulativeTokens) ?? 0,
   };
@@ -1876,7 +1918,9 @@ function normalizePoolRoutingTimeoutSettings(
   };
 }
 
-export function normalizeCompactSupportState(raw: unknown): CompactSupportState {
+export function normalizeCompactSupportState(
+  raw: unknown,
+): CompactSupportState {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const status =
     payload.status === "supported" || payload.status === "unsupported"
@@ -1939,7 +1983,8 @@ function normalizePromptCacheConversationsResponse(
     },
     totalMatched: normalizeFiniteNumber(payload.totalMatched) ?? null,
     hasMore: payload.hasMore === true,
-    nextCursor: typeof payload.nextCursor === "string" ? payload.nextCursor : null,
+    nextCursor:
+      typeof payload.nextCursor === "string" ? payload.nextCursor : null,
     conversations: conversationsRaw
       .map(normalizePromptCacheConversation)
       .filter((item): item is PromptCacheConversation => item != null),
@@ -1972,7 +2017,6 @@ function normalizeSettingsPayload(raw: unknown): SettingsPayload {
     pricing: normalizePricingSettings(payload.pricing),
   };
 }
-
 
 export async function fetchVersion(): Promise<VersionResponse> {
   return fetchJson<VersionResponse>("/api/version");
