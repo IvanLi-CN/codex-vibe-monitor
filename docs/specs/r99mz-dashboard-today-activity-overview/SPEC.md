@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 已实现，待 PR / CI / review-proof 收敛
+- Status: 已实现，PR #321 收敛中
 - Created: 2026-04-08
 - Last: 2026-04-10
 
