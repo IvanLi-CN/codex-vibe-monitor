@@ -12,8 +12,6 @@ async fn proxy_openai_v1_inner(
     runtime_timeouts: PoolRoutingTimeoutSettingsResolved,
     mut proxy_request_permit: Option<ProxyRequestConcurrencyPermit>,
 ) -> Result<Response, ProxyErrorResponse> {
-    let proxy_request_concurrency_wait_timeout =
-        state.config.proxy_request_concurrency_wait_timeout;
     if !pool_route_active {
         // `/v1/*` is pool-only; non-pool traffic must stop here instead of reviving the
         // removed reverse-proxy/direct path.
@@ -38,11 +36,7 @@ async fn proxy_openai_v1_inner(
         )
         .await
         .map_err(|(status, message)| ProxyErrorResponse {
-            retry_after_secs: retry_after_secs_for_proxy_error(
-                status,
-                &message,
-                Some(proxy_request_concurrency_wait_timeout),
-            ),
+            retry_after_secs: retry_after_secs_for_proxy_error(status, &message),
             status,
             message,
             cvm_id: None,
@@ -67,11 +61,7 @@ async fn proxy_openai_v1_inner(
         )
         .await
         .map_err(|(status, message)| ProxyErrorResponse {
-            retry_after_secs: retry_after_secs_for_proxy_error(
-                status,
-                &message,
-                Some(proxy_request_concurrency_wait_timeout),
-            ),
+            retry_after_secs: retry_after_secs_for_proxy_error(status, &message),
             status,
             message,
             cvm_id: Some(tracked_invoke_id),
@@ -90,11 +80,7 @@ async fn proxy_openai_v1_inner(
     )
     .await
     .map_err(|(status, message)| ProxyErrorResponse {
-        retry_after_secs: retry_after_secs_for_proxy_error(
-            status,
-            &message,
-            Some(proxy_request_concurrency_wait_timeout),
-        ),
+        retry_after_secs: retry_after_secs_for_proxy_error(status, &message),
         status,
         message,
         cvm_id: None,
@@ -142,7 +128,7 @@ async fn proxy_openai_v1_capture_target(
         &Method::POST,
         original_uri,
     )
-    .await?;
+    .await;
     let pool_routing_reservation_key = build_pool_routing_reservation_key(proxy_request_id);
     let occurred_at_utc = Utc::now();
     let occurred_at = format_naive(occurred_at_utc.with_timezone(&Shanghai).naive_local());
@@ -165,12 +151,13 @@ async fn proxy_openai_v1_capture_target(
             let t_req_read_ms = elapsed_ms(req_read_started);
             let request_info = RequestCaptureInfo::default();
             drop(proxy_request_permit);
-            let req_raw = store_raw_payload_file(
-                &state.config,
+            let req_raw = spawn_raw_payload_file_write(
+                state.as_ref(),
                 &invoke_id,
                 "request",
-                &read_err.partial_body,
+                Bytes::from(read_err.partial_body),
             )
+            .finish()
             .await;
             let usage = ParsedUsage::default();
             let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
@@ -437,12 +424,13 @@ async fn proxy_openai_v1_capture_target(
                     .request_body_for_capture
                     .clone()
                     .unwrap_or_else(|| base_request_bytes_for_capture.clone());
-                let req_raw = store_raw_payload_file(
-                    &state.config,
+                let req_raw = spawn_raw_payload_file_write(
+                    state.as_ref(),
                     &invoke_id,
                     "request",
-                    request_body_for_capture.as_ref(),
+                    request_body_for_capture,
                 )
+                .finish()
                 .await;
                 let usage = ParsedUsage::default();
                 let (billing_service_tier, pricing_mode) =
@@ -634,12 +622,13 @@ async fn proxy_openai_v1_capture_target(
             ),
             Err(err) => {
                 drop(proxy_request_permit);
-                let req_raw = store_raw_payload_file(
-                    &state.config,
+                let req_raw = spawn_raw_payload_file_write(
+                    state.as_ref(),
                     &invoke_id,
                     "request",
-                    base_request_bytes_for_capture.as_ref(),
+                    base_request_bytes_for_capture.clone(),
                 )
+                .finish()
                 .await;
                 let proxy_attempt_update = record_forward_proxy_attempt(
                     state.clone(),
@@ -757,16 +746,14 @@ async fn proxy_openai_v1_capture_target(
     request_info.requested_service_tier = final_requested_service_tier
         .clone()
         .or(request_info.requested_service_tier);
-    let req_raw = store_raw_payload_file(
-        &state.config,
+    let mut req_raw_pending = Some(spawn_raw_payload_file_write(
+        state.as_ref(),
         &invoke_id,
         "request",
         final_request_body_for_capture
-            .as_ref()
-            .unwrap_or(&base_request_bytes_for_capture)
-            .as_ref(),
-    )
-    .await;
+            .clone()
+            .unwrap_or_else(|| base_request_bytes_for_capture.clone()),
+    ));
 
     let upstream_status = upstream_response.status();
     let location_base_url = location_rewrite_upstream_base(
@@ -812,6 +799,11 @@ async fn proxy_openai_v1_capture_target(
             .await;
             let proxy_display_name = resolve_invocation_proxy_display_name(selected_proxy.as_ref());
             drop(proxy_request_permit);
+            let req_raw = req_raw_pending
+                .take()
+                .expect("request raw capture should be pending before redirect normalization")
+                .finish()
+                .await;
             let record = ProxyCaptureRecord {
                 invoke_id,
                 occurred_at,
@@ -994,7 +986,9 @@ async fn proxy_openai_v1_capture_target(
 
     let state_for_task = state.clone();
     let request_info_for_task = request_info.clone();
-    let req_raw_for_task = req_raw.clone();
+    let req_raw_pending_for_task = req_raw_pending
+        .take()
+        .expect("request raw capture should still be pending when response stream starts");
     let invoke_id_for_task = invoke_id.clone();
     let occurred_at_for_task = occurred_at.clone();
     let upstream_content_encoding_for_task = upstream_content_encoding.clone();
@@ -1254,6 +1248,7 @@ async fn proxy_openai_v1_capture_target(
         }
 
         let t_upstream_stream_ms = stream_started_at.map(elapsed_ms).unwrap_or(0.0);
+        let req_raw_for_task = req_raw_pending_for_task.finish().await;
         let resp_raw = response_raw_writer.finish().await;
         let preview_bytes = response_preview.as_slice().to_vec();
         let raw_response_preview = response_preview.into_preview();

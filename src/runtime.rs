@@ -124,9 +124,6 @@ pub(crate) async fn run() -> Result<()> {
         shutdown: shutdown.clone(),
         semaphore: semaphore.clone(),
         proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
-        proxy_request_concurrency_semaphore: Arc::new(Semaphore::new(
-            config.proxy_request_concurrency_limit,
-        )),
         proxy_raw_async_semaphore,
         proxy_model_settings,
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -150,7 +147,7 @@ pub(crate) async fn run() -> Result<()> {
         pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
         upstream_accounts,
     });
-    refresh_pool_routing_runtime_cache(state.as_ref()).await?;
+    warm_pool_routing_runtime_cache_best_effort(state.as_ref()).await;
 
     let signal_listener = spawn_shutdown_signal_listener(state.shutdown.clone());
 
@@ -161,6 +158,23 @@ pub(crate) async fn run() -> Result<()> {
 }
 
 const POOL_EARLY_PHASE_ORPHAN_RECOVERY_INTERVAL: Duration = Duration::from_secs(60);
+
+pub(crate) async fn warm_pool_routing_runtime_cache_best_effort(state: &AppState) {
+    refresh_pool_routing_runtime_cache_best_effort(state, "startup warmup").await;
+}
+
+pub(crate) async fn refresh_pool_routing_runtime_cache_best_effort(
+    state: &AppState,
+    operation: &'static str,
+) {
+    if let Err(err) = refresh_pool_routing_runtime_cache(state).await {
+        warn!(
+            error = %err,
+            operation,
+            "failed to refresh pool routing runtime cache; falling back to lazy pool routing resolution"
+        );
+    }
+}
 
 fn begin_runtime_shutdown_if_requested<F>(
     shutdown_signal: &Shared<F>,

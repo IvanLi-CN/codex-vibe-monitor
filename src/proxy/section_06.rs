@@ -2344,6 +2344,60 @@ impl BoundedResponseParseBuffer {
     }
 }
 
+enum PendingRawPayloadWrite {
+    Ready(RawPayloadMeta),
+    Task(JoinHandle<RawPayloadMeta>),
+}
+
+impl PendingRawPayloadWrite {
+    fn dropped(size_bytes: usize) -> Self {
+        Self::Ready(RawPayloadMeta {
+            path: None,
+            size_bytes: size_bytes as i64,
+            truncated: size_bytes > 0,
+            truncated_reason: (size_bytes > 0)
+                .then_some(RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED.to_string()),
+        })
+    }
+
+    async fn finish(self) -> RawPayloadMeta {
+        match self {
+            Self::Ready(meta) => meta,
+            Self::Task(handle) => match handle.await {
+                Ok(meta) => meta,
+                Err(err) => RawPayloadMeta {
+                    path: None,
+                    size_bytes: 0,
+                    truncated: true,
+                    truncated_reason: Some(format!("write_failed:{err}")),
+                },
+            },
+        }
+    }
+}
+
+fn spawn_raw_payload_file_write(
+    state: &AppState,
+    invoke_id: &str,
+    kind: &'static str,
+    bytes: Bytes,
+) -> PendingRawPayloadWrite {
+    if bytes.is_empty() {
+        return PendingRawPayloadWrite::Ready(RawPayloadMeta::default());
+    }
+
+    let Ok(permit) = state.proxy_raw_async_semaphore.clone().try_acquire_owned() else {
+        return PendingRawPayloadWrite::dropped(bytes.len());
+    };
+
+    let config = state.config.clone();
+    let invoke_id = invoke_id.to_string();
+    PendingRawPayloadWrite::Task(tokio::spawn(async move {
+        let _permit = permit;
+        store_raw_payload_file(&config, &invoke_id, kind, bytes.as_ref()).await
+    }))
+}
+
 struct AsyncStreamingRawPayloadWriter {
     tx: Option<mpsc::Sender<Bytes>>,
     meta_rx: Option<oneshot::Receiver<RawPayloadMeta>>,

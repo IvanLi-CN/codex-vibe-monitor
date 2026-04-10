@@ -777,7 +777,6 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
         shutdown: CancellationToken::new(),
         semaphore,
         proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
-        proxy_request_concurrency_semaphore: Arc::new(Semaphore::new(config.proxy_request_concurrency_limit)),
         proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings {
             hijack_enabled: true,
@@ -2267,6 +2266,61 @@ async fn pool_routing_settings_timeout_updates_succeed_without_crypto_key() {
             .await
             .expect("timeout-only routing update should succeed without crypto key");
     assert_eq!(response.timeouts.responses_stream_timeout_secs, 375);
+}
+
+#[tokio::test]
+async fn pool_routing_settings_timeout_updates_tolerate_invalid_cached_api_key_ciphertext() {
+    let state = test_state_from_config(test_config(), true).await;
+    sqlx::query(
+        r#"
+        UPDATE pool_routing_settings
+        SET encrypted_api_key = ?1,
+            masked_api_key = ?2
+        WHERE id = 1
+        "#,
+    )
+    .bind("not-a-valid-ciphertext")
+    .bind("sk-bad")
+    .execute(&state.pool)
+    .await
+    .expect("poison stored pool api key ciphertext");
+
+    {
+        let mut runtime_cache = state.pool_routing_runtime_cache.lock().await;
+        *runtime_cache = None;
+    }
+
+    let payload = UpdatePoolRoutingSettingsRequest {
+        api_key: None,
+        maintenance: None,
+        timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
+            responses_first_byte_timeout_secs: None,
+            compact_first_byte_timeout_secs: None,
+            responses_stream_timeout_secs: Some(375),
+            compact_stream_timeout_secs: None,
+        }),
+    };
+    let Json(response) =
+        update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(payload))
+            .await
+            .expect("timeout-only routing update should stay writable with invalid cached api key");
+    assert_eq!(response.timeouts.responses_stream_timeout_secs, 375);
+    assert!(
+        state.pool_routing_runtime_cache.lock().await.is_none(),
+        "best-effort refresh should keep lazy resolution when the stored key cannot be decrypted"
+    );
+
+    let persisted = sqlx::query_as::<_, (Option<i64>,)>(
+        r#"
+        SELECT responses_stream_timeout_secs
+        FROM pool_routing_settings
+        WHERE id = 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load updated timeout row");
+    assert_eq!(persisted.0, Some(375));
 }
 
 #[tokio::test]

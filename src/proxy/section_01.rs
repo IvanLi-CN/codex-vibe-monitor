@@ -128,17 +128,15 @@ async fn proxy_openai_v1_common(
     };
     let pool_route_active = true;
 
-    let proxy_request_permit = match acquire_proxy_request_concurrency_permit(
-        state.as_ref(),
-        proxy_request_id,
-        &method_for_log,
-        &uri_for_log,
-    )
-    .await
-    {
-        Ok(permit) => Some(permit),
-        Err(err) => return build_proxy_error_response(err, &invoke_id),
-    };
+    let proxy_request_permit = Some(
+        acquire_proxy_request_concurrency_permit(
+            state.as_ref(),
+            proxy_request_id,
+            &method_for_log,
+            &uri_for_log,
+        )
+        .await,
+    );
 
     match proxy_openai_v1_inner(
         state,
@@ -192,9 +190,6 @@ struct ProxyErrorResponse {
 }
 
 const PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE: &str = "pool route key missing or invalid";
-const PROXY_REQUEST_CONCURRENCY_LIMIT_REACHED_MESSAGE: &str =
-    "proxy request concurrency limit reached";
-
 fn build_proxy_error_response(err: ProxyErrorResponse, invoke_id: &str) -> Response {
     match err.cvm_id {
         Some(cvm_id) => {
@@ -233,7 +228,6 @@ fn build_proxy_error_response(err: ProxyErrorResponse, invoke_id: &str) -> Respo
 
 #[derive(Debug)]
 struct ProxyRequestConcurrencyPermit {
-    _semaphore_permit: OwnedSemaphorePermit,
     in_flight: Arc<AtomicUsize>,
 }
 
@@ -250,52 +244,7 @@ async fn acquire_proxy_request_concurrency_permit(
     proxy_request_id: u64,
     method: &Method,
     original_uri: &Uri,
-) -> Result<ProxyRequestConcurrencyPermit, ProxyErrorResponse> {
-    let wait_timeout = state.config.proxy_request_concurrency_wait_timeout;
-    let started = Instant::now();
-    let permit = match timeout(
-        wait_timeout,
-        state.proxy_request_concurrency_semaphore.clone().acquire_owned(),
-    )
-    .await
-    {
-        Ok(Ok(permit)) => permit,
-        Ok(Err(err)) => {
-            warn!(
-                proxy_request_id,
-                method = %method,
-                uri = %original_uri,
-                error = %err,
-                "proxy request admission semaphore closed unexpectedly"
-            );
-            return Err(ProxyErrorResponse {
-                status: StatusCode::SERVICE_UNAVAILABLE,
-                message: "proxy request admission unavailable".to_string(),
-                cvm_id: None,
-                retry_after_secs: None,
-            });
-        }
-        Err(_) => {
-            warn!(
-                proxy_request_id,
-                method = %method,
-                uri = %original_uri,
-                wait_timeout_ms = wait_timeout.as_millis(),
-                "proxy request admission timed out"
-            );
-            return Err(ProxyErrorResponse {
-                status: StatusCode::SERVICE_UNAVAILABLE,
-                message: PROXY_REQUEST_CONCURRENCY_LIMIT_REACHED_MESSAGE.to_string(),
-                cvm_id: None,
-                retry_after_secs: retry_after_secs_for_proxy_error(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    PROXY_REQUEST_CONCURRENCY_LIMIT_REACHED_MESSAGE,
-                    Some(wait_timeout),
-                ),
-            });
-        }
-    };
-
+) -> ProxyRequestConcurrencyPermit {
     let in_flight = state
         .proxy_request_in_flight
         .fetch_add(1, Ordering::AcqRel)
@@ -305,15 +254,12 @@ async fn acquire_proxy_request_concurrency_permit(
         method = %method,
         uri = %original_uri,
         in_flight,
-        configured_limit = state.config.proxy_request_concurrency_limit,
-        wait_elapsed_ms = started.elapsed().as_millis(),
         "proxy request admitted"
     );
 
-    Ok(ProxyRequestConcurrencyPermit {
-        _semaphore_permit: permit,
+    ProxyRequestConcurrencyPermit {
         in_flight: state.proxy_request_in_flight.clone(),
-    })
+    }
 }
 
 async fn take_or_acquire_proxy_request_concurrency_permit(
@@ -322,12 +268,13 @@ async fn take_or_acquire_proxy_request_concurrency_permit(
     proxy_request_id: u64,
     method: &Method,
     original_uri: &Uri,
-) -> Result<ProxyRequestConcurrencyPermit, (StatusCode, String)> {
+) -> ProxyRequestConcurrencyPermit {
     match permit.take() {
-        Some(permit) => Ok(permit),
-        None => acquire_proxy_request_concurrency_permit(state, proxy_request_id, method, original_uri)
-            .await
-            .map_err(|err| (err.status, err.message)),
+        Some(permit) => permit,
+        None => {
+            acquire_proxy_request_concurrency_permit(state, proxy_request_id, method, original_uri)
+                .await
+        }
     }
 }
 
@@ -680,21 +627,12 @@ fn build_pool_no_available_account_error(
 fn retry_after_secs_for_proxy_error(
     status: StatusCode,
     message: &str,
-    proxy_request_concurrency_wait_timeout: Option<Duration>,
 ) -> Option<u64> {
     if status != StatusCode::SERVICE_UNAVAILABLE {
         return None;
     }
     if message == POOL_NO_AVAILABLE_ACCOUNT_MESSAGE {
         return Some(DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS);
-    }
-    if message == PROXY_REQUEST_CONCURRENCY_LIMIT_REACHED_MESSAGE {
-        let wait_timeout = proxy_request_concurrency_wait_timeout?;
-        let secs = wait_timeout
-            .as_secs()
-            .saturating_add(u64::from(wait_timeout.subsec_nanos() > 0))
-            .max(1);
-        return Some(secs);
     }
     None
 }

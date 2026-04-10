@@ -127,7 +127,6 @@
             shutdown: CancellationToken::new(),
             semaphore: Arc::new(Semaphore::new(4)),
             proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
-            proxy_request_concurrency_semaphore: Arc::new(Semaphore::new(DEFAULT_PROXY_REQUEST_CONCURRENCY_LIMIT)),
             proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit)),
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
@@ -1945,6 +1944,42 @@
             .expect("load routing settings");
         assert!(stored.encrypted_api_key.is_some());
         assert_eq!(stored.secondary_sync_interval_secs, Some(2400));
+    }
+
+    #[tokio::test]
+    async fn warm_pool_routing_runtime_cache_best_effort_skips_invalid_encrypted_api_key() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        sqlx::query(
+            r#"
+            UPDATE pool_routing_settings
+            SET encrypted_api_key = ?1
+            WHERE id = ?2
+            "#,
+        )
+        .bind("not-a-valid-ciphertext")
+        .bind(POOL_SETTINGS_SINGLETON_ID)
+        .execute(&state.pool)
+        .await
+        .expect("poison encrypted api key");
+
+        {
+            let mut runtime_cache = state.pool_routing_runtime_cache.lock().await;
+            *runtime_cache = None;
+        }
+
+        assert!(
+            refresh_pool_routing_runtime_cache(state.as_ref())
+                .await
+                .is_err(),
+            "invalid ciphertext should still fail direct refresh"
+        );
+
+        warm_pool_routing_runtime_cache_best_effort(state.as_ref()).await;
+
+        assert!(
+            state.pool_routing_runtime_cache.lock().await.is_none(),
+            "best-effort startup warmup should leave the cache empty after decrypt failures"
+        );
     }
 
     fn maintenance_candidates(

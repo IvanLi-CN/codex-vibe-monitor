@@ -19,7 +19,6 @@ struct AppState {
     shutdown: CancellationToken,
     semaphore: Arc<Semaphore>,
     proxy_request_in_flight: Arc<AtomicUsize>,
-    proxy_request_concurrency_semaphore: Arc<Semaphore>,
     proxy_raw_async_semaphore: Arc<Semaphore>,
     proxy_model_settings: Arc<RwLock<ProxyModelSettings>>,
     proxy_model_settings_update_lock: Arc<Mutex<()>>,

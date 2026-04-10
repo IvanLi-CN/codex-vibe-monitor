@@ -118,7 +118,7 @@ fn app_config_from_sources_ignores_proxy_request_concurrency_envs() {
 }
 
 #[tokio::test]
-async fn acquire_proxy_request_concurrency_permit_times_out_when_limit_exceeded() {
+async fn acquire_proxy_request_concurrency_permit_tracks_multiple_in_flight_requests() {
     let mut config = test_config();
     config.proxy_request_concurrency_limit = 1;
     config.proxy_request_concurrency_wait_timeout = Duration::from_millis(25);
@@ -126,17 +126,18 @@ async fn acquire_proxy_request_concurrency_permit_times_out_when_limit_exceeded(
     let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
 
     let permit =
-        acquire_proxy_request_concurrency_permit(state.as_ref(), 1001, &Method::POST, &uri)
-            .await
-            .expect("first request should acquire admission permit");
-    let err =
         acquire_proxy_request_concurrency_permit(state.as_ref(), 1002, &Method::POST, &uri)
-            .await
-            .expect_err("second request should time out while admission slot is occupied");
+            .await;
+    let permit2 =
+        acquire_proxy_request_concurrency_permit(state.as_ref(), 1003, &Method::POST, &uri).await;
+    assert_eq!(
+        state
+            .proxy_request_in_flight
+            .load(std::sync::atomic::Ordering::Acquire),
+        2
+    );
 
-    assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(err.message, PROXY_REQUEST_CONCURRENCY_LIMIT_REACHED_MESSAGE);
-    assert_eq!(err.retry_after_secs, Some(1));
+    drop(permit);
     assert_eq!(
         state
             .proxy_request_in_flight
@@ -144,7 +145,7 @@ async fn acquire_proxy_request_concurrency_permit_times_out_when_limit_exceeded(
         1
     );
 
-    drop(permit);
+    drop(permit2);
     assert_eq!(
         state
             .proxy_request_in_flight
@@ -162,9 +163,7 @@ async fn proxy_openai_v1_invalid_pool_key_bypasses_admission_backpressure() {
     let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
 
     let permit =
-        acquire_proxy_request_concurrency_permit(state.as_ref(), 2001, &Method::POST, &uri)
-            .await
-            .expect("first request should occupy the only admission slot");
+        acquire_proxy_request_concurrency_permit(state.as_ref(), 2001, &Method::POST, &uri).await;
 
     let response = proxy_openai_v1(
         State(state.clone()),

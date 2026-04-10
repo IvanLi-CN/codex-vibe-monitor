@@ -1562,6 +1562,46 @@ fn search_raw_script_reports_missing_root_as_configuration_error() {
     cleanup_temp_test_dir(&temp_dir);
 }
 
+#[tokio::test]
+async fn spawn_raw_payload_file_write_drops_when_async_writer_pool_is_saturated() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let available_permits = state.proxy_raw_async_semaphore.available_permits();
+    let permit = state
+        .proxy_raw_async_semaphore
+        .clone()
+        .acquire_many_owned(available_permits as u32)
+        .await
+        .expect("saturate async raw writer permits");
+
+    let meta = spawn_raw_payload_file_write(
+        state.as_ref(),
+        "proxy-test",
+        "request",
+        Bytes::from_static(br#"{"ok":true}"#),
+    )
+    .finish()
+    .await;
+
+    assert!(
+        meta.path.is_none(),
+        "dropped raw payload should not have a file"
+    );
+    assert_eq!(meta.size_bytes, br#"{"ok":true}"#.len() as i64);
+    assert!(
+        meta.truncated,
+        "dropped raw payload should be marked truncated"
+    );
+    assert_eq!(
+        meta.truncated_reason.as_deref(),
+        Some(RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED)
+    );
+
+    drop(permit);
+}
+
 #[test]
 fn search_raw_script_reports_corrupt_gzip_as_error() {
     let temp_dir = make_temp_test_dir("search-raw-script-corrupt-gzip");

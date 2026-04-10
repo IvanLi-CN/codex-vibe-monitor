@@ -929,7 +929,7 @@ async fn proxy_openai_v1_via_pool(
         &method,
         original_uri,
     )
-    .await?;
+    .await;
     let body_size_hint_exact = body
         .size_hint()
         .exact()
@@ -1506,6 +1506,9 @@ async fn proxy_openai_v1_via_pool(
                         .map(|record| record.invoke_id.clone());
                     let t_upstream_connect_ms = upstream.connect_latency_ms;
                     let t_upstream_ttfb_ms = upstream.first_byte_latency_ms;
+                    let deferred_pool_early_phase_cleanup_guard =
+                        upstream.deferred_early_phase_cleanup_guard;
+                    let live_pool_attempt_activity_lease = upstream.live_attempt_activity_lease;
                     let upstream_response = upstream.response;
                     let rewritten_location = normalize_proxy_location_header(
                         upstream_response.status(),
@@ -1576,6 +1579,10 @@ async fn proxy_openai_v1_via_pool(
                     let upstream_attempt_started_at_utc_for_record = upstream_attempt_started_at_utc;
                     let proxy_request_permit_for_task = proxy_request_permit;
                     tokio::spawn(async move {
+                        let _deferred_pool_early_phase_cleanup_guard_for_task =
+                            deferred_pool_early_phase_cleanup_guard;
+                        let _live_pool_attempt_activity_lease_for_task =
+                            live_pool_attempt_activity_lease;
                         let mut forwarded_chunks = 0usize;
                         let mut forwarded_bytes = 0usize;
                         let stream_started_at = Instant::now();
@@ -1772,6 +1779,8 @@ async fn proxy_openai_v1_via_pool(
         .map(|record| record.invoke_id.clone());
     let t_upstream_connect_ms = upstream.connect_latency_ms;
     let t_upstream_ttfb_ms = upstream.first_byte_latency_ms;
+    let deferred_pool_early_phase_cleanup_guard = upstream.deferred_early_phase_cleanup_guard;
+    let live_pool_attempt_activity_lease = upstream.live_attempt_activity_lease;
     let upstream_response = upstream.response;
     let rewritten_location = normalize_proxy_location_header(
         upstream_response.status(),
@@ -1839,6 +1848,9 @@ async fn proxy_openai_v1_via_pool(
     let upstream_attempt_started_at_utc_for_record = upstream_attempt_started_at_utc;
     let proxy_request_permit_for_task = proxy_request_permit;
     tokio::spawn(async move {
+        let _deferred_pool_early_phase_cleanup_guard_for_task =
+            deferred_pool_early_phase_cleanup_guard;
+        let _live_pool_attempt_activity_lease_for_task = live_pool_attempt_activity_lease;
         let mut forwarded_chunks = 0usize;
         let mut forwarded_bytes = 0usize;
         let stream_started_at = Instant::now();
