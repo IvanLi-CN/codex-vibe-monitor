@@ -410,11 +410,11 @@ fn estimate_proxy_cost(
     (Some(cost), true, price_version)
 }
 
-async fn store_raw_payload_file_async(
+async fn store_raw_payload_file(
     config: &AppConfig,
     invoke_id: &str,
     kind: &str,
-    bytes: Bytes,
+    bytes: &[u8],
 ) -> RawPayloadMeta {
     let mut meta = RawPayloadMeta {
         path: None,
@@ -713,35 +713,6 @@ async fn persist_and_broadcast_proxy_capture(
                 continue;
             }
 
-            if DEFAULT_PROXY_SUMMARY_QUOTA_BROADCAST_DEBOUNCE_MS > 0 {
-                tokio::select! {
-                    _ = shutdown.cancelled() => {
-                        broadcast_proxy_capture_follow_up(
-                            &pool,
-                            &broadcaster,
-                            broadcast_state_cache.as_ref(),
-                            relay_config.as_ref(),
-                            invocation_max_days,
-                            &invoke_id,
-                        )
-                        .await;
-                        broadcast_running.store(false, Ordering::Release);
-                        info!(
-                            invoke_id = %invoke_id,
-                            "summary/quota broadcast worker flushed follow-up during debounce because shutdown is in progress"
-                        );
-                        break;
-                    }
-                    _ = sleep(Duration::from_millis(
-                        DEFAULT_PROXY_SUMMARY_QUOTA_BROADCAST_DEBOUNCE_MS,
-                    )) => {}
-                }
-                synced_seq = latest_broadcast_seq.load(Ordering::Acquire);
-                if broadcaster.receiver_count() == 0 {
-                    continue;
-                }
-            }
-
             let summaries = tokio::select! {
                 _ = shutdown.cancelled() => {
                     broadcast_proxy_capture_follow_up(
@@ -986,7 +957,12 @@ async fn persist_proxy_capture_record(
             tx.commit().await?;
             return Ok(None);
         };
-        if !invocation_status_is_in_flight(existing.status.as_deref()) {
+        let allow_terminal_repair = !invocation_status_is_in_flight(Some(record.status.as_str()))
+            && invocation_status_is_recoverable_proxy_interrupted(
+                existing.status.as_deref(),
+                existing.failure_kind.as_deref(),
+            );
+        if !invocation_status_is_in_flight(existing.status.as_deref()) && !allow_terminal_repair {
             tx.commit().await?;
             return Ok(None);
         }
@@ -1028,7 +1004,13 @@ async fn persist_proxy_capture_record(
                 t_resp_parse_ms = ?33,
                 t_persist_ms = ?34
             WHERE id = ?1
-              AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
+              AND (
+                    LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
+                    OR (
+                        LOWER(TRIM(COALESCE(status, ''))) = 'interrupted'
+                        AND LOWER(TRIM(COALESCE(failure_kind, ''))) = 'proxy_interrupted'
+                    )
+              )
             "#,
         )
         .bind(existing.id)

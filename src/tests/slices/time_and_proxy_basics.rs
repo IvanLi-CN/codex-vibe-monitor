@@ -1,5 +1,4 @@
 use super::*;
-
 use aes_gcm::{
     Aes256Gcm,
     aead::{Aead, KeyInit},
@@ -31,6 +30,7 @@ use std::{
     env,
     ffi::OsString,
     fs,
+    convert::Infallible,
     io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex as StdMutex, atomic::AtomicUsize},
@@ -40,6 +40,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{Mutex as AsyncMutex, Notify, Semaphore, broadcast};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use reqwest::Url;
 
 static APP_CONFIG_ENV_LOCK: once_cell::sync::Lazy<AsyncMutex<()>> =
     once_cell::sync::Lazy::new(|| AsyncMutex::new(()));
@@ -93,6 +94,238 @@ impl Drop for EnvVarGuard {
             }
         }
     }
+}
+
+#[test]
+fn app_config_from_sources_ignores_proxy_request_concurrency_envs() {
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
+    let _env = EnvVarGuard::set(&[
+        (ENV_PROXY_REQUEST_CONCURRENCY_LIMIT, Some("7")),
+        (ENV_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS, Some("3456")),
+    ]);
+
+    let config = AppConfig::from_sources(&CliArgs::default())
+        .expect("proxy request concurrency envs should parse");
+
+    assert_eq!(
+        config.proxy_request_concurrency_limit,
+        DEFAULT_PROXY_REQUEST_CONCURRENCY_LIMIT
+    );
+    assert_eq!(
+        config.proxy_request_concurrency_wait_timeout,
+        Duration::from_millis(DEFAULT_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS)
+    );
+}
+
+#[tokio::test]
+async fn acquire_proxy_request_concurrency_permit_tracks_multiple_in_flight_requests() {
+    let mut config = test_config();
+    config.proxy_request_concurrency_limit = 1;
+    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(25);
+    let state = test_state_from_config(config, true).await;
+    let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
+
+    let permit =
+        acquire_proxy_request_concurrency_permit(state.as_ref(), 1002, &Method::POST, &uri)
+            .await;
+    let permit2 =
+        acquire_proxy_request_concurrency_permit(state.as_ref(), 1003, &Method::POST, &uri).await;
+    assert_eq!(
+        state
+            .proxy_request_in_flight
+            .load(std::sync::atomic::Ordering::Acquire),
+        2
+    );
+
+    drop(permit);
+    assert_eq!(
+        state
+            .proxy_request_in_flight
+            .load(std::sync::atomic::Ordering::Acquire),
+        1
+    );
+
+    drop(permit2);
+    assert_eq!(
+        state
+            .proxy_request_in_flight
+            .load(std::sync::atomic::Ordering::Acquire),
+        0
+    );
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_invalid_pool_key_bypasses_admission_backpressure() {
+    let mut config = test_config();
+    config.proxy_request_concurrency_limit = 1;
+    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(25);
+    let state = test_state_from_config(config, true).await;
+    let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
+
+    let permit =
+        acquire_proxy_request_concurrency_permit(state.as_ref(), 2001, &Method::POST, &uri).await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(uri),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer invalid-pool-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let payload: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read invalid pool key body"),
+    )
+    .expect("decode invalid pool key payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE)
+    );
+    assert_eq!(
+        state
+            .proxy_request_in_flight
+            .load(std::sync::atomic::Ordering::Acquire),
+        1,
+        "invalid pool keys should not consume an admission slot while another request is in flight"
+    );
+
+    drop(permit);
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_models_rejects_non_pool_bearer_key() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://example.invalid").expect("valid upstream base url"),
+    )
+    .await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/models".parse().expect("valid uri")),
+        Method::GET,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer sk-direct-upstream"),
+        )]),
+        Body::empty(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let payload: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read non-pool models error body"),
+    )
+    .expect("decode non-pool models error payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE)
+    );
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_via_pool_keeps_in_flight_tracking_until_downstream_stream_finishes() {
+    let app = Router::new().route(
+        "/v1/responses",
+        post(|| async move {
+            let stream = futures_util::stream::once(async {
+                Ok::<Bytes, Infallible>(Bytes::from_static(br#"{"phase":"streaming""#))
+            })
+            .chain(futures_util::stream::once(async move {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                Ok::<Bytes, Infallible>(Bytes::from_static(br#","done":true}"#))
+            }));
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(http_header::CONTENT_TYPE, "application/json")
+                .body(Body::from_stream(stream))
+                .expect("build streaming response")
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind streaming upstream");
+    let addr = listener.local_addr().expect("streaming upstream addr");
+    let upstream_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("streaming upstream should run");
+    });
+
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse(&format!("http://{addr}")).expect("valid streaming upstream base url");
+    config.proxy_request_concurrency_limit = 1;
+    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-stream-slot-key").await;
+    insert_test_pool_api_key_account(&state, "Streaming Slot", "route-stream-slot").await;
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        1003,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-stream-slot-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hi"}"#)),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("streaming via-pool request should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        state
+            .proxy_request_in_flight
+            .load(std::sync::atomic::Ordering::Acquire),
+        1,
+        "proxy request should remain in-flight until downstream streaming finishes"
+    );
+
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read streaming via-pool response");
+    assert_eq!(
+        body,
+        Bytes::from_static(br#"{"phase":"streaming","done":true}"#)
+    );
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(
+        state
+            .proxy_request_in_flight
+            .load(std::sync::atomic::Ordering::Acquire),
+        0,
+        "in-flight tracking should release after downstream streaming completes"
+    );
+
+    upstream_handle.abort();
 }
 
 #[test]
@@ -998,694 +1231,6 @@ fn parse_retry_after_delay_rejects_invalid_or_past_values() {
         .to_string();
     let past_header = HeaderValue::from_str(&past).expect("valid past retry-after date header");
     assert_eq!(parse_retry_after_delay(&past_header), None);
-}
-
-#[tokio::test]
-async fn acquire_proxy_request_concurrency_permit_tracks_in_flight_without_rejecting() {
-    let mut config = test_config();
-    config.proxy_request_concurrency_limit = 1;
-    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
-    let state = test_state_from_config(config, true).await;
-    let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
-
-    let permit =
-        acquire_proxy_request_concurrency_permit(state.as_ref(), 1001, &Method::POST, &uri).await;
-    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 1);
-
-    let second_permit =
-        acquire_proxy_request_concurrency_permit(state.as_ref(), 1002, &Method::POST, &uri).await;
-    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 2);
-
-    drop(second_permit);
-    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 1);
-
-    drop(permit);
-    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 0);
-}
-
-#[test]
-fn retry_after_secs_for_proxy_error_only_uses_pool_backpressure_hints() {
-    assert_eq!(
-        retry_after_secs_for_proxy_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            POOL_NO_AVAILABLE_ACCOUNT_MESSAGE,
-            Some(Duration::from_millis(2_500)),
-        ),
-        Some(DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS)
-    );
-}
-
-#[tokio::test]
-async fn proxy_openai_v1_unauthorized_capture_targets_do_not_increment_in_flight_tracking() {
-    let state = test_state_from_config(test_config(), true).await;
-    let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
-    let response = proxy_openai_v1(
-        State(state.clone()),
-        OriginalUri(uri),
-        Method::POST,
-        HeaderMap::from_iter([(
-            http_header::CONTENT_TYPE,
-            HeaderValue::from_static("application/json"),
-        )]),
-        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#)),
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read unauthorized capture-target body");
-    let payload: Value = serde_json::from_slice(&body).expect("decode unauthorized payload");
-    assert_eq!(
-        payload["error"].as_str(),
-        Some(PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE)
-    );
-    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 0);
-    assert!(payload.get("cvmId").is_none());
-}
-
-#[tokio::test]
-async fn proxy_openai_v1_invalid_pool_keys_are_rejected_without_local_admission_gate() {
-    let state = test_state_from_config(test_config(), true).await;
-    let response = proxy_openai_v1(
-        State(state.clone()),
-        OriginalUri("/v1/responses".parse::<Uri>().expect("valid proxy uri")),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer invalid-pool-key"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#)),
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read invalid-key body");
-    let payload: Value = serde_json::from_slice(&body).expect("decode invalid-key body");
-    assert_eq!(
-        payload["error"].as_str(),
-        Some(PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE)
-    );
-    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 0);
-}
-
-#[tokio::test]
-async fn proxy_request_tracking_can_reach_100_in_flight_without_local_rejection() {
-    let state = test_state_from_config(test_config(), true).await;
-    let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
-    let mut permits = Vec::new();
-
-    for request_id in 0..100_u64 {
-        permits.push(
-            acquire_proxy_request_concurrency_permit(
-                state.as_ref(),
-                10_000 + request_id,
-                &Method::POST,
-                &uri,
-            )
-            .await,
-        );
-    }
-
-    assert_eq!(
-        state.proxy_request_in_flight.load(Ordering::Acquire),
-        100,
-        "tracking should allow at least 100 concurrent in-flight proxy requests"
-    );
-
-    drop(permits);
-    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 0);
-}
-
-#[tokio::test]
-async fn proxy_openai_v1_capture_targets_require_pool_route_key() {
-    let (upstream_base, _captured_requests, upstream_handle) =
-        spawn_capture_target_body_upstream().await;
-    let mut config = test_config();
-    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
-    let state = test_state_from_config(config, true).await;
-
-    let response = proxy_openai_v1(
-        State(state),
-        OriginalUri("/v1/responses".parse::<Uri>().expect("valid proxy uri")),
-        Method::POST,
-        HeaderMap::from_iter([(
-            http_header::CONTENT_TYPE,
-            HeaderValue::from_static("application/json"),
-        )]),
-        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#)),
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read unauthorized capture-target body");
-    let payload: Value = serde_json::from_slice(&body).expect("decode unauthorized payload");
-    assert_eq!(
-        payload["error"].as_str(),
-        Some(PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE)
-    );
-
-    upstream_handle.abort();
-}
-
-#[tokio::test]
-async fn proxy_openai_v1_bearer_capture_targets_fail_closed_when_pool_route_lookup_fails() {
-    let (upstream_base, captured_requests, upstream_handle) =
-        spawn_capture_target_body_upstream().await;
-    let mut config = test_config();
-    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
-    let state = test_state_from_config(config, true).await;
-    sqlx::query("DROP TABLE pool_routing_settings")
-        .execute(&state.pool)
-        .await
-        .expect("drop pool routing settings to force lookup failure");
-
-    let response = proxy_openai_v1(
-        State(state),
-        OriginalUri("/v1/responses".parse::<Uri>().expect("valid proxy uri")),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer upstream-direct-key"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#)),
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read route lookup failure body");
-    let payload: Value = serde_json::from_slice(&body).expect("decode route lookup failure body");
-    assert!(
-        payload["error"]
-            .as_str()
-            .is_some_and(|message| message.contains("failed to resolve pool routing settings"))
-    );
-    assert!(
-        captured_requests.lock().await.is_empty(),
-        "route lookup failures should not leak bearer credentials upstream"
-    );
-
-    upstream_handle.abort();
-}
-
-#[tokio::test]
-async fn proxy_openai_v1_models_require_pool_route_key() {
-    let state = test_state_with_openai_base(
-        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
-    )
-    .await;
-    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
-
-    let response = proxy_openai_v1(
-        State(state),
-        OriginalUri("/v1/models".parse::<Uri>().expect("valid proxy uri")),
-        Method::GET,
-        HeaderMap::from_iter([(
-            http_header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer invalid-pool-key"),
-        )]),
-        Body::empty(),
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read unauthorized models response body");
-    let payload: Value = serde_json::from_slice(&body).expect("decode unauthorized models body");
-    assert_eq!(
-        payload["error"].as_str(),
-        Some(PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE)
-    );
-}
-
-#[tokio::test]
-async fn proxy_openai_v1_non_capture_routes_require_pool_route_key() {
-    let state = test_state_with_openai_base(
-        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
-    )
-    .await;
-    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
-
-    let response = proxy_openai_v1(
-        State(state),
-        OriginalUri("/v1/echo".parse::<Uri>().expect("valid proxy uri")),
-        Method::POST,
-        HeaderMap::from_iter([(
-            http_header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer invalid-pool-key"),
-        )]),
-        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#)),
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read unauthorized non-capture response body");
-    let payload: Value =
-        serde_json::from_slice(&body).expect("decode unauthorized non-capture body");
-    assert_eq!(
-        payload["error"].as_str(),
-        Some(PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE)
-    );
-}
-
-#[tokio::test]
-async fn proxy_openai_v1_route_lookup_failures_fail_closed_without_local_admission_reject() {
-    let state = test_state_from_config(test_config(), true).await;
-    sqlx::query("DROP TABLE pool_routing_settings")
-        .execute(&state.pool)
-        .await
-        .expect("drop pool routing settings to force lookup failure");
-
-    let response = proxy_openai_v1(
-        State(state.clone()),
-        OriginalUri("/v1/responses".parse::<Uri>().expect("valid proxy uri")),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer upstream-direct-key"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#)),
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read route lookup failure body");
-    let payload: Value = serde_json::from_slice(&body).expect("decode route lookup failure body");
-    assert!(
-        payload["error"]
-            .as_str()
-            .is_some_and(|message| message.contains("failed to resolve pool routing settings"))
-    );
-    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 0);
-}
-
-#[tokio::test]
-async fn proxy_openai_v1_via_pool_reads_request_body_without_local_admission_gate() {
-    let app = Router::new().route(
-        "/v1/chat/completions",
-        post(|| async move {
-            Response::builder()
-                .status(StatusCode::OK)
-                .header(http_header::CONTENT_TYPE, "application/json")
-                .body(Body::from(Bytes::from_static(br#"{"id":"chatcmpl-test"}"#)))
-                .expect("build chat completion response")
-        }),
-    );
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind body-read upstream");
-    let addr = listener.local_addr().expect("body-read upstream addr");
-    let upstream_handle = tokio::spawn(async move {
-        axum::serve(listener, app)
-            .await
-            .expect("body-read upstream should run");
-    });
-    let mut config = test_config();
-    config.openai_upstream_base_url =
-        Url::parse(&format!("http://{addr}")).expect("valid upstream base url");
-    let state = test_state_from_config(config, true).await;
-    let uri = "/v1/chat/completions"
-        .parse::<Uri>()
-        .expect("valid proxy uri");
-    seed_pool_routing_api_key(&state, "pool-body-read-key").await;
-    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
-    let body_poll_count = Arc::new(AtomicUsize::new(0));
-    let body_poll_count_for_stream = body_poll_count.clone();
-    let body = Body::from_stream(stream::poll_fn(move |_cx| {
-        let poll_index = body_poll_count_for_stream.fetch_add(1, Ordering::AcqRel);
-        if poll_index == 0 {
-            std::task::Poll::Ready(Some(Ok::<Bytes, io::Error>(Bytes::from_static(
-                br#"{"model":"gpt-5","messages":[]}"#,
-            ))))
-        } else {
-            std::task::Poll::Ready(None)
-        }
-    }));
-
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
-        .await
-        .expect("resolve pool runtime timeouts");
-    let response = proxy_openai_v1_via_pool(
-        state.clone(),
-        1004,
-        &uri,
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-body-read-key"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        body,
-        runtime_timeouts,
-        None,
-    )
-    .await
-    .expect("proxy request should proceed without local admission gate");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        body_poll_count.load(Ordering::Acquire),
-        2,
-        "body stream should be consumed even without a global admission gate"
-    );
-    let _ = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read via-pool response body");
-
-    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 0);
-    upstream_handle.abort();
-}
-
-#[tokio::test]
-async fn proxy_openai_v1_via_pool_keeps_in_flight_tracking_until_downstream_stream_finishes() {
-    let app = Router::new().route(
-        "/v1/responses",
-        post(|| async move {
-            let stream = stream::once(async {
-                Ok::<Bytes, Infallible>(Bytes::from_static(br#"{"phase":"streaming""#))
-            })
-            .chain(stream::once(async move {
-                tokio::time::sleep(Duration::from_millis(200)).await;
-                Ok::<Bytes, Infallible>(Bytes::from_static(br#","done":true}"#))
-            }));
-            Response::builder()
-                .status(StatusCode::OK)
-                .header(http_header::CONTENT_TYPE, "application/json")
-                .body(Body::from_stream(stream))
-                .expect("build streaming response")
-        }),
-    );
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind streaming upstream");
-    let addr = listener.local_addr().expect("streaming upstream addr");
-    let upstream_handle = tokio::spawn(async move {
-        axum::serve(listener, app)
-            .await
-            .expect("streaming upstream should run");
-    });
-
-    let mut config = test_config();
-    config.openai_upstream_base_url =
-        Url::parse(&format!("http://{addr}")).expect("valid streaming upstream base url");
-    config.proxy_request_concurrency_limit = 1;
-    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
-    let state = test_state_from_config(config, true).await;
-    seed_pool_routing_api_key(&state, "pool-stream-slot-key").await;
-    insert_test_pool_api_key_account(&state, "Streaming Slot", "route-stream-slot").await;
-
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
-        .await
-        .expect("resolve pool runtime timeouts");
-    let response = proxy_openai_v1_via_pool(
-        state.clone(),
-        1003,
-        &"/v1/responses".parse().expect("valid uri"),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-stream-slot-key"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hi"}"#)),
-        runtime_timeouts,
-        None,
-    )
-    .await
-    .expect("streaming via-pool request should succeed");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        state.proxy_request_in_flight.load(Ordering::Acquire),
-        1,
-        "proxy request should remain in-flight until downstream streaming finishes"
-    );
-
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read streaming via-pool response");
-    assert_eq!(
-        body,
-        Bytes::from_static(br#"{"phase":"streaming","done":true}"#)
-    );
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    assert_eq!(
-        state.proxy_request_in_flight.load(Ordering::Acquire),
-        0,
-        "in-flight tracking should release after downstream streaming completes"
-    );
-
-    upstream_handle.abort();
-}
-
-#[tokio::test]
-async fn proxy_openai_v1_capture_target_releases_in_flight_tracking_before_persist_follow_up() {
-    let app = Router::new().route(
-        "/v1/responses",
-        post(|| async move {
-            let stream = stream::once(async {
-                Ok::<Bytes, Infallible>(Bytes::from_static(br#"{"phase":"streaming""#))
-            })
-            .chain(stream::once(async move {
-                tokio::time::sleep(Duration::from_millis(120)).await;
-                Ok::<Bytes, Infallible>(Bytes::from_static(br#","done":true}"#))
-            }));
-            Response::builder()
-                .status(StatusCode::OK)
-                .header(http_header::CONTENT_TYPE, "application/json")
-                .body(Body::from_stream(stream))
-                .expect("build streaming response")
-        }),
-    );
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind streaming upstream");
-    let addr = listener.local_addr().expect("streaming upstream addr");
-    let upstream_handle = tokio::spawn(async move {
-        axum::serve(listener, app)
-            .await
-            .expect("streaming upstream should run");
-    });
-
-    let mut config = test_config();
-    config.openai_upstream_base_url =
-        Url::parse(&format!("http://{addr}")).expect("valid streaming upstream base url");
-    config.proxy_request_concurrency_limit = 1;
-    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
-    let state = test_state_from_config(config, true).await;
-    seed_pool_routing_api_key(&state, "pool-stream-slot-key").await;
-    insert_test_pool_api_key_account(&state, "Streaming Slot", "route-stream-slot").await;
-
-    let response = proxy_openai_v1(
-        State(state.clone()),
-        OriginalUri("/v1/responses".parse().expect("valid proxy uri")),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-stream-slot-key"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hi"}"#)),
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        state.proxy_request_in_flight.load(Ordering::Acquire),
-        1,
-        "proxy request should remain in-flight while downstream body is still open"
-    );
-
-    let mut lock_conn = state
-        .pool
-        .acquire()
-        .await
-        .expect("acquire sqlite lock connection");
-    sqlx::query("BEGIN IMMEDIATE")
-        .execute(&mut *lock_conn)
-        .await
-        .expect("acquire sqlite write lock");
-
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read capture-target response body");
-    assert_eq!(
-        body,
-        Bytes::from_static(br#"{"phase":"streaming","done":true}"#)
-    );
-
-    tokio::time::timeout(Duration::from_secs(1), async {
-        loop {
-            if state.proxy_request_in_flight.load(Ordering::Acquire) == 0 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("in-flight tracking should release before persist follow-up completes");
-
-    sqlx::query("ROLLBACK")
-        .execute(&mut *lock_conn)
-        .await
-        .expect("rollback sqlite write lock");
-    drop(lock_conn);
-
-    wait_for_codex_invocations(&state.pool, 1).await;
-
-    upstream_handle.abort();
-}
-
-#[tokio::test]
-async fn proxy_openai_v1_capture_target_keeps_in_flight_tracking_while_draining_cancelled_stream() {
-    let app = Router::new().route(
-        "/v1/responses",
-        post(|| async move {
-            let stream = stream::once(async {
-                Ok::<Bytes, Infallible>(Bytes::from_static(br#"{"phase":"streaming""#))
-            })
-            .chain(stream::once(async move {
-                tokio::time::sleep(Duration::from_millis(60)).await;
-                Ok::<Bytes, Infallible>(Bytes::from_static(br#","mid":true"#))
-            }))
-            .chain(stream::once(async move {
-                tokio::time::sleep(Duration::from_millis(200)).await;
-                Ok::<Bytes, Infallible>(Bytes::from_static(br#","done":true}"#))
-            }));
-            Response::builder()
-                .status(StatusCode::OK)
-                .header(http_header::CONTENT_TYPE, "application/json")
-                .body(Body::from_stream(stream))
-                .expect("build streaming response")
-        }),
-    );
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind streaming upstream");
-    let addr = listener.local_addr().expect("streaming upstream addr");
-    let upstream_handle = tokio::spawn(async move {
-        axum::serve(listener, app)
-            .await
-            .expect("streaming upstream should run");
-    });
-
-    let mut config = test_config();
-    config.openai_upstream_base_url =
-        Url::parse(&format!("http://{addr}")).expect("valid streaming upstream base url");
-    config.proxy_request_concurrency_limit = 1;
-    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
-    let state = test_state_from_config(config, true).await;
-    seed_pool_routing_api_key(&state, "pool-stream-slot-key").await;
-    insert_test_pool_api_key_account(&state, "Streaming Slot", "route-stream-slot").await;
-
-    let response = proxy_openai_v1(
-        State(state.clone()),
-        OriginalUri("/v1/responses".parse().expect("valid proxy uri")),
-        Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-stream-slot-key"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
-        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hi"}"#)),
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        state.proxy_request_in_flight.load(Ordering::Acquire),
-        1,
-        "proxy request should remain in-flight while downstream body is still open"
-    );
-
-    let mut lock_conn = state
-        .pool
-        .acquire()
-        .await
-        .expect("acquire sqlite lock connection");
-    sqlx::query("BEGIN IMMEDIATE")
-        .execute(&mut *lock_conn)
-        .await
-        .expect("acquire sqlite write lock");
-
-    drop(response);
-
-    tokio::time::sleep(Duration::from_millis(120)).await;
-    assert_eq!(
-        state.proxy_request_in_flight.load(Ordering::Acquire),
-        1,
-        "in-flight tracking should remain held while cancelled capture keeps draining upstream"
-    );
-
-    tokio::time::timeout(Duration::from_secs(1), async {
-        loop {
-            if state.proxy_request_in_flight.load(Ordering::Acquire) == 0 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("in-flight tracking should release after cancelled capture finishes draining");
-
-    sqlx::query("ROLLBACK")
-        .execute(&mut *lock_conn)
-        .await
-        .expect("rollback sqlite write lock");
-    drop(lock_conn);
-
-    wait_for_codex_invocations(&state.pool, 1).await;
-
-    upstream_handle.abort();
 }
 
 #[test]

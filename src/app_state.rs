@@ -1,3 +1,9 @@
+#[derive(Debug, Clone)]
+struct PoolRoutingRuntimeCache {
+    api_key: Option<String>,
+    timeouts: PoolRoutingTimeoutSettingsResolved,
+}
+
 #[derive(Debug)]
 struct AppState {
     config: AppConfig,
@@ -25,6 +31,8 @@ struct AppState {
     prompt_cache_conversation_cache: Arc<Mutex<PromptCacheConversationsCacheState>>,
     maintenance_stats_cache: Arc<Mutex<StatsMaintenanceCacheState>>,
     pool_routing_reservations: Arc<std::sync::Mutex<HashMap<String, PoolRoutingReservation>>>,
+    pool_routing_runtime_cache: Arc<Mutex<Option<PoolRoutingRuntimeCache>>>,
+    pool_live_attempt_ids: Arc<std::sync::Mutex<HashSet<i64>>>,
     pool_group_429_retry_delay_override: Option<Duration>,
     pool_no_available_wait: PoolNoAvailableWaitSettings,
     upstream_accounts: Arc<UpstreamAccountsRuntime>,

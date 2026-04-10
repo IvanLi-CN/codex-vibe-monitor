@@ -126,9 +126,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout() {
         shutdown: CancellationToken::new(),
         semaphore,
         proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
-        proxy_raw_async_semaphore: Arc::new(Semaphore::new(
-            DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
-        )),
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
@@ -148,6 +146,8 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout() {
         )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
+        pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         pool_group_429_retry_delay_override: None,
         pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
@@ -208,9 +208,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout_with_
         shutdown: CancellationToken::new(),
         semaphore,
         proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
-        proxy_raw_async_semaphore: Arc::new(Semaphore::new(
-            DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
-        )),
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
@@ -230,6 +228,8 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout_with_
         )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
+        pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         pool_group_429_retry_delay_override: None,
         pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
@@ -407,24 +407,12 @@ fn rewrite_request_service_tier_for_fast_mode_force_remove_deletes_both_aliases(
 }
 
 #[test]
-fn pool_request_snapshot_preserves_content_length_only_for_matching_file_backed_replays() {
+fn pool_request_snapshot_preserves_content_length_only_for_file_backed_replays() {
     assert!(!pool_request_snapshot_preserves_content_length(
-        &PoolReplayBodySnapshot::Empty,
-        Some(0)
+        &PoolReplayBodySnapshot::Empty
     ));
     assert!(!pool_request_snapshot_preserves_content_length(
-        &PoolReplayBodySnapshot::Memory(Bytes::from_static(b"{}")),
-        Some(2)
-    ));
-    assert!(!pool_request_snapshot_preserves_content_length(
-        &PoolReplayBodySnapshot::File {
-            temp_file: Arc::new(PoolReplayTempFile {
-                path: PathBuf::from("/tmp/cvm-pool-replay-test.bin"),
-            }),
-            size: 3,
-            sticky_key: None,
-        },
-        Some(2)
+        &PoolReplayBodySnapshot::Memory(Bytes::from_static(b"{}"))
     ));
     assert!(pool_request_snapshot_preserves_content_length(
         &PoolReplayBodySnapshot::File {
@@ -432,9 +420,7 @@ fn pool_request_snapshot_preserves_content_length_only_for_matching_file_backed_
                 path: PathBuf::from("/tmp/cvm-pool-replay-test.bin"),
             }),
             size: 2,
-            sticky_key: None,
-        },
-        Some(2)
+        }
     ));
 }
 
@@ -456,7 +442,6 @@ async fn prepare_pool_request_body_for_account_skips_fast_mode_rewrite_for_compa
         &"/v1/responses/compact".parse().expect("valid compact uri"),
         &Method::POST,
         TagFastModeRewriteMode::ForceAdd,
-        1001,
     )
     .await
     .expect("prepare compact pool request body");
@@ -468,124 +453,6 @@ async fn prepare_pool_request_body_for_account_skips_fast_mode_rewrite_for_compa
     let payload: Value = serde_json::from_slice(&request_body).expect("decode body");
     assert_eq!(payload, expected);
     assert!(payload.get("service_tier").is_none());
-}
-
-#[tokio::test]
-async fn prepare_pool_request_body_for_account_preserves_fast_mode_rewrite_for_large_file_snapshot()
-{
-    let temp_dir = make_temp_test_dir("pool-request-large-rewrite-preserve");
-    let temp_file = Arc::new(PoolReplayTempFile {
-        path: temp_dir.join("request-body.bin"),
-    });
-    let original_body = serde_json::to_vec(&json!({
-        "model": "gpt-5.3-codex",
-        "serviceTier": "flex",
-        "stickyKey": "sticky-large-body",
-        "input": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 128),
-    }))
-    .expect("serialize large request body");
-    tokio::fs::write(&temp_file.path, &original_body)
-        .await
-        .expect("write large request body");
-
-    let prepared = prepare_pool_request_body_for_account(
-        Some(&PoolReplayBodySnapshot::File {
-            temp_file: temp_file.clone(),
-            size: original_body.len(),
-            sticky_key: Some("sticky-large-body".to_string()),
-        }),
-        &"/v1/responses".parse().expect("valid responses uri"),
-        &Method::POST,
-        TagFastModeRewriteMode::ForceAdd,
-        1002,
-    )
-    .await
-    .expect("prepare large pool request body");
-
-    assert!(
-        matches!(&prepared.snapshot, PoolReplayBodySnapshot::File { .. }),
-        "rewritten large body should stay file-backed"
-    );
-    assert_eq!(prepared.requested_service_tier.as_deref(), Some("priority"));
-    let rewritten_bytes = prepared
-        .request_body_for_capture
-        .expect("rewritten large file-backed body should keep capture bytes");
-    let rewritten_payload: Value =
-        serde_json::from_slice(&rewritten_bytes).expect("decode rewritten large request body");
-    assert_eq!(rewritten_payload["service_tier"], "priority");
-    assert!(rewritten_payload.get("serviceTier").is_none());
-    assert_eq!(rewritten_payload["stickyKey"], "sticky-large-body");
-
-    let snapshot_bytes = prepared
-        .snapshot
-        .to_bytes()
-        .await
-        .expect("read rewritten snapshot bytes");
-    assert_eq!(snapshot_bytes, rewritten_bytes);
-
-    cleanup_temp_test_dir(&temp_dir);
-}
-
-#[tokio::test]
-async fn prepare_pool_request_body_for_account_uses_unique_temp_paths_per_proxy_request() {
-    let temp_dir = make_temp_test_dir("pool-request-large-rewrite-unique-paths");
-    let temp_file = Arc::new(PoolReplayTempFile {
-        path: temp_dir.join("request-body.bin"),
-    });
-    let original_body = serde_json::to_vec(&json!({
-        "model": "gpt-5.3-codex",
-        "serviceTier": "flex",
-        "stickyKey": "sticky-large-body",
-        "input": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 128),
-    }))
-    .expect("serialize large request body");
-    tokio::fs::write(&temp_file.path, &original_body)
-        .await
-        .expect("write large request body");
-
-    let first = prepare_pool_request_body_for_account(
-        Some(&PoolReplayBodySnapshot::File {
-            temp_file: temp_file.clone(),
-            size: original_body.len(),
-            sticky_key: Some("sticky-large-body".to_string()),
-        }),
-        &"/v1/responses".parse().expect("valid responses uri"),
-        &Method::POST,
-        TagFastModeRewriteMode::ForceAdd,
-        2001,
-    )
-    .await
-    .expect("prepare first large rewritten request body");
-
-    let second = prepare_pool_request_body_for_account(
-        Some(&PoolReplayBodySnapshot::File {
-            temp_file,
-            size: original_body.len(),
-            sticky_key: Some("sticky-large-body".to_string()),
-        }),
-        &"/v1/responses".parse().expect("valid responses uri"),
-        &Method::POST,
-        TagFastModeRewriteMode::ForceAdd,
-        2002,
-    )
-    .await
-    .expect("prepare second large rewritten request body");
-
-    let first_path = match &first.snapshot {
-        PoolReplayBodySnapshot::File { temp_file, .. } => temp_file.path.clone(),
-        other => panic!("expected first rewritten snapshot to stay file-backed, got {other:?}"),
-    };
-    let second_path = match &second.snapshot {
-        PoolReplayBodySnapshot::File { temp_file, .. } => temp_file.path.clone(),
-        other => panic!("expected second rewritten snapshot to stay file-backed, got {other:?}"),
-    };
-
-    assert_ne!(
-        first_path, second_path,
-        "large rewritten replay snapshots should use distinct temp files per proxy request"
-    );
-
-    cleanup_temp_test_dir(&temp_dir);
 }
 
 #[test]
@@ -2488,4 +2355,3 @@ async fn proxy_capture_target_large_nonstream_json_skips_bounded_parse_and_keeps
     upstream_handle.abort();
     cleanup_temp_test_dir(&raw_dir);
 }
-

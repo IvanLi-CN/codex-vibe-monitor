@@ -557,28 +557,21 @@ async fn pool_route_waits_for_recovered_alternate_after_upstream_429() {
     });
 
     let started = Instant::now();
-    // Under the full 900+ test suite, Tokio wakeups can drift far past the nominal
-    // sub-200ms recovery window. Guard against hangs without pinning the assertion to
-    // a scheduler-sensitive wall-clock upper bound.
-    let response = tokio::time::timeout(
-        Duration::from_secs(3),
-        proxy_openai_v1(
-            State(state.clone()),
-            OriginalUri("/v1/responses".parse().expect("valid uri")),
-            Method::POST,
-            HeaderMap::from_iter([(
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            )]),
-            Body::from(
-                r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-429-wait-recovered"}"#
-                    .as_bytes()
-                    .to_vec(),
-            ),
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-429-wait-recovered"}"#
+                .as_bytes()
+                .to_vec(),
         ),
     )
-    .await
-    .expect("bounded wait request should not hang");
+    .await;
     let elapsed = started.elapsed();
 
     release_task
@@ -589,6 +582,10 @@ async fn pool_route_waits_for_recovered_alternate_after_upstream_429() {
     assert!(
         elapsed >= Duration::from_millis(35),
         "request should wait for the alternate to recover, elapsed={elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(220),
+        "bounded wait should still complete within the configured window, elapsed={elapsed:?}"
     );
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
@@ -1448,6 +1445,22 @@ async fn capture_target_pool_route_no_content_success_finalizes_pending_attempt(
     assert_eq!(attempt_row.4, None);
     assert_eq!(attempt_row.5, Some(primary_id));
 
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let invocation_row = sqlx::query_as::<_, (String, Option<String>)>(
+        r#"
+        SELECT status, failure_kind
+        FROM codex_invocations
+        WHERE invoke_id LIKE 'proxy-%'
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load no-content invocation row");
+    assert_eq!(invocation_row.0, "success");
+    assert_eq!(invocation_row.1, None);
+
     upstream_handle.abort();
 }
 
@@ -2103,32 +2116,30 @@ async fn pool_route_body_sticky_wait_timeout_returns_total_timeout_error_before_
     set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
 
     let started = Instant::now();
-    // This path only needs to prove the request terminates as a pre-attempt total-timeout
-    // failure without hanging; exact wall-clock wakeups are too noisy under full-suite load.
-    let response = tokio::time::timeout(
-        Duration::from_secs(3),
-        proxy_openai_v1(
-            State(state.clone()),
-            OriginalUri("/v1/responses".parse().expect("valid uri")),
-            Method::POST,
-            HeaderMap::from_iter([(
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            )]),
-            Body::from(
-                r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-wait-total-timeout"}"#
-                    .as_bytes()
-                    .to_vec(),
-            ),
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-wait-total-timeout"}"#
+                .as_bytes()
+                .to_vec(),
         ),
     )
-    .await
-    .expect("pre-attempt total-timeout request should not hang");
+    .await;
     let elapsed = started.elapsed();
 
     assert!(
         elapsed >= Duration::from_millis(25),
         "request should still wait briefly before failing, elapsed={elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(150),
+        "responses total timeout should cap the pre-attempt no-account wait, elapsed={elapsed:?}"
     );
     assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
     assert_eq!(

@@ -1519,4 +1519,3 @@ fn tag_summary_from_row(row: &TagListRow) -> TagSummary {
         updated_at: row.updated_at.clone(),
     }
 }
-

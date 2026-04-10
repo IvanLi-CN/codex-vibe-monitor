@@ -351,9 +351,7 @@ async fn test_state_from_config_with_pool_no_available_wait(
         shutdown: CancellationToken::new(),
         semaphore,
         proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
-        proxy_raw_async_semaphore: Arc::new(Semaphore::new(
-            DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
-        )),
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
@@ -374,6 +372,8 @@ async fn test_state_from_config_with_pool_no_available_wait(
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
+        pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
         pool_group_429_retry_delay_override: None,
         pool_no_available_wait,
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
@@ -412,6 +412,8 @@ fn clone_state_with_upstream_accounts(
         prompt_cache_conversation_cache: state.prompt_cache_conversation_cache.clone(),
         maintenance_stats_cache: state.maintenance_stats_cache.clone(),
         pool_routing_reservations: state.pool_routing_reservations.clone(),
+        pool_routing_runtime_cache: state.pool_routing_runtime_cache.clone(),
+        pool_live_attempt_ids: state.pool_live_attempt_ids.clone(),
         pool_group_429_retry_delay_override: state.pool_group_429_retry_delay_override,
         pool_no_available_wait: state.pool_no_available_wait,
         upstream_accounts,
@@ -450,6 +452,8 @@ fn clone_state_with_pool_group_429_retry_delay_override(
         prompt_cache_conversation_cache: state.prompt_cache_conversation_cache.clone(),
         maintenance_stats_cache: state.maintenance_stats_cache.clone(),
         pool_routing_reservations: state.pool_routing_reservations.clone(),
+        pool_routing_runtime_cache: state.pool_routing_runtime_cache.clone(),
+        pool_live_attempt_ids: state.pool_live_attempt_ids.clone(),
         pool_group_429_retry_delay_override: delay,
         pool_no_available_wait: state.pool_no_available_wait,
         upstream_accounts: state.upstream_accounts.clone(),
@@ -485,9 +489,7 @@ async fn test_state_from_existing_pool(
         shutdown: CancellationToken::new(),
         semaphore,
         proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
-        proxy_raw_async_semaphore: Arc::new(Semaphore::new(
-            DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
-        )),
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
@@ -508,6 +510,8 @@ async fn test_state_from_existing_pool(
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
+        pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
         pool_group_429_retry_delay_override: None,
         pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
@@ -936,11 +940,11 @@ async fn upsert_test_sticky_route_at(
 }
 
 fn format_test_recent_active_timestamp(now: DateTime<Utc>) -> String {
-    format_utc_iso(now - ChronoDuration::minutes(4) - ChronoDuration::seconds(59))
+    format_utc_iso(now - ChronoDuration::minutes(4))
 }
 
 fn format_test_stale_active_timestamp(now: DateTime<Utc>) -> String {
-    format_utc_iso(now - ChronoDuration::minutes(5) - ChronoDuration::seconds(1))
+    format_utc_iso(now - ChronoDuration::minutes(6))
 }
 
 async fn insert_test_pool_oauth_account(
@@ -2421,4 +2425,3 @@ async fn update_upstream_account_group_enabling_retry_defaults_missing_retry_cou
     assert_eq!(persisted.0, 1);
     assert_eq!(persisted.1, 1);
 }
-
