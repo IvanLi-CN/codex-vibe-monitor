@@ -152,12 +152,13 @@
 - 2026-04-10: 根据 fresh review 继续收口 legacy 空状态语义：blank/null `status` 且缺少失败元数据的历史行现在保持中性，不再在 summary / timeseries / archive rollup 中被误算为 failure；只有带明确失败元数据的 legacy 行才会保留失败统计。
 - 2026-04-10: 根据 fresh review 继续收口本地 live patch 稳定性：`useTimeseries` 现在把近期终态 delta 连同其受 TTL / 上限约束的去重元数据一起写入 remount cache，并在复水后继续吸收 duplicate SSE；同时活跃会话里的 tracked delta 仍会按 TTL / 上限裁剪，避免长时间停留页面时 `liveRecordDeltaRef` 单调增长。
 - 2026-04-10: 根据 round16 review 继续收口 `今日 / 次数` tooltip 与 all-time summary repair：当 minute bucket 含有 `running/pending` 残差时，tooltip 现在会显式展示 `进行中`，不再让 `总数` 与成功/失败小计失配；同时 summary repair 仅在 materialized 归档文件真实缺失时保留既有 rollup 历史，避免已 prune 的旧归档触发全量重建失败，而文件仍在时继续重放归档以修正陈旧 failure 计数。
+- 2026-04-10: 为清除 PR freshness gate，同步最新 `main` 到当前修复分支，并补齐 `PromptCacheConversationsQuery` 新增分页字段在 prompt-cache 回归测试里的构造参数；本 spec 的功能范围与验收口径保持不变，验证基线刷新到同步后的最新 head。
 
 ## Visual Evidence
 
 - Storybook覆盖=通过
 - 视觉证据目标源=storybook_canvas（mock-only）
-- Validation: `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run test && bun run build && bun run build-storybook`；`cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test all_time_summary_preserves_archived_history_when_rollup_failures_are_stale -- --nocapture && cargo test all_time_summary_repair_preserves_pruned_materialized_archives -- --nocapture && cargo test all_time_summary_repair_does_not_advance_shared_live_cursor_without_hourly_sync -- --nocapture && cargo test all_time_summary_rollup_repair_counts_mixed_case_success_status -- --nocapture && cargo test all_time_summary_missing_summary_markers_do_not_replay_materialized_archives -- --nocapture`
+- Validation: `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run test && bun run build && bun run build-storybook`；`cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo check && cargo test prompt_cache_conversations_cache_reuses_recent_result_within_ttl -- --nocapture && cargo test all_time_summary_preserves_archived_history_when_rollup_failures_are_stale -- --nocapture && cargo test all_time_summary_repair_preserves_pruned_materialized_archives -- --nocapture && cargo test all_time_summary_repair_does_not_advance_shared_live_cursor_without_hourly_sync -- --nocapture && cargo test all_time_summary_rollup_repair_counts_mixed_case_success_status -- --nocapture && cargo test all_time_summary_missing_summary_markers_do_not_replay_materialized_archives -- --nocapture`
 - Story id: `dashboard-dashboardtodayactivitychart--count-bars-dense-pairing`
 - Scenario: `今日 / 次数` 高密度 minute bucket，对齐验证 success / in-flight / failure 共用同一时间槽位并围绕 0 轴展开。
 - Evidence note: 验证柱子不再左右错位；`running/pending` 与其临时失败元数据不会把 failure 柱短时拉长后再回落；带 in-flight 残差的 minute bucket 会在 tooltip 中额外解释 `进行中` 数量。

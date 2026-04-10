@@ -1,11 +1,14 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { useTranslation } from "../i18n";
 import type { TranslationKey } from "../i18n";
 import type {
@@ -14,7 +17,10 @@ import type {
   DashboardWorkingConversationInvocationSelection,
   DashboardWorkingConversationTone,
 } from "../lib/dashboardWorkingConversations";
-import { formatDashboardWorkingConversationSequenceId } from "../lib/dashboardWorkingConversations";
+import {
+  DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE,
+  formatDashboardWorkingConversationSequenceId,
+} from "../lib/dashboardWorkingConversations";
 import { cn } from "../lib/utils";
 import { AppIcon } from "./AppIcon";
 import {
@@ -33,8 +39,13 @@ import {
 
 interface DashboardWorkingConversationsSectionProps {
   cards: DashboardWorkingConversationCardModel[];
+  totalMatched?: number;
+  hasMore?: boolean;
   isLoading: boolean;
+  isLoadingMore?: boolean;
   error?: string | null;
+  onLoadMore?: () => void;
+  setRefreshTargetCount?: (count: number) => void;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
   onOpenInvocation?: (
     selection: DashboardWorkingConversationInvocationSelection,
@@ -72,6 +83,7 @@ const SLOT_CLASS_NAME =
 const CARD_SURFACE_CLASS_NAME = "working-conversation-card-surface";
 
 const INVOCATION_SURFACE_CLASS_NAME = "working-conversation-slot-surface";
+const DASHBOARD_WORKING_CONVERSATION_ROW_GAP_PX = 16;
 
 const STATUS_META: Record<DashboardWorkingConversationTone, StatusMeta> = {
   running: {
@@ -661,15 +673,150 @@ function InvocationSlot({
   );
 }
 
+function resolveDashboardWorkingConversationColumnCount(width: number) {
+  if (width >= 1660) return 4;
+  if (width >= 1536) return 3;
+  if (width >= 1280) return 2;
+  return 1;
+}
+
+function splitDashboardWorkingConversationGridTracks(template: string) {
+  const tracks: string[] = [];
+  let currentTrack = "";
+  let depth = 0;
+
+  for (const character of template.trim()) {
+    if (character === "(") {
+      depth += 1;
+      currentTrack += character;
+      continue;
+    }
+    if (character === ")") {
+      currentTrack += character;
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (/\s/.test(character) && depth === 0) {
+      if (currentTrack.trim().length > 0) {
+        tracks.push(currentTrack.trim());
+        currentTrack = "";
+      }
+      continue;
+    }
+    currentTrack += character;
+  }
+
+  if (currentTrack.trim().length > 0) {
+    tracks.push(currentTrack.trim());
+  }
+
+  return tracks;
+}
+
+function resolveDashboardWorkingConversationCssColumnCount(
+  container: HTMLDivElement | null,
+) {
+  if (!container || typeof window === "undefined") return null;
+  const template = window
+    .getComputedStyle(container)
+    .gridTemplateColumns.trim();
+  if (!template || template === "none" || template === "subgrid") {
+    return null;
+  }
+
+  const tracks = splitDashboardWorkingConversationGridTracks(template);
+  if (tracks.length === 0) return null;
+
+  const count = tracks.reduce((total, track) => {
+    const repeatMatch = track.match(/^repeat\(\s*(\d+)\s*,[\s\S]*\)$/i);
+    if (repeatMatch) {
+      return total + Number.parseInt(repeatMatch[1] ?? "0", 10);
+    }
+    return total + 1;
+  }, 0);
+
+  return count > 0 ? count : null;
+}
+
+function chunkDashboardWorkingConversationRows(
+  cards: DashboardWorkingConversationCardModel[],
+  columnCount: number,
+) {
+  if (columnCount <= 1) {
+    return cards.map((card) => [card]);
+  }
+  const rows: DashboardWorkingConversationCardModel[][] = [];
+  for (let index = 0; index < cards.length; index += columnCount) {
+    rows.push(cards.slice(index, index + columnCount));
+  }
+  return rows;
+}
+
+interface DashboardWorkingConversationAnchorCardElement extends HTMLElement {
+  __dashboardWorkingConversationAnchorKey?: string;
+}
+
+function readDashboardWorkingConversationAnchorKey(card: HTMLElement) {
+  return (
+    (card as DashboardWorkingConversationAnchorCardElement)
+      .__dashboardWorkingConversationAnchorKey ?? ""
+  )
+    .trim();
+}
+
+function captureVisibleCardAnchor(container: HTMLDivElement) {
+  const containerRect = container.getBoundingClientRect();
+  const cards = Array.from(
+    container.querySelectorAll<HTMLElement>(
+      '[data-testid="dashboard-working-conversation-card"]',
+    ),
+  );
+  for (const card of cards) {
+    const rect = card.getBoundingClientRect();
+    if (rect.bottom <= containerRect.top) continue;
+    const anchorKey = readDashboardWorkingConversationAnchorKey(card);
+    if (!anchorKey) continue;
+    return {
+      anchorKey,
+      top: rect.top - containerRect.top,
+    };
+  }
+  return null;
+}
+
 export function DashboardWorkingConversationsSection({
   cards,
+  totalMatched,
+  hasMore = false,
   isLoading,
+  isLoadingMore = false,
   error,
+  onLoadMore,
+  setRefreshTargetCount,
   onOpenUpstreamAccount,
   onOpenInvocation,
 }: DashboardWorkingConversationsSectionProps) {
   const { t, locale } = useTranslation();
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [containerWidth, setContainerWidth] = useState(0);
+  const [viewportWidth, setViewportWidth] = useState(() =>
+    typeof window === "undefined" ? 0 : window.innerWidth,
+  );
+  const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(
+    null,
+  );
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const visibleAnchorRef = useRef<{
+    anchorKey: string;
+    top: number;
+  } | null>(null);
+  const loadMoreRequestPendingRef = useRef(false);
+  const previousLoadingMoreRef = useRef(isLoadingMore);
+  const previousRowsLengthRef = useRef(cards.length);
+  const setScrollContainerRef = useCallback((node: HTMLDivElement | null) => {
+    scrollRef.current = node;
+    setScrollElement(node);
+  }, []);
   const hasInFlightCards = cards.some(
     (card) =>
       card.currentInvocation.isInFlight ||
@@ -702,6 +849,60 @@ export function DashboardWorkingConversationsSection({
       }),
     [localeTag],
   );
+  const countBadgeValue = totalMatched ?? cards.length;
+  const cssColumnCount =
+    resolveDashboardWorkingConversationCssColumnCount(scrollElement);
+  const columnCount =
+    cssColumnCount ??
+    resolveDashboardWorkingConversationColumnCount(
+      Math.max(containerWidth, viewportWidth),
+    );
+  const rows = useMemo(
+    () => chunkDashboardWorkingConversationRows(cards, columnCount),
+    [cards, columnCount],
+  );
+  const rowVirtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scrollElement,
+    estimateSize: () => 360,
+    overscan: 3,
+  });
+  const virtualRows = rowVirtualizer.getVirtualItems();
+  const fallbackRowCount = Math.min(
+    rows.length,
+    Math.max(
+      1,
+      Math.ceil(
+        DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE / Math.max(columnCount, 1),
+      ),
+    ),
+  );
+  const renderedRows =
+    virtualRows.length > 0
+      ? virtualRows
+      : rows.slice(0, fallbackRowCount).map((_, index) => ({
+          key: index,
+          index,
+          start: index * 360,
+        }));
+  const totalSize =
+    virtualRows.length > 0 ? rowVirtualizer.getTotalSize() : rows.length * 360;
+  const refreshTargetCount = useMemo(() => {
+    if (cards.length === 0) {
+      return DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE;
+    }
+    const deepestVisibleRowIndex = virtualRows.reduce(
+      (maxIndex, row) => Math.max(maxIndex, row.index),
+      0,
+    );
+    return Math.min(
+      cards.length,
+      Math.max(
+        DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE,
+        (deepestVisibleRowIndex + 1) * columnCount,
+      ),
+    );
+  }, [cards.length, columnCount, virtualRows]);
 
   useEffect(() => {
     if (!hasInFlightCards) return;
@@ -716,7 +917,103 @@ export function DashboardWorkingConversationsSection({
     setNowMs(Date.now());
   }, [cards]);
 
-  if (error) {
+  useEffect(() => {
+    const updateLayoutMetrics = () => {
+      setViewportWidth(typeof window === "undefined" ? 0 : window.innerWidth);
+      setContainerWidth(scrollElement?.clientWidth ?? 0);
+    };
+
+    updateLayoutMetrics();
+    if (!scrollElement) {
+      return;
+    }
+
+    window.addEventListener("resize", updateLayoutMetrics);
+    if (typeof ResizeObserver === "undefined") {
+      return () => window.removeEventListener("resize", updateLayoutMetrics);
+    }
+
+    const observer = new ResizeObserver(() => {
+      updateLayoutMetrics();
+    });
+    observer.observe(scrollElement);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updateLayoutMetrics);
+    };
+  }, [scrollElement]);
+
+  useEffect(() => {
+    if (
+      !hasMore ||
+      previousRowsLengthRef.current !== rows.length ||
+      (previousLoadingMoreRef.current && !isLoadingMore)
+    ) {
+      loadMoreRequestPendingRef.current = false;
+    }
+    previousRowsLengthRef.current = rows.length;
+    previousLoadingMoreRef.current = isLoadingMore;
+  }, [hasMore, isLoadingMore, rows.length]);
+
+  useEffect(() => {
+    const container = scrollElement;
+    if (!container || !hasMore || !onLoadMore) return;
+    const maybeLoadMore = (trigger: "mount" | "scroll") => {
+      if (isLoadingMore || loadMoreRequestPendingRef.current) return;
+      const isScrollable = container.scrollHeight > container.clientHeight + 1;
+      if (trigger === "mount" && isScrollable) {
+        return;
+      }
+      const remaining =
+        container.scrollHeight - container.scrollTop - container.clientHeight;
+      if (remaining <= 320) {
+        loadMoreRequestPendingRef.current = true;
+        onLoadMore();
+      }
+    };
+    const mountTimer = window.setTimeout(() => {
+      maybeLoadMore("mount");
+    }, 0);
+    const handleScroll = () => {
+      visibleAnchorRef.current = captureVisibleCardAnchor(container);
+      maybeLoadMore("scroll");
+    };
+    container.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      window.clearTimeout(mountTimer);
+      container.removeEventListener("scroll", handleScroll);
+    };
+  }, [hasMore, isLoadingMore, onLoadMore, rows.length, scrollElement]);
+
+  useEffect(() => {
+    setRefreshTargetCount?.(refreshTargetCount);
+  }, [refreshTargetCount, setRefreshTargetCount]);
+
+  useLayoutEffect(() => {
+    const container = scrollRef.current;
+    const pendingAnchor = visibleAnchorRef.current;
+    if (container && pendingAnchor?.anchorKey) {
+      const anchoredCard = Array.from(
+        container.querySelectorAll<HTMLElement>(
+          '[data-testid="dashboard-working-conversation-card"]',
+        ),
+      ).find((card) => readDashboardWorkingConversationAnchorKey(card) === pendingAnchor.anchorKey);
+      if (anchoredCard) {
+        const containerRect = container.getBoundingClientRect();
+        const nextTop =
+          anchoredCard.getBoundingClientRect().top - containerRect.top;
+        const delta = nextTop - pendingAnchor.top;
+        if (Math.abs(delta) > 0.5) {
+          container.scrollTop += delta;
+        }
+      }
+    }
+    visibleAnchorRef.current = container
+      ? captureVisibleCardAnchor(container)
+      : null;
+  }, [cards, columnCount]);
+
+  if (error && cards.length === 0) {
     return (
       <section
         className="surface-panel"
@@ -756,10 +1053,16 @@ export function DashboardWorkingConversationsSection({
             className="rounded-full px-3 py-1 font-mono text-xs font-semibold"
           >
             {t("dashboard.workingConversations.countBadge", {
-              count: cards.length,
+              count: countBadgeValue,
             })}
           </Badge>
         </div>
+
+        {error && cards.length > 0 ? (
+          <Alert variant="error">
+            <span>{error}</span>
+          </Alert>
+        ) : null}
 
         {isLoading && cards.length === 0 ? (
           <div className="flex min-h-44 items-center justify-center gap-3 rounded-2xl border border-dashed border-base-300/75 bg-base-100/45">
@@ -779,115 +1082,183 @@ export function DashboardWorkingConversationsSection({
         {cards.length > 0 ? (
           <div
             data-testid="dashboard-working-conversations-grid"
-            className="grid grid-cols-1 gap-4 xl:grid-cols-2 2xl:grid-cols-3 desktop1660:grid-cols-4"
+            ref={setScrollContainerRef}
+            className="grid grid-cols-1 max-h-[72vh] overflow-auto overscroll-contain xl:grid-cols-2 2xl:grid-cols-3 desktop1660:grid-cols-4"
           >
-            {cards.map((card) => {
-              const currentStatusMeta = resolveStatusMeta(
-                card.currentInvocation.tone,
-                card.currentInvocation.displayStatus,
-              );
-              const displaySequenceId = formatDashboardWorkingConversationSequenceId(
-                card.conversationSequenceId,
-              );
-              const currentStatusLabel = currentStatusMeta.labelKey
-                ? t(currentStatusMeta.labelKey)
-                : (currentStatusMeta.label ?? t("table.status.unknown"));
-              const sortAnchorLabel =
-                card.sortAnchorEpoch != null
-                  ? timestampFormatter.format(new Date(card.sortAnchorEpoch))
-                  : FALLBACK_CELL;
+            <div
+              className="col-span-full"
+              style={{ height: `${totalSize}px`, position: "relative" }}
+            >
+              {renderedRows.map((virtualRow) => {
+                const rowCards = rows[virtualRow.index] ?? [];
+                return (
+                  <div
+                    key={virtualRow.key}
+                    ref={rowVirtualizer.measureElement}
+                    data-testid="dashboard-working-conversations-row"
+                    data-row-index={virtualRow.index}
+                    data-index={virtualRow.index}
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      left: 0,
+                      width: "100%",
+                      transform: `translateY(${virtualRow.start}px)`,
+                      paddingBottom:
+                        virtualRow.index === rows.length - 1
+                          ? 0
+                          : `${DASHBOARD_WORKING_CONVERSATION_ROW_GAP_PX}px`,
+                    }}
+                  >
+                    <div
+                      className="grid grid-cols-1 gap-4 xl:grid-cols-2 2xl:grid-cols-3 desktop1660:grid-cols-4"
+                      style={{
+                        gridTemplateColumns: `repeat(${columnCount}, minmax(0, 1fr))`,
+                      }}
+                    >
+                      {rowCards.map((card) => {
+                        const currentStatusMeta = resolveStatusMeta(
+                          card.currentInvocation.tone,
+                          card.currentInvocation.displayStatus,
+                        );
+                        const displaySequenceId =
+                          formatDashboardWorkingConversationSequenceId(
+                            card.conversationSequenceId,
+                          );
+                        const currentStatusLabel = currentStatusMeta.labelKey
+                          ? t(currentStatusMeta.labelKey)
+                          : (currentStatusMeta.label ??
+                            t("table.status.unknown"));
+                        const sortAnchorLabel =
+                          card.sortAnchorEpoch != null
+                            ? timestampFormatter.format(
+                                new Date(card.sortAnchorEpoch),
+                              )
+                            : FALLBACK_CELL;
 
-              return (
-                <article
-                  key={card.promptCacheKey}
-                  data-testid="dashboard-working-conversation-card"
-                  data-conversation-sequence-id={displaySequenceId}
-                  className={cn(
-                    CARD_CLASS_NAME,
-                    currentStatusMeta.cardToneClassName,
-                  )}
-                >
-                  <div className="relative">
-                    <div className="flex min-w-0 items-center justify-between gap-3">
-                      <div className="min-w-0 shrink truncate font-mono text-[0.95rem] font-semibold tracking-[0.08em] text-base-content">
-                        {displaySequenceId}
-                      </div>
-                      <div className="flex shrink-0 items-center justify-end gap-2 whitespace-nowrap text-[10px] text-base-content/62">
-                        <span className="font-mono">{sortAnchorLabel}</span>
-                        <span className="font-semibold uppercase tracking-[0.14em] text-base-content/76">
-                          {currentStatusLabel}
-                        </span>
-                        <span
-                          className={cn(
-                            "inline-flex h-2 w-2 rounded-full",
-                            currentStatusMeta.beaconClassName,
-                            card.currentInvocation.isInFlight &&
-                              "motion-safe:animate-pulse motion-reduce:animate-none",
-                          )}
-                          aria-hidden
-                        />
-                      </div>
-                    </div>
+                        return (
+                          <article
+                            key={card.promptCacheKey}
+                            ref={(node) => {
+                              if (!node) return;
+                              (
+                                node as DashboardWorkingConversationAnchorCardElement
+                              ).__dashboardWorkingConversationAnchorKey =
+                                card.promptCacheKey;
+                            }}
+                            data-testid="dashboard-working-conversation-card"
+                            data-conversation-sequence-id={displaySequenceId}
+                            className={cn(
+                              CARD_CLASS_NAME,
+                              currentStatusMeta.cardToneClassName,
+                            )}
+                          >
+                            <div className="relative">
+                              <div className="flex min-w-0 items-center justify-between gap-3">
+                                <div className="min-w-0 shrink truncate font-mono text-[0.95rem] font-semibold tracking-[0.08em] text-base-content">
+                                  {displaySequenceId}
+                                </div>
+                                <div className="flex shrink-0 items-center justify-end gap-2 whitespace-nowrap text-[10px] text-base-content/62">
+                                  <span className="font-mono">
+                                    {sortAnchorLabel}
+                                  </span>
+                                  <span className="font-semibold uppercase tracking-[0.14em] text-base-content/76">
+                                    {currentStatusLabel}
+                                  </span>
+                                  <span
+                                    className={cn(
+                                      "inline-flex h-2 w-2 rounded-full",
+                                      currentStatusMeta.beaconClassName,
+                                      card.currentInvocation.isInFlight &&
+                                        "motion-safe:animate-pulse motion-reduce:animate-none",
+                                    )}
+                                    aria-hidden
+                                  />
+                                </div>
+                              </div>
 
-                    <div className="mt-2">
-                      <div className="grid grid-cols-3 gap-1.5">
-                        <SummaryMetric
-                          label={t(
-                            "dashboard.workingConversations.requestCountLabel",
-                          )}
-                          value={numberFormatter.format(card.requestCount)}
-                        />
-                        <SummaryMetric
-                          label={t(
-                            "dashboard.workingConversations.totalTokensLabel",
-                          )}
-                          value={numberFormatter.format(card.totalTokens)}
-                        />
-                        <SummaryMetric
-                          label={t(
-                            "dashboard.workingConversations.totalCostLabel",
-                          )}
-                          value={currencyFormatter.format(card.totalCost)}
-                        />
-                      </div>
-                    </div>
+                              <div className="mt-2">
+                                <div className="grid grid-cols-3 gap-1.5">
+                                  <SummaryMetric
+                                    label={t(
+                                      "dashboard.workingConversations.requestCountLabel",
+                                    )}
+                                    value={numberFormatter.format(
+                                      card.requestCount,
+                                    )}
+                                  />
+                                  <SummaryMetric
+                                    label={t(
+                                      "dashboard.workingConversations.totalTokensLabel",
+                                    )}
+                                    value={numberFormatter.format(
+                                      card.totalTokens,
+                                    )}
+                                  />
+                                  <SummaryMetric
+                                    label={t(
+                                      "dashboard.workingConversations.totalCostLabel",
+                                    )}
+                                    value={currencyFormatter.format(
+                                      card.totalCost,
+                                    )}
+                                  />
+                                </div>
+                              </div>
 
-                    <div className="mt-2.5 space-y-1.5 sm:mt-3 sm:space-y-2">
-                      <InvocationSlot
-                        invocation={card.currentInvocation}
-                        label={t(
-                          "dashboard.workingConversations.currentInvocation",
-                        )}
-                        slotKind="current"
-                        conversationSequenceId={card.conversationSequenceId}
-                        promptCacheKey={card.promptCacheKey}
-                        nowMs={nowMs}
-                        locale={locale}
-                        onOpenUpstreamAccount={onOpenUpstreamAccount}
-                        onOpenInvocation={onOpenInvocation}
-                      />
-                      {card.previousInvocation ? (
-                        <InvocationSlot
-                          invocation={card.previousInvocation}
-                          label={t(
-                            "dashboard.workingConversations.previousInvocation",
-                          )}
-                          slotKind="previous"
-                          conversationSequenceId={card.conversationSequenceId}
-                          promptCacheKey={card.promptCacheKey}
-                          nowMs={nowMs}
-                          locale={locale}
-                          onOpenUpstreamAccount={onOpenUpstreamAccount}
-                          onOpenInvocation={onOpenInvocation}
-                        />
-                      ) : (
-                        <PlaceholderSlot />
-                      )}
+                              <div className="mt-2.5 space-y-1.5 sm:mt-3 sm:space-y-2">
+                                <InvocationSlot
+                                  invocation={card.currentInvocation}
+                                  label={t(
+                                    "dashboard.workingConversations.currentInvocation",
+                                  )}
+                                  slotKind="current"
+                                  conversationSequenceId={
+                                    card.conversationSequenceId
+                                  }
+                                  promptCacheKey={card.promptCacheKey}
+                                  nowMs={nowMs}
+                                  locale={locale}
+                                  onOpenUpstreamAccount={onOpenUpstreamAccount}
+                                  onOpenInvocation={onOpenInvocation}
+                                />
+                                {card.previousInvocation ? (
+                                  <InvocationSlot
+                                    invocation={card.previousInvocation}
+                                    label={t(
+                                      "dashboard.workingConversations.previousInvocation",
+                                    )}
+                                    slotKind="previous"
+                                    conversationSequenceId={
+                                      card.conversationSequenceId
+                                    }
+                                    promptCacheKey={card.promptCacheKey}
+                                    nowMs={nowMs}
+                                    locale={locale}
+                                    onOpenUpstreamAccount={
+                                      onOpenUpstreamAccount
+                                    }
+                                    onOpenInvocation={onOpenInvocation}
+                                  />
+                                ) : (
+                                  <PlaceholderSlot />
+                                )}
+                              </div>
+                            </div>
+                          </article>
+                        );
+                      })}
                     </div>
                   </div>
-                </article>
-              );
-            })}
+                );
+              })}
+            </div>
+            {isLoadingMore ? (
+              <div className="col-span-full flex items-center justify-center gap-2 py-4 text-sm text-base-content/65">
+                <Spinner size="sm" aria-label={t("chart.loadingDetailed")} />
+                <span>{t("chart.loadingDetailed")}</span>
+              </div>
+            ) : null}
           </div>
         ) : null}
       </div>

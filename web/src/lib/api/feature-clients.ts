@@ -17,6 +17,7 @@ export {
   fetchForwardProxyLiveStats,
   fetchForwardProxyTimeseries,
   fetchPromptCacheConversations,
+  fetchPromptCacheConversationsPage,
   fetchTimeseries,
   fetchParallelWorkStats,
   fetchErrorDistribution,

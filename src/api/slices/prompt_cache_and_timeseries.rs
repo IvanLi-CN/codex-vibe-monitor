@@ -286,7 +286,7 @@ fn add_invocation_record_to_summary_totals(
     totals.total_cost += record.cost.unwrap_or_default();
 }
 
-fn db_occurred_at_upper_bound(end_utc: DateTime<Utc>) -> String {
+pub(crate) fn db_occurred_at_upper_bound(end_utc: DateTime<Utc>) -> String {
     if end_utc.timestamp_subsec_nanos() > 0 {
         return db_occurred_at_lower_bound(end_utc + ChronoDuration::seconds(1));
     }
@@ -460,8 +460,19 @@ pub(crate) async fn fetch_prompt_cache_conversations(
     Query(params): Query<PromptCacheConversationsQuery>,
 ) -> Result<Json<PromptCacheConversationsResponse>, ApiError> {
     ensure_hourly_rollups_caught_up(state.as_ref()).await?;
-    let selection = resolve_prompt_cache_conversation_selection(params)?;
-    let response = fetch_prompt_cache_conversations_cached(state.as_ref(), selection).await?;
+    let request = resolve_prompt_cache_conversations_request(params)?;
+    let response = if request.page_size.is_none() && request.cursor.is_none() && request.snapshot_at.is_none() {
+        let response =
+            fetch_prompt_cache_conversations_cached(state.as_ref(), request.selection).await?;
+        match request.detail_level {
+            PromptCacheConversationDetailLevel::Full => response,
+            PromptCacheConversationDetailLevel::Compact => {
+                compact_prompt_cache_conversations_response(response)
+            }
+        }
+    } else {
+        build_prompt_cache_conversations_response_for_request(state.as_ref(), request).await?
+    };
     Ok(Json(response))
 }
 
@@ -519,6 +530,259 @@ pub(crate) fn resolve_prompt_cache_conversation_selection(
     Ok(PromptCacheConversationSelection::Count(
         normalize_prompt_cache_conversation_limit(params.limit),
     ))
+}
+
+fn normalize_prompt_cache_conversation_page_size(raw: Option<i64>) -> Result<Option<i64>, ApiError> {
+    let Some(value) = raw else {
+        return Ok(None);
+    };
+    if !(1..=100).contains(&value) {
+        return Err(ApiError::bad_request(anyhow!(
+            "pageSize must be between 1 and 100"
+        )));
+    }
+    Ok(Some(value))
+}
+
+fn resolve_prompt_cache_conversation_detail_level(
+    raw: Option<&str>,
+) -> Result<PromptCacheConversationDetailLevel, ApiError> {
+    let Some(value) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(PromptCacheConversationDetailLevel::Full);
+    };
+    match value {
+        "full" => Ok(PromptCacheConversationDetailLevel::Full),
+        "compact" => Ok(PromptCacheConversationDetailLevel::Compact),
+        _ => Err(ApiError::bad_request(anyhow!(
+            "detail must be one of: full, compact"
+        ))),
+    }
+}
+
+fn resolve_prompt_cache_conversations_request(
+    params: PromptCacheConversationsQuery,
+) -> Result<PromptCacheConversationsRequest, ApiError> {
+    let selection = resolve_prompt_cache_conversation_selection(PromptCacheConversationsQuery {
+        limit: params.limit,
+        activity_hours: params.activity_hours,
+        activity_minutes: params.activity_minutes,
+        page_size: None,
+        cursor: None,
+        snapshot_at: None,
+        detail: None,
+    })?;
+    let detail_level = resolve_prompt_cache_conversation_detail_level(params.detail.as_deref())?;
+    let normalized_page_size = normalize_prompt_cache_conversation_page_size(params.page_size)?;
+    let uses_pagination =
+        normalized_page_size.is_some() || params.cursor.is_some() || params.snapshot_at.is_some();
+
+    if params.cursor.is_some() && params.snapshot_at.is_none() {
+        return Err(ApiError::bad_request(anyhow!(
+            "cursor requires snapshotAt"
+        )));
+    }
+
+    if uses_pagination
+        && !matches!(
+            selection,
+            PromptCacheConversationSelection::ActivityWindowMinutes(_)
+        )
+    {
+        return Err(ApiError::bad_request(anyhow!(
+            "pageSize, cursor, and snapshotAt are only supported for activityMinutes working conversations"
+        )));
+    }
+
+    Ok(PromptCacheConversationsRequest {
+        selection,
+        detail_level,
+        page_size: if uses_pagination {
+            Some(normalized_page_size.unwrap_or(20))
+        } else {
+            normalized_page_size
+        },
+        cursor: params.cursor,
+        snapshot_at: params.snapshot_at,
+    })
+}
+
+pub(crate) fn resolve_prompt_cache_conversation_snapshot_at_with_default(
+    raw: Option<&str>,
+    default_now: DateTime<Utc>,
+) -> Result<DateTime<Utc>> {
+    let Some(value) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(default_now);
+    };
+    parse_to_utc_datetime(value).ok_or_else(|| anyhow!("invalid snapshotAt: {value}"))
+}
+
+pub(crate) fn resolve_prompt_cache_conversation_snapshot_at(
+    raw: Option<&str>,
+) -> Result<DateTime<Utc>> {
+    resolve_prompt_cache_conversation_snapshot_at_with_default(raw, Utc::now())
+}
+
+fn resolve_working_conversation_sort_anchor<'a>(
+    last_terminal_at: Option<&'a str>,
+    last_in_flight_at: Option<&'a str>,
+    created_at: &'a str,
+) -> &'a str {
+    match (last_terminal_at, last_in_flight_at) {
+        (Some(last_terminal_at), Some(last_in_flight_at)) => {
+            if last_terminal_at >= last_in_flight_at {
+                last_terminal_at
+            } else {
+                last_in_flight_at
+            }
+        }
+        (Some(last_terminal_at), None) => last_terminal_at,
+        (None, Some(last_in_flight_at)) => last_in_flight_at,
+        (None, None) => created_at,
+    }
+}
+
+fn encode_prompt_cache_conversation_cursor(
+    sort_anchor_at: &str,
+    created_at: &str,
+    prompt_cache_key: &str,
+    snapshot_boundary_row_id_ceiling: Option<i64>,
+) -> String {
+    let payload = serde_json::to_vec(&(
+        sort_anchor_at,
+        created_at,
+        prompt_cache_key,
+        snapshot_boundary_row_id_ceiling,
+    ))
+    .expect("prompt cache cursor payload should serialize");
+    base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        payload,
+    )
+}
+
+fn decode_prompt_cache_conversation_cursor(raw: &str) -> Result<(String, String, String, Option<i64>)> {
+    let decoded = base64::Engine::decode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        raw.trim(),
+    )
+    .map_err(|err| anyhow!("invalid cursor encoding: {err}"))?;
+    if let Ok((sort_anchor_at, created_at, prompt_cache_key, snapshot_boundary_row_id_ceiling)) =
+        serde_json::from_slice::<(String, String, String, Option<i64>)>(&decoded)
+    {
+        let sort_anchor_at = sort_anchor_at.trim();
+        let created_at = created_at.trim();
+        let prompt_cache_key = prompt_cache_key.trim();
+        if sort_anchor_at.is_empty() || created_at.is_empty() || prompt_cache_key.is_empty() {
+            return Err(anyhow!("invalid cursor payload"));
+        }
+        return Ok((
+            sort_anchor_at.to_string(),
+            created_at.to_string(),
+            prompt_cache_key.to_string(),
+            snapshot_boundary_row_id_ceiling,
+        ));
+    }
+
+    let decoded = String::from_utf8(decoded).map_err(|err| anyhow!("invalid cursor bytes: {err}"))?;
+    let mut parts = decoded.splitn(4, '|');
+    let Some(sort_anchor_at) = parts.next() else {
+        return Err(anyhow!("invalid cursor payload"));
+    };
+    let Some(created_at) = parts.next() else {
+        return Err(anyhow!("invalid cursor payload"));
+    };
+    let Some(prompt_cache_key) = parts.next() else {
+        return Err(anyhow!("invalid cursor payload"));
+    };
+    let sort_anchor_at = sort_anchor_at.trim();
+    let created_at = created_at.trim();
+    let prompt_cache_key = prompt_cache_key.trim();
+    if sort_anchor_at.is_empty() || created_at.is_empty() || prompt_cache_key.is_empty() {
+        return Err(anyhow!("invalid cursor payload"));
+    }
+    let snapshot_boundary_row_id_ceiling = parts
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value
+                .parse::<i64>()
+                .map_err(|err| anyhow!("invalid cursor snapshot row id ceiling: {err}"))
+        })
+        .transpose()?;
+    Ok((
+        sort_anchor_at.to_string(),
+        created_at.to_string(),
+        prompt_cache_key.to_string(),
+        snapshot_boundary_row_id_ceiling,
+    ))
+}
+
+fn build_prompt_cache_conversation_cursor(
+    row: &PromptCacheConversationAggregateRow,
+    snapshot_boundary_row_id_ceiling: Option<i64>,
+) -> String {
+    let sort_anchor_at = row.sort_anchor_at.as_deref().unwrap_or_else(|| {
+        resolve_working_conversation_sort_anchor(
+            row.last_terminal_at.as_deref(),
+            row.last_in_flight_at.as_deref(),
+            row.created_at.as_str(),
+        )
+    });
+    encode_prompt_cache_conversation_cursor(
+        sort_anchor_at,
+        &row.created_at,
+        &row.prompt_cache_key,
+        snapshot_boundary_row_id_ceiling,
+    )
+}
+
+async fn query_prompt_cache_conversation_snapshot_row_id_ceiling(
+    pool: &Pool<Sqlite>,
+    snapshot_at: DateTime<Utc>,
+    source_scope: InvocationSourceScope,
+) -> Result<Option<i64>> {
+    let snapshot_created_at_upper_bound = format_utc_iso_precise(snapshot_at);
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT MAX(id) AS max_id \
+         FROM codex_invocations \
+         WHERE julianday(created_at) <= julianday(",
+    );
+    query
+        .push_bind(snapshot_created_at_upper_bound)
+        .push(")");
+
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+
+    let (max_id,) = query.build_query_as::<(Option<i64>,)>().fetch_one(pool).await?;
+    Ok(max_id)
+}
+
+async fn resolve_prompt_cache_conversation_snapshot_filter(
+    pool: &Pool<Sqlite>,
+    snapshot_at: DateTime<Utc>,
+    source_scope: InvocationSourceScope,
+    cursor_snapshot_boundary_row_id_ceiling: Option<i64>,
+) -> Result<PromptCacheConversationSnapshotFilter> {
+    let snapshot_upper_bound = db_occurred_at_lower_bound(
+        snapshot_at + ChronoDuration::seconds(1),
+    );
+    let snapshot_boundary_row_id_ceiling = Some(match cursor_snapshot_boundary_row_id_ceiling {
+        Some(value) => value,
+        None => query_prompt_cache_conversation_snapshot_row_id_ceiling(
+            pool,
+            snapshot_at,
+            source_scope,
+        )
+        .await?
+        .unwrap_or(0),
+    });
+    Ok(PromptCacheConversationSnapshotFilter {
+        snapshot_upper_bound,
+        snapshot_boundary_row_id_ceiling,
+    })
 }
 
 pub(crate) async fn fetch_prompt_cache_conversations_cached(
@@ -616,109 +880,132 @@ pub(crate) async fn fetch_prompt_cache_conversations_cached(
     }
 }
 
-pub(crate) async fn build_prompt_cache_conversations_response(
+fn compact_prompt_cache_conversations_response(
+    mut response: PromptCacheConversationsResponse,
+) -> PromptCacheConversationsResponse {
+    for conversation in &mut response.conversations {
+        conversation.upstream_accounts.clear();
+        conversation.last24h_requests.clear();
+        conversation
+            .recent_invocations
+            .truncate(2);
+    }
+    response
+}
+
+pub(crate) struct PromptCacheConversationHydrationSnapshot<'a> {
+    snapshot_upper_bound: &'a str,
+    snapshot_hour_start_epoch: i64,
+    snapshot_hour_start_bound: &'a str,
+    snapshot_boundary_row_id_ceiling: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PromptCacheConversationSnapshotFilter {
+    snapshot_upper_bound: String,
+    snapshot_boundary_row_id_ceiling: Option<i64>,
+}
+
+impl PromptCacheConversationSnapshotFilter {
+    fn snapshot_upper_bound(&self) -> &str {
+        self.snapshot_upper_bound.as_str()
+    }
+
+}
+
+fn push_snapshot_invocation_visibility_clause(
+    query: &mut QueryBuilder<Sqlite>,
+    occurred_at_expr: &str,
+    id_expr: &str,
+    snapshot: Option<&PromptCacheConversationSnapshotFilter>,
+) {
+    if let Some(snapshot) = snapshot {
+        let snapshot_upper_bound = snapshot.snapshot_upper_bound().to_string();
+        query
+            .push("(")
+            .push(occurred_at_expr)
+            .push(" < ")
+            .push_bind(snapshot_upper_bound);
+        if let Some(row_id_ceiling) = snapshot.snapshot_boundary_row_id_ceiling {
+            query
+                .push(" AND ")
+                .push(id_expr)
+                .push(" <= ")
+                .push_bind(row_id_ceiling);
+        }
+        query.push(")");
+    }
+}
+
+async fn hydrate_prompt_cache_conversations(
     state: &AppState,
-    selection: PromptCacheConversationSelection,
-) -> Result<PromptCacheConversationsResponse> {
-    let source_scope = resolve_default_source_scope(&state.pool).await?;
-    let range_end = Utc::now();
-    let range_start = range_end - selection.activity_window_duration();
-    let range_start_bound = db_occurred_at_lower_bound(range_start);
-    let display_limit = selection.display_limit();
-
-    let (aggregates, active_filtered_count) = match selection {
-        PromptCacheConversationSelection::Count(limit) => {
-            let aggregates = query_prompt_cache_conversation_aggregates(
-                &state.pool,
-                &range_start_bound,
-                source_scope,
-                display_limit,
-            )
-            .await?;
-            let filtered_count = query_prompt_cache_conversation_hidden_count(
-                &state.pool,
-                &range_start_bound,
-                source_scope,
-                limit,
-                aggregates.len() as i64,
-            )
-            .await?;
-            (aggregates, filtered_count)
-        }
-        PromptCacheConversationSelection::ActivityWindowHours(_) => {
-            let aggregates = query_prompt_cache_conversation_aggregates(
-                &state.pool,
-                &range_start_bound,
-                source_scope,
-                display_limit,
-            )
-            .await?;
-            let matched_count = query_active_prompt_cache_conversation_count(
-                &state.pool,
-                &range_start_bound,
-                source_scope,
-            )
-            .await?;
-            (aggregates, matched_count.saturating_sub(display_limit))
-        }
-        PromptCacheConversationSelection::ActivityWindowMinutes(_) => {
-            let aggregates = query_prompt_cache_working_conversation_aggregates(
-                &state.pool,
-                &range_start_bound,
-                source_scope,
-                display_limit,
-            )
-            .await?;
-            let matched_count = query_working_prompt_cache_conversation_count(
-                &state.pool,
-                &range_start_bound,
-                source_scope,
-            )
-            .await?;
-            (aggregates, matched_count.saturating_sub(display_limit))
-        }
-    };
-    let implicit_filter = selection.implicit_filter(active_filtered_count);
-
+    source_scope: InvocationSourceScope,
+    aggregates: Vec<PromptCacheConversationAggregateRow>,
+    range_end: DateTime<Utc>,
+    detail_level: PromptCacheConversationDetailLevel,
+    snapshot: Option<&PromptCacheConversationHydrationSnapshot<'_>>,
+) -> Result<Vec<PromptCacheConversationResponse>> {
     if aggregates.is_empty() {
-        return Ok(PromptCacheConversationsResponse {
-            range_start: format_utc_iso(range_start),
-            range_end: format_utc_iso(range_end),
-            selection_mode: selection.selection_mode(),
-            selected_limit: selection.selected_limit(),
-            selected_activity_hours: selection.selected_activity_hours(),
-            selected_activity_minutes: selection.selected_activity_minutes(),
-            implicit_filter,
-            conversations: Vec::new(),
-        });
+        return Ok(Vec::new());
     }
 
     let selected_keys = aggregates
         .iter()
         .map(|row| row.prompt_cache_key.clone())
         .collect::<Vec<_>>();
-    let chart_range_start_bound = resolve_prompt_cache_conversation_chart_range_start(
-        range_end,
-        aggregates.iter().map(|row| row.created_at.as_str()).min(),
-    );
-    let events = query_prompt_cache_conversation_events(
-        &state.pool,
-        &chart_range_start_bound,
-        source_scope,
-        &selected_keys,
-    )
-    .await?;
-    let upstream_account_rows = query_prompt_cache_conversation_upstream_account_summaries(
-        &state.pool,
-        source_scope,
-        &selected_keys,
-    )
-    .await?;
+    let recent_invocation_limit = match detail_level {
+        PromptCacheConversationDetailLevel::Full => {
+            PROMPT_CACHE_CONVERSATION_INVOCATION_PREVIEW_LIMIT as i64
+        }
+        PromptCacheConversationDetailLevel::Compact => 2,
+    };
+
+    let events = if detail_level == PromptCacheConversationDetailLevel::Full {
+        let chart_range_start_bound = resolve_prompt_cache_conversation_chart_range_start(
+            range_end,
+            aggregates.iter().map(|row| row.created_at.as_str()).min(),
+        );
+        query_prompt_cache_conversation_events(
+            &state.pool,
+            &chart_range_start_bound,
+            snapshot,
+            source_scope,
+            &selected_keys,
+        )
+        .await?
+    } else {
+        Vec::new()
+    };
+
+    let upstream_account_rows = if detail_level == PromptCacheConversationDetailLevel::Full {
+        if let Some(snapshot) = snapshot {
+            query_prompt_cache_conversation_upstream_account_summaries_at_snapshot(
+                &state.pool,
+                source_scope,
+                &selected_keys,
+                snapshot.snapshot_hour_start_epoch,
+                snapshot.snapshot_hour_start_bound,
+                snapshot,
+            )
+            .await?
+        } else {
+            query_prompt_cache_conversation_upstream_account_summaries(
+                &state.pool,
+                source_scope,
+                &selected_keys,
+            )
+            .await?
+        }
+    } else {
+        Vec::new()
+    };
+
     let recent_invocation_rows = query_prompt_cache_conversation_recent_invocations(
         &state.pool,
         source_scope,
         &selected_keys,
-        PROMPT_CACHE_CONVERSATION_INVOCATION_PREVIEW_LIMIT as i64,
+        recent_invocation_limit,
+        snapshot,
     )
     .await?;
 
@@ -917,7 +1204,7 @@ pub(crate) async fn build_prompt_cache_conversations_response(
         accounts.truncate(PROMPT_CACHE_CONVERSATION_UPSTREAM_ACCOUNT_LIMIT);
     }
 
-    let conversations = aggregates
+    Ok(aggregates
         .into_iter()
         .map(|row| PromptCacheConversationResponse {
             prompt_cache_key: row.prompt_cache_key.clone(),
@@ -926,6 +1213,9 @@ pub(crate) async fn build_prompt_cache_conversations_response(
             total_cost: row.total_cost,
             created_at: row.created_at,
             last_activity_at: row.last_activity_at,
+            last_terminal_at: row.last_terminal_at,
+            last_in_flight_at: row.last_in_flight_at,
+            cursor: None,
             upstream_accounts: grouped_upstream_accounts
                 .remove(&row.prompt_cache_key)
                 .unwrap_or_default(),
@@ -936,16 +1226,247 @@ pub(crate) async fn build_prompt_cache_conversations_response(
                 .remove(&row.prompt_cache_key)
                 .unwrap_or_default(),
         })
-        .collect::<Vec<_>>();
+        .collect::<Vec<_>>())
+}
+
+pub(crate) async fn build_prompt_cache_conversations_response_for_request(
+    state: &AppState,
+    request: PromptCacheConversationsRequest,
+) -> Result<PromptCacheConversationsResponse, ApiError> {
+    if request.page_size.is_none() && request.cursor.is_none() && request.snapshot_at.is_none() {
+        let response = build_prompt_cache_conversations_response(state, request.selection)
+            .await
+            .map_err(ApiError::from)?;
+        return Ok(match request.detail_level {
+            PromptCacheConversationDetailLevel::Full => response,
+            PromptCacheConversationDetailLevel::Compact => {
+                compact_prompt_cache_conversations_response(response)
+            }
+        });
+    }
+
+    let selection = request.selection;
+    let PromptCacheConversationSelection::ActivityWindowMinutes(_) = selection else {
+        return Err(ApiError::bad_request(anyhow!(
+            "paginated prompt cache conversations only support activityMinutes working conversations"
+        )));
+    };
+    let page_size = request.page_size.unwrap_or(20);
+    let source_scope = resolve_default_source_scope(&state.pool).await?;
+    let snapshot_at = resolve_prompt_cache_conversation_snapshot_at(request.snapshot_at.as_deref())
+        .map_err(ApiError::bad_request)?;
+    let range_end = snapshot_at;
+    let range_start = range_end - selection.activity_window_duration();
+    let range_start_bound = db_occurred_at_lower_bound(range_start);
+    let snapshot_hour_start_epoch = align_bucket_epoch(range_end.timestamp(), 3_600, 0);
+    let snapshot_hour_start_bound = db_occurred_at_lower_bound(
+        Utc.timestamp_opt(snapshot_hour_start_epoch, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid snapshot hour start epoch"))?,
+    );
+    let cursor = request
+        .cursor
+        .as_deref()
+        .map(decode_prompt_cache_conversation_cursor)
+        .transpose()
+        .map_err(ApiError::bad_request)?;
+    let snapshot_filter = resolve_prompt_cache_conversation_snapshot_filter(
+        &state.pool,
+        snapshot_at,
+        source_scope,
+        cursor
+            .as_ref()
+            .and_then(|(_, _, _, snapshot_boundary_row_id_ceiling)| {
+                *snapshot_boundary_row_id_ceiling
+            }),
+    )
+    .await?;
+    let mut aggregates = query_prompt_cache_working_conversation_aggregates_page(
+        &state.pool,
+        &range_start_bound,
+        &snapshot_filter,
+        snapshot_hour_start_epoch,
+        &snapshot_hour_start_bound,
+        source_scope,
+        cursor.as_ref(),
+        page_size + 1,
+    )
+    .await?;
+    let has_more = aggregates.len() as i64 > page_size;
+    if has_more {
+        aggregates.truncate(page_size as usize);
+    }
+    let total_matched = query_working_prompt_cache_conversation_count_at_snapshot(
+        &state.pool,
+        &range_start_bound,
+        &snapshot_filter,
+        source_scope,
+    )
+    .await?;
+    let next_cursor = if has_more {
+        aggregates.last().map(|row| {
+            build_prompt_cache_conversation_cursor(
+                row,
+                snapshot_filter.snapshot_boundary_row_id_ceiling,
+            )
+        })
+    } else {
+        None
+    };
+    let row_cursors_by_key = aggregates
+        .iter()
+        .map(|row| {
+            (
+                row.prompt_cache_key.clone(),
+                build_prompt_cache_conversation_cursor(
+                    row,
+                    snapshot_filter.snapshot_boundary_row_id_ceiling,
+                ),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let hydration_snapshot = PromptCacheConversationHydrationSnapshot {
+        snapshot_upper_bound: snapshot_filter.snapshot_upper_bound(),
+        snapshot_hour_start_epoch,
+        snapshot_hour_start_bound: &snapshot_hour_start_bound,
+        snapshot_boundary_row_id_ceiling: snapshot_filter.snapshot_boundary_row_id_ceiling,
+    };
+    let mut conversations = hydrate_prompt_cache_conversations(
+        state,
+        source_scope,
+        aggregates,
+        range_end,
+        request.detail_level,
+        Some(&hydration_snapshot),
+    )
+    .await?;
+    for conversation in &mut conversations {
+        conversation.cursor = row_cursors_by_key
+            .get(&conversation.prompt_cache_key)
+            .cloned();
+    }
+
+    Ok(PromptCacheConversationsResponse {
+        range_start: format_utc_iso(range_start),
+        range_end: format_utc_iso_precise(range_end),
+        snapshot_at: Some(format_utc_iso_precise(snapshot_at)),
+        selection_mode: selection.selection_mode(),
+        selected_limit: selection.selected_limit(),
+        selected_activity_hours: selection.selected_activity_hours(),
+        selected_activity_minutes: selection.selected_activity_minutes(),
+        implicit_filter: PromptCacheConversationImplicitFilter {
+            kind: None,
+            filtered_count: 0,
+        },
+        total_matched: Some(total_matched),
+        has_more,
+        next_cursor,
+        conversations,
+    })
+}
+
+pub(crate) async fn build_prompt_cache_conversations_response(
+    state: &AppState,
+    selection: PromptCacheConversationSelection,
+) -> Result<PromptCacheConversationsResponse> {
+    let source_scope = resolve_default_source_scope(&state.pool).await?;
+    let range_end = Utc::now();
+    let range_start = range_end - selection.activity_window_duration();
+    let range_start_bound = db_occurred_at_lower_bound(range_start);
+    let display_limit = selection.display_limit();
+
+    let (aggregates, active_filtered_count) = match selection {
+        PromptCacheConversationSelection::Count(limit) => {
+            let aggregates = query_prompt_cache_conversation_aggregates(
+                &state.pool,
+                &range_start_bound,
+                source_scope,
+                display_limit,
+            )
+            .await?;
+            let filtered_count = query_prompt_cache_conversation_hidden_count(
+                &state.pool,
+                &range_start_bound,
+                source_scope,
+                limit,
+                aggregates.len() as i64,
+            )
+            .await?;
+            (aggregates, filtered_count)
+        }
+        PromptCacheConversationSelection::ActivityWindowHours(_) => {
+            let aggregates = query_prompt_cache_conversation_aggregates(
+                &state.pool,
+                &range_start_bound,
+                source_scope,
+                display_limit,
+            )
+            .await?;
+            let matched_count = query_active_prompt_cache_conversation_count(
+                &state.pool,
+                &range_start_bound,
+                source_scope,
+            )
+            .await?;
+            (aggregates, matched_count.saturating_sub(display_limit))
+        }
+        PromptCacheConversationSelection::ActivityWindowMinutes(_) => {
+            let aggregates = query_prompt_cache_working_conversation_aggregates(
+                &state.pool,
+                &range_start_bound,
+                source_scope,
+                display_limit,
+            )
+            .await?;
+            let matched_count = query_working_prompt_cache_conversation_count(
+                &state.pool,
+                &range_start_bound,
+                source_scope,
+            )
+            .await?;
+            (aggregates, matched_count.saturating_sub(display_limit))
+        }
+    };
+    let implicit_filter = selection.implicit_filter(active_filtered_count);
+
+    if aggregates.is_empty() {
+        return Ok(PromptCacheConversationsResponse {
+            range_start: format_utc_iso(range_start),
+            range_end: format_utc_iso(range_end),
+            snapshot_at: None,
+            selection_mode: selection.selection_mode(),
+            selected_limit: selection.selected_limit(),
+            selected_activity_hours: selection.selected_activity_hours(),
+            selected_activity_minutes: selection.selected_activity_minutes(),
+            implicit_filter,
+            total_matched: None,
+            has_more: false,
+            next_cursor: None,
+            conversations: Vec::new(),
+        });
+    }
+    let conversations = hydrate_prompt_cache_conversations(
+        state,
+        source_scope,
+        aggregates,
+        range_end,
+        PromptCacheConversationDetailLevel::Full,
+        None,
+    )
+    .await?;
 
     Ok(PromptCacheConversationsResponse {
         range_start: format_utc_iso(range_start),
         range_end: format_utc_iso(range_end),
+        snapshot_at: None,
         selection_mode: selection.selection_mode(),
         selected_limit: selection.selected_limit(),
         selected_activity_hours: selection.selected_activity_hours(),
         selected_activity_minutes: selection.selected_activity_minutes(),
         implicit_filter,
+        total_matched: None,
+        has_more: false,
+        next_cursor: None,
         conversations,
     })
 }
@@ -1148,6 +1669,81 @@ pub(crate) async fn query_working_prompt_cache_conversation_count(
     Ok(count)
 }
 
+pub(crate) async fn query_working_prompt_cache_conversation_count_at_snapshot(
+    pool: &Pool<Sqlite>,
+    range_start_bound: &str,
+    snapshot: &PromptCacheConversationSnapshotFilter,
+    source_scope: InvocationSourceScope,
+) -> Result<i64> {
+    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "WITH recent_terminal AS (\
+            SELECT ",
+    );
+    query
+        .push(KEY_EXPR)
+        .push(
+            " AS prompt_cache_key \
+             FROM codex_invocations \
+             WHERE occurred_at >= ",
+        )
+        .push_bind(range_start_bound)
+        .push(" AND ");
+    push_snapshot_invocation_visibility_clause(&mut query, "occurred_at", "id", Some(snapshot));
+    query
+        .push(" AND ")
+        .push(KEY_EXPR)
+        .push(" IS NOT NULL AND ")
+        .push(KEY_EXPR)
+        .push(" <> '' AND LOWER(TRIM(")
+        .push(invocation_display_status_sql())
+        .push(")) NOT IN ('running', 'pending')");
+
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+
+    query.push(
+        " GROUP BY prompt_cache_key\
+         ), in_flight AS (\
+            SELECT ",
+    );
+    query
+        .push(KEY_EXPR)
+        .push(
+            " AS prompt_cache_key \
+             FROM codex_invocations \
+             WHERE ",
+        );
+    push_snapshot_invocation_visibility_clause(&mut query, "occurred_at", "id", Some(snapshot));
+    query
+        .push(" AND ")
+        .push(KEY_EXPR)
+        .push(" IS NOT NULL AND ")
+        .push(KEY_EXPR)
+        .push(" <> '' AND LOWER(TRIM(")
+        .push(invocation_display_status_sql())
+        .push(")) IN ('running', 'pending')");
+
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+
+    query.push(
+        " GROUP BY prompt_cache_key\
+         ), working AS (\
+            SELECT prompt_cache_key FROM recent_terminal \
+            UNION \
+            SELECT prompt_cache_key FROM in_flight\
+         ) \
+         SELECT COUNT(*) AS count FROM working",
+    );
+
+    let (count,) = query.build_query_as::<(i64,)>().fetch_one(pool).await?;
+    Ok(count)
+}
+
 pub(crate) async fn query_prompt_cache_conversation_hidden_count(
     pool: &Pool<Sqlite>,
     range_start_bound: &str,
@@ -1285,7 +1881,12 @@ pub(crate) async fn query_prompt_cache_working_conversation_aggregates(
             SELECT prompt_cache_key, \
                    MAX(last_terminal_at) AS last_terminal_at, \
                    MAX(last_in_flight_at) AS last_in_flight_at, \
-                   COALESCE(MAX(last_terminal_at), MAX(last_in_flight_at)) AS sort_anchor_at \
+                   CASE \
+                       WHEN MAX(last_terminal_at) IS NULL THEN MAX(last_in_flight_at) \
+                       WHEN MAX(last_in_flight_at) IS NULL THEN MAX(last_terminal_at) \
+                       WHEN MAX(last_terminal_at) >= MAX(last_in_flight_at) THEN MAX(last_terminal_at) \
+                       ELSE MAX(last_in_flight_at) \
+                   END AS sort_anchor_at \
               FROM working \
               GROUP BY prompt_cache_key\
          ), aggregates AS (\
@@ -1323,9 +1924,210 @@ pub(crate) async fn query_prompt_cache_working_conversation_aggregates(
         .map_err(Into::into)
 }
 
+pub(crate) async fn query_prompt_cache_working_conversation_aggregates_page(
+    pool: &Pool<Sqlite>,
+    range_start_bound: &str,
+    snapshot: &PromptCacheConversationSnapshotFilter,
+    snapshot_hour_start_epoch: i64,
+    snapshot_hour_start_bound: &str,
+    source_scope: InvocationSourceScope,
+    cursor: Option<&(String, String, String, Option<i64>)>,
+    limit: i64,
+) -> Result<Vec<PromptCacheConversationAggregateRow>> {
+    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "WITH recent_terminal AS (\
+            SELECT ",
+    );
+    query
+        .push(KEY_EXPR)
+        .push(
+            " AS prompt_cache_key, MAX(occurred_at) AS last_terminal_at \
+             FROM codex_invocations \
+             WHERE occurred_at >= ",
+        )
+        .push_bind(range_start_bound)
+        .push(" AND ");
+    push_snapshot_invocation_visibility_clause(&mut query, "occurred_at", "id", Some(snapshot));
+    query
+        .push(" AND ")
+        .push(KEY_EXPR)
+        .push(" IS NOT NULL AND ")
+        .push(KEY_EXPR)
+        .push(" <> '' AND LOWER(TRIM(")
+        .push(invocation_display_status_sql())
+        .push(")) NOT IN ('running', 'pending')");
+
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+
+    query.push(
+        " GROUP BY prompt_cache_key\
+         ), in_flight AS (\
+            SELECT ",
+    );
+    query
+        .push(KEY_EXPR)
+        .push(
+            " AS prompt_cache_key, MAX(occurred_at) AS last_in_flight_at \
+             FROM codex_invocations \
+             WHERE ",
+        );
+    push_snapshot_invocation_visibility_clause(&mut query, "occurred_at", "id", Some(snapshot));
+    query
+        .push(" AND ")
+        .push(KEY_EXPR)
+        .push(" IS NOT NULL AND ")
+        .push(KEY_EXPR)
+        .push(" <> '' AND LOWER(TRIM(")
+        .push(invocation_display_status_sql())
+        .push(")) IN ('running', 'pending')");
+
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+
+    query.push(
+        " GROUP BY prompt_cache_key\
+         ), working AS (\
+            SELECT prompt_cache_key, last_terminal_at, NULL AS last_in_flight_at \
+              FROM recent_terminal \
+            UNION ALL \
+            SELECT prompt_cache_key, NULL AS last_terminal_at, last_in_flight_at \
+              FROM in_flight \
+         ), collapsed_working AS (\
+            SELECT prompt_cache_key, \
+                   MAX(last_terminal_at) AS last_terminal_at, \
+                   MAX(last_in_flight_at) AS last_in_flight_at, \
+                   CASE \
+                       WHEN MAX(last_terminal_at) IS NULL THEN MAX(last_in_flight_at) \
+                       WHEN MAX(last_in_flight_at) IS NULL THEN MAX(last_terminal_at) \
+                       WHEN MAX(last_terminal_at) >= MAX(last_in_flight_at) THEN MAX(last_terminal_at) \
+                       ELSE MAX(last_in_flight_at) \
+                   END AS sort_anchor_at \
+              FROM working \
+              GROUP BY prompt_cache_key\
+         ), history_rollup AS (\
+            SELECT prompt_cache_key, \
+                   SUM(request_count) AS request_count, \
+                   SUM(total_tokens) AS total_tokens, \
+                   SUM(total_cost) AS total_cost, \
+                   MIN(first_seen_at) AS created_at, \
+                   MAX(last_seen_at) AS last_activity_at \
+              FROM prompt_cache_rollup_hourly \
+             WHERE prompt_cache_key IN (SELECT prompt_cache_key FROM collapsed_working) \
+               AND bucket_start_epoch < ",
+    );
+    query.push_bind(snapshot_hour_start_epoch);
+
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+
+    query.push(
+        " GROUP BY prompt_cache_key\
+         ), history_live AS (\
+            SELECT ",
+    );
+    query
+        .push(KEY_EXPR)
+        .push(
+            " AS prompt_cache_key, \
+                   COUNT(*) AS request_count, \
+                   COALESCE(SUM(COALESCE(total_tokens, 0)), 0) AS total_tokens, \
+                   COALESCE(SUM(COALESCE(cost, 0)), 0) AS total_cost, \
+                   MIN(occurred_at) AS created_at, \
+                   MAX(occurred_at) AS last_activity_at \
+              FROM codex_invocations \
+             WHERE occurred_at >= ",
+        )
+        .push_bind(snapshot_hour_start_bound)
+        .push(" AND ");
+    push_snapshot_invocation_visibility_clause(&mut query, "occurred_at", "id", Some(snapshot));
+    query
+        .push(" AND ")
+        .push(KEY_EXPR)
+        .push(" IN (SELECT prompt_cache_key FROM collapsed_working)");
+
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+
+    query.push(
+        " GROUP BY prompt_cache_key\
+         ), history_inputs AS (\
+            SELECT prompt_cache_key, request_count, total_tokens, total_cost, created_at, last_activity_at \
+              FROM history_rollup \
+            UNION ALL \
+            SELECT prompt_cache_key, request_count, total_tokens, total_cost, created_at, last_activity_at \
+              FROM history_live\
+         ), history_aggregates AS (\
+            SELECT prompt_cache_key, \
+                   COALESCE(SUM(request_count), 0) AS request_count, \
+                   COALESCE(SUM(total_tokens), 0) AS total_tokens, \
+                   COALESCE(SUM(total_cost), 0.0) AS total_cost, \
+                   MIN(created_at) AS created_at, \
+                   MAX(last_activity_at) AS last_activity_at \
+              FROM history_inputs \
+             GROUP BY prompt_cache_key\
+         ), aggregates AS (\
+            SELECT collapsed_working.prompt_cache_key AS prompt_cache_key, \
+                   COALESCE(history_aggregates.request_count, 0) AS request_count, \
+                   COALESCE(history_aggregates.total_tokens, 0) AS total_tokens, \
+                   COALESCE(history_aggregates.total_cost, 0.0) AS total_cost, \
+                   COALESCE(history_aggregates.created_at, collapsed_working.sort_anchor_at) AS created_at, \
+                   COALESCE(history_aggregates.last_activity_at, collapsed_working.sort_anchor_at) AS last_activity_at, \
+                   collapsed_working.sort_anchor_at AS sort_anchor_at, \
+                   collapsed_working.last_terminal_at AS last_terminal_at, \
+                   collapsed_working.last_in_flight_at AS last_in_flight_at \
+              FROM collapsed_working \
+              LEFT JOIN history_aggregates ON history_aggregates.prompt_cache_key = collapsed_working.prompt_cache_key",
+    );
+
+    query.push(
+        " ) \
+         SELECT aggregates.prompt_cache_key, aggregates.request_count, aggregates.total_tokens, \
+                aggregates.total_cost, aggregates.created_at, aggregates.last_activity_at, \
+                aggregates.sort_anchor_at, aggregates.last_terminal_at, \
+                aggregates.last_in_flight_at \
+           FROM aggregates",
+    );
+
+    if let Some((cursor_sort_anchor_at, cursor_created_at, cursor_prompt_cache_key, _)) = cursor {
+        query
+            .push(" WHERE (aggregates.sort_anchor_at < ")
+            .push_bind(cursor_sort_anchor_at)
+            .push(" OR (aggregates.sort_anchor_at = ")
+            .push_bind(cursor_sort_anchor_at)
+            .push(" AND (aggregates.created_at < ")
+            .push_bind(cursor_created_at)
+            .push(" OR (aggregates.created_at = ")
+            .push_bind(cursor_created_at)
+            .push(" AND aggregates.prompt_cache_key < ")
+            .push_bind(cursor_prompt_cache_key)
+            .push("))))");
+    }
+
+    query
+        .push(
+            " ORDER BY aggregates.sort_anchor_at DESC, aggregates.created_at DESC, aggregates.prompt_cache_key DESC \
+              LIMIT ",
+        )
+        .push_bind(limit);
+
+    query
+        .build_query_as::<PromptCacheConversationAggregateRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
 pub(crate) async fn query_prompt_cache_conversation_events(
     pool: &Pool<Sqlite>,
     range_start_bound: &str,
+    snapshot: Option<&PromptCacheConversationHydrationSnapshot<'_>>,
     source_scope: InvocationSourceScope,
     selected_keys: &[String],
 ) -> Result<Vec<PromptCacheConversationEventRow>> {
@@ -1349,7 +2151,21 @@ pub(crate) async fn query_prompt_cache_conversation_events(
              WHERE occurred_at >= ",
         )
         .push_bind(range_start_bound)
-        .push(" AND ")
+        .push(" AND ");
+    if let Some(snapshot) = snapshot {
+        let snapshot_filter = PromptCacheConversationSnapshotFilter {
+            snapshot_upper_bound: snapshot.snapshot_upper_bound.to_string(),
+            snapshot_boundary_row_id_ceiling: snapshot.snapshot_boundary_row_id_ceiling,
+        };
+        push_snapshot_invocation_visibility_clause(
+            &mut query,
+            "occurred_at",
+            "id",
+            Some(&snapshot_filter),
+        );
+        query.push(" AND ");
+    }
+    query
         .push(KEY_EXPR)
         .push(" IN (");
 
@@ -1379,6 +2195,7 @@ pub(crate) async fn query_prompt_cache_conversation_recent_invocations(
     source_scope: InvocationSourceScope,
     selected_keys: &[String],
     limit_per_key: i64,
+    snapshot: Option<&PromptCacheConversationHydrationSnapshot<'_>>,
 ) -> Result<Vec<PromptCacheConversationInvocationPreviewRow>> {
     if selected_keys.is_empty() || limit_per_key <= 0 {
         return Ok(Vec::new());
@@ -1447,6 +2264,19 @@ pub(crate) async fn query_prompt_cache_conversation_recent_invocations(
         }
     }
     query.push(")");
+    if let Some(snapshot) = snapshot {
+        let snapshot_filter = PromptCacheConversationSnapshotFilter {
+            snapshot_upper_bound: snapshot.snapshot_upper_bound.to_string(),
+            snapshot_boundary_row_id_ceiling: snapshot.snapshot_boundary_row_id_ceiling,
+        };
+        query.push(" AND ");
+        push_snapshot_invocation_visibility_clause(
+            &mut query,
+            "occurred_at",
+            "id",
+            Some(&snapshot_filter),
+        );
+    }
 
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
@@ -1459,6 +2289,146 @@ pub(crate) async fn query_prompt_cache_conversation_recent_invocations(
 
     query
         .build_query_as::<PromptCacheConversationInvocationPreviewRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
+pub(crate) async fn query_prompt_cache_conversation_upstream_account_summaries_at_snapshot(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    selected_keys: &[String],
+    snapshot_hour_start_epoch: i64,
+    snapshot_hour_start_bound: &str,
+    snapshot: &PromptCacheConversationHydrationSnapshot<'_>,
+) -> Result<Vec<PromptCacheConversationUpstreamAccountSummaryRow>> {
+    if selected_keys.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
+    const UPSTREAM_ACCOUNT_ID_EXPR: &str =
+        "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
+    const UPSTREAM_ACCOUNT_NAME_EXPR: &str =
+        "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT)) END";
+    const UPSTREAM_ACCOUNT_KEY_EXPR: &str =
+        "CASE \
+            WHEN CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END IS NOT NULL \
+             AND CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT)) END IS NOT NULL \
+             AND CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT)) END <> '' \
+              THEN 'id:' || CAST(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END AS TEXT) || '|name:' || CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT)) END \
+            WHEN CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END IS NOT NULL \
+              THEN 'id:' || CAST(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END AS TEXT) \
+            WHEN CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT)) END IS NOT NULL \
+             AND CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT)) END <> '' \
+              THEN 'name:' || CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT)) END \
+            ELSE 'unknown' \
+         END";
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "WITH historical AS (\
+            SELECT prompt_cache_key, \
+                   upstream_account_key, \
+                   upstream_account_id, \
+                   upstream_account_name, \
+                   SUM(request_count) AS request_count, \
+                   SUM(total_tokens) AS total_tokens, \
+                   SUM(total_cost) AS total_cost, \
+                   MAX(last_seen_at) AS last_activity_at \
+              FROM prompt_cache_upstream_account_hourly \
+             WHERE prompt_cache_key IN (",
+    );
+
+    {
+        let mut separated = query.separated(", ");
+        for key in selected_keys {
+            separated.push_bind(key);
+        }
+    }
+
+    query
+        .push(") AND bucket_start_epoch < ")
+        .push_bind(snapshot_hour_start_epoch);
+
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+
+    query.push(
+        " GROUP BY prompt_cache_key, upstream_account_key, upstream_account_id, upstream_account_name\
+         ), current_hour_live AS (\
+            SELECT ",
+    );
+    query
+        .push(KEY_EXPR)
+        .push(" AS prompt_cache_key, ")
+        .push(UPSTREAM_ACCOUNT_KEY_EXPR)
+        .push(
+            " AS upstream_account_key, ",
+        )
+        .push(UPSTREAM_ACCOUNT_ID_EXPR)
+        .push(" AS upstream_account_id, ")
+        .push(UPSTREAM_ACCOUNT_NAME_EXPR)
+        .push(
+            " AS upstream_account_name, \
+                   COUNT(*) AS request_count, \
+                   COALESCE(SUM(COALESCE(total_tokens, 0)), 0) AS total_tokens, \
+                   COALESCE(SUM(COALESCE(cost, 0)), 0) AS total_cost, \
+                   MAX(occurred_at) AS last_activity_at \
+              FROM codex_invocations \
+             WHERE occurred_at >= ",
+        )
+        .push_bind(snapshot_hour_start_bound)
+        .push(" AND ");
+    let snapshot_filter = PromptCacheConversationSnapshotFilter {
+        snapshot_upper_bound: snapshot.snapshot_upper_bound.to_string(),
+        snapshot_boundary_row_id_ceiling: snapshot.snapshot_boundary_row_id_ceiling,
+    };
+    push_snapshot_invocation_visibility_clause(
+        &mut query,
+        "occurred_at",
+        "id",
+        Some(&snapshot_filter),
+    );
+    query
+        .push(" AND ")
+        .push(KEY_EXPR)
+        .push(" IN (");
+
+    {
+        let mut separated = query.separated(", ");
+        for key in selected_keys {
+            separated.push_bind(key);
+        }
+    }
+    query.push(")");
+
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+
+    query
+        .push(" GROUP BY prompt_cache_key, upstream_account_key, upstream_account_id, upstream_account_name\
+         ), combined AS (\
+            SELECT prompt_cache_key, upstream_account_key, upstream_account_id, upstream_account_name, request_count, total_tokens, total_cost, last_activity_at \
+              FROM historical \
+            UNION ALL \
+            SELECT prompt_cache_key, upstream_account_key, upstream_account_id, upstream_account_name, request_count, total_tokens, total_cost, last_activity_at \
+              FROM current_hour_live\
+         ) \
+         SELECT prompt_cache_key, \
+                upstream_account_id, \
+                upstream_account_name, \
+                SUM(request_count) AS request_count, \
+                SUM(total_tokens) AS total_tokens, \
+                SUM(total_cost) AS total_cost, \
+                MAX(last_activity_at) AS last_activity_at \
+           FROM combined \
+          GROUP BY prompt_cache_key, upstream_account_key, upstream_account_id, upstream_account_name \
+          ORDER BY prompt_cache_key ASC, last_activity_at DESC, upstream_account_name DESC, upstream_account_id DESC");
+
+    query
+        .build_query_as::<PromptCacheConversationUpstreamAccountSummaryRow>()
         .fetch_all(pool)
         .await
         .map_err(Into::into)

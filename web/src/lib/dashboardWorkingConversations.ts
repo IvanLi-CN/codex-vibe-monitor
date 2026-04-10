@@ -9,6 +9,7 @@ import { buildInvocationFromPromptCachePreview } from "./promptCacheLive";
 
 export const DASHBOARD_WORKING_CONVERSATIONS_LIMIT = 20;
 export const DASHBOARD_WORKING_CONVERSATIONS_ACTIVITY_MINUTES = 5;
+export const DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE = 20;
 export const DASHBOARD_WORKING_CONVERSATIONS_SELECTION = {
   mode: "activityWindow",
   activityMinutes: DASHBOARD_WORKING_CONVERSATIONS_ACTIVITY_MINUTES,
@@ -171,20 +172,23 @@ function buildPendingCardModel(
 
   const previousInvocation = invocations[1] ?? null;
   const lastTerminalAtEpoch =
+    parseEpoch(conversation.lastTerminalAt) ??
     invocations.find(
       (invocation) =>
         invocation.isTerminal &&
         invocation.occurredAtEpoch != null &&
         invocation.occurredAtEpoch >= rangeStartEpoch,
-    )?.occurredAtEpoch ?? null;
+    )?.occurredAtEpoch ??
+    null;
   const lastInFlightAtEpoch =
+    parseEpoch(conversation.lastInFlightAt) ??
     invocations.find((invocation) => invocation.isInFlight)?.occurredAtEpoch ??
     null;
-  const sortAnchorEpoch =
-    lastTerminalAtEpoch ??
-    lastInFlightAtEpoch ??
-    currentInvocation.occurredAtEpoch ??
-    Number.MIN_SAFE_INTEGER;
+  const sortAnchorEpoch = Math.max(
+    lastTerminalAtEpoch ?? Number.MIN_SAFE_INTEGER,
+    lastInFlightAtEpoch ?? Number.MIN_SAFE_INTEGER,
+    currentInvocation.occurredAtEpoch ?? Number.MIN_SAFE_INTEGER,
+  );
 
   return {
     promptCacheKey: conversation.promptCacheKey,
@@ -237,14 +241,14 @@ export function mapPromptCacheConversationsToDashboardCards(
 
   const rangeStartEpoch =
     parseEpoch(response.rangeStart) ?? Number.MIN_SAFE_INTEGER;
-  const limit = options.limit ?? DASHBOARD_WORKING_CONVERSATIONS_LIMIT;
   const sortedCards = response.conversations
     .map((conversation) => buildPendingCardModel(conversation, rangeStartEpoch))
     .filter((card): card is PendingSequenceCardModel => card != null)
-    .sort(compareDashboardWorkingConversationVisibleSetOrder)
-    .slice(0, limit);
+    .sort(compareDashboardWorkingConversationVisibleSetOrder);
 
-  sortedCards.sort(compareDashboardWorkingConversationDisplayOrder);
+  if (typeof options.limit === "number" && Number.isFinite(options.limit)) {
+    sortedCards.splice(options.limit);
+  }
 
   const hashFn = options.hashFn ?? hashDashboardWorkingConversationKey;
   const collisionHashFn =
