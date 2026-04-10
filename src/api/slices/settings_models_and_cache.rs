@@ -30,9 +30,13 @@ pub(crate) struct ApiPoolUpstreamRequestAttempt {
     #[sqlx(default)]
     pub(crate) http_status: Option<i64>,
     #[sqlx(default)]
+    pub(crate) downstream_http_status: Option<i64>,
+    #[sqlx(default)]
     pub(crate) failure_kind: Option<String>,
     #[sqlx(default)]
     pub(crate) error_message: Option<String>,
+    #[sqlx(default)]
+    pub(crate) downstream_error_message: Option<String>,
     #[sqlx(default)]
     pub(crate) connect_latency_ms: Option<f64>,
     #[sqlx(default)]
@@ -596,6 +600,8 @@ pub(crate) struct PromptCacheConversationInvocationPreviewResponse {
     pub(crate) reasoning_tokens: Option<i64>,
     pub(crate) reasoning_effort: Option<String>,
     pub(crate) error_message: Option<String>,
+    pub(crate) downstream_status_code: Option<i64>,
+    pub(crate) downstream_error_message: Option<String>,
     pub(crate) failure_kind: Option<String>,
     pub(crate) is_actionable: Option<bool>,
     pub(crate) response_content_encoding: Option<String>,
@@ -1049,6 +1055,8 @@ pub(crate) struct PromptCacheConversationInvocationPreviewRow {
     pub(crate) reasoning_tokens: Option<i64>,
     pub(crate) reasoning_effort: Option<String>,
     pub(crate) error_message: Option<String>,
+    pub(crate) downstream_status_code: Option<i64>,
+    pub(crate) downstream_error_message: Option<String>,
     pub(crate) failure_kind: Option<String>,
     pub(crate) is_actionable: Option<i64>,
     pub(crate) proxy_display_name: Option<String>,

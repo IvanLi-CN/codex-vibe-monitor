@@ -376,9 +376,11 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
                  '$.reasoningEffort', ?17, \
                  '$.responseContentEncoding', ?18, \
                  '$.requestedServiceTier', ?19, \
-                 '$.serviceTier', ?20 \
+                 '$.serviceTier', ?20, \
+                 '$.downstreamStatusCode', ?21, \
+                 '$.downstreamErrorMessage', ?22 \
              ) \
-         WHERE invoke_id = ?21",
+         WHERE invoke_id = ?23",
     )
     .bind(120_i64)
     .bind(80_i64)
@@ -400,6 +402,8 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
     .bind("br")
     .bind("flex")
     .bind("scale")
+    .bind(502_i64)
+    .bind("pool upstream responded with 502: failed to contact oauth codex upstream")
     .bind("preview-06")
     .execute(&state.pool)
     .await
@@ -472,6 +476,17 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
     assert_eq!(latest.failure_class.as_deref(), Some("none"));
     assert_eq!(latest.route_mode.as_deref(), Some("pool"));
     assert_eq!(latest.source.as_deref(), Some(SOURCE_CRS));
+
+    let preview_with_downstream = conversation
+        .recent_invocations
+        .iter()
+        .find(|item| item.invoke_id == "preview-06")
+        .expect("preview-06 should be included");
+    assert_eq!(preview_with_downstream.downstream_status_code, Some(502));
+    assert_eq!(
+        preview_with_downstream.downstream_error_message.as_deref(),
+        Some("pool upstream responded with 502: failed to contact oauth codex upstream")
+    );
 
     let id_only = conversation
         .recent_invocations

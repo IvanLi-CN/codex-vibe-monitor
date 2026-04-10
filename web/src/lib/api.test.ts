@@ -1723,6 +1723,9 @@ describe("account pool frontend API helpers", () => {
                   reasoningTokens: 3,
                   reasoningEffort: "high",
                   errorMessage: "[upstream_response_failed] preview error",
+                  downstreamStatusCode: 502,
+                  downstreamErrorMessage:
+                    "pool upstream responded with 502: failed to contact oauth codex upstream",
                   failureKind: "upstream_response_failed",
                   isActionable: true,
                   responseContentEncoding: "br",
@@ -1782,6 +1785,14 @@ describe("account pool frontend API helpers", () => {
     );
     expect(response.conversations[0]?.recentInvocations[0]?.failureKind).toBe(
       "upstream_response_failed",
+    );
+    expect(
+      response.conversations[0]?.recentInvocations[0]?.downstreamStatusCode,
+    ).toBe(502);
+    expect(
+      response.conversations[0]?.recentInvocations[0]?.downstreamErrorMessage,
+    ).toBe(
+      "pool upstream responded with 502: failed to contact oauth codex upstream",
     );
     expect(response.conversations[0]?.recentInvocations[0]?.isActionable).toBe(true);
     expect(

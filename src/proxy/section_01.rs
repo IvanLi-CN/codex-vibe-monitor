@@ -525,10 +525,12 @@ pub(crate) struct PoolUpstreamError {
     pub(crate) account: Option<PoolResolvedAccount>,
     pub(crate) status: StatusCode,
     pub(crate) message: String,
+    pub(crate) canonical_error_message: Option<String>,
     pub(crate) failure_kind: &'static str,
     pub(crate) connect_latency_ms: f64,
     pub(crate) upstream_error_code: Option<String>,
     pub(crate) upstream_error_message: Option<String>,
+    pub(crate) downstream_error_message: Option<String>,
     pub(crate) upstream_request_id: Option<String>,
     pub(crate) oauth_responses_debug: Option<oauth_bridge::OauthResponsesDebugInfo>,
     pub(crate) attempt_summary: PoolAttemptSummary,
@@ -574,10 +576,12 @@ fn build_pool_rate_limited_error(
         account: None,
         status: StatusCode::TOO_MANY_REQUESTS,
         message: POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
+        canonical_error_message: None,
         failure_kind,
         connect_latency_ms: 0.0,
         upstream_error_code: None,
         upstream_error_message: None,
+        downstream_error_message: None,
         upstream_request_id: None,
         oauth_responses_debug: None,
         attempt_summary: pool_attempt_summary(
@@ -599,10 +603,12 @@ fn build_pool_no_available_account_error(
         account: None,
         status: StatusCode::SERVICE_UNAVAILABLE,
         message: POOL_NO_AVAILABLE_ACCOUNT_MESSAGE.to_string(),
+        canonical_error_message: None,
         failure_kind: PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
         connect_latency_ms: 0.0,
         upstream_error_code: None,
         upstream_error_message: None,
+        downstream_error_message: None,
         upstream_request_id: None,
         oauth_responses_debug: None,
         attempt_summary: pool_attempt_summary(
@@ -637,10 +643,12 @@ fn build_pool_degraded_only_error(
         account: None,
         status: StatusCode::SERVICE_UNAVAILABLE,
         message: POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
+        canonical_error_message: None,
         failure_kind: PROXY_FAILURE_POOL_ALL_ACCOUNTS_DEGRADED,
         connect_latency_ms: 0.0,
         upstream_error_code: None,
         upstream_error_message: None,
+        downstream_error_message: None,
         upstream_request_id: None,
         oauth_responses_debug: None,
         attempt_summary: pool_attempt_summary(
@@ -881,6 +889,32 @@ fn proxy_capture_response_status_is_success(
     logical_stream_failure: bool,
 ) -> bool {
     !logical_stream_failure && proxy_forward_response_status_is_success(status, stream_error)
+}
+
+fn proxy_capture_is_pure_downstream_close(
+    upstream_status: StatusCode,
+    stream_error: bool,
+    logical_stream_failure: bool,
+    downstream_closed: bool,
+) -> bool {
+    downstream_closed
+        && upstream_status.is_success()
+        && !stream_error
+        && !logical_stream_failure
+}
+
+fn proxy_capture_invocation_status(
+    upstream_status: StatusCode,
+    has_error_message: bool,
+    downstream_closed: bool,
+) -> String {
+    if downstream_closed {
+        "failed".to_string()
+    } else if upstream_status.is_success() && !has_error_message {
+        "success".to_string()
+    } else {
+        format!("http_{}", upstream_status.as_u16())
+    }
 }
 
 fn proxy_forward_response_failure_kind(

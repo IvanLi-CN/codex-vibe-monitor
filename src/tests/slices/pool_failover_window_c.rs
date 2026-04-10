@@ -408,7 +408,10 @@ async fn pool_route_oauth_observability_omits_fingerprints_without_crypto_key() 
     assert!(request_debug.request_body_prefix_fingerprint.is_none());
     assert!(request_debug.request_body_prefix_bytes.is_none());
     assert_eq!(request_debug.request_body_snapshot_kind, Some("memory"));
-    assert_eq!(request_debug.responses_body_mode, Some("small_body_rewrite"));
+    assert_eq!(
+        request_debug.responses_body_mode,
+        Some("small_body_rewrite")
+    );
     let serialized_debug = serde_json::to_string(&request_debug).expect("serialize request debug");
     assert!(
         !serialized_debug.contains("session-no-crypto"),
@@ -476,6 +479,17 @@ async fn pool_route_oauth_responses_timeout_switches_to_alternate_route() {
     #[derive(sqlx::FromRow)]
     struct PersistedPayloadRow {
         payload: Option<String>,
+    }
+
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRow {
+        attempt_index: i64,
+        status: String,
+        http_status: Option<i64>,
+        downstream_http_status: Option<i64>,
+        failure_kind: Option<String>,
+        error_message: Option<String>,
+        downstream_error_message: Option<String>,
     }
 
     let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
@@ -579,6 +593,61 @@ async fn pool_route_oauth_responses_timeout_switches_to_alternate_route() {
         Some(2)
     );
     assert!(persisted_payload["poolAttemptTerminalReason"].is_null());
+
+    wait_for_pool_attempt_row_count(&state.pool, 2).await;
+    let attempt_rows = sqlx::query_as::<_, AttemptRow>(
+        r#"
+        SELECT
+            attempt_index,
+            status,
+            http_status,
+            downstream_http_status,
+            failure_kind,
+            error_message,
+            downstream_error_message
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load oauth timeout failover attempt rows");
+    assert_eq!(attempt_rows.len(), 2);
+    assert_eq!(attempt_rows[0].attempt_index, 1);
+    assert_eq!(
+        attempt_rows[0].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
+    );
+    assert_eq!(attempt_rows[0].http_status, None);
+    assert_eq!(attempt_rows[0].downstream_http_status, Some(502));
+    assert_eq!(
+        attempt_rows[0].failure_kind.as_deref(),
+        Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT)
+    );
+    assert!(
+        attempt_rows[0]
+            .error_message
+            .as_deref()
+            .is_some_and(|message| {
+                !message.contains("pool upstream responded with 502")
+                    && (message.contains("timed out")
+                        || message.contains("failed to contact oauth codex upstream"))
+            }),
+        "unexpected canonical attempt error row: {:?}",
+        attempt_rows[0]
+    );
+    assert!(
+        attempt_rows[0]
+            .downstream_error_message
+            .as_deref()
+            .is_some_and(|message| {
+                message.contains("pool upstream responded with 502")
+                    && (message.contains("failed to contact oauth codex upstream")
+                        || message.contains("failed to read error body"))
+            }),
+        "unexpected downstream attempt error row: {:?}",
+        attempt_rows[0]
+    );
 
     slow_upstream_handle.abort();
     fast_upstream_handle.abort();
@@ -687,7 +756,10 @@ async fn pool_route_large_oauth_responses_file_backed_body_passthroughs_non_stre
     let request_debug = upstream
         .oauth_responses_debug
         .expect("oauth responses debug should be present");
-    assert_eq!(request_debug.responses_body_mode, Some("large_body_passthrough"));
+    assert_eq!(
+        request_debug.responses_body_mode,
+        Some("large_body_passthrough")
+    );
     assert_eq!(request_debug.request_body_snapshot_kind, Some("file"));
     assert_eq!(
         request_debug.rewrite,
@@ -876,7 +948,10 @@ async fn pool_route_large_oauth_responses_file_backed_body_passthroughs_non_stre
     let request_debug = upstream
         .oauth_responses_debug
         .expect("oauth responses debug should be present");
-    assert_eq!(request_debug.responses_body_mode, Some("large_body_passthrough"));
+    assert_eq!(
+        request_debug.responses_body_mode,
+        Some("large_body_passthrough")
+    );
     assert_eq!(request_debug.request_body_snapshot_kind, Some("file"));
 
     upstream_handle.abort();
@@ -1179,7 +1254,10 @@ async fn pool_route_responses_preflight_failures_do_not_consume_distinct_account
             .expect("read retry budget response"),
     )
     .expect("decode retry budget response");
-    assert_eq!(payload["authorization"].as_str(), Some("Bearer route-budget-ok"));
+    assert_eq!(
+        payload["authorization"].as_str(),
+        Some("Bearer route-budget-ok")
+    );
     assert_eq!(
         payload["attempt"].as_i64(),
         Some(2),
@@ -2519,6 +2597,21 @@ async fn build_account_sticky_keys_response_activity_window_previews_respect_tim
         ("sticky-window-preview-recent", recent_time.as_str()),
         ("sticky-window-preview-stale", stale_time.as_str()),
     ] {
+        let payload = if invoke_id == "sticky-window-preview-recent" {
+            json!({
+                "stickyKey": sticky_key,
+                "upstreamAccountId": account_id,
+                "model": "gpt-5.4",
+                "downstreamStatusCode": 200,
+                "downstreamErrorMessage": "[downstream_closed] downstream closed while streaming upstream response",
+            })
+        } else {
+            json!({
+                "stickyKey": sticky_key,
+                "upstreamAccountId": account_id,
+                "model": "gpt-5.4",
+            })
+        };
         sqlx::query(
             r#"
             INSERT INTO codex_invocations (
@@ -2533,14 +2626,7 @@ async fn build_account_sticky_keys_response_activity_window_previews_respect_tim
         .bind("success")
         .bind(64_i64)
         .bind(0.08_f64)
-        .bind(
-            json!({
-                "stickyKey": sticky_key,
-                "upstreamAccountId": account_id,
-                "model": "gpt-5.4",
-            })
-            .to_string(),
-        )
+        .bind(payload.to_string())
         .bind("{}")
         .execute(&state.pool)
         .await
@@ -2566,6 +2652,11 @@ async fn build_account_sticky_keys_response_activity_window_previews_respect_tim
     assert_eq!(
         previews[0]["invokeId"].as_str(),
         Some("sticky-window-preview-recent")
+    );
+    assert_eq!(previews[0]["downstreamStatusCode"].as_i64(), Some(200));
+    assert_eq!(
+        previews[0]["downstreamErrorMessage"].as_str(),
+        Some("[downstream_closed] downstream closed while streaming upstream response")
     );
 }
 

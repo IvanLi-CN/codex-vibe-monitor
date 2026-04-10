@@ -1393,6 +1393,8 @@ pub(crate) async fn build_account_sticky_keys_response(
                     reasoning_tokens: row.reasoning_tokens,
                     reasoning_effort: row.reasoning_effort,
                     error_message: row.error_message,
+                    downstream_status_code: row.downstream_status_code,
+                    downstream_error_message: row.downstream_error_message,
                     failure_kind: row.failure_kind,
                     is_actionable: row.is_actionable.map(|value| value != 0),
                     response_content_encoding: row.response_content_encoding,
@@ -1572,6 +1574,10 @@ async fn query_account_sticky_key_recent_invocations(
              t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, \
              t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, ",
         )
+        .push(crate::api::INVOCATION_DOWNSTREAM_STATUS_CODE_SQL)
+        .push(" AS downstream_status_code, ")
+        .push(crate::api::INVOCATION_DOWNSTREAM_ERROR_MESSAGE_SQL)
+        .push(" AS downstream_error_message, ")
         .push(crate::api::INVOCATION_ENDPOINT_SQL)
         .push(" AS endpoint, ")
         .push(crate::api::INVOCATION_STICKY_KEY_SQL)
@@ -1601,7 +1607,7 @@ async fn query_account_sticky_key_recent_invocations(
     }
 
     query
-        .push(")) SELECT sticky_key, id, invoke_id, occurred_at, status, failure_class, route_mode, model, total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, reasoning_effort, error_message, failure_kind, is_actionable, proxy_display_name, upstream_account_id, upstream_account_name, response_content_encoding, requested_service_tier, service_tier, billing_service_tier, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, endpoint FROM ranked WHERE row_number <= ")
+        .push(")) SELECT sticky_key, id, invoke_id, occurred_at, status, failure_class, route_mode, model, total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, reasoning_effort, error_message, downstream_status_code, downstream_error_message, failure_kind, is_actionable, proxy_display_name, upstream_account_id, upstream_account_name, response_content_encoding, requested_service_tier, service_tier, billing_service_tier, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, endpoint FROM ranked WHERE row_number <= ")
         .push_bind(limit_per_key)
         .push(" ORDER BY sticky_key ASC, occurred_at DESC, id DESC");
 
@@ -2370,4 +2376,3 @@ fn decrypt_secret_value(key: &[u8; 32], payload: &str) -> Result<String> {
         .map_err(|err| anyhow!("failed to decrypt secret: {err}"))?;
     String::from_utf8(plaintext).context("failed to decode decrypted secret")
 }
-

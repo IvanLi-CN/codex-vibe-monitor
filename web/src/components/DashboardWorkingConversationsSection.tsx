@@ -557,11 +557,11 @@ function InvocationSlot({
               "h-4.5 rounded-full border-transparent bg-base-100/10 px-1.5 py-0 text-[8.5px] font-semibold leading-none text-base-content/72 shadow-none",
             )}
           </div>
-          {viewModel.errorMessage ? (
+          {viewModel.collapsedErrorSummary ? (
             <span
               className="inline-flex h-4.5 w-4.5 items-center justify-center rounded-full bg-base-100/12 text-error/90"
-              title={viewModel.errorMessage}
-              aria-label={viewModel.errorMessage}
+              title={viewModel.collapsedErrorSummary}
+              aria-label={viewModel.collapsedErrorSummary}
             >
               <AppIcon
                 name="alert-circle-outline"
@@ -660,11 +660,11 @@ function InvocationSlot({
           }
         />
 
-        {viewModel.errorMessage ? (
+        {viewModel.collapsedErrorSummary ? (
           <InvocationMetaLine
             label={lineLabels.error}
-            value={viewModel.errorMessage}
-            title={viewModel.errorMessage}
+            value={viewModel.collapsedErrorSummary}
+            title={viewModel.collapsedErrorSummary}
             toneClassName="text-error"
           />
         ) : null}

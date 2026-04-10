@@ -626,6 +626,231 @@ fn classify_invocation_failure_marks_downstream_closed_as_client_abort() {
 }
 
 #[test]
+fn proxy_capture_invocation_status_marks_downstream_closed_as_failed() {
+    assert_eq!(
+        proxy_capture_invocation_status(StatusCode::OK, false, true),
+        "failed"
+    );
+    assert_eq!(
+        proxy_capture_invocation_status(StatusCode::OK, false, false),
+        "success"
+    );
+    assert_eq!(
+        proxy_capture_invocation_status(StatusCode::OK, true, false),
+        "http_200"
+    );
+}
+
+#[test]
+fn proxy_capture_is_pure_downstream_close_requires_a_clean_upstream_success() {
+    assert!(proxy_capture_is_pure_downstream_close(
+        StatusCode::OK,
+        false,
+        false,
+        true,
+    ));
+    assert!(!proxy_capture_is_pure_downstream_close(
+        StatusCode::BAD_GATEWAY,
+        false,
+        false,
+        true,
+    ));
+    assert!(!proxy_capture_is_pure_downstream_close(
+        StatusCode::OK,
+        true,
+        false,
+        true,
+    ));
+    assert!(!proxy_capture_is_pure_downstream_close(
+        StatusCode::OK,
+        false,
+        true,
+        true,
+    ));
+}
+
+#[tokio::test]
+async fn insert_pool_upstream_terminal_attempt_preserves_downstream_wrapper_status_for_transport_failures()
+{
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRow {
+        status: String,
+        http_status: Option<i64>,
+        downstream_http_status: Option<i64>,
+        failure_kind: Option<String>,
+        error_message: Option<String>,
+        downstream_error_message: Option<String>,
+    }
+
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    ensure_schema(&pool).await.expect("ensure schema");
+    let trace = PoolUpstreamAttemptTraceContext {
+        invoke_id: "proxy-test-terminal-transport".to_string(),
+        occurred_at: "2026-04-10 00:00:00".to_string(),
+        endpoint: "/v1/responses".to_string(),
+        sticky_key: Some("sticky-terminal-transport".to_string()),
+        requester_ip: Some("203.0.113.10".to_string()),
+    };
+    let final_error = PoolUpstreamError {
+        account: None,
+        status: StatusCode::BAD_GATEWAY,
+        message:
+            "pool upstream responded with 502: failed to contact oauth codex upstream".to_string(),
+        canonical_error_message: Some("failed to contact oauth codex upstream".to_string()),
+        failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+        connect_latency_ms: 0.0,
+        upstream_error_code: None,
+        upstream_error_message: None,
+        downstream_error_message: Some(
+            "pool upstream responded with 502: failed to contact oauth codex upstream"
+                .to_string(),
+        ),
+        upstream_request_id: None,
+        oauth_responses_debug: None,
+        attempt_summary: PoolAttemptSummary::default(),
+        requested_service_tier: None,
+        request_body_for_capture: None,
+    };
+
+    insert_pool_upstream_terminal_attempt(
+        &pool,
+        &trace,
+        &final_error,
+        2,
+        1,
+        PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+    )
+    .await
+    .expect("persist budget exhausted terminal attempt");
+
+    let row = sqlx::query_as::<_, AttemptRow>(
+        r#"
+        SELECT
+            status,
+            http_status,
+            downstream_http_status,
+            failure_kind,
+            error_message,
+            downstream_error_message
+        FROM pool_upstream_request_attempts
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load persisted terminal attempt");
+
+    assert_eq!(
+        row.status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL
+    );
+    assert_eq!(row.http_status, None);
+    assert_eq!(row.downstream_http_status, Some(502));
+    assert_eq!(
+        row.failure_kind.as_deref(),
+        Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM)
+    );
+    assert_eq!(
+        row.error_message.as_deref(),
+        Some("failed to contact oauth codex upstream")
+    );
+    assert_eq!(
+        row.downstream_error_message.as_deref(),
+        Some("pool upstream responded with 502: failed to contact oauth codex upstream")
+    );
+}
+
+#[tokio::test]
+async fn persist_proxy_capture_runtime_record_preserves_downstream_closed_as_client_abort() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct InvocationRow {
+        status: Option<String>,
+        failure_kind: Option<String>,
+        failure_class: Option<String>,
+        is_actionable: Option<i64>,
+    }
+
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    ensure_schema(&pool).await.expect("ensure schema");
+
+    let persisted = persist_proxy_capture_runtime_record(
+        &pool,
+        ProxyCaptureRecord {
+            invoke_id: "proxy-test-downstream-closed".to_string(),
+            occurred_at: "2026-04-10 00:00:00".to_string(),
+            model: Some("gpt-5.4".to_string()),
+            usage: ParsedUsage::default(),
+            cost: None,
+            cost_estimated: false,
+            price_version: None,
+            status: "failed".to_string(),
+            error_message: None,
+            failure_kind: Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED.to_string()),
+            payload: None,
+            raw_response: "{}".to_string(),
+            req_raw: RawPayloadMeta {
+                path: None,
+                size_bytes: 0,
+                truncated: false,
+                truncated_reason: None,
+            },
+            resp_raw: RawPayloadMeta {
+                path: None,
+                size_bytes: 0,
+                truncated: false,
+                truncated_reason: None,
+            },
+            timings: StageTimings {
+                t_total_ms: 0.0,
+                t_req_read_ms: 0.0,
+                t_req_parse_ms: 0.0,
+                t_upstream_connect_ms: 0.0,
+                t_upstream_ttfb_ms: 0.0,
+                t_upstream_stream_ms: 0.0,
+                t_resp_parse_ms: 0.0,
+                t_persist_ms: 0.0,
+            },
+        },
+    )
+    .await
+    .expect("persist runtime record")
+    .expect("persisted invocation should be returned");
+
+    assert_eq!(persisted.status.as_deref(), Some("failed"));
+    assert_eq!(
+        persisted.failure_kind.as_deref(),
+        Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED)
+    );
+    assert_eq!(persisted.failure_class.as_deref(), Some("client_abort"));
+    assert_eq!(persisted.is_actionable, Some(false));
+
+    let row = sqlx::query_as::<_, InvocationRow>(
+        r#"
+        SELECT status, failure_kind, failure_class, is_actionable
+        FROM codex_invocations
+        WHERE invoke_id = ?1
+        "#,
+    )
+    .bind("proxy-test-downstream-closed")
+    .fetch_one(&pool)
+    .await
+    .expect("load persisted downstream closed invocation");
+
+    assert_eq!(row.status.as_deref(), Some("failed"));
+    assert_eq!(
+        row.failure_kind.as_deref(),
+        Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED)
+    );
+    assert_eq!(row.failure_class.as_deref(), Some("client_abort"));
+    assert_eq!(row.is_actionable, Some(0));
+}
+
+#[test]
 fn classify_invocation_failure_marks_invalid_key_as_client_failure() {
     let result = classify_invocation_failure(Some("http_401"), Some("Invalid API key format"));
     assert_eq!(result.failure_class, FailureClass::ClientFailure);
@@ -711,6 +936,20 @@ fn resolve_failure_classification_overrides_legacy_default_none_for_failures() {
         result.failure_kind.as_deref(),
         Some("failed_contact_upstream")
     );
+}
+
+#[test]
+fn resolve_failure_classification_uses_explicit_downstream_closed_kind() {
+    let result = resolve_failure_classification(
+        Some("http_200"),
+        None,
+        Some("downstream_closed"),
+        None,
+        None,
+    );
+    assert_eq!(result.failure_class, FailureClass::ClientAbort);
+    assert!(!result.is_actionable);
+    assert_eq!(result.failure_kind.as_deref(), Some("downstream_closed"));
 }
 
 #[test]

@@ -522,9 +522,10 @@ pub(crate) fn derive_failure_kind(status_norm: &str, err: &str, err_lower: &str)
     None
 }
 
-pub(crate) fn classify_invocation_failure(
+fn classify_invocation_failure_with_kind(
     status: Option<&str>,
     error_message: Option<&str>,
+    explicit_failure_kind: Option<&str>,
 ) -> FailureClassification {
     let status_norm = status.unwrap_or_default().trim().to_ascii_lowercase();
     let err = error_message.unwrap_or_default().trim();
@@ -545,7 +546,11 @@ pub(crate) fn classify_invocation_failure(
         };
     }
 
-    let failure_kind = extract_failure_kind_prefix(err)
+    let failure_kind = explicit_failure_kind
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| extract_failure_kind_prefix(err))
         .or_else(|| derive_failure_kind(&status_norm, err, &err_lower));
 
     let failure_kind_lower = failure_kind
@@ -608,6 +613,13 @@ pub(crate) fn classify_invocation_failure(
     }
 }
 
+pub(crate) fn classify_invocation_failure(
+    status: Option<&str>,
+    error_message: Option<&str>,
+) -> FailureClassification {
+    classify_invocation_failure_with_kind(status, error_message, None)
+}
+
 pub(crate) fn resolve_failure_classification(
     status: Option<&str>,
     error_message: Option<&str>,
@@ -615,7 +627,7 @@ pub(crate) fn resolve_failure_classification(
     failure_class: Option<&str>,
     is_actionable: Option<i64>,
 ) -> FailureClassification {
-    let derived = classify_invocation_failure(status, error_message);
+    let derived = classify_invocation_failure_with_kind(status, error_message, failure_kind);
     let stored_class = failure_class.and_then(FailureClass::from_db_str);
     let resolved_class = match stored_class {
         // Legacy rows can carry migration defaults (`none`/`0`) for non-success records.
@@ -1703,6 +1715,8 @@ pub(crate) struct ApiInvocation {
     pub(crate) status: Option<String>,
     pub(crate) error_message: Option<String>,
     #[sqlx(default)]
+    pub(crate) downstream_status_code: Option<i64>,
+    #[sqlx(default)]
     pub(crate) failure_kind: Option<String>,
     #[sqlx(default)]
     pub(crate) stream_terminal_event: Option<String>,
@@ -1710,6 +1724,8 @@ pub(crate) struct ApiInvocation {
     pub(crate) upstream_error_code: Option<String>,
     #[sqlx(default)]
     pub(crate) upstream_error_message: Option<String>,
+    #[sqlx(default)]
+    pub(crate) downstream_error_message: Option<String>,
     #[sqlx(default)]
     pub(crate) upstream_request_id: Option<String>,
     #[sqlx(default)]
@@ -1799,4 +1815,3 @@ pub(crate) struct ListResponse {
     pub(crate) page_size: i64,
     pub(crate) records: Vec<ApiInvocation>,
 }
-

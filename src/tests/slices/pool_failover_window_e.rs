@@ -1074,6 +1074,64 @@ async fn list_invocations_status_failed_matches_http_failure_statuses() {
 }
 
 #[tokio::test]
+async fn list_invocations_keyword_filter_matches_downstream_error_message() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            error_message,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+    )
+    .bind("keyword-downstream-close")
+    .bind("2026-03-10 08:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("failed")
+    .bind::<Option<&str>>(None)
+    .bind(
+        json!({
+            "failureKind": "downstream_closed",
+            "downstreamStatusCode": 200,
+            "downstreamErrorMessage":
+                "[downstream_closed] downstream closed while streaming upstream response"
+        })
+        .to_string(),
+    )
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert downstream-close row");
+
+    let Json(filtered) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            keyword: Some("downstream closed".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("keyword filter should match downstream diagnostics");
+
+    assert_eq!(filtered.total, 1);
+    assert_eq!(filtered.records[0].invoke_id, "keyword-downstream-close");
+    assert_eq!(
+        filtered.records[0].downstream_error_message.as_deref(),
+        Some("[downstream_closed] downstream closed while streaming upstream response")
+    );
+}
+
+#[tokio::test]
 async fn list_invocations_status_success_excludes_resolved_failures() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

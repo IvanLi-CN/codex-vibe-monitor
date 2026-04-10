@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { userEvent, within, expect, waitFor } from 'storybook/test'
 import { I18nProvider } from '../i18n'
+import { UPSTREAM_ACCOUNTS_CHANGED_EVENT } from '../lib/upstreamAccountsEvents'
 import UpstreamAccountsPage from '../pages/account-pool/UpstreamAccounts'
 import {
   AccountPoolStoryRouter,
@@ -41,6 +42,35 @@ function detailRouteEntry(accountId: number, state?: Record<string, unknown>) {
   }
 }
 
+async function findTokyoDetailDialog(documentScope: ReturnType<typeof within>) {
+  const existingDialog = documentScope.queryByRole('dialog', {
+    name: /Codex Pro - Tokyo/i,
+  })
+  if (existingDialog) return existingDialog
+
+  await userEvent.click(
+    await documentScope.findByRole('button', {
+      name: /选择 Codex Pro - Tokyo/i,
+    }),
+  )
+
+  return await documentScope.findByRole('dialog', {
+    name: /Codex Pro - Tokyo/i,
+  })
+}
+
+function setTextboxValue(element: HTMLInputElement, value: string) {
+  const view = element.ownerDocument.defaultView
+  const setter = view
+    ? Object.getOwnPropertyDescriptor(view.HTMLInputElement.prototype, 'value')
+        ?.set
+    : undefined
+
+  setter?.call(element, value)
+  element.dispatchEvent(new Event('input', { bubbles: true }))
+  element.dispatchEvent(new Event('change', { bubbles: true }))
+}
+
 export const DetailDrawer: Story = {
   render: () => (
     <AccountPoolStoryRouter
@@ -49,7 +79,7 @@ export const DetailDrawer: Story = {
   ),
   play: async ({ canvasElement }) => {
     const documentScope = within(canvasElement.ownerDocument.body)
-    const dialog = await documentScope.findByRole('dialog', { name: /Codex Pro - Tokyo/i })
+    const dialog = await findTokyoDetailDialog(documentScope)
     await expect(within(dialog).getByRole('tab', { name: /概览|overview/i })).toHaveAttribute('aria-selected', 'true')
     await expect(within(dialog).getByText(/最近成功同步|last successful sync/i)).toBeInTheDocument()
     await expect(within(dialog).getByText(/5 小时窗口|5h window/i)).toBeInTheDocument()
@@ -63,7 +93,40 @@ export const DetailDrawer: Story = {
     await expect(within(dialog).getByText(/最近账号动作|latest account action/i)).toBeInTheDocument()
     await expect(within(dialog).getByText(/Weekly cap exhausted; traffic was moved to a sibling Tokyo lane\./i)).toBeInTheDocument()
     await userEvent.click(within(dialog).getByRole('tab', { name: /编辑|edit/i }))
-    await expect(within(dialog).getByLabelText(/显示名称|display name/i)).toBeInTheDocument()
+    await waitFor(() => {
+      expect(dialog.querySelector('input[name="detailDisplayName"]')).not.toBeNull()
+    })
+  },
+}
+
+export const EditDraftSurvivesBackgroundRefresh: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={detailRouteEntry(101)}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const dialog = await findTokyoDetailDialog(documentScope)
+    await userEvent.click(
+      within(dialog).getByRole('tab', { name: /编辑|edit/i }),
+    )
+    await waitFor(() => {
+      expect(dialog.querySelector('input[name="detailDisplayName"]')).not.toBeNull()
+    })
+    const displayNameInput = dialog.querySelector(
+      'input[name="detailDisplayName"]',
+    ) as HTMLInputElement
+    setTextboxValue(displayNameInput, 'Codex Pro - Tokyo Draft')
+
+    window.dispatchEvent(new CustomEvent(UPSTREAM_ACCOUNTS_CHANGED_EVENT))
+
+    await waitFor(() => {
+      const refreshedInput = dialog.querySelector(
+        'input[name="detailDisplayName"]',
+      ) as HTMLInputElement
+      expect(refreshedInput.value).toBe('Codex Pro - Tokyo Draft')
+    })
   },
 }
 

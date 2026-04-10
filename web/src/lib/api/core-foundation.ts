@@ -323,6 +323,8 @@ export interface ApiInvocation {
   cost?: number;
   status?: string;
   errorMessage?: string;
+  downstreamStatusCode?: number | null;
+  downstreamErrorMessage?: string;
   failureKind?: string;
   streamTerminalEvent?: string;
   upstreamErrorCode?: string;
@@ -410,8 +412,10 @@ export interface ApiPoolUpstreamRequestAttempt {
   status: string;
   phase?: string | null;
   httpStatus?: number | null;
+  downstreamHttpStatus?: number | null;
   failureKind?: string | null;
   errorMessage?: string | null;
+  downstreamErrorMessage?: string | null;
   connectLatencyMs?: number | null;
   firstByteLatencyMs?: number | null;
   streamLatencyMs?: number | null;
@@ -992,6 +996,8 @@ export interface PromptCacheConversationInvocationPreview {
   reasoningTokens?: ApiInvocation["reasoningTokens"];
   reasoningEffort?: ApiInvocation["reasoningEffort"];
   errorMessage?: ApiInvocation["errorMessage"];
+  downstreamStatusCode?: ApiInvocation["downstreamStatusCode"];
+  downstreamErrorMessage?: ApiInvocation["downstreamErrorMessage"];
   failureKind?: ApiInvocation["failureKind"];
   isActionable?: ApiInvocation["isActionable"];
   responseContentEncoding?: ApiInvocation["responseContentEncoding"];
@@ -1626,6 +1632,12 @@ function normalizePromptCacheConversationInvocationPreview(
     errorMessage:
       typeof payload.errorMessage === "string" && payload.errorMessage.trim()
         ? payload.errorMessage
+        : undefined,
+    downstreamStatusCode: normalizeFiniteNumber(payload.downstreamStatusCode),
+    downstreamErrorMessage:
+      typeof payload.downstreamErrorMessage === "string" &&
+      payload.downstreamErrorMessage.trim()
+        ? payload.downstreamErrorMessage
         : undefined,
     failureKind:
       typeof payload.failureKind === "string" && payload.failureKind.trim()

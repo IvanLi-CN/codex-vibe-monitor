@@ -425,6 +425,111 @@ describe("InvocationRecordsTable", () => {
     );
   });
 
+  it("renders upstream and downstream error channels separately", async () => {
+    apiMocks.fetchInvocationRecordDetail.mockResolvedValue({
+      id: 32,
+      abnormalResponseBody: null,
+    });
+    apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([
+      {
+        id: 19,
+        invokeId: "invoke-split-error",
+        occurredAt: "2026-03-10T00:00:00Z",
+        endpoint: "/v1/responses",
+        attemptIndex: 2,
+        distinctAccountIndex: 2,
+        sameAccountRetryIndex: 1,
+        status: "transport_failure",
+        httpStatus: null,
+        downstreamHttpStatus: 502,
+        failureKind: "failed_contact_upstream",
+        errorMessage:
+          "failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
+        downstreamErrorMessage:
+          "pool upstream responded with 502: failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
+        createdAt: "2026-03-10T00:00:02Z",
+        upstreamAccountId: 42,
+        upstreamAccountName: "pool-account-42",
+      },
+    ]);
+
+    render(
+      <InvocationRecordsTable
+        focus="exception"
+        isLoading={false}
+        records={[
+          createRecord({
+            id: 32,
+            invokeId: "invoke-split-error",
+            routeMode: "pool",
+            status: "failed",
+            failureClass: "service_failure",
+            failureKind: "failed_contact_upstream",
+            errorMessage:
+              "failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
+            downstreamStatusCode: 502,
+            downstreamErrorMessage:
+              "pool upstream responded with 502: failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
+            upstreamErrorMessage:
+              "failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
+            poolAttemptCount: 2,
+            poolDistinctAccountCount: 2,
+          }),
+        ]}
+      />,
+    );
+
+    clickFirstToggle();
+
+    await waitFor(
+      () =>
+        host?.querySelector('[data-testid="invocation-downstream-error-section"]') != null,
+    );
+
+    expect(
+      host?.querySelector('[data-testid="invocation-upstream-error-section"]'),
+    ).not.toBeNull();
+    expect(
+      host?.querySelector('[data-testid="invocation-downstream-error-section"]'),
+    ).not.toBeNull();
+    expect(
+      host?.querySelector('[data-testid="pool-attempt-upstream-error"]'),
+    ).not.toBeNull();
+    expect(
+      host?.querySelector('[data-testid="pool-attempt-downstream-error"]'),
+    ).not.toBeNull();
+    expect(host?.textContent ?? "").toContain(
+      "failed to contact oauth codex upstream",
+    );
+    expect(host?.textContent ?? "").toContain("pool upstream responded with 502");
+  });
+
+  it("uses downstream-facing diagnostics as the collapsed exception summary when upstream is empty", () => {
+    render(
+      <InvocationRecordsTable
+        focus="exception"
+        isLoading={false}
+        records={[
+          createRecord({
+            id: 33,
+            invokeId: "invoke-downstream-summary",
+            status: "failed",
+            failureClass: "client_abort",
+            failureKind: "downstream_closed",
+            errorMessage: undefined,
+            downstreamStatusCode: 200,
+            downstreamErrorMessage:
+              "[downstream_closed] downstream closed while streaming upstream response",
+          }),
+        ]}
+      />,
+    );
+
+    expect(host?.textContent ?? "").toContain(
+      "[downstream_closed] downstream closed while streaming upstream response",
+    );
+  });
+
   it("refetches pool attempts when in-flight detail fields change without counter changes", async () => {
     apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([]);
 

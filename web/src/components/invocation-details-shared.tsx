@@ -54,6 +54,7 @@ export interface InvocationDetailViewModel {
   endpointValue: string
   endpointDisplay: InvocationEndpointDisplay
   errorMessage: string
+  collapsedErrorSummary: string
   totalLatencyValue: string
   firstResponseByteTotalValue: string
   firstByteLatencyValue: string
@@ -114,6 +115,14 @@ export function formatMilliseconds(value: number | null | undefined) {
   return `${value.toFixed(1)} ms`
 }
 
+export function resolveInvocationCollapsedErrorSummary(
+  record: Pick<ApiInvocation, 'errorMessage' | 'downstreamErrorMessage'>,
+) {
+  const canonicalUpstreamError = record.errorMessage?.trim()
+  if (canonicalUpstreamError) return canonicalUpstreamError
+  return record.downstreamErrorMessage?.trim() ?? ''
+}
+
 export function formatSecondsFromMilliseconds(value: number | null | undefined, localeTag: string) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return FALLBACK_CELL
 
@@ -145,6 +154,11 @@ export function formatOptionalNumber(value: number | null | undefined, formatter
 export function formatOptionalText(value: string | null | undefined) {
   const normalized = value?.trim()
   return normalized ? normalized : FALLBACK_CELL
+}
+
+function formatOptionalStatusCode(value: number | null | undefined) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return FALLBACK_CELL
+  return String(Math.trunc(value))
 }
 
 export function canOpenInvocationAccount(record: ApiInvocation) {
@@ -383,6 +397,7 @@ export function buildInvocationDetailViewModel({
   const endpointDisplay = resolveInvocationEndpointDisplay(record.endpoint)
   const endpointValue = endpointDisplay.endpointValue
   const errorMessage = record.errorMessage?.trim() ?? ''
+  const collapsedErrorSummary = resolveInvocationCollapsedErrorSummary(record)
 
   const proxyWeightDeltaView = formatProxyWeightDelta(record.proxyWeightDelta)
   const proxyWeightDeltaValue =
@@ -484,6 +499,7 @@ export function buildInvocationDetailViewModel({
     { key: 'streamTerminalEvent', label: t('table.details.streamTerminalEvent'), value: formatOptionalText(record.streamTerminalEvent) },
     { key: 'upstreamErrorCode', label: t('table.details.upstreamErrorCode'), value: formatOptionalText(record.upstreamErrorCode) },
     { key: 'upstreamErrorMessage', label: t('table.details.upstreamErrorMessage'), value: formatOptionalText(record.upstreamErrorMessage) },
+    { key: 'downstreamStatusCode', label: t('table.details.downstreamStatusCode'), value: formatOptionalStatusCode(record.downstreamStatusCode) },
     { key: 'upstreamRequestId', label: t('table.details.upstreamRequestId'), value: formatOptionalText(record.upstreamRequestId) },
     {
       key: 'detailLevel',
@@ -538,6 +554,7 @@ export function buildInvocationDetailViewModel({
     endpointValue,
     endpointDisplay,
     errorMessage,
+    collapsedErrorSummary,
     totalLatencyValue,
     firstResponseByteTotalValue,
     firstByteLatencyValue,
@@ -621,8 +638,10 @@ function poolAttemptCompletenessScore(attempt: ApiPoolUpstreamRequestAttempt) {
   let score = 0
   if (attempt.finishedAt?.trim()) score += 8
   if (attempt.httpStatus != null) score += 2
+  if (attempt.downstreamHttpStatus != null) score += 1
   if (attempt.failureKind?.trim()) score += 1
   if (attempt.errorMessage?.trim()) score += 1
+  if (attempt.downstreamErrorMessage?.trim()) score += 1
   if (attempt.connectLatencyMs != null) score += 1
   if (attempt.firstByteLatencyMs != null) score += 1
   if (attempt.streamLatencyMs != null) score += 1
@@ -792,6 +811,8 @@ export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) 
       expandedRecord.poolAttemptTerminalReason ?? '',
       expandedRecord.failureKind ?? '',
       expandedRecord.errorMessage ?? '',
+      expandedRecord.downstreamStatusCode ?? '',
+      expandedRecord.downstreamErrorMessage ?? '',
       expandedRecord.upstreamErrorCode ?? '',
       expandedRecord.upstreamErrorMessage ?? '',
       expandedRecord.upstreamRequestId ?? '',
@@ -902,6 +923,8 @@ export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) 
     expandedRecord?.poolAttemptTerminalReason,
     expandedRecord?.failureKind,
     expandedRecord?.errorMessage,
+    expandedRecord?.downstreamStatusCode,
+    expandedRecord?.downstreamErrorMessage,
     expandedRecord?.upstreamErrorCode,
     expandedRecord?.upstreamErrorMessage,
     expandedRecord?.upstreamRequestId,
@@ -974,9 +997,8 @@ function renderPoolAttemptsContent(
             const phaseMeta = poolAttemptPhaseMeta(phase)
             const accountLabel = formatPoolAttemptAccountLabel(attempt)
             const httpStatusValue =
-              typeof attempt.httpStatus === 'number' && Number.isFinite(attempt.httpStatus)
-                ? String(Math.trunc(attempt.httpStatus))
-                : FALLBACK_CELL
+              formatOptionalStatusCode(attempt.httpStatus)
+            const downstreamHttpStatusValue = formatOptionalStatusCode(attempt.downstreamHttpStatus)
 
             return (
               <div
@@ -1005,9 +1027,15 @@ function renderPoolAttemptsContent(
                   </div>
                   <div className="flex items-start gap-2">
                     <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
-                      {t('table.poolAttempts.httpStatus')}
+                      {t('table.poolAttempts.upstreamHttpStatus')}
                     </span>
                     <span className="font-mono">{httpStatusValue}</span>
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
+                      {t('table.poolAttempts.downstreamHttpStatus')}
+                    </span>
+                    <span className="font-mono">{downstreamHttpStatusValue}</span>
                   </div>
                   <div className="flex items-start gap-2">
                     <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
@@ -1053,9 +1081,24 @@ function renderPoolAttemptsContent(
                   </div>
                 </div>
                 {attempt.errorMessage?.trim() ? (
-                  <pre className="mt-2 whitespace-pre-wrap break-words font-mono text-sm text-base-content/80">
-                    {attempt.errorMessage}
-                  </pre>
+                  <div className="mt-2 flex flex-col gap-1" data-testid="pool-attempt-upstream-error">
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-base-content/60">
+                      {t('table.poolAttempts.upstreamErrorMessage')}
+                    </span>
+                    <pre className="whitespace-pre-wrap break-words font-mono text-sm text-base-content/80">
+                      {attempt.errorMessage}
+                    </pre>
+                  </div>
+                ) : null}
+                {attempt.downstreamErrorMessage?.trim() ? (
+                  <div className="mt-2 flex flex-col gap-1" data-testid="pool-attempt-downstream-error">
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-base-content/60">
+                      {t('table.poolAttempts.downstreamErrorMessage')}
+                    </span>
+                    <pre className="whitespace-pre-wrap break-words font-mono text-sm text-base-content/80">
+                      {attempt.downstreamErrorMessage}
+                    </pre>
+                  </div>
                 ) : null}
               </div>
             )
@@ -1111,6 +1154,14 @@ export function InvocationExpandedDetails({
   showFullDetailsAction = false,
   t,
 }: InvocationExpandedDetailsProps) {
+  const canonicalUpstreamError = errorMessage.trim()
+  const upstreamRawError = record.upstreamErrorMessage?.trim() ?? ''
+  const downstreamErrorMessage = record.downstreamErrorMessage?.trim() ?? ''
+  const showUpstreamErrorSection = Boolean(canonicalUpstreamError || upstreamRawError)
+  const showDownstreamErrorSection = Boolean(
+    downstreamErrorMessage ||
+      (typeof record.downstreamStatusCode === 'number' && Number.isFinite(record.downstreamStatusCode)),
+  )
   const showResponseBodySection =
     abnormalResponseBody != null ||
     abnormalResponseBodyLoading ||
@@ -1213,12 +1264,51 @@ export function InvocationExpandedDetails({
 
       {renderPoolAttemptsContent(record, poolAttemptsState, t)}
 
-      {errorMessage ? (
+      {showUpstreamErrorSection ? (
         <div className="flex flex-col gap-2">
           <span className="text-xs font-semibold uppercase tracking-wide text-base-content/70">
-            {t('table.errorDetailsTitle')}
+            {t('table.upstreamErrorDetailsTitle')}
           </span>
-          <pre className="whitespace-pre-wrap break-words font-mono text-sm">{errorMessage}</pre>
+          {canonicalUpstreamError ? (
+            <div className="flex flex-col gap-1" data-testid="invocation-upstream-error-section">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-base-content/60">
+                {t('table.upstreamCanonicalErrorLabel')}
+              </span>
+              <pre className="whitespace-pre-wrap break-words font-mono text-sm">{canonicalUpstreamError}</pre>
+            </div>
+          ) : null}
+          {upstreamRawError && upstreamRawError !== canonicalUpstreamError ? (
+            <div className="flex flex-col gap-1">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-base-content/60">
+                {t('table.details.upstreamErrorMessage')}
+              </span>
+              <pre className="whitespace-pre-wrap break-words font-mono text-sm">{upstreamRawError}</pre>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {showDownstreamErrorSection ? (
+        <div className="flex flex-col gap-2" data-testid="invocation-downstream-error-section">
+          <span className="text-xs font-semibold uppercase tracking-wide text-base-content/70">
+            {t('table.downstreamErrorDetailsTitle')}
+          </span>
+          <div className="grid gap-2 md:grid-cols-2">
+            <div className="flex items-start gap-2">
+              <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60 md:min-w-36">
+                {t('table.details.downstreamStatusCode')}
+              </span>
+              <span className="font-mono text-sm">{formatOptionalStatusCode(record.downstreamStatusCode)}</span>
+            </div>
+          </div>
+          {downstreamErrorMessage ? (
+            <div className="flex flex-col gap-1">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-base-content/60">
+                {t('table.details.downstreamErrorMessage')}
+              </span>
+              <pre className="whitespace-pre-wrap break-words font-mono text-sm">{downstreamErrorMessage}</pre>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>

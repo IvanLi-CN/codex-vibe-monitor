@@ -157,10 +157,12 @@ async fn continue_or_retry_pool_live_request(
                     "request body read timed out after {}ms",
                     replay_wait_timeout.as_millis()
                 ),
+                canonical_error_message: None,
                 failure_kind: PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
                 connect_latency_ms: first_error.connect_latency_ms,
                 upstream_error_code: None,
                 upstream_error_message: None,
+                downstream_error_message: None,
                 upstream_request_id: None,
                 oauth_responses_debug: first_error.oauth_responses_debug,
                 attempt_summary: first_error.attempt_summary,
@@ -226,10 +228,12 @@ async fn continue_or_retry_pool_live_request(
                         "request body read timed out after {}ms",
                         replay_wait_timeout.as_millis()
                     ),
+                    canonical_error_message: None,
                     failure_kind: PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
                     connect_latency_ms: first_error.connect_latency_ms,
                     upstream_error_code: None,
                     upstream_error_message: None,
+                    downstream_error_message: None,
                     upstream_request_id: None,
                     oauth_responses_debug: first_error.oauth_responses_debug,
                     attempt_summary: first_error.attempt_summary,
@@ -335,10 +339,12 @@ async fn continue_or_retry_pool_live_request(
                 account: Some(initial_account),
                 status: err.status,
                 message: err.message,
+                canonical_error_message: None,
                 failure_kind: err.failure_kind,
                 connect_latency_ms: first_error.connect_latency_ms,
                 upstream_error_code: None,
                 upstream_error_message: None,
+                downstream_error_message: None,
                 upstream_request_id: None,
                 oauth_responses_debug: None,
                 attempt_summary: first_error.attempt_summary.clone(),
@@ -352,10 +358,12 @@ async fn continue_or_retry_pool_live_request(
                 account: Some(initial_account),
                 status: StatusCode::INTERNAL_SERVER_ERROR,
                 message,
+                canonical_error_message: None,
                 failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                 connect_latency_ms: first_error.connect_latency_ms,
                 upstream_error_code: None,
                 upstream_error_message: None,
+                downstream_error_message: None,
                 upstream_request_id: None,
                 oauth_responses_debug: None,
                 attempt_summary: first_error.attempt_summary.clone(),
@@ -446,10 +454,12 @@ async fn send_pool_request_live_first_attempt(
                             account: Some(account.clone()),
                             status: StatusCode::BAD_GATEWAY,
                             message,
+                            canonical_error_message: None,
                             failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                             connect_latency_ms: 0.0,
                             upstream_error_code: None,
                             upstream_error_message: None,
+                            downstream_error_message: None,
                             upstream_request_id: None,
                             oauth_responses_debug: None,
                             attempt_summary: pool_attempt_summary(
@@ -470,10 +480,12 @@ async fn send_pool_request_live_first_attempt(
                         account: Some(account.clone()),
                         status: StatusCode::BAD_GATEWAY,
                         message: format!("failed to build pool upstream url: {err}"),
+                        canonical_error_message: None,
                         failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                         connect_latency_ms: 0.0,
                         upstream_error_code: None,
                         upstream_error_message: None,
+                        downstream_error_message: None,
                         upstream_request_id: None,
                         oauth_responses_debug: None,
                         attempt_summary: pool_attempt_summary(
@@ -516,10 +528,12 @@ async fn send_pool_request_live_first_attempt(
                         account: Some(account.clone()),
                         status: StatusCode::BAD_GATEWAY,
                         message: format!("failed to contact upstream: {err}"),
+                        canonical_error_message: None,
                         failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                         connect_latency_ms: elapsed_ms(connect_started),
                         upstream_error_code: None,
                         upstream_error_message: None,
+                        downstream_error_message: None,
                         upstream_request_id: None,
                         oauth_responses_debug: None,
                         attempt_summary: pool_attempt_summary(
@@ -547,10 +561,12 @@ async fn send_pool_request_live_first_attempt(
                             capture_target_for_request(original_uri.path(), &method),
                             attempt_send_timeout,
                         ),
+                        canonical_error_message: None,
                         failure_kind: PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
                         connect_latency_ms: elapsed_ms(connect_started),
                         upstream_error_code: None,
                         upstream_error_message: None,
+                        downstream_error_message: None,
                         upstream_request_id: None,
                         oauth_responses_debug: None,
                         attempt_summary: pool_attempt_summary(
@@ -577,10 +593,12 @@ async fn send_pool_request_live_first_attempt(
                             account: Some(account.clone()),
                             status: StatusCode::BAD_GATEWAY,
                             message,
+                            canonical_error_message: None,
                             failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                             connect_latency_ms: 0.0,
                             upstream_error_code: None,
                             upstream_error_message: None,
+                            downstream_error_message: None,
                             upstream_request_id: None,
                             oauth_responses_debug: None,
                             attempt_summary: pool_attempt_summary(
@@ -680,6 +698,14 @@ async fn send_pool_request_live_first_attempt(
             classify_pool_account_http_failure(&account.kind, status, &route_error_message);
         let failure_kind =
             oauth_transport_failure_kind.unwrap_or(http_failure_classification.failure_kind);
+        let normalized_failure = normalize_pool_upstream_failure_record(
+            status,
+            oauth_transport_failure_kind,
+            &message,
+            upstream_error_message.as_deref(),
+        );
+        let canonical_override = (normalized_failure.canonical_error_message != message)
+            .then(|| normalized_failure.canonical_error_message.clone());
         let compact_support_observation = classify_compact_support_observation(
             original_uri,
             Some(status),
@@ -700,16 +726,33 @@ async fn send_pool_request_live_first_attempt(
                 "failed to record compact support observation"
             );
         }
-        if let Err(route_err) = record_pool_route_transport_failure(
-            &state.pool,
-            account.account_id,
-            sticky_key,
-            &route_error_message,
-            None,
-        )
-        .await
-        {
-            warn!(account_id = account.account_id, error = %route_err, "failed to record pool live-attempt http failure");
+        let route_failure_result = if oauth_transport_failure_kind.is_some() {
+            record_pool_route_transport_failure(
+                &state.pool,
+                account.account_id,
+                sticky_key,
+                normalized_failure.canonical_error_message.as_str(),
+                None,
+            )
+            .await
+        } else {
+            record_pool_route_http_failure(
+                &state.pool,
+                account.account_id,
+                &account.kind,
+                sticky_key,
+                status,
+                &route_error_message,
+                None,
+            )
+            .await
+        };
+        if let Err(route_err) = route_failure_result {
+            warn!(
+                account_id = account.account_id,
+                error = %route_err,
+                "failed to record pool live-attempt failure"
+            );
         }
         release_pool_routing_reservation(state.as_ref(), &reservation_key);
         maybe_backfill_oauth_request_debug_from_replay_status(
@@ -723,10 +766,12 @@ async fn send_pool_request_live_first_attempt(
             account: Some(account),
             status,
             message: route_error_message,
+            canonical_error_message: canonical_override,
             failure_kind,
             connect_latency_ms,
             upstream_error_code,
             upstream_error_message,
+            downstream_error_message: normalized_failure.downstream_error_message,
             upstream_request_id,
             oauth_responses_debug,
             attempt_summary: pool_attempt_summary(1, 1, Some(failure_kind.to_string())),
@@ -778,10 +823,12 @@ async fn send_pool_request_live_first_attempt(
                 account: Some(account),
                 status: StatusCode::BAD_GATEWAY,
                 message,
+                canonical_error_message: None,
                 failure_kind: PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
                 connect_latency_ms,
                 upstream_error_code: None,
                 upstream_error_message: None,
+                downstream_error_message: None,
                 upstream_request_id: None,
                 oauth_responses_debug,
                 attempt_summary: pool_attempt_summary(

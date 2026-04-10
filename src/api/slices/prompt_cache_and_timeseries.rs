@@ -145,8 +145,10 @@ pub(crate) async fn query_pool_attempt_records_from_live(
                 END
             ) AS phase,
             attempts.http_status,
+            attempts.downstream_http_status,
             attempts.failure_kind,
             attempts.error_message,
+            attempts.downstream_error_message,
             attempts.connect_latency_ms,
             attempts.first_byte_latency_ms,
             attempts.stream_latency_ms,
@@ -895,6 +897,10 @@ async fn hydrate_prompt_cache_conversations(
                 reasoning_tokens: row.reasoning_tokens,
                 reasoning_effort: normalize_trimmed_optional_string(row.reasoning_effort),
                 error_message: normalize_trimmed_optional_string(row.error_message),
+                downstream_status_code: row.downstream_status_code,
+                downstream_error_message: normalize_trimmed_optional_string(
+                    row.downstream_error_message,
+                ),
                 failure_kind: normalize_trimmed_optional_string(row.failure_kind),
                 is_actionable: row.is_actionable.map(|value| value != 0),
                 response_content_encoding: normalize_trimmed_optional_string(
@@ -2035,6 +2041,10 @@ pub(crate) async fn query_prompt_cache_conversation_recent_invocations(
              t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, \
              t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, ",
         )
+        .push(INVOCATION_DOWNSTREAM_STATUS_CODE_SQL)
+        .push(" AS downstream_status_code, ")
+        .push(INVOCATION_DOWNSTREAM_ERROR_MESSAGE_SQL)
+        .push(" AS downstream_error_message, ")
         .push(INVOCATION_ENDPOINT_SQL)
         .push(" AS endpoint, ")
         .push(KEY_EXPR)
@@ -2062,7 +2072,7 @@ pub(crate) async fn query_prompt_cache_conversation_recent_invocations(
     }
 
     query
-        .push(") SELECT prompt_cache_key, id, invoke_id, occurred_at, status, failure_class, route_mode, model, total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, reasoning_effort, error_message, failure_kind, is_actionable, proxy_display_name, upstream_account_id, upstream_account_name, response_content_encoding, requested_service_tier, service_tier, billing_service_tier, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, endpoint FROM ranked WHERE row_number <= ")
+        .push(") SELECT prompt_cache_key, id, invoke_id, occurred_at, status, failure_class, route_mode, model, total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, reasoning_effort, error_message, downstream_status_code, downstream_error_message, failure_kind, is_actionable, proxy_display_name, upstream_account_id, upstream_account_name, response_content_encoding, requested_service_tier, service_tier, billing_service_tier, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, endpoint FROM ranked WHERE row_number <= ")
         .push_bind(limit_per_key)
         .push(" ORDER BY prompt_cache_key ASC, occurred_at DESC, id DESC");
 
