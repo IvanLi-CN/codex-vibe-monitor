@@ -240,10 +240,22 @@ fn add_invocation_record_to_summary_totals(
     record: &InvocationAggregateRecord,
 ) {
     totals.total_count += 1;
-    match record.status.as_deref() {
-        Some("success") => totals.success_count += 1,
-        Some(_) => totals.failure_count += 1,
-        None => {}
+    let classification = resolve_failure_classification(
+        record.status.as_deref(),
+        record.error_message.as_deref(),
+        record.failure_kind.as_deref(),
+        record.failure_class.as_deref(),
+        record.is_actionable,
+    );
+    if record
+        .status
+        .as_deref()
+        .is_some_and(|status| status.eq_ignore_ascii_case("success"))
+        && classification.failure_class == FailureClass::None
+    {
+        totals.success_count += 1;
+    } else if classification.failure_class != FailureClass::None {
+        totals.failure_count += 1;
     }
     totals.total_tokens += record.total_tokens.unwrap_or_default();
     totals.total_cost += record.cost.unwrap_or_default();
@@ -1506,18 +1518,15 @@ pub(crate) async fn fetch_timeseries(
     let start_dt = range_window.start;
     let start_str_iso = format_utc_iso(start_dt);
 
-    let mut records_query = QueryBuilder::new(
-        "SELECT occurred_at, status, total_tokens, cost, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms FROM codex_invocations WHERE occurred_at >= ",
-    );
-    records_query.push_bind(db_occurred_at_lower_bound(start_dt));
-    if source_scope == InvocationSourceScope::ProxyOnly {
-        records_query.push(" AND source = ").push_bind(SOURCE_PROXY);
-    }
-    records_query.push(" ORDER BY occurred_at ASC");
-    let records = records_query
-        .build_query_as::<TimeseriesRecord>()
-        .fetch_all(&state.pool)
-        .await?;
+    let records = query_invocation_aggregate_records_from_live_range(
+        &state.pool,
+        ExactUtcRange {
+            start: start_dt,
+            end: end_dt,
+        },
+        source_scope,
+    )
+    .await?;
 
     let mut aggregates: BTreeMap<i64, BucketAggregate> = BTreeMap::new();
 
@@ -1535,10 +1544,22 @@ pub(crate) async fn fetch_timeseries(
         let bucket_epoch = align_reporting_bucket_epoch(epoch, bucket_seconds, reporting_tz)?;
         let entry = aggregates.entry(bucket_epoch).or_default();
         entry.total_count += 1;
-        match record.status.as_deref() {
-            Some("success") => entry.success_count += 1,
-            Some(_) => entry.failure_count += 1,
-            None => {}
+        let classification = resolve_failure_classification(
+            record.status.as_deref(),
+            record.error_message.as_deref(),
+            record.failure_kind.as_deref(),
+            record.failure_class.as_deref(),
+            record.is_actionable,
+        );
+        if record
+            .status
+            .as_deref()
+            .is_some_and(|status| status.eq_ignore_ascii_case("success"))
+            && classification.failure_class == FailureClass::None
+        {
+            entry.success_count += 1;
+        } else if classification.failure_class != FailureClass::None {
+            entry.failure_count += 1;
         }
         entry.record_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms);
         entry.record_first_response_byte_total_sample(
@@ -1846,10 +1867,22 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
             align_reporting_bucket_epoch(occurred_utc.timestamp(), bucket_seconds, reporting_tz)?;
         if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
             entry.total_count += 1;
-            match record.status.as_deref() {
-                Some("success") => entry.success_count += 1,
-                Some(_) => entry.failure_count += 1,
-                None => {}
+            let classification = resolve_failure_classification(
+                record.status.as_deref(),
+                record.error_message.as_deref(),
+                record.failure_kind.as_deref(),
+                record.failure_class.as_deref(),
+                record.is_actionable,
+            );
+            if record
+                .status
+                .as_deref()
+                .is_some_and(|status| status.eq_ignore_ascii_case("success"))
+                && classification.failure_class == FailureClass::None
+            {
+                entry.success_count += 1;
+            } else if classification.failure_class != FailureClass::None {
+                entry.failure_count += 1;
             }
             entry.record_exact_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms);
             entry.record_exact_first_response_byte_total_sample(

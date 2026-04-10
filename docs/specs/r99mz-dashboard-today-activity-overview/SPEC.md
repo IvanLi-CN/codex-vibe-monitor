@@ -4,7 +4,7 @@
 
 - Status: 已实现，待 PR / CI / review-proof 收敛
 - Created: 2026-04-08
-- Last: 2026-04-09
+- Last: 2026-04-10
 
 ## 背景 / 问题陈述
 
@@ -54,7 +54,7 @@
 - Given 打开 Dashboard，When 查看页面顶部，Then 不再存在独立的 `today-stats-overview-card` 外层卡片，“今日”能力只出现在 `活动总览` 内。
 - Given 查看 `活动总览` 范围切换，When 进入页面，Then 显示 `今日 / 24 小时 / 7 日 / 历史` 四段；首次进入默认 `今日`，之后优先恢复最近一次访问的范围；localStorage 值非法时回退到 `今日`。
 - Given 处于 `今日` 视图，When 查看总览内容，Then 顶部显示 5 个 KPI、下方显示一张分钟级图表；`24 小时 / 7 日` 仍显示既有 KPI + 热力图；`历史` 仍只显示半年日历。
-- Given `今日` 视图切到 `次数`，When 查看图表，Then 成功柱位于 0 轴上方、失败柱位于 0 轴下方，tooltip 同时给出成功 / 失败 / 总数。
+- Given `今日` 视图切到 `次数`，When 查看图表，Then 每个时间桶的成功 / 失败柱共享同一 X 槽位，成功柱位于 0 轴上方、失败柱位于 0 轴下方，tooltip 同时给出成功 / 失败 / 总数。
 - Given `今日` 视图切到 `金额` 或 `Tokens`，When 查看图表，Then 图表切换为“今日整天 24 小时横轴”的累计面积图；未来分钟不渲染，缺失分钟补 0 以保持曲线连续。
 - Given 在四个范围间切换 `次数 / 金额 / Tokens`，When 来回切换范围，Then 每个范围仍保留各自上次选中的 metric。
 - Given 默认进入 `/dashboard`，When 页面首次完成 hydration，Then 仅当前 active range 对应的数据请求会首屏触发，未访问的隐藏范围不会提前发起 summary / timeseries 请求。
@@ -74,16 +74,16 @@
 ### Testing
 
 - Frontend targeted tests:
-  - `cd /Users/ivan/.codex/worktrees/r99mz/codex-vibe-monitor/web && bunx vitest run src/components/DashboardTodayActivityChart.test.tsx src/components/TodayStatsOverview.test.tsx src/components/DashboardActivityOverview.test.tsx src/pages/Dashboard.test.tsx`
+  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bunx vitest run src/components/DashboardTodayActivityChart.test.tsx src/components/TodayStatsOverview.test.tsx src/components/DashboardActivityOverview.test.tsx src/pages/Dashboard.test.tsx src/hooks/useTimeseries.test.ts`
 - Storybook build:
-  - `cd /Users/ivan/.codex/worktrees/r99mz/codex-vibe-monitor/web && bun run build-storybook`
+  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run build-storybook`
 
 ### Quality checks
 
-- `cd /Users/ivan/.codex/worktrees/r99mz/codex-vibe-monitor/web && bun run test`
-- `cd /Users/ivan/.codex/worktrees/r99mz/codex-vibe-monitor/web && bun run build`
-- `cd /Users/ivan/.codex/worktrees/r99mz/codex-vibe-monitor/web && bun run build-storybook`
-- `cd /Users/ivan/.codex/worktrees/afc2/codex-vibe-monitor/web && bun -e 'import { mergePromptCacheConversationHistory } from "./src/lib/promptCacheLive.ts"; /* high-churn boundedness smoke */'`
+- `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run test`
+- `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run build`
+- `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run build-storybook`
+- `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun -e 'import { mergePromptCacheConversationHistory } from "./src/lib/promptCacheLive.ts"; /* high-churn boundedness smoke */'`
 
 ## 文档更新（Docs to Update）
 
@@ -133,15 +133,16 @@
 - 2026-04-09: 修复 Dashboard KPI 数值溢出；当卡片宽度不足以容纳完整值时，前端会自动切换到紧凑记数法（如 `1.31B`），并保留完整值 tooltip。
 - 2026-04-09: 修正 `今日` 页签分钟图的时间语义：保留“今日”自然日范围，但将横轴扩展为当天完整 24 小时；当前时刻之后的未来分钟不渲染，从而避免图表只占用 `00:00 -> 当前时间` 的前半段宽度。
 - 2026-04-09: 刷新 Storybook 证据夹具与截图，确保 `今日 / 金额` 图的累计终值与 KPI 总成本一致，不再出现 `US$539.42` KPI 对应 `US$58` 曲线终点的错图。
+- 2026-04-10: 修复 `今日 / 次数` 柱状图的双系列对位与 live failure 口径：成功 / 失败柱现在通过重叠 category slot 共用同一时间槽位并围绕 0 轴对称渲染；前后端 live 聚合同时排除 `running/pending` 的临时失败计数，避免失败柱短时异常拉长后再回落。
 
 ## Visual Evidence
 
 - Source: Storybook canvas（mock-only）
-- Validation: `cd /Users/ivan/.codex/worktrees/afc2/codex-vibe-monitor/web && bun run test`、`bun run build`、`bun run build-storybook`
+- Validation: `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run test`、`bun run build`、`bun run build-storybook`
 
 ### 1. 活动总览：今日 / 次数（成功正柱，失败负柱）
 
-![活动总览：今日 / 次数](./assets/dashboard-activity-overview-today.png)
+![活动总览：今日 / 次数](./assets/dashboard-today-activity-chart-count-paired.png)
 
 ### 2. 活动总览：今日 / 金额累计
 

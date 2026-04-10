@@ -692,6 +692,63 @@ async fn timeseries_includes_first_byte_avg_and_p95_for_success_samples() {
 }
 
 #[tokio::test]
+async fn timeseries_and_summary_do_not_treat_running_rows_as_failures() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::minutes(5))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+
+    insert_timeseries_invocation(&state.pool, "timeseries-success", &occurred_at, "success", Some(80.0))
+        .await;
+    insert_timeseries_invocation(&state.pool, "timeseries-running", &occurred_at, "running", Some(120.0))
+        .await;
+    insert_timeseries_invocation(&state.pool, "timeseries-pending", &occurred_at, "pending", Some(160.0))
+        .await;
+    insert_timeseries_invocation(&state.pool, "timeseries-failed", &occurred_at, "failed", Some(240.0))
+        .await;
+
+    let Json(summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("1d".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch summary for mixed running statuses");
+    assert_eq!(summary.total_count, 4);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 1);
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "1h".to_string(),
+            bucket: Some("15m".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch timeseries for mixed running statuses");
+    let bucket = response
+        .points
+        .iter()
+        .find(|point| point.total_count >= 4)
+        .expect("should include populated bucket");
+
+    assert_eq!(bucket.total_count, 4);
+    assert_eq!(bucket.success_count, 1);
+    assert_eq!(bucket.failure_count, 1);
+}
+
+#[tokio::test]
 async fn timeseries_ignores_non_positive_or_missing_ttfb_samples() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -2413,4 +2470,3 @@ fn invocation_archive_pruned_success_details_require_empty_legacy_http_200_error
         "legacy http_200 rows with an empty error message should still count as pruned success-like rows",
     );
 }
-

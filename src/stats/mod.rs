@@ -8,6 +8,17 @@ pub(crate) enum SummaryWindow {
     Calendar(String),
 }
 
+fn stats_success_failure_select_sql() -> String {
+    format!(
+        "COUNT(*) AS total_count, \
+         COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(status, ''))) = 'success' AND {resolved_failure} = 'none' THEN 1 ELSE 0 END), 0) AS success_count, \
+         COALESCE(SUM(CASE WHEN {resolved_failure} IN ('service_failure', 'client_failure', 'client_abort') THEN 1 ELSE 0 END), 0) AS failure_count, \
+         COALESCE(SUM(cost), 0.0) AS total_cost, \
+         COALESCE(SUM(total_tokens), 0) AS total_tokens",
+        resolved_failure = crate::api::INVOCATION_RESOLVED_FAILURE_CLASS_SQL,
+    )
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum StatsFilter {
     All,
@@ -626,118 +637,85 @@ pub(crate) async fn query_stats_row(
     source_scope: InvocationSourceScope,
 ) -> Result<StatsRow> {
     match (filter, source_scope) {
-        (StatsFilter::All, InvocationSourceScope::ProxyOnly) => sqlx::query_as::<_, StatsRow>(
-            r#"
-                SELECT
-                    COUNT(*) AS total_count,
-                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
-                    SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END) AS failure_count,
-                    COALESCE(SUM(cost), 0.0) AS total_cost,
-                    COALESCE(SUM(total_tokens), 0) AS total_tokens
-                FROM codex_invocations
-                WHERE source = ?1
-                "#,
-        )
-        .bind(SOURCE_PROXY)
-        .fetch_one(pool)
-        .await
-        .map_err(Into::into),
-        (StatsFilter::All, InvocationSourceScope::All) => sqlx::query_as::<_, StatsRow>(
-            r#"
-                SELECT
-                    COUNT(*) AS total_count,
-                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
-                    SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END) AS failure_count,
-                    COALESCE(SUM(cost), 0.0) AS total_cost,
-                    COALESCE(SUM(total_tokens), 0) AS total_tokens
-                FROM codex_invocations
-                "#,
-        )
-        .fetch_one(pool)
-        .await
-        .map_err(Into::into),
-        (StatsFilter::Since(start), InvocationSourceScope::ProxyOnly) => {
-            sqlx::query_as::<_, StatsRow>(
-                r#"
-                SELECT
-                    COUNT(*) AS total_count,
-                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
-                    SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END) AS failure_count,
-                    COALESCE(SUM(cost), 0.0) AS total_cost,
-                    COALESCE(SUM(total_tokens), 0) AS total_tokens
-                FROM codex_invocations
-                WHERE source = ?1 AND occurred_at >= ?2
-                "#,
-            )
-            .bind(SOURCE_PROXY)
-            .bind(db_occurred_at_lower_bound(start))
-            .fetch_one(pool)
-            .await
-            .map_err(Into::into)
+        (StatsFilter::All, InvocationSourceScope::ProxyOnly) => {
+            let query = format!(
+                "SELECT {} FROM codex_invocations WHERE source = ?1",
+                stats_success_failure_select_sql()
+            );
+            sqlx::query_as::<_, StatsRow>(&query)
+                .bind(SOURCE_PROXY)
+                .fetch_one(pool)
+                .await
+                .map_err(Into::into)
         }
-        (StatsFilter::Since(start), InvocationSourceScope::All) => sqlx::query_as::<_, StatsRow>(
-            r#"
-                SELECT
-                    COUNT(*) AS total_count,
-                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
-                    SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END) AS failure_count,
-                    COALESCE(SUM(cost), 0.0) AS total_cost,
-                    COALESCE(SUM(total_tokens), 0) AS total_tokens
-                FROM codex_invocations
-                WHERE occurred_at >= ?1
-                "#,
-        )
-        .bind(db_occurred_at_lower_bound(start))
-        .fetch_one(pool)
-        .await
-        .map_err(Into::into),
+        (StatsFilter::All, InvocationSourceScope::All) => {
+            let query = format!(
+                "SELECT {} FROM codex_invocations",
+                stats_success_failure_select_sql()
+            );
+            sqlx::query_as::<_, StatsRow>(&query)
+                .fetch_one(pool)
+                .await
+                .map_err(Into::into)
+        }
+        (StatsFilter::Since(start), InvocationSourceScope::ProxyOnly) => {
+            let query = format!(
+                "SELECT {} FROM codex_invocations WHERE source = ?1 AND occurred_at >= ?2",
+                stats_success_failure_select_sql()
+            );
+            sqlx::query_as::<_, StatsRow>(&query)
+                .bind(SOURCE_PROXY)
+                .bind(db_occurred_at_lower_bound(start))
+                .fetch_one(pool)
+                .await
+                .map_err(Into::into)
+        }
+        (StatsFilter::Since(start), InvocationSourceScope::All) => {
+            let query = format!(
+                "SELECT {} FROM codex_invocations WHERE occurred_at >= ?1",
+                stats_success_failure_select_sql()
+            );
+            sqlx::query_as::<_, StatsRow>(&query)
+                .bind(db_occurred_at_lower_bound(start))
+                .fetch_one(pool)
+                .await
+                .map_err(Into::into)
+        }
         (StatsFilter::RecentLimit(limit), InvocationSourceScope::ProxyOnly) => {
-            sqlx::query_as::<_, StatsRow>(
-                r#"
-                WITH recent AS (
-                    SELECT *
-                    FROM codex_invocations
-                    WHERE source = ?1
-                    ORDER BY occurred_at DESC
-                    LIMIT ?2
-                )
-                SELECT
-                    COUNT(*) AS total_count,
-                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
-                    SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END) AS failure_count,
-                    COALESCE(SUM(cost), 0.0) AS total_cost,
-                    COALESCE(SUM(total_tokens), 0) AS total_tokens
-                FROM recent
-                "#,
-            )
-            .bind(SOURCE_PROXY)
-            .bind(limit)
-            .fetch_one(pool)
-            .await
-            .map_err(Into::into)
+            let query = format!(
+                "WITH recent AS ( \
+                    SELECT * \
+                    FROM codex_invocations \
+                    WHERE source = ?1 \
+                    ORDER BY occurred_at DESC \
+                    LIMIT ?2 \
+                ) \
+                SELECT {} FROM recent",
+                stats_success_failure_select_sql()
+            );
+            sqlx::query_as::<_, StatsRow>(&query)
+                .bind(SOURCE_PROXY)
+                .bind(limit)
+                .fetch_one(pool)
+                .await
+                .map_err(Into::into)
         }
         (StatsFilter::RecentLimit(limit), InvocationSourceScope::All) => {
-            sqlx::query_as::<_, StatsRow>(
-                r#"
-                WITH recent AS (
-                    SELECT *
-                    FROM codex_invocations
-                    ORDER BY occurred_at DESC
-                    LIMIT ?1
-                )
-                SELECT
-                    COUNT(*) AS total_count,
-                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
-                    SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END) AS failure_count,
-                    COALESCE(SUM(cost), 0.0) AS total_cost,
-                    COALESCE(SUM(total_tokens), 0) AS total_tokens
-                FROM recent
-                "#,
-            )
-            .bind(limit)
-            .fetch_one(pool)
-            .await
-            .map_err(Into::into)
+            let query = format!(
+                "WITH recent AS ( \
+                    SELECT * \
+                    FROM codex_invocations \
+                    ORDER BY occurred_at DESC \
+                    LIMIT ?1 \
+                ) \
+                SELECT {} FROM recent",
+                stats_success_failure_select_sql()
+            );
+            sqlx::query_as::<_, StatsRow>(&query)
+                .bind(limit)
+                .fetch_one(pool)
+                .await
+                .map_err(Into::into)
         }
     }
 }
@@ -762,39 +740,25 @@ pub(crate) async fn query_invocation_totals(
         .unwrap_or_default();
         let tail = match source_scope {
             InvocationSourceScope::ProxyOnly => {
-                sqlx::query_as::<_, StatsRow>(
-                    r#"
-                SELECT
-                    COUNT(*) AS total_count,
-                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
-                    SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END) AS failure_count,
-                    COALESCE(SUM(cost), 0.0) AS total_cost,
-                    COALESCE(SUM(total_tokens), 0) AS total_tokens
-                FROM codex_invocations
-                WHERE id > ?1 AND source = ?2
-                "#,
-                )
-                .bind(last_row_id)
-                .bind(SOURCE_PROXY)
-                .fetch_one(pool)
-                .await?
+                let query = format!(
+                    "SELECT {} FROM codex_invocations WHERE id > ?1 AND source = ?2",
+                    stats_success_failure_select_sql()
+                );
+                sqlx::query_as::<_, StatsRow>(&query)
+                    .bind(last_row_id)
+                    .bind(SOURCE_PROXY)
+                    .fetch_one(pool)
+                    .await?
             }
             InvocationSourceScope::All => {
-                sqlx::query_as::<_, StatsRow>(
-                    r#"
-                SELECT
-                    COUNT(*) AS total_count,
-                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
-                    SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END) AS failure_count,
-                    COALESCE(SUM(cost), 0.0) AS total_cost,
-                    COALESCE(SUM(total_tokens), 0) AS total_tokens
-                FROM codex_invocations
-                WHERE id > ?1
-                "#,
-                )
-                .bind(last_row_id)
-                .fetch_one(pool)
-                .await?
+                let query = format!(
+                    "SELECT {} FROM codex_invocations WHERE id > ?1",
+                    stats_success_failure_select_sql()
+                );
+                sqlx::query_as::<_, StatsRow>(&query)
+                    .bind(last_row_id)
+                    .fetch_one(pool)
+                    .await?
             }
         };
         totals = totals.add(StatsTotals::from(tail));

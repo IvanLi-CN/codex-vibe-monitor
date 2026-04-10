@@ -1,18 +1,18 @@
-import type { Meta, StoryObj } from '@storybook/react-vite'
-import { I18nProvider } from '../i18n'
-import { DashboardTodayActivityChart } from './DashboardTodayActivityChart'
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { I18nProvider } from "../i18n";
+import { DashboardTodayActivityChart } from "./DashboardTodayActivityChart";
 
 const sampleResponse = {
-  rangeStart: '2026-04-08T00:00:00+08:00',
-  rangeEnd: '2026-04-08T12:24:00+08:00',
+  rangeStart: "2026-04-08T00:00:00+08:00",
+  rangeEnd: "2026-04-08T12:24:00+08:00",
   bucketSeconds: 60,
   points: Array.from({ length: 149 }, (_, index) => {
-    const bucketStart = new Date('2026-04-08T00:00:00+08:00')
-    bucketStart.setMinutes(bucketStart.getMinutes() + index * 5)
-    const bucketEnd = new Date(bucketStart.getTime() + 60_000)
-    const totalCount = index % 7 === 0 ? 0 : (index % 5) + 1
-    const failureCount = totalCount > 0 && index % 6 === 0 ? 1 : 0
-    const successCount = Math.max(totalCount - failureCount, 0)
+    const bucketStart = new Date("2026-04-08T00:00:00+08:00");
+    bucketStart.setMinutes(bucketStart.getMinutes() + index * 5);
+    const bucketEnd = new Date(bucketStart.getTime() + 60_000);
+    const totalCount = index % 7 === 0 ? 0 : (index % 5) + 1;
+    const failureCount = totalCount > 0 && index % 6 === 0 ? 1 : 0;
+    const successCount = Math.max(totalCount - failureCount, 0);
     return {
       bucketStart: bucketStart.toISOString(),
       bucketEnd: bucketEnd.toISOString(),
@@ -21,16 +21,16 @@ const sampleResponse = {
       failureCount,
       totalTokens: totalCount * 380,
       totalCost: Number((totalCount * 0.018).toFixed(4)),
-    }
+    };
   }),
-}
+};
 
 const meta = {
-  title: 'Dashboard/DashboardTodayActivityChart',
+  title: "Dashboard/DashboardTodayActivityChart",
   component: DashboardTodayActivityChart,
-  tags: ['autodocs'],
+  tags: ["autodocs"],
   parameters: {
-    layout: 'fullscreen',
+    layout: "fullscreen",
   },
   decorators: [
     (Story) => (
@@ -43,49 +43,77 @@ const meta = {
       </I18nProvider>
     ),
   ],
-} satisfies Meta<typeof DashboardTodayActivityChart>
+} satisfies Meta<typeof DashboardTodayActivityChart>;
 
-export default meta
+export default meta;
 
-type Story = StoryObj<typeof meta>
+type Story = StoryObj<typeof meta>;
 
 export const CountBars: Story = {
   args: {
     response: sampleResponse,
     loading: false,
     error: null,
-    metric: 'totalCount',
+    metric: "totalCount",
   },
-}
+};
 
 export const CostCumulative: Story = {
   args: {
     response: sampleResponse,
     loading: false,
     error: null,
-    metric: 'totalCost',
+    metric: "totalCost",
   },
-}
+};
 
 export const TokensCumulative: Story = {
   args: {
     response: sampleResponse,
     loading: false,
     error: null,
-    metric: 'totalTokens',
+    metric: "totalTokens",
   },
-}
+};
+
+export const CountBarsDensePairing: Story = {
+  args: {
+    response: {
+      ...sampleResponse,
+      points: Array.from({ length: 180 }, (_, index) => {
+        const bucketStart = new Date("2026-04-08T00:00:00+08:00");
+        bucketStart.setMinutes(bucketStart.getMinutes() + index * 4);
+        const bucketEnd = new Date(bucketStart.getTime() + 60_000);
+        const failureCount = index % 6 === 0 ? 3 : index % 3 === 0 ? 2 : 1;
+        const successCount = 4 + (index % 5);
+        const totalCount = successCount + failureCount;
+        return {
+          bucketStart: bucketStart.toISOString(),
+          bucketEnd: bucketEnd.toISOString(),
+          totalCount,
+          successCount,
+          failureCount,
+          totalTokens: totalCount * 420,
+          totalCost: Number((totalCount * 0.021).toFixed(4)),
+        };
+      }),
+    },
+    loading: false,
+    error: null,
+    metric: "totalCount",
+  },
+};
 
 export const EmptyState: Story = {
   args: {
     response: {
-      rangeStart: '2026-04-08T00:00:00+08:00',
-      rangeEnd: '2026-04-08T12:24:00+08:00',
+      rangeStart: "2026-04-08T00:00:00+08:00",
+      rangeEnd: "2026-04-08T12:24:00+08:00",
       bucketSeconds: 60,
       points: [],
     },
     loading: false,
     error: null,
-    metric: 'totalCount',
+    metric: "totalCount",
   },
-}
+};
