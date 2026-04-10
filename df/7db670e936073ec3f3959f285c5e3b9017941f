@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.46.1",
+  "base_stable_version": "1.46.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-10T17:55:18Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.46.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "e75d29793f750072a831b4a00c7a9b2c896ae2fc",
+  "pr_number": 319,
+  "pr_title": "fix: recover pool send-phase orphaned requests at runtime",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.46.1",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.46.1",
+  "target_sha": "df7db670e936073ec3f3959f285c5e3b9017941f",
+  "type_label": "type:patch"
+}
