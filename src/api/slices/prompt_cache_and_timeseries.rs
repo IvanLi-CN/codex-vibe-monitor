@@ -73,6 +73,7 @@ fn invocation_status_is_success_like(status: Option<&str>, error_message: Option
     let error_message_empty = error_message.map(str::trim).is_none_or(str::is_empty);
 
     normalized_status.eq_ignore_ascii_case("success")
+        || normalized_status.eq_ignore_ascii_case("completed")
         || (normalized_status.eq_ignore_ascii_case("http_200") && error_message_empty)
 }
 
@@ -86,6 +87,31 @@ fn invocation_status_is_in_flight(status: Option<&str>) -> bool {
     let normalized_status = status.map(str::trim).unwrap_or_default();
     normalized_status.eq_ignore_ascii_case("running")
         || normalized_status.eq_ignore_ascii_case("pending")
+}
+
+fn invocation_metadata_has_failure_text(value: Option<&str>) -> bool {
+    value.map(str::trim).is_some_and(|text| !text.is_empty())
+}
+
+fn invocation_point_has_explicit_failure_metadata(
+    error_message: Option<&str>,
+    downstream_error_message: Option<&str>,
+    failure_kind: Option<&str>,
+    failure_class: Option<&str>,
+) -> bool {
+    if failure_class
+        .map(str::trim)
+        .unwrap_or_default()
+        .eq_ignore_ascii_case("none")
+    {
+        return invocation_metadata_has_failure_text(error_message)
+            || invocation_metadata_has_failure_text(downstream_error_message)
+            || failure_kind
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty() && !value.eq_ignore_ascii_case("none"));
+    }
+
+    true
 }
 
 fn invocation_point_is_success(
@@ -103,22 +129,31 @@ fn invocation_point_is_success(
 fn invocation_point_outcome(
     status: Option<&str>,
     error_message: Option<&str>,
+    downstream_error_message: Option<&str>,
+    failure_kind: Option<&str>,
     failure_class: Option<&str>,
 ) -> &'static str {
     if invocation_point_is_success(status, error_message, failure_class) {
         return "success";
     }
-    let failure_class_is_none = failure_class
-        .map(str::trim)
-        .unwrap_or_default()
-        .eq_ignore_ascii_case("none");
-    if failure_class_is_none {
-        if invocation_status_is_in_flight(status) {
-            return "in_flight";
-        }
-        return "neutral";
+    if invocation_point_has_explicit_failure_metadata(
+        error_message,
+        downstream_error_message,
+        failure_kind,
+        failure_class,
+    ) {
+        return "failure";
     }
-    "failure"
+    if invocation_status_is_in_flight(status) {
+        return "in_flight";
+    }
+    if status
+        .map(str::trim)
+        .is_some_and(|value| value.starts_with("http_4") || value.starts_with("http_5"))
+    {
+        return "failure";
+    }
+    "neutral"
 }
 
 async fn load_pool_attempt_account_names(
@@ -235,13 +270,27 @@ where
 {
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT \
-            id, occurred_at, status, total_tokens, cost, error_message, failure_kind, \
-            failure_class, is_actionable, t_total_ms, t_req_read_ms, t_req_parse_ms, \
+            id, occurred_at, status, total_tokens, cost, error_message, ",
+    );
+    query
+        .push(INVOCATION_FAILURE_KIND_SQL)
+        .push(
+            " AS failure_kind, \
+            ",
+        )
+        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(
+            " AS failure_class, CASE WHEN ",
+        )
+        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(
+            " = 'service_failure' THEN 1 ELSE 0 END AS is_actionable, \
+            t_total_ms, t_req_read_ms, t_req_parse_ms, \
             t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, \
             t_resp_parse_ms, t_persist_ms \
          FROM codex_invocations \
          WHERE occurred_at >= ",
-    );
+        );
     query
         .push_bind(db_occurred_at_lower_bound(range.start))
         .push(" AND occurred_at < ")
@@ -1268,6 +1317,8 @@ async fn hydrate_prompt_cache_conversations(
         let outcome = invocation_point_outcome(
             Some(&normalized_status),
             row.error_message.as_deref(),
+            row.downstream_error_message.as_deref(),
+            row.failure_kind.as_deref(),
             row.failure_class.as_deref(),
         )
         .to_string();
@@ -2391,6 +2442,10 @@ pub(crate) async fn query_prompt_cache_conversation_events(
          error_message, ",
     );
     query
+        .push(INVOCATION_DOWNSTREAM_ERROR_MESSAGE_SQL)
+        .push(" AS downstream_error_message, ")
+        .push(INVOCATION_FAILURE_KIND_SQL)
+        .push(" AS failure_kind, ")
         .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
         .push(" AS failure_class, COALESCE(total_tokens, 0) AS request_tokens, ")
         .push(KEY_EXPR)

@@ -61,4 +61,16 @@ describe("resolvePromptCacheInvocationOutcome", () => {
       }),
     ).toBe("neutral");
   });
+
+  it("keeps status-only http failures marked as failures", () => {
+    expect(
+      resolvePromptCacheInvocationOutcome({
+        status: "http_500",
+        failureClass: "none",
+        failureKind: undefined,
+        errorMessage: "",
+        downstreamErrorMessage: "",
+      }),
+    ).toBe("failure");
+  });
 });

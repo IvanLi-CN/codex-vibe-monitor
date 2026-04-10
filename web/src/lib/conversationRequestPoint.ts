@@ -88,6 +88,10 @@ export function resolvePromptCacheInvocationOutcome(
     return "success";
   }
 
+  if (status.startsWith("http_4") || status.startsWith("http_5")) {
+    return "failure";
+  }
+
   if (status === "" || status === "unknown") {
     return "neutral";
   }

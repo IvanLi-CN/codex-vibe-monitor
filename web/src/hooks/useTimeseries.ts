@@ -329,7 +329,8 @@ function normalizeLiveRecordOutcome(record: ApiInvocation): LiveRecordOutcome {
   const hasFailureMetadata =
     (failureClass.length > 0 && failureClass !== "none") ||
     (record.failureKind?.trim().length ?? 0) > 0 ||
-    (record.errorMessage?.trim().length ?? 0) > 0;
+    (record.errorMessage?.trim().length ?? 0) > 0 ||
+    (record.downstreamErrorMessage?.trim().length ?? 0) > 0;
 
   if (status === "success" || status === "completed" || status === "http_200") {
     return hasFailureMetadata ? "failure" : "success";

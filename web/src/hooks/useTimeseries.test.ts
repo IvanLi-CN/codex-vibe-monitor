@@ -268,15 +268,15 @@ describe("useTimeseries current-day bucket patching", () => {
     });
   });
 
-  it("ignores downstream-only metadata when classifying live outcomes", () => {
+  it("treats http_200 rows with downstream-only metadata as failures", () => {
     const next = applyRecordsToCurrentDayBucket(
       base,
       [
         {
           id: 7,
-          invokeId: "today-success-downstream-only",
+          invokeId: "today-http-200-downstream-only",
           occurredAt: "2026-03-06T08:33:30Z",
-          status: "success",
+          status: "http_200",
           downstreamStatusCode: 502,
           downstreamErrorMessage: "socket closed after response",
           totalTokens: 15,
@@ -289,10 +289,38 @@ describe("useTimeseries current-day bucket patching", () => {
 
     expect(next?.points[1]).toMatchObject({
       totalCount: 2,
-      successCount: 2,
-      failureCount: 0,
+      successCount: 1,
+      failureCount: 1,
       totalTokens: 115,
       totalCost: 0.65,
+    });
+  });
+
+  it("treats blank-status rows with downstream-only metadata as failures", () => {
+    const next = applyRecordsToCurrentDayBucket(
+      base,
+      [
+        {
+          id: 8,
+          invokeId: "today-blank-downstream-only",
+          occurredAt: "2026-03-06T08:34:30Z",
+          status: "",
+          downstreamErrorMessage:
+            "downstream closed while streaming upstream response",
+          totalTokens: 12,
+          cost: 0.12,
+          createdAt: "2026-03-06T08:34:30Z",
+        },
+      ],
+      Math.floor(Date.parse("2026-03-06T12:00:00Z") / 1000),
+    );
+
+    expect(next?.points[1]).toMatchObject({
+      totalCount: 2,
+      successCount: 1,
+      failureCount: 1,
+      totalTokens: 112,
+      totalCost: 0.62,
     });
   });
 
@@ -636,6 +664,51 @@ describe("useTimeseries natural-day range patching", () => {
       failureCount: 0,
       totalTokens: 0,
       totalCost: 0,
+    });
+  });
+
+  it("treats downstream-only live SSE rows as failures immediately", () => {
+    const current: TimeseriesResponse = {
+      rangeStart: new Date(2026, 3, 8, 0, 0, 0)
+        .toISOString()
+        .replace(/\.\d{3}Z$/, "Z"),
+      rangeEnd: new Date(2026, 3, 8, 0, 3, 0)
+        .toISOString()
+        .replace(/\.\d{3}Z$/, "Z"),
+      bucketSeconds: 60,
+      points: [],
+    };
+
+    const result = upsertTimeseriesLiveRecord(
+      current,
+      {
+        id: 13,
+        invokeId: "live-http-200-downstream-only",
+        occurredAt: new Date(2026, 3, 8, 0, 1, 45)
+          .toISOString()
+          .replace(/\.\d{3}Z$/, "Z"),
+        status: "http_200",
+        downstreamStatusCode: 502,
+        downstreamErrorMessage: "socket closed after response",
+        totalTokens: 17,
+        cost: 0.17,
+        createdAt: new Date(2026, 3, 8, 0, 1, 45)
+          .toISOString()
+          .replace(/\.\d{3}Z$/, "Z"),
+      },
+      null,
+      {
+        range: "today",
+        bucketSeconds: 60,
+      },
+    );
+
+    expect(result.next?.points[0]).toMatchObject({
+      totalCount: 1,
+      successCount: 0,
+      failureCount: 1,
+      totalTokens: 17,
+      totalCost: 0.17,
     });
   });
 

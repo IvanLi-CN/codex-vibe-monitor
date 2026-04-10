@@ -2719,3 +2719,193 @@ async fn prompt_cache_last24h_requests_treat_running_rows_with_failure_class_as_
     assert!(!conversation.last24h_requests[0].is_success);
     assert_eq!(conversation.last24h_requests[0].outcome, "failure");
 }
+
+#[tokio::test]
+async fn prompt_cache_last24h_requests_treat_running_rows_with_error_text_as_failures() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response,
+            failure_class, error_message
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+    )
+    .bind("pck-running-error-text")
+    .bind(format_naive(
+        (now - ChronoDuration::minutes(4))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    ))
+    .bind(SOURCE_PROXY)
+    .bind("running")
+    .bind(9_i64)
+    .bind(0.09_f64)
+    .bind(json!({ "promptCacheKey": "pck-running-error-text" }).to_string())
+    .bind("{}")
+    .bind("none")
+    .bind("downstream closed while streaming upstream response")
+    .execute(&state.pool)
+    .await
+    .expect("insert running prompt cache row with error text");
+
+    let Json(response) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+            activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
+        }),
+    )
+    .await
+    .expect("prompt cache running error-text conversation stats should succeed");
+
+    let conversation = response
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-running-error-text")
+        .expect("running error-text prompt cache conversation should exist");
+    assert_eq!(conversation.last24h_requests.len(), 1);
+    assert_eq!(conversation.last24h_requests[0].status, "running");
+    assert!(!conversation.last24h_requests[0].is_success);
+    assert_eq!(conversation.last24h_requests[0].outcome, "failure");
+}
+
+#[tokio::test]
+async fn prompt_cache_last24h_requests_treat_pending_rows_with_failure_kind_as_failures() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response,
+            failure_class, error_message, failure_kind
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind("pck-pending-failure-kind")
+    .bind(format_naive(
+        (now - ChronoDuration::minutes(3))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    ))
+    .bind(SOURCE_PROXY)
+    .bind("pending")
+    .bind(7_i64)
+    .bind(0.07_f64)
+    .bind(
+        json!({
+            "promptCacheKey": "pck-pending-failure-kind",
+            "downstreamErrorMessage": "pool upstream responded with 502",
+        })
+        .to_string(),
+    )
+    .bind("{}")
+    .bind("none")
+    .bind::<Option<&str>>(None)
+    .bind(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
+    .execute(&state.pool)
+    .await
+    .expect("insert pending prompt cache row with failure kind");
+
+    let Json(response) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+            activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
+        }),
+    )
+    .await
+    .expect("prompt cache pending failure-kind conversation stats should succeed");
+
+    let conversation = response
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-pending-failure-kind")
+        .expect("pending failure-kind prompt cache conversation should exist");
+    assert_eq!(conversation.last24h_requests.len(), 1);
+    assert_eq!(conversation.last24h_requests[0].status, "pending");
+    assert!(!conversation.last24h_requests[0].is_success);
+    assert_eq!(conversation.last24h_requests[0].outcome, "failure");
+}
+
+#[tokio::test]
+async fn prompt_cache_last24h_requests_keep_status_only_http_failures_marked_as_failures() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response,
+            failure_class, error_message
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+    )
+    .bind("pck-http-status-only-failure")
+    .bind(format_naive(
+        (now - ChronoDuration::minutes(2))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    ))
+    .bind(SOURCE_PROXY)
+    .bind("http_500")
+    .bind(5_i64)
+    .bind(0.05_f64)
+    .bind(json!({ "promptCacheKey": "pck-http-status-only-failure" }).to_string())
+    .bind("{}")
+    .bind("none")
+    .bind("")
+    .execute(&state.pool)
+    .await
+    .expect("insert http-status-only prompt cache failure row");
+
+    let Json(response) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+            activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
+        }),
+    )
+    .await
+    .expect("prompt cache http-status-only failure conversation stats should succeed");
+
+    let conversation = response
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-http-status-only-failure")
+        .expect("http-status-only prompt cache conversation should exist");
+    assert_eq!(conversation.last24h_requests.len(), 1);
+    assert_eq!(conversation.last24h_requests[0].status, "http_500");
+    assert!(!conversation.last24h_requests[0].is_success);
+    assert_eq!(conversation.last24h_requests[0].outcome, "failure");
+}

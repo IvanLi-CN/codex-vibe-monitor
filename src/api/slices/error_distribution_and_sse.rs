@@ -537,7 +537,10 @@ fn classify_invocation_failure_with_kind(
         .map(str::trim)
         .filter(|value| !value.is_empty());
 
-    if status_norm == "success" && err.is_empty() {
+    if (status_norm == "success" || status_norm == "completed")
+        && err.is_empty()
+        && explicit_failure_kind.is_none()
+    {
         return FailureClassification {
             failure_kind: None,
             failure_class: FailureClass::None,
@@ -606,9 +609,12 @@ fn classify_invocation_failure_with_kind(
         || is_http_5xx
     {
         FailureClass::ServiceFailure
-    } else if status_norm == "success"
-        || (status_norm == "http_200" && err.is_empty() && failure_kind_lower.is_empty())
+    } else if (status_norm == "success" || status_norm == "completed")
+        && err.is_empty()
+        && failure_kind_lower.is_empty()
     {
+        FailureClass::None
+    } else if status_norm == "http_200" && err.is_empty() && failure_kind_lower.is_empty() {
         FailureClass::None
     } else {
         // Conservative fallback: unknown non-success records are treated as service-impacting.
@@ -1302,11 +1308,8 @@ pub(crate) async fn fetch_failure_summary(
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
-    query.push(" AND (status IS NULL OR status != 'success')");
-
     let rows: Vec<Row> = query.build_query_as().fetch_all(&state.pool).await?;
-    let total_failures = rows.len() as i64;
-
+    let mut total_failures = 0_i64;
     let mut service_failure_count = 0_i64;
     let mut client_failure_count = 0_i64;
     let mut client_abort_count = 0_i64;
@@ -1320,6 +1323,10 @@ pub(crate) async fn fetch_failure_summary(
             row.failure_class.as_deref(),
             row.is_actionable,
         );
+        if classification.failure_class == FailureClass::None {
+            continue;
+        }
+        total_failures += 1;
         match classification.failure_class {
             FailureClass::ServiceFailure => service_failure_count += 1,
             FailureClass::ClientFailure => client_failure_count += 1,

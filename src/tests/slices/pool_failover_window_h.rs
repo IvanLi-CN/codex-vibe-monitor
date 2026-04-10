@@ -749,6 +749,123 @@ async fn timeseries_includes_legacy_http_200_success_like_ttfb_samples() {
 }
 
 #[tokio::test]
+async fn timeseries_and_summary_count_completed_rows_as_success() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::minutes(5))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+
+    insert_timeseries_invocation(
+        &state.pool,
+        "timeseries-success-completed-control",
+        &occurred_at,
+        "success",
+        Some(80.0),
+    )
+    .await;
+    insert_timeseries_invocation(
+        &state.pool,
+        "timeseries-completed-success-like",
+        &occurred_at,
+        "completed",
+        Some(120.0),
+    )
+    .await;
+
+    let Json(summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("1d".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch summary for completed success-like row");
+    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.success_count, 2);
+    assert_eq!(summary.failure_count, 0);
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "1h".to_string(),
+            bucket: Some("15m".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch timeseries for completed success-like row");
+    let bucket = response
+        .points
+        .iter()
+        .find(|point| point.total_count >= 2)
+        .expect("should include populated bucket");
+
+    assert_eq!(bucket.total_count, 2);
+    assert_eq!(bucket.success_count, 2);
+    assert_eq!(bucket.failure_count, 0);
+    assert_eq!(bucket.first_byte_sample_count, 2);
+    assert_f64_close(
+        bucket.first_byte_avg_ms.expect("avg should be present"),
+        100.0,
+    );
+}
+
+#[tokio::test]
+async fn failure_summary_excludes_completed_success_like_rows_from_recent_totals() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::minutes(5))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+
+    insert_timeseries_invocation(
+        &state.pool,
+        "failure-summary-completed-success-like",
+        &occurred_at,
+        "completed",
+        Some(80.0),
+    )
+    .await;
+    insert_timeseries_invocation(
+        &state.pool,
+        "failure-summary-failed-control",
+        &occurred_at,
+        "failed",
+        Some(120.0),
+    )
+    .await;
+
+    let Json(summary) = fetch_failure_summary(
+        State(state),
+        Query(FailureSummaryQuery {
+            range: "1h".to_string(),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch failure summary for completed success-like row");
+
+    assert_eq!(summary.total_failures, 1);
+    assert_eq!(summary.service_failure_count, 1);
+    assert_eq!(summary.client_failure_count, 0);
+    assert_eq!(summary.client_abort_count, 0);
+    assert_eq!(summary.actionable_failure_count, 1);
+    assert_f64_close(summary.actionable_failure_rate, 1.0);
+}
+
+#[tokio::test]
 async fn timeseries_reports_snapshot_id_for_live_exact_queries() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -909,6 +1026,82 @@ async fn timeseries_and_summary_do_not_treat_running_rows_with_failure_metadata_
     assert_eq!(bucket.success_count, 1);
     assert_eq!(bucket.failure_count, 1);
     assert_eq!(bucket.in_flight_count, 2);
+}
+
+#[tokio::test]
+async fn timeseries_and_summary_count_http_200_rows_with_downstream_only_failure_metadata() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::minutes(5))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+
+    insert_timeseries_invocation(
+        &state.pool,
+        "timeseries-success-downstream-control",
+        &occurred_at,
+        "success",
+        Some(80.0),
+    )
+    .await;
+    insert_timeseries_invocation(
+        &state.pool,
+        "timeseries-http-200-downstream-only",
+        &occurred_at,
+        "http_200",
+        Some(120.0),
+    )
+    .await;
+    sqlx::query("UPDATE codex_invocations SET payload = ?1 WHERE invoke_id = ?2")
+        .bind(
+            json!({
+                "downstreamErrorMessage": "socket closed after response"
+            })
+            .to_string(),
+        )
+        .bind("timeseries-http-200-downstream-only")
+        .execute(&state.pool)
+        .await
+        .expect("annotate http_200 row with downstream-only failure metadata");
+
+    let Json(summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("1d".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch summary for downstream-only http_200 row");
+    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 1);
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "1h".to_string(),
+            bucket: Some("15m".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch timeseries for downstream-only http_200 row");
+    let bucket = response
+        .points
+        .iter()
+        .find(|point| point.total_count >= 2)
+        .expect("should include populated bucket");
+
+    assert_eq!(bucket.total_count, 2);
+    assert_eq!(bucket.success_count, 1);
+    assert_eq!(bucket.failure_count, 1);
 }
 
 #[tokio::test]
@@ -4995,6 +5188,64 @@ async fn combined_totals_count_legacy_null_status_failures_when_error_metadata_e
 }
 
 #[tokio::test]
+async fn combined_totals_count_legacy_null_status_failures_when_only_downstream_error_exists() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id,
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            total_tokens,
+            cost,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind(205_i64)
+    .bind("summary-null-status-downstream-only")
+    .bind(&occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind(Option::<String>::None)
+    .bind(6_i64)
+    .bind(0.06_f64)
+    .bind(
+        json!({
+            "downstreamErrorMessage": "downstream closed while streaming upstream response"
+        })
+        .to_string(),
+    )
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert legacy null-status downstream-only failure row");
+
+    let totals = query_combined_totals(
+        &state.pool,
+        None,
+        StatsFilter::All,
+        InvocationSourceScope::ProxyOnly,
+    )
+    .await
+    .expect("query combined totals");
+    assert_eq!(totals.total_count, 1);
+    assert_eq!(totals.success_count, 0);
+    assert_eq!(totals.failure_count, 1);
+    assert_eq!(totals.total_tokens, 6);
+    assert_f64_close(totals.total_cost, 0.06);
+}
+
+#[tokio::test]
 async fn combined_totals_treat_legacy_http_200_without_error_as_success() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -5045,10 +5296,86 @@ async fn combined_totals_treat_legacy_http_200_without_error_as_success() {
     assert_f64_close(totals.total_cost, 0.09);
 }
 
+#[tokio::test]
+async fn combined_totals_count_legacy_http_200_failures_when_only_downstream_error_exists() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id,
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            total_tokens,
+            cost,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind(206_i64)
+    .bind("summary-http-200-downstream-only")
+    .bind(&occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind("http_200")
+    .bind(8_i64)
+    .bind(0.08_f64)
+    .bind(
+        json!({
+            "downstreamErrorMessage": "socket closed after response"
+        })
+        .to_string(),
+    )
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert legacy http_200 downstream-only failure row");
+
+    let totals = query_combined_totals(
+        &state.pool,
+        None,
+        StatsFilter::All,
+        InvocationSourceScope::ProxyOnly,
+    )
+    .await
+    .expect("query combined totals");
+    assert_eq!(totals.total_count, 1);
+    assert_eq!(totals.success_count, 0);
+    assert_eq!(totals.failure_count, 1);
+    assert_eq!(totals.total_tokens, 8);
+    assert_f64_close(totals.total_cost, 0.08);
+}
+
 #[test]
 fn resolve_failure_classification_keeps_unknown_legacy_http_200_failure_kinds_actionable() {
     let classification = resolve_failure_classification(
         Some("http_200"),
+        Some(""),
+        Some("unknown_future_failure_kind"),
+        None,
+        None,
+    );
+
+    assert_eq!(classification.failure_class, FailureClass::ServiceFailure);
+    assert_eq!(
+        classification.failure_kind.as_deref(),
+        Some("unknown_future_failure_kind"),
+    );
+    assert!(classification.is_actionable);
+}
+
+#[test]
+fn resolve_failure_classification_keeps_completed_rows_with_failure_kind_as_failures() {
+    let classification = resolve_failure_classification(
+        Some("completed"),
         Some(""),
         Some("unknown_future_failure_kind"),
         None,

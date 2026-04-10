@@ -24,7 +24,7 @@
 - `24 小时 / 7 日 / 历史` 维持现有热力图 / 日历形态，仅共享头部 metric toggle，并保持按视图记忆 metric 行为不回退。
 - `活动总览` 的非激活范围改为按需挂载与按需请求：默认进入 Dashboard 只加载当前页签，未访问的 `24 小时 / 7 日 / 历史` 不再首屏预取，也不再常驻隐藏面板。
 - Dashboard 工作中对话的 prompt-cache 会话工作集必须有界：authoritative 刷新后只保留“当前响应中的 key + 仍有 live record 的 key”，selection 切换或卸载后释放旧工作集。
-- prompt-cache 会话图表 / 表格必须按 `outcome` 区分 `success / failure / neutral / in_flight`：blank/null `status` 且缺少失败元数据的历史行保持中性，不得再渲染成错误红色；一旦 live 行带有 `errorMessage` / `downstreamErrorMessage` / `failureKind` 之类显式错误元数据，即使 `failureClass` 还未回填，也必须先按失败呈现。
+- prompt-cache 会话图表 / 表格必须按 `outcome` 区分 `success / failure / neutral / in_flight`：blank/null `status` 且缺少失败元数据的历史行保持中性，不得再渲染成错误红色；一旦 live 或 authoritative 行带有 `errorMessage` / `downstreamErrorMessage` / `failureKind` 之类显式错误元数据，即使 `failureClass` 还未回填，也必须先按失败呈现。
 - Dashboard KPI 必须能识别卡片宽度不足导致的数值溢出，并自动切换到紧凑记数法（例如 `1.31B`）以保持布局稳定。
 - 补齐 Storybook、Vitest、spec 与视觉证据，并按 fast-track 路径收敛到 merge-ready。
 
@@ -61,7 +61,8 @@
 - Given 处于 `今日` 视图，When 查看总览内容，Then 顶部显示 5 个 KPI、下方显示一张分钟级图表；`24 小时 / 7 日` 仍显示既有 KPI + 热力图；`历史` 仍只显示半年日历。
 - Given `今日` 视图切到 `次数`，When 查看图表，Then 每个时间桶的成功 / 失败柱共享同一 X 槽位，成功柱位于 0 轴上方、失败柱位于 0 轴下方；当 bucket 带有显式 `inFlightCount > 0` 时，图表会在同一正半轴槽位额外绘制中性 `进行中` 柱，并且 tooltip 至少给出成功 / 失败 / 进行中 / 总数；仅因为 `totalCount > successCount + failureCount` 产生的 legacy 中性残差不得再被反推成 `进行中` 柱。
 - Given `今日 / 次数` 存在 `running/pending` live row、带失败元数据的临时态，或 legacy blank/null status 行缺少失败元数据，When 页面初载、silent refresh、SSE 多次更新或数据归档后重新读取，Then 这些非终态 / 中性 legacy 记录都不会被计入 failure；只有终态失败或带明确失败元数据的 legacy 行才会进入失败柱与失败汇总。
-- Given prompt-cache 会话图表或表格读到 blank/null `status` 且缺少失败元数据的历史行，When 前端按 authoritative 数据或 live patch 渲染该记录，Then 该记录会保持 `neutral` 语义与中性色，而不是被渲染成失败红色或进行中态；反之，只要 live 行已带显式错误元数据，就必须立即按失败态显示，而不能先落到 success/neutral 再等待下一次 authoritative refresh 纠正。
+- Given authoritative/live/archive 统计路径读到 legacy 成功终态 `status='completed'` 且缺少失败元数据，When Dashboard summary、今日次数图、TTFB 样本或 invocation summary 读取这些记录，Then 它们必须与 `success` 一样计入 success-like 口径，而不能掉进 failure / neutral / missing-sample。
+- Given prompt-cache 会话图表或表格读到 blank/null `status` 且缺少失败元数据的历史行，When 前端按 authoritative 数据或 live patch 渲染该记录，Then 该记录会保持 `neutral` 语义与中性色，而不是被渲染成失败红色或进行中态；反之，只要 live 或 authoritative 行已带显式错误元数据，就必须立即按失败态显示，而不能先落到 success/neutral 或 in_flight 再等待下一次 authoritative refresh 纠正。
 - Given in-flight seed 需要跨多页抓取 `running/pending` 记录，When 前端顺序拉取后续页，Then 所有页都复用第一页返回的 `snapshotId`，不会因底层集合变化而重复或漏算 seeded live delta。
 - Given `今日` 视图切到 `金额` 或 `Tokens`，When 查看图表，Then 图表切换为“今日整天 24 小时横轴”的累计面积图；未来分钟不渲染，缺失分钟补 0 以保持曲线连续。
 - Given 在四个范围间切换 `次数 / 金额 / Tokens`，When 来回切换范围，Then 每个范围仍保留各自上次选中的 metric。
@@ -85,7 +86,13 @@
   - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bunx vitest run src/components/DashboardTodayActivityChart.test.tsx src/components/PromptCacheConversationTable.test.tsx src/lib/promptCacheLive.test.ts src/hooks/useTimeseries.test.ts src/lib/api.test.ts`
 - Backend targeted tests:
   - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test timeseries_and_summary_do_not_treat_running_rows_with_failure_metadata_as_failures -- --nocapture`
+  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test timeseries_and_summary_count_completed_rows_as_success -- --nocapture`
   - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test prompt_cache_last24h_requests_keep_null_status_rows_neutral -- --nocapture`
+  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test prompt_cache_last24h_requests_treat_running_rows_with_error_text_as_failures -- --nocapture`
+  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test prompt_cache_last24h_requests_treat_pending_rows_with_failure_kind_as_failures -- --nocapture`
+  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test combined_totals_count_legacy_null_status_failures_when_only_downstream_error_exists -- --nocapture`
+  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test combined_totals_count_legacy_http_200_failures_when_only_downstream_error_exists -- --nocapture`
+  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test timeseries_and_summary_count_http_200_rows_with_downstream_only_failure_metadata -- --nocapture`
 - Storybook build:
   - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run build-storybook`
 
@@ -94,7 +101,7 @@
 - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run test`
 - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run build`
 - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run build-storybook`
-- `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test fetch_invocation_summary_normalizes_top_level_success_and_failure_counts -- --nocapture && cargo test hourly_backed_summary_replays_pre_cutoff_full_hour_live_rows_after_rollup_cursor -- --nocapture && cargo test timeseries_hourly_backed_repairs_stale_archived_rollup_counts_before_querying -- --nocapture && cargo test timeseries_and_summary_do_not_treat_running_rows_with_failure_metadata_as_failures -- --nocapture && cargo test prompt_cache_last24h_requests_keep_null_status_rows_neutral -- --nocapture && cargo check`
+- `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test fetch_invocation_summary_normalizes_top_level_success_and_failure_counts -- --nocapture && cargo test hourly_backed_summary_replays_pre_cutoff_full_hour_live_rows_after_rollup_cursor -- --nocapture && cargo test timeseries_hourly_backed_repairs_stale_archived_rollup_counts_before_querying -- --nocapture && cargo test timeseries_and_summary_do_not_treat_running_rows_with_failure_metadata_as_failures -- --nocapture && cargo test timeseries_and_summary_count_completed_rows_as_success -- --nocapture && cargo test prompt_cache_last24h_requests_keep_null_status_rows_neutral -- --nocapture && cargo test prompt_cache_last24h_requests_treat_running_rows_with_error_text_as_failures -- --nocapture && cargo test prompt_cache_last24h_requests_treat_pending_rows_with_failure_kind_as_failures -- --nocapture && cargo test combined_totals_count_legacy_null_status_failures_when_only_downstream_error_exists -- --nocapture && cargo test combined_totals_count_legacy_http_200_failures_when_only_downstream_error_exists -- --nocapture && cargo test timeseries_and_summary_count_http_200_rows_with_downstream_only_failure_metadata -- --nocapture && cargo check`
 
 ## 文档更新（Docs to Update）
 
@@ -163,15 +170,19 @@
 - 2026-04-10: 根据 fresh review 新一轮阻塞项继续收口 neutral / in-flight 语义：`今日 / 次数` 图现在只消费显式 `inFlightCount`，不再把 `totalCount - successCount - failureCount` 的 legacy 中性残差误画成 `进行中`；prompt-cache blank/null 历史行新增 `outcome=neutral`，会在 keyed chart / 表格里保持中性色而不是错误红色；前后端对应测试、全量 `web` 验证与 targeted cargo 回归已刷新到当前本地 head。
 - 2026-04-10: 根据最新 fresh review 继续收口 live prompt-cache 失败呈现：`resolvePromptCacheInvocationOutcome` 现在会优先尊重 `errorMessage` / `downstreamErrorMessage` / `failureKind` 等显式错误元数据，再决定 success/neutral fallback，避免刚结算但 `failureClass` 尚未回填的 live 记录在下一次 authoritative refresh 前短暂误显示为成功或中性。
 - 2026-04-10: 根据最新 fresh review 再补齐 `failure metadata > in_flight` 优先级：无论 authoritative `last24hRequests` 还是 live SSE merge，只要 `running/pending` 行已经带有明确失败元数据，就会立即产出 `outcome=failure` 并保持失败色；只有既无失败元数据、又仍处于 `running/pending` 的记录才继续显示为 `in_flight`。
+- 2026-04-10: 根据最新 fresh review 再补 authoritative prompt-cache request-point 对账：`last24hRequests` authoritative refresh 现在不仅识别 `failureClass`，也会把 `errorMessage` / `downstreamErrorMessage` / `failureKind` 视为显式失败元数据，因此 `running/pending` 但已带错误文本的记录不会再被 authoritative 刷新错误降级回 `in_flight` 或 `neutral`。
+- 2026-04-10: 根据最新 fresh review 再统一 downstream-only failure metadata：`INVOCATION_RESOLVED_FAILURE_CLASS_SQL` 的 legacy `success / http_200 / blank-status` 快路径现在会同时检查 `downstreamErrorMessage`，避免仅靠 downstream 错误文本支撑的旧记录被误判成 success/neutral；前端 `useTimeseries` 的 live classifier 也把 `downstreamErrorMessage` 视为显式失败元数据，因此 today minute chart 不会再把这类实时记录短暂画成绿色。
+- 2026-04-10: 根据最新 fresh review 再补 exact/live aggregate 读取：`query_invocation_aggregate_records_from_live_range*` 现在直接投影 `INVOCATION_FAILURE_KIND_SQL` 与 `INVOCATION_RESOLVED_FAILURE_CLASS_SQL`，并按 resolved class 重新计算 `is_actionable`，所以 current/live summary、today exact bucket 与 full-hour tail replay 不会再漏掉仅存在于 `payload.downstreamErrorMessage` 的 legacy 失败元数据。
+- 2026-04-10: 根据最新 fresh review 再统一 `completed` success-like 口径：`resolve_failure_classification`、`INVOCATION_RESOLVED_FAILURE_CLASS_SQL`、recent/exact summary helper、hourly rollup success-like 判定与 `query_combined_totals` 现在都会把无失败元数据的 `status='completed'` 视为成功，从而让 Dashboard summary、今日次数图、TTFB 样本与 invocation summary 不再把常见成功终态漏算成 failure 或 missing sample。
 
 ## Visual Evidence
 
 - Storybook覆盖=通过
 - 视觉证据目标源=storybook_canvas（mock-only）
-- Validation: `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bunx vitest run src/components/DashboardTodayActivityChart.test.tsx src/components/PromptCacheConversationTable.test.tsx src/lib/promptCacheLive.test.ts src/hooks/useTimeseries.test.ts src/lib/api.test.ts && bun run test && bun run build && bun run build-storybook`；`cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test fetch_invocation_summary_normalizes_top_level_success_and_failure_counts -- --nocapture && cargo test hourly_backed_summary_replays_pre_cutoff_full_hour_live_rows_after_rollup_cursor -- --nocapture && cargo test timeseries_hourly_backed_repairs_stale_archived_rollup_counts_before_querying -- --nocapture && cargo test timeseries_and_summary_do_not_treat_running_rows_with_failure_metadata_as_failures -- --nocapture && cargo test prompt_cache_last24h_requests_keep_null_status_rows_neutral -- --nocapture && cargo check`
+- Validation: `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bunx vitest run src/components/DashboardTodayActivityChart.test.tsx src/components/PromptCacheConversationTable.test.tsx src/lib/promptCacheLive.test.ts src/hooks/useTimeseries.test.ts src/lib/api.test.ts && bun run test && bun run build && bun run build-storybook`；`cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test fetch_invocation_summary_normalizes_top_level_success_and_failure_counts -- --nocapture && cargo test hourly_backed_summary_replays_pre_cutoff_full_hour_live_rows_after_rollup_cursor -- --nocapture && cargo test timeseries_hourly_backed_repairs_stale_archived_rollup_counts_before_querying -- --nocapture && cargo test timeseries_and_summary_do_not_treat_running_rows_with_failure_metadata_as_failures -- --nocapture && cargo test timeseries_and_summary_count_completed_rows_as_success -- --nocapture && cargo test prompt_cache_last24h_requests_keep_null_status_rows_neutral -- --nocapture && cargo check`
 - Story id: `dashboard-dashboardtodayactivitychart--count-bars-dense-pairing`
 - Scenario: `今日 / 次数` 高密度 minute bucket，对齐验证 success / in-flight / failure 共用同一时间槽位并围绕 0 轴展开。
-- Evidence note: 验证柱子不再左右错位；`running/pending` 与其临时失败元数据不会把 failure 柱短时拉长后再回落；图表只会为显式 `inFlightCount` 绘制中性 `进行中` 正柱，legacy neutral residual 不再被误画成进行中；本轮 rebuilt Storybook 已重新绑定到最新本地验证 head。
+- Evidence note: 验证柱子不再左右错位；`running/pending` 与其临时失败元数据不会把 failure 柱短时拉长后再回落；图表只会为显式 `inFlightCount` 绘制中性 `进行中` 正柱，legacy neutral residual 不再被误画成进行中；本轮 `completed` success-like 修复未改变该画面的结构与像素语义，因此继续沿用已回传的本地 Storybook canvas 证据，未额外声称 fresh devtools 重截。
 - Live patch note: 最新收口额外验证了 `running/pending` seed 的跨页同快照一致性，以及“新到达但同桶”的 settled 记录不会错误吞掉旧 placeholder；anonymous placeholder 只允许回收 authoritative `snapshotId` 之前的同桶记录，而 authoritative refresh 会把仍在 TTL 内的 tracked live deltas 合并回 fresh response；当匿名 placeholder 独占 bucket 时，终态 SSE 也会把 provisional token/cost 直接修正到最终值；`current-day-local` 模式仅抓取当前日 bucket 的 in-flight seed，不再为长范围日历扫描整段窗口。
 - Repair note: 最新收口额外验证了 all-time summary repair 在 mixed preserve 场景下会补回被 boundary archive 重放清空的历史 live rows，并确保“只缺 failure replay marker”的归档回填不会误删已有正确的 `invocation_rollup_hourly` 总数；同时历史 hourly-backed timeseries / summary / failure 读取 archived rollup 前会先 refresh rollup，再冻结同一个 `snapshotId`，并对 `rollup_live_cursor < id <= snapshotId` 的 full-hour tail 做 exact replay，不再在升级后继续暴露陈旧 failure counts。
 - Prompt-cache note: blank/null `status` 且缺少失败元数据的历史 prompt-cache 记录现在会带 `outcome=neutral`，keyed chart 与表格统一使用中性色呈现，不再误标成 error 红线。
