@@ -818,6 +818,36 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(renderedCards?.length).toBeLessThan(30);
   });
 
+  it("keeps the pre-measure fallback bounded before virtual rows are available", () => {
+    virtualizerMocks.rowIndexes = [];
+    virtualizerMocks.totalSize = 30 * 360;
+
+    renderSection(
+      createResponse(
+        Array.from({ length: 30 }, (_, index) =>
+          createConversation(`pck-fallback-${index + 1}`, [
+            createPreview({
+              id: index + 1,
+              invokeId: `invoke-fallback-${index + 1}`,
+              occurredAt: `2026-04-04T10:${String((59 - index) % 60).padStart(2, "0")}:00Z`,
+              status: index % 2 === 0 ? "running" : "completed",
+            }),
+          ]),
+        ),
+      ),
+    );
+
+    const renderedCards = host?.querySelectorAll(
+      '[data-testid="dashboard-working-conversation-card"]',
+    );
+    const renderedRows = host?.querySelectorAll(
+      '[data-testid="dashboard-working-conversations-row"]',
+    );
+
+    expect(renderedRows?.length).toBeLessThan(30);
+    expect(renderedCards?.length).toBeLessThan(30);
+  });
+
   it("reports the current virtualized depth instead of pinning refreshes to historical rows", () => {
     const setRefreshTargetCount = vi.fn();
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1700);

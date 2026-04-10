@@ -853,10 +853,19 @@ export function DashboardWorkingConversationsSection({
     overscan: 3,
   });
   const virtualRows = rowVirtualizer.getVirtualItems();
+  const fallbackRowCount = Math.min(
+    rows.length,
+    Math.max(
+      1,
+      Math.ceil(
+        DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE / Math.max(columnCount, 1),
+      ),
+    ),
+  );
   const renderedRows =
     virtualRows.length > 0
       ? virtualRows
-      : rows.map((_, index) => ({
+      : rows.slice(0, fallbackRowCount).map((_, index) => ({
           key: index,
           index,
           start: index * 360,
