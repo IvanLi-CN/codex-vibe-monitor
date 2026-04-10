@@ -24,6 +24,15 @@ function normalizeFailureClass(value: string | null | undefined) {
   return normalized.length > 0 ? normalized : null;
 }
 
+function normalizeFailureKind(value: string | null | undefined) {
+  const normalized = value?.trim().toLowerCase() ?? "";
+  return normalized.length > 0 ? normalized : null;
+}
+
+function hasNonEmptyText(value: string | null | undefined) {
+  return (value?.trim().length ?? 0) > 0;
+}
+
 export function resolveConversationRequestPointOutcome(
   point: Pick<ConversationRequestPoint, "status" | "isSuccess" | "outcome">,
 ): ConversationRequestOutcome {
@@ -41,7 +50,14 @@ export function resolveConversationRequestPointOutcome(
 }
 
 export function resolvePromptCacheInvocationOutcome(
-  record: Pick<ApiInvocation, "status" | "failureClass" | "errorMessage">,
+  record: Pick<
+    ApiInvocation,
+    | "status"
+    | "failureClass"
+    | "failureKind"
+    | "errorMessage"
+    | "downstreamErrorMessage"
+  >,
 ): ConversationRequestOutcome {
   const status = normalizeStatus(record.status);
   if (status === "running" || status === "pending") {
@@ -53,11 +69,21 @@ export function resolvePromptCacheInvocationOutcome(
     return "failure";
   }
 
-  const hasErrorMessage = (record.errorMessage?.trim().length ?? 0) > 0;
+  const failureKind = normalizeFailureKind(record.failureKind);
+  const hasErrorMessage = hasNonEmptyText(record.errorMessage);
+  const hasDownstreamErrorMessage = hasNonEmptyText(record.downstreamErrorMessage);
+  if (
+    hasErrorMessage ||
+    hasDownstreamErrorMessage ||
+    (failureKind != null && failureKind !== "none")
+  ) {
+    return "failure";
+  }
+
   if (
     status === "success" ||
     status === "completed" ||
-    (status === "http_200" && !hasErrorMessage)
+    status === "http_200"
   ) {
     return "success";
   }
