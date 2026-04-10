@@ -13,6 +13,10 @@ type PersistedRange = 'today' | '1d' | '7d' | 'usage' | null
 type WindowWithDashboardFetchLog = Window & {
   __dashboardOverviewFetchLog__?: string[]
 }
+type DashboardOverviewParameters = {
+  persistedRange?: PersistedRange
+  failTodayTimeseries?: boolean
+}
 
 function StorySurface({ children }: { children: ReactNode }) {
   return (
@@ -231,7 +235,13 @@ function distributeInteger(total: number, weights: number[]) {
   return allocations
 }
 
-function DashboardOverviewMockApi({ children }: { children: ReactNode }) {
+function DashboardOverviewMockApi({
+  children,
+  failTodayTimeseries = false,
+}: {
+  children: ReactNode
+  failTodayTimeseries?: boolean
+}) {
   const originalFetchRef = useRef<typeof window.fetch | null>(null)
   const originalEventSourceRef = useRef<typeof window.EventSource | null>(null)
 
@@ -257,6 +267,12 @@ function DashboardOverviewMockApi({ children }: { children: ReactNode }) {
         const range = url.searchParams.get('range')
         const bucket = url.searchParams.get('bucket')
         const key = `${range}:${bucket}` as TimeseriesKey
+        if (failTodayTimeseries && key === 'today:1m') {
+          return new Response(JSON.stringify({ error: 'timeseries failed' }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
         if (key in TIMESERIES_FIXTURES) {
           return jsonResponse(TIMESERIES_FIXTURES[key])
         }
@@ -331,9 +347,9 @@ const meta = {
   decorators: [
     (Story, context) => (
       <I18nProvider>
-        <DashboardOverviewMockApi>
+        <DashboardOverviewMockApi failTodayTimeseries={(context.parameters as DashboardOverviewParameters).failTodayTimeseries === true}>
           <StorySurface>
-            <RangeStorageHarness persistedRange={(context.parameters.persistedRange ?? null) as PersistedRange}>
+            <RangeStorageHarness persistedRange={((context.parameters as DashboardOverviewParameters).persistedRange ?? null) as PersistedRange}>
               <Story />
             </RangeStorageHarness>
           </StorySurface>
@@ -352,7 +368,24 @@ export const TodayView: Story = {
     const canvas = within(canvasElement)
     await waitFor(() => {
       expect(canvas.getByRole('tab', { name: /今日|today/i })).toHaveAttribute('aria-selected', 'true')
+      expect(canvas.getByTestId('today-stats-value-tpm')).toBeVisible()
+      expect(canvas.getByTestId('today-stats-value-cost-per-minute')).toBeVisible()
       expect(canvas.getByTestId('today-stats-value-total-tokens')).toHaveAttribute('data-compact', 'true')
+    })
+  },
+}
+
+export const TodayRateUnavailable: Story = {
+  parameters: {
+    failTodayTimeseries: true,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await waitFor(() => {
+      expect(canvas.getByRole('tab', { name: /今日|today/i })).toHaveAttribute('aria-selected', 'true')
+      expect(canvas.getByTestId('today-stats-value-tpm')).toHaveTextContent('—')
+      expect(canvas.getByTestId('today-stats-value-cost-per-minute')).toHaveTextContent('—')
+      expect(canvas.getByTestId('today-stats-value-success')).toBeVisible()
     })
   },
 }

@@ -46,9 +46,23 @@ vi.mock('../i18n', () => ({
 }))
 
 vi.mock('./TodayStatsOverview', () => ({
-  TodayStatsOverview: ({ showSurface, showHeader, showDayBadge }: { showSurface?: boolean; showHeader?: boolean; showDayBadge?: boolean }) => (
+  TodayStatsOverview: ({
+    showSurface,
+    showHeader,
+    showDayBadge,
+    rate,
+    rateLoading,
+    rateError,
+  }: {
+    showSurface?: boolean
+    showHeader?: boolean
+    showDayBadge?: boolean
+    rate?: { tokensPerMinute?: number; costPerMinute?: number } | null
+    rateLoading?: boolean
+    rateError?: string | null
+  }) => (
     <div data-testid="today-stats-overview-mock">
-      {`surface:${String(showSurface)};header:${String(showHeader)};badge:${String(showDayBadge)}`}
+      {`surface:${String(showSurface)};header:${String(showHeader)};badge:${String(showDayBadge)};tpm:${rate?.tokensPerMinute ?? 'null'};cpm:${rate?.costPerMinute ?? 'null'};rateLoading:${String(rateLoading)};rateError:${rateError ?? 'null'}`}
     </div>
   ),
 }))
@@ -165,7 +179,58 @@ function installSummaryMocks() {
   })
 
   hookMocks.useTimeseries.mockReturnValue({
-    data: { rangeStart: '2026-04-08T00:00:00.000Z', rangeEnd: '2026-04-08T00:03:00.000Z', bucketSeconds: 60, points: [] },
+    data: {
+      rangeStart: '2026-04-08 00:00:00',
+      rangeEnd: '2026-04-08 00:06:00',
+      bucketSeconds: 60,
+      points: [
+        {
+          bucketStart: '2026-04-08 00:01:00',
+          bucketEnd: '2026-04-08 00:02:00',
+          totalCount: 1,
+          successCount: 1,
+          failureCount: 0,
+          totalTokens: 600,
+          totalCost: 0.06,
+        },
+        {
+          bucketStart: '2026-04-08 00:02:00',
+          bucketEnd: '2026-04-08 00:03:00',
+          totalCount: 1,
+          successCount: 1,
+          failureCount: 0,
+          totalTokens: 800,
+          totalCost: 0.08,
+        },
+        {
+          bucketStart: '2026-04-08 00:03:00',
+          bucketEnd: '2026-04-08 00:04:00',
+          totalCount: 1,
+          successCount: 1,
+          failureCount: 0,
+          totalTokens: 1000,
+          totalCost: 0.1,
+        },
+        {
+          bucketStart: '2026-04-08 00:04:00',
+          bucketEnd: '2026-04-08 00:05:00',
+          totalCount: 1,
+          successCount: 1,
+          failureCount: 0,
+          totalTokens: 1200,
+          totalCost: 0.12,
+        },
+        {
+          bucketStart: '2026-04-08 00:05:00',
+          bucketEnd: '2026-04-08 00:06:00',
+          totalCount: 1,
+          successCount: 1,
+          failureCount: 0,
+          totalTokens: 1400,
+          totalCost: 0.14,
+        },
+      ],
+    },
     isLoading: false,
     error: null,
   })
@@ -208,7 +273,7 @@ describe('DashboardActivityOverview', () => {
     expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')).toBeNull()
     expect(host?.querySelector('[data-testid="dashboard-activity-range-usage"]')).toBeNull()
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toBe(
-      'surface:false;header:false;badge:false',
+      'surface:false;header:false;badge:false;tpm:1000;cpm:0.1;rateLoading:false;rateError:null',
     )
     expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent).toBe(
       'metric:totalCount',
