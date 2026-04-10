@@ -14,6 +14,7 @@ import {
   createStoryPoolAttemptsByInvokeId,
   STORYBOOK_FIRST_RESPONSE_BYTE_SEMANTICS_RECORDS,
   STORYBOOK_INVOCATION_RECORDS,
+  STORYBOOK_PROXY_ERROR_CONTRACT_RECORDS,
 } from './invocationRecordsStoryFixtures'
 
 type PoolAttemptsByInvokeId = Record<string, ApiPoolUpstreamRequestAttempt[]>
@@ -166,6 +167,7 @@ function StorybookPoolAttemptsMock({ children, records }: { children: ReactNode;
 const meta = {
   title: 'Records/InvocationRecordsTable',
   component: InvocationRecordsTable,
+  tags: ['autodocs'],
   parameters: {
     layout: 'fullscreen',
   },
@@ -286,6 +288,39 @@ export const PoolRouteFocus: Story = {
     records: STORYBOOK_INVOCATION_RECORDS.filter((record) => record.routeMode === 'pool'),
     isLoading: false,
     error: null,
+  },
+}
+
+export const SplitProxyErrorSemantics: Story = {
+  args: {
+    focus: 'exception',
+    records: STORYBOOK_PROXY_ERROR_CONTRACT_RECORDS,
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Compares three failure contracts in one controlled surface: a synthetic oauth-bridge 502 split into upstream transport facts + downstream wrapper text, a true upstream HTTP 502, and a downstream-closed client abort with downstream-only diagnostics.',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+
+    await userEvent.click(canvas.getByRole('button', { name: /展开详情|show details/i }))
+    await waitFor(() => {
+      expect(
+        document.querySelector('[data-testid="invocation-upstream-error-section"]'),
+      ).not.toBeNull()
+      expect(
+        document.querySelector('[data-testid="invocation-downstream-error-section"]'),
+      ).not.toBeNull()
+      expect(
+        document.querySelector('[data-testid="pool-attempt-downstream-error"]')?.textContent ?? '',
+      ).toContain('pool upstream responded with 502')
+    })
   },
 }
 

@@ -1998,6 +1998,128 @@ async fn pool_route_marks_oauth_missing_scopes_as_error_and_persists_upstream_de
 }
 
 #[tokio::test]
+async fn pool_route_persists_canonical_oauth_transport_error_without_failure_kind_prefix() {
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    #[derive(Debug, sqlx::FromRow)]
+    struct PersistedRow {
+        error_message: Option<String>,
+        failure_kind: Option<String>,
+        downstream_status_code: Option<i64>,
+        downstream_error_message: Option<String>,
+    }
+
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRow {
+        error_message: Option<String>,
+        downstream_error_message: Option<String>,
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind unused oauth upstream port");
+    let addr = listener.local_addr().expect("oauth upstream addr");
+    drop(listener);
+
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("http://{addr}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_oauth_account(&state, "Broken OAuth", "oauth-broken-transport").await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(r#"{"model":"gpt-5","input":"hello"}"#.as_bytes().to_vec()),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read oauth transport failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode oauth transport failure");
+    assert!(
+        payload["error"]
+            .as_str()
+            .is_some_and(|value| value.contains("failed to contact oauth codex upstream"))
+    );
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    let row = sqlx::query_as::<_, PersistedRow>(
+        r#"
+        SELECT
+            error_message,
+            json_extract(payload, '$.failureKind') AS failure_kind,
+            CAST(json_extract(payload, '$.downstreamStatusCode') AS INTEGER) AS downstream_status_code,
+            json_extract(payload, '$.downstreamErrorMessage') AS downstream_error_message
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load oauth transport failure invocation");
+
+    let attempt_row = sqlx::query_as::<_, AttemptRow>(
+        r#"
+        SELECT error_message, downstream_error_message
+        FROM pool_upstream_request_attempts
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load oauth transport failure attempt");
+
+    assert_eq!(row.error_message, attempt_row.error_message);
+    assert_eq!(
+        row.failure_kind.as_deref(),
+        Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM)
+    );
+    assert_eq!(row.downstream_status_code, Some(502));
+    assert!(
+        row.error_message.as_deref().is_some_and(|value| {
+            !value.contains("pool upstream responded with 502")
+                && !value.starts_with("[failed_contact_upstream]")
+                && value.contains("failed to contact oauth codex upstream")
+        }),
+        "unexpected canonical invocation error: {:?}",
+        row
+    );
+    assert!(
+        row.downstream_error_message
+            .as_deref()
+            .is_some_and(|value| {
+                value.contains("pool upstream responded with 502")
+                    && value.contains("failed to contact oauth codex upstream")
+            }),
+        "unexpected downstream wrapper error: {:?}",
+        row
+    );
+    assert_eq!(
+        row.downstream_error_message,
+        attempt_row.downstream_error_message
+    );
+
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
 async fn pool_route_marks_explicit_invalidated_oauth_as_needs_reauth() {
     let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
         .lock()
@@ -2479,4 +2601,3 @@ async fn pool_route_oauth_responses_sends_uuid_account_header_and_persists_obser
     upstream_handle.abort();
     oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
 }
-

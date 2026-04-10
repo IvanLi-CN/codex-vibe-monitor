@@ -39,6 +39,10 @@ function createPreview(
     cacheInputTokens: overrides.cacheInputTokens ?? 30,
     reasoningTokens: overrides.reasoningTokens ?? 14,
     reasoningEffort: overrides.reasoningEffort ?? "high",
+    errorMessage: overrides.errorMessage,
+    downstreamStatusCode: overrides.downstreamStatusCode,
+    downstreamErrorMessage: overrides.downstreamErrorMessage,
+    failureKind: overrides.failureKind,
     requestedServiceTier: overrides.requestedServiceTier ?? "priority",
     serviceTier: overrides.serviceTier ?? "priority",
     tReqReadMs: overrides.tReqReadMs ?? 10,
@@ -239,6 +243,31 @@ describe("DashboardWorkingConversationsSection", () => {
       reasoningEffort.compareDocumentPosition(fastIcon) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0);
+  });
+
+  it("falls back to downstream-facing diagnostics in the dashboard card summary", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-downstream-dashboard", [
+          createPreview({
+            id: 9,
+            invokeId: "invoke-downstream-dashboard",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "failed",
+            failureClass: "client_abort",
+            failureKind: "downstream_closed",
+            downstreamStatusCode: 200,
+            downstreamErrorMessage:
+              "[downstream_closed] downstream closed while streaming upstream response",
+          }),
+        ]),
+      ]),
+    );
+
+    const text = host?.textContent ?? "";
+    expect(text).toContain(
+      "[downstream_closed] downstream closed while streaming upstream response",
+    );
   });
 
   it("renders a fixed previous-invocation placeholder when a conversation has only one call", () => {

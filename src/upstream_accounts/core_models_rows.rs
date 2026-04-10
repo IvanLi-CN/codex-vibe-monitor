@@ -533,6 +533,8 @@ struct AccountStickyKeyInvocationPreviewRow {
     reasoning_tokens: Option<i64>,
     reasoning_effort: Option<String>,
     error_message: Option<String>,
+    downstream_status_code: Option<i64>,
+    downstream_error_message: Option<String>,
     failure_kind: Option<String>,
     is_actionable: Option<i64>,
     proxy_display_name: Option<String>,
@@ -621,4 +623,3 @@ struct OauthMailboxSessionRow {
     updated_at: String,
     expires_at: String,
 }
-

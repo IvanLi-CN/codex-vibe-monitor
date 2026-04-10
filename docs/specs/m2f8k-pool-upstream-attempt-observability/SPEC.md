@@ -4,7 +4,7 @@
 
 - Status: 进行中
 - Created: 2026-03-22
-- Last: 2026-03-25
+- Last: 2026-04-10
 - Note: 在线历史读取语义已由 `#h9r2m` 接管；本 spec 中涉及 archive 回读的描述仅保留为原始设计背景，不再代表当前契约。
 
 ## 背景 / 问题陈述
@@ -50,12 +50,12 @@
 
 ### MUST
 
-- `pool_upstream_request_attempts` 至少记录：`invoke_id`、`occurred_at`、`endpoint`、`route_mode`、`sticky_key`、`upstream_account_id`、`attempt_index`、`distinct_account_index`、`same_account_retry_index`、`requester_ip`、`started_at`、`finished_at`、`status`、`phase`、`http_status`、`failure_kind`、`error_message`、`connect_latency_ms`、`first_byte_latency_ms`、`stream_latency_ms`、`upstream_request_id`。
+- `pool_upstream_request_attempts` 至少记录：`invoke_id`、`occurred_at`、`endpoint`、`route_mode`、`sticky_key`、`upstream_account_id`、`attempt_index`、`distinct_account_index`、`same_account_retry_index`、`requester_ip`、`started_at`、`finished_at`、`status`、`phase`、`http_status`、`downstream_http_status`、`failure_kind`、`error_message`、`downstream_error_message`、`connect_latency_ms`、`first_byte_latency_ms`、`stream_latency_ms`、`upstream_request_id`。
 - attempt `status` 必须收敛到有限集合：`pending`、`success`、`http_failure`、`transport_failure`、`budget_exhausted_final`。
 - attempt `phase` 必须表达过程态推进；当前契约至少包含 `connecting`、`sending_request`、`waiting_first_byte`、`streaming_response`、`completed`、`failed`。其中 `completed` / `failed` 只表示过程收口，最终业务结果仍以 `status` 为准。
 - pool failover 最多尝试 `3` 个不同账号；若即将进入第 `4` 个不同账号，必须停止继续 failover，并写一条 `budget_exhausted_final` attempt，`failure_kind=max_distinct_accounts_exhausted`。
 - 同账号内的 retry 仍可发生，但只能增加 `same_account_retry_index`，不得额外占用新的 `distinct_account_index`。
-- `codex_invocations.payload.upstreamAccountId` 继续表示最终落定账号；新增 `poolAttemptCount`、`poolDistinctAccountCount`、`poolAttemptTerminalReason` 作为汇总字段。
+- `codex_invocations.payload.upstreamAccountId` 继续表示最终落定账号；新增 `poolAttemptCount`、`poolDistinctAccountCount`、`poolAttemptTerminalReason`、`downstreamStatusCode`、`downstreamErrorMessage` 作为汇总字段；其中主记录与 attempt 的 `errorMessage` 都改为“我们项目 ↔ 上游”的 canonical summary，不再复用对下游包装文案。
 - `GET /api/invocations/{invokeId}/pool-attempts` 只对 `routeMode=pool` 返回记录；非 pool 调用必须稳定返回空数组。
 - InvocationTable 只能在展开详情时按需请求 attempts；列表与 SSE 载荷不得内嵌完整 attempts。
 - `/events` 继续复用同一条 SSE 连接；attempt 明细必须通过单独的 `pool_attempts` 事件推送完整 attempts 列表，开始尝试与尝试终态更新都要触发推送。
@@ -65,6 +65,7 @@
 
 - attempt 查询只读 live DB；超出在线保留窗时返回空数组，由主记录 summary 与统计层承担长期历史能力。
 - UI 详情应同时展示尝试序号、账号、账号内重试序号、终态、HTTP 状态、失败类型、各阶段耗时、上游请求 ID 与时间点。
+- UI 详情与 attempts 表必须把 “Upstream error” 与 “Downstream-facing error” 分开展示；旧数据缺少 downstream 字段时稳定降级为 `—`。
 - UI 在首次拿到空 attempts 后，只要主记录仍在运行中或后续收到 `poolAttemptCount` / `pool_attempts` 增量，就必须能被动刷新，不得把空结果当成最终真相缓存住。
 - 历史 invocation 缺少 pool summary 字段时，前端详情仍应稳定渲染，不把它误判成错误态。
 
@@ -79,6 +80,7 @@
 - process phase 只能在阶段切换时更新数据库和 SSE，不得按上传/下载 chunk 高频写库。
 - 当同一个账号返回 `5xx` 且仍有同账号 retry 预算时，先记录这次失败 attempt，再按现有策略 sleep 后重试同一账号。
 - 当同一个账号返回 `429` 时，必须先记录这次失败 attempt，并立即切到下一个不同账号；若没有可切账号，则对调用方返回 `429` 终态。
+- 当 OAuth bridge 用 `x-codex-oauth-transport-failure` 标记 synthetic `502/504` 时，该 attempt 必须归一化为 `transport_failure`：`http_status=NULL`、`downstream_http_status=<wrapped status>`，`error_message` 只保留 upstream transport facts，原包装 `502` 文案只进入 `downstream_error_message`。
 - 当一个账号的 retry 预算耗尽且需要换号时，递增 `distinct_account_index` 并继续 `continue 'account_loop`；一旦即将超过 3 个不同账号，终止 failover 并写 `budget_exhausted_final`。
 - 最终成功 attempt 在流结束后补全 `stream_latency_ms`；失败 attempt 只要求补全当前已知的连接/HTTP/失败信息。
 - retention 任务先 archive 再 purge live rows，并给 `archive_batches` 写入 `coverage_start_at`、`coverage_end_at`、`archive_expires_at`；archive TTL 清理只按 manifest 覆盖窗口判断，不按文件 mtime 猜测。
@@ -88,6 +90,7 @@
 - pool 调用在 live DB 中已被清理时，attempt API 返回空数组，不再从 archive 中回读，也不因 archive 文件状态影响在线接口可用性。
 - 非 pool 调用或未知 `invokeId` 返回空数组，不把“没有 attempts”误报为服务异常。
 - 历史记录尚未带 `poolAttemptCount` / `poolDistinctAccountCount` / `poolAttemptTerminalReason` 时，列表详情按 `—` 降级显示。
+- 历史记录尚未带 `downstreamStatusCode` / `downstreamErrorMessage` 或 attempts 新 downstream 字段时，列表详情与 attempts 表也必须按 `—` 降级显示。
 - `/v1/responses/compact` 与 `/v1/responses` 共用同一 attempt 记录与 3 账号预算模型，不分叉实现。
 
 ## 接口契约（Interfaces & Contracts）
@@ -110,6 +113,8 @@
 - Given 一个 pool 调用连续失败，When 第 3 个不同账号仍失败，Then 服务立即返回失败，不再尝试第 4 个账号，且 attempts 列表最后包含 `budget_exhausted_final` / `max_distinct_accounts_exhausted`。
 - Given 同账号内出现 retryable `5xx`，When 读取 attempts，Then `same_account_retry_index` 递增而 `distinct_account_index` 不变。
 - Given 任一账号收到 `429`，When 读取 attempts，Then 该 attempt 的 `same_account_retry_index` 固定为 `1`，且后续 failover 必须切到下一个 distinct account 或直接返回 `429`。
+- Given OAuth bridge synthetic `502` 被 header 标记为 transport failure，When 读取 attempts 与 invocation 详情，Then `error_message` 只显示 canonical upstream transport 文案，`downstream_http_status/downstream_error_message` 单独显示包装给客户端的 `502` 信息。
+- Given downstream 在流式返回途中提前断开，When 读取 invocation 详情，Then `failureKind=downstream_closed` 仍落到 `client_abort`，但 downstream 文案不得混入 canonical upstream `error_message`。
 - Given 一个非 pool invocation，When 展开 InvocationTable 详情，Then UI 显示明确的“非号池调用无 attempt 明细”空态，且不会发起 attempts 请求。
 - Given 一个 pool invocation 的 live attempts 已被 retention 清理，When 调用 attempts API，Then 服务可以从对应 archive 月份回读 attempts。
 - Given attempt archive 超过 `30` 个上海自然日，When 运行 retention live 模式，Then 过期 archive 文件与对应 `archive_batches` manifest 行会一起被删除。

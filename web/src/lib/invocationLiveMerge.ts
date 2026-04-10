@@ -24,6 +24,8 @@ function invocationHasTerminalFailure(record: ApiInvocation) {
   if (failureClass && failureClass !== "none") return true;
   if (status.startsWith("http_4") || status.startsWith("http_5")) return true;
   if (hasMeaningfulString(record.errorMessage)) return true;
+  if (hasMeaningfulString(record.downstreamErrorMessage)) return true;
+  if (hasComparableNumber(record.downstreamStatusCode)) return true;
   if (hasMeaningfulString(record.failureKind)) return true;
   if (hasMeaningfulString(record.poolAttemptTerminalReason)) return true;
   if (hasMeaningfulString(record.upstreamErrorCode)) return true;
@@ -112,6 +114,10 @@ function recordCompletenessScore(record: ApiInvocation) {
   if (record.upstreamErrorCode?.trim()) score += 1;
   if (record.upstreamErrorMessage?.trim()) score += 1;
   if (record.errorMessage?.trim()) score += 2;
+  if (typeof record.downstreamStatusCode === "number" && Number.isFinite(record.downstreamStatusCode)) {
+    score += 1;
+  }
+  if (record.downstreamErrorMessage?.trim()) score += 1;
   return score;
 }
 
@@ -212,6 +218,7 @@ function mergeInvocationRecordDetails(
     "poolAttemptTerminalReason",
     "upstreamErrorCode",
     "upstreamErrorMessage",
+    "downstreamErrorMessage",
   ];
 
   const fillStringFieldGroup = (fields: Array<keyof ApiInvocation>) => {
@@ -242,6 +249,7 @@ function mergeInvocationRecordDetails(
     "totalTokens",
     "cost",
     "upstreamAccountId",
+    "downstreamStatusCode",
     "poolAttemptCount",
     "poolDistinctAccountCount",
     "tReqReadMs",

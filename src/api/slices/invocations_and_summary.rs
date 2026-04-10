@@ -19,6 +19,8 @@ pub(crate) const INVOCATION_UPSTREAM_ACCOUNT_ID_SQL: &str = "CASE WHEN json_vali
 pub(crate) const INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT) END";
 pub(crate) const INVOCATION_REASONING_EFFORT_SQL: &str = "CASE WHEN json_valid(payload) AND json_type(payload, '$.reasoningEffort') = 'text' THEN json_extract(payload, '$.reasoningEffort') END";
 pub(crate) const INVOCATION_RESPONSE_CONTENT_ENCODING_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.responseContentEncoding') AS TEXT) END";
+pub(crate) const INVOCATION_DOWNSTREAM_STATUS_CODE_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamStatusCode') AS INTEGER) END";
+pub(crate) const INVOCATION_DOWNSTREAM_ERROR_MESSAGE_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END";
 pub(crate) const INVOCATION_BILLING_SERVICE_TIER_SQL: &str = "CASE   WHEN json_valid(payload) AND json_type(payload, '$.billingServiceTier') = 'text'     THEN json_extract(payload, '$.billingServiceTier')   WHEN json_valid(payload) AND json_type(payload, '$.billing_service_tier') = 'text'     THEN json_extract(payload, '$.billing_service_tier') END";
 const INVOCATION_POOL_ATTEMPT_COUNT_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.poolAttemptCount') AS INTEGER) END";
 const INVOCATION_POOL_DISTINCT_ACCOUNT_COUNT_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.poolDistinctAccountCount') AS INTEGER) END";
@@ -46,6 +48,11 @@ fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
         .push(
             " AS reasoning_effort, \
          total_tokens, cost, status, error_message, \
+         ",
+        )
+        .push(INVOCATION_DOWNSTREAM_STATUS_CODE_SQL)
+        .push(
+            " AS downstream_status_code, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.endpoint') END AS endpoint, \
          ",
         )
@@ -55,6 +62,11 @@ fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.streamTerminalEvent') END AS stream_terminal_event, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamErrorCode') END AS upstream_error_code, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamErrorMessage') END AS upstream_error_message, \
+         ",
+        )
+        .push(INVOCATION_DOWNSTREAM_ERROR_MESSAGE_SQL)
+        .push(
+            " AS downstream_error_message, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamRequestId') END AS upstream_request_id, ",
         )
         .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
@@ -496,35 +508,39 @@ fn push_keyword_filter(query: &mut QueryBuilder<Sqlite>, keyword: &str) {
     query
         .push("LOWER(invoke_id) LIKE ")
         .push_bind(like_pattern.clone())
-        .push(" ESCAPE '\\\\'");
+        .push(" ESCAPE '\\'");
     query
         .push(" OR LOWER(COALESCE(model, '')) LIKE ")
         .push_bind(like_pattern.clone())
-        .push(" ESCAPE '\\\\'");
+        .push(" ESCAPE '\\'");
     query.push(" OR LOWER(TRIM(COALESCE(");
     query.push(INVOCATION_PROXY_DISPLAY_SQL);
     query.push(", ''))) LIKE ");
-    query.push_bind(like_pattern.clone()).push(" ESCAPE '\\\\'");
+    query.push_bind(like_pattern.clone()).push(" ESCAPE '\\'");
     query.push(" OR LOWER(TRIM(COALESCE(");
     query.push(INVOCATION_ENDPOINT_SQL);
     query.push(", ''))) LIKE ");
-    query.push_bind(like_pattern.clone()).push(" ESCAPE '\\\\'");
+    query.push_bind(like_pattern.clone()).push(" ESCAPE '\\'");
     query.push(" OR LOWER(TRIM(COALESCE(");
     query.push(INVOCATION_FAILURE_KIND_SQL);
     query.push(", ''))) LIKE ");
-    query.push_bind(like_pattern.clone()).push(" ESCAPE '\\\\'");
+    query.push_bind(like_pattern.clone()).push(" ESCAPE '\\'");
     query
         .push(" OR LOWER(COALESCE(error_message, '')) LIKE ")
         .push_bind(like_pattern.clone())
-        .push(" ESCAPE '\\\\'");
+        .push(" ESCAPE '\\'");
+    query.push(" OR LOWER(TRIM(COALESCE(");
+    query.push(INVOCATION_DOWNSTREAM_ERROR_MESSAGE_SQL);
+    query.push(", ''))) LIKE ");
+    query.push_bind(like_pattern.clone()).push(" ESCAPE '\\'");
     query.push(" OR LOWER(TRIM(COALESCE(");
     query.push(INVOCATION_PROMPT_CACHE_KEY_SQL);
     query.push(", ''))) LIKE ");
-    query.push_bind(like_pattern.clone()).push(" ESCAPE '\\\\'");
+    query.push_bind(like_pattern.clone()).push(" ESCAPE '\\'");
     query.push(" OR LOWER(TRIM(COALESCE(");
     query.push(INVOCATION_REQUESTER_IP_SQL);
     query.push(", ''))) LIKE ");
-    query.push_bind(like_pattern).push(" ESCAPE '\\\\'");
+    query.push_bind(like_pattern).push(" ESCAPE '\\'");
     query.push(")");
 }
 
@@ -1813,4 +1829,3 @@ fn push_exact_range(
     ranges.push(range);
     Ok(())
 }
-
