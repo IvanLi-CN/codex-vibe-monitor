@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.46.3",
+  "base_stable_version": "1.46.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-11T05:15:09Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.46.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "01d8522c11fcf7da180088d20b040339bdab32b6",
+  "pr_number": 324,
+  "pr_title": "fix(tests): isolate stateful backend runtime dirs",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.46.3",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.46.3",
+  "target_sha": "4079fb2cb29382142ff264b05560448ec4d44333",
+  "type_label": "type:patch"
+}
