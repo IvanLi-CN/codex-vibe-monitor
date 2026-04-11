@@ -894,8 +894,7 @@ export function DashboardWorkingConversationsSection({
       : rows.slice(0, fallbackRowCount).map((_, index) => ({
           key: index,
           index,
-          start: index * 360,
-          translateStart: index * 360,
+          start: scrollMargin + index * 360,
         }));
   const hasVirtualizedRowsAbove =
     renderedRows.length > 0 ? renderedRows[0]!.index > 0 : false;
@@ -1166,9 +1165,7 @@ export function DashboardWorkingConversationsSection({
                       top: 0,
                       left: 0,
                       width: "100%",
-                      transform: `translateY(${("translateStart" in virtualRow
-                        ? virtualRow.translateStart
-                        : virtualRow.start - scrollMargin)}px)`,
+                      transform: `translateY(${virtualRow.start - scrollMargin}px)`,
                       paddingBottom:
                         virtualRow.index === rows.length - 1
                           ? 0

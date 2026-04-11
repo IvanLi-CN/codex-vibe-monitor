@@ -17,6 +17,16 @@ import { DashboardWorkingConversationsSection } from "./DashboardWorkingConversa
 const virtualizerMocks = vi.hoisted(() => ({
   rowIndexes: null as number[] | null,
   totalSize: null as number | null,
+  customVirtualItems: null as
+    | Array<{
+        key: number;
+        index: number;
+        start: number;
+        size: number;
+        end: number;
+        translateStart?: number;
+      }>
+    | null,
 }));
 
 vi.mock("@tanstack/react-virtual", () => ({
@@ -27,6 +37,7 @@ vi.mock("@tanstack/react-virtual", () => ({
     return {
       measureElement: () => undefined,
       getVirtualItems: () =>
+        virtualizerMocks.customVirtualItems ??
         rowIndexes
           .filter((index) => index >= 0 && index < count)
           .map((index) => ({
@@ -150,6 +161,7 @@ afterEach(() => {
   root = null;
   virtualizerMocks.rowIndexes = null;
   virtualizerMocks.totalSize = null;
+  virtualizerMocks.customVirtualItems = null;
   globalThis.ResizeObserver = originalResizeObserver;
   vi.restoreAllMocks();
 });
@@ -1228,6 +1240,76 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(renderedRows?.length).toBe(4);
     expect(renderedCards?.length).toBe(4);
     expect(renderedCards?.length).toBeLessThan(30);
+  });
+
+  it("subtracts scrollMargin when virtual rows expose document-based translateStart", () => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1700);
+    virtualizerMocks.customVirtualItems = [
+      {
+        key: 1,
+        index: 1,
+        start: 600,
+        size: 360,
+        end: 960,
+        translateStart: 600,
+      },
+    ];
+    virtualizerMocks.totalSize = 960;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        if (
+          this.getAttribute("data-testid") ===
+          "dashboard-working-conversations-grid"
+        ) {
+          return {
+            x: 0,
+            y: 240,
+            top: 240,
+            bottom: 840,
+            left: 0,
+            right: 1200,
+            width: 1200,
+            height: 600,
+            toJSON: () => ({}),
+          } satisfies DOMRect;
+        }
+        return {
+          x: 0,
+          y: 0,
+          top: 0,
+          bottom: 0,
+          left: 0,
+          right: 0,
+          width: 0,
+          height: 0,
+          toJSON: () => ({}),
+        } satisfies DOMRect;
+      },
+    );
+
+    renderSection(
+      createResponse(
+        Array.from({ length: 8 }, (_, index) =>
+          createConversation(`pck-scroll-margin-${index + 1}`, [
+            createPreview({
+              id: index + 1,
+              invokeId: `invoke-scroll-margin-${index + 1}`,
+              occurredAt: `2026-04-04T10:${String(59 - index).padStart(2, "0")}:00Z`,
+              status: "completed",
+            }),
+          ]),
+        ),
+      ),
+    );
+
+    const row = host?.querySelector(
+      '[data-testid="dashboard-working-conversations-row"][data-row-index="1"]',
+    );
+    if (!(row instanceof HTMLElement)) {
+      throw new Error("missing virtualized row");
+    }
+
+    expect(row.style.transform).toBe("translateY(360px)");
   });
 
   it("keeps the pre-measure fallback bounded before virtual rows are available", () => {
