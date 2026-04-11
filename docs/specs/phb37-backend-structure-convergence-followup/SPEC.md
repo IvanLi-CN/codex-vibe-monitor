@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（2/3）
+- Status: 已完成
 - Created: 2026-04-11
 - Last: 2026-04-11
 
@@ -181,4 +181,4 @@ None
 
 - [x] M1: 拆分 `proxy / api / upstream_accounts / maintenance` 的首批后端热点到真实模块边界
 - [x] M2: 完成本地 Rust 质量门槛与必要回归测试
-- [ ] M3: 完成 shared-testbox 实际环境 smoke、PR 收敛、合并与 cleanup
+- [x] M3: 完成 shared-testbox 实际环境 smoke、PR 收敛、合并与 cleanup
