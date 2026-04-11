@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.46.5",
+  "base_stable_version": "1.46.4",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-11T07:52:41Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.46.5",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "31a071109dac61a468080f2704c3b7c137337597",
+  "pr_number": 326,
+  "pr_title": "fix(web): render dashboard TPM as a whole number",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.46.5",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.46.5",
+  "target_sha": "0c40463fe5d2e86438c79d17657b071c07d05b33",
+  "type_label": "type:patch"
+}
