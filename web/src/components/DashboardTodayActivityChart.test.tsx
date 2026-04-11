@@ -233,15 +233,19 @@ describe("DashboardTodayActivityChart", () => {
   });
 
   it("anchors a completed yesterday range to the previous local day instead of the next midnight", () => {
+    const localYesterdayStart = new Date(2026, 3, 7, 0, 0, 0);
+    const localYesterdayEnd = new Date(2026, 3, 8, 0, 1, 0);
+    const localYesterdayTail = new Date(2026, 3, 7, 23, 59, 0);
+    const localNow = new Date(2026, 3, 8, 12, 3, 0);
     const data = buildTodayMinuteChartData(
       {
-        rangeStart: "2026-04-07T00:00:00.000+08:00",
-        rangeEnd: "2026-04-08T00:01:00.000+08:00",
+        rangeStart: localYesterdayStart.toISOString(),
+        rangeEnd: localYesterdayEnd.toISOString(),
         bucketSeconds: 60,
         points: [
           {
-            bucketStart: "2026-04-07T23:59:00.000+08:00",
-            bucketEnd: "2026-04-08T00:00:00.000+08:00",
+            bucketStart: localYesterdayTail.toISOString(),
+            bucketEnd: new Date(2026, 3, 8, 0, 0, 0).toISOString(),
             totalCount: 2,
             successCount: 2,
             failureCount: 0,
@@ -251,14 +255,14 @@ describe("DashboardTodayActivityChart", () => {
         ],
       },
       {
-        now: new Date("2026-04-08T12:03:00.000+08:00"),
+        now: localNow,
         localeTag: "en-US",
         closedNaturalDay: true,
       },
     );
 
     expect(data[0]?.label).toBe("00:00");
-    expect(data[0]?.epochMs).toBe(new Date(2026, 3, 7, 0, 0, 0).getTime());
+    expect(data[0]?.epochMs).toBe(localYesterdayStart.getTime());
     expect(data.at(-1)?.label).toBe("23:59");
     expect(data.at(-1)).toMatchObject({
       totalCount: 2,
@@ -272,15 +276,18 @@ describe("DashboardTodayActivityChart", () => {
   });
 
   it("does not treat a rolling 24-hour window as a closed natural day at midnight", () => {
+    const localRangeStart = new Date(2026, 3, 7, 0, 0, 0);
+    const localRangeEnd = new Date(2026, 3, 8, 0, 0, 0);
+    const localTail = new Date(2026, 3, 7, 23, 59, 0);
     const data = buildTodayMinuteChartData(
       {
-        rangeStart: "2026-04-07T00:00:00.000+08:00",
-        rangeEnd: "2026-04-08T00:00:00.000+08:00",
+        rangeStart: localRangeStart.toISOString(),
+        rangeEnd: localRangeEnd.toISOString(),
         bucketSeconds: 60,
         points: [
           {
-            bucketStart: "2026-04-07T23:59:00.000+08:00",
-            bucketEnd: "2026-04-08T00:00:00.000+08:00",
+            bucketStart: localTail.toISOString(),
+            bucketEnd: localRangeEnd.toISOString(),
             totalCount: 2,
             successCount: 2,
             failureCount: 0,
@@ -290,12 +297,12 @@ describe("DashboardTodayActivityChart", () => {
         ],
       },
       {
-        now: new Date("2026-04-08T00:00:00.000+08:00"),
+        now: localRangeEnd,
         localeTag: "en-US",
       },
     );
 
-    expect(data[0]?.epochMs).toBe(new Date(2026, 3, 8, 0, 0, 0).getTime());
+    expect(data[0]?.epochMs).toBe(localRangeEnd.getTime());
     expect(data.at(-1)?.epochMs).toBe(new Date(2026, 3, 8, 23, 59, 0).getTime());
   });
 
