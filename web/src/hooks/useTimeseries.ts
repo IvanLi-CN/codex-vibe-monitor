@@ -293,13 +293,32 @@ export function getNextLocalDayStartEpoch(
   return Math.floor(value.getTime() / 1000);
 }
 
-export function shouldForceNaturalDayOpenResync(
+function isYesterdayTimeseriesStale(
+  data: TimeseriesResponse | null,
+  nowEpochSeconds = Math.floor(Date.now() / 1000),
+) {
+  const rangeEndEpoch = parseIsoEpoch(data?.rangeEnd);
+  if (rangeEndEpoch == null) {
+    return true;
+  }
+  return getLocalDayStartEpoch(rangeEndEpoch) !== getLocalDayStartEpoch(nowEpochSeconds);
+}
+
+export function getVisibilityOpenResyncMode(
   range: string,
   syncMode: TimeseriesSyncMode,
+  data: TimeseriesResponse | null,
+  nowEpochSeconds = Math.floor(Date.now() / 1000),
 ) {
-  return (
-    range === "today" || range === "yesterday" || syncMode === "current-day-local"
-  );
+  if (range === "yesterday") {
+    return isYesterdayTimeseriesStale(data, nowEpochSeconds)
+      ? "force"
+      : "skip";
+  }
+  if (range === "today" || syncMode === "current-day-local") {
+    return "force";
+  }
+  return "normal";
 }
 
 export function getTimeseriesDayRolloverRefreshEpoch(
@@ -1789,7 +1808,15 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
     if (typeof document === "undefined") return;
     const onVisibilityChange = () => {
       if (document.visibilityState !== "visible") return;
-      triggerOpenResync(shouldForceNaturalDayOpenResync(range, syncPolicy.mode));
+      const resyncMode = getVisibilityOpenResyncMode(
+        range,
+        syncPolicy.mode,
+        dataRef.current,
+      );
+      if (resyncMode === "skip") {
+        return;
+      }
+      triggerOpenResync(resyncMode === "force");
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () =>

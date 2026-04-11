@@ -99,21 +99,38 @@ export function getCurrentSummarySseRefreshDelay(lastRefreshAt: number, now: num
   return Math.max(0, CURRENT_SUMMARY_RECORDS_REFRESH_THROTTLE_MS - (now - lastRefreshAt))
 }
 
+function getLocalDayStartEpoch(nowEpochSeconds = Math.floor(Date.now() / 1000)) {
+  const value = new Date(nowEpochSeconds * 1000)
+  value.setHours(0, 0, 0, 0)
+  return Math.floor(value.getTime() / 1000)
+}
+
 function getNextLocalDayStartEpoch(nowEpochSeconds = Math.floor(Date.now() / 1000)) {
   const value = new Date(nowEpochSeconds * 1000)
   value.setHours(24, 0, 0, 0)
   return Math.floor(value.getTime() / 1000)
 }
 
-export function shouldForceCalendarSummaryOpenResync(window: string) {
-  return window === 'today' || window === 'yesterday'
+export function shouldRefreshCalendarSummaryOnRecords(window: string) {
+  return window === 'today' || window === 'thisWeek' || window === 'thisMonth'
+}
+
+export function shouldForceCalendarSummaryOpenResync(
+  window: string,
+  lastLoadedLocalDayStartEpoch: number | null,
+  nowEpochSeconds = Math.floor(Date.now() / 1000),
+) {
+  if (window !== 'today' && window !== 'yesterday') {
+    return false
+  }
+  return lastLoadedLocalDayStartEpoch !== getLocalDayStartEpoch(nowEpochSeconds)
 }
 
 export function getCalendarSummaryDayRolloverRefreshEpoch(
   window: string,
   nowEpochSeconds = Math.floor(Date.now() / 1000),
 ) {
-  if (!shouldForceCalendarSummaryOpenResync(window)) {
+  if (window !== 'today' && window !== 'yesterday') {
     return null
   }
   return getNextLocalDayStartEpoch(nowEpochSeconds)
@@ -212,6 +229,11 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
   const lastCurrentRecordsRefreshAtRef = useRef(0)
   const lastOpenResyncAtRef = useRef(0)
   const currentRetryAttemptRef = useRef(0)
+  const lastNaturalDayLoadStartEpochRef = useRef<number | null>(
+    window === 'today' || window === 'yesterday'
+      ? getLocalDayStartEpoch()
+      : null,
+  )
   summaryContextRef.current.window = window
   summaryContextRef.current.limit = options?.limit
 
@@ -258,6 +280,10 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
         summaryContextRef.current.limit,
         response,
       )
+      lastNaturalDayLoadStartEpochRef.current =
+        summaryContextRef.current.window === 'today' || summaryContextRef.current.window === 'yesterday'
+          ? getLocalDayStartEpoch()
+          : null
       hasHydratedRef.current = true
       currentRetryAttemptRef.current = 0
       setError(null)
@@ -380,6 +406,10 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     currentRetryAttemptRef.current = 0
     unsupportedRefreshRef.current = createUnsupportedRefreshGate()
     calendarRefreshRef.current = createUnsupportedRefreshGate()
+    lastNaturalDayLoadStartEpochRef.current =
+      window === 'today' || window === 'yesterday'
+        ? getLocalDayStartEpoch()
+        : null
     clearPendingLoad()
     clearPendingRefreshTimer()
     clearDayRolloverTimer()
@@ -420,7 +450,6 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
   )
 
   const supportsSse = useMemo(() => SUPPORTED_SSE_WINDOWS.has(window), [window])
-  const isCalendarWindow = useMemo(() => isCalendarSummaryWindow(window), [window])
 
   useEffect(() => {
     const unsubscribe = subscribeToSse((payload) => {
@@ -428,6 +457,10 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
         if (payload.window === window) {
           setStats(payload.summary)
           writeSummaryRemountCache(window, options?.limit, payload.summary)
+          lastNaturalDayLoadStartEpochRef.current =
+            window === 'today' || window === 'yesterday'
+              ? getLocalDayStartEpoch()
+              : null
           hasHydratedRef.current = true
           setError(null)
           setIsLoading(false)
@@ -438,20 +471,28 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
         if (window === 'current') {
           // current 窗口通过节流静默刷新，避免高频事件导致闪烁。
           triggerCurrentWindowRefresh()
-        } else if (isCalendarWindow) {
+        } else if (shouldRefreshCalendarSummaryOnRecords(window)) {
           // calendar windows 依旧通过 HTTP 计算，但 records 到达时以 1s 节流静默补拉。
           void runCalendarSummaryRefresh(calendarRefreshRef.current, Date.now(), () => load({ silent: true }))
         }
       }
     })
     return unsubscribe
-  }, [isCalendarWindow, load, options?.limit, supportsSse, triggerCurrentWindowRefresh, window])
+  }, [load, options?.limit, supportsSse, triggerCurrentWindowRefresh, window])
 
   useEffect(() => {
     if (typeof document === 'undefined') return
     const onVisibilityChange = () => {
       if (document.visibilityState !== 'visible') return
-      triggerOpenResync(shouldForceCalendarSummaryOpenResync(window))
+      if (
+        !shouldForceCalendarSummaryOpenResync(
+          window,
+          lastNaturalDayLoadStartEpochRef.current,
+        )
+      ) {
+        return
+      }
+      triggerOpenResync(true)
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
     return () => document.removeEventListener('visibilitychange', onVisibilityChange)

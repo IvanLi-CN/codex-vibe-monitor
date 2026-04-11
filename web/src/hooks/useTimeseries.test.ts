@@ -17,6 +17,7 @@ import {
   getTimeseriesDayRolloverRefreshEpoch,
   getTimeseriesRemountCacheKey,
   getTimeseriesRecordsResyncDelay,
+  getVisibilityOpenResyncMode,
   mergePendingTimeseriesSilentOption,
   readTimeseriesRemountCache,
   resolveTimeseriesSyncPolicy,
@@ -29,7 +30,6 @@ import {
   shouldTriggerTimeseriesOpenResync,
   seedCurrentDayLiveRecordDeltas,
   seedTimeseriesLiveRecordDeltas,
-  shouldForceNaturalDayOpenResync,
   trackTimeseriesLiveRecordDelta,
   pruneTrackedTimeseriesLiveRecordDeltas,
   upsertCurrentDayLiveRecord,
@@ -1176,13 +1176,35 @@ describe("useTimeseries refresh coordination helpers", () => {
     expect(shouldTriggerTimeseriesOpenResync(30_000, 30_250, true)).toBe(true);
   });
 
-  it("forces visibility reconnect resync for natural-day dashboard ranges", () => {
-    expect(shouldForceNaturalDayOpenResync("today", "local")).toBe(true);
-    expect(shouldForceNaturalDayOpenResync("yesterday", "local")).toBe(true);
-    expect(shouldForceNaturalDayOpenResync("6mo", "current-day-local")).toBe(
-      true,
-    );
-    expect(shouldForceNaturalDayOpenResync("1d", "local")).toBe(false);
+  it("only forces visibility reconnect when the active range is live or stale", () => {
+    const yesterdayCurrent: TimeseriesResponse = {
+      rangeStart: "2026-04-07T00:00:00Z",
+      rangeEnd: "2026-04-08T00:00:00Z",
+      bucketSeconds: 60,
+      points: [],
+    };
+
+    expect(getVisibilityOpenResyncMode("today", "local", null)).toBe("force");
+    expect(
+      getVisibilityOpenResyncMode("6mo", "current-day-local", null),
+    ).toBe("force");
+    expect(
+      getVisibilityOpenResyncMode(
+        "yesterday",
+        "local",
+        yesterdayCurrent,
+        Math.floor(new Date(2026, 3, 8, 12, 0, 0).getTime() / 1000),
+      ),
+    ).toBe("skip");
+    expect(
+      getVisibilityOpenResyncMode(
+        "yesterday",
+        "local",
+        yesterdayCurrent,
+        Math.floor(new Date(2026, 3, 9, 0, 0, 30).getTime() / 1000),
+      ),
+    ).toBe("force");
+    expect(getVisibilityOpenResyncMode("1d", "local", null)).toBe("normal");
   });
 
   it("schedules yesterday rollover refresh at the next local midnight", () => {

@@ -16,6 +16,7 @@ import {
   runCalendarSummaryRefresh,
   runUnsupportedSummaryRefresh,
   shouldEnableSummaryRemountCache,
+  shouldRefreshCalendarSummaryOnRecords,
   shouldForceCalendarSummaryOpenResync,
   shouldReuseSummaryRemountCache,
   shouldTriggerCurrentSummaryOpenResync,
@@ -140,9 +141,13 @@ describe('useSummary unsupported window fallback', () => {
   })
 
   it('forces natural-day summary reconnect resync for today and yesterday', () => {
-    expect(shouldForceCalendarSummaryOpenResync('today')).toBe(true)
-    expect(shouldForceCalendarSummaryOpenResync('yesterday')).toBe(true)
-    expect(shouldForceCalendarSummaryOpenResync('thisWeek')).toBe(false)
+    const currentDayStartEpoch = Math.floor(new Date(2026, 3, 8, 0, 0, 0).getTime() / 1000)
+    const nextDayNoonEpoch = Math.floor(new Date(2026, 3, 9, 12, 0, 0).getTime() / 1000)
+
+    expect(shouldForceCalendarSummaryOpenResync('today', currentDayStartEpoch, nextDayNoonEpoch)).toBe(true)
+    expect(shouldForceCalendarSummaryOpenResync('yesterday', currentDayStartEpoch, nextDayNoonEpoch)).toBe(true)
+    expect(shouldForceCalendarSummaryOpenResync('today', currentDayStartEpoch, currentDayStartEpoch + 3_600)).toBe(false)
+    expect(shouldForceCalendarSummaryOpenResync('thisWeek', currentDayStartEpoch, nextDayNoonEpoch)).toBe(false)
   })
 
   it('schedules yesterday summary rollover refresh at the next local midnight', () => {
@@ -151,6 +156,13 @@ describe('useSummary unsupported window fallback', () => {
 
     expect(getCalendarSummaryDayRolloverRefreshEpoch('yesterday', noonEpoch)).toBe(nextMidnightEpoch)
     expect(getCalendarSummaryDayRolloverRefreshEpoch('thisWeek', noonEpoch)).toBeNull()
+  })
+
+  it('skips record-driven refreshes for the closed yesterday summary window', () => {
+    expect(shouldRefreshCalendarSummaryOnRecords('today')).toBe(true)
+    expect(shouldRefreshCalendarSummaryOnRecords('thisWeek')).toBe(true)
+    expect(shouldRefreshCalendarSummaryOnRecords('thisMonth')).toBe(true)
+    expect(shouldRefreshCalendarSummaryOnRecords('yesterday')).toBe(false)
   })
 
   it('retries current summary only for transient network-like errors', () => {
