@@ -16,7 +16,7 @@
 
 ### Goals
 
-- 代理不再透传下游真实 `client_metadata.x-codex-installation-id`。
+- 代理不再在当前可安全 rewrite 的 OAuth `/v1/responses` 请求里透传下游真实 `client_metadata.x-codex-installation-id`。
 - 为每个部署实例持久化一个稳定 seed，并基于 `internal account_id` 派生上游 installation id。
 - 相同部署实例 + 相同上游账号必须稳定，相同部署实例 + 不同上游账号必须不同。
 - 若当前请求没有可用的内部 `account_id`，则从上游 body 中移除该键，避免回传下游原值。
@@ -26,6 +26,7 @@
 
 - 不改 `x-codex-installation-id` header 转发策略。
 - 不改非 OAuth 路由、`/v1/chat/completions`、`/v1/responses/compact` 的 body 规范化。
+- 不为压缩或超大 file-backed `/v1/responses` body 引入额外的解压 / 重编码 / 无限放大 rewrite 路径。
 - 不新增对外 API、UI 配置项或运维面板设置项。
 
 ## 范围（Scope）
@@ -49,10 +50,11 @@
 
 - 持久化一个 deployment 级 seed，数据库克隆前后行为可复现。
 - 派生算法对同一 seed + 同一 `account_id` 输出稳定，对不同 `account_id` 输出不同。
-- 上游 body 中若存在 `client_metadata.x-codex-installation-id`，必须被代理派生值覆盖。
-- 上游 body 中若不存在可用 `account_id`，必须删除该键，不得保留下游原值。
+- 在可安全 rewrite 的 `/v1/responses` JSON body 中，若存在 `client_metadata.x-codex-installation-id`，必须被代理派生值覆盖。
+- 在可安全 rewrite 的 `/v1/responses` JSON body 中，若不存在可用 `account_id`，必须删除该键，不得保留下游原值。
 - 若 `client_metadata` 已存在，只允许改动 `x-codex-installation-id` 一个键。
 - 不得把 seed 或派生前原文写入日志、指标或调试输出。
+- 对压缩或超出 rewrite 上限的 file-backed `/v1/responses` body，必须保持 passthrough，避免把大 payload 或压缩 payload 全量重新物化进内存。
 
 ### SHOULD
 
@@ -71,12 +73,14 @@
 - 当 OAuth `/v1/responses` 请求带 `account_id` 但 body 中不存在 `client_metadata` 时，代理不新增 `client_metadata` 容器，只保留现有 rewrite 逻辑。
 - 当 OAuth `/v1/responses` 请求没有 `account_id` 时，若 body 中存在该 installation id，则删除该键后再转发。
 - deployment seed 首次读取缺失时，代理在本地 SQLite 事务中生成并持久化，再缓存到运行时供后续请求复用。
+- 当 `/v1/responses` replay snapshot 已 spill 到 file 且请求带有非 `identity` 的 `Content-Encoding`，或 file-backed body 超过 rewrite 上限时，代理保持 passthrough，不做 body rewrite。
 
 ### Edge cases / errors
 
 - seed 表已存在且有值时，不得重复生成或覆盖。
 - `client_metadata` 不是 object 时，按最小兼容策略忽略 installation id 改写，不额外造结构，也不破坏其它字段。
 - body 非 JSON object 仍沿用现有错误返回。
+- file-backed rewrite 仅允许在未压缩且大小不超过 `OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES` 时发生；超限或压缩场景必须回退到原始 streaming replay。
 
 ## 接口契约（Interfaces & Contracts）
 
@@ -102,16 +106,20 @@ None
   Then 上游看到的 installation id 不同。
 
 - Given 下游 body 中带有真实 `client_metadata.x-codex-installation-id`
-  When 代理转发且有可用 `account_id`
+  When 代理转发且有可用 `account_id`，并且请求属于可安全 rewrite 的 `/v1/responses` JSON body
   Then 上游看到的是代理派生值而非下游原值。
 
 - Given 下游 body 中带有真实 `client_metadata.x-codex-installation-id`
-  When 代理转发但没有可用 `account_id`
+  When 代理转发但没有可用 `account_id`，并且请求属于可安全 rewrite 的 `/v1/responses` JSON body
   Then 上游 body 中不再包含该键。
 
 - Given 现有 `/v1/responses` rewrite 逻辑
   When 引入 installation id 改写后
   Then `instructions`、`store=false`、`stream=true`、移除 `max_output_tokens` 的既有行为不回归。
+
+- Given file-backed `/v1/responses` body 带有非 `identity` 的 `Content-Encoding`，或 body 大于 `OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES`
+  When 代理转发该请求
+  Then 请求保持 passthrough，不返回新的 JSON 解析错误，也不会重新把整份 payload 读回内存做 rewrite。
 
 ## 实现前置条件（Definition of Ready / Preconditions）
 
@@ -125,7 +133,7 @@ None
 ### Testing
 
 - Unit tests: OAuth body rewrite / seed helper / installation id 派生稳定性
-- Integration tests: mock upstream 验证转发后的 body 观测值
+- Integration tests: mock upstream 验证 rewrite body 与 passthrough body 的转发观测值
 - E2E tests (if applicable): None
 
 ### UI / Storybook (if applicable)
@@ -177,6 +185,7 @@ None
 
 - 2026-04-11: 初始化规格，冻结 deployment seed + `account_id` 派生方案。
 - 2026-04-11: 完成 OAuth `/v1/responses` installation id 稳定改写、SQLite seed 持久化与回归测试。
+- 2026-04-11: 收敛 review finding，恢复 file-backed `/v1/responses` 的压缩 / 超大 body passthrough 护栏，并补充对应回归测试。
 
 ## 参考（References）
 
