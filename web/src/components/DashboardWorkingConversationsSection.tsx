@@ -780,8 +780,10 @@ function captureVisibleCardAnchor(
   let hasHiddenContentAbove = hasVirtualizedRowsAbove;
   for (const card of cards) {
     const rect = card.getBoundingClientRect();
-    if (rect.bottom <= topBoundary) {
+    if (rect.top < topBoundary) {
       hasHiddenContentAbove = true;
+    }
+    if (rect.bottom <= topBoundary) {
       continue;
     }
     if (rect.top >= viewportBottom) continue;
@@ -994,12 +996,7 @@ export function DashboardWorkingConversationsSection({
       if (typeof window === "undefined") return;
       const containerRect = container.getBoundingClientRect();
       const sectionStartsBelowFold = containerRect.top >= window.innerHeight - 1;
-      const sectionBottomAlreadyPastViewport =
-        containerRect.bottom > window.innerHeight + 1;
-      if (
-        trigger === "mount" &&
-        (sectionStartsBelowFold || sectionBottomAlreadyPastViewport)
-      ) {
+      if (trigger === "mount" && sectionStartsBelowFold) {
         return;
       }
       const remaining = containerRect.bottom - window.innerHeight;

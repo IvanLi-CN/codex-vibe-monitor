@@ -766,6 +766,70 @@ describe("DashboardWorkingConversationsSection", () => {
     vi.useRealTimers();
   });
 
+  it("continues initial load-more on mount when the page restores near the visible section bottom", () => {
+    vi.useFakeTimers();
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1700);
+    vi.spyOn(window, "innerHeight", "get").mockReturnValue(900);
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        if (
+          this.getAttribute("data-testid") ===
+          "dashboard-working-conversations-grid"
+        ) {
+          return {
+            x: 0,
+            y: -260,
+            top: -260,
+            bottom: 1_160,
+            left: 0,
+            right: 1200,
+            width: 1200,
+            height: 1_420,
+            toJSON: () => ({}),
+          } satisfies DOMRect;
+        }
+        return {
+          x: 0,
+          y: 0,
+          top: 0,
+          bottom: 0,
+          left: 0,
+          right: 0,
+          width: 0,
+          height: 0,
+          toJSON: () => ({}),
+        } satisfies DOMRect;
+      },
+    );
+    const onLoadMore = vi.fn();
+
+    renderSection(
+      createResponse(
+        Array.from({ length: 4 }, (_, index) =>
+          createConversation(`pck-restored-${index + 1}`, [
+            createPreview({
+              id: index + 1,
+              invokeId: `invoke-restored-${index + 1}`,
+              occurredAt: `2026-04-04T10:${String(59 - index).padStart(2, "0")}:00Z`,
+              status: "completed",
+            }),
+          ]),
+        ),
+      ),
+      {
+        hasMore: true,
+        onLoadMore,
+      },
+    );
+
+    act(() => {
+      vi.runAllTimers();
+    });
+
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
   it("falls back to downstream-facing diagnostics in the dashboard card summary", () => {
     renderSection(
       createResponse([
@@ -1359,6 +1423,99 @@ describe("DashboardWorkingConversationsSection", () => {
               return rectFor(760);
             default:
               return rectFor(920);
+          }
+        }
+        return rectFor(0, 0);
+      },
+    );
+
+    renderSectionWithCards(initialCards);
+
+    const scrollBy = vi.spyOn(window, "scrollBy");
+
+    rerenderSectionWithCards(nextCards);
+
+    expect(scrollBy).toHaveBeenCalledWith(0, 180);
+  });
+
+  it("preserves the page-scroll anchor when the first visible card is partially clipped", () => {
+    const baseCards = mapPromptCacheConversationsToDashboardCards(
+      createResponse(
+        Array.from({ length: 3 }, (_, index) =>
+          createConversation(`partial-anchor-${index + 1}`, [
+            createPreview({
+              id: index + 1,
+              invokeId: `invoke-partial-anchor-${index + 1}`,
+              occurredAt: `2026-04-04T10:${String(59 - index).padStart(2, "0")}:00Z`,
+              status: "running",
+            }),
+          ]),
+        ),
+      ),
+    );
+
+    const initialCards = baseCards.map((card, index) => ({
+      ...card,
+      promptCacheKey: `partial-anchor-${index + 1}`,
+      normalizedPromptCacheKey: `partial-anchor-${index + 1}`,
+      conversationSequenceId: `WC-PARTIAL-${index + 1}`,
+    })) satisfies DashboardWorkingConversationCardModel[];
+
+    const insertedHead = {
+      ...baseCards[0]!,
+      promptCacheKey: "partial-anchor-new-head",
+      normalizedPromptCacheKey: "partial-anchor-new-head",
+      conversationSequenceId: "WC-PARTIAL-NEW",
+    } satisfies DashboardWorkingConversationCardModel;
+
+    const nextCards = [
+      insertedHead,
+      ...initialCards.map((card, index) => ({
+        ...card,
+        conversationSequenceId: `WC-PARTIAL-NEXT-${index + 1}`,
+      })),
+    ] satisfies DashboardWorkingConversationCardModel[];
+
+    const rectFor = (top: number, height = 160) =>
+      ({
+        x: 0,
+        y: top,
+        top,
+        bottom: top + height,
+        left: 0,
+        right: 1200,
+        width: 1200,
+        height,
+        toJSON: () => ({}),
+      }) satisfies DOMRect;
+
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        if (
+          this.getAttribute("data-testid") ===
+          "dashboard-working-conversations-grid"
+        ) {
+          return rectFor(0, 600);
+        }
+        if (
+          this.getAttribute("data-testid") ===
+          "dashboard-working-conversation-card"
+        ) {
+          switch (this.getAttribute("data-conversation-sequence-id")) {
+            case "PARTIAL-1":
+              return rectFor(-24);
+            case "PARTIAL-2":
+              return rectFor(180);
+            case "PARTIAL-3":
+              return rectFor(360);
+            case "PARTIAL-NEXT-1":
+              return rectFor(156);
+            case "PARTIAL-NEXT-2":
+              return rectFor(360);
+            case "PARTIAL-NEXT-3":
+              return rectFor(540);
+            default:
+              return rectFor(720);
           }
         }
         return rectFor(0, 0);
