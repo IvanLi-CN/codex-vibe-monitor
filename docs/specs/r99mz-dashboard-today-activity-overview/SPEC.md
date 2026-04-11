@@ -2,9 +2,9 @@
 
 ## 状态
 
-- Status: 已实现，PR #321 收敛中
+- Status: 已实现
 - Created: 2026-04-08
-- Last: 2026-04-10
+- Last: 2026-04-11
 
 ## 背景 / 问题陈述
 
@@ -123,7 +123,7 @@
 - [x] M3: 实现 `DashboardTodayActivityChart` 与 `TodayStatsOverview` 嵌入模式，接入今日 summary / timeseries。
 - [x] M4: 补齐 Dashboard / ActivityOverview / Today chart / Today KPI 的 Storybook 与 Vitest 覆盖。
 - [x] M5: 完成本地全量验证与视觉证据归档。
-- [ ] M6: fast-track 推进到 merge+cleanup。
+- [x] M6: fast-track 推进到 merge+cleanup。
 
 ## 方案概述（Approach, high-level）
 
@@ -177,6 +177,7 @@
 - 2026-04-10: 根据最新 fresh review 再补 exact/live aggregate 读取：`query_invocation_aggregate_records_from_live_range*` 现在直接投影 `INVOCATION_FAILURE_KIND_SQL` 与 `INVOCATION_RESOLVED_FAILURE_CLASS_SQL`，并按 resolved class 重新计算 `is_actionable`，所以 current/live summary、today exact bucket 与 full-hour tail replay 不会再漏掉仅存在于 `payload.downstreamErrorMessage` 的 legacy 失败元数据。
 - 2026-04-10: 根据最新 fresh review 再统一 `completed` success-like 口径：`resolve_failure_classification`、`INVOCATION_RESOLVED_FAILURE_CLASS_SQL`、recent/exact summary helper、hourly rollup success-like 判定与 `query_combined_totals` 现在都会把无失败元数据的 `status='completed'` 视为成功，从而让 Dashboard summary、今日次数图、TTFB 样本与 invocation summary 不再把常见成功终态漏算成 failure 或 missing sample。
 - 2026-04-10: 为修复 PR 收敛阶段暴露的 historical range regression，hourly-backed `timeseries` / duration-summary / failure-summary 读取 archived 数据前改为 best-effort rollup refresh：若只遇到“archive manifest 已存在但文件被移除”的缺失批次，会复用当前已存在的 hourly rollup 返回范围结果而不是直接 500；但 `window=all` 的严格 summary repair 仍保留 missing archive fail-fast，不会把 repair marker 误标完成。
+- 2026-04-11: 为解除 `#321` 合并后的发布阻塞，测试基座现在会为使用默认 `target/archive-tests` / `target/proxy-raw-tests` / `target/xray-forward-tests` 的 stateful 后端用例自动分配按 `db_id` 隔离的运行目录，避免并行 `cargo test --all-features` 时因共享归档路径互相覆盖而触发 all-time summary / historical range 相关用例的偶发失败。
 
 ## Visual Evidence
 
