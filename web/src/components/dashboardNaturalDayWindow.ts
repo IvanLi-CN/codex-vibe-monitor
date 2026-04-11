@@ -31,7 +31,11 @@ export function parseDateInput(value?: string | null) {
 
 export function resolveClosedNaturalDayEnd(
   response?: NaturalDayWindowLike | null,
+  closedNaturalDay = false,
 ) {
+  if (!closedNaturalDay) {
+    return null
+  }
   const rangeStart = parseDateInput(response?.rangeStart)
   const rangeEnd = parseDateInput(response?.rangeEnd)
   if (!rangeStart || !rangeEnd || !isLocalMidnight(rangeStart)) {

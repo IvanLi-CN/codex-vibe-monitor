@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchSummary } from '../lib/api'
-import type { StatsResponse } from '../lib/api'
+import type { ApiInvocation, StatsResponse } from '../lib/api'
 import { subscribeToSse, subscribeToSseOpen } from '../lib/sse'
 
 interface UseSummaryOptions {
@@ -113,6 +113,22 @@ function getNextLocalDayStartEpoch(nowEpochSeconds = Math.floor(Date.now() / 100
 
 export function shouldRefreshCalendarSummaryOnRecords(window: string) {
   return window === 'today' || window === 'thisWeek' || window === 'thisMonth'
+}
+
+export function shouldRefreshYesterdaySummaryOnRecords(
+  records: Array<Pick<ApiInvocation, 'occurredAt'>>,
+  nowEpochSeconds = Math.floor(Date.now() / 1000),
+) {
+  const rangeEndEpoch = getLocalDayStartEpoch(nowEpochSeconds)
+  const rangeStartEpoch = getLocalDayStartEpoch(rangeEndEpoch - 1)
+  return records.some((record) => {
+    const occurredEpochMs = Date.parse(record.occurredAt ?? '')
+    if (!Number.isFinite(occurredEpochMs)) {
+      return false
+    }
+    const occurredEpoch = Math.floor(occurredEpochMs / 1000)
+    return occurredEpoch >= rangeStartEpoch && occurredEpoch < rangeEndEpoch
+  })
 }
 
 export function shouldForceCalendarSummaryOpenResync(
@@ -471,7 +487,11 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
         if (window === 'current') {
           // current 窗口通过节流静默刷新，避免高频事件导致闪烁。
           triggerCurrentWindowRefresh()
-        } else if (shouldRefreshCalendarSummaryOnRecords(window)) {
+        } else if (
+          shouldRefreshCalendarSummaryOnRecords(window) ||
+          (window === 'yesterday' &&
+            shouldRefreshYesterdaySummaryOnRecords(payload.records))
+        ) {
           // calendar windows 依旧通过 HTTP 计算，但 records 到达时以 1s 节流静默补拉。
           void runCalendarSummaryRefresh(calendarRefreshRef.current, Date.now(), () => load({ silent: true }))
         }

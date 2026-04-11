@@ -16,7 +16,7 @@ export interface DashboardTodayRateSnapshot {
 
 export function buildDashboardTodayRateSnapshot(
   response: TimeseriesResponse | null,
-  options?: { now?: Date; targetWindowMinutes?: number },
+  options?: { now?: Date; targetWindowMinutes?: number; closedNaturalDay?: boolean },
 ): DashboardTodayRateSnapshot | null {
   if (!response) {
     return null
@@ -24,7 +24,10 @@ export function buildDashboardTodayRateSnapshot(
 
   const targetWindowMinutes = Math.max(1, options?.targetWindowMinutes ?? DEFAULT_WINDOW_MINUTES)
   const fallbackNow = options?.now ?? new Date()
-  const closedNaturalDayEnd = resolveClosedNaturalDayEnd(response)
+  const closedNaturalDayEnd = resolveClosedNaturalDayEnd(
+    response,
+    options?.closedNaturalDay ?? false,
+  )
   const anchor = floorToMinute(
     closedNaturalDayEnd ?? parseDateInput(response.rangeEnd) ?? fallbackNow,
   )

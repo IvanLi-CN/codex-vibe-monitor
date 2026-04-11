@@ -29,11 +29,15 @@ export interface DashboardTodayMinuteDatum {
 
 export function buildTodayMinuteChartData(
   response: TimeseriesResponse | null,
-  options?: { now?: Date; localeTag?: string },
+  options?: { now?: Date; localeTag?: string; closedNaturalDay?: boolean },
 ): DashboardTodayMinuteDatum[] {
   const localeTag = options?.localeTag ?? "en-US";
   const fallbackNow = options?.now ?? new Date();
-  const anchor = resolveRangeAnchor(response, fallbackNow);
+  const anchor = resolveRangeAnchor(
+    response,
+    fallbackNow,
+    options?.closedNaturalDay ?? false,
+  );
   const start = startOfLocalDay(anchor);
   const end = endOfLocalDay(anchor);
 
@@ -166,13 +170,17 @@ function floorToMinute(date: Date) {
 function resolveRangeAnchor(
   response: TimeseriesResponse | null,
   fallbackNow: Date,
+  closedNaturalDay: boolean,
 ) {
   const rangeEnd = parseDateInput(response?.rangeEnd);
   if (!rangeEnd) {
     return floorToMinute(fallbackNow);
   }
 
-  const closedNaturalDayEnd = resolveClosedNaturalDayEnd(response);
+  const closedNaturalDayEnd = resolveClosedNaturalDayEnd(
+    response,
+    closedNaturalDay,
+  );
   if (closedNaturalDayEnd) {
     return new Date(closedNaturalDayEnd.getTime() - MINUTE_MS);
   }

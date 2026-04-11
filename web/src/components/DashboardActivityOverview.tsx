@@ -72,7 +72,11 @@ function DashboardNaturalDayRangePanel({
     error: summaryError,
   } = useSummary(summaryWindow)
   const { data, isLoading, error } = useTimeseries(timeseriesRange, { bucket: '1m' })
-  const rate = useMemo(() => buildDashboardTodayRateSnapshot(data), [data])
+  const closedNaturalDay = timeseriesRange === 'yesterday'
+  const rate = useMemo(
+    () => buildDashboardTodayRateSnapshot(data, { closedNaturalDay }),
+    [closedNaturalDay, data],
+  )
 
   return (
     <div
@@ -96,6 +100,7 @@ function DashboardNaturalDayRangePanel({
         loading={isLoading}
         error={error}
         metric={metric}
+        closedNaturalDay={closedNaturalDay}
       />
     </div>
   )

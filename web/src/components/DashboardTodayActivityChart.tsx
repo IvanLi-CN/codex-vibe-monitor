@@ -34,6 +34,7 @@ export interface DashboardTodayActivityChartProps {
   loading: boolean;
   error?: string | null;
   metric: MetricKey;
+  closedNaturalDay?: boolean;
 }
 
 function formatCountValue(
@@ -117,6 +118,7 @@ export function DashboardTodayActivityChart({
   loading,
   error,
   metric,
+  closedNaturalDay = false,
 }: DashboardTodayActivityChartProps) {
   const { t, locale } = useTranslation();
   const { themeMode } = useTheme();
@@ -150,8 +152,8 @@ export function DashboardTodayActivityChart({
   }, [metric, themeMode]);
 
   const data = useMemo(
-    () => buildTodayMinuteChartData(response, { localeTag }),
-    [localeTag, response],
+    () => buildTodayMinuteChartData(response, { localeTag, closedNaturalDay }),
+    [closedNaturalDay, localeTag, response],
   );
 
   const countUnit = t("unit.calls");
@@ -194,7 +196,9 @@ export function DashboardTodayActivityChart({
   }
 
   const chartData =
-    data.length > 0 ? data : buildTodayMinuteChartData(response, { localeTag });
+    data.length > 0
+      ? data
+      : buildTodayMinuteChartData(response, { localeTag, closedNaturalDay });
   const animate = chartData.length <= 800;
   const chartMode = metric === "totalCount" ? "count-bars" : "cumulative-area";
   const renderCountTooltip = (point: DashboardTodayMinuteDatum) =>

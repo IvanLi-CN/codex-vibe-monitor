@@ -166,7 +166,10 @@ describe('buildDashboardTodayRateSnapshot', () => {
           },
         ],
       },
-      { now: new Date(2026, 3, 10, 12, 0, 0, 0) },
+      {
+        now: new Date(2026, 3, 10, 12, 0, 0, 0),
+        closedNaturalDay: true,
+      },
     )
 
     expect(snapshot?.tokensPerMinute).toBe(700)

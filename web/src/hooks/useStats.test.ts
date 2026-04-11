@@ -18,6 +18,7 @@ import {
   shouldEnableSummaryRemountCache,
   shouldRefreshCalendarSummaryOnRecords,
   shouldForceCalendarSummaryOpenResync,
+  shouldRefreshYesterdaySummaryOnRecords,
   shouldReuseSummaryRemountCache,
   shouldTriggerCurrentSummaryOpenResync,
   shouldRetryCurrentSummaryError,
@@ -163,6 +164,23 @@ describe('useSummary unsupported window fallback', () => {
     expect(shouldRefreshCalendarSummaryOnRecords('thisWeek')).toBe(true)
     expect(shouldRefreshCalendarSummaryOnRecords('thisMonth')).toBe(true)
     expect(shouldRefreshCalendarSummaryOnRecords('yesterday')).toBe(false)
+  })
+
+  it('refreshes yesterday summary only when records settle inside the previous local day', () => {
+    const nowEpoch = Math.floor(new Date(2026, 3, 9, 12, 0, 0).getTime() / 1000)
+
+    expect(
+      shouldRefreshYesterdaySummaryOnRecords(
+        [{ occurredAt: new Date(2026, 3, 8, 23, 59, 30).toISOString() }],
+        nowEpoch,
+      ),
+    ).toBe(true)
+    expect(
+      shouldRefreshYesterdaySummaryOnRecords(
+        [{ occurredAt: new Date(2026, 3, 9, 0, 1, 0).toISOString() }],
+        nowEpoch,
+      ),
+    ).toBe(false)
   })
 
   it('retries current summary only for transient network-like errors', () => {
