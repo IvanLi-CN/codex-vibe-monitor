@@ -520,10 +520,15 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
 
   useEffect(() => {
     const unsubscribe = subscribeToSseOpen(() => {
-      triggerOpenResync()
+      triggerOpenResync(
+        shouldForceCalendarSummaryOpenResync(
+          window,
+          lastNaturalDayLoadStartEpochRef.current,
+        ),
+      )
     })
     return unsubscribe
-  }, [triggerOpenResync])
+  }, [triggerOpenResync, window])
 
   useEffect(() => {
     clearDayRolloverTimer()
