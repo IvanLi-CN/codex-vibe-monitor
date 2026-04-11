@@ -995,6 +995,9 @@ export function DashboardWorkingConversationsSection({
       if (isLoadingMore || loadMoreRequestPendingRef.current) return;
       if (typeof window === "undefined") return;
       const containerRect = container.getBoundingClientRect();
+      if (containerRect.bottom <= 0) {
+        return;
+      }
       const sectionStartsBelowFold = containerRect.top >= window.innerHeight - 1;
       if (trigger === "mount" && sectionStartsBelowFold) {
         return;

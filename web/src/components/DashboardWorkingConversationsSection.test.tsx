@@ -830,6 +830,71 @@ describe("DashboardWorkingConversationsSection", () => {
     vi.useRealTimers();
   });
 
+  it("does not keep loading more after the section has scrolled above the viewport", () => {
+    vi.useFakeTimers();
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1700);
+    vi.spyOn(window, "innerHeight", "get").mockReturnValue(900);
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        if (
+          this.getAttribute("data-testid") ===
+          "dashboard-working-conversations-grid"
+        ) {
+          return {
+            x: 0,
+            y: -1_320,
+            top: -1_320,
+            bottom: -40,
+            left: 0,
+            right: 1200,
+            width: 1200,
+            height: 1_280,
+            toJSON: () => ({}),
+          } satisfies DOMRect;
+        }
+        return {
+          x: 0,
+          y: 0,
+          top: 0,
+          bottom: 0,
+          left: 0,
+          right: 0,
+          width: 0,
+          height: 0,
+          toJSON: () => ({}),
+        } satisfies DOMRect;
+      },
+    );
+    const onLoadMore = vi.fn();
+
+    renderSection(
+      createResponse(
+        Array.from({ length: 4 }, (_, index) =>
+          createConversation(`pck-above-viewport-${index + 1}`, [
+            createPreview({
+              id: index + 1,
+              invokeId: `invoke-above-viewport-${index + 1}`,
+              occurredAt: `2026-04-04T10:${String(59 - index).padStart(2, "0")}:00Z`,
+              status: "completed",
+            }),
+          ]),
+        ),
+      ),
+      {
+        hasMore: true,
+        onLoadMore,
+      },
+    );
+
+    act(() => {
+      vi.runAllTimers();
+      window.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(onLoadMore).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
   it("falls back to downstream-facing diagnostics in the dashboard card summary", () => {
     renderSection(
       createResponse([
