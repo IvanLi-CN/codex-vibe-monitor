@@ -232,6 +232,80 @@ describe("DashboardTodayActivityChart", () => {
     expect(data.at(-1)?.chartCumulativeCost).toBeNull();
   });
 
+  it("anchors a completed yesterday range to the previous local day instead of the next midnight", () => {
+    const localYesterdayStart = new Date(2026, 3, 7, 0, 0, 0);
+    const localYesterdayEnd = new Date(2026, 3, 8, 0, 1, 0);
+    const localYesterdayTail = new Date(2026, 3, 7, 23, 59, 0);
+    const localNow = new Date(2026, 3, 8, 12, 3, 0);
+    const data = buildTodayMinuteChartData(
+      {
+        rangeStart: localYesterdayStart.toISOString(),
+        rangeEnd: localYesterdayEnd.toISOString(),
+        bucketSeconds: 60,
+        points: [
+          {
+            bucketStart: localYesterdayTail.toISOString(),
+            bucketEnd: new Date(2026, 3, 8, 0, 0, 0).toISOString(),
+            totalCount: 2,
+            successCount: 2,
+            failureCount: 0,
+            totalTokens: 80,
+            totalCost: 0.25,
+          },
+        ],
+      },
+      {
+        now: localNow,
+        localeTag: "en-US",
+        closedNaturalDay: true,
+      },
+    );
+
+    expect(data[0]?.label).toBe("00:00");
+    expect(data[0]?.epochMs).toBe(localYesterdayStart.getTime());
+    expect(data.at(-1)?.label).toBe("23:59");
+    expect(data.at(-1)).toMatchObject({
+      totalCount: 2,
+      successCount: 2,
+      failureCount: 0,
+      chartSuccessCount: 2,
+      chartFailureCountNegative: 0,
+      chartCumulativeCost: 0.25,
+      chartCumulativeTokens: 80,
+    });
+  });
+
+  it("does not treat a rolling 24-hour window as a closed natural day at midnight", () => {
+    const localRangeStart = new Date(2026, 3, 7, 0, 0, 0);
+    const localRangeEnd = new Date(2026, 3, 8, 0, 0, 0);
+    const localTail = new Date(2026, 3, 7, 23, 59, 0);
+    const data = buildTodayMinuteChartData(
+      {
+        rangeStart: localRangeStart.toISOString(),
+        rangeEnd: localRangeEnd.toISOString(),
+        bucketSeconds: 60,
+        points: [
+          {
+            bucketStart: localTail.toISOString(),
+            bucketEnd: localRangeEnd.toISOString(),
+            totalCount: 2,
+            successCount: 2,
+            failureCount: 0,
+            totalTokens: 80,
+            totalCost: 0.25,
+          },
+        ],
+      },
+      {
+        now: localRangeEnd,
+        localeTag: "en-US",
+      },
+    );
+
+    expect(data[0]?.epochMs).toBe(localRangeEnd.getTime());
+    expect(data.at(-1)?.epochMs).toBe(new Date(2026, 3, 8, 23, 59, 0).getTime());
+  });
+
   it("uses explicit in-flight counts and leaves neutral residual totals unrendered", () => {
     const data = buildTodayMinuteChartData(
       {

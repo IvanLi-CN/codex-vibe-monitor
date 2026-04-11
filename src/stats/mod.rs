@@ -41,6 +41,7 @@ fn is_missing_invocation_summary_archive_error(err: &anyhow::Error) -> bool {
 pub(crate) enum StatsFilter {
     All,
     Since(DateTime<Utc>),
+    Range(DateTime<Utc>, DateTime<Utc>),
     RecentLimit(i64),
 }
 
@@ -402,6 +403,15 @@ pub(crate) fn db_occurred_at_lower_bound(start_utc: DateTime<Utc>) -> String {
     format_naive(shanghai.naive_local())
 }
 
+pub(crate) fn exclusive_epoch_upper_bound(end_utc: DateTime<Utc>) -> i64 {
+    end_utc.timestamp()
+        + if end_utc.timestamp_subsec_nanos() > 0 {
+            1
+        } else {
+            0
+        }
+}
+
 pub(crate) fn parse_duration_spec(spec: &str) -> Result<ChronoDuration> {
     if let Some(value) = spec.strip_suffix("mo") {
         let months: i64 = value.parse()?;
@@ -437,7 +447,7 @@ pub(crate) fn resolve_range_window(spec: &str, tz: Tz) -> Result<RangeWindow> {
     if let Some((start, raw_end)) = named_range_bounds(spec, now, tz) {
         // Clamp to "now" so charts do not render future empty buckets.
         let mut end = now.min(raw_end);
-        if end == now && end.timestamp_subsec_nanos() == 0 {
+        if raw_end > now && end == now && end.timestamp_subsec_nanos() == 0 {
             end += ChronoDuration::nanoseconds(1);
         }
         let duration = end.signed_duration_since(start).max(ChronoDuration::zero());
@@ -476,6 +486,15 @@ pub(crate) fn named_range_bounds(
                 .succ_opt()
                 .unwrap_or(local_date + ChronoDuration::days(1));
             let end = local_midnight_utc(next_date, tz);
+            Some((start, end))
+        }
+        "yesterday" => {
+            let local_date = now.with_timezone(&tz).date_naive();
+            let end = local_midnight_utc(local_date, tz);
+            let previous_date = local_date
+                .pred_opt()
+                .unwrap_or(local_date - ChronoDuration::days(1));
+            let start = local_midnight_utc(previous_date, tz);
             Some((start, end))
         }
         "thisWeek" => {
@@ -642,7 +661,7 @@ pub(crate) fn parse_summary_window(
             Ok(SummaryWindow::Current(limit))
         }
         Some("all") => Ok(SummaryWindow::All),
-        Some(raw @ ("today" | "thisWeek" | "thisMonth")) => {
+        Some(raw @ ("today" | "yesterday" | "thisWeek" | "thisMonth")) => {
             Ok(SummaryWindow::Calendar(raw.to_string()))
         }
         Some(raw) => Ok(SummaryWindow::Duration(parse_duration_spec(raw)?)),
@@ -696,6 +715,31 @@ pub(crate) async fn query_stats_row(
             );
             sqlx::query_as::<_, StatsRow>(&query)
                 .bind(db_occurred_at_lower_bound(start))
+                .fetch_one(pool)
+                .await
+                .map_err(Into::into)
+        }
+        (StatsFilter::Range(start, end), InvocationSourceScope::ProxyOnly) => {
+            let query = format!(
+                "SELECT {} FROM codex_invocations WHERE source = ?1 AND occurred_at >= ?2 AND occurred_at < ?3",
+                stats_success_failure_select_sql()
+            );
+            sqlx::query_as::<_, StatsRow>(&query)
+                .bind(SOURCE_PROXY)
+                .bind(db_occurred_at_lower_bound(start))
+                .bind(db_occurred_at_upper_bound(end))
+                .fetch_one(pool)
+                .await
+                .map_err(Into::into)
+        }
+        (StatsFilter::Range(start, end), InvocationSourceScope::All) => {
+            let query = format!(
+                "SELECT {} FROM codex_invocations WHERE occurred_at >= ?1 AND occurred_at < ?2",
+                stats_success_failure_select_sql()
+            );
+            sqlx::query_as::<_, StatsRow>(&query)
+                .bind(db_occurred_at_lower_bound(start))
+                .bind(db_occurred_at_upper_bound(end))
                 .fetch_one(pool)
                 .await
                 .map_err(Into::into)
@@ -1619,18 +1663,27 @@ pub(crate) async fn query_crs_totals(
     );
 
     let mut binds: Vec<i64> = Vec::new();
-    if let StatsFilter::Since(start) = filter {
-        query.push_str(" AND captured_at_epoch >= ?3");
-        binds.push(start.timestamp());
-    } else if matches!(filter, StatsFilter::RecentLimit(_)) {
-        return Ok(StatsTotals::default());
+    match filter {
+        StatsFilter::Since(start) => {
+            query.push_str(" AND captured_at_epoch >= ?3");
+            binds.push(start.timestamp());
+        }
+        StatsFilter::Range(start, end) => {
+            query.push_str(" AND captured_at_epoch >= ?3 AND captured_at_epoch < ?4");
+            binds.push(start.timestamp());
+            binds.push(exclusive_epoch_upper_bound(*end));
+        }
+        StatsFilter::RecentLimit(_) => {
+            return Ok(StatsTotals::default());
+        }
+        StatsFilter::All => {}
     }
 
     let mut sql = sqlx::query_as::<_, StatsRow>(&query)
         .bind(SOURCE_CRS)
         .bind(&relay.period);
 
-    if let Some(epoch) = binds.first() {
+    for epoch in binds {
         sql = sql.bind(epoch);
     }
 
@@ -1659,7 +1712,7 @@ pub(crate) async fn query_crs_deltas(
     pool: &Pool<Sqlite>,
     relay: &CrsStatsConfig,
     start_epoch: i64,
-    end_epoch: i64,
+    end_epoch_exclusive: i64,
 ) -> Result<Vec<StatsDeltaRecord>> {
     sqlx::query_as::<_, StatsDeltaRecord>(
         r#"
@@ -1674,14 +1727,14 @@ pub(crate) async fn query_crs_deltas(
         WHERE source = ?1
           AND period = ?2
           AND captured_at_epoch >= ?3
-          AND captured_at_epoch <= ?4
+          AND captured_at_epoch < ?4
         ORDER BY captured_at_epoch ASC
         "#,
     )
     .bind(SOURCE_CRS)
     .bind(&relay.period)
     .bind(start_epoch)
-    .bind(end_epoch)
+    .bind(end_epoch_exclusive)
     .fetch_all(pool)
     .await
     .map_err(Into::into)

@@ -23,6 +23,11 @@ export interface TimeseriesSyncPolicy {
   recordsRefreshThrottleMs: number;
 }
 
+export interface TimeseriesOpenResyncOptions {
+  bypassCooldown?: boolean;
+  forceLoad?: boolean;
+}
+
 interface LoadOptions {
   silent?: boolean;
   force?: boolean;
@@ -216,7 +221,7 @@ export function getTimeseriesRemountCacheKey(
 }
 
 export function shouldEnableTimeseriesRemountCache(range: string) {
-  return range !== "current" && range !== "today";
+  return range !== "current" && range !== "today" && range !== "yesterday";
 }
 
 export function readTimeseriesRemountCache(
@@ -293,9 +298,103 @@ export function getNextLocalDayStartEpoch(
   return Math.floor(value.getTime() / 1000);
 }
 
+function isYesterdayTimeseriesStale(
+  data: TimeseriesResponse | null,
+  nowEpochSeconds = Math.floor(Date.now() / 1000),
+) {
+  const rangeEndEpoch = parseIsoEpoch(data?.rangeEnd);
+  if (rangeEndEpoch == null) {
+    return true;
+  }
+  return getLocalDayStartEpoch(rangeEndEpoch) !== getLocalDayStartEpoch(nowEpochSeconds);
+}
+
+export function getVisibilityOpenResyncMode(
+  range: string,
+  syncMode: TimeseriesSyncMode,
+  data: TimeseriesResponse | null,
+  nowEpochSeconds = Math.floor(Date.now() / 1000),
+) {
+  if (range === "yesterday") {
+    return isYesterdayTimeseriesStale(data, nowEpochSeconds)
+      ? "force"
+      : "normal";
+  }
+  if (range === "today" || syncMode === "current-day-local") {
+    return "force";
+  }
+  return "normal";
+}
+
+export function getSseOpenResyncOptions(
+  range: string,
+  syncMode: TimeseriesSyncMode,
+  data: TimeseriesResponse | null,
+  nowEpochSeconds = Math.floor(Date.now() / 1000),
+) {
+  if (range === "yesterday") {
+    return {
+      bypassCooldown: true,
+      forceLoad:
+        getVisibilityOpenResyncMode(range, syncMode, data, nowEpochSeconds) ===
+        "force",
+    };
+  }
+  return (
+    range === "today" || syncMode === "current-day-local"
+      ? { bypassCooldown: true, forceLoad: true }
+      : { bypassCooldown: false, forceLoad: false }
+  );
+}
+
+export function getTimeseriesDayRolloverRefreshEpoch(
+  range: string,
+  syncMode: TimeseriesSyncMode,
+  data: TimeseriesResponse | null,
+  nowEpochSeconds = Math.floor(Date.now() / 1000),
+) {
+  if (range === "today" || range === "yesterday") {
+    return getNextLocalDayStartEpoch(nowEpochSeconds);
+  }
+  if (syncMode === "current-day-local") {
+    return getCurrentDayBucketEndEpoch(data, nowEpochSeconds);
+  }
+  return null;
+}
+
+function getYesterdayRangeEndEpoch(
+  nowEpochSeconds = Math.floor(Date.now() / 1000),
+) {
+  return getLocalDayStartEpoch(nowEpochSeconds);
+}
+
+function getYesterdayRangeStartEpoch(
+  rangeEndEpoch = getYesterdayRangeEndEpoch(),
+) {
+  return getLocalDayStartEpoch(rangeEndEpoch - 1);
+}
+
+function getClosedNaturalDayRangeBounds(
+  range: string,
+  rangeEndEpoch: number,
+) {
+  if (range !== "yesterday") {
+    return null;
+  }
+
+  const end = getLocalDayStartEpoch(rangeEndEpoch);
+  return {
+    start: getYesterdayRangeStartEpoch(end),
+    end,
+  };
+}
+
 function getRangeStartEpoch(range: string, rangeEndEpoch: number) {
   if (range === "today") {
     return getLocalDayStartEpoch(rangeEndEpoch);
+  }
+  if (range === "yesterday") {
+    return getYesterdayRangeStartEpoch(rangeEndEpoch);
   }
 
   const rangeSeconds = parseRangeSpec(range);
@@ -311,10 +410,14 @@ function createSeededTimeseries(range: string, bucket?: string) {
   const bucketSeconds =
     guessBucketSeconds(bucket) ?? defaultBucketSecondsForRange(range);
   const nowEpochSeconds = Math.floor(Date.now() / 1000);
+  const rangeEndEpoch =
+    range === "yesterday"
+      ? getYesterdayRangeEndEpoch(nowEpochSeconds)
+      : nowEpochSeconds;
   const rangeStartEpoch =
-    getRangeStartEpoch(range, nowEpochSeconds) ?? nowEpochSeconds - 86_400;
+    getRangeStartEpoch(range, rangeEndEpoch) ?? rangeEndEpoch - 86_400;
   const start = formatEpochToIso(rangeStartEpoch);
-  const end = formatEpochToIso(nowEpochSeconds);
+  const end = formatEpochToIso(rangeEndEpoch);
   return {
     rangeStart: start,
     rangeEnd: end,
@@ -1022,6 +1125,16 @@ function buildTimeseriesLiveRecordDelta(
 
   const latestRangeEndEpoch =
     parseIsoEpoch(current.rangeEnd) ?? occurredEpoch + bucketSeconds;
+  const closedRange = getClosedNaturalDayRangeBounds(
+    context.range,
+    latestRangeEndEpoch,
+  );
+  if (
+    closedRange &&
+    (occurredEpoch < closedRange.start || occurredEpoch >= closedRange.end)
+  ) {
+    return null;
+  }
   const earliestAllowed = getRangeStartEpoch(
     context.range,
     latestRangeEndEpoch,
@@ -1509,7 +1622,10 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
   }, [clearPendingRefreshTimer, load, syncPolicy.recordsRefreshThrottleMs]);
 
   const triggerOpenResync = useCallback(
-    (force = false) => {
+    ({
+      bypassCooldown = false,
+      forceLoad = false,
+    }: TimeseriesOpenResyncOptions = {}) => {
       if (!hasHydratedRef.current) {
         pendingOpenResyncRef.current = true;
         return;
@@ -1519,13 +1635,13 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
         !shouldTriggerTimeseriesOpenResync(
           lastOpenResyncAtRef.current,
           now,
-          force,
+          bypassCooldown,
         )
       ) {
         return;
       }
       lastOpenResyncAtRef.current = now;
-      void load({ silent: true, force: true });
+      void load({ silent: true, force: forceLoad });
     },
     [load],
   );
@@ -1592,7 +1708,10 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
       if (syncPolicy.mode === "current-day-local") {
         const nowEpochSeconds = Math.floor(Date.now() / 1000);
         if (shouldResyncForCurrentDayBucket(dataRef.current, nowEpochSeconds)) {
-          triggerOpenResync(true);
+          triggerOpenResync({
+            bypassCooldown: true,
+            forceLoad: true,
+          });
           return;
         }
         setData((current) => {
@@ -1721,8 +1840,15 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
     if (typeof document === "undefined") return;
     const onVisibilityChange = () => {
       if (document.visibilityState !== "visible") return;
+      const resyncMode = getVisibilityOpenResyncMode(
+        range,
+        syncPolicy.mode,
+        dataRef.current,
+      );
       triggerOpenResync(
-        range === "today" || syncPolicy.mode === "current-day-local",
+        resyncMode === "force"
+          ? { bypassCooldown: true, forceLoad: true }
+          : undefined,
       );
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
@@ -1732,20 +1858,24 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
 
   useEffect(() => {
     const unsubscribe = subscribeToSseOpen(() => {
-      triggerOpenResync();
+      triggerOpenResync(
+        getSseOpenResyncOptions(
+          range,
+          syncPolicy.mode,
+          dataRef.current,
+        ),
+      );
     });
     return unsubscribe;
-  }, [triggerOpenResync]);
+  }, [range, syncPolicy.mode, triggerOpenResync]);
 
   useEffect(() => {
     clearDayRolloverTimer();
-    if (range !== "today" && syncPolicy.mode !== "current-day-local") {
-      return;
-    }
-    const refreshEpoch =
-      range === "today"
-        ? getNextLocalDayStartEpoch()
-        : getCurrentDayBucketEndEpoch(data);
+    const refreshEpoch = getTimeseriesDayRolloverRefreshEpoch(
+      range,
+      syncPolicy.mode,
+      data,
+    );
     if (refreshEpoch == null) {
       return;
     }
@@ -1914,6 +2044,16 @@ export function applyRecordsToTimeseries(
     }
 
     if (latestRangeEndEpoch != null) {
+      const closedRange = getClosedNaturalDayRangeBounds(
+        context.range,
+        latestRangeEndEpoch,
+      );
+      if (
+        closedRange &&
+        (occurredEpoch < closedRange.start || occurredEpoch >= closedRange.end)
+      ) {
+        continue;
+      }
       const earliestAllowed = getRangeStartEpoch(
         context.range,
         latestRangeEndEpoch,

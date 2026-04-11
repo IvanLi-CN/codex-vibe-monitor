@@ -89,6 +89,7 @@ async fn hourly_timeseries_omits_pre_cutoff_partial_hour_rollups() {
         .iter()
         .find(|point| point.bucket_start == format_utc_iso(bucket_start))
         .expect("pre-cutoff bucket should remain visible");
+    assert_eq!(response.range_end, format_utc_iso(end));
     assert_eq!(point.total_count, 0);
     assert_eq!(point.success_count, 0);
     assert_eq!(point.failure_count, 0);

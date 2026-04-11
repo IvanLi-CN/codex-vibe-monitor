@@ -111,6 +111,72 @@ describe('buildDashboardTodayRateSnapshot', () => {
     expect(snapshot?.windowMinutes).toBe(0)
     expect(snapshot?.available).toBe(true)
   })
+
+  it('keeps yesterday closed-day rates on the previous natural day even when rangeEnd is rounded into the next minute', () => {
+    const snapshot = buildDashboardTodayRateSnapshot(
+      {
+        rangeStart: '2026-04-09 00:00:00',
+        rangeEnd: '2026-04-10 00:01:00',
+        bucketSeconds: 60,
+        points: [
+          {
+            bucketStart: '2026-04-09 23:55:00',
+            bucketEnd: '2026-04-09 23:56:00',
+            totalCount: 1,
+            successCount: 1,
+            failureCount: 0,
+            totalTokens: 500,
+            totalCost: 0.05,
+          },
+          {
+            bucketStart: '2026-04-09 23:56:00',
+            bucketEnd: '2026-04-09 23:57:00',
+            totalCount: 1,
+            successCount: 1,
+            failureCount: 0,
+            totalTokens: 600,
+            totalCost: 0.06,
+          },
+          {
+            bucketStart: '2026-04-09 23:57:00',
+            bucketEnd: '2026-04-09 23:58:00',
+            totalCount: 1,
+            successCount: 1,
+            failureCount: 0,
+            totalTokens: 700,
+            totalCost: 0.07,
+          },
+          {
+            bucketStart: '2026-04-09 23:58:00',
+            bucketEnd: '2026-04-09 23:59:00',
+            totalCount: 1,
+            successCount: 1,
+            failureCount: 0,
+            totalTokens: 800,
+            totalCost: 0.08,
+          },
+          {
+            bucketStart: '2026-04-09 23:59:00',
+            bucketEnd: '2026-04-10 00:00:00',
+            totalCount: 1,
+            successCount: 1,
+            failureCount: 0,
+            totalTokens: 900,
+            totalCost: 0.09,
+          },
+        ],
+      },
+      {
+        now: new Date(2026, 3, 10, 12, 0, 0, 0),
+        closedNaturalDay: true,
+      },
+    )
+
+    expect(snapshot?.tokensPerMinute).toBe(700)
+    expect(snapshot?.costPerMinute).toBeCloseTo(0.07, 6)
+    expect(snapshot?.windowMinutes).toBe(5)
+    expect(snapshot?.available).toBe(true)
+  })
 })
 
 function formatLocal(date: Date) {

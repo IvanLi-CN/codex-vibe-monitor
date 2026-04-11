@@ -350,6 +350,27 @@ fn named_range_today_end_respects_dst() {
 }
 
 #[test]
+fn named_range_yesterday_end_respects_dst() {
+    let tz = chrono_tz::America::Los_Angeles;
+    let now = Utc
+        .with_ymd_and_hms(2024, 3, 11, 12, 0, 0)
+        .single()
+        .expect("valid dt");
+
+    let (start, end) = named_range_bounds("yesterday", now, tz).expect("yesterday bounds");
+    // Yesterday start: Sun 2024-03-10 00:00 PST => 08:00Z.
+    assert_eq!(
+        start,
+        Utc.with_ymd_and_hms(2024, 3, 10, 8, 0, 0).single().unwrap()
+    );
+    // Yesterday end: Mon 2024-03-11 00:00 PDT => 07:00Z after the DST jump.
+    assert_eq!(
+        end,
+        Utc.with_ymd_and_hms(2024, 3, 11, 7, 0, 0).single().unwrap()
+    );
+}
+
+#[test]
 fn named_range_this_week_end_respects_dst() {
     let tz = chrono_tz::America::Los_Angeles;
     let now = Utc
@@ -398,6 +419,39 @@ fn next_reporting_bucket_epoch_respects_dst_for_multi_hour_buckets() {
     assert_eq!(bucket_start_local.minute(), 0);
     assert_eq!(bucket_end_local.hour(), 6);
     assert_eq!(bucket_end_local.minute(), 0);
+}
+
+#[test]
+fn parse_summary_window_accepts_yesterday_calendar_window() {
+    let window = parse_summary_window(
+        &SummaryQuery {
+            window: Some("yesterday".to_string()),
+            limit: None,
+            time_zone: None,
+        },
+        50,
+    )
+    .expect("parse yesterday summary window");
+
+    match window {
+        SummaryWindow::Calendar(value) => assert_eq!(value, "yesterday"),
+        other => panic!("expected calendar window, got {other:?}"),
+    }
+}
+
+#[test]
+fn exclusive_epoch_upper_bound_preserves_fractional_current_second() {
+    let exact_second = Utc
+        .with_ymd_and_hms(2026, 4, 11, 0, 0, 0)
+        .single()
+        .expect("valid exact second");
+    let fractional_second = exact_second + ChronoDuration::nanoseconds(1);
+
+    assert_eq!(exclusive_epoch_upper_bound(exact_second), exact_second.timestamp());
+    assert_eq!(
+        exclusive_epoch_upper_bound(fractional_second),
+        exact_second.timestamp() + 1
+    );
 }
 
 #[test]

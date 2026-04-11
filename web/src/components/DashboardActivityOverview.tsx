@@ -13,13 +13,14 @@ import { SegmentedControl, SegmentedControlItem } from './ui/segmented-control'
 import { UsageCalendar } from './UsageCalendar'
 import { WeeklyHourlyHeatmap } from './WeeklyHourlyHeatmap'
 
-type RangeKey = 'today' | '1d' | '7d' | 'usage'
+type RangeKey = 'today' | 'yesterday' | '1d' | '7d' | 'usage'
 
 export const DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY = 'dashboard.activityOverview.activeRange.v1'
 
 const DEFAULT_RANGE: RangeKey = 'today'
 const RANGE_OPTIONS: Array<{ key: RangeKey; labelKey: string }> = [
   { key: 'today', labelKey: 'dashboard.activityOverview.rangeToday' },
+  { key: 'yesterday', labelKey: 'dashboard.activityOverview.rangeYesterday' },
   { key: '1d', labelKey: 'dashboard.activityOverview.range24h' },
   { key: '7d', labelKey: 'dashboard.activityOverview.range7d' },
   { key: 'usage', labelKey: 'dashboard.activityOverview.rangeUsage' },
@@ -32,7 +33,7 @@ const METRIC_OPTIONS: Array<{ key: MetricKey; labelKey: string }> = [
 ]
 
 function isRangeKey(value: string | null): value is RangeKey {
-  return value === 'today' || value === '1d' || value === '7d' || value === 'usage'
+  return value === 'today' || value === 'yesterday' || value === '1d' || value === '7d' || value === 'usage'
 }
 
 function readPersistedRange(): RangeKey {
@@ -54,19 +55,33 @@ function persistRange(range: RangeKey) {
   }
 }
 
-function DashboardTodayRangePanel({ metric }: { metric: MetricKey }) {
+function DashboardNaturalDayRangePanel({
+  metric,
+  summaryWindow,
+  timeseriesRange,
+  testId,
+}: {
+  metric: MetricKey
+  summaryWindow: 'today' | 'yesterday'
+  timeseriesRange: 'today' | 'yesterday'
+  testId: string
+}) {
   const {
     summary,
     isLoading: summaryLoading,
     error: summaryError,
-  } = useSummary('today')
-  const { data, isLoading, error } = useTimeseries('today', { bucket: '1m' })
-  const rate = useMemo(() => buildDashboardTodayRateSnapshot(data), [data])
+  } = useSummary(summaryWindow)
+  const { data, isLoading, error } = useTimeseries(timeseriesRange, { bucket: '1m' })
+  const closedNaturalDay = timeseriesRange === 'yesterday'
+  const rate = useMemo(
+    () => buildDashboardTodayRateSnapshot(data, { closedNaturalDay }),
+    [closedNaturalDay, data],
+  )
 
   return (
     <div
       className="flex flex-col gap-5"
-      data-testid="dashboard-activity-range-today"
+      data-testid={testId}
       data-active="true"
     >
       <TodayStatsOverview
@@ -85,8 +100,31 @@ function DashboardTodayRangePanel({ metric }: { metric: MetricKey }) {
         loading={isLoading}
         error={error}
         metric={metric}
+        closedNaturalDay={closedNaturalDay}
       />
     </div>
+  )
+}
+
+function DashboardTodayRangePanel({ metric }: { metric: MetricKey }) {
+  return (
+    <DashboardNaturalDayRangePanel
+      metric={metric}
+      summaryWindow="today"
+      timeseriesRange="today"
+      testId="dashboard-activity-range-today"
+    />
+  )
+}
+
+function DashboardYesterdayRangePanel({ metric }: { metric: MetricKey }) {
+  return (
+    <DashboardNaturalDayRangePanel
+      metric={metric}
+      summaryWindow="yesterday"
+      timeseriesRange="yesterday"
+      testId="dashboard-activity-range-yesterday"
+    />
   )
 }
 
@@ -148,6 +186,7 @@ export function DashboardActivityOverview() {
   const { themeMode } = useTheme()
   const [activeRange, setActiveRange] = useState<RangeKey>(() => readPersistedRange())
   const [metricToday, setMetricToday] = useState<MetricKey>('totalCount')
+  const [metricYesterday, setMetricYesterday] = useState<MetricKey>('totalCount')
   const [metric24h, setMetric24h] = useState<MetricKey>('totalCount')
   const [metric7d, setMetric7d] = useState<MetricKey>('totalCount')
   const [metricUsage, setMetricUsage] = useState<MetricKey>('totalCount')
@@ -164,6 +203,8 @@ export function DashboardActivityOverview() {
   const activeMetric =
     activeRange === 'today'
       ? metricToday
+      : activeRange === 'yesterday'
+        ? metricYesterday
       : activeRange === '1d'
         ? metric24h
         : activeRange === '7d'
@@ -177,6 +218,10 @@ export function DashboardActivityOverview() {
   const setActiveMetric = (metric: MetricKey) => {
     if (activeRange === 'today') {
       setMetricToday(metric)
+      return
+    }
+    if (activeRange === 'yesterday') {
+      setMetricYesterday(metric)
       return
     }
     if (activeRange === '1d') {
@@ -234,6 +279,7 @@ export function DashboardActivityOverview() {
           </SegmentedControl>
         </div>
         {activeRange === 'today' ? <DashboardTodayRangePanel metric={metricToday} /> : null}
+        {activeRange === 'yesterday' ? <DashboardYesterdayRangePanel metric={metricYesterday} /> : null}
         {activeRange === '1d' ? <Dashboard24HourRangePanel metric={metric24h} /> : null}
         {activeRange === '7d' ? <Dashboard7DayRangePanel metric={metric7d} /> : null}
         {activeRange === 'usage' ? <DashboardUsageRangePanel metric={metricUsage} /> : null}

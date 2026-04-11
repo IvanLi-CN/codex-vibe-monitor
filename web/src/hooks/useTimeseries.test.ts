@@ -14,8 +14,11 @@ import {
   getCurrentDayBucketEndEpoch,
   getLocalDayStartEpoch,
   getNextLocalDayStartEpoch,
+  getSseOpenResyncOptions,
+  getTimeseriesDayRolloverRefreshEpoch,
   getTimeseriesRemountCacheKey,
   getTimeseriesRecordsResyncDelay,
+  getVisibilityOpenResyncMode,
   mergePendingTimeseriesSilentOption,
   readTimeseriesRemountCache,
   resolveTimeseriesSyncPolicy,
@@ -574,6 +577,85 @@ describe("useTimeseries natural-day range patching", () => {
     expect(previousDayStart.getTime()).toBeLessThan(currentDayStart.getTime());
   });
 
+  it("keeps yesterday-scoped local patches inside the previous local day", () => {
+    const yesterdayStart = new Date(2026, 3, 7, 0, 0, 0);
+    const todayStart = new Date(2026, 3, 8, 0, 0, 0);
+    const current: TimeseriesResponse = {
+      rangeStart: yesterdayStart.toISOString().replace(/\.\d{3}Z$/, "Z"),
+      rangeEnd: todayStart.toISOString().replace(/\.\d{3}Z$/, "Z"),
+      bucketSeconds: 60,
+      points: [
+        {
+          bucketStart: new Date(2026, 3, 7, 23, 58, 0)
+            .toISOString()
+            .replace(/\.\d{3}Z$/, "Z"),
+          bucketEnd: new Date(2026, 3, 7, 23, 59, 0)
+            .toISOString()
+            .replace(/\.\d{3}Z$/, "Z"),
+          totalCount: 1,
+          successCount: 1,
+          failureCount: 0,
+          totalTokens: 10,
+          totalCost: 0.1,
+        },
+      ],
+    };
+
+    const next = applyRecordsToTimeseries(
+      current,
+      [
+        {
+          id: 3,
+          invokeId: "yesterday-success",
+          occurredAt: new Date(2026, 3, 7, 23, 59, 15)
+            .toISOString()
+            .replace(/\.\d{3}Z$/, "Z"),
+          status: "success",
+          totalTokens: 20,
+          cost: 0.3,
+          createdAt: new Date(2026, 3, 7, 23, 59, 15)
+            .toISOString()
+            .replace(/\.\d{3}Z$/, "Z"),
+        },
+        {
+          id: 4,
+          invokeId: "today-should-ignore",
+          occurredAt: new Date(2026, 3, 8, 0, 1, 15)
+            .toISOString()
+            .replace(/\.\d{3}Z$/, "Z"),
+          status: "failed",
+          totalTokens: 25,
+          cost: 0.2,
+          createdAt: new Date(2026, 3, 8, 0, 1, 15)
+            .toISOString()
+            .replace(/\.\d{3}Z$/, "Z"),
+        },
+      ],
+      {
+        range: "yesterday",
+        bucketSeconds: 60,
+      },
+    );
+
+    expect(next?.rangeStart).toBe(
+      yesterdayStart.toISOString().replace(/\.\d{3}Z$/, "Z"),
+    );
+    expect(next?.rangeEnd).toBe(
+      todayStart.toISOString().replace(/\.\d{3}Z$/, "Z"),
+    );
+    expect(next?.points).toHaveLength(2);
+    expect(next?.points.at(-1)).toMatchObject({
+      bucketStart: new Date(2026, 3, 7, 23, 59, 0)
+        .toISOString()
+        .replace(/\.\d{3}Z$/, "Z"),
+      totalCount: 1,
+      successCount: 1,
+      failureCount: 0,
+      totalTokens: 20,
+      totalCost: 0.3,
+    });
+  });
+
   it("counts running local live records toward totals without painting provisional failure metadata as failures", () => {
     const current: TimeseriesResponse = {
       rangeStart: new Date(2026, 3, 8, 0, 0, 0)
@@ -1095,6 +1177,96 @@ describe("useTimeseries refresh coordination helpers", () => {
     expect(shouldTriggerTimeseriesOpenResync(30_000, 30_250, true)).toBe(true);
   });
 
+  it("only forces visibility reconnect when the active range is live or stale", () => {
+    const yesterdayCurrent: TimeseriesResponse = {
+      rangeStart: "2026-04-07T00:00:00Z",
+      rangeEnd: "2026-04-08T00:00:00Z",
+      bucketSeconds: 60,
+      points: [],
+    };
+
+    expect(getVisibilityOpenResyncMode("today", "local", null)).toBe("force");
+    expect(
+      getVisibilityOpenResyncMode("6mo", "current-day-local", null),
+    ).toBe("force");
+    expect(
+      getVisibilityOpenResyncMode(
+        "yesterday",
+        "local",
+        yesterdayCurrent,
+        Math.floor(new Date(2026, 3, 8, 12, 0, 0).getTime() / 1000),
+      ),
+    ).toBe("normal");
+    expect(
+      getVisibilityOpenResyncMode(
+        "yesterday",
+        "local",
+        yesterdayCurrent,
+        Math.floor(new Date(2026, 3, 9, 0, 0, 30).getTime() / 1000),
+      ),
+    ).toBe("force");
+    expect(getVisibilityOpenResyncMode("1d", "local", null)).toBe("normal");
+  });
+
+  it("uses a soft reconnect refresh for fresh yesterday ranges", () => {
+    const yesterdayCurrent: TimeseriesResponse = {
+      rangeStart: "2026-04-07T00:00:00Z",
+      rangeEnd: "2026-04-08T00:00:00Z",
+      bucketSeconds: 60,
+      points: [],
+    };
+
+    expect(getSseOpenResyncOptions("today", "local", null)).toEqual({
+      bypassCooldown: true,
+      forceLoad: true,
+    });
+    expect(getSseOpenResyncOptions("6mo", "current-day-local", null)).toEqual({
+      bypassCooldown: true,
+      forceLoad: true,
+    });
+    expect(
+      getSseOpenResyncOptions(
+        "yesterday",
+        "local",
+        yesterdayCurrent,
+        Math.floor(new Date(2026, 3, 8, 12, 0, 0).getTime() / 1000),
+      ),
+    ).toEqual({
+      bypassCooldown: true,
+      forceLoad: false,
+    });
+    expect(
+      getSseOpenResyncOptions(
+        "yesterday",
+        "local",
+        yesterdayCurrent,
+        Math.floor(new Date(2026, 3, 9, 0, 0, 30).getTime() / 1000),
+      ),
+    ).toEqual({
+      bypassCooldown: true,
+      forceLoad: true,
+    });
+    expect(getSseOpenResyncOptions("1d", "local", null)).toEqual({
+      bypassCooldown: false,
+      forceLoad: false,
+    });
+  });
+
+  it("schedules yesterday rollover refresh at the next local midnight", () => {
+    const noonEpoch = Math.floor(
+      new Date(2026, 3, 8, 12, 34, 56).getTime() / 1000,
+    );
+
+    expect(
+      getTimeseriesDayRolloverRefreshEpoch(
+        "yesterday",
+        "local",
+        null,
+        noonEpoch,
+      ),
+    ).toBe(getNextLocalDayStartEpoch(noonEpoch));
+  });
+
   it("stores remount cache entries by range and options", () => {
     const response: TimeseriesResponse = {
       rangeStart: "2026-04-08T00:00:00Z",
@@ -1160,9 +1332,10 @@ describe("useTimeseries refresh coordination helpers", () => {
     expect(cached?.settledLiveRecordUpdatedAt.has("invoke-2")).toBe(false);
   });
 
-  it("disables remount caching for current and today timeseries", () => {
+  it("disables remount caching for current, today, and yesterday timeseries", () => {
     expect(shouldEnableTimeseriesRemountCache("current")).toBe(false);
     expect(shouldEnableTimeseriesRemountCache("today")).toBe(false);
+    expect(shouldEnableTimeseriesRemountCache("yesterday")).toBe(false);
     writeTimeseriesRemountCache(
       "current",
       undefined,
@@ -1188,6 +1361,20 @@ describe("useTimeseries refresh coordination helpers", () => {
     );
     expect(
       readTimeseriesRemountCache("today", { bucket: "1m" }, 1_001),
+    ).toBeNull();
+    writeTimeseriesRemountCache(
+      "yesterday",
+      { bucket: "1m" },
+      {
+        rangeStart: "2026-04-07T00:00:00Z",
+        rangeEnd: "2026-04-08T00:00:00Z",
+        bucketSeconds: 60,
+        points: [],
+      },
+      1_000,
+    );
+    expect(
+      readTimeseriesRemountCache("yesterday", { bucket: "1m" }, 1_001),
     ).toBeNull();
   });
 

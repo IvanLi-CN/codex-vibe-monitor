@@ -3273,6 +3273,44 @@ async fn timeseries_daily_bucket_includes_first_byte_stats() {
 }
 
 #[tokio::test]
+async fn open_live_timeseries_range_end_stays_at_query_cutoff() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let mut before = Utc::now();
+    if before.timestamp().rem_euclid(60) >= 58 {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        before = Utc::now();
+    }
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "1h".to_string(),
+            bucket: Some("1m".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch open live timeseries");
+    let after = Utc::now();
+    let response_end =
+        parse_to_utc_datetime(&response.range_end).expect("response range_end should parse");
+
+    assert!(
+        response_end <= after,
+        "open-window range_end should not exceed wall-clock query cutoff: response_end={response_end:?}, after={after:?}"
+    );
+    assert!(
+        response_end >= before - ChronoDuration::seconds(2),
+        "open-window range_end should stay near the live query cutoff: response_end={response_end:?}, before={before:?}"
+    );
+}
+
+#[tokio::test]
 async fn timeseries_includes_first_response_byte_total_avg_and_p95_for_complete_stage_samples() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
