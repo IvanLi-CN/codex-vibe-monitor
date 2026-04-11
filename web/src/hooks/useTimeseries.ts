@@ -216,7 +216,7 @@ export function getTimeseriesRemountCacheKey(
 }
 
 export function shouldEnableTimeseriesRemountCache(range: string) {
-  return range !== "current" && range !== "today";
+  return range !== "current" && range !== "today" && range !== "yesterday";
 }
 
 export function readTimeseriesRemountCache(

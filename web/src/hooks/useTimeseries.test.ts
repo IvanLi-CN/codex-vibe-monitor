@@ -1265,9 +1265,10 @@ describe("useTimeseries refresh coordination helpers", () => {
     expect(cached?.settledLiveRecordUpdatedAt.has("invoke-2")).toBe(false);
   });
 
-  it("disables remount caching for current and today timeseries", () => {
+  it("disables remount caching for current, today, and yesterday timeseries", () => {
     expect(shouldEnableTimeseriesRemountCache("current")).toBe(false);
     expect(shouldEnableTimeseriesRemountCache("today")).toBe(false);
+    expect(shouldEnableTimeseriesRemountCache("yesterday")).toBe(false);
     writeTimeseriesRemountCache(
       "current",
       undefined,
@@ -1293,6 +1294,20 @@ describe("useTimeseries refresh coordination helpers", () => {
     );
     expect(
       readTimeseriesRemountCache("today", { bucket: "1m" }, 1_001),
+    ).toBeNull();
+    writeTimeseriesRemountCache(
+      "yesterday",
+      { bucket: "1m" },
+      {
+        rangeStart: "2026-04-07T00:00:00Z",
+        rangeEnd: "2026-04-08T00:00:00Z",
+        bucketSeconds: 60,
+        points: [],
+      },
+      1_000,
+    );
+    expect(
+      readTimeseriesRemountCache("yesterday", { bucket: "1m" }, 1_001),
     ).toBeNull();
   });
 
