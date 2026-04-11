@@ -99,6 +99,26 @@ export function getCurrentSummarySseRefreshDelay(lastRefreshAt: number, now: num
   return Math.max(0, CURRENT_SUMMARY_RECORDS_REFRESH_THROTTLE_MS - (now - lastRefreshAt))
 }
 
+function getNextLocalDayStartEpoch(nowEpochSeconds = Math.floor(Date.now() / 1000)) {
+  const value = new Date(nowEpochSeconds * 1000)
+  value.setHours(24, 0, 0, 0)
+  return Math.floor(value.getTime() / 1000)
+}
+
+export function shouldForceCalendarSummaryOpenResync(window: string) {
+  return window === 'today' || window === 'yesterday'
+}
+
+export function getCalendarSummaryDayRolloverRefreshEpoch(
+  window: string,
+  nowEpochSeconds = Math.floor(Date.now() / 1000),
+) {
+  if (!shouldForceCalendarSummaryOpenResync(window)) {
+    return null
+  }
+  return getNextLocalDayStartEpoch(nowEpochSeconds)
+}
+
 export function mergePendingSummarySilentOption(existingSilent: boolean | null, incomingSilent: boolean) {
   return (existingSilent ?? true) && incomingSilent
 }
@@ -187,6 +207,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
   const pendingOpenResyncRef = useRef(false)
   const requestSeqRef = useRef(0)
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const dayRolloverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const activeRequestControllerRef = useRef<AbortController | null>(null)
   const lastCurrentRecordsRefreshAtRef = useRef(0)
   const lastOpenResyncAtRef = useRef(0)
@@ -198,6 +219,12 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     if (!refreshTimerRef.current) return
     clearTimeout(refreshTimerRef.current)
     refreshTimerRef.current = null
+  }, [])
+
+  const clearDayRolloverTimer = useCallback(() => {
+    if (!dayRolloverTimerRef.current) return
+    clearTimeout(dayRolloverTimerRef.current)
+    dayRolloverTimerRef.current = null
   }, [])
 
   const clearPendingLoad = useCallback(() => {
@@ -326,13 +353,13 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     refreshTimerRef.current = setTimeout(run, delay)
   }, [clearPendingRefreshTimer, load])
 
-  const triggerOpenResync = useCallback(() => {
+  const triggerOpenResync = useCallback((force = false) => {
     if (!hasHydratedRef.current) {
       pendingOpenResyncRef.current = true
       return
     }
     const now = Date.now()
-    if (!shouldTriggerCurrentSummaryOpenResync(lastOpenResyncAtRef.current, now)) {
+    if (!shouldTriggerCurrentSummaryOpenResync(lastOpenResyncAtRef.current, now, force)) {
       return
     }
     lastOpenResyncAtRef.current = now
@@ -355,12 +382,13 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     calendarRefreshRef.current = createUnsupportedRefreshGate()
     clearPendingLoad()
     clearPendingRefreshTimer()
+    clearDayRolloverTimer()
     if (!cachedSummary) {
       void load({ force: true })
       return
     }
     void load({ silent: true, force: true })
-  }, [clearPendingLoad, clearPendingRefreshTimer, load, options?.limit, window])
+  }, [clearDayRolloverTimer, clearPendingLoad, clearPendingRefreshTimer, load, options?.limit, window])
 
   useEffect(() => {
     if (!error || window !== 'current' || !shouldRetryCurrentSummaryError(error)) {
@@ -386,8 +414,9 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
       pendingOpenResyncRef.current = false
       currentRetryAttemptRef.current = 0
       clearPendingRefreshTimer()
+      clearDayRolloverTimer()
     },
-    [clearPendingLoad, clearPendingRefreshTimer],
+    [clearDayRolloverTimer, clearPendingLoad, clearPendingRefreshTimer],
   )
 
   const supportsSse = useMemo(() => SUPPORTED_SSE_WINDOWS.has(window), [window])
@@ -419,11 +448,34 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
   }, [isCalendarWindow, load, options?.limit, supportsSse, triggerCurrentWindowRefresh, window])
 
   useEffect(() => {
+    if (typeof document === 'undefined') return
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return
+      triggerOpenResync(shouldForceCalendarSummaryOpenResync(window))
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange)
+  }, [triggerOpenResync, window])
+
+  useEffect(() => {
     const unsubscribe = subscribeToSseOpen(() => {
       triggerOpenResync()
     })
     return unsubscribe
   }, [triggerOpenResync])
+
+  useEffect(() => {
+    clearDayRolloverTimer()
+    const refreshEpoch = getCalendarSummaryDayRolloverRefreshEpoch(window)
+    if (refreshEpoch == null) {
+      return
+    }
+    const delay = Math.max(0, refreshEpoch * 1000 - Date.now() + 50)
+    dayRolloverTimerRef.current = setTimeout(() => {
+      void load({ silent: true, force: true })
+    }, delay)
+    return clearDayRolloverTimer
+  }, [clearDayRolloverTimer, load, window])
 
   return {
     summary: stats,

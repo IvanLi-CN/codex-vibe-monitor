@@ -7,6 +7,7 @@ import {
   CURRENT_SUMMARY_RECORDS_REFRESH_THROTTLE_MS,
   CURRENT_SUMMARY_RETRY_DELAY_MS,
   createUnsupportedRefreshGate,
+  getCalendarSummaryDayRolloverRefreshEpoch,
   getSummaryRemountCacheKey,
   getCurrentSummarySseRefreshDelay,
   isCalendarSummaryWindow,
@@ -15,6 +16,7 @@ import {
   runCalendarSummaryRefresh,
   runUnsupportedSummaryRefresh,
   shouldEnableSummaryRemountCache,
+  shouldForceCalendarSummaryOpenResync,
   shouldReuseSummaryRemountCache,
   shouldTriggerCurrentSummaryOpenResync,
   shouldRetryCurrentSummaryError,
@@ -135,6 +137,20 @@ describe('useSummary unsupported window fallback', () => {
   it('allows forced reconnect resync regardless of cooldown', () => {
     const allowed = shouldTriggerCurrentSummaryOpenResync(40_000, 40_500, true)
     expect(allowed).toBe(true)
+  })
+
+  it('forces natural-day summary reconnect resync for today and yesterday', () => {
+    expect(shouldForceCalendarSummaryOpenResync('today')).toBe(true)
+    expect(shouldForceCalendarSummaryOpenResync('yesterday')).toBe(true)
+    expect(shouldForceCalendarSummaryOpenResync('thisWeek')).toBe(false)
+  })
+
+  it('schedules yesterday summary rollover refresh at the next local midnight', () => {
+    const noonEpoch = Math.floor(new Date(2026, 3, 8, 12, 34, 56).getTime() / 1000)
+    const nextMidnightEpoch = Math.floor(new Date(2026, 3, 9, 0, 0, 0).getTime() / 1000)
+
+    expect(getCalendarSummaryDayRolloverRefreshEpoch('yesterday', noonEpoch)).toBe(nextMidnightEpoch)
+    expect(getCalendarSummaryDayRolloverRefreshEpoch('thisWeek', noonEpoch)).toBeNull()
   })
 
   it('retries current summary only for transient network-like errors', () => {
