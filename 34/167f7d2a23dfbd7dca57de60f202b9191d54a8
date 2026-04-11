@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.46.2",
+  "base_stable_version": "1.46.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-11T05:15:08Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.46.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "3e2b294df758709223c98a4468ea6c3a44c359d1",
+  "pr_number": 321,
+  "pr_title": "fix(dashboard): stabilize today activity failure accounting",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.46.2",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.46.2",
+  "target_sha": "34167f7d2a23dfbd7dca57de60f202b9191d54a8",
+  "type_label": "type:patch"
+}
