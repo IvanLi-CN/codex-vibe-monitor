@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.46.9",
+  "base_stable_version": "1.46.8",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-11T13:58:08Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.46.9",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "e33a71f1bf556cf944fef8def220df30a104975a",
+  "pr_number": 323,
+  "pr_title": "fix: keep prompt cache total_cost typed as real in paginated snapshots",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.46.9",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.46.9",
+  "target_sha": "bcddf0d9c64336e9bfb69ea63e39b978de95a89e",
+  "type_label": "type:patch"
+}
