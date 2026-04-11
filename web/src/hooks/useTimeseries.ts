@@ -293,6 +293,30 @@ export function getNextLocalDayStartEpoch(
   return Math.floor(value.getTime() / 1000);
 }
 
+export function shouldForceNaturalDayOpenResync(
+  range: string,
+  syncMode: TimeseriesSyncMode,
+) {
+  return (
+    range === "today" || range === "yesterday" || syncMode === "current-day-local"
+  );
+}
+
+export function getTimeseriesDayRolloverRefreshEpoch(
+  range: string,
+  syncMode: TimeseriesSyncMode,
+  data: TimeseriesResponse | null,
+  nowEpochSeconds = Math.floor(Date.now() / 1000),
+) {
+  if (range === "today" || range === "yesterday") {
+    return getNextLocalDayStartEpoch(nowEpochSeconds);
+  }
+  if (syncMode === "current-day-local") {
+    return getCurrentDayBucketEndEpoch(data, nowEpochSeconds);
+  }
+  return null;
+}
+
 function getYesterdayRangeEndEpoch(
   nowEpochSeconds = Math.floor(Date.now() / 1000),
 ) {
@@ -1765,9 +1789,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
     if (typeof document === "undefined") return;
     const onVisibilityChange = () => {
       if (document.visibilityState !== "visible") return;
-      triggerOpenResync(
-        range === "today" || syncPolicy.mode === "current-day-local",
-      );
+      triggerOpenResync(shouldForceNaturalDayOpenResync(range, syncPolicy.mode));
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () =>
@@ -1783,13 +1805,11 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
 
   useEffect(() => {
     clearDayRolloverTimer();
-    if (range !== "today" && syncPolicy.mode !== "current-day-local") {
-      return;
-    }
-    const refreshEpoch =
-      range === "today"
-        ? getNextLocalDayStartEpoch()
-        : getCurrentDayBucketEndEpoch(data);
+    const refreshEpoch = getTimeseriesDayRolloverRefreshEpoch(
+      range,
+      syncPolicy.mode,
+      data,
+    );
     if (refreshEpoch == null) {
       return;
     }

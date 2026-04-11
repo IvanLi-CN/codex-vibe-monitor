@@ -14,6 +14,7 @@ import {
   getCurrentDayBucketEndEpoch,
   getLocalDayStartEpoch,
   getNextLocalDayStartEpoch,
+  getTimeseriesDayRolloverRefreshEpoch,
   getTimeseriesRemountCacheKey,
   getTimeseriesRecordsResyncDelay,
   mergePendingTimeseriesSilentOption,
@@ -28,6 +29,7 @@ import {
   shouldTriggerTimeseriesOpenResync,
   seedCurrentDayLiveRecordDeltas,
   seedTimeseriesLiveRecordDeltas,
+  shouldForceNaturalDayOpenResync,
   trackTimeseriesLiveRecordDelta,
   pruneTrackedTimeseriesLiveRecordDeltas,
   upsertCurrentDayLiveRecord,
@@ -1172,6 +1174,30 @@ describe("useTimeseries refresh coordination helpers", () => {
       ),
     ).toBe(false);
     expect(shouldTriggerTimeseriesOpenResync(30_000, 30_250, true)).toBe(true);
+  });
+
+  it("forces visibility reconnect resync for natural-day dashboard ranges", () => {
+    expect(shouldForceNaturalDayOpenResync("today", "local")).toBe(true);
+    expect(shouldForceNaturalDayOpenResync("yesterday", "local")).toBe(true);
+    expect(shouldForceNaturalDayOpenResync("6mo", "current-day-local")).toBe(
+      true,
+    );
+    expect(shouldForceNaturalDayOpenResync("1d", "local")).toBe(false);
+  });
+
+  it("schedules yesterday rollover refresh at the next local midnight", () => {
+    const noonEpoch = Math.floor(
+      new Date(2026, 3, 8, 12, 34, 56).getTime() / 1000,
+    );
+
+    expect(
+      getTimeseriesDayRolloverRefreshEpoch(
+        "yesterday",
+        "local",
+        null,
+        noonEpoch,
+      ),
+    ).toBe(getNextLocalDayStartEpoch(noonEpoch));
   });
 
   it("stores remount cache entries by range and options", () => {
