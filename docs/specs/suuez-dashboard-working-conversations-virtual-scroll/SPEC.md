@@ -12,6 +12,7 @@
 - 现有 Dashboard 数据层对 `/events` `records` 的处理仍偏整表思路：已加载项和未知新 key 之间没有清晰分流，滚动到中段后也容易停在过时工作集上。
 - 卡片区已经演进到 `1 / 2 / 3 / 4` 栏响应式合同，下一步要把“加载完整工作集”与“DOM 只保留视口附近卡片”两件事一起做完，避免无限列表把页面直接拖死。
 - 本轮 follow-up 继续复用现有通用接口与共享 `/events`，不新增 Dashboard 专用 route，也不再开第二条 working-conversations SSE 通道。
+- 线上热修补充：`activityMinutes=5 + pagination + snapshotAt` 路径里，若当前小时 working rows 的 `cost` 全为 `NULL/0`，SQLite 会把 `total_cost` 聚合成 `INTEGER 0`；Rust 端此字段按 `f64` 解码，导致 Dashboard 偶发显示 `Request failed: 500 ... mismatched types ... total_cost`。
 
 ## 目标 / 非目标
 
@@ -36,6 +37,7 @@
 ### In scope
 
 - 后端 `GET /api/stats/prompt-cache-conversations` 分页、cursor、snapshotAt、一致性与 `detail=compact|full` 扩展。
+- 分页 working-conversations 聚合与 full-detail upstream account hydration 的 `total_cost` 数值类型热修，确保 `NULL cost` working rows 稳定返回 `REAL 0.0`。
 - Dashboard 工作中对话 hook、mapper、section 组件、分页续页、SSE patch / reconnect resync / 本地过期剔除。
 - `@tanstack/react-virtual` 页面级滚动驱动的按行虚拟化与视口外 DOM 剔除。
 - `DashboardWorkingConversationsSection` Storybook、Vitest 与视觉证据。
@@ -85,6 +87,8 @@
 
 - Given 当前工作中对话数 `>20`，When 打开 Dashboard 并持续下滚，Then 可以浏览完整工作集，且 DOM 只保留可见行与 overscan，而不是把所有卡片全挂在页面上。
 - Given 当前工作中对话数 `>50`，When Dashboard 走分页 `activityMinutes=5` 请求，Then 可以继续翻页拿到后续工作集；旧非分页调用方行为不变。
+- Given `activityMinutes=5 + pageSize + snapshotAt + detail=compact` 命中当前小时 `cost` 全为 `NULL` 的 working rows，When 请求 `GET /api/stats/prompt-cache-conversations`，Then 接口返回 `200` 且 `totalCost` 稳定序列化为 JSON number `0`/`0.0`，不会再抛 `total_cost` 解码 `500`。
+- Given 同一路径切到 `detail=full`，When working rows 的 `cost` 全为 `NULL`，Then `recentInvocations` / `upstreamAccounts` 仍与 snapshot 边界一致，且 `conversation.totalCost` / `upstreamAccounts[].totalCost` 稳定为 `0.0`。
 - Given 用户正滚在中段，When 新会话出现在列表头部或已加载卡片收到新 `records`，Then 当前视口 anchor 不跳；可见卡片即时更新，头部新项自动并入。
 - Given 某已加载对话超出 5 分钟工作窗口且不再 in-flight，When 本地时钟推进或 reconnect / resync 发生，Then 该项会尽快从工作集剔除，不会长期停在过时状态。
 - Given 高频 `records` 连续到达，When 观察 Dashboard 网络请求，Then working-conversations 不再每次都整表回源，只允许节流首屏 resync 与滚动触发的按页加载。
@@ -124,7 +128,7 @@
 - [x] M3: Dashboard 数据层改成分页无限列表，完成 SSE patch / head resync / 本地过期剔除，并接入页面级滚动驱动的按行虚拟化。
 - [x] M4: 补齐 Storybook 大数据虚拟滚动、头插锚点补偿、loading / empty / error、mobile / 1660 宽屏入口，并生成视觉证据。
 - [x] M5: 跑完 cargo + vitest + build + storybook build，确认请求节流与分页行为符合验收标准。
-- [ ] M6: 执行 fast-track review-loop，推到 latest PR merge-ready（不自动 merge / cleanup）。
+- [x] M6: 执行 fast-track review-loop，推到 latest PR merge-ready（不自动 merge / cleanup）。
 
 ## 方案概述（Approach, high-level）
 
@@ -146,7 +150,9 @@
 - 2026-04-10: 新建 follow-up spec，冻结“无限列表 + 页面级滚动驱动的按行虚拟化 + compact 分页 API + SSE patch / resync + 头插锚点补偿 + merge-ready 收口”这组决策。
 - 2026-04-10: 后端已落地 prompt-cache conversations 分页 / compact 合同与 Rust 回归；Dashboard hook / mapper / section 已切到分页无限列表、页面级滚动驱动的按行虚拟化与局部 patch 路径。
 - 2026-04-10: 已新增 hook 级 Vitest 覆盖首屏 compact page、loadMore cursor/snapshotAt、loaded-key patch、unseen-key resync、reconnect resync 与本地 stale prune；组件级测试新增 DOM 子集渲染断言。
-- 2026-04-11: Storybook 已补齐 loading / empty / error、mobile 390、wide 1660、virtualized large dataset 与 head-insert anchor compensation 入口；本地 `cargo test`、Dashboard 定向 Vitest、`bun run build`、`bun run storybook:build` 全部通过，视觉证据已刷新落盘并获主人确认，PR 已达到 merge-ready。
+- 2026-04-10: Storybook 已补齐 loading / empty / error、mobile 390、wide 1660、virtualized large dataset 与 head-insert anchor compensation 入口；本地 `cargo test`、Dashboard 定向 Vitest、`bun run build`、`bun run storybook:build` 全部通过，视觉证据已落盘并获主人批准继续推进 PR 收敛。
+- 2026-04-11: 修复分页 working-conversations 与 full-detail upstream account hydration 的 `total_cost` 数值聚合，把 `COALESCE/SUM` 统一锚到 `REAL 0.0`，并新增 `NULL cost` snapshot pagination Rust 回归，锁住 Dashboard 偶发 `500 total_cost mismatched types` 热修。
+- 2026-04-11: Storybook 已刷新 loading / empty / error、mobile 390、wide 1660、virtualized large dataset 与 head-insert anchor compensation 入口，相关视觉证据继续归档在本 spec；本次 `total_cost` 热修复用该 spec，不新增额外视觉证据。
 
 ## Visual Evidence
 

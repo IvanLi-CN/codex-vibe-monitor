@@ -1933,6 +1933,125 @@ async fn prompt_cache_conversations_activity_minutes_paginated_respect_requested
 }
 
 #[tokio::test]
+async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_null_cost_stays_real_zero()
+{
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let current_hour_start = Utc
+        .timestamp_opt(align_bucket_epoch(Utc::now().timestamp(), 3_600, 0), 0)
+        .single()
+        .expect("current hour start should be valid");
+    let snapshot_at = current_hour_start + ChronoDuration::minutes(20);
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        key: &str,
+        total_tokens: i64,
+        cost: Option<f64>,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(
+            json!({
+                "promptCacheKey": key,
+                "routeMode": "pool",
+                "model": "gpt-5.4",
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .bind(format_utc_iso_millis(occurred_at))
+        .execute(pool)
+        .await
+        .expect("insert null-cost paginated snapshot row");
+    }
+
+    insert_row(
+        &state.pool,
+        "working-null-cost-head-pre",
+        snapshot_at - ChronoDuration::seconds(5),
+        "working-null-cost-head",
+        20,
+        Some(0.20),
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-null-cost-target-pre",
+        snapshot_at - ChronoDuration::seconds(15),
+        "working-null-cost-target",
+        10,
+        None,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-null-cost-target-post",
+        snapshot_at + ChronoDuration::seconds(5),
+        "working-null-cost-target",
+        999,
+        Some(9.99),
+    )
+    .await;
+
+    let snapshot_at_rfc3339 = snapshot_at.to_rfc3339();
+    let Json(first_page) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: None,
+            snapshot_at: Some(snapshot_at_rfc3339.clone()),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("first null-cost snapshot page should succeed");
+
+    let Json(second_page) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: first_page.next_cursor.clone(),
+            snapshot_at: Some(snapshot_at_rfc3339),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("second null-cost snapshot page should succeed");
+
+    assert_eq!(second_page.conversations.len(), 1);
+    let target = &second_page.conversations[0];
+    assert_eq!(target.prompt_cache_key, "working-null-cost-target");
+    assert_eq!(target.request_count, 1);
+    assert_eq!(target.total_tokens, 10);
+    assert_eq!(target.total_cost, 0.0);
+}
+
+#[tokio::test]
 async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_excludes_same_second_post_snapshot_writes(
 ) {
     let state = test_state_with_openai_base(
@@ -2660,6 +2779,153 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_keeps_hy
     assert_eq!(target.upstream_accounts[0].request_count, 1);
     assert_eq!(target.upstream_accounts[0].total_tokens, 10);
     assert!((target.upstream_accounts[0].total_cost - 0.10).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_full_detail_null_cost_stays_real_zero(
+) {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let current_hour_start = Utc
+        .timestamp_opt(align_bucket_epoch(Utc::now().timestamp(), 3_600, 0), 0)
+        .single()
+        .expect("current hour start should be valid");
+    let snapshot_at = current_hour_start + ChronoDuration::minutes(20);
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        key: &str,
+        upstream_account_id: Option<i64>,
+        upstream_account_name: Option<&str>,
+        total_tokens: i64,
+        cost: Option<f64>,
+    ) {
+        let mut payload = json!({
+            "promptCacheKey": key,
+            "routeMode": "pool",
+            "model": "gpt-5.4",
+        });
+        if let Some(upstream_account_id) = upstream_account_id {
+            payload["upstreamAccountId"] = json!(upstream_account_id);
+        }
+        if let Some(upstream_account_name) = upstream_account_name {
+            payload["upstreamAccountName"] = json!(upstream_account_name);
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(payload.to_string())
+        .bind("{}")
+        .bind(format_utc_iso_millis(occurred_at))
+        .execute(pool)
+        .await
+        .expect("insert null-cost full snapshot row");
+    }
+
+    insert_row(
+        &state.pool,
+        "working-null-cost-full-head-pre",
+        snapshot_at - ChronoDuration::seconds(5),
+        "working-null-cost-full-head",
+        Some(11),
+        Some("Head"),
+        20,
+        Some(0.20),
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-null-cost-full-target-pre",
+        snapshot_at - ChronoDuration::seconds(15),
+        "working-null-cost-full-target",
+        Some(1),
+        Some("Alpha"),
+        10,
+        None,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "working-null-cost-full-target-post",
+        snapshot_at + ChronoDuration::seconds(5),
+        "working-null-cost-full-target",
+        Some(2),
+        Some("Beta"),
+        999,
+        Some(9.99),
+    )
+    .await;
+
+    let snapshot_at_rfc3339 = snapshot_at.to_rfc3339();
+    let Json(first_page) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: None,
+            snapshot_at: Some(snapshot_at_rfc3339.clone()),
+            detail: Some("full".to_string()),
+        }),
+    )
+    .await
+    .expect("first null-cost full snapshot page should succeed");
+
+    let Json(second_page) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(1),
+            cursor: first_page.next_cursor.clone(),
+            snapshot_at: Some(snapshot_at_rfc3339),
+            detail: Some("full".to_string()),
+        }),
+    )
+    .await
+    .expect("second null-cost full snapshot page should succeed");
+
+    assert_eq!(second_page.conversations.len(), 1);
+    let target = &second_page.conversations[0];
+    assert_eq!(target.prompt_cache_key, "working-null-cost-full-target");
+    assert_eq!(target.request_count, 1);
+    assert_eq!(target.total_tokens, 10);
+    assert_eq!(target.total_cost, 0.0);
+    assert_eq!(target.recent_invocations.len(), 1);
+    assert_eq!(
+        target.recent_invocations[0].invoke_id,
+        "working-null-cost-full-target-pre"
+    );
+    assert_eq!(target.recent_invocations[0].cost, None);
+    assert_eq!(target.upstream_accounts.len(), 1);
+    assert_eq!(target.upstream_accounts[0].upstream_account_id, Some(1));
+    assert_eq!(
+        target.upstream_accounts[0].upstream_account_name.as_deref(),
+        Some("Alpha")
+    );
+    assert_eq!(target.upstream_accounts[0].request_count, 1);
+    assert_eq!(target.upstream_accounts[0].total_tokens, 10);
+    assert_eq!(target.upstream_accounts[0].total_cost, 0.0);
 }
 
 #[tokio::test]
