@@ -186,6 +186,35 @@ describe('TodayStatsOverview', () => {
     expect(host?.querySelector('[data-testid="today-stats-value-failures"]')?.textContent).toContain('8')
   })
 
+  it('renders TPM as a whole number even when the averaged rate is fractional', () => {
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 42,
+          successCount: 40,
+          failureCount: 2,
+          totalCost: 1.48,
+          totalTokens: 9000,
+        }}
+        rate={{
+          tokensPerMinute: 1000.6,
+          costPerMinute: 0.104,
+          windowMinutes: 5,
+          available: true,
+        }}
+        loading={false}
+        error={null}
+      />,
+    )
+
+    const tpmText = host?.querySelector('[data-testid="today-stats-value-tpm"]')?.textContent ?? ''
+    const costPerMinuteText = host?.querySelector('[data-testid="today-stats-value-cost-per-minute"]')?.textContent ?? ''
+
+    expect(tpmText).toContain('1,001')
+    expect(tpmText).not.toContain('.')
+    expect(costPerMinuteText).toContain('$0.10')
+  })
+
   it('shows unavailable placeholders for rate tiles when timeseries loading fails', () => {
     render(
       <TodayStatsOverview

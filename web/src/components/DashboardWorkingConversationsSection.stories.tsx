@@ -1261,6 +1261,14 @@ export const VirtualizedLargeDataset: Story = {
     const container = await canvas.findByTestId(
       "dashboard-working-conversations-grid",
     );
+    const storyWindow = canvasElement.ownerDocument.defaultView;
+    if (!storyWindow) {
+      throw new Error("missing story window");
+    }
+
+    const scrollTarget =
+      container.getBoundingClientRect().top + storyWindow.scrollY + 1_600;
+    storyWindow.scrollTo({ top: scrollTarget });
 
     await waitFor(() => {
       const renderedCards = container.querySelectorAll(
@@ -1269,6 +1277,9 @@ export const VirtualizedLargeDataset: Story = {
       expect(renderedCards).toBeGreaterThan(0);
       expect(renderedCards).toBeLessThan(virtualizedLargeDatasetCards.length);
     });
+
+    expect(container.className).not.toContain("overflow-auto");
+    expect(container.className).not.toContain("max-h-[72vh]");
   },
 };
 
@@ -1293,9 +1304,15 @@ export const HeadInsertAnchorCompensation: Story = {
     const container = await canvas.findByTestId(
       "dashboard-working-conversations-grid",
     );
+    const storyWindow = canvasElement.ownerDocument.defaultView;
+    if (!storyWindow) {
+      throw new Error("missing story window");
+    }
 
-    container.scrollTop = 1_600;
-    container.dispatchEvent(new Event("scroll"));
+    const scrollTarget =
+      container.getBoundingClientRect().top + storyWindow.scrollY + 1_600;
+    storyWindow.scrollTo({ top: scrollTarget });
+    storyWindow.dispatchEvent(new Event("scroll"));
 
     let anchorCard: HTMLElement | undefined;
     await waitFor(() => {
@@ -1308,9 +1325,12 @@ export const HeadInsertAnchorCompensation: Story = {
     });
 
     const anchorSequenceId = anchorCard?.dataset.conversationSequenceId ?? "";
-    const containerRect = container.getBoundingClientRect();
+    const containerTopBoundary = Math.max(
+      0,
+      container.getBoundingClientRect().top,
+    );
     const anchorTop =
-      (anchorCard?.getBoundingClientRect().top ?? 0) - containerRect.top;
+      (anchorCard?.getBoundingClientRect().top ?? 0) - containerTopBoundary;
 
     await waitFor(() => {
       expect(canvas.getByTestId("story-head-insert-status")).toHaveTextContent(
@@ -1329,7 +1349,7 @@ export const HeadInsertAnchorCompensation: Story = {
       );
       expect(nextAnchor).toBeDefined();
       const nextTop =
-        (nextAnchor?.getBoundingClientRect().top ?? 0) - containerRect.top;
+        (nextAnchor?.getBoundingClientRect().top ?? 0) - containerTopBoundary;
       expect(Math.abs(nextTop - anchorTop)).toBeLessThanOrEqual(12);
     });
   },

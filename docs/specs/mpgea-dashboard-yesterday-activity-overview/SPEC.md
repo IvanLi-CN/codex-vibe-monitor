@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 已实现，待截图提交授权 / PR 收敛
+- Status: 已完成
 - Created: 2026-04-11
 - Last: 2026-04-11
 
@@ -105,7 +105,7 @@
 - [x] M2: 后端新增 `yesterday` named range，并修复 summary 使用精确 `[start, end)` 过滤。
 - [x] M3: 前端新增 `昨日` 页签、hook 边界保护与 localStorage / metric 记忆接入。
 - [x] M4: 补齐 Storybook、Vitest 与 Rust 回归。
-- [ ] M5: 生成 mock-only 视觉证据、写回 spec，并推进 fast-track 到 merge-ready。
+- [x] M5: 生成 mock-only 视觉证据、写回 spec，并推进 fast-track 到 merge-ready。
 
 ## 参考（References）
 
@@ -118,7 +118,7 @@
 - Storybook覆盖=通过
 - 视觉证据目标源=storybook_canvas（mock-only）
 - 空白裁剪=已裁剪
-- 聊天回图=待本轮回传
+- 聊天回图=已回传并获主人批准
 - 证据落盘=已落盘
 - Validation:
   - `cargo check` ✅
@@ -126,10 +126,11 @@
   - `cargo test parse_summary_window_accepts_yesterday_calendar_window -- --nocapture` ✅
   - `cargo test hourly_backed_summary_trims_crs_totals_to_effective_proxy_range -- --nocapture` ✅
   - `cargo test yesterday_summary_and_timeseries_only_include_previous_local_day -- --nocapture` ✅
-  - `cd web && bun run test -- src/components/dashboardTodayRateSnapshot.test.ts src/components/DashboardActivityOverview.test.tsx src/pages/Dashboard.test.tsx src/hooks/useStats.test.ts src/hooks/useTimeseries.test.ts src/components/DashboardTodayActivityChart.test.tsx` ✅（Vitest 实际执行仓库 `src` 全量集，80 files / 763 tests green）
+  - `cd web && bun run test -- src/components/dashboardTodayRateSnapshot.test.ts src/components/DashboardActivityOverview.test.tsx src/pages/Dashboard.test.tsx src/hooks/useStats.test.ts src/hooks/useTimeseries.test.ts src/components/DashboardTodayActivityChart.test.tsx` ✅（Vitest 实际执行仓库 `src` 全量集，80 files / 771 tests green）
   - `cd web && bun run build` ✅
   - `cd web && bun run build-storybook` ✅
   - `cargo test` ❌：本轮修复后 `hourly_backed_summary_trims_crs_totals_to_effective_proxy_range` 已单独转绿；全量仍会命中既有 proxy 读 body 超时用例 `proxy_openai_v1_chunked_json_without_header_sticky_uses_live_first_attempt`，另外两个同批失败用例单独复跑已通过。
+  - fresh review proof ✅：`gpt-5.4` / `medium`，latest PR head 未发现新增 correctness 问题
 
 - source_type: storybook_canvas
   target_program: mock-only

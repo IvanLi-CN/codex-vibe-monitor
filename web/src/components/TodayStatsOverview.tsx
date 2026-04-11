@@ -134,6 +134,7 @@ export function TodayStatsOverview({
             value={tokensPerMinute}
             localeTag={localeTag}
             loading={loading || rateLoading}
+            kind="integer"
             toneClass="text-primary"
             valueTestId="today-stats-value-tpm"
             displayText={rateUnavailable ? RATE_UNAVAILABLE_PLACEHOLDER : undefined}
