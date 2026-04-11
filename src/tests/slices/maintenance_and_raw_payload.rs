@@ -317,12 +317,38 @@ async fn test_state_from_config(config: AppConfig, startup_ready: bool) -> Arc<A
     .await
 }
 
+fn isolate_default_test_runtime_path(path: &Path, default_root: &str, db_id: u64) -> PathBuf {
+    if path != Path::new(default_root) {
+        return path.to_path_buf();
+    }
+    let isolated = Path::new(default_root).join(format!("{db_id}"));
+    fs::create_dir_all(&isolated).expect("create isolated test runtime dir");
+    isolated
+}
+
+fn isolate_stateful_test_config_runtime_paths(mut config: AppConfig, db_id: u64) -> AppConfig {
+    config.archive_dir =
+        isolate_default_test_runtime_path(&config.archive_dir, "target/archive-tests", db_id);
+    config.proxy_raw_dir = isolate_default_test_runtime_path(
+        &config.proxy_raw_dir,
+        "target/proxy-raw-tests",
+        db_id,
+    );
+    config.xray_runtime_dir = isolate_default_test_runtime_path(
+        &config.xray_runtime_dir,
+        "target/xray-forward-tests",
+        db_id,
+    );
+    config
+}
+
 async fn test_state_from_config_with_pool_no_available_wait(
     config: AppConfig,
     startup_ready: bool,
     pool_no_available_wait: PoolNoAvailableWaitSettings,
 ) -> Arc<AppState> {
     let db_id = NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+    let config = isolate_stateful_test_config_runtime_paths(config, db_id);
     let db_url = format!("sqlite:file:codex-vibe-monitor-test-{db_id}?mode=memory&cache=shared");
     let pool = SqlitePool::connect(&db_url)
         .await
