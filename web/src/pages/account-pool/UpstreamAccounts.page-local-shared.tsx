@@ -2177,6 +2177,9 @@ export function SharedUpstreamAccountDetailDrawer({
 
   const selectedDetail = detail?.id === selectedId ? detail : null;
   const selected = selectedDetail ?? selectedSummary;
+  const handleDetailDrawerClose = useCallback(() => {
+    onClose();
+  }, [onClose]);
   const selectedPlanBadge = upstreamPlanBadgeRecipe(selected?.planType);
   const selectedRecoveryHint = resolveOauthRecoveryHint(
     selectedDetail?.kind ?? selected?.kind ?? "",
@@ -2674,7 +2677,7 @@ export function SharedUpstreamAccountDetailDrawer({
           closeDisabled={isBusyAction(busyAction, "delete", accountId)}
           autoFocusCloseButton={!isDeleteConfirmOpen}
           onPortalContainerChange={setDetailDrawerPortalContainer}
-          onClose={() => onClose()}
+          onClose={handleDetailDrawerClose}
           shellClassName="max-w-[60rem]"
           header={
             <div className="space-y-4">
