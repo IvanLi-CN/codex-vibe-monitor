@@ -1457,4 +1457,72 @@ describe("SharedUpstreamAccountDetailDrawer edit drafts", () => {
     expect((displayNameInput as HTMLInputElement).value).toBe("Backup Key")
     expect((noteInput as HTMLTextAreaElement).value).toBe("Backup note")
   })
+
+  it("keeps the add-tag picker open across same-session detail rerenders", async () => {
+    const item = createApiKeyItem(8, "Gateway Key")
+    const tagVip = defaultPoolTags[0]
+    const tagBurstSafe = defaultPoolTags[1]
+    let state = createApiKeyHookState({
+      items: [item],
+      selectedId: 8,
+      detail: createApiKeyDetail(item, {
+        displayName: "Gateway Key",
+        note: "Original note",
+        tags: [tagVip],
+      }),
+    })
+    hookMocks.useUpstreamAccounts.mockImplementation(() => state)
+    hookMocks.usePoolTags.mockReturnValue({
+      items: [tagVip, tagBurstSafe],
+      writesEnabled: true,
+      isLoading: false,
+      error: null,
+      query: {},
+      refresh: vi.fn(),
+      updateQuery: vi.fn(),
+      createTag: vi.fn(),
+      updateTag: vi.fn(),
+      deleteTag: vi.fn(),
+    })
+
+    renderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+    const addTagButton = clickButton(/Add tag/i)
+    await flushAsync()
+
+    const searchInput = document.body.querySelector(
+      'input[placeholder="Search existing tags..."]',
+    ) as HTMLInputElement
+    expect(searchInput).not.toBeNull()
+    expect(addTagButton.getAttribute("aria-expanded")).toBe("true")
+
+    state = {
+      ...state,
+      detail: createApiKeyDetail(item, {
+        displayName: "Gateway Key refreshed",
+        note: "Background note refreshed",
+        tags: [tagVip],
+      }),
+    }
+    rerenderDetailDrawer(8)
+    await flushAsync()
+
+    const refreshedSearchInput = document.body.querySelector(
+      'input[placeholder="Search existing tags..."]',
+    ) as HTMLInputElement
+    expect(refreshedSearchInput).not.toBeNull()
+    expect(document.activeElement).toBe(refreshedSearchInput)
+    expect(document.body.querySelector("[cmdk-list]")).not.toBeNull()
+    expect(addTagButton.getAttribute("aria-expanded")).toBe("true")
+
+    clickCommandItem(/burst-safe/i)
+    await flushAsync()
+
+    expect(addTagButton.getAttribute("aria-expanded")).toBe("true")
+    expect(
+      document.body.querySelector('button[aria-label="burst-safe more actions"]'),
+    ).not.toBeNull()
+  })
 })

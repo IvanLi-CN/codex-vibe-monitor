@@ -34,6 +34,17 @@ export function AccountDetailDrawerShell({
 }: AccountDetailDrawerShellProps) {
   const closeButtonRef = useRef<HTMLButtonElement | null>(null)
   const [sectionElement, setSectionElement] = useState<HTMLElement | null>(null)
+  const onCloseRef = useRef(onClose)
+  const closeDisabledRef = useRef(closeDisabled)
+  const previousOpenRef = useRef(false)
+
+  useEffect(() => {
+    onCloseRef.current = onClose
+  }, [onClose])
+
+  useEffect(() => {
+    closeDisabledRef.current = closeDisabled
+  }, [closeDisabled])
 
   const handleSectionRef = useCallback(
     (node: HTMLElement | null) => {
@@ -48,25 +59,32 @@ export function AccountDetailDrawerShell({
 
     const previousOverflow = document.body.style.overflow
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !closeDisabled) {
-        onClose()
+      if (event.key === 'Escape' && !closeDisabledRef.current) {
+        onCloseRef.current()
       }
     }
 
     document.body.style.overflow = 'hidden'
     document.addEventListener('keydown', handleKeyDown)
-    const focusTimer = autoFocusCloseButton
-      ? window.setTimeout(() => closeButtonRef.current?.focus(), 0)
-      : null
 
     return () => {
-      if (focusTimer != null) {
-        window.clearTimeout(focusTimer)
-      }
       document.body.style.overflow = previousOverflow
       document.removeEventListener('keydown', handleKeyDown)
     }
-  }, [autoFocusCloseButton, closeDisabled, onClose, open])
+  }, [open])
+
+  useEffect(() => {
+    const wasOpen = previousOpenRef.current
+    previousOpenRef.current = open
+    if (!open || wasOpen || !autoFocusCloseButton || typeof window === 'undefined') {
+      return undefined
+    }
+
+    const focusTimer = window.setTimeout(() => closeButtonRef.current?.focus(), 0)
+    return () => {
+      window.clearTimeout(focusTimer)
+    }
+  }, [autoFocusCloseButton, open])
 
   if (!open || typeof document === 'undefined') return null
 
