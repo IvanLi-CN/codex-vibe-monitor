@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { act } from 'react'
+import { act, StrictMode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AccountDetailDrawerShell } from './AccountDetailDrawerShell'
@@ -38,20 +38,22 @@ function renderDrawer(revision: number, open = true) {
 
   act(() => {
     root?.render(
-      <AccountDetailDrawerShell
-        open={open}
-        labelledBy="drawer-shell-title"
-        closeLabel="Close drawer"
-        onClose={() => undefined}
-        header={
-          <div>
-            <h2 id="drawer-shell-title">Drawer shell</h2>
-            <p>revision {revision}</p>
-          </div>
-        }
-      >
-        <input data-testid="drawer-input" defaultValue={`revision-${revision}`} />
-      </AccountDetailDrawerShell>,
+      <StrictMode>
+        <AccountDetailDrawerShell
+          open={open}
+          labelledBy="drawer-shell-title"
+          closeLabel="Close drawer"
+          onClose={() => undefined}
+          header={
+            <div>
+              <h2 id="drawer-shell-title">Drawer shell</h2>
+              <p>revision {revision}</p>
+            </div>
+          }
+        >
+          <input data-testid="drawer-input" defaultValue={`revision-${revision}`} />
+        </AccountDetailDrawerShell>
+      </StrictMode>,
     )
   })
 }

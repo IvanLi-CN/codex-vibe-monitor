@@ -36,7 +36,7 @@ export function AccountDetailDrawerShell({
   const [sectionElement, setSectionElement] = useState<HTMLElement | null>(null)
   const onCloseRef = useRef(onClose)
   const closeDisabledRef = useRef(closeDisabled)
-  const previousOpenRef = useRef(false)
+  const hasAutofocusedForOpenRef = useRef(false)
 
   useEffect(() => {
     onCloseRef.current = onClose
@@ -74,13 +74,20 @@ export function AccountDetailDrawerShell({
   }, [open])
 
   useEffect(() => {
-    const wasOpen = previousOpenRef.current
-    previousOpenRef.current = open
-    if (!open || wasOpen || !autoFocusCloseButton || typeof window === 'undefined') {
+    if (!open) {
+      hasAutofocusedForOpenRef.current = false
       return undefined
     }
 
-    const focusTimer = window.setTimeout(() => closeButtonRef.current?.focus(), 0)
+    if (!autoFocusCloseButton || hasAutofocusedForOpenRef.current || typeof window === 'undefined') {
+      return undefined
+    }
+
+    const focusTimer = window.setTimeout(() => {
+      closeButtonRef.current?.focus()
+      hasAutofocusedForOpenRef.current = true
+    }, 0)
+
     return () => {
       window.clearTimeout(focusTimer)
     }
