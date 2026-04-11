@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.46.7",
+  "base_stable_version": "1.46.6",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-11T10:26:22Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.46.7",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "a15ac4fe3a8da52f7387728b6df6b4694cb2a03d",
+  "pr_number": 329,
+  "pr_title": "fix(web): keep tag picker open during drawer refresh",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.46.7",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.46.7",
+  "target_sha": "74a5557920fa923ad304fde7f6793725becdcc78",
+  "type_label": "type:patch"
+}
