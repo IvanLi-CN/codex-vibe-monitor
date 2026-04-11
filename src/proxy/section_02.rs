@@ -1392,10 +1392,7 @@ async fn send_pool_request_with_failover(
                             }
                         };
                     let oauth_body = match &prepared_request_body.snapshot {
-                        snapshot @ (PoolReplayBodySnapshot::Empty
-                        | PoolReplayBodySnapshot::Memory(_))
-                            if original_uri.path() == "/v1/responses" =>
-                        {
+                        snapshot if original_uri.path() == "/v1/responses" => {
                             oauth_bridge::OauthUpstreamRequestBody::Bytes(
                                 snapshot.to_bytes().await.map_err(|err| PoolUpstreamError {
                                     account: Some(account.clone()),
@@ -1555,6 +1552,7 @@ async fn send_pool_request_with_failover(
                             Some(account.account_id),
                             access_token,
                             chatgpt_account_id.as_deref(),
+                            Some(&state.oauth_installation_seed),
                             state.upstream_accounts.crypto_key.as_ref(),
                         )
                         .await;

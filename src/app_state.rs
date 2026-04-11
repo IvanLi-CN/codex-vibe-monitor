@@ -8,6 +8,7 @@ struct PoolRoutingRuntimeCache {
 struct AppState {
     config: AppConfig,
     pool: Pool<Sqlite>,
+    oauth_installation_seed: [u8; 32],
     hourly_rollup_sync_lock: Arc<Mutex<()>>,
     http_clients: HttpClients,
     broadcaster: broadcast::Sender<BroadcastPayload>,

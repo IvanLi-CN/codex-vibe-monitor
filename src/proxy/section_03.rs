@@ -354,6 +354,7 @@ async fn send_pool_request_live_first_attempt(
                 Some(account.account_id),
                 access_token,
                 chatgpt_account_id.as_deref(),
+                Some(&state.oauth_installation_seed),
                 state.upstream_accounts.crypto_key.as_ref(),
             )
             .await;

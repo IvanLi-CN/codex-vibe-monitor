@@ -116,6 +116,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout() {
     let state = Arc::new(AppState {
         config: config.clone(),
         pool,
+        oauth_installation_seed: [0_u8; 32],
         http_clients,
         broadcaster,
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
@@ -198,6 +199,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout_with_
     let state = Arc::new(AppState {
         config: config.clone(),
         pool,
+        oauth_installation_seed: [0_u8; 32],
         http_clients,
         broadcaster,
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),

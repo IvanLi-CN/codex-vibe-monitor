@@ -88,6 +88,7 @@ pub(crate) async fn run() -> Result<()> {
     let proxy_model_settings = Arc::new(RwLock::new(load_proxy_model_settings(&pool).await?));
     let forward_proxy_settings = load_forward_proxy_settings(&pool).await?;
     let forward_proxy_runtime = load_forward_proxy_runtime_states(&pool).await?;
+    let oauth_installation_seed = oauth_bridge::load_or_init_oauth_installation_seed(&pool).await?;
     let forward_proxy = Arc::new(Mutex::new(ForwardProxyManager::with_algo(
         forward_proxy_settings,
         forward_proxy_runtime,
@@ -113,6 +114,7 @@ pub(crate) async fn run() -> Result<()> {
     let state = Arc::new(AppState {
         config: config.clone(),
         pool,
+        oauth_installation_seed,
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         http_clients,
         broadcaster: tx.clone(),

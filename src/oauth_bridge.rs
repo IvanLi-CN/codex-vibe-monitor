@@ -5,11 +5,15 @@ use axum::{
     http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, header},
     response::{IntoResponse, Response},
 };
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures_util::TryStreamExt;
+use hmac::{Hmac, Mac};
+use rand::{RngCore, rngs::OsRng};
 use reqwest::{Body as ReqwestBody, Client, Url};
 use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use sqlx::{Pool, Sqlite};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 use tokio::time::{Instant, timeout};
@@ -36,6 +40,9 @@ const PROMPT_CACHE_HEADER_NAMES: &[&str] = &[
 const OAUTH_FINGERPRINT_VERSION: &str = "v1";
 pub(crate) const OAUTH_REQUEST_BODY_PREFIX_FINGERPRINT_MAX_BYTES: usize = 64 * 1024;
 const OAUTH_TRANSPORT_FAILURE_KIND_HEADER: &str = "x-codex-oauth-transport-failure";
+const OAUTH_BRIDGE_SETTINGS_SINGLETON_ID: i64 = 1;
+const OAUTH_INSTALLATION_ID_METADATA_KEY: &str = "x-codex-installation-id";
+const OAUTH_INSTALLATION_ID_NAMESPACE: &str = "codex-installation-id:v1";
 const OAUTH_FINGERPRINTED_HEADER_NAMES: &[&str] = &[
     "session_id",
     "traceparent",
@@ -80,6 +87,73 @@ pub(crate) async fn reset_test_oauth_codex_upstream_base_url() {
         .expect("lock test oauth codex upstream base url") = None;
 }
 
+pub(crate) async fn load_or_init_oauth_installation_seed(pool: &Pool<Sqlite>) -> Result<[u8; 32]> {
+    let mut tx = pool
+        .begin()
+        .await
+        .context("failed to begin oauth installation seed transaction")?;
+    if let Some(existing) = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT installation_seed
+        FROM oauth_bridge_settings
+        WHERE id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(OAUTH_BRIDGE_SETTINGS_SINGLETON_ID)
+    .fetch_optional(&mut *tx)
+    .await
+    .context("failed to load oauth installation seed")?
+    {
+        tx.commit()
+            .await
+            .context("failed to commit oauth installation seed transaction")?;
+        return decode_oauth_installation_seed(existing.as_str());
+    }
+
+    let mut seed = [0_u8; 32];
+    OsRng.fill_bytes(&mut seed);
+    let encoded = URL_SAFE_NO_PAD.encode(seed);
+    sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO oauth_bridge_settings (id, installation_seed)
+        VALUES (?1, ?2)
+        "#,
+    )
+    .bind(OAUTH_BRIDGE_SETTINGS_SINGLETON_ID)
+    .bind(encoded)
+    .execute(&mut *tx)
+    .await
+    .context("failed to persist oauth installation seed")?;
+
+    let stored = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT installation_seed
+        FROM oauth_bridge_settings
+        WHERE id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(OAUTH_BRIDGE_SETTINGS_SINGLETON_ID)
+    .fetch_one(&mut *tx)
+    .await
+    .context("failed to reload oauth installation seed")?;
+    tx.commit()
+        .await
+        .context("failed to commit oauth installation seed transaction")?;
+    decode_oauth_installation_seed(stored.as_str())
+}
+
+fn decode_oauth_installation_seed(raw: &str) -> Result<[u8; 32]> {
+    let decoded = URL_SAFE_NO_PAD
+        .decode(raw.trim())
+        .context("failed to decode oauth installation seed")?;
+    let bytes: [u8; 32] = decoded
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("oauth installation seed must decode to 32 bytes"))?;
+    Ok(bytes)
+}
+
 pub(crate) enum OauthUpstreamRequestBody {
     Empty,
     Bytes(Bytes),
@@ -99,6 +173,8 @@ pub(crate) struct OauthResponsesRewriteSummary {
     pub(crate) added_store: bool,
     pub(crate) forced_stream_true: bool,
     pub(crate) removed_max_output_tokens: bool,
+    pub(crate) rewrote_installation_id: bool,
+    pub(crate) removed_installation_id: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -160,6 +236,12 @@ struct PreparedResponsesRequestBody {
     rewrite: OauthResponsesRewriteSummary,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ClientMetadataInstallationIdRewriteSummary {
+    rewrote_installation_id: bool,
+    removed_installation_id: bool,
+}
+
 pub(crate) async fn send_oauth_upstream_request(
     client: &Client,
     method: Method,
@@ -171,6 +253,7 @@ pub(crate) async fn send_oauth_upstream_request(
     account_id: Option<i64>,
     access_token: &str,
     chatgpt_account_id: Option<&str>,
+    installation_seed: Option<&[u8; 32]>,
     crypto_key: Option<&[u8; 32]>,
 ) -> OauthUpstreamResponse {
     match original_uri.path() {
@@ -194,6 +277,7 @@ pub(crate) async fn send_oauth_upstream_request(
                 access_token,
                 chatgpt_account_id,
                 body,
+                installation_seed,
                 crypto_key,
             )
             .await
@@ -373,6 +457,7 @@ async fn oauth_responses(
     access_token: &str,
     chatgpt_account_id: Option<&str>,
     body: OauthUpstreamRequestBody,
+    installation_seed: Option<&[u8; 32]>,
     crypto_key: Option<&[u8; 32]>,
 ) -> OauthUpstreamResponse {
     let upstream_url = match build_oauth_upstream_url("/responses", None) {
@@ -396,7 +481,8 @@ async fn oauth_responses(
     );
     let (request, request_debug, wants_stream) = match body {
         OauthUpstreamRequestBody::Empty => {
-            let prepared = match prepare_responses_request_body(&[]) {
+            let prepared = match prepare_responses_request_body(&[], account_id, installation_seed)
+            {
                 Ok(value) => value,
                 Err(err) => {
                     return OauthUpstreamResponse {
@@ -425,19 +511,20 @@ async fn oauth_responses(
             )
         }
         OauthUpstreamRequestBody::Bytes(bytes) => {
-            let prepared = match prepare_responses_request_body(&bytes) {
-                Ok(value) => value,
-                Err(err) => {
-                    return OauthUpstreamResponse {
-                        response: error_response(
-                            StatusCode::BAD_REQUEST,
-                            &err.to_string(),
-                            "invalid_request_error",
-                        ),
-                        request_debug: None,
-                    };
-                }
-            };
+            let prepared =
+                match prepare_responses_request_body(&bytes, account_id, installation_seed) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return OauthUpstreamResponse {
+                            response: error_response(
+                                StatusCode::BAD_REQUEST,
+                                &err.to_string(),
+                                "invalid_request_error",
+                            ),
+                            request_debug: None,
+                        };
+                    }
+                };
             let request_debug = build_oauth_request_debug(
                 "/v1/responses",
                 &forwarded_headers,
@@ -497,6 +584,8 @@ async fn oauth_responses(
         rewrite_added_store = request_debug.rewrite.added_store,
         rewrite_forced_stream_true = request_debug.rewrite.forced_stream_true,
         rewrite_removed_max_output_tokens = request_debug.rewrite.removed_max_output_tokens,
+        rewrite_rewrote_installation_id = request_debug.rewrite.rewrote_installation_id,
+        rewrite_removed_installation_id = request_debug.rewrite.removed_installation_id,
         "forwarding oauth responses request"
     );
     let request_started = Instant::now();
@@ -713,6 +802,8 @@ async fn oauth_passthrough(
         rewrite_added_store = request_debug.rewrite.added_store,
         rewrite_forced_stream_true = request_debug.rewrite.forced_stream_true,
         rewrite_removed_max_output_tokens = request_debug.rewrite.removed_max_output_tokens,
+        rewrite_rewrote_installation_id = request_debug.rewrite.rewrote_installation_id,
+        rewrite_removed_installation_id = request_debug.rewrite.removed_installation_id,
         "forwarding oauth passthrough request"
     );
     let upstream = match timeout(handshake_timeout, builder.body(body.0).send()).await {
@@ -1050,7 +1141,11 @@ fn reqwest_response_to_axum_response(response: reqwest::Response) -> Response {
         })
 }
 
-fn prepare_responses_request_body(body: &[u8]) -> Result<PreparedResponsesRequestBody> {
+fn prepare_responses_request_body(
+    body: &[u8],
+    account_id: Option<i64>,
+    installation_seed: Option<&[u8; 32]>,
+) -> Result<PreparedResponsesRequestBody> {
     let mut value: Value =
         serde_json::from_slice(body).context("request body must be valid JSON")?;
     let Value::Object(ref mut map) = value else {
@@ -1069,15 +1164,87 @@ fn prepare_responses_request_body(body: &[u8]) -> Result<PreparedResponsesReques
     rewrite.forced_stream_true = map.get("stream").and_then(Value::as_bool) != Some(true);
     map.insert("stream".to_string(), Value::Bool(true));
     rewrite.removed_max_output_tokens = map.remove("max_output_tokens").is_some();
+    let installation_id_rewrite =
+        rewrite_client_metadata_installation_id(map, account_id, installation_seed);
+    rewrite.rewrote_installation_id = installation_id_rewrite.rewrote_installation_id;
+    rewrite.removed_installation_id = installation_id_rewrite.removed_installation_id;
     rewrite.applied = rewrite.added_instructions
         || rewrite.added_store
         || rewrite.forced_stream_true
-        || rewrite.removed_max_output_tokens;
+        || rewrite.removed_max_output_tokens
+        || rewrite.rewrote_installation_id
+        || rewrite.removed_installation_id;
     Ok(PreparedResponsesRequestBody {
         wants_stream,
         body: serde_json::to_vec(&value)?,
         rewrite,
     })
+}
+
+fn rewrite_client_metadata_installation_id(
+    map: &mut serde_json::Map<String, Value>,
+    account_id: Option<i64>,
+    installation_seed: Option<&[u8; 32]>,
+) -> ClientMetadataInstallationIdRewriteSummary {
+    let Some(Value::Object(client_metadata)) = map.get_mut("client_metadata") else {
+        return ClientMetadataInstallationIdRewriteSummary::default();
+    };
+    if !client_metadata.contains_key(OAUTH_INSTALLATION_ID_METADATA_KEY) {
+        return ClientMetadataInstallationIdRewriteSummary::default();
+    }
+
+    match (account_id, installation_seed) {
+        (Some(account_id), Some(seed)) => {
+            client_metadata.insert(
+                OAUTH_INSTALLATION_ID_METADATA_KEY.to_string(),
+                Value::String(derive_oauth_installation_id(seed, account_id)),
+            );
+            ClientMetadataInstallationIdRewriteSummary {
+                rewrote_installation_id: true,
+                removed_installation_id: false,
+            }
+        }
+        _ => {
+            client_metadata.remove(OAUTH_INSTALLATION_ID_METADATA_KEY);
+            ClientMetadataInstallationIdRewriteSummary {
+                rewrote_installation_id: false,
+                removed_installation_id: true,
+            }
+        }
+    }
+}
+
+fn derive_oauth_installation_id(seed: &[u8; 32], account_id: i64) -> String {
+    type HmacSha256 = Hmac<Sha256>;
+
+    let mut mac = HmacSha256::new_from_slice(seed).expect("32-byte installation seed");
+    mac.update(OAUTH_INSTALLATION_ID_NAMESPACE.as_bytes());
+    mac.update(b":");
+    mac.update(account_id.to_string().as_bytes());
+    let digest = mac.finalize().into_bytes();
+    let mut uuid_bytes = [0_u8; 16];
+    uuid_bytes.copy_from_slice(&digest[..16]);
+    uuid_bytes[6] = (uuid_bytes[6] & 0x0f) | 0x80;
+    uuid_bytes[8] = (uuid_bytes[8] & 0x3f) | 0x80;
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        uuid_bytes[0],
+        uuid_bytes[1],
+        uuid_bytes[2],
+        uuid_bytes[3],
+        uuid_bytes[4],
+        uuid_bytes[5],
+        uuid_bytes[6],
+        uuid_bytes[7],
+        uuid_bytes[8],
+        uuid_bytes[9],
+        uuid_bytes[10],
+        uuid_bytes[11],
+        uuid_bytes[12],
+        uuid_bytes[13],
+        uuid_bytes[14],
+        uuid_bytes[15],
+    )
 }
 
 fn extract_completed_response_from_sse(bytes: &[u8]) -> Result<Value> {
@@ -1286,6 +1453,8 @@ mod tests {
     fn prepare_responses_request_body_preserves_previous_response_id() {
         let prepared = prepare_responses_request_body(
             br#"{"model":"gpt-5.4","stream":false,"max_output_tokens":256,"previous_response_id":"resp_prev_001"}"#,
+            None,
+            None,
         )
         .expect("rewrite responses request");
 
@@ -1304,8 +1473,139 @@ mod tests {
                 added_store: true,
                 forced_stream_true: true,
                 removed_max_output_tokens: true,
+                rewrote_installation_id: false,
+                removed_installation_id: false,
             }
         );
+    }
+
+    #[test]
+    fn derive_oauth_installation_id_is_stable_and_distinct_per_account() {
+        let seed = [0x5a_u8; 32];
+        let first = derive_oauth_installation_id(&seed, 42);
+        let same_again = derive_oauth_installation_id(&seed, 42);
+        let different_account = derive_oauth_installation_id(&seed, 43);
+
+        assert_eq!(first, same_again);
+        assert_ne!(first, different_account);
+        assert_eq!(first.len(), 36);
+        assert_eq!(first.chars().nth(8), Some('-'));
+        assert_eq!(first.chars().nth(13), Some('-'));
+        assert_eq!(first.chars().nth(18), Some('-'));
+        assert_eq!(first.chars().nth(23), Some('-'));
+        assert!(first.chars().all(|ch| ch == '-' || ch.is_ascii_hexdigit()));
+        assert_eq!(first, first.to_ascii_lowercase());
+    }
+
+    #[test]
+    fn prepare_responses_request_body_rewrites_installation_id_when_account_id_present() {
+        let seed = [0x11_u8; 32];
+        let expected_installation_id = derive_oauth_installation_id(&seed, 7);
+        let prepared = prepare_responses_request_body(
+            br#"{
+                "model":"gpt-5.4",
+                "stream":false,
+                "max_output_tokens":256,
+                "client_metadata":{
+                    "x-codex-installation-id":"downstream-installation-id",
+                    "other":"keep-me"
+                }
+            }"#,
+            Some(7),
+            Some(&seed),
+        )
+        .expect("rewrite responses request");
+
+        let payload: Value = serde_json::from_slice(&prepared.body).expect("decode rewritten body");
+        assert_eq!(
+            payload["client_metadata"]["x-codex-installation-id"],
+            Value::String(expected_installation_id)
+        );
+        assert_eq!(payload["client_metadata"]["other"], "keep-me");
+        assert_eq!(
+            prepared.rewrite,
+            OauthResponsesRewriteSummary {
+                applied: true,
+                added_instructions: true,
+                added_store: true,
+                forced_stream_true: true,
+                removed_max_output_tokens: true,
+                rewrote_installation_id: true,
+                removed_installation_id: false,
+            }
+        );
+    }
+
+    #[test]
+    fn prepare_responses_request_body_strips_installation_id_without_account_id() {
+        let seed = [0x22_u8; 32];
+        let prepared = prepare_responses_request_body(
+            br#"{
+                "model":"gpt-5.4",
+                "stream":true,
+                "instructions":"",
+                "store":false,
+                "client_metadata":{
+                    "x-codex-installation-id":"downstream-installation-id",
+                    "other":"keep-me"
+                }
+            }"#,
+            None,
+            Some(&seed),
+        )
+        .expect("rewrite responses request");
+
+        let payload: Value = serde_json::from_slice(&prepared.body).expect("decode rewritten body");
+        assert!(
+            payload["client_metadata"]
+                .get("x-codex-installation-id")
+                .is_none()
+        );
+        assert_eq!(payload["client_metadata"]["other"], "keep-me");
+        assert_eq!(
+            prepared.rewrite,
+            OauthResponsesRewriteSummary {
+                applied: true,
+                added_instructions: false,
+                added_store: false,
+                forced_stream_true: false,
+                removed_max_output_tokens: false,
+                rewrote_installation_id: false,
+                removed_installation_id: true,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn load_or_init_oauth_installation_seed_persists_single_value() {
+        let db_url = format!(
+            "sqlite:file:oauth-installation-seed-test-{}?mode=memory&cache=shared",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos()
+        );
+        let pool = sqlx::SqlitePool::connect(&db_url)
+            .await
+            .expect("connect in-memory sqlite");
+        crate::ensure_schema(&pool)
+            .await
+            .expect("schema should initialize");
+
+        let first = load_or_init_oauth_installation_seed(&pool)
+            .await
+            .expect("load or init oauth installation seed");
+        let second = load_or_init_oauth_installation_seed(&pool)
+            .await
+            .expect("reload oauth installation seed");
+        let row_count =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM oauth_bridge_settings WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .expect("count oauth bridge settings rows");
+
+        assert_eq!(first, second);
+        assert_eq!(row_count, 1);
     }
 
     #[test]
@@ -1649,6 +1949,7 @@ mod tests {
             Some(7),
             "oauth-json",
             Some("org_test"),
+            Some(&[0x33_u8; 32]),
             None,
         )
         .await;

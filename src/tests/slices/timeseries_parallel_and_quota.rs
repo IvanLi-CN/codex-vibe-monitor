@@ -86,6 +86,7 @@ async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
     let state = Arc::new(AppState {
         config: config.clone(),
         pool,
+        oauth_installation_seed: [0_u8; 32],
         http_clients,
         broadcaster,
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),

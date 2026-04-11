@@ -2026,6 +2026,7 @@ async fn quota_latest_returns_degraded_when_empty() {
     let state = Arc::new(AppState {
         config: config.clone(),
         pool,
+        oauth_installation_seed: [0_u8; 32],
         http_clients,
         broadcaster,
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
