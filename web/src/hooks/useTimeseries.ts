@@ -321,6 +321,15 @@ export function getVisibilityOpenResyncMode(
   return "normal";
 }
 
+export function shouldForceSseOpenResync(
+  range: string,
+  syncMode: TimeseriesSyncMode,
+) {
+  return (
+    range === "today" || range === "yesterday" || syncMode === "current-day-local"
+  );
+}
+
 export function getTimeseriesDayRolloverRefreshEpoch(
   range: string,
   syncMode: TimeseriesSyncMode,
@@ -1822,10 +1831,10 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
 
   useEffect(() => {
     const unsubscribe = subscribeToSseOpen(() => {
-      triggerOpenResync();
+      triggerOpenResync(shouldForceSseOpenResync(range, syncPolicy.mode));
     });
     return unsubscribe;
-  }, [triggerOpenResync]);
+  }, [range, syncPolicy.mode, triggerOpenResync]);
 
   useEffect(() => {
     clearDayRolloverTimer();

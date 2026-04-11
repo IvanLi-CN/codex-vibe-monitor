@@ -27,6 +27,7 @@ import {
   shouldPatchCurrentDayBucketOnRecordsEvent,
   shouldResyncForCurrentDayBucket,
   shouldResyncOnRecordsEvent,
+  shouldForceSseOpenResync,
   shouldTriggerTimeseriesOpenResync,
   seedCurrentDayLiveRecordDeltas,
   seedTimeseriesLiveRecordDeltas,
@@ -1205,6 +1206,13 @@ describe("useTimeseries refresh coordination helpers", () => {
       ),
     ).toBe("force");
     expect(getVisibilityOpenResyncMode("1d", "local", null)).toBe("normal");
+  });
+
+  it("forces reconnect resyncs for locally patched natural-day ranges", () => {
+    expect(shouldForceSseOpenResync("today", "local")).toBe(true);
+    expect(shouldForceSseOpenResync("yesterday", "local")).toBe(true);
+    expect(shouldForceSseOpenResync("6mo", "current-day-local")).toBe(true);
+    expect(shouldForceSseOpenResync("1d", "local")).toBe(false);
   });
 
   it("schedules yesterday rollover refresh at the next local midnight", () => {
