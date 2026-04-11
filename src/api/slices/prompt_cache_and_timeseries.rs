@@ -2399,7 +2399,7 @@ pub(crate) async fn query_prompt_cache_working_conversation_aggregates_page(
             " AS prompt_cache_key, \
                    COUNT(*) AS request_count, \
                    COALESCE(SUM(COALESCE(total_tokens, 0)), 0) AS total_tokens, \
-                   COALESCE(SUM(COALESCE(cost, 0)), 0) AS total_cost, \
+                   COALESCE(SUM(COALESCE(cost, 0.0)), 0.0) AS total_cost, \
                    MIN(occurred_at) AS created_at, \
                    MAX(occurred_at) AS last_activity_at \
               FROM codex_invocations \
@@ -2739,7 +2739,7 @@ pub(crate) async fn query_prompt_cache_conversation_upstream_account_summaries_a
             " AS upstream_account_name, \
                    COUNT(*) AS request_count, \
                    COALESCE(SUM(COALESCE(total_tokens, 0)), 0) AS total_tokens, \
-                   COALESCE(SUM(COALESCE(cost, 0)), 0) AS total_cost, \
+                   COALESCE(SUM(COALESCE(cost, 0.0)), 0.0) AS total_cost, \
                    MAX(occurred_at) AS last_activity_at \
               FROM codex_invocations \
              WHERE occurred_at >= ",
