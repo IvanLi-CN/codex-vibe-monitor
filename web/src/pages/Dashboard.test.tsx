@@ -245,6 +245,7 @@ vi.mock("../i18n", () => ({
       const map: Record<string, string> = {
         "dashboard.activityOverview.title": "活动总览",
         "dashboard.activityOverview.rangeToday": "今日",
+        "dashboard.activityOverview.rangeYesterday": "昨日",
         "dashboard.activityOverview.range24h": "24 小时",
         "dashboard.activityOverview.range7d": "7 日",
         "dashboard.activityOverview.rangeUsage": "历史",
@@ -313,6 +314,9 @@ function installSummaryMocks() {
   hookMocks.useSummary.mockImplementation((window: string) => {
     if (window === "today") {
       return { summary: { totalCount: 12 }, isLoading: false, error: null };
+    }
+    if (window === "yesterday") {
+      return { summary: { totalCount: 8 }, isLoading: false, error: null };
     }
     if (window === "1d") {
       return { summary: { totalCount: 100 }, isLoading: false, error: null };
@@ -441,6 +445,23 @@ describe("DashboardPage", () => {
     expect(
       host?.querySelector('[data-testid="usage-calendar"]')?.textContent,
     ).toBe("metric:totalCount;surface:false;toggle:false;meta:false");
+
+    const yesterdayButton = Array.from(
+      host?.querySelectorAll('button[role="tab"]') ?? [],
+    ).find((button) => button.textContent === "昨日");
+    if (!(yesterdayButton instanceof HTMLButtonElement)) {
+      throw new Error("missing yesterday range button");
+    }
+
+    act(() => {
+      yesterdayButton.click();
+    });
+
+    expect(
+      host
+        ?.querySelector('[data-testid="dashboard-activity-range-yesterday"]')
+        ?.getAttribute("data-active"),
+    ).toBe("true");
   });
 
   it("switches between the invocation drawer and the shared account drawer from dashboard interactions", () => {

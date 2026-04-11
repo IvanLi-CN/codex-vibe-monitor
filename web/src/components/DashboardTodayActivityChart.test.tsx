@@ -232,6 +232,44 @@ describe("DashboardTodayActivityChart", () => {
     expect(data.at(-1)?.chartCumulativeCost).toBeNull();
   });
 
+  it("anchors a completed yesterday range to the previous local day instead of the next midnight", () => {
+    const data = buildTodayMinuteChartData(
+      {
+        rangeStart: "2026-04-07T00:00:00.000+08:00",
+        rangeEnd: "2026-04-08T00:01:00.000+08:00",
+        bucketSeconds: 60,
+        points: [
+          {
+            bucketStart: "2026-04-07T23:59:00.000+08:00",
+            bucketEnd: "2026-04-08T00:00:00.000+08:00",
+            totalCount: 2,
+            successCount: 2,
+            failureCount: 0,
+            totalTokens: 80,
+            totalCost: 0.25,
+          },
+        ],
+      },
+      {
+        now: new Date("2026-04-08T12:03:00.000+08:00"),
+        localeTag: "en-US",
+      },
+    );
+
+    expect(data[0]?.label).toBe("00:00");
+    expect(data[0]?.epochMs).toBe(new Date(2026, 3, 7, 0, 0, 0).getTime());
+    expect(data.at(-1)?.label).toBe("23:59");
+    expect(data.at(-1)).toMatchObject({
+      totalCount: 2,
+      successCount: 2,
+      failureCount: 0,
+      chartSuccessCount: 2,
+      chartFailureCountNegative: 0,
+      chartCumulativeCost: 0.25,
+      chartCumulativeTokens: 80,
+    });
+  });
+
   it("uses explicit in-flight counts and leaves neutral residual totals unrendered", () => {
     const data = buildTodayMinuteChartData(
       {

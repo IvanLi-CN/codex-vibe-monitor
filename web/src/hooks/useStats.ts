@@ -8,7 +8,7 @@ interface UseSummaryOptions {
 }
 
 const SUPPORTED_SSE_WINDOWS = new Set(['all', '30m', '1h', '1d', '1mo'])
-const CALENDAR_SUMMARY_WINDOWS = new Set(['today', 'thisWeek', 'thisMonth'])
+const CALENDAR_SUMMARY_WINDOWS = new Set(['today', 'yesterday', 'thisWeek', 'thisMonth'])
 export const UNSUPPORTED_SSE_REFRESH_INTERVAL_MS = 60_000
 export const CALENDAR_SUMMARY_RECORDS_REFRESH_THROTTLE_MS = 1_000
 export const CURRENT_SUMMARY_RECORDS_REFRESH_THROTTLE_MS = 600

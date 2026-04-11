@@ -31,6 +31,7 @@ vi.mock('../i18n', () => ({
       const map: Record<string, string> = {
         'dashboard.activityOverview.title': 'Activity Overview',
         'dashboard.activityOverview.rangeToday': 'Today',
+        'dashboard.activityOverview.rangeYesterday': 'Yesterday',
         'dashboard.activityOverview.range24h': '24 Hours',
         'dashboard.activityOverview.range7d': '7 Days',
         'dashboard.activityOverview.rangeUsage': 'History',
@@ -169,6 +170,13 @@ function installSummaryMocks() {
         error: null,
       }
     }
+    if (window === 'yesterday') {
+      return {
+        summary: { totalCount: 8, successCount: 7, failureCount: 1, totalCost: 0.21, totalTokens: 1024 },
+        isLoading: false,
+        error: null,
+      }
+    }
     if (window === '1d') {
       return { summary: { totalCount: 100 }, isLoading: false, error: null }
     }
@@ -260,7 +268,7 @@ function getFirstSeenSummaryWindows() {
 }
 
 describe('DashboardActivityOverview', () => {
-  it('loads only the active range and keeps per-range metric memory across all four tabs', () => {
+  it('loads only the active range and keeps per-range metric memory across all five tabs', () => {
     installSummaryMocks()
 
     render(<DashboardActivityOverview />)
@@ -285,9 +293,19 @@ describe('DashboardActivityOverview', () => {
       'metric:totalCost',
     )
 
+    clickTab('Yesterday')
+    expect(host?.querySelector('[data-testid="dashboard-activity-range-yesterday"]')?.getAttribute('data-active')).toBe('true')
+    expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent).toBe(
+      'metric:totalCount',
+    )
+    clickTab('Tokens')
+    expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent).toBe(
+      'metric:totalTokens',
+    )
+
     clickTab('History')
-    expect(hookMocks.useSummary.mock.calls.every(([window]) => window === 'today')).toBe(true)
-    expect(hookMocks.useTimeseries.mock.calls.every(([window]) => window === 'today')).toBe(true)
+    expect(hookMocks.useSummary.mock.calls.every(([window]) => window === 'today' || window === 'yesterday')).toBe(true)
+    expect(hookMocks.useTimeseries.mock.calls.every(([window]) => window === 'today' || window === 'yesterday')).toBe(true)
     expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
       'metric:totalCount;surface:false;toggle:false;meta:false',
     )
@@ -315,6 +333,10 @@ describe('DashboardActivityOverview', () => {
     clickTab('History')
     expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
       'metric:totalTokens;surface:false;toggle:false;meta:false',
+    )
+    clickTab('Yesterday')
+    expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent).toBe(
+      'metric:totalTokens',
     )
     clickTab('7 Days')
     expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe('metric:totalCost')
@@ -352,13 +374,16 @@ describe('DashboardActivityOverview', () => {
     render(<DashboardActivityOverview />)
     expect(getFirstSeenSummaryWindows()).toEqual(['today'])
 
+    clickTab('Yesterday')
+    expect(getFirstSeenSummaryWindows()).toEqual(['today', 'yesterday'])
+
     clickTab('7 Days')
-    expect(getFirstSeenSummaryWindows()).toEqual(['today', '7d'])
+    expect(getFirstSeenSummaryWindows()).toEqual(['today', 'yesterday', '7d'])
 
     clickTab('24 Hours')
-    expect(getFirstSeenSummaryWindows()).toEqual(['today', '7d', '1d'])
+    expect(getFirstSeenSummaryWindows()).toEqual(['today', 'yesterday', '7d', '1d'])
 
     clickTab('History')
-    expect(getFirstSeenSummaryWindows()).toEqual(['today', '7d', '1d'])
+    expect(getFirstSeenSummaryWindows()).toEqual(['today', 'yesterday', '7d', '1d'])
   })
 })

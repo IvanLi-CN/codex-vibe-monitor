@@ -87,6 +87,7 @@ describe('useSummary unsupported window fallback', () => {
 
   it('recognizes calendar windows that should refresh from records', () => {
     expect(isCalendarSummaryWindow('today')).toBe(true)
+    expect(isCalendarSummaryWindow('yesterday')).toBe(true)
     expect(isCalendarSummaryWindow('thisWeek')).toBe(true)
     expect(isCalendarSummaryWindow('thisMonth')).toBe(true)
     expect(isCalendarSummaryWindow('1d')).toBe(false)
@@ -169,6 +170,7 @@ describe('useSummary unsupported window fallback', () => {
   it('disables remount caching for current and calendar summary windows', () => {
     expect(shouldEnableSummaryRemountCache('current')).toBe(false)
     expect(shouldEnableSummaryRemountCache('today')).toBe(false)
+    expect(shouldEnableSummaryRemountCache('yesterday')).toBe(false)
     writeSummaryRemountCache(
       'current',
       undefined,
@@ -190,6 +192,14 @@ describe('useSummary unsupported window fallback', () => {
       totalTokens: 2,
     }, 1_000)
     expect(readSummaryRemountCache('today', undefined, 1_001)).toBeNull()
+    writeSummaryRemountCache('yesterday', undefined, {
+      totalCount: 3,
+      successCount: 3,
+      failureCount: 0,
+      totalCost: 0,
+      totalTokens: 3,
+    }, 1_000)
+    expect(readSummaryRemountCache('yesterday', undefined, 1_001)).toBeNull()
   })
 
   it('treats remount cache as reusable only inside the ttl window', () => {

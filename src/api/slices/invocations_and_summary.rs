@@ -1705,11 +1705,24 @@ pub(crate) async fn fetch_summary(
             query_hourly_backed_summary_since(state.as_ref(), start, source_scope).await?
         }
         SummaryWindow::Calendar(spec) => {
-            let now = Utc::now();
-            let start = named_range_start(spec.as_str(), now, reporting_tz).ok_or_else(|| {
-                ApiError::bad_request(anyhow!("unsupported calendar window: {spec}"))
-            })?;
-            query_hourly_backed_summary_since(state.as_ref(), start, source_scope).await?
+            let range_window = resolve_range_window(spec.as_str(), reporting_tz).map_err(ApiError::from)?;
+            if range_window.start >= range_window.end {
+                return Ok(Json(StatsResponse {
+                    total_count: 0,
+                    success_count: 0,
+                    failure_count: 0,
+                    total_cost: 0.0,
+                    total_tokens: 0,
+                    maintenance: Some(load_stats_maintenance_response(state.as_ref()).await?),
+                }));
+            }
+            query_hourly_backed_summary_range(
+                state.as_ref(),
+                range_window.start,
+                range_window.end,
+                source_scope,
+            )
+            .await?
         }
     };
 

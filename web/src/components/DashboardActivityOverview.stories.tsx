@@ -7,9 +7,9 @@ import {
   DashboardActivityOverview,
 } from './DashboardActivityOverview'
 
-type SummaryKey = 'today' | '1d' | '7d'
-type TimeseriesKey = 'today:1m' | '1d:1m' | '7d:1h' | '6mo:1d'
-type PersistedRange = 'today' | '1d' | '7d' | 'usage' | null
+type SummaryKey = 'today' | 'yesterday' | '1d' | '7d'
+type TimeseriesKey = 'today:1m' | 'yesterday:1m' | '1d:1m' | '7d:1h' | '6mo:1d'
+type PersistedRange = 'today' | 'yesterday' | '1d' | '7d' | 'usage' | null
 type WindowWithDashboardFetchLog = Window & {
   __dashboardOverviewFetchLog__?: string[]
 }
@@ -38,6 +38,7 @@ function createSummary(totalCount: number, successCount: number, failureCount: n
 }
 
 const TODAY_SUMMARY_FIXTURE = createSummary(12474, 9949, 2525, 539.42, 1314275579)
+const YESTERDAY_SUMMARY_FIXTURE = createSummary(10864, 9532, 1332, 418.76, 1092456123)
 
 function buildTodayMinutePoints(summary = TODAY_SUMMARY_FIXTURE) {
   const rangeStart = new Date('2026-04-09T00:00:00+08:00')
@@ -60,6 +61,55 @@ function buildTodayMinutePoints(summary = TODAY_SUMMARY_FIXTURE) {
   const totalCostCents = distributeInteger(
     Math.round(summary.totalCost * 100),
     minuteIndexes.map((index) => buildUsageWeight(successCounts[index] + failureCounts[index], index, 'cost')),
+  )
+
+  for (let minute = 0; minute < minuteCount; minute += 1) {
+    const bucketStart = new Date(rangeStart.getTime() + minute * 60_000)
+    const bucketEnd = new Date(bucketStart.getTime() + 60_000)
+    const successCount = successCounts[minute] ?? 0
+    const failureCount = failureCounts[minute] ?? 0
+    const totalCount = successCount + failureCount
+    points.push({
+      bucketStart: bucketStart.toISOString(),
+      bucketEnd: bucketEnd.toISOString(),
+      totalCount,
+      successCount,
+      failureCount,
+      totalTokens: totalTokens[minute] ?? 0,
+      totalCost: Number(((totalCostCents[minute] ?? 0) / 100).toFixed(2)),
+    })
+  }
+
+  return {
+    rangeStart: rangeStart.toISOString(),
+    rangeEnd: rangeEnd.toISOString(),
+    bucketSeconds: 60,
+    points,
+  }
+}
+
+function buildYesterdayMinutePoints(summary = YESTERDAY_SUMMARY_FIXTURE) {
+  const rangeStart = new Date('2026-04-08T00:00:00+08:00')
+  const activityEnd = new Date('2026-04-08T18:36:00+08:00')
+  const rangeEnd = new Date('2026-04-09T00:00:00+08:00')
+  const points: Array<Record<string, number | string>> = []
+  const minuteCount = Math.floor((activityEnd.getTime() - rangeStart.getTime()) / 60_000) + 1
+  const minuteIndexes = Array.from({ length: minuteCount }, (_, index) => index)
+  const successCounts = distributeInteger(
+    summary.successCount,
+    minuteIndexes.map((index) => buildActivityWeight(index + 17, 'success')),
+  )
+  const failureCounts = distributeInteger(
+    summary.failureCount,
+    minuteIndexes.map((index) => buildActivityWeight(index + 17, 'failure')),
+  )
+  const totalTokens = distributeInteger(
+    summary.totalTokens,
+    minuteIndexes.map((index) => buildUsageWeight(successCounts[index] + failureCounts[index], index + 9, 'tokens')),
+  )
+  const totalCostCents = distributeInteger(
+    Math.round(summary.totalCost * 100),
+    minuteIndexes.map((index) => buildUsageWeight(successCounts[index] + failureCounts[index], index + 9, 'cost')),
   )
 
   for (let minute = 0; minute < minuteCount; minute += 1) {
@@ -175,12 +225,14 @@ function buildDailyPoints() {
 
 const SUMMARY_FIXTURES: Record<SummaryKey, ReturnType<typeof createSummary>> = {
   today: TODAY_SUMMARY_FIXTURE,
+  yesterday: YESTERDAY_SUMMARY_FIXTURE,
   '1d': createSummary(76421, 70115, 6306, 3128.74, 8764311220),
   '7d': createSummary(182904, 171240, 11664, 8422.18, 21640351742),
 }
 
 const TIMESERIES_FIXTURES: Record<TimeseriesKey, ReturnType<typeof buildTodayMinutePoints> | ReturnType<typeof build24HourPoints> | ReturnType<typeof buildHourlyPoints> | ReturnType<typeof buildDailyPoints>> = {
   'today:1m': buildTodayMinutePoints(),
+  'yesterday:1m': buildYesterdayMinutePoints(),
   '1d:1m': build24HourPoints(),
   '7d:1h': buildHourlyPoints(),
   '6mo:1d': buildDailyPoints(),
@@ -390,6 +442,20 @@ export const TodayRateUnavailable: Story = {
   },
 }
 
+export const YesterdayView: Story = {
+  parameters: {
+    persistedRange: 'yesterday',
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await waitFor(() => {
+      expect(canvas.getByRole('tab', { name: /昨日|yesterday/i })).toHaveAttribute('aria-selected', 'true')
+      expect(canvas.getByTestId('today-stats-value-tpm')).toBeVisible()
+      expect(canvas.getByTestId('dashboard-today-activity-chart')).toHaveAttribute('data-chart-mode', 'count-bars')
+    })
+  },
+}
+
 export const SevenDayView: Story = {
   parameters: {
     persistedRange: '7d',
@@ -458,8 +524,18 @@ export const LoadsRangesOnDemand: Story = {
       const fetchLog = windowWithFetchLog.__dashboardOverviewFetchLog__ ?? []
       expect(fetchLog).toContain('/api/stats/summary?window=today')
       expect(fetchLog).toContain('/api/stats/timeseries?range=today&bucket=1m')
+      expect(fetchLog.some((entry) => entry.includes('window=yesterday'))).toBe(false)
+      expect(fetchLog.some((entry) => entry.includes('range=yesterday'))).toBe(false)
       expect(fetchLog.some((entry) => entry.includes('window=1d'))).toBe(false)
       expect(fetchLog.some((entry) => entry.includes('window=7d'))).toBe(false)
+    })
+
+    await userEvent.click(canvas.getByRole('tab', { name: /昨日|yesterday/i }))
+    await waitFor(() => {
+      const fetchLog = windowWithFetchLog.__dashboardOverviewFetchLog__ ?? []
+      expect(fetchLog).toContain('/api/stats/summary?window=yesterday')
+      expect(fetchLog).toContain('/api/stats/timeseries?range=yesterday&bucket=1m')
+      expect(fetchLog.some((entry) => entry.includes('window=1d'))).toBe(false)
     })
 
     await userEvent.click(canvas.getByRole('tab', { name: /7 日|7 days/i }))

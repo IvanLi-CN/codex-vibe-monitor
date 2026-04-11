@@ -1,4 +1,8 @@
 import type { TimeseriesResponse } from "../lib/api";
+import {
+  parseDateInput,
+  resolveClosedNaturalDayEnd,
+} from "./dashboardNaturalDayWindow";
 
 const MINUTE_MS = 60_000;
 
@@ -29,9 +33,7 @@ export function buildTodayMinuteChartData(
 ): DashboardTodayMinuteDatum[] {
   const localeTag = options?.localeTag ?? "en-US";
   const fallbackNow = options?.now ?? new Date();
-  const anchor = floorToMinute(
-    parseDateInput(response?.rangeEnd) ?? fallbackNow,
-  );
+  const anchor = resolveRangeAnchor(response, fallbackNow);
   const start = startOfLocalDay(anchor);
   const end = endOfLocalDay(anchor);
 
@@ -161,32 +163,26 @@ function floorToMinute(date: Date) {
   return next;
 }
 
+function resolveRangeAnchor(
+  response: TimeseriesResponse | null,
+  fallbackNow: Date,
+) {
+  const rangeEnd = parseDateInput(response?.rangeEnd);
+  if (!rangeEnd) {
+    return floorToMinute(fallbackNow);
+  }
+
+  const closedNaturalDayEnd = resolveClosedNaturalDayEnd(response);
+  if (closedNaturalDayEnd) {
+    return new Date(closedNaturalDayEnd.getTime() - MINUTE_MS);
+  }
+
+  return floorToMinute(rangeEnd);
+}
+
 function normalizeFormattedMidnight(value: string) {
   return value.replace(
     /(^|\D)24:(\d{2})/g,
     (_match, prefix: string, minutes: string) => `${prefix}00:${minutes}`,
   );
-}
-
-function parseDateInput(value?: string | null) {
-  if (!value) return null;
-  if (value.includes("T")) {
-    const parsed = new Date(value);
-    return Number.isNaN(parsed.getTime()) ? null : parsed;
-  }
-
-  const [datePart, timePart] = value.split(" ");
-  const [year, month, day] = (datePart ?? "").split("-").map(Number);
-  const [hour, minute, second] = (timePart ?? "").split(":").map(Number);
-  if (![year, month, day].every(Number.isFinite)) return null;
-  const parsed = new Date(
-    year,
-    Math.max(0, month - 1),
-    day,
-    Number.isFinite(hour) ? hour : 0,
-    Number.isFinite(minute) ? minute : 0,
-    Number.isFinite(second) ? second : 0,
-    0,
-  );
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
 }

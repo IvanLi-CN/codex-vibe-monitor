@@ -319,6 +319,8 @@ function buildWorkingConversationsResponse(empty = false): PromptCacheConversati
 
 function createDashboardRequestHandler(scenario: DashboardScenario = 'default') {
   const now = Date.parse('2026-04-09T12:24:00+08:00')
+  const rangeYesterdayStart = Date.parse('2026-04-08T00:00:00+08:00')
+  const rangeYesterdayEnd = Date.parse('2026-04-09T00:00:00+08:00')
   const rangeTodayStart = Date.parse('2026-04-09T00:00:00+08:00')
   const range1dStart = now - 24 * 60 * 60 * 1000
   const range7dStart = now - 7 * 24 * 60 * 60 * 1000
@@ -331,9 +333,17 @@ function createDashboardRequestHandler(scenario: DashboardScenario = 'default') 
     totalCost: 539.42,
     totalTokens: 1314275579,
   })
+  const yesterdaySummary = buildSummary({
+    totalCount: 10864,
+    successCount: 9532,
+    failureCount: 1332,
+    totalCost: 418.76,
+    totalTokens: 1092456123,
+  })
 
   const responses = {
     today: todaySummary,
+    yesterday: yesterdaySummary,
     '1d': buildSummary({
       totalCount: 13564,
       successCount: 10948,
@@ -358,6 +368,18 @@ function createDashboardRequestHandler(scenario: DashboardScenario = 'default') 
         startMs: rangeTodayStart,
         endMs: now,
         summary: todaySummary,
+      }),
+    }),
+    timeseriesYesterday: buildTimeseriesResponse({
+      rangeStart: new Date(rangeYesterdayStart).toISOString(),
+      rangeEnd: new Date(rangeYesterdayEnd).toISOString(),
+      bucketSeconds: 60,
+      effectiveBucket: '1m',
+      availableBuckets: ['1m'],
+      points: buildTodayTimeseriesPoints({
+        startMs: rangeYesterdayStart,
+        endMs: rangeYesterdayEnd - 60 * 1000,
+        summary: yesterdaySummary,
       }),
     }),
     timeseries1d: buildTimeseriesResponse({
@@ -392,12 +414,13 @@ function createDashboardRequestHandler(scenario: DashboardScenario = 'default') 
       if (scenario === 'degraded' && window === 'today') {
         return new Response('dashboard today summary unavailable', { status: 500 })
       }
-      return jsonResponse(responses[window as keyof Pick<typeof responses, 'today' | '1d' | '7d'>] ?? responses.today)
+      return jsonResponse(responses[window as keyof Pick<typeof responses, 'today' | 'yesterday' | '1d' | '7d'>] ?? responses.today)
     }
 
     if (url.pathname === '/api/stats/timeseries') {
       const range = url.searchParams.get('range')
       if (range === 'today') return jsonResponse(responses.timeseriesToday)
+      if (range === 'yesterday') return jsonResponse(responses.timeseriesYesterday)
       if (range === '1d') return jsonResponse(responses.timeseries1d)
       if (range === '7d') return jsonResponse(responses.timeseries7d)
       if (range === '6mo') return jsonResponse(responses.timeseries6mo)
@@ -458,6 +481,11 @@ export const Default: Story = {
     await userEvent.click(historyTab)
     await expect(historyTab).toHaveAttribute('aria-selected', 'true')
     await expect(canvas.getByTestId('usage-calendar-card')).toBeVisible()
+
+    const yesterdayTab = canvas.getByRole('tab', { name: '昨日' })
+    await userEvent.click(yesterdayTab)
+    await expect(yesterdayTab).toHaveAttribute('aria-selected', 'true')
+    await expect(canvas.getByTestId('dashboard-activity-range-yesterday')).toHaveAttribute('data-active', 'true')
 
     const range7d = canvas.getByRole('tab', { name: '7 日' })
     await userEvent.click(range7d)

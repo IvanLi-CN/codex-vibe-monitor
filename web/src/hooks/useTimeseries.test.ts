@@ -574,6 +574,85 @@ describe("useTimeseries natural-day range patching", () => {
     expect(previousDayStart.getTime()).toBeLessThan(currentDayStart.getTime());
   });
 
+  it("keeps yesterday-scoped local patches inside the previous local day", () => {
+    const yesterdayStart = new Date(2026, 3, 7, 0, 0, 0);
+    const todayStart = new Date(2026, 3, 8, 0, 0, 0);
+    const current: TimeseriesResponse = {
+      rangeStart: yesterdayStart.toISOString().replace(/\.\d{3}Z$/, "Z"),
+      rangeEnd: todayStart.toISOString().replace(/\.\d{3}Z$/, "Z"),
+      bucketSeconds: 60,
+      points: [
+        {
+          bucketStart: new Date(2026, 3, 7, 23, 58, 0)
+            .toISOString()
+            .replace(/\.\d{3}Z$/, "Z"),
+          bucketEnd: new Date(2026, 3, 7, 23, 59, 0)
+            .toISOString()
+            .replace(/\.\d{3}Z$/, "Z"),
+          totalCount: 1,
+          successCount: 1,
+          failureCount: 0,
+          totalTokens: 10,
+          totalCost: 0.1,
+        },
+      ],
+    };
+
+    const next = applyRecordsToTimeseries(
+      current,
+      [
+        {
+          id: 3,
+          invokeId: "yesterday-success",
+          occurredAt: new Date(2026, 3, 7, 23, 59, 15)
+            .toISOString()
+            .replace(/\.\d{3}Z$/, "Z"),
+          status: "success",
+          totalTokens: 20,
+          cost: 0.3,
+          createdAt: new Date(2026, 3, 7, 23, 59, 15)
+            .toISOString()
+            .replace(/\.\d{3}Z$/, "Z"),
+        },
+        {
+          id: 4,
+          invokeId: "today-should-ignore",
+          occurredAt: new Date(2026, 3, 8, 0, 1, 15)
+            .toISOString()
+            .replace(/\.\d{3}Z$/, "Z"),
+          status: "failed",
+          totalTokens: 25,
+          cost: 0.2,
+          createdAt: new Date(2026, 3, 8, 0, 1, 15)
+            .toISOString()
+            .replace(/\.\d{3}Z$/, "Z"),
+        },
+      ],
+      {
+        range: "yesterday",
+        bucketSeconds: 60,
+      },
+    );
+
+    expect(next?.rangeStart).toBe(
+      yesterdayStart.toISOString().replace(/\.\d{3}Z$/, "Z"),
+    );
+    expect(next?.rangeEnd).toBe(
+      todayStart.toISOString().replace(/\.\d{3}Z$/, "Z"),
+    );
+    expect(next?.points).toHaveLength(2);
+    expect(next?.points.at(-1)).toMatchObject({
+      bucketStart: new Date(2026, 3, 7, 23, 59, 0)
+        .toISOString()
+        .replace(/\.\d{3}Z$/, "Z"),
+      totalCount: 1,
+      successCount: 1,
+      failureCount: 0,
+      totalTokens: 20,
+      totalCost: 0.3,
+    });
+  });
+
   it("counts running local live records toward totals without painting provisional failure metadata as failures", () => {
     const current: TimeseriesResponse = {
       rangeStart: new Date(2026, 3, 8, 0, 0, 0)

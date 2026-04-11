@@ -2306,6 +2306,145 @@ async fn stats_endpoints_preserve_historical_xy_records() {
     );
 }
 
+#[tokio::test]
+async fn yesterday_summary_and_timeseries_only_include_previous_local_day() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now_local = Utc::now().with_timezone(&Shanghai);
+    let today = now_local.date_naive();
+    let yesterday = today.pred_opt().expect("previous date");
+
+    let yesterday_occurred = yesterday
+        .and_hms_opt(12, 34, 0)
+        .expect("valid yesterday timestamp");
+    let today_occurred = today
+        .and_hms_opt(12, 34, 0)
+        .expect("valid today timestamp");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            total_tokens,
+            cost,
+            status,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind("yesterday-local-noon")
+    .bind(format_naive(yesterday_occurred))
+    .bind(SOURCE_PROXY)
+    .bind(11_i64)
+    .bind(0.11_f64)
+    .bind("success")
+    .bind(r#"{"serviceTier":"priority"}"#)
+    .bind(r#"{"range":"yesterday"}"#)
+    .execute(&state.pool)
+    .await
+    .expect("insert yesterday invocation");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            total_tokens,
+            cost,
+            status,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind("today-local-noon")
+    .bind(format_naive(today_occurred))
+    .bind(SOURCE_PROXY)
+    .bind(22_i64)
+    .bind(0.22_f64)
+    .bind("success")
+    .bind(r#"{"serviceTier":"priority"}"#)
+    .bind(r#"{"range":"today"}"#)
+    .execute(&state.pool)
+    .await
+    .expect("insert today invocation");
+
+    let Json(summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("yesterday".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch yesterday summary");
+    assert_eq!(summary.total_count, 1);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 0);
+    assert_eq!(summary.total_tokens, 11);
+    assert_f64_close(summary.total_cost, 0.11);
+
+    let Json(timeseries) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "yesterday".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch yesterday timeseries");
+    assert_eq!(
+        timeseries
+            .points
+            .iter()
+            .map(|point| point.total_count)
+            .sum::<i64>(),
+        1
+    );
+    assert_eq!(
+        timeseries
+            .points
+            .iter()
+            .map(|point| point.total_tokens)
+            .sum::<i64>(),
+        11
+    );
+    assert_f64_close(
+        timeseries
+            .points
+            .iter()
+            .map(|point| point.total_cost)
+            .sum::<f64>(),
+        0.11,
+    );
+
+    let expected_start = format_utc_iso(local_midnight_utc(yesterday, Shanghai));
+    let expected_end = format_utc_iso(local_midnight_utc(today, Shanghai));
+    assert_eq!(timeseries.range_start, expected_start);
+    assert!(
+        timeseries.range_end >= expected_end,
+        "timeseries should not end before the closed yesterday window"
+    );
+    assert!(
+        timeseries.points.iter().all(|point| {
+            point.total_count == 0
+                || point.bucket_start.as_str() < expected_end.as_str()
+        }),
+        "non-zero yesterday buckets must stay inside the previous local day"
+    );
+}
+
 #[test]
 fn normalize_prompt_cache_conversation_limit_accepts_whitelist_values_only() {
     assert_eq!(normalize_prompt_cache_conversation_limit(None), 50);

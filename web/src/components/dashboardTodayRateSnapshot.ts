@@ -1,4 +1,8 @@
 import type { TimeseriesResponse } from '../lib/api'
+import {
+  parseDateInput,
+  resolveClosedNaturalDayEnd,
+} from './dashboardNaturalDayWindow'
 
 const MINUTE_MS = 60_000
 const DEFAULT_WINDOW_MINUTES = 5
@@ -20,8 +24,16 @@ export function buildDashboardTodayRateSnapshot(
 
   const targetWindowMinutes = Math.max(1, options?.targetWindowMinutes ?? DEFAULT_WINDOW_MINUTES)
   const fallbackNow = options?.now ?? new Date()
-  const anchor = floorToMinute(parseDateInput(response.rangeEnd) ?? fallbackNow)
-  const start = startOfLocalDay(anchor)
+  const closedNaturalDayEnd = resolveClosedNaturalDayEnd(response)
+  const anchor = floorToMinute(
+    closedNaturalDayEnd ?? parseDateInput(response.rangeEnd) ?? fallbackNow,
+  )
+  const start = closedNaturalDayEnd
+    ? floorToMinute(
+        parseDateInput(response.rangeStart) ??
+          new Date(closedNaturalDayEnd.getTime() - 24 * 60 * MINUTE_MS),
+      )
+    : startOfLocalDay(anchor)
   const startMs = start.getTime()
   const anchorMs = anchor.getTime()
 
@@ -90,27 +102,4 @@ function floorToMinute(date: Date) {
   const next = new Date(date)
   next.setSeconds(0, 0)
   return next
-}
-
-function parseDateInput(value?: string | null) {
-  if (!value) return null
-  if (value.includes('T')) {
-    const parsed = new Date(value)
-    return Number.isNaN(parsed.getTime()) ? null : parsed
-  }
-
-  const [datePart, timePart] = value.split(' ')
-  const [year, month, day] = (datePart ?? '').split('-').map(Number)
-  const [hour, minute, second] = (timePart ?? '').split(':').map(Number)
-  if (![year, month, day].every(Number.isFinite)) return null
-  const parsed = new Date(
-    year,
-    Math.max(0, month - 1),
-    day,
-    Number.isFinite(hour) ? hour : 0,
-    Number.isFinite(minute) ? minute : 0,
-    Number.isFinite(second) ? second : 0,
-    0,
-  )
-  return Number.isNaN(parsed.getTime()) ? null : parsed
 }

@@ -293,9 +293,39 @@ export function getNextLocalDayStartEpoch(
   return Math.floor(value.getTime() / 1000);
 }
 
+function getYesterdayRangeEndEpoch(
+  nowEpochSeconds = Math.floor(Date.now() / 1000),
+) {
+  return getLocalDayStartEpoch(nowEpochSeconds);
+}
+
+function getYesterdayRangeStartEpoch(
+  rangeEndEpoch = getYesterdayRangeEndEpoch(),
+) {
+  return getLocalDayStartEpoch(rangeEndEpoch - 1);
+}
+
+function getClosedNaturalDayRangeBounds(
+  range: string,
+  rangeEndEpoch: number,
+) {
+  if (range !== "yesterday") {
+    return null;
+  }
+
+  const end = getLocalDayStartEpoch(rangeEndEpoch);
+  return {
+    start: getYesterdayRangeStartEpoch(end),
+    end,
+  };
+}
+
 function getRangeStartEpoch(range: string, rangeEndEpoch: number) {
   if (range === "today") {
     return getLocalDayStartEpoch(rangeEndEpoch);
+  }
+  if (range === "yesterday") {
+    return getYesterdayRangeStartEpoch(rangeEndEpoch);
   }
 
   const rangeSeconds = parseRangeSpec(range);
@@ -311,10 +341,14 @@ function createSeededTimeseries(range: string, bucket?: string) {
   const bucketSeconds =
     guessBucketSeconds(bucket) ?? defaultBucketSecondsForRange(range);
   const nowEpochSeconds = Math.floor(Date.now() / 1000);
+  const rangeEndEpoch =
+    range === "yesterday"
+      ? getYesterdayRangeEndEpoch(nowEpochSeconds)
+      : nowEpochSeconds;
   const rangeStartEpoch =
-    getRangeStartEpoch(range, nowEpochSeconds) ?? nowEpochSeconds - 86_400;
+    getRangeStartEpoch(range, rangeEndEpoch) ?? rangeEndEpoch - 86_400;
   const start = formatEpochToIso(rangeStartEpoch);
-  const end = formatEpochToIso(nowEpochSeconds);
+  const end = formatEpochToIso(rangeEndEpoch);
   return {
     rangeStart: start,
     rangeEnd: end,
@@ -1022,6 +1056,16 @@ function buildTimeseriesLiveRecordDelta(
 
   const latestRangeEndEpoch =
     parseIsoEpoch(current.rangeEnd) ?? occurredEpoch + bucketSeconds;
+  const closedRange = getClosedNaturalDayRangeBounds(
+    context.range,
+    latestRangeEndEpoch,
+  );
+  if (
+    closedRange &&
+    (occurredEpoch < closedRange.start || occurredEpoch >= closedRange.end)
+  ) {
+    return null;
+  }
   const earliestAllowed = getRangeStartEpoch(
     context.range,
     latestRangeEndEpoch,
@@ -1914,6 +1958,16 @@ export function applyRecordsToTimeseries(
     }
 
     if (latestRangeEndEpoch != null) {
+      const closedRange = getClosedNaturalDayRangeBounds(
+        context.range,
+        latestRangeEndEpoch,
+      );
+      if (
+        closedRange &&
+        (occurredEpoch < closedRange.start || occurredEpoch >= closedRange.end)
+      ) {
+        continue;
+      }
       const earliestAllowed = getRangeStartEpoch(
         context.range,
         latestRangeEndEpoch,
