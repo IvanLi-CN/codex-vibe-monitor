@@ -8,7 +8,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import { useTranslation } from "../i18n";
 import type { TranslationKey } from "../i18n";
 import type {
@@ -764,21 +764,35 @@ function readDashboardWorkingConversationAnchorKey(card: HTMLElement) {
     .trim();
 }
 
-function captureVisibleCardAnchor(container: HTMLDivElement) {
+function captureVisibleCardAnchor(
+  container: HTMLDivElement,
+  hasVirtualizedRowsAbove = false,
+) {
   const containerRect = container.getBoundingClientRect();
+  const topBoundary = Math.max(0, containerRect.top);
+  const viewportBottom =
+    typeof window === "undefined" ? Number.POSITIVE_INFINITY : window.innerHeight;
   const cards = Array.from(
     container.querySelectorAll<HTMLElement>(
       '[data-testid="dashboard-working-conversation-card"]',
     ),
   );
+  let hasHiddenContentAbove = hasVirtualizedRowsAbove;
   for (const card of cards) {
     const rect = card.getBoundingClientRect();
-    if (rect.bottom <= containerRect.top) continue;
+    if (rect.top < topBoundary) {
+      hasHiddenContentAbove = true;
+    }
+    if (rect.bottom <= topBoundary) {
+      continue;
+    }
+    if (rect.top >= viewportBottom) continue;
     const anchorKey = readDashboardWorkingConversationAnchorKey(card);
     if (!anchorKey) continue;
     return {
       anchorKey,
-      top: rect.top - containerRect.top,
+      top: rect.top - topBoundary,
+      hasHiddenContentAbove,
     };
   }
   return null;
@@ -802,10 +816,8 @@ export function DashboardWorkingConversationsSection({
   const [viewportWidth, setViewportWidth] = useState(() =>
     typeof window === "undefined" ? 0 : window.innerWidth,
   );
-  const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(
-    null,
-  );
-  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [gridElement, setGridElement] = useState<HTMLDivElement | null>(null);
+  const [scrollMargin, setScrollMargin] = useState(0);
   const visibleAnchorRef = useRef<{
     anchorKey: string;
     top: number;
@@ -813,9 +825,8 @@ export function DashboardWorkingConversationsSection({
   const loadMoreRequestPendingRef = useRef(false);
   const previousLoadingMoreRef = useRef(isLoadingMore);
   const previousRowsLengthRef = useRef(cards.length);
-  const setScrollContainerRef = useCallback((node: HTMLDivElement | null) => {
-    scrollRef.current = node;
-    setScrollElement(node);
+  const setGridContainerRef = useCallback((node: HTMLDivElement | null) => {
+    setGridElement(node);
   }, []);
   const hasInFlightCards = cards.some(
     (card) =>
@@ -851,7 +862,7 @@ export function DashboardWorkingConversationsSection({
   );
   const countBadgeValue = totalMatched ?? cards.length;
   const cssColumnCount =
-    resolveDashboardWorkingConversationCssColumnCount(scrollElement);
+    resolveDashboardWorkingConversationCssColumnCount(gridElement);
   const columnCount =
     cssColumnCount ??
     resolveDashboardWorkingConversationColumnCount(
@@ -861,11 +872,11 @@ export function DashboardWorkingConversationsSection({
     () => chunkDashboardWorkingConversationRows(cards, columnCount),
     [cards, columnCount],
   );
-  const rowVirtualizer = useVirtualizer({
+  const rowVirtualizer = useWindowVirtualizer({
     count: rows.length,
-    getScrollElement: () => scrollElement,
     estimateSize: () => 360,
     overscan: 3,
+    scrollMargin,
   });
   const virtualRows = rowVirtualizer.getVirtualItems();
   const fallbackRowCount = Math.min(
@@ -883,8 +894,10 @@ export function DashboardWorkingConversationsSection({
       : rows.slice(0, fallbackRowCount).map((_, index) => ({
           key: index,
           index,
-          start: index * 360,
+          start: scrollMargin + index * 360,
         }));
+  const hasVirtualizedRowsAbove =
+    renderedRows.length > 0 ? renderedRows[0]!.index > 0 : false;
   const totalSize =
     virtualRows.length > 0 ? rowVirtualizer.getTotalSize() : rows.length * 360;
   const refreshTargetCount = useMemo(() => {
@@ -920,28 +933,47 @@ export function DashboardWorkingConversationsSection({
   useEffect(() => {
     const updateLayoutMetrics = () => {
       setViewportWidth(typeof window === "undefined" ? 0 : window.innerWidth);
-      setContainerWidth(scrollElement?.clientWidth ?? 0);
+      setContainerWidth(gridElement?.clientWidth ?? 0);
+      if (!gridElement || typeof window === "undefined") {
+        setScrollMargin(0);
+        return;
+      }
+      const nextScrollMargin =
+        gridElement.getBoundingClientRect().top + window.scrollY;
+      setScrollMargin((current) =>
+        Math.abs(current - nextScrollMargin) > 0.5
+          ? nextScrollMargin
+          : current,
+      );
     };
 
     updateLayoutMetrics();
-    if (!scrollElement) {
+    if (!gridElement) {
       return;
     }
 
     window.addEventListener("resize", updateLayoutMetrics);
+    window.addEventListener("scroll", updateLayoutMetrics, { passive: true });
     if (typeof ResizeObserver === "undefined") {
-      return () => window.removeEventListener("resize", updateLayoutMetrics);
+      return () => {
+        window.removeEventListener("resize", updateLayoutMetrics);
+        window.removeEventListener("scroll", updateLayoutMetrics);
+      };
     }
 
     const observer = new ResizeObserver(() => {
       updateLayoutMetrics();
     });
-    observer.observe(scrollElement);
+    observer.observe(gridElement);
+    if (document.body) {
+      observer.observe(document.body);
+    }
     return () => {
       observer.disconnect();
       window.removeEventListener("resize", updateLayoutMetrics);
+      window.removeEventListener("scroll", updateLayoutMetrics);
     };
-  }, [scrollElement]);
+  }, [gridElement]);
 
   useEffect(() => {
     if (
@@ -956,41 +988,65 @@ export function DashboardWorkingConversationsSection({
   }, [hasMore, isLoadingMore, rows.length]);
 
   useEffect(() => {
-    const container = scrollElement;
+    const container = gridElement;
     if (!container || !hasMore || !onLoadMore) return;
     const maybeLoadMore = (trigger: "mount" | "scroll") => {
       if (isLoadingMore || loadMoreRequestPendingRef.current) return;
-      const isScrollable = container.scrollHeight > container.clientHeight + 1;
-      if (trigger === "mount" && isScrollable) {
+      if (typeof window === "undefined") return;
+      const containerRect = container.getBoundingClientRect();
+      if (containerRect.bottom <= 0) {
         return;
       }
-      const remaining =
-        container.scrollHeight - container.scrollTop - container.clientHeight;
+      const sectionStartsBelowFold = containerRect.top >= window.innerHeight - 1;
+      if (trigger === "mount" && sectionStartsBelowFold) {
+        return;
+      }
+      const remaining = containerRect.bottom - window.innerHeight;
       if (remaining <= 320) {
         loadMoreRequestPendingRef.current = true;
         onLoadMore();
       }
     };
     const mountTimer = window.setTimeout(() => {
+      const nextAnchor = captureVisibleCardAnchor(
+        container,
+        hasVirtualizedRowsAbove,
+      );
+      visibleAnchorRef.current = nextAnchor?.hasHiddenContentAbove
+        ? nextAnchor
+        : null;
       maybeLoadMore("mount");
     }, 0);
     const handleScroll = () => {
-      visibleAnchorRef.current = captureVisibleCardAnchor(container);
+      const nextAnchor = captureVisibleCardAnchor(
+        container,
+        hasVirtualizedRowsAbove,
+      );
+      visibleAnchorRef.current = nextAnchor?.hasHiddenContentAbove
+        ? nextAnchor
+        : null;
       maybeLoadMore("scroll");
     };
-    container.addEventListener("scroll", handleScroll, { passive: true });
+    window.addEventListener("scroll", handleScroll, { passive: true });
     return () => {
       window.clearTimeout(mountTimer);
-      container.removeEventListener("scroll", handleScroll);
+      window.removeEventListener("scroll", handleScroll);
     };
-  }, [hasMore, isLoadingMore, onLoadMore, rows.length, scrollElement]);
+  }, [
+    gridElement,
+    hasMore,
+    hasVirtualizedRowsAbove,
+    isLoadingMore,
+    onLoadMore,
+    rows.length,
+  ]);
 
   useEffect(() => {
     setRefreshTargetCount?.(refreshTargetCount);
   }, [refreshTargetCount, setRefreshTargetCount]);
 
   useLayoutEffect(() => {
-    const container = scrollRef.current;
+    const container = gridElement;
     const pendingAnchor = visibleAnchorRef.current;
     if (container && pendingAnchor?.anchorKey) {
       const anchoredCard = Array.from(
@@ -999,19 +1055,25 @@ export function DashboardWorkingConversationsSection({
         ),
       ).find((card) => readDashboardWorkingConversationAnchorKey(card) === pendingAnchor.anchorKey);
       if (anchoredCard) {
-        const containerRect = container.getBoundingClientRect();
+        const containerTopBoundary = Math.max(
+          0,
+          container.getBoundingClientRect().top,
+        );
         const nextTop =
-          anchoredCard.getBoundingClientRect().top - containerRect.top;
+          anchoredCard.getBoundingClientRect().top - containerTopBoundary;
         const delta = nextTop - pendingAnchor.top;
-        if (Math.abs(delta) > 0.5) {
-          container.scrollTop += delta;
+        if (Math.abs(delta) > 0.5 && typeof window !== "undefined") {
+          window.scrollBy(0, delta);
         }
       }
     }
-    visibleAnchorRef.current = container
-      ? captureVisibleCardAnchor(container)
+    const nextAnchor = container
+      ? captureVisibleCardAnchor(container, hasVirtualizedRowsAbove)
       : null;
-  }, [cards, columnCount]);
+    visibleAnchorRef.current = nextAnchor?.hasHiddenContentAbove
+      ? nextAnchor
+      : null;
+  }, [cards, columnCount, gridElement, hasVirtualizedRowsAbove]);
 
   if (error && cards.length === 0) {
     return (
@@ -1082,8 +1144,8 @@ export function DashboardWorkingConversationsSection({
         {cards.length > 0 ? (
           <div
             data-testid="dashboard-working-conversations-grid"
-            ref={setScrollContainerRef}
-            className="grid grid-cols-1 max-h-[72vh] overflow-auto overscroll-contain xl:grid-cols-2 2xl:grid-cols-3 desktop1660:grid-cols-4"
+            ref={setGridContainerRef}
+            className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3 desktop1660:grid-cols-4"
           >
             <div
               className="col-span-full"
@@ -1103,7 +1165,7 @@ export function DashboardWorkingConversationsSection({
                       top: 0,
                       left: 0,
                       width: "100%",
-                      transform: `translateY(${virtualRow.start}px)`,
+                      transform: `translateY(${virtualRow.start - scrollMargin}px)`,
                       paddingBottom:
                         virtualRow.index === rows.length - 1
                           ? 0
