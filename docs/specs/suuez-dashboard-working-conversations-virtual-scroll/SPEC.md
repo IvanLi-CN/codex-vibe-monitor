@@ -2,9 +2,9 @@
 
 ## 状态
 
-- Status: 已实现，待 PR / CI / review-proof 收敛
+- Status: 已实现，待 owner 视觉确认 / PR / CI 收敛
 - Created: 2026-04-10
-- Last: 2026-04-10
+- Last: 2026-04-11
 
 ## 背景 / 问题陈述
 
@@ -19,7 +19,7 @@
 
 - 让 Dashboard 工作中对话区可浏览完整工作集，不再停在 `20` 条或 `50` 条上限。
 - 为 `/api/stats/prompt-cache-conversations` 增加兼容分页与 `detail=compact` 紧凑载荷，让 Dashboard 可以按页拉取完整工作集而不拖上重载荷字段。
-- Dashboard 前端改成“首屏分页 + 触底续页 + 行级虚拟滚动 + 局部 patch + 节流首屏 resync”的组合方案。
+- Dashboard 前端改成“首屏分页 + 触底续页 + 页面级滚动驱动的按行虚拟化 + 局部 patch + 节流首屏 resync”的组合方案。
 - 继续保留现有 `1 / 2 / 3 / 4` 栏响应式布局，同时保证头部插入新项时当前视口 anchor 不跳。
 - 用 Storybook 稳定 mock 产出可复核的虚拟滚动 / 头插锚点补偿 / loading / empty / error / 移动端 / 1660 宽屏证据，并把最终图回填到本 spec 的 `## Visual Evidence`。
 - 按 fast-track 收敛到 latest PR merge-ready，但不自动 merge / cleanup。
@@ -37,7 +37,7 @@
 
 - 后端 `GET /api/stats/prompt-cache-conversations` 分页、cursor、snapshotAt、一致性与 `detail=compact|full` 扩展。
 - Dashboard 工作中对话 hook、mapper、section 组件、分页续页、SSE patch / reconnect resync / 本地过期剔除。
-- `@tanstack/react-virtual` 行级虚拟滚动与视口外 DOM 剔除。
+- `@tanstack/react-virtual` 页面级滚动驱动的按行虚拟化与视口外 DOM 剔除。
 - `DashboardWorkingConversationsSection` Storybook、Vitest 与视觉证据。
 - `docs/specs/README.md` 与本 spec 的进度、验证、视觉证据记录。
 
@@ -121,7 +121,7 @@
 
 - [x] M1: 新建 follow-up spec，并在 `docs/specs/README.md` 登记本轮工作项。
 - [x] M2: 扩展通用 prompt-cache conversations API，补齐分页 / cursor / snapshotAt / compact 合同与 Rust 回归。
-- [x] M3: Dashboard 数据层改成分页无限列表，完成 SSE patch / head resync / 本地过期剔除，并接入行级虚拟滚动。
+- [x] M3: Dashboard 数据层改成分页无限列表，完成 SSE patch / head resync / 本地过期剔除，并接入页面级滚动驱动的按行虚拟化。
 - [x] M4: 补齐 Storybook 大数据虚拟滚动、头插锚点补偿、loading / empty / error、mobile / 1660 宽屏入口，并生成视觉证据。
 - [x] M5: 跑完 cargo + vitest + build + storybook build，确认请求节流与分页行为符合验收标准。
 - [ ] M6: 执行 fast-track review-loop，推到 latest PR merge-ready（不自动 merge / cleanup）。
@@ -130,7 +130,7 @@
 
 - 后端继续复用现有 `prompt-cache-conversations` route，但把 Dashboard 需要的分页能力收拢到 `activityMinutes=5 + detail=compact` 新路径上，避免专门拆出一条 UI-only API。
 - 前端 hook 以首屏 page 为真实工作集头部，续页只在触底时拉，已加载项优先本地 patch，未知 key 再触发节流 resync，这样能把实时性与请求量一起压住。
-- 虚拟滚动固定走“按行”而不是卡片级绝对定位：保留现有 `1 / 2 / 3 / 4` 栏响应式合同，同时让 prepend 时的 anchor 补偿只需要围绕可见卡片 top delta 做处理。
+- 虚拟滚动固定走“按行”而不是卡片级绝对定位，并以页面滚动作为唯一纵向滚动真相源：保留现有 `1 / 2 / 3 / 4` 栏响应式合同，同时让 prepend 时的 anchor 补偿只需要围绕可见卡片 top delta 做处理。
 - Storybook 用稳定 mock 去覆盖大数据列表、自动 prepend 锚点稳定、loading / empty / error、mobile / 1660 宽屏几组关键态，并把最终 owner-facing 截图写回本 spec。
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
@@ -143,18 +143,18 @@
 
 ## 变更记录（Change log）
 
-- 2026-04-10: 新建 follow-up spec，冻结“无限列表 + 行级虚拟滚动 + compact 分页 API + SSE patch / resync + 头插锚点补偿 + merge-ready 收口”这组决策。
-- 2026-04-10: 后端已落地 prompt-cache conversations 分页 / compact 合同与 Rust 回归；Dashboard hook / mapper / section 已切到分页无限列表、行级虚拟滚动与局部 patch 路径。
+- 2026-04-10: 新建 follow-up spec，冻结“无限列表 + 页面级滚动驱动的按行虚拟化 + compact 分页 API + SSE patch / resync + 头插锚点补偿 + merge-ready 收口”这组决策。
+- 2026-04-10: 后端已落地 prompt-cache conversations 分页 / compact 合同与 Rust 回归；Dashboard hook / mapper / section 已切到分页无限列表、页面级滚动驱动的按行虚拟化与局部 patch 路径。
 - 2026-04-10: 已新增 hook 级 Vitest 覆盖首屏 compact page、loadMore cursor/snapshotAt、loaded-key patch、unseen-key resync、reconnect resync 与本地 stale prune；组件级测试新增 DOM 子集渲染断言。
-- 2026-04-10: Storybook 已补齐 loading / empty / error、mobile 390、wide 1660、virtualized large dataset 与 head-insert anchor compensation 入口；本地 `cargo test`、Dashboard 定向 Vitest、`bun run build`、`bun run storybook:build` 全部通过，视觉证据已落盘并获主人批准继续推进 PR 收敛。
+- 2026-04-11: Storybook 已补齐 loading / empty / error、mobile 390、wide 1660、virtualized large dataset 与 head-insert anchor compensation 入口；本地 `cargo test`、Dashboard 定向 Vitest、`bun run build`、`bun run storybook:build` 全部通过，视觉证据已刷新落盘，等待主人确认后再继续提交 / 推送。
 
 ## Visual Evidence
 
 - source_type: storybook_canvas
   target_program: mock-only
-  capture_scope: element
+  capture_scope: browser-viewport
   sensitive_exclusion: N/A
-  submission_gate: approved
+  submission_gate: pending-owner-approval
   story_id_or_title: Dashboard/WorkingConversationsSection/WideDesktop1660
   state: wide-desktop-1660
   evidence_note: 验证 1660 宽屏下工作中对话区保持 `1 / 2 / 3 / 4` 响应式合同，并在总览页中稳定显示四栏卡片。
@@ -164,21 +164,21 @@
 
 - source_type: storybook_canvas
   target_program: mock-only
-  capture_scope: element
+  capture_scope: browser-viewport
   sensitive_exclusion: N/A
-  submission_gate: approved
+  submission_gate: pending-owner-approval
   story_id_or_title: Dashboard/WorkingConversationsSection/VirtualizedLargeDataset
   state: virtualized-large-dataset
-  evidence_note: 验证大工作集场景下列表保持虚拟滚动，视口外卡片不会全部挂进 DOM，同时总数徽标与行级虚拟化合同保持一致。
+  evidence_note: 验证大工作集场景下列表保持页面级滚动驱动的按行虚拟化，区块内部不出现独立滚动条，且视口外卡片不会全部挂进 DOM。
   PR: include
   image:
   ![Dashboard 工作中对话虚拟滚动大数据集](./assets/dashboard-working-conversations-virtualized-1660.png)
 
 - source_type: storybook_canvas
   target_program: mock-only
-  capture_scope: element
+  capture_scope: browser-viewport
   sensitive_exclusion: N/A
-  submission_gate: approved
+  submission_gate: pending-owner-approval
   story_id_or_title: Dashboard/WorkingConversationsSection/HeadInsertAnchorCompensation
   state: head-insert-anchor-compensation
   evidence_note: 验证滚动到中段后自动 prepend 新头部项时，当前视口 anchor 通过滚动偏移补偿保持稳定，不会把用户踹回顶部。
@@ -187,9 +187,9 @@
 
 - source_type: storybook_canvas
   target_program: mock-only
-  capture_scope: element
+  capture_scope: browser-viewport
   sensitive_exclusion: N/A
-  submission_gate: approved
+  submission_gate: pending-owner-approval
   story_id_or_title: Dashboard/WorkingConversationsSection/Mobile390
   state: mobile-390
   evidence_note: 验证 390px 移动端下工作中对话区退回单列布局，卡片头部与双槽内容层级仍保持可读。

@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../i18n";
 import type {
   PromptCacheConversation,
@@ -20,10 +20,10 @@ const virtualizerMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@tanstack/react-virtual", () => ({
-  useVirtualizer: ({ count }: { count: number }) => {
+  useWindowVirtualizer: ({ count }: { count: number }) => {
     const rowIndexes =
       virtualizerMocks.rowIndexes ??
-      Array.from({ length: count }, (_, index) => index);
+      Array.from({ length: Math.min(count, 4) }, (_, index) => index);
     return {
       measureElement: () => undefined,
       getVirtualItems: () =>
@@ -130,6 +130,15 @@ beforeAll(() => {
     writable: true,
     value: true,
   });
+  Object.defineProperty(window, "scrollBy", {
+    configurable: true,
+    writable: true,
+    value: vi.fn(),
+  });
+});
+
+beforeEach(() => {
+  window.scrollBy = vi.fn();
 });
 
 afterEach(() => {
@@ -562,8 +571,41 @@ describe("DashboardWorkingConversationsSection", () => {
   it("does not auto-load another page on first paint when the initial grid already overflows", () => {
     vi.useFakeTimers();
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1700);
-    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(700);
-    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(1680);
+    vi.spyOn(window, "innerHeight", "get").mockReturnValue(700);
+    vi.spyOn(document.documentElement, "scrollHeight", "get").mockReturnValue(
+      1680,
+    );
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        if (
+          this.getAttribute("data-testid") ===
+          "dashboard-working-conversations-grid"
+        ) {
+          return {
+            x: 0,
+            y: 0,
+            top: 0,
+            bottom: 1480,
+            left: 0,
+            right: 1200,
+            width: 1200,
+            height: 1480,
+            toJSON: () => ({}),
+          } satisfies DOMRect;
+        }
+        return {
+          x: 0,
+          y: 0,
+          top: 0,
+          bottom: 0,
+          left: 0,
+          right: 0,
+          width: 0,
+          height: 0,
+          toJSON: () => ({}),
+        } satisfies DOMRect;
+      },
+    );
     const onLoadMore = vi.fn();
 
     renderSection(
@@ -596,8 +638,41 @@ describe("DashboardWorkingConversationsSection", () => {
   it("backfills immediately on first paint when the initial grid is not scrollable yet", () => {
     vi.useFakeTimers();
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1700);
-    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(900);
-    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(640);
+    vi.spyOn(window, "innerHeight", "get").mockReturnValue(900);
+    vi.spyOn(document.documentElement, "scrollHeight", "get").mockReturnValue(
+      640,
+    );
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        if (
+          this.getAttribute("data-testid") ===
+          "dashboard-working-conversations-grid"
+        ) {
+          return {
+            x: 0,
+            y: 0,
+            top: 0,
+            bottom: 640,
+            left: 0,
+            right: 1200,
+            width: 1200,
+            height: 640,
+            toJSON: () => ({}),
+          } satisfies DOMRect;
+        }
+        return {
+          x: 0,
+          y: 0,
+          top: 0,
+          bottom: 0,
+          left: 0,
+          right: 0,
+          width: 0,
+          height: 0,
+          toJSON: () => ({}),
+        } satisfies DOMRect;
+      },
+    );
     const onLoadMore = vi.fn();
 
     renderSection(
@@ -624,6 +699,70 @@ describe("DashboardWorkingConversationsSection", () => {
     });
 
     expect(onLoadMore).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it("does not eagerly prefetch on mount when the section starts below the fold", () => {
+    vi.useFakeTimers();
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1700);
+    vi.spyOn(window, "innerHeight", "get").mockReturnValue(900);
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        if (
+          this.getAttribute("data-testid") ===
+          "dashboard-working-conversations-grid"
+        ) {
+          return {
+            x: 0,
+            y: 1_120,
+            top: 1_120,
+            bottom: 1_760,
+            left: 0,
+            right: 1200,
+            width: 1200,
+            height: 640,
+            toJSON: () => ({}),
+          } satisfies DOMRect;
+        }
+        return {
+          x: 0,
+          y: 0,
+          top: 0,
+          bottom: 0,
+          left: 0,
+          right: 0,
+          width: 0,
+          height: 0,
+          toJSON: () => ({}),
+        } satisfies DOMRect;
+      },
+    );
+    const onLoadMore = vi.fn();
+
+    renderSection(
+      createResponse(
+        Array.from({ length: 4 }, (_, index) =>
+          createConversation(`pck-below-fold-${index + 1}`, [
+            createPreview({
+              id: index + 1,
+              invokeId: `invoke-below-fold-${index + 1}`,
+              occurredAt: `2026-04-04T10:${String(59 - index).padStart(2, "0")}:00Z`,
+              status: "completed",
+            }),
+          ]),
+        ),
+      ),
+      {
+        hasMore: true,
+        onLoadMore,
+      },
+    );
+
+    act(() => {
+      vi.runAllTimers();
+    });
+
+    expect(onLoadMore).not.toHaveBeenCalled();
     vi.useRealTimers();
   });
 
@@ -906,6 +1045,31 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(grid?.className).toContain("desktop1660:grid-cols-4");
   });
 
+  it("does not turn the conversations grid into an inner scrolling container", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-page-scroll", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-page-scroll",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+          }),
+        ]),
+      ]),
+    );
+
+    const grid = host?.querySelector(
+      '[data-testid="dashboard-working-conversations-grid"]',
+    );
+    if (!(grid instanceof HTMLDivElement)) {
+      throw new Error("missing working conversations grid");
+    }
+
+    expect(grid.className).not.toContain("overflow-auto");
+    expect(grid.className).not.toContain("max-h-[72vh]");
+  });
+
   it("renders only the virtualized rows instead of keeping every card mounted in the DOM", () => {
     virtualizerMocks.rowIndexes = [0, 1, 2, 3];
     virtualizerMocks.totalSize = 30 * 360;
@@ -993,7 +1157,7 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(setRefreshTargetCount).toHaveBeenLastCalledWith(20);
   });
 
-  it("keeps scroll-anchor compensation stable when display ids are renumbered by a new collision", () => {
+  it("keeps page-scroll anchor compensation stable when display ids are renumbered by a new collision", () => {
     const baseCards = mapPromptCacheConversationsToDashboardCards(
       createResponse([
         createConversation("hidden-before", [
@@ -1103,16 +1267,229 @@ describe("DashboardWorkingConversationsSection", () => {
 
     renderSectionWithCards(initialCards);
 
-    const grid = host?.querySelector(
-      '[data-testid="dashboard-working-conversations-grid"]',
-    );
-    if (!(grid instanceof HTMLDivElement)) {
-      throw new Error("missing working conversations grid");
-    }
-    grid.scrollTop = 300;
+    const scrollBy = vi.spyOn(window, "scrollBy");
 
     rerenderSectionWithCards(nextCards);
 
-    expect(grid.scrollTop).toBe(480);
+    expect(scrollBy).toHaveBeenCalledWith(0, 180);
+  });
+
+  it("preserves the page-scroll anchor even when virtualization has pruned rows above the viewport", () => {
+    virtualizerMocks.rowIndexes = [2, 3, 4, 5];
+    virtualizerMocks.totalSize = 12 * 360;
+
+    const baseCards = mapPromptCacheConversationsToDashboardCards(
+      createResponse(
+        Array.from({ length: 8 }, (_, index) =>
+          createConversation(`pruned-row-${index + 1}`, [
+            createPreview({
+              id: index + 1,
+              invokeId: `invoke-pruned-row-${index + 1}`,
+              occurredAt: `2026-04-04T10:${String(59 - index).padStart(2, "0")}:00Z`,
+              status: "running",
+            }),
+          ]),
+        ),
+      ),
+    );
+
+    const initialCards = baseCards.map((card, index) => ({
+      ...card,
+      promptCacheKey: `pruned-row-${index + 1}`,
+      normalizedPromptCacheKey: `pruned-row-${index + 1}`,
+      conversationSequenceId: `WC-PRUNED-${index + 1}`,
+    })) satisfies DashboardWorkingConversationCardModel[];
+
+    const insertedHead = {
+      ...baseCards[0]!,
+      promptCacheKey: "pruned-new-head",
+      normalizedPromptCacheKey: "pruned-new-head",
+      conversationSequenceId: "WC-PRUNED-NEW",
+    } satisfies DashboardWorkingConversationCardModel;
+
+    const nextCards = [
+      insertedHead,
+      ...initialCards.map((card, index) => ({
+        ...card,
+        conversationSequenceId: `WC-PRUNED-NEXT-${index + 1}`,
+      })),
+    ] satisfies DashboardWorkingConversationCardModel[];
+
+    const rectFor = (top: number, height = 160) =>
+      ({
+        x: 0,
+        y: top,
+        top,
+        bottom: top + height,
+        left: 0,
+        right: 1200,
+        width: 1200,
+        height,
+        toJSON: () => ({}),
+      }) satisfies DOMRect;
+
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        if (
+          this.getAttribute("data-testid") ===
+          "dashboard-working-conversations-grid"
+        ) {
+          return rectFor(0, 600);
+        }
+        if (
+          this.getAttribute("data-testid") ===
+          "dashboard-working-conversation-card"
+        ) {
+          switch (this.getAttribute("data-conversation-sequence-id")) {
+            case "PRUNED-3":
+              return rectFor(40);
+            case "PRUNED-4":
+              return rectFor(220);
+            case "PRUNED-5":
+              return rectFor(400);
+            case "PRUNED-6":
+              return rectFor(580);
+            case "PRUNED-NEXT-3":
+              return rectFor(220);
+            case "PRUNED-NEXT-4":
+              return rectFor(400);
+            case "PRUNED-NEXT-5":
+              return rectFor(580);
+            case "PRUNED-NEXT-6":
+              return rectFor(760);
+            default:
+              return rectFor(920);
+          }
+        }
+        return rectFor(0, 0);
+      },
+    );
+
+    renderSectionWithCards(initialCards);
+
+    const scrollBy = vi.spyOn(window, "scrollBy");
+
+    rerenderSectionWithCards(nextCards);
+
+    expect(scrollBy).toHaveBeenCalledWith(0, 180);
+  });
+
+  it("does not preserve an anchor when new cards arrive while the list top is still visible", () => {
+    const baseCards = mapPromptCacheConversationsToDashboardCards(
+      createResponse([
+        createConversation("visible-top", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-visible-top",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "running",
+          }),
+        ]),
+        createConversation("visible-second", [
+          createPreview({
+            id: 2,
+            invokeId: "invoke-visible-second",
+            occurredAt: "2026-04-04T10:03:00Z",
+            status: "running",
+          }),
+        ]),
+        createConversation("visible-new-head", [
+          createPreview({
+            id: 3,
+            invokeId: "invoke-visible-new-head",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "running",
+          }),
+        ]),
+      ]),
+    );
+
+    const initialCards = [
+      {
+        ...baseCards[0]!,
+        promptCacheKey: "visible-top",
+        normalizedPromptCacheKey: "visible-top",
+        conversationSequenceId: "WC-VISIBLE-A",
+      },
+      {
+        ...baseCards[1]!,
+        promptCacheKey: "visible-second",
+        normalizedPromptCacheKey: "visible-second",
+        conversationSequenceId: "WC-VISIBLE-B",
+      },
+    ] satisfies DashboardWorkingConversationCardModel[];
+
+    const nextCards = [
+      {
+        ...baseCards[2]!,
+        promptCacheKey: "visible-new-head",
+        normalizedPromptCacheKey: "visible-new-head",
+        conversationSequenceId: "WC-VISIBLE-C",
+      },
+      {
+        ...baseCards[0]!,
+        promptCacheKey: "visible-top",
+        normalizedPromptCacheKey: "visible-top",
+        conversationSequenceId: "WC-VISIBLE-A-1",
+      },
+      {
+        ...baseCards[1]!,
+        promptCacheKey: "visible-second",
+        normalizedPromptCacheKey: "visible-second",
+        conversationSequenceId: "WC-VISIBLE-B-1",
+      },
+    ] satisfies DashboardWorkingConversationCardModel[];
+
+    const rectFor = (top: number, height = 160) =>
+      ({
+        x: 0,
+        y: top,
+        top,
+        bottom: top + height,
+        left: 0,
+        right: 1200,
+        width: 1200,
+        height,
+        toJSON: () => ({}),
+      }) satisfies DOMRect;
+
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        if (
+          this.getAttribute("data-testid") ===
+          "dashboard-working-conversations-grid"
+        ) {
+          return rectFor(0, 600);
+        }
+        if (
+          this.getAttribute("data-testid") ===
+          "dashboard-working-conversation-card"
+        ) {
+          switch (this.getAttribute("data-conversation-sequence-id")) {
+            case "VISIBLE-A":
+              return rectFor(40);
+            case "VISIBLE-B":
+              return rectFor(220);
+            case "VISIBLE-C":
+              return rectFor(40);
+            case "VISIBLE-A-1":
+              return rectFor(220);
+            case "VISIBLE-B-1":
+              return rectFor(400);
+            default:
+              return rectFor(720);
+          }
+        }
+        return rectFor(0, 0);
+      },
+    );
+
+    renderSectionWithCards(initialCards);
+
+    const scrollBy = vi.spyOn(window, "scrollBy");
+
+    rerenderSectionWithCards(nextCards);
+
+    expect(scrollBy).not.toHaveBeenCalled();
   });
 });
