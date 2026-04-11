@@ -15,7 +15,7 @@ const sampleStats: StatsResponse = {
 }
 
 const sampleRate: DashboardTodayRateSnapshot = {
-  tokensPerMinute: 1000,
+  tokensPerMinute: 1000.6,
   costPerMinute: 0.1,
   windowMinutes: 5,
   available: true,
