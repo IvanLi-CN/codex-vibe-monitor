@@ -3028,13 +3028,7 @@ pub(crate) async fn fetch_timeseries(
 
     let response = TimeseriesResponse {
         range_start: start_str_iso,
-        range_end: {
-            let end = Utc
-                .timestamp_opt(fill_end_epoch, 0)
-                .single()
-                .unwrap_or_else(Utc::now);
-            format_utc_iso(end)
-        },
+        range_end: format_utc_iso(end_dt),
         bucket_seconds,
         snapshot_id,
         effective_bucket: bucket_selection.effective_bucket,
@@ -3370,13 +3364,7 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
 
     Ok(Json(TimeseriesResponse {
         range_start: format_utc_iso(range_window.start),
-        range_end: {
-            let end = Utc
-                .timestamp_opt(fill_end_epoch, 0)
-                .single()
-                .unwrap_or_else(Utc::now);
-            format_utc_iso(end)
-        },
+        range_end: format_utc_iso(range_window.display_end),
         bucket_seconds,
         snapshot_id,
         effective_bucket: bucket_selection.effective_bucket,
