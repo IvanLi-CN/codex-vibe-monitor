@@ -1,7 +1,7 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AnimatedDigits } from './AnimatedDigits'
 
-export type AdaptiveMetricValueKind = 'number' | 'currency'
+export type AdaptiveMetricValueKind = 'number' | 'integer' | 'currency'
 
 const ADAPTIVE_METRIC_COMPACT_GUTTER_PX = 12
 const COMPACT_SUFFIX_LOCALE = 'en-US'
@@ -37,7 +37,7 @@ function createMetricFormatter(
 
   return new Intl.NumberFormat(compactLocale, {
     notation: compact ? 'compact' : 'standard',
-    maximumFractionDigits: 2,
+    maximumFractionDigits: kind === 'integer' ? 0 : 2,
   })
 }
 
@@ -116,7 +116,7 @@ export function AdaptiveMetricValue({
   }, [evaluateOverflow])
 
   const visibleValue = useCompactValue ? compactValue : fullValue
-  const shouldAnimateDigits = kind === 'number' && !useCompactValue
+  const shouldAnimateDigits = (kind === 'number' || kind === 'integer') && !useCompactValue
 
   return (
     <span
