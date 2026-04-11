@@ -440,6 +440,21 @@ fn parse_summary_window_accepts_yesterday_calendar_window() {
 }
 
 #[test]
+fn exclusive_epoch_upper_bound_preserves_fractional_current_second() {
+    let exact_second = Utc
+        .with_ymd_and_hms(2026, 4, 11, 0, 0, 0)
+        .single()
+        .expect("valid exact second");
+    let fractional_second = exact_second + ChronoDuration::nanoseconds(1);
+
+    assert_eq!(exclusive_epoch_upper_bound(exact_second), exact_second.timestamp());
+    assert_eq!(
+        exclusive_epoch_upper_bound(fractional_second),
+        exact_second.timestamp() + 1
+    );
+}
+
+#[test]
 fn local_naive_to_utc_does_not_fall_back_to_and_utc_on_dst_gap() {
     let tz = chrono_tz::America::Los_Angeles;
     let naive = NaiveDate::from_ymd_opt(2024, 3, 10)

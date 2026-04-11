@@ -403,6 +403,15 @@ pub(crate) fn db_occurred_at_lower_bound(start_utc: DateTime<Utc>) -> String {
     format_naive(shanghai.naive_local())
 }
 
+pub(crate) fn exclusive_epoch_upper_bound(end_utc: DateTime<Utc>) -> i64 {
+    end_utc.timestamp()
+        + if end_utc.timestamp_subsec_nanos() > 0 {
+            1
+        } else {
+            0
+        }
+}
+
 pub(crate) fn parse_duration_spec(spec: &str) -> Result<ChronoDuration> {
     if let Some(value) = spec.strip_suffix("mo") {
         let months: i64 = value.parse()?;
@@ -1662,7 +1671,7 @@ pub(crate) async fn query_crs_totals(
         StatsFilter::Range(start, end) => {
             query.push_str(" AND captured_at_epoch >= ?3 AND captured_at_epoch < ?4");
             binds.push(start.timestamp());
-            binds.push(end.timestamp());
+            binds.push(exclusive_epoch_upper_bound(*end));
         }
         StatsFilter::RecentLimit(_) => {
             return Ok(StatsTotals::default());
@@ -1703,7 +1712,7 @@ pub(crate) async fn query_crs_deltas(
     pool: &Pool<Sqlite>,
     relay: &CrsStatsConfig,
     start_epoch: i64,
-    end_epoch: i64,
+    end_epoch_exclusive: i64,
 ) -> Result<Vec<StatsDeltaRecord>> {
     sqlx::query_as::<_, StatsDeltaRecord>(
         r#"
@@ -1718,14 +1727,14 @@ pub(crate) async fn query_crs_deltas(
         WHERE source = ?1
           AND period = ?2
           AND captured_at_epoch >= ?3
-          AND captured_at_epoch <= ?4
+          AND captured_at_epoch < ?4
         ORDER BY captured_at_epoch ASC
         "#,
     )
     .bind(SOURCE_CRS)
     .bind(&relay.period)
     .bind(start_epoch)
-    .bind(end_epoch)
+    .bind(end_epoch_exclusive)
     .fetch_all(pool)
     .await
     .map_err(Into::into)

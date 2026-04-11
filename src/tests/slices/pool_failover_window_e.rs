@@ -2432,10 +2432,8 @@ async fn yesterday_summary_and_timeseries_only_include_previous_local_day() {
     let expected_start = format_utc_iso(local_midnight_utc(yesterday, Shanghai));
     let expected_end = format_utc_iso(local_midnight_utc(today, Shanghai));
     assert_eq!(timeseries.range_start, expected_start);
-    assert!(
-        timeseries.range_end >= expected_end,
-        "timeseries should not end before the closed yesterday window"
-    );
+    assert_eq!(timeseries.range_end, expected_end);
+    assert_eq!(timeseries.points.len(), 24);
     assert!(
         timeseries.points.iter().all(|point| {
             point.total_count == 0

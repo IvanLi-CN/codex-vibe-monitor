@@ -68,6 +68,23 @@ fn effective_range_for_hourly_rollup_plan(
     Ok(range.filter(|value| value.start < value.end))
 }
 
+fn resolve_timeseries_fill_end_epoch(
+    end_dt: DateTime<Utc>,
+    bucket_seconds: i64,
+    reporting_tz: Tz,
+) -> Result<i64, ApiError> {
+    let aligned_end_epoch =
+        align_reporting_bucket_epoch(end_dt.timestamp(), bucket_seconds, reporting_tz)?;
+    if end_dt.timestamp_subsec_nanos() == 0 && aligned_end_epoch == end_dt.timestamp() {
+        return Ok(aligned_end_epoch);
+    }
+    Ok(next_reporting_bucket_epoch(
+        aligned_end_epoch,
+        bucket_seconds,
+        reporting_tz,
+    )?)
+}
+
 fn invocation_status_is_success_like(status: Option<&str>, error_message: Option<&str>) -> bool {
     let normalized_status = status.map(str::trim).unwrap_or_default();
     let error_message_empty = error_message.map(str::trim).is_none_or(str::is_empty);
@@ -2936,7 +2953,13 @@ pub(crate) async fn fetch_timeseries(
     let relay_deltas = if source_scope == InvocationSourceScope::All
         && let Some(relay) = state.config.crs_stats.as_ref()
     {
-        query_crs_deltas(&state.pool, relay, start_epoch, end_dt.timestamp()).await?
+        query_crs_deltas(
+            &state.pool,
+            relay,
+            start_epoch,
+            crate::stats::exclusive_epoch_upper_bound(end_dt),
+        )
+        .await?
     } else {
         Vec::new()
     };
@@ -2956,11 +2979,8 @@ pub(crate) async fn fetch_timeseries(
     // boundaries rather than fixed UTC-duration strides. This keeps DST transition
     // days aligned to local clock buckets.
     let fill_start_epoch = align_reporting_bucket_epoch(start_epoch, bucket_seconds, reporting_tz)?;
-    let fill_end_epoch = next_reporting_bucket_epoch(
-        align_reporting_bucket_epoch(end_dt.timestamp(), bucket_seconds, reporting_tz)?,
-        bucket_seconds,
-        reporting_tz,
-    )?;
+    let fill_end_epoch =
+        resolve_timeseries_fill_end_epoch(end_dt, bucket_seconds, reporting_tz)?;
     let mut bucket_cursor = fill_start_epoch;
     while bucket_cursor < fill_end_epoch {
         aggregates.entry(bucket_cursor).or_default();
@@ -3154,7 +3174,6 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
 ) -> Result<Json<TimeseriesResponse>, ApiError> {
     let bucket_seconds = bucket_selection.bucket_seconds;
     let start_epoch = range_window.start.timestamp();
-    let end_epoch = range_window.end.timestamp();
     let range_plan = build_hourly_rollup_exact_range_plan(
         range_window.start,
         range_window.end,
@@ -3163,11 +3182,8 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
 
     let mut aggregates: BTreeMap<i64, BucketAggregate> = BTreeMap::new();
     let fill_start_epoch = align_reporting_bucket_epoch(start_epoch, bucket_seconds, reporting_tz)?;
-    let fill_end_epoch = next_reporting_bucket_epoch(
-        align_reporting_bucket_epoch(end_epoch, bucket_seconds, reporting_tz)?,
-        bucket_seconds,
-        reporting_tz,
-    )?;
+    let fill_end_epoch =
+        resolve_timeseries_fill_end_epoch(range_window.end, bucket_seconds, reporting_tz)?;
     let mut bucket_cursor = fill_start_epoch;
     while bucket_cursor < fill_end_epoch {
         aggregates.entry(bucket_cursor).or_default();
@@ -3301,7 +3317,7 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
             &state.pool,
             relay,
             effective_range.start.timestamp(),
-            effective_range.end.timestamp(),
+            crate::stats::exclusive_epoch_upper_bound(effective_range.end),
         )
         .await?
     } else {
