@@ -1421,6 +1421,42 @@ async fn send_pool_request_with_failover(
                                 })?,
                             )
                         }
+                        snapshot @ PoolReplayBodySnapshot::File { size, .. }
+                            if original_uri.path() == "/v1/responses"
+                                && *size <= OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES
+                                && headers
+                                    .get(header::CONTENT_ENCODING)
+                                    .and_then(|value| value.to_str().ok())
+                                    .map(|value| parse_content_encodings(Some(value)))
+                                    .map_or(true, |encodings| {
+                                        encodings.iter().all(|encoding| encoding == "identity")
+                                    }) =>
+                        {
+                            oauth_bridge::OauthUpstreamRequestBody::Bytes(
+                                snapshot.to_bytes().await.map_err(|err| PoolUpstreamError {
+                                    account: Some(account.clone()),
+                                    status: StatusCode::BAD_GATEWAY,
+                                    message: format!("failed to replay oauth request body: {err}"),
+                                    canonical_error_message: None,
+                                    failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                                    connect_latency_ms: 0.0,
+                                    upstream_error_code: None,
+                                    upstream_error_message: None,
+                                    downstream_error_message: None,
+                                    upstream_request_id: None,
+                                    oauth_responses_debug: None,
+                                    attempt_summary: pool_attempt_summary(
+                                        attempt_count,
+                                        distinct_account_count,
+                                        Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string()),
+                                    ),
+                                    requested_service_tier:
+                                        attempted_requested_service_tier.clone(),
+                                    request_body_for_capture:
+                                        attempted_request_body_for_capture.clone(),
+                                })?,
+                            )
+                        }
                         snapshot => oauth_bridge::OauthUpstreamRequestBody::Stream {
                             debug_body_prefix: Some(
                                 snapshot
@@ -1555,6 +1591,7 @@ async fn send_pool_request_with_failover(
                             Some(account.account_id),
                             access_token,
                             chatgpt_account_id.as_deref(),
+                            Some(&state.oauth_installation_seed),
                             state.upstream_accounts.crypto_key.as_ref(),
                         )
                         .await;

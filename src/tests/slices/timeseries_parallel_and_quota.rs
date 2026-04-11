@@ -86,6 +86,7 @@ async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
     let state = Arc::new(AppState {
         config: config.clone(),
         pool,
+        oauth_installation_seed: [0_u8; 32],
         http_clients,
         broadcaster,
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
@@ -1214,10 +1215,21 @@ async fn oauth_codex_responses_capture_upstream(request: axum::extract::Request)
         .get("originator")
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
+    let content_encoding = request
+        .headers()
+        .get(http_header::CONTENT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     let body = to_bytes(request.into_body(), usize::MAX)
         .await
         .expect("read oauth codex responses capture request body");
-    let body_value: Value = serde_json::from_slice(&body).expect("decode oauth capture body");
+    let (decoded_body, decode_error) = decode_response_payload(&body, content_encoding.as_deref(), false);
+    assert!(
+        decode_error.is_none(),
+        "decode oauth capture body: {decode_error:?}"
+    );
+    let body_value: Value =
+        serde_json::from_slice(decoded_body.as_ref()).expect("decode oauth capture body");
     let completed_event = serde_json::json!({
         "type": "response.completed",
         "response": {
@@ -1235,6 +1247,7 @@ async fn oauth_codex_responses_capture_upstream(request: axum::extract::Request)
             "xClientRequestIdHeader": x_client_request_id,
             "xCodexTurnMetadataHeader": x_codex_turn_metadata,
             "originatorHeader": originator,
+            "contentEncodingHeader": content_encoding,
             "forwardedHeaderNames": forwarded_header_names,
             "received": body_value,
             "usage": {

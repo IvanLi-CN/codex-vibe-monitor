@@ -367,6 +367,7 @@ async fn test_state_from_config_with_pool_no_available_wait(
     Arc::new(AppState {
         config: config.clone(),
         pool,
+        oauth_installation_seed: [0_u8; 32],
         http_clients,
         broadcaster,
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
@@ -413,6 +414,7 @@ fn clone_state_with_upstream_accounts(
     Arc::new(AppState {
         config: state.config.clone(),
         pool: state.pool.clone(),
+        oauth_installation_seed: state.oauth_installation_seed,
         hourly_rollup_sync_lock: state.hourly_rollup_sync_lock.clone(),
         http_clients: state.http_clients.clone(),
         broadcaster: state.broadcaster.clone(),
@@ -453,6 +455,7 @@ fn clone_state_with_pool_group_429_retry_delay_override(
     Arc::new(AppState {
         config: state.config.clone(),
         pool: state.pool.clone(),
+        oauth_installation_seed: state.oauth_installation_seed,
         hourly_rollup_sync_lock: state.hourly_rollup_sync_lock.clone(),
         http_clients: state.http_clients.clone(),
         broadcaster: state.broadcaster.clone(),
@@ -505,6 +508,7 @@ async fn test_state_from_existing_pool(
     Arc::new(AppState {
         config: config.clone(),
         pool,
+        oauth_installation_seed: [0_u8; 32],
         http_clients,
         broadcaster,
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),

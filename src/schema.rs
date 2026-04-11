@@ -1051,6 +1051,19 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS oauth_bridge_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            installation_seed TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure oauth_bridge_settings table existence")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS forward_proxy_settings (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             proxy_urls_json TEXT NOT NULL DEFAULT '[]',

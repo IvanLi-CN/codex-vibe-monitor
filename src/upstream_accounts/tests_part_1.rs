@@ -1878,6 +1878,7 @@
         Arc::new(AppState {
             config,
             pool: test_pool().await,
+            oauth_installation_seed: [0_u8; 32],
             http_clients,
             broadcaster,
             broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache {

@@ -387,6 +387,7 @@ async fn pool_route_oauth_observability_omits_fingerprints_without_crypto_key() 
         "oauth-no-crypto",
         Some("02355c9d-fb23-4517-a96d-35e5f6758e9e"),
         None,
+        None,
     )
     .await;
 
@@ -423,7 +424,7 @@ async fn pool_route_oauth_observability_omits_fingerprints_without_crypto_key() 
 }
 
 #[tokio::test]
-async fn pool_route_large_oauth_responses_file_backed_body_passthroughs_non_stream_sse() {
+async fn pool_route_large_oauth_responses_file_backed_body_rewrites_and_replaces_installation_id() {
     let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
         .lock()
         .await;
@@ -447,6 +448,10 @@ async fn pool_route_large_oauth_responses_file_backed_body_passthroughs_non_stre
         "model": "gpt-5.4",
         "stream": false,
         "max_output_tokens": 256,
+        "client_metadata": {
+            "x-codex-installation-id": "downstream-installation-id",
+            "other": "keep-me",
+        },
         "input": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 4096),
     }))
     .expect("serialize large oauth responses body");
@@ -514,23 +519,42 @@ async fn pool_route_large_oauth_responses_file_backed_body_passthroughs_non_stre
         serde_json::from_slice(&response_body).expect("decode oauth passthrough response");
     assert_eq!(
         payload["received"]["stream"].as_bool(),
-        Some(false),
-        "non-stream requests should preserve the original stream flag on large file-backed bodies",
+        Some(true),
+        "responses requests should be normalized to streaming upstream even for file-backed bodies",
     );
-    assert_eq!(payload["received"]["max_output_tokens"].as_i64(), Some(256));
-    assert!(payload["received"].get("instructions").is_none());
-    assert!(payload["received"].get("store").is_none());
+    assert!(payload["received"].get("max_output_tokens").is_none());
+    assert_eq!(payload["received"]["instructions"], "");
+    assert_eq!(payload["received"]["store"], false);
+    assert_eq!(payload["received"]["client_metadata"]["other"], "keep-me");
+    let rewritten_installation_id = payload["received"]["client_metadata"]
+        ["x-codex-installation-id"]
+        .as_str()
+        .expect("rewritten installation id should be present");
+    assert_ne!(rewritten_installation_id, "downstream-installation-id");
+    assert_eq!(rewritten_installation_id.len(), 36);
+    assert_eq!(rewritten_installation_id.chars().nth(8), Some('-'));
+    assert_eq!(rewritten_installation_id.chars().nth(13), Some('-'));
+    assert_eq!(rewritten_installation_id.chars().nth(18), Some('-'));
+    assert_eq!(rewritten_installation_id.chars().nth(23), Some('-'));
     let request_debug = upstream
         .oauth_responses_debug
         .expect("oauth responses debug should be present");
     assert_eq!(
         request_debug.responses_body_mode,
-        Some("large_body_passthrough")
+        Some("small_body_rewrite")
     );
-    assert_eq!(request_debug.request_body_snapshot_kind, Some("file"));
+    assert_eq!(request_debug.request_body_snapshot_kind, Some("memory"));
     assert_eq!(
         request_debug.rewrite,
-        oauth_bridge::OauthResponsesRewriteSummary::default()
+        oauth_bridge::OauthResponsesRewriteSummary {
+            applied: true,
+            added_instructions: true,
+            added_store: true,
+            forced_stream_true: true,
+            removed_max_output_tokens: true,
+            rewrote_installation_id: true,
+            removed_installation_id: false,
+        }
     );
 
     upstream_handle.abort();
@@ -570,6 +594,7 @@ async fn oauth_responses_timeout_marks_transport_failure_header() {
         Some(7),
         "oauth-timeout",
         Some("02355c9d-fb23-4517-a96d-35e5f6758e9e"),
+        None,
         None,
     )
     .await;
@@ -869,12 +894,12 @@ async fn pool_route_oauth_compact_stream_timeout_does_not_cap_send_phase_before_
 }
 
 #[tokio::test]
-async fn pool_route_oauth_responses_large_file_backed_body_passthroughs_without_rewrite_limit() {
+async fn pool_route_oauth_responses_file_backed_body_above_rewrite_limit_stays_passthrough() {
     let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
         .lock()
         .await;
 
-    let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_responses_capture_upstream().await;
     oauth_bridge::set_test_oauth_codex_upstream_base_url(
         Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
     )
@@ -889,7 +914,17 @@ async fn pool_route_oauth_responses_large_file_backed_body_passthroughs_without_
     let temp_file = Arc::new(PoolReplayTempFile {
         path: build_pool_replay_temp_path(515151),
     });
-    let body = vec![b'x'; OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES + 1];
+    let input = "x".repeat(OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES + 256);
+    let body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "stream": false,
+        "max_output_tokens": 256,
+        "client_metadata": {
+            "x-codex-installation-id": "downstream-installation-id",
+        },
+        "input": input,
+    }))
+    .expect("serialize oversized oauth responses body");
     tokio::fs::write(&temp_file.path, &body)
         .await
         .expect("write oversized oauth responses body");
@@ -956,7 +991,21 @@ async fn pool_route_oauth_responses_large_file_backed_body_passthroughs_without_
         payload["path"].as_str(),
         Some("/backend-api/codex/responses")
     );
-    assert_eq!(payload["bodyLength"].as_u64(), Some(body.len() as u64));
+    assert_eq!(payload["received"]["stream"].as_bool(), Some(false));
+    assert_eq!(payload["received"]["max_output_tokens"].as_u64(), Some(256));
+    assert!(payload["received"].get("instructions").is_none());
+    assert!(payload["received"].get("store").is_none());
+    assert_eq!(
+        payload["received"]["input"]
+            .as_str()
+            .map(str::len),
+        Some(OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES + 256)
+    );
+    assert_eq!(
+        payload["received"]["client_metadata"]["x-codex-installation-id"]
+            .as_str(),
+        Some("downstream-installation-id")
+    );
     let request_debug = upstream
         .oauth_responses_debug
         .expect("oauth responses debug should be present");
@@ -964,6 +1013,142 @@ async fn pool_route_oauth_responses_large_file_backed_body_passthroughs_without_
     assert_eq!(
         request_debug.responses_body_mode,
         Some("large_body_passthrough")
+    );
+    assert_eq!(
+        request_debug.rewrite,
+        oauth_bridge::OauthResponsesRewriteSummary::default()
+    );
+
+    upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn pool_route_oauth_responses_compressed_file_backed_body_stays_passthrough() {
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_responses_capture_upstream().await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_oauth_account(&state, "Compressed OAuth", "oauth-compressed").await;
+    let temp_file = Arc::new(PoolReplayTempFile {
+        path: build_pool_replay_temp_path(525252),
+    });
+    let body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "stream": false,
+        "max_output_tokens": 64,
+        "client_metadata": {
+            "x-codex-installation-id": "compressed-downstream-installation-id",
+        },
+        "input": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 2048),
+    }))
+    .expect("serialize compressed oauth responses body");
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut encoder, &body).expect("write compressed oauth responses body");
+    let compressed_body = encoder
+        .finish()
+        .expect("finish compressed oauth responses body");
+    tokio::fs::write(&temp_file.path, &compressed_body)
+        .await
+        .expect("write compressed oauth responses body");
+
+    let account = PoolResolvedAccount {
+        account_id,
+        display_name: "Compressed OAuth".to_string(),
+        kind: "oauth_codex".to_string(),
+        auth: PoolResolvedAuth::Oauth {
+            access_token: "oauth-compressed".to_string(),
+            chatgpt_account_id: Some("org_test".to_string()),
+        },
+        upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
+            .expect("oauth upstream base url"),
+        routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        group_name: Some(test_required_group_name().to_string()),
+        bound_proxy_keys: test_required_group_bound_proxy_keys(),
+        forward_proxy_scope: ForwardProxyRouteScope::from_group_binding(
+            Some(test_required_group_name()),
+            test_required_group_bound_proxy_keys(),
+        ),
+        group_upstream_429_retry_enabled: false,
+        group_upstream_429_max_retries: 0,
+        fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+    };
+
+    let upstream = send_pool_request_with_failover(
+        state,
+        525252,
+        Method::POST,
+        &"/v1/responses".parse().expect("valid uri"),
+        &HeaderMap::from_iter([
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+            (
+                http_header::CONTENT_ENCODING,
+                HeaderValue::from_static("gzip"),
+            ),
+        ]),
+        Some(PoolReplayBodySnapshot::File {
+            temp_file,
+            size: compressed_body.len(),
+        }),
+        Duration::from_secs(5),
+        None,
+        None,
+        None,
+        Some(account),
+        PoolFailoverProgress::default(),
+        1,
+    )
+    .await
+    .expect("compressed oauth responses body should stay on oauth route");
+
+    assert_eq!(upstream.account.account_id, account_id);
+    assert_eq!(upstream.response.status(), StatusCode::OK);
+    let mut response_body = upstream.first_chunk.clone().unwrap_or_default().to_vec();
+    response_body.extend_from_slice(
+        &upstream
+            .response
+            .into_bytes()
+            .await
+            .expect("read oauth passthrough response"),
+    );
+    let payload: Value =
+        serde_json::from_slice(&response_body).expect("decode oauth passthrough response");
+    assert_eq!(
+        payload["path"].as_str(),
+        Some("/backend-api/codex/responses")
+    );
+    assert_eq!(payload["contentEncodingHeader"].as_str(), Some("gzip"));
+    assert_eq!(payload["received"]["stream"].as_bool(), Some(false));
+    assert_eq!(payload["received"]["max_output_tokens"].as_u64(), Some(64));
+    assert_eq!(
+        payload["received"]["client_metadata"]["x-codex-installation-id"].as_str(),
+        Some("compressed-downstream-installation-id")
+    );
+    let request_debug = upstream
+        .oauth_responses_debug
+        .expect("oauth responses debug should be present");
+    assert_eq!(request_debug.request_body_snapshot_kind, Some("file"));
+    assert_eq!(
+        request_debug.responses_body_mode,
+        Some("large_body_passthrough")
+    );
+    assert_eq!(
+        request_debug.rewrite,
+        oauth_bridge::OauthResponsesRewriteSummary::default()
     );
 
     upstream_handle.abort();
@@ -1598,6 +1783,7 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
     let state = Arc::new(AppState {
         config: config.clone(),
         pool,
+        oauth_installation_seed: [0_u8; 32],
         http_clients,
         broadcaster,
         broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
