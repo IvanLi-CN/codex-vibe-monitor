@@ -313,7 +313,7 @@ export function getVisibilityOpenResyncMode(
   if (range === "yesterday") {
     return isYesterdayTimeseriesStale(data, nowEpochSeconds)
       ? "force"
-      : "skip";
+      : "normal";
   }
   if (range === "today" || syncMode === "current-day-local") {
     return "force";
@@ -1813,9 +1813,6 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
         syncPolicy.mode,
         dataRef.current,
       );
-      if (resyncMode === "skip") {
-        return;
-      }
       triggerOpenResync(resyncMode === "force");
     };
     document.addEventListener("visibilitychange", onVisibilityChange);

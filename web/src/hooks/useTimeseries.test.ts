@@ -1195,7 +1195,7 @@ describe("useTimeseries refresh coordination helpers", () => {
         yesterdayCurrent,
         Math.floor(new Date(2026, 3, 8, 12, 0, 0).getTime() / 1000),
       ),
-    ).toBe("skip");
+    ).toBe("normal");
     expect(
       getVisibilityOpenResyncMode(
         "yesterday",

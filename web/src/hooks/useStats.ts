@@ -504,15 +504,15 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     if (typeof document === 'undefined') return
     const onVisibilityChange = () => {
       if (document.visibilityState !== 'visible') return
-      if (
-        !shouldForceCalendarSummaryOpenResync(
-          window,
-          lastNaturalDayLoadStartEpochRef.current,
-        )
-      ) {
+      if (window !== 'today' && window !== 'yesterday') {
         return
       }
-      triggerOpenResync(true)
+      triggerOpenResync(
+        shouldForceCalendarSummaryOpenResync(
+          window,
+          lastNaturalDayLoadStartEpochRef.current,
+        ),
+      )
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
     return () => document.removeEventListener('visibilitychange', onVisibilityChange)
