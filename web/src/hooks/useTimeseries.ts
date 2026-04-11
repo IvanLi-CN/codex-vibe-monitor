@@ -23,6 +23,11 @@ export interface TimeseriesSyncPolicy {
   recordsRefreshThrottleMs: number;
 }
 
+export interface TimeseriesOpenResyncOptions {
+  bypassCooldown?: boolean;
+  forceLoad?: boolean;
+}
+
 interface LoadOptions {
   silent?: boolean;
   force?: boolean;
@@ -321,12 +326,24 @@ export function getVisibilityOpenResyncMode(
   return "normal";
 }
 
-export function shouldForceSseOpenResync(
+export function getSseOpenResyncOptions(
   range: string,
   syncMode: TimeseriesSyncMode,
+  data: TimeseriesResponse | null,
+  nowEpochSeconds = Math.floor(Date.now() / 1000),
 ) {
+  if (range === "yesterday") {
+    return {
+      bypassCooldown: true,
+      forceLoad:
+        getVisibilityOpenResyncMode(range, syncMode, data, nowEpochSeconds) ===
+        "force",
+    };
+  }
   return (
-    range === "today" || range === "yesterday" || syncMode === "current-day-local"
+    range === "today" || syncMode === "current-day-local"
+      ? { bypassCooldown: true, forceLoad: true }
+      : { bypassCooldown: false, forceLoad: false }
   );
 }
 
@@ -1605,7 +1622,10 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
   }, [clearPendingRefreshTimer, load, syncPolicy.recordsRefreshThrottleMs]);
 
   const triggerOpenResync = useCallback(
-    (force = false) => {
+    ({
+      bypassCooldown = false,
+      forceLoad = false,
+    }: TimeseriesOpenResyncOptions = {}) => {
       if (!hasHydratedRef.current) {
         pendingOpenResyncRef.current = true;
         return;
@@ -1615,13 +1635,13 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
         !shouldTriggerTimeseriesOpenResync(
           lastOpenResyncAtRef.current,
           now,
-          force,
+          bypassCooldown,
         )
       ) {
         return;
       }
       lastOpenResyncAtRef.current = now;
-      void load({ silent: true, force: true });
+      void load({ silent: true, force: forceLoad });
     },
     [load],
   );
@@ -1688,7 +1708,10 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
       if (syncPolicy.mode === "current-day-local") {
         const nowEpochSeconds = Math.floor(Date.now() / 1000);
         if (shouldResyncForCurrentDayBucket(dataRef.current, nowEpochSeconds)) {
-          triggerOpenResync(true);
+          triggerOpenResync({
+            bypassCooldown: true,
+            forceLoad: true,
+          });
           return;
         }
         setData((current) => {
@@ -1822,7 +1845,11 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
         syncPolicy.mode,
         dataRef.current,
       );
-      triggerOpenResync(resyncMode === "force");
+      triggerOpenResync(
+        resyncMode === "force"
+          ? { bypassCooldown: true, forceLoad: true }
+          : undefined,
+      );
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () =>
@@ -1831,7 +1858,13 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
 
   useEffect(() => {
     const unsubscribe = subscribeToSseOpen(() => {
-      triggerOpenResync(shouldForceSseOpenResync(range, syncPolicy.mode));
+      triggerOpenResync(
+        getSseOpenResyncOptions(
+          range,
+          syncPolicy.mode,
+          dataRef.current,
+        ),
+      );
     });
     return unsubscribe;
   }, [range, syncPolicy.mode, triggerOpenResync]);

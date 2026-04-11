@@ -14,6 +14,7 @@ import {
   getCurrentDayBucketEndEpoch,
   getLocalDayStartEpoch,
   getNextLocalDayStartEpoch,
+  getSseOpenResyncOptions,
   getTimeseriesDayRolloverRefreshEpoch,
   getTimeseriesRemountCacheKey,
   getTimeseriesRecordsResyncDelay,
@@ -27,7 +28,6 @@ import {
   shouldPatchCurrentDayBucketOnRecordsEvent,
   shouldResyncForCurrentDayBucket,
   shouldResyncOnRecordsEvent,
-  shouldForceSseOpenResync,
   shouldTriggerTimeseriesOpenResync,
   seedCurrentDayLiveRecordDeltas,
   seedTimeseriesLiveRecordDeltas,
@@ -1208,11 +1208,48 @@ describe("useTimeseries refresh coordination helpers", () => {
     expect(getVisibilityOpenResyncMode("1d", "local", null)).toBe("normal");
   });
 
-  it("forces reconnect resyncs for locally patched natural-day ranges", () => {
-    expect(shouldForceSseOpenResync("today", "local")).toBe(true);
-    expect(shouldForceSseOpenResync("yesterday", "local")).toBe(true);
-    expect(shouldForceSseOpenResync("6mo", "current-day-local")).toBe(true);
-    expect(shouldForceSseOpenResync("1d", "local")).toBe(false);
+  it("uses a soft reconnect refresh for fresh yesterday ranges", () => {
+    const yesterdayCurrent: TimeseriesResponse = {
+      rangeStart: "2026-04-07T00:00:00Z",
+      rangeEnd: "2026-04-08T00:00:00Z",
+      bucketSeconds: 60,
+      points: [],
+    };
+
+    expect(getSseOpenResyncOptions("today", "local", null)).toEqual({
+      bypassCooldown: true,
+      forceLoad: true,
+    });
+    expect(getSseOpenResyncOptions("6mo", "current-day-local", null)).toEqual({
+      bypassCooldown: true,
+      forceLoad: true,
+    });
+    expect(
+      getSseOpenResyncOptions(
+        "yesterday",
+        "local",
+        yesterdayCurrent,
+        Math.floor(new Date(2026, 3, 8, 12, 0, 0).getTime() / 1000),
+      ),
+    ).toEqual({
+      bypassCooldown: true,
+      forceLoad: false,
+    });
+    expect(
+      getSseOpenResyncOptions(
+        "yesterday",
+        "local",
+        yesterdayCurrent,
+        Math.floor(new Date(2026, 3, 9, 0, 0, 30).getTime() / 1000),
+      ),
+    ).toEqual({
+      bypassCooldown: true,
+      forceLoad: true,
+    });
+    expect(getSseOpenResyncOptions("1d", "local", null)).toEqual({
+      bypassCooldown: false,
+      forceLoad: false,
+    });
   });
 
   it("schedules yesterday rollover refresh at the next local midnight", () => {
