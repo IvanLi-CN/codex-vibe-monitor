@@ -967,11 +967,13 @@ async fn open_invocation_archive_batch_pool(
     read_surface: &'static str,
 ) -> Result<Option<(Pool<Sqlite>, TempSqliteCleanup)>> {
     let archive_path = PathBuf::from(&archive_row.file_path);
+    let is_materialized_archive = archive_row.historical_rollups_materialized_at.is_some();
     if !archive_path.exists() {
         warn!(
             file_path = archive_row.file_path,
             read_surface,
-            "skipping missing unmaterialized invocation archive while serving read-only historical fallback"
+            historical_rollups_materialized = is_materialized_archive,
+            "skipping missing invocation archive while serving read-only historical fallback"
         );
         return Ok(None);
     }
@@ -985,12 +987,40 @@ async fn open_invocation_archive_batch_pool(
         let _ = fs::remove_file(&temp_path);
     }
     let temp_cleanup = TempSqliteCleanup(temp_path.clone());
-    inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
-    let archive_pool = SqlitePoolOptions::new()
+    if let Err(err) = inflate_gzip_sqlite_file(&archive_path, &temp_path) {
+        drop(temp_cleanup);
+        if is_materialized_archive {
+            warn!(
+                file_path = archive_row.file_path,
+                read_surface,
+                error = %err,
+                "skipping unreadable materialized invocation archive while serving read-only historical fallback"
+            );
+            return Ok(None);
+        }
+        return Err(err);
+    }
+    let archive_pool = match SqlitePoolOptions::new()
         .max_connections(1)
         .connect(&sqlite_url_for_path(&temp_path))
         .await
-        .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
+        .with_context(|| format!("failed to open archive batch {}", archive_path.display()))
+    {
+        Ok(pool) => pool,
+        Err(err) => {
+            drop(temp_cleanup);
+            if is_materialized_archive {
+                warn!(
+                    file_path = archive_row.file_path,
+                    read_surface,
+                    error = %err,
+                    "skipping unreadable materialized invocation archive while serving read-only historical fallback"
+                );
+                return Ok(None);
+            }
+            return Err(err);
+        }
+    };
 
     Ok(Some((archive_pool, temp_cleanup)))
 }
