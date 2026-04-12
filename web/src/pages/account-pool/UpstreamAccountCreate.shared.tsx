@@ -1,27 +1,12 @@
-/* eslint-disable @typescript-eslint/ban-ts-comment, @typescript-eslint/no-unused-vars, react-refresh/only-export-components */
-// @ts-nocheck
+/* eslint-disable react-refresh/only-export-components */
 import {
-  useCallback,
   useEffect,
-  useMemo,
-  useRef,
   useState,
-  type ChangeEvent,
-  type ClipboardEvent,
-  type KeyboardEvent,
 } from "react";
 import { AppIcon } from "../../components/AppIcon";
-import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "../../components/ui/card";
 import {
   Dialog,
   DialogCloseIcon,
@@ -30,13 +15,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../../components/ui/dialog";
-import { FloatingFieldError } from "../../components/ui/floating-field-error";
-import { FormFieldFeedback } from "../../components/ui/form-field-feedback";
-import { Input } from "../../components/ui/input";
-import {
-  SegmentedControl,
-  SegmentedControlItem,
-} from "../../components/ui/segmented-control";
 import {
   Popover,
   PopoverArrow,
@@ -44,24 +22,12 @@ import {
   PopoverTrigger,
 } from "../../components/ui/popover";
 import { Spinner } from "../../components/ui/spinner";
-import { Tooltip } from "../../components/ui/tooltip";
-import { BatchOauthActionButton } from "../../components/account-pool/BatchOauthActionButton";
-import { OauthMailboxChip } from "../../components/account-pool/OauthMailboxChip";
-import { AccountTagField } from "../../components/AccountTagField";
 import {
-  ImportedOauthValidationDialog,
   IMPORT_VALIDATION_PAGE_SIZE,
   type ImportedOauthValidationDialogState,
 } from "../../components/ImportedOauthValidationDialog";
-import { UpstreamAccountGroupCombobox } from "../../components/UpstreamAccountGroupCombobox";
-import { UpstreamAccountGroupNoteDialog } from "../../components/UpstreamAccountGroupNoteDialog";
-import { MotherAccountToggle } from "../../components/MotherAccountToggle";
-import { useMotherSwitchNotifications } from "../../hooks/useMotherSwitchNotifications";
-import { usePoolTags } from "../../hooks/usePoolTags";
-import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
 import type {
   ImportOauthCredentialFilePayload,
-  ImportedOauthValidationFailedEventPayload,
   ImportedOauthValidationRow,
   ImportedOauthValidationSnapshotEventPayload,
   LoginSessionStatusResponse,
@@ -69,44 +35,18 @@ import type {
   OauthMailboxSessionSupported,
   OauthMailboxStatus,
   UpdateOauthLoginSessionPayload,
-  UpdateUpstreamAccountPayload,
   UpstreamAccountDetail,
   UpstreamAccountDuplicateInfo,
   UpstreamAccountSummary,
 } from "../../lib/api";
 import {
-  createImportedOauthValidationJobEventSource,
-  fetchUpstreamAccountDetail,
-  normalizeImportedOauthValidationFailedEventPayload,
-  normalizeImportedOauthValidationRowEventPayload,
-  normalizeImportedOauthValidationSnapshotEventPayload,
-  updateOauthLoginSessionKeepalive,
-} from "../../lib/api";
-import { copyText, selectAllReadonlyText } from "../../lib/clipboard";
-import { emitUpstreamAccountsChanged } from "../../lib/upstreamAccountsEvents";
-import {
-  buildGroupNameSuggestions,
-  isExistingGroup,
-  normalizeGroupName,
-  resolveGroupConcurrencyLimit,
-  resolveGroupNote,
-} from "../../lib/upstreamAccountGroups";
-import {
-  apiConcurrencyLimitToSliderValue,
-  sliderConcurrencyLimitToApiValue,
-} from "../../lib/concurrencyLimit";
-import { resolvePersistedGroupNodeShuntEnabled } from "../../lib/upstreamAccountGroupDrafts";
-import { validateUpstreamBaseUrl } from "../../lib/upstreamBaseUrl";
-import {
-  applyMotherUpdateToItems,
   normalizeMotherGroupKey,
 } from "../../lib/upstreamMother";
-import { cn } from "../../lib/utils";
-import { useTranslation } from "../../i18n";
 
 export type CreateTab = "oauth" | "batchOauth" | "apiKey" | "import";
 type BatchOauthBusyAction = "generate" | "complete" | null;
-type MailboxBusyAction = "attach" | "generate" | null;
+export type { ImportedOauthValidationDialogState };
+export type MailboxBusyAction = "attach" | "generate" | null;
 export type BatchOauthPersistedMetadata = {
   displayName: string;
   groupName: string;
@@ -131,7 +71,7 @@ export type GroupNoteEditorState = {
   upstream429RetryEnabled: boolean;
   upstream429MaxRetries: number;
 };
-type MailboxCopyTone = "idle" | "copied" | "manual";
+export type MailboxCopyTone = "idle" | "copied" | "manual";
 export const MAILBOX_REFRESH_INTERVAL_MS = 5_000;
 export const MAILBOX_REFRESH_TICK_MS = 1_000;
 export const OAUTH_SESSION_SYNC_DEBOUNCE_MS = 300;
@@ -141,20 +81,11 @@ export const GROUP_UPSTREAM_429_RETRY_OPTIONS = [1, 2, 3, 4, 5] as const;
 export const IMPORTED_OAUTH_DUPLICATE_DETAIL =
   "duplicate credential in current import selection";
 
-type PendingOauthSessionSnapshot = {
+export type PendingOauthSessionSnapshot = {
   loginId: string;
   payload: UpdateOauthLoginSessionPayload;
   signature: string;
   baseUpdatedAt: string | null;
-};
-
-type PendingOauthSessionSyncRecord = {
-  syncedSignature: string | null;
-  failedSignature: string | null;
-  pendingSignature: string;
-  timerId: number | null;
-  inFlight: Promise<void> | null;
-  lastSnapshot: PendingOauthSessionSnapshot | null;
 };
 
 export type BatchOauthRow = {
