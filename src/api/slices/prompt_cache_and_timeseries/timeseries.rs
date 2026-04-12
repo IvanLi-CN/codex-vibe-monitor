@@ -5,7 +5,6 @@ pub(crate) async fn fetch_timeseries(
     State(state): State<Arc<AppState>>,
     Query(params): Query<TimeseriesQuery>,
 ) -> Result<Json<TimeseriesResponse>, ApiError> {
-    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
@@ -201,7 +200,6 @@ pub(crate) async fn fetch_parallel_work_stats(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ParallelWorkStatsQuery>,
 ) -> Result<Json<ParallelWorkStatsResponse>, ApiError> {
-    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let requested_reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let now = Utc::now();
@@ -342,7 +340,6 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
     }
 
     let (snapshot_id, hourly_rows, exact_records) = if range_plan.full_hour_range.is_some() {
-        ensure_invocation_summary_rollups_ready_best_effort(&state.pool).await?;
         let mut tx = state.pool.begin().await?;
         let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
         let rollup_live_cursor = load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;

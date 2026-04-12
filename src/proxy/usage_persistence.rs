@@ -781,24 +781,13 @@ pub(crate) async fn broadcast_recovered_proxy_invocations(
         invalidate_prompt_cache_conversations_cache(&state.prompt_cache_conversation_cache).await;
     }
 
-    if state.broadcaster.receiver_count() == 0 {
-        return Ok(());
-    }
-
     let summary_invoke_id = records[0].invoke_id.clone();
-    state
-        .broadcaster
-        .send(BroadcastPayload::Records { records })
-        .map_err(|err| anyhow!("failed to broadcast recovered proxy invocation records: {err}"))?;
-    broadcast_proxy_capture_follow_up(
-        &state.pool,
-        &state.broadcaster,
-        state.broadcast_state_cache.as_ref(),
-        state.config.crs_stats.as_ref(),
-        state.config.invocation_max_days,
-        &summary_invoke_id,
-    )
-    .await;
+    if state.broadcaster.receiver_count() > 0 {
+        state.broadcaster.send(BroadcastPayload::Records { records }).map_err(
+            |err| anyhow!("failed to broadcast recovered proxy invocation records: {err}"),
+        )?;
+    }
+    schedule_proxy_capture_follow_up_worker(state, &summary_invoke_id).await?;
 
     Ok(())
 }
@@ -1862,14 +1851,12 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_runtime_snapshot(
         invalidate_prompt_cache_conversations_cache(&state.prompt_cache_conversation_cache).await;
     }
 
-    if state.broadcaster.receiver_count() == 0 {
-        return Ok(());
-    }
-
     let invoke_id = persisted_record.invoke_id.clone();
-    if let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
-        records: vec![persisted_record],
-    }) {
+    if state.broadcaster.receiver_count() > 0
+        && let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
+            records: vec![persisted_record],
+        })
+    {
         warn!(
             ?err,
             invoke_id = %invoke_id,
@@ -1877,7 +1864,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_runtime_snapshot(
         );
     }
 
-    Ok(())
+    schedule_proxy_capture_follow_up_worker(state, &invoke_id).await
 }
 
 pub(crate) async fn persist_proxy_capture_runtime_record(

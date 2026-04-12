@@ -2665,6 +2665,10 @@ async fn prompt_cache_conversations_groups_recent_keys_and_uses_history_totals()
     )
     .await;
 
+    sync_hourly_rollups_from_live_tables(&state.pool)
+        .await
+        .expect("materialize prompt cache rollups before count-mode prompt-cache read");
+
     let Json(response) = fetch_prompt_cache_conversations(
         State(state.clone()),
         Query(PromptCacheConversationsQuery {
@@ -2769,6 +2773,10 @@ async fn prompt_cache_last24h_requests_keep_null_status_rows_neutral() {
     .await
     .expect("insert null-status prompt cache row");
 
+    sync_hourly_rollups_from_live_tables(&state.pool)
+        .await
+        .expect("materialize prompt cache rollups before neutral status read");
+
     let Json(response) = fetch_prompt_cache_conversations(
         State(state),
         Query(PromptCacheConversationsQuery {
@@ -2831,6 +2839,10 @@ async fn prompt_cache_last24h_requests_treat_running_rows_with_failure_class_as_
     .await
     .expect("insert running prompt cache failure row");
 
+    sync_hourly_rollups_from_live_tables(&state.pool)
+        .await
+        .expect("materialize prompt cache rollups before running failure read");
+
     let Json(response) = fetch_prompt_cache_conversations(
         State(state),
         Query(PromptCacheConversationsQuery {
@@ -2891,6 +2903,10 @@ async fn prompt_cache_last24h_requests_treat_running_rows_with_error_text_as_fai
     .execute(&state.pool)
     .await
     .expect("insert running prompt cache row with error text");
+
+    sync_hourly_rollups_from_live_tables(&state.pool)
+        .await
+        .expect("materialize prompt cache rollups before running error-text read");
 
     let Json(response) = fetch_prompt_cache_conversations(
         State(state),
@@ -2960,6 +2976,10 @@ async fn prompt_cache_last24h_requests_treat_pending_rows_with_failure_kind_as_f
     .await
     .expect("insert pending prompt cache row with failure kind");
 
+    sync_hourly_rollups_from_live_tables(&state.pool)
+        .await
+        .expect("materialize prompt cache rollups before pending failure-kind read");
+
     let Json(response) = fetch_prompt_cache_conversations(
         State(state),
         Query(PromptCacheConversationsQuery {
@@ -3020,6 +3040,10 @@ async fn prompt_cache_last24h_requests_keep_status_only_http_failures_marked_as_
     .execute(&state.pool)
     .await
     .expect("insert http-status-only prompt cache failure row");
+
+    sync_hourly_rollups_from_live_tables(&state.pool)
+        .await
+        .expect("materialize prompt cache rollups before http-status-only read");
 
     let Json(response) = fetch_prompt_cache_conversations(
         State(state),

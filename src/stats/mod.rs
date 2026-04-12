@@ -1521,11 +1521,10 @@ pub(crate) async fn query_invocation_totals(
             ));
         }
 
-        // Once invocation archives exist, `window=all` must use repaired hourly rollups instead of
-        // rescanning every archive on each request. The one-time repair rebuilds overall/failure
-        // rollup tables from authoritative archive + live sources, then subsequent requests only
-        // backfill newly archived batches that are still missing summary markers.
-        ensure_invocation_summary_rollups_ready(pool).await?;
+        // Read paths must stay query-only even when historical summary repair is still pending.
+        // Background startup / follow-up maintenance is responsible for rebuilding stale archived
+        // hourly rollups and summary replay markers; requests reuse the current materialized
+        // rollups plus the live tail instead of writing through here.
         return query_invocation_all_time_rollup_totals(pool, source_scope).await;
     }
 

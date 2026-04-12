@@ -63,6 +63,7 @@ async fn run_startup_persistent_prep_inner(
     let archive_expiry_backfill_count = backfill_invocation_archive_expiries(pool, config).await?;
     if include_hourly_rollup_bootstrap {
         bootstrap_hourly_rollups(pool).await?;
+        ensure_invocation_summary_rollups_ready_best_effort(pool).await?;
     }
     let historical_rollup_snapshot = load_historical_rollup_backfill_snapshot(pool, config).await?;
 

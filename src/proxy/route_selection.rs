@@ -1096,8 +1096,19 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         .pool_no_available_wait
                         .normalized_poll_interval();
                     loop {
+                        let now = Instant::now();
                         if pre_attempt_total_timeout_deadline
-                            .is_some_and(|deadline| Instant::now() >= deadline)
+                            .is_some_and(|deadline| now >= deadline)
+                        {
+                            break (
+                                Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired),
+                                no_available_wait_deadline,
+                            );
+                        }
+                        if no_available_wait_deadline.is_some()
+                            && pre_attempt_total_timeout_deadline
+                                .map(|deadline| deadline.saturating_duration_since(now) <= poll_interval)
+                                .unwrap_or(false)
                         {
                             break (
                                 Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired),
@@ -1111,6 +1122,17 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             &excluded_upstream_route_keys,
                         )
                         .await;
+                        if matches!(
+                            resolution,
+                            Ok(PoolAccountResolution::Unavailable | PoolAccountResolution::NoCandidate)
+                        ) && no_available_wait_deadline.is_none()
+                        {
+                            let deadline = Instant::now() + state_for_wait.pool_no_available_wait.timeout;
+                            no_available_wait_deadline = Some(deadline);
+                            *shared_wait_deadline_for_task
+                                .lock()
+                                .expect("lock shared header wait deadline") = Some(deadline);
+                        }
                         if pre_attempt_total_timeout_deadline
                             .is_some_and(|deadline| Instant::now() >= deadline)
                         {

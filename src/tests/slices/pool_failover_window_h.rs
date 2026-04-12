@@ -71,6 +71,12 @@ async fn seed_invocation_archive_batch(
     seed_invocation_archive_batch_with_details(pool, config, batch_name, &rows).await
 }
 
+async fn run_background_invocation_summary_rollup_repair(pool: &SqlitePool) {
+    crate::stats::ensure_invocation_summary_rollups_ready(pool)
+        .await
+        .expect("run background invocation summary rollup repair");
+}
+
 #[derive(Clone, Copy)]
 struct SeedInvocationArchiveBatchRow<'a> {
     id: i64,
@@ -1366,34 +1372,47 @@ async fn all_time_summary_preserves_archived_history_when_rollup_failures_are_st
     .await
     .expect("fetch all-time summary with archived history present");
 
-    assert_eq!(summary.total_count, 4);
-    assert_eq!(summary.success_count, 2);
-    assert_eq!(summary.failure_count, 1);
-    assert_eq!(summary.total_tokens, 40);
-    assert!((summary.total_cost - 0.31).abs() < 1e-9);
+    assert_eq!(summary.total_count, 3);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 2);
+    assert_eq!(summary.total_tokens, 30);
+    assert!((summary.total_cost - 0.30).abs() < 1e-9);
 
-    let repair_marker_cursor: i64 =
-        sqlx::query_scalar("SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1")
-            .bind("codex_invocations_summary_rollup_v2")
-            .fetch_one(&state.pool)
-            .await
-            .expect("load archived all-time summary repair marker");
-    assert_eq!(repair_marker_cursor, 1);
-    let repair_live_cursor: i64 =
-        sqlx::query_scalar("SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1")
-            .bind("codex_invocations_summary_rollup_v2_live_cursor")
-            .fetch_one(&state.pool)
-            .await
-            .expect("load archived all-time summary repair live cursor");
-    assert_eq!(repair_live_cursor, 10);
+    let repair_marker_cursor = sqlx::query_scalar::<_, i64>(
+        "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
+    )
+    .bind("codex_invocations_summary_rollup_v2")
+    .fetch_optional(&state.pool)
+    .await
+    .expect("load archived all-time summary repair marker presence");
+    assert_eq!(
+        repair_marker_cursor, None,
+        "read-only all-time summary should not materialize summary repair markers inline"
+    );
+    let repair_live_cursor = sqlx::query_scalar::<_, i64>(
+        "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
+    )
+    .bind("codex_invocations_summary_rollup_v2_live_cursor")
+    .fetch_optional(&state.pool)
+    .await
+    .expect("load archived all-time summary repair live cursor presence");
+    assert_eq!(
+        repair_live_cursor, None,
+        "read-only all-time summary should not materialize repair live-cursor markers inline"
+    );
     let invocation_rollup_cursor = sqlx::query_scalar::<_, i64>(
         "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
     )
     .bind("codex_invocations")
-    .fetch_one(&state.pool)
+    .fetch_optional(&state.pool)
     .await
-    .expect("load invocation hourly rollup live cursor after repair");
-    assert_eq!(invocation_rollup_cursor, 10);
+    .expect("load invocation hourly rollup live cursor presence after read-only summary");
+    assert_eq!(
+        invocation_rollup_cursor, None,
+        "read-only all-time summary should not advance the shared invocation hourly cursor inline"
+    );
+
+    run_background_invocation_summary_rollup_repair(&state.pool).await;
 
     let Json(summary_repeat) = fetch_summary(
         State(state.clone()),
@@ -1561,6 +1580,8 @@ async fn timeseries_hourly_backed_repairs_stale_archived_rollup_counts_before_qu
     .await
     .expect("seed stale archived invocation rollup counts");
 
+    run_background_invocation_summary_rollup_repair(&state.pool).await;
+
     let start = local_naive_to_utc(archived_hour_local, Shanghai);
     let end = local_naive_to_utc(
         archived_hour_local
@@ -1696,7 +1717,17 @@ async fn all_time_summary_missing_archive_does_not_mark_repair_complete() {
 
     fs::remove_file(&archive_path).expect("remove archived invocation batch from disk");
 
-    let response = fetch_summary(
+    let repair_err = crate::stats::ensure_invocation_summary_rollups_ready(&state.pool)
+        .await
+        .expect_err("missing archive should fail background summary repair");
+    assert!(
+        repair_err
+            .to_string()
+            .contains("completed invocation archive is missing"),
+        "missing archive should bubble the repair cause"
+    );
+
+    let Json(summary) = fetch_summary(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -1705,9 +1736,12 @@ async fn all_time_summary_missing_archive_does_not_mark_repair_complete() {
         }),
     )
     .await
-    .expect_err("missing archive should fail all-time summary repair")
-    .into_response();
-    assert_eq!(response.status().as_u16(), 500);
+    .expect("read-only all-time summary should fall back to current materialized rollups");
+    assert_eq!(summary.total_count, 99);
+    assert_eq!(summary.success_count, 99);
+    assert_eq!(summary.failure_count, 0);
+    assert_eq!(summary.total_tokens, 990);
+    assert!((summary.total_cost - 9.9).abs() < 1e-9);
 
     let repair_marker_cursor = sqlx::query_scalar::<_, i64>(
         "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
@@ -1874,6 +1908,8 @@ async fn all_time_summary_missing_summary_markers_do_not_replay_materialized_arc
     .execute(&state.pool)
     .await
     .expect("seed summary repair live cursor");
+
+    run_background_invocation_summary_rollup_repair(&state.pool).await;
 
     let Json(summary) = fetch_summary(
         State(state.clone()),
@@ -2116,6 +2152,8 @@ async fn all_time_summary_backfill_preserves_overall_rollups_when_only_failure_m
     .await
     .expect("seed shared invocation hourly rollup cursor for failure-only backfill");
 
+    run_background_invocation_summary_rollup_repair(&state.pool).await;
+
     let Json(summary) = fetch_summary(
         State(state.clone()),
         Query(SummaryQuery {
@@ -2276,6 +2314,8 @@ async fn all_time_summary_repair_preserves_pruned_materialized_archives() {
     .execute(&state.pool)
     .await
     .expect("insert live invocation row");
+
+    run_background_invocation_summary_rollup_repair(&state.pool).await;
 
     let Json(summary) = fetch_summary(
         State(state.clone()),
@@ -2499,6 +2539,8 @@ async fn all_time_summary_repair_replays_existing_materialized_archives_when_oth
     .execute(&state.pool)
     .await
     .expect("seed stale existing materialized rollup");
+
+    run_background_invocation_summary_rollup_repair(&state.pool).await;
 
     let Json(summary) = fetch_summary(
         State(state.clone()),
@@ -2738,6 +2780,8 @@ async fn all_time_summary_repair_restores_live_rows_in_boundary_hours_when_prese
     .await
     .expect("seed shared invocation hourly rollup cursor");
 
+    run_background_invocation_summary_rollup_repair(&state.pool).await;
+
     let Json(summary) = fetch_summary(
         State(state.clone()),
         Query(SummaryQuery {
@@ -2930,6 +2974,8 @@ async fn all_time_summary_repair_rebuilds_non_materialized_archives_when_others_
     .await
     .expect("seed stale non-materialized rollup");
 
+    run_background_invocation_summary_rollup_repair(&state.pool).await;
+
     let Json(summary) = fetch_summary(
         State(state.clone()),
         Query(SummaryQuery {
@@ -3044,6 +3090,8 @@ async fn all_time_summary_repair_does_not_advance_shared_live_cursor_without_hou
     .await
     .expect("insert live invocation row");
 
+    run_background_invocation_summary_rollup_repair(&state.pool).await;
+
     let totals = query_combined_totals(
         &state.pool,
         state.config.crs_stats.as_ref(),
@@ -3114,6 +3162,8 @@ async fn all_time_summary_rollup_repair_counts_mixed_case_success_status() {
         )],
     )
     .await;
+
+    run_background_invocation_summary_rollup_repair(&state.pool).await;
 
     let Json(summary) = fetch_summary(
         State(state),

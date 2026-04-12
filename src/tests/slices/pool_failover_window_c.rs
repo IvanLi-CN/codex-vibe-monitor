@@ -2832,10 +2832,14 @@ async fn prompt_cache_views_ignore_sticky_only_internal_keys() {
         .bind(0.01_f64)
         .bind(payload.to_string())
         .bind("{}")
-        .execute(&state.pool)
-        .await
-        .expect("insert prompt cache test invocation");
+    .execute(&state.pool)
+    .await
+    .expect("insert prompt cache test invocation");
     }
+
+    sync_hourly_rollups_from_live_tables(&state.pool)
+        .await
+        .expect("materialize prompt cache rollups before sticky-only prompt-cache read");
 
     let Json(response) = fetch_prompt_cache_conversations(
         State(state.clone()),

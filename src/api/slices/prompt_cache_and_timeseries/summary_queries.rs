@@ -40,7 +40,6 @@ pub(crate) async fn query_hourly_backed_summary_range_with_config(
     let mut totals = StatsTotals::default();
     let range_plan = build_hourly_rollup_exact_range_plan(start, end, retention_cutoff)?;
     if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
-        ensure_invocation_summary_rollups_ready_best_effort(pool).await?;
         let mut tx = pool.begin().await?;
         let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
         let rollup_live_cursor = load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;

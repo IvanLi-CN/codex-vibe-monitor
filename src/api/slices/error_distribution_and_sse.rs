@@ -778,7 +778,6 @@ pub(crate) async fn fetch_error_distribution(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ErrorQuery>,
 ) -> Result<Json<ErrorDistributionResponse>, ApiError> {
-    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
     let start_dt = range_window.start;
@@ -792,9 +791,6 @@ pub(crate) async fn fetch_error_distribution(
             display_end,
             shanghai_retention_cutoff(state.config.invocation_max_days),
         )?;
-        if range_plan.full_hour_range.is_some() {
-            ensure_invocation_summary_rollups_ready_best_effort(&state.pool).await?;
-        }
         let (hourly_rows, exact_records) = if range_plan.full_hour_range.is_some() {
                 let mut tx = state.pool.begin().await?;
                 let snapshot_id =
@@ -1173,7 +1169,6 @@ pub(crate) async fn fetch_failure_summary(
     State(state): State<Arc<AppState>>,
     Query(params): Query<FailureSummaryQuery>,
 ) -> Result<Json<FailureSummaryResponse>, ApiError> {
-    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
     let start_dt = range_window.start;
@@ -1190,9 +1185,6 @@ pub(crate) async fn fetch_failure_summary(
             display_end,
             shanghai_retention_cutoff(state.config.invocation_max_days),
         )?;
-        if range_plan.full_hour_range.is_some() {
-            ensure_invocation_summary_rollups_ready_best_effort(&state.pool).await?;
-        }
         let (hourly_rows, exact_records) = if range_plan.full_hour_range.is_some() {
                 let mut tx = state.pool.begin().await?;
                 let snapshot_id =
@@ -1360,7 +1352,6 @@ pub(crate) async fn fetch_perf_stats(
     State(state): State<Arc<AppState>>,
     Query(params): Query<PerfQuery>,
 ) -> Result<Json<PerfStatsResponse>, ApiError> {
-    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     #[derive(sqlx::FromRow)]
     struct PerfTimingRow {
         t_total_ms: Option<f64>,

@@ -780,10 +780,6 @@ pub(crate) async fn build_forward_proxy_binding_nodes_response_with_options(
     const BUCKET_SECONDS: i64 = 3600;
     const BUCKET_COUNT: i64 = 24;
 
-    if catch_up_hourly_rollups {
-        crate::ensure_hourly_rollups_caught_up(state).await?;
-    }
-
     let mut nodes = {
         let manager = state.forward_proxy.lock().await;
         manager.binding_nodes()

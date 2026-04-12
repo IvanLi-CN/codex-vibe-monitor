@@ -30,7 +30,15 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait(
     let poll_interval = state.pool_no_available_wait.normalized_poll_interval();
 
     loop {
-        if total_timeout_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        let now = Instant::now();
+        if total_timeout_deadline.is_some_and(|deadline| now >= deadline) {
+            return Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired);
+        }
+        if wait_deadline.is_some()
+            && total_timeout_deadline
+                .map(|deadline| deadline.saturating_duration_since(now) <= poll_interval)
+                .unwrap_or(false)
+        {
             return Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired);
         }
         let resolution = resolve_pool_account_for_request_with_route_requirement(
@@ -41,6 +49,15 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait(
             required_upstream_route_key,
         )
         .await?;
+        if wait_for_no_available
+            && matches!(
+                resolution,
+                PoolAccountResolution::Unavailable | PoolAccountResolution::NoCandidate
+            )
+            && wait_deadline.is_none()
+        {
+            *wait_deadline = Some(Instant::now() + state.pool_no_available_wait.timeout);
+        }
         if total_timeout_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             return Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired);
         }
