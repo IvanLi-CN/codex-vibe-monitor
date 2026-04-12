@@ -374,8 +374,28 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
                 .await?;
         (snapshot_id, Vec::new(), exact_records)
     };
+    let archived_hourly_rows = if let Some((range_start_epoch, range_end_epoch)) =
+        range_plan.full_hour_range
+    {
+        let archived_start = Utc
+            .timestamp_opt(range_start_epoch, 0)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid archived timeseries start epoch")))?;
+        let archived_end = Utc
+            .timestamp_opt(range_end_epoch, 0)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid archived timeseries end epoch")))?;
+        crate::stats::query_unmaterialized_invocation_archive_hourly_rollup_deltas(
+            &state.pool,
+            source_scope,
+            Some((archived_start, archived_end)),
+        )
+        .await?
+    } else {
+        Vec::new()
+    };
 
-    for row in hourly_rows {
+    for row in hourly_rows.into_iter().chain(archived_hourly_rows) {
         let bucket_epoch =
             align_reporting_bucket_epoch(row.bucket_start_epoch, bucket_seconds, reporting_tz)?;
         let entry = aggregates.entry(bucket_epoch).or_default();

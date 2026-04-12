@@ -998,72 +998,210 @@ async fn open_unmaterialized_invocation_archive_batch_pool(
     Ok(Some((archive_pool, temp_cleanup)))
 }
 
-async fn load_archive_bucket_source_keys(
-    archive_pool: &Pool<Sqlite>,
-    source_scope: InvocationSourceScope,
-    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
-) -> Result<HashSet<(i64, String)>> {
-    let mut cursor_id = 0_i64;
-    let mut keys = HashSet::new();
-
-    loop {
-        let rows = load_invocation_hourly_source_rows_after_id(
-            archive_pool,
-            cursor_id,
-            source_scope,
-            BACKFILL_BATCH_SIZE,
-        )
-        .await?;
-        if rows.is_empty() {
-            break;
-        }
-        cursor_id = rows.last().map(|row| row.id).unwrap_or(cursor_id);
-        for row in rows {
-            if let Some((start, end)) = range {
-                let Some(occurred_at_utc) = parse_to_utc_datetime(&row.occurred_at) else {
-                    continue;
-                };
-                if occurred_at_utc < start || occurred_at_utc >= end {
-                    continue;
-                }
-            }
-            keys.insert((
-                summary_rollup_bucket_start_epoch(&row.occurred_at)?,
-                row.source.clone(),
-            ));
-        }
+fn subtract_approx_histogram_counts(
+    archive_histogram: &[i64],
+    materialized_histogram: &[i64],
+) -> ApproxHistogramCounts {
+    let expected_len = archive_histogram.len().max(materialized_histogram.len());
+    let mut delta = archive_histogram.to_vec();
+    delta.resize(expected_len, 0);
+    for (idx, slot) in delta.iter_mut().enumerate() {
+        let materialized = materialized_histogram.get(idx).copied().unwrap_or_default();
+        *slot = slot.saturating_sub(materialized);
     }
-
-    Ok(keys)
+    delta
 }
 
-async fn load_missing_overall_rollup_keys_for_archive(
+async fn load_materialized_invocation_rollup_record(
     pool: &Pool<Sqlite>,
-    archive_pool: &Pool<Sqlite>,
+    bucket_start_epoch: i64,
+    source: &str,
+) -> Result<Option<InvocationHourlyRollupRecord>> {
+    sqlx::query_as::<_, InvocationHourlyRollupRecord>(
+        r#"
+        SELECT
+            bucket_start_epoch,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram,
+            first_response_byte_total_sample_count,
+            first_response_byte_total_sum_ms,
+            first_response_byte_total_max_ms,
+            first_response_byte_total_histogram
+        FROM invocation_rollup_hourly
+        WHERE bucket_start_epoch = ?1
+          AND source = ?2
+        LIMIT 1
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(source)
+    .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
+}
+
+fn build_invocation_hourly_rollup_delta_record(
+    bucket_start_epoch: i64,
+    archive_delta: &InvocationHourlyRollupDelta,
+    materialized_row: Option<&InvocationHourlyRollupRecord>,
+) -> Result<Option<InvocationHourlyRollupRecord>> {
+    let total_count = archive_delta.total_count.saturating_sub(
+        materialized_row
+            .map(|row| row.total_count.max(0))
+            .unwrap_or(0),
+    );
+    let success_count = archive_delta.success_count.saturating_sub(
+        materialized_row
+            .map(|row| row.success_count.max(0))
+            .unwrap_or(0),
+    );
+    let failure_count = archive_delta.failure_count.saturating_sub(
+        materialized_row
+            .map(|row| row.failure_count.max(0))
+            .unwrap_or(0),
+    );
+    let total_tokens = archive_delta.total_tokens.saturating_sub(
+        materialized_row
+            .map(|row| row.total_tokens.max(0))
+            .unwrap_or(0),
+    );
+    let total_cost = (archive_delta.total_cost
+        - materialized_row.map(|row| row.total_cost).unwrap_or(0.0))
+    .max(0.0);
+
+    let first_byte_histogram = subtract_approx_histogram_counts(
+        &archive_delta.first_byte_histogram,
+        &materialized_row
+            .map(|row| decode_approx_histogram(&row.first_byte_histogram))
+            .unwrap_or_else(empty_approx_histogram),
+    );
+    let first_byte_sample_count = first_byte_histogram.iter().copied().sum::<i64>();
+    let first_byte_sum_ms = (archive_delta.first_byte_sum_ms
+        - materialized_row
+            .map(|row| row.first_byte_sum_ms)
+            .unwrap_or(0.0))
+    .max(0.0);
+
+    let first_response_byte_total_histogram = subtract_approx_histogram_counts(
+        &archive_delta.first_response_byte_total_histogram,
+        &materialized_row
+            .map(|row| decode_approx_histogram(&row.first_response_byte_total_histogram))
+            .unwrap_or_else(empty_approx_histogram),
+    );
+    let first_response_byte_total_sample_count = first_response_byte_total_histogram
+        .iter()
+        .copied()
+        .sum::<i64>();
+    let first_response_byte_total_sum_ms = (archive_delta.first_response_byte_total_sum_ms
+        - materialized_row
+            .map(|row| row.first_response_byte_total_sum_ms)
+            .unwrap_or(0.0))
+    .max(0.0);
+
+    if total_count <= 0
+        && success_count <= 0
+        && failure_count <= 0
+        && total_tokens <= 0
+        && total_cost <= 0.0
+        && first_byte_sample_count <= 0
+        && first_response_byte_total_sample_count <= 0
+    {
+        return Ok(None);
+    }
+
+    Ok(Some(InvocationHourlyRollupRecord {
+        bucket_start_epoch,
+        total_count,
+        success_count,
+        failure_count,
+        total_tokens,
+        total_cost,
+        first_byte_sample_count,
+        first_byte_sum_ms,
+        first_byte_max_ms: if first_byte_sample_count > 0 {
+            archive_delta.first_byte_max_ms
+        } else {
+            0.0
+        },
+        first_byte_histogram: encode_approx_histogram(&first_byte_histogram)?,
+        first_response_byte_total_sample_count,
+        first_response_byte_total_sum_ms,
+        first_response_byte_total_max_ms: if first_response_byte_total_sample_count > 0 {
+            archive_delta.first_response_byte_total_max_ms
+        } else {
+            0.0
+        },
+        first_response_byte_total_histogram: encode_approx_histogram(
+            &first_response_byte_total_histogram,
+        )?,
+    }))
+}
+
+pub(crate) async fn query_unmaterialized_invocation_archive_hourly_rollup_deltas(
+    pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
-) -> Result<HashSet<(i64, String)>> {
-    let keys = load_archive_bucket_source_keys(archive_pool, source_scope, range).await?;
-    if keys.is_empty() {
-        return Ok(HashSet::new());
-    }
+) -> Result<Vec<InvocationHourlyRollupRecord>> {
+    let archive_rows = load_completed_invocation_archive_paths(pool).await?;
+    let mut delta_rows = Vec::new();
 
-    let mut missing_keys = HashSet::new();
-    for (bucket_start_epoch, source) in keys {
-        let exists = sqlx::query_scalar::<_, i64>(
-            "SELECT 1 FROM invocation_rollup_hourly WHERE bucket_start_epoch = ?1 AND source = ?2 LIMIT 1",
-        )
-        .bind(bucket_start_epoch)
-        .bind(&source)
-        .fetch_optional(pool)
-        .await?
-        .is_some();
-        if !exists {
-            missing_keys.insert((bucket_start_epoch, source));
+    for archive_row in archive_rows {
+        let Some((archive_pool, temp_cleanup)) =
+            open_unmaterialized_invocation_archive_batch_pool(&archive_row, "stats-summary")
+                .await?
+        else {
+            continue;
+        };
+        let mut overall = BTreeMap::<(i64, String), InvocationHourlyRollupDelta>::new();
+        let mut cursor_id = 0_i64;
+        loop {
+            let rows = load_invocation_hourly_source_rows_after_id(
+                &archive_pool,
+                cursor_id,
+                source_scope,
+                BACKFILL_BATCH_SIZE,
+            )
+            .await?;
+            if rows.is_empty() {
+                break;
+            }
+            cursor_id = rows.last().map(|row| row.id).unwrap_or(cursor_id);
+            let filtered_rows = rows
+                .into_iter()
+                .filter(|row| invocation_hourly_source_record_matches_range(row, range))
+                .collect::<Vec<_>>();
+            if filtered_rows.is_empty() {
+                continue;
+            }
+            accumulate_invocation_hourly_overall_rollups(&mut overall, &filtered_rows)?;
         }
+
+        for ((bucket_start_epoch, source), archive_delta) in overall {
+            let materialized_row =
+                load_materialized_invocation_rollup_record(pool, bucket_start_epoch, &source)
+                    .await?;
+            if let Some(delta_row) = build_invocation_hourly_rollup_delta_record(
+                bucket_start_epoch,
+                &archive_delta,
+                materialized_row.as_ref(),
+            )? {
+                delta_rows.push(delta_row);
+            }
+        }
+
+        archive_pool.close().await;
+        drop(temp_cleanup);
     }
 
-    Ok(missing_keys)
+    delta_rows.sort_by_key(|row| row.bucket_start_epoch);
+    Ok(delta_rows)
 }
 
 fn invocation_hourly_source_record_matches_range(
@@ -1079,14 +1217,9 @@ fn invocation_hourly_source_record_matches_range(
     occurred_at_utc >= start && occurred_at_utc < end
 }
 
-fn add_invocation_hourly_source_record_to_totals(
-    totals: &mut StatsTotals,
-    row: &InvocationHourlySourceRecord,
-) {
-    totals.total_count += 1;
-    totals.total_tokens += row.total_tokens.unwrap_or(0);
-    totals.total_cost += row.cost.unwrap_or(0.0);
-
+fn archived_failure_rollup_key(
+    row: &ArchivedInvocationFailureRow,
+) -> Result<Option<(i64, String, String, i64, String)>> {
     let classification = resolve_failure_classification(
         row.status.as_deref(),
         row.error_message.as_deref(),
@@ -1094,51 +1227,41 @@ fn add_invocation_hourly_source_record_to_totals(
         row.failure_class.as_deref(),
         row.is_actionable,
     );
-    if invocation_status_is_success_like(row.status.as_deref(), row.error_message.as_deref())
-        && classification.failure_class == FailureClass::None
-    {
-        totals.success_count += 1;
-    } else if invocation_status_counts_toward_terminal_totals(row.status.as_deref())
-        && classification.failure_class != FailureClass::None
-    {
-        totals.failure_count += 1;
+    if classification.failure_class == FailureClass::None {
+        return Ok(None);
     }
+    Ok(Some((
+        summary_rollup_bucket_start_epoch(&row.occurred_at)?,
+        row.source.clone(),
+        classification.failure_class.as_str().to_string(),
+        classification.is_actionable as i64,
+        categorize_error(row.error_message.as_deref().unwrap_or_default()),
+    )))
 }
 
-async fn load_missing_failure_rollup_keys_for_rows(
+async fn load_missing_failure_rollup_row_counts_for_rows(
     pool: &Pool<Sqlite>,
     rows: &[ArchivedInvocationFailureRow],
-) -> Result<HashSet<(i64, String, String, i64, String)>> {
-    let keys = rows
-        .iter()
-        .filter_map(|row| {
-            let classification = resolve_failure_classification(
-                row.status.as_deref(),
-                row.error_message.as_deref(),
-                row.failure_kind.as_deref(),
-                row.failure_class.as_deref(),
-                row.is_actionable,
-            );
-            if classification.failure_class == FailureClass::None {
-                return None;
-            }
-            Some((
-                summary_rollup_bucket_start_epoch(&row.occurred_at).ok()?,
-                row.source.clone(),
-                classification.failure_class.as_str().to_string(),
-                classification.is_actionable as i64,
-                categorize_error(row.error_message.as_deref().unwrap_or_default()),
-            ))
-        })
-        .collect::<HashSet<_>>();
-    if keys.is_empty() {
-        return Ok(HashSet::new());
+) -> Result<HashMap<(i64, String, String, i64, String), usize>> {
+    let mut grouped_counts = HashMap::<(i64, String, String, i64, String), usize>::new();
+    for row in rows {
+        let Some(key) = archived_failure_rollup_key(row)? else {
+            continue;
+        };
+        *grouped_counts.entry(key).or_default() += 1;
+    }
+    if grouped_counts.is_empty() {
+        return Ok(HashMap::new());
     }
 
-    let mut missing_keys = HashSet::new();
-    for (bucket_start_epoch, source, failure_class, is_actionable, error_category) in keys {
-        let exists = sqlx::query_scalar::<_, i64>(
-            "SELECT 1 FROM invocation_failure_rollup_hourly WHERE bucket_start_epoch = ?1 AND source = ?2 AND failure_class = ?3 AND is_actionable = ?4 AND error_category = ?5 LIMIT 1",
+    let mut missing_counts = HashMap::new();
+    for (
+        (bucket_start_epoch, source, failure_class, is_actionable, error_category),
+        archive_count,
+    ) in grouped_counts
+    {
+        let materialized_count = sqlx::query_scalar::<_, i64>(
+            "SELECT failure_count FROM invocation_failure_rollup_hourly WHERE bucket_start_epoch = ?1 AND source = ?2 AND failure_class = ?3 AND is_actionable = ?4 AND error_category = ?5 LIMIT 1",
         )
         .bind(bucket_start_epoch)
         .bind(&source)
@@ -1147,19 +1270,24 @@ async fn load_missing_failure_rollup_keys_for_rows(
         .bind(&error_category)
         .fetch_optional(pool)
         .await?
-        .is_some();
-        if !exists {
-            missing_keys.insert((
-                bucket_start_epoch,
-                source,
-                failure_class,
-                is_actionable,
-                error_category,
-            ));
+        .unwrap_or_default()
+        .max(0) as usize;
+        let missing_count = archive_count.saturating_sub(materialized_count);
+        if missing_count > 0 {
+            missing_counts.insert(
+                (
+                    bucket_start_epoch,
+                    source,
+                    failure_class,
+                    is_actionable,
+                    error_category,
+                ),
+                missing_count,
+            );
         }
     }
 
-    Ok(missing_keys)
+    Ok(missing_counts)
 }
 
 fn collect_proxy_perf_rollup_keys_from_row(
@@ -1341,54 +1469,16 @@ pub(crate) async fn query_unmaterialized_invocation_archive_totals(
     source_scope: InvocationSourceScope,
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
 ) -> Result<StatsTotals> {
-    let archive_rows = load_completed_invocation_archive_paths(pool).await?;
     let mut totals = StatsTotals::default();
-
-    for archive_row in archive_rows {
-        let Some((archive_pool, temp_cleanup)) =
-            open_unmaterialized_invocation_archive_batch_pool(&archive_row, "stats-summary")
-                .await?
-        else {
-            continue;
-        };
-        let missing_keys =
-            load_missing_overall_rollup_keys_for_archive(pool, &archive_pool, source_scope, range)
-                .await?;
-        if missing_keys.is_empty() {
-            archive_pool.close().await;
-            drop(temp_cleanup);
-            continue;
-        }
-        let mut cursor_id = 0_i64;
-        loop {
-            let rows = load_invocation_hourly_source_rows_after_id(
-                &archive_pool,
-                cursor_id,
-                source_scope,
-                BACKFILL_BATCH_SIZE,
-            )
-            .await?;
-            if rows.is_empty() {
-                break;
-            }
-            cursor_id = rows.last().map(|row| row.id).unwrap_or(cursor_id);
-            for row in rows {
-                if !invocation_hourly_source_record_matches_range(&row, range) {
-                    continue;
-                }
-                let key = (
-                    summary_rollup_bucket_start_epoch(&row.occurred_at)?,
-                    row.source.clone(),
-                );
-                if !missing_keys.contains(&key) {
-                    continue;
-                }
-                add_invocation_hourly_source_record_to_totals(&mut totals, &row);
-            }
-        }
-
-        archive_pool.close().await;
-        drop(temp_cleanup);
+    for row in
+        query_unmaterialized_invocation_archive_hourly_rollup_deltas(pool, source_scope, range)
+            .await?
+    {
+        totals.total_count += row.total_count;
+        totals.success_count += row.success_count;
+        totals.failure_count += row.failure_count;
+        totals.total_tokens += row.total_tokens;
+        totals.total_cost += row.total_cost;
     }
 
     Ok(totals)
@@ -1435,34 +1525,27 @@ pub(crate) async fn load_unmaterialized_invocation_archive_failure_rows(
         };
         let archive_rows =
             load_failure_rows_from_archive_pool(&archive_pool, start, end, source_scope).await?;
-        let missing_keys = load_missing_failure_rollup_keys_for_rows(pool, &archive_rows).await?;
-        if missing_keys.is_empty() {
+        let missing_row_counts =
+            load_missing_failure_rollup_row_counts_for_rows(pool, &archive_rows).await?;
+        if missing_row_counts.is_empty() {
             archive_pool.close().await;
             drop(temp_cleanup);
             continue;
         }
+        let mut emitted_row_counts = HashMap::<(i64, String, String, i64, String), usize>::new();
         rows.extend(archive_rows.into_iter().filter(|row| {
-            let classification = resolve_failure_classification(
-                row.status.as_deref(),
-                row.error_message.as_deref(),
-                row.failure_kind.as_deref(),
-                row.failure_class.as_deref(),
-                row.is_actionable,
-            );
-            if classification.failure_class == FailureClass::None {
-                return false;
-            }
-            let Ok(bucket_start_epoch) = summary_rollup_bucket_start_epoch(&row.occurred_at) else {
+            let Ok(Some(key)) = archived_failure_rollup_key(row) else {
                 return false;
             };
-            let error_category = categorize_error(row.error_message.as_deref().unwrap_or_default());
-            missing_keys.contains(&(
-                bucket_start_epoch,
-                row.source.clone(),
-                classification.failure_class.as_str().to_string(),
-                classification.is_actionable as i64,
-                error_category,
-            ))
+            let Some(missing_count) = missing_row_counts.get(&key) else {
+                return false;
+            };
+            let emitted_count = emitted_row_counts.entry(key).or_default();
+            if *emitted_count >= *missing_count {
+                return false;
+            }
+            *emitted_count += 1;
+            true
         }));
         archive_pool.close().await;
         drop(temp_cleanup);
