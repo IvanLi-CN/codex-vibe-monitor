@@ -365,6 +365,19 @@ describe("UpstreamAccountGroupNoteDialog", () => {
     expect(onBoundProxyKeysChange).toHaveBeenCalledWith([]);
   });
 
+  it("does not keep showing the loading placeholder after an idle missing catalog failure", () => {
+    renderDialog({
+      availableProxyNodes: [],
+      proxyBindingsCatalogKind: "missing",
+      proxyBindingsCatalogFreshness: "missing",
+    });
+
+    expect(bodyText()).not.toContain("Loading proxy nodes…");
+    expect(
+      document.querySelector('[data-testid="proxy-binding-options-loading"]'),
+    ).toBeNull();
+  });
+
   it("blocks saving when every selected binding is unavailable", () => {
     renderDialog({
       boundProxyKeys: ["fpn_unavailable_only"],

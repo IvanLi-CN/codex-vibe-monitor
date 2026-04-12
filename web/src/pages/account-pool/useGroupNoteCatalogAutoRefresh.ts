@@ -20,7 +20,8 @@ export function useGroupNoteCatalogAutoRefresh(options: {
     const autoRefreshReason =
       catalogState?.kind === "missing"
         ? "missing"
-        : catalogState?.freshness === "stale"
+        : catalogState?.kind !== "loading" &&
+            catalogState?.freshness === "stale"
           ? "stale"
           : null;
 

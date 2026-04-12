@@ -440,7 +440,6 @@ export function UpstreamAccountGroupNoteDialog({
     canonicalBoundProxyKeys.length > 0;
   const proxyBindingsLoading =
     proxyBindingsCatalogKind === "loading" ||
-    proxyBindingsCatalogKind === "missing" ||
     (proxyBindingsCatalogFreshness === "stale" && proxyOptions.length === 0);
   const showProxyBindingsLoadingNotice = proxyBindingsLoading;
   const showProxyBindingsEmptyState =
