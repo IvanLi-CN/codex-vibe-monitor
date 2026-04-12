@@ -1007,9 +1007,13 @@ fn subtract_approx_histogram_counts(
     delta.resize(expected_len, 0);
     for (idx, slot) in delta.iter_mut().enumerate() {
         let materialized = materialized_histogram.get(idx).copied().unwrap_or_default();
-        *slot = slot.saturating_sub(materialized);
+        *slot = slot.saturating_sub(materialized).max(0);
     }
     delta
+}
+
+fn subtract_nonnegative_i64(archive_value: i64, materialized_value: i64) -> i64 {
+    archive_value.saturating_sub(materialized_value).max(0)
 }
 
 async fn load_materialized_invocation_rollup_record(
@@ -1052,22 +1056,26 @@ fn build_invocation_hourly_rollup_delta_record(
     archive_delta: &InvocationHourlyRollupDelta,
     materialized_row: Option<&InvocationHourlyRollupRecord>,
 ) -> Result<Option<InvocationHourlyRollupRecord>> {
-    let total_count = archive_delta.total_count.saturating_sub(
+    let total_count = subtract_nonnegative_i64(
+        archive_delta.total_count,
         materialized_row
             .map(|row| row.total_count.max(0))
             .unwrap_or(0),
     );
-    let success_count = archive_delta.success_count.saturating_sub(
+    let success_count = subtract_nonnegative_i64(
+        archive_delta.success_count,
         materialized_row
             .map(|row| row.success_count.max(0))
             .unwrap_or(0),
     );
-    let failure_count = archive_delta.failure_count.saturating_sub(
+    let failure_count = subtract_nonnegative_i64(
+        archive_delta.failure_count,
         materialized_row
             .map(|row| row.failure_count.max(0))
             .unwrap_or(0),
     );
-    let total_tokens = archive_delta.total_tokens.saturating_sub(
+    let total_tokens = subtract_nonnegative_i64(
+        archive_delta.total_tokens,
         materialized_row
             .map(|row| row.total_tokens.max(0))
             .unwrap_or(0),
