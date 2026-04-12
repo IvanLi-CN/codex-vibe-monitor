@@ -1,4 +1,4 @@
-fn deflate_stream_uses_zlib_wrapper(header: &[u8]) -> bool {
+pub(crate) fn deflate_stream_uses_zlib_wrapper(header: &[u8]) -> bool {
     if header.len() < 2 {
         return true;
     }
@@ -12,7 +12,7 @@ fn deflate_stream_uses_zlib_wrapper(header: &[u8]) -> bool {
 }
 
 #[allow(dead_code)]
-fn wrap_decoded_response_reader(
+pub(crate) fn wrap_decoded_response_reader(
     mut reader: Box<dyn Read + Send>,
     content_encoding: Option<&str>,
 ) -> std::result::Result<Box<dyn Read + Send>, String> {
@@ -38,7 +38,7 @@ fn wrap_decoded_response_reader(
 }
 
 #[allow(dead_code)]
-fn open_decoded_response_reader(
+pub(crate) fn open_decoded_response_reader(
     path: &Path,
     content_encoding: Option<&str>,
 ) -> std::result::Result<Box<dyn Read + Send>, String> {
@@ -47,7 +47,7 @@ fn open_decoded_response_reader(
 }
 
 #[allow(dead_code)]
-fn parse_nonstream_response_payload_from_raw_file(
+pub(crate) fn parse_nonstream_response_payload_from_raw_file(
     target: ProxyCaptureTarget,
     path: &Path,
     content_encoding: Option<&str>,
@@ -72,7 +72,7 @@ fn parse_nonstream_response_payload_from_raw_file(
 }
 
 #[allow(dead_code)]
-fn parse_target_response_payload_from_raw_file(
+pub(crate) fn parse_target_response_payload_from_raw_file(
     target: ProxyCaptureTarget,
     path: &Path,
     is_stream_hint: bool,
@@ -87,7 +87,7 @@ fn parse_target_response_payload_from_raw_file(
 }
 
 #[allow(dead_code)]
-fn parse_target_response_payload_from_capture(
+pub(crate) fn parse_target_response_payload_from_capture(
     target: ProxyCaptureTarget,
     resp_raw: &RawPayloadMeta,
     preview_bytes: &[u8],
@@ -122,7 +122,7 @@ fn parse_target_response_payload_from_capture(
     }
 }
 
-fn summarize_pool_upstream_http_failure(
+pub(crate) fn summarize_pool_upstream_http_failure(
     status: StatusCode,
     upstream_request_id_header: Option<&str>,
     bytes: &[u8],
@@ -177,7 +177,7 @@ fn summarize_pool_upstream_http_failure(
     )
 }
 
-struct NormalizedPoolFailureRecord {
+pub(crate) struct NormalizedPoolFailureRecord {
     attempt_status: &'static str,
     upstream_http_status: Option<StatusCode>,
     downstream_http_status: Option<StatusCode>,
@@ -185,7 +185,7 @@ struct NormalizedPoolFailureRecord {
     downstream_error_message: Option<String>,
 }
 
-fn default_oauth_transport_failure_message(failure_kind: &'static str) -> &'static str {
+pub(crate) fn default_oauth_transport_failure_message(failure_kind: &'static str) -> &'static str {
     match failure_kind {
         PROXY_FAILURE_FAILED_CONTACT_UPSTREAM => "failed to contact oauth codex upstream",
         PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT => "oauth codex upstream handshake timed out",
@@ -194,7 +194,7 @@ fn default_oauth_transport_failure_message(failure_kind: &'static str) -> &'stat
     }
 }
 
-fn normalize_pool_upstream_failure_record(
+pub(crate) fn normalize_pool_upstream_failure_record(
     status: StatusCode,
     oauth_transport_failure_kind: Option<&'static str>,
     message: &str,
@@ -231,7 +231,7 @@ fn normalize_pool_upstream_failure_record(
     }
 }
 
-async fn estimate_proxy_cost_from_shared_catalog(
+pub(crate) async fn estimate_proxy_cost_from_shared_catalog(
     catalog: &Arc<RwLock<PricingCatalog>>,
     model: Option<&str>,
     usage: &ParsedUsage,
@@ -242,14 +242,14 @@ async fn estimate_proxy_cost_from_shared_catalog(
     estimate_proxy_cost(&guard, model, usage, billing_service_tier, pricing_mode)
 }
 
-fn has_billable_usage(usage: &ParsedUsage) -> bool {
+pub(crate) fn has_billable_usage(usage: &ParsedUsage) -> bool {
     usage.input_tokens.unwrap_or(0).max(0) > 0
         || usage.output_tokens.unwrap_or(0).max(0) > 0
         || usage.cache_input_tokens.unwrap_or(0).max(0) > 0
         || usage.reasoning_tokens.unwrap_or(0).max(0) > 0
 }
 
-fn resolve_pricing_for_model<'a>(
+pub(crate) fn resolve_pricing_for_model<'a>(
     catalog: &'a PricingCatalog,
     model: &str,
 ) -> Option<&'a ModelPricing> {
@@ -259,7 +259,7 @@ fn resolve_pricing_for_model<'a>(
     dated_model_alias_base(model).and_then(|base| catalog.models.get(base))
 }
 
-fn dated_model_alias_base(model: &str) -> Option<&str> {
+pub(crate) fn dated_model_alias_base(model: &str) -> Option<&str> {
     const DATED_SUFFIX_LEN: usize = 11; // -YYYY-MM-DD
     if model.len() <= DATED_SUFFIX_LEN {
         return None;
@@ -283,16 +283,16 @@ fn dated_model_alias_base(model: &str) -> Option<&str> {
     if base.is_empty() { None } else { Some(base) }
 }
 
-fn is_gpt_5_4_long_context_surcharge_model(model: &str) -> bool {
+pub(crate) fn is_gpt_5_4_long_context_surcharge_model(model: &str) -> bool {
     let base = dated_model_alias_base(model).unwrap_or(model);
     matches!(base, "gpt-5.4" | "gpt-5.4-pro")
 }
 
-fn proxy_price_version(catalog_version: &str, pricing_mode: ProxyPricingMode) -> String {
+pub(crate) fn proxy_price_version(catalog_version: &str, pricing_mode: ProxyPricingMode) -> String {
     format!("{catalog_version}{}", pricing_mode.price_version_suffix())
 }
 
-fn pricing_backfill_attempt_version(catalog: &PricingCatalog) -> String {
+pub(crate) fn pricing_backfill_attempt_version(catalog: &PricingCatalog) -> String {
     fn mix_fvn1a(hash: &mut u64, bytes: &[u8]) {
         for byte in bytes {
             *hash ^= u64::from(*byte);
@@ -342,7 +342,7 @@ fn pricing_backfill_attempt_version(catalog: &PricingCatalog) -> String {
     format!("{}@{:016x}", catalog.version, hash)
 }
 
-fn estimate_proxy_cost(
+pub(crate) fn estimate_proxy_cost(
     catalog: &PricingCatalog,
     model: Option<&str>,
     usage: &ParsedUsage,
@@ -410,7 +410,7 @@ fn estimate_proxy_cost(
     (Some(cost), true, price_version)
 }
 
-async fn store_raw_payload_file(
+pub(crate) async fn store_raw_payload_file(
     config: &AppConfig,
     invoke_id: &str,
     kind: &str,
@@ -459,7 +459,7 @@ async fn store_raw_payload_file(
     meta
 }
 
-async fn broadcast_proxy_capture_follow_up(
+pub(crate) async fn broadcast_proxy_capture_follow_up(
     pool: &Pool<Sqlite>,
     broadcaster: &broadcast::Sender<BroadcastPayload>,
     broadcast_state_cache: &Mutex<BroadcastStateCache>,
@@ -527,19 +527,19 @@ async fn broadcast_proxy_capture_follow_up(
     }
 }
 
-struct SummaryQuotaBroadcastIdleContext<'a> {
-    latest_broadcast_seq: &'a AtomicU64,
-    broadcast_running: &'a AtomicBool,
-    shutdown: &'a CancellationToken,
-    pool: &'a Pool<Sqlite>,
-    broadcaster: &'a broadcast::Sender<BroadcastPayload>,
-    broadcast_state_cache: &'a Mutex<BroadcastStateCache>,
-    relay_config: Option<&'a CrsStatsConfig>,
-    invocation_max_days: u64,
-    invoke_id: &'a str,
+pub(crate) struct SummaryQuotaBroadcastIdleContext<'a> {
+    pub(crate) latest_broadcast_seq: &'a AtomicU64,
+    pub(crate) broadcast_running: &'a AtomicBool,
+    pub(crate) shutdown: &'a CancellationToken,
+    pub(crate) pool: &'a Pool<Sqlite>,
+    pub(crate) broadcaster: &'a broadcast::Sender<BroadcastPayload>,
+    pub(crate) broadcast_state_cache: &'a Mutex<BroadcastStateCache>,
+    pub(crate) relay_config: Option<&'a CrsStatsConfig>,
+    pub(crate) invocation_max_days: u64,
+    pub(crate) invoke_id: &'a str,
 }
 
-async fn finish_summary_quota_broadcast_idle(
+pub(crate) async fn finish_summary_quota_broadcast_idle(
     ctx: SummaryQuotaBroadcastIdleContext<'_>,
     synced_seq: u64,
 ) -> bool {
@@ -574,7 +574,7 @@ async fn finish_summary_quota_broadcast_idle(
         .is_ok()
 }
 
-async fn persist_and_broadcast_proxy_capture(
+pub(crate) async fn persist_and_broadcast_proxy_capture(
     state: &AppState,
     capture_started: Instant,
     record: ProxyCaptureRecord,
@@ -842,7 +842,7 @@ async fn persist_and_broadcast_proxy_capture(
     Ok(())
 }
 
-async fn persist_proxy_capture_record(
+pub(crate) async fn persist_proxy_capture_record(
     pool: &Pool<Sqlite>,
     capture_started: Instant,
     mut record: ProxyCaptureRecord,
@@ -1131,7 +1131,7 @@ async fn persist_proxy_capture_record(
     Ok(Some(persisted))
 }
 
-fn read_proxy_raw_bytes(path: &str, fallback_root: Option<&Path>) -> io::Result<Vec<u8>> {
+pub(crate) fn read_proxy_raw_bytes(path: &str, fallback_root: Option<&Path>) -> io::Result<Vec<u8>> {
     let mut last_error = None;
     for candidate in resolved_raw_path_read_candidates(path, fallback_root) {
         match fs::read(&candidate) {
@@ -1150,7 +1150,7 @@ fn read_proxy_raw_bytes(path: &str, fallback_root: Option<&Path>) -> io::Result<
     }))
 }
 
-fn decode_proxy_raw_file_bytes(path: &Path, bytes: Vec<u8>) -> io::Result<Vec<u8>> {
+pub(crate) fn decode_proxy_raw_file_bytes(path: &Path, bytes: Vec<u8>) -> io::Result<Vec<u8>> {
     if path
         .extension()
         .and_then(|extension| extension.to_str())
@@ -1170,7 +1170,7 @@ fn decode_proxy_raw_file_bytes(path: &Path, bytes: Vec<u8>) -> io::Result<Vec<u8
     }
 }
 
-async fn current_proxy_usage_backfill_snapshot_max_id(pool: &Pool<Sqlite>) -> Result<i64> {
+pub(crate) async fn current_proxy_usage_backfill_snapshot_max_id(pool: &Pool<Sqlite>) -> Result<i64> {
     Ok(sqlx::query_scalar(
         r#"
         SELECT COALESCE(MAX(id), 0)
@@ -1186,7 +1186,7 @@ async fn current_proxy_usage_backfill_snapshot_max_id(pool: &Pool<Sqlite>) -> Re
     .await?)
 }
 
-async fn backfill_proxy_usage_tokens_from_cursor(
+pub(crate) async fn backfill_proxy_usage_tokens_from_cursor(
     pool: &Pool<Sqlite>,
     start_after_id: i64,
     snapshot_max_id: i64,
@@ -1328,7 +1328,7 @@ async fn backfill_proxy_usage_tokens_from_cursor(
 }
 
 #[cfg(test)]
-async fn backfill_proxy_usage_tokens(
+pub(crate) async fn backfill_proxy_usage_tokens(
     pool: &Pool<Sqlite>,
     raw_path_fallback_root: Option<&Path>,
 ) -> Result<ProxyUsageBackfillSummary> {
@@ -1346,7 +1346,7 @@ async fn backfill_proxy_usage_tokens(
 }
 
 #[cfg(test)]
-async fn backfill_proxy_usage_tokens_up_to_id(
+pub(crate) async fn backfill_proxy_usage_tokens_up_to_id(
     pool: &Pool<Sqlite>,
     snapshot_max_id: i64,
     raw_path_fallback_root: Option<&Path>,
@@ -1364,7 +1364,7 @@ async fn backfill_proxy_usage_tokens_up_to_id(
 }
 
 #[cfg(test)]
-async fn run_backfill_with_retry(
+pub(crate) async fn run_backfill_with_retry(
     pool: &Pool<Sqlite>,
     raw_path_fallback_root: Option<&Path>,
 ) -> Result<ProxyUsageBackfillSummary> {
@@ -1397,7 +1397,7 @@ async fn run_backfill_with_retry(
     }
 }
 
-async fn current_proxy_cost_backfill_snapshot_max_id(
+pub(crate) async fn current_proxy_cost_backfill_snapshot_max_id(
     pool: &Pool<Sqlite>,
     attempt_version: &str,
     requested_tier_price_version: &str,
@@ -1509,7 +1509,7 @@ async fn current_proxy_cost_backfill_snapshot_max_id(
     .await?)
 }
 
-async fn backfill_proxy_missing_costs_from_cursor(
+pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
     pool: &Pool<Sqlite>,
     start_after_id: i64,
     snapshot_max_id: i64,

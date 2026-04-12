@@ -75,6 +75,7 @@ mod api;
 mod forward_proxy;
 mod maintenance;
 mod oauth_bridge;
+mod proxy;
 mod stats;
 #[cfg(test)]
 mod tests;
@@ -82,6 +83,7 @@ mod upstream_accounts;
 
 use api::*;
 use forward_proxy::*;
+use proxy::*;
 use stats::*;
 use upstream_accounts::*;
 
@@ -494,7 +496,6 @@ include!("maintenance/hourly_rollups.rs");
 
 include!("schema.rs");
 include!("pricing.rs");
-include!("proxy.rs");
 
 #[tokio::main]
 async fn main() -> Result<()> {

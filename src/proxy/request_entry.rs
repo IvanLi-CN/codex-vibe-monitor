@@ -1,4 +1,4 @@
-async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+pub(crate) async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     if state.startup_ready.load(Ordering::Acquire) {
         (StatusCode::OK, "ok")
     } else {
@@ -7,7 +7,7 @@ async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 }
 
 #[cfg(test)]
-async fn proxy_openai_v1(
+pub(crate) async fn proxy_openai_v1(
     State(state): State<Arc<AppState>>,
     OriginalUri(original_uri): OriginalUri,
     method: Method,
@@ -17,7 +17,7 @@ async fn proxy_openai_v1(
     proxy_openai_v1_common(state, original_uri, method, headers, body, None).await
 }
 
-async fn proxy_openai_v1_with_connect_info(
+pub(crate) async fn proxy_openai_v1_with_connect_info(
     State(state): State<Arc<AppState>>,
     connect_info: Option<ConnectInfo<SocketAddr>>,
     OriginalUri(original_uri): OriginalUri,
@@ -36,7 +36,7 @@ async fn proxy_openai_v1_with_connect_info(
     .await
 }
 
-async fn proxy_openai_v1_common(
+pub(crate) async fn proxy_openai_v1_common(
     state: Arc<AppState>,
     original_uri: Uri,
     method: Method,
@@ -182,15 +182,15 @@ async fn proxy_openai_v1_common(
 }
 
 #[derive(Debug)]
-struct ProxyErrorResponse {
+pub(crate) struct ProxyErrorResponse {
     status: StatusCode,
     message: String,
     cvm_id: Option<String>,
     retry_after_secs: Option<u64>,
 }
 
-const PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE: &str = "pool route key missing or invalid";
-fn build_proxy_error_response(err: ProxyErrorResponse, invoke_id: &str) -> Response {
+pub(crate) const PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE: &str = "pool route key missing or invalid";
+pub(crate) fn build_proxy_error_response(err: ProxyErrorResponse, invoke_id: &str) -> Response {
     match err.cvm_id {
         Some(cvm_id) => {
             let mut response = (
@@ -227,7 +227,7 @@ fn build_proxy_error_response(err: ProxyErrorResponse, invoke_id: &str) -> Respo
 }
 
 #[derive(Debug)]
-struct ProxyRequestConcurrencyPermit {
+pub(crate) struct ProxyRequestConcurrencyPermit {
     in_flight: Arc<AtomicUsize>,
 }
 
@@ -239,7 +239,7 @@ impl Drop for ProxyRequestConcurrencyPermit {
     }
 }
 
-async fn acquire_proxy_request_concurrency_permit(
+pub(crate) async fn acquire_proxy_request_concurrency_permit(
     state: &AppState,
     proxy_request_id: u64,
     method: &Method,
@@ -262,7 +262,7 @@ async fn acquire_proxy_request_concurrency_permit(
     }
 }
 
-async fn take_or_acquire_proxy_request_concurrency_permit(
+pub(crate) async fn take_or_acquire_proxy_request_concurrency_permit(
     permit: &mut Option<ProxyRequestConcurrencyPermit>,
     state: &AppState,
     proxy_request_id: u64,
@@ -278,7 +278,7 @@ async fn take_or_acquire_proxy_request_concurrency_permit(
     }
 }
 
-async fn resolve_proxy_route_context_for_request(
+pub(crate) async fn resolve_proxy_route_context_for_request(
     state: &AppState,
     proxy_request_id: u64,
     method: &Method,
@@ -333,7 +333,7 @@ async fn resolve_proxy_route_context_for_request(
     }
 }
 
-async fn resolve_proxy_request_timeouts(
+pub(crate) async fn resolve_proxy_request_timeouts(
     state: &AppState,
     pool_route_active: bool,
 ) -> Result<PoolRoutingTimeoutSettingsResolved> {
@@ -366,7 +366,7 @@ pub(crate) struct ForwardProxyUpstreamError {
     pub(crate) connect_latency_ms: f64,
 }
 
-enum ProxyUpstreamResponseBody {
+pub(crate) enum ProxyUpstreamResponseBody {
     Reqwest(reqwest::Response),
     Axum(Response),
 }
@@ -387,21 +387,21 @@ impl fmt::Debug for ProxyUpstreamResponseBody {
 }
 
 impl ProxyUpstreamResponseBody {
-    fn status(&self) -> StatusCode {
+    pub(crate) fn status(&self) -> StatusCode {
         match self {
             Self::Reqwest(response) => response.status(),
             Self::Axum(response) => response.status(),
         }
     }
 
-    fn headers(&self) -> &HeaderMap {
+    pub(crate) fn headers(&self) -> &HeaderMap {
         match self {
             Self::Reqwest(response) => response.headers(),
             Self::Axum(response) => response.headers(),
         }
     }
 
-    async fn into_bytes(self) -> Result<Bytes, String> {
+    pub(crate) async fn into_bytes(self) -> Result<Bytes, String> {
         match self {
             Self::Reqwest(response) => response.bytes().await.map_err(|err| err.to_string()),
             Self::Axum(response) => axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -430,7 +430,7 @@ impl ProxyUpstreamResponseBody {
         }
     }
 
-    fn into_bytes_stream(
+    pub(crate) fn into_bytes_stream(
         self,
     ) -> Pin<Box<dyn futures_util::Stream<Item = Result<Bytes, io::Error>> + Send>> {
         match self {
@@ -449,18 +449,18 @@ impl ProxyUpstreamResponseBody {
     }
 }
 
-const RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED: &str =
+pub(crate) const RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED: &str =
     "async_backpressure_dropped";
-const ASYNC_STREAMING_RAW_WRITER_QUEUE_CAPACITY: usize = 8;
+pub(crate) const ASYNC_STREAMING_RAW_WRITER_QUEUE_CAPACITY: usize = 8;
 
-fn pool_upstream_timeout_message(total_timeout: Duration, phase: &str) -> String {
+pub(crate) fn pool_upstream_timeout_message(total_timeout: Duration, phase: &str) -> String {
     format!(
         "request timed out after {}ms while {phase}",
         total_timeout.as_millis()
     )
 }
 
-fn proxy_request_send_timeout_message(
+pub(crate) fn proxy_request_send_timeout_message(
     capture_target: Option<ProxyCaptureTarget>,
     total_timeout: Duration,
 ) -> String {
@@ -475,7 +475,7 @@ fn proxy_request_send_timeout_message(
     }
 }
 
-async fn read_pool_upstream_bytes_with_timeout(
+pub(crate) async fn read_pool_upstream_bytes_with_timeout(
     response: ProxyUpstreamResponseBody,
     total_timeout: Duration,
     started: Instant,
@@ -491,7 +491,7 @@ async fn read_pool_upstream_bytes_with_timeout(
     }
 }
 
-async fn read_pool_upstream_first_chunk_with_timeout(
+pub(crate) async fn read_pool_upstream_first_chunk_with_timeout(
     response: ProxyUpstreamResponseBody,
     total_timeout: Duration,
     started: Instant,
@@ -554,7 +554,7 @@ pub(crate) struct PoolAttemptSummary {
     pub(crate) pool_attempt_terminal_reason: Option<String>,
 }
 
-fn pool_attempt_summary(
+pub(crate) fn pool_attempt_summary(
     pool_attempt_count: usize,
     pool_distinct_account_count: usize,
     pool_attempt_terminal_reason: Option<String>,
@@ -566,7 +566,7 @@ fn pool_attempt_summary(
     }
 }
 
-fn pool_upstream_error_is_rate_limited(err: &PoolUpstreamError) -> bool {
+pub(crate) fn pool_upstream_error_is_rate_limited(err: &PoolUpstreamError) -> bool {
     err.status == StatusCode::TOO_MANY_REQUESTS
         || matches!(
             err.failure_kind,
@@ -576,7 +576,7 @@ fn pool_upstream_error_is_rate_limited(err: &PoolUpstreamError) -> bool {
         )
 }
 
-fn build_pool_rate_limited_error(
+pub(crate) fn build_pool_rate_limited_error(
     attempt_count: usize,
     distinct_account_count: usize,
     failure_kind: &'static str,
@@ -603,7 +603,7 @@ fn build_pool_rate_limited_error(
     }
 }
 
-fn build_pool_no_available_account_error(
+pub(crate) fn build_pool_no_available_account_error(
     attempt_count: usize,
     distinct_account_count: usize,
     _retry_after_secs: u64,
@@ -630,7 +630,7 @@ fn build_pool_no_available_account_error(
     }
 }
 
-fn retry_after_secs_for_proxy_error(
+pub(crate) fn retry_after_secs_for_proxy_error(
     status: StatusCode,
     message: &str,
 ) -> Option<u64> {
@@ -643,7 +643,7 @@ fn retry_after_secs_for_proxy_error(
     None
 }
 
-fn build_pool_degraded_only_error(
+pub(crate) fn build_pool_degraded_only_error(
     attempt_count: usize,
     distinct_account_count: usize,
 ) -> PoolUpstreamError {
@@ -669,7 +669,7 @@ fn build_pool_degraded_only_error(
     }
 }
 
-fn pool_upstream_error_preserves_existing_sticky_owner(
+pub(crate) fn pool_upstream_error_preserves_existing_sticky_owner(
     err: Option<&PoolUpstreamError>,
 ) -> bool {
     err.and_then(|value| value.account.as_ref())
@@ -687,18 +687,18 @@ fn pool_upstream_error_preserves_existing_sticky_owner(
         )
 }
 
-fn pool_upstream_error_has_concrete_account_context(err: Option<&PoolUpstreamError>) -> bool {
+pub(crate) fn pool_upstream_error_has_concrete_account_context(err: Option<&PoolUpstreamError>) -> bool {
     err.and_then(|value| value.account.as_ref()).is_some()
 }
 
-fn sticky_owner_terminal_error_preservation_is_active(
+pub(crate) fn sticky_owner_terminal_error_preservation_is_active(
     preserve_sticky_owner_terminal_error: bool,
     err: Option<&PoolUpstreamError>,
 ) -> bool {
     preserve_sticky_owner_terminal_error && pool_upstream_error_has_concrete_account_context(err)
 }
 
-fn take_sticky_owner_terminal_error(
+pub(crate) fn take_sticky_owner_terminal_error(
     preserve_sticky_owner_terminal_error: bool,
     last_error: &mut Option<PoolUpstreamError>,
     attempt_count: usize,
@@ -722,7 +722,7 @@ fn take_sticky_owner_terminal_error(
     Some(err)
 }
 
-async fn take_and_record_sticky_owner_terminal_error(
+pub(crate) async fn take_and_record_sticky_owner_terminal_error(
     state: &AppState,
     trace_context: Option<&PoolUpstreamAttemptTraceContext>,
     preserve_sticky_owner_terminal_error: bool,
@@ -756,7 +756,7 @@ async fn take_and_record_sticky_owner_terminal_error(
     Some(err)
 }
 
-fn store_pool_failover_error(
+pub(crate) fn store_pool_failover_error(
     last_error: &mut Option<PoolUpstreamError>,
     preserve_sticky_owner_terminal_error: &mut bool,
     err: PoolUpstreamError,
@@ -787,7 +787,7 @@ pub(crate) struct PendingPoolAttemptRecord {
 }
 
 #[derive(Debug, Default)]
-struct PoolFailoverProgress {
+pub(crate) struct PoolFailoverProgress {
     excluded_account_ids: Vec<i64>,
     excluded_upstream_route_keys: HashSet<String>,
     attempt_count: usize,
@@ -800,31 +800,31 @@ struct PoolFailoverProgress {
 }
 
 #[derive(Debug, Clone)]
-struct PoolUpstreamAttemptTraceContext {
-    invoke_id: String,
-    occurred_at: String,
-    endpoint: String,
-    sticky_key: Option<String>,
-    requester_ip: Option<String>,
+pub(crate) struct PoolUpstreamAttemptTraceContext {
+    pub(crate) invoke_id: String,
+    pub(crate) occurred_at: String,
+    pub(crate) endpoint: String,
+    pub(crate) sticky_key: Option<String>,
+    pub(crate) requester_ip: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-struct PoolAttemptRuntimeSnapshotContext {
-    capture_target: ProxyCaptureTarget,
-    request_info: RequestCaptureInfo,
-    prompt_cache_key: Option<String>,
-    t_req_read_ms: f64,
-    t_req_parse_ms: f64,
+pub(crate) struct PoolAttemptRuntimeSnapshotContext {
+    pub(crate) capture_target: ProxyCaptureTarget,
+    pub(crate) request_info: RequestCaptureInfo,
+    pub(crate) prompt_cache_key: Option<String>,
+    pub(crate) t_req_read_ms: f64,
+    pub(crate) t_req_parse_ms: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct InvocationRecoverySelector {
+pub(crate) struct InvocationRecoverySelector {
     invoke_id: String,
     occurred_at: String,
 }
 
 impl InvocationRecoverySelector {
-    fn new(invoke_id: impl Into<String>, occurred_at: impl Into<String>) -> Self {
+    pub(crate) fn new(invoke_id: impl Into<String>, occurred_at: impl Into<String>) -> Self {
         Self {
             invoke_id: invoke_id.into(),
             occurred_at: occurred_at.into(),
@@ -840,7 +840,7 @@ impl From<&PendingPoolAttemptRecord> for InvocationRecoverySelector {
 
 #[derive(Debug, Clone, FromRow)]
 #[allow(dead_code)]
-struct RecoveredPoolAttemptRow {
+pub(crate) struct RecoveredPoolAttemptRow {
     id: i64,
     invoke_id: String,
     occurred_at: String,
@@ -849,7 +849,7 @@ struct RecoveredPoolAttemptRow {
 }
 
 #[derive(Debug, Clone, FromRow)]
-struct RecoveredInvocationRow {
+pub(crate) struct RecoveredInvocationRow {
     id: i64,
     invoke_id: String,
     occurred_at: String,
@@ -861,31 +861,31 @@ pub(crate) struct PoolOrphanRecoveryOutcome {
     pub(crate) recovered_invocations: usize,
 }
 
-const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING: &str = "pending";
-struct CompactSupportObservation {
-    status: &'static str,
-    reason: Option<String>,
+pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING: &str = "pending";
+pub(crate) struct CompactSupportObservation {
+    pub(crate) status: &'static str,
+    pub(crate) reason: Option<String>,
 }
-const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS: &str = "success";
-const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE: &str = "http_failure";
-const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE: &str = "transport_failure";
-const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL: &str = "budget_exhausted_final";
-const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_CONNECTING: &str = "connecting";
-const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST: &str = "sending_request";
-const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_WAITING_FIRST_BYTE: &str = "waiting_first_byte";
-const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE: &str = "streaming_response";
-const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED: &str = "completed";
-const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED: &str = "failed";
-const POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE: Duration = Duration::from_secs(30);
-const POOL_ATTEMPT_RECOVERY_SELECTOR_BATCH_SIZE: usize = 400;
-const PROXY_INVOCATION_RECOVERY_SELECTOR_BATCH_SIZE: usize = 400;
+pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS: &str = "success";
+pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE: &str = "http_failure";
+pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE: &str = "transport_failure";
+pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL: &str = "budget_exhausted_final";
+pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_CONNECTING: &str = "connecting";
+pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST: &str = "sending_request";
+pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_WAITING_FIRST_BYTE: &str = "waiting_first_byte";
+pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE: &str = "streaming_response";
+pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED: &str = "completed";
+pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED: &str = "failed";
+pub(crate) const POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE: Duration = Duration::from_secs(30);
+pub(crate) const POOL_ATTEMPT_RECOVERY_SELECTOR_BATCH_SIZE: usize = 400;
+pub(crate) const PROXY_INVOCATION_RECOVERY_SELECTOR_BATCH_SIZE: usize = 400;
 
-struct PoolEarlyPhaseOrphanCleanupGuard {
+pub(crate) struct PoolEarlyPhaseOrphanCleanupGuard {
     state: Arc<AppState>,
     pending_attempt_record: PendingPoolAttemptRecord,
-    first_byte_observed: bool,
-    terminal_outcome_observed: bool,
-    armed: bool,
+    pub(crate) first_byte_observed: bool,
+    pub(crate) terminal_outcome_observed: bool,
+    pub(crate) armed: bool,
 }
 
 impl std::fmt::Debug for PoolEarlyPhaseOrphanCleanupGuard {
@@ -898,7 +898,7 @@ impl std::fmt::Debug for PoolEarlyPhaseOrphanCleanupGuard {
 }
 
 impl PoolEarlyPhaseOrphanCleanupGuard {
-    fn new(state: Arc<AppState>, pending_attempt_record: PendingPoolAttemptRecord) -> Self {
+    pub(crate) fn new(state: Arc<AppState>, pending_attempt_record: PendingPoolAttemptRecord) -> Self {
         Self {
             state,
             pending_attempt_record,
@@ -908,11 +908,11 @@ impl PoolEarlyPhaseOrphanCleanupGuard {
         }
     }
 
-    fn disarm(&mut self) {
+    pub(crate) fn disarm(&mut self) {
         self.armed = false;
     }
 
-    fn mark_first_byte_observed(&mut self, first_byte_latency_ms: f64) {
+    pub(crate) fn mark_first_byte_observed(&mut self, first_byte_latency_ms: f64) {
         self.first_byte_observed = true;
         self.pending_attempt_record.first_byte_latency_ms = self
             .pending_attempt_record
@@ -920,7 +920,7 @@ impl PoolEarlyPhaseOrphanCleanupGuard {
             .max(first_byte_latency_ms);
     }
 
-    fn mark_terminal_outcome_observed(&mut self) {
+    pub(crate) fn mark_terminal_outcome_observed(&mut self) {
         self.terminal_outcome_observed = true;
     }
 }
@@ -950,7 +950,7 @@ impl Drop for PoolEarlyPhaseOrphanCleanupGuard {
     }
 }
 
-struct PoolInvocationCleanupGuard {
+pub(crate) struct PoolInvocationCleanupGuard {
     state: Arc<AppState>,
     selector: InvocationRecoverySelector,
     recovery_trigger: &'static str,
@@ -968,7 +968,7 @@ impl std::fmt::Debug for PoolInvocationCleanupGuard {
 }
 
 impl PoolInvocationCleanupGuard {
-    fn new(
+    pub(crate) fn new(
         state: Arc<AppState>,
         selector: InvocationRecoverySelector,
         recovery_trigger: &'static str,
@@ -981,7 +981,7 @@ impl PoolInvocationCleanupGuard {
         }
     }
 
-    fn disarm(&mut self) {
+    pub(crate) fn disarm(&mut self) {
         self.armed = false;
     }
 }
@@ -1009,7 +1009,7 @@ impl Drop for PoolInvocationCleanupGuard {
     }
 }
 
-struct PoolLiveAttemptActivityLease {
+pub(crate) struct PoolLiveAttemptActivityLease {
     live_attempt_ids: Arc<std::sync::Mutex<HashSet<i64>>>,
     attempt_id: i64,
 }
@@ -1023,7 +1023,7 @@ impl std::fmt::Debug for PoolLiveAttemptActivityLease {
 }
 
 impl PoolLiveAttemptActivityLease {
-    fn new(state: Arc<AppState>, attempt_id: i64) -> Self {
+    pub(crate) fn new(state: Arc<AppState>, attempt_id: i64) -> Self {
         {
             let mut live_attempt_ids = state
                 .pool_live_attempt_ids
@@ -1048,7 +1048,7 @@ impl Drop for PoolLiveAttemptActivityLease {
     }
 }
 
-fn disarm_pool_early_phase_cleanup_guard(
+pub(crate) fn disarm_pool_early_phase_cleanup_guard(
     guard: &mut Option<PoolEarlyPhaseOrphanCleanupGuard>,
 ) {
     if let Some(guard) = guard.as_mut() {
@@ -1056,7 +1056,7 @@ fn disarm_pool_early_phase_cleanup_guard(
     }
 }
 
-fn complete_deferred_pool_early_phase_cleanup_guard(
+pub(crate) fn complete_deferred_pool_early_phase_cleanup_guard(
     guard: &mut Option<PoolEarlyPhaseOrphanCleanupGuard>,
 ) {
     if let Some(guard) = guard.as_mut() {
@@ -1065,7 +1065,7 @@ fn complete_deferred_pool_early_phase_cleanup_guard(
     disarm_pool_early_phase_cleanup_guard(guard);
 }
 
-fn finalize_deferred_pool_early_phase_cleanup_guard_after_terminal_invocation(
+pub(crate) fn finalize_deferred_pool_early_phase_cleanup_guard_after_terminal_invocation(
     guard: &mut Option<PoolEarlyPhaseOrphanCleanupGuard>,
     terminal_invocation_persisted: bool,
 ) {
@@ -1075,19 +1075,19 @@ fn finalize_deferred_pool_early_phase_cleanup_guard_after_terminal_invocation(
     complete_deferred_pool_early_phase_cleanup_guard(guard);
 }
 
-fn disarm_pool_invocation_cleanup_guard(
+pub(crate) fn disarm_pool_invocation_cleanup_guard(
     guard: &mut Option<PoolInvocationCleanupGuard>,
 ) {
     if let Some(guard) = guard.as_mut() {
         guard.disarm();
     }
 }
-const POOL_UPSTREAM_MAX_DISTINCT_ACCOUNTS: usize = 3;
-const POOL_UPSTREAM_RESPONSES_MAX_TIMEOUT_ROUTE_KEYS: usize = 3;
+pub(crate) const POOL_UPSTREAM_MAX_DISTINCT_ACCOUNTS: usize = 3;
+pub(crate) const POOL_UPSTREAM_RESPONSES_MAX_TIMEOUT_ROUTE_KEYS: usize = 3;
 
 #[derive(Debug)]
-struct PoolReplayTempFile {
-    path: PathBuf,
+pub(crate) struct PoolReplayTempFile {
+    pub(crate) path: PathBuf,
 }
 
 impl Drop for PoolReplayTempFile {
@@ -1097,7 +1097,7 @@ impl Drop for PoolReplayTempFile {
 }
 
 #[derive(Debug, Clone)]
-enum PoolReplayBodySnapshot {
+pub(crate) enum PoolReplayBodySnapshot {
     Empty,
     Memory(Bytes),
     File {
@@ -1107,7 +1107,7 @@ enum PoolReplayBodySnapshot {
 }
 
 #[derive(Debug, Clone)]
-enum PoolReplayBodyStatus {
+pub(crate) enum PoolReplayBodyStatus {
     Reading,
     Complete(PoolReplayBodySnapshot),
     ReadError(RequestBodyReadError),
@@ -1116,12 +1116,12 @@ enum PoolReplayBodyStatus {
 }
 
 #[derive(Debug, Clone)]
-enum PoolReplayBodyStickyKeyProbeStatus {
+pub(crate) enum PoolReplayBodyStickyKeyProbeStatus {
     Pending,
     Ready(Option<String>),
 }
 
-struct PoolReplayBodyBuffer {
+pub(crate) struct PoolReplayBodyBuffer {
     proxy_request_id: u64,
     len: usize,
     memory: Vec<u8>,
@@ -1129,18 +1129,18 @@ struct PoolReplayBodyBuffer {
     sticky_key_prefix_probe: Vec<u8>,
 }
 
-struct PoolReplayableRequestBody {
+pub(crate) struct PoolReplayableRequestBody {
     body: reqwest::Body,
     status_rx: watch::Receiver<PoolReplayBodyStatus>,
     sticky_key_probe_rx: watch::Receiver<PoolReplayBodyStickyKeyProbeStatus>,
     cancel: CancellationToken,
 }
 
-fn proxy_forward_response_status_is_success(status: StatusCode, stream_error: bool) -> bool {
+pub(crate) fn proxy_forward_response_status_is_success(status: StatusCode, stream_error: bool) -> bool {
     !stream_error && status != StatusCode::TOO_MANY_REQUESTS && !status.is_server_error()
 }
 
-fn proxy_capture_response_status_is_success(
+pub(crate) fn proxy_capture_response_status_is_success(
     status: StatusCode,
     stream_error: bool,
     logical_stream_failure: bool,
@@ -1148,7 +1148,7 @@ fn proxy_capture_response_status_is_success(
     !logical_stream_failure && proxy_forward_response_status_is_success(status, stream_error)
 }
 
-fn proxy_capture_is_pure_downstream_close(
+pub(crate) fn proxy_capture_is_pure_downstream_close(
     status: StatusCode,
     stream_error: bool,
     logical_stream_failure: bool,
@@ -1160,7 +1160,7 @@ fn proxy_capture_is_pure_downstream_close(
         && !logical_stream_failure
 }
 
-fn proxy_capture_invocation_failure_kind(
+pub(crate) fn proxy_capture_invocation_failure_kind(
     status: StatusCode,
     stream_error: bool,
     logical_stream_failure: bool,
@@ -1181,7 +1181,7 @@ fn proxy_capture_invocation_failure_kind(
     }
 }
 
-fn proxy_capture_invocation_status(
+pub(crate) fn proxy_capture_invocation_status(
     status: StatusCode,
     has_error_message: bool,
     pure_downstream_closed: bool,
@@ -1195,7 +1195,7 @@ fn proxy_capture_invocation_status(
     }
 }
 
-fn pool_capture_attempt_status(
+pub(crate) fn pool_capture_attempt_status(
     status: StatusCode,
     stream_error: bool,
     logical_stream_failure: bool,
@@ -1212,7 +1212,7 @@ fn pool_capture_attempt_status(
     }
 }
 
-fn proxy_forward_response_failure_kind(
+pub(crate) fn proxy_forward_response_failure_kind(
     status: StatusCode,
     stream_error: bool,
 ) -> Option<&'static str> {
@@ -1227,7 +1227,7 @@ fn proxy_forward_response_failure_kind(
     }
 }
 
-fn proxy_capture_response_failure_kind(
+pub(crate) fn proxy_capture_response_failure_kind(
     status: StatusCode,
     stream_error: bool,
     logical_stream_failure: bool,
@@ -1276,11 +1276,11 @@ pub(crate) fn upstream_error_indicates_quota_exhausted(message: &str) -> bool {
     .any(|needle| normalized.contains(needle))
 }
 
-fn upstream_error_code_is_server_overloaded(code: Option<&str>) -> bool {
+pub(crate) fn upstream_error_code_is_server_overloaded(code: Option<&str>) -> bool {
     code.is_some_and(|value| value.eq_ignore_ascii_case(UPSTREAM_ERROR_CODE_SERVER_IS_OVERLOADED))
 }
 
-fn route_http_failure_is_retryable_server_overloaded(
+pub(crate) fn route_http_failure_is_retryable_server_overloaded(
     status: StatusCode,
     error_message: &str,
 ) -> bool {
@@ -1293,7 +1293,7 @@ fn route_http_failure_is_retryable_server_overloaded(
         && normalized.contains(UPSTREAM_ERROR_CODE_SERVER_IS_OVERLOADED)
 }
 
-fn response_info_is_retryable_server_overloaded(
+pub(crate) fn response_info_is_retryable_server_overloaded(
     status: StatusCode,
     response_info: &ResponseCaptureInfo,
 ) -> bool {
@@ -1370,7 +1370,7 @@ pub(crate) fn classify_pool_account_http_failure(
     }
 }
 
-fn compact_support_negative_signal(message: &str) -> bool {
+pub(crate) fn compact_support_negative_signal(message: &str) -> bool {
     let normalized = message.to_ascii_lowercase();
     let has_compact_signal = normalized.contains("compact")
         || normalized.contains("responses/compact")
@@ -1395,7 +1395,7 @@ fn compact_support_negative_signal(message: &str) -> bool {
         .any(|needle| normalized.contains(needle))
 }
 
-fn classify_compact_support_observation(
+pub(crate) fn classify_compact_support_observation(
     original_uri: &Uri,
     status: Option<StatusCode>,
     message: Option<&str>,
@@ -1431,13 +1431,13 @@ fn classify_compact_support_observation(
     }
 }
 
-fn fallback_proxy_429_retry_delay(retry_index: u32) -> Duration {
+pub(crate) fn fallback_proxy_429_retry_delay(retry_index: u32) -> Duration {
     let exponent = retry_index.saturating_sub(1).min(16);
     let multiplier = 1_u64 << exponent;
     Duration::from_millis(500_u64.saturating_mul(multiplier)).min(Duration::from_secs(5))
 }
 
-fn pool_group_upstream_429_retry_delay(state: &AppState) -> Duration {
+pub(crate) fn pool_group_upstream_429_retry_delay(state: &AppState) -> Duration {
     if let Some(delay) = state.pool_group_429_retry_delay_override {
         return delay;
     }
@@ -1446,16 +1446,16 @@ fn pool_group_upstream_429_retry_delay(state: &AppState) -> Duration {
     ))
 }
 
-const DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_WAIT_TIMEOUT_SECS: u64 = 10;
-const DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_WAIT_POLL_INTERVAL_MS: u64 = 250;
-const DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS: u64 = 10;
-const POOL_NO_AVAILABLE_ACCOUNT_MESSAGE: &str = "no healthy pool account is available";
+pub(crate) const DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_WAIT_TIMEOUT_SECS: u64 = 10;
+pub(crate) const DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_WAIT_POLL_INTERVAL_MS: u64 = 250;
+pub(crate) const DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS: u64 = 10;
+pub(crate) const POOL_NO_AVAILABLE_ACCOUNT_MESSAGE: &str = "no healthy pool account is available";
 
 #[derive(Debug, Clone, Copy)]
-struct PoolNoAvailableWaitSettings {
-    timeout: Duration,
-    poll_interval: Duration,
-    retry_after_secs: u64,
+pub(crate) struct PoolNoAvailableWaitSettings {
+    pub(crate) timeout: Duration,
+    pub(crate) poll_interval: Duration,
+    pub(crate) retry_after_secs: u64,
 }
 
 impl Default for PoolNoAvailableWaitSettings {
@@ -1471,7 +1471,7 @@ impl Default for PoolNoAvailableWaitSettings {
 }
 
 impl PoolNoAvailableWaitSettings {
-    fn normalized_poll_interval(self) -> Duration {
+    pub(crate) fn normalized_poll_interval(self) -> Duration {
         if self.poll_interval.is_zero() {
             Duration::from_millis(1)
         } else {
@@ -1481,16 +1481,16 @@ impl PoolNoAvailableWaitSettings {
 }
 
 #[derive(Debug)]
-enum PoolAccountResolutionWithWait {
+pub(crate) enum PoolAccountResolutionWithWait {
     Resolution(PoolAccountResolution),
     TotalTimeoutExpired,
 }
 
-const POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS: u8 = 3;
-const OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS: u8 = 3;
+pub(crate) const OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 impl PoolReplayBodyBuffer {
-    fn new(proxy_request_id: u64) -> Self {
+    pub(crate) fn new(proxy_request_id: u64) -> Self {
         Self {
             proxy_request_id,
             len: 0,
@@ -1500,7 +1500,7 @@ impl PoolReplayBodyBuffer {
         }
     }
 
-    async fn append(&mut self, chunk: &[u8]) -> io::Result<()> {
+    pub(crate) async fn append(&mut self, chunk: &[u8]) -> io::Result<()> {
         self.len = self.len.saturating_add(chunk.len());
         if self.sticky_key_prefix_probe.len() < HEADER_STICKY_EARLY_STICKY_SCAN_BYTES {
             let probe_remaining = HEADER_STICKY_EARLY_STICKY_SCAN_BYTES
@@ -1533,7 +1533,7 @@ impl PoolReplayBodyBuffer {
         Ok(())
     }
 
-    async fn finish(mut self) -> io::Result<PoolReplayBodySnapshot> {
+    pub(crate) async fn finish(mut self) -> io::Result<PoolReplayBodySnapshot> {
         if let Some((temp_file, mut file)) = self.file.take() {
             file.flush().await?;
             return Ok(PoolReplayBodySnapshot::File {
@@ -1551,7 +1551,7 @@ impl PoolReplayBodyBuffer {
 }
 
 impl PoolReplayBodySnapshot {
-    fn to_reqwest_body(&self) -> reqwest::Body {
+    pub(crate) fn to_reqwest_body(&self) -> reqwest::Body {
         match self {
             Self::Empty => reqwest::Body::from(Bytes::new()),
             Self::Memory(bytes) => reqwest::Body::from(bytes.clone()),
@@ -1595,7 +1595,7 @@ impl PoolReplayBodySnapshot {
         }
     }
 
-    async fn to_bytes(&self) -> io::Result<Bytes> {
+    pub(crate) async fn to_bytes(&self) -> io::Result<Bytes> {
         match self {
             Self::Empty => Ok(Bytes::new()),
             Self::Memory(bytes) => Ok(bytes.clone()),
@@ -1603,7 +1603,7 @@ impl PoolReplayBodySnapshot {
         }
     }
 
-    async fn to_prefix_bytes(&self, limit: usize) -> io::Result<Bytes> {
+    pub(crate) async fn to_prefix_bytes(&self, limit: usize) -> io::Result<Bytes> {
         match self {
             Self::Empty => Ok(Bytes::new()),
             Self::Memory(bytes) => Ok(bytes.slice(..bytes.len().min(limit))),
@@ -1617,7 +1617,7 @@ impl PoolReplayBodySnapshot {
         }
     }
 
-    async fn extract_request_stream_flag(&self, content_encoding: Option<&str>) -> Option<bool> {
+    pub(crate) async fn extract_request_stream_flag(&self, content_encoding: Option<&str>) -> Option<bool> {
         #[derive(serde::Deserialize)]
         struct StreamFlagProjection {
             #[serde(default)]
@@ -1659,17 +1659,17 @@ impl PoolReplayBodySnapshot {
 }
 
 #[derive(Debug, Clone)]
-struct PreparedPoolRequestBody {
-    snapshot: PoolReplayBodySnapshot,
-    request_body_for_capture: Option<Bytes>,
-    requested_service_tier: Option<String>,
+pub(crate) struct PreparedPoolRequestBody {
+    pub(crate) snapshot: PoolReplayBodySnapshot,
+    pub(crate) request_body_for_capture: Option<Bytes>,
+    pub(crate) requested_service_tier: Option<String>,
 }
 
-fn pool_request_snapshot_preserves_content_length(snapshot: &PoolReplayBodySnapshot) -> bool {
+pub(crate) fn pool_request_snapshot_preserves_content_length(snapshot: &PoolReplayBodySnapshot) -> bool {
     matches!(snapshot, PoolReplayBodySnapshot::File { .. })
 }
 
-fn pool_request_snapshot_kind(snapshot: &PoolReplayBodySnapshot) -> &'static str {
+pub(crate) fn pool_request_snapshot_kind(snapshot: &PoolReplayBodySnapshot) -> &'static str {
     match snapshot {
         PoolReplayBodySnapshot::Empty => "empty",
         PoolReplayBodySnapshot::Memory(_) => "memory",
@@ -1677,7 +1677,7 @@ fn pool_request_snapshot_kind(snapshot: &PoolReplayBodySnapshot) -> &'static str
     }
 }
 
-fn pool_request_snapshot_body_bytes(snapshot: &PoolReplayBodySnapshot) -> usize {
+pub(crate) fn pool_request_snapshot_body_bytes(snapshot: &PoolReplayBodySnapshot) -> usize {
     match snapshot {
         PoolReplayBodySnapshot::Empty => 0,
         PoolReplayBodySnapshot::Memory(bytes) => bytes.len(),
@@ -1685,7 +1685,7 @@ fn pool_request_snapshot_body_bytes(snapshot: &PoolReplayBodySnapshot) -> usize 
     }
 }
 
-async fn prepare_pool_request_body_for_account(
+pub(crate) async fn prepare_pool_request_body_for_account(
     body: Option<&PoolReplayBodySnapshot>,
     original_uri: &Uri,
     method: &Method,
@@ -1767,7 +1767,7 @@ async fn prepare_pool_request_body_for_account(
     })
 }
 
-fn build_pool_replay_temp_path(proxy_request_id: u64) -> PathBuf {
+pub(crate) fn build_pool_replay_temp_path(proxy_request_id: u64) -> PathBuf {
     let mut path = env::temp_dir();
     path.push(format!(
         "cvm-pool-replay-{proxy_request_id}-{}.bin",
@@ -1776,7 +1776,7 @@ fn build_pool_replay_temp_path(proxy_request_id: u64) -> PathBuf {
     path
 }
 
-fn spawn_pool_replayable_request_body(
+pub(crate) fn spawn_pool_replayable_request_body(
     body: Body,
     body_limit: usize,
     request_read_timeout: Duration,
@@ -1975,7 +1975,7 @@ fn spawn_pool_replayable_request_body(
     }
 }
 
-async fn wait_for_replay_body_sticky_key_probe(
+pub(crate) async fn wait_for_replay_body_sticky_key_probe(
     sticky_key_probe_rx: &watch::Receiver<PoolReplayBodyStickyKeyProbeStatus>,
     max_wait: Duration,
 ) -> Option<String> {
@@ -1997,7 +1997,7 @@ async fn wait_for_replay_body_sticky_key_probe(
     }
 }
 
-fn live_body_sticky_key_probe_wait_timeout(
+pub(crate) fn live_body_sticky_key_probe_wait_timeout(
     request_read_timeout: Duration,
     pre_attempt_total_timeout_deadline: Option<Instant>,
 ) -> Duration {
@@ -2007,7 +2007,7 @@ fn live_body_sticky_key_probe_wait_timeout(
     }
 }
 
-async fn wait_for_replay_body_snapshot(
+pub(crate) async fn wait_for_replay_body_snapshot(
     state: &AppState,
     original_uri: &Uri,
     method: &Method,

@@ -1,5 +1,5 @@
 #[cfg(test)]
-async fn backfill_proxy_missing_costs(
+pub(crate) async fn backfill_proxy_missing_costs(
     pool: &Pool<Sqlite>,
     catalog: &PricingCatalog,
 ) -> Result<ProxyCostBackfillSummary> {
@@ -32,7 +32,7 @@ async fn backfill_proxy_missing_costs(
 
 #[cfg(test)]
 #[allow(dead_code)]
-async fn backfill_proxy_missing_costs_up_to_id(
+pub(crate) async fn backfill_proxy_missing_costs_up_to_id(
     pool: &Pool<Sqlite>,
     snapshot_max_id: i64,
     catalog: &PricingCatalog,
@@ -58,7 +58,7 @@ async fn backfill_proxy_missing_costs_up_to_id(
 }
 
 #[cfg(test)]
-async fn run_cost_backfill_with_retry(
+pub(crate) async fn run_cost_backfill_with_retry(
     pool: &Pool<Sqlite>,
     catalog: &PricingCatalog,
 ) -> Result<ProxyCostBackfillSummary> {
@@ -91,7 +91,7 @@ async fn run_cost_backfill_with_retry(
     }
 }
 
-async fn backfill_proxy_prompt_cache_keys_from_cursor(
+pub(crate) async fn backfill_proxy_prompt_cache_keys_from_cursor(
     pool: &Pool<Sqlite>,
     start_after_id: i64,
     raw_path_fallback_root: Option<&Path>,
@@ -235,7 +235,7 @@ async fn backfill_proxy_prompt_cache_keys_from_cursor(
 }
 
 #[cfg(test)]
-async fn backfill_proxy_prompt_cache_keys(
+pub(crate) async fn backfill_proxy_prompt_cache_keys(
     pool: &Pool<Sqlite>,
     raw_path_fallback_root: Option<&Path>,
 ) -> Result<ProxyPromptCacheKeyBackfillSummary> {
@@ -246,7 +246,7 @@ async fn backfill_proxy_prompt_cache_keys(
     )
 }
 
-async fn backfill_proxy_requested_service_tiers_from_cursor(
+pub(crate) async fn backfill_proxy_requested_service_tiers_from_cursor(
     pool: &Pool<Sqlite>,
     start_after_id: i64,
     raw_path_fallback_root: Option<&Path>,
@@ -372,7 +372,7 @@ async fn backfill_proxy_requested_service_tiers_from_cursor(
 }
 
 #[cfg(test)]
-async fn backfill_proxy_requested_service_tiers(
+pub(crate) async fn backfill_proxy_requested_service_tiers(
     pool: &Pool<Sqlite>,
     raw_path_fallback_root: Option<&Path>,
 ) -> Result<ProxyRequestedServiceTierBackfillSummary> {
@@ -387,7 +387,7 @@ async fn backfill_proxy_requested_service_tiers(
     .summary)
 }
 
-async fn backfill_proxy_reasoning_efforts_from_cursor(
+pub(crate) async fn backfill_proxy_reasoning_efforts_from_cursor(
     pool: &Pool<Sqlite>,
     start_after_id: i64,
     raw_path_fallback_root: Option<&Path>,
@@ -514,7 +514,7 @@ async fn backfill_proxy_reasoning_efforts_from_cursor(
 }
 
 #[cfg(test)]
-async fn backfill_proxy_reasoning_efforts(
+pub(crate) async fn backfill_proxy_reasoning_efforts(
     pool: &Pool<Sqlite>,
     raw_path_fallback_root: Option<&Path>,
 ) -> Result<ProxyReasoningEffortBackfillSummary> {
@@ -525,7 +525,7 @@ async fn backfill_proxy_reasoning_efforts(
     )
 }
 
-fn infer_proxy_capture_target_from_payload(value: &Value) -> ProxyCaptureTarget {
+pub(crate) fn infer_proxy_capture_target_from_payload(value: &Value) -> ProxyCaptureTarget {
     if value.get("messages").is_some() || value.get("reasoning_effort").is_some() {
         ProxyCaptureTarget::ChatCompletions
     } else if value.get("previous_response_id").is_some() {
@@ -536,7 +536,7 @@ fn infer_proxy_capture_target_from_payload(value: &Value) -> ProxyCaptureTarget 
 }
 
 #[derive(Debug, FromRow)]
-struct InvocationServiceTierBackfillCandidate {
+pub(crate) struct InvocationServiceTierBackfillCandidate {
     id: i64,
     source: String,
     raw_response: String,
@@ -544,7 +544,7 @@ struct InvocationServiceTierBackfillCandidate {
     current_service_tier: Option<String>,
 }
 
-async fn backfill_invocation_service_tiers_from_cursor(
+pub(crate) async fn backfill_invocation_service_tiers_from_cursor(
     pool: &Pool<Sqlite>,
     start_after_id: i64,
     raw_path_fallback_root: Option<&Path>,
@@ -719,7 +719,7 @@ async fn backfill_invocation_service_tiers_from_cursor(
 }
 
 #[cfg(test)]
-async fn backfill_invocation_service_tiers(
+pub(crate) async fn backfill_invocation_service_tiers(
     pool: &Pool<Sqlite>,
     raw_path_fallback_root: Option<&Path>,
 ) -> Result<InvocationServiceTierBackfillSummary> {
@@ -731,7 +731,7 @@ async fn backfill_invocation_service_tiers(
 }
 
 #[derive(Debug, FromRow)]
-struct FailureClassificationBackfillRow {
+pub(crate) struct FailureClassificationBackfillRow {
     id: i64,
     source: String,
     status: Option<String>,
@@ -744,7 +744,7 @@ struct FailureClassificationBackfillRow {
     response_raw_path: Option<String>,
 }
 
-fn parse_proxy_response_capture_from_stored_bytes(
+pub(crate) fn parse_proxy_response_capture_from_stored_bytes(
     target: ProxyCaptureTarget,
     bytes: &[u8],
     is_stream: bool,
@@ -753,7 +753,7 @@ fn parse_proxy_response_capture_from_stored_bytes(
     parse_target_response_payload(target, payload_for_parse.as_ref(), is_stream, None)
 }
 
-fn format_upstream_response_failed_message(response_info: &ResponseCaptureInfo) -> String {
+pub(crate) fn format_upstream_response_failed_message(response_info: &ResponseCaptureInfo) -> String {
     let upstream_message = response_info
         .upstream_error_message
         .as_deref()
@@ -771,7 +771,7 @@ fn format_upstream_response_failed_message(response_info: &ResponseCaptureInfo) 
     }
 }
 
-fn update_proxy_payload_failure_details(
+pub(crate) fn update_proxy_payload_failure_details(
     payload: Option<&str>,
     failure_kind: Option<&str>,
     response_info: &ResponseCaptureInfo,
@@ -834,7 +834,7 @@ fn update_proxy_payload_failure_details(
     serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string())
 }
 
-fn should_upgrade_to_upstream_response_failed(
+pub(crate) fn should_upgrade_to_upstream_response_failed(
     row: &FailureClassificationBackfillRow,
     existing_kind: Option<&str>,
 ) -> bool {
@@ -855,7 +855,7 @@ fn should_upgrade_to_upstream_response_failed(
         || existing_kind == Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
 }
 
-fn parse_proxy_response_failure_from_persisted_record(
+pub(crate) fn parse_proxy_response_failure_from_persisted_record(
     row: &FailureClassificationBackfillRow,
     raw_path_fallback_root: Option<&Path>,
 ) -> Result<Option<ResponseCaptureInfo>> {
@@ -897,7 +897,7 @@ fn parse_proxy_response_failure_from_persisted_record(
     }
 }
 
-async fn backfill_failure_classification_from_cursor(
+pub(crate) async fn backfill_failure_classification_from_cursor(
     pool: &Pool<Sqlite>,
     start_after_id: i64,
     raw_path_fallback_root: Option<&Path>,
@@ -1112,7 +1112,7 @@ async fn backfill_failure_classification_from_cursor(
 
 #[cfg(test)]
 #[allow(dead_code)]
-async fn backfill_failure_classification(
+pub(crate) async fn backfill_failure_classification(
     pool: &Pool<Sqlite>,
     raw_path_fallback_root: Option<&Path>,
 ) -> Result<FailureClassificationBackfillSummary> {
@@ -1123,7 +1123,7 @@ async fn backfill_failure_classification(
     )
 }
 
-fn is_sqlite_lock_error(err: &anyhow::Error) -> bool {
+pub(crate) fn is_sqlite_lock_error(err: &anyhow::Error) -> bool {
     if err.chain().any(|cause| {
         let Some(sqlx_err) = cause.downcast_ref::<sqlx::Error>() else {
             return false;
@@ -1150,7 +1150,7 @@ fn is_sqlite_lock_error(err: &anyhow::Error) -> bool {
     })
 }
 
-fn parse_proxy_capture_summary(payload: Option<&str>) -> (ProxyCaptureTarget, bool) {
+pub(crate) fn parse_proxy_capture_summary(payload: Option<&str>) -> (ProxyCaptureTarget, bool) {
     let mut target = ProxyCaptureTarget::Responses;
     let mut is_stream = false;
 
@@ -1171,11 +1171,11 @@ fn parse_proxy_capture_summary(payload: Option<&str>) -> (ProxyCaptureTarget, bo
     (target, is_stream)
 }
 
-fn elapsed_ms(started: Instant) -> f64 {
+pub(crate) fn elapsed_ms(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1000.0
 }
 
-fn percentile_sorted_f64(sorted_values: &[f64], p: f64) -> f64 {
+pub(crate) fn percentile_sorted_f64(sorted_values: &[f64], p: f64) -> f64 {
     if sorted_values.is_empty() {
         return 0.0;
     }
@@ -1193,34 +1193,34 @@ fn percentile_sorted_f64(sorted_values: &[f64], p: f64) -> f64 {
     sorted_values[lower] + (sorted_values[upper] - sorted_values[lower]) * weight
 }
 
-fn next_proxy_request_id() -> u64 {
+pub(crate) fn next_proxy_request_id() -> u64 {
     NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
 }
 
 #[derive(Debug, Clone)]
-struct PoolRoutingReservation {
-    account_id: i64,
-    proxy_key: Option<String>,
+pub(crate) struct PoolRoutingReservation {
+    pub(crate) account_id: i64,
+    pub(crate) proxy_key: Option<String>,
     #[allow(dead_code)]
-    created_at: Instant,
+    pub(crate) created_at: Instant,
 }
 
 #[derive(Debug, Default, Clone)]
-struct PoolRoutingReservationSnapshot {
+pub(crate) struct PoolRoutingReservationSnapshot {
     counts_by_account: HashMap<i64, i64>,
     proxy_keys_by_account: HashMap<i64, HashSet<String>>,
     reserved_proxy_keys: HashSet<String>,
 }
 
 impl PoolRoutingReservationSnapshot {
-    fn count_for_account(&self, account_id: i64) -> i64 {
+    pub(crate) fn count_for_account(&self, account_id: i64) -> i64 {
         self.counts_by_account
             .get(&account_id)
             .copied()
             .unwrap_or_default()
     }
 
-    fn pinned_proxy_keys_for_account(
+    pub(crate) fn pinned_proxy_keys_for_account(
         &self,
         account_id: i64,
         valid_proxy_keys: &[String],
@@ -1239,7 +1239,7 @@ impl PoolRoutingReservationSnapshot {
             .collect()
     }
 
-    fn reserved_proxy_keys_for_group(&self, valid_proxy_keys: &[String]) -> HashSet<String> {
+    pub(crate) fn reserved_proxy_keys_for_group(&self, valid_proxy_keys: &[String]) -> HashSet<String> {
         let valid_proxy_keys = valid_proxy_keys
             .iter()
             .map(String::as_str)
@@ -1253,14 +1253,14 @@ impl PoolRoutingReservationSnapshot {
 }
 
 #[derive(Debug)]
-struct PoolRoutingReservationDropGuard {
+pub(crate) struct PoolRoutingReservationDropGuard {
     state: Arc<AppState>,
     reservation_key: String,
     active: bool,
 }
 
 impl PoolRoutingReservationDropGuard {
-    fn new(state: Arc<AppState>, reservation_key: String) -> Self {
+    pub(crate) fn new(state: Arc<AppState>, reservation_key: String) -> Self {
         Self {
             state,
             reservation_key,
@@ -1268,7 +1268,7 @@ impl PoolRoutingReservationDropGuard {
         }
     }
 
-    fn disarm(&mut self) {
+    pub(crate) fn disarm(&mut self) {
         self.active = false;
     }
 }
@@ -1281,11 +1281,11 @@ impl Drop for PoolRoutingReservationDropGuard {
     }
 }
 
-fn build_pool_routing_reservation_key(proxy_request_id: u64) -> String {
+pub(crate) fn build_pool_routing_reservation_key(proxy_request_id: u64) -> String {
     format!("pool-route-{proxy_request_id}")
 }
 
-fn pool_routing_reservation_count(state: &AppState, account_id: i64) -> i64 {
+pub(crate) fn pool_routing_reservation_count(state: &AppState, account_id: i64) -> i64 {
     let reservations = state
         .pool_routing_reservations
         .lock()
@@ -1296,7 +1296,7 @@ fn pool_routing_reservation_count(state: &AppState, account_id: i64) -> i64 {
         .count() as i64
 }
 
-fn pool_routing_reservation_snapshot(state: &AppState) -> PoolRoutingReservationSnapshot {
+pub(crate) fn pool_routing_reservation_snapshot(state: &AppState) -> PoolRoutingReservationSnapshot {
     let reservations = state
         .pool_routing_reservations
         .lock()
@@ -1319,7 +1319,7 @@ fn pool_routing_reservation_snapshot(state: &AppState) -> PoolRoutingReservation
     snapshot
 }
 
-fn reserve_pool_routing_account(
+pub(crate) fn reserve_pool_routing_account(
     state: &AppState,
     reservation_key: &str,
     account: &PoolResolvedAccount,
@@ -1345,7 +1345,7 @@ fn reserve_pool_routing_account(
     );
 }
 
-fn release_pool_routing_reservation(state: &AppState, reservation_key: &str) {
+pub(crate) fn release_pool_routing_reservation(state: &AppState, reservation_key: &str) {
     let mut reservations = state
         .pool_routing_reservations
         .lock()
@@ -1353,16 +1353,16 @@ fn release_pool_routing_reservation(state: &AppState, reservation_key: &str) {
     reservations.remove(reservation_key);
 }
 
-fn consume_pool_routing_reservation(state: &AppState, reservation_key: &str) {
+pub(crate) fn consume_pool_routing_reservation(state: &AppState, reservation_key: &str) {
     release_pool_routing_reservation(state, reservation_key);
 }
 
-fn is_body_too_large_error(err: &reqwest::Error) -> bool {
+pub(crate) fn is_body_too_large_error(err: &reqwest::Error) -> bool {
     error_chain_contains(err, "length limit exceeded")
         || error_chain_contains(err, PROXY_REQUEST_BODY_LIMIT_EXCEEDED)
 }
 
-fn error_chain_contains(err: &(dyn std::error::Error + 'static), needle: &str) -> bool {
+pub(crate) fn error_chain_contains(err: &(dyn std::error::Error + 'static), needle: &str) -> bool {
     if err.to_string().contains(needle) {
         return true;
     }
@@ -1376,7 +1376,7 @@ fn error_chain_contains(err: &(dyn std::error::Error + 'static), needle: &str) -
     false
 }
 
-fn build_proxy_upstream_url(base: &Url, original_uri: &Uri) -> Result<Url> {
+pub(crate) fn build_proxy_upstream_url(base: &Url, original_uri: &Uri) -> Result<Url> {
     if path_has_forbidden_dot_segment(original_uri.path()) {
         bail!(PROXY_DOT_SEGMENT_PATH_NOT_ALLOWED);
     }
@@ -1433,7 +1433,7 @@ fn build_proxy_upstream_url(base: &Url, original_uri: &Uri) -> Result<Url> {
     Url::parse(&target).context("failed to parse proxy upstream url")
 }
 
-fn path_has_forbidden_dot_segment(path: &str) -> bool {
+pub(crate) fn path_has_forbidden_dot_segment(path: &str) -> bool {
     let mut candidate = path.to_string();
     for _ in 0..3 {
         if decoded_path_has_forbidden_dot_segment(&candidate) {
@@ -1448,7 +1448,7 @@ fn path_has_forbidden_dot_segment(path: &str) -> bool {
     decoded_path_has_forbidden_dot_segment(&candidate)
 }
 
-fn has_invalid_percent_encoding(input: &str) -> bool {
+pub(crate) fn has_invalid_percent_encoding(input: &str) -> bool {
     let bytes = input.as_bytes();
     let mut idx = 0usize;
     while idx < bytes.len() {
@@ -1467,15 +1467,15 @@ fn has_invalid_percent_encoding(input: &str) -> bool {
     false
 }
 
-fn decoded_path_has_forbidden_dot_segment(path: &str) -> bool {
+pub(crate) fn decoded_path_has_forbidden_dot_segment(path: &str) -> bool {
     path.split(['/', '\\']).any(is_forbidden_dot_segment)
 }
 
-fn is_forbidden_dot_segment(segment: &str) -> bool {
+pub(crate) fn is_forbidden_dot_segment(segment: &str) -> bool {
     segment == "." || segment == ".."
 }
 
-fn percent_decode_once_lossy(input: &str) -> String {
+pub(crate) fn percent_decode_once_lossy(input: &str) -> String {
     let bytes = input.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut idx = 0usize;
@@ -1497,7 +1497,7 @@ fn percent_decode_once_lossy(input: &str) -> String {
     String::from_utf8_lossy(&decoded).into_owned()
 }
 
-fn decode_hex_nibble(value: u8) -> Option<u8> {
+pub(crate) fn decode_hex_nibble(value: u8) -> Option<u8> {
     match value {
         b'0'..=b'9' => Some(value - b'0'),
         b'a'..=b'f' => Some(value - b'a' + 10),
@@ -1532,7 +1532,7 @@ pub(crate) fn should_forward_proxy_header(
     should_transport_proxy_header(name) && !connection_scoped.contains(name)
 }
 
-fn request_may_have_body(method: &Method, headers: &HeaderMap) -> bool {
+pub(crate) fn request_may_have_body(method: &Method, headers: &HeaderMap) -> bool {
     if headers.contains_key(header::TRANSFER_ENCODING) {
         return true;
     }
@@ -1546,7 +1546,7 @@ fn request_may_have_body(method: &Method, headers: &HeaderMap) -> bool {
     !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
 }
 
-fn location_rewrite_upstream_base<'a>(
+pub(crate) fn location_rewrite_upstream_base<'a>(
     pool_account: Option<&'a PoolResolvedAccount>,
     global_upstream_base_url: &'a Url,
 ) -> &'a Url {
@@ -1555,7 +1555,7 @@ fn location_rewrite_upstream_base<'a>(
         .unwrap_or(global_upstream_base_url)
 }
 
-fn normalize_proxy_location_header(
+pub(crate) fn normalize_proxy_location_header(
     status: StatusCode,
     headers: &HeaderMap,
     upstream_base: &Url,
@@ -1605,7 +1605,7 @@ fn normalize_proxy_location_header(
     Ok(Some(raw_location.to_string()))
 }
 
-fn rewrite_proxy_relative_location(location: &str, upstream_base: &Url) -> String {
+pub(crate) fn rewrite_proxy_relative_location(location: &str, upstream_base: &Url) -> String {
     let (path_and_query, fragment) = match location.split_once('#') {
         Some((pq, frag)) => (pq, Some(frag)),
         None => (location, None),
@@ -1627,7 +1627,7 @@ fn rewrite_proxy_relative_location(location: &str, upstream_base: &Url) -> Strin
     rewritten
 }
 
-fn rewrite_proxy_location_path(upstream_path: &str, upstream_base: &Url) -> String {
+pub(crate) fn rewrite_proxy_location_path(upstream_path: &str, upstream_base: &Url) -> String {
     let base_path = upstream_base.path().trim_end_matches('/');
     if base_path.is_empty() || base_path == "/" {
         return upstream_path.to_string();
@@ -1643,17 +1643,17 @@ fn rewrite_proxy_location_path(upstream_path: &str, upstream_base: &Url) -> Stri
     upstream_path.to_string()
 }
 
-fn is_same_origin(lhs: &Url, rhs: &Url) -> bool {
+pub(crate) fn is_same_origin(lhs: &Url, rhs: &Url) -> bool {
     lhs.scheme() == rhs.scheme()
         && lhs.host_str() == rhs.host_str()
         && effective_port(lhs) == effective_port(rhs)
 }
 
-fn effective_port(url: &Url) -> Option<u16> {
+pub(crate) fn effective_port(url: &Url) -> Option<u16> {
     url.port_or_known_default()
 }
 
-fn should_transport_proxy_header(name: &HeaderName) -> bool {
+pub(crate) fn should_transport_proxy_header(name: &HeaderName) -> bool {
     !matches!(
         name.as_str(),
         "host"
@@ -1677,7 +1677,7 @@ fn should_transport_proxy_header(name: &HeaderName) -> bool {
     )
 }
 
-fn build_cors_layer(config: &AppConfig) -> CorsLayer {
+pub(crate) fn build_cors_layer(config: &AppConfig) -> CorsLayer {
     let allowed = config
         .cors_allowed_origins
         .iter()
@@ -1695,7 +1695,7 @@ fn build_cors_layer(config: &AppConfig) -> CorsLayer {
         .allow_headers(Any)
 }
 
-fn origin_allowed(origin_raw: &str, configured: &HashSet<String>) -> bool {
+pub(crate) fn origin_allowed(origin_raw: &str, configured: &HashSet<String>) -> bool {
     let Some(origin) = normalize_cors_origin(origin_raw) else {
         return false;
     };
@@ -1705,7 +1705,7 @@ fn origin_allowed(origin_raw: &str, configured: &HashSet<String>) -> bool {
     is_loopback_origin(origin_raw)
 }
 
-fn is_loopback_origin(origin_raw: &str) -> bool {
+pub(crate) fn is_loopback_origin(origin_raw: &str) -> bool {
     let Ok(origin) = Url::parse(origin_raw) else {
         return false;
     };
@@ -1718,7 +1718,7 @@ fn is_loopback_origin(origin_raw: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn parse_cors_allowed_origins_env(name: &str) -> Result<Vec<String>> {
+pub(crate) fn parse_cors_allowed_origins_env(name: &str) -> Result<Vec<String>> {
     match env::var(name) {
         Ok(raw) => parse_cors_allowed_origins(&raw),
         Err(env::VarError::NotPresent) => Ok(Vec::new()),
@@ -1726,7 +1726,7 @@ fn parse_cors_allowed_origins_env(name: &str) -> Result<Vec<String>> {
     }
 }
 
-fn parse_cors_allowed_origins(raw: &str) -> Result<Vec<String>> {
+pub(crate) fn parse_cors_allowed_origins(raw: &str) -> Result<Vec<String>> {
     let mut entries = Vec::new();
     let mut seen = HashSet::new();
     for candidate in raw.split(',').map(str::trim).filter(|v| !v.is_empty()) {
@@ -1739,7 +1739,7 @@ fn parse_cors_allowed_origins(raw: &str) -> Result<Vec<String>> {
     Ok(entries)
 }
 
-fn normalize_cors_origin(origin_raw: &str) -> Option<String> {
+pub(crate) fn normalize_cors_origin(origin_raw: &str) -> Option<String> {
     let origin = Url::parse(origin_raw).ok()?;
     if !matches!(origin.scheme(), "http" | "https") {
         return None;
@@ -1773,7 +1773,7 @@ fn normalize_cors_origin(origin_raw: &str) -> Option<String> {
     }
 }
 
-fn is_models_list_path(path: &str) -> bool {
+pub(crate) fn is_models_list_path(path: &str) -> bool {
     path == "/v1/models"
 }
 
@@ -1783,7 +1783,7 @@ fn is_models_list_path(path: &str) -> bool {
 // (CLI/automation) may omit Origin and are allowed by policy. The security boundary
 // is deployment-level network isolation (trusted gateway only), documented in
 // docs/deployment.md.
-fn is_same_origin_settings_write(headers: &HeaderMap) -> bool {
+pub(crate) fn is_same_origin_settings_write(headers: &HeaderMap) -> bool {
     if matches!(
         header_value_as_str(headers, "sec-fetch-site"),
         Some(site)
@@ -1830,7 +1830,7 @@ fn is_same_origin_settings_write(headers: &HeaderMap) -> bool {
     is_loopback_authority_host(origin_host) && is_loopback_authority_host(&request_host)
 }
 
-fn forwarded_or_host_authority(
+pub(crate) fn forwarded_or_host_authority(
     headers: &HeaderMap,
     origin_scheme: &str,
 ) -> Option<(String, Option<u16>)> {
@@ -1876,7 +1876,7 @@ fn forwarded_or_host_authority(
     ))
 }
 
-fn single_forwarded_header_value(raw: &str) -> Option<&str> {
+pub(crate) fn single_forwarded_header_value(raw: &str) -> Option<&str> {
     let mut parts = raw
         .split(',')
         .map(str::trim)
@@ -1888,7 +1888,7 @@ fn single_forwarded_header_value(raw: &str) -> Option<&str> {
     Some(first)
 }
 
-fn default_port_for_scheme(scheme: &str) -> Option<u16> {
+pub(crate) fn default_port_for_scheme(scheme: &str) -> Option<u16> {
     match scheme {
         "http" => Some(80),
         "https" => Some(443),
@@ -1896,13 +1896,13 @@ fn default_port_for_scheme(scheme: &str) -> Option<u16> {
     }
 }
 
-fn header_value_as_str<'a>(headers: &'a HeaderMap, name: &'static str) -> Option<&'a str> {
+pub(crate) fn header_value_as_str<'a>(headers: &'a HeaderMap, name: &'static str) -> Option<&'a str> {
     headers
         .get(HeaderName::from_static(name))
         .and_then(|value| value.to_str().ok())
 }
 
-fn extract_requester_ip(headers: &HeaderMap, peer_ip: Option<IpAddr>) -> Option<String> {
+pub(crate) fn extract_requester_ip(headers: &HeaderMap, peer_ip: Option<IpAddr>) -> Option<String> {
     if let Some(x_forwarded_for) = header_value_as_str(headers, "x-forwarded-for")
         && let Some(ip) = extract_first_ip_from_x_forwarded_for(x_forwarded_for)
     {
@@ -1924,7 +1924,7 @@ fn extract_requester_ip(headers: &HeaderMap, peer_ip: Option<IpAddr>) -> Option<
     peer_ip.map(|ip| ip.to_string())
 }
 
-fn extract_sticky_key_from_headers(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn extract_sticky_key_from_headers(headers: &HeaderMap) -> Option<String> {
     for header_name in [
         "x-sticky-key",
         "sticky-key",
@@ -1947,7 +1947,7 @@ fn extract_sticky_key_from_headers(headers: &HeaderMap) -> Option<String> {
     None
 }
 
-fn extract_prompt_cache_key_from_headers(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn extract_prompt_cache_key_from_headers(headers: &HeaderMap) -> Option<String> {
     for header_name in [
         "x-prompt-cache-key",
         "prompt-cache-key",
@@ -1968,12 +1968,12 @@ fn extract_prompt_cache_key_from_headers(headers: &HeaderMap) -> Option<String> 
     None
 }
 
-fn extract_first_ip_from_x_forwarded_for(raw: &str) -> Option<String> {
+pub(crate) fn extract_first_ip_from_x_forwarded_for(raw: &str) -> Option<String> {
     let first = raw.split(',').next()?.trim();
     extract_ip_from_header_value(first)
 }
 
-fn extract_ip_from_forwarded_header(raw: &str) -> Option<String> {
+pub(crate) fn extract_ip_from_forwarded_header(raw: &str) -> Option<String> {
     for entry in raw.split(',') {
         for segment in entry.split(';') {
             let pair = segment.trim();
@@ -1988,7 +1988,7 @@ fn extract_ip_from_forwarded_header(raw: &str) -> Option<String> {
     None
 }
 
-fn extract_ip_from_header_value(raw: &str) -> Option<String> {
+pub(crate) fn extract_ip_from_header_value(raw: &str) -> Option<String> {
     let normalized = raw.trim().trim_matches('"');
     if normalized.is_empty()
         || normalized.eq_ignore_ascii_case("unknown")
@@ -2023,14 +2023,14 @@ fn extract_ip_from_header_value(raw: &str) -> Option<String> {
     None
 }
 
-fn is_loopback_authority_host(host: &str) -> bool {
+pub(crate) fn is_loopback_authority_host(host: &str) -> bool {
     if host.eq_ignore_ascii_case("localhost") {
         return true;
     }
     host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
-fn build_preset_models_payload(enabled_model_ids: &[String]) -> Value {
+pub(crate) fn build_preset_models_payload(enabled_model_ids: &[String]) -> Value {
     let data = enabled_model_ids
         .iter()
         .map(|id| {
@@ -2048,7 +2048,7 @@ fn build_preset_models_payload(enabled_model_ids: &[String]) -> Value {
     })
 }
 
-fn merge_models_payload_with_upstream(
+pub(crate) fn merge_models_payload_with_upstream(
     upstream_payload: &Value,
     enabled_model_ids: &[String],
 ) -> Result<Value> {

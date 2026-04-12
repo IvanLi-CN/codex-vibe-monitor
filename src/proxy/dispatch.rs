@@ -1,4 +1,4 @@
-async fn proxy_openai_v1_inner(
+pub(crate) async fn proxy_openai_v1_inner(
     state: Arc<AppState>,
     proxy_request_id: u64,
     invoke_id: String,
@@ -87,7 +87,7 @@ async fn proxy_openai_v1_inner(
     });
 }
 
-fn capture_target_for_request(path: &str, method: &Method) -> Option<ProxyCaptureTarget> {
+pub(crate) fn capture_target_for_request(path: &str, method: &Method) -> Option<ProxyCaptureTarget> {
     if *method != Method::POST {
         return None;
     }
@@ -100,7 +100,7 @@ fn capture_target_for_request(path: &str, method: &Method) -> Option<ProxyCaptur
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn proxy_openai_v1_capture_target(
+pub(crate) async fn proxy_openai_v1_capture_target(
     state: Arc<AppState>,
     proxy_request_id: u64,
     invoke_id: String,
@@ -1705,7 +1705,7 @@ async fn proxy_openai_v1_capture_target(
         })
 }
 
-async fn read_request_body_with_limit(
+pub(crate) async fn read_request_body_with_limit(
     body: Body,
     body_limit: usize,
     request_read_timeout: Duration,
@@ -1796,7 +1796,7 @@ async fn read_request_body_with_limit(
     Ok(data)
 }
 
-async fn read_request_body_snapshot_with_limit(
+pub(crate) async fn read_request_body_snapshot_with_limit(
     body: Body,
     body_limit: usize,
     request_read_timeout: Duration,

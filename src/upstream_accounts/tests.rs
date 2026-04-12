@@ -1,5 +1,9 @@
 #[cfg(test)]
 mod tests {
+    use super::super::*;
+    #[allow(unused_imports)]
+    use crate::*;
+
     include!("tests_part_1.rs");
     include!("tests_part_2.rs");
     include!("tests_part_3.rs");
