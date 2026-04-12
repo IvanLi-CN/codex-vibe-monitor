@@ -945,7 +945,7 @@ struct GroupNodeShuntSlots {
 }
 
 #[derive(Debug, Clone, Default)]
-struct UpstreamAccountNodeShuntAssignments {
+pub(crate) struct UpstreamAccountNodeShuntAssignments {
     account_proxy_keys: HashMap<i64, String>,
     group_slots: HashMap<String, GroupNodeShuntSlots>,
     group_assigned_proxy_keys: HashMap<String, HashSet<String>>,

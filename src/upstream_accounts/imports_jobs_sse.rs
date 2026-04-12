@@ -1,4 +1,6 @@
-async fn build_imported_oauth_validation_response(
+use super::*;
+
+pub(crate) async fn build_imported_oauth_validation_response(
     state: &AppState,
     items: &[ImportOauthCredentialFileRequest],
     binding: &ResolvedRequiredGroupProxyBinding,
@@ -133,7 +135,7 @@ async fn build_imported_oauth_validation_response(
     ))
 }
 
-fn build_imported_oauth_pending_response(
+pub(crate) fn build_imported_oauth_pending_response(
     items: &[ImportOauthCredentialFileRequest],
 ) -> ImportedOauthValidationResponse {
     ImportedOauthValidationResponse {
@@ -158,7 +160,7 @@ fn build_imported_oauth_pending_response(
     }
 }
 
-fn build_imported_oauth_validation_response_from_rows(
+pub(crate) fn build_imported_oauth_validation_response_from_rows(
     input_files: usize,
     rows: Vec<ImportedOauthValidationRow>,
 ) -> ImportedOauthValidationResponse {
@@ -174,7 +176,7 @@ fn build_imported_oauth_validation_response_from_rows(
     }
 }
 
-fn compute_imported_oauth_validation_counts(
+pub(crate) fn compute_imported_oauth_validation_counts(
     rows: &[ImportedOauthValidationRow],
 ) -> ImportedOauthValidationCounts {
     let mut counts = ImportedOauthValidationCounts::default();
@@ -194,14 +196,14 @@ fn compute_imported_oauth_validation_counts(
     counts
 }
 
-fn build_imported_oauth_snapshot_event(
+pub(crate) fn build_imported_oauth_snapshot_event(
     snapshot: ImportedOauthValidationResponse,
 ) -> ImportedOauthValidationSnapshotEvent {
     let counts = compute_imported_oauth_validation_counts(&snapshot.rows);
     ImportedOauthValidationSnapshotEvent { snapshot, counts }
 }
 
-fn compute_bulk_upstream_account_sync_counts(
+pub(crate) fn compute_bulk_upstream_account_sync_counts(
     rows: &[BulkUpstreamAccountSyncRow],
 ) -> BulkUpstreamAccountSyncCounts {
     let mut counts = BulkUpstreamAccountSyncCounts {
@@ -231,7 +233,7 @@ fn compute_bulk_upstream_account_sync_counts(
     counts
 }
 
-fn with_bulk_upstream_account_sync_snapshot_status(
+pub(crate) fn with_bulk_upstream_account_sync_snapshot_status(
     mut snapshot: BulkUpstreamAccountSyncSnapshot,
     status: &str,
 ) -> BulkUpstreamAccountSyncSnapshot {
@@ -239,14 +241,17 @@ fn with_bulk_upstream_account_sync_snapshot_status(
     snapshot
 }
 
-fn build_bulk_upstream_account_sync_snapshot_event(
+pub(crate) fn build_bulk_upstream_account_sync_snapshot_event(
     snapshot: BulkUpstreamAccountSyncSnapshot,
 ) -> BulkUpstreamAccountSyncSnapshotEvent {
     let counts = compute_bulk_upstream_account_sync_counts(&snapshot.rows);
     BulkUpstreamAccountSyncSnapshotEvent { snapshot, counts }
 }
 
-fn imported_oauth_sse_event<T: Serialize>(event_name: &str, payload: &T) -> Option<Event> {
+pub(crate) fn imported_oauth_sse_event<T: Serialize>(
+    event_name: &str,
+    payload: &T,
+) -> Option<Event> {
     match Event::default().event(event_name).json_data(payload) {
         Ok(event) => Some(event),
         Err(err) => {
@@ -259,7 +264,7 @@ fn imported_oauth_sse_event<T: Serialize>(event_name: &str, payload: &T) -> Opti
     }
 }
 
-fn bulk_upstream_account_sync_sse_event<T: Serialize>(
+pub(crate) fn bulk_upstream_account_sync_sse_event<T: Serialize>(
     event_name: &str,
     payload: &T,
 ) -> Option<Event> {
@@ -275,7 +280,7 @@ fn bulk_upstream_account_sync_sse_event<T: Serialize>(
     }
 }
 
-fn imported_oauth_terminal_event_to_sse(
+pub(crate) fn imported_oauth_terminal_event_to_sse(
     terminal: &ImportedOauthValidationTerminalEvent,
 ) -> Option<Event> {
     match terminal {
@@ -291,7 +296,7 @@ fn imported_oauth_terminal_event_to_sse(
     }
 }
 
-fn bulk_upstream_account_sync_terminal_event_to_sse(
+pub(crate) fn bulk_upstream_account_sync_terminal_event_to_sse(
     terminal: &BulkUpstreamAccountSyncTerminalEvent,
 ) -> Option<Event> {
     match terminal {
@@ -307,7 +312,7 @@ fn bulk_upstream_account_sync_terminal_event_to_sse(
     }
 }
 
-async fn build_imported_oauth_validation_result(
+pub(crate) async fn build_imported_oauth_validation_result(
     state: &AppState,
     normalized: NormalizedImportedOauthCredentials,
     matched_account: Option<ImportedOauthMatchSummary>,
@@ -366,7 +371,7 @@ async fn build_imported_oauth_validation_result(
     }
 }
 
-async fn update_imported_oauth_validation_job_row(
+pub(crate) async fn update_imported_oauth_validation_job_row(
     job: &Arc<ImportedOauthValidationJob>,
     row_index: usize,
     row: ImportedOauthValidationRow,
@@ -402,7 +407,7 @@ async fn update_imported_oauth_validation_job_row(
     ));
 }
 
-async fn set_imported_oauth_validation_job_terminal(
+pub(crate) async fn set_imported_oauth_validation_job_terminal(
     job: &Arc<ImportedOauthValidationJob>,
     terminal: ImportedOauthValidationTerminalEvent,
 ) {
@@ -426,7 +431,9 @@ async fn set_imported_oauth_validation_job_terminal(
     });
 }
 
-async fn finish_imported_oauth_validation_job_completed(job: &Arc<ImportedOauthValidationJob>) {
+pub(crate) async fn finish_imported_oauth_validation_job_completed(
+    job: &Arc<ImportedOauthValidationJob>,
+) {
     let snapshot = { job.snapshot.lock().await.clone() };
     set_imported_oauth_validation_job_terminal(
         job,
@@ -437,7 +444,7 @@ async fn finish_imported_oauth_validation_job_completed(job: &Arc<ImportedOauthV
     .await;
 }
 
-async fn finish_imported_oauth_validation_job_failed(
+pub(crate) async fn finish_imported_oauth_validation_job_failed(
     job: &Arc<ImportedOauthValidationJob>,
     error: String,
 ) {
@@ -453,7 +460,9 @@ async fn finish_imported_oauth_validation_job_failed(
     .await;
 }
 
-async fn finish_imported_oauth_validation_job_cancelled(job: &Arc<ImportedOauthValidationJob>) {
+pub(crate) async fn finish_imported_oauth_validation_job_cancelled(
+    job: &Arc<ImportedOauthValidationJob>,
+) {
     let snapshot = { job.snapshot.lock().await.clone() };
     set_imported_oauth_validation_job_terminal(
         job,
@@ -464,7 +473,7 @@ async fn finish_imported_oauth_validation_job_cancelled(job: &Arc<ImportedOauthV
     .await;
 }
 
-async fn update_bulk_upstream_account_sync_job_row(
+pub(crate) async fn update_bulk_upstream_account_sync_job_row(
     job: &Arc<BulkUpstreamAccountSyncJob>,
     row: BulkUpstreamAccountSyncRow,
 ) {
@@ -486,7 +495,7 @@ async fn update_bulk_upstream_account_sync_job_row(
     ));
 }
 
-async fn set_bulk_upstream_account_sync_job_terminal(
+pub(crate) async fn set_bulk_upstream_account_sync_job_terminal(
     job: &Arc<BulkUpstreamAccountSyncJob>,
     terminal: BulkUpstreamAccountSyncTerminalEvent,
 ) {
@@ -525,7 +534,9 @@ async fn set_bulk_upstream_account_sync_job_terminal(
     });
 }
 
-async fn finish_bulk_upstream_account_sync_job_completed(job: &Arc<BulkUpstreamAccountSyncJob>) {
+pub(crate) async fn finish_bulk_upstream_account_sync_job_completed(
+    job: &Arc<BulkUpstreamAccountSyncJob>,
+) {
     let snapshot = with_bulk_upstream_account_sync_snapshot_status(
         job.snapshot.lock().await.clone(),
         BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_COMPLETED,
@@ -539,7 +550,7 @@ async fn finish_bulk_upstream_account_sync_job_completed(job: &Arc<BulkUpstreamA
     .await;
 }
 
-async fn finish_bulk_upstream_account_sync_job_failed(
+pub(crate) async fn finish_bulk_upstream_account_sync_job_failed(
     job: &Arc<BulkUpstreamAccountSyncJob>,
     error: String,
 ) {
@@ -558,7 +569,9 @@ async fn finish_bulk_upstream_account_sync_job_failed(
     .await;
 }
 
-async fn finish_bulk_upstream_account_sync_job_cancelled(job: &Arc<BulkUpstreamAccountSyncJob>) {
+pub(crate) async fn finish_bulk_upstream_account_sync_job_cancelled(
+    job: &Arc<BulkUpstreamAccountSyncJob>,
+) {
     let snapshot = with_bulk_upstream_account_sync_snapshot_status(
         job.snapshot.lock().await.clone(),
         BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_CANCELLED,
@@ -572,7 +585,7 @@ async fn finish_bulk_upstream_account_sync_job_cancelled(job: &Arc<BulkUpstreamA
     .await;
 }
 
-fn schedule_imported_oauth_validation_job_cleanup(
+pub(crate) fn schedule_imported_oauth_validation_job_cleanup(
     runtime: Arc<UpstreamAccountsRuntime>,
     job_id: String,
 ) {
@@ -588,7 +601,7 @@ fn schedule_imported_oauth_validation_job_cleanup(
     });
 }
 
-fn schedule_bulk_upstream_account_sync_job_cleanup(
+pub(crate) fn schedule_bulk_upstream_account_sync_job_cleanup(
     runtime: Arc<UpstreamAccountsRuntime>,
     job_id: String,
 ) {
@@ -604,7 +617,7 @@ fn schedule_bulk_upstream_account_sync_job_cleanup(
     });
 }
 
-fn spawn_imported_oauth_validation_job(
+pub(crate) fn spawn_imported_oauth_validation_job(
     state: Arc<AppState>,
     runtime: Arc<UpstreamAccountsRuntime>,
     job_id: String,
@@ -788,7 +801,7 @@ fn spawn_imported_oauth_validation_job(
     });
 }
 
-fn spawn_bulk_upstream_account_sync_job(
+pub(crate) fn spawn_bulk_upstream_account_sync_job(
     state: Arc<AppState>,
     runtime: Arc<UpstreamAccountsRuntime>,
     job_id: String,
@@ -884,7 +897,7 @@ fn spawn_bulk_upstream_account_sync_job(
     });
 }
 
-async fn build_bulk_upstream_account_sync_job_response(
+pub(crate) async fn build_bulk_upstream_account_sync_job_response(
     job_id: String,
     job: &Arc<BulkUpstreamAccountSyncJob>,
 ) -> BulkUpstreamAccountSyncJobResponse {

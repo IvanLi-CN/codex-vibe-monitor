@@ -1,6 +1,6 @@
-const HEADER_STICKY_EARLY_STICKY_SCAN_BYTES: usize = 64 * 1024;
+pub(crate) const HEADER_STICKY_EARLY_STICKY_SCAN_BYTES: usize = 64 * 1024;
 
-fn best_effort_extract_sticky_key_from_request_body_prefix(bytes: &[u8]) -> Option<String> {
+pub(crate) fn best_effort_extract_sticky_key_from_request_body_prefix(bytes: &[u8]) -> Option<String> {
     const STICKY_KEY_PATTERNS: &[&[u8]] = &[
         br#""sticky_key""#,
         br#""stickyKey""#,
@@ -79,7 +79,7 @@ fn best_effort_extract_sticky_key_from_request_body_prefix(bytes: &[u8]) -> Opti
     None
 }
 
-fn prepare_target_request_body(
+pub(crate) fn prepare_target_request_body(
     target: ProxyCaptureTarget,
     body: Vec<u8>,
     auto_include_usage: bool,
@@ -155,7 +155,7 @@ fn prepare_target_request_body(
     }
 }
 
-fn proxy_upstream_send_timeout_for_capture_target(
+pub(crate) fn proxy_upstream_send_timeout_for_capture_target(
     timeouts: &PoolRoutingTimeoutSettingsResolved,
     capture_target: Option<ProxyCaptureTarget>,
 ) -> Duration {
@@ -166,7 +166,7 @@ fn proxy_upstream_send_timeout_for_capture_target(
     }
 }
 
-fn pool_upstream_first_chunk_timeout(
+pub(crate) fn pool_upstream_first_chunk_timeout(
     timeouts: &PoolRoutingTimeoutSettingsResolved,
     original_uri: &Uri,
     method: &Method,
@@ -178,7 +178,7 @@ fn pool_upstream_first_chunk_timeout(
     }
 }
 
-fn pool_upstream_responses_total_timeout(
+pub(crate) fn pool_upstream_responses_total_timeout(
     config: &AppConfig,
     original_uri: &Uri,
     method: &Method,
@@ -187,7 +187,7 @@ fn pool_upstream_responses_total_timeout(
         .then_some(config.pool_upstream_responses_total_timeout)
 }
 
-fn proxy_capture_target_stream_timeout(
+pub(crate) fn proxy_capture_target_stream_timeout(
     timeouts: &PoolRoutingTimeoutSettingsResolved,
     capture_target: ProxyCaptureTarget,
 ) -> Option<Duration> {
@@ -198,7 +198,7 @@ fn proxy_capture_target_stream_timeout(
     }
 }
 
-fn pool_upstream_send_timeout(
+pub(crate) fn pool_upstream_send_timeout(
     original_uri: &Uri,
     method: &Method,
     send_timeout: Duration,
@@ -211,7 +211,7 @@ fn pool_upstream_send_timeout(
     }
 }
 
-fn pool_uses_responses_timeout_failover_policy(original_uri: &Uri, method: &Method) -> bool {
+pub(crate) fn pool_uses_responses_timeout_failover_policy(original_uri: &Uri, method: &Method) -> bool {
     method == Method::POST
         && matches!(
             original_uri.path(),
@@ -219,7 +219,7 @@ fn pool_uses_responses_timeout_failover_policy(original_uri: &Uri, method: &Meth
         )
 }
 
-fn pool_timeout_budget_with_total_limit(
+pub(crate) fn pool_timeout_budget_with_total_limit(
     timeout: Duration,
     total_timeout: Option<Duration>,
     total_timeout_started_at: Option<Instant>,
@@ -237,18 +237,18 @@ fn pool_timeout_budget_with_total_limit(
     }
 }
 
-fn pool_total_timeout_exhausted(total_timeout: Duration, started_at: Instant) -> bool {
+pub(crate) fn pool_total_timeout_exhausted(total_timeout: Duration, started_at: Instant) -> bool {
     timeout_budget_exhausted(total_timeout, started_at.elapsed())
 }
 
-fn pool_total_timeout_exhausted_message(total_timeout: Duration) -> String {
+pub(crate) fn pool_total_timeout_exhausted_message(total_timeout: Duration) -> String {
     format!(
         "pool upstream total timeout exhausted after {}ms",
         total_timeout.as_millis()
     )
 }
 
-fn build_pool_total_timeout_exhausted_error(
+pub(crate) fn build_pool_total_timeout_exhausted_error(
     total_timeout: Duration,
     last_error: Option<PoolUpstreamError>,
     attempt_count: usize,
@@ -284,14 +284,14 @@ fn build_pool_total_timeout_exhausted_error(
     final_error
 }
 
-fn pool_pre_attempt_total_timeout_error(total_timeout: Duration) -> (StatusCode, String) {
+pub(crate) fn pool_pre_attempt_total_timeout_error(total_timeout: Duration) -> (StatusCode, String) {
     (
         StatusCode::GATEWAY_TIMEOUT,
         pool_total_timeout_exhausted_message(total_timeout),
     )
 }
 
-fn pool_uses_responses_family_retry_budget_policy(original_uri: &Uri, method: &Method) -> bool {
+pub(crate) fn pool_uses_responses_family_retry_budget_policy(original_uri: &Uri, method: &Method) -> bool {
     method == Method::POST
         && matches!(
             original_uri.path(),
@@ -299,7 +299,7 @@ fn pool_uses_responses_family_retry_budget_policy(original_uri: &Uri, method: &M
         )
 }
 
-fn pool_same_account_attempt_budget(
+pub(crate) fn pool_same_account_attempt_budget(
     original_uri: &Uri,
     method: &Method,
     distinct_account_count: usize,
@@ -318,9 +318,9 @@ fn pool_same_account_attempt_budget(
     }
 }
 
-const POOL_RESPONSES_FAMILY_INITIAL_OVERLOAD_ATTEMPT_BUDGET: u8 = 4;
+pub(crate) const POOL_RESPONSES_FAMILY_INITIAL_OVERLOAD_ATTEMPT_BUDGET: u8 = 4;
 
-fn pool_overload_same_account_attempt_budget(
+pub(crate) fn pool_overload_same_account_attempt_budget(
     original_uri: &Uri,
     method: &Method,
     distinct_account_count: usize,
@@ -335,13 +335,13 @@ fn pool_overload_same_account_attempt_budget(
     }
 }
 
-fn pool_error_message_indicates_proxy_timeout(message: &str) -> bool {
+pub(crate) fn pool_error_message_indicates_proxy_timeout(message: &str) -> bool {
     let message_lower = message.trim().to_ascii_lowercase();
     message_lower.contains("request timed out after")
         || message_lower.contains("upstream handshake timed out after")
 }
 
-fn pool_failure_is_timeout_shaped(failure_kind: &str, message: &str) -> bool {
+pub(crate) fn pool_failure_is_timeout_shaped(failure_kind: &str, message: &str) -> bool {
     matches!(
         failure_kind,
         PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT
@@ -351,13 +351,13 @@ fn pool_failure_is_timeout_shaped(failure_kind: &str, message: &str) -> bool {
     ) && pool_error_message_indicates_proxy_timeout(message)
 }
 
-fn pool_account_forward_proxy_scope(
+pub(crate) fn pool_account_forward_proxy_scope(
     account: &PoolResolvedAccount,
 ) -> std::result::Result<ForwardProxyRouteScope, String> {
     Ok(account.forward_proxy_scope.clone())
 }
 
-async fn select_pool_account_forward_proxy_client(
+pub(crate) async fn select_pool_account_forward_proxy_client(
     state: &AppState,
     account: &PoolResolvedAccount,
 ) -> Result<(ForwardProxyRouteScope, SelectedForwardProxy, Client), String> {
@@ -395,7 +395,7 @@ async fn select_pool_account_forward_proxy_client(
     Ok((scope, selected_proxy, client))
 }
 
-async fn record_pool_account_forward_proxy_result(
+pub(crate) async fn record_pool_account_forward_proxy_result(
     state: &AppState,
     scope: &ForwardProxyRouteScope,
     selected_proxy: &SelectedForwardProxy,
@@ -404,7 +404,7 @@ async fn record_pool_account_forward_proxy_result(
     record_forward_proxy_scope_result(state, scope, &selected_proxy.key, result).await;
 }
 
-fn extract_sticky_key_from_request_body(value: &Value) -> Option<String> {
+pub(crate) fn extract_sticky_key_from_request_body(value: &Value) -> Option<String> {
     const STICKY_KEY_POINTERS: &[&str] = &[
         "/metadata/sticky_key",
         "/metadata/stickyKey",
@@ -427,7 +427,7 @@ fn extract_sticky_key_from_request_body(value: &Value) -> Option<String> {
     None
 }
 
-fn extract_prompt_cache_key_from_request_body(value: &Value) -> Option<String> {
+pub(crate) fn extract_prompt_cache_key_from_request_body(value: &Value) -> Option<String> {
     for pointer in [
         "/metadata/prompt_cache_key",
         "/metadata/promptCacheKey",
@@ -444,14 +444,14 @@ fn extract_prompt_cache_key_from_request_body(value: &Value) -> Option<String> {
     None
 }
 
-fn extract_requested_service_tier_from_request_body(value: &Value) -> Option<String> {
+pub(crate) fn extract_requested_service_tier_from_request_body(value: &Value) -> Option<String> {
     ["/service_tier", "/serviceTier"]
         .iter()
         .find_map(|pointer| value.pointer(pointer).and_then(|entry| entry.as_str()))
         .and_then(normalize_service_tier)
 }
 
-fn rewrite_request_service_tier_for_fast_mode(
+pub(crate) fn rewrite_request_service_tier_for_fast_mode(
     value: &mut Value,
     fast_mode_rewrite_mode: TagFastModeRewriteMode,
 ) -> bool {
@@ -493,7 +493,7 @@ fn rewrite_request_service_tier_for_fast_mode(
     }
 }
 
-fn extract_reasoning_effort_from_request_body(
+pub(crate) fn extract_reasoning_effort_from_request_body(
     target: ProxyCaptureTarget,
     value: &Value,
 ) -> Option<String> {
@@ -514,7 +514,7 @@ fn extract_reasoning_effort_from_request_body(
     }
 }
 
-fn build_response_capture_info_from_bytes(
+pub(crate) fn build_response_capture_info_from_bytes(
     bytes: &[u8],
     request_is_stream: bool,
     decode_failure_reason: Option<String>,
@@ -599,7 +599,7 @@ fn build_response_capture_info_from_bytes(
     response_info
 }
 
-fn parse_target_response_payload(
+pub(crate) fn parse_target_response_payload(
     _target: ProxyCaptureTarget,
     bytes: &[u8],
     request_is_stream: bool,
@@ -613,7 +613,7 @@ fn parse_target_response_payload(
         decode_failure_reason,
     )
 }
-fn parse_target_response_preview_payload(
+pub(crate) fn parse_target_response_preview_payload(
     _target: ProxyCaptureTarget,
     bytes: &[u8],
     request_is_stream: bool,
@@ -628,7 +628,7 @@ fn parse_target_response_preview_payload(
     )
 }
 
-fn response_payload_looks_like_sse(bytes: &[u8]) -> bool {
+pub(crate) fn response_payload_looks_like_sse(bytes: &[u8]) -> bool {
     String::from_utf8_lossy(bytes)
         .lines()
         .find_map(|line| {
@@ -647,7 +647,7 @@ fn response_payload_looks_like_sse(bytes: &[u8]) -> bool {
         .unwrap_or(false)
 }
 
-fn response_payload_looks_like_sse_after_decode(
+pub(crate) fn response_payload_looks_like_sse_after_decode(
     bytes: &[u8],
     content_encoding: Option<&str>,
 ) -> bool {
@@ -656,18 +656,18 @@ fn response_payload_looks_like_sse_after_decode(
 }
 
 #[cfg(test)]
-static RESPONSE_CAPTURE_RAW_SSE_HINT_FALLBACK_CALLS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static RESPONSE_CAPTURE_RAW_SSE_HINT_FALLBACK_CALLS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
-static RESPONSE_CAPTURE_RAW_PARSE_FALLBACK_CALLS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static RESPONSE_CAPTURE_RAW_PARSE_FALLBACK_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(test)]
-fn reset_response_capture_raw_fallback_counters() {
+pub(crate) fn reset_response_capture_raw_fallback_counters() {
     RESPONSE_CAPTURE_RAW_SSE_HINT_FALLBACK_CALLS.store(0, Ordering::Relaxed);
     RESPONSE_CAPTURE_RAW_PARSE_FALLBACK_CALLS.store(0, Ordering::Relaxed);
 }
 
 #[cfg(test)]
-fn response_capture_raw_fallback_counts() -> (usize, usize) {
+pub(crate) fn response_capture_raw_fallback_counts() -> (usize, usize) {
     (
         RESPONSE_CAPTURE_RAW_SSE_HINT_FALLBACK_CALLS.load(Ordering::Relaxed),
         RESPONSE_CAPTURE_RAW_PARSE_FALLBACK_CALLS.load(Ordering::Relaxed),
@@ -675,7 +675,7 @@ fn response_capture_raw_fallback_counts() -> (usize, usize) {
 }
 
 #[allow(dead_code)]
-fn response_payload_looks_like_sse_from_raw_file(
+pub(crate) fn response_payload_looks_like_sse_from_raw_file(
     path: &Path,
     content_encoding: Option<&str>,
 ) -> std::result::Result<bool, String> {
@@ -690,7 +690,7 @@ fn response_payload_looks_like_sse_from_raw_file(
 }
 
 #[allow(dead_code)]
-fn response_payload_looks_like_sse_from_capture(
+pub(crate) fn response_payload_looks_like_sse_from_capture(
     resp_raw: &RawPayloadMeta,
     preview_bytes: &[u8],
     content_encoding: Option<&str>,
@@ -714,14 +714,14 @@ fn response_payload_looks_like_sse_from_capture(
         .unwrap_or(false)
 }
 
-fn decode_response_payload_for_parse<'a>(
+pub(crate) fn decode_response_payload_for_parse<'a>(
     bytes: &'a [u8],
     content_encoding: Option<&str>,
 ) -> (Cow<'a, [u8]>, Option<String>) {
     decode_response_payload(bytes, content_encoding, false)
 }
 
-fn decode_response_payload_for_preview_parse<'a>(
+pub(crate) fn decode_response_payload_for_preview_parse<'a>(
     bytes: &'a [u8],
     content_encoding: Option<&str>,
 ) -> (Cow<'a, [u8]>, Option<String>) {
@@ -742,7 +742,7 @@ fn decode_response_payload_for_preview_parse<'a>(
     (Cow::Owned(decoded), None)
 }
 
-fn read_decoder_lossy(
+pub(crate) fn read_decoder_lossy(
     mut reader: impl Read,
 ) -> std::result::Result<(Vec<u8>, Option<String>), String> {
     let mut decoded = Vec::new();
@@ -753,7 +753,7 @@ fn read_decoder_lossy(
     }
 }
 
-fn decode_single_content_encoding_lossy(
+pub(crate) fn decode_single_content_encoding_lossy(
     bytes: &[u8],
     encoding: &str,
 ) -> std::result::Result<(Vec<u8>, Option<String>), String> {
@@ -785,7 +785,7 @@ fn decode_single_content_encoding_lossy(
 }
 
 #[derive(Default)]
-struct StreamResponsePayloadParser {
+pub(crate) struct StreamResponsePayloadParser {
     model: Option<String>,
     usage: ParsedUsage,
     service_tier: Option<String>,
@@ -889,12 +889,12 @@ impl StreamResponsePayloadParser {
     }
 }
 
-struct StreamResponsePayloadParseOutcome {
+pub(crate) struct StreamResponsePayloadParseOutcome {
     response_info: ResponseCaptureInfo,
     saw_stream_fields: bool,
 }
 
-struct StreamResponsePayloadChunkParser {
+pub(crate) struct StreamResponsePayloadChunkParser {
     parser: StreamResponsePayloadParser,
     line_buffer: Vec<u8>,
     discarding_oversized_line: bool,
@@ -999,14 +999,14 @@ impl StreamResponsePayloadChunkParser {
     }
 }
 
-fn parse_stream_response_payload(bytes: &[u8]) -> ResponseCaptureInfo {
+pub(crate) fn parse_stream_response_payload(bytes: &[u8]) -> ResponseCaptureInfo {
     let mut parser = StreamResponsePayloadChunkParser::default();
     parser.ingest_bytes(bytes);
     parser.finish().response_info
 }
 
 #[allow(dead_code)]
-fn parse_stream_response_payload_from_reader<R: Read>(
+pub(crate) fn parse_stream_response_payload_from_reader<R: Read>(
     reader: R,
 ) -> io::Result<ResponseCaptureInfo> {
     let mut parser = StreamResponsePayloadChunkParser::with_line_buffer_limit(
@@ -1024,14 +1024,14 @@ fn parse_stream_response_payload_from_reader<R: Read>(
     Ok(parser.finish().response_info)
 }
 
-fn extract_stream_payload_type(value: &Value) -> Option<String> {
+pub(crate) fn extract_stream_payload_type(value: &Value) -> Option<String> {
     value
         .get("type")
         .and_then(|entry| entry.as_str())
         .map(|entry| entry.to_string())
 }
 
-fn stream_payload_service_tier_rank(event_name: Option<&str>, value: &Value) -> u8 {
+pub(crate) fn stream_payload_service_tier_rank(event_name: Option<&str>, value: &Value) -> u8 {
     match event_name.or_else(|| value.get("type").and_then(|entry| entry.as_str())) {
         Some("response.completed" | "response.failed") => 2,
         Some("response.created" | "response.in_progress") => 1,
@@ -1039,7 +1039,7 @@ fn stream_payload_service_tier_rank(event_name: Option<&str>, value: &Value) -> 
     }
 }
 
-fn should_overwrite_stream_service_tier(
+pub(crate) fn should_overwrite_stream_service_tier(
     current_tier: Option<&str>,
     current_rank: u8,
     next_tier: &str,
@@ -1064,7 +1064,7 @@ fn should_overwrite_stream_service_tier(
     }
 }
 
-fn stream_payload_indicates_failure(event_name: Option<&str>, value: &Value) -> bool {
+pub(crate) fn stream_payload_indicates_failure(event_name: Option<&str>, value: &Value) -> bool {
     matches!(event_name, Some("response.failed") | Some("error"))
         || value
             .get("type")
@@ -1076,7 +1076,7 @@ fn stream_payload_indicates_failure(event_name: Option<&str>, value: &Value) -> 
             .is_some_and(|status| status.eq_ignore_ascii_case("failed"))
 }
 
-fn extract_upstream_error_object(value: &Value) -> Option<&Value> {
+pub(crate) fn extract_upstream_error_object(value: &Value) -> Option<&Value> {
     value
         .get("error")
         .filter(|entry| entry.is_object())
@@ -1087,7 +1087,7 @@ fn extract_upstream_error_object(value: &Value) -> Option<&Value> {
         })
 }
 
-fn extract_upstream_error_code(value: &Value) -> Option<String> {
+pub(crate) fn extract_upstream_error_code(value: &Value) -> Option<String> {
     extract_upstream_error_object(value)
         .and_then(|entry| entry.get("code"))
         .and_then(|entry| entry.as_str())
@@ -1100,7 +1100,7 @@ fn extract_upstream_error_code(value: &Value) -> Option<String> {
         })
 }
 
-fn extract_upstream_error_message(value: &Value) -> Option<String> {
+pub(crate) fn extract_upstream_error_message(value: &Value) -> Option<String> {
     extract_upstream_error_object(value)
         .and_then(|entry| entry.get("message"))
         .and_then(|entry| entry.as_str())
@@ -1113,7 +1113,7 @@ fn extract_upstream_error_message(value: &Value) -> Option<String> {
         })
 }
 
-fn extract_upstream_request_id(value: &Value) -> Option<String> {
+pub(crate) fn extract_upstream_request_id(value: &Value) -> Option<String> {
     extract_upstream_error_object(value)
         .and_then(|entry| {
             entry
@@ -1135,7 +1135,7 @@ fn extract_upstream_request_id(value: &Value) -> Option<String> {
         })
 }
 
-fn find_first_sse_event_boundary(bytes: &[u8]) -> Option<usize> {
+pub(crate) fn find_first_sse_event_boundary(bytes: &[u8]) -> Option<usize> {
     let mut index = 0usize;
     while index + 1 < bytes.len() {
         if bytes[index] == b'\n' && bytes[index + 1] == b'\n' {
@@ -1154,7 +1154,7 @@ fn find_first_sse_event_boundary(bytes: &[u8]) -> Option<usize> {
     None
 }
 
-fn initial_sse_event_kind(bytes: &[u8]) -> Option<String> {
+pub(crate) fn initial_sse_event_kind(bytes: &[u8]) -> Option<String> {
     let mut event_name = None;
     let mut data_lines = Vec::new();
     for line in String::from_utf8_lossy(bytes).lines() {
@@ -1192,7 +1192,7 @@ fn initial_sse_event_kind(bytes: &[u8]) -> Option<String> {
         .or(event_name)
 }
 
-fn build_retryable_overload_gate_outcome(
+pub(crate) fn build_retryable_overload_gate_outcome(
     upstream_error_code: Option<String>,
     upstream_error_message: Option<String>,
     upstream_request_id: Option<String>,
@@ -1215,7 +1215,7 @@ fn build_retryable_overload_gate_outcome(
     }
 }
 
-enum PoolInitialResponsesSseEventDecision {
+pub(crate) enum PoolInitialResponsesSseEventDecision {
     ContinueMetadata,
     Forward,
     RetrySameAccount {
@@ -1225,7 +1225,7 @@ enum PoolInitialResponsesSseEventDecision {
     },
 }
 
-fn classify_pool_initial_responses_sse_event(
+pub(crate) fn classify_pool_initial_responses_sse_event(
     status: StatusCode,
     event_bytes: &[u8],
 ) -> PoolInitialResponsesSseEventDecision {
@@ -1246,7 +1246,7 @@ fn classify_pool_initial_responses_sse_event(
     }
 }
 
-fn rebuild_proxy_upstream_response_stream(
+pub(crate) fn rebuild_proxy_upstream_response_stream(
     status: StatusCode,
     headers: &HeaderMap,
     stream: Pin<Box<dyn futures_util::Stream<Item = Result<Bytes, io::Error>> + Send>>,
@@ -1261,7 +1261,7 @@ fn rebuild_proxy_upstream_response_stream(
         .map_err(|err| format!("failed to rebuild upstream response stream: {err}"))
 }
 
-enum PoolInitialResponseGateOutcome {
+pub(crate) enum PoolInitialResponseGateOutcome {
     Forward {
         response: ProxyUpstreamResponseBody,
         prefetched_bytes: Option<Bytes>,
@@ -1274,7 +1274,7 @@ enum PoolInitialResponseGateOutcome {
     },
 }
 
-async fn gate_pool_initial_response_stream(
+pub(crate) async fn gate_pool_initial_response_stream(
     response: ProxyUpstreamResponseBody,
     prefetched_first_chunk: Option<Bytes>,
     total_timeout: Duration,
@@ -1358,7 +1358,7 @@ async fn gate_pool_initial_response_stream(
     })
 }
 
-fn gate_pool_initial_compact_response(
+pub(crate) fn gate_pool_initial_compact_response(
     status: StatusCode,
     headers: &HeaderMap,
     prefetched_first_chunk: Option<&Bytes>,
@@ -1394,7 +1394,7 @@ fn gate_pool_initial_compact_response(
     ))
 }
 
-fn extract_request_id_from_message(message: &str) -> Option<String> {
+pub(crate) fn extract_request_id_from_message(message: &str) -> Option<String> {
     let lower_message = message.to_ascii_lowercase();
     let start = lower_message
         .find("request id ")
@@ -1421,14 +1421,14 @@ fn extract_request_id_from_message(message: &str) -> Option<String> {
     }
 }
 
-fn decode_response_payload_for_usage<'a>(
+pub(crate) fn decode_response_payload_for_usage<'a>(
     bytes: &'a [u8],
     content_encoding: Option<&str>,
 ) -> (Cow<'a, [u8]>, Option<String>) {
     decode_response_payload(bytes, content_encoding, true)
 }
 
-fn decode_response_payload<'a>(
+pub(crate) fn decode_response_payload<'a>(
     bytes: &'a [u8],
     content_encoding: Option<&str>,
     allow_gzip_magic_fallback: bool,
@@ -1470,7 +1470,7 @@ fn decode_response_payload<'a>(
     (Cow::Owned(decoded), None)
 }
 
-fn parse_content_encodings(content_encoding: Option<&str>) -> Vec<String> {
+pub(crate) fn parse_content_encodings(content_encoding: Option<&str>) -> Vec<String> {
     content_encoding
         .into_iter()
         .flat_map(|raw| raw.split(','))
@@ -1480,7 +1480,7 @@ fn parse_content_encodings(content_encoding: Option<&str>) -> Vec<String> {
         .collect()
 }
 
-fn decode_single_content_encoding<'a>(
+pub(crate) fn decode_single_content_encoding<'a>(
     bytes: &'a [u8],
     encoding: &str,
 ) -> std::result::Result<Cow<'a, [u8]>, String> {
@@ -1493,7 +1493,7 @@ fn decode_single_content_encoding<'a>(
     }
 }
 
-fn decode_gzip_payload<'a>(bytes: &'a [u8]) -> std::result::Result<Cow<'a, [u8]>, String> {
+pub(crate) fn decode_gzip_payload<'a>(bytes: &'a [u8]) -> std::result::Result<Cow<'a, [u8]>, String> {
     let mut decoder = GzDecoder::new(bytes);
     let mut decoded = Vec::new();
     decoder
@@ -1502,7 +1502,7 @@ fn decode_gzip_payload<'a>(bytes: &'a [u8]) -> std::result::Result<Cow<'a, [u8]>
     Ok(Cow::Owned(decoded))
 }
 
-fn decode_brotli_payload<'a>(bytes: &'a [u8]) -> std::result::Result<Cow<'a, [u8]>, String> {
+pub(crate) fn decode_brotli_payload<'a>(bytes: &'a [u8]) -> std::result::Result<Cow<'a, [u8]>, String> {
     let mut decoder = BrotliDecompressor::new(bytes, 4096);
     let mut decoded = Vec::new();
     decoder
@@ -1511,7 +1511,7 @@ fn decode_brotli_payload<'a>(bytes: &'a [u8]) -> std::result::Result<Cow<'a, [u8
     Ok(Cow::Owned(decoded))
 }
 
-fn decode_deflate_payload<'a>(bytes: &'a [u8]) -> std::result::Result<Cow<'a, [u8]>, String> {
+pub(crate) fn decode_deflate_payload<'a>(bytes: &'a [u8]) -> std::result::Result<Cow<'a, [u8]>, String> {
     let mut zlib_decoder = ZlibDecoder::new(bytes);
     let mut decoded = Vec::new();
     match zlib_decoder.read_to_end(&mut decoded) {
@@ -1527,11 +1527,11 @@ fn decode_deflate_payload<'a>(bytes: &'a [u8]) -> std::result::Result<Cow<'a, [u
     }
 }
 
-fn response_payload_looks_like_gzip_magic(bytes: &[u8]) -> bool {
+pub(crate) fn response_payload_looks_like_gzip_magic(bytes: &[u8]) -> bool {
     bytes.len() >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b
 }
 
-fn extract_model_from_payload(value: &Value) -> Option<String> {
+pub(crate) fn extract_model_from_payload(value: &Value) -> Option<String> {
     value
         .get("model")
         .and_then(|v| v.as_str())
@@ -1544,7 +1544,7 @@ fn extract_model_from_payload(value: &Value) -> Option<String> {
         })
 }
 
-fn extract_partial_json_string_field(bytes: &[u8], keys: &[&str]) -> Option<String> {
+pub(crate) fn extract_partial_json_string_field(bytes: &[u8], keys: &[&str]) -> Option<String> {
     let text = std::str::from_utf8(bytes).ok()?;
     keys.iter().find_map(|key| {
         let pattern = format!(r#""{}"\s*:\s*"((?:\\.|[^"\\])*)""#, regex::escape(key));
@@ -1555,16 +1555,16 @@ fn extract_partial_json_string_field(bytes: &[u8], keys: &[&str]) -> Option<Stri
     })
 }
 
-fn extract_partial_json_model(bytes: &[u8]) -> Option<String> {
+pub(crate) fn extract_partial_json_model(bytes: &[u8]) -> Option<String> {
     extract_partial_json_string_field(bytes, &["model"])
 }
 
-fn extract_partial_json_service_tier(bytes: &[u8]) -> Option<String> {
+pub(crate) fn extract_partial_json_service_tier(bytes: &[u8]) -> Option<String> {
     extract_partial_json_string_field(bytes, &["service_tier", "serviceTier"])
         .and_then(|value| normalize_service_tier(&value))
 }
 
-fn normalize_service_tier(value: &str) -> Option<String> {
+pub(crate) fn normalize_service_tier(value: &str) -> Option<String> {
     let normalized = value.trim().to_ascii_lowercase();
     if normalized.is_empty() {
         None
@@ -1573,17 +1573,17 @@ fn normalize_service_tier(value: &str) -> Option<String> {
     }
 }
 
-const AUTO_SERVICE_TIER: &str = "auto";
-const DEFAULT_SERVICE_TIER: &str = "default";
-const PRIORITY_SERVICE_TIER: &str = "priority";
-const API_KEYS_BILLING_ACCOUNT_KIND: &str = "api_key_codex";
-const REQUESTED_TIER_PRICE_VERSION_SUFFIX: &str = "@requested-tier";
-const RESPONSE_TIER_PRICE_VERSION_SUFFIX: &str = "@response-tier";
-const EXPLICIT_BILLING_PRICE_VERSION_SUFFIX: &str = "@explicit-billing";
-const SERVICE_TIER_STREAM_BACKFILL_VERSION: &str = "stream-terminal-v1";
+pub(crate) const AUTO_SERVICE_TIER: &str = "auto";
+pub(crate) const DEFAULT_SERVICE_TIER: &str = "default";
+pub(crate) const PRIORITY_SERVICE_TIER: &str = "priority";
+pub(crate) const API_KEYS_BILLING_ACCOUNT_KIND: &str = "api_key_codex";
+pub(crate) const REQUESTED_TIER_PRICE_VERSION_SUFFIX: &str = "@requested-tier";
+pub(crate) const RESPONSE_TIER_PRICE_VERSION_SUFFIX: &str = "@response-tier";
+pub(crate) const EXPLICIT_BILLING_PRICE_VERSION_SUFFIX: &str = "@explicit-billing";
+pub(crate) const SERVICE_TIER_STREAM_BACKFILL_VERSION: &str = "stream-terminal-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProxyPricingMode {
+pub(crate) enum ProxyPricingMode {
     ResponseTier,
     RequestedTier,
     ExplicitBilling,
@@ -1599,7 +1599,7 @@ impl ProxyPricingMode {
     }
 }
 
-fn normalize_upstream_base_url_host(raw: &str) -> Option<String> {
+pub(crate) fn normalize_upstream_base_url_host(raw: &str) -> Option<String> {
     Url::parse(raw)
         .ok()
         .and_then(|url| url.host_str().map(|host| host.trim().to_ascii_lowercase()))
@@ -1614,13 +1614,13 @@ fn normalize_upstream_base_url_host(raw: &str) -> Option<String> {
         .filter(|host| !host.is_empty())
 }
 
-fn api_keys_billing_matches_context(upstream_account_kind: Option<&str>) -> bool {
+pub(crate) fn api_keys_billing_matches_context(upstream_account_kind: Option<&str>) -> bool {
     upstream_account_kind
         .map(str::trim)
         .is_some_and(|kind| kind.eq_ignore_ascii_case(API_KEYS_BILLING_ACCOUNT_KIND))
 }
 
-fn resolve_proxy_billing_service_tier_and_pricing_mode(
+pub(crate) fn resolve_proxy_billing_service_tier_and_pricing_mode(
     explicit_billing_service_tier: Option<&str>,
     requested_service_tier: Option<&str>,
     response_service_tier: Option<&str>,
@@ -1652,7 +1652,7 @@ fn resolve_proxy_billing_service_tier_and_pricing_mode(
     )
 }
 
-fn resolve_proxy_billing_service_tier_and_pricing_mode_for_account(
+pub(crate) fn resolve_proxy_billing_service_tier_and_pricing_mode_for_account(
     explicit_billing_service_tier: Option<&str>,
     requested_service_tier: Option<&str>,
     response_service_tier: Option<&str>,
@@ -1666,15 +1666,15 @@ fn resolve_proxy_billing_service_tier_and_pricing_mode_for_account(
     )
 }
 
-fn payload_summary_upstream_account_kind(account: Option<&PoolResolvedAccount>) -> Option<&str> {
+pub(crate) fn payload_summary_upstream_account_kind(account: Option<&PoolResolvedAccount>) -> Option<&str> {
     account.map(|entry| entry.kind.as_str())
 }
 
-fn payload_summary_upstream_base_url_host(account: Option<&PoolResolvedAccount>) -> Option<&str> {
+pub(crate) fn payload_summary_upstream_base_url_host(account: Option<&PoolResolvedAccount>) -> Option<&str> {
     account.and_then(|entry| entry.upstream_base_url.host_str())
 }
 
-fn resolve_backfill_upstream_account_kind(
+pub(crate) fn resolve_backfill_upstream_account_kind(
     snapshot_kind: Option<&str>,
     live_kind: Option<&str>,
     allow_live_fallback: bool,
@@ -1693,11 +1693,11 @@ fn resolve_backfill_upstream_account_kind(
         .map(str::to_string)
 }
 
-fn allow_live_upstream_account_fallback(raw: Option<i64>) -> bool {
+pub(crate) fn allow_live_upstream_account_fallback(raw: Option<i64>) -> bool {
     raw == Some(1)
 }
 
-fn resolve_backfill_upstream_base_url_host(
+pub(crate) fn resolve_backfill_upstream_base_url_host(
     snapshot_host: Option<&str>,
     live_host: Option<&str>,
     allow_live_fallback: bool,
@@ -1710,7 +1710,7 @@ fn resolve_backfill_upstream_base_url_host(
     })
 }
 
-fn extract_service_tier_from_payload(value: &Value) -> Option<String> {
+pub(crate) fn extract_service_tier_from_payload(value: &Value) -> Option<String> {
     [
         "/service_tier",
         "/serviceTier",
@@ -1722,7 +1722,7 @@ fn extract_service_tier_from_payload(value: &Value) -> Option<String> {
     .and_then(normalize_service_tier)
 }
 
-fn extract_usage_from_payload(value: &Value) -> Option<ParsedUsage> {
+pub(crate) fn extract_usage_from_payload(value: &Value) -> Option<ParsedUsage> {
     if let Some(usage) = value.get("usage") {
         let parsed = parse_usage_value(usage);
         if parsed.total_tokens.is_some()
@@ -1744,7 +1744,7 @@ fn extract_usage_from_payload(value: &Value) -> Option<ParsedUsage> {
     None
 }
 
-fn parse_usage_value(value: &Value) -> ParsedUsage {
+pub(crate) fn parse_usage_value(value: &Value) -> ParsedUsage {
     let input_tokens = value
         .get("input_tokens")
         .and_then(json_value_to_i64)
@@ -1788,7 +1788,7 @@ fn parse_usage_value(value: &Value) -> ParsedUsage {
     parsed
 }
 
-fn json_value_to_i64(value: &Value) -> Option<i64> {
+pub(crate) fn json_value_to_i64(value: &Value) -> Option<i64> {
     if let Some(v) = value.as_i64() {
         return Some(v);
     }
@@ -1798,7 +1798,7 @@ fn json_value_to_i64(value: &Value) -> Option<i64> {
     value.as_str().and_then(|v| v.parse::<i64>().ok())
 }
 
-fn upstream_account_id_from_payload(payload: Option<&str>) -> Option<i64> {
+pub(crate) fn upstream_account_id_from_payload(payload: Option<&str>) -> Option<i64> {
     let payload = payload?;
     let value = serde_json::from_str::<Value>(payload).ok()?;
     value.get("upstreamAccountId").and_then(json_value_to_i64)
