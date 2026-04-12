@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "",
+  "base_stable_version": "",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-12T14:20:21Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "24d554518f26c9fd35ee4e8c829943ff26a8abc3",
+  "pr_number": 340,
+  "pr_title": "docs(specs): mark n78zb prompt-cache flow complete",
+  "registry": "ghcr.io",
+  "release_bump": "skip",
+  "release_channel": "stable",
+  "release_enabled": false,
+  "release_prerelease": false,
+  "release_tag": "",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "",
+  "target_sha": "ecfc6e3c9f857d85ad0a840ac0e12389f2e53951",
+  "type_label": "type:skip"
+}
