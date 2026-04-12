@@ -19,6 +19,8 @@ import type {
   PromptCacheConversationsResponse,
 } from "../lib/api";
 import {
+  formatDashboardWorkingConversationSequenceId,
+  hashDashboardWorkingConversationKey,
   mapPromptCacheConversationsToDashboardCards,
   type DashboardWorkingConversationInvocationSelection,
 } from "../lib/dashboardWorkingConversations";
@@ -614,6 +616,22 @@ function buildCards(response: PromptCacheConversationsResponse) {
 const createdAtDescendingOrderCards = buildCards(
   createdAtDescendingOrderResponse,
 );
+const createdAtDescendingOrderKeys = [
+  ...createdAtDescendingOrderResponse.conversations,
+]
+  .sort(
+    (left, right) =>
+      right.createdAt.localeCompare(left.createdAt) ||
+      right.promptCacheKey.localeCompare(left.promptCacheKey),
+  )
+  .map((conversation) => conversation.promptCacheKey);
+
+function getStorySequenceIdForPromptCacheKey(promptCacheKey: string) {
+  return formatDashboardWorkingConversationSequenceId(
+    `WC-${hashDashboardWorkingConversationKey(promptCacheKey).slice(0, 6)}`,
+  );
+}
+
 const virtualizedLargeDatasetResponse = buildVirtualizedLargeResponse(
   "pck-virtual",
   72,
@@ -1366,23 +1384,10 @@ export const CreatedAtDescendingOrder: Story = {
     const cards = await canvas.findAllByTestId(
       "dashboard-working-conversation-card",
     );
-    expect(cards[0]?.getAttribute("data-conversation-sequence-id")).toBe(
-      createdAtDescendingOrderCards[0]?.conversationSequenceId.replace(
-        /^WC-/,
-        "",
-      ),
-    );
-    expect(cards[1]?.getAttribute("data-conversation-sequence-id")).toBe(
-      createdAtDescendingOrderCards[1]?.conversationSequenceId.replace(
-        /^WC-/,
-        "",
-      ),
-    );
-    expect(cards[2]?.getAttribute("data-conversation-sequence-id")).toBe(
-      createdAtDescendingOrderCards[2]?.conversationSequenceId.replace(
-        /^WC-/,
-        "",
-      ),
+    expect(
+      cards.map((card) => card.getAttribute("data-conversation-sequence-id")),
+    ).toEqual(
+      createdAtDescendingOrderKeys.map(getStorySequenceIdForPromptCacheKey),
     );
   },
 };

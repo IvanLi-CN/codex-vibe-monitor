@@ -224,13 +224,13 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
     const cards = mapPromptCacheConversationsToDashboardCards(response);
 
     expect(cards.map((card) => card.promptCacheKey)).toEqual([
-      "pck-running-only",
       "pck-terminal-late",
       "pck-terminal-early",
+      "pck-running-only",
     ]);
-    expect(cards[0]?.currentInvocation.displayStatus).toBe("running");
-    expect(cards[0]?.previousInvocation?.displayStatus).toBe("completed");
-    expect(cards[0]?.sortAnchorEpoch).toBe(Date.parse("2026-04-04T10:05:00Z"));
+    expect(cards[2]?.currentInvocation.displayStatus).toBe("running");
+    expect(cards[2]?.previousInvocation?.displayStatus).toBe("completed");
+    expect(cards[2]?.sortAnchorEpoch).toBe(Date.parse("2026-04-04T10:05:00Z"));
   });
 
   it("uses the latest of terminal and in-flight anchors when both are present", () => {
@@ -279,7 +279,7 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
     );
   });
 
-  it("keeps an explicit 20-card cap anchored on active work without reordering the visible set", () => {
+  it("keeps the explicit 20-card cap anchored on active work before final display sorting", () => {
     const response = createResponse([
       ...Array.from({ length: 20 }, (_, index) =>
         createConversation(
@@ -330,10 +330,10 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
     expect(cards.map((card) => card.promptCacheKey)).not.toContain(
       "pck-base-00",
     );
-    expect(cards[0]?.promptCacheKey).toBe("pck-old-running");
+    expect(cards.at(-1)?.promptCacheKey).toBe("pck-old-running");
   });
 
-  it("keeps later pages appended behind the already visible set even when createdAt is newer", () => {
+  it("re-sorts loaded cards by createdAt descending even when later pages arrive behind the visible set", () => {
     const response = createResponse([
       createConversation(
         "pck-head-visible",
@@ -385,12 +385,12 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
     const cards = mapPromptCacheConversationsToDashboardCards(response);
 
     expect(cards.map((card) => card.promptCacheKey)).toEqual([
+      "pck-page-two-new-created",
       "pck-head-visible",
       "pck-head-second",
-      "pck-page-two-new-created",
     ]);
-    expect(cards[2]?.createdAtEpoch).toBe(Date.parse("2026-04-04T10:05:30Z"));
-    expect(cards[2]?.sortAnchorEpoch).toBe(Date.parse("2026-04-04T10:03:30Z"));
+    expect(cards[0]?.createdAtEpoch).toBe(Date.parse("2026-04-04T10:05:30Z"));
+    expect(cards[0]?.sortAnchorEpoch).toBe(Date.parse("2026-04-04T10:03:30Z"));
   });
 
   it("breaks explicit cap ties by createdAt descending after the shared anchor", () => {

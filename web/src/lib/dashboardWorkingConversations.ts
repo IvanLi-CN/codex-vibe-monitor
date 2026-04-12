@@ -241,14 +241,18 @@ export function mapPromptCacheConversationsToDashboardCards(
 
   const rangeStartEpoch =
     parseEpoch(response.rangeStart) ?? Number.MIN_SAFE_INTEGER;
-  const sortedCards = response.conversations
+  const visibleSetCards = response.conversations
     .map((conversation) => buildPendingCardModel(conversation, rangeStartEpoch))
     .filter((card): card is PendingSequenceCardModel => card != null)
     .sort(compareDashboardWorkingConversationVisibleSetOrder);
 
   if (typeof options.limit === "number" && Number.isFinite(options.limit)) {
-    sortedCards.splice(options.limit);
+    visibleSetCards.splice(options.limit);
   }
+
+  const sortedCards = visibleSetCards.sort(
+    compareDashboardWorkingConversationDisplayOrder,
+  );
 
   const hashFn = options.hashFn ?? hashDashboardWorkingConversationKey;
   const collisionHashFn =
