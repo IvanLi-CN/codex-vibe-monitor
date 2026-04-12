@@ -10,6 +10,7 @@ import type {
   UpstreamAccountSummary,
 } from "../lib/api";
 import {
+  UPSTREAM_ACCOUNTS_OPEN_RESYNC_COOLDOWN_MS,
   UPSTREAM_ACCOUNTS_SSE_REFRESH_THROTTLE_MS,
   useUpstreamAccounts,
 } from "./useUpstreamAccounts";
@@ -351,6 +352,20 @@ describe("useUpstreamAccounts", () => {
     expect(text("list-loading-state")).toBe("idle");
     expect(text("list-status")).toBe("ready");
     expect(text("list-has-current-query-data")).toBe("true");
+  });
+
+  it("does not refetch the roster when rerenders keep the same query key", async () => {
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(createDetail(1, "Alpha"));
+
+    render(<Probe query={{ page: 1, pageSize: 20 }} />);
+    await flushAsync();
+
+    expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(1);
+
+    rerender(<Probe query={{ page: 1, pageSize: 20 }} />);
+    await flushAsync();
+
+    expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the forward proxy catalog in loading state until the first roster payload lands", async () => {
@@ -1050,7 +1065,7 @@ describe("useUpstreamAccounts", () => {
     }
   });
 
-  it("runs a silent resync when the SSE connection opens again", async () => {
+  it("skips an immediate open resync after a fresh load, then resyncs after the cooldown", async () => {
     apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(createDetail(1, "Alpha"));
 
     render(<Probe />);
@@ -1058,12 +1073,107 @@ describe("useUpstreamAccounts", () => {
 
     expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(1);
 
-    act(() => {
-      emitOpenEvent();
-    });
+    vi.useFakeTimers();
+    try {
+      act(() => {
+        emitOpenEvent();
+      });
+      await flushAsync();
+      expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(1);
+
+      act(() => {
+        vi.advanceTimersByTime(UPSTREAM_ACCOUNTS_OPEN_RESYNC_COOLDOWN_MS);
+        emitOpenEvent();
+      });
+      await flushAsync();
+
+      expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(2);
+      expect(apiMocks.fetchUpstreamAccountDetail).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not let records SSE preempt the first roster load before the current query hydrates", async () => {
+    const pendingList = deferred<UpstreamAccountListResponse>();
+    apiMocks.fetchUpstreamAccounts.mockImplementationOnce(async () => pendingList.promise);
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(createDetail(1, "Alpha"));
+
+    render(<Probe />);
+
+    expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(1);
+
+    vi.useFakeTimers();
+    try {
+      act(() => {
+        emitRecordsEvent();
+        vi.advanceTimersByTime(UPSTREAM_ACCOUNTS_SSE_REFRESH_THROTTLE_MS);
+      });
+      await flushAsync();
+
+      expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(1);
+
+      pendingList.resolve(createListResponse());
+      await flushAsync();
+      await flushAsync();
+
+      expect(text("list-status")).toBe("ready");
+      expect(text("selected-name")).toBe("Alpha");
+      expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("coalesces same-query SSE refreshes into one follow-up request while a refresh is already running", async () => {
+    const firstRefresh = deferred<UpstreamAccountListResponse>();
+    const queuedRefresh = deferred<UpstreamAccountListResponse>();
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(createDetail(1, "Alpha"));
+
+    render(<Probe />);
     await flushAsync();
 
-    expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(2);
-    expect(apiMocks.fetchUpstreamAccountDetail).toHaveBeenCalledTimes(2);
+    apiMocks.fetchUpstreamAccounts
+      .mockImplementationOnce(async () => firstRefresh.promise)
+      .mockImplementationOnce(async () => queuedRefresh.promise);
+
+    vi.useFakeTimers();
+    try {
+      act(() => {
+        emitRecordsEvent();
+        vi.advanceTimersByTime(UPSTREAM_ACCOUNTS_SSE_REFRESH_THROTTLE_MS);
+      });
+      await flushAsync();
+
+      expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(2);
+
+      act(() => {
+        emitRecordsEvent();
+        emitRecordsEvent();
+        vi.advanceTimersByTime(UPSTREAM_ACCOUNTS_SSE_REFRESH_THROTTLE_MS);
+      });
+      await flushAsync();
+
+      expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(2);
+
+      firstRefresh.resolve(createListResponse({
+        items: [createSummary(1, "Alpha Refresh 1"), createSummary(2, "Beta")],
+      }));
+      await flushAsync();
+      await flushAsync();
+
+      expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(3);
+
+      queuedRefresh.resolve(createListResponse({
+        items: [createSummary(1, "Alpha Refresh 2"), createSummary(2, "Beta")],
+      }));
+      await flushAsync();
+      await flushAsync();
+
+      expect(text("selected-name")).toBe("Alpha Refresh 2");
+      expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

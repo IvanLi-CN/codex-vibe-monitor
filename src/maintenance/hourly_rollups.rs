@@ -578,6 +578,10 @@ fn build_pool_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
             get(get_tag).patch(update_tag).delete(delete_tag),
         )
         .route(
+            "/api/pool/forward-proxy-binding-nodes",
+            get(list_forward_proxy_binding_nodes),
+        )
+        .route(
             "/api/pool/upstream-accounts",
             get(list_upstream_accounts_from_uri).post(bulk_update_upstream_accounts),
         )

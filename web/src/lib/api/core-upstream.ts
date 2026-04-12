@@ -1678,6 +1678,30 @@ export async function fetchUpstreamAccounts(
   return normalizeUpstreamAccountListResponse(response);
 }
 
+export async function fetchForwardProxyBindingNodes(
+  keys?: string[],
+  options?: { includeCurrent?: boolean },
+): Promise<ForwardProxyBindingNode[]> {
+  const search = new URLSearchParams();
+  if (options?.includeCurrent) {
+    search.set("includeCurrent", "1");
+  }
+  for (const key of keys ?? []) {
+    const normalized = key.trim();
+    if (!normalized) continue;
+    search.append("key", normalized);
+  }
+  const response = await fetchJson<unknown>(
+    search.size
+      ? `/api/pool/forward-proxy-binding-nodes?${search.toString()}`
+      : "/api/pool/forward-proxy-binding-nodes",
+  );
+  const items = Array.isArray(response) ? response : [];
+  return items
+    .map(normalizeForwardProxyBindingNode)
+    .filter((item): item is ForwardProxyBindingNode => item != null);
+}
+
 export async function fetchTags(
   query?: FetchTagsQuery,
 ): Promise<TagListResponse> {
