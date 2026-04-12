@@ -860,6 +860,42 @@ pub(crate) async fn fetch_error_distribution(
             let key = categorize_error(&raw);
             *counts.entry(key).or_default() += 1;
         }
+        if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
+            let archived_start = Utc
+                .timestamp_opt(range_start_epoch, 0)
+                .single()
+                .ok_or_else(|| {
+                    ApiError::from(anyhow!("invalid error distribution archive start epoch"))
+                })?;
+            let archived_end = Utc
+                .timestamp_opt(range_end_epoch, 0)
+                .single()
+                .ok_or_else(|| {
+                    ApiError::from(anyhow!("invalid error distribution archive end epoch"))
+                })?;
+            let archived_rows = crate::stats::load_unmaterialized_invocation_archive_failure_rows(
+                &state.pool,
+                archived_start,
+                archived_end,
+                source_scope,
+            )
+            .await?;
+            for row in archived_rows {
+                let classification = resolve_failure_classification(
+                    row.status.as_deref(),
+                    row.error_message.as_deref(),
+                    row.failure_kind.as_deref(),
+                    row.failure_class.as_deref(),
+                    row.is_actionable,
+                );
+                if !failure_scope_matches(scope, classification.failure_class) {
+                    continue;
+                }
+                let raw = row.error_message.unwrap_or_default();
+                let key = categorize_error(&raw);
+                *counts.entry(key).or_default() += 1;
+            }
+        }
         let mut items: Vec<ErrorDistributionItem> = counts
             .into_iter()
             .map(|(reason, count)| ErrorDistributionItem { reason, count })
@@ -1265,6 +1301,45 @@ pub(crate) async fn fetch_failure_summary(
             }
             if classification.is_actionable {
                 actionable_failure_count += 1;
+            }
+        }
+        if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
+            let archived_start = Utc
+                .timestamp_opt(range_start_epoch, 0)
+                .single()
+                .ok_or_else(|| ApiError::from(anyhow!("invalid failure summary archive start epoch")))?;
+            let archived_end = Utc
+                .timestamp_opt(range_end_epoch, 0)
+                .single()
+                .ok_or_else(|| ApiError::from(anyhow!("invalid failure summary archive end epoch")))?;
+            let archived_rows = crate::stats::load_unmaterialized_invocation_archive_failure_rows(
+                &state.pool,
+                archived_start,
+                archived_end,
+                source_scope,
+            )
+            .await?;
+            for row in archived_rows {
+                let classification = resolve_failure_classification(
+                    row.status.as_deref(),
+                    row.error_message.as_deref(),
+                    row.failure_kind.as_deref(),
+                    row.failure_class.as_deref(),
+                    row.is_actionable,
+                );
+                if classification.failure_class == FailureClass::None {
+                    continue;
+                }
+                total_failures += 1;
+                match classification.failure_class {
+                    FailureClass::ServiceFailure => service_failure_count += 1,
+                    FailureClass::ClientFailure => client_failure_count += 1,
+                    FailureClass::ClientAbort => client_abort_count += 1,
+                    FailureClass::None => {}
+                }
+                if classification.is_actionable {
+                    actionable_failure_count += 1;
+                }
             }
         }
         let actionable_failure_rate = if total_failures > 0 {

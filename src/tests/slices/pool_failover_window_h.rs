@@ -64,6 +64,10 @@ async fn seed_invocation_archive_batch(
                     ttfb_ms: *ttfb_ms,
                     payload: Some("{}"),
                     detail_level: DETAIL_LEVEL_FULL,
+                    error_message: None,
+                    failure_kind: None,
+                    failure_class: Some("none"),
+                    is_actionable: Some(0),
                 }
             },
         )
@@ -89,6 +93,10 @@ struct SeedInvocationArchiveBatchRow<'a> {
     ttfb_ms: Option<f64>,
     payload: Option<&'a str>,
     detail_level: &'a str,
+    error_message: Option<&'a str>,
+    failure_kind: Option<&'a str>,
+    failure_class: Option<&'a str>,
+    is_actionable: Option<i64>,
 }
 
 async fn seed_invocation_archive_batch_with_details(
@@ -125,9 +133,9 @@ async fn seed_invocation_archive_batch_with_details(
         sqlx::query(
             r#"
             INSERT INTO codex_invocations (
-                id, invoke_id, occurred_at, source, status, total_tokens, cost, t_upstream_ttfb_ms, payload, detail_level, raw_response, created_at
+                id, invoke_id, occurred_at, source, status, total_tokens, cost, t_upstream_ttfb_ms, payload, detail_level, error_message, failure_kind, failure_class, is_actionable, raw_response, created_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
             "#,
         )
         .bind(row.id)
@@ -140,6 +148,10 @@ async fn seed_invocation_archive_batch_with_details(
         .bind(row.ttfb_ms)
         .bind(row.payload)
         .bind(row.detail_level)
+        .bind(row.error_message)
+        .bind(row.failure_kind)
+        .bind(row.failure_class)
+        .bind(row.is_actionable)
         .bind("{}")
         .bind(row.occurred_at)
         .execute(&archive_pool)
@@ -1479,6 +1491,217 @@ async fn all_time_summary_preserves_archived_history_when_rollup_failures_are_st
     assert_eq!(summary_with_live_tail.failure_count, 2);
     assert_eq!(summary_with_live_tail.total_tokens, 45);
     assert!((summary_with_live_tail.total_cost - 0.36).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn all_time_summary_includes_unmaterialized_archived_history_without_inline_repair() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(6, 0, 0)
+    .expect("valid archived local hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("archived success time"),
+    );
+    let archived_failed_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("archived failed time"),
+    );
+
+    seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-all-unmaterialized-archive",
+        &[
+            (
+                1_i64,
+                "summary-all-unmaterialized-success",
+                archived_success_at.as_str(),
+                SOURCE_PROXY,
+                "success",
+                10_i64,
+                0.10_f64,
+                Some(100.0),
+            ),
+            (
+                2_i64,
+                "summary-all-unmaterialized-failed",
+                archived_failed_at.as_str(),
+                SOURCE_PROXY,
+                "failed",
+                10_i64,
+                0.20_f64,
+                Some(120.0),
+            ),
+        ],
+    )
+    .await;
+
+    let Json(summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch all-time summary with unmaterialized archived history");
+
+    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 1);
+    assert_eq!(summary.total_tokens, 20);
+    assert!((summary.total_cost - 0.30).abs() < 1e-9);
+
+    let repair_marker_cursor = sqlx::query_scalar::<_, i64>(
+        "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
+    )
+    .bind("codex_invocations_summary_rollup_v2")
+    .fetch_optional(&state.pool)
+    .await
+    .expect("load pending archive repair marker presence");
+    assert_eq!(
+        repair_marker_cursor, None,
+        "all-time summary should not materialize summary repair markers inline"
+    );
+}
+
+#[tokio::test]
+async fn archived_range_reads_include_unmaterialized_batches_without_inline_repair() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(9, 0, 0)
+    .expect("valid archived local hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("archived success time"),
+    );
+    let archived_failed_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(35))
+            .expect("archived failed time"),
+    );
+
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "summary-range-unmaterialized-archive",
+        &[
+            SeedInvocationArchiveBatchRow {
+                id: 1_i64,
+                invoke_id: "summary-range-unmaterialized-success",
+                occurred_at: archived_success_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 10_i64,
+                cost: 0.10_f64,
+                ttfb_ms: Some(100.0),
+                payload: Some("{}"),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0_i64),
+            },
+            SeedInvocationArchiveBatchRow {
+                id: 2_i64,
+                invoke_id: "summary-range-unmaterialized-failed",
+                occurred_at: archived_failed_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "failed",
+                total_tokens: 20_i64,
+                cost: 0.20_f64,
+                ttfb_ms: Some(120.0),
+                payload: Some("{}"),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: Some("HTTP 429 too many requests"),
+                failure_kind: Some("upstream_response_failed"),
+                failure_class: Some("service_failure"),
+                is_actionable: Some(1_i64),
+            },
+        ],
+    )
+    .await;
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some(historical_range.clone()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch historical summary with unmaterialized archived range");
+    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 1);
+    assert_eq!(summary.total_tokens, 30);
+    assert!((summary.total_cost - 0.30).abs() < 1e-9);
+
+    let Json(failure_summary) = fetch_failure_summary(
+        State(state.clone()),
+        Query(FailureSummaryQuery {
+            range: historical_range.clone(),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch historical failure summary with unmaterialized archived range");
+    assert_eq!(failure_summary.total_failures, 1);
+    assert_eq!(failure_summary.service_failure_count, 1);
+    assert_eq!(failure_summary.client_failure_count, 0);
+    assert_eq!(failure_summary.client_abort_count, 0);
+    assert_eq!(failure_summary.actionable_failure_count, 1);
+    assert_f64_close(failure_summary.actionable_failure_rate, 1.0);
+
+    let Json(error_distribution) = fetch_error_distribution(
+        State(state.clone()),
+        Query(ErrorQuery {
+            range: historical_range,
+            top: None,
+            scope: Some("service".to_string()),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch historical error distribution with unmaterialized archived range");
+    assert!(
+        error_distribution
+            .items
+            .iter()
+            .any(|item| item.reason == "too_many_requests" && item.count == 1),
+        "historical error distribution should include archived service failures before background repair"
+    );
+
+    let repair_marker_cursor = sqlx::query_scalar::<_, i64>(
+        "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
+    )
+    .bind("codex_invocations_summary_rollup_v2")
+    .fetch_optional(&state.pool)
+    .await
+    .expect("load historical range repair marker presence");
+    assert_eq!(
+        repair_marker_cursor, None,
+        "historical archived reads should not materialize summary repair markers inline"
+    );
 }
 
 #[tokio::test]

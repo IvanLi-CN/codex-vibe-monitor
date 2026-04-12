@@ -791,6 +791,17 @@ struct ArchiveBatchPathRow {
     needs_failures: Option<i64>,
 }
 
+#[derive(Debug, Clone, FromRow)]
+pub(crate) struct ArchivedInvocationFailureRow {
+    pub(crate) occurred_at: String,
+    pub(crate) source: String,
+    pub(crate) status: Option<String>,
+    pub(crate) error_message: Option<String>,
+    pub(crate) failure_kind: Option<String>,
+    pub(crate) failure_class: Option<String>,
+    pub(crate) is_actionable: Option<i64>,
+}
+
 #[derive(Debug, Default)]
 struct ClearedSummaryRollupBuckets {
     overall: HashSet<(i64, String)>,
@@ -948,6 +959,244 @@ async fn load_invocation_archives_missing_summary_rollup_markers(
     .fetch_all(executor)
     .await
     .map_err(Into::into)
+}
+
+async fn open_unmaterialized_invocation_archive_batch_pool(
+    archive_row: &ArchiveBatchPathRow,
+    read_surface: &'static str,
+) -> Result<Option<(Pool<Sqlite>, TempSqliteCleanup)>> {
+    if archive_row.historical_rollups_materialized_at.is_some() {
+        return Ok(None);
+    }
+
+    let archive_path = PathBuf::from(&archive_row.file_path);
+    if !archive_path.exists() {
+        warn!(
+            file_path = archive_row.file_path,
+            read_surface,
+            "skipping missing unmaterialized invocation archive while serving read-only historical fallback"
+        );
+        return Ok(None);
+    }
+
+    let temp_path = PathBuf::from(format!(
+        "{}.{}.sqlite",
+        archive_path.display(),
+        retention_temp_suffix()
+    ));
+    if temp_path.exists() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+    inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
+    let archive_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&sqlite_url_for_path(&temp_path))
+        .await
+        .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
+
+    Ok(Some((archive_pool, temp_cleanup)))
+}
+
+async fn load_archive_bucket_source_keys(
+    archive_pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+) -> Result<HashSet<(i64, String)>> {
+    let mut cursor_id = 0_i64;
+    let mut keys = HashSet::new();
+
+    loop {
+        let rows = load_invocation_hourly_source_rows_after_id(
+            archive_pool,
+            cursor_id,
+            source_scope,
+            BACKFILL_BATCH_SIZE,
+        )
+        .await?;
+        if rows.is_empty() {
+            break;
+        }
+        cursor_id = rows.last().map(|row| row.id).unwrap_or(cursor_id);
+        for row in rows {
+            if let Some((start, end)) = range {
+                let Some(occurred_at_utc) = parse_to_utc_datetime(&row.occurred_at) else {
+                    continue;
+                };
+                if occurred_at_utc < start || occurred_at_utc >= end {
+                    continue;
+                }
+            }
+            keys.insert((
+                summary_rollup_bucket_start_epoch(&row.occurred_at)?,
+                row.source.clone(),
+            ));
+        }
+    }
+
+    Ok(keys)
+}
+
+async fn overall_rollups_exist_for_archive(
+    pool: &Pool<Sqlite>,
+    archive_pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+) -> Result<bool> {
+    let keys = load_archive_bucket_source_keys(archive_pool, source_scope, range).await?;
+    if keys.is_empty() {
+        return Ok(true);
+    }
+
+    for (bucket_start_epoch, source) in keys {
+        let exists = sqlx::query_scalar::<_, i64>(
+            "SELECT 1 FROM invocation_rollup_hourly WHERE bucket_start_epoch = ?1 AND source = ?2 LIMIT 1",
+        )
+        .bind(bucket_start_epoch)
+        .bind(source)
+        .fetch_optional(pool)
+        .await?
+        .is_some();
+        if !exists {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+async fn failure_rollups_exist_for_rows(
+    pool: &Pool<Sqlite>,
+    rows: &[ArchivedInvocationFailureRow],
+) -> Result<bool> {
+    let keys = rows
+        .iter()
+        .filter_map(|row| {
+            let classification = resolve_failure_classification(
+                row.status.as_deref(),
+                row.error_message.as_deref(),
+                row.failure_kind.as_deref(),
+                row.failure_class.as_deref(),
+                row.is_actionable,
+            );
+            if classification.failure_class == FailureClass::None {
+                return None;
+            }
+            Some((
+                summary_rollup_bucket_start_epoch(&row.occurred_at).ok()?,
+                row.source.clone(),
+            ))
+        })
+        .collect::<HashSet<_>>();
+    if keys.is_empty() {
+        return Ok(true);
+    }
+
+    for (bucket_start_epoch, source) in keys {
+        let exists = sqlx::query_scalar::<_, i64>(
+            "SELECT 1 FROM invocation_failure_rollup_hourly WHERE bucket_start_epoch = ?1 AND source = ?2 LIMIT 1",
+        )
+        .bind(bucket_start_epoch)
+        .bind(source)
+        .fetch_optional(pool)
+        .await?
+        .is_some();
+        if !exists {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+pub(crate) async fn query_unmaterialized_invocation_archive_totals(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+) -> Result<StatsTotals> {
+    let archive_rows = load_completed_invocation_archive_paths(pool).await?;
+    let mut totals = StatsTotals::default();
+
+    for archive_row in archive_rows {
+        let Some((archive_pool, temp_cleanup)) =
+            open_unmaterialized_invocation_archive_batch_pool(&archive_row, "stats-summary")
+                .await?
+        else {
+            continue;
+        };
+        if overall_rollups_exist_for_archive(pool, &archive_pool, source_scope, range).await? {
+            archive_pool.close().await;
+            drop(temp_cleanup);
+            continue;
+        }
+
+        let filter = match range {
+            Some((start, end)) => StatsFilter::Range(start, end),
+            None => StatsFilter::All,
+        };
+        totals = totals.add(StatsTotals::from(
+            query_stats_row(&archive_pool, filter, source_scope).await?,
+        ));
+
+        archive_pool.close().await;
+        drop(temp_cleanup);
+    }
+
+    Ok(totals)
+}
+
+async fn load_failure_rows_from_archive_pool(
+    archive_pool: &Pool<Sqlite>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    source_scope: InvocationSourceScope,
+) -> Result<Vec<ArchivedInvocationFailureRow>> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT occurred_at, source, status, error_message, failure_kind, failure_class, is_actionable FROM codex_invocations WHERE occurred_at >= ",
+    );
+    query.push_bind(db_occurred_at_lower_bound(start));
+    query
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_lower_bound(end));
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query
+        .build_query_as::<ArchivedInvocationFailureRow>()
+        .fetch_all(archive_pool)
+        .await
+        .map_err(Into::into)
+}
+
+pub(crate) async fn load_unmaterialized_invocation_archive_failure_rows(
+    pool: &Pool<Sqlite>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    source_scope: InvocationSourceScope,
+) -> Result<Vec<ArchivedInvocationFailureRow>> {
+    let archive_rows = load_completed_invocation_archive_paths(pool).await?;
+    let mut rows = Vec::new();
+
+    for archive_row in archive_rows {
+        let Some((archive_pool, temp_cleanup)) =
+            open_unmaterialized_invocation_archive_batch_pool(&archive_row, "failure-breakdown")
+                .await?
+        else {
+            continue;
+        };
+        let archive_rows =
+            load_failure_rows_from_archive_pool(&archive_pool, start, end, source_scope).await?;
+        if failure_rollups_exist_for_rows(pool, &archive_rows).await? {
+            archive_pool.close().await;
+            drop(temp_cleanup);
+            continue;
+        }
+        rows.extend(archive_rows);
+        archive_pool.close().await;
+        drop(temp_cleanup);
+    }
+
+    Ok(rows)
 }
 
 async fn rebuild_invocation_summary_rollups_from_archive_batch(
@@ -1524,8 +1773,10 @@ pub(crate) async fn query_invocation_totals(
         // Read paths must stay query-only even when historical summary repair is still pending.
         // Background startup / follow-up maintenance is responsible for rebuilding stale archived
         // hourly rollups and summary replay markers; requests reuse the current materialized
-        // rollups plus the live tail instead of writing through here.
-        return query_invocation_all_time_rollup_totals(pool, source_scope).await;
+        // rollups plus any still-unmaterialized archive batches instead of writing through here.
+        return Ok(query_invocation_all_time_rollup_totals(pool, source_scope)
+            .await?
+            .add(query_unmaterialized_invocation_archive_totals(pool, source_scope, None).await?));
     }
 
     Ok(StatsTotals::from(

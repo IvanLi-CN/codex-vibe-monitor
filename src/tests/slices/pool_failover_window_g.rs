@@ -1831,6 +1831,13 @@ async fn dashboard_read_endpoints_stay_queryable_under_sqlite_write_lock() {
     sync_hourly_rollups_from_live_tables(&state.pool)
         .await
         .expect("seed hourly rollups before lock");
+    insert_parallel_work_invocation(
+        &state.pool,
+        "dashboard-lock-unsynced-working-conversation",
+        Utc::now(),
+        "dashboard-lock-read",
+    )
+    .await;
 
     let mut lock_conn = SqliteConnection::connect(&db_url)
         .await
