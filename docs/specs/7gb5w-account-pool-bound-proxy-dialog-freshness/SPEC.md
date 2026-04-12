@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（4/5）
+- Status: 已完成
 - Created: 2026-04-12
 - Last: 2026-04-12
 
@@ -144,7 +144,7 @@
 - [x] M2: 落地 hook tri-state、dialog loading 占位与 stale 时 silent refresh
 - [x] M3: 落地 settings 保存后的 `upstream-accounts:changed` 失效通知，并补 hook / dialog 回归测试
 - [x] M4: Storybook 场景、浏览器验收与视觉证据落盘
-- [ ] M5: review-loop、PR 收敛到 merge-ready
+- [x] M5: review-loop、PR 收敛到 merge-ready
 
 ## 方案概述（Approach, high-level）
 
@@ -164,3 +164,4 @@
 - 2026-04-12: 初始化 hotfix spec，锁定“未加载不等于空目录”“settings 保存后同会话自动同步”“Storybook 先行验收”三条主约束。
 - 2026-04-12: 完成 hook tri-state、dialog loading 占位、弹窗 stale silent refresh、settings 保存失效通知与 targeted Vitest/build 验证。
 - 2026-04-12: 根据 review-loop 收敛自动 silent refresh 的失败自旋问题，抽出共享 auto-refresh hook，并补回归测试与 Storybook 视觉证据。
+- 2026-04-12: 主人批准截图随分支一起提交；分支已推送并创建 PR #335，当前停在 merge-ready。
