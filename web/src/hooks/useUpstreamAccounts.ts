@@ -64,6 +64,12 @@ export const UPSTREAM_ACCOUNTS_OPEN_RESYNC_COOLDOWN_MS = 3_000
 export type UpstreamAccountsListFreshness = 'fresh' | 'stale' | 'missing' | 'deferred'
 export type UpstreamAccountsListLoadingState = 'idle' | 'deferred' | 'initial' | 'switching' | 'refreshing'
 export type UpstreamAccountsListStatus = 'ready' | 'loading' | 'error' | 'deferred'
+export type ForwardProxyCatalogKind =
+  | 'ready-empty'
+  | 'ready-with-data'
+  | 'loading'
+  | 'missing'
+  | 'deferred'
 
 type UpstreamAccountsListState = {
   queryKey: string | null
@@ -73,6 +79,13 @@ type UpstreamAccountsListState = {
   status: UpstreamAccountsListStatus
   hasCurrentQueryData: boolean
   isPending: boolean
+}
+
+export type ForwardProxyCatalogState = {
+  kind: ForwardProxyCatalogKind
+  freshness: UpstreamAccountsListFreshness
+  isPending: boolean
+  hasNodes: boolean
 }
 
 type UseUpstreamAccountsOptions = {
@@ -143,7 +156,7 @@ export function useUpstreamAccounts(
   }
   const [items, setItems] = useState<UpstreamAccountSummary[]>([])
   const [groups, setGroups] = useState<UpstreamAccountGroupSummary[]>([])
-  const [forwardProxyNodes, setForwardProxyNodes] = useState<ForwardProxyBindingNode[]>([])
+  const [forwardProxyNodes, setForwardProxyNodes] = useState<ForwardProxyBindingNode[] | null>(null)
   const [hasUngroupedAccounts, setHasUngroupedAccounts] = useState(false)
   const [writesEnabled, setWritesEnabled] = useState(true)
   const [routing, setRouting] = useState<PoolRoutingSettings | null>(null)
@@ -748,11 +761,32 @@ export function useUpstreamAccounts(
     hasCurrentQueryData,
     isPending: isListPending,
   }
+  const forwardProxyCatalogState: ForwardProxyCatalogState = {
+    kind:
+      query == null
+        ? 'deferred'
+        : forwardProxyNodes == null
+          ? isListPending || isLoading
+            ? 'loading'
+            : 'missing'
+          : forwardProxyNodes.length > 0
+            ? 'ready-with-data'
+            : 'ready-empty',
+    freshness:
+      query == null
+        ? 'deferred'
+        : forwardProxyNodes == null
+          ? 'missing'
+          : listFreshness,
+    isPending: isListPending,
+    hasNodes: Array.isArray(forwardProxyNodes) && forwardProxyNodes.length > 0,
+  }
 
   return {
     items,
     groups,
-    forwardProxyNodes,
+    forwardProxyNodes: forwardProxyNodes ?? [],
+    forwardProxyCatalogState,
     hasUngroupedAccounts,
     writesEnabled,
     routing,

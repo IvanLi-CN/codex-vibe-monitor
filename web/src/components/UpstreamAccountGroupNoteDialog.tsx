@@ -74,9 +74,12 @@ interface UpstreamAccountGroupNoteDialogProps {
   proxyBindingsLabel?: string;
   proxyBindingsHint?: string;
   proxyBindingsAutomaticLabel?: string;
+  proxyBindingsLoadingLabel?: string;
   proxyBindingsEmptyLabel?: string;
   proxyBindingsMissingLabel?: string;
   proxyBindingsUnavailableLabel?: string;
+  proxyBindingsCatalogKind?: "ready-empty" | "ready-with-data" | "loading" | "missing" | "deferred";
+  proxyBindingsCatalogFreshness?: "fresh" | "stale" | "missing" | "deferred";
   proxyBindingsChartLabel?: string;
   proxyBindingsChartSuccessLabel?: string;
   proxyBindingsChartFailureLabel?: string;
@@ -314,9 +317,12 @@ export function UpstreamAccountGroupNoteDialog({
   proxyBindingsLabel,
   proxyBindingsHint,
   proxyBindingsAutomaticLabel,
+  proxyBindingsLoadingLabel,
   proxyBindingsEmptyLabel,
   proxyBindingsMissingLabel,
   proxyBindingsUnavailableLabel,
+  proxyBindingsCatalogKind,
+  proxyBindingsCatalogFreshness,
   proxyBindingsChartLabel,
   proxyBindingsChartSuccessLabel,
   proxyBindingsChartFailureLabel,
@@ -432,6 +438,10 @@ export function UpstreamAccountGroupNoteDialog({
     Boolean(onBoundProxyKeysChange) ||
     proxyOptions.length > 0 ||
     canonicalBoundProxyKeys.length > 0;
+  const proxyBindingsLoading =
+    proxyBindingsCatalogKind === "loading" ||
+    proxyBindingsCatalogKind === "missing" ||
+    (proxyBindingsCatalogFreshness === "stale" && proxyOptions.length === 0);
   const hasSelectableBoundProxySelection =
     canonicalBoundProxyKeys.length === 0 ||
     canonicalBoundProxyKeys.some((key) =>
@@ -599,7 +609,21 @@ export function UpstreamAccountGroupNoteDialog({
                   </div>
                 ) : null}
 
-                {proxyOptions.length === 0 ? (
+                {proxyBindingsLoading ? (
+                  <div
+                    className="flex items-center gap-2 rounded-xl border border-dashed border-base-300/80 bg-base-100/65 px-3 py-2 text-xs text-base-content/65"
+                    data-testid="proxy-binding-options-loading"
+                  >
+                    <AppIcon
+                      name="loading"
+                      className="h-4 w-4 animate-spin"
+                      aria-hidden
+                    />
+                    <span>
+                      {proxyBindingsLoadingLabel ?? "Loading proxy nodes…"}
+                    </span>
+                  </div>
+                ) : proxyOptions.length === 0 ? (
                   <div className="rounded-xl border border-dashed border-base-300/80 bg-base-100/65 px-3 py-2 text-xs text-base-content/65">
                     {proxyBindingsEmptyLabel ?? "No proxy nodes available."}
                   </div>

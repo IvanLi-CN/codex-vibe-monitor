@@ -496,6 +496,8 @@ const baseTranslations = {
       "Leave empty to keep automatic routing. With node shunt disabled, selected nodes stay as a shared hard-bound pool; with node shunt enabled, each selected node becomes one exclusive account slot.",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.automatic":
       "No nodes bound. This group uses automatic routing.",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.loading":
+      "Loading proxy nodes…",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.empty":
       "No proxy nodes available right now.",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.missing": "Missing",
@@ -2209,6 +2211,8 @@ const baseTranslations = {
       "留空时继续走自动路由。关闭节点分流策略时，所选节点会作为共享硬绑定池；开启后，每个选中节点都会变成一个独占账号槽位。",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.automatic":
       "当前没有绑定节点，这个分组会继续使用自动路由。",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.loading":
+      "正在加载代理节点…",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.empty":
       "当前没有可用的代理节点。",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.missing": "已失效",

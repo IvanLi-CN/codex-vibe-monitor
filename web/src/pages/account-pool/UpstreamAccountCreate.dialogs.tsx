@@ -3,6 +3,7 @@ import { ImportedOauthValidationDialog } from "../../components/ImportedOauthVal
 import { UpstreamAccountGroupNoteDialog } from "../../components/UpstreamAccountGroupNoteDialog";
 import { DuplicateAccountDetailDialog } from "./UpstreamAccountCreate.shared";
 import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.controller-context";
+import { useGroupNoteCatalogAutoRefresh } from "./useGroupNoteCatalogAutoRefresh";
 
 export function UpstreamAccountCreateDialogs() {
   const {
@@ -15,6 +16,7 @@ export function UpstreamAccountCreateDialogs() {
     duplicateDetailOpen,
     formatDuplicateReasons,
     forwardProxyNodes,
+    forwardProxyCatalogState,
     groupNoteBusy,
     groupNoteEditor,
     groupNoteError,
@@ -29,12 +31,19 @@ export function UpstreamAccountCreateDialogs() {
     locale,
     normalizeEnabledGroupUpstream429MaxRetries,
     normalizeGroupUpstream429MaxRetries,
+    refresh,
     setDuplicateDetail,
     setDuplicateDetailOpen,
     setGroupNoteEditor,
     setGroupNoteError,
     t,
   } = useUpstreamAccountCreateViewContext();
+
+  useGroupNoteCatalogAutoRefresh({
+    open: groupNoteEditor.open,
+    refresh,
+    catalogState: forwardProxyCatalogState,
+  });
 
   return (
     <>
@@ -55,6 +64,8 @@ export function UpstreamAccountCreateDialogs() {
         boundProxyKeys={groupNoteEditor.boundProxyKeys}
         nodeShuntEnabled={groupNoteEditor.nodeShuntEnabled}
         availableProxyNodes={forwardProxyNodes}
+        proxyBindingsCatalogKind={forwardProxyCatalogState?.kind}
+        proxyBindingsCatalogFreshness={forwardProxyCatalogState?.freshness}
         busy={groupNoteBusy}
         error={groupNoteError}
         existing={groupNoteEditor.existing}
@@ -188,6 +199,9 @@ export function UpstreamAccountCreateDialogs() {
         )}
         proxyBindingsAutomaticLabel={t(
           "accountPool.upstreamAccounts.groupNotes.proxyBindings.automatic",
+        )}
+        proxyBindingsLoadingLabel={t(
+          "accountPool.upstreamAccounts.groupNotes.proxyBindings.loading",
         )}
         proxyBindingsEmptyLabel={t(
           "accountPool.upstreamAccounts.groupNotes.proxyBindings.empty",
