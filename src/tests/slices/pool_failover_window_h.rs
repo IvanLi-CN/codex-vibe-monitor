@@ -1620,6 +1620,141 @@ async fn all_time_summary_includes_unmaterialized_archived_history_without_inlin
 }
 
 #[tokio::test]
+async fn all_time_summary_skips_archive_fallback_rows_already_counted_in_live_tail() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(6, 0, 0)
+    .expect("valid archived overlap hour");
+    let first_archived_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("first archived overlap time"),
+    );
+    let second_archived_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("second archived overlap time"),
+    );
+
+    seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-all-live-tail-overlap",
+        &[
+            (
+                2_i64,
+                "summary-all-live-tail-overlap-success",
+                first_archived_at.as_str(),
+                SOURCE_PROXY,
+                "success",
+                10_i64,
+                0.10_f64,
+                Some(100.0),
+            ),
+            (
+                3_i64,
+                "summary-all-live-tail-overlap-failed",
+                second_archived_at.as_str(),
+                SOURCE_PROXY,
+                "failed",
+                20_i64,
+                0.20_f64,
+                Some(120.0),
+            ),
+        ],
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)
+        VALUES (?1, ?2, datetime('now'))
+        ON CONFLICT(dataset) DO UPDATE SET
+            cursor_id = excluded.cursor_id,
+            updated_at = datetime('now')
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(1_i64)
+    .execute(&state.pool)
+    .await
+    .expect("seed shared hourly rollup cursor before overlapping live tail");
+
+    for (id, invoke_id, occurred_at, status, total_tokens, cost, ttfb_ms) in [
+        (
+            2_i64,
+            "summary-all-live-tail-overlap-success",
+            first_archived_at.as_str(),
+            "success",
+            10_i64,
+            0.10_f64,
+            100.0_f64,
+        ),
+        (
+            3_i64,
+            "summary-all-live-tail-overlap-failed",
+            second_archived_at.as_str(),
+            "failed",
+            20_i64,
+            0.20_f64,
+            120.0_f64,
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id,
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                total_tokens,
+                cost,
+                t_upstream_ttfb_ms,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(id)
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(ttfb_ms)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert overlapping live tail invocation row");
+    }
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch all-time summary with overlapping archive/live tail");
+
+    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 1);
+    assert_eq!(summary.total_tokens, 30);
+    assert!((summary.total_cost - 0.30).abs() < 1e-9);
+}
+
+#[tokio::test]
 async fn archived_range_reads_include_unmaterialized_batches_without_inline_repair() {
     let mut config = test_config();
     config.openai_upstream_base_url =
@@ -1746,6 +1881,214 @@ async fn archived_range_reads_include_unmaterialized_batches_without_inline_repa
         repair_marker_cursor, None,
         "historical archived reads should not materialize summary repair markers inline"
     );
+}
+
+#[tokio::test]
+async fn archived_range_reads_skip_archive_fallback_rows_already_counted_in_live_tail() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(9, 0, 0)
+    .expect("valid archived range overlap hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("archived range overlap success time"),
+    );
+    let archived_failed_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(35))
+            .expect("archived range overlap failed time"),
+    );
+
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "summary-range-live-tail-overlap",
+        &[
+            SeedInvocationArchiveBatchRow {
+                id: 2_i64,
+                invoke_id: "summary-range-live-tail-overlap-success",
+                occurred_at: archived_success_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 10_i64,
+                cost: 0.10_f64,
+                ttfb_ms: Some(100.0),
+                payload: Some("{}"),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0_i64),
+            },
+            SeedInvocationArchiveBatchRow {
+                id: 3_i64,
+                invoke_id: "summary-range-live-tail-overlap-failed",
+                occurred_at: archived_failed_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "failed",
+                total_tokens: 20_i64,
+                cost: 0.20_f64,
+                ttfb_ms: Some(120.0),
+                payload: Some("{}"),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: Some("HTTP 429 too many requests"),
+                failure_kind: Some("upstream_response_failed"),
+                failure_class: Some("service_failure"),
+                is_actionable: Some(1_i64),
+            },
+        ],
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)
+        VALUES (?1, ?2, datetime('now'))
+        ON CONFLICT(dataset) DO UPDATE SET
+            cursor_id = excluded.cursor_id,
+            updated_at = datetime('now')
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(1_i64)
+    .execute(&state.pool)
+    .await
+    .expect("seed archived range shared hourly rollup cursor");
+
+    for (
+        id,
+        invoke_id,
+        occurred_at,
+        status,
+        total_tokens,
+        cost,
+        ttfb_ms,
+        error_message,
+        failure_kind,
+        failure_class,
+        is_actionable,
+    ) in [
+        (
+            2_i64,
+            "summary-range-live-tail-overlap-success",
+            archived_success_at.as_str(),
+            "success",
+            10_i64,
+            0.10_f64,
+            100.0_f64,
+            None,
+            None,
+            Some("none"),
+            Some(0_i64),
+        ),
+        (
+            3_i64,
+            "summary-range-live-tail-overlap-failed",
+            archived_failed_at.as_str(),
+            "failed",
+            20_i64,
+            0.20_f64,
+            120.0_f64,
+            Some("HTTP 429 too many requests"),
+            Some("upstream_response_failed"),
+            Some("service_failure"),
+            Some(1_i64),
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id,
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                total_tokens,
+                cost,
+                error_message,
+                failure_kind,
+                failure_class,
+                is_actionable,
+                detail_level,
+                t_upstream_ttfb_ms,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            "#,
+        )
+        .bind(id)
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(error_message)
+        .bind(failure_kind)
+        .bind(failure_class)
+        .bind(is_actionable)
+        .bind(DETAIL_LEVEL_FULL)
+        .bind(ttfb_ms)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert overlapping archived range live row");
+    }
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some(historical_range.clone()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch historical summary with overlapping archive/live tail");
+    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 1);
+    assert_eq!(summary.total_tokens, 30);
+    assert!((summary.total_cost - 0.30).abs() < 1e-9);
+
+    let Json(failure_summary) = fetch_failure_summary(
+        State(state.clone()),
+        Query(FailureSummaryQuery {
+            range: historical_range.clone(),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch historical failure summary with overlapping archive/live tail");
+    assert_eq!(failure_summary.total_failures, 1);
+    assert_eq!(failure_summary.service_failure_count, 1);
+    assert_eq!(failure_summary.client_failure_count, 0);
+    assert_eq!(failure_summary.client_abort_count, 0);
+    assert_eq!(failure_summary.actionable_failure_count, 1);
+    assert_f64_close(failure_summary.actionable_failure_rate, 1.0);
+
+    let Json(error_distribution) = fetch_error_distribution(
+        State(state),
+        Query(ErrorQuery {
+            range: historical_range,
+            top: None,
+            scope: Some("service".to_string()),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch historical error distribution with overlapping archive/live tail");
+    assert_eq!(error_distribution.items.len(), 1);
+    assert_eq!(error_distribution.items[0].reason, "too_many_requests");
+    assert_eq!(error_distribution.items[0].count, 1);
 }
 
 #[tokio::test]
@@ -3306,6 +3649,210 @@ async fn historical_timeseries_includes_unmaterialized_archived_hours_without_in
         .iter()
         .find(|point| point.bucket_start == format_utc_iso(start))
         .expect("historical timeseries bucket should exist");
+    assert_eq!(archived_point.total_count, 2);
+    assert_eq!(archived_point.success_count, 1);
+    assert_eq!(archived_point.failure_count, 1);
+    assert_eq!(archived_point.total_tokens, 30);
+    assert_f64_close(archived_point.total_cost, 0.30);
+}
+
+#[tokio::test]
+async fn historical_timeseries_skips_archive_fallback_rows_already_counted_in_live_tail() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(12, 0, 0)
+    .expect("valid overlapping archived timeseries hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("archived overlap timeseries success time"),
+    );
+    let archived_failed_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(35))
+            .expect("archived overlap timeseries failure time"),
+    );
+
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "timeseries-live-tail-overlap",
+        &[
+            SeedInvocationArchiveBatchRow {
+                id: 2_i64,
+                invoke_id: "timeseries-live-tail-overlap-success",
+                occurred_at: archived_success_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 10_i64,
+                cost: 0.10_f64,
+                ttfb_ms: Some(100.0),
+                payload: Some("{}"),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0_i64),
+            },
+            SeedInvocationArchiveBatchRow {
+                id: 3_i64,
+                invoke_id: "timeseries-live-tail-overlap-failed",
+                occurred_at: archived_failed_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "failed",
+                total_tokens: 20_i64,
+                cost: 0.20_f64,
+                ttfb_ms: Some(120.0),
+                payload: Some("{}"),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: Some("HTTP 429 too many requests"),
+                failure_kind: Some("upstream_response_failed"),
+                failure_class: Some("service_failure"),
+                is_actionable: Some(1_i64),
+            },
+        ],
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)
+        VALUES (?1, ?2, datetime('now'))
+        ON CONFLICT(dataset) DO UPDATE SET
+            cursor_id = excluded.cursor_id,
+            updated_at = datetime('now')
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(1_i64)
+    .execute(&state.pool)
+    .await
+    .expect("seed overlapping timeseries shared hourly rollup cursor");
+
+    for (
+        id,
+        invoke_id,
+        occurred_at,
+        status,
+        total_tokens,
+        cost,
+        ttfb_ms,
+        error_message,
+        failure_kind,
+        failure_class,
+        is_actionable,
+    ) in [
+        (
+            2_i64,
+            "timeseries-live-tail-overlap-success",
+            archived_success_at.as_str(),
+            "success",
+            10_i64,
+            0.10_f64,
+            100.0_f64,
+            None,
+            None,
+            Some("none"),
+            Some(0_i64),
+        ),
+        (
+            3_i64,
+            "timeseries-live-tail-overlap-failed",
+            archived_failed_at.as_str(),
+            "failed",
+            20_i64,
+            0.20_f64,
+            120.0_f64,
+            Some("HTTP 429 too many requests"),
+            Some("upstream_response_failed"),
+            Some("service_failure"),
+            Some(1_i64),
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id,
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                total_tokens,
+                cost,
+                error_message,
+                failure_kind,
+                failure_class,
+                is_actionable,
+                detail_level,
+                t_upstream_ttfb_ms,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            "#,
+        )
+        .bind(id)
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(error_message)
+        .bind(failure_kind)
+        .bind(failure_class)
+        .bind(is_actionable)
+        .bind(DETAIL_LEVEL_FULL)
+        .bind(ttfb_ms)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert overlapping timeseries live row");
+    }
+
+    let start = local_naive_to_utc(archived_hour_local, Shanghai);
+    let end = local_naive_to_utc(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::hours(1))
+            .expect("overlapping archived timeseries hour end"),
+        Shanghai,
+    );
+    let Json(response) = fetch_timeseries_from_hourly_rollups(
+        state,
+        TimeseriesQuery {
+            range: "ignored".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        },
+        Shanghai,
+        InvocationSourceScope::ProxyOnly,
+        RangeWindow {
+            start,
+            end,
+            display_end: end,
+            duration: end - start,
+        },
+        TimeseriesBucketSelection {
+            bucket_seconds: 3_600,
+            effective_bucket: "1h".to_string(),
+            available_buckets: vec!["1h".to_string()],
+            bucket_limited_to_daily: false,
+        },
+    )
+    .await
+    .expect("fetch historical timeseries with overlapping archive/live tail");
+
+    let archived_point = response
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(start))
+        .expect("overlapping historical timeseries bucket should exist");
     assert_eq!(archived_point.total_count, 2);
     assert_eq!(archived_point.success_count, 1);
     assert_eq!(archived_point.failure_count, 1);

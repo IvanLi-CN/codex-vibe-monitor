@@ -794,6 +794,7 @@ struct ArchiveBatchPathRow {
 
 #[derive(Debug, Clone, FromRow)]
 pub(crate) struct ArchivedInvocationFailureRow {
+    pub(crate) id: i64,
     pub(crate) occurred_at: String,
     pub(crate) source: String,
     pub(crate) status: Option<String>,
@@ -880,6 +881,35 @@ async fn load_invocation_hourly_source_rows_after_id(
         .fetch_all(executor)
         .await
         .map_err(Into::into)
+}
+
+async fn load_live_invocation_ids_after_id(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    source_scope: InvocationSourceScope,
+    start_after_id: i64,
+) -> Result<HashSet<i64>> {
+    if start_after_id < 0 {
+        return Ok(HashSet::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT id FROM codex_invocations WHERE id > ");
+    query.push_bind(start_after_id);
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+
+    #[derive(Debug, FromRow)]
+    struct IdRow {
+        id: i64,
+    }
+
+    Ok(query
+        .build_query_as::<IdRow>()
+        .fetch_all(executor)
+        .await?
+        .into_iter()
+        .map(|row| row.id)
+        .collect())
 }
 
 async fn load_completed_invocation_archive_paths(
@@ -1525,9 +1555,15 @@ pub(crate) async fn query_unmaterialized_invocation_archive_hourly_rollup_deltas
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    exclude_invocation_ids: Option<&HashSet<i64>>,
 ) -> Result<Vec<InvocationHourlyRollupRecord>> {
-    let pending_overall =
-        load_pending_invocation_archive_hourly_rollup_deltas(pool, source_scope, range).await?;
+    let pending_overall = load_pending_invocation_archive_hourly_rollup_deltas(
+        pool,
+        source_scope,
+        range,
+        exclude_invocation_ids,
+    )
+    .await?;
     let materialized_bucket_sources = load_materialized_rollup_bucket_sources(
         pool,
         HOURLY_ROLLUP_TARGET_INVOCATIONS,
@@ -1571,6 +1607,7 @@ async fn load_pending_invocation_archive_hourly_rollup_deltas(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    exclude_invocation_ids: Option<&HashSet<i64>>,
 ) -> Result<BTreeMap<(i64, String), InvocationHourlyRollupDelta>> {
     let archive_rows =
         load_invocation_archives_missing_rollup_target(pool, HOURLY_ROLLUP_TARGET_INVOCATIONS)
@@ -1598,6 +1635,10 @@ async fn load_pending_invocation_archive_hourly_rollup_deltas(
             cursor_id = rows.last().map(|row| row.id).unwrap_or(cursor_id);
             let filtered_rows = rows
                 .into_iter()
+                .filter(|row| {
+                    !exclude_invocation_ids
+                        .is_some_and(|excluded_ids| excluded_ids.contains(&row.id))
+                })
                 .filter(|row| invocation_hourly_source_record_matches_range(row, range))
                 .collect::<Vec<_>>();
             if filtered_rows.is_empty() {
@@ -2000,11 +2041,16 @@ pub(crate) async fn query_unmaterialized_invocation_archive_totals(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    exclude_invocation_ids: Option<&HashSet<i64>>,
 ) -> Result<StatsTotals> {
     let mut totals = StatsTotals::default();
-    for row in
-        query_unmaterialized_invocation_archive_hourly_rollup_deltas(pool, source_scope, range)
-            .await?
+    for row in query_unmaterialized_invocation_archive_hourly_rollup_deltas(
+        pool,
+        source_scope,
+        range,
+        exclude_invocation_ids,
+    )
+    .await?
     {
         totals.total_count += row.total_count;
         totals.success_count += row.success_count;
@@ -2023,7 +2069,7 @@ async fn load_failure_rows_from_archive_pool(
     source_scope: InvocationSourceScope,
 ) -> Result<Vec<ArchivedInvocationFailureRow>> {
     let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT occurred_at, source, status, error_message, failure_kind, failure_class, is_actionable FROM codex_invocations WHERE occurred_at >= ",
+        "SELECT id, occurred_at, source, status, error_message, failure_kind, failure_class, is_actionable FROM codex_invocations WHERE occurred_at >= ",
     );
     query.push_bind(db_occurred_at_lower_bound(start));
     query
@@ -2044,6 +2090,7 @@ pub(crate) async fn load_unmaterialized_invocation_archive_failure_rows(
     start: DateTime<Utc>,
     end: DateTime<Utc>,
     source_scope: InvocationSourceScope,
+    exclude_invocation_ids: Option<&HashSet<i64>>,
 ) -> Result<Vec<ArchivedInvocationFailureRow>> {
     let archive_rows = load_invocation_archives_missing_rollup_target(
         pool,
@@ -2059,7 +2106,14 @@ pub(crate) async fn load_unmaterialized_invocation_archive_failure_rows(
             continue;
         };
         let batch_rows =
-            load_failure_rows_from_archive_pool(&archive_pool, start, end, source_scope).await?;
+            load_failure_rows_from_archive_pool(&archive_pool, start, end, source_scope)
+                .await?
+                .into_iter()
+                .filter(|row| {
+                    !exclude_invocation_ids
+                        .is_some_and(|excluded_ids| excluded_ids.contains(&row.id))
+                })
+                .collect::<Vec<_>>();
         archive_failure_rows.extend(batch_rows);
         archive_pool.close().await;
         drop(temp_cleanup);
@@ -2667,10 +2721,15 @@ pub(crate) async fn ensure_invocation_summary_rollups_ready_best_effort(
     }
 }
 
+struct AllTimeRollupTotals {
+    totals: StatsTotals,
+    live_tail_ids: HashSet<i64>,
+}
+
 async fn query_invocation_all_time_rollup_totals(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
-) -> Result<StatsTotals> {
+) -> Result<AllTimeRollupTotals> {
     let mut query = QueryBuilder::<Sqlite>::new(
         r#"
         SELECT
@@ -2696,7 +2755,10 @@ async fn query_invocation_all_time_rollup_totals(
     .await?;
     let tail_cursor = live_progress_cursor.max(repair_live_cursor);
     if tail_cursor <= 0 {
-        return Ok(totals);
+        return Ok(AllTimeRollupTotals {
+            totals,
+            live_tail_ids: HashSet::new(),
+        });
     }
 
     let tail_query = match source_scope {
@@ -2725,7 +2787,11 @@ async fn query_invocation_all_time_rollup_totals(
         }
     };
     totals = totals.add(StatsTotals::from(tail));
-    Ok(totals)
+    let live_tail_ids = load_live_invocation_ids_after_id(pool, source_scope, tail_cursor).await?;
+    Ok(AllTimeRollupTotals {
+        totals,
+        live_tail_ids,
+    })
 }
 
 pub(crate) async fn query_invocation_totals(
@@ -2747,9 +2813,16 @@ pub(crate) async fn query_invocation_totals(
         // Background startup / follow-up maintenance is responsible for rebuilding stale archived
         // hourly rollups and summary replay markers; requests reuse the current materialized
         // rollups plus any still-unmaterialized archive batches instead of writing through here.
-        return Ok(query_invocation_all_time_rollup_totals(pool, source_scope)
-            .await?
-            .add(query_unmaterialized_invocation_archive_totals(pool, source_scope, None).await?));
+        let all_time = query_invocation_all_time_rollup_totals(pool, source_scope).await?;
+        return Ok(all_time.totals.add(
+            query_unmaterialized_invocation_archive_totals(
+                pool,
+                source_scope,
+                None,
+                Some(&all_time.live_tail_ids),
+            )
+            .await?,
+        ));
     }
 
     Ok(StatsTotals::from(

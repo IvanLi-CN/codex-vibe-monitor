@@ -339,7 +339,8 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
         bucket_cursor = next_reporting_bucket_epoch(bucket_cursor, bucket_seconds, reporting_tz)?;
     }
 
-    let (snapshot_id, hourly_rows, exact_records) = if range_plan.full_hour_range.is_some() {
+    let (snapshot_id, hourly_rows, exact_records, archive_overlap_ids) =
+        if range_plan.full_hour_range.is_some() {
         let mut tx = state.pool.begin().await?;
         let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
         let rollup_live_cursor = load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
@@ -356,23 +357,26 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
         let mut exact_records =
             query_invocation_exact_records_tx(tx.as_mut(), &range_plan, source_scope, snapshot_id)
                 .await?;
-        exact_records.extend(
-            query_invocation_full_hour_tail_records_tx(
-                tx.as_mut(),
-                &range_plan,
-                source_scope,
-                rollup_live_cursor,
-                snapshot_id,
-            )
-            .await?,
-        );
-        (snapshot_id, hourly_rows, exact_records)
+        let tail_records = query_invocation_full_hour_tail_records_tx(
+            tx.as_mut(),
+            &range_plan,
+            source_scope,
+            rollup_live_cursor,
+            snapshot_id,
+        )
+        .await?;
+        let archive_overlap_ids = tail_records
+            .iter()
+            .map(|record| record.id)
+            .collect::<HashSet<_>>();
+        exact_records.extend(tail_records);
+        (snapshot_id, hourly_rows, exact_records, archive_overlap_ids)
     } else {
         let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
         let exact_records =
             query_invocation_exact_records(&state.pool, &range_plan, source_scope, snapshot_id)
                 .await?;
-        (snapshot_id, Vec::new(), exact_records)
+        (snapshot_id, Vec::new(), exact_records, HashSet::new())
     };
     let archived_hourly_rows = if let Some((range_start_epoch, range_end_epoch)) =
         range_plan.full_hour_range
@@ -389,6 +393,7 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
             &state.pool,
             source_scope,
             Some((archived_start, archived_end)),
+            Some(&archive_overlap_ids),
         )
         .await?
     } else {

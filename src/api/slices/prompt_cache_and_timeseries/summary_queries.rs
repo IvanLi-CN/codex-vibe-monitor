@@ -40,7 +40,7 @@ pub(crate) async fn query_hourly_backed_summary_range_with_config(
     let mut totals = StatsTotals::default();
     let range_plan = build_hourly_rollup_exact_range_plan(start, end, retention_cutoff)?;
     if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
-        {
+        let archive_overlap_ids = {
             let mut tx = pool.begin().await?;
             let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
             let rollup_live_cursor =
@@ -66,20 +66,21 @@ pub(crate) async fn query_hourly_backed_summary_range_with_config(
                 snapshot_id,
             )
             .await?;
-            exact_records.extend(
-                query_invocation_full_hour_tail_records_tx(
-                    tx.as_mut(),
-                    &range_plan,
-                    source_scope,
-                    rollup_live_cursor,
-                    snapshot_id,
-                )
-                .await?,
-            );
+            let tail_records = query_invocation_full_hour_tail_records_tx(
+                tx.as_mut(),
+                &range_plan,
+                source_scope,
+                rollup_live_cursor,
+                snapshot_id,
+            )
+            .await?;
+            let archive_overlap_ids = tail_records.iter().map(|record| record.id).collect::<HashSet<_>>();
+            exact_records.extend(tail_records);
             for record in &exact_records {
                 add_invocation_record_to_summary_totals(&mut totals, record);
             }
-        }
+            archive_overlap_ids
+        };
         let archived_start = Utc
             .timestamp_opt(range_start_epoch, 0)
             .single()
@@ -93,6 +94,7 @@ pub(crate) async fn query_hourly_backed_summary_range_with_config(
                 pool,
                 source_scope,
                 Some((archived_start, archived_end)),
+                Some(&archive_overlap_ids),
             )
             .await?,
         );
