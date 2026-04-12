@@ -365,17 +365,15 @@ describe("UpstreamAccountGroupNoteDialog", () => {
     expect(onBoundProxyKeysChange).toHaveBeenCalledWith([]);
   });
 
-  it("does not keep showing the loading placeholder after an idle missing catalog failure", () => {
+  it("treats a missing proxy catalog as unresolved instead of showing the empty-state copy", () => {
     renderDialog({
       availableProxyNodes: [],
       proxyBindingsCatalogKind: "missing",
       proxyBindingsCatalogFreshness: "missing",
     });
 
-    expect(bodyText()).not.toContain("Loading proxy nodes…");
-    expect(
-      document.querySelector('[data-testid="proxy-binding-options-loading"]'),
-    ).toBeNull();
+    expect(bodyText()).toContain("Loading proxy nodes…");
+    expect(bodyText()).not.toContain("No proxy nodes available.");
   });
 
   it("blocks saving when every selected binding is unavailable", () => {

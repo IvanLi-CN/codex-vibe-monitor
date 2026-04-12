@@ -441,6 +441,33 @@ describe("useUpstreamAccounts", () => {
     expect(text("proxy-catalog-freshness")).toBe("stale");
   });
 
+  it("keeps a populated proxy catalog stale after a refresh failure", async () => {
+    apiMocks.fetchUpstreamAccounts
+      .mockResolvedValueOnce(
+        createListResponse({
+          forwardProxyNodes: [createForwardProxyNode("jp-edge-01")],
+        }),
+      )
+      .mockRejectedValueOnce(new Error("refresh failed"));
+
+    render(<Probe />);
+    await flushAsync();
+
+    expect(text("proxy-catalog-kind")).toBe("ready-with-data");
+    expect(text("proxy-catalog-freshness")).toBe("fresh");
+
+    act(() => {
+      (
+        host?.querySelector('[data-testid="refresh"]') as HTMLButtonElement | null
+      )?.click();
+    });
+    await flushAsync();
+
+    expect(text("list-error")).toBe("refresh failed");
+    expect(text("proxy-catalog-kind")).toBe("ready-with-data");
+    expect(text("proxy-catalog-freshness")).toBe("stale");
+  });
+
   it("reports the current query as failed after a switched roster request rejects", async () => {
     const nextPage = deferred<UpstreamAccountListResponse>();
     apiMocks.fetchUpstreamAccounts
