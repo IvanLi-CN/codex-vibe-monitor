@@ -141,6 +141,10 @@
 
   ![Dashboard working conversations theme dark](./assets/dashboard-working-conversations-theme-dark.png)
 
+- Storybook Canvas `dashboard-workingconversationssection--created-at-descending-order`，主题 `light`，视口 `1440x980`，验证最近活动更晚的运行中对话不会抢到更前位置，卡片顺序保持 `createdAt DESC`（`pck-created-newest → pck-created-middle → pck-created-oldest`）。
+
+  ![Dashboard working conversations createdAt desc order](./assets/dashboard-working-conversations-created-at-desc-order.png)
+
 - Storybook Canvas `dashboard-workingconversationssection--failed-with-clickable-account`，视口 `900x900`，验证失败态卡片、账号交互入口与紧凑调用记录布局。
 
   ![Dashboard working conversations failed viewport 900](./assets/dashboard-working-conversations-failed-viewport-900.png)
