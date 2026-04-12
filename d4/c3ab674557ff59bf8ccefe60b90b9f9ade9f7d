@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.46.10",
+  "base_stable_version": "1.46.9",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-12T11:22:45Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.46.10",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "6cb0591ec0cddeba9cfe065b62cbf41e28ed892b",
+  "pr_number": 336,
+  "pr_title": "fix(web): restore created-at ordering for working conversations",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.46.10",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.46.10",
+  "target_sha": "d4c3ab674557ff59bf8ccefe60b90b9f9ade9f7d",
+  "type_label": "type:patch"
+}
