@@ -1037,38 +1037,78 @@ async fn load_archive_bucket_source_keys(
     Ok(keys)
 }
 
-async fn overall_rollups_exist_for_archive(
+async fn load_missing_overall_rollup_keys_for_archive(
     pool: &Pool<Sqlite>,
     archive_pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
-) -> Result<bool> {
+) -> Result<HashSet<(i64, String)>> {
     let keys = load_archive_bucket_source_keys(archive_pool, source_scope, range).await?;
     if keys.is_empty() {
-        return Ok(true);
+        return Ok(HashSet::new());
     }
 
+    let mut missing_keys = HashSet::new();
     for (bucket_start_epoch, source) in keys {
         let exists = sqlx::query_scalar::<_, i64>(
             "SELECT 1 FROM invocation_rollup_hourly WHERE bucket_start_epoch = ?1 AND source = ?2 LIMIT 1",
         )
         .bind(bucket_start_epoch)
-        .bind(source)
+        .bind(&source)
         .fetch_optional(pool)
         .await?
         .is_some();
         if !exists {
-            return Ok(false);
+            missing_keys.insert((bucket_start_epoch, source));
         }
     }
 
-    Ok(true)
+    Ok(missing_keys)
 }
 
-async fn failure_rollups_exist_for_rows(
+fn invocation_hourly_source_record_matches_range(
+    row: &InvocationHourlySourceRecord,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+) -> bool {
+    let Some((start, end)) = range else {
+        return true;
+    };
+    let Some(occurred_at_utc) = parse_to_utc_datetime(&row.occurred_at) else {
+        return false;
+    };
+    occurred_at_utc >= start && occurred_at_utc < end
+}
+
+fn add_invocation_hourly_source_record_to_totals(
+    totals: &mut StatsTotals,
+    row: &InvocationHourlySourceRecord,
+) {
+    totals.total_count += 1;
+    totals.total_tokens += row.total_tokens.unwrap_or(0);
+    totals.total_cost += row.cost.unwrap_or(0.0);
+
+    let classification = resolve_failure_classification(
+        row.status.as_deref(),
+        row.error_message.as_deref(),
+        row.failure_kind.as_deref(),
+        row.failure_class.as_deref(),
+        row.is_actionable,
+    );
+    if invocation_status_is_success_like(row.status.as_deref(), row.error_message.as_deref())
+        && classification.failure_class == FailureClass::None
+    {
+        totals.success_count += 1;
+    } else if invocation_status_counts_toward_terminal_totals(row.status.as_deref())
+        && classification.failure_class != FailureClass::None
+    {
+        totals.failure_count += 1;
+    }
+}
+
+async fn load_missing_failure_rollup_keys_for_rows(
     pool: &Pool<Sqlite>,
     rows: &[ArchivedInvocationFailureRow],
-) -> Result<bool> {
+) -> Result<HashSet<(i64, String)>> {
     let keys = rows
         .iter()
         .filter_map(|row| {
@@ -1089,24 +1129,25 @@ async fn failure_rollups_exist_for_rows(
         })
         .collect::<HashSet<_>>();
     if keys.is_empty() {
-        return Ok(true);
+        return Ok(HashSet::new());
     }
 
+    let mut missing_keys = HashSet::new();
     for (bucket_start_epoch, source) in keys {
         let exists = sqlx::query_scalar::<_, i64>(
             "SELECT 1 FROM invocation_failure_rollup_hourly WHERE bucket_start_epoch = ?1 AND source = ?2 LIMIT 1",
         )
         .bind(bucket_start_epoch)
-        .bind(source)
+        .bind(&source)
         .fetch_optional(pool)
         .await?
         .is_some();
         if !exists {
-            return Ok(false);
+            missing_keys.insert((bucket_start_epoch, source));
         }
     }
 
-    Ok(true)
+    Ok(missing_keys)
 }
 
 pub(crate) async fn query_unmaterialized_invocation_archive_totals(
@@ -1124,19 +1165,41 @@ pub(crate) async fn query_unmaterialized_invocation_archive_totals(
         else {
             continue;
         };
-        if overall_rollups_exist_for_archive(pool, &archive_pool, source_scope, range).await? {
+        let missing_keys =
+            load_missing_overall_rollup_keys_for_archive(pool, &archive_pool, source_scope, range)
+                .await?;
+        if missing_keys.is_empty() {
             archive_pool.close().await;
             drop(temp_cleanup);
             continue;
         }
-
-        let filter = match range {
-            Some((start, end)) => StatsFilter::Range(start, end),
-            None => StatsFilter::All,
-        };
-        totals = totals.add(StatsTotals::from(
-            query_stats_row(&archive_pool, filter, source_scope).await?,
-        ));
+        let mut cursor_id = 0_i64;
+        loop {
+            let rows = load_invocation_hourly_source_rows_after_id(
+                &archive_pool,
+                cursor_id,
+                source_scope,
+                BACKFILL_BATCH_SIZE,
+            )
+            .await?;
+            if rows.is_empty() {
+                break;
+            }
+            cursor_id = rows.last().map(|row| row.id).unwrap_or(cursor_id);
+            for row in rows {
+                if !invocation_hourly_source_record_matches_range(&row, range) {
+                    continue;
+                }
+                let key = (
+                    summary_rollup_bucket_start_epoch(&row.occurred_at)?,
+                    row.source.clone(),
+                );
+                if !missing_keys.contains(&key) {
+                    continue;
+                }
+                add_invocation_hourly_source_record_to_totals(&mut totals, &row);
+            }
+        }
 
         archive_pool.close().await;
         drop(temp_cleanup);
@@ -1186,12 +1249,28 @@ pub(crate) async fn load_unmaterialized_invocation_archive_failure_rows(
         };
         let archive_rows =
             load_failure_rows_from_archive_pool(&archive_pool, start, end, source_scope).await?;
-        if failure_rollups_exist_for_rows(pool, &archive_rows).await? {
+        let missing_keys = load_missing_failure_rollup_keys_for_rows(pool, &archive_rows).await?;
+        if missing_keys.is_empty() {
             archive_pool.close().await;
             drop(temp_cleanup);
             continue;
         }
-        rows.extend(archive_rows);
+        rows.extend(archive_rows.into_iter().filter(|row| {
+            let classification = resolve_failure_classification(
+                row.status.as_deref(),
+                row.error_message.as_deref(),
+                row.failure_kind.as_deref(),
+                row.failure_class.as_deref(),
+                row.is_actionable,
+            );
+            if classification.failure_class == FailureClass::None {
+                return false;
+            }
+            let Ok(bucket_start_epoch) = summary_rollup_bucket_start_epoch(&row.occurred_at) else {
+                return false;
+            };
+            missing_keys.contains(&(bucket_start_epoch, row.source.clone()))
+        }));
         archive_pool.close().await;
         drop(temp_cleanup);
     }

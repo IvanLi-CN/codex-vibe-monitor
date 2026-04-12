@@ -1705,6 +1705,235 @@ async fn archived_range_reads_include_unmaterialized_batches_without_inline_repa
 }
 
 #[tokio::test]
+async fn all_time_summary_fallback_skips_already_materialized_archive_buckets() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_a_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(6, 0, 0)
+    .expect("valid first archived local hour");
+    let archived_hour_b_local = archived_hour_a_local
+        .checked_add_signed(ChronoDuration::hours(1))
+        .expect("second archived local hour");
+    let archived_first_at = format_naive(
+        archived_hour_a_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("first archived time"),
+    );
+    let archived_second_at = format_naive(
+        archived_hour_b_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("second archived time"),
+    );
+
+    seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-partial-materialized-archive",
+        &[
+            (
+                1_i64,
+                "summary-partial-materialized-first",
+                archived_first_at.as_str(),
+                SOURCE_PROXY,
+                "success",
+                10_i64,
+                0.10_f64,
+                Some(100.0),
+            ),
+            (
+                2_i64,
+                "summary-partial-materialized-second",
+                archived_second_at.as_str(),
+                SOURCE_PROXY,
+                "success",
+                20_i64,
+                0.20_f64,
+                Some(120.0),
+            ),
+        ],
+    )
+    .await;
+
+    let first_bucket_start_epoch = invocation_bucket_start_epoch(&archived_first_at)
+        .expect("first bucket start epoch should be derivable");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0, 0, ?8)
+        "#,
+    )
+    .bind(first_bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(10_i64)
+    .bind(0.10_f64)
+    .bind("[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&state.pool)
+    .await
+    .expect("seed already materialized first summary bucket");
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch all-time summary with partially materialized archive");
+
+    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.success_count, 2);
+    assert_eq!(summary.failure_count, 0);
+    assert_eq!(summary.total_tokens, 30);
+    assert!((summary.total_cost - 0.30).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn archived_failure_fallback_skips_already_materialized_archive_buckets() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_a_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid first archived failure hour");
+    let archived_hour_b_local = archived_hour_a_local
+        .checked_add_signed(ChronoDuration::hours(1))
+        .expect("second archived failure hour");
+    let archived_first_at = format_naive(
+        archived_hour_a_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("first archived failure time"),
+    );
+    let archived_second_at = format_naive(
+        archived_hour_b_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("second archived failure time"),
+    );
+
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "failure-partial-materialized-archive",
+        &[
+            SeedInvocationArchiveBatchRow {
+                id: 1_i64,
+                invoke_id: "failure-partial-materialized-first",
+                occurred_at: archived_first_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "failed",
+                total_tokens: 10_i64,
+                cost: 0.10_f64,
+                ttfb_ms: Some(100.0),
+                payload: Some("{}"),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: Some("HTTP 429 too many requests"),
+                failure_kind: Some("upstream_response_failed"),
+                failure_class: Some("service_failure"),
+                is_actionable: Some(1_i64),
+            },
+            SeedInvocationArchiveBatchRow {
+                id: 2_i64,
+                invoke_id: "failure-partial-materialized-second",
+                occurred_at: archived_second_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "failed",
+                total_tokens: 20_i64,
+                cost: 0.20_f64,
+                ttfb_ms: Some(120.0),
+                payload: Some("{}"),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: Some("upstream stream error"),
+                failure_kind: Some("upstream_stream_error"),
+                failure_class: Some("service_failure"),
+                is_actionable: Some(1_i64),
+            },
+        ],
+    )
+    .await;
+
+    let first_bucket_start_epoch = invocation_bucket_start_epoch(&archived_first_at)
+        .expect("first failure bucket start epoch should be derivable");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_failure_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            failure_class,
+            is_actionable,
+            error_category,
+            failure_count,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(first_bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind("service_failure")
+    .bind(1_i64)
+    .bind("too_many_requests")
+    .bind(1_i64)
+    .execute(&state.pool)
+    .await
+    .expect("seed already materialized first failure bucket");
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(failure_summary) = fetch_failure_summary(
+        State(state.clone()),
+        Query(FailureSummaryQuery {
+            range: historical_range.clone(),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch failure summary with partially materialized archive");
+    assert_eq!(failure_summary.total_failures, 2);
+    assert_eq!(failure_summary.service_failure_count, 2);
+    assert_eq!(failure_summary.client_failure_count, 0);
+    assert_eq!(failure_summary.client_abort_count, 0);
+    assert_eq!(failure_summary.actionable_failure_count, 2);
+
+    let Json(error_distribution) = fetch_error_distribution(
+        State(state),
+        Query(ErrorQuery {
+            range: historical_range,
+            top: None,
+            scope: Some("service".to_string()),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch error distribution with partially materialized archive");
+    let total_distribution_count: i64 = error_distribution.items.iter().map(|item| item.count).sum();
+    assert_eq!(total_distribution_count, 2);
+}
+
+#[tokio::test]
 async fn timeseries_hourly_backed_repairs_stale_archived_rollup_counts_before_querying() {
     let mut config = test_config();
     config.openai_upstream_base_url =
