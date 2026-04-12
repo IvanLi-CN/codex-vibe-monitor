@@ -1,5 +1,4 @@
-/* eslint-disable @typescript-eslint/ban-ts-comment, @typescript-eslint/no-unused-vars, react-hooks/exhaustive-deps */
-// @ts-nocheck
+/* eslint-disable react-hooks/exhaustive-deps */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useMotherSwitchNotifications } from "../../hooks/useMotherSwitchNotifications";
@@ -10,6 +9,8 @@ import type {
   LoginSessionStatusResponse,
   OauthMailboxSession,
   OauthMailboxStatus,
+  UpstreamAccountDetail,
+  UpstreamAccountDuplicateInfo,
   UpstreamAccountSummary,
 } from "../../lib/api";
 import { fetchUpstreamAccountDetail, updateOauthLoginSessionKeepalive } from "../../lib/api";
@@ -22,15 +23,19 @@ import {
   normalizeGroupName,
 } from "../../lib/upstreamAccountGroups";
 import { validateUpstreamBaseUrl } from "../../lib/upstreamBaseUrl";
-import { applyMotherUpdateToItems, normalizeMotherGroupKey } from "../../lib/upstreamMother";
+import { applyMotherUpdateToItems } from "../../lib/upstreamMother";
 import { cn } from "../../lib/utils";
 import { useTranslation } from "../../i18n";
 import type {
+  BatchOauthRow,
+  CreatePageLocationState,
   CreateTab,
   DuplicateWarningState,
   GroupNoteEditorState,
-  BatchOauthRow,
-  CreatePageLocationState,
+  ImportedOauthValidationDialogState,
+  MailboxBusyAction,
+  MailboxCopyTone,
+  PendingOauthSessionSnapshot,
 } from "./UpstreamAccountCreate.shared";
 import {
   GROUP_UPSTREAM_429_RETRY_OPTIONS,
@@ -79,6 +84,15 @@ import { useUpstreamAccountCreateBatchOauth } from "./UpstreamAccountCreate.batc
 import { useUpstreamAccountCreateImportedOauth } from "./UpstreamAccountCreate.imported-oauth";
 import { useUpstreamAccountCreateActions } from "./UpstreamAccountCreate.actions";
 import { UpstreamAccountCreatePageSections } from "./UpstreamAccountCreate.sections";
+
+type PendingOauthSessionSyncRecord = {
+  syncedSignature: string | null;
+  failedSignature: string | null;
+  pendingSignature: string;
+  timerId: number | null;
+  inFlight: Promise<void> | null;
+  lastSnapshot: PendingOauthSessionSnapshot | null;
+};
 
 export default function UpstreamAccountCreatePage() {
   const { t, locale } = useTranslation();
@@ -590,13 +604,7 @@ export default function UpstreamAccountCreatePage() {
     notifyMotherSwitches(items, nextItems);
   };
   const {
-    resolveGroupSummaryForName,
-    resolveGroupNoteForName,
-    resolveGroupConcurrencyLimitForName,
-    resolveGroupBoundProxyKeysForName,
     resolveGroupNodeShuntEnabledForName,
-    resolveGroupUpstream429RetryEnabledForName,
-    resolveGroupUpstream429MaxRetriesForName,
     resolvePendingGroupNoteForName,
     resolvePendingGroupConcurrencyLimitForName,
     resolvePendingGroupBoundProxyKeysForName,
@@ -606,7 +614,6 @@ export default function UpstreamAccountCreatePage() {
     importGroupProxyState,
     importSelectionLabel,
     apiKeyGroupProxyState,
-    clearDraftGroupSettings,
     persistDraftGroupSettings,
     openGroupNoteEditor,
     closeGroupNoteEditor,
@@ -1195,7 +1202,7 @@ export default function UpstreamAccountCreatePage() {
   ) => {
     const reasons = duplicateInfo?.reasons ?? [];
     return reasons
-      .map((reason) => {
+      .map((reason: string) => {
         if (reason === "sharedChatgptAccountId") {
           return t(
             "accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptAccountId",
@@ -1612,7 +1619,6 @@ export default function UpstreamAccountCreatePage() {
     scheduleBatchMailboxToneReset,
     removeBatchRow,
     toggleBatchNoteExpanded,
-    persistCompletedBatchRowMetadata,
     handleBatchMetadataChange,
     handleBatchCompletedTextFieldBlur,
     handleBatchCompletedTextFieldKeyDown,
@@ -1657,12 +1663,6 @@ export default function UpstreamAccountCreatePage() {
 
 
   const {
-    closeImportValidationEventSource,
-    cancelActiveImportedOauthValidation,
-    resetImportValidationForSelectionChange,
-    attachImportedOauthValidationJob,
-    runImportValidation,
-    validateAndQueueImportedOauthPaste,
     handleImportedOauthPasteDraftChange,
     handleImportedOauthPaste,
     handleValidateImportedOauthPasteDraft,
@@ -1728,8 +1728,6 @@ export default function UpstreamAccountCreatePage() {
     handleBatchAttachMailbox,
     handleBatchCopyMailbox,
     handleBatchCopyMailboxCode,
-    canApplyBatchOauthCopyFeedback,
-    resolveBatchOauthCopyFeedback,
     handleBatchGenerateOauthUrl,
     handleBatchCopyOauthUrl,
     handleBatchCompleteOauth,

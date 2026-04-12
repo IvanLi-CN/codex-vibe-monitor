@@ -1,6 +1,6 @@
 #[allow(dead_code)]
 #[derive(Debug, FromRow)]
-struct UpstreamAccountRow {
+pub(crate) struct UpstreamAccountRow {
     id: i64,
     kind: String,
     provider: String,
@@ -49,7 +49,7 @@ struct UpstreamAccountRow {
 }
 
 #[derive(Debug, FromRow)]
-struct PoolRoutingSettingsRow {
+pub(crate) struct PoolRoutingSettingsRow {
     encrypted_api_key: Option<String>,
     masked_api_key: Option<String>,
     primary_sync_interval_secs: Option<i64>,
@@ -65,7 +65,7 @@ struct PoolRoutingSettingsRow {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PoolRoutingMaintenanceSettings {
+pub(crate) struct PoolRoutingMaintenanceSettings {
     primary_sync_interval_secs: u64,
     secondary_sync_interval_secs: u64,
     priority_available_account_cap: usize,
@@ -82,14 +82,14 @@ impl PoolRoutingMaintenanceSettings {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MaintenanceTier {
+pub(crate) enum MaintenanceTier {
     HighFrequency,
     Priority,
     Secondary,
 }
 
 #[derive(Debug, Clone, FromRow)]
-struct MaintenanceCandidateRow {
+pub(crate) struct MaintenanceCandidateRow {
     id: i64,
     status: String,
     last_synced_at: Option<String>,
@@ -114,7 +114,7 @@ struct MaintenanceCandidateRow {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MaintenanceDispatchPlan {
+pub(crate) struct MaintenanceDispatchPlan {
     account_id: i64,
     tier: MaintenanceTier,
     sync_interval_secs: u64,
@@ -145,7 +145,7 @@ where
 
 #[derive(Debug, FromRow)]
 #[allow(dead_code)]
-struct PoolStickyRouteRow {
+pub(crate) struct PoolStickyRouteRow {
     sticky_key: String,
     account_id: i64,
     created_at: String,
@@ -154,7 +154,7 @@ struct PoolStickyRouteRow {
 }
 
 #[derive(Debug, Clone, FromRow)]
-struct AccountRoutingCandidateRow {
+pub(crate) struct AccountRoutingCandidateRow {
     id: i64,
     plan_type: Option<String>,
     secondary_used_percent: Option<f64>,
@@ -400,7 +400,7 @@ struct TagListRow {
 }
 
 #[derive(Debug, FromRow)]
-struct StickyKeyAggregateRow {
+pub(crate) struct StickyKeyAggregateRow {
     sticky_key: String,
     request_count: i64,
     total_tokens: i64,
@@ -507,7 +507,7 @@ struct UpstreamAccountActionEventRow {
 }
 
 #[derive(Debug, FromRow)]
-struct StickyKeyEventRow {
+pub(crate) struct StickyKeyEventRow {
     occurred_at: String,
     status: String,
     request_tokens: i64,
@@ -515,7 +515,7 @@ struct StickyKeyEventRow {
 }
 
 #[derive(Debug, FromRow)]
-struct AccountStickyKeyInvocationPreviewRow {
+pub(crate) struct AccountStickyKeyInvocationPreviewRow {
     sticky_key: String,
     id: i64,
     invoke_id: String,
@@ -575,7 +575,7 @@ struct UpstreamAccountSampleRow {
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, FromRow)]
-struct OauthLoginSessionRow {
+pub(crate) struct OauthLoginSessionRow {
     login_id: String,
     account_id: Option<i64>,
     display_name: Option<String>,

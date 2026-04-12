@@ -1,6 +1,7 @@
-/* eslint-disable @typescript-eslint/ban-ts-comment, react-hooks/exhaustive-deps */
-// @ts-nocheck
+/* eslint-disable react-hooks/exhaustive-deps */
 import { useCallback } from "react";
+import type { LoginSessionStatusResponse } from "../../lib/api";
+import type { BatchOauthRow } from "./UpstreamAccountCreate.shared";
 import type { UpstreamAccountCreateControllerContext } from "./UpstreamAccountCreate.controller-context";
 
 export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateControllerContext) {
@@ -131,7 +132,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
       }
       setOauthMailboxSession(response);
       setOauthMailboxInput(response.emailAddress);
-      setOauthDisplayName((current) =>
+      setOauthDisplayName((current: string) =>
         current.trim() ? current : response.emailAddress,
       );
       setOauthMailboxStatus(null);
@@ -178,7 +179,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         if (!previousSessionId || previousSessionId !== response.sessionId) {
           invalidateRelinkPendingOauthSession();
         }
-        setOauthDisplayName((current) =>
+        setOauthDisplayName((current: string) =>
           current.trim() ? current : response.emailAddress,
         );
       } else if (previousSessionId) {
@@ -377,7 +378,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
       } catch {
         latestSession = null;
       }
-      setSession((current) => latestSession ?? current);
+      setSession((current: LoginSessionStatusResponse | null) => latestSession ?? current);
       if (latestSession?.status === "completed" && latestSession.accountId) {
         setActionError(null);
         emitUpstreamAccountsChanged();
@@ -429,10 +430,10 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
   };
 
   const handleBatchGenerateMailbox = async (rowId: string) => {
-    const row = batchRows.find((item) => item.id === rowId);
+    const row = batchRows.find((item: BatchOauthRow) => item.id === rowId);
     if (!row) return;
 
-    updateBatchRow(rowId, (current) => ({
+    updateBatchRow(rowId, (current: BatchOauthRow) => ({
       ...current,
       mailboxBusyAction: "generate",
       mailboxEditorOpen: false,
@@ -443,7 +444,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
     try {
       const response = await beginOauthMailboxSession();
       if (!isSupportedMailboxSession(response)) {
-        updateBatchRow(rowId, (current) => ({
+        updateBatchRow(rowId, (current: BatchOauthRow) => ({
           ...current,
           mailboxBusyAction: null,
           mailboxError: t(
@@ -454,7 +455,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         return;
       }
       const previousSessionId = row.mailboxSession?.sessionId;
-      updateBatchRow(rowId, (current) => ({
+      updateBatchRow(rowId, (current: BatchOauthRow) => ({
         ...current,
         mailboxBusyAction: null,
         mailboxSession: response,
@@ -475,7 +476,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         );
       }
     } catch (err) {
-      updateBatchRow(rowId, (current) => ({
+      updateBatchRow(rowId, (current: BatchOauthRow) => ({
         ...current,
         mailboxBusyAction: null,
         mailboxError: null,
@@ -485,7 +486,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
   };
 
   const handleBatchStartMailboxEdit = (rowId: string) => {
-    updateBatchRow(rowId, (current) => {
+    updateBatchRow(rowId, (current: BatchOauthRow) => {
       if (
         current.busyAction ||
         current.mailboxBusyAction ||
@@ -510,7 +511,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
     rowId: string,
     value: string,
   ) => {
-    updateBatchRow(rowId, (current) => ({
+    updateBatchRow(rowId, (current: BatchOauthRow) => ({
       ...current,
       mailboxEditorValue: value,
       mailboxEditorError: null,
@@ -518,7 +519,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
   };
 
   const handleBatchCancelMailboxEdit = (rowId: string) => {
-    updateBatchRow(rowId, (current) => ({
+    updateBatchRow(rowId, (current: BatchOauthRow) => ({
       ...current,
       mailboxEditorOpen: false,
       mailboxEditorValue:
@@ -528,12 +529,12 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
   };
 
   const handleBatchAttachMailbox = async (rowId: string) => {
-    const row = batchRows.find((item) => item.id === rowId);
+    const row = batchRows.find((item: BatchOauthRow) => item.id === rowId);
     if (!row) return;
     const normalizedAddress = row.mailboxEditorValue.trim();
     if (!normalizedAddress) return;
     if (!isProbablyValidEmailAddress(normalizedAddress)) {
-      updateBatchRow(rowId, (current) => ({
+      updateBatchRow(rowId, (current: BatchOauthRow) => ({
         ...current,
         mailboxEditorError: t(
           "accountPool.upstreamAccounts.batchOauth.validation.mailboxFormat",
@@ -542,7 +543,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
       return;
     }
 
-    updateBatchRow(rowId, (current) => ({
+    updateBatchRow(rowId, (current: BatchOauthRow) => ({
       ...current,
       mailboxBusyAction: "attach",
       actionError: null,
@@ -558,7 +559,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         ? null
         : resolveMailboxIssue(response, null, null, null, t);
 
-      updateBatchRow(rowId, (current) => ({
+      updateBatchRow(rowId, (current: BatchOauthRow) => ({
         ...current,
         mailboxBusyAction: null,
         mailboxEditorOpen: false,
@@ -587,7 +588,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         );
       }
     } catch (err) {
-      updateBatchRow(rowId, (current) => ({
+      updateBatchRow(rowId, (current: BatchOauthRow) => ({
         ...current,
         mailboxBusyAction: null,
         actionError: err instanceof Error ? err.message : String(err),
@@ -596,18 +597,18 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
   };
 
   const handleBatchCopyMailbox = async (rowId: string) => {
-    const row = batchRows.find((item) => item.id === rowId);
+    const row = batchRows.find((item: BatchOauthRow) => item.id === rowId);
     const value = row?.mailboxSession?.emailAddress ?? row?.mailboxInput ?? "";
     if (!value) return;
     const result = await copyText(value, { preferExecCommand: true });
     if (!result.ok) {
-      updateBatchRow(rowId, (current) => ({
+      updateBatchRow(rowId, (current: BatchOauthRow) => ({
         ...current,
         mailboxTone: "manual",
       }));
       return;
     }
-    updateBatchRow(rowId, (current) => ({
+    updateBatchRow(rowId, (current: BatchOauthRow) => ({
       ...current,
       mailboxTone: "copied",
     }));
@@ -615,12 +616,12 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
   };
 
   const handleBatchCopyMailboxCode = async (rowId: string) => {
-    const row = batchRows.find((item) => item.id === rowId);
+    const row = batchRows.find((item: BatchOauthRow) => item.id === rowId);
     const value = row?.mailboxStatus?.latestCode?.value;
     if (!value) return;
     const result = await copyText(value, { preferExecCommand: true });
     if (!result.ok) return;
-    updateBatchRow(rowId, (current) => ({
+    updateBatchRow(rowId, (current: BatchOauthRow) => ({
       ...current,
       mailboxCodeTone: "copied",
     }));
@@ -636,7 +637,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
     ) {
       return false;
     }
-    const currentRow = batchRowsRef.current.find((item) => item.id === rowId);
+    const currentRow = batchRowsRef.current.find((item: BatchOauthRow) => item.id === rowId);
     if (currentRow?.session?.loginId !== loginId) {
       return true;
     }
@@ -655,7 +656,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
     const fallbackHint = t(
       "accountPool.upstreamAccounts.batchOauth.copyInlineFallback",
     );
-    setBatchManualCopyRowId((current) => {
+    setBatchManualCopyRowId((current: string | null) => {
       if (!canApplyBatchOauthCopyFeedback(rowId, loginId)) {
         return current;
       }
@@ -668,13 +669,13 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
   };
 
   const handleBatchGenerateOauthUrl = async (rowId: string) => {
-    const row = batchRows.find((item) => item.id === rowId);
+    const row = batchRows.find((item: BatchOauthRow) => item.id === rowId);
     if (!row) return;
     if (row.needsRefresh) return;
 
     const groupProxyState = resolveRequiredGroupProxyState(row.groupName);
     if (groupProxyState.error) {
-      updateBatchRow(rowId, (current) => ({
+      updateBatchRow(rowId, (current: BatchOauthRow) => ({
         ...current,
         busyAction: null,
         actionError: groupProxyState.error,
@@ -682,7 +683,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
       return;
     }
 
-    updateBatchRow(rowId, (current) => ({
+    updateBatchRow(rowId, (current: BatchOauthRow) => ({
       ...current,
       busyAction: "generate",
       actionError: null,
@@ -736,7 +737,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         status: response.status,
         authUrl: response.authUrl ?? null,
       };
-      updateBatchRow(rowId, (current) => ({
+      updateBatchRow(rowId, (current: BatchOauthRow) => ({
         ...current,
         busyAction: null,
         callbackUrl: "",
@@ -758,7 +759,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         if (!copyFeedback) {
           return;
         }
-        updateBatchRow(rowId, (current) => ({
+        updateBatchRow(rowId, (current: BatchOauthRow) => ({
           ...(current.session?.loginId !== response.loginId
             ? current
             : {
@@ -771,12 +772,12 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         batchSessionFeedbackStateByRowRef.current[rowId]?.loginId ===
         response.loginId
       ) {
-        setBatchManualCopyRowId((current) =>
+        setBatchManualCopyRowId((current: string | null) =>
           current === rowId ? null : current,
         );
       }
     } catch (err) {
-      updateBatchRow(rowId, (current) => ({
+      updateBatchRow(rowId, (current: BatchOauthRow) => ({
         ...current,
         busyAction: null,
         actionError: err instanceof Error ? err.message : String(err),
@@ -785,10 +786,10 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
   };
 
   const handleBatchCopyOauthUrl = async (rowId: string) => {
-    const row = batchRows.find((item) => item.id === rowId);
+    const row = batchRows.find((item: BatchOauthRow) => item.id === rowId);
     if (!row?.session?.authUrl) return;
 
-    updateBatchRow(rowId, (current) => ({
+    updateBatchRow(rowId, (current: BatchOauthRow) => ({
       ...current,
       actionError: null,
     }));
@@ -802,7 +803,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
       const latestSession = await getLoginSession(row.session.loginId);
       applyPendingOauthSessionStatus(row.session.loginId, latestSession);
       if (latestSession.status !== "pending" || !latestSession.authUrl) {
-        setBatchManualCopyRowId((current) =>
+        setBatchManualCopyRowId((current: string | null) =>
           current === rowId ? null : current,
         );
         return;
@@ -829,7 +830,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
       return;
     }
 
-    updateBatchRow(rowId, (current) => ({
+    updateBatchRow(rowId, (current: BatchOauthRow) => ({
       ...current,
       sessionHint: copyFeedback.sessionHint,
       actionError: copyFeedback.actionError,
@@ -837,10 +838,10 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
   };
 
   const handleBatchCompleteOauth = async (rowId: string) => {
-    const row = batchRows.find((item) => item.id === rowId);
+    const row = batchRows.find((item: BatchOauthRow) => item.id === rowId);
     if (!row?.session) return;
 
-    updateBatchRow(rowId, (current) => ({
+    updateBatchRow(rowId, (current: BatchOauthRow) => ({
       ...current,
       busyAction: "complete",
       actionError: null,
@@ -858,7 +859,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
       });
       await persistDraftGroupSettings(row.groupName);
       notifyMotherChange(detail);
-      updateBatchRow(rowId, (current) => {
+      updateBatchRow(rowId, (current: BatchOauthRow) => {
         const baseSession = (current.session ??
           row.session) as LoginSessionStatusResponse;
         return {
@@ -894,7 +895,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
               note: detail.note ?? "",
               isMother: detail.isMother === true,
             },
-            (detail.tags ?? []).map((tag) => tag.id),
+            (detail.tags ?? []).map((tag: { id: number }) => tag.id),
           ),
           pendingSharedTagIds: null,
           sharedTagSyncAttempts: 0,
@@ -917,7 +918,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
           );
           await persistDraftGroupSettings(row.groupName);
           notifyMotherChange(detail);
-          updateBatchRow(rowId, (current) => {
+          updateBatchRow(rowId, (current: BatchOauthRow) => {
             const baseSession = (current.session ??
               row.session) as LoginSessionStatusResponse;
             return {
@@ -960,7 +961,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
                   note: detail.note ?? "",
                   isMother: detail.isMother === true,
                 },
-                (detail.tags ?? []).map((tag) => tag.id),
+                (detail.tags ?? []).map((tag: { id: number }) => tag.id),
               ),
               pendingSharedTagIds: null,
               sharedTagSyncAttempts: 0,
@@ -968,7 +969,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
             };
           });
         } catch {
-          updateBatchRow(rowId, (current) => {
+          updateBatchRow(rowId, (current: BatchOauthRow) => {
             const baseSession = (current.session ??
               row.session) as LoginSessionStatusResponse;
             return {
@@ -996,7 +997,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         return;
       }
 
-      updateBatchRow(rowId, (current) => ({
+      updateBatchRow(rowId, (current: BatchOauthRow) => ({
         ...current,
         busyAction: null,
         session: latestSession ?? current.session,

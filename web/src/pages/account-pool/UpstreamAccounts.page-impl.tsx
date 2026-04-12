@@ -1,16 +1,13 @@
-/* eslint-disable @typescript-eslint/ban-ts-comment, @typescript-eslint/no-unused-vars, react-hooks/exhaustive-deps */
-// @ts-nocheck
+/* eslint-disable react-hooks/exhaustive-deps */
 import {
   useCallback,
   useEffect,
-  useId,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
-import { AppIcon, type AppIconName } from "../../components/AppIcon";
-import { AccountDetailDrawerShell } from "../../components/AccountDetailDrawerShell";
+import { AppIcon } from "../../components/AppIcon";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
@@ -31,84 +28,38 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../../components/ui/dialog";
-import { FloatingFieldError } from "../../components/ui/floating-field-error";
-import { FormFieldFeedback } from "../../components/ui/form-field-feedback";
-import { Input } from "../../components/ui/input";
-import {
-  Popover,
-  PopoverArrow,
-  PopoverContent,
-  PopoverTrigger,
-} from "../../components/ui/popover";
 import { formFieldSpanVariants } from "../../components/ui/form-control";
 import { SelectField } from "../../components/ui/select-field";
-import {
-  SegmentedControl,
-  SegmentedControlItem,
-} from "../../components/ui/segmented-control";
-import {
-  MotherAccountBadge,
-  MotherAccountToggle,
-} from "../../components/MotherAccountToggle";
 import { Spinner } from "../../components/ui/spinner";
-import { Switch } from "../../components/ui/switch";
-import { AccountTagField } from "../../components/AccountTagField";
 import { AccountTagFilterCombobox } from "../../components/AccountTagFilterCombobox";
-import { EffectiveRoutingRuleCard } from "../../components/EffectiveRoutingRuleCard";
-import { InvocationTable } from "../../components/InvocationTable";
 import { MultiSelectFilterCombobox } from "../../components/MultiSelectFilterCombobox";
 import { UpstreamAccountGroupCombobox } from "../../components/UpstreamAccountGroupCombobox";
-import { UpstreamAccountGroupNoteDialog } from "../../components/UpstreamAccountGroupNoteDialog";
-import { UpstreamAccountUsageCard } from "../../components/UpstreamAccountUsageCard";
-import { StickyKeyConversationTable } from "../../components/StickyKeyConversationTable";
 import { UpstreamAccountsTable } from "../../components/UpstreamAccountsTable";
 import { usePoolTags } from "../../hooks/usePoolTags";
-import { useMotherSwitchNotifications } from "../../hooks/useMotherSwitchNotifications";
 import { useUpstreamAccountDetailRoute } from "../../hooks/useUpstreamAccountDetailRoute";
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
-import { useUpstreamStickyConversations } from "../../hooks/useUpstreamStickyConversations";
 import type {
-  ApiInvocation,
   BulkUpstreamAccountActionPayload,
   BulkUpstreamAccountSyncCounts,
-  BulkUpstreamAccountSyncRow,
   BulkUpstreamAccountSyncSnapshot,
   PoolRoutingMaintenanceSettings,
-  CompactSupportState,
   FetchUpstreamAccountsQuery,
-  StickyKeyConversationSelection,
   PoolRoutingTimeoutSettings,
-  UpstreamAccountDetail,
   UpstreamAccountDuplicateInfo,
   UpstreamAccountSummary,
 } from "../../lib/api";
-import { DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS } from "../../lib/api";
 import {
   createBulkUpstreamAccountSyncJobEventSource,
-  fetchInvocationRecords,
   normalizeBulkUpstreamAccountSyncFailedEventPayload,
   normalizeBulkUpstreamAccountSyncRowEventPayload,
   normalizeBulkUpstreamAccountSyncSnapshotEventPayload,
 } from "../../lib/api";
 import {
   buildGroupNameSuggestions,
-  isExistingGroup,
-  normalizeGroupName,
-  resolveGroupConcurrencyLimit,
-  resolveGroupNote,
 } from "../../lib/upstreamAccountGroups";
-import {
-  apiConcurrencyLimitToSliderValue,
-  sliderConcurrencyLimitToApiValue,
-} from "../../lib/concurrencyLimit";
-import { resolvePersistedGroupNodeShuntEnabled } from "../../lib/upstreamAccountGroupDrafts";
-import { validateUpstreamBaseUrl } from "../../lib/upstreamBaseUrl";
 import { generatePoolRoutingKey } from "../../lib/poolRouting";
-import { applyMotherUpdateToItems } from "../../lib/upstreamMother";
-import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
-import { isUpstreamAccountNotFoundError } from "../../lib/upstreamAccountErrors";
 import { cn } from "../../lib/utils";
-import { useTranslation, type TranslationValues } from "../../i18n";
+import { useTranslation } from "../../i18n";
 import {
   DEFAULT_ROUTING_TIMEOUTS,
   UPSTREAM_ACCOUNTS_QUERY_STALE_GRACE_MS,

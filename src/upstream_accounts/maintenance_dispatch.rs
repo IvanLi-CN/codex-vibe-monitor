@@ -1,4 +1,6 @@
-async fn run_upstream_account_maintenance_once(state: Arc<AppState>) -> Result<()> {
+use super::*;
+
+pub(crate) async fn run_upstream_account_maintenance_once(state: Arc<AppState>) -> Result<()> {
     expire_pending_login_sessions(&state.pool).await?;
     cleanup_expired_oauth_mailbox_sessions(state.as_ref()).await?;
     let Some(_) = state.upstream_accounts.crypto_key else {
@@ -59,7 +61,7 @@ async fn run_upstream_account_maintenance_once(state: Arc<AppState>) -> Result<(
     Ok(())
 }
 
-async fn ensure_integer_column_with_default(
+pub(crate) async fn ensure_integer_column_with_default(
     pool: &Pool<Sqlite>,
     table_name: &str,
     column_name: &str,
@@ -83,7 +85,9 @@ async fn ensure_integer_column_with_default(
     Ok(())
 }
 
-async fn load_maintenance_candidates(pool: &Pool<Sqlite>) -> Result<Vec<MaintenanceCandidateRow>> {
+pub(crate) async fn load_maintenance_candidates(
+    pool: &Pool<Sqlite>,
+) -> Result<Vec<MaintenanceCandidateRow>> {
     sqlx::query_as::<_, MaintenanceCandidateRow>(
         r#"
         SELECT
@@ -164,7 +168,7 @@ async fn load_maintenance_candidates(pool: &Pool<Sqlite>) -> Result<Vec<Maintena
     .map_err(Into::into)
 }
 
-async fn load_maintenance_candidate(
+pub(crate) async fn load_maintenance_candidate(
     pool: &Pool<Sqlite>,
     account_id: i64,
 ) -> Result<Option<MaintenanceCandidateRow>> {
@@ -249,7 +253,7 @@ async fn load_maintenance_candidate(
     .map_err(Into::into)
 }
 
-fn maintenance_refresh_due(
+pub(crate) fn maintenance_refresh_due(
     candidate: &MaintenanceCandidateRow,
     refresh_lead_time: Duration,
     now: DateTime<Utc>,
@@ -262,11 +266,15 @@ fn maintenance_refresh_due(
         .unwrap_or(true)
 }
 
-fn maintenance_candidate_has_complete_usage(candidate: &MaintenanceCandidateRow) -> bool {
+pub(crate) fn maintenance_candidate_has_complete_usage(
+    candidate: &MaintenanceCandidateRow,
+) -> bool {
     candidate.primary_used_percent.is_some() && candidate.secondary_used_percent.is_some()
 }
 
-fn maintenance_candidate_snapshot_exhausted(candidate: &MaintenanceCandidateRow) -> bool {
+pub(crate) fn maintenance_candidate_snapshot_exhausted(
+    candidate: &MaintenanceCandidateRow,
+) -> bool {
     persisted_usage_snapshot_is_exhausted(
         candidate.primary_used_percent,
         candidate.secondary_used_percent,
@@ -276,7 +284,9 @@ fn maintenance_candidate_snapshot_exhausted(candidate: &MaintenanceCandidateRow)
     )
 }
 
-fn maintenance_candidate_health_status(candidate: &MaintenanceCandidateRow) -> &'static str {
+pub(crate) fn maintenance_candidate_health_status(
+    candidate: &MaintenanceCandidateRow,
+) -> &'static str {
     derive_upstream_account_health_status(
         UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
         true,
@@ -289,7 +299,7 @@ fn maintenance_candidate_health_status(candidate: &MaintenanceCandidateRow) -> &
     )
 }
 
-fn maintenance_candidate_work_status(
+pub(crate) fn maintenance_candidate_work_status(
     candidate: &MaintenanceCandidateRow,
     now: DateTime<Utc>,
 ) -> &'static str {
@@ -314,7 +324,7 @@ fn maintenance_candidate_work_status(
     )
 }
 
-fn maintenance_candidate_is_high_frequency(
+pub(crate) fn maintenance_candidate_is_high_frequency(
     candidate: &MaintenanceCandidateRow,
     now: DateTime<Utc>,
 ) -> bool {
@@ -324,12 +334,12 @@ fn maintenance_candidate_is_high_frequency(
     )
 }
 
-fn maintenance_candidate_is_available(candidate: &MaintenanceCandidateRow) -> bool {
+pub(crate) fn maintenance_candidate_is_available(candidate: &MaintenanceCandidateRow) -> bool {
     maintenance_candidate_has_complete_usage(candidate)
         && !maintenance_candidate_snapshot_exhausted(candidate)
 }
 
-fn maintenance_candidate_force_priority(
+pub(crate) fn maintenance_candidate_force_priority(
     candidate: &MaintenanceCandidateRow,
     refresh_lead_time: Duration,
     now: DateTime<Utc>,
@@ -339,7 +349,7 @@ fn maintenance_candidate_force_priority(
         || !maintenance_candidate_has_complete_usage(candidate)
 }
 
-fn compare_maintenance_candidates(
+pub(crate) fn compare_maintenance_candidates(
     lhs: &MaintenanceCandidateRow,
     rhs: &MaintenanceCandidateRow,
 ) -> std::cmp::Ordering {
@@ -361,7 +371,9 @@ fn compare_maintenance_candidates(
         .then_with(|| lhs.id.cmp(&rhs.id))
 }
 
-fn maintenance_last_sync_attempt_at(candidate: &MaintenanceCandidateRow) -> Option<DateTime<Utc>> {
+pub(crate) fn maintenance_last_sync_attempt_at(
+    candidate: &MaintenanceCandidateRow,
+) -> Option<DateTime<Utc>> {
     let last_synced_at = candidate
         .last_synced_at
         .as_deref()
@@ -387,7 +399,7 @@ fn maintenance_last_sync_attempt_at(candidate: &MaintenanceCandidateRow) -> Opti
         .max()
 }
 
-fn maintenance_last_interval_anchor_at(
+pub(crate) fn maintenance_last_interval_anchor_at(
     candidate: &MaintenanceCandidateRow,
 ) -> Option<DateTime<Utc>> {
     let last_sync_attempt_at = maintenance_last_sync_attempt_at(candidate);
@@ -406,7 +418,7 @@ fn maintenance_last_interval_anchor_at(
         .max()
 }
 
-fn maintenance_last_attempt_recorded_after_reset(
+pub(crate) fn maintenance_last_attempt_recorded_after_reset(
     candidate: &MaintenanceCandidateRow,
     reset_at: DateTime<Utc>,
 ) -> bool {
@@ -414,7 +426,7 @@ fn maintenance_last_attempt_recorded_after_reset(
         .is_some_and(|last_attempt_at| last_attempt_at >= reset_at)
 }
 
-fn maintenance_interval_is_due(
+pub(crate) fn maintenance_interval_is_due(
     candidate: &MaintenanceCandidateRow,
     interval_secs: u64,
     now: DateTime<Utc>,
@@ -424,7 +436,7 @@ fn maintenance_interval_is_due(
         .unwrap_or(true)
 }
 
-fn maintenance_interval_for_tier(
+pub(crate) fn maintenance_interval_for_tier(
     tier: MaintenanceTier,
     settings: PoolRoutingMaintenanceSettings,
 ) -> u64 {
@@ -435,7 +447,7 @@ fn maintenance_interval_for_tier(
     }
 }
 
-fn maintenance_window_reset_due(
+pub(crate) fn maintenance_window_reset_due(
     candidate: &MaintenanceCandidateRow,
     resets_at: Option<&str>,
     now: DateTime<Utc>,
@@ -446,12 +458,15 @@ fn maintenance_window_reset_due(
     reset_at <= now && !maintenance_last_attempt_recorded_after_reset(candidate, reset_at)
 }
 
-fn maintenance_reset_due(candidate: &MaintenanceCandidateRow, now: DateTime<Utc>) -> bool {
+pub(crate) fn maintenance_reset_due(
+    candidate: &MaintenanceCandidateRow,
+    now: DateTime<Utc>,
+) -> bool {
     maintenance_window_reset_due(candidate, candidate.primary_resets_at.as_deref(), now)
         || maintenance_window_reset_due(candidate, candidate.secondary_resets_at.as_deref(), now)
 }
 
-fn maintenance_plan_is_due(
+pub(crate) fn maintenance_plan_is_due(
     candidate: &MaintenanceCandidateRow,
     tier: MaintenanceTier,
     settings: PoolRoutingMaintenanceSettings,
@@ -465,7 +480,7 @@ fn maintenance_plan_is_due(
         )
 }
 
-async fn load_maintenance_candidates_ranked_before(
+pub(crate) async fn load_maintenance_candidates_ranked_before(
     pool: &Pool<Sqlite>,
     candidate: &MaintenanceCandidateRow,
     offset: usize,
@@ -586,7 +601,7 @@ async fn load_maintenance_candidates_ranked_before(
     .map_err(Into::into)
 }
 
-async fn current_maintenance_interval_for_queued_high_frequency_candidate(
+pub(crate) async fn current_maintenance_interval_for_queued_high_frequency_candidate(
     state: &AppState,
     candidate: &MaintenanceCandidateRow,
     now: DateTime<Utc>,
@@ -636,7 +651,7 @@ async fn current_maintenance_interval_for_queued_high_frequency_candidate(
     }
 }
 
-async fn execute_queued_maintenance_sync(
+pub(crate) async fn execute_queued_maintenance_sync(
     state: &AppState,
     plan: MaintenanceDispatchPlan,
     id: i64,
@@ -662,7 +677,7 @@ async fn execute_queued_maintenance_sync(
     sync_upstream_account_by_id(state, id, SyncCause::Maintenance).await
 }
 
-fn resolve_due_maintenance_dispatch_plans(
+pub(crate) fn resolve_due_maintenance_dispatch_plans(
     candidates: Vec<MaintenanceCandidateRow>,
     settings: PoolRoutingMaintenanceSettings,
     refresh_lead_time: Duration,
@@ -736,7 +751,7 @@ fn resolve_due_maintenance_dispatch_plans(
     plans
 }
 
-async fn find_existing_import_match(
+pub(crate) async fn find_existing_import_match(
     pool: &Pool<Sqlite>,
     chatgpt_account_id: &str,
     email: &str,
@@ -803,7 +818,7 @@ async fn find_existing_import_match(
     Ok(email_matches.into_iter().next())
 }
 
-async fn probe_imported_oauth_credentials(
+pub(crate) async fn probe_imported_oauth_credentials(
     state: &AppState,
     imported: &NormalizedImportedOauthCredentials,
     refresh_scope: &ForwardProxyRouteScope,

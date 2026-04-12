@@ -1,5 +1,4 @@
-/* eslint-disable @typescript-eslint/ban-ts-comment, react-hooks/exhaustive-deps */
-// @ts-nocheck
+/* eslint-disable react-hooks/exhaustive-deps */
 import { useCallback, useEffect } from "react";
 import type { KeyboardEvent } from "react";
 import type { UpdateUpstreamAccountPayload } from "../../lib/api";
@@ -65,7 +64,7 @@ export function useUpstreamAccountCreateBatchOauth(
 
   const appendBatchRow = () => {
     const nextId = `row-${batchRowIdRef.current++}`;
-    setBatchRows((current) => [
+    setBatchRows((current: BatchOauthRow[]) => [
       ...current,
       createBatchOauthRow(nextId, batchDefaultGroupName.trim()),
     ]);
@@ -85,10 +84,10 @@ export function useUpstreamAccountCreateBatchOauth(
     rowId: string,
     updater: (row: BatchOauthRow) => BatchOauthRow,
   ) => {
-    setBatchRows((current) =>
+    setBatchRows((current: BatchOauthRow[]) =>
       enforceBatchMotherDraftUniqueness(
         applyBatchMotherDraftRules(
-          current.map((row) => (row.id === rowId ? updater(row) : row)),
+          current.map((row: BatchOauthRow) => (row.id === rowId ? updater(row) : row)),
           rowId,
         ),
       ),
@@ -102,7 +101,7 @@ export function useUpstreamAccountCreateBatchOauth(
         window.clearTimeout(currentTimer);
       }
       batchMailboxToneResetRef.current[rowId] = window.setTimeout(() => {
-        updateBatchRow(rowId, (current) => ({
+        updateBatchRow(rowId, (current: BatchOauthRow) => ({
           ...current,
           mailboxTone: "idle",
         }));
@@ -113,10 +112,10 @@ export function useUpstreamAccountCreateBatchOauth(
   );
 
   const removeBatchRow = (rowId: string) => {
-    const mailboxSessionId = batchRows.find((row) => row.id === rowId)
+    const mailboxSessionId = batchRows.find((row: BatchOauthRow) => row.id === rowId)
       ?.mailboxSession?.sessionId;
-    setBatchRows((current) => {
-      const remaining = current.filter((row) => row.id !== rowId);
+    setBatchRows((current: BatchOauthRow[]) => {
+      const remaining = current.filter((row: BatchOauthRow) => row.id !== rowId);
       return remaining.length > 0
         ? remaining
         : [
@@ -126,14 +125,14 @@ export function useUpstreamAccountCreateBatchOauth(
             ),
           ];
     });
-    setBatchManualCopyRowId((current) => (current === rowId ? null : current));
+    setBatchManualCopyRowId((current: string | null) => (current === rowId ? null : current));
     if (mailboxSessionId) {
       void removeOauthMailboxSession(mailboxSessionId).catch(() => undefined);
     }
   };
 
   const toggleBatchNoteExpanded = (rowId: string) => {
-    updateBatchRow(rowId, (row) => ({
+    updateBatchRow(rowId, (row: BatchOauthRow) => ({
       ...row,
       noteExpanded: !row.noteExpanded,
     }));
@@ -144,7 +143,7 @@ export function useUpstreamAccountCreateBatchOauth(
     overrides: Partial<BatchOauthPersistedMetadata>,
     committedFields: Array<keyof BatchOauthPersistedMetadata>,
   ) {
-    const sourceRow = batchRowsRef.current.find((item) => item.id === rowId);
+    const sourceRow = batchRowsRef.current.find((item: BatchOauthRow) => item.id === rowId);
     if (
       !sourceRow ||
       !canEditCompletedBatchOauthRowMetadata(sourceRow) ||
@@ -179,7 +178,7 @@ export function useUpstreamAccountCreateBatchOauth(
       nextMetadata.displayName &&
       findDisplayNameConflict(items, nextMetadata.displayName, accountId)
     ) {
-      updateBatchRow(rowId, (current) => ({
+      updateBatchRow(rowId, (current: BatchOauthRow) => ({
         ...current,
         metadataError: t(
           "accountPool.upstreamAccounts.validation.displayNameDuplicate",
@@ -196,7 +195,7 @@ export function useUpstreamAccountCreateBatchOauth(
         items,
       )
     ) {
-      updateBatchRow(rowId, (current) =>
+      updateBatchRow(rowId, (current: BatchOauthRow) =>
         current.metadataError
           ? {
               ...current,
@@ -207,7 +206,7 @@ export function useUpstreamAccountCreateBatchOauth(
       return;
     }
 
-    updateBatchRow(rowId, (current) => ({
+    updateBatchRow(rowId, (current: BatchOauthRow) => ({
       ...current,
       metadataBusy: true,
       metadataError: null,
@@ -249,8 +248,8 @@ export function useUpstreamAccountCreateBatchOauth(
       }
       const detail = await saveAccount(accountId, payload);
       notifyMotherChange(detail);
-      setBatchRows((currentRows) => {
-        const nextRows = currentRows.map((current) => {
+      setBatchRows((currentRows: BatchOauthRow[]) => {
+        const nextRows = currentRows.map((current: BatchOauthRow) => {
           if (current.id !== rowId) return current;
           const nextPersisted = buildBatchOauthPersistedMetadata(
             {
@@ -259,7 +258,7 @@ export function useUpstreamAccountCreateBatchOauth(
               note: detail.note ?? "",
               isMother: detail.isMother === true,
             },
-            (detail.tags ?? []).map((tag) => tag.id),
+            (detail.tags ?? []).map((tag: { id: number }) => tag.id),
           );
           const pendingSharedTagIds =
             current.pendingSharedTagIds &&
@@ -319,7 +318,7 @@ export function useUpstreamAccountCreateBatchOauth(
         return reconcileBatchOauthMotherRowsAfterSave(nextRows, rowId, detail);
       });
     } catch (err) {
-      updateBatchRow(rowId, (current) => ({
+      updateBatchRow(rowId, (current: BatchOauthRow) => ({
         ...current,
         metadataBusy: false,
         metadataError: err instanceof Error ? err.message : String(err),
@@ -332,7 +331,7 @@ export function useUpstreamAccountCreateBatchOauth(
     field: "displayName" | "groupName" | "note" | "callbackUrl",
     value: string,
   ) => {
-    updateBatchRow(rowId, (row) => {
+    updateBatchRow(rowId, (row: BatchOauthRow) => {
       if (row.busyAction || row.mailboxBusyAction || row.metadataBusy) {
         return row;
       }
@@ -355,7 +354,7 @@ export function useUpstreamAccountCreateBatchOauth(
     rowId: string,
     field: "displayName" | "note",
   ) => {
-    const row = batchRowsRef.current.find((item) => item.id === rowId);
+    const row = batchRowsRef.current.find((item: BatchOauthRow) => item.id === rowId);
     if (!row || !canEditCompletedBatchOauthRowMetadata(row)) return;
     if (field === "displayName") {
       void persistCompletedBatchRowMetadata(
@@ -379,11 +378,11 @@ export function useUpstreamAccountCreateBatchOauth(
   };
 
   const handleBatchGroupValueChange = (rowId: string, value: string) => {
-    const row = batchRowsRef.current.find((item) => item.id === rowId);
+    const row = batchRowsRef.current.find((item: BatchOauthRow) => item.id === rowId);
     if (!row) return;
     const normalizedValue = value.trim();
     const nextGroupName = normalizedValue || batchDefaultGroupName.trim();
-    updateBatchRow(rowId, (current) => {
+    updateBatchRow(rowId, (current: BatchOauthRow) => {
       if (
         current.busyAction ||
         current.mailboxBusyAction ||
@@ -408,13 +407,13 @@ export function useUpstreamAccountCreateBatchOauth(
   };
 
   const handleBatchMotherToggle = (rowId: string) => {
-    const row = batchRowsRef.current.find((item) => item.id === rowId);
+    const row = batchRowsRef.current.find((item: BatchOauthRow) => item.id === rowId);
     if (!row || row.busyAction || row.mailboxBusyAction || row.metadataBusy) {
       return;
     }
     const nextIsMother = !row.isMother;
     if (!canEditCompletedBatchOauthRowMetadata(row)) {
-      updateBatchRow(rowId, (current) => ({
+      updateBatchRow(rowId, (current: BatchOauthRow) => ({
         ...current,
         isMother: nextIsMother,
       }));
@@ -430,7 +429,7 @@ export function useUpstreamAccountCreateBatchOauth(
     const completedRowIdsToPersist: string[] = [];
 
     const nextRows = enforceBatchMotherDraftUniqueness(
-      batchRows.map((row) => {
+      batchRows.map((row: BatchOauthRow) => {
         if (row.busyAction || row.mailboxBusyAction || row.metadataBusy) {
           return row;
         }
@@ -487,9 +486,9 @@ export function useUpstreamAccountCreateBatchOauth(
     }
     previousBatchTagIdsRef.current = normalizedBatchTagIds;
     previousCompletedSharedTagBaselineRef.current = baselineSignature;
-    setBatchRows((current) => {
+    setBatchRows((current: BatchOauthRow[]) => {
       let changed = false;
-      const nextRows = current.map((row) => {
+      const nextRows = current.map((row: BatchOauthRow) => {
         if (!canEditCompletedBatchOauthRowMetadata(row)) return row;
         const persistedTagIds = resolveCompletedBatchOauthRowPersistedTagIds(
           row,
@@ -521,7 +520,7 @@ export function useUpstreamAccountCreateBatchOauth(
   }, [batchRows, batchTagIds, items]);
 
   useEffect(() => {
-    batchRows.forEach((row) => {
+    batchRows.forEach((row: BatchOauthRow) => {
       if (
         !canEditCompletedBatchOauthRowMetadata(row) ||
         row.metadataBusy ||

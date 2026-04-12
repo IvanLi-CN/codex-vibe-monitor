@@ -1,5 +1,4 @@
-/* eslint-disable @typescript-eslint/ban-ts-comment, react-hooks/exhaustive-deps */
-// @ts-nocheck
+/* eslint-disable react-hooks/exhaustive-deps */
 import { useCallback, useEffect } from "react";
 import type { ChangeEvent, ClipboardEvent } from "react";
 import {
@@ -16,6 +15,13 @@ import type {
   ImportedOauthValidationSnapshotEventPayload,
 } from "../../lib/api";
 import type { UpstreamAccountCreateControllerContext } from "./UpstreamAccountCreate.controller-context";
+import type { ImportedOauthValidationDialogState } from "../../components/ImportedOauthValidationDialog";
+type ImportOauthAccountResult = {
+  sourceId: string;
+  status: string;
+  detail?: string | null;
+};
+
 import {
   buildImportedOauthPendingState,
   buildImportedOauthStateFromRows,
@@ -133,7 +139,7 @@ export function useUpstreamAccountCreateImportedOauth(
           importError?: string | null;
         },
       ) => {
-        setImportValidationState((current) => {
+        setImportValidationState((current: ImportedOauthValidationDialogState | null) => {
           const baselineRows =
             current?.rows ?? buildImportedOauthPendingState(allItems).rows;
           const mergedRows = merge
@@ -151,7 +157,7 @@ export function useUpstreamAccountCreateImportedOauth(
             : mergeImportedOauthValidationRows(
                 baselineRows,
                 nextRows,
-                new Set(nextRows.map((row) => row.sourceId)),
+                new Set(nextRows.map((row: ImportedOauthValidationRow) => row.sourceId)),
               );
           return {
             ...buildImportedOauthStateFromRows(mergedRows, allItems),
@@ -170,7 +176,7 @@ export function useUpstreamAccountCreateImportedOauth(
             JSON.parse(message.data),
           );
           if (merge) {
-            setImportValidationState((current) => {
+            setImportValidationState((current: ImportedOauthValidationDialogState | null) => {
               const baselineRows =
                 current?.rows ?? buildImportedOauthPendingState(allItems).rows;
               return {
@@ -195,7 +201,7 @@ export function useUpstreamAccountCreateImportedOauth(
             importError: null,
           });
         } catch (err) {
-          setImportValidationState((current) =>
+          setImportValidationState((current: ImportedOauthValidationDialogState | null) =>
             current
               ? {
                   ...current,
@@ -217,7 +223,7 @@ export function useUpstreamAccountCreateImportedOauth(
           );
           updateRows([payload.row], { checking: true, importError: null });
         } catch (err) {
-          setImportValidationState((current) =>
+          setImportValidationState((current: ImportedOauthValidationDialogState | null) =>
             current
               ? {
                   ...current,
@@ -262,7 +268,7 @@ export function useUpstreamAccountCreateImportedOauth(
           finalizeValidation(payload, null);
         } catch (err) {
           closeImportValidationEventSource();
-          setImportValidationState((current) =>
+          setImportValidationState((current: ImportedOauthValidationDialogState | null) =>
             current
               ? {
                   ...current,
@@ -284,7 +290,7 @@ export function useUpstreamAccountCreateImportedOauth(
           );
           finalizeValidation(payload, payload.error);
         } catch (err) {
-          setImportValidationState((current) =>
+          setImportValidationState((current: ImportedOauthValidationDialogState | null) =>
             current
               ? {
                   ...current,
@@ -373,7 +379,7 @@ export function useUpstreamAccountCreateImportedOauth(
           groupBoundProxyKeys: importGroupProxyState.boundProxyKeys,
           groupNodeShuntEnabled: importGroupProxyState.nodeShuntEnabled,
         });
-        setImportValidationState((current) => {
+        setImportValidationState((current: ImportedOauthValidationDialogState | null) => {
           if (merge && current) {
             return {
               ...buildImportedOauthStateFromRows(
@@ -411,7 +417,7 @@ export function useUpstreamAccountCreateImportedOauth(
           retriedSourceIds,
         });
       } catch (err) {
-        setImportValidationState((current) => {
+        setImportValidationState((current: ImportedOauthValidationDialogState | null) => {
           const baseline = current ?? buildImportedOauthPendingState(allItems);
           const nextRows = merge
             ? markImportedOauthRowsAsError(
@@ -509,7 +515,7 @@ export function useUpstreamAccountCreateImportedOauth(
             return;
           }
           importFilesRevisionRef.current += 1;
-          setImportFiles((current) => [...current, item]);
+          setImportFiles((current: ImportOauthCredentialFilePayload[]) => [...current, item]);
           importPasteDraftRef.current = "";
           setImportPasteDraft("");
           setImportPasteDraftSerial(null);
@@ -604,8 +610,8 @@ export function useUpstreamAccountCreateImportedOauth(
           })),
         );
         importFilesRevisionRef.current += 1;
-        setImportFiles((current) => [...current, ...items]);
-        setImportInputKey((current) => current + 1);
+        setImportFiles((current: ImportOauthCredentialFilePayload[]) => [...current, ...items]);
+        setImportInputKey((current: number) => current + 1);
       } catch (err) {
         setActionError(err instanceof Error ? err.message : String(err));
       }
@@ -620,7 +626,7 @@ export function useUpstreamAccountCreateImportedOauth(
       await resetImportValidationForSelectionChange();
       importFilesRevisionRef.current += 1;
       setImportFiles([]);
-      setImportInputKey((current) => current + 1);
+      setImportInputKey((current: number) => current + 1);
     })();
   }, [resetImportValidationForSelectionChange]);
 
@@ -633,7 +639,7 @@ export function useUpstreamAccountCreateImportedOauth(
   const handleRetryImportedOauthOne = useCallback(
     async (sourceId: string) => {
       const item = importFiles.find(
-        (candidate) => candidate.sourceId === sourceId,
+        (candidate: ImportOauthCredentialFilePayload) => candidate.sourceId === sourceId,
       );
       if (!item) return;
       await runImportValidation([item], { merge: true });
@@ -644,12 +650,12 @@ export function useUpstreamAccountCreateImportedOauth(
   const handleRetryImportedOauthFailed = useCallback(async () => {
     const failedSourceIds = new Set(
       (importValidationState?.rows ?? [])
-        .filter((row) => row.status === "invalid" || row.status === "error")
-        .map((row) => row.sourceId),
+        .filter((row: ImportedOauthValidationRow) => row.status === "invalid" || row.status === "error")
+        .map((row: ImportedOauthValidationRow) => row.sourceId),
     );
     if (failedSourceIds.size === 0) return;
     await runImportValidation(
-      importFiles.filter((item) => failedSourceIds.has(item.sourceId)),
+      importFiles.filter((item: ImportOauthCredentialFilePayload) => failedSourceIds.has(item.sourceId)),
       { merge: true },
     );
   }, [importFiles, importValidationState?.rows, runImportValidation]);
@@ -690,7 +696,7 @@ export function useUpstreamAccountCreateImportedOauth(
   const handleImportValidatedOauth = useCallback(async () => {
     if (importGroupProxyState.error) {
       setActionError(importGroupProxyState.error);
-      setImportValidationState((current) =>
+      setImportValidationState((current: ImportedOauthValidationDialogState | null) =>
         current
           ? {
               ...current,
@@ -702,11 +708,11 @@ export function useUpstreamAccountCreateImportedOauth(
     }
     const currentRows = importValidationState?.rows ?? [];
     const validSourceIds = currentRows
-      .filter((row) => row.status === "ok" || row.status === "ok_exhausted")
-      .map((row) => row.sourceId);
+      .filter((row: ImportedOauthValidationRow) => row.status === "ok" || row.status === "ok_exhausted")
+      .map((row: ImportedOauthValidationRow) => row.sourceId);
     if (validSourceIds.length === 0) return;
     const validSourceIdSet = new Set(validSourceIds);
-    const selectedItems = importFiles.filter((item) =>
+    const selectedItems = importFiles.filter((item: ImportOauthCredentialFilePayload) =>
       validSourceIdSet.has(item.sourceId),
     );
     const batches = chunkImportedOauthItems(selectedItems);
@@ -727,7 +733,7 @@ export function useUpstreamAccountCreateImportedOauth(
     let importedAny = false;
     const batchErrors: string[] = [];
 
-    setImportValidationState((current) =>
+    setImportValidationState((current: ImportedOauthValidationDialogState | null) =>
       current
         ? {
             ...current,
@@ -753,16 +759,16 @@ export function useUpstreamAccountCreateImportedOauth(
         const importedSourceIds = new Set(
           response.results
             .filter(
-              (result) =>
+              (result: ImportOauthAccountResult) =>
                 result.status === "created" ||
                 result.status === "updated_existing",
             )
-            .map((result) => result.sourceId),
+            .map((result: ImportOauthAccountResult) => result.sourceId),
         );
-        const failedResultsBySourceId = new Map(
+        const failedResultsBySourceId = new Map<string, ImportOauthAccountResult>(
           response.results
-            .filter((result) => result.status === "failed")
-            .map((result) => [result.sourceId, result] as const),
+            .filter((result: ImportOauthAccountResult) => result.status === "failed")
+            .map((result: ImportOauthAccountResult) => [result.sourceId, result] as const),
         );
 
         if (importedSourceIds.size > 0) {
@@ -772,8 +778,8 @@ export function useUpstreamAccountCreateImportedOauth(
           (item) => !importedSourceIds.has(item.sourceId),
         );
         workingRows = workingRows
-          .filter((row) => !importedSourceIds.has(row.sourceId))
-          .map((row) => {
+          .filter((row: ImportedOauthValidationRow) => !importedSourceIds.has(row.sourceId))
+          .map((row: ImportedOauthValidationRow) => {
             const failedResult = failedResultsBySourceId.get(row.sourceId);
             if (!failedResult) return row;
             return {
@@ -823,7 +829,7 @@ export function useUpstreamAccountCreateImportedOauth(
       }
     }
     if (importedAny) {
-      setImportInputKey((current) => current + 1);
+      setImportInputKey((current: number) => current + 1);
     }
     setImportValidationState(() => {
       if (workingRows.length === 0) {

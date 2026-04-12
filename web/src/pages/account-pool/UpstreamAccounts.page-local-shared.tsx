@@ -1,17 +1,15 @@
-/* eslint-disable @typescript-eslint/ban-ts-comment, @typescript-eslint/no-unused-vars, react-refresh/only-export-components */
-// @ts-nocheck
+/* eslint-disable react-refresh/only-export-components */
 import {
   useCallback,
   useEffect,
   useId,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
-import { AppIcon, type AppIconName } from "../../components/AppIcon";
+import { AppIcon } from "../../components/AppIcon";
 import { AccountDetailDrawerShell } from "../../components/AccountDetailDrawerShell";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
@@ -40,7 +38,6 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "../../components/ui/popover";
-import { formFieldSpanVariants } from "../../components/ui/form-control";
 import { SelectField } from "../../components/ui/select-field";
 import {
   SegmentedControl,
@@ -53,15 +50,12 @@ import {
 import { Spinner } from "../../components/ui/spinner";
 import { Switch } from "../../components/ui/switch";
 import { AccountTagField } from "../../components/AccountTagField";
-import { AccountTagFilterCombobox } from "../../components/AccountTagFilterCombobox";
 import { EffectiveRoutingRuleCard } from "../../components/EffectiveRoutingRuleCard";
 import { InvocationTable } from "../../components/InvocationTable";
-import { MultiSelectFilterCombobox } from "../../components/MultiSelectFilterCombobox";
 import { UpstreamAccountGroupCombobox } from "../../components/UpstreamAccountGroupCombobox";
 import { UpstreamAccountGroupNoteDialog } from "../../components/UpstreamAccountGroupNoteDialog";
 import { UpstreamAccountUsageCard } from "../../components/UpstreamAccountUsageCard";
 import { StickyKeyConversationTable } from "../../components/StickyKeyConversationTable";
-import { UpstreamAccountsTable } from "../../components/UpstreamAccountsTable";
 import { usePoolTags } from "../../hooks/usePoolTags";
 import { useMotherSwitchNotifications } from "../../hooks/useMotherSwitchNotifications";
 import { useUpstreamAccountDetailRoute } from "../../hooks/useUpstreamAccountDetailRoute";
@@ -70,27 +64,12 @@ import { useGroupNoteCatalogAutoRefresh } from "./useGroupNoteCatalogAutoRefresh
 import { useUpstreamStickyConversations } from "../../hooks/useUpstreamStickyConversations";
 import type {
   ApiInvocation,
-  BulkUpstreamAccountActionPayload,
-  BulkUpstreamAccountSyncCounts,
-  BulkUpstreamAccountSyncRow,
-  BulkUpstreamAccountSyncSnapshot,
-  PoolRoutingMaintenanceSettings,
-  CompactSupportState,
-  FetchUpstreamAccountsQuery,
   StickyKeyConversationSelection,
-  PoolRoutingTimeoutSettings,
   UpstreamAccountDetail,
   UpstreamAccountDuplicateInfo,
   UpstreamAccountSummary,
 } from "../../lib/api";
-import { DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS } from "../../lib/api";
-import {
-  createBulkUpstreamAccountSyncJobEventSource,
-  fetchInvocationRecords,
-  normalizeBulkUpstreamAccountSyncFailedEventPayload,
-  normalizeBulkUpstreamAccountSyncRowEventPayload,
-  normalizeBulkUpstreamAccountSyncSnapshotEventPayload,
-} from "../../lib/api";
+import { fetchInvocationRecords } from "../../lib/api";
 import {
   buildGroupNameSuggestions,
   isExistingGroup,
@@ -109,32 +88,77 @@ import {
 } from "../../lib/upstreamAccountDrafts";
 import { resolvePersistedGroupNodeShuntEnabled } from "../../lib/upstreamAccountGroupDrafts";
 import { validateUpstreamBaseUrl } from "../../lib/upstreamBaseUrl";
-import { generatePoolRoutingKey } from "../../lib/poolRouting";
 import { applyMotherUpdateToItems } from "../../lib/upstreamMother";
 import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
 import { isUpstreamAccountNotFoundError } from "../../lib/upstreamAccountErrors";
 import { cn } from "../../lib/utils";
-import { useTranslation, type TranslationValues } from "../../i18n";
+import { useTranslation } from "../../i18n";
+import {
+  DEFAULT_ROUTING_TIMEOUTS,
+  type AccountBusyActionType,
+  type ActionErrorState,
+  type BusyActionState,
+  type GroupFilterState,
+  type RoutingDraft,
+  type UpstreamAccountsLocationState,
+} from "./UpstreamAccounts.shared-types";
+import {
+  UPSTREAM_ACCOUNTS_QUERY_STALE_GRACE_MS,
+} from "./UpstreamAccounts.shared-types";
+import {
+  formatGroupFilterValue,
+  parseGroupFilterValue,
+  persistUpstreamAccountFilters,
+  readPersistedUpstreamAccountFilters,
+} from "./UpstreamAccounts.filters";
+import {
+  bulkSyncRowStatusVariant,
+  resolveBulkSyncCounts,
+  shouldAutoHideBulkSyncProgress,
+  withBulkSyncSnapshotStatus,
+} from "./UpstreamAccounts.bulk-sync";
+import {
+  buildRoutingDraft,
+  parseRoutingPositiveInteger,
+  parseRoutingTimeoutValue,
+  resolveRoutingMaintenance,
+} from "./UpstreamAccounts.routing";
+import {
+  accountHealthStatus,
+  accountWorkStatus,
+  compactSupportHint,
+  compactSupportLabel,
+  poolCardMetric,
+} from "./UpstreamAccounts.status";
 
-type RoutingDraft = {
-  apiKey: string;
-  maskedApiKey: string | null;
-  primarySyncIntervalSecs: string;
-  secondarySyncIntervalSecs: string;
-  priorityAvailableAccountCap: string;
-  responsesFirstByteTimeoutSecs: string;
-  compactFirstByteTimeoutSecs: string;
-  responsesStreamTimeoutSecs: string;
-  compactStreamTimeoutSecs: string;
+export {
+  DEFAULT_ROUTING_TIMEOUTS,
+  UPSTREAM_ACCOUNTS_QUERY_STALE_GRACE_MS,
+  formatGroupFilterValue,
+  parseGroupFilterValue,
+  persistUpstreamAccountFilters,
+  readPersistedUpstreamAccountFilters,
+  bulkSyncRowStatusVariant,
+  resolveBulkSyncCounts,
+  shouldAutoHideBulkSyncProgress,
+  withBulkSyncSnapshotStatus,
+  buildRoutingDraft,
+  parseRoutingPositiveInteger,
+  parseRoutingTimeoutValue,
+  resolveRoutingMaintenance,
+  accountHealthStatus,
+  accountWorkStatus,
+  compactSupportHint,
+  compactSupportLabel,
+  poolCardMetric,
 };
-
-export const DEFAULT_ROUTING_TIMEOUTS: PoolRoutingTimeoutSettings = {
-  responsesFirstByteTimeoutSecs: 120,
-  compactFirstByteTimeoutSecs: 300,
-  responsesStreamTimeoutSecs: 300,
-  compactStreamTimeoutSecs: 300,
+export type {
+  ActionErrorState,
+  BusyActionState,
+  GroupFilterState,
+  RoutingDraft,
+  UpstreamAccountsLocationState,
 };
-const POSITIVE_INTEGER_PATTERN = /^[1-9]\d*$/;
 
 const ACCOUNT_RECORD_LIMIT_OPTIONS = [20, 50, 100] as const;
 const DEFAULT_STICKY_CONVERSATION_SELECTION_VALUE = "count:50";
@@ -206,52 +230,6 @@ const STICKY_CONVERSATION_SELECTION_LOOKUP = new Map<
   ]),
 );
 const GROUP_UPSTREAM_429_RETRY_OPTIONS = [1, 2, 3, 4, 5] as const;
-const UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY =
-  "codex-vibe-monitor.account-pool.upstream-accounts.filters";
-export const UPSTREAM_ACCOUNTS_QUERY_STALE_GRACE_MS = 600;
-const WORK_STATUS_FILTER_VALUES = [
-  "working",
-  "degraded",
-  "idle",
-  "rate_limited",
-  "unavailable",
-] as const;
-const ENABLE_STATUS_FILTER_VALUES = ["enabled", "disabled"] as const;
-const HEALTH_STATUS_FILTER_VALUES = [
-  "normal",
-  "needs_reauth",
-  "upstream_unavailable",
-  "upstream_rejected",
-  "error_other",
-] as const;
-
-type GroupFilterMode = "all" | "ungrouped" | "search";
-
-export type GroupFilterState = {
-  mode: GroupFilterMode;
-  query: string;
-};
-
-type PersistedUpstreamAccountsFilters = {
-  workStatus: string[];
-  enableStatus: string[];
-  healthStatus: string[];
-  tagIds: number[];
-  groupFilter: GroupFilterState;
-};
-
-export type UpstreamAccountsLocationState = {
-  selectedAccountId?: number;
-  openDetail?: boolean;
-  openDeleteConfirm?: boolean;
-  postCreateWarning?: string | null;
-  duplicateWarning?: {
-    accountId: number;
-    displayName: string;
-    peerAccountIds: number[];
-    reasons: string[];
-  } | null;
-};
 
 type GroupSettingsEditorState = {
   open: boolean;
@@ -268,18 +246,6 @@ type GroupSettingsEditorState = {
 type OauthRecoveryHint = {
   titleKey: string;
   bodyKey: string;
-};
-
-export type ActionErrorState = {
-  routing: string | null;
-  accountMessages: Record<number, string>;
-};
-
-type AccountBusyActionType = "save" | "sync" | "toggle" | "relogin" | "delete";
-
-export type BusyActionState = {
-  routing: boolean;
-  accountActions: Set<string>;
 };
 
 type AccountDetailTab =
@@ -316,160 +282,6 @@ type RecentSaveResponseGuard = {
   retainedDraft: AccountDraft;
 };
 
-const DEFAULT_GROUP_FILTER_STATE: GroupFilterState = {
-  mode: "all",
-  query: "",
-};
-
-const DEFAULT_PERSISTED_UPSTREAM_ACCOUNT_FILTERS: PersistedUpstreamAccountsFilters =
-  {
-    workStatus: [],
-    enableStatus: [],
-    healthStatus: [],
-    tagIds: [],
-    groupFilter: DEFAULT_GROUP_FILTER_STATE,
-  };
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function sanitizeFilterValues(
-  value: unknown,
-  allowedValues: readonly string[],
-) {
-  if (!Array.isArray(value)) return [];
-  const allowed = new Set(allowedValues);
-  const next: string[] = [];
-  for (const item of value) {
-    if (typeof item !== "string" || !allowed.has(item) || next.includes(item)) {
-      continue;
-    }
-    next.push(item);
-  }
-  return next;
-}
-
-function sanitizeTagIds(value: unknown) {
-  if (!Array.isArray(value)) return [];
-  const next: number[] = [];
-  for (const item of value) {
-    if (!Number.isInteger(item) || item <= 0 || next.includes(item)) {
-      continue;
-    }
-    next.push(item);
-  }
-  return next;
-}
-
-function sanitizeGroupFilterState(value: unknown): GroupFilterState {
-  if (!isPlainObject(value)) return DEFAULT_GROUP_FILTER_STATE;
-  const mode = value.mode;
-  if (mode === "ungrouped") {
-    return {
-      mode,
-      query: "",
-    };
-  }
-  if (mode === "search") {
-    const query = typeof value.query === "string" ? value.query.trim() : "";
-    if (query) {
-      return {
-        mode,
-        query,
-      };
-    }
-  }
-  return DEFAULT_GROUP_FILTER_STATE;
-}
-
-export function readPersistedUpstreamAccountFilters(): PersistedUpstreamAccountsFilters {
-  if (typeof window === "undefined") {
-    return DEFAULT_PERSISTED_UPSTREAM_ACCOUNT_FILTERS;
-  }
-  try {
-    const raw = window.localStorage.getItem(
-      UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY,
-    );
-    if (!raw) {
-      return DEFAULT_PERSISTED_UPSTREAM_ACCOUNT_FILTERS;
-    }
-    const parsed = JSON.parse(raw);
-    if (!isPlainObject(parsed)) {
-      return DEFAULT_PERSISTED_UPSTREAM_ACCOUNT_FILTERS;
-    }
-    return {
-      workStatus: sanitizeFilterValues(
-        parsed.workStatus,
-        WORK_STATUS_FILTER_VALUES,
-      ),
-      enableStatus: sanitizeFilterValues(
-        parsed.enableStatus,
-        ENABLE_STATUS_FILTER_VALUES,
-      ),
-      healthStatus: sanitizeFilterValues(
-        parsed.healthStatus,
-        HEALTH_STATUS_FILTER_VALUES,
-      ),
-      tagIds: sanitizeTagIds(parsed.tagIds),
-      groupFilter: sanitizeGroupFilterState(parsed.groupFilter),
-    };
-  } catch {
-    return DEFAULT_PERSISTED_UPSTREAM_ACCOUNT_FILTERS;
-  }
-}
-
-export function persistUpstreamAccountFilters(
-  value: PersistedUpstreamAccountsFilters,
-) {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(
-      UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY,
-      JSON.stringify(value),
-    );
-  } catch {
-    // Ignore storage write failures and keep the current UI state.
-  }
-}
-
-export function formatGroupFilterValue(
-  groupFilter: GroupFilterState,
-  labels: { ungrouped: string },
-) {
-  if (groupFilter.mode === "ungrouped") {
-    return labels.ungrouped;
-  }
-  if (groupFilter.mode === "search") {
-    return groupFilter.query;
-  }
-  return "";
-}
-
-export function parseGroupFilterValue(
-  value: string,
-  labels: { all: string; ungrouped: string },
-): GroupFilterState {
-  const normalized = value.trim();
-  if (!normalized) {
-    return DEFAULT_GROUP_FILTER_STATE;
-  }
-  const normalizedLower = normalized.toLocaleLowerCase();
-  if (normalizedLower === labels.all.trim().toLocaleLowerCase()) {
-    return DEFAULT_GROUP_FILTER_STATE;
-  }
-  if (normalizedLower === labels.ungrouped.trim().toLocaleLowerCase()) {
-    return {
-      mode: "ungrouped",
-      query: "",
-    };
-  }
-  return {
-    mode: "search",
-    query: normalized,
-  };
-}
-
 function createBusyActionKey(type: AccountBusyActionType, accountId: number) {
   return `${type}:${accountId}`;
 }
@@ -494,6 +306,31 @@ function hasBusyAccountAction(
     if (key.endsWith(suffix)) return true;
   }
   return false;
+}
+
+type AccountStatusSnapshot = Pick<
+  UpstreamAccountSummary,
+  | "status"
+  | "displayStatus"
+  | "enabled"
+  | "workStatus"
+  | "enableStatus"
+  | "healthStatus"
+  | "syncState"
+>;
+
+function accountEnableStatus(item?: AccountStatusSnapshot | null) {
+  if (item?.enableStatus) return item.enableStatus;
+  if (item?.enabled === false || item?.displayStatus === "disabled") {
+    return "disabled";
+  }
+  return "enabled";
+}
+
+function accountSyncState(item?: AccountStatusSnapshot | null) {
+  if (item?.syncState) return item.syncState;
+  const legacyStatus = item?.displayStatus ?? item?.status;
+  return legacyStatus === "syncing" ? "syncing" : "idle";
 }
 
 function formatDateTime(value?: string | null) {
@@ -568,16 +405,6 @@ function buildDraft(detail: UpstreamAccountDetail | null): AccountDraft {
   };
 }
 
-function filterAccountDraftTagIds(
-  draft: AccountDraft,
-  validTagIds: Set<number>,
-): AccountDraft {
-  const nextTagIds = draft.tagIds.filter((tagId) => validTagIds.has(tagId));
-  return nextTagIds.length === draft.tagIds.length
-    ? draft
-    : { ...draft, tagIds: nextTagIds };
-}
-
 function removeAccountDraftTagId(draft: AccountDraft, tagId: number) {
   return draft.tagIds.includes(tagId)
     ? { ...draft, tagIds: draft.tagIds.filter((value) => value !== tagId) }
@@ -592,106 +419,6 @@ function removeAccountDraftTagIds(
   return nextTagIds.length === draft.tagIds.length
     ? draft
     : { ...draft, tagIds: nextTagIds };
-}
-
-export function resolveRoutingMaintenance(
-  maintenance?: PoolRoutingMaintenanceSettings | null,
-): PoolRoutingMaintenanceSettings {
-  return {
-    primarySyncIntervalSecs:
-      maintenance?.primarySyncIntervalSecs ??
-      DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS.primarySyncIntervalSecs,
-    secondarySyncIntervalSecs:
-      maintenance?.secondarySyncIntervalSecs ??
-      DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS.secondarySyncIntervalSecs,
-    priorityAvailableAccountCap:
-      maintenance?.priorityAvailableAccountCap ??
-      DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS.priorityAvailableAccountCap,
-  };
-}
-
-export function buildRoutingDraft(
-  routing?: {
-    maskedApiKey?: string | null;
-    maintenance?: PoolRoutingMaintenanceSettings | null;
-    timeouts?: PoolRoutingTimeoutSettings | null;
-  } | null,
-): RoutingDraft {
-  const maintenance = resolveRoutingMaintenance(routing?.maintenance);
-  const timeouts = routing?.timeouts ?? DEFAULT_ROUTING_TIMEOUTS;
-  return {
-    apiKey: "",
-    maskedApiKey: routing?.maskedApiKey ?? null,
-    primarySyncIntervalSecs: String(maintenance.primarySyncIntervalSecs),
-    secondarySyncIntervalSecs: String(maintenance.secondarySyncIntervalSecs),
-    priorityAvailableAccountCap: String(
-      maintenance.priorityAvailableAccountCap,
-    ),
-    responsesFirstByteTimeoutSecs: String(
-      timeouts.responsesFirstByteTimeoutSecs,
-    ),
-    compactFirstByteTimeoutSecs: String(timeouts.compactFirstByteTimeoutSecs),
-    responsesStreamTimeoutSecs: String(timeouts.responsesStreamTimeoutSecs),
-    compactStreamTimeoutSecs: String(timeouts.compactStreamTimeoutSecs),
-  };
-}
-
-type AccountStatusSnapshot = Pick<
-  UpstreamAccountSummary,
-  | "status"
-  | "displayStatus"
-  | "enabled"
-  | "workStatus"
-  | "enableStatus"
-  | "healthStatus"
-  | "syncState"
->;
-
-function accountEnableStatus(item?: AccountStatusSnapshot | null) {
-  if (item?.enableStatus) return item.enableStatus;
-  if (item?.enabled === false || item?.displayStatus === "disabled")
-    return "disabled";
-  return "enabled";
-}
-
-export function accountWorkStatus(item?: AccountStatusSnapshot | null) {
-  if (!item) return "idle";
-  if (accountEnableStatus(item) !== "enabled") return "idle";
-  if (accountSyncState(item) === "syncing") return "idle";
-  if (item?.workStatus === "degraded") return "degraded";
-  if (item?.workStatus === "rate_limited") return "rate_limited";
-  if (accountHealthStatus(item) !== "normal") return "unavailable";
-  return item?.workStatus ?? "idle";
-}
-
-export function accountHealthStatus(item?: AccountStatusSnapshot | null) {
-  if (item?.healthStatus) return item.healthStatus;
-  const legacyStatus = item?.displayStatus ?? item?.status ?? "error_other";
-  if (
-    legacyStatus === "needs_reauth" ||
-    legacyStatus === "upstream_unavailable" ||
-    legacyStatus === "upstream_rejected" ||
-    legacyStatus === "error_other"
-  ) {
-    return legacyStatus;
-  }
-  if (legacyStatus === "error") {
-    return "error_other";
-  }
-  return "normal";
-}
-
-function accountSyncState(item?: AccountStatusSnapshot | null) {
-  if (item?.syncState) return item.syncState;
-  const legacyStatus = item?.displayStatus ?? item?.status;
-  return legacyStatus === "syncing" ? "syncing" : "idle";
-}
-
-export function parseRoutingPositiveInteger(value: string) {
-  const trimmed = value.trim();
-  if (!trimmed || !/^\d+$/.test(trimmed)) return null;
-  const parsed = Number(trimmed);
-  return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
 function enableStatusVariant(status: string): "success" | "secondary" {
@@ -723,72 +450,6 @@ function healthStatusVariant(
 
 function syncStateVariant(status: string): "warning" | "secondary" {
   return status === "syncing" ? "warning" : "secondary";
-}
-
-export function bulkSyncRowStatusVariant(
-  status: string,
-): "success" | "warning" | "error" | "secondary" {
-  if (status === "succeeded") return "success";
-  if (status === "pending") return "warning";
-  if (status === "failed") return "error";
-  return "secondary";
-}
-
-function computeBulkSyncCounts(
-  rows: BulkUpstreamAccountSyncRow[],
-): BulkUpstreamAccountSyncCounts {
-  return rows.reduce<BulkUpstreamAccountSyncCounts>(
-    (counts, row) => {
-      counts.total += 1;
-      if (row.status === "succeeded") {
-        counts.succeeded += 1;
-        counts.completed += 1;
-      } else if (row.status === "failed") {
-        counts.failed += 1;
-        counts.completed += 1;
-      } else if (row.status === "skipped") {
-        counts.skipped += 1;
-        counts.completed += 1;
-      }
-      return counts;
-    },
-    {
-      total: 0,
-      completed: 0,
-      succeeded: 0,
-      failed: 0,
-      skipped: 0,
-    },
-  );
-}
-
-export function resolveBulkSyncCounts(
-  snapshot: BulkUpstreamAccountSyncSnapshot,
-  counts?: BulkUpstreamAccountSyncCounts | null,
-) {
-  return counts ?? computeBulkSyncCounts(snapshot.rows);
-}
-
-export function withBulkSyncSnapshotStatus(
-  snapshot: BulkUpstreamAccountSyncSnapshot,
-  status: BulkUpstreamAccountSyncSnapshot["status"],
-) {
-  if (snapshot.status === status) return snapshot;
-  return {
-    ...snapshot,
-    status,
-  };
-}
-
-export function shouldAutoHideBulkSyncProgress(
-  snapshot: BulkUpstreamAccountSyncSnapshot,
-  counts: BulkUpstreamAccountSyncCounts,
-) {
-  return (
-    snapshot.status === "completed" &&
-    counts.failed === 0 &&
-    counts.skipped === 0
-  );
 }
 
 function kindVariant(kind: string): "secondary" | "success" {
@@ -831,59 +492,6 @@ function resolveOauthRecoveryHint(
     };
   }
   return null;
-}
-
-export function compactSupportLabel(
-  support: CompactSupportState | null | undefined,
-  t: (key: string) => string,
-) {
-  if (!support || support.status !== "unsupported") return null;
-  return t("accountPool.upstreamAccounts.compactSupport.unsupportedBadge");
-}
-
-export function compactSupportHint(
-  support: CompactSupportState | null | undefined,
-  t: (key: string, values?: TranslationValues) => string,
-) {
-  if (!support || support.status === "unknown") return null;
-  const statusLabel =
-    support.status === "unsupported"
-      ? t("accountPool.upstreamAccounts.compactSupport.status.unsupported")
-      : t("accountPool.upstreamAccounts.compactSupport.status.supported");
-  const observedAt = support.observedAt
-    ? formatDateTime(support.observedAt)
-    : t("accountPool.upstreamAccounts.unavailable");
-  if (support.reason) {
-    return `${statusLabel} · ${observedAt} · ${support.reason}`;
-  }
-  return `${statusLabel} · ${observedAt}`;
-}
-
-export function parseRoutingTimeoutValue(
-  raw: string,
-  label: string,
-): { ok: true; value: number } | { ok: false; error: string } {
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    return { ok: false, error: `${label} is required.` };
-  }
-  if (!POSITIVE_INTEGER_PATTERN.test(trimmed)) {
-    return { ok: false, error: `${label} must be a positive integer.` };
-  }
-  const parsed = Number(trimmed);
-  if (!Number.isSafeInteger(parsed)) {
-    return { ok: false, error: `${label} must be a positive integer.` };
-  }
-  return { ok: true, value: parsed };
-}
-
-export function poolCardMetric(
-  value: number | string,
-  label: string,
-  icon: AppIconName,
-  accent: string,
-) {
-  return { value, label, icon, accent };
 }
 
 function AccountDetailSkeleton() {
@@ -1400,7 +1008,9 @@ export function SharedUpstreamAccountDetailDrawer({
     draftSessionKeyRef.current = activeDraftSessionKey;
 
     const recentSaveResponseGuard =
-      recentSaveResponseGuardsRef.current.get(accountId) ?? null;
+      accountId == null
+        ? null
+        : (recentSaveResponseGuardsRef.current.get(accountId) ?? null);
     const retainedServerDraft =
       recentSaveResponseGuard?.retainedDraft ?? previousLatestServerDraft;
     const hasAcceptedFresherServerDraft =
@@ -2485,8 +2095,6 @@ export function SharedUpstreamAccountDetailDrawer({
           selectedIdRef.current === source.id &&
           activeDraftSessionKeyRef.current != null
         ) {
-          const previousRecentSaveResponseGuard =
-            recentSaveResponseGuardsRef.current.get(source.id) ?? null;
           const recentSaveResponseGuard = {
             accountId: source.id,
             sessionKey: saveDraftSessionKey,

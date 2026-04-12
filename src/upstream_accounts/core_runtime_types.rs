@@ -1,5 +1,4 @@
 use crate::oauth_bridge::oauth_codex_upstream_base_url;
-use crate::*;
 use aes_gcm::{
     Aes256Gcm,
     aead::{Aead, KeyInit},
@@ -1001,7 +1000,7 @@ pub(crate) struct UpstreamAccountGroupSummary {
 }
 
 #[derive(Debug, Clone, Default)]
-struct UpstreamAccountGroupMetadata {
+pub(crate) struct UpstreamAccountGroupMetadata {
     note: Option<String>,
     bound_proxy_keys: Vec<String>,
     node_shunt_enabled: bool,
@@ -1011,7 +1010,7 @@ struct UpstreamAccountGroupMetadata {
 }
 
 #[derive(Debug, Clone, Default)]
-struct RequestedGroupMetadataChanges {
+pub(crate) struct RequestedGroupMetadataChanges {
     note: Option<String>,
     note_was_requested: bool,
     bound_proxy_keys: Vec<String>,
@@ -1648,7 +1647,7 @@ pub(crate) struct ImportedOauthValidationFailedEvent {
 }
 
 #[derive(Debug, Clone)]
-enum ImportedOauthValidationTerminalEvent {
+pub(crate) enum ImportedOauthValidationTerminalEvent {
     Completed(ImportedOauthValidationSnapshotEvent),
     Failed(ImportedOauthValidationFailedEvent),
     Cancelled(ImportedOauthValidationSnapshotEvent),
@@ -1663,7 +1662,7 @@ enum ImportedOauthValidationJobEvent {
 }
 
 #[derive(Debug)]
-struct ImportedOauthValidationJob {
+pub(crate) struct ImportedOauthValidationJob {
     target_group_name: String,
     target_bound_proxy_keys: Vec<String>,
     target_node_shunt_enabled: bool,
@@ -1787,7 +1786,7 @@ pub(crate) struct BulkUpstreamAccountSyncFailedEvent {
 }
 
 #[derive(Debug, Clone)]
-enum BulkUpstreamAccountSyncTerminalEvent {
+pub(crate) enum BulkUpstreamAccountSyncTerminalEvent {
     Completed(BulkUpstreamAccountSyncSnapshotEvent),
     Failed(BulkUpstreamAccountSyncFailedEvent),
     Cancelled(BulkUpstreamAccountSyncSnapshotEvent),
@@ -1802,7 +1801,7 @@ enum BulkUpstreamAccountSyncJobEvent {
 }
 
 #[derive(Debug)]
-struct BulkUpstreamAccountSyncJob {
+pub(crate) struct BulkUpstreamAccountSyncJob {
     snapshot: Mutex<BulkUpstreamAccountSyncSnapshot>,
     broadcaster: broadcast::Sender<BulkUpstreamAccountSyncJobEvent>,
     cancel: CancellationToken,
@@ -2027,7 +2026,7 @@ struct ImportedOauthCredentialsFile {
 }
 
 #[derive(Debug, Clone)]
-struct NormalizedImportedOauthCredentials {
+pub(crate) struct NormalizedImportedOauthCredentials {
     source_id: String,
     file_name: String,
     email: String,
@@ -2039,7 +2038,7 @@ struct NormalizedImportedOauthCredentials {
 }
 
 #[derive(Debug, Clone)]
-struct ImportedOauthProbeOutcome {
+pub(crate) struct ImportedOauthProbeOutcome {
     token_expires_at: String,
     credentials: StoredOauthCredentials,
     claims: ChatgptJwtClaims,
@@ -2049,12 +2048,12 @@ struct ImportedOauthProbeOutcome {
 }
 
 #[derive(Debug, Clone)]
-struct ImportedOauthValidatedImportData {
+pub(crate) struct ImportedOauthValidatedImportData {
     normalized: NormalizedImportedOauthCredentials,
     probe: ImportedOauthProbeOutcome,
 }
 
-struct PersistOauthCallbackInput {
+pub(crate) struct PersistOauthCallbackInput {
     session: OauthLoginSessionRow,
     display_name: String,
     claims: ChatgptJwtClaims,

@@ -1,4 +1,4 @@
-fn upstream_account_name_from_payload(payload: Option<&str>) -> Option<String> {
+pub(crate) fn upstream_account_name_from_payload(payload: Option<&str>) -> Option<String> {
     let payload = payload?;
     let value = serde_json::from_str::<Value>(payload).ok()?;
     value
@@ -9,7 +9,7 @@ fn upstream_account_name_from_payload(payload: Option<&str>) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn prompt_cache_key_from_payload(payload: Option<&str>) -> Option<String> {
+pub(crate) fn prompt_cache_key_from_payload(payload: Option<&str>) -> Option<String> {
     let payload = payload?;
     let value = serde_json::from_str::<Value>(payload).ok()?;
     value
@@ -20,7 +20,7 @@ fn prompt_cache_key_from_payload(payload: Option<&str>) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn sticky_key_from_payload(payload: Option<&str>) -> Option<String> {
+pub(crate) fn sticky_key_from_payload(payload: Option<&str>) -> Option<String> {
     let payload = payload?;
     let value = serde_json::from_str::<Value>(payload).ok()?;
     value
@@ -32,11 +32,11 @@ fn sticky_key_from_payload(payload: Option<&str>) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn shanghai_now_string() -> String {
+pub(crate) fn shanghai_now_string() -> String {
     format_naive(Utc::now().with_timezone(&Shanghai).naive_local())
 }
 
-fn terminal_pool_upstream_request_attempt_phase(status: &str) -> &'static str {
+pub(crate) fn terminal_pool_upstream_request_attempt_phase(status: &str) -> &'static str {
     if status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS {
         POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED
     } else {
@@ -44,7 +44,7 @@ fn terminal_pool_upstream_request_attempt_phase(status: &str) -> &'static str {
     }
 }
 
-async fn insert_pool_upstream_request_attempt(
+pub(crate) async fn insert_pool_upstream_request_attempt(
     pool: &Pool<Sqlite>,
     trace: &PoolUpstreamAttemptTraceContext,
     upstream_account_id: Option<i64>,
@@ -134,7 +134,7 @@ async fn insert_pool_upstream_request_attempt(
     Ok(result.last_insert_rowid())
 }
 
-async fn begin_pool_upstream_request_attempt(
+pub(crate) async fn begin_pool_upstream_request_attempt(
     pool: &Pool<Sqlite>,
     trace: &PoolUpstreamAttemptTraceContext,
     upstream_account_id: i64,
@@ -201,7 +201,7 @@ async fn begin_pool_upstream_request_attempt(
     }
 }
 
-async fn update_pool_upstream_request_attempt_phase(
+pub(crate) async fn update_pool_upstream_request_attempt_phase(
     pool: &Pool<Sqlite>,
     pending: &PendingPoolAttemptRecord,
     phase: &str,
@@ -229,7 +229,7 @@ async fn update_pool_upstream_request_attempt_phase(
     Ok(result.rows_affected() > 0)
 }
 
-async fn persist_pool_upstream_request_attempt_first_byte_progress(
+pub(crate) async fn persist_pool_upstream_request_attempt_first_byte_progress(
     pool: &Pool<Sqlite>,
     pending: &PendingPoolAttemptRecord,
     connect_latency_ms: f64,
@@ -263,7 +263,7 @@ async fn persist_pool_upstream_request_attempt_first_byte_progress(
     Ok(result.rows_affected() > 0)
 }
 
-async fn advance_pool_upstream_request_attempt_phase(
+pub(crate) async fn advance_pool_upstream_request_attempt_phase(
     state: &AppState,
     pending: &PendingPoolAttemptRecord,
     phase: &str,
@@ -275,7 +275,7 @@ async fn advance_pool_upstream_request_attempt_phase(
     broadcast_pool_upstream_attempts_snapshot(state, &pending.invoke_id).await
 }
 
-enum PoolAttemptRecoveryScope<'a> {
+pub(crate) enum PoolAttemptRecoveryScope<'a> {
     AllPending,
     SpecificEarlyPhase { attempt_id: i64 },
     StaleEarlyPhase {
@@ -285,7 +285,7 @@ enum PoolAttemptRecoveryScope<'a> {
     },
 }
 
-async fn recover_pool_upstream_request_attempts_with_scope(
+pub(crate) async fn recover_pool_upstream_request_attempts_with_scope(
     pool: &Pool<Sqlite>,
     scope: PoolAttemptRecoveryScope<'_>,
 ) -> Result<Vec<RecoveredPoolAttemptRow>> {
@@ -295,7 +295,7 @@ async fn recover_pool_upstream_request_attempts_with_scope(
     Ok(recovered)
 }
 
-async fn recover_pool_upstream_request_attempts_with_scope_tx(
+pub(crate) async fn recover_pool_upstream_request_attempts_with_scope_tx(
     tx: &mut SqliteConnection,
     scope: PoolAttemptRecoveryScope<'_>,
 ) -> Result<Vec<RecoveredPoolAttemptRow>> {
@@ -384,7 +384,7 @@ async fn recover_pool_upstream_request_attempts_with_scope_tx(
     Ok(recovered)
 }
 
-async fn load_stale_pool_upstream_request_attempt_candidate_rows_tx(
+pub(crate) async fn load_stale_pool_upstream_request_attempt_candidate_rows_tx(
     tx: &mut SqliteConnection,
     responses_started_before: &str,
     compact_started_before: &str,
@@ -433,7 +433,7 @@ async fn load_stale_pool_upstream_request_attempt_candidate_rows_tx(
     .map_err(Into::into)
 }
 
-async fn recover_stale_pool_upstream_request_attempt_candidates_tx(
+pub(crate) async fn recover_stale_pool_upstream_request_attempt_candidates_tx(
     tx: &mut SqliteConnection,
     candidate_ids: &[i64],
     finished_at: &str,
@@ -547,7 +547,7 @@ async fn recover_stale_pool_upstream_request_attempt_candidates_tx(
 }
 
 #[cfg(test)]
-async fn recover_stale_pool_upstream_request_attempt_candidates(
+pub(crate) async fn recover_stale_pool_upstream_request_attempt_candidates(
     pool: &Pool<Sqlite>,
     candidate_ids: &[i64],
     finished_at: &str,
@@ -569,7 +569,7 @@ async fn recover_stale_pool_upstream_request_attempt_candidates(
     Ok(recovered)
 }
 
-async fn recover_orphaned_pool_upstream_request_attempts(pool: &Pool<Sqlite>) -> Result<u64> {
+pub(crate) async fn recover_orphaned_pool_upstream_request_attempts(pool: &Pool<Sqlite>) -> Result<u64> {
     Ok(
         recover_pool_upstream_request_attempts_with_scope(pool, PoolAttemptRecoveryScope::AllPending)
             .await?
@@ -577,12 +577,12 @@ async fn recover_orphaned_pool_upstream_request_attempts(pool: &Pool<Sqlite>) ->
     )
 }
 
-enum ProxyInvocationRecoveryScope<'a> {
+pub(crate) enum ProxyInvocationRecoveryScope<'a> {
     AllInFlight,
     Selectors(&'a [InvocationRecoverySelector]),
 }
 
-async fn recover_proxy_invocations_with_scope(
+pub(crate) async fn recover_proxy_invocations_with_scope(
     pool: &Pool<Sqlite>,
     scope: ProxyInvocationRecoveryScope<'_>,
 ) -> Result<Vec<RecoveredInvocationRow>> {
@@ -592,7 +592,7 @@ async fn recover_proxy_invocations_with_scope(
     Ok(rows)
 }
 
-async fn recover_proxy_invocations_with_scope_tx(
+pub(crate) async fn recover_proxy_invocations_with_scope_tx(
     tx: &mut SqliteConnection,
     scope: ProxyInvocationRecoveryScope<'_>,
 ) -> Result<Vec<RecoveredInvocationRow>> {
@@ -711,7 +711,7 @@ async fn recover_proxy_invocations_with_scope_tx(
     Ok(rows)
 }
 
-async fn recover_orphaned_proxy_invocations(pool: &Pool<Sqlite>) -> Result<u64> {
+pub(crate) async fn recover_orphaned_proxy_invocations(pool: &Pool<Sqlite>) -> Result<u64> {
     Ok(
         recover_proxy_invocations_with_scope(pool, ProxyInvocationRecoveryScope::AllInFlight)
             .await?
@@ -719,14 +719,14 @@ async fn recover_orphaned_proxy_invocations(pool: &Pool<Sqlite>) -> Result<u64> 
     )
 }
 
-fn stale_started_before_string(timeout: Duration, grace: Duration) -> String {
+pub(crate) fn stale_started_before_string(timeout: Duration, grace: Duration) -> String {
     let cutoff = Utc::now().with_timezone(&Shanghai).naive_local()
         - ChronoDuration::from_std(timeout + grace)
             .expect("pool orphan recovery cutoff should fit chrono duration");
     format_naive(cutoff)
 }
 
-async fn load_persisted_api_invocation(
+pub(crate) async fn load_persisted_api_invocation(
     pool: &Pool<Sqlite>,
     invoke_id: &str,
     occurred_at: &str,
@@ -737,7 +737,7 @@ async fn load_persisted_api_invocation(
     Ok(invocation)
 }
 
-async fn broadcast_recovered_proxy_invocations(
+pub(crate) async fn broadcast_recovered_proxy_invocations(
     state: &AppState,
     recovered: &[RecoveredInvocationRow],
 ) -> Result<()> {
@@ -803,7 +803,7 @@ async fn broadcast_recovered_proxy_invocations(
     Ok(())
 }
 
-fn pool_routing_reservation_key_for_invoke_id(invoke_id: &str) -> Option<String> {
+pub(crate) fn pool_routing_reservation_key_for_invoke_id(invoke_id: &str) -> Option<String> {
     let request_id = invoke_id.strip_prefix("proxy-")?.split('-').next()?;
     request_id
         .parse::<u64>()
@@ -811,13 +811,13 @@ fn pool_routing_reservation_key_for_invoke_id(invoke_id: &str) -> Option<String>
         .map(build_pool_routing_reservation_key)
 }
 
-fn pool_route_orphan_recovery_failure_message(recovery_trigger: &str) -> String {
+pub(crate) fn pool_route_orphan_recovery_failure_message(recovery_trigger: &str) -> String {
     format!(
         "pool request was interrupted before completion and recovered via {recovery_trigger}"
     )
 }
 
-async fn clean_up_pool_route_after_orphan_recovery(
+pub(crate) async fn clean_up_pool_route_after_orphan_recovery(
     state: &AppState,
     invoke_id: &str,
     sticky_key: Option<&str>,
@@ -856,7 +856,7 @@ async fn clean_up_pool_route_after_orphan_recovery(
     }
 }
 
-async fn clean_up_recovered_pool_routes(
+pub(crate) async fn clean_up_recovered_pool_routes(
     state: &AppState,
     recovered_attempts: &[RecoveredPoolAttemptRow],
     recovered_invocations: &[RecoveredInvocationRow],
@@ -881,7 +881,7 @@ async fn clean_up_recovered_pool_routes(
     }
 }
 
-async fn recover_guard_dropped_pool_early_phase_orphan(
+pub(crate) async fn recover_guard_dropped_pool_early_phase_orphan(
     state: &AppState,
     pending_attempt_record: PendingPoolAttemptRecord,
     first_byte_observed: bool,
@@ -972,7 +972,7 @@ async fn recover_guard_dropped_pool_early_phase_orphan(
     Ok(())
 }
 
-async fn recover_guard_dropped_pool_invocation_orphan(
+pub(crate) async fn recover_guard_dropped_pool_invocation_orphan(
     state: &AppState,
     selector: InvocationRecoverySelector,
     recovery_trigger: &'static str,
@@ -998,7 +998,7 @@ async fn recover_guard_dropped_pool_invocation_orphan(
     broadcast_recovered_proxy_invocations(state, &recovered_invocations).await
 }
 
-async fn recover_guard_dropped_pool_terminal_invocation_orphan(
+pub(crate) async fn recover_guard_dropped_pool_terminal_invocation_orphan(
     state: &AppState,
     selector: InvocationRecoverySelector,
 ) -> Result<()> {
@@ -1107,7 +1107,7 @@ pub(crate) async fn recover_stale_pool_early_phase_orphans_runtime(
     Ok(outcome)
 }
 
-async fn broadcast_pool_upstream_attempts_snapshot(
+pub(crate) async fn broadcast_pool_upstream_attempts_snapshot(
     state: &AppState,
     invoke_id: &str,
 ) -> Result<()> {
@@ -1128,7 +1128,7 @@ async fn broadcast_pool_upstream_attempts_snapshot(
     Ok(())
 }
 
-async fn broadcast_pool_attempt_started_runtime_snapshot(
+pub(crate) async fn broadcast_pool_attempt_started_runtime_snapshot(
     state: &AppState,
     trace: &PoolUpstreamAttemptTraceContext,
     runtime_snapshot: &PoolAttemptRuntimeSnapshotContext,
@@ -1177,7 +1177,7 @@ async fn broadcast_pool_attempt_started_runtime_snapshot(
     }
 }
 
-async fn finalize_pool_upstream_request_attempt(
+pub(crate) async fn finalize_pool_upstream_request_attempt(
     pool: &Pool<Sqlite>,
     pending: &PendingPoolAttemptRecord,
     finished_at: &str,
@@ -1279,7 +1279,7 @@ async fn finalize_pool_upstream_request_attempt(
     .map(|_| ())
 }
 
-async fn insert_pool_upstream_terminal_attempt(
+pub(crate) async fn insert_pool_upstream_terminal_attempt(
     pool: &Pool<Sqlite>,
     trace: &PoolUpstreamAttemptTraceContext,
     final_error: &PoolUpstreamError,
@@ -1332,7 +1332,7 @@ async fn insert_pool_upstream_terminal_attempt(
     .map(|_| ())
 }
 
-async fn insert_and_broadcast_pool_upstream_terminal_attempt(
+pub(crate) async fn insert_and_broadcast_pool_upstream_terminal_attempt(
     state: &AppState,
     trace: &PoolUpstreamAttemptTraceContext,
     final_error: &PoolUpstreamError,
@@ -1353,7 +1353,7 @@ async fn insert_and_broadcast_pool_upstream_terminal_attempt(
     Ok(())
 }
 
-fn prompt_cache_upstream_account_rollup_key(
+pub(crate) fn prompt_cache_upstream_account_rollup_key(
     upstream_account_id: Option<i64>,
     upstream_account_name: Option<&str>,
 ) -> String {
@@ -1368,7 +1368,7 @@ fn prompt_cache_upstream_account_rollup_key(
     }
 }
 
-async fn load_hourly_rollup_live_progress(pool: &Pool<Sqlite>, dataset: &str) -> Result<i64> {
+pub(crate) async fn load_hourly_rollup_live_progress(pool: &Pool<Sqlite>, dataset: &str) -> Result<i64> {
     Ok(sqlx::query_scalar::<_, i64>(
         "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
     )
@@ -1378,7 +1378,7 @@ async fn load_hourly_rollup_live_progress(pool: &Pool<Sqlite>, dataset: &str) ->
     .unwrap_or(0))
 }
 
-async fn load_hourly_rollup_live_progress_tx(
+pub(crate) async fn load_hourly_rollup_live_progress_tx(
     tx: &mut SqliteConnection,
     dataset: &str,
 ) -> Result<i64> {
@@ -1391,7 +1391,7 @@ async fn load_hourly_rollup_live_progress_tx(
     .unwrap_or(0))
 }
 
-async fn save_hourly_rollup_live_progress_tx(
+pub(crate) async fn save_hourly_rollup_live_progress_tx(
     tx: &mut SqliteConnection,
     dataset: &str,
     cursor_id: i64,
@@ -1412,7 +1412,7 @@ async fn save_hourly_rollup_live_progress_tx(
     Ok(())
 }
 
-async fn mark_hourly_rollup_archive_replayed_tx(
+pub(crate) async fn mark_hourly_rollup_archive_replayed_tx(
     tx: &mut SqliteConnection,
     target: &str,
     dataset: &str,
@@ -1437,7 +1437,7 @@ async fn mark_hourly_rollup_archive_replayed_tx(
     Ok(())
 }
 
-async fn hourly_rollup_archive_replayed_tx(
+pub(crate) async fn hourly_rollup_archive_replayed_tx(
     tx: &mut SqliteConnection,
     target: &str,
     dataset: &str,
@@ -1456,11 +1456,11 @@ async fn hourly_rollup_archive_replayed_tx(
     )
 }
 
-fn normalized_oauth_account_id(value: Option<&str>) -> Option<&str> {
+pub(crate) fn normalized_oauth_account_id(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
 
-fn looks_like_uuid_shape(value: &str) -> bool {
+pub(crate) fn looks_like_uuid_shape(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.len() != 36 {
         return false;
@@ -1478,7 +1478,7 @@ fn looks_like_uuid_shape(value: &str) -> bool {
     true
 }
 
-fn oauth_account_id_shape(value: Option<&str>) -> &'static str {
+pub(crate) fn oauth_account_id_shape(value: Option<&str>) -> &'static str {
     match normalized_oauth_account_id(value) {
         None => "empty",
         Some(value) if value.starts_with("org_") => "org",
@@ -1487,7 +1487,7 @@ fn oauth_account_id_shape(value: Option<&str>) -> &'static str {
     }
 }
 
-fn oauth_account_header_attached_for_account(
+pub(crate) fn oauth_account_header_attached_for_account(
     account: Option<&PoolResolvedAccount>,
 ) -> Option<bool> {
     let PoolResolvedAuth::Oauth {
@@ -1500,7 +1500,7 @@ fn oauth_account_header_attached_for_account(
     Some(normalized_oauth_account_id(chatgpt_account_id.as_deref()).is_some())
 }
 
-fn oauth_account_id_shape_for_account(
+pub(crate) fn oauth_account_id_shape_for_account(
     account: Option<&PoolResolvedAccount>,
 ) -> Option<&'static str> {
     let PoolResolvedAuth::Oauth {
@@ -1513,7 +1513,7 @@ fn oauth_account_id_shape_for_account(
     Some(oauth_account_id_shape(chatgpt_account_id.as_deref()))
 }
 
-struct ProxyPayloadSummary<'a> {
+pub(crate) struct ProxyPayloadSummary<'a> {
     target: ProxyCaptureTarget,
     status: StatusCode,
     is_stream: bool,
@@ -1561,7 +1561,7 @@ struct ProxyPayloadSummary<'a> {
     pool_attempt_terminal_reason: Option<&'a str>,
 }
 
-fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
+pub(crate) fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
     let ProxyPayloadSummary {
         target,
         status,
@@ -1659,7 +1659,7 @@ fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
     serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string())
 }
 
-fn invocation_status_is_in_flight(status: Option<&str>) -> bool {
+pub(crate) fn invocation_status_is_in_flight(status: Option<&str>) -> bool {
     matches!(
         status
             .unwrap_or_default()
@@ -1670,7 +1670,7 @@ fn invocation_status_is_in_flight(status: Option<&str>) -> bool {
     )
 }
 
-fn invocation_status_is_recoverable_proxy_interrupted(
+pub(crate) fn invocation_status_is_recoverable_proxy_interrupted(
     status: Option<&str>,
     failure_kind: Option<&str>,
 ) -> bool {
@@ -1684,18 +1684,18 @@ fn invocation_status_is_recoverable_proxy_interrupted(
             .eq_ignore_ascii_case(PROXY_FAILURE_INVOCATION_INTERRUPTED)
 }
 
-fn nullable_runtime_timing_value(value: f64) -> Option<f64> {
+pub(crate) fn nullable_runtime_timing_value(value: f64) -> Option<f64> {
     (value.is_finite() && value > 0.0).then_some(value)
 }
 
 #[derive(Debug, FromRow)]
-struct PersistedInvocationIdentityRow {
-    id: i64,
-    status: Option<String>,
-    failure_kind: Option<String>,
+pub(crate) struct PersistedInvocationIdentityRow {
+    pub(crate) id: i64,
+    pub(crate) status: Option<String>,
+    pub(crate) failure_kind: Option<String>,
 }
 
-async fn load_persisted_invocation_identity_tx(
+pub(crate) async fn load_persisted_invocation_identity_tx(
     tx: &mut SqliteConnection,
     invoke_id: &str,
     occurred_at: &str,
@@ -1716,7 +1716,7 @@ async fn load_persisted_invocation_identity_tx(
     .map_err(Into::into)
 }
 
-async fn load_persisted_api_invocation_tx(
+pub(crate) async fn load_persisted_api_invocation_tx(
     tx: &mut SqliteConnection,
     invoke_id: &str,
     occurred_at: &str,
@@ -1820,7 +1820,7 @@ async fn load_persisted_api_invocation_tx(
     .map_err(Into::into)
 }
 
-async fn touch_invocation_upstream_account_last_activity_tx(
+pub(crate) async fn touch_invocation_upstream_account_last_activity_tx(
     tx: &mut SqliteConnection,
     occurred_at: &str,
     payload: Option<&str>,
@@ -1845,7 +1845,7 @@ async fn touch_invocation_upstream_account_last_activity_tx(
     Ok(())
 }
 
-async fn persist_and_broadcast_proxy_capture_runtime_snapshot(
+pub(crate) async fn persist_and_broadcast_proxy_capture_runtime_snapshot(
     state: &AppState,
     record: ProxyCaptureRecord,
 ) -> Result<()> {
@@ -1880,7 +1880,7 @@ async fn persist_and_broadcast_proxy_capture_runtime_snapshot(
     Ok(())
 }
 
-async fn persist_proxy_capture_runtime_record(
+pub(crate) async fn persist_proxy_capture_runtime_record(
     pool: &Pool<Sqlite>,
     record: ProxyCaptureRecord,
 ) -> Result<Option<ApiInvocation>> {
@@ -2162,7 +2162,7 @@ async fn persist_proxy_capture_runtime_record(
     Ok(Some(persisted))
 }
 
-fn build_running_proxy_capture_record(
+pub(crate) fn build_running_proxy_capture_record(
     invoke_id: &str,
     occurred_at: &str,
     target: ProxyCaptureTarget,
@@ -2267,13 +2267,13 @@ fn build_running_proxy_capture_record(
     }
 }
 
-fn resolve_invocation_proxy_display_name(
+pub(crate) fn resolve_invocation_proxy_display_name(
     selected_proxy: Option<&SelectedForwardProxy>,
 ) -> Option<String> {
     selected_proxy.map(|proxy| proxy.display_name.clone())
 }
 
-fn summarize_response_content_encoding(content_encoding: Option<&str>) -> String {
+pub(crate) fn summarize_response_content_encoding(content_encoding: Option<&str>) -> String {
     let encodings = parse_content_encodings(content_encoding);
     if encodings.is_empty() {
         "identity".to_string()
@@ -2283,7 +2283,7 @@ fn summarize_response_content_encoding(content_encoding: Option<&str>) -> String
 }
 
 #[derive(Default)]
-struct RawResponsePreviewBuffer {
+pub(crate) struct RawResponsePreviewBuffer {
     bytes: Vec<u8>,
 }
 
@@ -2306,7 +2306,7 @@ impl RawResponsePreviewBuffer {
     }
 }
 
-struct BoundedResponseParseBuffer {
+pub(crate) struct BoundedResponseParseBuffer {
     bytes: Vec<u8>,
     limit: usize,
     exceeded_limit: bool,
@@ -2353,7 +2353,7 @@ impl BoundedResponseParseBuffer {
     }
 }
 
-enum PendingRawPayloadWrite {
+pub(crate) enum PendingRawPayloadWrite {
     Ready(RawPayloadMeta),
     Task(JoinHandle<RawPayloadMeta>),
 }
@@ -2369,7 +2369,7 @@ impl PendingRawPayloadWrite {
         })
     }
 
-    async fn finish(self) -> RawPayloadMeta {
+    pub(crate) async fn finish(self) -> RawPayloadMeta {
         match self {
             Self::Ready(meta) => meta,
             Self::Task(handle) => match handle.await {
@@ -2385,7 +2385,7 @@ impl PendingRawPayloadWrite {
     }
 }
 
-fn spawn_raw_payload_file_write(
+pub(crate) fn spawn_raw_payload_file_write(
     state: &AppState,
     invoke_id: &str,
     kind: &'static str,
@@ -2407,7 +2407,7 @@ fn spawn_raw_payload_file_write(
     }))
 }
 
-struct AsyncStreamingRawPayloadWriter {
+pub(crate) struct AsyncStreamingRawPayloadWriter {
     tx: Option<mpsc::Sender<Bytes>>,
     meta_rx: Option<oneshot::Receiver<RawPayloadMeta>>,
     observed_size_bytes: i64,
@@ -2416,7 +2416,7 @@ struct AsyncStreamingRawPayloadWriter {
 }
 
 impl AsyncStreamingRawPayloadWriter {
-    fn new(state: &AppState, invoke_id: &str, kind: &'static str) -> Self {
+    pub(crate) fn new(state: &AppState, invoke_id: &str, kind: &'static str) -> Self {
         let Ok(permit) = state.proxy_raw_async_semaphore.clone().try_acquire_owned() else {
             return Self {
                 tx: None,
@@ -2466,7 +2466,7 @@ impl AsyncStreamingRawPayloadWriter {
         self.tx = None;
     }
 
-    fn append(&mut self, bytes: &[u8]) {
+    pub(crate) fn append(&mut self, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
         }
@@ -2483,7 +2483,7 @@ impl AsyncStreamingRawPayloadWriter {
         }
     }
 
-    async fn finish(mut self) -> RawPayloadMeta {
+    pub(crate) async fn finish(mut self) -> RawPayloadMeta {
         self.tx.take();
         let mut meta = match self.meta_rx.take() {
             Some(meta_rx) => match meta_rx.await {
@@ -2508,7 +2508,7 @@ impl AsyncStreamingRawPayloadWriter {
     }
 }
 
-async fn write_streaming_raw_payload_to_file(
+pub(crate) async fn write_streaming_raw_payload_to_file(
     path: PathBuf,
     max_bytes: Option<usize>,
     rx: &mut mpsc::Receiver<Bytes>,
@@ -2600,7 +2600,7 @@ async fn write_streaming_raw_payload_to_file(
     meta
 }
 
-fn build_raw_response_preview(bytes: &[u8]) -> String {
+pub(crate) fn build_raw_response_preview(bytes: &[u8]) -> String {
     if bytes.is_empty() {
         return "{}".to_string();
     }
@@ -2612,7 +2612,7 @@ fn build_raw_response_preview(bytes: &[u8]) -> String {
     String::from_utf8_lossy(preview).to_string()
 }
 
-fn extract_error_message_from_response(bytes: &[u8]) -> Option<String> {
+pub(crate) fn extract_error_message_from_response(bytes: &[u8]) -> Option<String> {
     let value = serde_json::from_slice::<Value>(bytes).ok()?;
     value
         .pointer("/error/message")
@@ -2626,7 +2626,7 @@ fn extract_error_message_from_response(bytes: &[u8]) -> Option<String> {
         })
 }
 
-fn summarize_plaintext_upstream_error(bytes: &[u8]) -> Option<String> {
+pub(crate) fn summarize_plaintext_upstream_error(bytes: &[u8]) -> Option<String> {
     let text = std::str::from_utf8(bytes).ok()?.trim();
     if text.is_empty() {
         return None;
@@ -2642,11 +2642,11 @@ fn summarize_plaintext_upstream_error(bytes: &[u8]) -> Option<String> {
     Some(text.chars().take(240).collect())
 }
 
-fn extract_error_message_from_response_preview(bytes: &[u8]) -> Option<String> {
+pub(crate) fn extract_error_message_from_response_preview(bytes: &[u8]) -> Option<String> {
     extract_error_message_from_response(bytes).or_else(|| summarize_plaintext_upstream_error(bytes))
 }
 
-fn merge_response_capture_reason(
+pub(crate) fn merge_response_capture_reason(
     response_info: &mut ResponseCaptureInfo,
     reason: impl Into<String>,
 ) {

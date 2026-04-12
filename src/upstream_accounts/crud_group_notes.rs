@@ -1,3 +1,5 @@
+use super::*;
+
 #[cfg(test)]
 pub(crate) async fn list_upstream_accounts(
     State(state): State<Arc<AppState>>,
@@ -15,7 +17,7 @@ pub(crate) async fn list_upstream_accounts_from_uri(
     list_upstream_accounts_from_params(state, params).await
 }
 
-async fn list_upstream_accounts_from_params(
+pub(crate) async fn list_upstream_accounts_from_params(
     state: Arc<AppState>,
     params: ListUpstreamAccountsQuery,
 ) -> Result<Json<UpstreamAccountListResponse>, (StatusCode, String)> {
@@ -84,7 +86,9 @@ async fn list_upstream_accounts_from_params(
     }))
 }
 
-fn parse_list_upstream_accounts_query(uri: &Uri) -> Result<ListUpstreamAccountsQuery, String> {
+pub(crate) fn parse_list_upstream_accounts_query(
+    uri: &Uri,
+) -> Result<ListUpstreamAccountsQuery, String> {
     let base = Query::<ListUpstreamAccountsBaseQuery>::try_from_uri(uri)
         .map_err(|err| err.body_text())?
         .0;
