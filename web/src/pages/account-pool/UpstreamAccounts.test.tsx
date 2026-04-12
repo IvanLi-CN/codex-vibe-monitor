@@ -53,6 +53,7 @@ const LOCALE_STORAGE_KEY = "codex-vibe-monitor.locale";
 const navigateMock = vi.hoisted(() => vi.fn());
 const hookMocks = vi.hoisted(() => ({
   useUpstreamAccounts: vi.fn(),
+  useForwardProxyBindingNodes: vi.fn(),
   useUpstreamStickyConversations: vi.fn(),
   usePoolTags: vi.fn(),
 }));
@@ -74,6 +75,10 @@ vi.mock("react-router-dom", async () => {
 
 vi.mock("../../hooks/useUpstreamAccounts", () => ({
   useUpstreamAccounts: hookMocks.useUpstreamAccounts,
+}));
+
+vi.mock("../../hooks/useForwardProxyBindingNodes", () => ({
+  useForwardProxyBindingNodes: hookMocks.useForwardProxyBindingNodes,
 }));
 
 vi.mock("../../hooks/useUpstreamStickyConversations", () => ({
@@ -252,6 +257,46 @@ beforeEach(() => {
     createTag: vi.fn(),
     updateTag: vi.fn(),
     deleteTag: vi.fn(),
+  });
+  hookMocks.useForwardProxyBindingNodes.mockReturnValue({
+    nodes: [
+      {
+        key: "__direct__",
+        displayName: "Direct",
+        protocolLabel: "DIRECT",
+        source: "direct",
+        penalized: false,
+        selectable: true,
+        last24h: [],
+      },
+      {
+        key: "jp-edge-01",
+        displayName: "JP Edge 01",
+        protocolLabel: "HTTP",
+        source: "inventory",
+        penalized: false,
+        selectable: true,
+        last24h: [],
+      },
+      {
+        key: "vless://11111111-2222-3333-4444-555555555555@fixture-vless-edge.example.invalid:443?encryption=none&security=tls&type=ws&host=cdn.example.invalid&path=%2Ffixture&fp=chrome&pbk=fixture-public-key&sid=fixture-subscription-node#Ivan-hinet-vless-vision-01KF874741GBN6MQYD6TNMYDVS",
+        displayName: "Ivan-hinet-vless-vision-01KF874741GBN6MQYD6TNMYDVS",
+        protocolLabel: "VLESS",
+        source: "subscription",
+        penalized: false,
+        selectable: true,
+        last24h: [],
+      },
+    ],
+    error: null,
+    isLoading: false,
+    refresh: vi.fn(),
+    catalogState: {
+      kind: "ready-with-data",
+      freshness: "fresh",
+      isPending: false,
+      hasNodes: true,
+    },
   });
 });
 

@@ -180,7 +180,16 @@ export function useUpstreamAccounts(
   const [missingDetailAccountId, setMissingDetailAccountId] = useState<number | null>(null)
   const selectedIdRef = useRef<number | null>(null)
   const currentListQueryKeyRef = useRef<string | null>(currentListQueryKey)
+  const listDataQueryKeyRef = useRef<string | null>(null)
+  const autoLoadQueryKeyRef = useRef<string | null>(null)
   const listRequestSeqRef = useRef(0)
+  const listRequestInFlightSeqRef = useRef<number | null>(null)
+  const listRequestPromiseRef = useRef<Promise<number | null | typeof LOAD_LIST_FAILED> | null>(null)
+  const listRequestQueryKeyRef = useRef<string | null>(null)
+  const queuedSameQueryRefreshRef = useRef<{
+    preferredId?: number | null
+    options?: { respectCurrentSelection?: boolean; selectionAnchorId?: number | null; silent?: boolean }
+  } | null>(null)
   const detailRequestSeqRef = useRef(0)
   const detailRequestAccountIdRef = useRef<number | null>(null)
   const detailAbortControllerRef = useRef<AbortController | null>(null)
@@ -189,10 +198,15 @@ export function useUpstreamAccounts(
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastRefreshAtRef = useRef(0)
   const lastOpenResyncAtRef = useRef(0)
+  const hasSeenSseOpenRef = useRef(false)
 
   useEffect(() => {
     currentListQueryKeyRef.current = currentListQueryKey
   }, [currentListQueryKey])
+
+  useEffect(() => {
+    listDataQueryKeyRef.current = listDataQueryKey
+  }, [listDataQueryKey])
 
   const setSelectedAccount = useCallback((accountId: number | null) => {
     selectedIdRef.current = accountId
@@ -224,7 +238,12 @@ export function useUpstreamAccounts(
   }, [])
 
   const invalidateListRequest = useCallback(() => {
+    autoLoadQueryKeyRef.current = null
     listRequestSeqRef.current += 1
+    listRequestInFlightSeqRef.current = null
+    listRequestPromiseRef.current = null
+    listRequestQueryKeyRef.current = null
+    queuedSameQueryRefreshRef.current = null
     setIsListPending(false)
     setIsLoading(false)
   }, [])
@@ -241,68 +260,114 @@ export function useUpstreamAccounts(
       options?: { respectCurrentSelection?: boolean; selectionAnchorId?: number | null; silent?: boolean },
     ): Promise<number | null | typeof LOAD_LIST_FAILED> => {
       const requestQueryKey = currentListQueryKeyRef.current
+      if (
+        listRequestPromiseRef.current &&
+        listRequestQueryKeyRef.current != null &&
+        listRequestQueryKeyRef.current === requestQueryKey
+      ) {
+        const currentQueryHydrated =
+          requestQueryKey != null && listDataQueryKeyRef.current === requestQueryKey
+        if (currentQueryHydrated) {
+          const queued = queuedSameQueryRefreshRef.current
+          queuedSameQueryRefreshRef.current = {
+            preferredId,
+            options: {
+              respectCurrentSelection:
+                options?.respectCurrentSelection ?? queued?.options?.respectCurrentSelection,
+              selectionAnchorId:
+                options?.selectionAnchorId ?? queued?.options?.selectionAnchorId,
+              silent: (options?.silent ?? true) && (queued?.options?.silent ?? true),
+            },
+          }
+        }
+        return listRequestPromiseRef.current
+      }
+
       listRequestSeqRef.current += 1
       const requestSeq = listRequestSeqRef.current
       const shouldShowLoading = !(options?.silent && hasHydratedRef.current)
-      setIsListPending(true)
-      if (shouldShowLoading) setIsLoading(true)
-      setListError(null)
-      try {
-        const response = await fetchUpstreamAccounts(effectiveQuery)
-        if (requestSeq !== listRequestSeqRef.current) {
-          return LOAD_LIST_FAILED
-        }
-        const currentSelectedId = selectedIdRef.current
-        const selectionAnchorId = options?.selectionAnchorId ?? preferredId ?? null
-        const shouldPreferRequestedId =
-          preferredId != null &&
-          (!options?.respectCurrentSelection || currentSelectedId === selectionAnchorId)
-        const candidateId = shouldPreferRequestedId ? preferredId : currentSelectedId
-        const hasCandidateInList =
-          candidateId != null && response.items.some((item) => item.id === candidateId)
-        const nextSelectedId =
-          hasCandidateInList
-            ? candidateId
-            : candidateId != null && resolvedOptions.allowSelectionOutsideList
-              ? candidateId
-              : resolvedOptions.fallbackToFirstItem
-                ? response.items[0]?.id ?? null
-                : null
-
-        setItems(response.items)
-        setGroups(response.groups)
-        setForwardProxyNodes(response.forwardProxyNodes ?? [])
-        setHasUngroupedAccounts(response.hasUngroupedAccounts)
-        setWritesEnabled(response.writesEnabled)
-        setRouting(response.routing ?? null)
-        setTotal(response.total ?? 0)
-        setPage(response.page ?? 1)
-        setPageSize(response.pageSize ?? 20)
-        setMetrics(response.metrics ?? {
-          total: 0,
-          oauth: 0,
-          apiKey: 0,
-          attention: 0,
-        })
-        setListDataQueryKey(requestQueryKey)
-        hasHydratedRef.current = true
+      listRequestInFlightSeqRef.current = requestSeq
+      const requestPromise = (async () => {
+        setIsListPending(true)
+        if (shouldShowLoading) setIsLoading(true)
         setListError(null)
-        setSelectedAccount(nextSelectedId)
-        return nextSelectedId
-      } catch (err) {
-        if (requestSeq !== listRequestSeqRef.current) {
+        try {
+          const response = await fetchUpstreamAccounts(effectiveQuery)
+          if (requestSeq !== listRequestSeqRef.current) {
+            return LOAD_LIST_FAILED
+          }
+          const currentSelectedId = selectedIdRef.current
+          const selectionAnchorId = options?.selectionAnchorId ?? preferredId ?? null
+          const shouldPreferRequestedId =
+            preferredId != null &&
+            (!options?.respectCurrentSelection || currentSelectedId === selectionAnchorId)
+          const candidateId = shouldPreferRequestedId ? preferredId : currentSelectedId
+          const hasCandidateInList =
+            candidateId != null && response.items.some((item) => item.id === candidateId)
+          const nextSelectedId =
+            hasCandidateInList
+              ? candidateId
+              : candidateId != null && resolvedOptions.allowSelectionOutsideList
+                ? candidateId
+                : resolvedOptions.fallbackToFirstItem
+                  ? response.items[0]?.id ?? null
+                  : null
+
+          setItems(response.items)
+          setGroups(response.groups)
+          setForwardProxyNodes(response.forwardProxyNodes ?? [])
+          setHasUngroupedAccounts(response.hasUngroupedAccounts)
+          setWritesEnabled(response.writesEnabled)
+          setRouting(response.routing ?? null)
+          setTotal(response.total ?? 0)
+          setPage(response.page ?? 1)
+          setPageSize(response.pageSize ?? 20)
+          setMetrics(response.metrics ?? {
+            total: 0,
+            oauth: 0,
+            apiKey: 0,
+            attention: 0,
+          })
+          lastRefreshAtRef.current = Date.now()
+          setListDataQueryKey(requestQueryKey)
+          hasHydratedRef.current = true
+          setListError(null)
+          setSelectedAccount(nextSelectedId)
+          return nextSelectedId
+        } catch (err) {
+          if (requestSeq !== listRequestSeqRef.current) {
+            return LOAD_LIST_FAILED
+          }
+          setListError(err instanceof Error ? err.message : String(err))
           return LOAD_LIST_FAILED
-        }
-        setListError(err instanceof Error ? err.message : String(err))
-        return LOAD_LIST_FAILED
-      } finally {
-        if (requestSeq === listRequestSeqRef.current) {
-          setIsListPending(false)
-          if (shouldShowLoading) {
-            setIsLoading(false)
+        } finally {
+          const shouldReplaySameQuery =
+            requestSeq === listRequestSeqRef.current &&
+            requestQueryKey != null &&
+            currentListQueryKeyRef.current === requestQueryKey &&
+            queuedSameQueryRefreshRef.current != null
+          const queuedRefresh = shouldReplaySameQuery ? queuedSameQueryRefreshRef.current : null
+          queuedSameQueryRefreshRef.current = null
+          if (listRequestInFlightSeqRef.current === requestSeq) {
+            listRequestInFlightSeqRef.current = null
+            listRequestPromiseRef.current = null
+            listRequestQueryKeyRef.current = null
+          }
+          if (requestSeq === listRequestSeqRef.current) {
+            setIsListPending(false)
+            if (shouldShowLoading) {
+              setIsLoading(false)
+            }
+          }
+          if (queuedRefresh) {
+            void loadList(queuedRefresh.preferredId, queuedRefresh.options)
           }
         }
-      }
+      })()
+
+      listRequestPromiseRef.current = requestPromise
+      listRequestQueryKeyRef.current = requestQueryKey
+      return requestPromise
     },
     [effectiveQuery, resolvedOptions.allowSelectionOutsideList, resolvedOptions.fallbackToFirstItem, setSelectedAccount],
   )
@@ -365,13 +430,21 @@ export function useUpstreamAccounts(
 
   useEffect(() => {
     if (query == null) {
+      autoLoadQueryKeyRef.current = null
       setIsLoading(true)
       setIsListPending(false)
       setListError(null)
       return
     }
+    if (
+      autoLoadQueryKeyRef.current === currentListQueryKey &&
+      (listRequestPromiseRef.current != null || listDataQueryKeyRef.current === currentListQueryKey)
+    ) {
+      return
+    }
+    autoLoadQueryKeyRef.current = currentListQueryKey
     void loadList()
-  }, [loadList, query])
+  }, [currentListQueryKey, loadList, query])
 
   useEffect(() => {
     void loadDetail(selectedId)
@@ -422,6 +495,12 @@ export function useUpstreamAccounts(
   }, [refresh])
 
   const triggerSseRefresh = useCallback(() => {
+    if (
+      currentListQueryKeyRef.current == null ||
+      listDataQueryKeyRef.current !== currentListQueryKeyRef.current
+    ) {
+      return
+    }
     const now = Date.now()
     const delay = getUpstreamAccountsSseRefreshDelay(lastRefreshAtRef.current, now)
     const run = () => {
@@ -440,8 +519,17 @@ export function useUpstreamAccounts(
 
   const triggerOpenResync = useCallback(
     (force = false) => {
-      if (!hasHydratedRef.current) return
+      if (
+        !hasHydratedRef.current ||
+        currentListQueryKeyRef.current == null ||
+        listDataQueryKeyRef.current !== currentListQueryKeyRef.current
+      ) {
+        return
+      }
       const now = Date.now()
+      if (!force && now - lastRefreshAtRef.current < UPSTREAM_ACCOUNTS_OPEN_RESYNC_COOLDOWN_MS) {
+        return
+      }
       if (!shouldTriggerUpstreamAccountsOpenResync(lastOpenResyncAtRef.current, now, force)) return
       lastOpenResyncAtRef.current = now
       void refresh({ silent: true })
@@ -459,6 +547,10 @@ export function useUpstreamAccounts(
 
   useEffect(() => {
     const unsubscribe = subscribeToSseOpen(() => {
+      if (!hasSeenSseOpenRef.current) {
+        hasSeenSseOpenRef.current = true
+        return
+      }
       triggerOpenResync()
     })
     return unsubscribe
@@ -714,10 +806,16 @@ export function useUpstreamAccounts(
   useEffect(
     () => () => {
       listRequestSeqRef.current += 1
+      listRequestInFlightSeqRef.current = null
+      listRequestPromiseRef.current = null
+      listRequestQueryKeyRef.current = null
+      queuedSameQueryRefreshRef.current = null
       detailRequestSeqRef.current += 1
       detailRequestAccountIdRef.current = null
       detailAbortControllerRef.current?.abort()
       detailAbortControllerRef.current = null
+      hasSeenSseOpenRef.current = false
+      autoLoadQueryKeyRef.current = null
       clearPendingRefreshTimer()
     },
     [clearPendingRefreshTimer],

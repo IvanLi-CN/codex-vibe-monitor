@@ -1,4 +1,5 @@
 use super::*;
+use std::time::Instant;
 
 #[cfg(test)]
 pub(crate) async fn list_upstream_accounts(
@@ -21,18 +22,24 @@ pub(crate) async fn list_upstream_accounts_from_params(
     state: Arc<AppState>,
     params: ListUpstreamAccountsQuery,
 ) -> Result<Json<UpstreamAccountListResponse>, (StatusCode, String)> {
+    let started_at = Instant::now();
+
     expire_pending_login_sessions(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
     let page = normalize_upstream_account_list_page(params.page);
     let page_size = normalize_upstream_account_list_page_size(params.page_size);
     let filters = normalize_upstream_account_list_filters(&params);
+    let load_summaries_started_at = Instant::now();
     let mut all_items = load_upstream_account_summaries_for_query(&state.pool, &params)
         .await
         .map_err(internal_error_tuple)?;
+    let load_summaries_ms = load_summaries_started_at.elapsed().as_millis() as u64;
+    let enrich_block_reason_started_at = Instant::now();
     enrich_node_shunt_routing_block_reasons(state.as_ref(), &mut all_items)
         .await
         .map_err(internal_error_tuple)?;
+    let enrich_block_reason_ms = enrich_block_reason_started_at.elapsed().as_millis() as u64;
     let filtered_items = filter_upstream_account_summaries(all_items, &filters);
     let total = filtered_items.len();
     let metrics = build_upstream_account_list_metrics(&filtered_items);
@@ -46,9 +53,12 @@ pub(crate) async fn list_upstream_accounts_from_params(
             .take(page_size)
             .collect::<Vec<_>>()
     };
+    let enrich_window_usage_started_at = Instant::now();
     enrich_window_actual_usage_for_summaries(state.as_ref(), &mut items)
         .await
         .map_err(internal_error_tuple)?;
+    let enrich_window_usage_ms = enrich_window_usage_started_at.elapsed().as_millis() as u64;
+    let load_groups_started_at = Instant::now();
     let mut groups = load_upstream_account_groups(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
@@ -58,20 +68,28 @@ pub(crate) async fn list_upstream_accounts_from_params(
                 .await
                 .map_err(internal_error_tuple)?;
     }
-    let bound_proxy_keys = groups
-        .iter()
-        .flat_map(|group| group.bound_proxy_keys.iter().cloned())
-        .collect::<Vec<_>>();
-    let forward_proxy_nodes =
-        build_forward_proxy_binding_nodes_response(state.as_ref(), &bound_proxy_keys)
-            .await
-            .map_err(internal_error_tuple)?;
+    let load_groups_ms = load_groups_started_at.elapsed().as_millis() as u64;
     let has_ungrouped_accounts = has_ungrouped_upstream_accounts(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
+    let load_routing_started_at = Instant::now();
     let routing = load_pool_routing_settings_seeded(&state.pool, &state.config)
         .await
         .map_err(internal_error_tuple)?;
+    let load_routing_ms = load_routing_started_at.elapsed().as_millis() as u64;
+    let total_ms = started_at.elapsed().as_millis() as u64;
+    tracing::info!(
+        page,
+        page_size,
+        total,
+        load_summaries_ms,
+        enrich_block_reason_ms,
+        enrich_window_usage_ms,
+        load_groups_ms,
+        load_routing_ms,
+        total_ms,
+        "upstream accounts roster request completed"
+    );
     Ok(Json(UpstreamAccountListResponse {
         writes_enabled: state.upstream_accounts.writes_enabled(),
         items,
@@ -80,10 +98,65 @@ pub(crate) async fn list_upstream_accounts_from_params(
         page_size,
         metrics,
         groups,
-        forward_proxy_nodes,
+        forward_proxy_nodes: Vec::new(),
         has_ungrouped_accounts,
         routing: build_pool_routing_settings_response(state.as_ref(), &routing),
     }))
+}
+
+pub(crate) async fn list_forward_proxy_binding_nodes(
+    State(state): State<Arc<AppState>>,
+    uri: Uri,
+) -> Result<Json<Vec<ForwardProxyBindingNodeResponse>>, (StatusCode, String)> {
+    let params = parse_list_forward_proxy_binding_nodes_query(&uri)
+        .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
+    let requested_keys = params
+        .key
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if requested_keys.is_empty() && !params.include_current {
+        return Ok(Json(Vec::new()));
+    }
+    let nodes = build_forward_proxy_binding_nodes_response_with_options(
+        state.as_ref(),
+        &requested_keys,
+        false,
+    )
+    .await
+    .map_err(internal_error_tuple)?;
+    Ok(Json(nodes))
+}
+
+pub(crate) fn parse_list_forward_proxy_binding_nodes_query(
+    uri: &Uri,
+) -> Result<ListForwardProxyBindingNodesQuery, String> {
+    let mut params = ListForwardProxyBindingNodesQuery::default();
+    let Some(raw_query) = uri.query() else {
+        return Ok(params);
+    };
+    for (key, value) in url::form_urlencoded::parse(raw_query.as_bytes()) {
+        match key.as_ref() {
+            "key" => params.key.push(value.into_owned()),
+            "includeCurrent" => {
+                params.include_current = match value.as_ref() {
+                    "" | "0" | "false" | "False" | "FALSE" | "no" | "off" => false,
+                    "1" | "true" | "True" | "TRUE" | "yes" | "on" => true,
+                    other => {
+                        return Err(format!(
+                            "invalid includeCurrent value `{other}`; expected true/false"
+                        ));
+                    }
+                };
+            }
+            _ => {}
+        }
+    }
+    Ok(params)
 }
 
 pub(crate) fn parse_list_upstream_accounts_query(

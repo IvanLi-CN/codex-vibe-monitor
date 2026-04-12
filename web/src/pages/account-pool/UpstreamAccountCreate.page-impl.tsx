@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useMotherSwitchNotifications } from "../../hooks/useMotherSwitchNotifications";
+import { useForwardProxyBindingNodes } from "../../hooks/useForwardProxyBindingNodes";
 import { usePoolTags } from "../../hooks/usePoolTags";
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
 import type {
@@ -103,8 +104,6 @@ export default function UpstreamAccountCreatePage() {
   const {
     items,
     groups = [],
-    forwardProxyNodes,
-    forwardProxyCatalogState,
     writesEnabled,
     isLoading,
     listError,
@@ -330,6 +329,13 @@ export default function UpstreamAccountCreatePage() {
     nodeShuntEnabled: false,
     upstream429RetryEnabled: false,
     upstream429MaxRetries: 0,
+  });
+  const {
+    nodes: forwardProxyNodes,
+    catalogState: forwardProxyCatalogState,
+    refresh: refreshForwardProxyBindings,
+  } = useForwardProxyBindingNodes(groupNoteEditor.boundProxyKeys, {
+    enabled: groupNoteEditor.open,
   });
   const [groupNoteBusy, setGroupNoteBusy] = useState(false);
   const [groupNoteError, setGroupNoteError] = useState<string | null>(null);
@@ -1929,6 +1935,7 @@ export default function UpstreamAccountCreatePage() {
     formatDuplicateReasons,
     forwardProxyNodes,
     forwardProxyCatalogState,
+    refreshForwardProxyBindings,
     groupNoteBusy,
     groupNoteEditor,
     groupNoteError,

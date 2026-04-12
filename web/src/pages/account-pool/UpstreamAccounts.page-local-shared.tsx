@@ -57,6 +57,7 @@ import { UpstreamAccountGroupNoteDialog } from "../../components/UpstreamAccount
 import { UpstreamAccountUsageCard } from "../../components/UpstreamAccountUsageCard";
 import { StickyKeyConversationTable } from "../../components/StickyKeyConversationTable";
 import { usePoolTags } from "../../hooks/usePoolTags";
+import { useForwardProxyBindingNodes } from "../../hooks/useForwardProxyBindingNodes";
 import { useMotherSwitchNotifications } from "../../hooks/useMotherSwitchNotifications";
 import { useUpstreamAccountDetailRoute } from "../../hooks/useUpstreamAccountDetailRoute";
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
@@ -810,7 +811,16 @@ export function RoutingSettingsDialog({
   );
 }
 
-export function SharedUpstreamAccountDetailDrawer({
+export function SharedUpstreamAccountDetailDrawer(
+  props: SharedUpstreamAccountDetailDrawerProps,
+) {
+  if (props.accountId == null) {
+    return null;
+  }
+  return <SharedUpstreamAccountDetailDrawerInner {...props} />;
+}
+
+function SharedUpstreamAccountDetailDrawerInner({
   open,
   accountId,
   initialDeleteConfirmOpen = false,
@@ -823,8 +833,6 @@ export function SharedUpstreamAccountDetailDrawer({
   const {
     items,
     groups = [],
-    forwardProxyNodes = [],
-    forwardProxyCatalogState,
     hasUngroupedAccounts = false,
     writesEnabled,
     selectedId,
@@ -833,7 +841,6 @@ export function SharedUpstreamAccountDetailDrawer({
     isDetailLoading,
     detailError = null,
     selectAccount,
-    refresh,
     saveAccount,
     runSync,
     removeAccount,
@@ -898,6 +905,13 @@ export function SharedUpstreamAccountDetailDrawer({
       upstream429RetryEnabled: false,
       upstream429MaxRetries: 0,
     });
+  const {
+    nodes: forwardProxyNodes,
+    catalogState: forwardProxyCatalogState,
+    refresh: refreshForwardProxyBindings,
+  } = useForwardProxyBindingNodes(groupNoteEditor.boundProxyKeys, {
+    enabled: groupNoteEditor.open,
+  });
   const [groupNoteBusy, setGroupNoteBusy] = useState(false);
   const [groupNoteError, setGroupNoteError] = useState<string | null>(null);
   const [detailDrawerPortalContainer, setDetailDrawerPortalContainer] =
@@ -1540,7 +1554,7 @@ export function SharedUpstreamAccountDetailDrawer({
   }, [groupNoteBusy]);
   useGroupNoteCatalogAutoRefresh({
     open: groupNoteEditor.open,
-    refresh,
+    refresh: refreshForwardProxyBindings,
     catalogState: forwardProxyCatalogState,
   });
 

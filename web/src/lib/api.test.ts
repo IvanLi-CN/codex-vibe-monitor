@@ -4,6 +4,7 @@ import {
   createOauthMailboxSession,
   fetchInvocationRecords,
   fetchForwardProxyLiveStats,
+  fetchForwardProxyBindingNodes,
   fetchForwardProxyTimeseries,
   fetchParallelWorkStats,
   fetchPromptCacheConversations,
@@ -907,6 +908,47 @@ describe("settings normalization", () => {
     expect(response.forwardProxyNodes?.[1]?.displayName).toBe("历史东京中继");
     expect(response.forwardProxyNodes?.[0]?.last24h[0]?.successCount).toBe(5);
     expect(response.forwardProxyNodes?.[1]?.last24h).toEqual([]);
+  });
+
+  it("fetches forward proxy binding nodes through the dedicated endpoint", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      expect(String(input)).toContain(
+        "/api/pool/forward-proxy-binding-nodes?includeCurrent=1&key=fpb_jp_edge_01&key=fpb_sg_edge_02",
+      );
+      return new Response(
+        JSON.stringify([
+          {
+            key: "fpb_jp_edge_01",
+            aliasKeys: ["fpn_jp_edge_runtime"],
+            source: "manual",
+            displayName: "JP Edge 01",
+            protocolLabel: "HTTP",
+            penalized: false,
+            selectable: true,
+            last24h: [],
+          },
+        ]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    const response = await fetchForwardProxyBindingNodes([
+      "fpb_jp_edge_01",
+      " ",
+      "fpb_sg_edge_02",
+      "fpb_jp_edge_01",
+    ], {
+      includeCurrent: true,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(response).toHaveLength(1);
+    expect(response[0]).toMatchObject({
+      key: "fpb_jp_edge_01",
+      protocolLabel: "HTTP",
+      aliasKeys: ["fpn_jp_edge_runtime"],
+    });
   });
 });
 

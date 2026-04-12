@@ -34,6 +34,7 @@ import UpstreamAccountCreatePage from "./UpstreamAccountCreate";
 const navigateMock = vi.hoisted(() => vi.fn());
 const hookMocks = vi.hoisted(() => ({
   useUpstreamAccounts: vi.fn(),
+  useForwardProxyBindingNodes: vi.fn(),
   usePoolTags: vi.fn(),
 }));
 const upstreamAccountsEventMocks = vi.hoisted(() => ({
@@ -58,6 +59,10 @@ vi.mock("react-router-dom", async () => {
 
 vi.mock("../../hooks/useUpstreamAccounts", () => ({
   useUpstreamAccounts: hookMocks.useUpstreamAccounts,
+}));
+
+vi.mock("../../hooks/useForwardProxyBindingNodes", () => ({
+  useForwardProxyBindingNodes: hookMocks.useForwardProxyBindingNodes,
 }));
 
 vi.mock("../../hooks/usePoolTags", () => ({
@@ -288,6 +293,18 @@ beforeEach(() => {
   apiMocks.createImportedOauthValidationJobEventSource.mockReset();
   apiMocks.updateOauthLoginSessionKeepalive.mockReset();
   apiMocks.updateOauthLoginSessionKeepalive.mockResolvedValue(undefined);
+  hookMocks.useForwardProxyBindingNodes.mockReturnValue({
+    nodes: [],
+    error: null,
+    isLoading: false,
+    refresh: vi.fn(),
+    catalogState: {
+      kind: "ready-empty",
+      freshness: "fresh",
+      isPending: false,
+      hasNodes: false,
+    },
+  });
 });
 
 afterEach(() => {
@@ -855,6 +872,22 @@ function mockUpstreamAccounts(
     ...overrides,
   };
   hookMocks.useUpstreamAccounts.mockReturnValue(hookState);
+  hookMocks.useForwardProxyBindingNodes.mockReturnValue({
+    nodes: hookState.forwardProxyNodes ?? [],
+    error: null,
+    isLoading: false,
+    refresh: vi.fn(),
+    catalogState: {
+      kind:
+        Array.isArray(hookState.forwardProxyNodes) && hookState.forwardProxyNodes.length > 0
+          ? "ready-with-data"
+          : "ready-empty",
+      freshness: "fresh",
+      isPending: false,
+      hasNodes:
+        Array.isArray(hookState.forwardProxyNodes) && hookState.forwardProxyNodes.length > 0,
+    },
+  });
   return hookState;
 }
 
