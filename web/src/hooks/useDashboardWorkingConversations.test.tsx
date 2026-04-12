@@ -354,6 +354,9 @@ function Probe() {
         set refresh target 25
       </button>
       <div data-testid="cards-length">{String(cards.length)}</div>
+      <div data-testid="card-keys">
+        {cards.map((item) => item.promptCacheKey).join(",")}
+      </div>
       <div data-testid="conversation-keys">
         {stats?.conversations.map((item) => item.promptCacheKey).join(",") ??
           ""}
@@ -395,6 +398,70 @@ function Probe() {
 }
 
 describe("useDashboardWorkingConversations", () => {
+  it("keeps card display order on createdAt descending even when the backing rows remain activity-sorted", async () => {
+    apiMocks.fetchPromptCacheConversationsPage.mockResolvedValueOnce(
+      createResponseWithConversations([
+        createConversation("pck-created-middle", {
+          createdAt: "2026-04-10T02:02:00Z",
+          lastActivityAt: "2026-04-10T02:04:58Z",
+          lastTerminalAt: "2026-04-10T02:03:40Z",
+          lastInFlightAt: "2026-04-10T02:04:58Z",
+          recentInvocations: [
+            createPreview({
+              id: 52,
+              invokeId: "invoke-created-middle-running",
+              occurredAt: "2026-04-10T02:04:58Z",
+              status: "running",
+            }),
+            createPreview({
+              id: 51,
+              invokeId: "invoke-created-middle-previous",
+              occurredAt: "2026-04-10T02:03:40Z",
+              status: "completed",
+            }),
+          ],
+        }),
+        createConversation("pck-created-oldest", {
+          createdAt: "2026-04-10T01:58:00Z",
+          lastActivityAt: "2026-04-10T02:03:20Z",
+          lastTerminalAt: "2026-04-10T02:03:20Z",
+          recentInvocations: [
+            createPreview({
+              id: 61,
+              invokeId: "invoke-created-oldest",
+              occurredAt: "2026-04-10T02:03:20Z",
+              status: "completed",
+            }),
+          ],
+        }),
+        createConversation("pck-created-newest", {
+          createdAt: "2026-04-10T02:03:00Z",
+          lastActivityAt: "2026-04-10T02:01:00Z",
+          lastTerminalAt: "2026-04-10T02:01:00Z",
+          recentInvocations: [
+            createPreview({
+              id: 71,
+              invokeId: "invoke-created-newest",
+              occurredAt: "2026-04-10T02:01:00Z",
+              status: "completed",
+            }),
+          ],
+        }),
+      ]),
+    );
+
+    render(<Probe />);
+    await flushAsync();
+    await flushAsync();
+
+    expect(text("conversation-keys")).toBe(
+      "pck-created-middle,pck-created-oldest,pck-created-newest",
+    );
+    expect(text("card-keys")).toBe(
+      "pck-created-newest,pck-created-middle,pck-created-oldest",
+    );
+  });
+
   it("loads the head page with compact pagination defaults", async () => {
     apiMocks.fetchPromptCacheConversationsPage.mockResolvedValueOnce(
       createResponseWithConversations(
