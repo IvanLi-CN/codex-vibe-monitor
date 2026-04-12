@@ -74,9 +74,12 @@ interface UpstreamAccountGroupNoteDialogProps {
   proxyBindingsLabel?: string;
   proxyBindingsHint?: string;
   proxyBindingsAutomaticLabel?: string;
+  proxyBindingsLoadingLabel?: string;
   proxyBindingsEmptyLabel?: string;
   proxyBindingsMissingLabel?: string;
   proxyBindingsUnavailableLabel?: string;
+  proxyBindingsCatalogKind?: "ready-empty" | "ready-with-data" | "loading" | "missing" | "deferred";
+  proxyBindingsCatalogFreshness?: "fresh" | "stale" | "missing" | "deferred";
   proxyBindingsChartLabel?: string;
   proxyBindingsChartSuccessLabel?: string;
   proxyBindingsChartFailureLabel?: string;
@@ -314,9 +317,12 @@ export function UpstreamAccountGroupNoteDialog({
   proxyBindingsLabel,
   proxyBindingsHint,
   proxyBindingsAutomaticLabel,
+  proxyBindingsLoadingLabel,
   proxyBindingsEmptyLabel,
   proxyBindingsMissingLabel,
   proxyBindingsUnavailableLabel,
+  proxyBindingsCatalogKind,
+  proxyBindingsCatalogFreshness,
   proxyBindingsChartLabel,
   proxyBindingsChartSuccessLabel,
   proxyBindingsChartFailureLabel,
@@ -432,6 +438,14 @@ export function UpstreamAccountGroupNoteDialog({
     Boolean(onBoundProxyKeysChange) ||
     proxyOptions.length > 0 ||
     canonicalBoundProxyKeys.length > 0;
+  const proxyBindingsLoading =
+    proxyBindingsCatalogKind === "loading" ||
+    proxyBindingsCatalogKind === "missing" ||
+    (proxyBindingsCatalogFreshness === "stale" && proxyOptions.length === 0);
+  const showProxyBindingsLoadingNotice = proxyBindingsLoading;
+  const showProxyBindingsEmptyState =
+    !proxyBindingsLoading && proxyOptions.length === 0;
+  const showProxyBindingOptions = proxyOptions.length > 0;
   const hasSelectableBoundProxySelection =
     canonicalBoundProxyKeys.length === 0 ||
     canonicalBoundProxyKeys.some((key) =>
@@ -599,11 +613,29 @@ export function UpstreamAccountGroupNoteDialog({
                   </div>
                 ) : null}
 
-                {proxyOptions.length === 0 ? (
+                {showProxyBindingsLoadingNotice ? (
+                  <div
+                    className="flex items-center gap-2 rounded-xl border border-dashed border-base-300/80 bg-base-100/65 px-3 py-2 text-xs text-base-content/65"
+                    data-testid="proxy-binding-options-loading"
+                  >
+                    <AppIcon
+                      name="loading"
+                      className="h-4 w-4 animate-spin"
+                      aria-hidden
+                    />
+                    <span>
+                      {proxyBindingsLoadingLabel ?? "Loading proxy nodes…"}
+                    </span>
+                  </div>
+                ) : null}
+
+                {showProxyBindingsEmptyState ? (
                   <div className="rounded-xl border border-dashed border-base-300/80 bg-base-100/65 px-3 py-2 text-xs text-base-content/65">
                     {proxyBindingsEmptyLabel ?? "No proxy nodes available."}
                   </div>
-                ) : (
+                ) : null}
+
+                {showProxyBindingOptions ? (
                   <div
                     className="min-h-0 max-h-[min(26rem,45dvh)] overflow-y-auto rounded-xl pr-1"
                     data-testid="proxy-binding-options-scroll-region"
@@ -721,7 +753,7 @@ export function UpstreamAccountGroupNoteDialog({
                       })}
                     </div>
                   </div>
-                )}
+                ) : null}
               </section>
             ) : null}
 

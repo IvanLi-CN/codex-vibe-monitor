@@ -122,6 +122,7 @@ function renderDialog(props: Partial<DialogProps> = {}) {
     proxyBindingsHint: "Leave empty to keep automatic routing.",
     proxyBindingsAutomaticLabel:
       "No nodes bound. This group uses automatic routing.",
+    proxyBindingsLoadingLabel: "Loading proxy nodes…",
     proxyBindingsEmptyLabel: "No proxy nodes available.",
     proxyBindingsMissingLabel: "Missing",
     proxyBindingsUnavailableLabel: "Unavailable",
@@ -316,6 +317,63 @@ describe("UpstreamAccountGroupNoteDialog", () => {
 
     expect(bodyText()).toContain("fpn_missing_only");
     expect(bodyText()).toContain("Missing");
+  });
+
+  it("shows a loading placeholder instead of the empty-state message while the proxy catalog is still hydrating", () => {
+    renderDialog({
+      availableProxyNodes: [],
+      proxyBindingsCatalogKind: "loading",
+      proxyBindingsCatalogFreshness: "missing",
+    });
+
+    expect(bodyText()).toContain("Loading proxy nodes…");
+    expect(bodyText()).not.toContain("No proxy nodes available.");
+
+    const loadingState = document.querySelector(
+      '[data-testid="proxy-binding-options-loading"]',
+    );
+    expect(loadingState).not.toBeNull();
+  });
+
+  it("keeps bound missing proxy rows visible while the catalog is still hydrating", () => {
+    const onBoundProxyKeysChange = vi.fn();
+
+    renderDialog({
+      boundProxyKeys: ["fpn_missing_only"],
+      availableProxyNodes: [],
+      onBoundProxyKeysChange,
+      proxyBindingsCatalogKind: "loading",
+      proxyBindingsCatalogFreshness: "missing",
+    });
+
+    expect(bodyText()).toContain("Loading proxy nodes…");
+    expect(bodyText()).toContain("fpn_missing_only");
+    expect(bodyText()).toContain("Missing");
+
+    const missingBindingButton = Array.from(
+      document.querySelectorAll("button"),
+    ).find((candidate) =>
+      (candidate.textContent ?? "").includes("fpn_missing_only"),
+    ) as HTMLButtonElement | undefined;
+
+    expect(missingBindingButton).toBeDefined();
+
+    act(() => {
+      missingBindingButton?.click();
+    });
+
+    expect(onBoundProxyKeysChange).toHaveBeenCalledWith([]);
+  });
+
+  it("treats a missing proxy catalog as unresolved instead of showing the empty-state copy", () => {
+    renderDialog({
+      availableProxyNodes: [],
+      proxyBindingsCatalogKind: "missing",
+      proxyBindingsCatalogFreshness: "missing",
+    });
+
+    expect(bodyText()).toContain("Loading proxy nodes…");
+    expect(bodyText()).not.toContain("No proxy nodes available.");
   });
 
   it("blocks saving when every selected binding is unavailable", () => {

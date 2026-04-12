@@ -40,6 +40,7 @@ export function useUpstreamAccountCreateGroupDrafts(
   const {
     apiKeyGroupName,
     forwardProxyNodes,
+    forwardProxyCatalogState,
     groupDraftBoundProxyKeys,
     groupDraftConcurrencyLimits,
     groupDraftNodeShuntEnabled,
@@ -158,7 +159,9 @@ export function useUpstreamAccountCreateGroupDrafts(
     );
   }
 
-  const hasLoadedForwardProxyCatalog = Array.isArray(forwardProxyNodes);
+  const hasLoadedForwardProxyCatalog =
+    forwardProxyCatalogState?.kind === "ready-empty" ||
+    forwardProxyCatalogState?.kind === "ready-with-data";
   const selectableForwardProxyKeys = useMemo(
     () =>
       new Set(

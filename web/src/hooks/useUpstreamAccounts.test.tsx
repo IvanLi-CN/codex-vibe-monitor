@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   FetchUpstreamAccountsQuery,
+  ForwardProxyBindingNode,
   UpstreamAccountDetail,
   UpstreamAccountListResponse,
   UpstreamAccountSummary,
@@ -189,13 +190,32 @@ function createDetail(id: number, displayName: string): UpstreamAccountDetail {
   };
 }
 
-function createListResponse(): UpstreamAccountListResponse {
+function createForwardProxyNode(
+  key: string,
+  displayName = "JP Edge 01",
+): ForwardProxyBindingNode {
+  return {
+    key,
+    source: "manual",
+    displayName,
+    protocolLabel: "HTTP",
+    penalized: false,
+    selectable: true,
+    last24h: [],
+  };
+}
+
+function createListResponse(
+  overrides: Partial<UpstreamAccountListResponse> = {},
+): UpstreamAccountListResponse {
   return {
     writesEnabled: true,
     items: [createSummary(1, "Alpha"), createSummary(2, "Beta")],
     groups: [],
+    forwardProxyNodes: [],
     hasUngroupedAccounts: false,
     routing: { writesEnabled: true, apiKeyConfigured: false, maskedApiKey: null },
+    ...overrides,
   };
 }
 
@@ -207,6 +227,7 @@ function Probe({ query }: { query?: FetchUpstreamAccountsQuery | null }) {
     isDetailLoading,
     listError,
     listState,
+    forwardProxyCatalogState,
     detailError,
     error,
     selectAccount,
@@ -230,6 +251,10 @@ function Probe({ query }: { query?: FetchUpstreamAccountsQuery | null }) {
       <div data-testid="list-status">{listState.status}</div>
       <div data-testid="list-has-current-query-data">
         {listState.hasCurrentQueryData ? "true" : "false"}
+      </div>
+      <div data-testid="proxy-catalog-kind">{forwardProxyCatalogState.kind}</div>
+      <div data-testid="proxy-catalog-freshness">
+        {forwardProxyCatalogState.freshness}
       </div>
       <div data-testid="detail-error">{detailError ?? ""}</div>
       <div data-testid="error">{error ?? ""}</div>
@@ -326,6 +351,121 @@ describe("useUpstreamAccounts", () => {
     expect(text("list-loading-state")).toBe("idle");
     expect(text("list-status")).toBe("ready");
     expect(text("list-has-current-query-data")).toBe("true");
+  });
+
+  it("keeps the forward proxy catalog in loading state until the first roster payload lands", async () => {
+    const listRequest = deferred<UpstreamAccountListResponse>();
+    apiMocks.fetchUpstreamAccounts.mockReturnValueOnce(listRequest.promise);
+
+    render(<Probe />);
+
+    expect(text("proxy-catalog-kind")).toBe("loading");
+    expect(text("proxy-catalog-freshness")).toBe("missing");
+
+    listRequest.resolve(
+      createListResponse({
+        forwardProxyNodes: [createForwardProxyNode("jp-edge-01")],
+      }),
+    );
+    await flushAsync();
+
+    expect(text("proxy-catalog-kind")).toBe("ready-with-data");
+    expect(text("proxy-catalog-freshness")).toBe("fresh");
+  });
+
+  it("reports an empty-but-loaded forward proxy catalog distinctly from loading", async () => {
+    apiMocks.fetchUpstreamAccounts.mockResolvedValueOnce(
+      createListResponse({ forwardProxyNodes: [] }),
+    );
+
+    render(<Probe />);
+    await flushAsync();
+
+    expect(text("proxy-catalog-kind")).toBe("ready-empty");
+    expect(text("proxy-catalog-freshness")).toBe("fresh");
+  });
+
+  it("treats a pending refresh of an empty proxy catalog as loading until the refreshed roster lands", async () => {
+    const refreshedList = deferred<UpstreamAccountListResponse>();
+    apiMocks.fetchUpstreamAccounts
+      .mockResolvedValueOnce(createListResponse({ forwardProxyNodes: [] }))
+      .mockImplementationOnce(async () => refreshedList.promise);
+
+    render(<Probe />);
+    await flushAsync();
+
+    expect(text("proxy-catalog-kind")).toBe("ready-empty");
+    expect(text("proxy-catalog-freshness")).toBe("fresh");
+
+    act(() => {
+      (
+        host?.querySelector('[data-testid="refresh"]') as HTMLButtonElement | null
+      )?.click();
+    });
+    await flushAsync();
+
+    expect(text("proxy-catalog-kind")).toBe("loading");
+    expect(text("proxy-catalog-freshness")).toBe("stale");
+
+    refreshedList.resolve(
+      createListResponse({
+        forwardProxyNodes: [createForwardProxyNode("jp-edge-01")],
+      }),
+    );
+    await flushAsync();
+
+    expect(text("proxy-catalog-kind")).toBe("ready-with-data");
+    expect(text("proxy-catalog-freshness")).toBe("fresh");
+  });
+
+  it("keeps an empty proxy catalog stale after a refresh failure", async () => {
+    apiMocks.fetchUpstreamAccounts
+      .mockResolvedValueOnce(createListResponse({ forwardProxyNodes: [] }))
+      .mockRejectedValueOnce(new Error("refresh failed"));
+
+    render(<Probe />);
+    await flushAsync();
+
+    expect(text("proxy-catalog-kind")).toBe("ready-empty");
+    expect(text("proxy-catalog-freshness")).toBe("fresh");
+
+    act(() => {
+      (
+        host?.querySelector('[data-testid="refresh"]') as HTMLButtonElement | null
+      )?.click();
+    });
+    await flushAsync();
+
+    expect(text("list-error")).toBe("refresh failed");
+    expect(text("proxy-catalog-kind")).toBe("ready-empty");
+    expect(text("proxy-catalog-freshness")).toBe("stale");
+  });
+
+  it("keeps a populated proxy catalog stale after a refresh failure", async () => {
+    apiMocks.fetchUpstreamAccounts
+      .mockResolvedValueOnce(
+        createListResponse({
+          forwardProxyNodes: [createForwardProxyNode("jp-edge-01")],
+        }),
+      )
+      .mockRejectedValueOnce(new Error("refresh failed"));
+
+    render(<Probe />);
+    await flushAsync();
+
+    expect(text("proxy-catalog-kind")).toBe("ready-with-data");
+    expect(text("proxy-catalog-freshness")).toBe("fresh");
+
+    act(() => {
+      (
+        host?.querySelector('[data-testid="refresh"]') as HTMLButtonElement | null
+      )?.click();
+    });
+    await flushAsync();
+
+    expect(text("list-error")).toBe("refresh failed");
+    expect(text("proxy-catalog-kind")).toBe("ready-with-data");
+    expect(text("proxy-catalog-freshness")).toBe("stale");
   });
 
   it("reports the current query as failed after a switched roster request rejects", async () => {

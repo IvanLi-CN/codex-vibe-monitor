@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, within } from "storybook/test";
 import type { ForwardProxyBindingNode } from "../lib/api";
@@ -17,6 +17,8 @@ type DialogHarnessProps = {
   upstream429RetryEnabled?: boolean;
   upstream429MaxRetries?: number;
   availableProxyNodes?: ForwardProxyBindingNode[];
+  proxyBindingsCatalogKind?: "ready-empty" | "ready-with-data" | "loading" | "missing" | "deferred";
+  proxyBindingsCatalogFreshness?: "fresh" | "stale" | "missing" | "deferred";
 };
 
 function buildRequestBuckets(
@@ -290,6 +292,7 @@ function DialogHarness({
           proxyBindingsLabel="Bound proxy nodes"
           proxyBindingsHint="Leave empty to keep automatic routing. Selected nodes are used as a hard-bound pool for this group."
           proxyBindingsAutomaticLabel="No nodes bound. This group uses automatic routing."
+          proxyBindingsLoadingLabel="Loading proxy nodes…"
           proxyBindingsEmptyLabel="No proxy nodes available."
           proxyBindingsMissingLabel="Missing"
           proxyBindingsUnavailableLabel="Unavailable"
@@ -442,6 +445,70 @@ export const MissingOrUnavailableBindings: Story = {
       ...defaultForwardProxyNodes,
       unicodeForwardProxyNodes[1],
     ],
+  },
+};
+
+export const LoadingProxyCatalog: Story = {
+  args: {
+    groupName: "warming-up",
+    note: "This dialog is still waiting for the shared proxy catalog to hydrate.",
+    availableProxyNodes: [],
+    proxyBindingsCatalogKind: "loading",
+    proxyBindingsCatalogFreshness: "missing",
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText(/Loading proxy nodes/i)).toBeInTheDocument();
+    await expect(
+      canvas.queryByText(/No proxy nodes available/i),
+    ).not.toBeInTheDocument();
+  },
+};
+
+export const SettingsSaveSyncRefresh: Story = {
+  render: (args) => {
+    function SettingsSyncRefreshHarness() {
+      const [catalog, setCatalog] = useState<ForwardProxyBindingNode[]>([]);
+      const [catalogKind, setCatalogKind] = useState<
+        "ready-empty" | "ready-with-data" | "loading" | "missing" | "deferred"
+      >("missing");
+      const [freshness, setFreshness] = useState<
+        "fresh" | "stale" | "missing" | "deferred"
+      >("stale");
+
+      useEffect(() => {
+        const timer = window.setTimeout(() => {
+          setCatalog([
+            defaultForwardProxyNodes.find((node) => node.key === "fpn_5a7b0c1d2e3f4a10")!,
+            defaultForwardProxyNodes.find((node) => node.key === "fpn_8b9c0d1e2f3a4b20")!,
+          ]);
+          setCatalogKind("ready-with-data");
+          setFreshness("fresh");
+        }, 450);
+        return () => window.clearTimeout(timer);
+      }, []);
+
+      return (
+        <DialogHarness
+          {...args}
+          groupName="settings-sync"
+          note="Starts stale and empty, then repaints in place once the refreshed proxy catalog lands."
+          availableProxyNodes={catalog}
+          proxyBindingsCatalogKind={catalogKind}
+          proxyBindingsCatalogFreshness={freshness}
+        />
+      );
+    }
+
+    return <SettingsSyncRefreshHarness />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText(/Loading proxy nodes/i)).toBeInTheDocument();
+    await expect(
+      canvas.queryByText(/No proxy nodes available/i),
+    ).not.toBeInTheDocument();
+    await expect(await canvas.findByText(/JP Edge 01/i)).toBeInTheDocument();
   },
 };
 

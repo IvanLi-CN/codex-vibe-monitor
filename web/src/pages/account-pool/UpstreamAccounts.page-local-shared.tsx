@@ -60,6 +60,7 @@ import { usePoolTags } from "../../hooks/usePoolTags";
 import { useMotherSwitchNotifications } from "../../hooks/useMotherSwitchNotifications";
 import { useUpstreamAccountDetailRoute } from "../../hooks/useUpstreamAccountDetailRoute";
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
+import { useGroupNoteCatalogAutoRefresh } from "./useGroupNoteCatalogAutoRefresh";
 import { useUpstreamStickyConversations } from "../../hooks/useUpstreamStickyConversations";
 import type {
   ApiInvocation,
@@ -823,6 +824,7 @@ export function SharedUpstreamAccountDetailDrawer({
     items,
     groups = [],
     forwardProxyNodes = [],
+    forwardProxyCatalogState,
     hasUngroupedAccounts = false,
     writesEnabled,
     selectedId,
@@ -831,6 +833,7 @@ export function SharedUpstreamAccountDetailDrawer({
     isDetailLoading,
     detailError = null,
     selectAccount,
+    refresh,
     saveAccount,
     runSync,
     removeAccount,
@@ -1535,6 +1538,11 @@ export function SharedUpstreamAccountDetailDrawer({
     setGroupNoteEditor((current) => ({ ...current, open: false }));
     setGroupNoteError(null);
   }, [groupNoteBusy]);
+  useGroupNoteCatalogAutoRefresh({
+    open: groupNoteEditor.open,
+    refresh,
+    catalogState: forwardProxyCatalogState,
+  });
 
   const handleSaveGroupNote = useCallback(async () => {
     if (!writesEnabled) return;
@@ -3562,6 +3570,8 @@ export function SharedUpstreamAccountDetailDrawer({
         boundProxyKeys={groupNoteEditor.boundProxyKeys}
         nodeShuntEnabled={groupNoteEditor.nodeShuntEnabled}
         availableProxyNodes={forwardProxyNodes}
+        proxyBindingsCatalogKind={forwardProxyCatalogState?.kind}
+        proxyBindingsCatalogFreshness={forwardProxyCatalogState?.freshness}
         busy={groupNoteBusy}
         error={groupNoteError}
         existing={groupNoteEditor.existing}
@@ -3695,6 +3705,9 @@ export function SharedUpstreamAccountDetailDrawer({
         )}
         proxyBindingsAutomaticLabel={t(
           "accountPool.upstreamAccounts.groupNotes.proxyBindings.automatic",
+        )}
+        proxyBindingsLoadingLabel={t(
+          "accountPool.upstreamAccounts.groupNotes.proxyBindings.loading",
         )}
         proxyBindingsEmptyLabel={t(
           "accountPool.upstreamAccounts.groupNotes.proxyBindings.empty",

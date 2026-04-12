@@ -7,6 +7,7 @@ import {
   type PricingSettings,
   type SettingsPayload,
 } from '../lib/api'
+import { emitUpstreamAccountsChanged } from '../lib/upstreamAccountsEvents'
 
 function toPricingKey(pricing: PricingSettings): string {
   return JSON.stringify({
@@ -187,6 +188,7 @@ export function useSettings() {
               forwardProxy: saved,
             }
           }
+          emitUpstreamAccountsChanged()
           setError(null)
         } catch (err) {
           if (pendingForwardProxyRef.current == null) {
