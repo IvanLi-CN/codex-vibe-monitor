@@ -3693,6 +3693,81 @@ async fn historical_perf_stats_fill_missing_samples_from_partially_materialized_
 }
 
 #[tokio::test]
+async fn historical_perf_stats_include_unreplayed_full_hour_tail_without_inline_catch_up() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let historical_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(14, 0, 0)
+    .expect("valid historical perf hour");
+    let historical_tail_at = format_naive(
+        historical_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("historical perf tail time"),
+    );
+    let bucket_start_epoch = invocation_bucket_start_epoch(&historical_tail_at)
+        .expect("historical perf bucket start epoch should be derivable");
+
+    let mut histogram = empty_approx_histogram();
+    add_approx_histogram_sample(&mut histogram, 100.0);
+    sqlx::query(
+        r#"
+        INSERT INTO proxy_perf_stage_hourly (
+            bucket_start_epoch,
+            stage,
+            sample_count,
+            sum_ms,
+            max_ms,
+            histogram,
+            updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind("upstreamFirstByte")
+    .bind(1_i64)
+    .bind(100.0_f64)
+    .bind(100.0_f64)
+    .bind(encode_approx_histogram(&histogram).expect("encode historical perf histogram"))
+    .execute(&state.pool)
+    .await
+    .expect("seed historical perf rollup row");
+
+    insert_timeseries_invocation(
+        &state.pool,
+        "historical-perf-unreplayed-tail",
+        &historical_tail_at,
+        "success",
+        Some(200.0),
+    )
+    .await;
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(perf_stats) = fetch_perf_stats(
+        State(state),
+        Query(PerfQuery {
+            range: historical_range,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch historical perf stats with unreplayed full-hour tail");
+
+    let upstream_first_byte = perf_stats
+        .stages
+        .iter()
+        .find(|stage| stage.stage == "upstreamFirstByte")
+        .expect("historical perf stats should include unreplayed full-hour tail samples");
+    assert_eq!(upstream_first_byte.count, 2);
+    assert_f64_close(upstream_first_byte.avg_ms, 150.0);
+    assert_f64_close(upstream_first_byte.max_ms, 200.0);
+}
+
+#[tokio::test]
 async fn historical_perf_archive_delta_distinguishes_materialized_sibling_parts_and_stale_pending_overlap(
 ) {
     let mut config = test_config();
@@ -3826,6 +3901,7 @@ async fn historical_perf_archive_delta_distinguishes_materialized_sibling_parts_
         &state.pool,
         archived_start,
         archived_end,
+        None,
     )
     .await
     .expect("query mixed-state perf archive delta");
@@ -3974,6 +4050,7 @@ async fn historical_perf_archive_delta_keeps_pending_stage_rows_when_materialize
         &state.pool,
         archived_start,
         archived_end,
+        None,
     )
     .await
     .expect("query unreadable mixed-state perf archive delta");

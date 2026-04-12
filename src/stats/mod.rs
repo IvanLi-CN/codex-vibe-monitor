@@ -1931,6 +1931,7 @@ async fn load_proxy_perf_stage_rollups_by_materialization_state(
     pool: &Pool<Sqlite>,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
+    exclude_invocation_ids: Option<&HashSet<i64>>,
 ) -> Result<(
     BTreeMap<(i64, String), ProxyPerfStageHourlyDelta>,
     HashSet<String>,
@@ -1966,6 +1967,10 @@ async fn load_proxy_perf_stage_rollups_by_materialization_state(
             }
             cursor_id = rows.last().map(|row| row.id).unwrap_or(cursor_id);
             for row in rows {
+                if exclude_invocation_ids.is_some_and(|excluded_ids| excluded_ids.contains(&row.id))
+                {
+                    continue;
+                }
                 if !invocation_hourly_source_record_matches_range(&row, Some((start, end))) {
                     continue;
                 }
@@ -2050,9 +2055,16 @@ pub(crate) async fn query_unmaterialized_proxy_perf_stage_rollups_from_archives(
     pool: &Pool<Sqlite>,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
+    exclude_invocation_ids: Option<&HashSet<i64>>,
 ) -> Result<BTreeMap<String, ProxyPerfStageHourlyDelta>> {
     let (archive_perf_by_bucket_stage, unreadable_pending_materialized_month_keys) =
-        load_proxy_perf_stage_rollups_by_materialization_state(pool, start, end).await?;
+        load_proxy_perf_stage_rollups_by_materialization_state(
+            pool,
+            start,
+            end,
+            exclude_invocation_ids,
+        )
+        .await?;
 
     if archive_perf_by_bucket_stage.is_empty() {
         return Ok(BTreeMap::new());

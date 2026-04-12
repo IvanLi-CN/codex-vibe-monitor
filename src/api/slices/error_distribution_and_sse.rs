@@ -1446,8 +1446,6 @@ pub(crate) async fn fetch_perf_stats(
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
     if range_window.start < shanghai_retention_cutoff(state.config.invocation_max_days) {
-        let snapshot_id =
-            resolve_invocation_snapshot_id(&state.pool, InvocationSourceScope::ProxyOnly).await?;
         let range_plan = build_hourly_rollup_exact_range_plan(
             range_window.start,
             range_window.display_end,
@@ -1455,6 +1453,46 @@ pub(crate) async fn fetch_perf_stats(
         )?;
         let mut by_stage: BTreeMap<String, (i64, f64, f64, ApproxHistogramCounts)> =
             BTreeMap::new();
+        let (exact_records, archive_overlap_ids) = if range_plan.full_hour_range.is_some() {
+            let mut tx = state.pool.begin().await?;
+            let snapshot_id =
+                resolve_invocation_snapshot_id_tx(tx.as_mut(), InvocationSourceScope::ProxyOnly)
+                    .await?;
+            let rollup_live_cursor = load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
+            let mut exact_records = query_invocation_exact_records_tx(
+                tx.as_mut(),
+                &range_plan,
+                InvocationSourceScope::ProxyOnly,
+                snapshot_id,
+            )
+            .await?;
+            let tail_records = query_invocation_full_hour_tail_records_tx(
+                tx.as_mut(),
+                &range_plan,
+                InvocationSourceScope::ProxyOnly,
+                rollup_live_cursor,
+                snapshot_id,
+            )
+            .await?;
+            let archive_overlap_ids =
+                tail_records.iter().map(|record| record.id).collect::<HashSet<_>>();
+            exact_records.extend(tail_records);
+            (exact_records, archive_overlap_ids)
+        } else {
+            let snapshot_id =
+                resolve_invocation_snapshot_id(&state.pool, InvocationSourceScope::ProxyOnly)
+                    .await?;
+            (
+                query_invocation_exact_records(
+                    &state.pool,
+                    &range_plan,
+                    InvocationSourceScope::ProxyOnly,
+                    snapshot_id,
+                )
+                .await?,
+                HashSet::new(),
+            )
+        };
         if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
             let rows = query_proxy_perf_stage_hourly_rollup_range(
                 &state.pool,
@@ -1487,6 +1525,7 @@ pub(crate) async fn fetch_perf_stats(
                     &state.pool,
                     archived_start,
                     archived_end,
+                    Some(&archive_overlap_ids),
                 )
                 .await?;
             for (stage, delta) in archived_perf {
@@ -1499,13 +1538,6 @@ pub(crate) async fn fetch_perf_stats(
                 merge_approx_histogram_into(&mut entry.3, &delta.histogram)?;
             }
         }
-        let exact_records = query_invocation_exact_records(
-            &state.pool,
-            &range_plan,
-            InvocationSourceScope::ProxyOnly,
-            snapshot_id,
-        )
-        .await?;
         for record in exact_records {
             record_perf_stage_sample(&mut by_stage, "total", record.t_total_ms);
             record_perf_stage_sample(&mut by_stage, "requestRead", record.t_req_read_ms);
