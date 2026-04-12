@@ -904,6 +904,37 @@ async fn load_completed_invocation_archive_paths(
     .map_err(Into::into)
 }
 
+async fn load_invocation_archives_missing_rollup_target(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    target: &str,
+) -> Result<Vec<ArchiveBatchPathRow>> {
+    sqlx::query_as::<_, ArchiveBatchPathRow>(
+        r#"
+        SELECT
+            batches.file_path,
+            batches.historical_rollups_materialized_at,
+            NULL AS needs_overall,
+            NULL AS needs_failures
+        FROM archive_batches AS batches
+        WHERE batches.dataset = 'codex_invocations'
+          AND batches.status = ?1
+          AND NOT EXISTS(
+            SELECT 1
+            FROM hourly_rollup_archive_replay AS replay
+            WHERE replay.target = ?2
+              AND replay.dataset = 'codex_invocations'
+              AND replay.file_path = batches.file_path
+          )
+        ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(target)
+    .fetch_all(executor)
+    .await
+    .map_err(Into::into)
+}
+
 async fn load_invocation_archives_missing_summary_rollup_markers(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
 ) -> Result<Vec<ArchiveBatchPathRow>> {
@@ -1086,8 +1117,9 @@ fn shanghai_month_keys_for_bucket_starts(
         .collect()
 }
 
-async fn load_materialized_invocation_archive_paths_for_month_keys(
+async fn load_replayed_invocation_archive_paths_for_month_keys(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    target: &str,
     month_keys: &HashSet<String>,
 ) -> Result<Vec<String>> {
     if month_keys.is_empty() {
@@ -1100,20 +1132,36 @@ async fn load_materialized_invocation_archive_paths_for_month_keys(
     let mut query = QueryBuilder::<Sqlite>::new(
         r#"
         SELECT file_path
-        FROM archive_batches
-        WHERE dataset = 'codex_invocations'
-          AND status =
+        FROM archive_batches AS batches
+        WHERE batches.dataset = 'codex_invocations'
+          AND batches.status =
         "#,
     );
     query.push_bind(ARCHIVE_STATUS_COMPLETED);
-    query.push(" AND historical_rollups_materialized_at IS NOT NULL AND month_key IN (");
+    query.push(
+        r#"
+         AND EXISTS(
+            SELECT 1
+            FROM hourly_rollup_archive_replay AS replay
+            WHERE replay.target =
+        "#,
+    );
+    query.push_bind(target);
+    query.push(
+        r#"
+              AND replay.dataset = 'codex_invocations'
+              AND replay.file_path = batches.file_path
+         )
+         AND batches.month_key IN (
+        "#,
+    );
     {
         let mut separated = query.separated(", ");
         for month_key in month_keys {
             separated.push_bind(month_key);
         }
     }
-    query.push(") ORDER BY month_key ASC, created_at ASC, id ASC");
+    query.push(") ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC");
 
     query
         .build_query_scalar::<String>()
@@ -1146,8 +1194,12 @@ async fn load_materialized_invocation_archive_hourly_rollup_deltas_for_bucket_so
             .iter()
             .map(|(bucket_start_epoch, _)| *bucket_start_epoch),
     );
-    let archive_paths =
-        load_materialized_invocation_archive_paths_for_month_keys(pool, &month_keys).await?;
+    let archive_paths = load_replayed_invocation_archive_paths_for_month_keys(
+        pool,
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        &month_keys,
+    )
+    .await?;
     let mut materialized = BTreeMap::<(i64, String), InvocationHourlyRollupDelta>::new();
 
     for archive_path in archive_paths {
@@ -1520,13 +1572,12 @@ async fn load_pending_invocation_archive_hourly_rollup_deltas(
     source_scope: InvocationSourceScope,
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
 ) -> Result<BTreeMap<(i64, String), InvocationHourlyRollupDelta>> {
-    let archive_rows = load_completed_invocation_archive_paths(pool).await?;
+    let archive_rows =
+        load_invocation_archives_missing_rollup_target(pool, HOURLY_ROLLUP_TARGET_INVOCATIONS)
+            .await?;
     let mut pending = BTreeMap::<(i64, String), InvocationHourlyRollupDelta>::new();
 
     for archive_row in archive_rows {
-        if archive_row.historical_rollups_materialized_at.is_some() {
-            continue;
-        }
         let Some((archive_pool, temp_cleanup)) =
             open_invocation_archive_batch_pool(&archive_row, "stats-summary").await?
         else {
@@ -1779,13 +1830,12 @@ async fn load_proxy_perf_stage_rollups_by_materialization_state(
     start: DateTime<Utc>,
     end: DateTime<Utc>,
 ) -> Result<BTreeMap<(i64, String), ProxyPerfStageHourlyDelta>> {
-    let archive_rows = load_completed_invocation_archive_paths(pool).await?;
+    let archive_rows =
+        load_invocation_archives_missing_rollup_target(pool, HOURLY_ROLLUP_TARGET_PROXY_PERF)
+            .await?;
     let mut pending = BTreeMap::<(i64, String), ProxyPerfStageHourlyDelta>::new();
 
     for archive_row in archive_rows {
-        if archive_row.historical_rollups_materialized_at.is_some() {
-            continue;
-        }
         let Some((archive_pool, temp_cleanup)) =
             open_invocation_archive_batch_pool(&archive_row, "proxy-perf").await?
         else {
@@ -1830,8 +1880,12 @@ async fn load_materialized_proxy_perf_stage_rollups_for_buckets(
     }
 
     let month_keys = shanghai_month_keys_for_bucket_starts(bucket_start_epochs.iter().copied());
-    let archive_paths =
-        load_materialized_invocation_archive_paths_for_month_keys(pool, &month_keys).await?;
+    let archive_paths = load_replayed_invocation_archive_paths_for_month_keys(
+        pool,
+        HOURLY_ROLLUP_TARGET_PROXY_PERF,
+        &month_keys,
+    )
+    .await?;
     let mut materialized = BTreeMap::<(i64, String), ProxyPerfStageHourlyDelta>::new();
 
     for archive_path in archive_paths {
@@ -1991,13 +2045,14 @@ pub(crate) async fn load_unmaterialized_invocation_archive_failure_rows(
     end: DateTime<Utc>,
     source_scope: InvocationSourceScope,
 ) -> Result<Vec<ArchivedInvocationFailureRow>> {
-    let archive_rows = load_completed_invocation_archive_paths(pool).await?;
+    let archive_rows = load_invocation_archives_missing_rollup_target(
+        pool,
+        HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
+    )
+    .await?;
     let mut archive_failure_rows = Vec::new();
 
     for archive_row in archive_rows {
-        if archive_row.historical_rollups_materialized_at.is_some() {
-            continue;
-        }
         let Some((archive_pool, temp_cleanup)) =
             open_invocation_archive_batch_pool(&archive_row, "failure-breakdown").await?
         else {
@@ -2084,8 +2139,12 @@ async fn load_materialized_failure_rollup_row_counts_for_keys(
         keys.iter()
             .map(|(bucket_start_epoch, _, _, _, _)| *bucket_start_epoch),
     );
-    let archive_paths =
-        load_materialized_invocation_archive_paths_for_month_keys(pool, &month_keys).await?;
+    let archive_paths = load_replayed_invocation_archive_paths_for_month_keys(
+        pool,
+        HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
+        &month_keys,
+    )
+    .await?;
     let mut counts = HashMap::<(i64, String, String, i64, String), usize>::new();
 
     for archive_path in archive_paths {

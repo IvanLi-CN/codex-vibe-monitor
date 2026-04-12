@@ -106,6 +106,25 @@ async fn insert_materialized_rollup_bucket_marker(
     .expect("insert materialized rollup bucket marker");
 }
 
+async fn insert_hourly_rollup_archive_replay_marker(
+    pool: &SqlitePool,
+    target: &str,
+    file_path: &Path,
+) {
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
+        VALUES (?1, ?2, ?3, datetime('now'))
+        "#,
+    )
+    .bind(target)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(file_path.to_string_lossy().to_string())
+    .execute(pool)
+    .await
+    .expect("insert hourly rollup archive replay marker");
+}
+
 #[derive(Clone, Copy)]
 struct SeedInvocationArchiveBatchRow<'a> {
     id: i64,
@@ -3423,6 +3442,134 @@ async fn historical_timeseries_skip_unreadable_materialized_archives() {
 }
 
 #[tokio::test]
+async fn historical_timeseries_skips_unreadable_replayed_legacy_archives() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(12, 0, 0)
+    .expect("valid archived replayed timeseries hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("archived replayed timeseries success time"),
+    );
+    let archive_path = seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "timeseries-replayed-corrupt-read-path",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1_i64,
+            invoke_id: "timeseries-replayed-corrupt-read-path-success",
+            occurred_at: archived_success_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 10_i64,
+            cost: 0.10_f64,
+            ttfb_ms: Some(100.0),
+            payload: Some(r#"{"promptCacheKey":"legacy-replayed"}"#),
+            detail_level: DETAIL_LEVEL_STRUCTURED_ONLY,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0_i64),
+        }],
+    )
+    .await;
+
+    insert_hourly_rollup_archive_replay_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        &archive_path,
+    )
+    .await;
+
+    let start = local_naive_to_utc(archived_hour_local, Shanghai);
+    let end = local_naive_to_utc(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::hours(1))
+            .expect("archived replayed timeseries hour end"),
+        Shanghai,
+    );
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind(start.timestamp())
+    .bind(SOURCE_PROXY)
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(10_i64)
+    .bind(0.10_f64)
+    .bind(1_i64)
+    .bind(100.0_f64)
+    .bind(100.0_f64)
+    .bind("[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&state.pool)
+    .await
+    .expect("seed replayed timeseries rollup row");
+
+    fs::write(&archive_path, b"not-a-gzip-archive")
+        .expect("corrupt replayed timeseries archive");
+
+    let Json(response) = fetch_timeseries_from_hourly_rollups(
+        state,
+        TimeseriesQuery {
+            range: "ignored".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        },
+        Shanghai,
+        InvocationSourceScope::ProxyOnly,
+        RangeWindow {
+            start,
+            end,
+            display_end: end,
+            duration: end - start,
+        },
+        TimeseriesBucketSelection {
+            bucket_seconds: 3_600,
+            effective_bucket: "1h".to_string(),
+            available_buckets: vec!["1h".to_string()],
+            bucket_limited_to_daily: false,
+        },
+    )
+    .await
+    .expect("fetch historical timeseries with unreadable replayed legacy archive");
+
+    let archived_point = response
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(start))
+        .expect("historical replayed timeseries bucket should exist");
+    assert_eq!(archived_point.total_count, 1);
+    assert_eq!(archived_point.success_count, 1);
+    assert_eq!(archived_point.failure_count, 0);
+    assert_eq!(archived_point.total_tokens, 10);
+    assert_f64_close(archived_point.total_cost, 0.10);
+}
+
+#[tokio::test]
 async fn timeseries_hourly_backed_repairs_stale_archived_rollup_counts_before_querying() {
     let mut config = test_config();
     config.openai_upstream_base_url =
@@ -4615,6 +4762,109 @@ async fn all_time_summary_read_path_skips_unreadable_materialized_archives() {
     )
     .await
     .expect("fetch all-time summary with unreadable materialized archive");
+
+    assert_eq!(summary.total_count, 1);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 0);
+    assert_eq!(summary.total_tokens, 10);
+    assert!((summary.total_cost - 0.10).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn all_time_summary_read_path_skips_unreadable_replayed_legacy_archives() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived replayed summary hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("archived replayed success time"),
+    );
+    let archive_path = seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "summary-replayed-corrupt-read-path",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1_i64,
+            invoke_id: "summary-replayed-corrupt-read-path-success",
+            occurred_at: archived_success_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 10_i64,
+            cost: 0.10_f64,
+            ttfb_ms: Some(100.0),
+            payload: Some(r#"{"promptCacheKey":"legacy-replayed"}"#),
+            detail_level: DETAIL_LEVEL_STRUCTURED_ONLY,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0_i64),
+        }],
+    )
+    .await;
+
+    insert_hourly_rollup_archive_replay_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        &archive_path,
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_success_at)
+        .expect("derive replayed summary bucket epoch");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(10_i64)
+    .bind(0.10_f64)
+    .bind(1_i64)
+    .bind(100.0_f64)
+    .bind(100.0_f64)
+    .bind("[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&state.pool)
+    .await
+    .expect("seed replayed summary rollup row");
+
+    fs::write(&archive_path, b"not-a-gzip-archive")
+        .expect("corrupt replayed legacy archive batch");
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch all-time summary with unreadable replayed legacy archive");
 
     assert_eq!(summary.total_count, 1);
     assert_eq!(summary.success_count, 1);
