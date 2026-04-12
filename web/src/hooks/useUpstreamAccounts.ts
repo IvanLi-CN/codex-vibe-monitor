@@ -761,23 +761,34 @@ export function useUpstreamAccounts(
     hasCurrentQueryData,
     isPending: isListPending,
   }
-  const forwardProxyCatalogState: ForwardProxyCatalogState = {
-    kind:
-      query == null
-        ? 'deferred'
-        : forwardProxyNodes == null
-          ? isListPending || isLoading
-            ? 'loading'
-            : 'missing'
+  const forwardProxyCatalogWaitingOnRefresh =
+    query != null &&
+    Array.isArray(forwardProxyNodes) &&
+    forwardProxyNodes.length === 0 &&
+    isListPending
+  const forwardProxyCatalogKind: ForwardProxyCatalogKind =
+    query == null
+      ? 'deferred'
+      : forwardProxyNodes == null
+        ? isListPending || isLoading
+          ? 'loading'
+          : 'missing'
+        : forwardProxyCatalogWaitingOnRefresh
+          ? 'loading'
           : forwardProxyNodes.length > 0
             ? 'ready-with-data'
-            : 'ready-empty',
-    freshness:
-      query == null
-        ? 'deferred'
-        : forwardProxyNodes == null
-          ? 'missing'
-          : listFreshness,
+            : 'ready-empty'
+  const forwardProxyCatalogFreshness: ForwardProxyCatalogState['freshness'] =
+    query == null
+      ? 'deferred'
+      : forwardProxyNodes == null
+        ? 'missing'
+        : forwardProxyCatalogWaitingOnRefresh
+          ? 'stale'
+          : listFreshness
+  const forwardProxyCatalogState: ForwardProxyCatalogState = {
+    kind: forwardProxyCatalogKind,
+    freshness: forwardProxyCatalogFreshness,
     isPending: isListPending,
     hasNodes: Array.isArray(forwardProxyNodes) && forwardProxyNodes.length > 0,
   }

@@ -385,6 +385,39 @@ describe("useUpstreamAccounts", () => {
     expect(text("proxy-catalog-freshness")).toBe("fresh");
   });
 
+  it("treats a pending refresh of an empty proxy catalog as loading until the refreshed roster lands", async () => {
+    const refreshedList = deferred<UpstreamAccountListResponse>();
+    apiMocks.fetchUpstreamAccounts
+      .mockResolvedValueOnce(createListResponse({ forwardProxyNodes: [] }))
+      .mockImplementationOnce(async () => refreshedList.promise);
+
+    render(<Probe />);
+    await flushAsync();
+
+    expect(text("proxy-catalog-kind")).toBe("ready-empty");
+    expect(text("proxy-catalog-freshness")).toBe("fresh");
+
+    act(() => {
+      (
+        host?.querySelector('[data-testid="refresh"]') as HTMLButtonElement | null
+      )?.click();
+    });
+    await flushAsync();
+
+    expect(text("proxy-catalog-kind")).toBe("loading");
+    expect(text("proxy-catalog-freshness")).toBe("stale");
+
+    refreshedList.resolve(
+      createListResponse({
+        forwardProxyNodes: [createForwardProxyNode("jp-edge-01")],
+      }),
+    );
+    await flushAsync();
+
+    expect(text("proxy-catalog-kind")).toBe("ready-with-data");
+    expect(text("proxy-catalog-freshness")).toBe("fresh");
+  });
+
   it("reports the current query as failed after a switched roster request rejects", async () => {
     const nextPage = deferred<UpstreamAccountListResponse>();
     apiMocks.fetchUpstreamAccounts

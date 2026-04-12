@@ -335,6 +335,36 @@ describe("UpstreamAccountGroupNoteDialog", () => {
     expect(loadingState).not.toBeNull();
   });
 
+  it("keeps bound missing proxy rows visible while the catalog is still hydrating", () => {
+    const onBoundProxyKeysChange = vi.fn();
+
+    renderDialog({
+      boundProxyKeys: ["fpn_missing_only"],
+      availableProxyNodes: [],
+      onBoundProxyKeysChange,
+      proxyBindingsCatalogKind: "loading",
+      proxyBindingsCatalogFreshness: "missing",
+    });
+
+    expect(bodyText()).toContain("Loading proxy nodes…");
+    expect(bodyText()).toContain("fpn_missing_only");
+    expect(bodyText()).toContain("Missing");
+
+    const missingBindingButton = Array.from(
+      document.querySelectorAll("button"),
+    ).find((candidate) =>
+      (candidate.textContent ?? "").includes("fpn_missing_only"),
+    ) as HTMLButtonElement | undefined;
+
+    expect(missingBindingButton).toBeDefined();
+
+    act(() => {
+      missingBindingButton?.click();
+    });
+
+    expect(onBoundProxyKeysChange).toHaveBeenCalledWith([]);
+  });
+
   it("blocks saving when every selected binding is unavailable", () => {
     renderDialog({
       boundProxyKeys: ["fpn_unavailable_only"],

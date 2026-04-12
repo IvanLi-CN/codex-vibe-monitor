@@ -442,6 +442,10 @@ export function UpstreamAccountGroupNoteDialog({
     proxyBindingsCatalogKind === "loading" ||
     proxyBindingsCatalogKind === "missing" ||
     (proxyBindingsCatalogFreshness === "stale" && proxyOptions.length === 0);
+  const showProxyBindingsLoadingNotice = proxyBindingsLoading;
+  const showProxyBindingsEmptyState =
+    !proxyBindingsLoading && proxyOptions.length === 0;
+  const showProxyBindingOptions = proxyOptions.length > 0;
   const hasSelectableBoundProxySelection =
     canonicalBoundProxyKeys.length === 0 ||
     canonicalBoundProxyKeys.some((key) =>
@@ -609,7 +613,7 @@ export function UpstreamAccountGroupNoteDialog({
                   </div>
                 ) : null}
 
-                {proxyBindingsLoading ? (
+                {showProxyBindingsLoadingNotice ? (
                   <div
                     className="flex items-center gap-2 rounded-xl border border-dashed border-base-300/80 bg-base-100/65 px-3 py-2 text-xs text-base-content/65"
                     data-testid="proxy-binding-options-loading"
@@ -623,11 +627,15 @@ export function UpstreamAccountGroupNoteDialog({
                       {proxyBindingsLoadingLabel ?? "Loading proxy nodes…"}
                     </span>
                   </div>
-                ) : proxyOptions.length === 0 ? (
+                ) : null}
+
+                {showProxyBindingsEmptyState ? (
                   <div className="rounded-xl border border-dashed border-base-300/80 bg-base-100/65 px-3 py-2 text-xs text-base-content/65">
                     {proxyBindingsEmptyLabel ?? "No proxy nodes available."}
                   </div>
-                ) : (
+                ) : null}
+
+                {showProxyBindingOptions ? (
                   <div
                     className="min-h-0 max-h-[min(26rem,45dvh)] overflow-y-auto rounded-xl pr-1"
                     data-testid="proxy-binding-options-scroll-region"
@@ -745,7 +753,7 @@ export function UpstreamAccountGroupNoteDialog({
                       })}
                     </div>
                   </div>
-                )}
+                ) : null}
               </section>
             ) : null}
 
