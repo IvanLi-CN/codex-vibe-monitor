@@ -1163,6 +1163,7 @@ pub(crate) async fn query_unmaterialized_invocation_archive_hourly_rollup_deltas
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
 ) -> Result<Vec<InvocationHourlyRollupRecord>> {
     let archive_rows = load_completed_invocation_archive_paths(pool).await?;
+    let mut overall = BTreeMap::<(i64, String), InvocationHourlyRollupDelta>::new();
     let mut delta_rows = Vec::new();
 
     for archive_row in archive_rows {
@@ -1172,7 +1173,6 @@ pub(crate) async fn query_unmaterialized_invocation_archive_hourly_rollup_deltas
         else {
             continue;
         };
-        let mut overall = BTreeMap::<(i64, String), InvocationHourlyRollupDelta>::new();
         let mut cursor_id = 0_i64;
         loop {
             let rows = load_invocation_hourly_source_rows_after_id(
@@ -1196,21 +1196,20 @@ pub(crate) async fn query_unmaterialized_invocation_archive_hourly_rollup_deltas
             accumulate_invocation_hourly_overall_rollups(&mut overall, &filtered_rows)?;
         }
 
-        for ((bucket_start_epoch, source), archive_delta) in overall {
-            let materialized_row =
-                load_materialized_invocation_rollup_record(pool, bucket_start_epoch, &source)
-                    .await?;
-            if let Some(delta_row) = build_invocation_hourly_rollup_delta_record(
-                bucket_start_epoch,
-                &archive_delta,
-                materialized_row.as_ref(),
-            )? {
-                delta_rows.push(delta_row);
-            }
-        }
-
         archive_pool.close().await;
         drop(temp_cleanup);
+    }
+
+    for ((bucket_start_epoch, source), archive_delta) in overall {
+        let materialized_row =
+            load_materialized_invocation_rollup_record(pool, bucket_start_epoch, &source).await?;
+        if let Some(delta_row) = build_invocation_hourly_rollup_delta_record(
+            bucket_start_epoch,
+            &archive_delta,
+            materialized_row.as_ref(),
+        )? {
+            delta_rows.push(delta_row);
+        }
     }
 
     delta_rows.sort_by_key(|row| row.bucket_start_epoch);
@@ -1495,7 +1494,7 @@ pub(crate) async fn load_unmaterialized_invocation_archive_failure_rows(
     source_scope: InvocationSourceScope,
 ) -> Result<Vec<ArchivedInvocationFailureRow>> {
     let archive_rows = load_completed_invocation_archive_paths(pool).await?;
-    let mut rows = Vec::new();
+    let mut archive_failure_rows = Vec::new();
 
     for archive_row in archive_rows {
         let Some((archive_pool, temp_cleanup)) =
@@ -1504,17 +1503,23 @@ pub(crate) async fn load_unmaterialized_invocation_archive_failure_rows(
         else {
             continue;
         };
-        let archive_rows =
+        let batch_rows =
             load_failure_rows_from_archive_pool(&archive_pool, start, end, source_scope).await?;
-        let missing_row_counts =
-            load_missing_failure_rollup_row_counts_for_rows(pool, &archive_rows).await?;
-        if missing_row_counts.is_empty() {
-            archive_pool.close().await;
-            drop(temp_cleanup);
-            continue;
-        }
-        let mut emitted_row_counts = HashMap::<(i64, String, String, i64, String), usize>::new();
-        rows.extend(archive_rows.into_iter().filter(|row| {
+        archive_failure_rows.extend(batch_rows);
+        archive_pool.close().await;
+        drop(temp_cleanup);
+    }
+
+    let missing_row_counts =
+        load_missing_failure_rollup_row_counts_for_rows(pool, &archive_failure_rows).await?;
+    if missing_row_counts.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut emitted_row_counts = HashMap::<(i64, String, String, i64, String), usize>::new();
+    Ok(archive_failure_rows
+        .into_iter()
+        .filter(|row| {
             let Ok(Some(key)) = archived_failure_rollup_key(row) else {
                 return false;
             };
@@ -1527,12 +1532,8 @@ pub(crate) async fn load_unmaterialized_invocation_archive_failure_rows(
             }
             *emitted_count += 1;
             true
-        }));
-        archive_pool.close().await;
-        drop(temp_cleanup);
-    }
-
-    Ok(rows)
+        })
+        .collect())
 }
 
 async fn rebuild_invocation_summary_rollups_from_archive_batch(

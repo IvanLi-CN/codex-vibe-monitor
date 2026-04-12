@@ -1915,6 +1915,131 @@ async fn all_time_summary_fallback_includes_missing_rows_from_partially_material
 }
 
 #[tokio::test]
+async fn all_time_summary_fallback_aggregates_missing_rows_across_archive_parts() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(7, 0, 0)
+    .expect("valid archived multipart summary hour");
+    let archived_first_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("first archived multipart summary time"),
+    );
+    let archived_second_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("second archived multipart summary time"),
+    );
+
+    let first_archive_original_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-multipart-archive-a",
+        &[(
+            1_i64,
+            "summary-multipart-first",
+            archived_first_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+    let first_archive_path = state
+        .config
+        .archive_dir
+        .join("summary-multipart-archive-a.sqlite.gz");
+    let _ = fs::remove_file(&first_archive_path);
+    fs::rename(&first_archive_original_path, &first_archive_path)
+        .expect("move first multipart summary archive batch to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1 WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(first_archive_path.to_string_lossy().to_string())
+    .bind(first_archive_original_path.to_string_lossy().to_string())
+    .execute(&state.pool)
+    .await
+    .expect("update first multipart summary archive batch path after move");
+
+    seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-multipart-archive-b",
+        &[(
+            1_i64,
+            "summary-multipart-second",
+            archived_second_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            20_i64,
+            0.20_f64,
+            Some(120.0),
+        )],
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_first_at)
+        .expect("multipart summary bucket start epoch should be derivable");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(10_i64)
+    .bind(0.10_f64)
+    .bind(1_i64)
+    .bind(100.0_f64)
+    .bind(100.0_f64)
+    .bind("[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&state.pool)
+    .await
+    .expect("seed partially materialized multipart summary rollup row");
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch all-time summary with multipart partially materialized archive");
+
+    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.success_count, 2);
+    assert_eq!(summary.failure_count, 0);
+    assert_eq!(summary.total_tokens, 30);
+    assert!((summary.total_cost - 0.30).abs() < 1e-9);
+}
+
+#[tokio::test]
 async fn archived_failure_fallback_skips_already_materialized_archive_buckets() {
     let mut config = test_config();
     config.openai_upstream_base_url =
@@ -2153,6 +2278,149 @@ async fn archived_failure_fallback_includes_missing_rows_from_partially_material
     )
     .await
     .expect("fetch error distribution with partially materialized failure count");
+    assert!(
+        error_distribution
+            .items
+            .iter()
+            .any(|item| item.reason == "too_many_requests" && item.count == 2)
+    );
+}
+
+#[tokio::test]
+async fn archived_failure_fallback_aggregates_missing_rows_across_archive_parts() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(9, 0, 0)
+    .expect("valid archived multipart failure hour");
+    let archived_first_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("first archived multipart failure time"),
+    );
+    let archived_second_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("second archived multipart failure time"),
+    );
+
+    let first_archive_original_path = seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "failure-multipart-archive-a",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1_i64,
+            invoke_id: "failure-multipart-first",
+            occurred_at: archived_first_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "failed",
+            total_tokens: 10_i64,
+            cost: 0.10_f64,
+            ttfb_ms: Some(100.0),
+            payload: Some("{}"),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: Some("HTTP 429 too many requests"),
+            failure_kind: Some("upstream_response_failed"),
+            failure_class: Some("service_failure"),
+            is_actionable: Some(1_i64),
+        }],
+    )
+    .await;
+    let first_archive_path = state
+        .config
+        .archive_dir
+        .join("failure-multipart-archive-a.sqlite.gz");
+    let _ = fs::remove_file(&first_archive_path);
+    fs::rename(&first_archive_original_path, &first_archive_path)
+        .expect("move first multipart failure archive batch to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1 WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(first_archive_path.to_string_lossy().to_string())
+    .bind(first_archive_original_path.to_string_lossy().to_string())
+    .execute(&state.pool)
+    .await
+    .expect("update first multipart failure archive batch path after move");
+
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "failure-multipart-archive-b",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1_i64,
+            invoke_id: "failure-multipart-second",
+            occurred_at: archived_second_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "failed",
+            total_tokens: 20_i64,
+            cost: 0.20_f64,
+            ttfb_ms: Some(120.0),
+            payload: Some("{}"),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: Some("HTTP 429 too many requests"),
+            failure_kind: Some("upstream_response_failed"),
+            failure_class: Some("service_failure"),
+            is_actionable: Some(1_i64),
+        }],
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_first_at)
+        .expect("multipart failure bucket start epoch should be derivable");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_failure_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            failure_class,
+            is_actionable,
+            error_category,
+            failure_count,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind("service_failure")
+    .bind(1_i64)
+    .bind("too_many_requests")
+    .bind(1_i64)
+    .execute(&state.pool)
+    .await
+    .expect("seed partially materialized multipart failure count row");
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(failure_summary) = fetch_failure_summary(
+        State(state.clone()),
+        Query(FailureSummaryQuery {
+            range: historical_range.clone(),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch failure summary with multipart partially materialized failure count");
+    assert_eq!(failure_summary.total_failures, 2);
+    assert_eq!(failure_summary.service_failure_count, 2);
+    assert_eq!(failure_summary.actionable_failure_count, 2);
+
+    let Json(error_distribution) = fetch_error_distribution(
+        State(state),
+        Query(ErrorQuery {
+            range: historical_range,
+            top: None,
+            scope: Some("service".to_string()),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch error distribution with multipart partially materialized failure count");
     assert!(
         error_distribution
             .items
