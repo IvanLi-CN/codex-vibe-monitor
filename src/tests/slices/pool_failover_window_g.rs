@@ -1899,7 +1899,7 @@ async fn dashboard_read_endpoints_stay_queryable_under_sqlite_write_lock() {
 }
 
 #[tokio::test]
-async fn runtime_snapshot_follow_up_refreshes_prompt_cache_rollups_without_read_path_writes() {
+async fn runtime_snapshot_keeps_prompt_cache_rollups_inline_without_background_follow_up() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -1940,7 +1940,12 @@ async fn runtime_snapshot_follow_up_refreshes_prompt_cache_rollups_without_read_
     persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
         .await
         .expect("runtime snapshot should persist");
-    wait_for_summary_quota_workers(state.as_ref()).await;
+
+    let runtime_snapshot_follow_up_handles = state.proxy_summary_quota_broadcast_handle.lock().await.len();
+    assert_eq!(
+        runtime_snapshot_follow_up_handles, 0,
+        "runtime snapshots should not schedule the summary/quota follow-up worker"
+    );
 
     let prompt_cache_requests: i64 = sqlx::query_scalar(
         "SELECT COALESCE(SUM(request_count), 0) FROM prompt_cache_rollup_hourly WHERE prompt_cache_key = ?1",
@@ -1948,10 +1953,10 @@ async fn runtime_snapshot_follow_up_refreshes_prompt_cache_rollups_without_read_
     .bind("pck-follow-up-refresh")
     .fetch_one(&state.pool)
     .await
-    .expect("load prompt cache rollup count after follow-up");
+    .expect("load prompt cache rollup count after runtime snapshot");
     assert_eq!(
         prompt_cache_requests, 1,
-        "background follow-up should materialize the new prompt-cache key without any GET-triggered sync"
+        "runtime snapshots should still keep prompt-cache rollups queryable inline"
     );
 
     let Json(conversations) = fetch_prompt_cache_conversations(
@@ -1967,15 +1972,31 @@ async fn runtime_snapshot_follow_up_refreshes_prompt_cache_rollups_without_read_
         }),
     )
     .await
-    .expect("working conversations should stay readable after background follow-up");
+    .expect("working conversations should stay readable after runtime snapshot");
     assert!(
         conversations
             .conversations
             .iter()
             .any(|conversation| conversation.prompt_cache_key == "pck-follow-up-refresh"
                 && conversation.request_count >= 1),
-        "background follow-up should make the new prompt-cache key visible to the read-only handler"
+        "runtime snapshots should keep the new prompt-cache key visible without any GET-triggered sync"
     );
+
+    let mut terminal_record = test_proxy_capture_record("follow-up-refresh-running", &occurred_at);
+    terminal_record.payload = Some(
+        "{\"endpoint\":\"/v1/responses\",\"statusCode\":200,\"isStream\":true,\"requesterIp\":\"198.51.100.88\",\"promptCacheKey\":\"pck-follow-up-refresh\",\"routeMode\":\"pool\",\"upstreamAccountId\":17,\"upstreamAccountName\":\"pool-account-17\",\"responseContentEncoding\":\"gzip\",\"requestedServiceTier\":\"priority\",\"reasoningEffort\":\"high\",\"proxyDisplayName\":\"jp-relay-01\"}"
+            .to_string(),
+    );
+
+    persist_and_broadcast_proxy_capture(&state, Instant::now(), terminal_record)
+        .await
+        .expect("terminal proxy capture should persist");
+    let terminal_follow_up_handles = state.proxy_summary_quota_broadcast_handle.lock().await.len();
+    assert!(
+        terminal_follow_up_handles > 0,
+        "terminal proxy captures should still schedule the summary/quota follow-up worker"
+    );
+    wait_for_summary_quota_workers(state.as_ref()).await;
 }
 
 #[tokio::test]

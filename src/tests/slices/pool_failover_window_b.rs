@@ -775,6 +775,76 @@ async fn proxy_openai_v1_header_sticky_responses_wait_timeout_respects_total_tim
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_header_sticky_recovers_in_final_poll_window_before_total_timeout() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse(&upstream_base).expect("valid upstream base url");
+    config.pool_upstream_responses_total_timeout = Duration::from_millis(250);
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(400),
+            poll_interval: Duration::from_millis(60),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
+    set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+
+    let request_state = state.clone();
+    let request_task = tokio::spawn(async move {
+        proxy_openai_v1(
+            State(request_state),
+            OriginalUri("/v1/responses".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    HeaderName::from_static("x-sticky-key"),
+                    HeaderValue::from_static("sticky-final-window-recovery"),
+                ),
+            ]),
+            Body::from(r#"{"model":"gpt-5","input":"hello"}"#.as_bytes().to_vec()),
+        )
+        .await
+    });
+
+    let pool = state.pool.clone();
+    let release_task = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(170)).await;
+        set_test_account_status(&pool, delayed_id, "active").await;
+    });
+
+    let response = request_task
+        .await
+        .expect("header sticky request task should join");
+    release_task
+        .await
+        .expect("delayed release task should join");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode proxy response");
+    assert_eq!(payload["authorization"], "Bearer upstream-delayed");
+    wait_for_pool_attempt_row_count(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-delayed").copied(), Some(1));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_header_sticky_responses_total_timeout_short_circuits_body_buffering() {
     let mut config = test_config();
     config.openai_upstream_base_url =

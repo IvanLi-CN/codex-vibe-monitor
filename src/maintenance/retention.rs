@@ -611,6 +611,13 @@ fn spawn_data_retention_maintenance(
             run_data_retention_maintenance(&state.pool, &state.config, None, Some(&cancel)).await
         {
             warn!(error = %err, "failed to run retention maintenance at startup");
+        } else if !cancel.is_cancelled() {
+            refresh_hourly_rollups_for_read_surfaces_best_effort(
+                &state.pool,
+                &state.hourly_rollup_sync_lock,
+                "retention-maintenance-startup-follow-up",
+            )
+            .await;
         }
 
         let mut ticker = interval(state.config.retention_interval);
@@ -630,6 +637,13 @@ fn spawn_data_retention_maintenance(
                         Some(&cancel),
                     ).await {
                         warn!(error = %err, "failed to run retention maintenance");
+                    } else if !cancel.is_cancelled() {
+                        refresh_hourly_rollups_for_read_surfaces_best_effort(
+                            &state.pool,
+                            &state.hourly_rollup_sync_lock,
+                            "retention-maintenance-interval-follow-up",
+                        )
+                        .await;
                     }
                 }
             }

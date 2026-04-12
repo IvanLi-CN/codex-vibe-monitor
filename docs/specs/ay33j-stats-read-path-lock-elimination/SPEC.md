@@ -60,7 +60,7 @@
 ### Core flows
 
 - Dashboard / stats GET 只读取现有 rollup、当前小时 live tail、当前 snapshot，不做任何写事务。
-- 新 proxy capture / runtime snapshot 写入后，由后台 coalesced follow-up 异步刷新 invocation/prompt-cache/sticky-key hourly rollups，并在需要时补跑 historical summary repair。
+- 新 terminal proxy capture / recovered invocation 写入后，由后台 coalesced follow-up 异步刷新 read-surface 所需快照，并在需要时补跑 historical summary repair；runtime snapshot 仍会 inline 更新当前 invocation/prompt-cache/sticky-key hourly rollup 行，但不再触发整套 read-surface refresh worker。
 - 启动期 maintenance 负责兜底历史 summary repair/backfill，GET 不再承担 bootstrap 责任。
 
 ### Edge cases / errors
@@ -82,7 +82,7 @@ None
 
 - Given SQLite 上存在并发写锁，When 请求 `/api/stats/summary?window=today`、`/api/stats/timeseries?range=today&bucket=1m`、`/api/stats/prompt-cache-conversations?...detail=compact`，Then 接口保持 2xx，不再返回 `database is locked` 500。
 - Given 请求链路经过本轮改造，When 检查相关 handler / query helper，Then 不再存在同步 live rollup catch-up 或 archive repair 写事务。
-- Given 新 invocation / runtime snapshot 写入，When 后台 follow-up 运行，Then invocation / prompt-cache / sticky-key 相关 rollup 会在有界时间内收敛，Dashboard 与共享 stats 不会永久陈旧。
+- Given 新 terminal invocation / recovered invocation 写入，When 后台 follow-up 运行，Then invocation / prompt-cache / sticky-key 相关 rollup 会在有界时间内收敛，Dashboard 与共享 stats 不会永久陈旧。
 - Given 现有前端与 API consumer，When 升级到本轮实现，Then `/api/**`、`/events`、JSON/SSE 字段与现有页面行为保持兼容。
 
 ## 实现前置条件（Definition of Ready / Preconditions）

@@ -1864,7 +1864,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_runtime_snapshot(
         );
     }
 
-    schedule_proxy_capture_follow_up_worker(state, &invoke_id).await
+    Ok(())
 }
 
 pub(crate) async fn persist_proxy_capture_runtime_record(

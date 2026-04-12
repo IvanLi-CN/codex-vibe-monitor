@@ -34,13 +34,10 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait(
         if total_timeout_deadline.is_some_and(|deadline| now >= deadline) {
             return Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired);
         }
-        if wait_deadline.is_some()
+        let in_final_poll_window = wait_deadline.is_some()
             && total_timeout_deadline
                 .map(|deadline| deadline.saturating_duration_since(now) <= poll_interval)
-                .unwrap_or(false)
-        {
-            return Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired);
-        }
+                .unwrap_or(false);
         let resolution = resolve_pool_account_for_request_with_route_requirement(
             state,
             sticky_key,
@@ -77,7 +74,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait(
                     .map(|deadline| std::cmp::min(wait_deadline, deadline))
                     .unwrap_or(wait_deadline);
                 let now = Instant::now();
-                if now >= effective_deadline {
+                if in_final_poll_window || now >= effective_deadline {
                     if total_timeout_deadline.is_some_and(|deadline| deadline <= wait_deadline) {
                         return Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired);
                     }
