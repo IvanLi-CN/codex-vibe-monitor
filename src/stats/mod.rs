@@ -1108,7 +1108,7 @@ fn add_invocation_hourly_source_record_to_totals(
 async fn load_missing_failure_rollup_keys_for_rows(
     pool: &Pool<Sqlite>,
     rows: &[ArchivedInvocationFailureRow],
-) -> Result<HashSet<(i64, String)>> {
+) -> Result<HashSet<(i64, String, String, i64, String)>> {
     let keys = rows
         .iter()
         .filter_map(|row| {
@@ -1125,6 +1125,9 @@ async fn load_missing_failure_rollup_keys_for_rows(
             Some((
                 summary_rollup_bucket_start_epoch(&row.occurred_at).ok()?,
                 row.source.clone(),
+                classification.failure_class.as_str().to_string(),
+                classification.is_actionable as i64,
+                categorize_error(row.error_message.as_deref().unwrap_or_default()),
             ))
         })
         .collect::<HashSet<_>>();
@@ -1133,21 +1136,204 @@ async fn load_missing_failure_rollup_keys_for_rows(
     }
 
     let mut missing_keys = HashSet::new();
-    for (bucket_start_epoch, source) in keys {
+    for (bucket_start_epoch, source, failure_class, is_actionable, error_category) in keys {
         let exists = sqlx::query_scalar::<_, i64>(
-            "SELECT 1 FROM invocation_failure_rollup_hourly WHERE bucket_start_epoch = ?1 AND source = ?2 LIMIT 1",
+            "SELECT 1 FROM invocation_failure_rollup_hourly WHERE bucket_start_epoch = ?1 AND source = ?2 AND failure_class = ?3 AND is_actionable = ?4 AND error_category = ?5 LIMIT 1",
         )
         .bind(bucket_start_epoch)
         .bind(&source)
+        .bind(&failure_class)
+        .bind(is_actionable)
+        .bind(&error_category)
         .fetch_optional(pool)
         .await?
         .is_some();
         if !exists {
-            missing_keys.insert((bucket_start_epoch, source));
+            missing_keys.insert((
+                bucket_start_epoch,
+                source,
+                failure_class,
+                is_actionable,
+                error_category,
+            ));
         }
     }
 
     Ok(missing_keys)
+}
+
+fn collect_proxy_perf_rollup_keys_from_row(
+    keys: &mut HashSet<(i64, String)>,
+    row: &InvocationHourlySourceRecord,
+) -> Result<()> {
+    if row.source != SOURCE_PROXY {
+        return Ok(());
+    }
+    let bucket_start_epoch = summary_rollup_bucket_start_epoch(&row.occurred_at)?;
+    for (stage, value_ms) in [
+        ("total", row.t_total_ms),
+        ("requestRead", row.t_req_read_ms),
+        ("requestParse", row.t_req_parse_ms),
+        ("upstreamConnect", row.t_upstream_connect_ms),
+        ("upstreamFirstByte", row.t_upstream_ttfb_ms),
+        ("upstreamStream", row.t_upstream_stream_ms),
+        ("responseParse", row.t_resp_parse_ms),
+        ("persistence", row.t_persist_ms),
+    ] {
+        if normalize_non_negative_timing_value(value_ms).is_some() {
+            keys.insert((bucket_start_epoch, stage.to_string()));
+        }
+    }
+    Ok(())
+}
+
+async fn load_missing_proxy_perf_rollup_keys_for_archive(
+    pool: &Pool<Sqlite>,
+    archive_pool: &Pool<Sqlite>,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+) -> Result<HashSet<(i64, String)>> {
+    let mut cursor_id = 0_i64;
+    let mut keys = HashSet::new();
+
+    loop {
+        let rows = load_invocation_hourly_source_rows_after_id(
+            archive_pool,
+            cursor_id,
+            InvocationSourceScope::ProxyOnly,
+            BACKFILL_BATCH_SIZE,
+        )
+        .await?;
+        if rows.is_empty() {
+            break;
+        }
+        cursor_id = rows.last().map(|row| row.id).unwrap_or(cursor_id);
+        for row in rows {
+            if !invocation_hourly_source_record_matches_range(&row, range) {
+                continue;
+            }
+            collect_proxy_perf_rollup_keys_from_row(&mut keys, &row)?;
+        }
+    }
+
+    if keys.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    let mut missing_keys = HashSet::new();
+    for (bucket_start_epoch, stage) in keys {
+        let exists = sqlx::query_scalar::<_, i64>(
+            "SELECT 1 FROM proxy_perf_stage_hourly WHERE bucket_start_epoch = ?1 AND stage = ?2 LIMIT 1",
+        )
+        .bind(bucket_start_epoch)
+        .bind(&stage)
+        .fetch_optional(pool)
+        .await?
+        .is_some();
+        if !exists {
+            missing_keys.insert((bucket_start_epoch, stage));
+        }
+    }
+
+    Ok(missing_keys)
+}
+
+fn add_invocation_hourly_source_record_to_missing_proxy_perf_rollups(
+    perf: &mut BTreeMap<(i64, String), ProxyPerfStageHourlyDelta>,
+    row: &InvocationHourlySourceRecord,
+    missing_keys: &HashSet<(i64, String)>,
+) -> Result<()> {
+    if row.source != SOURCE_PROXY {
+        return Ok(());
+    }
+    let bucket_start_epoch = summary_rollup_bucket_start_epoch(&row.occurred_at)?;
+    for (stage, value_ms) in [
+        ("total", row.t_total_ms),
+        ("requestRead", row.t_req_read_ms),
+        ("requestParse", row.t_req_parse_ms),
+        ("upstreamConnect", row.t_upstream_connect_ms),
+        ("upstreamFirstByte", row.t_upstream_ttfb_ms),
+        ("upstreamStream", row.t_upstream_stream_ms),
+        ("responseParse", row.t_resp_parse_ms),
+        ("persistence", row.t_persist_ms),
+    ] {
+        if !missing_keys.contains(&(bucket_start_epoch, stage.to_string())) {
+            continue;
+        }
+        record_proxy_perf_stage_sample(perf, bucket_start_epoch, stage, value_ms);
+    }
+    Ok(())
+}
+
+pub(crate) async fn query_unmaterialized_proxy_perf_stage_rollups_from_archives(
+    pool: &Pool<Sqlite>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> Result<BTreeMap<String, ProxyPerfStageHourlyDelta>> {
+    let archive_rows = load_completed_invocation_archive_paths(pool).await?;
+    let mut perf_by_bucket_stage: BTreeMap<(i64, String), ProxyPerfStageHourlyDelta> =
+        BTreeMap::new();
+
+    for archive_row in archive_rows {
+        let Some((archive_pool, temp_cleanup)) =
+            open_unmaterialized_invocation_archive_batch_pool(&archive_row, "proxy-perf").await?
+        else {
+            continue;
+        };
+        let missing_keys = load_missing_proxy_perf_rollup_keys_for_archive(
+            pool,
+            &archive_pool,
+            Some((start, end)),
+        )
+        .await?;
+        if missing_keys.is_empty() {
+            archive_pool.close().await;
+            drop(temp_cleanup);
+            continue;
+        }
+        let mut cursor_id = 0_i64;
+        loop {
+            let rows = load_invocation_hourly_source_rows_after_id(
+                &archive_pool,
+                cursor_id,
+                InvocationSourceScope::ProxyOnly,
+                BACKFILL_BATCH_SIZE,
+            )
+            .await?;
+            if rows.is_empty() {
+                break;
+            }
+            cursor_id = rows.last().map(|row| row.id).unwrap_or(cursor_id);
+            for row in rows {
+                if !invocation_hourly_source_record_matches_range(&row, Some((start, end))) {
+                    continue;
+                }
+                add_invocation_hourly_source_record_to_missing_proxy_perf_rollups(
+                    &mut perf_by_bucket_stage,
+                    &row,
+                    &missing_keys,
+                )?;
+            }
+        }
+
+        archive_pool.close().await;
+        drop(temp_cleanup);
+    }
+
+    let mut by_stage = BTreeMap::new();
+    for ((_, stage), delta) in perf_by_bucket_stage {
+        let entry = by_stage
+            .entry(stage)
+            .or_insert_with(ProxyPerfStageHourlyDelta::default);
+        entry.sample_count += delta.sample_count;
+        entry.sum_ms += delta.sum_ms;
+        entry.max_ms = entry.max_ms.max(delta.max_ms);
+        if entry.histogram.is_empty() {
+            entry.histogram = empty_approx_histogram();
+        }
+        merge_approx_histogram_into(&mut entry.histogram, &delta.histogram)?;
+    }
+
+    Ok(by_stage)
 }
 
 pub(crate) async fn query_unmaterialized_invocation_archive_totals(
@@ -1269,7 +1455,14 @@ pub(crate) async fn load_unmaterialized_invocation_archive_failure_rows(
             let Ok(bucket_start_epoch) = summary_rollup_bucket_start_epoch(&row.occurred_at) else {
                 return false;
             };
-            missing_keys.contains(&(bucket_start_epoch, row.source.clone()))
+            let error_category = categorize_error(row.error_message.as_deref().unwrap_or_default());
+            missing_keys.contains(&(
+                bucket_start_epoch,
+                row.source.clone(),
+                classification.failure_class.as_str().to_string(),
+                classification.is_actionable as i64,
+                error_category,
+            ))
         }));
         archive_pool.close().await;
         drop(temp_cleanup);

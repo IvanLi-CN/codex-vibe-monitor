@@ -1470,6 +1470,30 @@ pub(crate) async fn fetch_perf_stats(
                     &decode_approx_histogram(&row.histogram),
                 )?;
             }
+            let archived_start = Utc
+                .timestamp_opt(range_start_epoch, 0)
+                .single()
+                .ok_or_else(|| ApiError::from(anyhow!("invalid perf archive start epoch")))?;
+            let archived_end = Utc
+                .timestamp_opt(range_end_epoch, 0)
+                .single()
+                .ok_or_else(|| ApiError::from(anyhow!("invalid perf archive end epoch")))?;
+            let archived_perf =
+                crate::stats::query_unmaterialized_proxy_perf_stage_rollups_from_archives(
+                    &state.pool,
+                    archived_start,
+                    archived_end,
+                )
+                .await?;
+            for (stage, delta) in archived_perf {
+                let entry = by_stage
+                    .entry(stage)
+                    .or_insert_with(|| (0, 0.0, 0.0, empty_approx_histogram()));
+                entry.0 += delta.sample_count;
+                entry.1 += delta.sum_ms;
+                entry.2 = entry.2.max(delta.max_ms);
+                merge_approx_histogram_into(&mut entry.3, &delta.histogram)?;
+            }
         }
         let exact_records = query_invocation_exact_records(
             &state.pool,
