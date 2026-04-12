@@ -140,6 +140,10 @@ cleanup_remote() {
   fi
   rm -f "$MOCK_SCRIPT" "$LOADGEN_SCRIPT" "$COMPOSE_FILE" "$CAPS_OVERRIDE"
   if [ "$CLEANUP" = "1" ]; then
+    docker run --rm --cap-drop=all \
+      -v "$REMOTE_RUN:/work" \
+      python:3.12-alpine \
+      python -c "import shutil; shutil.rmtree('/work/data', ignore_errors=True)" >/dev/null 2>&1 || true
     if [ -z "$REUSE_IMAGE_TAG" ]; then
       docker image rm -f "$IMAGE_TAG" >/dev/null 2>&1 || true
     fi

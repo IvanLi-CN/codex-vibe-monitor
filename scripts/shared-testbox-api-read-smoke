@@ -1,0 +1,285 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: scripts/shared-testbox-api-read-smoke [options]
+
+Build the current repo on codex-testbox and run a read-side smoke test that verifies:
+- `/health` returns 200/ok once the containerized runtime starts
+- `/api/version`, `/api/stats/summary`, `/api/stats/timeseries`, and `/api/stats/prompt-cache-conversations` return 200
+- summary/timeseries/prompt-cache responses keep their baseline JSON object/array shapes
+
+Options:
+  --testbox HOST       SSH host alias (default: codex-testbox)
+  --reuse-image TAG    Skip docker build and reuse an existing remote image tag
+  --cleanup            Remove this run directory and image after success
+  -h, --help           Show this help message
+USAGE
+}
+
+TESTBOX="codex-testbox"
+REUSE_IMAGE_TAG=""
+CLEANUP=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --testbox)
+      TESTBOX="$2"
+      shift 2
+      ;;
+    --reuse-image)
+      REUSE_IMAGE_TAG="$2"
+      shift 2
+      ;;
+    --cleanup)
+      CLEANUP=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+  :
+else
+  REPO_ROOT="$(pwd)"
+fi
+REPO_ROOT="$(python3 - <<'PY' "$REPO_ROOT"
+import os, sys
+print(os.path.realpath(sys.argv[1]))
+PY
+)"
+REPO_NAME="$(basename "$REPO_ROOT")"
+PATH_HASH8="$(python3 - <<'PY' "$REPO_ROOT"
+import hashlib, os, sys
+print(hashlib.sha256(os.path.realpath(sys.argv[1]).encode()).hexdigest()[:8])
+PY
+)"
+GIT_SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo nogit)"
+RUN_ID="$(date +%Y%m%d_%H%M%S)_api_read_${GIT_SHA}"
+REMOTE_BASE="/srv/codex/workspaces/$USER"
+WORKSPACE_SLUG="${REPO_NAME}__${PATH_HASH8}"
+REMOTE_WORKSPACE="${REMOTE_BASE}/${WORKSPACE_SLUG}"
+REMOTE_RUN="${REMOTE_WORKSPACE}/runs/${RUN_ID}"
+IMAGE_TAG="${REUSE_IMAGE_TAG}"
+if [ -z "$IMAGE_TAG" ]; then
+  IMAGE_TAG_RAW="codex_${WORKSPACE_SLUG}_${RUN_ID}"
+  IMAGE_TAG="$(python3 - <<'PY' "$IMAGE_TAG_RAW"
+import re, sys
+value = re.sub(r'[^a-z0-9_.-]+', '_', sys.argv[1].lower()).strip('._-')
+print(value[:120])
+PY
+)"
+fi
+APP_CONTAINER_RAW="cvm_api_read_${WORKSPACE_SLUG}_${RUN_ID}"
+APP_CONTAINER="$(python3 - <<'PY' "$APP_CONTAINER_RAW"
+import re, sys
+value = re.sub(r'[^a-z0-9_.-]+', '_', sys.argv[1].lower()).strip('._-')
+print(value[:63])
+PY
+)"
+
+printf '== local repo ==\n%s\n' "$REPO_ROOT"
+printf '== remote run ==\n%s\n' "$REMOTE_RUN"
+printf '== image tag ==\n%s\n' "$IMAGE_TAG"
+printf '== app container ==\n%s\n' "$APP_CONTAINER"
+
+ssh -o BatchMode=yes "$TESTBOX" "mkdir -p '$REMOTE_RUN'"
+rsync -az --delete \
+  --exclude '.git/' \
+  --exclude '.env' \
+  --exclude '.env.*' \
+  --exclude 'node_modules/' \
+  --exclude 'target/' \
+  --exclude '*.db' \
+  --exclude '*.db-*' \
+  --exclude 'web/node_modules/' \
+  --exclude 'web/dist/' \
+  --exclude 'data/' \
+  --exclude 'logs/' \
+  "$REPO_ROOT/" "$TESTBOX:$REMOTE_RUN/"
+
+ssh -o BatchMode=yes "$TESTBOX" env \
+  REMOTE_RUN="$REMOTE_RUN" \
+  IMAGE_TAG="$IMAGE_TAG" \
+  REUSE_IMAGE_TAG="$REUSE_IMAGE_TAG" \
+  CLEANUP="$CLEANUP" \
+  APP_CONTAINER="$APP_CONTAINER" \
+  GIT_SHA="$GIT_SHA" \
+  bash -s <<'REMOTE'
+set -euo pipefail
+export TZ=Asia/Shanghai
+
+DATA_DIR="$REMOTE_RUN/data"
+LOG_DIR="$REMOTE_RUN/logs"
+APP_LOG="$LOG_DIR/app.log"
+SMOKE_SCRIPT="$REMOTE_RUN/.codex-api-read-smoke.py"
+TOKEN="api-read-smoke-$GIT_SHA"
+ENCRYPTION_SECRET="shared-testbox-encryption-secret"
+DATABASE_PATH="/srv/app/data/codex_vibe_monitor.db"
+
+mkdir -p "$DATA_DIR" "$LOG_DIR"
+chmod 0777 "$DATA_DIR"
+
+cleanup_remote() {
+  set +e
+  docker rm -f "$APP_CONTAINER" >/dev/null 2>&1 || true
+  rm -f "$SMOKE_SCRIPT"
+  if [ "$CLEANUP" = "1" ]; then
+    if [ -z "$REUSE_IMAGE_TAG" ]; then
+      docker image rm -f "$IMAGE_TAG" >/dev/null 2>&1 || true
+    fi
+    rm -rf "$REMOTE_RUN"
+  fi
+}
+trap cleanup_remote EXIT
+
+cat > "$SMOKE_SCRIPT" <<'PY'
+#!/usr/bin/env python3
+import json
+import time
+import urllib.error
+import urllib.request
+
+BASE_URL = 'http://127.0.0.1:8080'
+TOKEN = None
+
+
+def request_json(method, path, payload=None, timeout=30):
+    data = None if payload is None else json.dumps(payload).encode()
+    headers = {}
+    if TOKEN:
+        headers['Authorization'] = f'Bearer {TOKEN}'
+    if data is not None:
+        headers['Content-Type'] = 'application/json'
+        headers['Content-Length'] = str(len(data))
+    req = urllib.request.Request(BASE_URL + path, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode(errors='replace')
+            content_type = resp.headers.get('Content-Type', '')
+            parsed = json.loads(body) if 'json' in content_type else body
+            return resp.status, parsed
+    except urllib.error.HTTPError as err:
+        body = err.read().decode(errors='replace')
+        try:
+            parsed = json.loads(body)
+        except Exception:
+            parsed = body
+        return err.code, parsed
+
+
+def wait_health():
+    last_error = None
+    for _ in range(60):
+        try:
+            status, body = request_json('GET', '/health', timeout=5)
+            if status == 200 and body == 'ok':
+                print(json.dumps({'phase': 'health', 'status': status, 'body': body}))
+                return
+            last_error = f'status={status} body={body!r}'
+        except Exception as exc:
+            last_error = str(exc)
+        time.sleep(1)
+    raise SystemExit(f'healthcheck timed out: {last_error}')
+
+
+def seed_token():
+    status, payload = request_json('PUT', '/api/pool/routing-settings', {'apiKey': TOKEN})
+    if status != 200:
+        raise SystemExit(f'failed to seed pool routing settings: status={status} payload={payload}')
+    print(json.dumps({'phase': 'seed', 'status': status}))
+
+
+def assert_shape(name, payload):
+    if name == 'version':
+        assert isinstance(payload, dict), payload
+        assert ('version' in payload) or ({'backend', 'frontend'} <= set(payload.keys())), payload
+    elif name == 'summary':
+        assert isinstance(payload, dict), payload
+        assert (('totals' in payload and 'window' in payload) or ('totalCount' in payload and 'successCount' in payload and 'failureCount' in payload)), payload
+    elif name == 'timeseries':
+        assert isinstance(payload, dict), payload
+        assert 'points' in payload, payload
+        assert isinstance(payload['points'], list), payload
+    elif name == 'prompt_cache':
+        assert isinstance(payload, dict), payload
+        assert 'conversations' in payload, payload
+        assert isinstance(payload['conversations'], list), payload
+    else:
+        raise AssertionError(name)
+
+
+def run_checks():
+    checks = [
+        ('version', '/api/version'),
+        ('summary', '/api/stats/summary'),
+        ('timeseries', '/api/stats/timeseries?range=24h&bucket=1h'),
+        ('prompt_cache', '/api/stats/prompt-cache-conversations?activityHours=1'),
+    ]
+    for name, path in checks:
+        status, payload = request_json('GET', path, timeout=30)
+        if status != 200:
+            raise SystemExit(f'{name} failed: status={status} payload={payload}')
+        assert_shape(name, payload)
+        print(json.dumps({'phase': name, 'status': status, 'keys': sorted(payload.keys()) if isinstance(payload, dict) else None}))
+
+
+if __name__ == '__main__':
+    import sys
+    if len(sys.argv) != 3 or sys.argv[1] != 'run':
+        raise SystemExit(f'usage: {sys.argv[0]} run <token>')
+    TOKEN = sys.argv[2]
+    wait_health()
+    seed_token()
+    run_checks()
+PY
+chmod +x "$SMOKE_SCRIPT"
+
+if [ -z "$REUSE_IMAGE_TAG" ]; then
+  printf '== build image ==\n'
+  docker build -t "$IMAGE_TAG" --build-arg APP_EFFECTIVE_VERSION="testbox-api-read-$GIT_SHA" "$REMOTE_RUN"
+else
+  printf '== reuse image ==\n%s\n' "$IMAGE_TAG"
+  docker image inspect "$IMAGE_TAG" >/dev/null
+fi
+
+printf '== init schema ==\n'
+docker run --rm --cap-drop=all \
+  -v "$DATA_DIR:/srv/app/data" \
+  -e DATABASE_PATH="$DATABASE_PATH" \
+  -e UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET="$ENCRYPTION_SECRET" \
+  "$IMAGE_TAG" \
+  codex-vibe-monitor --retention-run-once --retention-dry-run
+
+printf '== start app ==\n'
+docker run -d --name "$APP_CONTAINER" --cap-drop=all \
+  -v "$DATA_DIR:/srv/app/data" \
+  -e DATABASE_PATH="$DATABASE_PATH" \
+  -e UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET="$ENCRYPTION_SECRET" \
+  -e RUST_LOG=warn \
+  "$IMAGE_TAG" > /dev/null
+
+docker logs -f "$APP_CONTAINER" >"$APP_LOG" 2>&1 &
+LOG_PID=$!
+trap 'kill "$LOG_PID" >/dev/null 2>&1 || true; cleanup_remote' EXIT
+
+printf '== verify api ==\n'
+docker run --rm --cap-drop=all \
+  --network "container:$APP_CONTAINER" \
+  -v "$SMOKE_SCRIPT:/smoke.py:ro" \
+  python:3.12-alpine python /smoke.py run "$TOKEN"
+
+printf '== app log tail ==\n'
+tail -n 40 "$APP_LOG" || true
+printf '== shared testbox api read smoke ok ==\n'
+REMOTE
