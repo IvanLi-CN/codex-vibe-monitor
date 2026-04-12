@@ -1,3 +1,5 @@
+use super::*;
+
 pub(crate) async fn get_pool_routing_settings(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<PoolRoutingSettingsResponse>, (StatusCode, String)> {
@@ -1135,7 +1137,7 @@ pub(crate) async fn relogin_upstream_account(
     create_oauth_login_session(State(state), headers, Json(payload)).await
 }
 
-async fn apply_mother_assignment(
+pub(crate) async fn apply_mother_assignment(
     tx: &mut Transaction<'_, Sqlite>,
     account_id: i64,
     group_name: Option<&str>,
@@ -1187,7 +1189,7 @@ pub(crate) async fn create_api_key_account(
     Ok(Json(detail))
 }
 
-async fn create_api_key_account_inner(
+pub(crate) async fn create_api_key_account_inner(
     state: Arc<AppState>,
     payload: CreateApiKeyAccountRequest,
 ) -> Result<UpstreamAccountDetail, (StatusCode, String)> {
@@ -1319,7 +1321,7 @@ pub(crate) async fn update_upstream_account(
     Ok(Json(detail))
 }
 
-async fn update_upstream_account_inner(
+pub(crate) async fn update_upstream_account_inner(
     state: &AppState,
     id: i64,
     payload: UpdateUpstreamAccountRequest,
@@ -1506,7 +1508,7 @@ async fn update_upstream_account_inner(
     Ok(detail)
 }
 
-async fn apply_oauth_login_session_metadata_to_account_with_executor(
+pub(crate) async fn apply_oauth_login_session_metadata_to_account_with_executor(
     tx: &mut Transaction<'_, Sqlite>,
     account_id: i64,
     display_name: Option<String>,
@@ -1588,7 +1590,7 @@ pub(crate) async fn delete_upstream_account(
     Ok(status)
 }
 
-async fn delete_upstream_account_inner(
+pub(crate) async fn delete_upstream_account_inner(
     state: &AppState,
     id: i64,
 ) -> Result<StatusCode, (StatusCode, String)> {
@@ -1655,7 +1657,7 @@ pub(crate) async fn sync_upstream_account(
     Ok(Json(detail))
 }
 
-async fn handle_oauth_callback(
+pub(crate) async fn handle_oauth_callback(
     state: Arc<AppState>,
     query: OauthCallbackQuery,
 ) -> Result<String, (StatusCode, String)> {
@@ -1700,7 +1702,7 @@ async fn handle_oauth_callback(
     ))
 }
 
-async fn complete_oauth_login_session_with_query(
+pub(crate) async fn complete_oauth_login_session_with_query(
     state: Arc<AppState>,
     session: OauthLoginSessionRow,
     query: OauthCallbackQuery,
@@ -1867,7 +1869,7 @@ async fn complete_oauth_login_session_with_query(
     Ok(account_id)
 }
 
-async fn persist_existing_oauth_callback_inner(
+pub(crate) async fn persist_existing_oauth_callback_inner(
     state: &AppState,
     input: PersistOauthCallbackInput,
 ) -> Result<i64, (StatusCode, String)> {
@@ -1878,14 +1880,14 @@ async fn persist_existing_oauth_callback_inner(
     Ok(account_id)
 }
 
-async fn persist_new_oauth_callback_inner(
+pub(crate) async fn persist_new_oauth_callback_inner(
     state: &AppState,
     input: PersistOauthCallbackInput,
 ) -> Result<i64, (StatusCode, String)> {
     persist_oauth_callback_inner(state, input).await
 }
 
-async fn persist_oauth_callback_inner(
+pub(crate) async fn persist_oauth_callback_inner(
     state: &AppState,
     input: PersistOauthCallbackInput,
 ) -> Result<i64, (StatusCode, String)> {
@@ -1968,7 +1970,7 @@ async fn persist_oauth_callback_inner(
     Ok(account_id)
 }
 
-fn parse_manual_oauth_callback(
+pub(crate) fn parse_manual_oauth_callback(
     callback_url: &str,
     expected_redirect_uri: &str,
 ) -> Result<OauthCallbackQuery> {

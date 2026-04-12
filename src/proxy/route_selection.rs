@@ -1,4 +1,4 @@
-fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
     let authorization = headers.get(header::AUTHORIZATION)?.to_str().ok()?.trim();
     let (scheme, token) = authorization.split_once(' ')?;
     if !scheme.eq_ignore_ascii_case("bearer") {
@@ -12,7 +12,7 @@ fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
     }
 }
 
-async fn request_matches_pool_route(state: &AppState, headers: &HeaderMap) -> Result<bool> {
+pub(crate) async fn request_matches_pool_route(state: &AppState, headers: &HeaderMap) -> Result<bool> {
     let Some(api_key) = extract_bearer_token(headers) else {
         return Ok(false);
     };
@@ -20,7 +20,7 @@ async fn request_matches_pool_route(state: &AppState, headers: &HeaderMap) -> Re
 }
 
 #[derive(Debug, Default, Deserialize)]
-struct StickyKeyProjection {
+pub(crate) struct StickyKeyProjection {
     #[serde(default)]
     metadata: StickyKeyProjectionMetadata,
     #[serde(default)]
@@ -34,7 +34,7 @@ struct StickyKeyProjection {
 }
 
 #[derive(Debug, Default, Deserialize)]
-struct StickyKeyProjectionMetadata {
+pub(crate) struct StickyKeyProjectionMetadata {
     #[serde(default)]
     sticky_key: Option<String>,
     #[serde(default, rename = "stickyKey")]
@@ -64,13 +64,13 @@ impl StickyKeyProjection {
     }
 }
 
-fn extract_sticky_key_from_request_body_projection(bytes: &[u8]) -> Option<String> {
+pub(crate) fn extract_sticky_key_from_request_body_projection(bytes: &[u8]) -> Option<String> {
     serde_json::from_slice::<StickyKeyProjection>(bytes)
         .ok()
         .and_then(StickyKeyProjection::into_sticky_key)
 }
 
-async fn extract_sticky_key_from_replay_snapshot(
+pub(crate) async fn extract_sticky_key_from_replay_snapshot(
     snapshot: &PoolReplayBodySnapshot,
 ) -> Option<String> {
     match snapshot {
@@ -93,14 +93,14 @@ async fn extract_sticky_key_from_replay_snapshot(
     }
 }
 
-fn pool_account_supports_live_request_body(account: &PoolResolvedAccount, original_uri: &Uri) -> bool {
+pub(crate) fn pool_account_supports_live_request_body(account: &PoolResolvedAccount, original_uri: &Uri) -> bool {
     match &account.auth {
         PoolResolvedAuth::ApiKey { .. } => true,
         PoolResolvedAuth::Oauth { .. } => original_uri.path() != "/v1/responses",
     }
 }
 
-fn should_prebuffer_for_body_sticky_probe(
+pub(crate) fn should_prebuffer_for_body_sticky_probe(
     has_header_sticky_key: bool,
     content_type: Option<&str>,
     body_size_hint_exact: Option<usize>,
@@ -115,7 +115,7 @@ fn should_prebuffer_for_body_sticky_probe(
             .is_some_and(|value| value <= POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES)
 }
 
-async fn send_pool_request_live_first_attempt(
+pub(crate) async fn send_pool_request_live_first_attempt(
     state: Arc<AppState>,
     proxy_request_id: u64,
     method: Method,
@@ -625,7 +625,7 @@ async fn send_pool_request_live_first_attempt(
     })
 }
 
-async fn continue_or_retry_pool_live_request(
+pub(crate) async fn continue_or_retry_pool_live_request(
     state: Arc<AppState>,
     proxy_request_id: u64,
     method: Method,
@@ -889,7 +889,7 @@ async fn continue_or_retry_pool_live_request(
     }
 }
 
-async fn maybe_backfill_oauth_request_debug_from_replay_status(
+pub(crate) async fn maybe_backfill_oauth_request_debug_from_replay_status(
     debug: &mut Option<oauth_bridge::OauthResponsesDebugInfo>,
     original_uri: &Uri,
     replay_status_rx: &watch::Receiver<PoolReplayBodyStatus>,
@@ -920,7 +920,7 @@ async fn maybe_backfill_oauth_request_debug_from_replay_status(
     );
 }
 
-async fn proxy_openai_v1_via_pool(
+pub(crate) async fn proxy_openai_v1_via_pool(
     state: Arc<AppState>,
     proxy_request_id: u64,
     original_uri: &Uri,

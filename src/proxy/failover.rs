@@ -1,4 +1,4 @@
-fn parse_retry_after_delay(value: &HeaderValue) -> Option<Duration> {
+pub(crate) fn parse_retry_after_delay(value: &HeaderValue) -> Option<Duration> {
     let text = value.to_str().ok()?.trim();
     if text.is_empty() {
         return None;
@@ -17,7 +17,7 @@ fn parse_retry_after_delay(value: &HeaderValue) -> Option<Duration> {
     )))
 }
 
-async fn resolve_pool_account_for_request_with_wait(
+pub(crate) async fn resolve_pool_account_for_request_with_wait(
     state: &AppState,
     sticky_key: Option<&str>,
     excluded_ids: &[i64],
@@ -76,7 +76,7 @@ async fn resolve_pool_account_for_request_with_wait(
     }
 }
 
-async fn send_pool_request_with_failover(
+pub(crate) async fn send_pool_request_with_failover(
     state: Arc<AppState>,
     proxy_request_id: u64,
     method: Method,
