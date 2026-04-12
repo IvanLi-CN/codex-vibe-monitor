@@ -805,9 +805,19 @@ pub(crate) struct UpstreamAccountListResponse {
     page_size: usize,
     metrics: UpstreamAccountListMetrics,
     groups: Vec<UpstreamAccountGroupSummary>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     forward_proxy_nodes: Vec<ForwardProxyBindingNodeResponse>,
     has_ungrouped_accounts: bool,
     routing: PoolRoutingSettingsResponse,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ListForwardProxyBindingNodesQuery {
+    #[serde(default)]
+    pub(crate) key: Vec<String>,
+    #[serde(default)]
+    pub(crate) include_current: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]

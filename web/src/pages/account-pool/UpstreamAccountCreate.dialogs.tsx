@@ -31,7 +31,7 @@ export function UpstreamAccountCreateDialogs() {
     locale,
     normalizeEnabledGroupUpstream429MaxRetries,
     normalizeGroupUpstream429MaxRetries,
-    refresh,
+    refreshForwardProxyBindings,
     setDuplicateDetail,
     setDuplicateDetailOpen,
     setGroupNoteEditor,
@@ -41,7 +41,7 @@ export function UpstreamAccountCreateDialogs() {
 
   useGroupNoteCatalogAutoRefresh({
     open: groupNoteEditor.open,
-    refresh,
+    refresh: refreshForwardProxyBindings,
     catalogState: forwardProxyCatalogState,
   });
 

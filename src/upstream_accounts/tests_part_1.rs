@@ -190,6 +190,73 @@
     }
 
     #[test]
+    fn forward_proxy_binding_nodes_query_keeps_repeated_keys_and_include_current() {
+        let query = parse_list_forward_proxy_binding_nodes_query(
+            &"/api/pool/forward-proxy-binding-nodes?includeCurrent=1&key=legacy-a&key=&key=legacy-b"
+                .parse()
+                .expect("parse uri"),
+        )
+        .expect("deserialize binding query");
+
+        assert!(query.include_current);
+        assert_eq!(
+            query.key,
+            vec![
+                "legacy-a".to_string(),
+                "".to_string(),
+                "legacy-b".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn list_forward_proxy_binding_nodes_returns_current_nodes_and_deduplicated_requested_missing_keys()
+     {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        crate::ensure_schema(&state.pool)
+            .await
+            .expect("ensure full schema for forward proxy settings");
+        let settings = ForwardProxySettings {
+            proxy_urls: vec!["http://127.0.0.1:17890#JP Edge 01".to_string()],
+            subscription_urls: Vec::new(),
+            subscription_update_interval_secs: 3600,
+            insert_direct: false,
+        };
+        save_forward_proxy_settings(&state.pool, settings.clone())
+            .await
+            .expect("persist forward proxy settings");
+        {
+            let mut manager = state.forward_proxy.lock().await;
+            manager.apply_settings(settings);
+        }
+
+        let Json(nodes) = list_forward_proxy_binding_nodes(
+            State(state),
+            "/api/pool/forward-proxy-binding-nodes?includeCurrent=1&key=&key=legacy-missing-key&key=legacy-missing-key"
+                .parse()
+                .expect("parse uri"),
+        )
+        .await
+        .expect("list forward proxy binding nodes");
+
+        assert_eq!(
+            nodes
+                .iter()
+                .filter(|node| node.key == "legacy-missing-key")
+                .count(),
+            1
+        );
+        assert!(
+            nodes.iter().any(|node| node.key == "legacy-missing-key" && !node.selectable),
+            "missing requested key should be returned once as an unavailable option"
+        );
+        assert!(
+            nodes.iter().any(|node| node.selectable),
+            "current selectable binding nodes should still be returned for dialog choices"
+        );
+    }
+
+    #[test]
     fn explicit_split_filters_override_legacy_status_mapping() {
         let enable_filters = collect_normalized_upstream_account_filters(
             &[UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED.to_string()],

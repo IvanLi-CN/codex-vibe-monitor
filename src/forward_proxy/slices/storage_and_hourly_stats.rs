@@ -769,10 +769,20 @@ pub(crate) async fn build_forward_proxy_binding_nodes_response(
     state: &AppState,
     extra_proxy_keys: &[String],
 ) -> Result<Vec<ForwardProxyBindingNodeResponse>> {
+    build_forward_proxy_binding_nodes_response_with_options(state, extra_proxy_keys, true).await
+}
+
+pub(crate) async fn build_forward_proxy_binding_nodes_response_with_options(
+    state: &AppState,
+    extra_proxy_keys: &[String],
+    catch_up_hourly_rollups: bool,
+) -> Result<Vec<ForwardProxyBindingNodeResponse>> {
     const BUCKET_SECONDS: i64 = 3600;
     const BUCKET_COUNT: i64 = 24;
 
-    crate::ensure_hourly_rollups_caught_up(state).await?;
+    if catch_up_hourly_rollups {
+        crate::ensure_hourly_rollups_caught_up(state).await?;
+    }
 
     let mut nodes = {
         let manager = state.forward_proxy.lock().await;
@@ -1826,4 +1836,3 @@ pub(crate) fn spawn_forward_proxy_bootstrap_probe_round(
         info!(trigger, "forward proxy bootstrap probe round finished");
     });
 }
-
