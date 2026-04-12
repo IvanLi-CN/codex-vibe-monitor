@@ -1,817 +1,4 @@
-fn split_exact_range_by_retention(
-    live_ranges: &mut Vec<ExactUtcRange>,
-    range: ExactUtcRange,
-    raw_cutoff: DateTime<Utc>,
-) -> Result<(), ApiError> {
-    if range.end > raw_cutoff {
-        push_exact_range(live_ranges, range.start.max(raw_cutoff), range.end)?;
-    }
-    Ok(())
-}
-
-fn build_hourly_rollup_exact_range_plan(
-    start: DateTime<Utc>,
-    end: DateTime<Utc>,
-    raw_cutoff: DateTime<Utc>,
-) -> Result<HourlyRollupExactRangePlan, ApiError> {
-    let mut plan = HourlyRollupExactRangePlan::default();
-    let start_epoch = start.timestamp();
-    let end_epoch = end.timestamp();
-    // Archived history is only available as hourly buckets. Keep only the full hours that are
-    // completely contained in the requested range so historical queries never overstate totals.
-    let full_hour_start_epoch = ceil_hour_epoch(start_epoch);
-    let full_hour_end_epoch = align_bucket_epoch(end_epoch, 3_600, 0);
-    let full_hour_start = Utc
-        .timestamp_opt(full_hour_start_epoch, 0)
-        .single()
-        .ok_or_else(|| ApiError::from(anyhow!("invalid full-hour start epoch")))?;
-    let full_hour_end = Utc
-        .timestamp_opt(full_hour_end_epoch, 0)
-        .single()
-        .ok_or_else(|| ApiError::from(anyhow!("invalid full-hour end epoch")))?;
-    if full_hour_start_epoch < full_hour_end_epoch {
-        plan.full_hour_range = Some((full_hour_start_epoch, full_hour_end_epoch));
-    }
-    if let Some(range) = exact_utc_range(start, end.min(full_hour_start))? {
-        split_exact_range_by_retention(&mut plan.live_exact_ranges, range, raw_cutoff)?;
-    }
-    if let Some(range) = exact_utc_range(start.max(full_hour_end), end)? {
-        split_exact_range_by_retention(&mut plan.live_exact_ranges, range, raw_cutoff)?;
-    }
-    Ok(plan)
-}
-
-fn effective_range_for_hourly_rollup_plan(
-    plan: &HourlyRollupExactRangePlan,
-) -> Result<Option<ExactUtcRange>, ApiError> {
-    let mut range: Option<ExactUtcRange> = None;
-    if let Some((start_epoch, end_epoch)) = plan.full_hour_range {
-        let start = Utc
-            .timestamp_opt(start_epoch, 0)
-            .single()
-            .ok_or_else(|| ApiError::from(anyhow!("invalid effective range start epoch")))?;
-        let end = Utc
-            .timestamp_opt(end_epoch, 0)
-            .single()
-            .ok_or_else(|| ApiError::from(anyhow!("invalid effective range end epoch")))?;
-        range = Some(ExactUtcRange { start, end });
-    }
-    for exact_range in &plan.live_exact_ranges {
-        range = Some(match range {
-            Some(existing) => ExactUtcRange {
-                start: existing.start.min(exact_range.start),
-                end: existing.end.max(exact_range.end),
-            },
-            None => *exact_range,
-        });
-    }
-    Ok(range.filter(|value| value.start < value.end))
-}
-
-fn resolve_timeseries_fill_end_epoch(
-    end_dt: DateTime<Utc>,
-    bucket_seconds: i64,
-    reporting_tz: Tz,
-) -> Result<i64, ApiError> {
-    let aligned_end_epoch =
-        align_reporting_bucket_epoch(end_dt.timestamp(), bucket_seconds, reporting_tz)?;
-    if end_dt.timestamp_subsec_nanos() == 0 && aligned_end_epoch == end_dt.timestamp() {
-        return Ok(aligned_end_epoch);
-    }
-    Ok(next_reporting_bucket_epoch(
-        aligned_end_epoch,
-        bucket_seconds,
-        reporting_tz,
-    )?)
-}
-
-fn invocation_status_is_success_like(status: Option<&str>, error_message: Option<&str>) -> bool {
-    let normalized_status = status.map(str::trim).unwrap_or_default();
-    let error_message_empty = error_message.map(str::trim).is_none_or(str::is_empty);
-
-    normalized_status.eq_ignore_ascii_case("success")
-        || normalized_status.eq_ignore_ascii_case("completed")
-        || (normalized_status.eq_ignore_ascii_case("http_200") && error_message_empty)
-}
-
-fn invocation_status_counts_toward_terminal_totals(status: Option<&str>) -> bool {
-    let normalized_status = status.map(str::trim).unwrap_or_default();
-    !normalized_status.eq_ignore_ascii_case("running")
-        && !normalized_status.eq_ignore_ascii_case("pending")
-}
-
-fn invocation_status_is_in_flight(status: Option<&str>) -> bool {
-    let normalized_status = status.map(str::trim).unwrap_or_default();
-    normalized_status.eq_ignore_ascii_case("running")
-        || normalized_status.eq_ignore_ascii_case("pending")
-}
-
-fn invocation_metadata_has_failure_text(value: Option<&str>) -> bool {
-    value.map(str::trim).is_some_and(|text| !text.is_empty())
-}
-
-fn invocation_point_has_explicit_failure_metadata(
-    error_message: Option<&str>,
-    downstream_error_message: Option<&str>,
-    failure_kind: Option<&str>,
-    failure_class: Option<&str>,
-) -> bool {
-    if failure_class
-        .map(str::trim)
-        .unwrap_or_default()
-        .eq_ignore_ascii_case("none")
-    {
-        return invocation_metadata_has_failure_text(error_message)
-            || invocation_metadata_has_failure_text(downstream_error_message)
-            || failure_kind
-                .map(str::trim)
-                .is_some_and(|value| !value.is_empty() && !value.eq_ignore_ascii_case("none"));
-    }
-
-    true
-}
-
-fn invocation_point_is_success(
-    status: Option<&str>,
-    error_message: Option<&str>,
-    failure_class: Option<&str>,
-) -> bool {
-    invocation_status_is_success_like(status, error_message)
-        && failure_class
-            .map(str::trim)
-            .unwrap_or_default()
-            .eq_ignore_ascii_case("none")
-}
-
-fn invocation_point_outcome(
-    status: Option<&str>,
-    error_message: Option<&str>,
-    downstream_error_message: Option<&str>,
-    failure_kind: Option<&str>,
-    failure_class: Option<&str>,
-) -> &'static str {
-    if invocation_point_is_success(status, error_message, failure_class) {
-        return "success";
-    }
-    if invocation_point_has_explicit_failure_metadata(
-        error_message,
-        downstream_error_message,
-        failure_kind,
-        failure_class,
-    ) {
-        return "failure";
-    }
-    if invocation_status_is_in_flight(status) {
-        return "in_flight";
-    }
-    if status
-        .map(str::trim)
-        .is_some_and(|value| value.starts_with("http_4") || value.starts_with("http_5"))
-    {
-        return "failure";
-    }
-    "neutral"
-}
-
-async fn load_pool_attempt_account_names(
-    pool: &Pool<Sqlite>,
-    records: &mut [ApiPoolUpstreamRequestAttempt],
-) -> Result<(), ApiError> {
-    let account_ids = records
-        .iter()
-        .filter_map(|record| record.upstream_account_id)
-        .collect::<HashSet<_>>();
-    if account_ids.is_empty() {
-        return Ok(());
-    }
-
-    #[derive(Debug, FromRow)]
-    struct AccountNameRow {
-        id: i64,
-        display_name: String,
-    }
-
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT id, display_name FROM pool_upstream_accounts WHERE id IN (",
-    );
-    {
-        let mut separated = query.separated(", ");
-        for account_id in account_ids {
-            separated.push_bind(account_id);
-        }
-    }
-    query.push(")");
-    let rows = query
-        .build_query_as::<AccountNameRow>()
-        .fetch_all(pool)
-        .await?;
-    let name_map = rows
-        .into_iter()
-        .map(|row| (row.id, row.display_name))
-        .collect::<HashMap<_, _>>();
-    for record in records {
-        if record.upstream_account_name.is_none()
-            && let Some(account_id) = record.upstream_account_id
-        {
-            record.upstream_account_name = name_map.get(&account_id).cloned();
-        }
-    }
-    Ok(())
-}
-
-pub(crate) async fn query_pool_attempt_records_from_live(
-    pool: &Pool<Sqlite>,
-    invoke_id: &str,
-) -> Result<Vec<ApiPoolUpstreamRequestAttempt>, ApiError> {
-    let mut records = sqlx::query_as::<_, ApiPoolUpstreamRequestAttempt>(
-        r#"
-        SELECT
-            attempts.id,
-            attempts.invoke_id,
-            attempts.occurred_at,
-            attempts.endpoint,
-            attempts.sticky_key,
-            attempts.upstream_account_id,
-            accounts.display_name AS upstream_account_name,
-            attempts.upstream_route_key,
-            attempts.attempt_index,
-            attempts.distinct_account_index,
-            attempts.same_account_retry_index,
-            attempts.requester_ip,
-            attempts.started_at,
-            attempts.finished_at,
-            attempts.status,
-            COALESCE(
-                attempts.phase,
-                CASE
-                    WHEN attempts.status = 'pending' THEN 'sending_request'
-                    WHEN attempts.status = 'success' THEN 'completed'
-                    ELSE 'failed'
-                END
-            ) AS phase,
-            attempts.http_status,
-            attempts.downstream_http_status,
-            attempts.failure_kind,
-            attempts.error_message,
-            attempts.downstream_error_message,
-            attempts.connect_latency_ms,
-            attempts.first_byte_latency_ms,
-            attempts.stream_latency_ms,
-            attempts.upstream_request_id,
-            attempts.compact_support_status,
-            attempts.compact_support_reason,
-            attempts.created_at
-        FROM pool_upstream_request_attempts AS attempts
-        LEFT JOIN pool_upstream_accounts AS accounts
-            ON accounts.id = attempts.upstream_account_id
-        WHERE attempts.invoke_id = ?1
-        ORDER BY attempts.attempt_index ASC, attempts.id ASC
-        "#,
-    )
-    .bind(invoke_id)
-    .fetch_all(pool)
-    .await?;
-    load_pool_attempt_account_names(pool, &mut records).await?;
-    Ok(records)
-}
-
-async fn query_invocation_aggregate_records_from_live_range_executor<'e, E>(
-    executor: E,
-    range: ExactUtcRange,
-    source_scope: InvocationSourceScope,
-    start_after_id: Option<i64>,
-    snapshot_id: Option<i64>,
-) -> Result<Vec<InvocationAggregateRecord>, ApiError>
-where
-    E: sqlx::Executor<'e, Database = Sqlite>,
-{
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT \
-            id, occurred_at, status, total_tokens, cost, error_message, ",
-    );
-    query
-        .push(INVOCATION_FAILURE_KIND_SQL)
-        .push(
-            " AS failure_kind, \
-            ",
-        )
-        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
-        .push(
-            " AS failure_class, CASE WHEN ",
-        )
-        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
-        .push(
-            " = 'service_failure' THEN 1 ELSE 0 END AS is_actionable, \
-            t_total_ms, t_req_read_ms, t_req_parse_ms, \
-            t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, \
-            t_resp_parse_ms, t_persist_ms \
-         FROM codex_invocations \
-         WHERE occurred_at >= ",
-        );
-    query
-        .push_bind(db_occurred_at_lower_bound(range.start))
-        .push(" AND occurred_at < ")
-        .push_bind(db_occurred_at_upper_bound(range.end));
-    if let Some(start_after_id) = start_after_id {
-        query.push(" AND id > ").push_bind(start_after_id);
-    }
-    if let Some(snapshot_id) = snapshot_id {
-        query.push(" AND id <= ").push_bind(snapshot_id);
-    }
-    if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND source = ").push_bind(SOURCE_PROXY);
-    }
-    query.push(" ORDER BY occurred_at ASC, id ASC");
-    query
-        .build_query_as::<InvocationAggregateRecord>()
-        .fetch_all(executor)
-        .await
-        .map_err(Into::into)
-}
-
-async fn query_invocation_aggregate_records_from_live_range(
-    pool: &Pool<Sqlite>,
-    range: ExactUtcRange,
-    source_scope: InvocationSourceScope,
-    start_after_id: Option<i64>,
-    snapshot_id: Option<i64>,
-) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
-    query_invocation_aggregate_records_from_live_range_executor(
-        pool,
-        range,
-        source_scope,
-        start_after_id,
-        snapshot_id,
-    )
-    .await
-}
-
-async fn query_invocation_aggregate_records_from_live_range_tx(
-    tx: &mut SqliteConnection,
-    range: ExactUtcRange,
-    source_scope: InvocationSourceScope,
-    start_after_id: Option<i64>,
-    snapshot_id: Option<i64>,
-) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
-    query_invocation_aggregate_records_from_live_range_executor(
-        &mut *tx,
-        range,
-        source_scope,
-        start_after_id,
-        snapshot_id,
-    )
-    .await
-}
-
-fn extend_unique_invocation_records(
-    records: &mut Vec<InvocationAggregateRecord>,
-    seen_ids: &mut HashSet<i64>,
-    candidates: Vec<InvocationAggregateRecord>,
-) {
-    for record in candidates {
-        if seen_ids.insert(record.id) {
-            records.push(record);
-        }
-    }
-}
-
-async fn query_invocation_exact_records(
-    pool: &Pool<Sqlite>,
-    range_plan: &HourlyRollupExactRangePlan,
-    source_scope: InvocationSourceScope,
-    snapshot_id: i64,
-) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
-    let mut records = Vec::new();
-    let mut seen_ids = HashSet::new();
-
-    for range in &range_plan.live_exact_ranges {
-        extend_unique_invocation_records(
-            &mut records,
-            &mut seen_ids,
-            query_invocation_aggregate_records_from_live_range(
-                pool,
-                *range,
-                source_scope,
-                None,
-                Some(snapshot_id),
-            )
-            .await?,
-        );
-    }
-
-    records.sort_by(|left, right| {
-        left.occurred_at
-            .cmp(&right.occurred_at)
-            .then_with(|| left.id.cmp(&right.id))
-    });
-    Ok(records)
-}
-
-pub(crate) async fn query_invocation_exact_records_tx(
-    tx: &mut SqliteConnection,
-    range_plan: &HourlyRollupExactRangePlan,
-    source_scope: InvocationSourceScope,
-    snapshot_id: i64,
-) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
-    let mut records = Vec::new();
-    let mut seen_ids = HashSet::new();
-
-    for range in &range_plan.live_exact_ranges {
-        extend_unique_invocation_records(
-            &mut records,
-            &mut seen_ids,
-            query_invocation_aggregate_records_from_live_range_tx(
-                &mut *tx,
-                *range,
-                source_scope,
-                None,
-                Some(snapshot_id),
-            )
-            .await?,
-        );
-    }
-
-    records.sort_by(|left, right| {
-        left.occurred_at
-            .cmp(&right.occurred_at)
-            .then_with(|| left.id.cmp(&right.id))
-    });
-    Ok(records)
-}
-
-pub(crate) async fn query_invocation_full_hour_tail_records_tx(
-    tx: &mut SqliteConnection,
-    range_plan: &HourlyRollupExactRangePlan,
-    source_scope: InvocationSourceScope,
-    rollup_live_cursor: i64,
-    snapshot_id: i64,
-) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
-    if snapshot_id <= rollup_live_cursor {
-        return Ok(Vec::new());
-    }
-    let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range else {
-        return Ok(Vec::new());
-    };
-    let range = ExactUtcRange {
-        start: Utc
-            .timestamp_opt(range_start_epoch, 0)
-            .single()
-            .ok_or_else(|| ApiError::from(anyhow!("invalid full-hour tail start epoch")))?,
-        end: Utc
-            .timestamp_opt(range_end_epoch, 0)
-            .single()
-            .ok_or_else(|| ApiError::from(anyhow!("invalid full-hour tail end epoch")))?,
-    };
-    query_invocation_aggregate_records_from_live_range_tx(
-        &mut *tx,
-        range,
-        source_scope,
-        Some(rollup_live_cursor),
-        Some(snapshot_id),
-    )
-    .await
-}
-
-pub(crate) async fn load_invocation_summary_rollup_live_cursor_tx(
-    tx: &mut SqliteConnection,
-) -> Result<i64> {
-    Ok(
-        load_hourly_rollup_live_progress_tx(tx, HOURLY_ROLLUP_DATASET_INVOCATIONS)
-            .await?
-            .max(
-                load_hourly_rollup_live_progress_tx(
-                    tx,
-                    INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET,
-                )
-                .await?,
-            ),
-    )
-}
-
-pub(crate) async fn resolve_invocation_snapshot_id_tx(
-    tx: &mut SqliteConnection,
-    source_scope: InvocationSourceScope,
-) -> Result<i64, ApiError> {
-    #[derive(Debug, FromRow)]
-    struct SnapshotRow {
-        snapshot_id: Option<i64>,
-    }
-
-    let mut query =
-        QueryBuilder::new("SELECT MAX(id) AS snapshot_id FROM codex_invocations WHERE 1 = 1");
-    if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND source = ").push_bind(SOURCE_PROXY);
-    }
-
-    let row = query.build_query_as::<SnapshotRow>().fetch_one(&mut *tx).await?;
-    Ok(row.snapshot_id.unwrap_or(0))
-}
-
-async fn query_invocation_hourly_rollup_range_tx(
-    tx: &mut SqliteConnection,
-    range_start_epoch: i64,
-    range_end_epoch: i64,
-    source_scope: InvocationSourceScope,
-) -> Result<Vec<InvocationHourlyRollupRecord>, ApiError> {
-    let mut query = QueryBuilder::<Sqlite>::new(
-        r#"
-        SELECT
-            bucket_start_epoch,
-            total_count,
-            success_count,
-            failure_count,
-            total_tokens,
-            total_cost,
-            first_byte_sample_count,
-            first_byte_sum_ms,
-            first_byte_max_ms,
-            first_byte_histogram,
-            first_response_byte_total_sample_count,
-            first_response_byte_total_sum_ms,
-            first_response_byte_total_max_ms,
-            first_response_byte_total_histogram
-        FROM invocation_rollup_hourly
-        WHERE bucket_start_epoch >=
-        "#,
-    );
-    query.push_bind(range_start_epoch);
-    query
-        .push(" AND bucket_start_epoch < ")
-        .push_bind(range_end_epoch);
-    if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND source = ").push_bind(SOURCE_PROXY);
-    }
-    query.push(" ORDER BY bucket_start_epoch ASC");
-
-    query
-        .build_query_as::<InvocationHourlyRollupRecord>()
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(Into::into)
-}
-
-fn add_invocation_record_to_summary_totals(
-    totals: &mut StatsTotals,
-    record: &InvocationAggregateRecord,
-) {
-    totals.total_count += 1;
-    let classification = resolve_failure_classification(
-        record.status.as_deref(),
-        record.error_message.as_deref(),
-        record.failure_kind.as_deref(),
-        record.failure_class.as_deref(),
-        record.is_actionable,
-    );
-    if invocation_status_is_success_like(record.status.as_deref(), record.error_message.as_deref())
-        && classification.failure_class == FailureClass::None
-    {
-        totals.success_count += 1;
-    } else if invocation_status_counts_toward_terminal_totals(record.status.as_deref())
-        && classification.failure_class != FailureClass::None
-    {
-        totals.failure_count += 1;
-    }
-    totals.total_tokens += record.total_tokens.unwrap_or_default();
-    totals.total_cost += record.cost.unwrap_or_default();
-}
-
-pub(crate) fn db_occurred_at_upper_bound(end_utc: DateTime<Utc>) -> String {
-    if end_utc.timestamp_subsec_nanos() > 0 {
-        return db_occurred_at_lower_bound(end_utc + ChronoDuration::seconds(1));
-    }
-    db_occurred_at_lower_bound(end_utc)
-}
-
-fn record_perf_stage_sample(
-    by_stage: &mut BTreeMap<String, (i64, f64, f64, ApproxHistogramCounts)>,
-    stage: &str,
-    value: Option<f64>,
-) {
-    let Some(value) = value else {
-        return;
-    };
-    let entry = by_stage
-        .entry(stage.to_string())
-        .or_insert_with(|| (0, 0.0, 0.0, empty_approx_histogram()));
-    entry.0 += 1;
-    entry.1 += value;
-    entry.2 = entry.2.max(value);
-    add_approx_histogram_sample(&mut entry.3, value);
-}
-
-pub(crate) async fn query_hourly_backed_summary_since_with_config(
-    pool: &Pool<Sqlite>,
-    relay: Option<&CrsStatsConfig>,
-    invocation_max_days: u64,
-    start: DateTime<Utc>,
-    source_scope: InvocationSourceScope,
-) -> Result<StatsTotals, ApiError> {
-    query_hourly_backed_summary_range_with_config(
-        pool,
-        relay,
-        invocation_max_days,
-        start,
-        Utc::now(),
-        source_scope,
-    )
-    .await
-}
-
-pub(crate) async fn query_hourly_backed_summary_range_with_config(
-    pool: &Pool<Sqlite>,
-    relay: Option<&CrsStatsConfig>,
-    invocation_max_days: u64,
-    start: DateTime<Utc>,
-    end: DateTime<Utc>,
-    source_scope: InvocationSourceScope,
-) -> Result<StatsTotals, ApiError> {
-    if start >= end {
-        return Ok(StatsTotals::default());
-    }
-
-    let retention_cutoff = shanghai_retention_cutoff(invocation_max_days);
-    if start >= retention_cutoff {
-        return query_combined_totals(
-            pool,
-            relay,
-            StatsFilter::Range(start, end),
-            source_scope,
-        )
-            .await
-            .map_err(Into::into);
-    }
-
-    let mut totals = StatsTotals::default();
-    let range_plan = build_hourly_rollup_exact_range_plan(start, end, retention_cutoff)?;
-    if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
-        ensure_invocation_summary_rollups_ready_best_effort(pool).await?;
-        let mut tx = pool.begin().await?;
-        let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
-        let rollup_live_cursor =
-            load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
-        let rows = query_invocation_hourly_rollup_range_tx(
-            tx.as_mut(),
-            range_start_epoch,
-            range_end_epoch,
-            source_scope,
-        )
-        .await?;
-        for row in rows {
-            totals.total_count += row.total_count;
-            totals.success_count += row.success_count;
-            totals.failure_count += row.failure_count;
-            totals.total_tokens += row.total_tokens;
-            totals.total_cost += row.total_cost;
-        }
-        let mut exact_records =
-            query_invocation_exact_records_tx(tx.as_mut(), &range_plan, source_scope, snapshot_id)
-                .await?;
-        exact_records.extend(
-            query_invocation_full_hour_tail_records_tx(
-                tx.as_mut(),
-                &range_plan,
-                source_scope,
-                rollup_live_cursor,
-                snapshot_id,
-            )
-            .await?,
-        );
-        for record in &exact_records {
-            add_invocation_record_to_summary_totals(&mut totals, record);
-        }
-    } else {
-        let snapshot_id = resolve_invocation_snapshot_id(pool, source_scope).await?;
-        let exact_records =
-            query_invocation_exact_records(pool, &range_plan, source_scope, snapshot_id).await?;
-        for record in &exact_records {
-            add_invocation_record_to_summary_totals(&mut totals, record);
-        }
-    }
-    let relay_totals =
-        if let Some(effective_range) = effective_range_for_hourly_rollup_plan(&range_plan)? {
-            query_crs_totals(
-                pool,
-                relay,
-                &StatsFilter::Range(effective_range.start, effective_range.end),
-                source_scope,
-            )
-            .await?
-        } else {
-            StatsTotals::default()
-        };
-    Ok(totals.add(relay_totals))
-}
-
-pub(crate) async fn query_hourly_backed_summary_since(
-    state: &AppState,
-    start: DateTime<Utc>,
-    source_scope: InvocationSourceScope,
-) -> Result<StatsTotals, ApiError> {
-    query_hourly_backed_summary_since_with_config(
-        &state.pool,
-        state.config.crs_stats.as_ref(),
-        state.config.invocation_max_days,
-        start,
-        source_scope,
-    )
-    .await
-    .map_err(Into::into)
-}
-
-pub(crate) async fn query_hourly_backed_summary_range(
-    state: &AppState,
-    start: DateTime<Utc>,
-    end: DateTime<Utc>,
-    source_scope: InvocationSourceScope,
-) -> Result<StatsTotals, ApiError> {
-    query_hourly_backed_summary_range_with_config(
-        &state.pool,
-        state.config.crs_stats.as_ref(),
-        state.config.invocation_max_days,
-        start,
-        end,
-        source_scope,
-    )
-    .await
-    .map_err(Into::into)
-}
-
-pub(crate) async fn fetch_forward_proxy_live_stats(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<ForwardProxyLiveStatsResponse>, ApiError> {
-    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
-    let response = build_forward_proxy_live_stats_response(state.as_ref()).await?;
-    Ok(Json(response))
-}
-
-pub(crate) async fn fetch_forward_proxy_timeseries(
-    State(state): State<Arc<AppState>>,
-    Query(params): Query<TimeseriesQuery>,
-) -> Result<Json<ForwardProxyTimeseriesResponse>, ApiError> {
-    let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
-    let range_window = resolve_range_window(&params.range, reporting_tz)?;
-    ensure_forward_proxy_hourly_tz_supported(reporting_tz, &range_window)?;
-    let bucket_spec = params.bucket.as_deref().unwrap_or("1h");
-    if bucket_seconds_from_spec(bucket_spec) != Some(3_600) {
-        return Err(ApiError::bad_request(anyhow!(
-            "unsupported forward proxy bucket specification: {bucket_spec}; only 1h is supported"
-        )));
-    }
-    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
-    let response = build_forward_proxy_timeseries_response(state.as_ref(), range_window).await?;
-    Ok(Json(response))
-}
-
-fn ensure_forward_proxy_hourly_tz_supported(
-    reporting_tz: Tz,
-    range_window: &RangeWindow,
-) -> Result<(), ApiError> {
-    if reporting_tz_has_whole_hour_offsets(reporting_tz, range_window) {
-        return Ok(());
-    }
-    Err(ApiError::bad_request(anyhow!(
-        "unsupported timeZone for forward proxy hourly timeseries: {reporting_tz}; hourly buckets require whole-hour UTC offsets"
-    )))
-}
-
-pub(crate) fn reporting_tz_has_whole_hour_offsets(
-    reporting_tz: Tz,
-    range_window: &RangeWindow,
-) -> bool {
-    const SAMPLE_STEP_DAYS: i64 = 1;
-
-    fn offset_is_hour_aligned(reporting_tz: Tz, instant: DateTime<Utc>) -> bool {
-        instant
-            .with_timezone(&reporting_tz)
-            .offset()
-            .fix()
-            .local_minus_utc()
-            .rem_euclid(3_600)
-            == 0
-    }
-
-    let mut cursor = range_window.start;
-    while cursor < range_window.end {
-        if !offset_is_hour_aligned(reporting_tz, cursor) {
-            return false;
-        }
-        let Some(next) = cursor.checked_add_signed(ChronoDuration::days(SAMPLE_STEP_DAYS)) else {
-            break;
-        };
-        if next >= range_window.end {
-            break;
-        }
-        cursor = next;
-    }
-    if let Some(last_instant) = range_window
-        .end
-        .checked_sub_signed(ChronoDuration::nanoseconds(1))
-        .filter(|instant| *instant >= range_window.start)
-    {
-        return offset_is_hour_aligned(reporting_tz, last_instant);
-    }
-    true
-}
+use super::*;
 
 pub(crate) async fn fetch_prompt_cache_conversations(
     State(state): State<Arc<AppState>>,
@@ -819,18 +6,20 @@ pub(crate) async fn fetch_prompt_cache_conversations(
 ) -> Result<Json<PromptCacheConversationsResponse>, ApiError> {
     ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let request = resolve_prompt_cache_conversations_request(params)?;
-    let response = if request.page_size.is_none() && request.cursor.is_none() && request.snapshot_at.is_none() {
-        let response =
-            fetch_prompt_cache_conversations_cached(state.as_ref(), request.selection).await?;
-        match request.detail_level {
-            PromptCacheConversationDetailLevel::Full => response,
-            PromptCacheConversationDetailLevel::Compact => {
-                compact_prompt_cache_conversations_response(response)
+    let response =
+        if request.page_size.is_none() && request.cursor.is_none() && request.snapshot_at.is_none()
+        {
+            let response =
+                fetch_prompt_cache_conversations_cached(state.as_ref(), request.selection).await?;
+            match request.detail_level {
+                PromptCacheConversationDetailLevel::Full => response,
+                PromptCacheConversationDetailLevel::Compact => {
+                    compact_prompt_cache_conversations_response(response)
+                }
             }
-        }
-    } else {
-        build_prompt_cache_conversations_response_for_request(state.as_ref(), request).await?
-    };
+        } else {
+            build_prompt_cache_conversations_response_for_request(state.as_ref(), request).await?
+        };
     Ok(Json(response))
 }
 
@@ -890,7 +79,9 @@ pub(crate) fn resolve_prompt_cache_conversation_selection(
     ))
 }
 
-fn normalize_prompt_cache_conversation_page_size(raw: Option<i64>) -> Result<Option<i64>, ApiError> {
+fn normalize_prompt_cache_conversation_page_size(
+    raw: Option<i64>,
+) -> Result<Option<i64>, ApiError> {
     let Some(value) = raw else {
         return Ok(None);
     };
@@ -935,9 +126,7 @@ fn resolve_prompt_cache_conversations_request(
         normalized_page_size.is_some() || params.cursor.is_some() || params.snapshot_at.is_some();
 
     if params.cursor.is_some() && params.snapshot_at.is_none() {
-        return Err(ApiError::bad_request(anyhow!(
-            "cursor requires snapshotAt"
-        )));
+        return Err(ApiError::bad_request(anyhow!("cursor requires snapshotAt")));
     }
 
     if uses_pagination
@@ -1012,13 +201,12 @@ fn encode_prompt_cache_conversation_cursor(
         snapshot_boundary_row_id_ceiling,
     ))
     .expect("prompt cache cursor payload should serialize");
-    base64::Engine::encode(
-        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-        payload,
-    )
+    base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, payload)
 }
 
-fn decode_prompt_cache_conversation_cursor(raw: &str) -> Result<(String, String, String, Option<i64>)> {
+fn decode_prompt_cache_conversation_cursor(
+    raw: &str,
+) -> Result<(String, String, String, Option<i64>)> {
     let decoded = base64::Engine::decode(
         &base64::engine::general_purpose::URL_SAFE_NO_PAD,
         raw.trim(),
@@ -1041,7 +229,8 @@ fn decode_prompt_cache_conversation_cursor(raw: &str) -> Result<(String, String,
         ));
     }
 
-    let decoded = String::from_utf8(decoded).map_err(|err| anyhow!("invalid cursor bytes: {err}"))?;
+    let decoded =
+        String::from_utf8(decoded).map_err(|err| anyhow!("invalid cursor bytes: {err}"))?;
     let mut parts = decoded.splitn(4, '|');
     let Some(sort_anchor_at) = parts.next() else {
         return Err(anyhow!("invalid cursor payload"));
@@ -1106,15 +295,16 @@ async fn query_prompt_cache_conversation_snapshot_row_id_ceiling(
          FROM codex_invocations \
          WHERE julianday(created_at) <= julianday(",
     );
-    query
-        .push_bind(snapshot_created_at_upper_bound)
-        .push(")");
+    query.push_bind(snapshot_created_at_upper_bound).push(")");
 
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
 
-    let (max_id,) = query.build_query_as::<(Option<i64>,)>().fetch_one(pool).await?;
+    let (max_id,) = query
+        .build_query_as::<(Option<i64>,)>()
+        .fetch_one(pool)
+        .await?;
     Ok(max_id)
 }
 
@@ -1124,18 +314,14 @@ async fn resolve_prompt_cache_conversation_snapshot_filter(
     source_scope: InvocationSourceScope,
     cursor_snapshot_boundary_row_id_ceiling: Option<i64>,
 ) -> Result<PromptCacheConversationSnapshotFilter> {
-    let snapshot_upper_bound = db_occurred_at_lower_bound(
-        snapshot_at + ChronoDuration::seconds(1),
-    );
+    let snapshot_upper_bound = db_occurred_at_lower_bound(snapshot_at + ChronoDuration::seconds(1));
     let snapshot_boundary_row_id_ceiling = Some(match cursor_snapshot_boundary_row_id_ceiling {
         Some(value) => value,
-        None => query_prompt_cache_conversation_snapshot_row_id_ceiling(
-            pool,
-            snapshot_at,
-            source_scope,
-        )
-        .await?
-        .unwrap_or(0),
+        None => {
+            query_prompt_cache_conversation_snapshot_row_id_ceiling(pool, snapshot_at, source_scope)
+                .await?
+                .unwrap_or(0)
+        }
     });
     Ok(PromptCacheConversationSnapshotFilter {
         snapshot_upper_bound,
@@ -1244,9 +430,7 @@ fn compact_prompt_cache_conversations_response(
     for conversation in &mut response.conversations {
         conversation.upstream_accounts.clear();
         conversation.last24h_requests.clear();
-        conversation
-            .recent_invocations
-            .truncate(2);
+        conversation.recent_invocations.truncate(2);
     }
     response
 }
@@ -1268,7 +452,6 @@ impl PromptCacheConversationSnapshotFilter {
     fn snapshot_upper_bound(&self) -> &str {
         self.snapshot_upper_bound.as_str()
     }
-
 }
 
 fn push_snapshot_invocation_visibility_clause(
@@ -2071,13 +1254,11 @@ pub(crate) async fn query_working_prompt_cache_conversation_count_at_snapshot(
          ), in_flight AS (\
             SELECT ",
     );
-    query
-        .push(KEY_EXPR)
-        .push(
-            " AS prompt_cache_key \
+    query.push(KEY_EXPR).push(
+        " AS prompt_cache_key \
              FROM codex_invocations \
              WHERE ",
-        );
+    );
     push_snapshot_invocation_visibility_clause(&mut query, "occurred_at", "id", Some(snapshot));
     query
         .push(" AND ")
@@ -2330,13 +1511,11 @@ pub(crate) async fn query_prompt_cache_working_conversation_aggregates_page(
          ), in_flight AS (\
             SELECT ",
     );
-    query
-        .push(KEY_EXPR)
-        .push(
-            " AS prompt_cache_key, MAX(occurred_at) AS last_in_flight_at \
+    query.push(KEY_EXPR).push(
+        " AS prompt_cache_key, MAX(occurred_at) AS last_in_flight_at \
              FROM codex_invocations \
              WHERE ",
-        );
+    );
     push_snapshot_invocation_visibility_clause(&mut query, "occurred_at", "id", Some(snapshot));
     query
         .push(" AND ")
@@ -2531,9 +1710,7 @@ pub(crate) async fn query_prompt_cache_conversation_events(
         );
         query.push(" AND ");
     }
-    query
-        .push(KEY_EXPR)
-        .push(" IN (");
+    query.push(KEY_EXPR).push(" IN (");
 
     {
         let mut separated = query.separated(", ");
@@ -2673,12 +1850,9 @@ pub(crate) async fn query_prompt_cache_conversation_upstream_account_summaries_a
     }
 
     const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
-    const UPSTREAM_ACCOUNT_ID_EXPR: &str =
-        "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
-    const UPSTREAM_ACCOUNT_NAME_EXPR: &str =
-        "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT)) END";
-    const UPSTREAM_ACCOUNT_KEY_EXPR: &str =
-        "CASE \
+    const UPSTREAM_ACCOUNT_ID_EXPR: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
+    const UPSTREAM_ACCOUNT_NAME_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT)) END";
+    const UPSTREAM_ACCOUNT_KEY_EXPR: &str = "CASE \
             WHEN CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END IS NOT NULL \
              AND CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT)) END IS NOT NULL \
              AND CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT)) END <> '' \
@@ -2729,9 +1903,7 @@ pub(crate) async fn query_prompt_cache_conversation_upstream_account_summaries_a
         .push(KEY_EXPR)
         .push(" AS prompt_cache_key, ")
         .push(UPSTREAM_ACCOUNT_KEY_EXPR)
-        .push(
-            " AS upstream_account_key, ",
-        )
+        .push(" AS upstream_account_key, ")
         .push(UPSTREAM_ACCOUNT_ID_EXPR)
         .push(" AS upstream_account_id, ")
         .push(UPSTREAM_ACCOUNT_NAME_EXPR)
@@ -2756,10 +1928,7 @@ pub(crate) async fn query_prompt_cache_conversation_upstream_account_summaries_a
         "id",
         Some(&snapshot_filter),
     );
-    query
-        .push(" AND ")
-        .push(KEY_EXPR)
-        .push(" IN (");
+    query.push(" AND ").push(KEY_EXPR).push(" IN (");
 
     {
         let mut separated = query.separated(", ");
@@ -2841,535 +2010,4 @@ pub(crate) async fn query_prompt_cache_conversation_upstream_account_summaries(
         .fetch_all(pool)
         .await
         .map_err(Into::into)
-}
-
-pub(crate) async fn fetch_timeseries(
-    State(state): State<Arc<AppState>>,
-    Query(params): Query<TimeseriesQuery>,
-) -> Result<Json<TimeseriesResponse>, ApiError> {
-    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
-    let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
-    let source_scope = resolve_default_source_scope(&state.pool).await?;
-    let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
-    let range_window = resolve_range_window(&params.range, reporting_tz)?;
-    let bucket_selection = resolve_timeseries_bucket_selection(
-        &params,
-        &range_window,
-        state.config.invocation_max_days,
-    )?;
-    let bucket_seconds = bucket_selection.bucket_seconds;
-
-    if bucket_seconds >= 3_600 {
-        let tz_is_hour_aligned = reporting_tz_has_whole_hour_offsets(reporting_tz, &range_window);
-        let needs_historical_rollups =
-            range_window.start < shanghai_retention_cutoff(state.config.invocation_max_days);
-        if !tz_is_hour_aligned {
-            if needs_historical_rollups {
-                return Err(ApiError::bad_request(anyhow!(
-                    "unsupported timeZone for historical hourly timeseries: {reporting_tz}; historical hourly buckets require whole-hour UTC offsets"
-                )));
-            }
-        } else {
-            return fetch_timeseries_from_hourly_rollups(
-                state,
-                params,
-                reporting_tz,
-                source_scope,
-                range_window,
-                bucket_selection,
-            )
-            .await;
-        }
-    }
-
-    let end_dt = range_window.end;
-    let start_dt = range_window.start;
-    let start_str_iso = format_utc_iso(start_dt);
-
-    let records = query_invocation_aggregate_records_from_live_range(
-        &state.pool,
-        ExactUtcRange {
-            start: start_dt,
-            end: end_dt,
-        },
-        source_scope,
-        None,
-        Some(snapshot_id),
-    )
-    .await?;
-
-    let mut aggregates: BTreeMap<i64, BucketAggregate> = BTreeMap::new();
-
-    let start_epoch = start_dt.timestamp();
-
-    for record in records {
-        let naive = NaiveDateTime::parse_from_str(&record.occurred_at, "%Y-%m-%d %H:%M:%S")
-            .map_err(|err| anyhow!("failed to parse occurred_at: {err}"))?;
-        // Interpret stored naive time as local Asia/Shanghai and convert to UTC epoch
-        let epoch = Shanghai
-            .from_local_datetime(&naive)
-            .single()
-            .map(|dt| dt.with_timezone(&Utc).timestamp())
-            .unwrap_or_else(|| naive.and_utc().timestamp());
-        let bucket_epoch = align_reporting_bucket_epoch(epoch, bucket_seconds, reporting_tz)?;
-        let entry = aggregates.entry(bucket_epoch).or_default();
-        entry.total_count += 1;
-        let classification = resolve_failure_classification(
-            record.status.as_deref(),
-            record.error_message.as_deref(),
-            record.failure_kind.as_deref(),
-            record.failure_class.as_deref(),
-            record.is_actionable,
-        );
-        let is_success_like = invocation_status_is_success_like(
-            record.status.as_deref(),
-            record.error_message.as_deref(),
-        ) && classification.failure_class == FailureClass::None;
-        if is_success_like {
-            entry.success_count += 1;
-        } else if invocation_status_is_in_flight(record.status.as_deref()) {
-            entry.in_flight_count += 1;
-        } else if invocation_status_counts_toward_terminal_totals(record.status.as_deref())
-            && classification.failure_class != FailureClass::None
-        {
-            entry.failure_count += 1;
-        }
-        let latency_status = if is_success_like {
-            Some("success")
-        } else {
-            record.status.as_deref()
-        };
-        entry.record_ttfb_sample(latency_status, record.t_upstream_ttfb_ms);
-        entry.record_first_response_byte_total_sample(
-            record.t_req_read_ms,
-            record.t_req_parse_ms,
-            record.t_upstream_connect_ms,
-            record.t_upstream_ttfb_ms,
-        );
-        entry.total_tokens += record.total_tokens.unwrap_or(0);
-        entry.total_cost += record.cost.unwrap_or(0.0);
-    }
-
-    let relay_deltas = if source_scope == InvocationSourceScope::All
-        && let Some(relay) = state.config.crs_stats.as_ref()
-    {
-        query_crs_deltas(
-            &state.pool,
-            relay,
-            start_epoch,
-            crate::stats::exclusive_epoch_upper_bound(end_dt),
-        )
-        .await?
-    } else {
-        Vec::new()
-    };
-
-    for delta in relay_deltas {
-        let bucket_epoch =
-            align_reporting_bucket_epoch(delta.captured_at_epoch, bucket_seconds, reporting_tz)?;
-        let entry = aggregates.entry(bucket_epoch).or_default();
-        entry.total_count += delta.total_count;
-        entry.success_count += delta.success_count;
-        entry.failure_count += delta.failure_count;
-        entry.total_tokens += delta.total_tokens;
-        entry.total_cost += delta.total_cost;
-    }
-
-    // Fill every bucket that intersects the requested range using reporting-timezone
-    // boundaries rather than fixed UTC-duration strides. This keeps DST transition
-    // days aligned to local clock buckets.
-    let fill_start_epoch = align_reporting_bucket_epoch(start_epoch, bucket_seconds, reporting_tz)?;
-    let fill_end_epoch =
-        resolve_timeseries_fill_end_epoch(end_dt, bucket_seconds, reporting_tz)?;
-    let mut bucket_cursor = fill_start_epoch;
-    while bucket_cursor < fill_end_epoch {
-        aggregates.entry(bucket_cursor).or_default();
-        bucket_cursor = next_reporting_bucket_epoch(bucket_cursor, bucket_seconds, reporting_tz)?;
-    }
-
-    let mut points = Vec::with_capacity(aggregates.len());
-    for (bucket_epoch, agg) in aggregates {
-        let bucket_end_epoch =
-            next_reporting_bucket_epoch(bucket_epoch, bucket_seconds, reporting_tz)?;
-        // Skip any buckets outside the desired window. This guards against
-        // future-dated records leaking past the clamped end.
-        if bucket_epoch < fill_start_epoch || bucket_end_epoch > fill_end_epoch {
-            continue;
-        }
-        let start = Utc
-            .timestamp_opt(bucket_epoch, 0)
-            .single()
-            .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
-        let end = Utc
-            .timestamp_opt(bucket_end_epoch, 0)
-            .single()
-            .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
-        let first_byte_avg_ms = agg.first_byte_avg_ms();
-        let first_byte_p95_ms = agg.first_byte_p95_ms();
-        let first_response_byte_total_avg_ms = agg.first_response_byte_total_avg_ms();
-        let first_response_byte_total_p95_ms = agg.first_response_byte_total_p95_ms();
-        points.push(TimeseriesPoint {
-            bucket_start: format_utc_iso(start),
-            bucket_end: format_utc_iso(end),
-            total_count: agg.total_count,
-            success_count: agg.success_count,
-            failure_count: agg.failure_count,
-            in_flight_count: agg.in_flight_count,
-            total_tokens: agg.total_tokens,
-            total_cost: agg.total_cost,
-            first_byte_sample_count: agg.first_byte_sample_count,
-            first_byte_avg_ms,
-            first_byte_p95_ms,
-            first_response_byte_total_sample_count: agg.first_response_byte_total_sample_count,
-            first_response_byte_total_avg_ms,
-            first_response_byte_total_p95_ms,
-        });
-    }
-
-    let response = TimeseriesResponse {
-        range_start: start_str_iso,
-        range_end: format_utc_iso(end_dt),
-        bucket_seconds,
-        snapshot_id,
-        effective_bucket: bucket_selection.effective_bucket,
-        available_buckets: bucket_selection.available_buckets,
-        bucket_limited_to_daily: bucket_selection.bucket_limited_to_daily,
-        points,
-    };
-
-    Ok(Json(response))
-}
-
-pub(crate) async fn fetch_parallel_work_stats(
-    State(state): State<Arc<AppState>>,
-    Query(params): Query<ParallelWorkStatsQuery>,
-) -> Result<Json<ParallelWorkStatsResponse>, ApiError> {
-    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
-    let requested_reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
-    let source_scope = resolve_default_source_scope(&state.pool).await?;
-    let now = Utc::now();
-
-    let minute7d_window = resolve_complete_parallel_work_window(
-        now,
-        ChronoDuration::days(7),
-        60,
-        requested_reporting_tz,
-    )?;
-    let requested_hour30d_window = resolve_complete_parallel_work_window(
-        now,
-        ChronoDuration::days(30),
-        3_600,
-        requested_reporting_tz,
-    )?;
-    let (hour30d_reporting_tz, hour30d_time_zone_fallback) =
-        resolve_parallel_work_rollup_reporting_tz(
-            requested_reporting_tz,
-            &requested_hour30d_window,
-        );
-    let hour30d_window = if hour30d_time_zone_fallback {
-        resolve_complete_parallel_work_window(
-            now,
-            ChronoDuration::days(30),
-            3_600,
-            hour30d_reporting_tz,
-        )?
-    } else {
-        requested_hour30d_window
-    };
-
-    let minute7d_counts = query_parallel_work_minute_counts(
-        &state.pool,
-        minute7d_window.start,
-        minute7d_window.end,
-        requested_reporting_tz,
-        source_scope,
-    )
-    .await?;
-    let hour30d_counts = query_parallel_work_hourly_counts(
-        &state.pool,
-        hour30d_window.start,
-        hour30d_window.end,
-        source_scope,
-    )
-    .await?;
-
-    let (day_all_window, day_all_reporting_tz, day_all_time_zone_fallback) =
-        resolve_parallel_work_day_all_window_with_fallback(
-            &state.pool,
-            requested_reporting_tz,
-            source_scope,
-        )
-        .await?;
-    let day_all_counts = if let Some(window) = day_all_window.as_ref() {
-        query_parallel_work_day_counts_from_hourly_rollups(
-            &state.pool,
-            window.start,
-            window.end,
-            day_all_reporting_tz,
-            source_scope,
-        )
-        .await?
-    } else {
-        BTreeMap::new()
-    };
-
-    let latest_complete_day_end = local_midnight_utc(
-        now.with_timezone(&day_all_reporting_tz).date_naive(),
-        day_all_reporting_tz,
-    );
-
-    Ok(Json(ParallelWorkStatsResponse {
-        minute7d: build_parallel_work_window_response(
-            minute7d_window.start,
-            minute7d_window.end,
-            60,
-            requested_reporting_tz,
-            &minute7d_counts,
-            requested_reporting_tz,
-            false,
-        )?,
-        hour30d: build_parallel_work_window_response(
-            hour30d_window.start,
-            hour30d_window.end,
-            3_600,
-            hour30d_reporting_tz,
-            &hour30d_counts,
-            hour30d_reporting_tz,
-            hour30d_time_zone_fallback,
-        )?,
-        day_all: if let Some(window) = day_all_window {
-            build_parallel_work_window_response(
-                window.start,
-                window.end,
-                86_400,
-                day_all_reporting_tz,
-                &day_all_counts,
-                day_all_reporting_tz,
-                day_all_time_zone_fallback,
-            )?
-        } else {
-            empty_parallel_work_window_response(
-                latest_complete_day_end,
-                86_400,
-                day_all_reporting_tz,
-                day_all_time_zone_fallback,
-            )
-        },
-    }))
-}
-
-pub(crate) async fn fetch_timeseries_from_hourly_rollups(
-    state: Arc<AppState>,
-    _params: TimeseriesQuery,
-    reporting_tz: Tz,
-    source_scope: InvocationSourceScope,
-    range_window: RangeWindow,
-    bucket_selection: TimeseriesBucketSelection,
-) -> Result<Json<TimeseriesResponse>, ApiError> {
-    let bucket_seconds = bucket_selection.bucket_seconds;
-    let start_epoch = range_window.start.timestamp();
-    let range_plan = build_hourly_rollup_exact_range_plan(
-        range_window.start,
-        range_window.end,
-        shanghai_retention_cutoff(state.config.invocation_max_days),
-    )?;
-
-    let mut aggregates: BTreeMap<i64, BucketAggregate> = BTreeMap::new();
-    let fill_start_epoch = align_reporting_bucket_epoch(start_epoch, bucket_seconds, reporting_tz)?;
-    let fill_end_epoch =
-        resolve_timeseries_fill_end_epoch(range_window.end, bucket_seconds, reporting_tz)?;
-    let mut bucket_cursor = fill_start_epoch;
-    while bucket_cursor < fill_end_epoch {
-        aggregates.entry(bucket_cursor).or_default();
-        bucket_cursor = next_reporting_bucket_epoch(bucket_cursor, bucket_seconds, reporting_tz)?;
-    }
-
-    let (snapshot_id, hourly_rows, exact_records) = if range_plan.full_hour_range.is_some() {
-        ensure_invocation_summary_rollups_ready_best_effort(&state.pool).await?;
-            let mut tx = state.pool.begin().await?;
-            let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
-            let rollup_live_cursor =
-                load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
-            let (hourly_cursor, hourly_end_epoch) = range_plan
-                .full_hour_range
-                .expect("full_hour_range is present when hourly rollups are enabled");
-            let hourly_rows = query_invocation_hourly_rollup_range_tx(
-                tx.as_mut(),
-                hourly_cursor,
-                hourly_end_epoch,
-                source_scope,
-            )
-            .await?;
-            let mut exact_records =
-                query_invocation_exact_records_tx(tx.as_mut(), &range_plan, source_scope, snapshot_id)
-                    .await?;
-            exact_records.extend(
-                query_invocation_full_hour_tail_records_tx(
-                    tx.as_mut(),
-                    &range_plan,
-                    source_scope,
-                    rollup_live_cursor,
-                    snapshot_id,
-                )
-                .await?,
-            );
-            (snapshot_id, hourly_rows, exact_records)
-    } else {
-        let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
-        let exact_records =
-            query_invocation_exact_records(&state.pool, &range_plan, source_scope, snapshot_id)
-                .await?;
-        (snapshot_id, Vec::new(), exact_records)
-    };
-
-    for row in hourly_rows {
-        let bucket_epoch =
-            align_reporting_bucket_epoch(row.bucket_start_epoch, bucket_seconds, reporting_tz)?;
-        let entry = aggregates.entry(bucket_epoch).or_default();
-        entry.total_count += row.total_count;
-        entry.success_count += row.success_count;
-        entry.failure_count += row.failure_count;
-        entry.total_tokens += row.total_tokens;
-        entry.total_cost += row.total_cost;
-        entry.first_byte_sample_count += row.first_byte_sample_count;
-        entry.first_byte_ttfb_sum_ms += row.first_byte_sum_ms;
-        entry.first_byte_histogram = if entry.first_byte_histogram.is_empty() {
-            decode_approx_histogram(&row.first_byte_histogram)
-        } else {
-            let mut merged = entry.first_byte_histogram.clone();
-            merge_approx_histogram_into(
-                &mut merged,
-                &decode_approx_histogram(&row.first_byte_histogram),
-            )?;
-            merged
-        };
-        entry.first_response_byte_total_sample_count +=
-            row.first_response_byte_total_sample_count;
-        entry.first_response_byte_total_sum_ms += row.first_response_byte_total_sum_ms;
-        entry.first_response_byte_total_histogram =
-            if entry.first_response_byte_total_histogram.is_empty() {
-                decode_approx_histogram(&row.first_response_byte_total_histogram)
-            } else {
-                let mut merged = entry.first_response_byte_total_histogram.clone();
-                merge_approx_histogram_into(
-                    &mut merged,
-                    &decode_approx_histogram(&row.first_response_byte_total_histogram),
-                )?;
-                merged
-            };
-    }
-    for record in exact_records {
-        let Some(occurred_utc) = parse_to_utc_datetime(&record.occurred_at) else {
-            continue;
-        };
-        let bucket_epoch =
-            align_reporting_bucket_epoch(occurred_utc.timestamp(), bucket_seconds, reporting_tz)?;
-        if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
-            entry.total_count += 1;
-            let classification = resolve_failure_classification(
-                record.status.as_deref(),
-                record.error_message.as_deref(),
-                record.failure_kind.as_deref(),
-                record.failure_class.as_deref(),
-                record.is_actionable,
-            );
-            let is_success_like = invocation_status_is_success_like(
-                record.status.as_deref(),
-                record.error_message.as_deref(),
-            ) && classification.failure_class == FailureClass::None;
-            if is_success_like {
-                entry.success_count += 1;
-            } else if invocation_status_is_in_flight(record.status.as_deref()) {
-                entry.in_flight_count += 1;
-            } else if invocation_status_counts_toward_terminal_totals(record.status.as_deref())
-                && classification.failure_class != FailureClass::None
-            {
-                entry.failure_count += 1;
-            }
-            let latency_status = if is_success_like {
-                Some("success")
-            } else {
-                record.status.as_deref()
-            };
-            entry.record_exact_ttfb_sample(latency_status, record.t_upstream_ttfb_ms);
-            entry.record_exact_first_response_byte_total_sample(
-                record.t_req_read_ms,
-                record.t_req_parse_ms,
-                record.t_upstream_connect_ms,
-                record.t_upstream_ttfb_ms,
-            );
-            entry.total_tokens += record.total_tokens.unwrap_or_default();
-            entry.total_cost += record.cost.unwrap_or_default();
-        }
-    }
-
-    let relay_deltas = if source_scope == InvocationSourceScope::All
-        && let Some(relay) = state.config.crs_stats.as_ref()
-        && let Some(effective_range) = effective_range_for_hourly_rollup_plan(&range_plan)?
-    {
-        query_crs_deltas(
-            &state.pool,
-            relay,
-            effective_range.start.timestamp(),
-            crate::stats::exclusive_epoch_upper_bound(effective_range.end),
-        )
-        .await?
-    } else {
-        Vec::new()
-    };
-    for delta in relay_deltas {
-        let bucket_epoch =
-            align_reporting_bucket_epoch(delta.captured_at_epoch, bucket_seconds, reporting_tz)?;
-        if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
-            entry.total_count += delta.total_count;
-            entry.success_count += delta.success_count;
-            entry.failure_count += delta.failure_count;
-            entry.total_tokens += delta.total_tokens;
-            entry.total_cost += delta.total_cost;
-        }
-    }
-
-    let mut points = Vec::with_capacity(aggregates.len());
-    for (bucket_epoch, agg) in aggregates {
-        let bucket_end_epoch =
-            next_reporting_bucket_epoch(bucket_epoch, bucket_seconds, reporting_tz)?;
-        if bucket_epoch < fill_start_epoch || bucket_end_epoch > fill_end_epoch {
-            continue;
-        }
-        let start = Utc
-            .timestamp_opt(bucket_epoch, 0)
-            .single()
-            .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
-        let end = Utc
-            .timestamp_opt(bucket_end_epoch, 0)
-            .single()
-            .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
-        points.push(TimeseriesPoint {
-            bucket_start: format_utc_iso(start),
-            bucket_end: format_utc_iso(end),
-            total_count: agg.total_count,
-            success_count: agg.success_count,
-            failure_count: agg.failure_count,
-            in_flight_count: agg.in_flight_count,
-            total_tokens: agg.total_tokens,
-            total_cost: agg.total_cost,
-            first_byte_sample_count: agg.first_byte_sample_count,
-            first_byte_avg_ms: agg.first_byte_avg_ms(),
-            first_byte_p95_ms: agg.first_byte_p95_ms(),
-            first_response_byte_total_sample_count: agg.first_response_byte_total_sample_count,
-            first_response_byte_total_avg_ms: agg.first_response_byte_total_avg_ms(),
-            first_response_byte_total_p95_ms: agg.first_response_byte_total_p95_ms(),
-        });
-    }
-
-    Ok(Json(TimeseriesResponse {
-        range_start: format_utc_iso(range_window.start),
-        range_end: format_utc_iso(range_window.display_end),
-        bucket_seconds,
-        snapshot_id,
-        effective_bucket: bucket_selection.effective_bucket,
-        available_buckets: bucket_selection.available_buckets,
-        bucket_limited_to_daily: bucket_selection.bucket_limited_to_daily,
-        points,
-    }))
 }

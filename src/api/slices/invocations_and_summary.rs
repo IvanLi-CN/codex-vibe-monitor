@@ -1,6 +1,3 @@
-use crate::forward_proxy::*;
-use crate::stats::*;
-use crate::*;
 use chrono::Offset;
 use chrono::Timelike;
 
@@ -670,7 +667,7 @@ fn apply_invocation_records_filters(
     }
 }
 
-async fn resolve_invocation_snapshot_id(
+pub(crate) async fn resolve_invocation_snapshot_id(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
 ) -> Result<i64> {
@@ -1778,44 +1775,44 @@ async fn load_stats_maintenance_response(
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ExactUtcRange {
-    start: DateTime<Utc>,
-    end: DateTime<Utc>,
+pub(crate) struct ExactUtcRange {
+    pub(crate) start: DateTime<Utc>,
+    pub(crate) end: DateTime<Utc>,
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct HourlyRollupExactRangePlan {
-    full_hour_range: Option<(i64, i64)>,
-    live_exact_ranges: Vec<ExactUtcRange>,
+    pub(crate) full_hour_range: Option<(i64, i64)>,
+    pub(crate) live_exact_ranges: Vec<ExactUtcRange>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub(crate) struct InvocationAggregateRecord {
-    id: i64,
-    occurred_at: String,
-    status: Option<String>,
-    total_tokens: Option<i64>,
-    cost: Option<f64>,
-    error_message: Option<String>,
-    failure_kind: Option<String>,
-    failure_class: Option<String>,
-    is_actionable: Option<i64>,
-    t_total_ms: Option<f64>,
-    t_req_read_ms: Option<f64>,
-    t_req_parse_ms: Option<f64>,
-    t_upstream_connect_ms: Option<f64>,
-    t_upstream_ttfb_ms: Option<f64>,
-    t_upstream_stream_ms: Option<f64>,
-    t_resp_parse_ms: Option<f64>,
-    t_persist_ms: Option<f64>,
+    pub(crate) id: i64,
+    pub(crate) occurred_at: String,
+    pub(crate) status: Option<String>,
+    pub(crate) total_tokens: Option<i64>,
+    pub(crate) cost: Option<f64>,
+    pub(crate) error_message: Option<String>,
+    pub(crate) failure_kind: Option<String>,
+    pub(crate) failure_class: Option<String>,
+    pub(crate) is_actionable: Option<i64>,
+    pub(crate) t_total_ms: Option<f64>,
+    pub(crate) t_req_read_ms: Option<f64>,
+    pub(crate) t_req_parse_ms: Option<f64>,
+    pub(crate) t_upstream_connect_ms: Option<f64>,
+    pub(crate) t_upstream_ttfb_ms: Option<f64>,
+    pub(crate) t_upstream_stream_ms: Option<f64>,
+    pub(crate) t_resp_parse_ms: Option<f64>,
+    pub(crate) t_persist_ms: Option<f64>,
 }
 
-fn ceil_hour_epoch(epoch: i64) -> i64 {
+pub(crate) fn ceil_hour_epoch(epoch: i64) -> i64 {
     let floor = align_bucket_epoch(epoch, 3_600, 0);
     if floor < epoch { floor + 3_600 } else { floor }
 }
 
-fn exact_utc_range(
+pub(crate) fn exact_utc_range(
     start: DateTime<Utc>,
     end: DateTime<Utc>,
 ) -> Result<Option<ExactUtcRange>, ApiError> {
@@ -1825,7 +1822,7 @@ fn exact_utc_range(
     Ok(Some(ExactUtcRange { start, end }))
 }
 
-fn push_exact_range(
+pub(crate) fn push_exact_range(
     ranges: &mut Vec<ExactUtcRange>,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
