@@ -487,11 +487,14 @@ async fn schedule_poll(
     Ok(Some(handle))
 }
 
-async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHandle<()>)> {
-    let cors_layer = build_cors_layer(&state.config);
-    let mut router = Router::new()
+fn build_health_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
+    router
         .route("/health", get(health_check))
         .route("/api/version", get(get_versions))
+}
+
+fn build_settings_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
+    router
         .route("/api/settings", get(get_settings))
         .route(
             "/api/settings/proxy-models",
@@ -510,6 +513,10 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHand
             post(post_forward_proxy_candidate_validation),
         )
         .route("/api/settings/pricing", put(put_pricing_settings))
+}
+
+fn build_invocation_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
+    router
         .route("/api/invocations", get(list_invocations))
         .route(
             "/api/invocations/:invoke_id/pool-attempts",
@@ -532,6 +539,10 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHand
             "/api/invocations/new-count",
             get(fetch_invocation_new_records_count),
         )
+}
+
+fn build_stats_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
+    router
         .route("/api/stats", get(fetch_stats))
         .route("/api/stats/summary", get(fetch_summary))
         .route(
@@ -553,6 +564,10 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHand
             get(fetch_prompt_cache_conversations),
         )
         .route("/api/quota/latest", get(latest_quota_snapshot))
+}
+
+fn build_pool_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
+    router
         .route(
             "/api/pool/routing-settings",
             get(get_pool_routing_settings).put(update_pool_routing_settings),
@@ -655,11 +670,26 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHand
             "/api/pool/upstream-accounts/oauth/callback",
             get(oauth_callback),
         )
-        .route("/events", get(sse_stream))
-        .route("/v1/*path", any(proxy_openai_v1_with_connect_info))
-        .with_state(state.clone())
-        .layer(TraceLayer::new_for_http())
-        .layer(cors_layer);
+}
+
+fn build_event_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
+    router.route("/events", get(sse_stream))
+}
+
+fn build_proxy_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
+    router.route("/v1/*path", any(proxy_openai_v1_with_connect_info))
+}
+
+async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHandle<()>)> {
+    let cors_layer = build_cors_layer(&state.config);
+    let mut router = build_proxy_routes(build_event_routes(build_pool_routes(
+        build_stats_routes(build_invocation_routes(build_settings_routes(build_health_routes(
+            Router::new(),
+        )))),
+    )))
+    .with_state(state.clone())
+    .layer(TraceLayer::new_for_http())
+    .layer(cors_layer);
 
     // Optionally attach headers in the future; standard EventSource cannot read headers
 
