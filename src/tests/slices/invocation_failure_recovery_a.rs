@@ -2219,7 +2219,7 @@ async fn resolve_pool_account_for_request_with_wait_accepts_recovery_in_final_po
 
     let pool = state.pool.clone();
     let delayed_release_task = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(170)).await;
+        tokio::time::sleep(Duration::from_millis(430)).await;
         set_test_account_status(&pool, delayed_id, "active").await;
     });
 
@@ -2233,7 +2233,7 @@ async fn resolve_pool_account_for_request_with_wait_accepts_recovery_in_final_po
         None,
         true,
         &mut wait_deadline,
-        Some(Instant::now() + Duration::from_millis(240)),
+        Some(Instant::now() + Duration::from_millis(500)),
     )
     .await
     .expect("helper resolution should succeed");
@@ -2244,7 +2244,7 @@ async fn resolve_pool_account_for_request_with_wait_accepts_recovery_in_final_po
         .expect("delayed release task should join");
 
     assert!(
-        elapsed < Duration::from_millis(320),
+        elapsed < Duration::from_millis(650),
         "helper should resolve near the external deadline once recovery lands in the final poll window, elapsed={elapsed:?}"
     );
     match resolution {

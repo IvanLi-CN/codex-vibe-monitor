@@ -769,13 +769,12 @@ pub(crate) async fn build_forward_proxy_binding_nodes_response(
     state: &AppState,
     extra_proxy_keys: &[String],
 ) -> Result<Vec<ForwardProxyBindingNodeResponse>> {
-    build_forward_proxy_binding_nodes_response_with_options(state, extra_proxy_keys, true).await
+    build_forward_proxy_binding_nodes_response_with_options(state, extra_proxy_keys).await
 }
 
 pub(crate) async fn build_forward_proxy_binding_nodes_response_with_options(
     state: &AppState,
     extra_proxy_keys: &[String],
-    catch_up_hourly_rollups: bool,
 ) -> Result<Vec<ForwardProxyBindingNodeResponse>> {
     const BUCKET_SECONDS: i64 = 3600;
     const BUCKET_COUNT: i64 = 24;

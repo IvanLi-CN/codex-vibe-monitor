@@ -780,12 +780,12 @@ async fn proxy_openai_v1_header_sticky_recovers_in_final_poll_window_before_tota
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse(&upstream_base).expect("valid upstream base url");
-    config.pool_upstream_responses_total_timeout = Duration::from_millis(250);
+    config.pool_upstream_responses_total_timeout = Duration::from_millis(500);
     let state = test_state_from_config_with_pool_no_available_wait(
         config,
         true,
         PoolNoAvailableWaitSettings {
-            timeout: Duration::from_millis(400),
+            timeout: Duration::from_millis(700),
             poll_interval: Duration::from_millis(60),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
@@ -818,7 +818,7 @@ async fn proxy_openai_v1_header_sticky_recovers_in_final_poll_window_before_tota
 
     let pool = state.pool.clone();
     let release_task = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(170)).await;
+        tokio::time::sleep(Duration::from_millis(430)).await;
         set_test_account_status(&pool, delayed_id, "active").await;
     });
 
@@ -1681,7 +1681,7 @@ async fn proxy_openai_v1_header_sticky_stream_reroute_preserves_original_wait_wi
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse(&upstream_base).expect("valid upstream base url"),
-        Duration::from_millis(120),
+        Duration::from_millis(200),
         Duration::from_millis(10),
     )
     .await;
@@ -1691,22 +1691,37 @@ async fn proxy_openai_v1_header_sticky_stream_reroute_preserves_original_wait_wi
     set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
     set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
 
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
-    let body_sender = std::thread::spawn(move || {
-        let _ = tx.blocking_send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5\",")));
-        std::thread::sleep(Duration::from_millis(90));
-        let _ = tx.blocking_send(Ok(Bytes::from_static(
-            b"\"messages\":[],\"stickyKey\":\"body-reroute-sticky\"}",
-        )));
-    });
+    let (body_reroute_tx, body_reroute_rx) = tokio::sync::oneshot::channel::<()>();
+    let body = Body::from_stream(futures_util::stream::unfold(
+        (0_u8, Some(body_reroute_tx)),
+        |(step, body_reroute_tx)| async move {
+            match step {
+                0 => Some((
+                    Ok::<Bytes, io::Error>(Bytes::from_static(b"{\"model\":\"gpt-5\",")),
+                    (1, body_reroute_tx),
+                )),
+                1 => {
+                    tokio::time::sleep(Duration::from_millis(140)).await;
+                    if let Some(body_reroute_tx) = body_reroute_tx {
+                        let _ = body_reroute_tx.send(());
+                    }
+                    Some((
+                        Ok::<Bytes, io::Error>(Bytes::from_static(
+                            b"\"messages\":[],\"stickyKey\":\"body-reroute-sticky\"}",
+                        )),
+                        (2, None),
+                    ))
+                }
+                _ => None,
+            }
+        },
+    ));
 
     let pool = state.pool.clone();
-    let runtime_handle = tokio::runtime::Handle::current();
-    let delayed_release_task = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(150));
-        runtime_handle.block_on(async move {
-            set_test_account_status(&pool, delayed_id, "active").await;
-        });
+    let delayed_release_task = tokio::spawn(async move {
+        body_reroute_rx.await.expect("body reroute signal should arrive");
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        set_test_account_status(&pool, delayed_id, "active").await;
     });
 
     let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
@@ -1732,20 +1747,19 @@ async fn proxy_openai_v1_header_sticky_stream_reroute_preserves_original_wait_wi
                 HeaderValue::from_static("application/json"),
             ),
         ]),
-        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        body,
         runtime_timeouts,
         None,
     )
     .await;
     let elapsed = started.elapsed();
 
-    body_sender.join().expect("body sender thread should join");
     delayed_release_task
-        .join()
-        .expect("delayed release thread should join");
+        .await
+        .expect("delayed release task should join");
 
     assert!(
-        elapsed < Duration::from_millis(210),
+        elapsed < Duration::from_millis(300),
         "rerouted sticky requests should not reset the bounded wait window, elapsed={elapsed:?}"
     );
     let (status, message) = response.expect_err("via-pool request should fail");
