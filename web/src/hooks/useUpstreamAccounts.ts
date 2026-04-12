@@ -783,6 +783,8 @@ export function useUpstreamAccounts(
       ? 'deferred'
       : forwardProxyNodes == null
         ? 'missing'
+        : listError != null && forwardProxyNodes.length === 0
+          ? 'stale'
         : forwardProxyCatalogWaitingOnRefresh
           ? 'stale'
           : listFreshness
