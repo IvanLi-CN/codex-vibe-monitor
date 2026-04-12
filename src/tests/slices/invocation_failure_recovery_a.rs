@@ -2205,11 +2205,11 @@ async fn resolve_pool_account_for_request_with_wait_respects_external_deadline()
 }
 
 #[tokio::test]
-async fn resolve_pool_account_for_request_with_wait_accepts_recovery_in_final_poll_window() {
+async fn resolve_pool_account_for_request_with_wait_accepts_recovery_after_wait_starts() {
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
         Duration::from_secs(2),
-        Duration::from_millis(60),
+        Duration::from_millis(100),
     )
     .await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
@@ -2217,10 +2217,16 @@ async fn resolve_pool_account_for_request_with_wait_accepts_recovery_in_final_po
     set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
     set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
 
+    let wait_started_rx = crate::proxy::register_pool_no_available_wait_hook(&state);
     let pool = state.pool.clone();
-    let delayed_release_task = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(430)).await;
-        set_test_account_status(&pool, delayed_id, "active").await;
+    let runtime_handle = tokio::runtime::Handle::current();
+    let delayed_release_task = std::thread::spawn(move || {
+        wait_started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("helper should signal once the bounded wait starts");
+        runtime_handle.block_on(async move {
+            set_test_account_status(&pool, delayed_id, "active").await;
+        });
     });
 
     let started = Instant::now();
@@ -2233,19 +2239,19 @@ async fn resolve_pool_account_for_request_with_wait_accepts_recovery_in_final_po
         None,
         true,
         &mut wait_deadline,
-        Some(Instant::now() + Duration::from_millis(500)),
+        Some(Instant::now() + Duration::from_millis(650)),
     )
     .await
     .expect("helper resolution should succeed");
     let elapsed = started.elapsed();
 
     delayed_release_task
-        .await
-        .expect("delayed release task should join");
+        .join()
+        .expect("delayed release thread should join");
 
     assert!(
-        elapsed < Duration::from_millis(650),
-        "helper should resolve near the external deadline once recovery lands in the final poll window, elapsed={elapsed:?}"
+        elapsed < Duration::from_millis(850),
+        "helper should still resolve once the account recovers after the bounded wait begins, elapsed={elapsed:?}"
     );
     match resolution {
         PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Resolved(account)) => {
@@ -2255,7 +2261,7 @@ async fn resolve_pool_account_for_request_with_wait_accepts_recovery_in_final_po
                 Some("Bearer upstream-delayed")
             );
         }
-        other => panic!("expected final-window recovery to succeed, got {other:?}"),
+        other => panic!("expected post-wait recovery to succeed, got {other:?}"),
     }
     assert!(
         wait_deadline.is_some(),

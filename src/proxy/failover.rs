@@ -1,3 +1,43 @@
+#[cfg(test)]
+fn pool_no_available_wait_hooks() -> &'static std::sync::Mutex<
+    std::collections::HashMap<usize, Vec<std::sync::mpsc::Sender<()>>>,
+> {
+    static HOOKS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<usize, Vec<std::sync::mpsc::Sender<()>>>>,
+    > = std::sync::OnceLock::new();
+    HOOKS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+#[cfg(test)]
+pub(crate) fn register_pool_no_available_wait_hook(
+    state: &Arc<AppState>,
+) -> std::sync::mpsc::Receiver<()> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    pool_no_available_wait_hooks()
+        .lock()
+        .expect("lock pool no-available wait hooks")
+        .entry(Arc::as_ptr(state) as usize)
+        .or_default()
+        .push(tx);
+    rx
+}
+
+#[cfg(test)]
+fn notify_pool_no_available_wait_hook(state: &AppState) {
+    let listeners = pool_no_available_wait_hooks()
+        .lock()
+        .expect("lock pool no-available wait hooks")
+        .remove(&(state as *const AppState as usize));
+    if let Some(listeners) = listeners {
+        for listener in listeners {
+            let _ = listener.send(());
+        }
+    }
+}
+
+#[cfg(not(test))]
+fn notify_pool_no_available_wait_hook(_state: &AppState) {}
+
 pub(crate) fn parse_retry_after_delay(value: &HeaderValue) -> Option<Duration> {
     let text = value.to_str().ok()?.trim();
     if text.is_empty() {
@@ -76,6 +116,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait(
                     }
                     return Ok(PoolAccountResolutionWithWait::Resolution(resolution));
                 }
+                notify_pool_no_available_wait_hook(state);
                 tokio::time::sleep(
                     poll_interval.min(effective_deadline.saturating_duration_since(now)),
                 )

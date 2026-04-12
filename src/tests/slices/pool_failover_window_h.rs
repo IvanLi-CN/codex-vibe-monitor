@@ -5421,6 +5421,56 @@ async fn all_time_summary_read_path_skips_unreadable_replayed_legacy_archives() 
 }
 
 #[tokio::test]
+async fn summary_rollup_repair_best_effort_skips_unreadable_pending_archives() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid unreadable pending summary hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("unreadable pending success time"),
+    );
+    let archive_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-pending-corrupt-best-effort",
+        &[(
+            1_i64,
+            "summary-pending-corrupt-best-effort-success",
+            archived_success_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+
+    fs::write(&archive_path, b"not-a-gzip-archive").expect("corrupt pending archive batch");
+
+    crate::stats::ensure_invocation_summary_rollups_ready_best_effort(&state.pool)
+        .await
+        .expect("best-effort summary repair should skip unreadable pending archive");
+
+    let repair_marker_cursor = sqlx::query_scalar::<_, i64>(
+        "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
+    )
+    .bind("codex_invocations_summary_rollup_v2")
+    .fetch_optional(&state.pool)
+    .await
+    .expect("load unreadable pending repair marker");
+    assert_eq!(repair_marker_cursor, None);
+}
+
+#[tokio::test]
 async fn all_time_summary_repair_restores_live_rows_in_boundary_hours_when_preserving_pruned_materialized_archives(
 ) {
     let mut config = test_config();

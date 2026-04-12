@@ -37,6 +37,15 @@ fn is_missing_invocation_summary_archive_error(err: &anyhow::Error) -> bool {
     })
 }
 
+fn is_unreadable_invocation_summary_archive_error(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        let message = cause.to_string();
+        message.contains("failed to decompress archive batch ")
+            || message.contains("failed to open archive batch ")
+            || message.contains("database disk image is malformed")
+    })
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum StatsFilter {
     All,
@@ -2714,6 +2723,13 @@ pub(crate) async fn ensure_invocation_summary_rollups_ready_best_effort(
             warn!(
                 error = %err,
                 "skipping invocation summary rollup repair because an archive batch file is missing; reusing current rollups for historical range queries"
+            );
+            Ok(())
+        }
+        Err(err) if is_unreadable_invocation_summary_archive_error(&err) => {
+            warn!(
+                error = %err,
+                "skipping invocation summary rollup repair because an archive batch is unreadable; reusing current rollups for historical range queries"
             );
             Ok(())
         }

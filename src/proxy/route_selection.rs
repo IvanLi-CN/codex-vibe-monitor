@@ -1174,6 +1174,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                         no_available_wait_deadline,
                                     );
                                 }
+                                notify_pool_no_available_wait_hook(state_for_wait.as_ref());
                                 tokio::time::sleep(
                                     poll_interval
                                         .min(effective_deadline.saturating_duration_since(now)),

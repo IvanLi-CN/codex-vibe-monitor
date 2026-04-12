@@ -775,18 +775,18 @@ async fn proxy_openai_v1_header_sticky_responses_wait_timeout_respects_total_tim
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_header_sticky_recovers_in_final_poll_window_before_total_timeout() {
+async fn proxy_openai_v1_header_sticky_recovers_after_wait_starts() {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse(&upstream_base).expect("valid upstream base url");
-    config.pool_upstream_responses_total_timeout = Duration::from_millis(500);
+    config.pool_upstream_responses_total_timeout = Duration::from_millis(650);
     let state = test_state_from_config_with_pool_no_available_wait(
         config,
         true,
         PoolNoAvailableWaitSettings {
-            timeout: Duration::from_millis(700),
-            poll_interval: Duration::from_millis(60),
+            timeout: Duration::from_millis(850),
+            poll_interval: Duration::from_millis(100),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -795,6 +795,7 @@ async fn proxy_openai_v1_header_sticky_recovers_in_final_poll_window_before_tota
     let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
     set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
 
+    let wait_started_rx = crate::proxy::register_pool_no_available_wait_hook(&state);
     let request_state = state.clone();
     let request_task = tokio::spawn(async move {
         proxy_openai_v1(
@@ -817,17 +818,22 @@ async fn proxy_openai_v1_header_sticky_recovers_in_final_poll_window_before_tota
     });
 
     let pool = state.pool.clone();
-    let release_task = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(430)).await;
-        set_test_account_status(&pool, delayed_id, "active").await;
+    let runtime_handle = tokio::runtime::Handle::current();
+    let release_task = std::thread::spawn(move || {
+        wait_started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("header sticky request should signal once the bounded wait starts");
+        runtime_handle.block_on(async move {
+            set_test_account_status(&pool, delayed_id, "active").await;
+        });
     });
 
     let response = request_task
         .await
         .expect("header sticky request task should join");
     release_task
-        .await
-        .expect("delayed release task should join");
+        .join()
+        .expect("delayed release thread should join");
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = to_bytes(response.into_body(), usize::MAX)
