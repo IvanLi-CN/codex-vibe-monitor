@@ -95,6 +95,7 @@ pub(crate) struct InvocationFailureHourlyRollupRecord {
 
 #[derive(Debug, FromRow)]
 pub(crate) struct ProxyPerfStageHourlyRollupRecord {
+    pub(crate) bucket_start_epoch: i64,
     pub(crate) stage: String,
     pub(crate) sample_count: i64,
     pub(crate) sum_ms: f64,
@@ -1016,6 +1017,10 @@ fn subtract_nonnegative_i64(archive_value: i64, materialized_value: i64) -> i64 
     archive_value.saturating_sub(materialized_value).max(0)
 }
 
+fn subtract_nonnegative_f64(archive_value: f64, materialized_value: f64) -> f64 {
+    (archive_value - materialized_value).max(0.0)
+}
+
 async fn load_materialized_invocation_rollup_record(
     pool: &Pool<Sqlite>,
     bucket_start_epoch: i64,
@@ -1298,85 +1303,9 @@ async fn load_missing_failure_rollup_row_counts_for_rows(
     Ok(missing_counts)
 }
 
-fn collect_proxy_perf_rollup_keys_from_row(
-    keys: &mut HashSet<(i64, String)>,
-    row: &InvocationHourlySourceRecord,
-) -> Result<()> {
-    if row.source != SOURCE_PROXY {
-        return Ok(());
-    }
-    let bucket_start_epoch = summary_rollup_bucket_start_epoch(&row.occurred_at)?;
-    for (stage, value_ms) in [
-        ("total", row.t_total_ms),
-        ("requestRead", row.t_req_read_ms),
-        ("requestParse", row.t_req_parse_ms),
-        ("upstreamConnect", row.t_upstream_connect_ms),
-        ("upstreamFirstByte", row.t_upstream_ttfb_ms),
-        ("upstreamStream", row.t_upstream_stream_ms),
-        ("responseParse", row.t_resp_parse_ms),
-        ("persistence", row.t_persist_ms),
-    ] {
-        if normalize_non_negative_timing_value(value_ms).is_some() {
-            keys.insert((bucket_start_epoch, stage.to_string()));
-        }
-    }
-    Ok(())
-}
-
-async fn load_missing_proxy_perf_rollup_keys_for_archive(
-    pool: &Pool<Sqlite>,
-    archive_pool: &Pool<Sqlite>,
-    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
-) -> Result<HashSet<(i64, String)>> {
-    let mut cursor_id = 0_i64;
-    let mut keys = HashSet::new();
-
-    loop {
-        let rows = load_invocation_hourly_source_rows_after_id(
-            archive_pool,
-            cursor_id,
-            InvocationSourceScope::ProxyOnly,
-            BACKFILL_BATCH_SIZE,
-        )
-        .await?;
-        if rows.is_empty() {
-            break;
-        }
-        cursor_id = rows.last().map(|row| row.id).unwrap_or(cursor_id);
-        for row in rows {
-            if !invocation_hourly_source_record_matches_range(&row, range) {
-                continue;
-            }
-            collect_proxy_perf_rollup_keys_from_row(&mut keys, &row)?;
-        }
-    }
-
-    if keys.is_empty() {
-        return Ok(HashSet::new());
-    }
-
-    let mut missing_keys = HashSet::new();
-    for (bucket_start_epoch, stage) in keys {
-        let exists = sqlx::query_scalar::<_, i64>(
-            "SELECT 1 FROM proxy_perf_stage_hourly WHERE bucket_start_epoch = ?1 AND stage = ?2 LIMIT 1",
-        )
-        .bind(bucket_start_epoch)
-        .bind(&stage)
-        .fetch_optional(pool)
-        .await?
-        .is_some();
-        if !exists {
-            missing_keys.insert((bucket_start_epoch, stage));
-        }
-    }
-
-    Ok(missing_keys)
-}
-
-fn add_invocation_hourly_source_record_to_missing_proxy_perf_rollups(
+fn add_invocation_hourly_source_record_to_proxy_perf_rollups(
     perf: &mut BTreeMap<(i64, String), ProxyPerfStageHourlyDelta>,
     row: &InvocationHourlySourceRecord,
-    missing_keys: &HashSet<(i64, String)>,
 ) -> Result<()> {
     if row.source != SOURCE_PROXY {
         return Ok(());
@@ -1392,12 +1321,55 @@ fn add_invocation_hourly_source_record_to_missing_proxy_perf_rollups(
         ("responseParse", row.t_resp_parse_ms),
         ("persistence", row.t_persist_ms),
     ] {
-        if !missing_keys.contains(&(bucket_start_epoch, stage.to_string())) {
-            continue;
-        }
         record_proxy_perf_stage_sample(perf, bucket_start_epoch, stage, value_ms);
     }
     Ok(())
+}
+
+async fn load_materialized_proxy_perf_rollups_for_range(
+    pool: &Pool<Sqlite>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> Result<BTreeMap<(i64, String), ProxyPerfStageHourlyRollupRecord>> {
+    Ok(
+        query_proxy_perf_stage_hourly_rollup_range(pool, start.timestamp(), end.timestamp())
+            .await?
+            .into_iter()
+            .map(|row| ((row.bucket_start_epoch, row.stage.clone()), row))
+            .collect(),
+    )
+}
+
+fn build_proxy_perf_stage_rollup_delta(
+    archive_delta: &ProxyPerfStageHourlyDelta,
+    materialized_row: Option<&ProxyPerfStageHourlyRollupRecord>,
+) -> Result<Option<ProxyPerfStageHourlyDelta>> {
+    let histogram = subtract_approx_histogram_counts(
+        &archive_delta.histogram,
+        &materialized_row
+            .map(|row| decode_approx_histogram(&row.histogram))
+            .unwrap_or_else(empty_approx_histogram),
+    );
+    let sample_count = histogram.iter().copied().sum::<i64>();
+    let sum_ms = subtract_nonnegative_f64(
+        archive_delta.sum_ms,
+        materialized_row.map(|row| row.sum_ms).unwrap_or(0.0),
+    );
+
+    if sample_count <= 0 && sum_ms <= 0.0 {
+        return Ok(None);
+    }
+
+    Ok(Some(ProxyPerfStageHourlyDelta {
+        sample_count,
+        sum_ms,
+        max_ms: if sample_count > 0 {
+            archive_delta.max_ms.max(0.0)
+        } else {
+            0.0
+        },
+        histogram,
+    }))
 }
 
 pub(crate) async fn query_unmaterialized_proxy_perf_stage_rollups_from_archives(
@@ -1406,7 +1378,7 @@ pub(crate) async fn query_unmaterialized_proxy_perf_stage_rollups_from_archives(
     end: DateTime<Utc>,
 ) -> Result<BTreeMap<String, ProxyPerfStageHourlyDelta>> {
     let archive_rows = load_completed_invocation_archive_paths(pool).await?;
-    let mut perf_by_bucket_stage: BTreeMap<(i64, String), ProxyPerfStageHourlyDelta> =
+    let mut archive_perf_by_bucket_stage: BTreeMap<(i64, String), ProxyPerfStageHourlyDelta> =
         BTreeMap::new();
 
     for archive_row in archive_rows {
@@ -1415,17 +1387,6 @@ pub(crate) async fn query_unmaterialized_proxy_perf_stage_rollups_from_archives(
         else {
             continue;
         };
-        let missing_keys = load_missing_proxy_perf_rollup_keys_for_archive(
-            pool,
-            &archive_pool,
-            Some((start, end)),
-        )
-        .await?;
-        if missing_keys.is_empty() {
-            archive_pool.close().await;
-            drop(temp_cleanup);
-            continue;
-        }
         let mut cursor_id = 0_i64;
         loop {
             let rows = load_invocation_hourly_source_rows_after_id(
@@ -1443,10 +1404,9 @@ pub(crate) async fn query_unmaterialized_proxy_perf_stage_rollups_from_archives(
                 if !invocation_hourly_source_record_matches_range(&row, Some((start, end))) {
                     continue;
                 }
-                add_invocation_hourly_source_record_to_missing_proxy_perf_rollups(
-                    &mut perf_by_bucket_stage,
+                add_invocation_hourly_source_record_to_proxy_perf_rollups(
+                    &mut archive_perf_by_bucket_stage,
                     &row,
-                    &missing_keys,
                 )?;
             }
         }
@@ -1455,8 +1415,21 @@ pub(crate) async fn query_unmaterialized_proxy_perf_stage_rollups_from_archives(
         drop(temp_cleanup);
     }
 
+    if archive_perf_by_bucket_stage.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let materialized_by_bucket_stage =
+        load_materialized_proxy_perf_rollups_for_range(pool, start, end).await?;
     let mut by_stage = BTreeMap::new();
-    for ((_, stage), delta) in perf_by_bucket_stage {
+    for ((bucket_start_epoch, stage), archive_delta) in archive_perf_by_bucket_stage {
+        let Some(delta) = build_proxy_perf_stage_rollup_delta(
+            &archive_delta,
+            materialized_by_bucket_stage.get(&(bucket_start_epoch, stage.clone())),
+        )?
+        else {
+            continue;
+        };
         let entry = by_stage
             .entry(stage)
             .or_insert_with(ProxyPerfStageHourlyDelta::default);
@@ -2231,6 +2204,7 @@ pub(crate) async fn query_proxy_perf_stage_hourly_rollup_range(
     sqlx::query_as::<_, ProxyPerfStageHourlyRollupRecord>(
         r#"
         SELECT
+            bucket_start_epoch,
             stage,
             sample_count,
             sum_ms,

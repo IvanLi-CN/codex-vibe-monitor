@@ -2364,6 +2364,106 @@ async fn historical_perf_stats_include_unmaterialized_archived_hours() {
 }
 
 #[tokio::test]
+async fn historical_perf_stats_fill_missing_samples_from_partially_materialized_archived_hours() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(13, 0, 0)
+    .expect("valid archived partial perf hour");
+    let archived_first_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("first archived partial perf time"),
+    );
+    let archived_second_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("second archived partial perf time"),
+    );
+
+    seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "perf-partial-materialized-archive",
+        &[
+            (
+                1_i64,
+                "perf-partial-materialized-first",
+                archived_first_at.as_str(),
+                SOURCE_PROXY,
+                "success",
+                10_i64,
+                0.10_f64,
+                Some(100.0),
+            ),
+            (
+                2_i64,
+                "perf-partial-materialized-second",
+                archived_second_at.as_str(),
+                SOURCE_PROXY,
+                "success",
+                20_i64,
+                0.20_f64,
+                Some(200.0),
+            ),
+        ],
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_first_at)
+        .expect("partial perf bucket start epoch should be derivable");
+    let mut histogram = empty_approx_histogram();
+    add_approx_histogram_sample(&mut histogram, 100.0);
+    sqlx::query(
+        r#"
+        INSERT INTO proxy_perf_stage_hourly (
+            bucket_start_epoch,
+            stage,
+            sample_count,
+            sum_ms,
+            max_ms,
+            histogram,
+            updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind("upstreamFirstByte")
+    .bind(1_i64)
+    .bind(100.0_f64)
+    .bind(100.0_f64)
+    .bind(encode_approx_histogram(&histogram).expect("encode partial perf histogram"))
+    .execute(&state.pool)
+    .await
+    .expect("seed partially materialized perf row");
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(perf_stats) = fetch_perf_stats(
+        State(state),
+        Query(PerfQuery {
+            range: historical_range,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch historical perf stats with partially materialized archive bucket");
+
+    let upstream_first_byte = perf_stats
+        .stages
+        .iter()
+        .find(|stage| stage.stage == "upstreamFirstByte")
+        .expect("historical perf stats should include partially materialized archived samples");
+    assert_eq!(upstream_first_byte.count, 2);
+    assert_f64_close(upstream_first_byte.avg_ms, 150.0);
+    assert_f64_close(upstream_first_byte.max_ms, 200.0);
+}
+
+#[tokio::test]
 async fn historical_timeseries_includes_unmaterialized_archived_hours_without_inline_repair() {
     let mut config = test_config();
     config.openai_upstream_base_url =
