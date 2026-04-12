@@ -2560,6 +2560,142 @@ async fn all_time_summary_fallback_keeps_unmaterialized_rows_when_sibling_archiv
 }
 
 #[tokio::test]
+async fn all_time_summary_fallback_keeps_unmaterialized_rows_when_materialized_sibling_archive_is_unreadable(
+) {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(7, 0, 0)
+    .expect("valid archived unreadable mixed-state summary hour");
+    let archived_first_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("first archived unreadable mixed-state summary time"),
+    );
+    let archived_second_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("second archived unreadable mixed-state summary time"),
+    );
+
+    let first_archive_original_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-mixed-state-unreadable-archive-a",
+        &[(
+            1_i64,
+            "summary-mixed-state-unreadable-first",
+            archived_first_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+    let first_archive_path = state
+        .config
+        .archive_dir
+        .join("summary-mixed-state-unreadable-archive-a.sqlite.gz");
+    let _ = fs::remove_file(&first_archive_path);
+    fs::rename(&first_archive_original_path, &first_archive_path)
+        .expect("move first unreadable mixed-state summary archive batch to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now') WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(first_archive_path.to_string_lossy().to_string())
+    .bind(first_archive_original_path.to_string_lossy().to_string())
+    .execute(&state.pool)
+    .await
+    .expect("mark first unreadable mixed-state summary archive batch as materialized");
+
+    seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-mixed-state-unreadable-archive-b",
+        &[(
+            1_i64,
+            "summary-mixed-state-unreadable-second",
+            archived_second_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            20_i64,
+            0.20_f64,
+            Some(120.0),
+        )],
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_first_at)
+        .expect("unreadable mixed-state summary bucket start epoch should be derivable");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(10_i64)
+    .bind(0.10_f64)
+    .bind(1_i64)
+    .bind(100.0_f64)
+    .bind(100.0_f64)
+    .bind("[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&state.pool)
+    .await
+    .expect("seed unreadable mixed-state materialized summary rollup row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
+
+    fs::write(&first_archive_path, b"not-a-gzip-archive")
+        .expect("corrupt unreadable mixed-state summary archive batch");
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch all-time summary with unreadable materialized sibling archive part");
+
+    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.success_count, 2);
+    assert_eq!(summary.failure_count, 0);
+    assert_eq!(summary.total_tokens, 30);
+    assert!((summary.total_cost - 0.30).abs() < 1e-9);
+}
+
+#[tokio::test]
 async fn archived_failure_fallback_skips_already_materialized_archive_buckets() {
     let mut config = test_config();
     config.openai_upstream_base_url =
@@ -3101,6 +3237,160 @@ async fn archived_failure_fallback_keeps_unmaterialized_rows_when_sibling_archiv
 }
 
 #[tokio::test]
+async fn archived_failure_fallback_keeps_unmaterialized_rows_when_materialized_sibling_archive_is_unreadable(
+) {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(9, 0, 0)
+    .expect("valid archived unreadable mixed-state failure hour");
+    let archived_first_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("first archived unreadable mixed-state failure time"),
+    );
+    let archived_second_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("second archived unreadable mixed-state failure time"),
+    );
+
+    let first_archive_original_path = seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "failure-mixed-state-unreadable-archive-a",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1_i64,
+            invoke_id: "failure-mixed-state-unreadable-first",
+            occurred_at: archived_first_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "failed",
+            total_tokens: 10_i64,
+            cost: 0.10_f64,
+            ttfb_ms: Some(100.0),
+            payload: Some("{}"),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: Some("HTTP 429 too many requests"),
+            failure_kind: Some("upstream_response_failed"),
+            failure_class: Some("service_failure"),
+            is_actionable: Some(1_i64),
+        }],
+    )
+    .await;
+    let first_archive_path = state
+        .config
+        .archive_dir
+        .join("failure-mixed-state-unreadable-archive-a.sqlite.gz");
+    let _ = fs::remove_file(&first_archive_path);
+    fs::rename(&first_archive_original_path, &first_archive_path)
+        .expect("move first unreadable mixed-state failure archive batch to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now') WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(first_archive_path.to_string_lossy().to_string())
+    .bind(first_archive_original_path.to_string_lossy().to_string())
+    .execute(&state.pool)
+    .await
+    .expect("mark first unreadable mixed-state failure archive batch as materialized");
+
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "failure-mixed-state-unreadable-archive-b",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1_i64,
+            invoke_id: "failure-mixed-state-unreadable-second",
+            occurred_at: archived_second_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "failed",
+            total_tokens: 20_i64,
+            cost: 0.20_f64,
+            ttfb_ms: Some(120.0),
+            payload: Some("{}"),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: Some("HTTP 429 too many requests"),
+            failure_kind: Some("upstream_response_failed"),
+            failure_class: Some("service_failure"),
+            is_actionable: Some(1_i64),
+        }],
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_first_at)
+        .expect("unreadable mixed-state failure bucket start epoch should be derivable");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_failure_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            failure_class,
+            is_actionable,
+            error_category,
+            failure_count,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind("service_failure")
+    .bind(1_i64)
+    .bind("too_many_requests")
+    .bind(1_i64)
+    .execute(&state.pool)
+    .await
+    .expect("seed unreadable mixed-state materialized failure count row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
+        bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
+
+    fs::write(&first_archive_path, b"not-a-gzip-archive")
+        .expect("corrupt unreadable mixed-state failure archive batch");
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(failure_summary) = fetch_failure_summary(
+        State(state.clone()),
+        Query(FailureSummaryQuery {
+            range: historical_range.clone(),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch failure summary with unreadable materialized sibling archive part");
+    assert_eq!(failure_summary.total_failures, 2);
+    assert_eq!(failure_summary.service_failure_count, 2);
+    assert_eq!(failure_summary.actionable_failure_count, 2);
+
+    let Json(error_distribution) = fetch_error_distribution(
+        State(state),
+        Query(ErrorQuery {
+            range: historical_range,
+            top: None,
+            scope: Some("service".to_string()),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch error distribution with unreadable materialized sibling archive part");
+    assert!(
+        error_distribution
+            .items
+            .iter()
+            .any(|item| item.reason == "too_many_requests" && item.count == 2)
+    );
+}
+
+#[tokio::test]
 async fn archived_failure_fallback_includes_missing_categories_from_partially_materialized_bucket() {
     let mut config = test_config();
     config.openai_upstream_base_url =
@@ -3545,6 +3835,154 @@ async fn historical_perf_archive_delta_distinguishes_materialized_sibling_parts_
     assert_eq!(upstream_first_byte.sample_count, 1);
     assert_f64_close(upstream_first_byte.sum_ms, 100.0);
     assert_f64_close(upstream_first_byte.max_ms, 100.0);
+}
+
+#[tokio::test]
+async fn historical_perf_archive_delta_keeps_pending_stage_rows_when_materialized_sibling_archive_is_unreadable(
+) {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(13, 0, 0)
+    .expect("valid archived unreadable mixed-state perf hour");
+    let archived_materialized_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("materialized unreadable mixed-state perf time"),
+    );
+    let archived_pending_first_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("first pending unreadable mixed-state perf time"),
+    );
+    let archived_pending_second_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(45))
+            .expect("second pending unreadable mixed-state perf time"),
+    );
+
+    let materialized_archive_original_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "perf-mixed-state-unreadable-archive-a",
+        &[(
+            1_i64,
+            "perf-mixed-state-unreadable-materialized",
+            archived_materialized_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(200.0),
+        )],
+    )
+    .await;
+    let materialized_archive_path = state
+        .config
+        .archive_dir
+        .join("perf-mixed-state-unreadable-archive-a.sqlite.gz");
+    let _ = fs::remove_file(&materialized_archive_path);
+    fs::rename(&materialized_archive_original_path, &materialized_archive_path)
+        .expect("move unreadable mixed-state materialized perf archive batch to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now') WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(materialized_archive_path.to_string_lossy().to_string())
+    .bind(materialized_archive_original_path.to_string_lossy().to_string())
+    .execute(&state.pool)
+    .await
+    .expect("mark unreadable mixed-state materialized perf archive batch as materialized");
+
+    seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "perf-mixed-state-unreadable-archive-b",
+        &[
+            (
+                1_i64,
+                "perf-mixed-state-unreadable-pending-first",
+                archived_pending_first_at.as_str(),
+                SOURCE_PROXY,
+                "success",
+                20_i64,
+                0.20_f64,
+                Some(100.0),
+            ),
+            (
+                2_i64,
+                "perf-mixed-state-unreadable-pending-second",
+                archived_pending_second_at.as_str(),
+                SOURCE_PROXY,
+                "success",
+                30_i64,
+                0.30_f64,
+                Some(300.0),
+            ),
+        ],
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_materialized_at)
+        .expect("unreadable mixed-state perf bucket start epoch should be derivable");
+    let mut histogram = empty_approx_histogram();
+    add_approx_histogram_sample(&mut histogram, 200.0);
+    add_approx_histogram_sample(&mut histogram, 300.0);
+    sqlx::query(
+        r#"
+        INSERT INTO proxy_perf_stage_hourly (
+            bucket_start_epoch,
+            stage,
+            sample_count,
+            sum_ms,
+            max_ms,
+            histogram,
+            updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind("upstreamFirstByte")
+    .bind(2_i64)
+    .bind(500.0_f64)
+    .bind(300.0_f64)
+    .bind(encode_approx_histogram(&histogram).expect("encode unreadable mixed-state perf histogram"))
+    .execute(&state.pool)
+    .await
+    .expect("seed unreadable mixed-state materialized perf row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_PROXY_PERF,
+        bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
+
+    fs::write(&materialized_archive_path, b"not-a-gzip-archive")
+        .expect("corrupt unreadable mixed-state materialized perf archive");
+
+    let archived_start = Utc
+        .timestamp_opt(bucket_start_epoch, 0)
+        .single()
+        .expect("valid unreadable mixed-state perf archive start");
+    let archived_end = archived_start + ChronoDuration::hours(1);
+    let archived_perf = query_unmaterialized_proxy_perf_stage_rollups_from_archives(
+        &state.pool,
+        archived_start,
+        archived_end,
+    )
+    .await
+    .expect("query unreadable mixed-state perf archive delta");
+    let upstream_first_byte = archived_perf
+        .get("upstreamFirstByte")
+        .expect("unreadable mixed-state perf delta should include upstreamFirstByte");
+    assert_eq!(upstream_first_byte.sample_count, 2);
+    assert_f64_close(upstream_first_byte.sum_ms, 400.0);
+    assert_f64_close(upstream_first_byte.max_ms, 300.0);
 }
 
 #[tokio::test]
