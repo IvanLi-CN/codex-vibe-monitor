@@ -81,6 +81,31 @@ async fn run_background_invocation_summary_rollup_repair(pool: &SqlitePool) {
         .expect("run background invocation summary rollup repair");
 }
 
+async fn insert_materialized_rollup_bucket_marker(
+    pool: &SqlitePool,
+    target: &str,
+    bucket_start_epoch: i64,
+    source: &str,
+) {
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_materialized_buckets (
+            target,
+            bucket_start_epoch,
+            source,
+            materialized_at
+        )
+        VALUES (?1, ?2, ?3, datetime('now'))
+        "#,
+    )
+    .bind(target)
+    .bind(bucket_start_epoch)
+    .bind(source)
+    .execute(pool)
+    .await
+    .expect("insert materialized rollup bucket marker");
+}
+
 #[derive(Clone, Copy)]
 struct SeedInvocationArchiveBatchRow<'a> {
     id: i64,
@@ -2146,6 +2171,13 @@ async fn all_time_summary_fallback_keeps_unmaterialized_rows_when_sibling_archiv
     .execute(&state.pool)
     .await
     .expect("seed mixed-state materialized summary rollup row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
 
     let Json(summary) = fetch_summary(
         State(state),
@@ -2665,6 +2697,13 @@ async fn archived_failure_fallback_keeps_unmaterialized_rows_when_sibling_archiv
     .execute(&state.pool)
     .await
     .expect("seed mixed-state materialized failure count row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
+        bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
 
     let historical_range = format!("{}d", state.config.invocation_max_days + 30);
     let Json(failure_summary) = fetch_failure_summary(
@@ -3118,6 +3157,13 @@ async fn historical_perf_archive_delta_distinguishes_materialized_sibling_parts_
     .execute(&state.pool)
     .await
     .expect("seed mixed-state materialized perf row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_PROXY_PERF,
+        bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
 
     let archived_start = Utc
         .timestamp_opt(bucket_start_epoch, 0)

@@ -1112,12 +1112,6 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                 no_available_wait_deadline,
                             );
                         }
-                        let in_final_poll_window = no_available_wait_deadline.is_some()
-                            && pre_attempt_total_timeout_deadline
-                                .map(|deadline| {
-                                    deadline.saturating_duration_since(now) <= poll_interval
-                                })
-                                .unwrap_or(false);
                         let resolution = resolve_pool_account_for_request(
                             state_for_wait.as_ref(),
                             Some(wait_task_sticky_key.as_str()),
@@ -1166,7 +1160,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                     .map(|deadline| std::cmp::min(wait_deadline, deadline))
                                     .unwrap_or(wait_deadline);
                                 let now = Instant::now();
-                                if in_final_poll_window || now >= effective_deadline {
+                                if now >= effective_deadline {
                                     if pre_attempt_total_timeout_deadline
                                         .is_some_and(|deadline| deadline <= wait_deadline)
                                     {
