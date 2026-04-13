@@ -1,6 +1,6 @@
 import { useLayoutEffect, type ReactNode } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { expect, userEvent, within } from 'storybook/test'
+import { expect, userEvent, waitFor, within } from 'storybook/test'
 import { MemoryRouter } from 'react-router-dom'
 import { I18nProvider } from '../i18n'
 import type {
@@ -13,13 +13,19 @@ import type {
 } from '../lib/api'
 import DashboardPage from '../pages/Dashboard'
 import { DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY } from './DashboardActivityOverview'
-import { FullPageStorySurface, StorybookPageEnvironment } from './storybookPageHelpers'
+import { DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY } from '../lib/dashboardPerformanceDiagnostics'
+import {
+  FullPageStorySurface,
+  StorybookPageEnvironment,
+  getStorybookPageSseController,
+} from './storybookPageHelpers'
 import { jsonResponse } from './storybookResponse'
 
 type DashboardScenario = 'default' | 'degraded'
 
 type DashboardStoryParameters = {
   scenario?: DashboardScenario
+  enableDiagnostics?: boolean
 }
 
 function DashboardRangeStorageReset({ children }: { children: ReactNode }) {
@@ -35,6 +41,45 @@ function DashboardRangeStorageReset({ children }: { children: ReactNode }) {
       }
     }
   }, [])
+
+  return <>{children}</>
+}
+
+function DashboardDiagnosticsStorageReset({
+  children,
+  enabled = false,
+}: {
+  children: ReactNode
+  enabled?: boolean
+}) {
+  useLayoutEffect(() => {
+    const previousValue = window.localStorage.getItem(
+      DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
+    )
+    if (enabled) {
+      window.localStorage.setItem(
+        DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
+        '1',
+      )
+    } else {
+      window.localStorage.removeItem(
+        DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
+      )
+    }
+
+    return () => {
+      if (previousValue === null) {
+        window.localStorage.removeItem(
+          DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
+        )
+      } else {
+        window.localStorage.setItem(
+          DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
+          previousValue,
+        )
+      }
+    }
+  }, [enabled])
 
   return <>{children}</>
 }
@@ -267,11 +312,15 @@ function buildWorkingConversationsResponse(empty = false): PromptCacheConversati
   return {
     rangeStart: '2026-04-06T11:55:00.000Z',
     rangeEnd: '2026-04-06T12:00:00.000Z',
+    snapshotAt: '2026-04-06T12:00:00.000Z',
     selectionMode: 'activityWindow',
     selectedLimit: null,
     selectedActivityHours: null,
     selectedActivityMinutes: 5,
     implicitFilter: { kind: null, filteredCount: 0 },
+    totalMatched: empty ? 0 : 2,
+    hasMore: false,
+    nextCursor: null,
     conversations: empty
       ? []
       : [
@@ -445,15 +494,18 @@ const meta = {
   },
   decorators: [
     (Story, context) => {
-      const scenario = ((context.parameters as DashboardStoryParameters).scenario ?? 'default') as DashboardScenario
+      const parameters = context.parameters as DashboardStoryParameters
+      const scenario = (parameters.scenario ?? 'default') as DashboardScenario
       return (
         <I18nProvider>
           <StorybookPageEnvironment onRequest={createDashboardRequestHandler(scenario)}>
             <MemoryRouter initialEntries={['/dashboard']}>
               <FullPageStorySurface>
-                <DashboardRangeStorageReset>
-                  <Story />
-                </DashboardRangeStorageReset>
+                <DashboardDiagnosticsStorageReset enabled={parameters.enableDiagnostics === true}>
+                  <DashboardRangeStorageReset>
+                    <Story />
+                  </DashboardRangeStorageReset>
+                </DashboardDiagnosticsStorageReset>
               </FullPageStorySurface>
             </MemoryRouter>
           </StorybookPageEnvironment>
@@ -509,5 +561,86 @@ export const Degraded: Story = {
     await expect(canvas.getByTestId('dashboard-working-conversations')).toBeVisible()
     await expect(canvas.getAllByRole('alert').at(0)).toBeVisible()
     await expect(canvas.queryAllByTestId('dashboard-working-conversation-card')).toHaveLength(0)
+  },
+}
+
+export const LiveRefreshDiagnostics: Story = {
+  parameters: {
+    enableDiagnostics: true,
+  },
+  render: () => <DashboardPage />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByTestId('dashboard-performance-diagnostics')).toBeVisible()
+
+    const initialSummaryRefreshCount = Number(
+      canvas.getByTestId(
+        'dashboard-performance-diagnostics-today-summary-refresh-count',
+      ).textContent ?? '0',
+    )
+    const initialChartRenderCount = Number(
+      canvas.getByTestId(
+        'dashboard-performance-diagnostics-today-chart-render-count',
+      ).textContent ?? '0',
+    )
+    const controller = getStorybookPageSseController()
+    if (!controller) {
+      throw new Error('storybook page SSE controller unavailable')
+    }
+
+    controller.emit({
+      type: 'records',
+      records: [
+        {
+          id: 901,
+          invokeId: 'wc-1-live-after-snapshot',
+          promptCacheKey: 'wc-current-1',
+          occurredAt: '2026-04-06T12:00:20.000Z',
+          createdAt: '2026-04-06T12:00:20.000Z',
+          status: 'running',
+          source: 'pool',
+          routeMode: 'pool',
+          model: 'gpt-5.4',
+          endpoint: '/v1/responses',
+          totalTokens: 640,
+          cost: 0.0284,
+        },
+      ],
+    })
+
+    await waitFor(
+      () => {
+        expect(
+          Number(
+            canvas.getByTestId(
+              'dashboard-performance-diagnostics-working-conversations-patch-bucket-count',
+            ).textContent ?? '0',
+          ),
+        ).toBe(1)
+        expect(
+          Number(
+            canvas.getByTestId(
+              'dashboard-performance-diagnostics-working-conversations-patch-entry-count',
+            ).textContent ?? '0',
+          ),
+        ).toBe(1)
+        expect(
+          Number(
+            canvas.getByTestId(
+              'dashboard-performance-diagnostics-today-summary-refresh-count',
+            ).textContent ?? '0',
+          ),
+        ).toBeGreaterThan(initialSummaryRefreshCount)
+      },
+      { timeout: 4000 },
+    )
+
+    await expect(
+      Number(
+        canvas.getByTestId(
+          'dashboard-performance-diagnostics-today-chart-render-count',
+        ).textContent ?? '0',
+      ),
+    ).toBe(initialChartRenderCount)
   },
 }

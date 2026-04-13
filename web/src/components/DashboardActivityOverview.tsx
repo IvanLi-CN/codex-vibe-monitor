@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import { useSummary } from '../hooks/useStats'
 import { useTimeseries } from '../hooks/useTimeseries'
 import { useTranslation } from '../i18n'
@@ -66,17 +66,7 @@ function DashboardNaturalDayRangePanel({
   timeseriesRange: 'today' | 'yesterday'
   testId: string
 }) {
-  const {
-    summary,
-    isLoading: summaryLoading,
-    error: summaryError,
-  } = useSummary(summaryWindow)
   const { data, isLoading, error } = useTimeseries(timeseriesRange, { bucket: '1m' })
-  const closedNaturalDay = timeseriesRange === 'yesterday'
-  const rate = useMemo(
-    () => buildDashboardTodayRateSnapshot(data, { closedNaturalDay }),
-    [closedNaturalDay, data],
-  )
 
   return (
     <div
@@ -84,27 +74,85 @@ function DashboardNaturalDayRangePanel({
       data-testid={testId}
       data-active="true"
     >
-      <TodayStatsOverview
-        stats={summary}
-        loading={summaryLoading}
-        error={summaryError}
-        rate={rate}
-        rateLoading={isLoading}
-        rateError={error}
-        showSurface={false}
-        showHeader={false}
-        showDayBadge={false}
+      <DashboardNaturalDaySummaryOverview
+        summaryWindow={summaryWindow}
+        response={data}
+        loading={isLoading}
+        error={error}
+        closedNaturalDay={timeseriesRange === 'yesterday'}
       />
-      <DashboardTodayActivityChart
+      <DashboardNaturalDayChartSection
         response={data}
         loading={isLoading}
         error={error}
         metric={metric}
-        closedNaturalDay={closedNaturalDay}
+        closedNaturalDay={timeseriesRange === 'yesterday'}
       />
     </div>
   )
 }
+
+function DashboardNaturalDaySummaryOverview({
+  summaryWindow,
+  response,
+  loading,
+  error,
+  closedNaturalDay,
+}: {
+  summaryWindow: 'today' | 'yesterday'
+  response: ReturnType<typeof useTimeseries>['data']
+  loading: boolean
+  error: ReturnType<typeof useTimeseries>['error']
+  closedNaturalDay: boolean
+}) {
+  const {
+    summary,
+    isLoading: summaryLoading,
+    error: summaryError,
+  } = useSummary(summaryWindow)
+  const rate = useMemo(
+    () => buildDashboardTodayRateSnapshot(response, { closedNaturalDay }),
+    [closedNaturalDay, response],
+  )
+
+  return (
+    <TodayStatsOverview
+      stats={summary}
+      loading={summaryLoading}
+      error={summaryError}
+      rate={rate}
+      rateLoading={loading}
+      rateError={error}
+      showSurface={false}
+      showHeader={false}
+      showDayBadge={false}
+    />
+  )
+}
+
+const DashboardNaturalDayChartSection = memo(function DashboardNaturalDayChartSection({
+  response,
+  loading,
+  error,
+  metric,
+  closedNaturalDay,
+}: {
+  response: ReturnType<typeof useTimeseries>['data']
+  loading: boolean
+  error: ReturnType<typeof useTimeseries>['error']
+  metric: MetricKey
+  closedNaturalDay: boolean
+}) {
+  return (
+    <DashboardTodayActivityChart
+      response={response}
+      loading={loading}
+      error={error}
+      metric={metric}
+      closedNaturalDay={closedNaturalDay}
+    />
+  )
+})
 
 function DashboardTodayRangePanel({ metric }: { metric: MetricKey }) {
   return (

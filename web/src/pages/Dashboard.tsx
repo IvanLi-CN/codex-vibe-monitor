@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import { DashboardInvocationDetailDrawer } from "../components/DashboardInvocationDetailDrawer";
 import { DashboardActivityOverview } from "../components/DashboardActivityOverview";
+import { DashboardPerformanceDiagnostics } from "../components/DashboardPerformanceDiagnostics";
 import { DashboardWorkingConversationsSection } from "../components/DashboardWorkingConversationsSection";
 import { useDashboardWorkingConversations } from "../hooks/useDashboardWorkingConversations";
+import { resetDashboardPerformanceDiagnostics } from "../lib/dashboardPerformanceDiagnostics";
 import type { DashboardWorkingConversationInvocationSelection } from "../lib/dashboardWorkingConversations";
 import { useUpstreamAccountDetailRoute } from "../hooks/useUpstreamAccountDetailRoute";
 import { SharedUpstreamAccountDetailDrawer } from "./account-pool/UpstreamAccounts";
@@ -29,9 +31,14 @@ export default function DashboardPage() {
     }
   }, [upstreamAccountId]);
 
+  useLayoutEffect(() => {
+    resetDashboardPerformanceDiagnostics();
+  }, []);
+
   return (
     <div className="mx-auto flex w-full max-w-full flex-col gap-6">
       <DashboardActivityOverview />
+      <DashboardPerformanceDiagnostics />
 
       <DashboardWorkingConversationsSection
         cards={cards}

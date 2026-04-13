@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { act } from 'react'
+import { act, useSyncExternalStore } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import {
@@ -10,6 +10,10 @@ import {
 const hookMocks = vi.hoisted(() => ({
   useSummary: vi.fn(),
   useTimeseries: vi.fn(),
+}))
+
+const componentState = vi.hoisted(() => ({
+  chartRenderCount: 0,
 }))
 
 vi.mock('../hooks/useStats', () => ({
@@ -48,6 +52,7 @@ vi.mock('../i18n', () => ({
 
 vi.mock('./TodayStatsOverview', () => ({
   TodayStatsOverview: ({
+    stats,
     showSurface,
     showHeader,
     showDayBadge,
@@ -55,6 +60,7 @@ vi.mock('./TodayStatsOverview', () => ({
     rateLoading,
     rateError,
   }: {
+    stats?: { totalCount?: number } | null
     showSurface?: boolean
     showHeader?: boolean
     showDayBadge?: boolean
@@ -63,15 +69,23 @@ vi.mock('./TodayStatsOverview', () => ({
     rateError?: string | null
   }) => (
     <div data-testid="today-stats-overview-mock">
-      {`surface:${String(showSurface)};header:${String(showHeader)};badge:${String(showDayBadge)};tpm:${rate?.tokensPerMinute ?? 'null'};cpm:${rate?.costPerMinute ?? 'null'};rateLoading:${String(rateLoading)};rateError:${rateError ?? 'null'}`}
+      {`total:${stats?.totalCount ?? 'null'};surface:${String(showSurface)};header:${String(showHeader)};badge:${String(showDayBadge)};tpm:${rate?.tokensPerMinute ?? 'null'};cpm:${rate?.costPerMinute ?? 'null'};rateLoading:${String(rateLoading)};rateError:${rateError ?? 'null'}`}
     </div>
   ),
 }))
 
 vi.mock('./DashboardTodayActivityChart', () => ({
-  DashboardTodayActivityChart: ({ metric }: { metric?: string }) => (
-    <div data-testid="dashboard-today-activity-chart-mock">{`metric:${metric ?? 'unset'}`}</div>
-  ),
+  DashboardTodayActivityChart: ({ metric }: { metric?: string }) => {
+    componentState.chartRenderCount += 1
+    return (
+      <div
+        data-testid="dashboard-today-activity-chart-mock"
+        data-render-count={String(componentState.chartRenderCount)}
+      >
+        {`metric:${metric ?? 'unset'}`}
+      </div>
+    )
+  },
 }))
 
 vi.mock('./StatsCards', () => ({
@@ -129,6 +143,54 @@ const localStorageMock = {
 let host: HTMLDivElement | null = null
 let root: Root | null = null
 
+function createSummaryStore() {
+  const values = new Map<
+    string,
+    {
+      summary: Record<string, unknown> | null
+      isLoading: boolean
+      error: string | null
+    }
+  >()
+  const listeners = new Set<() => void>()
+
+  const getFallback = () => ({
+    summary: null,
+    isLoading: false,
+    error: null,
+  })
+
+  return {
+    use(window: string) {
+      return useSyncExternalStore(
+        (listener) => {
+          listeners.add(listener)
+          return () => listeners.delete(listener)
+        },
+        () => values.get(window) ?? getFallback(),
+        () => values.get(window) ?? getFallback(),
+      )
+    },
+    set(
+      window: string,
+      value: {
+        summary: Record<string, unknown> | null
+        isLoading: boolean
+        error: string | null
+      },
+    ) {
+      values.set(window, value)
+      listeners.forEach((listener) => listener())
+    },
+    reset() {
+      values.clear()
+      listeners.clear()
+    },
+  }
+}
+
+const summaryStore = createSummaryStore()
+
 beforeAll(() => {
   Object.defineProperty(window, 'localStorage', {
     configurable: true,
@@ -149,6 +211,8 @@ afterEach(() => {
   host = null
   root = null
   window.localStorage.clear()
+  componentState.chartRenderCount = 0
+  summaryStore.reset()
   vi.clearAllMocks()
 })
 
@@ -162,29 +226,20 @@ function render(ui: React.ReactNode) {
 }
 
 function installSummaryMocks() {
-  hookMocks.useSummary.mockImplementation((window: string) => {
-    if (window === 'today') {
-      return {
-        summary: { totalCount: 12, successCount: 10, failureCount: 2, totalCost: 0.52, totalTokens: 2048 },
-        isLoading: false,
-        error: null,
-      }
-    }
-    if (window === 'yesterday') {
-      return {
-        summary: { totalCount: 8, successCount: 7, failureCount: 1, totalCost: 0.21, totalTokens: 1024 },
-        isLoading: false,
-        error: null,
-      }
-    }
-    if (window === '1d') {
-      return { summary: { totalCount: 100 }, isLoading: false, error: null }
-    }
-    if (window === '7d') {
-      return { summary: { totalCount: 700 }, isLoading: false, error: null }
-    }
-    return { summary: null, isLoading: false, error: null }
+  summaryStore.set('today', {
+    summary: { totalCount: 12, successCount: 10, failureCount: 2, totalCost: 0.52, totalTokens: 2048 },
+    isLoading: false,
+    error: null,
   })
+  summaryStore.set('yesterday', {
+    summary: { totalCount: 8, successCount: 7, failureCount: 1, totalCost: 0.21, totalTokens: 1024 },
+    isLoading: false,
+    error: null,
+  })
+  summaryStore.set('1d', { summary: { totalCount: 100 }, isLoading: false, error: null })
+  summaryStore.set('7d', { summary: { totalCount: 700 }, isLoading: false, error: null })
+
+  hookMocks.useSummary.mockImplementation((window: string) => summaryStore.use(window))
 
   hookMocks.useTimeseries.mockReturnValue({
     data: {
@@ -281,7 +336,7 @@ describe('DashboardActivityOverview', () => {
     expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')).toBeNull()
     expect(host?.querySelector('[data-testid="dashboard-activity-range-usage"]')).toBeNull()
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toBe(
-      'surface:false;header:false;badge:false;tpm:1000;cpm:0.1;rateLoading:false;rateError:null',
+      'total:12;surface:false;header:false;badge:false;tpm:1000;cpm:0.1;rateLoading:false;rateError:null',
     )
     expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent).toBe(
       'metric:totalCount',
@@ -385,5 +440,26 @@ describe('DashboardActivityOverview', () => {
 
     clickTab('History')
     expect(getFirstSeenSummaryWindows()).toEqual(['today', 'yesterday', '7d', '1d'])
+  })
+
+  it('does not rerender the today chart when only the summary hook updates', () => {
+    installSummaryMocks()
+
+    render(<DashboardActivityOverview />)
+
+    expect(componentState.chartRenderCount).toBe(1)
+    expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain('total:12')
+
+    act(() => {
+      summaryStore.set('today', {
+        summary: { totalCount: 18, successCount: 15, failureCount: 3, totalCost: 0.66, totalTokens: 2600 },
+        isLoading: false,
+        error: null,
+      })
+    })
+
+    expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain('total:18')
+    expect(componentState.chartRenderCount).toBe(1)
+    expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.getAttribute('data-render-count')).toBe('1')
   })
 })

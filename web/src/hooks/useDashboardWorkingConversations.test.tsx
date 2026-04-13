@@ -17,6 +17,11 @@ import type {
   PromptCacheConversationInvocationPreview,
   PromptCacheConversationsResponse,
 } from "../lib/api";
+import {
+  DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
+  getDashboardPerformanceDiagnosticsSnapshot,
+  resetDashboardPerformanceDiagnostics,
+} from "../lib/dashboardPerformanceDiagnostics";
 import { useDashboardWorkingConversations } from "./useDashboardWorkingConversations";
 
 const apiMocks = vi.hoisted(() => ({
@@ -65,11 +70,28 @@ let root: Root | null = null;
 let visibilityState: DocumentVisibilityState = "visible";
 const fixedNowMs = Date.parse("2026-04-10T02:05:00Z");
 const realDateNow = Date.now.bind(Date);
+const storage = new Map<string, string>();
+const localStorageMock = {
+  getItem: (key: string) => storage.get(key) ?? null,
+  setItem: (key: string, value: string) => {
+    storage.set(key, value);
+  },
+  removeItem: (key: string) => {
+    storage.delete(key);
+  },
+  clear: () => {
+    storage.clear();
+  },
+};
 
 beforeAll(() => {
   Object.defineProperty(document, "visibilityState", {
     configurable: true,
     get: () => visibilityState,
+  });
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: localStorageMock,
   });
   Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
     configurable: true,
@@ -94,6 +116,8 @@ afterEach(() => {
   visibilityState = "visible";
   vi.useRealTimers();
   Date.now = realDateNow;
+  window.localStorage.clear();
+  resetDashboardPerformanceDiagnostics();
   apiMocks.fetchPromptCacheConversationsPage.mockReset();
   vi.clearAllMocks();
 });
@@ -1846,5 +1870,76 @@ describe("useDashboardWorkingConversations", () => {
 
     expect(text("conversation-keys")).toBe("");
     expect(text("cards-length")).toBe("0");
+  });
+
+  it("keeps patch diagnostics bounded to the current working set", async () => {
+    window.localStorage.setItem(
+      DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
+      "1",
+    );
+    resetDashboardPerformanceDiagnostics();
+
+    apiMocks.fetchPromptCacheConversationsPage
+      .mockResolvedValueOnce(
+        createResponseWithConversations(
+          [
+            createConversation("pck-alpha", {
+              lastActivityAt: "2026-04-10T02:04:00Z",
+              lastTerminalAt: "2026-04-10T02:04:00Z",
+            }),
+            createConversation("pck-beta", {
+              lastActivityAt: "2026-04-10T02:03:00Z",
+              lastTerminalAt: "2026-04-10T02:03:00Z",
+            }),
+          ],
+          {
+            snapshotAt: "2026-04-10T02:05:00Z",
+          },
+        ),
+      )
+      .mockResolvedValueOnce(
+        createResponseWithConversations(
+          [
+            createConversation("pck-beta", {
+              lastActivityAt: "2026-04-10T02:05:30Z",
+              lastTerminalAt: "2026-04-10T02:05:30Z",
+            }),
+          ],
+          {
+            snapshotAt: "2026-04-10T02:06:00Z",
+          },
+        ),
+      );
+
+    render(<Probe />);
+    await flushAsync();
+    await flushAsync();
+
+    act(() => {
+      emitRecords([
+        createRecord("pck-alpha", {
+          id: 3001,
+          invokeId: "invoke-alpha-post-snapshot",
+          occurredAt: "2026-04-10T02:05:20Z",
+          createdAt: "2026-04-10T02:05:20Z",
+          status: "running",
+          totalTokens: 120,
+          cost: 0.18,
+        }),
+      ]);
+    });
+
+    const afterPatch = getDashboardPerformanceDiagnosticsSnapshot();
+    expect(afterPatch.workingConversationPatchBucketCount).toBe(1);
+    expect(afterPatch.workingConversationPatchEntryCount).toBe(1);
+
+    click("refresh");
+    await flushAsync();
+    await flushAsync();
+
+    const afterRefresh = getDashboardPerformanceDiagnosticsSnapshot();
+    expect(text("conversation-keys")).toBe("pck-beta");
+    expect(afterRefresh.workingConversationPatchBucketCount).toBe(0);
+    expect(afterRefresh.workingConversationPatchEntryCount).toBe(0);
   });
 });

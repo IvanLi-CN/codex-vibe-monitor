@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { memo, useEffect, useMemo } from "react";
 import {
   Area,
   AreaChart,
@@ -28,6 +28,7 @@ import {
   buildTodayMinuteChartData,
   type DashboardTodayMinuteDatum,
 } from "./dashboardTodayActivityChartData";
+import { recordTodayChartRender } from "../lib/dashboardPerformanceDiagnostics";
 
 export interface DashboardTodayActivityChartProps {
   response: TimeseriesResponse | null;
@@ -113,13 +114,17 @@ function ChartTooltipContent({
   );
 }
 
-export function DashboardTodayActivityChart({
+function DashboardTodayActivityChartImpl({
   response,
   loading,
   error,
   metric,
   closedNaturalDay = false,
 }: DashboardTodayActivityChartProps) {
+  useEffect(() => {
+    recordTodayChartRender();
+  });
+
   const { t, locale } = useTranslation();
   const { themeMode } = useTheme();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
@@ -458,3 +463,5 @@ export function DashboardTodayActivityChart({
     </section>
   );
 }
+
+export const DashboardTodayActivityChart = memo(DashboardTodayActivityChartImpl);

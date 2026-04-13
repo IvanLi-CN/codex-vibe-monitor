@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, type ReactNode } from 'react'
+import type { BroadcastPayload } from '../lib/api'
 
 export interface StorybookRequestContext {
   url: URL
@@ -8,6 +9,56 @@ export interface StorybookRequestContext {
 export type StorybookRequestHandler = (
   context: StorybookRequestContext,
 ) => Response | Promise<Response | undefined> | undefined
+
+export interface StorybookPageSseController {
+  emit: (payload: BroadcastPayload) => void
+  emitOpen: () => void
+  reset: () => void
+}
+
+declare global {
+  interface Window {
+    __storybookPageSseController__?: StorybookPageSseController
+  }
+}
+
+const storybookPageEventSources = new Set<MockEventSource>()
+
+function ensureStorybookPageSseController() {
+  if (typeof window === 'undefined') return null
+  const existing = window.__storybookPageSseController__
+  if (existing) return existing
+
+  const controller: StorybookPageSseController = {
+    emit: (payload) => {
+      const event = new MessageEvent<string>('message', {
+        data: JSON.stringify(payload),
+      })
+      storybookPageEventSources.forEach((eventSource) => {
+        eventSource.dispatchEvent(event)
+      })
+    },
+    emitOpen: () => {
+      const event = new Event('open')
+      storybookPageEventSources.forEach((eventSource) => {
+        eventSource.dispatchEvent(event)
+      })
+    },
+    reset: () => {
+      Array.from(storybookPageEventSources).forEach((eventSource) => {
+        eventSource.close()
+      })
+      storybookPageEventSources.clear()
+    },
+  }
+
+  window.__storybookPageSseController__ = controller
+  return controller
+}
+
+export function getStorybookPageSseController() {
+  return ensureStorybookPageSseController()
+}
 
 class MockEventSource implements EventTarget {
   static CONNECTING = 0
@@ -25,6 +76,8 @@ class MockEventSource implements EventTarget {
 
   constructor(url: string | URL) {
     this.url = typeof url === 'string' ? url : url.toString()
+    ensureStorybookPageSseController()
+    storybookPageEventSources.add(this)
     window.setTimeout(() => {
       if (this.readyState === MockEventSource.CLOSED) return
       this.readyState = MockEventSource.OPEN
@@ -51,6 +104,7 @@ class MockEventSource implements EventTarget {
 
   close() {
     this.readyState = MockEventSource.CLOSED
+    storybookPageEventSources.delete(this)
   }
 
   #emit(type: string, event: Event) {
@@ -81,6 +135,7 @@ export function StorybookPageEnvironment({
   useLayoutEffect(() => {
     originalFetchRef.current = window.fetch.bind(window)
     originalEventSourceRef.current = window.EventSource
+    ensureStorybookPageSseController()
 
     window.fetch = async (input, init) => {
       const inputUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
@@ -101,6 +156,8 @@ export function StorybookPageEnvironment({
       if (originalEventSourceRef.current) {
         window.EventSource = originalEventSourceRef.current
       }
+      storybookPageEventSources.clear()
+      delete window.__storybookPageSseController__
     }
   }, [onRequest])
 
