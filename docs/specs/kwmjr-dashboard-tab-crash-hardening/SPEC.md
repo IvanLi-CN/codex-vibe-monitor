@@ -77,7 +77,7 @@
 
 - Storybook覆盖=通过
 - 视觉证据目标源=storybook_canvas（mock-only）
-- 证据绑定sha=`当前工作树（未提交）`
+- 证据绑定sha=`origin/main 同步后的当前交付头（2026-04-13 复验）`
 - Validation:
   - `cd /Users/ivan/.codex/worktrees/0e28/codex-vibe-monitor/web && bunx vitest run src/hooks/useDashboardWorkingConversations.test.tsx src/components/DashboardActivityOverview.test.tsx src/pages/Dashboard.test.tsx`
   - `cd /Users/ivan/.codex/worktrees/0e28/codex-vibe-monitor/web && bun run build`

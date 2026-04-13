@@ -265,6 +265,7 @@ pub(crate) fn build_pool_total_timeout_exhausted_error(
         upstream_error_message: None,
         downstream_error_message: None,
         upstream_request_id: None,
+        proxy_binding_key_snapshot: None,
         oauth_responses_debug: None,
         attempt_summary: PoolAttemptSummary::default(),
         requested_service_tier: None,

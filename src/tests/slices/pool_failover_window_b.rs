@@ -49,7 +49,8 @@ async fn proxy_openai_v1_via_pool_waits_for_initial_account_resolution_before_se
     });
 
     tokio::time::sleep(Duration::from_millis(20)).await;
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 
     let response = request_task
         .await
@@ -65,7 +66,8 @@ async fn proxy_openai_v1_via_pool_waits_for_initial_account_resolution_before_se
         .expect("read via-pool response");
     let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
     assert_eq!(payload["authorization"], "Bearer upstream-delayed");
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-delayed").copied(), Some(1));
@@ -204,6 +206,43 @@ async fn proxy_openai_v1_chunked_json_without_header_sticky_uses_live_first_atte
         .expect("read via-pool response");
     let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
     assert_eq!(payload["authorization"], "Bearer upstream-primary");
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    let latest_attempt = timeout(Duration::from_secs(1), async {
+        loop {
+            let row = sqlx::query_as::<_, (Option<String>, Option<String>, String)>(
+                r#"
+                SELECT group_name_snapshot, proxy_binding_key_snapshot, status
+                FROM pool_upstream_request_attempts
+                ORDER BY id DESC
+                LIMIT 1
+                "#,
+            )
+            .fetch_one(&state.pool)
+            .await
+            .expect("load latest pool attempt");
+            if row.2 == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS {
+                break row;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("wait for live-first pool attempt success");
+    assert_eq!(
+        latest_attempt.0.as_deref(),
+        Some(test_required_group_name()),
+        "live-first grouped stats should snapshot the resolved group name",
+    );
+    assert_eq!(
+        latest_attempt.1.as_deref(),
+        Some(FORWARD_PROXY_DIRECT_KEY),
+        "live-first grouped stats should persist the canonical binding key",
+    );
+    assert_eq!(
+        latest_attempt.2,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+        "successful live-first requests should land as real success attempts",
+    );
 
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
@@ -683,7 +722,8 @@ async fn proxy_openai_v1_header_sticky_stream_waits_for_body_sticky_override_bef
         .expect("read via-pool response");
     let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
     assert_eq!(payload["authorization"], "Bearer upstream-replacement");
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-blocked").copied(), None);
@@ -1075,7 +1115,8 @@ async fn proxy_openai_v1_responses_prebuffer_body_wait_counts_total_timeout_from
         pool_total_timeout_exhausted_message(Duration::from_millis(90)),
         "unexpected via-pool failure: {message}"
     );
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 }
 
 #[tokio::test]
@@ -1295,7 +1336,8 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_pre_resolved_account_aft
         .expect("read via-pool response");
     let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
     assert_eq!(payload["authorization"], "Bearer upstream-primary");
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
@@ -1388,7 +1430,8 @@ async fn proxy_openai_v1_header_sticky_stream_body_override_beats_rate_limited_h
         .expect("read via-pool response");
     let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
     assert_eq!(payload["authorization"], "Bearer upstream-replacement");
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-rate-limited").copied(), None);
@@ -1517,7 +1560,8 @@ async fn proxy_openai_v1_header_sticky_stream_body_override_beats_blocked_policy
         .expect("read via-pool response");
     let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
     assert_eq!(payload["authorization"], "Bearer upstream-replacement");
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-blocked").copied(), None);
@@ -1673,7 +1717,8 @@ async fn proxy_openai_v1_header_sticky_stream_waits_after_body_reroute_needs_acc
         .expect("read via-pool response");
     let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
     assert_eq!(payload["authorization"], "Bearer upstream-delayed");
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-initial").copied(), None);

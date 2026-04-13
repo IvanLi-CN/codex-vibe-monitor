@@ -119,13 +119,20 @@ pub(crate) async fn list_forward_proxy_binding_nodes(
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    if requested_keys.is_empty() && !params.include_current {
+    if requested_keys.is_empty() && !params.include_current && params.group_name.is_none() {
         return Ok(Json(Vec::new()));
     }
-    let nodes =
-        build_forward_proxy_binding_nodes_response_with_options(state.as_ref(), &requested_keys)
-            .await
-            .map_err(internal_error_tuple)?;
+    let nodes = if let Some(group_name) = params.group_name.as_deref() {
+        build_group_forward_proxy_binding_nodes_response(
+            state.as_ref(),
+            &requested_keys,
+            group_name,
+        )
+        .await
+    } else {
+        build_forward_proxy_binding_nodes_response(state.as_ref(), &requested_keys).await
+    }
+    .map_err(internal_error_tuple)?;
     Ok(Json(nodes))
 }
 
@@ -139,6 +146,7 @@ pub(crate) fn parse_list_forward_proxy_binding_nodes_query(
     for (key, value) in url::form_urlencoded::parse(raw_query.as_bytes()) {
         match key.as_ref() {
             "key" => params.key.push(value.into_owned()),
+            "groupName" => params.group_name = normalize_optional_text(Some(value.into_owned())),
             "includeCurrent" => {
                 params.include_current = match value.as_ref() {
                     "" | "0" | "false" | "False" | "FALSE" | "no" | "off" => false,

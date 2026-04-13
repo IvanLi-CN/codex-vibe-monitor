@@ -1139,6 +1139,8 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             endpoint TEXT NOT NULL,
             route_mode TEXT NOT NULL,
             sticky_key TEXT,
+            group_name_snapshot TEXT,
+            proxy_binding_key_snapshot TEXT,
             upstream_account_id INTEGER,
             upstream_route_key TEXT,
             attempt_index INTEGER NOT NULL,
@@ -1177,6 +1179,8 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("downstream_error_message", "TEXT"),
         ("compact_support_status", "TEXT"),
         ("compact_support_reason", "TEXT"),
+        ("group_name_snapshot", "TEXT"),
+        ("proxy_binding_key_snapshot", "TEXT"),
     ] {
         if !existing_pool_attempt_columns.contains(column) {
             let statement =
@@ -1289,6 +1293,22 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_pool_upstream_request_attempts_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_request_attempts_group_proxy_occurred_at
+        ON pool_upstream_request_attempts (
+            group_name_snapshot,
+            occurred_at,
+            proxy_binding_key_snapshot
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context(
+        "failed to ensure index idx_pool_upstream_request_attempts_group_proxy_occurred_at",
+    )?;
 
     sqlx::query(
         r#"
