@@ -181,11 +181,7 @@ async fn fetch_usage_snapshot(
         UPSTREAM_USAGE_BROWSER_USER_AGENT,
     )
     .await
-    .with_context(|| {
-        format!(
-            "initial usage snapshot attempt with configured user agent failed: {primary_error:#}"
-        )
-    })
+    .map_err(|retry_error| usage_snapshot_browser_user_agent_retry_error(primary_error, retry_error))
 }
 
 fn usage_snapshot_error_is_network_failure(err: &anyhow::Error) -> bool {
@@ -199,6 +195,19 @@ fn usage_snapshot_error_is_network_failure(err: &anyhow::Error) -> bool {
 
 fn usage_snapshot_error_skips_browser_user_agent_retry(err: &anyhow::Error) -> bool {
     maintenance_upstream_rejected_error_message(&err.to_string())
+}
+
+fn usage_snapshot_browser_user_agent_retry_error(
+    primary_error: anyhow::Error,
+    retry_error: anyhow::Error,
+) -> anyhow::Error {
+    let primary_context =
+        format!("initial usage snapshot attempt with configured user agent failed: {primary_error:#}");
+    if usage_snapshot_error_skips_browser_user_agent_retry(&retry_error) {
+        anyhow!("{primary_context}; browser user agent retry failed: {retry_error:#}")
+    } else {
+        retry_error.context(primary_context)
+    }
 }
 
 async fn fetch_usage_snapshot_via_forward_proxy(
@@ -246,11 +255,7 @@ async fn fetch_usage_snapshot_via_forward_proxy(
         UPSTREAM_USAGE_BROWSER_USER_AGENT,
     )
     .await
-    .with_context(|| {
-        format!(
-            "initial usage snapshot attempt with configured user agent failed: {primary_error:#}"
-        )
-    })
+    .map_err(|retry_error| usage_snapshot_browser_user_agent_retry_error(primary_error, retry_error))
 }
 
 async fn request_usage_snapshot_with_user_agent_via_forward_proxy(

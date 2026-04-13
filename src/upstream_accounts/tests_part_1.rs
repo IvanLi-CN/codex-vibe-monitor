@@ -2789,6 +2789,86 @@
         server.abort();
     }
 
+    #[tokio::test]
+    async fn fetch_usage_snapshot_preserves_terminal_browser_retry_402_for_classification() {
+        #[derive(Clone)]
+        struct UsageSnapshotTestState {
+            requests: Arc<Mutex<Vec<String>>>,
+        }
+
+        async fn handler(
+            State(state): State<UsageSnapshotTestState>,
+            headers: HeaderMap,
+        ) -> (StatusCode, String) {
+            let user_agent = headers
+                .get(header::USER_AGENT)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            let is_browser_user_agent = user_agent == UPSTREAM_USAGE_BROWSER_USER_AGENT;
+            state.requests.lock().await.push(user_agent);
+            if is_browser_user_agent {
+                (
+                    StatusCode::PAYMENT_REQUIRED,
+                    json!({ "detail": { "code": "deactivated_workspace" } }).to_string(),
+                )
+            } else {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    "upstream usage endpoint temporary gateway failure".to_string(),
+                )
+            }
+        }
+
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let app = Router::new()
+            .route("/backend-api/wham/usage", get(handler))
+            .with_state(UsageSnapshotTestState {
+                requests: requests.clone(),
+            });
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve test app");
+        });
+
+        let client = Client::builder().build().expect("client");
+        let config = usage_snapshot_test_config(
+            &format!("http://{addr}/backend-api"),
+            "codex-vibe-monitor/0.2.0",
+        );
+
+        let err = fetch_usage_snapshot(&client, &config, "access-token", Some("acct_test"))
+            .await
+            .expect_err("terminal browser retry 402 should surface for sync classification");
+        let err_text = err.to_string();
+        assert!(
+            err_text.contains("browser user agent retry failed"),
+            "expected retry context in surfaced error, got: {err:#}"
+        );
+        assert!(
+            err_text.contains("402 Payment Required"),
+            "expected terminal browser retry 402 to survive to_string(), got: {err:#}"
+        );
+        assert!(
+            err_text.contains("deactivated_workspace"),
+            "expected terminal browser retry detail to survive to_string(), got: {err:#}"
+        );
+
+        let recorded = requests.lock().await.clone();
+        assert_eq!(
+            recorded,
+            vec![
+                "codex-vibe-monitor/0.2.0".to_string(),
+                UPSTREAM_USAGE_BROWSER_USER_AGENT.to_string()
+            ]
+        );
+
+        server.abort();
+    }
+
     #[test]
     fn build_manual_callback_redirect_uri_targets_localhost() {
         let redirect = build_manual_callback_redirect_uri().expect("redirect uri");

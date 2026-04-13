@@ -1372,6 +1372,65 @@ async fn materialize_historical_rollups_bounded_counts_partially_blocked_archive
 }
 
 #[tokio::test]
+async fn materialize_historical_rollups_bounded_skips_live_replay_when_elapsed_budget_is_zero() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("historical-rollup-bounded-live-budget-zero").await;
+    let recent_invocation = shanghai_local_days_ago(0, 9, 0, 0);
+
+    insert_retention_invocation(
+        &pool,
+        "historical-rollup-bounded-live-budget-zero",
+        &recent_invocation,
+        SOURCE_PROXY,
+        "success",
+        Some(r#"{"promptCacheKey":"live-budget-zero"}"#),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(8),
+        Some(0.08),
+    )
+    .await;
+
+    let summary = materialize_historical_rollups_bounded(
+        &pool,
+        &config,
+        false,
+        None,
+        Some(Duration::ZERO),
+    )
+    .await
+    .expect("bounded materialization with zero elapsed budget");
+    assert_eq!(summary.materialized_archive_batches, 0);
+
+    let total_count: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly WHERE source = ?1",
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load invocation hourly total count after zero-budget bounded pass");
+    assert_eq!(
+        total_count, 0,
+        "zero elapsed budget should leave live rollup catch-up for a later pass"
+    );
+
+    let live_cursor: Option<i64> = sqlx::query_scalar(
+        "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .fetch_optional(&pool)
+    .await
+    .expect("load invocation live cursor after zero-budget bounded pass");
+    assert_eq!(
+        live_cursor, None,
+        "zero elapsed budget should not advance the shared live replay cursor"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn materialize_historical_rollups_marks_replayed_batches_as_materialized() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("historical-rollup-mark-replayed").await;

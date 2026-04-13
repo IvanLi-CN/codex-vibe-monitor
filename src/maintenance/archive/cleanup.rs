@@ -610,12 +610,18 @@ pub(crate) async fn materialize_historical_rollups_bounded(
         )
         .await?;
     loop {
+        if historical_rollup_materialization_budget_exhausted(started_at, max_elapsed) {
+            break;
+        }
         let updated = replay_live_invocation_hourly_rollups_tx(tx.as_mut()).await?;
         if updated == 0 {
             break;
         }
     }
     loop {
+        if historical_rollup_materialization_budget_exhausted(started_at, max_elapsed) {
+            break;
+        }
         let updated = replay_live_forward_proxy_attempt_hourly_rollups_tx(tx.as_mut()).await?;
         if updated == 0 {
             break;
@@ -750,6 +756,16 @@ fn historical_rollup_materialization_remaining_budget(
     max_elapsed.map(|limit| limit.saturating_sub(started_at.elapsed()))
 }
 
+fn historical_rollup_materialization_budget_exhausted(
+    started_at: Instant,
+    max_elapsed: Option<Duration>,
+) -> bool {
+    matches!(
+        historical_rollup_materialization_remaining_budget(started_at, max_elapsed),
+        Some(remaining) if remaining.is_zero()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -774,6 +790,22 @@ mod tests {
             historical_rollup_materialization_remaining_budget(Instant::now(), None),
             None
         );
+    }
+
+    #[test]
+    fn historical_rollup_materialization_budget_exhausted_only_when_bounded_budget_is_zero() {
+        assert!(historical_rollup_materialization_budget_exhausted(
+            Instant::now(),
+            Some(Duration::ZERO),
+        ));
+        assert!(!historical_rollup_materialization_budget_exhausted(
+            Instant::now(),
+            None,
+        ));
+        assert!(!historical_rollup_materialization_budget_exhausted(
+            Instant::now(),
+            Some(Duration::from_secs(1)),
+        ));
     }
 }
 
