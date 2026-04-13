@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.46.13",
+  "base_stable_version": "1.46.12",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-13T01:21:29Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.46.13",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "37c1e7495d5f1e1f4e38db7f5c314e5edbf87171",
+  "pr_number": 342,
+  "pr_title": "fix: remove read-path rollup writes from dashboard stats",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.46.13",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.46.13",
+  "target_sha": "4b3bd8a63aae8304509ed911b55ecc7a1c8dd321",
+  "type_label": "type:patch"
+}
