@@ -175,12 +175,15 @@ fn historical_rollup_startup_backfill_run_state(
         .legacy_archive_pending
         .saturating_sub(after.legacy_archive_pending);
     let bucket_progress = before.pending_buckets.saturating_sub(after.pending_buckets);
+    let scanned_all_pending_archives =
+        summary.scanned_archive_batches as u64 >= before.legacy_archive_pending;
     let permanently_blocked = summary.blocked_archive_batches > 0
         && archive_progress == 0
-        && bucket_progress == 0;
+        && bucket_progress == 0
+        && scanned_all_pending_archives;
 
     StartupBackfillRunState {
-        next_cursor_id: cursor_id,
+        next_cursor_id: cursor_id.saturating_add(summary.scanned_archive_batches as i64),
         scanned: summary.scanned_archive_batches as u64,
         updated: archive_progress.max(bucket_progress),
         hit_scan_limit: after.legacy_archive_pending > 0 && !permanently_blocked,
@@ -756,12 +759,14 @@ async fn run_startup_backfill_task(
                 ));
             }
 
-            let summary = materialize_historical_rollups_bounded(
+            let skip_pending_archives = (cursor_id as u64 % before.legacy_archive_pending) as usize;
+            let summary = materialize_historical_rollups_bounded_from_skip(
                 &state.pool,
                 &state.config,
                 false,
                 Some(1),
                 Some(Duration::from_secs(STARTUP_BACKFILL_RUN_BUDGET_SECS)),
+                skip_pending_archives,
             )
             .await?;
             let after = load_historical_rollup_backfill_snapshot(&state.pool, &state.config).await?;
@@ -786,8 +791,8 @@ mod startup_backfill_tests {
     #[test]
     fn historical_rollup_backfill_run_state_backs_off_when_only_blocked_archives_remain() {
         let before = HistoricalRollupBackfillSnapshot {
-            pending_buckets: 8,
-            legacy_archive_pending: 3,
+            pending_buckets: 2,
+            legacy_archive_pending: 1,
             last_materialized_hour: None,
             alert_level: HistoricalRollupBackfillAlertLevel::Critical,
         };
@@ -800,7 +805,7 @@ mod startup_backfill_tests {
 
         let run = historical_rollup_startup_backfill_run_state(7, &before, &after, &summary);
 
-        assert_eq!(run.next_cursor_id, 7);
+        assert_eq!(run.next_cursor_id, 8);
         assert_eq!(run.scanned, 1);
         assert_eq!(run.updated, 0);
         assert!(!run.hit_scan_limit);
@@ -830,9 +835,33 @@ mod startup_backfill_tests {
 
         let run = historical_rollup_startup_backfill_run_state(11, &before, &after, &summary);
 
-        assert_eq!(run.next_cursor_id, 11);
+        assert_eq!(run.next_cursor_id, 12);
         assert_eq!(run.scanned, 1);
         assert_eq!(run.updated, 4);
+        assert!(run.hit_scan_limit);
+        assert!(!run.force_idle);
+    }
+
+    #[test]
+    fn historical_rollup_backfill_run_state_stays_active_when_partial_scan_found_only_blocked_work() {
+        let before = HistoricalRollupBackfillSnapshot {
+            pending_buckets: 8,
+            legacy_archive_pending: 3,
+            last_materialized_hour: None,
+            alert_level: HistoricalRollupBackfillAlertLevel::Critical,
+        };
+        let after = before.clone();
+        let summary = HistoricalRollupMaterializationSummary {
+            scanned_archive_batches: 1,
+            blocked_archive_batches: 1,
+            ..HistoricalRollupMaterializationSummary::default()
+        };
+
+        let run = historical_rollup_startup_backfill_run_state(5, &before, &after, &summary);
+
+        assert_eq!(run.next_cursor_id, 6);
+        assert_eq!(run.scanned, 1);
+        assert_eq!(run.updated, 0);
         assert!(run.hit_scan_limit);
         assert!(!run.force_idle);
     }

@@ -1523,7 +1523,7 @@ fn store_raw_payload_file_anchors_relative_dir_to_database_parent() {
         &config,
         "proxy-test",
         "request",
-        b"{\"ok\":true}",
+        Bytes::from_static(b"{\"ok\":true}"),
     ));
     let expected = db_root.join("proxy_raw_payloads/proxy-test-request.bin");
 
@@ -1566,7 +1566,7 @@ fn store_raw_payload_file_born_gzips_large_payloads_when_threshold_is_reached() 
         &config,
         "proxy-born-gzip",
         "request",
-        payload,
+        Bytes::from_static(payload),
     ));
 
     let path = PathBuf::from(meta.path.expect("born-gzip path"));

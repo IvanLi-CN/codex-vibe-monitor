@@ -25,6 +25,8 @@ enum HistoricalRollupArchiveReplayOutcome {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct HistoricalRollupArchiveReplaySummary {
+    scanned_batches: u64,
+    remaining_skip_batches: usize,
     budget_consumed_batches: u64,
     blocked_batches: u64,
     materialized_batches: u64,
@@ -332,9 +334,11 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
     tx: &mut SqliteConnection,
     max_archive_batches: Option<u64>,
     max_elapsed: Option<Duration>,
+    skip_archive_batches: usize,
 ) -> Result<HistoricalRollupArchiveReplaySummary> {
     let started_at = Instant::now();
     let mut summary = HistoricalRollupArchiveReplaySummary::default();
+    let mut skip_remaining = skip_archive_batches;
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
         r#"
         SELECT id, file_path, coverage_start_at, coverage_end_at
@@ -350,6 +354,11 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
     .await?;
 
     for archive_file in archive_files {
+        if skip_remaining > 0 {
+            skip_remaining -= 1;
+            summary.scanned_batches += 1;
+            continue;
+        }
         if historical_rollup_materialization_budget_reached(
             started_at,
             summary.budget_consumed_batches,
@@ -358,6 +367,7 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
         ) {
             break;
         }
+        summary.scanned_batches += 1;
         let mut pending_targets = Vec::new();
         let mut blocked_targets = Vec::new();
         for target in [
@@ -515,22 +525,25 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
         }
     }
 
+    summary.remaining_skip_batches = skip_remaining;
     Ok(summary)
 }
 
 async fn replay_invocation_archives_into_hourly_rollups_tx(
     tx: &mut SqliteConnection,
 ) -> Result<HistoricalRollupArchiveReplaySummary> {
-    replay_invocation_archives_into_hourly_rollups_tx_with_limits(tx, None, None).await
+    replay_invocation_archives_into_hourly_rollups_tx_with_limits(tx, None, None, 0).await
 }
 
 async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
     tx: &mut SqliteConnection,
     max_archive_batches: Option<u64>,
     max_elapsed: Option<Duration>,
+    skip_archive_batches: usize,
 ) -> Result<HistoricalRollupArchiveReplaySummary> {
     let started_at = Instant::now();
     let mut summary = HistoricalRollupArchiveReplaySummary::default();
+    let mut skip_remaining = skip_archive_batches;
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
         r#"
         SELECT id, file_path, coverage_start_at, coverage_end_at
@@ -546,6 +559,11 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
     .await?;
 
     for archive_file in archive_files {
+        if skip_remaining > 0 {
+            skip_remaining -= 1;
+            summary.scanned_batches += 1;
+            continue;
+        }
         if historical_rollup_materialization_budget_reached(
             started_at,
             summary.budget_consumed_batches,
@@ -554,6 +572,7 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
         ) {
             break;
         }
+        summary.scanned_batches += 1;
         if hourly_rollup_archive_replayed_tx(
             tx,
             HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS,
@@ -648,6 +667,7 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
         summary.materialized_batches += 1;
     }
 
+    summary.remaining_skip_batches = skip_remaining;
     Ok(summary)
 }
 
@@ -718,7 +738,7 @@ mod hourly_rollup_budget_tests {
 async fn replay_forward_proxy_archives_into_hourly_rollups_tx(
     tx: &mut SqliteConnection,
 ) -> Result<HistoricalRollupArchiveReplaySummary> {
-    replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(tx, None, None).await
+    replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(tx, None, None, 0).await
 }
 
 async fn bootstrap_hourly_rollups(pool: &Pool<Sqlite>) -> Result<()> {

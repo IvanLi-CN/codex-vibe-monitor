@@ -576,12 +576,35 @@ pub(crate) async fn materialize_historical_rollups_bounded(
     max_archive_batches: Option<u64>,
     max_elapsed: Option<Duration>,
 ) -> Result<HistoricalRollupMaterializationSummary> {
+    materialize_historical_rollups_bounded_from_skip(
+        pool,
+        config,
+        dry_run,
+        max_archive_batches,
+        max_elapsed,
+        0,
+    )
+    .await
+}
+
+pub(crate) async fn materialize_historical_rollups_bounded_from_skip(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    dry_run: bool,
+    max_archive_batches: Option<u64>,
+    max_elapsed: Option<Duration>,
+    skip_pending_archives: usize,
+) -> Result<HistoricalRollupMaterializationSummary> {
     let started_at = Instant::now();
-    let scanned_archive_batches = count_historical_rollup_archive_batches(pool, false).await?;
     let pending_snapshot = load_historical_rollup_backfill_snapshot(pool, config).await?;
+    let bounded_skip = if pending_snapshot.legacy_archive_pending == 0 {
+        0
+    } else {
+        skip_pending_archives % pending_snapshot.legacy_archive_pending as usize
+    };
     if dry_run {
         return Ok(HistoricalRollupMaterializationSummary {
-            scanned_archive_batches: scanned_archive_batches as usize,
+            scanned_archive_batches: pending_snapshot.legacy_archive_pending as usize,
             materialized_archive_batches: pending_snapshot.legacy_archive_pending as usize,
             blocked_archive_batches: 0,
             materialized_bucket_count: pending_snapshot.pending_buckets as usize,
@@ -597,6 +620,7 @@ pub(crate) async fn materialize_historical_rollups_bounded(
         tx.as_mut(),
         max_archive_batches,
         max_elapsed,
+        bounded_skip,
     )
     .await?;
     let remaining_budget =
@@ -607,6 +631,7 @@ pub(crate) async fn materialize_historical_rollups_bounded(
             max_archive_batches
                 .map(|limit| limit.saturating_sub(invocation_summary.budget_consumed_batches)),
             remaining_budget,
+            invocation_summary.remaining_skip_batches,
         )
         .await?;
     loop {
@@ -630,7 +655,8 @@ pub(crate) async fn materialize_historical_rollups_bounded(
     tx.commit().await?;
 
     Ok(HistoricalRollupMaterializationSummary {
-        scanned_archive_batches: scanned_archive_batches as usize,
+        scanned_archive_batches: (invocation_summary.scanned_batches
+            + forward_proxy_summary.scanned_batches) as usize,
         materialized_archive_batches: (invocation_summary.materialized_batches
             + forward_proxy_summary.materialized_batches) as usize,
         blocked_archive_batches: invocation_summary.blocked_batches as usize,

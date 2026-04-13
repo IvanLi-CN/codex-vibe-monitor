@@ -414,7 +414,7 @@ pub(crate) async fn store_raw_payload_file(
     config: &AppConfig,
     invoke_id: &str,
     kind: &str,
-    bytes: &[u8],
+    bytes: Bytes,
 ) -> RawPayloadMeta {
     let mut meta = RawPayloadMeta {
         path: None,
@@ -427,34 +427,36 @@ pub(crate) async fn store_raw_payload_file(
         return meta;
     }
 
-    let mut write_len = bytes.len();
+    let mut content = bytes;
     if let Some(limit) = config.proxy_raw_max_bytes
-        && write_len > limit
+        && content.len() > limit
     {
-        write_len = limit;
+        content = content.slice(..limit);
         meta.truncated = true;
         meta.truncated_reason = Some("max_bytes_exceeded".to_string());
     }
-    let content = &bytes[..write_len];
 
     let raw_dir = config.resolved_proxy_raw_dir();
-
-    if let Err(err) = tokio::fs::create_dir_all(&raw_dir).await {
-        meta.truncated = true;
-        meta.truncated_reason = Some(format!("write_failed:{err}"));
-        return meta;
-    }
 
     let born_gzip = config
         .proxy_raw_immediate_gzip_threshold()
         .is_some_and(|threshold| content.len() >= threshold);
     let path = raw_payload_path_for_kind(&raw_dir, invoke_id, kind, born_gzip);
     let write_result = if born_gzip {
-        match compress_raw_payload_bytes_to_gzip(content) {
-            Ok(compressed) => tokio::fs::write(&path, compressed).await,
-            Err(err) => Err(err),
-        }
+        let write_path = path.clone();
+        run_blocking_raw_writer_io(move || {
+            let mut encoder = create_gzip_streaming_raw_encoder(&write_path)?;
+            encoder.write_all(content.as_ref())?;
+            let mut writer = encoder.finish()?;
+            writer.flush()
+        })
+        .await
     } else {
+        if let Err(err) = tokio::fs::create_dir_all(&raw_dir).await {
+            meta.truncated = true;
+            meta.truncated_reason = Some(format!("write_failed:{err}"));
+            return meta;
+        }
         tokio::fs::write(&path, content).await
     };
     match write_result {
@@ -462,6 +464,9 @@ pub(crate) async fn store_raw_payload_file(
             meta.path = Some(path.to_string_lossy().to_string());
         }
         Err(err) => {
+            if born_gzip {
+                let _ = fs::remove_file(&path);
+            }
             meta.truncated = true;
             meta.truncated_reason = Some(format!("write_failed:{err}"));
         }

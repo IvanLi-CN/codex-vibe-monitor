@@ -2500,7 +2500,7 @@ pub(crate) fn spawn_raw_payload_file_write(
     let invoke_id = invoke_id.to_string();
     PendingRawPayloadWrite::Task(tokio::spawn(async move {
         let _permit = permit;
-        store_raw_payload_file(&config, &invoke_id, kind, bytes.as_ref()).await
+        store_raw_payload_file(&config, &invoke_id, kind, bytes).await
     }))
 }
 
