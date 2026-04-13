@@ -944,6 +944,99 @@
     }
 
     #[tokio::test]
+    async fn list_forward_proxy_binding_nodes_without_group_name_catches_up_live_hourly_rollups() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        crate::ensure_schema(&state.pool)
+            .await
+            .expect("ensure full schema for forward proxy settings");
+
+        let _ = put_forward_proxy_settings(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(ForwardProxySettingsUpdateRequest {
+                proxy_urls: vec!["socks5://127.0.0.1:1080".to_string()],
+                subscription_urls: vec![],
+                subscription_update_interval_secs: 3600,
+                insert_direct: false,
+            }),
+        )
+        .await
+        .expect("persist forward proxy settings");
+
+        let manual_key = {
+            let manager = state.forward_proxy.lock().await;
+            manager
+                .binding_nodes()
+                .into_iter()
+                .find(|node| node.key != FORWARD_PROXY_DIRECT_KEY)
+                .map(|node| node.key)
+                .expect("manual binding key")
+        };
+        let occurred_at = format_naive((Utc::now() - chrono::Duration::minutes(5)).naive_utc());
+        sqlx::query(
+            r#"
+            INSERT INTO forward_proxy_attempts (
+                proxy_key,
+                occurred_at,
+                is_success,
+                latency_ms,
+                failure_kind,
+                is_probe
+            ) VALUES (?1, ?2, 1, 12.5, NULL, 0)
+            "#,
+        )
+        .bind(&manual_key)
+        .bind(&occurred_at)
+        .execute(&state.pool)
+        .await
+        .expect("insert live forward proxy attempt");
+
+        let hourly_before: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM forward_proxy_attempt_hourly WHERE proxy_key = ?1",
+        )
+        .bind(&manual_key)
+        .fetch_one(&state.pool)
+        .await
+        .expect("load hourly baseline");
+        assert_eq!(
+            hourly_before, 0,
+            "test setup should rely on request-time catch-up instead of preexisting rollups"
+        );
+
+        let Json(nodes) = list_forward_proxy_binding_nodes(
+            State(state.clone()),
+            "/api/pool/forward-proxy-binding-nodes?includeCurrent=1"
+                .parse()
+                .expect("parse ungrouped binding uri"),
+        )
+        .await
+        .expect("list forward proxy binding nodes");
+
+        let manual = nodes
+            .iter()
+            .find(|node| node.key == manual_key)
+            .expect("manual node");
+        assert_eq!(
+            manual
+                .last24h
+                .iter()
+                .map(|bucket| bucket.success_count)
+                .sum::<i64>(),
+            1,
+            "ungrouped binding nodes should still catch up fresh live proxy attempts on demand",
+        );
+
+        let hourly_after: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(success_count), 0) FROM forward_proxy_attempt_hourly WHERE proxy_key = ?1",
+        )
+        .bind(&manual_key)
+        .fetch_one(&state.pool)
+        .await
+        .expect("load hourly after route catch-up");
+        assert_eq!(hourly_after, 1);
+    }
+
+    #[tokio::test]
     async fn live_first_proxy_binding_key_snapshot_canonicalizes_endpoint_storage_key() {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
         crate::ensure_schema(&state.pool)

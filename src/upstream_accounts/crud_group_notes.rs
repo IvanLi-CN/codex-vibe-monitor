@@ -130,12 +130,7 @@ pub(crate) async fn list_forward_proxy_binding_nodes(
         )
         .await
     } else {
-        build_forward_proxy_binding_nodes_response_with_options(
-            state.as_ref(),
-            &requested_keys,
-            false,
-        )
-        .await
+        build_forward_proxy_binding_nodes_response(state.as_ref(), &requested_keys).await
     }
     .map_err(internal_error_tuple)?;
     Ok(Json(nodes))

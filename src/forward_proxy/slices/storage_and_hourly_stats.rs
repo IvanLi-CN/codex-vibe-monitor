@@ -959,6 +959,13 @@ pub(crate) async fn build_forward_proxy_binding_nodes_response_with_options(
     Ok(nodes)
 }
 
+fn dedupe_forward_proxy_metadata_keys<I>(keys: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    keys.into_iter().collect::<HashSet<_>>().into_iter().collect()
+}
+
 async fn query_forward_proxy_binding_hourly_stats(
     state: &AppState,
     node_keys: &HashSet<String>,
@@ -991,10 +998,8 @@ async fn query_forward_proxy_binding_hourly_stats(
         )
     })?;
 
-    let metadata_keys = rows
-        .iter()
-        .map(|row| row.proxy_key.clone())
-        .collect::<Vec<_>>();
+    let metadata_keys =
+        dedupe_forward_proxy_metadata_keys(rows.iter().map(|row| row.proxy_key.clone()));
     let metadata_map = load_forward_proxy_metadata_history(&state.pool, &metadata_keys).await?;
     let manager = state.forward_proxy.lock().await;
     let mut grouped: HashMap<String, HashMap<i64, ForwardProxyHourlyStatsPoint>> = HashMap::new();
@@ -1083,17 +1088,16 @@ async fn query_group_forward_proxy_binding_hourly_stats(
         .await?,
     );
 
-    let metadata_keys = rows
-        .iter()
-        .map(|row| row.proxy_binding_key_snapshot.clone())
-        .collect::<Vec<_>>();
+    let metadata_keys = dedupe_forward_proxy_metadata_keys(
+        rows.iter()
+            .map(|row| row.proxy_binding_key_snapshot.clone()),
+    );
     let metadata_map = load_forward_proxy_metadata_history(&state.pool, &metadata_keys).await?;
     let resolved_binding_keys = {
         let manager = state.forward_proxy.lock().await;
         metadata_keys
             .iter()
             .cloned()
-            .collect::<HashSet<_>>()
             .into_iter()
             .map(|proxy_key| {
                 let resolved = manager.resolve_current_or_historical_bound_proxy_key(
