@@ -1071,12 +1071,13 @@ async fn open_invocation_archive_batch_pool(
     let temp_cleanup = TempSqliteCleanup(temp_path.clone());
     if let Err(err) = inflate_gzip_sqlite_file(&archive_path, &temp_path) {
         drop(temp_cleanup);
-        if is_materialized_archive {
+        if is_unreadable_invocation_summary_archive_error(&err) {
             warn!(
                 file_path = archive_row.file_path,
                 read_surface,
                 error = %err,
-                "skipping unreadable materialized invocation archive while serving read-only historical fallback"
+                historical_rollups_materialized = is_materialized_archive,
+                "skipping unreadable invocation archive while serving read-only historical fallback"
             );
             return Ok(None);
         }
@@ -1091,12 +1092,13 @@ async fn open_invocation_archive_batch_pool(
         Ok(pool) => pool,
         Err(err) => {
             drop(temp_cleanup);
-            if is_materialized_archive {
+            if is_unreadable_invocation_summary_archive_error(&err) {
                 warn!(
                     file_path = archive_row.file_path,
                     read_surface,
                     error = %err,
-                    "skipping unreadable materialized invocation archive while serving read-only historical fallback"
+                    historical_rollups_materialized = is_materialized_archive,
+                    "skipping unreadable invocation archive while serving read-only historical fallback"
                 );
                 return Ok(None);
             }

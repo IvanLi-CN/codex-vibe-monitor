@@ -2329,7 +2329,7 @@ async fn all_time_summary_fallback_aggregates_missing_rows_across_archive_parts(
         &state.config,
         "summary-multipart-archive-a",
         &[(
-            1_i64,
+            101_i64,
             "summary-multipart-first",
             archived_first_at.as_str(),
             SOURCE_PROXY,
@@ -2361,7 +2361,7 @@ async fn all_time_summary_fallback_aggregates_missing_rows_across_archive_parts(
         &state.config,
         "summary-multipart-archive-b",
         &[(
-            1_i64,
+            201_i64,
             "summary-multipart-second",
             archived_second_at.as_str(),
             SOURCE_PROXY,
@@ -3378,7 +3378,7 @@ async fn archived_failure_fallback_aggregates_missing_rows_across_archive_parts(
         &state.config,
         "failure-multipart-archive-a",
         &[SeedInvocationArchiveBatchRow {
-            id: 1_i64,
+            id: 301_i64,
             invoke_id: "failure-multipart-first",
             occurred_at: archived_first_at.as_str(),
             source: SOURCE_PROXY,
@@ -3973,6 +3973,116 @@ async fn archived_failure_fallback_skips_double_count_for_readable_materialized_
 }
 
 #[tokio::test]
+async fn historical_failure_read_path_skips_unreadable_pending_archives() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(9, 0, 0)
+    .expect("valid unreadable pending failure hour");
+    let archived_failed_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("unreadable pending failure time"),
+    );
+
+    let archive_path = seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "failure-pending-corrupt-read-path",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1_i64,
+            invoke_id: "failure-pending-corrupt-read-path-first",
+            occurred_at: archived_failed_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "failed",
+            total_tokens: 10_i64,
+            cost: 0.10_f64,
+            ttfb_ms: Some(100.0),
+            payload: Some("{}"),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: Some("HTTP 429 too many requests"),
+            failure_kind: Some("upstream_response_failed"),
+            failure_class: Some("service_failure"),
+            is_actionable: Some(1_i64),
+        }],
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_failed_at)
+        .expect("derive unreadable pending failure bucket epoch");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_failure_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            failure_class,
+            is_actionable,
+            error_category,
+            failure_count,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind("service_failure")
+    .bind(1_i64)
+    .bind("too_many_requests")
+    .bind(1_i64)
+    .execute(&state.pool)
+    .await
+    .expect("seed unreadable pending failure count row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
+        bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
+
+    fs::write(&archive_path, b"not-a-gzip-archive")
+        .expect("corrupt unreadable pending failure archive");
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(failure_summary) = fetch_failure_summary(
+        State(state.clone()),
+        Query(FailureSummaryQuery {
+            range: historical_range.clone(),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch failure summary with unreadable pending archive");
+    assert_eq!(failure_summary.total_failures, 1);
+    assert_eq!(failure_summary.service_failure_count, 1);
+    assert_eq!(failure_summary.actionable_failure_count, 1);
+
+    let Json(error_distribution) = fetch_error_distribution(
+        State(state),
+        Query(ErrorQuery {
+            range: historical_range,
+            top: None,
+            scope: Some("service".to_string()),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch error distribution with unreadable pending archive");
+    assert!(
+        error_distribution
+            .items
+            .iter()
+            .any(|item| item.reason == "too_many_requests" && item.count == 1)
+    );
+}
+
+#[tokio::test]
 async fn archived_failure_fallback_skips_double_count_for_readable_materialized_archive_when_same_month_sibling_is_unreadable(
 ) {
     let mut config = test_config();
@@ -4560,7 +4670,7 @@ async fn historical_perf_archive_delta_distinguishes_materialized_sibling_parts_
         &state.config,
         "perf-mixed-state-archive-a",
         &[(
-            1_i64,
+            401_i64,
             "perf-mixed-state-materialized",
             archived_materialized_at.as_str(),
             SOURCE_PROXY,
@@ -5131,6 +5241,98 @@ async fn historical_perf_stats_skip_double_count_for_readable_materialized_archi
 }
 
 #[tokio::test]
+async fn historical_perf_read_path_skips_unreadable_pending_archives() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(13, 0, 0)
+    .expect("valid unreadable pending perf hour");
+    let archived_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("unreadable pending perf time"),
+    );
+    let archive_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "perf-pending-corrupt-read-path",
+        &[(
+            1_i64,
+            "perf-pending-corrupt-read-path-first",
+            archived_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_at)
+        .expect("derive unreadable pending perf bucket epoch");
+    let mut histogram = empty_approx_histogram();
+    add_approx_histogram_sample(&mut histogram, 100.0);
+    sqlx::query(
+        r#"
+        INSERT INTO proxy_perf_stage_hourly (
+            bucket_start_epoch,
+            stage,
+            sample_count,
+            sum_ms,
+            max_ms,
+            histogram,
+            updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind("upstreamFirstByte")
+    .bind(1_i64)
+    .bind(100.0_f64)
+    .bind(100.0_f64)
+    .bind(encode_approx_histogram(&histogram).expect("encode unreadable pending perf histogram"))
+    .execute(&state.pool)
+    .await
+    .expect("seed unreadable pending perf row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_PROXY_PERF,
+        bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
+
+    fs::write(&archive_path, b"not-a-gzip-archive")
+        .expect("corrupt unreadable pending perf archive");
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(perf_stats) = fetch_perf_stats(
+        State(state),
+        Query(PerfQuery {
+            range: historical_range,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch historical perf stats with unreadable pending archive");
+
+    let upstream_first_byte = perf_stats
+        .stages
+        .iter()
+        .find(|stage| stage.stage == "upstreamFirstByte")
+        .expect("unreadable pending perf stats should include materialized stage");
+    assert_eq!(upstream_first_byte.count, 1);
+    assert_f64_close(upstream_first_byte.avg_ms, 100.0);
+    assert_f64_close(upstream_first_byte.max_ms, 100.0);
+}
+
+#[tokio::test]
 async fn historical_timeseries_includes_unmaterialized_archived_hours_without_inline_repair() {
     let mut config = test_config();
     config.openai_upstream_base_url =
@@ -5692,6 +5894,128 @@ async fn historical_timeseries_skips_unreadable_replayed_legacy_archives() {
         .iter()
         .find(|point| point.bucket_start == format_utc_iso(start))
         .expect("historical replayed timeseries bucket should exist");
+    assert_eq!(archived_point.total_count, 1);
+    assert_eq!(archived_point.success_count, 1);
+    assert_eq!(archived_point.failure_count, 0);
+    assert_eq!(archived_point.total_tokens, 10);
+    assert_f64_close(archived_point.total_cost, 0.10);
+}
+
+#[tokio::test]
+async fn historical_timeseries_read_path_skips_unreadable_pending_archives() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid unreadable pending timeseries hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("unreadable pending timeseries time"),
+    );
+    let archive_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "timeseries-pending-corrupt-read-path",
+        &[(
+            1_i64,
+            "timeseries-pending-corrupt-read-path-success",
+            archived_success_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+
+    let start = local_naive_to_utc(archived_hour_local, Shanghai);
+    let end = local_naive_to_utc(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::hours(1))
+            .expect("unreadable pending timeseries hour end"),
+        Shanghai,
+    );
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind(start.timestamp())
+    .bind(SOURCE_PROXY)
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(10_i64)
+    .bind(0.10_f64)
+    .bind(1_i64)
+    .bind(100.0_f64)
+    .bind(100.0_f64)
+    .bind("[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&state.pool)
+    .await
+    .expect("seed unreadable pending timeseries rollup row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        start.timestamp(),
+        SOURCE_PROXY,
+    )
+    .await;
+
+    fs::write(&archive_path, b"not-a-gzip-archive")
+        .expect("corrupt unreadable pending timeseries archive");
+
+    let Json(response) = fetch_timeseries_from_hourly_rollups(
+        state,
+        TimeseriesQuery {
+            range: "ignored".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        },
+        Shanghai,
+        InvocationSourceScope::ProxyOnly,
+        RangeWindow {
+            start,
+            end,
+            display_end: end,
+            duration: end - start,
+        },
+        TimeseriesBucketSelection {
+            bucket_seconds: 3_600,
+            effective_bucket: "1h".to_string(),
+            available_buckets: vec!["1h".to_string()],
+            bucket_limited_to_daily: false,
+        },
+    )
+    .await
+    .expect("fetch historical timeseries with unreadable pending archive");
+
+    let archived_point = response
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(start))
+        .expect("historical unreadable pending timeseries bucket should exist");
     assert_eq!(archived_point.total_count, 1);
     assert_eq!(archived_point.success_count, 1);
     assert_eq!(archived_point.failure_count, 0);
@@ -6996,6 +7320,110 @@ async fn all_time_summary_read_path_skips_unreadable_replayed_legacy_archives() 
     .await
     .expect("fetch all-time summary with unreadable replayed legacy archive");
 
+    assert_eq!(summary.total_count, 1);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 0);
+    assert_eq!(summary.total_tokens, 10);
+    assert!((summary.total_cost - 0.10).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn all_time_stats_and_summary_read_path_skip_unreadable_pending_archives() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid unreadable pending summary hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("unreadable pending summary time"),
+    );
+    let archive_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-pending-corrupt-read-path",
+        &[(
+            1_i64,
+            "summary-pending-corrupt-read-path-success",
+            archived_success_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_success_at)
+        .expect("derive unreadable pending summary bucket epoch");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(10_i64)
+    .bind(0.10_f64)
+    .bind(1_i64)
+    .bind(100.0_f64)
+    .bind(100.0_f64)
+    .bind("[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&state.pool)
+    .await
+    .expect("seed unreadable pending summary rollup row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
+
+    fs::write(&archive_path, b"not-a-gzip-archive").expect("corrupt pending archive batch");
+
+    let Json(stats) = fetch_stats(State(state.clone()))
+        .await
+        .expect("fetch stats with unreadable pending archive");
+    assert_eq!(stats.total_count, 1);
+    assert_eq!(stats.success_count, 1);
+    assert_eq!(stats.failure_count, 0);
+    assert_eq!(stats.total_tokens, 10);
+    assert!((stats.total_cost - 0.10).abs() < 1e-9);
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch all-time summary with unreadable pending archive");
     assert_eq!(summary.total_count, 1);
     assert_eq!(summary.success_count, 1);
     assert_eq!(summary.failure_count, 0);
