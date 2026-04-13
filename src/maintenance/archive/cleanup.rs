@@ -598,7 +598,8 @@ pub(crate) async fn materialize_historical_rollups_bounded(
         max_elapsed,
     )
     .await?;
-    let remaining_budget = max_elapsed.and_then(|limit| limit.checked_sub(started_at.elapsed()));
+    let remaining_budget =
+        historical_rollup_materialization_remaining_budget(started_at, max_elapsed);
     let materialized_forward_proxy_batches =
         replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
             tx.as_mut(),
@@ -738,6 +739,40 @@ pub(crate) async fn prune_legacy_archive_batches(
     }
 
     Ok(summary)
+}
+
+fn historical_rollup_materialization_remaining_budget(
+    started_at: Instant,
+    max_elapsed: Option<Duration>,
+) -> Option<Duration> {
+    max_elapsed.map(|limit| limit.saturating_sub(started_at.elapsed()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{thread, time::Duration};
+
+    #[test]
+    fn historical_rollup_materialization_remaining_budget_clamps_to_zero_when_elapsed() {
+        let started_at = Instant::now();
+        thread::sleep(Duration::from_millis(10));
+
+        let remaining = historical_rollup_materialization_remaining_budget(
+            started_at,
+            Some(Duration::from_millis(1)),
+        );
+
+        assert_eq!(remaining, Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn historical_rollup_materialization_remaining_budget_preserves_unbounded_mode() {
+        assert_eq!(
+            historical_rollup_materialization_remaining_budget(Instant::now(), None),
+            None
+        );
+    }
 }
 
 pub(crate) async fn prune_archive_batches(

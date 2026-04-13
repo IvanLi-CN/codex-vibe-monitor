@@ -1609,6 +1609,73 @@ async fn write_streaming_raw_payload_to_file_born_gzips_large_streams() {
     cleanup_temp_test_dir(&temp_dir);
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn write_streaming_raw_payload_to_file_removes_plain_path_after_write_failure() {
+    use std::os::unix::fs::symlink;
+
+    let temp_dir = make_temp_test_dir("proxy-stream-write-failure-plain");
+    let raw_path = temp_dir.join("stream-response.bin");
+    symlink("/dev/full", &raw_path).expect("symlink plain raw path to /dev/full");
+
+    let (tx, mut rx) = mpsc::channel::<Bytes>(4);
+    tx.send(Bytes::from_static(b"hello-world"))
+        .await
+        .expect("send chunk");
+    drop(tx);
+
+    let meta = write_streaming_raw_payload_to_file(raw_path.clone(), None, None, &mut rx).await;
+
+    assert!(meta.path.is_none(), "failed write must not keep raw path");
+    assert!(meta.truncated, "failed write should mark payload truncated");
+    assert!(
+        meta.truncated_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("write_failed")),
+        "failed write should surface write_failed reason"
+    );
+    assert!(
+        !raw_path.exists(),
+        "failed write should clean up the partially written plain path"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn write_streaming_raw_payload_to_file_removes_gzip_path_after_write_failure() {
+    use std::os::unix::fs::symlink;
+
+    let temp_dir = make_temp_test_dir("proxy-stream-write-failure-gzip");
+    let raw_path = temp_dir.join("stream-response.bin");
+    let gzip_path = temp_dir.join("stream-response.bin.gz");
+    symlink("/dev/full", &gzip_path).expect("symlink gzip raw path to /dev/full");
+
+    let (tx, mut rx) = mpsc::channel::<Bytes>(4);
+    tx.send(Bytes::from_static(b"hello-world"))
+        .await
+        .expect("send chunk");
+    drop(tx);
+
+    let meta = write_streaming_raw_payload_to_file(raw_path, None, Some(1), &mut rx).await;
+
+    assert!(meta.path.is_none(), "failed write must not keep raw path");
+    assert!(meta.truncated, "failed write should mark payload truncated");
+    assert!(
+        meta.truncated_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("write_failed")),
+        "failed write should surface write_failed reason"
+    );
+    assert!(
+        !gzip_path.exists(),
+        "failed write should clean up the partially written gzip path"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
 #[test]
 fn read_proxy_raw_bytes_keeps_current_dir_compat_for_legacy_relative_paths() {
     let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();

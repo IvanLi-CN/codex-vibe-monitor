@@ -2734,6 +2734,7 @@ pub(crate) async fn write_streaming_raw_payload_to_file(
 
         let current_writer =
             std::mem::replace(&mut writer, StreamingRawPayloadWriterState::Buffer(Vec::new()));
+        let mut failed_path: Option<PathBuf> = None;
         let result = match current_writer {
             StreamingRawPayloadWriterState::Buffer(mut buffer) => {
                 buffer.extend_from_slice(&bytes[..write_len]);
@@ -2749,9 +2750,15 @@ pub(crate) async fn write_streaming_raw_payload_to_file(
                                     };
                                     Ok(())
                                 }
-                                Err(err) => Err(err),
+                                Err(err) => {
+                                    failed_path = Some(gzip_path.clone());
+                                    Err(err)
+                                }
                             },
-                            Err(err) => Err(err),
+                            Err(err) => {
+                                failed_path = Some(gzip_path.clone());
+                                Err(err)
+                            }
                         }
                     }
                     Some(_) => {
@@ -2769,9 +2776,15 @@ pub(crate) async fn write_streaming_raw_payload_to_file(
                                     };
                                     Ok(())
                                 }
-                                Err(err) => Err(err),
+                                Err(err) => {
+                                    failed_path = Some(path.clone());
+                                    Err(err)
+                                }
                             },
-                            Err(err) => Err(err),
+                            Err(err) => {
+                                failed_path = Some(path.clone());
+                                Err(err)
+                            }
                         }
                     }
                 }
@@ -2782,7 +2795,10 @@ pub(crate) async fn write_streaming_raw_payload_to_file(
                         writer = StreamingRawPayloadWriterState::Plain { path, file };
                         Ok(())
                     }
-                    Err(err) => Err(err),
+                    Err(err) => {
+                        failed_path = Some(path.clone());
+                        Err(err)
+                    }
                 }
             }
             StreamingRawPayloadWriterState::Gzip { path, mut encoder } => {
@@ -2791,7 +2807,10 @@ pub(crate) async fn write_streaming_raw_payload_to_file(
                         writer = StreamingRawPayloadWriterState::Gzip { path, encoder };
                         Ok(())
                     }
-                    Err(err) => Err(err),
+                    Err(err) => {
+                        failed_path = Some(path.clone());
+                        Err(err)
+                    }
                 }
             }
         };
@@ -2799,7 +2818,7 @@ pub(crate) async fn write_streaming_raw_payload_to_file(
         if let Err(err) = result {
             meta.truncated = true;
             meta.truncated_reason = Some(format!("write_failed:{err}"));
-            if let Some(current_path) = writer.current_path() {
+            if let Some(current_path) = failed_path.as_deref() {
                 let _ = fs::remove_file(current_path);
             }
             meta.path = None;
