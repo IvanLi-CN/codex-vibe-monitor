@@ -583,6 +583,7 @@ pub(crate) async fn materialize_historical_rollups_bounded(
         return Ok(HistoricalRollupMaterializationSummary {
             scanned_archive_batches: scanned_archive_batches as usize,
             materialized_archive_batches: pending_snapshot.legacy_archive_pending as usize,
+            blocked_archive_batches: 0,
             materialized_bucket_count: pending_snapshot.pending_buckets as usize,
             materialized_invocation_batches: 0,
             materialized_forward_proxy_batches: 0,
@@ -626,6 +627,7 @@ pub(crate) async fn materialize_historical_rollups_bounded(
         scanned_archive_batches: scanned_archive_batches as usize,
         materialized_archive_batches: (invocation_summary.materialized_batches
             + forward_proxy_summary.materialized_batches) as usize,
+        blocked_archive_batches: invocation_summary.blocked_batches as usize,
         materialized_bucket_count: count_materialized_historical_rollup_buckets(pool).await?
             as usize,
         materialized_invocation_batches: invocation_summary.materialized_batches as usize,

@@ -2173,18 +2173,13 @@
             42,
             UPSTREAM_ACCOUNT_STATUS_ERROR,
             Some("2026-04-13T05:00:00Z"),
-            Some("2026-04-13T05:00:00Z"),
+            Some("2026-04-13T11:00:00Z"),
             Some("2026-05-13T12:00:00Z"),
             Some(10.0),
             Some(10.0),
         );
         candidate.last_action_reason_code = Some("upstream_http_402".to_string());
         candidate.last_route_failure_kind = Some(PROXY_FAILURE_UPSTREAM_HTTP_402.to_string());
-        candidate.cooldown_until = Some(format_utc_iso(
-            now + ChronoDuration::seconds(
-                UPSTREAM_ACCOUNT_UPSTREAM_REJECTED_MAINTENANCE_COOLDOWN_SECS,
-            ),
-        ));
 
         assert!(
             !maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now),
@@ -2207,18 +2202,13 @@
             42,
             UPSTREAM_ACCOUNT_STATUS_ERROR,
             Some("2026-04-13T05:00:00Z"),
-            Some("2026-04-13T05:00:00Z"),
+            Some("2026-04-13T11:00:00Z"),
             Some("2026-04-13T11:59:00Z"),
             Some(10.0),
             Some(10.0),
         );
         candidate.last_action_reason_code = Some("upstream_http_402".to_string());
         candidate.last_route_failure_kind = Some(PROXY_FAILURE_UPSTREAM_HTTP_402.to_string());
-        candidate.cooldown_until = Some(format_utc_iso(
-            now + ChronoDuration::seconds(
-                UPSTREAM_ACCOUNT_UPSTREAM_REJECTED_MAINTENANCE_COOLDOWN_SECS,
-            ),
-        ));
         candidate.primary_resets_at = Some(format_utc_iso(now - ChronoDuration::minutes(1)));
 
         assert!(
@@ -2242,7 +2232,7 @@
             42,
             UPSTREAM_ACCOUNT_STATUS_ERROR,
             Some("2026-04-13T05:00:00Z"),
-            Some("2026-04-13T05:00:00Z"),
+            Some("2026-04-13T11:00:00Z"),
             Some("2026-05-13T12:00:00Z"),
             Some(10.0),
             Some(10.0),
@@ -2253,11 +2243,6 @@
         );
         candidate.last_action_reason_code = Some("upstream_http_403".to_string());
         candidate.last_route_failure_kind = Some(PROXY_FAILURE_UPSTREAM_HTTP_AUTH.to_string());
-        candidate.cooldown_until = Some(format_utc_iso(
-            now + ChronoDuration::seconds(
-                UPSTREAM_ACCOUNT_UPSTREAM_REJECTED_MAINTENANCE_COOLDOWN_SECS,
-            ),
-        ));
 
         assert!(
             maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now),

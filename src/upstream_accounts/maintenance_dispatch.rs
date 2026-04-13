@@ -353,15 +353,36 @@ fn maintenance_candidate_has_active_upstream_rejected_cooldown(
     candidate: &MaintenanceCandidateRow,
     now: DateTime<Utc>,
 ) -> bool {
-    account_has_active_cooldown(candidate.cooldown_until.as_deref(), now)
-        && (account_reason_is_maintenance_upstream_rejected(
+    let has_maintenance_upstream_rejected_marker =
+        account_reason_is_maintenance_upstream_rejected(
             candidate.last_action_reason_code.as_deref(),
         ) || route_failure_kind_is_maintenance_upstream_rejected(
             candidate.last_route_failure_kind.as_deref(),
         ) || candidate
             .last_error
             .as_deref()
-            .is_some_and(maintenance_upstream_rejected_error_message))
+            .is_some_and(maintenance_upstream_rejected_error_message);
+    if !has_maintenance_upstream_rejected_marker {
+        return false;
+    }
+
+    candidate
+        .last_route_failure_at
+        .as_deref()
+        .and_then(parse_rfc3339_utc)
+        .or_else(|| {
+            candidate
+                .last_error_at
+                .as_deref()
+                .and_then(parse_rfc3339_utc)
+        })
+        .is_some_and(|failed_at| {
+            failed_at
+                + ChronoDuration::seconds(
+                    UPSTREAM_ACCOUNT_UPSTREAM_REJECTED_MAINTENANCE_COOLDOWN_SECS,
+                )
+                > now
+        })
 }
 
 fn maintenance_candidate_blocks_upstream_rejected_cooldown(

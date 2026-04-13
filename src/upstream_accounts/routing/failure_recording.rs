@@ -85,10 +85,6 @@ pub(crate) async fn record_pool_route_http_failure(
                 delete_sticky_route(pool, sticky_key).await?;
             }
             let now_iso = format_utc_iso(Utc::now());
-            let cooldown_until = account_reason_is_maintenance_upstream_rejected(Some(
-                classification.reason_code,
-            ))
-            .then(|| upstream_rejected_maintenance_cooldown_until(Utc::now()));
             sqlx::query(
                 r#"
                 UPDATE pool_upstream_accounts
@@ -97,7 +93,7 @@ pub(crate) async fn record_pool_route_http_failure(
                     last_error_at = ?4,
                     last_route_failure_at = ?4,
                     last_route_failure_kind = ?5,
-                    cooldown_until = ?6,
+                    cooldown_until = NULL,
                     consecutive_route_failures = consecutive_route_failures + 1,
                     temporary_route_failure_streak_started_at = NULL,
                     updated_at = ?4
@@ -113,7 +109,6 @@ pub(crate) async fn record_pool_route_http_failure(
             .bind(error_message)
             .bind(&now_iso)
             .bind(classification.failure_kind)
-            .bind(cooldown_until.as_deref())
             .execute(pool)
             .await?;
             record_upstream_account_action(
