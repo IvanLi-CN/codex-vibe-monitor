@@ -361,6 +361,14 @@ fn maintenance_candidate_has_active_upstream_rejected_cooldown(
         ))
 }
 
+fn maintenance_candidate_blocks_upstream_rejected_cooldown(
+    candidate: &MaintenanceCandidateRow,
+    now: DateTime<Utc>,
+) -> bool {
+    maintenance_candidate_has_active_upstream_rejected_cooldown(candidate, now)
+        && !maintenance_reset_due(candidate, now)
+}
+
 pub(crate) fn compare_maintenance_candidates(
     lhs: &MaintenanceCandidateRow,
     rhs: &MaintenanceCandidateRow,
@@ -484,15 +492,17 @@ pub(crate) fn maintenance_plan_is_due(
     settings: PoolRoutingMaintenanceSettings,
     now: DateTime<Utc>,
 ) -> bool {
-    if maintenance_candidate_has_active_upstream_rejected_cooldown(candidate, now) {
+    if maintenance_reset_due(candidate, now) {
+        return true;
+    }
+    if maintenance_candidate_blocks_upstream_rejected_cooldown(candidate, now) {
         return false;
     }
-    maintenance_reset_due(candidate, now)
-        || maintenance_interval_is_due(
-            candidate,
-            maintenance_interval_for_tier(tier, settings),
-            now,
-        )
+    maintenance_interval_is_due(
+        candidate,
+        maintenance_interval_for_tier(tier, settings),
+        now,
+    )
 }
 
 pub(crate) async fn load_maintenance_candidates_ranked_before(
@@ -683,7 +693,7 @@ pub(crate) async fn execute_queued_maintenance_sync(
     } else {
         plan.sync_interval_secs
     };
-    if maintenance_candidate_has_active_upstream_rejected_cooldown(&candidate, now) {
+    if maintenance_candidate_blocks_upstream_rejected_cooldown(&candidate, now) {
         return Ok(None);
     }
     if !maintenance_reset_due(&candidate, now)

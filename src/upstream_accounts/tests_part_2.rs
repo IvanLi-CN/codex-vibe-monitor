@@ -2193,6 +2193,41 @@
     }
 
     #[test]
+    fn maintenance_plan_is_due_when_reset_window_passes_even_during_upstream_rejected_cooldown() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 13, 12, 0, 0)
+            .single()
+            .expect("valid time");
+        let settings = PoolRoutingMaintenanceSettings {
+            primary_sync_interval_secs: 300,
+            secondary_sync_interval_secs: 1800,
+            priority_available_account_cap: 1,
+        };
+        let mut candidate = maintenance_candidates(
+            42,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            Some("2026-04-13T05:00:00Z"),
+            Some("2026-04-13T05:00:00Z"),
+            Some("2026-04-13T11:59:00Z"),
+            Some(10.0),
+            Some(10.0),
+        );
+        candidate.last_action_reason_code = Some("upstream_http_402".to_string());
+        candidate.last_route_failure_kind = Some(PROXY_FAILURE_UPSTREAM_HTTP_402.to_string());
+        candidate.cooldown_until = Some(format_utc_iso(
+            now + ChronoDuration::seconds(
+                UPSTREAM_ACCOUNT_UPSTREAM_REJECTED_MAINTENANCE_COOLDOWN_SECS,
+            ),
+        ));
+        candidate.primary_resets_at = Some(format_utc_iso(now - ChronoDuration::minutes(1)));
+
+        assert!(
+            maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now),
+            "reset-due accounts should bypass the temporary upstream-rejected cooldown"
+        );
+    }
+
+    #[test]
     fn resolve_due_maintenance_dispatch_plans_keeps_refresh_due_accounts_on_primary_cadence() {
         let now = Utc
             .with_ymd_and_hms(2026, 3, 23, 12, 0, 0)

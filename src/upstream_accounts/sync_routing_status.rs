@@ -760,8 +760,8 @@ fn sync_failure_requires_upstream_rejected_maintenance_cooldown(
         || {
             let normalized = error_message.to_ascii_lowercase();
             normalized.contains("deactivated_workspace")
+                || normalized.contains("upstream_http_402")
                 || normalized.contains("upstream rejected")
-                || normalized.contains("payment required")
         }
 }
 

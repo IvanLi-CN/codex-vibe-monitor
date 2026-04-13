@@ -201,8 +201,6 @@ fn usage_snapshot_error_skips_browser_user_agent_retry(err: &anyhow::Error) -> b
     let normalized = err.to_string().to_ascii_lowercase();
     normalized.contains("deactivated_workspace")
         || normalized.contains("upstream_http_402")
-        || normalized.contains("payment required")
-        || normalized.contains("usage endpoint returned 402")
         || normalized.contains("upstream rejected")
 }
 

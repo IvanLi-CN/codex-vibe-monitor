@@ -2635,6 +2635,80 @@
         server.abort();
     }
 
+    #[tokio::test]
+    async fn fetch_usage_snapshot_retries_browser_user_agent_for_generic_402_pages() {
+        #[derive(Clone)]
+        struct UsageSnapshotTestState {
+            requests: Arc<Mutex<Vec<String>>>,
+        }
+
+        async fn handler(
+            State(state): State<UsageSnapshotTestState>,
+            headers: HeaderMap,
+        ) -> (StatusCode, String) {
+            let user_agent = headers
+                .get(header::USER_AGENT)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            state.requests.lock().await.push(user_agent.clone());
+            if user_agent == UPSTREAM_USAGE_BROWSER_USER_AGENT {
+                (
+                    StatusCode::OK,
+                    json!({
+                        "planType": "pro",
+                        "rateLimit": {
+                            "primaryWindow": {
+                                "usedPercent": 9,
+                                "windowDurationMins": 300,
+                                "resetsAt": 1771322400
+                            }
+                        }
+                    })
+                    .to_string(),
+                )
+            } else {
+                (StatusCode::PAYMENT_REQUIRED, "Payment Required".to_string())
+            }
+        }
+
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let app = Router::new()
+            .route("/backend-api/wham/usage", get(handler))
+            .with_state(UsageSnapshotTestState {
+                requests: requests.clone(),
+            });
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve test app");
+        });
+
+        let client = Client::builder().build().expect("client");
+        let config = usage_snapshot_test_config(
+            &format!("http://{addr}/backend-api"),
+            "codex-vibe-monitor/0.2.0",
+        );
+
+        let snapshot = fetch_usage_snapshot(&client, &config, "access-token", Some("acct_test"))
+            .await
+            .expect("generic 402 should retry with browser user agent");
+        assert_eq!(snapshot.plan_type.as_deref(), Some("pro"));
+
+        let recorded = requests.lock().await.clone();
+        assert_eq!(
+            recorded,
+            vec![
+                "codex-vibe-monitor/0.2.0".to_string(),
+                UPSTREAM_USAGE_BROWSER_USER_AGENT.to_string()
+            ]
+        );
+
+        server.abort();
+    }
+
     #[test]
     fn build_manual_callback_redirect_uri_targets_localhost() {
         let redirect = build_manual_callback_redirect_uri().expect("redirect uri");
