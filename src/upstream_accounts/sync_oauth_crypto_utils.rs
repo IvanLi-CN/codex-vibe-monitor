@@ -1280,7 +1280,6 @@ fn maintenance_upstream_rejected_error_message(message: &str) -> bool {
     let msg = message.to_ascii_lowercase();
     msg.contains("deactivated_workspace")
         || msg.contains("upstream_http_402")
-        || msg.contains("upstream rejected")
         || (msg.contains("oauth_upstream_rejected_request")
             && (msg.contains("payment required")
                 || msg.contains("http 402")

@@ -1354,9 +1354,16 @@ async fn materialize_historical_rollups_bounded_counts_partially_blocked_archive
     );
 
     let second_summary =
-        materialize_historical_rollups_bounded(&pool, &config, false, Some(1), None)
-            .await
-            .expect("materialize second archive on the next bounded pass");
+        materialize_historical_rollups_bounded_from_skip(
+            &pool,
+            &config,
+            false,
+            Some(1),
+            None,
+            first_summary.scanned_archive_batches,
+        )
+        .await
+        .expect("materialize second archive on the next bounded pass after skipping the previously scanned backlog");
     assert_eq!(second_summary.materialized_invocation_batches, 1);
 
     let total_count_after_second: i64 = sqlx::query_scalar(
@@ -1367,6 +1374,126 @@ async fn materialize_historical_rollups_bounded_counts_partially_blocked_archive
     .await
     .expect("load invocation hourly total count after second bounded pass");
     assert_eq!(total_count_after_second, 2);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn materialize_historical_rollups_bounded_counts_fully_blocked_archive_budget() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("historical-rollup-bounded-fully-blocked-budget").await;
+    let first_archive_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days((config.invocation_max_days + 62) as i64))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid first archived local hour");
+    let second_archive_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days((config.invocation_max_days + 31) as i64))
+    .and_hms_opt(9, 0, 0)
+    .expect("valid second archived local hour");
+    let first_occurred_at = format_naive(
+        first_archive_hour_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("valid first archived occurred_at"),
+    );
+    let second_occurred_at = format_naive(
+        second_archive_hour_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("valid second archived occurred_at"),
+    );
+
+    let first_archive_path = seed_invocation_archive_batch_with_details(
+        &pool,
+        &config,
+        "historical-rollup-bounded-fully-blocked-first",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1,
+            invoke_id: "historical-rollup-bounded-fully-blocked-first",
+            occurred_at: first_occurred_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 12,
+            cost: 0.12,
+            ttfb_ms: Some(120.0),
+            payload: Some(r#"{"upstreamAccountId":17}"#),
+            detail_level: DETAIL_LEVEL_STRUCTURED_ONLY,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        }],
+    )
+    .await;
+    let second_archive_path = seed_invocation_archive_batch_with_details(
+        &pool,
+        &config,
+        "historical-rollup-bounded-fully-blocked-second",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1,
+            invoke_id: "historical-rollup-bounded-fully-blocked-second",
+            occurred_at: second_occurred_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 21,
+            cost: 0.21,
+            ttfb_ms: Some(210.0),
+            payload: Some(r#"{"upstreamAccountId":18}"#),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        }],
+    )
+    .await;
+
+    for target in [
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
+        HOURLY_ROLLUP_TARGET_PROXY_PERF,
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
+            VALUES (?1, ?2, ?3, datetime('now'))
+            "#,
+        )
+        .bind(target)
+        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+        .bind(first_archive_path.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .expect("insert replay marker for non-keyed invocation target");
+    }
+
+    let first_summary = materialize_historical_rollups_bounded(&pool, &config, false, Some(1), None)
+        .await
+        .expect("fully blocked archive should still consume the one-archive budget");
+    assert_eq!(first_summary.materialized_invocation_batches, 0);
+    assert_eq!(first_summary.blocked_archive_batches, 1);
+
+    let second_archive_materialized_at_after_first: Option<String> = sqlx::query_scalar(
+        "SELECT historical_rollups_materialized_at FROM archive_batches WHERE file_path = ?1",
+    )
+    .bind(second_archive_path.to_string_lossy().to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("load second archive materialized timestamp after fully blocked bounded pass");
+    assert!(
+        second_archive_materialized_at_after_first.is_none(),
+        "a fully blocked first archive should still consume the one-archive budget"
+    );
+
+    let second_summary = materialize_historical_rollups_bounded_from_skip(
+        &pool,
+        &config,
+        false,
+        Some(1),
+        None,
+        first_summary.scanned_archive_batches,
+    )
+    .await
+    .expect("second bounded pass should reach the next archive after skipping the blocked one");
+    assert_eq!(second_summary.materialized_invocation_batches, 1);
 
     cleanup_temp_test_dir(&temp_dir);
 }

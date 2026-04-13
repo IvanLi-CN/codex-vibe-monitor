@@ -460,6 +460,7 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
             archive_pool.close().await;
             drop(temp_cleanup);
             summary.blocked_batches += 1;
+            summary.budget_consumed_batches += 1;
             warn!(
                 dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
                 file_path = archive_file.file_path,
