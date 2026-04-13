@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, type ReactNode } from 'react'
-import type { BroadcastPayload } from '../lib/api'
+import type { StorybookPageSseController } from './storybookPageSse'
 
 export interface StorybookRequestContext {
   url: URL
@@ -9,18 +9,6 @@ export interface StorybookRequestContext {
 export type StorybookRequestHandler = (
   context: StorybookRequestContext,
 ) => Response | Promise<Response | undefined> | undefined
-
-export interface StorybookPageSseController {
-  emit: (payload: BroadcastPayload) => void
-  emitOpen: () => void
-  reset: () => void
-}
-
-declare global {
-  interface Window {
-    __storybookPageSseController__?: StorybookPageSseController
-  }
-}
 
 const storybookPageEventSources = new Set<MockEventSource>()
 
@@ -54,10 +42,6 @@ function ensureStorybookPageSseController() {
 
   window.__storybookPageSseController__ = controller
   return controller
-}
-
-export function getStorybookPageSseController() {
-  return ensureStorybookPageSseController()
 }
 
 class MockEventSource implements EventTarget {

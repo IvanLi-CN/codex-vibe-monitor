@@ -17,8 +17,8 @@ import { DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY } from '../lib/dashboardP
 import {
   FullPageStorySurface,
   StorybookPageEnvironment,
-  getStorybookPageSseController,
 } from './storybookPageHelpers'
+import { getStorybookPageSseController } from './storybookPageSse'
 import { jsonResponse } from './storybookResponse'
 
 type DashboardScenario = 'default' | 'degraded'
