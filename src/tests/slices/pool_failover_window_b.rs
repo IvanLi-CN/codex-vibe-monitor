@@ -49,7 +49,8 @@ async fn proxy_openai_v1_via_pool_waits_for_initial_account_resolution_before_se
     });
 
     tokio::time::sleep(Duration::from_millis(20)).await;
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 
     let response = request_task
         .await
@@ -65,7 +66,8 @@ async fn proxy_openai_v1_via_pool_waits_for_initial_account_resolution_before_se
         .expect("read via-pool response");
     let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
     assert_eq!(payload["authorization"], "Bearer upstream-delayed");
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-delayed").copied(), Some(1));
@@ -133,7 +135,8 @@ async fn proxy_openai_v1_body_only_sticky_stream_waits_only_once_before_503() {
         message, POOL_NO_AVAILABLE_ACCOUNT_MESSAGE,
         "unexpected via-pool failure: {message}"
     );
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 }
 
 #[tokio::test]
@@ -317,7 +320,8 @@ async fn proxy_openai_v1_header_sticky_stream_prefers_body_timeout_before_pool_w
         message, "request body read timed out after 80ms",
         "unexpected via-pool failure: {message}"
     );
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 }
 
 #[tokio::test]
@@ -398,7 +402,8 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_body_timeout_over_rate_l
         message, "request body read timed out after 80ms",
         "unexpected via-pool failure: {message}"
     );
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 }
 
 #[tokio::test]
@@ -513,7 +518,8 @@ async fn proxy_openai_v1_header_sticky_stream_waits_for_blocked_policy_header_er
         message.contains("upstream account is not assigned to a group"),
         "unexpected via-pool failure: {message}"
     );
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 }
 
 #[tokio::test]
@@ -634,7 +640,8 @@ async fn proxy_openai_v1_header_sticky_stream_same_value_short_circuits_blocked_
         message.contains("upstream account is not assigned to a group"),
         "unexpected via-pool failure: {message}"
     );
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 }
 
 #[tokio::test]
@@ -720,7 +727,8 @@ async fn proxy_openai_v1_header_sticky_stream_waits_for_body_sticky_override_bef
         .expect("read via-pool response");
     let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
     assert_eq!(payload["authorization"], "Bearer upstream-replacement");
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-blocked").copied(), None);
@@ -808,7 +816,8 @@ async fn proxy_openai_v1_header_sticky_responses_wait_timeout_respects_total_tim
         pool_total_timeout_exhausted_message(Duration::from_millis(90)),
         "unexpected via-pool failure: {message}"
     );
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 }
 
 #[tokio::test]
@@ -964,7 +973,8 @@ async fn proxy_openai_v1_header_sticky_responses_total_timeout_short_circuits_bo
         pool_total_timeout_exhausted_message(Duration::from_millis(90)),
         "unexpected via-pool failure: {message}"
     );
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 }
 
 #[tokio::test]
@@ -1033,7 +1043,8 @@ async fn proxy_openai_v1_responses_prebuffer_body_counts_total_timeout_from_requ
         pool_total_timeout_exhausted_message(Duration::from_millis(90)),
         "unexpected via-pool failure: {message}"
     );
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 }
 
 #[tokio::test]
@@ -1112,7 +1123,8 @@ async fn proxy_openai_v1_responses_prebuffer_body_wait_counts_total_timeout_from
         pool_total_timeout_exhausted_message(Duration::from_millis(90)),
         "unexpected via-pool failure: {message}"
     );
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 }
 
 #[tokio::test]
@@ -1179,7 +1191,8 @@ async fn proxy_openai_v1_responses_streamed_body_counts_total_timeout_from_reque
         pool_total_timeout_exhausted_message(Duration::from_millis(90)),
         "unexpected via-pool failure: {message}"
     );
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 }
 
 #[tokio::test]
@@ -1332,7 +1345,8 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_pre_resolved_account_aft
         .expect("read via-pool response");
     let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
     assert_eq!(payload["authorization"], "Bearer upstream-primary");
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
@@ -1425,7 +1439,8 @@ async fn proxy_openai_v1_header_sticky_stream_body_override_beats_rate_limited_h
         .expect("read via-pool response");
     let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
     assert_eq!(payload["authorization"], "Bearer upstream-replacement");
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-rate-limited").copied(), None);
@@ -1554,7 +1569,8 @@ async fn proxy_openai_v1_header_sticky_stream_body_override_beats_blocked_policy
         .expect("read via-pool response");
     let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
     assert_eq!(payload["authorization"], "Bearer upstream-replacement");
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-blocked").copied(), None);
@@ -1626,7 +1642,8 @@ async fn proxy_openai_v1_header_sticky_stream_prefers_body_too_large_before_pool
         message, "request body exceeds 24 bytes",
         "unexpected via-pool failure: {message}"
     );
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 }
 
 #[tokio::test]
@@ -1710,7 +1727,8 @@ async fn proxy_openai_v1_header_sticky_stream_waits_after_body_reroute_needs_acc
         .expect("read via-pool response");
     let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
     assert_eq!(payload["authorization"], "Bearer upstream-delayed");
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-initial").copied(), None);
