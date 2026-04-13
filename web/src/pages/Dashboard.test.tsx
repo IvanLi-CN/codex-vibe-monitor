@@ -577,6 +577,63 @@ describe("DashboardPage", () => {
     ).toBeNull();
   });
 
+  it("starts diagnostics counters from zero after enabling on a long-lived dashboard", () => {
+    installSummaryMocks();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [createWorkingConversationCard()],
+      totalMatched: 1,
+      hasMore: false,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore: vi.fn(),
+      setRefreshTargetCount: vi.fn(),
+    });
+
+    render(<DashboardPage />);
+
+    act(() => {
+      publishWorkingConversationPatchMetrics(
+        new Map([
+          [
+            "stale-pck",
+            new Map([["stale-invoke", { totalTokens: 64, cost: 0.02 }]]),
+          ],
+        ]),
+      );
+      recordTodaySummaryRefresh("today");
+      recordTodayChartRender("stale-chart");
+    });
+
+    act(() => {
+      window.localStorage.setItem(
+        DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
+        "1",
+      );
+    });
+
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-performance-diagnostics-working-conversations-patch-bucket-count"]',
+      )?.textContent,
+    ).toBe("0");
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-performance-diagnostics-working-conversations-patch-entry-count"]',
+      )?.textContent,
+    ).toBe("0");
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-performance-diagnostics-today-summary-refresh-count"]',
+      )?.textContent,
+    ).toBe("0");
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-performance-diagnostics-today-chart-render-count"]',
+      )?.textContent,
+    ).toBe("0");
+  });
+
   it("dedupes identical chart render signatures in diagnostics", () => {
     window.localStorage.setItem(
       DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,

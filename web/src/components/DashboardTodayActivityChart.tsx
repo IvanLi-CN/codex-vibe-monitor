@@ -29,8 +29,8 @@ import {
   type DashboardTodayMinuteDatum,
 } from "./dashboardTodayActivityChartData";
 import {
-  isDashboardPerformanceDiagnosticsEnabled,
   recordTodayChartRender,
+  useDashboardPerformanceDiagnosticsEnabled,
 } from "../lib/dashboardPerformanceDiagnostics";
 
 export interface DashboardTodayActivityChartProps {
@@ -172,7 +172,7 @@ function DashboardTodayActivityChartImpl({
   metric,
   closedNaturalDay = false,
 }: DashboardTodayActivityChartProps) {
-  const diagnosticsEnabled = isDashboardPerformanceDiagnosticsEnabled();
+  const diagnosticsEnabled = useDashboardPerformanceDiagnosticsEnabled();
   const renderSignature = useMemo(
     () =>
       diagnosticsEnabled

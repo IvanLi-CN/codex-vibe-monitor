@@ -96,6 +96,8 @@ export function syncDashboardPerformanceDiagnosticsEnabled() {
   if (snapshot.enabled === enabled) {
     return snapshot;
   }
+  lastTodayChartRenderSignature = null;
+  metrics = createEmptyMetrics();
   snapshot = createSnapshot(enabled);
   emitDiagnosticsSnapshot();
   return snapshot;
@@ -107,12 +109,12 @@ function updateMetricsSnapshot(
     timestamp: string,
   ) => DashboardPerformanceDiagnosticsMetrics,
 ) {
-  metrics = updater(metrics, new Date(Date.now()).toISOString());
-  snapshot = createSnapshot();
-  if (!snapshot.enabled) {
+  if (!readDiagnosticsEnabled()) {
     syncWindowSnapshot();
     return;
   }
+  metrics = updater(metrics, new Date(Date.now()).toISOString());
+  snapshot = createSnapshot(true);
   emitDiagnosticsSnapshot();
 }
 
