@@ -2410,18 +2410,13 @@ async fn build_account_sticky_keys_response_keeps_attached_keys_without_recent_a
 }
 
 #[tokio::test]
-async fn build_account_sticky_keys_response_merges_live_tail_without_read_time_catch_up() {
+async fn upstream_account_sticky_keys_reads_inline_rollups_without_read_time_catch_up() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
     let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
-    let sticky_key = "sticky-live-tail";
-    let historical_time = format_naive(
-        (Utc::now() - ChronoDuration::days(2))
-            .with_timezone(&Shanghai)
-            .naive_local(),
-    );
+    let sticky_key = "sticky-inline-rollup";
     let recent_time = format_naive(
         (Utc::now() - ChronoDuration::minutes(15))
             .with_timezone(&Shanghai)
@@ -2432,61 +2427,29 @@ async fn build_account_sticky_keys_response_merges_live_tail_without_read_time_c
         .await
         .expect("seed sticky route");
 
-    let historical_insert = sqlx::query(
-        r#"
-        INSERT INTO codex_invocations (
-            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
-        )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-        "#,
-    )
-    .bind("sticky-live-tail-historical")
-    .bind(&historical_time)
-    .bind(SOURCE_PROXY)
-    .bind("success")
-    .bind(123_i64)
-    .bind(0.42_f64)
-    .bind(
+    let mut record = test_proxy_capture_record("sticky-inline-rollup-invoke", &recent_time);
+    record.model = Some("gpt-5.4".to_string());
+    record.usage.input_tokens = Some(51);
+    record.usage.output_tokens = Some(26);
+    record.usage.cache_input_tokens = Some(0);
+    record.usage.reasoning_tokens = Some(0);
+    record.usage.total_tokens = Some(77);
+    record.cost = Some(0.18);
+    record.payload = Some(
         json!({
             "stickyKey": sticky_key,
             "upstreamAccountId": account_id,
-        })
-        .to_string(),
-    )
-    .bind("{}")
-    .execute(&state.pool)
-    .await
-    .expect("insert historical sticky invocation");
-    sync_hourly_rollups_from_live_tables(&state.pool)
-        .await
-        .expect("materialize initial sticky rollups");
-
-    sqlx::query(
-        r#"
-        INSERT INTO codex_invocations (
-            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
-        )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-        "#,
-    )
-    .bind("sticky-live-tail-recent")
-    .bind(&recent_time)
-    .bind(SOURCE_PROXY)
-    .bind("success")
-    .bind(77_i64)
-    .bind(0.18_f64)
-    .bind(
-        json!({
-            "stickyKey": sticky_key,
-            "upstreamAccountId": account_id,
+            "upstreamAccountName": "Primary",
+            "routeMode": "sticky",
+            "endpoint": "/v1/responses",
             "model": "gpt-5.4",
         })
         .to_string(),
-    )
-    .bind("{}")
-    .execute(&state.pool)
-    .await
-    .expect("insert live-tail sticky invocation");
+    );
+    persist_proxy_capture_record(&state.pool, std::time::Instant::now(), record)
+        .await
+        .expect("persist sticky proxy capture")
+        .expect("sticky invocation should persist");
 
     let response = build_account_sticky_keys_response(
         &state.pool,
@@ -2494,7 +2457,7 @@ async fn build_account_sticky_keys_response_merges_live_tail_without_read_time_c
         AccountStickyKeySelection::Count(20),
     )
     .await
-    .expect("build sticky response");
+    .expect("sticky-key endpoint should stay fresh without read-time catch-up");
     let json = serde_json::to_value(&response).expect("serialize sticky response");
     let conversations = json["conversations"]
         .as_array()
@@ -2502,28 +2465,19 @@ async fn build_account_sticky_keys_response_merges_live_tail_without_read_time_c
     assert_eq!(conversations.len(), 1);
     let conversation = &conversations[0];
     assert_eq!(conversation["stickyKey"].as_str(), Some(sticky_key));
-    assert_eq!(conversation["requestCount"].as_i64(), Some(2));
-    assert_eq!(conversation["totalTokens"].as_i64(), Some(200));
-    assert_eq!(conversation["totalCost"].as_f64(), Some(0.60));
+    assert_eq!(conversation["requestCount"].as_i64(), Some(1));
+    assert_eq!(conversation["totalTokens"].as_i64(), Some(77));
+    assert_eq!(conversation["totalCost"].as_f64(), Some(0.18));
     assert_eq!(
         conversation["recentInvocations"]
             .as_array()
             .map(Vec::len),
-        Some(2)
+        Some(1)
     );
     assert_eq!(
         conversation["recentInvocations"][0]["invokeId"].as_str(),
-        Some("sticky-live-tail-recent")
+        Some("sticky-inline-rollup-invoke")
     );
-
-    let live_progress = sqlx::query_scalar::<_, i64>(
-        "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
-    )
-    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-    .fetch_one(&state.pool)
-    .await
-    .expect("load live rollup progress");
-    assert_eq!(live_progress, historical_insert.last_insert_rowid());
 }
 
 #[test]

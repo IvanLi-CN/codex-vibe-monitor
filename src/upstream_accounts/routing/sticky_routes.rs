@@ -23,9 +23,11 @@ pub(crate) async fn build_account_sticky_keys_response(
         .iter()
         .map(|row| row.sticky_key.clone())
         .collect::<Vec<_>>();
+    // Keep this endpoint strictly read-only. Proxy/runtime persistence updates
+    // `upstream_sticky_key_hourly` inline via `upsert_invocation_hourly_rollups_tx`
+    // (plus recompute-on-repair paths), so attached sticky-key totals stay fresh
+    // without request-time catch-up.
     let aggregates = query_account_sticky_key_aggregates(pool, account_id, &attached_keys).await?;
-    let live_tail_aggregates =
-        query_account_sticky_key_live_tail_aggregates(pool, account_id, &attached_keys).await?;
     let events =
         query_account_sticky_key_events(pool, account_id, &range_start_bound, &attached_keys)
             .await?;
@@ -34,16 +36,6 @@ pub(crate) async fn build_account_sticky_keys_response(
         .into_iter()
         .map(|row| (row.sticky_key.clone(), row))
         .collect::<HashMap<_, _>>();
-    for row in live_tail_aggregates {
-        match aggregate_map.entry(row.sticky_key.clone()) {
-            std::collections::hash_map::Entry::Occupied(mut entry) => {
-                merge_sticky_key_aggregate_row(entry.get_mut(), row);
-            }
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(row);
-            }
-        }
-    }
     let mut grouped_events: HashMap<String, Vec<AccountStickyKeyRequestPoint>> = HashMap::new();
     for row in events {
         let status = if row.status.trim().is_empty() {
@@ -255,77 +247,6 @@ pub(crate) async fn query_account_sticky_key_aggregates(
         .fetch_all(pool)
         .await
         .map_err(Into::into)
-}
-
-pub(crate) async fn query_account_sticky_key_live_tail_aggregates(
-    pool: &Pool<Sqlite>,
-    account_id: i64,
-    selected_keys: &[String],
-) -> Result<Vec<StickyKeyAggregateRow>> {
-    if selected_keys.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let live_cursor =
-        load_hourly_rollup_live_progress(pool, HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
-    if live_cursor <= 0 {
-        return Ok(Vec::new());
-    }
-
-    const ACCOUNT_EXPR: &str =
-        "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT \
-             ",
-    );
-    query
-        .push(crate::api::INVOCATION_STICKY_KEY_SQL)
-        .push(
-            " AS sticky_key, \
-             COUNT(*) AS request_count, \
-             COALESCE(SUM(total_tokens), 0) AS total_tokens, \
-             COALESCE(SUM(cost), 0) AS total_cost, \
-             MIN(occurred_at) AS created_at, \
-             MAX(occurred_at) AS last_activity_at \
-         FROM codex_invocations \
-         WHERE id > ",
-        )
-        .push_bind(live_cursor)
-        .push(" AND ")
-        .push(ACCOUNT_EXPR)
-        .push(" = ")
-        .push_bind(account_id)
-        .push(" AND ")
-        .push(crate::api::INVOCATION_STICKY_KEY_SQL)
-        .push(" IN (");
-    {
-        let mut separated = query.separated(", ");
-        for key in selected_keys {
-            separated.push_bind(key);
-        }
-    }
-    query.push(") GROUP BY sticky_key");
-
-    query
-        .build_query_as::<StickyKeyAggregateRow>()
-        .fetch_all(pool)
-        .await
-        .map_err(Into::into)
-}
-
-fn merge_sticky_key_aggregate_row(
-    aggregate: &mut StickyKeyAggregateRow,
-    live_tail: StickyKeyAggregateRow,
-) {
-    aggregate.request_count += live_tail.request_count;
-    aggregate.total_tokens += live_tail.total_tokens;
-    aggregate.total_cost += live_tail.total_cost;
-    if live_tail.created_at < aggregate.created_at {
-        aggregate.created_at = live_tail.created_at;
-    }
-    if live_tail.last_activity_at > aggregate.last_activity_at {
-        aggregate.last_activity_at = live_tail.last_activity_at;
-    }
 }
 
 pub(crate) async fn query_account_sticky_key_events(
