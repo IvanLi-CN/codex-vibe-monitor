@@ -618,6 +618,7 @@ pub(crate) async fn materialize_historical_rollups_bounded_from_skip(
     let mut tx = pool.begin().await?;
     let invocation_summary = replay_invocation_archives_into_hourly_rollups_tx_with_limits(
         tx.as_mut(),
+        started_at,
         max_archive_batches,
         max_elapsed,
         bounded_skip,
@@ -628,6 +629,7 @@ pub(crate) async fn materialize_historical_rollups_bounded_from_skip(
     let forward_proxy_summary =
         replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
             tx.as_mut(),
+            started_at,
             max_archive_batches
                 .map(|limit| limit.saturating_sub(invocation_summary.budget_consumed_batches)),
             remaining_budget,

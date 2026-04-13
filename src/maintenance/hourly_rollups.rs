@@ -332,11 +332,11 @@ async fn replay_forward_proxy_archive_rows_into_hourly_rollups_tx_with_budget(
 
 async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
     tx: &mut SqliteConnection,
+    started_at: Instant,
     max_archive_batches: Option<u64>,
     max_elapsed: Option<Duration>,
     skip_archive_batches: usize,
 ) -> Result<HistoricalRollupArchiveReplaySummary> {
-    let started_at = Instant::now();
     let mut summary = HistoricalRollupArchiveReplaySummary::default();
     let mut skip_remaining = skip_archive_batches;
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
@@ -532,16 +532,23 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
 async fn replay_invocation_archives_into_hourly_rollups_tx(
     tx: &mut SqliteConnection,
 ) -> Result<HistoricalRollupArchiveReplaySummary> {
-    replay_invocation_archives_into_hourly_rollups_tx_with_limits(tx, None, None, 0).await
+    replay_invocation_archives_into_hourly_rollups_tx_with_limits(
+        tx,
+        Instant::now(),
+        None,
+        None,
+        0,
+    )
+    .await
 }
 
 async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
     tx: &mut SqliteConnection,
+    started_at: Instant,
     max_archive_batches: Option<u64>,
     max_elapsed: Option<Duration>,
     skip_archive_batches: usize,
 ) -> Result<HistoricalRollupArchiveReplaySummary> {
-    let started_at = Instant::now();
     let mut summary = HistoricalRollupArchiveReplaySummary::default();
     let mut skip_remaining = skip_archive_batches;
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
@@ -738,7 +745,14 @@ mod hourly_rollup_budget_tests {
 async fn replay_forward_proxy_archives_into_hourly_rollups_tx(
     tx: &mut SqliteConnection,
 ) -> Result<HistoricalRollupArchiveReplaySummary> {
-    replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(tx, None, None, 0).await
+    replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
+        tx,
+        Instant::now(),
+        None,
+        None,
+        0,
+    )
+    .await
 }
 
 async fn bootstrap_hourly_rollups(pool: &Pool<Sqlite>) -> Result<()> {

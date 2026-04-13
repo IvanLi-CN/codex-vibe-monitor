@@ -2251,6 +2251,53 @@
     }
 
     #[test]
+    fn resolve_due_maintenance_dispatch_plans_does_not_let_cooldown_blocked_accounts_consume_priority_slots() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 13, 12, 0, 0)
+            .single()
+            .expect("valid time");
+        let settings = PoolRoutingMaintenanceSettings {
+            primary_sync_interval_secs: 300,
+            secondary_sync_interval_secs: 1800,
+            priority_available_account_cap: 1,
+        };
+
+        let mut cooldown_blocked = maintenance_candidates(
+            1,
+            UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+            Some("2026-04-13T05:00:00Z"),
+            Some("2026-04-13T11:58:00Z"),
+            Some("2026-05-13T12:00:00Z"),
+            Some(5.0),
+            Some(5.0),
+        );
+        cooldown_blocked.last_action_reason_code = Some("upstream_http_402".to_string());
+        cooldown_blocked.last_route_failure_kind = Some(PROXY_FAILURE_UPSTREAM_HTTP_402.to_string());
+
+        let healthy_due = maintenance_candidates(
+            2,
+            UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+            Some("2026-04-13T05:00:00Z"),
+            Some("2026-04-13T11:00:00Z"),
+            Some("2026-05-13T12:00:00Z"),
+            Some(10.0),
+            Some(10.0),
+        );
+
+        let plans = resolve_due_maintenance_dispatch_plans(
+            vec![cooldown_blocked, healthy_due],
+            settings,
+            Duration::from_secs(900),
+            now,
+        );
+
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].account_id, 2);
+        assert_eq!(plans[0].tier, MaintenanceTier::Priority);
+        assert_eq!(plans[0].sync_interval_secs, settings.primary_sync_interval_secs);
+    }
+
+    #[test]
     fn resolve_due_maintenance_dispatch_plans_keeps_refresh_due_accounts_on_primary_cadence() {
         let now = Utc
             .with_ymd_and_hms(2026, 3, 23, 12, 0, 0)

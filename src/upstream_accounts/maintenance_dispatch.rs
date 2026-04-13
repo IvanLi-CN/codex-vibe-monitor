@@ -393,6 +393,17 @@ fn maintenance_candidate_blocks_upstream_rejected_cooldown(
         && !maintenance_reset_due(candidate, now)
 }
 
+fn maintenance_candidate_counts_toward_available_priority_slot(
+    candidate: &MaintenanceCandidateRow,
+    refresh_lead_time: Duration,
+    now: DateTime<Utc>,
+) -> bool {
+    maintenance_candidate_is_available(candidate)
+        && !maintenance_candidate_is_high_frequency(candidate, now)
+        && !maintenance_candidate_force_priority(candidate, refresh_lead_time, now)
+        && !maintenance_candidate_blocks_upstream_rejected_cooldown(candidate, now)
+}
+
 pub(crate) fn compare_maintenance_candidates(
     lhs: &MaintenanceCandidateRow,
     rhs: &MaintenanceCandidateRow,
@@ -678,14 +689,11 @@ pub(crate) async fn current_maintenance_interval_for_queued_high_frequency_candi
             return Ok(settings.primary_sync_interval_secs);
         }
         for other in &batch {
-            if maintenance_candidate_is_high_frequency(other, now)
-                || maintenance_candidate_force_priority(
-                    other,
-                    state.config.upstream_accounts_refresh_lead_time,
-                    now,
-                )
-                || !maintenance_candidate_is_available(other)
-            {
+            if !maintenance_candidate_counts_toward_available_priority_slot(
+                other,
+                state.config.upstream_accounts_refresh_lead_time,
+                now,
+            ) {
                 continue;
             }
             better_available += 1;
@@ -758,6 +766,7 @@ pub(crate) fn resolve_due_maintenance_dispatch_plans(
     secondary.sort_by(compare_maintenance_candidates);
 
     let mut plans = Vec::new();
+    let mut available_priority_slots_used = 0usize;
     for candidate in forced_priority {
         if maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now) {
             plans.push(MaintenanceDispatchPlan {
@@ -776,12 +785,23 @@ pub(crate) fn resolve_due_maintenance_dispatch_plans(
             });
         }
     }
-    for (index, candidate) in ranked_available.into_iter().enumerate() {
-        let tier = if index < settings.priority_available_account_cap {
+    for candidate in ranked_available {
+        let counts_toward_priority_slot =
+            maintenance_candidate_counts_toward_available_priority_slot(
+                &candidate,
+                refresh_lead_time,
+                now,
+            );
+        let tier = if counts_toward_priority_slot
+            && available_priority_slots_used < settings.priority_available_account_cap
+        {
             MaintenanceTier::Priority
         } else {
             MaintenanceTier::Secondary
         };
+        if counts_toward_priority_slot {
+            available_priority_slots_used += 1;
+        }
         if maintenance_plan_is_due(&candidate, tier, settings, now) {
             plans.push(MaintenanceDispatchPlan {
                 account_id: candidate.id,

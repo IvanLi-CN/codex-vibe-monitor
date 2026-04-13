@@ -1372,6 +1372,74 @@ async fn materialize_historical_rollups_bounded_counts_partially_blocked_archive
 }
 
 #[tokio::test]
+async fn replay_invocation_archives_into_hourly_rollups_respects_caller_elapsed_budget() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("historical-rollup-shared-elapsed-budget").await;
+    let archive_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days((config.invocation_max_days + 45) as i64))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let occurred_at = format_naive(
+        archive_hour_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("valid archived occurred_at"),
+    );
+
+    let archive_path = seed_invocation_archive_batch_with_details(
+        &pool,
+        &config,
+        "historical-rollup-shared-elapsed-budget",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1,
+            invoke_id: "historical-rollup-shared-elapsed-budget",
+            occurred_at: occurred_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 12,
+            cost: 0.12,
+            ttfb_ms: Some(120.0),
+            payload: Some(r#"{"upstreamAccountId":17}"#),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        }],
+    )
+    .await;
+
+    let mut tx = pool.begin().await.expect("begin transaction");
+    let summary = replay_invocation_archives_into_hourly_rollups_tx_with_limits(
+        tx.as_mut(),
+        Instant::now() - Duration::from_secs(1),
+        Some(1),
+        Some(Duration::from_millis(1)),
+        0,
+    )
+    .await
+    .expect("replay bounded invocation archives");
+    tx.rollback().await.expect("rollback replay transaction");
+
+    assert_eq!(summary.scanned_batches, 0);
+    assert_eq!(summary.materialized_batches, 0);
+    assert_eq!(summary.budget_consumed_batches, 0);
+
+    let still_pending: Option<String> = sqlx::query_scalar(
+        "SELECT historical_rollups_materialized_at FROM archive_batches WHERE file_path = ?1",
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("load archive materialized timestamp after bounded replay");
+    assert!(
+        still_pending.is_none(),
+        "expired caller elapsed budget should leave the archive pending for a later pass"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn materialize_historical_rollups_bounded_skips_live_replay_when_elapsed_budget_is_zero() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("historical-rollup-bounded-live-budget-zero").await;
