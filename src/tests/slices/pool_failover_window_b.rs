@@ -204,6 +204,43 @@ async fn proxy_openai_v1_chunked_json_without_header_sticky_uses_live_first_atte
         .expect("read via-pool response");
     let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
     assert_eq!(payload["authorization"], "Bearer upstream-primary");
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    let latest_attempt = timeout(Duration::from_secs(1), async {
+        loop {
+            let row = sqlx::query_as::<_, (Option<String>, Option<String>, String)>(
+                r#"
+                SELECT group_name_snapshot, proxy_binding_key_snapshot, status
+                FROM pool_upstream_request_attempts
+                ORDER BY id DESC
+                LIMIT 1
+                "#,
+            )
+            .fetch_one(&state.pool)
+            .await
+            .expect("load latest pool attempt");
+            if row.2 == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS {
+                break row;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("wait for live-first pool attempt success");
+    assert_eq!(
+        latest_attempt.0.as_deref(),
+        Some(test_required_group_name()),
+        "live-first grouped stats should snapshot the resolved group name",
+    );
+    assert_eq!(
+        latest_attempt.1.as_deref(),
+        Some(FORWARD_PROXY_DIRECT_KEY),
+        "live-first grouped stats should persist the canonical binding key",
+    );
+    assert_eq!(
+        latest_attempt.2,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+        "successful live-first requests should land as real success attempts",
+    );
 
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));

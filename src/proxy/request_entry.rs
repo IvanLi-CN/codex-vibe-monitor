@@ -541,6 +541,7 @@ pub(crate) struct PoolUpstreamError {
     pub(crate) upstream_error_message: Option<String>,
     pub(crate) downstream_error_message: Option<String>,
     pub(crate) upstream_request_id: Option<String>,
+    pub(crate) proxy_binding_key_snapshot: Option<String>,
     pub(crate) oauth_responses_debug: Option<oauth_bridge::OauthResponsesDebugInfo>,
     pub(crate) attempt_summary: PoolAttemptSummary,
     pub(crate) requested_service_tier: Option<String>,
@@ -592,6 +593,7 @@ pub(crate) fn build_pool_rate_limited_error(
         upstream_error_message: None,
         downstream_error_message: None,
         upstream_request_id: None,
+        proxy_binding_key_snapshot: None,
         oauth_responses_debug: None,
         attempt_summary: pool_attempt_summary(
             attempt_count,
@@ -619,6 +621,7 @@ pub(crate) fn build_pool_no_available_account_error(
         upstream_error_message: None,
         downstream_error_message: None,
         upstream_request_id: None,
+        proxy_binding_key_snapshot: None,
         oauth_responses_debug: None,
         attempt_summary: pool_attempt_summary(
             attempt_count,
@@ -658,6 +661,7 @@ pub(crate) fn build_pool_degraded_only_error(
         upstream_error_message: None,
         downstream_error_message: None,
         upstream_request_id: None,
+        proxy_binding_key_snapshot: None,
         oauth_responses_debug: None,
         attempt_summary: pool_attempt_summary(
             attempt_count,
@@ -774,6 +778,8 @@ pub(crate) struct PendingPoolAttemptRecord {
     pub(crate) endpoint: String,
     pub(crate) sticky_key: Option<String>,
     pub(crate) requester_ip: Option<String>,
+    pub(crate) group_name_snapshot: Option<String>,
+    pub(crate) proxy_binding_key_snapshot: Option<String>,
     pub(crate) upstream_account_id: i64,
     pub(crate) upstream_route_key: String,
     pub(crate) attempt_index: i64,

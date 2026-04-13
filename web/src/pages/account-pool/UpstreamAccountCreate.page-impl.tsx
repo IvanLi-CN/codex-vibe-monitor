@@ -336,6 +336,7 @@ export default function UpstreamAccountCreatePage() {
     refresh: refreshForwardProxyBindings,
   } = useForwardProxyBindingNodes(groupNoteEditor.boundProxyKeys, {
     enabled: groupNoteEditor.open,
+    groupName: groupNoteEditor.groupName,
   });
   const [groupNoteBusy, setGroupNoteBusy] = useState(false);
   const [groupNoteError, setGroupNoteError] = useState<string | null>(null);

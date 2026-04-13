@@ -115,6 +115,116 @@ pub(crate) fn should_prebuffer_for_body_sticky_probe(
             .is_some_and(|value| value <= POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES)
 }
 
+pub(crate) async fn live_first_proxy_binding_key_snapshot(
+    state: &AppState,
+    selected_proxy: Option<&SelectedForwardProxy>,
+) -> Option<String> {
+    let Some(selected_proxy) = selected_proxy else {
+        return None;
+    };
+    canonical_pool_attempt_proxy_binding_key(state, selected_proxy.key.as_str()).await
+}
+
+fn build_via_pool_attempt_trace_context(
+    proxy_request_id: u64,
+    endpoint: &str,
+    sticky_key: Option<String>,
+) -> PoolUpstreamAttemptTraceContext {
+    PoolUpstreamAttemptTraceContext {
+        invoke_id: format!("pool-via-{proxy_request_id}"),
+        occurred_at: shanghai_now_string(),
+        endpoint: endpoint.to_string(),
+        sticky_key,
+        requester_ip: None,
+    }
+}
+
+async fn finalize_tracked_live_first_pool_attempt(
+    state: &AppState,
+    pending_attempt_record: Option<&PendingPoolAttemptRecord>,
+    status: &str,
+    http_status: Option<StatusCode>,
+    failure_kind: Option<&str>,
+    error_message: Option<&str>,
+    connect_latency_ms: Option<f64>,
+    first_byte_latency_ms: Option<f64>,
+    upstream_request_id: Option<&str>,
+) {
+    finalize_tracked_pool_attempt(
+        state,
+        pending_attempt_record,
+        status,
+        http_status,
+        None,
+        failure_kind,
+        error_message,
+        None,
+        connect_latency_ms,
+        first_byte_latency_ms,
+        None,
+        upstream_request_id,
+        "live-first",
+    )
+    .await;
+}
+
+async fn finalize_tracked_pool_attempt(
+    state: &AppState,
+    pending_attempt_record: Option<&PendingPoolAttemptRecord>,
+    status: &str,
+    http_status: Option<StatusCode>,
+    downstream_http_status: Option<StatusCode>,
+    failure_kind: Option<&str>,
+    error_message: Option<&str>,
+    downstream_error_message: Option<&str>,
+    connect_latency_ms: Option<f64>,
+    first_byte_latency_ms: Option<f64>,
+    stream_latency_ms: Option<f64>,
+    upstream_request_id: Option<&str>,
+    context: &'static str,
+) {
+    let Some(pending_attempt_record) = pending_attempt_record else {
+        return;
+    };
+    let finished_at = shanghai_now_string();
+    if let Err(err) = finalize_pool_upstream_request_attempt(
+        &state.pool,
+        pending_attempt_record,
+        finished_at.as_str(),
+        status,
+        http_status,
+        downstream_http_status,
+        failure_kind,
+        error_message,
+        downstream_error_message,
+        connect_latency_ms,
+        first_byte_latency_ms,
+        stream_latency_ms,
+        upstream_request_id,
+        None,
+        None,
+    )
+    .await
+    {
+        warn!(
+            context,
+            invoke_id = %pending_attempt_record.invoke_id,
+            error = %err,
+            "failed to persist tracked pool attempt"
+        );
+    }
+    if let Err(err) =
+        broadcast_pool_upstream_attempts_snapshot(state, &pending_attempt_record.invoke_id).await
+    {
+        warn!(
+            context,
+            invoke_id = %pending_attempt_record.invoke_id,
+            error = %err,
+            "failed to broadcast tracked pool attempt snapshot"
+        );
+    }
+}
+
 pub(crate) async fn send_pool_request_live_first_attempt(
     state: Arc<AppState>,
     proxy_request_id: u64,
@@ -128,6 +238,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     responses_total_timeout_started_at: Option<Instant>,
     sticky_key: Option<&str>,
     account: PoolResolvedAccount,
+    trace_context: Option<&PoolUpstreamAttemptTraceContext>,
     replay_status_rx: &watch::Receiver<PoolReplayBodyStatus>,
 ) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
     let pre_first_byte_timeout =
@@ -169,6 +280,9 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     let attempt_started_at_utc = Utc::now();
     let attempted_request_body_for_capture = None;
     let attempted_requested_service_tier = None;
+    let mut pending_attempt_record: Option<PendingPoolAttemptRecord>;
+    let mut deferred_early_phase_cleanup_guard: Option<PoolEarlyPhaseOrphanCleanupGuard>;
+    let mut live_attempt_activity_lease: Option<PoolLiveAttemptActivityLease>;
     let (response, mut oauth_responses_debug, forward_proxy_selection) = match &account.auth {
         PoolResolvedAuth::ApiKey { authorization } => {
             let (forward_proxy_scope, selected_proxy, client) =
@@ -187,6 +301,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                             canonical_error_message: None,
                             downstream_error_message: None,
                             upstream_request_id: None,
+                            proxy_binding_key_snapshot: None,
                             oauth_responses_debug: None,
                             attempt_summary: pool_attempt_summary(
                                 1,
@@ -214,6 +329,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                             upstream_error_message: None,
                             downstream_error_message: None,
                             upstream_request_id: None,
+                            proxy_binding_key_snapshot: None,
                             oauth_responses_debug: None,
                             attempt_summary: pool_attempt_summary(
                                 1,
@@ -225,6 +341,50 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                         });
                     }
                 };
+            let attempt_started_at = shanghai_now_string();
+            let group_name_snapshot = normalize_pool_attempt_group_name(account.group_name.clone());
+            let proxy_binding_key_snapshot =
+                live_first_proxy_binding_key_snapshot(state.as_ref(), Some(&selected_proxy)).await;
+            pending_attempt_record = if let Some(trace_context) = trace_context {
+                Some(
+                    begin_pool_upstream_request_attempt_with_scope(
+                        &state.pool,
+                        trace_context,
+                        group_name_snapshot.as_deref(),
+                        proxy_binding_key_snapshot.as_deref(),
+                        account.account_id,
+                        account.upstream_route_key().as_str(),
+                        1,
+                        1,
+                        0,
+                        attempt_started_at.as_str(),
+                    )
+                    .await,
+                )
+            } else {
+                None
+            };
+            live_attempt_activity_lease = pending_attempt_record
+                .as_ref()
+                .and_then(|pending| pending.attempt_id)
+                .map(|attempt_id| PoolLiveAttemptActivityLease::new(state.clone(), attempt_id));
+            deferred_early_phase_cleanup_guard = pending_attempt_record
+                .as_ref()
+                .map(|pending| PoolEarlyPhaseOrphanCleanupGuard::new(state.clone(), pending.clone()));
+            if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                && let Err(err) = advance_pool_upstream_request_attempt_phase(
+                    state.as_ref(),
+                    pending_attempt_record,
+                    POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST,
+                )
+                .await
+            {
+                warn!(
+                    invoke_id = %pending_attempt_record.invoke_id,
+                    error = %err,
+                    "failed to advance live-first pool attempt into sending-request phase"
+                );
+            }
             let mut request = client.request(method.clone(), api_key_target_url);
             for (name, value) in headers {
                 if *name == header::AUTHORIZATION || *name == header::CONTENT_LENGTH {
@@ -251,10 +411,26 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                     )
                     .await;
                     release_pool_routing_reservation(state.as_ref(), &reservation_key);
+                    let message = format!("failed to contact upstream: {err}");
+                    finalize_tracked_live_first_pool_attempt(
+                        state.as_ref(),
+                        pending_attempt_record.as_ref(),
+                        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+                        None,
+                        Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM),
+                        Some(message.as_str()),
+                        Some(elapsed_ms(connect_started)),
+                        None,
+                        None,
+                    )
+                    .await;
+                    complete_deferred_pool_early_phase_cleanup_guard(
+                        &mut deferred_early_phase_cleanup_guard,
+                    );
                     return Err(PoolUpstreamError {
                         account: Some(account.clone()),
                         status: StatusCode::BAD_GATEWAY,
-                        message: format!("failed to contact upstream: {err}"),
+                        message,
                         canonical_error_message: None,
                         failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                         connect_latency_ms: elapsed_ms(connect_started),
@@ -262,6 +438,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                         upstream_error_message: None,
                         downstream_error_message: None,
                         upstream_request_id: None,
+                        proxy_binding_key_snapshot: proxy_binding_key_snapshot,
                         oauth_responses_debug: None,
                         attempt_summary: pool_attempt_summary(
                             1,
@@ -281,13 +458,29 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                     )
                     .await;
                     release_pool_routing_reservation(state.as_ref(), &reservation_key);
+                    let message = proxy_request_send_timeout_message(
+                        capture_target_for_request(original_uri.path(), &method),
+                        attempt_send_timeout,
+                    );
+                    finalize_tracked_live_first_pool_attempt(
+                        state.as_ref(),
+                        pending_attempt_record.as_ref(),
+                        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+                        None,
+                        Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT),
+                        Some(message.as_str()),
+                        Some(elapsed_ms(connect_started)),
+                        None,
+                        None,
+                    )
+                    .await;
+                    complete_deferred_pool_early_phase_cleanup_guard(
+                        &mut deferred_early_phase_cleanup_guard,
+                    );
                     return Err(PoolUpstreamError {
                         account: Some(account.clone()),
                         status: StatusCode::BAD_GATEWAY,
-                        message: proxy_request_send_timeout_message(
-                            capture_target_for_request(original_uri.path(), &method),
-                            attempt_send_timeout,
-                        ),
+                        message,
                         canonical_error_message: None,
                         failure_kind: PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
                         connect_latency_ms: elapsed_ms(connect_started),
@@ -295,6 +488,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                         upstream_error_message: None,
                         downstream_error_message: None,
                         upstream_request_id: None,
+                        proxy_binding_key_snapshot: proxy_binding_key_snapshot,
                         oauth_responses_debug: None,
                         attempt_summary: pool_attempt_summary(
                             1,
@@ -327,6 +521,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                             canonical_error_message: None,
                             downstream_error_message: None,
                             upstream_request_id: None,
+                            proxy_binding_key_snapshot: None,
                             oauth_responses_debug: None,
                             attempt_summary: pool_attempt_summary(
                                 1,
@@ -338,6 +533,50 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                         });
                     }
                 };
+            let attempt_started_at = shanghai_now_string();
+            let group_name_snapshot = normalize_pool_attempt_group_name(account.group_name.clone());
+            let proxy_binding_key_snapshot =
+                live_first_proxy_binding_key_snapshot(state.as_ref(), Some(&selected_proxy)).await;
+            pending_attempt_record = if let Some(trace_context) = trace_context {
+                Some(
+                    begin_pool_upstream_request_attempt_with_scope(
+                        &state.pool,
+                        trace_context,
+                        group_name_snapshot.as_deref(),
+                        proxy_binding_key_snapshot.as_deref(),
+                        account.account_id,
+                        account.upstream_route_key().as_str(),
+                        1,
+                        1,
+                        0,
+                        attempt_started_at.as_str(),
+                    )
+                    .await,
+                )
+            } else {
+                None
+            };
+            live_attempt_activity_lease = pending_attempt_record
+                .as_ref()
+                .and_then(|pending| pending.attempt_id)
+                .map(|attempt_id| PoolLiveAttemptActivityLease::new(state.clone(), attempt_id));
+            deferred_early_phase_cleanup_guard = pending_attempt_record
+                .as_ref()
+                .map(|pending| PoolEarlyPhaseOrphanCleanupGuard::new(state.clone(), pending.clone()));
+            if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                && let Err(err) = advance_pool_upstream_request_attempt_phase(
+                    state.as_ref(),
+                    pending_attempt_record,
+                    POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST,
+                )
+                .await
+            {
+                warn!(
+                    invoke_id = %pending_attempt_record.invoke_id,
+                    error = %err,
+                    "failed to advance live-first oauth pool attempt into sending-request phase"
+                );
+            }
             let oauth_response = oauth_bridge::send_oauth_upstream_request(
                 &client,
                 method.clone(),
@@ -483,6 +722,23 @@ pub(crate) async fn send_pool_request_live_first_attempt(
             );
         }
         release_pool_routing_reservation(state.as_ref(), &reservation_key);
+        finalize_tracked_live_first_pool_attempt(
+            state.as_ref(),
+            pending_attempt_record.as_ref(),
+            if oauth_transport_failure_kind.is_some() {
+                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
+            } else {
+                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
+            },
+            Some(status),
+            Some(failure_kind),
+            Some(route_error_message.as_str()),
+            Some(connect_latency_ms),
+            None,
+            upstream_request_id.as_deref(),
+        )
+        .await;
+        complete_deferred_pool_early_phase_cleanup_guard(&mut deferred_early_phase_cleanup_guard);
         maybe_backfill_oauth_request_debug_from_replay_status(
             &mut oauth_responses_debug,
             original_uri,
@@ -501,6 +757,13 @@ pub(crate) async fn send_pool_request_live_first_attempt(
             upstream_error_message,
             downstream_error_message: normalized_failure.downstream_error_message,
             upstream_request_id,
+            proxy_binding_key_snapshot: live_first_proxy_binding_key_snapshot(
+                state.as_ref(),
+                forward_proxy_selection
+                    .as_ref()
+                    .map(|(_, selected_proxy)| selected_proxy),
+            )
+            .await,
             oauth_responses_debug,
             attempt_summary: pool_attempt_summary(1, 1, Some(failure_kind.to_string())),
             requested_service_tier: attempted_requested_service_tier,
@@ -509,7 +772,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     }
 
     let first_byte_started = Instant::now();
-    let (response, first_chunk) = match read_pool_upstream_first_chunk_with_timeout(
+    let (response, mut first_chunk) = match read_pool_upstream_first_chunk_with_timeout(
         response,
         attempt_pre_first_byte_timeout,
         connect_started,
@@ -544,6 +807,19 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                 );
             }
             release_pool_routing_reservation(state.as_ref(), &reservation_key);
+            finalize_tracked_live_first_pool_attempt(
+                state.as_ref(),
+                pending_attempt_record.as_ref(),
+                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+                None,
+                Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
+                Some(message.as_str()),
+                Some(connect_latency_ms),
+                None,
+                None,
+            )
+            .await;
+            complete_deferred_pool_early_phase_cleanup_guard(&mut deferred_early_phase_cleanup_guard);
             maybe_backfill_oauth_request_debug_from_replay_status(
                 &mut oauth_responses_debug,
                 original_uri,
@@ -562,6 +838,13 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                 canonical_error_message: None,
                 downstream_error_message: None,
                 upstream_request_id: None,
+                proxy_binding_key_snapshot: live_first_proxy_binding_key_snapshot(
+                    state.as_ref(),
+                    forward_proxy_selection
+                        .as_ref()
+                        .map(|(_, selected_proxy)| selected_proxy),
+                )
+                .await,
                 oauth_responses_debug,
                 attempt_summary: pool_attempt_summary(
                     1,
@@ -575,6 +858,24 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     };
 
     let first_byte_latency_ms = elapsed_ms(first_byte_started);
+    if let Some(guard) = deferred_early_phase_cleanup_guard.as_mut() {
+        guard.mark_first_byte_observed(first_byte_latency_ms);
+    }
+    if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+        && let Err(err) = persist_pool_upstream_request_attempt_first_byte_progress(
+            &state.pool,
+            pending_attempt_record,
+            connect_latency_ms,
+            first_byte_latency_ms,
+        )
+        .await
+    {
+        warn!(
+            invoke_id = %pending_attempt_record.invoke_id,
+            error = %err,
+            "failed to persist live-first pool first-byte progress"
+        );
+    }
     let compact_support_observation =
         classify_compact_support_observation(original_uri, Some(status), None);
     if let Some(observation) = compact_support_observation.as_ref()
@@ -592,6 +893,55 @@ pub(crate) async fn send_pool_request_live_first_attempt(
             "failed to record compact support observation"
         );
     }
+    if let Some(pending_attempt_record) = pending_attempt_record.as_mut() {
+        pending_attempt_record.connect_latency_ms = connect_latency_ms;
+        pending_attempt_record.first_byte_latency_ms = first_byte_latency_ms;
+        pending_attempt_record.compact_support_status = compact_support_observation
+            .as_ref()
+            .map(|value| value.status.to_string());
+        pending_attempt_record.compact_support_reason = compact_support_observation
+            .as_ref()
+            .and_then(|value| value.reason.clone());
+        match update_pool_upstream_request_attempt_phase(
+            &state.pool,
+            pending_attempt_record,
+            POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE,
+        )
+        .await
+        {
+            Ok(phase_persisted) => {
+                if phase_persisted
+                    && let Err(err) = broadcast_pool_upstream_attempts_snapshot(
+                        state.as_ref(),
+                        &pending_attempt_record.invoke_id,
+                    )
+                    .await
+                {
+                    warn!(
+                        invoke_id = %pending_attempt_record.invoke_id,
+                        error = %err,
+                        "failed to broadcast live-first pool attempt streaming phase snapshot"
+                    );
+                }
+                if !phase_persisted {
+                    info!(
+                        invoke_id = %pending_attempt_record.invoke_id,
+                        attempt_id = pending_attempt_record.attempt_id,
+                        "streaming phase was not persisted for live-first pool attempt; relying on invocation cleanup guards for post-first-byte recovery"
+                    );
+                }
+            }
+            Err(err) => {
+                warn!(
+                    invoke_id = %pending_attempt_record.invoke_id,
+                    error = %err,
+                    "failed to persist live-first pool attempt streaming phase; relying on invocation cleanup guards for post-first-byte recovery"
+                );
+            }
+        }
+    } else {
+        disarm_pool_early_phase_cleanup_guard(&mut deferred_early_phase_cleanup_guard);
+    }
     if let Some((forward_proxy_scope, selected_proxy)) = forward_proxy_selection.as_ref() {
         record_pool_account_forward_proxy_result(
             state.as_ref(),
@@ -608,6 +958,25 @@ pub(crate) async fn send_pool_request_live_first_attempt(
         state.upstream_accounts.crypto_key.as_ref(),
     )
     .await;
+    if first_chunk.is_none() {
+        finalize_tracked_live_first_pool_attempt(
+            state.as_ref(),
+            pending_attempt_record.as_ref(),
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+            Some(status),
+            None,
+            None,
+            Some(connect_latency_ms),
+            Some(first_byte_latency_ms),
+            None,
+        )
+        .await;
+        complete_deferred_pool_early_phase_cleanup_guard(&mut deferred_early_phase_cleanup_guard);
+        pending_attempt_record = None;
+        deferred_early_phase_cleanup_guard = None;
+        live_attempt_activity_lease = None;
+        first_chunk = None;
+    }
     Ok(PoolUpstreamResponse {
         account,
         response,
@@ -616,9 +985,9 @@ pub(crate) async fn send_pool_request_live_first_attempt(
         attempt_started_at_utc,
         first_byte_latency_ms,
         first_chunk,
-        pending_attempt_record: None,
-        deferred_early_phase_cleanup_guard: None,
-        live_attempt_activity_lease: None,
+        pending_attempt_record,
+        deferred_early_phase_cleanup_guard,
+        live_attempt_activity_lease,
         attempt_summary: PoolAttemptSummary::default(),
         requested_service_tier: attempted_requested_service_tier,
         request_body_for_capture: attempted_request_body_for_capture,
@@ -674,6 +1043,7 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                 upstream_error_message: None,
                 downstream_error_message: None,
                 upstream_request_id: None,
+                proxy_binding_key_snapshot: None,
                 oauth_responses_debug: first_error.oauth_responses_debug,
                 attempt_summary: first_error.attempt_summary,
                 requested_service_tier: first_error.requested_service_tier,
@@ -745,6 +1115,7 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                     upstream_error_message: None,
                     downstream_error_message: None,
                     upstream_request_id: None,
+                    proxy_binding_key_snapshot: None,
                     oauth_responses_debug: first_error.oauth_responses_debug,
                     attempt_summary: first_error.attempt_summary,
                     requested_service_tier: first_error.requested_service_tier,
@@ -856,6 +1227,7 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                 upstream_error_message: None,
                 downstream_error_message: None,
                 upstream_request_id: None,
+                proxy_binding_key_snapshot: None,
                 oauth_responses_debug: None,
                 attempt_summary: first_error.attempt_summary.clone(),
                 requested_service_tier: first_error.requested_service_tier.clone(),
@@ -875,6 +1247,7 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                 canonical_error_message: None,
                 downstream_error_message: None,
                 upstream_request_id: None,
+                proxy_binding_key_snapshot: None,
                 oauth_responses_debug: None,
                 attempt_summary: first_error.attempt_summary.clone(),
                 requested_service_tier: first_error.requested_service_tier.clone(),
@@ -994,6 +1367,11 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             let body_sticky_key = serde_json::from_slice::<Value>(&request_body_bytes)
                 .ok()
                 .and_then(|value| extract_sticky_key_from_request_body(&value));
+            let pool_attempt_trace_context = build_via_pool_attempt_trace_context(
+                proxy_request_id,
+                original_uri.path(),
+                body_sticky_key.clone(),
+            );
             (
                 send_pool_request_with_failover(
                     state.clone(),
@@ -1003,7 +1381,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     &headers,
                     Some(PoolReplayBodySnapshot::Memory(request_body_bytes)),
                     handshake_timeout,
-                    None,
+                    Some(pool_attempt_trace_context),
                     None,
                     body_sticky_key.as_deref(),
                     None,
@@ -1490,6 +1868,11 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     unwrap_initial_pool_account(resolution, no_available_wait_deadline)?;
                 let live_responses_total_timeout_started_at =
                     responses_total_timeout_started_at_from_request;
+                let pool_attempt_trace_context = build_via_pool_attempt_trace_context(
+                    proxy_request_id,
+                    original_uri.path(),
+                    live_body_sticky_key.clone(),
+                );
 
                 if pool_account_supports_live_request_body(&initial_account, original_uri) {
                     let upstream = match send_pool_request_live_first_attempt(
@@ -1505,6 +1888,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         live_responses_total_timeout_started_at,
                         live_body_sticky_key.as_deref(),
                         initial_account.clone(),
+                        Some(&pool_attempt_trace_context),
                         &replay_status_rx,
                     )
                     .await
@@ -1531,8 +1915,8 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     };
                     let account = upstream.account;
                     let upstream_attempt_started_at_utc = upstream.attempt_started_at_utc;
-                    let upstream_invoke_id = upstream
-                        .pending_attempt_record
+                    let pending_pool_attempt_record = upstream.pending_attempt_record;
+                    let upstream_invoke_id = pending_pool_attempt_record
                         .as_ref()
                         .map(|record| record.invoke_id.clone());
                     let t_upstream_connect_ms = upstream.connect_latency_ms;
@@ -1554,6 +1938,13 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     })?;
 
                     let upstream_status = upstream_response.status();
+                    let upstream_request_id = upstream_response
+                        .headers()
+                        .get("x-request-id")
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(|value| value.to_string());
                     let upstream_connection_scoped =
                         connection_scoped_header_names(upstream_response.headers());
                     let mut response_builder = Response::builder().status(upstream_status);
@@ -1580,7 +1971,23 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             "pool upstream response first chunk ready"
                         );
                     } else {
-                        disarm_pool_early_phase_cleanup_guard(
+                        finalize_tracked_pool_attempt(
+                            state.as_ref(),
+                            pending_pool_attempt_record.as_ref(),
+                            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+                            Some(upstream_status),
+                            None,
+                            None,
+                            None,
+                            None,
+                            Some(t_upstream_connect_ms),
+                            Some(t_upstream_ttfb_ms),
+                            Some(0.0),
+                            upstream_request_id.as_deref(),
+                            "via-pool live-first empty response",
+                        )
+                        .await;
+                        complete_deferred_pool_early_phase_cleanup_guard(
                             &mut deferred_pool_early_phase_cleanup_guard,
                         );
                         consume_pool_routing_reservation(
@@ -1610,10 +2017,12 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     let reservation_key_for_record = pool_routing_reservation_key.clone();
                     let sticky_key_for_record = live_body_sticky_key.clone();
                     let invoke_id_for_record = upstream_invoke_id.clone();
+                    let pending_pool_attempt_record_for_task = pending_pool_attempt_record;
+                    let upstream_request_id_for_task = upstream_request_id;
                     let upstream_attempt_started_at_utc_for_record = upstream_attempt_started_at_utc;
                     let proxy_request_permit_for_task = proxy_request_permit;
                     tokio::spawn(async move {
-                        let _deferred_pool_early_phase_cleanup_guard_for_task =
+                        let mut deferred_pool_early_phase_cleanup_guard_for_task =
                             deferred_pool_early_phase_cleanup_guard;
                         let _live_pool_attempt_activity_lease_for_task =
                             live_pool_attempt_activity_lease;
@@ -1658,6 +2067,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             }
                         }
                         drop(proxy_request_permit_for_task.take());
+                        let stream_latency_ms = elapsed_ms(stream_started_at);
 
                         if let Some(message) = stream_error_message.as_deref() {
                             release_pool_routing_reservation(
@@ -1692,6 +2102,35 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                 warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
                             }
                         }
+                        finalize_tracked_pool_attempt(
+                            state_for_record.as_ref(),
+                            pending_pool_attempt_record_for_task.as_ref(),
+                            if stream_error_message.is_some() {
+                                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
+                            } else {
+                                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
+                            },
+                            Some(upstream_status),
+                            if downstream_closed {
+                                Some(upstream_status)
+                            } else {
+                                None
+                            },
+                            stream_error_message
+                                .as_ref()
+                                .map(|_| PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
+                            stream_error_message.as_deref(),
+                            None,
+                            Some(t_upstream_connect_ms),
+                            Some(t_upstream_ttfb_ms),
+                            Some(stream_latency_ms),
+                            upstream_request_id_for_task.as_deref(),
+                            "via-pool live-first streamed response",
+                        )
+                        .await;
+                        complete_deferred_pool_early_phase_cleanup_guard(
+                            &mut deferred_pool_early_phase_cleanup_guard_for_task,
+                        );
 
                         info!(
                             proxy_request_id,
@@ -1699,7 +2138,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             t_upstream_connect_ms,
                             forwarded_chunks,
                             forwarded_bytes,
-                            elapsed_ms = stream_started_at.elapsed().as_millis(),
+                            elapsed_ms = stream_latency_ms,
                             "pool upstream response stream completed"
                         );
                     });
@@ -1757,7 +2196,11 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     &headers,
                     Some(request_body_snapshot),
                     handshake_timeout,
-                    None,
+                    Some(build_via_pool_attempt_trace_context(
+                        proxy_request_id,
+                        original_uri.path(),
+                        body_sticky_key.clone(),
+                    )),
                     None,
                     body_sticky_key.as_deref(),
                     Some(initial_account),
@@ -1789,7 +2232,11 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 &headers,
                 None,
                 handshake_timeout,
-                None,
+                Some(build_via_pool_attempt_trace_context(
+                    proxy_request_id,
+                    original_uri.path(),
+                    header_sticky_key.clone(),
+                )),
                 None,
                 header_sticky_key.as_deref(),
                 None,
@@ -1807,8 +2254,8 @@ pub(crate) async fn proxy_openai_v1_via_pool(
 
     let account = upstream.account;
     let upstream_attempt_started_at_utc = upstream.attempt_started_at_utc;
-    let upstream_invoke_id = upstream
-        .pending_attempt_record
+    let pending_pool_attempt_record = upstream.pending_attempt_record;
+    let upstream_invoke_id = pending_pool_attempt_record
         .as_ref()
         .map(|record| record.invoke_id.clone());
     let t_upstream_connect_ms = upstream.connect_latency_ms;
@@ -1829,6 +2276,13 @@ pub(crate) async fn proxy_openai_v1_via_pool(
     })?;
 
     let upstream_status = upstream_response.status();
+    let upstream_request_id = upstream_response
+        .headers()
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
     let upstream_connection_scoped = connection_scoped_header_names(upstream_response.headers());
     let mut response_builder = Response::builder().status(upstream_status);
     for (name, value) in upstream_response.headers() {
@@ -1854,7 +2308,25 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             "pool upstream response first chunk ready"
         );
     } else {
-        disarm_pool_early_phase_cleanup_guard(&mut deferred_pool_early_phase_cleanup_guard);
+        finalize_tracked_pool_attempt(
+            state.as_ref(),
+            pending_pool_attempt_record.as_ref(),
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+            Some(upstream_status),
+            None,
+            None,
+            None,
+            None,
+            Some(t_upstream_connect_ms),
+            Some(t_upstream_ttfb_ms),
+            Some(0.0),
+            upstream_request_id.as_deref(),
+            "via-pool failover empty response",
+        )
+        .await;
+        complete_deferred_pool_early_phase_cleanup_guard(
+            &mut deferred_pool_early_phase_cleanup_guard,
+        );
         consume_pool_routing_reservation(state.as_ref(), &pool_routing_reservation_key);
         if let Err(route_err) = record_pool_route_success(
             &state.pool,
@@ -1880,10 +2352,12 @@ pub(crate) async fn proxy_openai_v1_via_pool(
     let reservation_key_for_record = pool_routing_reservation_key.clone();
     let sticky_key_for_record = sticky_key.clone();
     let invoke_id_for_record = upstream_invoke_id.clone();
+    let pending_pool_attempt_record_for_task = pending_pool_attempt_record;
+    let upstream_request_id_for_task = upstream_request_id;
     let upstream_attempt_started_at_utc_for_record = upstream_attempt_started_at_utc;
     let proxy_request_permit_for_task = proxy_request_permit;
     tokio::spawn(async move {
-        let _deferred_pool_early_phase_cleanup_guard_for_task =
+        let mut deferred_pool_early_phase_cleanup_guard_for_task =
             deferred_pool_early_phase_cleanup_guard;
         let _live_pool_attempt_activity_lease_for_task = live_pool_attempt_activity_lease;
         let mut forwarded_chunks = 0usize;
@@ -1927,6 +2401,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             }
         }
         drop(proxy_request_permit_for_task.take());
+        let stream_latency_ms = elapsed_ms(stream_started_at);
 
         if let Some(message) = stream_error_message.as_deref() {
             release_pool_routing_reservation(
@@ -1961,6 +2436,35 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
             }
         }
+        finalize_tracked_pool_attempt(
+            state_for_record.as_ref(),
+            pending_pool_attempt_record_for_task.as_ref(),
+            if stream_error_message.is_some() {
+                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
+            } else {
+                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
+            },
+            Some(upstream_status),
+            if downstream_closed {
+                Some(upstream_status)
+            } else {
+                None
+            },
+            stream_error_message
+                .as_ref()
+                .map(|_| PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
+            stream_error_message.as_deref(),
+            None,
+            Some(t_upstream_connect_ms),
+            Some(t_upstream_ttfb_ms),
+            Some(stream_latency_ms),
+            upstream_request_id_for_task.as_deref(),
+            "via-pool failover streamed response",
+        )
+        .await;
+        complete_deferred_pool_early_phase_cleanup_guard(
+            &mut deferred_pool_early_phase_cleanup_guard_for_task,
+        );
 
         info!(
             proxy_request_id,
@@ -1968,7 +2472,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             t_upstream_connect_ms,
             forwarded_chunks,
             forwarded_bytes,
-            elapsed_ms = stream_started_at.elapsed().as_millis(),
+            elapsed_ms = stream_latency_ms,
             "pool upstream response stream completed"
         );
     });

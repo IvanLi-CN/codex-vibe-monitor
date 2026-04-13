@@ -950,6 +950,26 @@ describe("settings normalization", () => {
       aliasKeys: ["fpn_jp_edge_runtime"],
     });
   });
+
+  it("includes groupName when requesting group-scoped binding node stats", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      expect(String(input)).toContain(
+        "/api/pool/forward-proxy-binding-nodes?includeCurrent=1&groupName=prod&key=fpb_jp_edge_01",
+      );
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    await fetchForwardProxyBindingNodes(["fpb_jp_edge_01"], {
+      includeCurrent: true,
+      groupName: "  prod  ",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("account pool frontend API helpers", () => {

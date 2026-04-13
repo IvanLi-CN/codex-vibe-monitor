@@ -7,6 +7,7 @@ import type { ForwardProxyCatalogState } from "./useUpstreamAccounts";
 
 type UseForwardProxyBindingNodesOptions = {
   enabled?: boolean;
+  groupName?: string;
 };
 
 function normalizeBindingNodeKeys(keys?: string[]) {
@@ -18,8 +19,16 @@ function normalizeBindingNodeKeys(keys?: string[]) {
   ).sort((left, right) => left.localeCompare(right));
 }
 
-function buildForwardProxyBindingNodesQueryKey(keys: string[]) {
-  return JSON.stringify(keys);
+function normalizeOptionalGroupName(groupName?: string) {
+  const normalized = groupName?.trim();
+  return normalized ? normalized : null;
+}
+
+function buildForwardProxyBindingNodesQueryKey(
+  keys: string[],
+  groupName: string | null,
+) {
+  return JSON.stringify({ keys, groupName });
 }
 
 export function useForwardProxyBindingNodes(
@@ -27,10 +36,20 @@ export function useForwardProxyBindingNodes(
   options?: UseForwardProxyBindingNodesOptions,
 ) {
   const enabled = options?.enabled === true;
+  const normalizedGroupName = useMemo(
+    () => normalizeOptionalGroupName(options?.groupName),
+    [options?.groupName],
+  );
   const normalizedKeys = useMemo(() => normalizeBindingNodeKeys(keys), [keys]);
   const currentQueryKey = useMemo(
-    () => (enabled ? buildForwardProxyBindingNodesQueryKey(normalizedKeys) : null),
-    [enabled, normalizedKeys],
+    () =>
+      enabled
+        ? buildForwardProxyBindingNodesQueryKey(
+            normalizedKeys,
+            normalizedGroupName,
+          )
+        : null,
+    [enabled, normalizedGroupName, normalizedKeys],
   );
   const [nodes, setNodes] = useState<ForwardProxyBindingNode[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -38,10 +57,15 @@ export function useForwardProxyBindingNodes(
   const [dataQueryKey, setDataQueryKey] = useState<string | null>(null);
   const requestSeqRef = useRef(0);
   const currentQueryKeyRef = useRef<string | null>(currentQueryKey);
+  const dataQueryKeyRef = useRef<string | null>(dataQueryKey);
 
   useEffect(() => {
     currentQueryKeyRef.current = currentQueryKey;
   }, [currentQueryKey]);
+
+  useEffect(() => {
+    dataQueryKeyRef.current = dataQueryKey;
+  }, [dataQueryKey]);
 
   const refresh = useCallback(
     async (loadOptions?: { silent?: boolean }) => {
@@ -51,13 +75,16 @@ export function useForwardProxyBindingNodes(
       requestSeqRef.current += 1;
       const requestSeq = requestSeqRef.current;
       const shouldShowLoading = !(
-        loadOptions?.silent && requestQueryKey != null && dataQueryKey === requestQueryKey
+        loadOptions?.silent &&
+        requestQueryKey != null &&
+        dataQueryKeyRef.current === requestQueryKey
       );
       if (shouldShowLoading) setIsLoading(true);
       setError(null);
       try {
         const response = await fetchForwardProxyBindingNodes(normalizedKeys, {
           includeCurrent: true,
+          groupName: normalizedGroupName ?? undefined,
         });
         if (requestSeq !== requestSeqRef.current) {
           return;
@@ -76,7 +103,7 @@ export function useForwardProxyBindingNodes(
         }
       }
     },
-    [dataQueryKey, enabled, normalizedKeys],
+    [enabled, normalizedGroupName, normalizedKeys],
   );
 
   useEffect(() => {

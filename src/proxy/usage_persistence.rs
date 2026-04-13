@@ -44,9 +44,11 @@ pub(crate) fn terminal_pool_upstream_request_attempt_phase(status: &str) -> &'st
     }
 }
 
-pub(crate) async fn insert_pool_upstream_request_attempt(
+pub(crate) async fn insert_pool_upstream_request_attempt_with_scope(
     pool: &Pool<Sqlite>,
     trace: &PoolUpstreamAttemptTraceContext,
+    group_name_snapshot: Option<&str>,
+    proxy_binding_key_snapshot: Option<&str>,
     upstream_account_id: Option<i64>,
     upstream_route_key: Option<&str>,
     attempt_index: i64,
@@ -76,6 +78,8 @@ pub(crate) async fn insert_pool_upstream_request_attempt(
             endpoint,
             route_mode,
             sticky_key,
+            group_name_snapshot,
+            proxy_binding_key_snapshot,
             upstream_account_id,
             upstream_route_key,
             attempt_index,
@@ -99,7 +103,7 @@ pub(crate) async fn insert_pool_upstream_request_attempt(
             compact_support_reason
         )
         VALUES (
-            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28
         )
         "#,
     )
@@ -108,6 +112,8 @@ pub(crate) async fn insert_pool_upstream_request_attempt(
     .bind(&trace.endpoint)
     .bind(INVOCATION_ROUTE_MODE_POOL)
     .bind(trace.sticky_key.as_deref())
+    .bind(group_name_snapshot)
+    .bind(proxy_binding_key_snapshot)
     .bind(upstream_account_id)
     .bind(upstream_route_key)
     .bind(attempt_index)
@@ -134,6 +140,59 @@ pub(crate) async fn insert_pool_upstream_request_attempt(
     Ok(result.last_insert_rowid())
 }
 
+pub(crate) async fn insert_pool_upstream_request_attempt(
+    pool: &Pool<Sqlite>,
+    trace: &PoolUpstreamAttemptTraceContext,
+    upstream_account_id: Option<i64>,
+    upstream_route_key: Option<&str>,
+    attempt_index: i64,
+    distinct_account_index: i64,
+    same_account_retry_index: i64,
+    started_at: Option<&str>,
+    finished_at: Option<&str>,
+    status: &str,
+    phase: Option<&str>,
+    http_status: Option<StatusCode>,
+    downstream_http_status: Option<StatusCode>,
+    failure_kind: Option<&str>,
+    error_message: Option<&str>,
+    downstream_error_message: Option<&str>,
+    connect_latency_ms: Option<f64>,
+    first_byte_latency_ms: Option<f64>,
+    stream_latency_ms: Option<f64>,
+    upstream_request_id: Option<&str>,
+    compact_support_status: Option<&str>,
+    compact_support_reason: Option<&str>,
+) -> Result<i64> {
+    insert_pool_upstream_request_attempt_with_scope(
+        pool,
+        trace,
+        None,
+        None,
+        upstream_account_id,
+        upstream_route_key,
+        attempt_index,
+        distinct_account_index,
+        same_account_retry_index,
+        started_at,
+        finished_at,
+        status,
+        phase,
+        http_status,
+        downstream_http_status,
+        failure_kind,
+        error_message,
+        downstream_error_message,
+        connect_latency_ms,
+        first_byte_latency_ms,
+        stream_latency_ms,
+        upstream_request_id,
+        compact_support_status,
+        compact_support_reason,
+    )
+    .await
+}
+
 pub(crate) async fn begin_pool_upstream_request_attempt(
     pool: &Pool<Sqlite>,
     trace: &PoolUpstreamAttemptTraceContext,
@@ -144,9 +203,38 @@ pub(crate) async fn begin_pool_upstream_request_attempt(
     same_account_retry_index: i64,
     started_at: &str,
 ) -> PendingPoolAttemptRecord {
-    let attempt_id = match insert_pool_upstream_request_attempt(
+    begin_pool_upstream_request_attempt_with_scope(
         pool,
         trace,
+        None,
+        None,
+        upstream_account_id,
+        upstream_route_key,
+        attempt_index,
+        distinct_account_index,
+        same_account_retry_index,
+        started_at,
+    )
+    .await
+}
+
+pub(crate) async fn begin_pool_upstream_request_attempt_with_scope(
+    pool: &Pool<Sqlite>,
+    trace: &PoolUpstreamAttemptTraceContext,
+    group_name_snapshot: Option<&str>,
+    proxy_binding_key_snapshot: Option<&str>,
+    upstream_account_id: i64,
+    upstream_route_key: &str,
+    attempt_index: i64,
+    distinct_account_index: i64,
+    same_account_retry_index: i64,
+    started_at: &str,
+) -> PendingPoolAttemptRecord {
+    let attempt_id = match insert_pool_upstream_request_attempt_with_scope(
+        pool,
+        trace,
+        group_name_snapshot,
+        proxy_binding_key_snapshot,
         Some(upstream_account_id),
         Some(upstream_route_key),
         attempt_index,
@@ -188,6 +276,8 @@ pub(crate) async fn begin_pool_upstream_request_attempt(
         endpoint: trace.endpoint.clone(),
         sticky_key: trace.sticky_key.clone(),
         requester_ip: trace.requester_ip.clone(),
+        group_name_snapshot: group_name_snapshot.map(ToOwned::to_owned),
+        proxy_binding_key_snapshot: proxy_binding_key_snapshot.map(ToOwned::to_owned),
         upstream_account_id,
         upstream_route_key: upstream_route_key.to_string(),
         attempt_index,
@@ -1251,9 +1341,11 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
         }
     }
 
-    insert_pool_upstream_request_attempt(
+    insert_pool_upstream_request_attempt_with_scope(
         pool,
         &trace,
+        pending.group_name_snapshot.as_deref(),
+        pending.proxy_binding_key_snapshot.as_deref(),
         Some(pending.upstream_account_id),
         Some(pending.upstream_route_key.as_str()),
         pending.attempt_index,
@@ -1288,6 +1380,13 @@ pub(crate) async fn insert_pool_upstream_terminal_attempt(
     failure_kind: &'static str,
 ) -> Result<()> {
     let finished_at = shanghai_now_string();
+    let group_name_snapshot = final_error
+        .account
+        .as_ref()
+        .and_then(|account| account.group_name.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
     let upstream_route_key = final_error
         .account
         .as_ref()
@@ -1301,9 +1400,11 @@ pub(crate) async fn insert_pool_upstream_terminal_attempt(
         .canonical_error_message
         .as_deref()
         .unwrap_or(final_error.message.as_str());
-    insert_pool_upstream_request_attempt(
+    insert_pool_upstream_request_attempt_with_scope(
         pool,
         trace,
+        group_name_snapshot.as_deref(),
+        final_error.proxy_binding_key_snapshot.as_deref(),
         final_error
             .account
             .as_ref()

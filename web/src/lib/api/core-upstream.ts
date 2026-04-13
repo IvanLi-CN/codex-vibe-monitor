@@ -1680,11 +1680,15 @@ export async function fetchUpstreamAccounts(
 
 export async function fetchForwardProxyBindingNodes(
   keys?: string[],
-  options?: { includeCurrent?: boolean },
+  options?: { includeCurrent?: boolean; groupName?: string },
 ): Promise<ForwardProxyBindingNode[]> {
   const search = new URLSearchParams();
   if (options?.includeCurrent) {
     search.set("includeCurrent", "1");
+  }
+  const normalizedGroupName = options?.groupName?.trim();
+  if (normalizedGroupName) {
+    search.set("groupName", normalizedGroupName);
   }
   for (const key of keys ?? []) {
     const normalized = key.trim();
