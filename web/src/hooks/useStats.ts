@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchSummary } from '../lib/api'
 import type { ApiInvocation, StatsResponse } from '../lib/api'
 import { subscribeToSse, subscribeToSseOpen } from '../lib/sse'
+import { recordTodaySummaryRefresh } from '../lib/dashboardPerformanceDiagnostics'
 
 interface UseSummaryOptions {
   limit?: number
@@ -296,6 +297,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
         summaryContextRef.current.limit,
         response,
       )
+      recordTodaySummaryRefresh(summaryContextRef.current.window)
       lastNaturalDayLoadStartEpochRef.current =
         summaryContextRef.current.window === 'today' || summaryContextRef.current.window === 'yesterday'
           ? getLocalDayStartEpoch()

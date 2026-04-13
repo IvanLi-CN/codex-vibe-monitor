@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from "react";
 import {
   fetchPromptCacheConversationsPage,
   type ApiInvocation,
@@ -12,6 +19,7 @@ import {
 } from "../lib/dashboardWorkingConversations";
 import { buildPromptCachePreviewFromInvocation } from "../lib/promptCacheLive";
 import { subscribeToSse, subscribeToSseOpen } from "../lib/sse";
+import { publishWorkingConversationPatchMetrics } from "../lib/dashboardPerformanceDiagnostics";
 
 const DASHBOARD_WORKING_CONVERSATIONS_REFRESH_THROTTLE_MS = 1_500;
 const DASHBOARD_WORKING_CONVERSATIONS_POLL_INTERVAL_MS = 15_000;
@@ -181,6 +189,73 @@ function resolveWorkingSetReferenceMs(
   return parseEpoch(snapshotAt) ?? fallbackNowMs;
 }
 
+function publishPatchDiagnostics(
+  patchedPostSnapshotInvocations: Map<
+    string,
+    Map<string, { totalTokens: number; cost: number }>
+  >,
+) {
+  publishWorkingConversationPatchMetrics(patchedPostSnapshotInvocations);
+}
+
+function trackPatchedInvocation(
+  patchedPostSnapshotInvocations: Map<
+    string,
+    {
+      totalTokens: number;
+      cost: number;
+    }
+  >,
+  invokeId: string,
+  value: {
+    totalTokens: number;
+    cost: number;
+  },
+) {
+  patchedPostSnapshotInvocations.set(invokeId, value);
+}
+
+function getOrCreatePatchedConversationInvocations(
+  patchedPostSnapshotInvocationsRef: MutableRefObject<
+    Map<string, Map<string, { totalTokens: number; cost: number }>>
+  >,
+  promptCacheKey: string,
+) {
+  const existing =
+    patchedPostSnapshotInvocationsRef.current.get(promptCacheKey) ?? null;
+  if (existing) {
+    return existing;
+  }
+  const created = new Map<string, { totalTokens: number; cost: number }>();
+  patchedPostSnapshotInvocationsRef.current.set(promptCacheKey, created);
+  return created;
+}
+
+function prunePatchedPostSnapshotInvocations(
+  patchedPostSnapshotInvocations: Map<
+    string,
+    Map<string, { totalTokens: number; cost: number }>
+  >,
+  {
+    retainedKeys,
+    refreshedKeys,
+  }: {
+    retainedKeys: Set<string>;
+    refreshedKeys?: Set<string>;
+  },
+) {
+  patchedPostSnapshotInvocations.forEach((patchedInvocations, promptCacheKey) => {
+    if (!retainedKeys.has(promptCacheKey)) {
+      patchedPostSnapshotInvocations.delete(promptCacheKey);
+      return;
+    }
+    if (refreshedKeys?.has(promptCacheKey) || patchedInvocations.size === 0) {
+      patchedPostSnapshotInvocations.delete(promptCacheKey);
+    }
+  });
+  publishPatchDiagnostics(patchedPostSnapshotInvocations);
+}
+
 function patchConversationWithRecord(
   conversation: PromptCacheConversation,
   record: ApiInvocation,
@@ -237,7 +312,7 @@ function patchConversationWithRecord(
     totalTokensDelta = previewTotalTokens - existingTotalTokens;
     totalCostDelta = previewCost - existingCost;
     if (isPostSnapshotRecord || existingPatched) {
-      patchedPostSnapshotInvocations.set(record.invokeId, {
+      trackPatchedInvocation(patchedPostSnapshotInvocations, record.invokeId, {
         totalTokens: previewTotalTokens,
         cost: previewCost,
       });
@@ -245,7 +320,7 @@ function patchConversationWithRecord(
   } else if (existingPatched) {
     totalTokensDelta = previewTotalTokens - existingPatched.totalTokens;
     totalCostDelta = previewCost - existingPatched.cost;
-    patchedPostSnapshotInvocations.set(record.invokeId, {
+    trackPatchedInvocation(patchedPostSnapshotInvocations, record.invokeId, {
       totalTokens: previewTotalTokens,
       cost: previewCost,
     });
@@ -253,7 +328,7 @@ function patchConversationWithRecord(
     requestCountDelta = 1;
     totalTokensDelta = previewTotalTokens;
     totalCostDelta = previewCost;
-    patchedPostSnapshotInvocations.set(record.invokeId, {
+    trackPatchedInvocation(patchedPostSnapshotInvocations, record.invokeId, {
       totalTokens: previewTotalTokens,
       cost: previewCost,
     });
@@ -569,15 +644,19 @@ export function useDashboardWorkingConversations() {
         ) {
           pendingLoadMoreRef.current = true;
         }
-        const refreshedKeys = new Set(
-          nextResponse.conversations.map(
-            (conversation) => conversation.promptCacheKey,
-          ),
-        );
-        patchedPostSnapshotInvocationsRef.current.forEach(
-          (_, promptCacheKey) => {
-            if (!refreshedKeys.has(promptCacheKey)) return;
-            patchedPostSnapshotInvocationsRef.current.delete(promptCacheKey);
+        prunePatchedPostSnapshotInvocations(
+          patchedPostSnapshotInvocationsRef.current,
+          {
+            retainedKeys: new Set(
+              merged.conversations.map(
+                (conversation) => conversation.promptCacheKey,
+              ),
+            ),
+            refreshedKeys: new Set(
+              nextResponse.conversations.map(
+                (conversation) => conversation.promptCacheKey,
+              ),
+            ),
           },
         );
         responseRef.current = merged;
@@ -662,6 +741,19 @@ export function useDashboardWorkingConversations() {
       ) {
         pendingLoadMoreRef.current = true;
       }
+      prunePatchedPostSnapshotInvocations(
+        patchedPostSnapshotInvocationsRef.current,
+        {
+          retainedKeys: new Set(
+            merged.conversations.map((conversation) => conversation.promptCacheKey),
+          ),
+          refreshedKeys: new Set(
+            nextResponse.conversations.map(
+              (conversation) => conversation.promptCacheKey,
+            ),
+          ),
+        },
+      );
       responseRef.current = merged;
       setResponse(merged);
       hasHydratedRef.current = true;
@@ -759,6 +851,7 @@ export function useDashboardWorkingConversations() {
       keys: new Set(),
     };
     patchedPostSnapshotInvocationsRef.current.clear();
+    publishPatchDiagnostics(patchedPostSnapshotInvocationsRef.current);
     hasHydratedRef.current = false;
     inFlightRef.current = false;
     pendingHeadRefreshRef.current = false;
@@ -786,20 +879,6 @@ export function useDashboardWorkingConversations() {
       );
       const nextConversations = current.conversations.map((conversation) => {
         let nextConversation = conversation;
-        const patchedPostSnapshotInvocations =
-          patchedPostSnapshotInvocationsRef.current.get(
-            conversation.promptCacheKey,
-          ) ?? new Map<string, { totalTokens: number; cost: number }>();
-        if (
-          !patchedPostSnapshotInvocationsRef.current.has(
-            conversation.promptCacheKey,
-          )
-        ) {
-          patchedPostSnapshotInvocationsRef.current.set(
-            conversation.promptCacheKey,
-            patchedPostSnapshotInvocations,
-          );
-        }
         for (const record of payload.records) {
           const promptCacheKey = record.promptCacheKey?.trim();
           if (!promptCacheKey) continue;
@@ -808,6 +887,11 @@ export function useDashboardWorkingConversations() {
             continue;
           }
           if (promptCacheKey !== conversation.promptCacheKey) continue;
+          const patchedPostSnapshotInvocations =
+            getOrCreatePatchedConversationInvocations(
+              patchedPostSnapshotInvocationsRef,
+              conversation.promptCacheKey,
+            );
           const patchResult = patchConversationWithRecord(
             nextConversation,
             record,
@@ -842,6 +926,14 @@ export function useDashboardWorkingConversations() {
           : null;
         responseRef.current = patched;
         setResponse(patched);
+        prunePatchedPostSnapshotInvocations(
+          patchedPostSnapshotInvocationsRef.current,
+          {
+            retainedKeys: new Set(
+              patched.conversations.map((conversation) => conversation.promptCacheKey),
+            ),
+          },
+        );
       }
       if (shouldRefreshHead) {
         triggerThrottledHeadRefresh();
@@ -893,6 +985,8 @@ export function useDashboardWorkingConversations() {
         snapshotAt: null,
         keys: new Set(),
       };
+      patchedPostSnapshotInvocationsRef.current.clear();
+      publishPatchDiagnostics(patchedPostSnapshotInvocationsRef.current);
       pendingHeadRefreshRef.current = false;
       pendingLoadMoreRef.current = false;
       inFlightRef.current = false;

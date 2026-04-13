@@ -1,10 +1,33 @@
+/** @vitest-environment jsdom */
 import type { ReactNode } from "react";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { DashboardTodayActivityChart } from "./DashboardTodayActivityChart";
+import {
+  DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
+  getDashboardPerformanceDiagnosticsSnapshot,
+  resetDashboardPerformanceDiagnostics,
+} from "../lib/dashboardPerformanceDiagnostics";
 import { buildTodayMinuteChartData } from "./dashboardTodayActivityChartData";
 
 let latestChartData: Array<Record<string, unknown>> = [];
+const storage = new Map<string, string>();
+const localStorageMock = {
+  getItem: (key: string) => storage.get(key) ?? null,
+  setItem: (key: string, value: string) => {
+    storage.set(key, value);
+  },
+  removeItem: (key: string) => {
+    storage.delete(key);
+  },
+  clear: () => {
+    storage.clear();
+  },
+};
+let host: HTMLDivElement | null = null;
+let root: Root | null = null;
 
 vi.mock("recharts", () => ({
   ResponsiveContainer: ({ children }: { children: ReactNode }) => (
@@ -112,6 +135,39 @@ const response = {
     },
   ],
 };
+
+beforeAll(() => {
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: localStorageMock,
+  });
+  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
+    configurable: true,
+    writable: true,
+    value: true,
+  });
+});
+
+afterEach(() => {
+  act(() => {
+    root?.unmount();
+  });
+  host?.remove();
+  host = null;
+  root = null;
+  latestChartData = [];
+  window.localStorage.clear();
+  resetDashboardPerformanceDiagnostics();
+});
+
+function render(ui: React.ReactNode) {
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  root = createRoot(host);
+  act(() => {
+    root?.render(ui);
+  });
+}
 
 describe("DashboardTodayActivityChart", () => {
   it("builds a continuous minute series and preserves cumulative totals", () => {
@@ -418,5 +474,31 @@ describe("DashboardTodayActivityChart", () => {
     expect(costHtml).not.toContain('data-testid="composed-chart"');
     expect(tokenHtml).toContain('data-chart-mode="cumulative-area"');
     expect(tokenHtml).toContain('data-testid="area-chart"');
+  });
+
+  it("starts chart diagnostics immediately after toggling debug on in an open tab", () => {
+    render(
+      <DashboardTodayActivityChart
+        response={response}
+        loading={false}
+        error={null}
+        metric="totalCount"
+      />,
+    );
+
+    expect(getDashboardPerformanceDiagnosticsSnapshot().todayChartRenderCount).toBe(
+      0,
+    );
+
+    act(() => {
+      window.localStorage.setItem(
+        DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
+        "1",
+      );
+    });
+
+    expect(getDashboardPerformanceDiagnosticsSnapshot().todayChartRenderCount).toBe(
+      1,
+    );
   });
 });

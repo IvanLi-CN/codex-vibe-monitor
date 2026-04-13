@@ -4,6 +4,14 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { DashboardWorkingConversationCardModel } from "../lib/dashboardWorkingConversations";
+import {
+  DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
+  getDashboardPerformanceDiagnosticsSnapshot,
+  publishWorkingConversationPatchMetrics,
+  recordTodayChartRender,
+  recordTodaySummaryRefresh,
+  resetDashboardPerformanceDiagnostics,
+} from "../lib/dashboardPerformanceDiagnostics";
 import DashboardPage from "./Dashboard";
 
 const hookMocks = vi.hoisted(() => ({
@@ -298,6 +306,8 @@ afterEach(() => {
   host = null;
   root = null;
   window.localStorage.clear();
+  resetDashboardPerformanceDiagnostics();
+  vi.useRealTimers();
   vi.clearAllMocks();
 });
 
@@ -462,6 +472,184 @@ describe("DashboardPage", () => {
         ?.querySelector('[data-testid="dashboard-activity-range-yesterday"]')
         ?.getAttribute("data-active"),
     ).toBe("true");
+  });
+
+  it("keeps diagnostics hidden by default and exposes them when the debug flag is enabled", () => {
+    installSummaryMocks();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [createWorkingConversationCard()],
+      totalMatched: 1,
+      hasMore: false,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore: vi.fn(),
+      setRefreshTargetCount: vi.fn(),
+    });
+
+    render(<DashboardPage />);
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-performance-diagnostics"]'),
+    ).toBeNull();
+
+    act(() => {
+      window.localStorage.setItem(
+        DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
+        "1",
+      );
+      resetDashboardPerformanceDiagnostics();
+      publishWorkingConversationPatchMetrics(
+        new Map([
+          [
+            "pck-drawer-switch",
+            new Map([["invoke-dashboard-current", { totalTokens: 120, cost: 0.01 }]]),
+          ],
+        ]),
+      );
+      recordTodaySummaryRefresh("today");
+      recordTodayChartRender();
+    });
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-performance-diagnostics"]'),
+    ).not.toBeNull();
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-performance-diagnostics-working-conversations-patch-bucket-count"]',
+      )?.textContent,
+    ).toBe("1");
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-performance-diagnostics-working-conversations-patch-entry-count"]',
+      )?.textContent,
+    ).toBe("1");
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-performance-diagnostics-today-summary-refresh-count"]',
+      )?.textContent,
+    ).toBe("1");
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-performance-diagnostics-today-chart-render-count"]',
+      )?.textContent,
+    ).toBe("1");
+  });
+
+  it("reacts to the debug toggle on an already-open dashboard", () => {
+    installSummaryMocks();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [createWorkingConversationCard()],
+      totalMatched: 1,
+      hasMore: false,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore: vi.fn(),
+      setRefreshTargetCount: vi.fn(),
+    });
+
+    render(<DashboardPage />);
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-performance-diagnostics"]'),
+    ).toBeNull();
+
+    act(() => {
+      window.localStorage.setItem(
+        DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
+        "1",
+      );
+    });
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-performance-diagnostics"]'),
+    ).not.toBeNull();
+
+    act(() => {
+      window.localStorage.removeItem(
+        DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
+      );
+    });
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-performance-diagnostics"]'),
+    ).toBeNull();
+  });
+
+  it("starts diagnostics counters from zero after enabling on a long-lived dashboard", () => {
+    installSummaryMocks();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [createWorkingConversationCard()],
+      totalMatched: 1,
+      hasMore: false,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore: vi.fn(),
+      setRefreshTargetCount: vi.fn(),
+    });
+
+    render(<DashboardPage />);
+
+    act(() => {
+      publishWorkingConversationPatchMetrics(
+        new Map([
+          [
+            "stale-pck",
+            new Map([["stale-invoke", { totalTokens: 64, cost: 0.02 }]]),
+          ],
+        ]),
+      );
+      recordTodaySummaryRefresh("today");
+      recordTodayChartRender("stale-chart");
+    });
+
+    act(() => {
+      window.localStorage.setItem(
+        DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
+        "1",
+      );
+    });
+
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-performance-diagnostics-working-conversations-patch-bucket-count"]',
+      )?.textContent,
+    ).toBe("0");
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-performance-diagnostics-working-conversations-patch-entry-count"]',
+      )?.textContent,
+    ).toBe("0");
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-performance-diagnostics-today-summary-refresh-count"]',
+      )?.textContent,
+    ).toBe("0");
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-performance-diagnostics-today-chart-render-count"]',
+      )?.textContent,
+    ).toBe("0");
+  });
+
+  it("dedupes identical chart render signatures in diagnostics", () => {
+    window.localStorage.setItem(
+      DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
+      "1",
+    );
+    resetDashboardPerformanceDiagnostics();
+
+    act(() => {
+      recordTodayChartRender("today:stable");
+      recordTodayChartRender("today:stable");
+      recordTodayChartRender("today:updated");
+    });
+
+    expect(
+      getDashboardPerformanceDiagnosticsSnapshot().todayChartRenderCount,
+    ).toBe(2);
   });
 
   it("switches between the invocation drawer and the shared account drawer from dashboard interactions", () => {

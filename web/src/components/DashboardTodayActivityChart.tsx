@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { memo, useEffect, useMemo } from "react";
 import {
   Area,
   AreaChart,
@@ -28,6 +28,10 @@ import {
   buildTodayMinuteChartData,
   type DashboardTodayMinuteDatum,
 } from "./dashboardTodayActivityChartData";
+import {
+  recordTodayChartRender,
+  useDashboardPerformanceDiagnosticsEnabled,
+} from "../lib/dashboardPerformanceDiagnostics";
 
 export interface DashboardTodayActivityChartProps {
   response: TimeseriesResponse | null;
@@ -35,6 +39,54 @@ export interface DashboardTodayActivityChartProps {
   error?: string | null;
   metric: MetricKey;
   closedNaturalDay?: boolean;
+}
+
+function buildChartRenderSignature({
+  response,
+  loading,
+  error,
+  metric,
+  closedNaturalDay,
+}: DashboardTodayActivityChartProps) {
+  if (!response) {
+    return JSON.stringify({
+      metric,
+      closedNaturalDay,
+      loading,
+      error: error ?? null,
+      response: null,
+    });
+  }
+
+  const aggregate = response.points.reduce(
+    (current, point) => ({
+      totalCount: current.totalCount + point.totalCount,
+      failureCount: current.failureCount + point.failureCount,
+      totalTokens: current.totalTokens + point.totalTokens,
+      totalCost: current.totalCost + point.totalCost,
+    }),
+    {
+      totalCount: 0,
+      failureCount: 0,
+      totalTokens: 0,
+      totalCost: 0,
+    },
+  );
+  const lastPoint = response.points.at(-1) ?? null;
+
+  return JSON.stringify({
+    metric,
+    closedNaturalDay,
+    loading,
+    error: error ?? null,
+    rangeStart: response.rangeStart,
+    rangeEnd: response.rangeEnd,
+    bucketSeconds: response.bucketSeconds,
+    snapshotId: response.snapshotId ?? null,
+    pointCount: response.points.length,
+    aggregate,
+    lastPoint,
+  });
 }
 
 function formatCountValue(
@@ -113,13 +165,42 @@ function ChartTooltipContent({
   );
 }
 
-export function DashboardTodayActivityChart({
+function DashboardTodayActivityChartImpl({
   response,
   loading,
   error,
   metric,
   closedNaturalDay = false,
 }: DashboardTodayActivityChartProps) {
+  const diagnosticsEnabled = useDashboardPerformanceDiagnosticsEnabled();
+  const renderSignature = useMemo(
+    () =>
+      diagnosticsEnabled
+        ? buildChartRenderSignature({
+            response,
+            loading,
+            error,
+            metric,
+            closedNaturalDay,
+          })
+        : null,
+    [
+      closedNaturalDay,
+      diagnosticsEnabled,
+      error,
+      loading,
+      metric,
+      response,
+    ],
+  );
+
+  useEffect(() => {
+    if (!diagnosticsEnabled || renderSignature == null) {
+      return;
+    }
+    recordTodayChartRender(renderSignature);
+  }, [diagnosticsEnabled, renderSignature]);
+
   const { t, locale } = useTranslation();
   const { themeMode } = useTheme();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
@@ -458,3 +539,5 @@ export function DashboardTodayActivityChart({
     </section>
   );
 }
+
+export const DashboardTodayActivityChart = memo(DashboardTodayActivityChartImpl);
