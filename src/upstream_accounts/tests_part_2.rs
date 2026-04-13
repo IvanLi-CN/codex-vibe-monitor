@@ -2180,6 +2180,9 @@
         );
         candidate.last_action_reason_code = Some("upstream_http_402".to_string());
         candidate.last_route_failure_kind = Some(PROXY_FAILURE_UPSTREAM_HTTP_402.to_string());
+        candidate.last_action_source =
+            Some(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE.to_string());
+        candidate.last_action_at = Some("2026-04-13T11:00:00Z".to_string());
 
         assert!(
             !maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now),
@@ -2210,6 +2213,9 @@
         candidate.last_action_reason_code = Some("upstream_http_402".to_string());
         candidate.last_route_failure_kind = Some(PROXY_FAILURE_UPSTREAM_HTTP_402.to_string());
         candidate.primary_resets_at = Some(format_utc_iso(now - ChronoDuration::minutes(1)));
+        candidate.last_action_source =
+            Some(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE.to_string());
+        candidate.last_action_at = Some("2026-04-13T11:00:00Z".to_string());
 
         assert!(
             maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now),
@@ -2273,6 +2279,9 @@
         );
         cooldown_blocked.last_action_reason_code = Some("upstream_http_402".to_string());
         cooldown_blocked.last_route_failure_kind = Some(PROXY_FAILURE_UPSTREAM_HTTP_402.to_string());
+        cooldown_blocked.last_action_source =
+            Some(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE.to_string());
+        cooldown_blocked.last_action_at = Some("2026-04-13T11:58:00Z".to_string());
 
         let healthy_due = maintenance_candidates(
             2,
@@ -2295,6 +2304,39 @@
         assert_eq!(plans[0].account_id, 2);
         assert_eq!(plans[0].tier, MaintenanceTier::Priority);
         assert_eq!(plans[0].sync_interval_secs, settings.primary_sync_interval_secs);
+    }
+
+    #[test]
+    fn maintenance_plan_is_due_for_call_driven_upstream_rejected_errors() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 13, 12, 0, 0)
+            .single()
+            .expect("valid time");
+        let settings = PoolRoutingMaintenanceSettings {
+            primary_sync_interval_secs: 300,
+            secondary_sync_interval_secs: 1800,
+            priority_available_account_cap: 1,
+        };
+        let mut candidate = maintenance_candidates(
+            77,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            Some("2026-04-13T05:00:00Z"),
+            Some("2026-04-13T11:00:00Z"),
+            Some("2026-05-13T12:00:00Z"),
+            Some(10.0),
+            Some(10.0),
+        );
+        candidate.last_action_source = Some(UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL.to_string());
+        candidate.last_action_at = Some("2026-04-13T11:00:00Z".to_string());
+        candidate.last_action_reason_code = Some("upstream_http_402".to_string());
+        candidate.last_route_failure_at = Some("2026-04-13T11:00:00Z".to_string());
+        candidate.last_route_failure_kind = Some(PROXY_FAILURE_UPSTREAM_HTTP_402.to_string());
+        candidate.last_error = Some("deactivated_workspace".to_string());
+
+        assert!(
+            maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now),
+            "ordinary routed 402s should still allow maintenance to retry promptly"
+        );
     }
 
     #[test]

@@ -26,6 +26,7 @@ enum HistoricalRollupArchiveReplayOutcome {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct HistoricalRollupArchiveReplaySummary {
     scanned_batches: u64,
+    skipped_batches: u64,
     remaining_skip_batches: usize,
     budget_consumed_batches: u64,
     blocked_batches: u64,
@@ -357,6 +358,7 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
         if skip_remaining > 0 {
             skip_remaining -= 1;
             summary.scanned_batches += 1;
+            summary.skipped_batches += 1;
             continue;
         }
         if historical_rollup_materialization_budget_reached(
@@ -569,6 +571,7 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
         if skip_remaining > 0 {
             skip_remaining -= 1;
             summary.scanned_batches += 1;
+            summary.skipped_batches += 1;
             continue;
         }
         if historical_rollup_materialization_budget_reached(

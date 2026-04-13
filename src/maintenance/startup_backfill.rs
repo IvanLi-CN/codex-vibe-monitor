@@ -175,8 +175,11 @@ fn historical_rollup_startup_backfill_run_state(
         .legacy_archive_pending
         .saturating_sub(after.legacy_archive_pending);
     let bucket_progress = before.pending_buckets.saturating_sub(after.pending_buckets);
+    let attempted_archive_batches = summary
+        .scanned_archive_batches
+        .saturating_sub(summary.skipped_archive_batches);
     let scanned_all_pending_archives =
-        summary.scanned_archive_batches as u64 >= before.legacy_archive_pending;
+        attempted_archive_batches as u64 >= before.legacy_archive_pending;
     let permanently_blocked = summary.blocked_archive_batches > 0
         && archive_progress == 0
         && bucket_progress == 0
@@ -861,6 +864,31 @@ mod startup_backfill_tests {
 
         assert_eq!(run.next_cursor_id, 6);
         assert_eq!(run.scanned, 1);
+        assert_eq!(run.updated, 0);
+        assert!(run.hit_scan_limit);
+        assert!(!run.force_idle);
+    }
+
+    #[test]
+    fn historical_rollup_backfill_run_state_does_not_back_off_when_only_blocked_archive_was_after_skip() {
+        let before = HistoricalRollupBackfillSnapshot {
+            pending_buckets: 8,
+            legacy_archive_pending: 2,
+            last_materialized_hour: None,
+            alert_level: HistoricalRollupBackfillAlertLevel::Critical,
+        };
+        let after = before.clone();
+        let summary = HistoricalRollupMaterializationSummary {
+            scanned_archive_batches: 2,
+            skipped_archive_batches: 1,
+            blocked_archive_batches: 1,
+            ..HistoricalRollupMaterializationSummary::default()
+        };
+
+        let run = historical_rollup_startup_backfill_run_state(9, &before, &after, &summary);
+
+        assert_eq!(run.next_cursor_id, 11);
+        assert_eq!(run.scanned, 2);
         assert_eq!(run.updated, 0);
         assert!(run.hit_scan_limit);
         assert!(!run.force_idle);

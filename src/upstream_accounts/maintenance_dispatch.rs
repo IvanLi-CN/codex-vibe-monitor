@@ -353,6 +353,12 @@ fn maintenance_candidate_has_active_upstream_rejected_cooldown(
     candidate: &MaintenanceCandidateRow,
     now: DateTime<Utc>,
 ) -> bool {
+    if !matches!(
+        candidate.last_action_source.as_deref(),
+        Some(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE)
+    ) {
+        return false;
+    }
     let has_maintenance_upstream_rejected_marker =
         account_reason_is_maintenance_upstream_rejected(
             candidate.last_action_reason_code.as_deref(),
@@ -367,9 +373,15 @@ fn maintenance_candidate_has_active_upstream_rejected_cooldown(
     }
 
     candidate
-        .last_route_failure_at
+        .last_action_at
         .as_deref()
         .and_then(parse_rfc3339_utc)
+        .or_else(|| {
+            candidate
+                .last_route_failure_at
+                .as_deref()
+                .and_then(parse_rfc3339_utc)
+        })
         .or_else(|| {
             candidate
                 .last_error_at

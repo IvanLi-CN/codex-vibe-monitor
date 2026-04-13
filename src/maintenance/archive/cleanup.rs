@@ -605,6 +605,7 @@ pub(crate) async fn materialize_historical_rollups_bounded_from_skip(
     if dry_run {
         return Ok(HistoricalRollupMaterializationSummary {
             scanned_archive_batches: pending_snapshot.legacy_archive_pending as usize,
+            skipped_archive_batches: 0,
             materialized_archive_batches: pending_snapshot.legacy_archive_pending as usize,
             blocked_archive_batches: 0,
             materialized_bucket_count: pending_snapshot.pending_buckets as usize,
@@ -659,6 +660,8 @@ pub(crate) async fn materialize_historical_rollups_bounded_from_skip(
     Ok(HistoricalRollupMaterializationSummary {
         scanned_archive_batches: (invocation_summary.scanned_batches
             + forward_proxy_summary.scanned_batches) as usize,
+        skipped_archive_batches: (invocation_summary.skipped_batches
+            + forward_proxy_summary.skipped_batches) as usize,
         materialized_archive_batches: (invocation_summary.materialized_batches
             + forward_proxy_summary.materialized_batches) as usize,
         blocked_archive_batches: invocation_summary.blocked_batches as usize,
