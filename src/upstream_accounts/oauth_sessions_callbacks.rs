@@ -107,9 +107,6 @@ pub(crate) async fn get_upstream_account_sticky_keys(
     AxumPath(id): AxumPath<i64>,
     Query(params): Query<AccountStickyKeysQuery>,
 ) -> Result<Json<AccountStickyKeysResponse>, (StatusCode, String)> {
-    ensure_hourly_rollups_caught_up(state.as_ref())
-        .await
-        .map_err(internal_error_tuple)?;
     let exists = load_upstream_account_row(&state.pool, id)
         .await
         .map_err(internal_error_tuple)?

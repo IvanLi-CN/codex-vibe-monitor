@@ -1724,6 +1724,288 @@ async fn build_sqlite_connect_options_enforces_wal_and_busy_timeout_defaults() {
     let _ = fs::remove_dir_all(&temp_dir);
 }
 
+async fn file_backed_test_state_with_busy_timeout(
+    prefix: &str,
+    busy_timeout: Duration,
+) -> (Arc<AppState>, PathBuf, String) {
+    let temp_dir = make_temp_test_dir(prefix);
+    let db_path = temp_dir.join("state.db");
+    let db_url = sqlite_url_for_path(&db_path);
+    let connect_options =
+        build_sqlite_connect_options(&db_url, busy_timeout).expect("build sqlite options");
+    let pool = SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect_with(connect_options)
+        .await
+        .expect("connect sqlite pool");
+    ensure_schema(&pool)
+        .await
+        .expect("schema should initialize");
+
+    let mut config = test_config();
+    config.database_path = db_path;
+    config.archive_dir = temp_dir.join("archive");
+    config.proxy_raw_dir = temp_dir.join("proxy-raw");
+    config.xray_runtime_dir = temp_dir.join("xray-runtime");
+    fs::create_dir_all(&config.archive_dir).expect("create archive dir");
+    fs::create_dir_all(&config.proxy_raw_dir).expect("create proxy raw dir");
+    fs::create_dir_all(&config.xray_runtime_dir).expect("create xray runtime dir");
+
+    let http_clients = HttpClients::build(&config).expect("http clients");
+    let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
+    let (broadcaster, _rx) = broadcast::channel(16);
+    let pricing_catalog = load_pricing_catalog(&pool)
+        .await
+        .expect("pricing catalog should initialize");
+
+    let state = Arc::new(AppState {
+        config: config.clone(),
+        pool,
+        oauth_installation_seed: [0_u8; 32],
+        http_clients,
+        broadcaster,
+        broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
+        proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
+        proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
+        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
+        startup_ready: Arc::new(AtomicBool::new(true)),
+        shutdown: CancellationToken::new(),
+        semaphore,
+        proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
+        proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
+        proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
+        forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
+            ForwardProxySettings::default(),
+            Vec::new(),
+        ))),
+        xray_supervisor: Arc::new(Mutex::new(XraySupervisor::new(
+            config.xray_binary.clone(),
+            config.xray_runtime_dir.clone(),
+        ))),
+        forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
+        forward_proxy_subscription_refresh_lock: Arc::new(Mutex::new(())),
+        pricing_settings_update_lock: Arc::new(Mutex::new(())),
+        pricing_catalog: Arc::new(RwLock::new(pricing_catalog)),
+        prompt_cache_conversation_cache: Arc::new(Mutex::new(
+            PromptCacheConversationsCacheState::default(),
+        )),
+        maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
+        hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
+        pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
+        pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
+        pool_group_429_retry_delay_override: None,
+        pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
+        upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
+    });
+
+    (state, temp_dir, db_url)
+}
+
+async fn wait_for_summary_quota_workers(state: &AppState) {
+    let handles = {
+        let mut guard = state.proxy_summary_quota_broadcast_handle.lock().await;
+        std::mem::take(&mut *guard)
+    };
+    for handle in handles {
+        handle.await.expect("summary/quota worker should join cleanly");
+    }
+}
+
+#[tokio::test]
+async fn dashboard_read_endpoints_stay_queryable_under_sqlite_write_lock() {
+    let (state, temp_dir, db_url) = file_backed_test_state_with_busy_timeout(
+        "dashboard-read-lock",
+        Duration::from_millis(100),
+    )
+    .await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    persist_proxy_capture_record(
+        &state.pool,
+        Instant::now(),
+        test_proxy_capture_record("dashboard-lock-read", &occurred_at),
+    )
+    .await
+    .expect("seed dashboard lock record");
+    sync_hourly_rollups_from_live_tables(&state.pool)
+        .await
+        .expect("seed hourly rollups before lock");
+    insert_parallel_work_invocation(
+        &state.pool,
+        "dashboard-lock-unsynced-working-conversation",
+        Utc::now(),
+        "dashboard-lock-read",
+    )
+    .await;
+
+    let mut lock_conn = SqliteConnection::connect(&db_url)
+        .await
+        .expect("connect lock holder");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut lock_conn)
+        .await
+        .expect("acquire sqlite write lock");
+
+    let Json(summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("today".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("today summary should stay readable under a concurrent write lock");
+    assert!(
+        summary.total_count >= 1,
+        "today summary should still return persisted totals"
+    );
+
+    let Json(timeseries) = fetch_timeseries(
+        State(state.clone()),
+        Query(TimeseriesQuery {
+            range: "today".to_string(),
+            bucket: Some("1m".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("today timeseries should stay readable under a concurrent write lock");
+    assert!(
+        timeseries.points.iter().any(|point| point.total_count >= 1),
+        "today timeseries should still expose the live point"
+    );
+
+    let Json(conversations) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("working conversations should stay readable under a concurrent write lock");
+    assert!(
+        !conversations.conversations.is_empty(),
+        "working conversations should still return the seeded prompt-cache key"
+    );
+
+    sqlx::query("ROLLBACK")
+        .execute(&mut lock_conn)
+        .await
+        .expect("release sqlite write lock");
+    state.pool.close().await;
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn runtime_snapshot_keeps_prompt_cache_rollups_inline_without_background_follow_up() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let request_info = RequestCaptureInfo {
+        model: Some("gpt-5.4".to_string()),
+        prompt_cache_key: Some("pck-follow-up-refresh".to_string()),
+        requested_service_tier: Some("priority".to_string()),
+        reasoning_effort: Some("high".to_string()),
+        is_stream: true,
+        ..RequestCaptureInfo::default()
+    };
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    let running_record = build_running_proxy_capture_record(
+        "follow-up-refresh-running",
+        &occurred_at,
+        ProxyCaptureTarget::Responses,
+        &request_info,
+        Some("198.51.100.88"),
+        None,
+        Some("pck-follow-up-refresh"),
+        true,
+        Some(17),
+        Some("pool-account-17"),
+        Some("api_key_codex"),
+        Some("api-keys.vendor.invalid"),
+        Some("jp-relay-01"),
+        Some(3),
+        Some(2),
+        None,
+        Some("gzip"),
+        22.0,
+        4.0,
+        330.0,
+        120.0,
+    );
+
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
+        .await
+        .expect("runtime snapshot should persist");
+
+    let runtime_snapshot_follow_up_handles = state.proxy_summary_quota_broadcast_handle.lock().await.len();
+    assert_eq!(
+        runtime_snapshot_follow_up_handles, 0,
+        "runtime snapshots should not schedule the summary/quota follow-up worker"
+    );
+
+    let prompt_cache_requests: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(request_count), 0) FROM prompt_cache_rollup_hourly WHERE prompt_cache_key = ?1",
+    )
+    .bind("pck-follow-up-refresh")
+    .fetch_one(&state.pool)
+    .await
+    .expect("load prompt cache rollup count after runtime snapshot");
+    assert_eq!(
+        prompt_cache_requests, 1,
+        "runtime snapshots should still keep prompt-cache rollups queryable inline"
+    );
+
+    let Json(conversations) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("working conversations should stay readable after runtime snapshot");
+    assert!(
+        conversations
+            .conversations
+            .iter()
+            .any(|conversation| conversation.prompt_cache_key == "pck-follow-up-refresh"
+                && conversation.request_count >= 1),
+        "runtime snapshots should keep the new prompt-cache key visible without any GET-triggered sync"
+    );
+
+    let mut terminal_record = test_proxy_capture_record("follow-up-refresh-running", &occurred_at);
+    terminal_record.payload = Some(
+        "{\"endpoint\":\"/v1/responses\",\"statusCode\":200,\"isStream\":true,\"requesterIp\":\"198.51.100.88\",\"promptCacheKey\":\"pck-follow-up-refresh\",\"routeMode\":\"pool\",\"upstreamAccountId\":17,\"upstreamAccountName\":\"pool-account-17\",\"responseContentEncoding\":\"gzip\",\"requestedServiceTier\":\"priority\",\"reasoningEffort\":\"high\",\"proxyDisplayName\":\"jp-relay-01\"}"
+            .to_string(),
+    );
+
+    persist_and_broadcast_proxy_capture(&state, Instant::now(), terminal_record)
+        .await
+        .expect("terminal proxy capture should persist");
+    let terminal_follow_up_handles = state.proxy_summary_quota_broadcast_handle.lock().await.len();
+    assert!(
+        terminal_follow_up_handles > 0,
+        "terminal proxy captures should still schedule the summary/quota follow-up worker"
+    );
+    wait_for_summary_quota_workers(state.as_ref()).await;
+}
+
 #[tokio::test]
 async fn run_backfill_with_retry_succeeds_after_lock_release() {
     let temp_dir = make_temp_test_dir("proxy-backfill-retry-success");

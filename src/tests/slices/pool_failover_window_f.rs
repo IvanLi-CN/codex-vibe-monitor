@@ -1,3 +1,9 @@
+async fn materialize_prompt_cache_hourly_rollups(pool: &Pool<Sqlite>) {
+    sync_hourly_rollups_from_live_tables(pool)
+        .await
+        .expect("materialize prompt-cache hourly rollups for read-only prompt-cache tests");
+}
+
 #[tokio::test]
 async fn prompt_cache_conversations_include_recent_upstream_account_summaries() {
     let state = test_state_with_openai_base(
@@ -113,6 +119,8 @@ async fn prompt_cache_conversations_include_recent_upstream_account_summaries() 
         0.25,
     )
     .await;
+
+    materialize_prompt_cache_hourly_rollups(&state.pool).await;
 
     let Json(response) = fetch_prompt_cache_conversations(
         State(state.clone()),
@@ -421,6 +429,8 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
         "gpt-5.4",
     )
     .await;
+
+    materialize_prompt_cache_hourly_rollups(&state.pool).await;
 
     let Json(response) = fetch_prompt_cache_conversations(
         State(state.clone()),
@@ -828,6 +838,8 @@ async fn prompt_cache_conversations_count_mode_reports_inactive_recent_history_f
     )
     .await;
 
+    materialize_prompt_cache_hourly_rollups(&state.pool).await;
+
     let Json(response) = fetch_prompt_cache_conversations(
         State(state),
         Query(PromptCacheConversationsQuery {
@@ -915,6 +927,10 @@ async fn prompt_cache_conversations_count_mode_reports_all_skipped_newer_inactiv
         .await;
     }
 
+    sync_hourly_rollups_from_live_tables(&state.pool)
+        .await
+        .expect("materialize prompt cache rollups before legacy activity-minutes read");
+
     let Json(response) = fetch_prompt_cache_conversations(
         State(state),
         Query(PromptCacheConversationsQuery {
@@ -1001,6 +1017,8 @@ async fn prompt_cache_conversations_count_mode_clamps_sparse_inactive_hidden_row
     )
     .await;
 
+    materialize_prompt_cache_hourly_rollups(&state.pool).await;
+
     let Json(response) = fetch_prompt_cache_conversations(
         State(state),
         Query(PromptCacheConversationsQuery {
@@ -1057,6 +1075,8 @@ async fn prompt_cache_conversations_activity_window_caps_results_to_fifty() {
         .await
         .expect("insert invocation row");
     }
+
+    materialize_prompt_cache_hourly_rollups(&state.pool).await;
 
     let Json(response) = fetch_prompt_cache_conversations(
         State(state),
@@ -1120,6 +1140,8 @@ async fn prompt_cache_conversations_activity_minutes_legacy_path_still_caps_resu
         .await
         .expect("insert working legacy row");
     }
+
+    materialize_prompt_cache_hourly_rollups(&state.pool).await;
 
     let Json(response) = fetch_prompt_cache_conversations(
         State(state),
@@ -1223,6 +1245,10 @@ async fn prompt_cache_conversations_activity_minutes_include_running_only_rows_a
         160,
     )
     .await;
+
+    sync_hourly_rollups_from_live_tables(&state.pool)
+        .await
+        .expect("materialize prompt cache rollups before working-conversations read");
 
     let Json(response) = fetch_prompt_cache_conversations(
         State(state),
@@ -1524,6 +1550,10 @@ async fn prompt_cache_conversations_activity_minutes_paginated_preserves_sort_an
         "success",
     )
     .await;
+
+    sync_hourly_rollups_from_live_tables(&state.pool)
+        .await
+        .expect("materialize prompt cache rollups before paginated working read");
 
     let Json(non_paginated) = fetch_prompt_cache_conversations(
         State(state.clone()),
@@ -2581,6 +2611,8 @@ async fn prompt_cache_conversations_activity_minutes_paginated_snapshot_preserve
     )
     .await;
 
+    materialize_prompt_cache_hourly_rollups(&state.pool).await;
+
     let snapshot_at_rfc3339 = snapshot_at.to_rfc3339();
     let Json(first_page) = fetch_prompt_cache_conversations(
         State(state.clone()),
@@ -3201,6 +3233,8 @@ async fn prompt_cache_conversations_chart_window_caps_history_to_recent_24_hours
     )
     .await;
 
+    materialize_prompt_cache_hourly_rollups(&state.pool).await;
+
     let Json(response) = fetch_prompt_cache_conversations(
         State(state),
         Query(PromptCacheConversationsQuery {
@@ -3317,6 +3351,8 @@ async fn prompt_cache_conversation_activity_keeps_http_200_errors_out_of_success
     )
     .await;
 
+    materialize_prompt_cache_hourly_rollups(&state.pool).await;
+
     let Json(response) = fetch_prompt_cache_conversations(
         State(state),
         Query(PromptCacheConversationsQuery {
@@ -3373,6 +3409,8 @@ async fn prompt_cache_conversation_timestamps_serialize_as_utc_iso() {
     .execute(&state.pool)
     .await
     .expect("insert prompt cache invocation row");
+
+    materialize_prompt_cache_hourly_rollups(&state.pool).await;
 
     let Json(response) = fetch_prompt_cache_conversations(
         State(state),
@@ -3455,6 +3493,8 @@ async fn prompt_cache_conversations_cache_reuses_recent_result_within_ttl() {
     .execute(&state.pool)
     .await
     .expect("insert first cache row");
+
+    materialize_prompt_cache_hourly_rollups(&state.pool).await;
 
     let Json(first) = fetch_prompt_cache_conversations(
         State(state.clone()),
@@ -3559,6 +3599,8 @@ async fn prompt_cache_conversations_cache_invalidation_exposes_new_proxy_capture
     .await
     .expect("insert initial prompt cache row");
 
+    materialize_prompt_cache_hourly_rollups(&state.pool).await;
+
     let Json(first) = fetch_prompt_cache_conversations(
         State(state.clone()),
         Query(PromptCacheConversationsQuery {
@@ -3650,6 +3692,10 @@ async fn prompt_cache_conversations_cache_ignores_proxy_captures_without_prompt_
     .await
     .expect("insert prompt cache seed row");
 
+    sync_hourly_rollups_from_live_tables(&state.pool)
+        .await
+        .expect("materialize prompt cache rollups before cached read");
+
     let Json(first) = fetch_prompt_cache_conversations(
         State(state.clone()),
         Query(PromptCacheConversationsQuery {
@@ -3739,6 +3785,8 @@ async fn prompt_cache_conversations_cache_returns_under_sustained_invalidations(
         .expect("insert sustained-invalidations seed row");
     }
 
+    materialize_prompt_cache_hourly_rollups(&state.pool).await;
+
     let stop = Arc::new(AtomicBool::new(false));
     let invalidator_stop = stop.clone();
     let cache = state.prompt_cache_conversation_cache.clone();
@@ -3812,6 +3860,8 @@ async fn prompt_cache_conversations_concurrent_requests_same_limit_do_not_stall(
     .execute(&state.pool)
     .await
     .expect("insert concurrent cache row");
+
+    materialize_prompt_cache_hourly_rollups(&state.pool).await;
 
     let mut handles = Vec::new();
     for _ in 0..8 {

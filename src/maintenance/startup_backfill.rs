@@ -346,10 +346,12 @@ async fn run_startup_backfill_maintenance_pass(state: Arc<AppState>, cancel: &Ca
         }
     }
 
-    let _guard = state.hourly_rollup_sync_lock.lock().await;
-    if let Err(err) = sync_hourly_rollups_from_live_tables(&state.pool).await {
-        warn!(error = %err, "startup backfill failed to refresh invocation hourly rollups");
-    }
+    refresh_hourly_rollups_for_read_surfaces_best_effort(
+        &state.pool,
+        state.hourly_rollup_sync_lock.as_ref(),
+        "startup backfill maintenance pass",
+    )
+    .await;
 }
 
 fn startup_backfill_task_enabled(state: &AppState, task: StartupBackfillTask) -> bool {

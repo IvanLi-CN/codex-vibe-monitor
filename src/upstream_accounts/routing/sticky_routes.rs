@@ -23,6 +23,10 @@ pub(crate) async fn build_account_sticky_keys_response(
         .iter()
         .map(|row| row.sticky_key.clone())
         .collect::<Vec<_>>();
+    // Keep this endpoint strictly read-only. Proxy/runtime persistence updates
+    // `upstream_sticky_key_hourly` inline via `upsert_invocation_hourly_rollups_tx`
+    // (plus recompute-on-repair paths), so attached sticky-key totals stay fresh
+    // without request-time catch-up.
     let aggregates = query_account_sticky_key_aggregates(pool, account_id, &attached_keys).await?;
     let events =
         query_account_sticky_key_events(pool, account_id, &range_start_bound, &attached_keys)

@@ -1462,6 +1462,13 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 initial_account,
                 no_available_wait_deadline,
             ) = if let Some(sticky_key) = header_sticky_key.clone() {
+                let initial_header_sticky_resolution = resolve_pool_account_for_request(
+                    state.as_ref(),
+                    Some(sticky_key.as_str()),
+                    &[],
+                    &HashSet::new(),
+                )
+                .await;
                 let state_for_wait = state.clone();
                 let wait_task_sticky_key = sticky_key.clone();
                 let shared_wait_deadline = Arc::new(std::sync::Mutex::new(None));
@@ -1474,8 +1481,9 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         .pool_no_available_wait
                         .normalized_poll_interval();
                     loop {
+                        let now = Instant::now();
                         if pre_attempt_total_timeout_deadline
-                            .is_some_and(|deadline| Instant::now() >= deadline)
+                            .is_some_and(|deadline| now >= deadline)
                         {
                             break (
                                 Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired),
@@ -1489,6 +1497,17 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             &excluded_upstream_route_keys,
                         )
                         .await;
+                        if matches!(
+                            resolution,
+                            Ok(PoolAccountResolution::Unavailable | PoolAccountResolution::NoCandidate)
+                        ) && no_available_wait_deadline.is_none()
+                        {
+                            let deadline = Instant::now() + state_for_wait.pool_no_available_wait.timeout;
+                            no_available_wait_deadline = Some(deadline);
+                            *shared_wait_deadline_for_task
+                                .lock()
+                                .expect("lock shared header wait deadline") = Some(deadline);
+                        }
                         if pre_attempt_total_timeout_deadline
                             .is_some_and(|deadline| Instant::now() >= deadline)
                         {
@@ -1533,6 +1552,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                         no_available_wait_deadline,
                                     );
                                 }
+                                notify_pool_no_available_wait_hook(state_for_wait.as_ref());
                                 tokio::time::sleep(
                                     poll_interval
                                         .min(effective_deadline.saturating_duration_since(now)),
@@ -1554,6 +1574,39 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 let mut pending_header_sticky_terminal_error: Option<(StatusCode, String)> = None;
                 let mut resolved_header_sticky_account: Option<PoolResolvedAccount> = None;
                 let mut header_sticky_wait_deadline = None;
+                match initial_header_sticky_resolution {
+                    Ok(PoolAccountResolution::Resolved(account)) => {
+                        resolved_header_sticky_account = Some(account);
+                        header_sticky_resolution_finished = true;
+                    }
+                    Ok(PoolAccountResolution::RateLimited) => {
+                        pending_header_sticky_terminal_error = Some((
+                            StatusCode::TOO_MANY_REQUESTS,
+                            POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
+                        ));
+                        header_sticky_resolution_finished = true;
+                    }
+                    Ok(PoolAccountResolution::DegradedOnly) => {
+                        pending_header_sticky_terminal_error = Some((
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
+                        ));
+                        header_sticky_resolution_finished = true;
+                    }
+                    Ok(PoolAccountResolution::BlockedByPolicy(message)) => {
+                        pending_header_sticky_terminal_error =
+                            Some((StatusCode::SERVICE_UNAVAILABLE, message));
+                        header_sticky_resolution_finished = true;
+                    }
+                    Err(err) => {
+                        pending_header_sticky_terminal_error = Some((
+                            StatusCode::BAD_GATEWAY,
+                            format!("failed to resolve pool account: {err}"),
+                        ));
+                        header_sticky_resolution_finished = true;
+                    }
+                    Ok(PoolAccountResolution::Unavailable | PoolAccountResolution::NoCandidate) => {}
+                }
                 let mut request_body_buffer = PoolReplayBodyBuffer::new(proxy_request_id);
                 let mut request_body_stream = body.into_data_stream();
                 let request_body_deadline = Instant::now() + runtime_timeouts.request_read_timeout;

@@ -293,9 +293,30 @@ async fn bootstrap_hourly_rollups(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
+async fn refresh_hourly_rollups_for_read_surfaces(pool: &Pool<Sqlite>) -> Result<()> {
+    sync_hourly_rollups_from_live_tables(pool).await?;
+    ensure_invocation_summary_rollups_ready_best_effort(pool).await?;
+    Ok(())
+}
+
 async fn ensure_hourly_rollups_caught_up(state: &AppState) -> Result<()> {
     let _guard = state.hourly_rollup_sync_lock.lock().await;
     sync_hourly_rollups_from_live_tables(&state.pool).await
+}
+
+pub(crate) async fn refresh_hourly_rollups_for_read_surfaces_best_effort(
+    pool: &Pool<Sqlite>,
+    hourly_rollup_sync_lock: &Mutex<()>,
+    reason: &'static str,
+) {
+    let _guard = hourly_rollup_sync_lock.lock().await;
+    if let Err(err) = refresh_hourly_rollups_for_read_surfaces(pool).await {
+        warn!(
+            error = %err,
+            reason,
+            "background hourly rollup refresh failed; keeping existing rollups for read surfaces"
+        );
+    }
 }
 
 async fn delete_rows_by_ids(

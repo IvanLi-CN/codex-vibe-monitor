@@ -778,7 +778,6 @@ pub(crate) async fn fetch_error_distribution(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ErrorQuery>,
 ) -> Result<Json<ErrorDistributionResponse>, ApiError> {
-    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
     let start_dt = range_window.start;
@@ -792,10 +791,7 @@ pub(crate) async fn fetch_error_distribution(
             display_end,
             shanghai_retention_cutoff(state.config.invocation_max_days),
         )?;
-        if range_plan.full_hour_range.is_some() {
-            ensure_invocation_summary_rollups_ready_best_effort(&state.pool).await?;
-        }
-        let (hourly_rows, exact_records) = if range_plan.full_hour_range.is_some() {
+        let (hourly_rows, exact_records, archive_overlap_ids) = if range_plan.full_hour_range.is_some() {
                 let mut tx = state.pool.begin().await?;
                 let snapshot_id =
                     resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
@@ -818,17 +814,18 @@ pub(crate) async fn fetch_error_distribution(
                     snapshot_id,
                 )
                 .await?;
-                exact_records.extend(
-                    query_invocation_full_hour_tail_records_tx(
-                        tx.as_mut(),
-                        &range_plan,
-                        source_scope,
-                        rollup_live_cursor,
-                        snapshot_id,
-                    )
-                    .await?,
-                );
-                (hourly_rows, exact_records)
+                let tail_records = query_invocation_full_hour_tail_records_tx(
+                    tx.as_mut(),
+                    &range_plan,
+                    source_scope,
+                    rollup_live_cursor,
+                    snapshot_id,
+                )
+                .await?;
+                let archive_overlap_ids =
+                    tail_records.iter().map(|record| record.id).collect::<HashSet<_>>();
+                exact_records.extend(tail_records);
+                (hourly_rows, exact_records, archive_overlap_ids)
             } else {
                 let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
                 let exact_records = query_invocation_exact_records(
@@ -838,7 +835,7 @@ pub(crate) async fn fetch_error_distribution(
                     snapshot_id,
                 )
                 .await?;
-                (Vec::new(), exact_records)
+                (Vec::new(), exact_records, HashSet::new())
             };
         for row in hourly_rows {
             let Some(class) = FailureClass::from_db_str(&row.failure_class) else {
@@ -863,6 +860,43 @@ pub(crate) async fn fetch_error_distribution(
             let raw = record.error_message.unwrap_or_default();
             let key = categorize_error(&raw);
             *counts.entry(key).or_default() += 1;
+        }
+        if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
+            let archived_start = Utc
+                .timestamp_opt(range_start_epoch, 0)
+                .single()
+                .ok_or_else(|| {
+                    ApiError::from(anyhow!("invalid error distribution archive start epoch"))
+                })?;
+            let archived_end = Utc
+                .timestamp_opt(range_end_epoch, 0)
+                .single()
+                .ok_or_else(|| {
+                    ApiError::from(anyhow!("invalid error distribution archive end epoch"))
+                })?;
+            let archived_rows = crate::stats::load_unmaterialized_invocation_archive_failure_rows(
+                &state.pool,
+                archived_start,
+                archived_end,
+                source_scope,
+                Some(&archive_overlap_ids),
+            )
+            .await?;
+            for row in archived_rows {
+                let classification = resolve_failure_classification(
+                    row.status.as_deref(),
+                    row.error_message.as_deref(),
+                    row.failure_kind.as_deref(),
+                    row.failure_class.as_deref(),
+                    row.is_actionable,
+                );
+                if !failure_scope_matches(scope, classification.failure_class) {
+                    continue;
+                }
+                let raw = row.error_message.unwrap_or_default();
+                let key = categorize_error(&raw);
+                *counts.entry(key).or_default() += 1;
+            }
         }
         let mut items: Vec<ErrorDistributionItem> = counts
             .into_iter()
@@ -1173,7 +1207,6 @@ pub(crate) async fn fetch_failure_summary(
     State(state): State<Arc<AppState>>,
     Query(params): Query<FailureSummaryQuery>,
 ) -> Result<Json<FailureSummaryResponse>, ApiError> {
-    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
     let start_dt = range_window.start;
@@ -1190,10 +1223,7 @@ pub(crate) async fn fetch_failure_summary(
             display_end,
             shanghai_retention_cutoff(state.config.invocation_max_days),
         )?;
-        if range_plan.full_hour_range.is_some() {
-            ensure_invocation_summary_rollups_ready_best_effort(&state.pool).await?;
-        }
-        let (hourly_rows, exact_records) = if range_plan.full_hour_range.is_some() {
+        let (hourly_rows, exact_records, archive_overlap_ids) = if range_plan.full_hour_range.is_some() {
                 let mut tx = state.pool.begin().await?;
                 let snapshot_id =
                     resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
@@ -1216,17 +1246,18 @@ pub(crate) async fn fetch_failure_summary(
                     snapshot_id,
                 )
                 .await?;
-                exact_records.extend(
-                    query_invocation_full_hour_tail_records_tx(
-                        tx.as_mut(),
-                        &range_plan,
-                        source_scope,
-                        rollup_live_cursor,
-                        snapshot_id,
-                    )
-                    .await?,
-                );
-                (hourly_rows, exact_records)
+                let tail_records = query_invocation_full_hour_tail_records_tx(
+                    tx.as_mut(),
+                    &range_plan,
+                    source_scope,
+                    rollup_live_cursor,
+                    snapshot_id,
+                )
+                .await?;
+                let archive_overlap_ids =
+                    tail_records.iter().map(|record| record.id).collect::<HashSet<_>>();
+                exact_records.extend(tail_records);
+                (hourly_rows, exact_records, archive_overlap_ids)
             } else {
                 let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
                 let exact_records = query_invocation_exact_records(
@@ -1236,7 +1267,7 @@ pub(crate) async fn fetch_failure_summary(
                     snapshot_id,
                 )
                 .await?;
-                (Vec::new(), exact_records)
+                (Vec::new(), exact_records, HashSet::new())
             };
         for row in hourly_rows {
             let Some(class) = FailureClass::from_db_str(&row.failure_class) else {
@@ -1273,6 +1304,46 @@ pub(crate) async fn fetch_failure_summary(
             }
             if classification.is_actionable {
                 actionable_failure_count += 1;
+            }
+        }
+        if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
+            let archived_start = Utc
+                .timestamp_opt(range_start_epoch, 0)
+                .single()
+                .ok_or_else(|| ApiError::from(anyhow!("invalid failure summary archive start epoch")))?;
+            let archived_end = Utc
+                .timestamp_opt(range_end_epoch, 0)
+                .single()
+                .ok_or_else(|| ApiError::from(anyhow!("invalid failure summary archive end epoch")))?;
+            let archived_rows = crate::stats::load_unmaterialized_invocation_archive_failure_rows(
+                &state.pool,
+                archived_start,
+                archived_end,
+                source_scope,
+                Some(&archive_overlap_ids),
+            )
+            .await?;
+            for row in archived_rows {
+                let classification = resolve_failure_classification(
+                    row.status.as_deref(),
+                    row.error_message.as_deref(),
+                    row.failure_kind.as_deref(),
+                    row.failure_class.as_deref(),
+                    row.is_actionable,
+                );
+                if classification.failure_class == FailureClass::None {
+                    continue;
+                }
+                total_failures += 1;
+                match classification.failure_class {
+                    FailureClass::ServiceFailure => service_failure_count += 1,
+                    FailureClass::ClientFailure => client_failure_count += 1,
+                    FailureClass::ClientAbort => client_abort_count += 1,
+                    FailureClass::None => {}
+                }
+                if classification.is_actionable {
+                    actionable_failure_count += 1;
+                }
             }
         }
         let actionable_failure_rate = if total_failures > 0 {
@@ -1360,7 +1431,6 @@ pub(crate) async fn fetch_perf_stats(
     State(state): State<Arc<AppState>>,
     Query(params): Query<PerfQuery>,
 ) -> Result<Json<PerfStatsResponse>, ApiError> {
-    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     #[derive(sqlx::FromRow)]
     struct PerfTimingRow {
         t_total_ms: Option<f64>,
@@ -1376,8 +1446,6 @@ pub(crate) async fn fetch_perf_stats(
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let range_window = resolve_range_window(&params.range, reporting_tz)?;
     if range_window.start < shanghai_retention_cutoff(state.config.invocation_max_days) {
-        let snapshot_id =
-            resolve_invocation_snapshot_id(&state.pool, InvocationSourceScope::ProxyOnly).await?;
         let range_plan = build_hourly_rollup_exact_range_plan(
             range_window.start,
             range_window.display_end,
@@ -1385,6 +1453,46 @@ pub(crate) async fn fetch_perf_stats(
         )?;
         let mut by_stage: BTreeMap<String, (i64, f64, f64, ApproxHistogramCounts)> =
             BTreeMap::new();
+        let (exact_records, archive_overlap_ids) = if range_plan.full_hour_range.is_some() {
+            let mut tx = state.pool.begin().await?;
+            let snapshot_id =
+                resolve_invocation_snapshot_id_tx(tx.as_mut(), InvocationSourceScope::ProxyOnly)
+                    .await?;
+            let rollup_live_cursor = load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
+            let mut exact_records = query_invocation_exact_records_tx(
+                tx.as_mut(),
+                &range_plan,
+                InvocationSourceScope::ProxyOnly,
+                snapshot_id,
+            )
+            .await?;
+            let tail_records = query_invocation_full_hour_tail_records_tx(
+                tx.as_mut(),
+                &range_plan,
+                InvocationSourceScope::ProxyOnly,
+                rollup_live_cursor,
+                snapshot_id,
+            )
+            .await?;
+            let archive_overlap_ids =
+                tail_records.iter().map(|record| record.id).collect::<HashSet<_>>();
+            exact_records.extend(tail_records);
+            (exact_records, archive_overlap_ids)
+        } else {
+            let snapshot_id =
+                resolve_invocation_snapshot_id(&state.pool, InvocationSourceScope::ProxyOnly)
+                    .await?;
+            (
+                query_invocation_exact_records(
+                    &state.pool,
+                    &range_plan,
+                    InvocationSourceScope::ProxyOnly,
+                    snapshot_id,
+                )
+                .await?,
+                HashSet::new(),
+            )
+        };
         if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
             let rows = query_proxy_perf_stage_hourly_rollup_range(
                 &state.pool,
@@ -1404,14 +1512,32 @@ pub(crate) async fn fetch_perf_stats(
                     &decode_approx_histogram(&row.histogram),
                 )?;
             }
+            let archived_start = Utc
+                .timestamp_opt(range_start_epoch, 0)
+                .single()
+                .ok_or_else(|| ApiError::from(anyhow!("invalid perf archive start epoch")))?;
+            let archived_end = Utc
+                .timestamp_opt(range_end_epoch, 0)
+                .single()
+                .ok_or_else(|| ApiError::from(anyhow!("invalid perf archive end epoch")))?;
+            let archived_perf =
+                crate::stats::query_unmaterialized_proxy_perf_stage_rollups_from_archives(
+                    &state.pool,
+                    archived_start,
+                    archived_end,
+                    Some(&archive_overlap_ids),
+                )
+                .await?;
+            for (stage, delta) in archived_perf {
+                let entry = by_stage
+                    .entry(stage)
+                    .or_insert_with(|| (0, 0.0, 0.0, empty_approx_histogram()));
+                entry.0 += delta.sample_count;
+                entry.1 += delta.sum_ms;
+                entry.2 = entry.2.max(delta.max_ms);
+                merge_approx_histogram_into(&mut entry.3, &delta.histogram)?;
+            }
         }
-        let exact_records = query_invocation_exact_records(
-            &state.pool,
-            &range_plan,
-            InvocationSourceScope::ProxyOnly,
-            snapshot_id,
-        )
-        .await?;
         for record in exact_records {
             record_perf_stage_sample(&mut by_stage, "total", record.t_total_ms);
             record_perf_stage_sample(&mut by_stage, "requestRead", record.t_req_read_ms);

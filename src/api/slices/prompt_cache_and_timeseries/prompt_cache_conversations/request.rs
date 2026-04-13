@@ -4,7 +4,6 @@ pub(crate) async fn fetch_prompt_cache_conversations(
     State(state): State<Arc<AppState>>,
     Query(params): Query<PromptCacheConversationsQuery>,
 ) -> Result<Json<PromptCacheConversationsResponse>, ApiError> {
-    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let request = resolve_prompt_cache_conversations_request(params)?;
     let response =
         if request.page_size.is_none() && request.cursor.is_none() && request.snapshot_at.is_none()
@@ -328,4 +327,3 @@ pub(crate) async fn resolve_prompt_cache_conversation_snapshot_filter(
         snapshot_boundary_row_id_ceiling,
     })
 }
-

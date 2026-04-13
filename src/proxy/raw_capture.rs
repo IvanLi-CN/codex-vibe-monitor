@@ -461,12 +461,20 @@ pub(crate) async fn store_raw_payload_file(
 
 pub(crate) async fn broadcast_proxy_capture_follow_up(
     pool: &Pool<Sqlite>,
+    hourly_rollup_sync_lock: &Mutex<()>,
     broadcaster: &broadcast::Sender<BroadcastPayload>,
     broadcast_state_cache: &Mutex<BroadcastStateCache>,
     relay_config: Option<&CrsStatsConfig>,
     invocation_max_days: u64,
     invoke_id: &str,
 ) {
+    refresh_hourly_rollups_for_read_surfaces_best_effort(
+        pool,
+        hourly_rollup_sync_lock,
+        "proxy capture follow-up",
+    )
+    .await;
+
     if broadcaster.receiver_count() == 0 {
         return;
     }
@@ -532,6 +540,7 @@ pub(crate) struct SummaryQuotaBroadcastIdleContext<'a> {
     pub(crate) broadcast_running: &'a AtomicBool,
     pub(crate) shutdown: &'a CancellationToken,
     pub(crate) pool: &'a Pool<Sqlite>,
+    pub(crate) hourly_rollup_sync_lock: &'a Mutex<()>,
     pub(crate) broadcaster: &'a broadcast::Sender<BroadcastPayload>,
     pub(crate) broadcast_state_cache: &'a Mutex<BroadcastStateCache>,
     pub(crate) relay_config: Option<&'a CrsStatsConfig>,
@@ -559,6 +568,7 @@ pub(crate) async fn finish_summary_quota_broadcast_idle(
         );
         broadcast_proxy_capture_follow_up(
             ctx.pool,
+            ctx.hourly_rollup_sync_lock,
             ctx.broadcaster,
             ctx.broadcast_state_cache,
             ctx.relay_config,
@@ -574,37 +584,10 @@ pub(crate) async fn finish_summary_quota_broadcast_idle(
         .is_ok()
 }
 
-pub(crate) async fn persist_and_broadcast_proxy_capture(
+pub(crate) async fn schedule_proxy_capture_follow_up_worker(
     state: &AppState,
-    capture_started: Instant,
-    record: ProxyCaptureRecord,
+    invoke_id: &str,
 ) -> Result<()> {
-    let inserted = persist_proxy_capture_record(&state.pool, capture_started, record).await?;
-    let Some(inserted_record) = inserted else {
-        return Ok(());
-    };
-    if inserted_record
-        .prompt_cache_key
-        .as_deref()
-        .is_some_and(|key| !key.trim().is_empty())
-    {
-        invalidate_prompt_cache_conversations_cache(&state.prompt_cache_conversation_cache).await;
-    }
-    if state.broadcaster.receiver_count() == 0 {
-        return Ok(());
-    }
-
-    let invoke_id = inserted_record.invoke_id.clone();
-    if let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
-        records: vec![inserted_record],
-    }) {
-        warn!(
-            ?err,
-            invoke_id = %invoke_id,
-            "failed to broadcast new proxy capture record"
-        );
-    }
-
     if state.shutdown.is_cancelled() {
         info!(
             invoke_id = %invoke_id,
@@ -612,11 +595,12 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
         );
         broadcast_proxy_capture_follow_up(
             &state.pool,
+            state.hourly_rollup_sync_lock.as_ref(),
             &state.broadcaster,
             state.broadcast_state_cache.as_ref(),
             state.config.crs_stats.as_ref(),
             state.config.invocation_max_days,
-            &invoke_id,
+            invoke_id,
         )
         .await;
         return Ok(());
@@ -632,11 +616,12 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
         );
         broadcast_proxy_capture_follow_up(
             &state.pool,
+            state.hourly_rollup_sync_lock.as_ref(),
             &state.broadcaster,
             state.broadcast_state_cache.as_ref(),
             state.config.crs_stats.as_ref(),
             state.config.invocation_max_days,
-            &invoke_id,
+            invoke_id,
         )
         .await;
         return Ok(());
@@ -652,12 +637,14 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
     let latest_broadcast_seq = state.proxy_summary_quota_broadcast_seq.clone();
     let broadcast_running = state.proxy_summary_quota_broadcast_running.clone();
     let pool = state.pool.clone();
+    let hourly_rollup_sync_lock = state.hourly_rollup_sync_lock.clone();
     let broadcaster = state.broadcaster.clone();
     let broadcast_state_cache = state.broadcast_state_cache.clone();
     let relay_config = state.config.crs_stats.clone();
     let invocation_max_days = state.config.invocation_max_days;
     let shutdown = state.shutdown.clone();
     let broadcast_handle_slot = state.proxy_summary_quota_broadcast_handle.clone();
+    let invoke_id = invoke_id.to_string();
     let handle = tokio::spawn(async move {
         let mut synced_seq = 0_u64;
         loop {
@@ -670,6 +657,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
                     );
                     broadcast_proxy_capture_follow_up(
                         &pool,
+                        hourly_rollup_sync_lock.as_ref(),
                         &broadcaster,
                         broadcast_state_cache.as_ref(),
                         relay_config.as_ref(),
@@ -693,6 +681,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
                         broadcast_running: broadcast_running.as_ref(),
                         shutdown: &shutdown,
                         pool: &pool,
+                        hourly_rollup_sync_lock: hourly_rollup_sync_lock.as_ref(),
                         broadcaster: &broadcaster,
                         broadcast_state_cache: broadcast_state_cache.as_ref(),
                         relay_config: relay_config.as_ref(),
@@ -709,14 +698,11 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
             }
             synced_seq = target_seq;
 
-            if broadcaster.receiver_count() == 0 {
-                continue;
-            }
-
-            let summaries = tokio::select! {
+            tokio::select! {
                 _ = shutdown.cancelled() => {
                     broadcast_proxy_capture_follow_up(
                         &pool,
+                        hourly_rollup_sync_lock.as_ref(),
                         &broadcaster,
                         broadcast_state_cache.as_ref(),
                         relay_config.as_ref(),
@@ -727,90 +713,20 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
                     broadcast_running.store(false, Ordering::Release);
                     info!(
                         invoke_id = %invoke_id,
-                        "summary/quota broadcast worker flushed follow-up before collecting summaries during shutdown"
+                        "summary/quota broadcast worker flushed follow-up before shutdown"
                     );
                     break;
                 }
-                result = collect_summary_snapshots(&pool, relay_config.as_ref(), invocation_max_days) => result,
+                _ = broadcast_proxy_capture_follow_up(
+                    &pool,
+                    hourly_rollup_sync_lock.as_ref(),
+                    &broadcaster,
+                    broadcast_state_cache.as_ref(),
+                    relay_config.as_ref(),
+                    invocation_max_days,
+                    &invoke_id,
+                ) => {}
             };
-            match summaries {
-                Ok(summaries) => {
-                    for summary in summaries {
-                        if let Err(err) = broadcast_summary_if_changed(
-                            &broadcaster,
-                            broadcast_state_cache.as_ref(),
-                            &summary.window,
-                            summary.summary,
-                        )
-                        .await
-                        {
-                            warn!(
-                                ?err,
-                                invoke_id = %invoke_id,
-                                window = %summary.window,
-                                "failed to broadcast proxy summary payload"
-                            );
-                        }
-                    }
-                }
-                Err(err) => {
-                    warn!(
-                        ?err,
-                        invoke_id = %invoke_id,
-                        "failed to collect summary snapshots after proxy capture persistence"
-                    );
-                }
-            }
-
-            if broadcaster.receiver_count() == 0 {
-                continue;
-            }
-
-            let quota = tokio::select! {
-                _ = shutdown.cancelled() => {
-                    broadcast_proxy_capture_follow_up(
-                        &pool,
-                        &broadcaster,
-                        broadcast_state_cache.as_ref(),
-                        relay_config.as_ref(),
-                        invocation_max_days,
-                        &invoke_id,
-                    )
-                    .await;
-                    broadcast_running.store(false, Ordering::Release);
-                    info!(
-                        invoke_id = %invoke_id,
-                        "summary/quota broadcast worker flushed follow-up before fetching quota during shutdown"
-                    );
-                    break;
-                }
-                result = QuotaSnapshotResponse::fetch_latest(&pool) => result,
-            };
-            match quota {
-                Ok(Some(snapshot)) => {
-                    if let Err(err) = broadcast_quota_if_changed(
-                        &broadcaster,
-                        broadcast_state_cache.as_ref(),
-                        snapshot,
-                    )
-                    .await
-                    {
-                        warn!(
-                            ?err,
-                            invoke_id = %invoke_id,
-                            "failed to broadcast proxy quota snapshot"
-                        );
-                    }
-                }
-                Ok(None) => {}
-                Err(err) => {
-                    warn!(
-                        ?err,
-                        invoke_id = %invoke_id,
-                        "failed to fetch latest quota snapshot after proxy capture persistence"
-                    );
-                }
-            }
         }
     });
 
@@ -840,6 +756,38 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
     }
 
     Ok(())
+}
+
+pub(crate) async fn persist_and_broadcast_proxy_capture(
+    state: &AppState,
+    capture_started: Instant,
+    record: ProxyCaptureRecord,
+) -> Result<()> {
+    let inserted = persist_proxy_capture_record(&state.pool, capture_started, record).await?;
+    let Some(inserted_record) = inserted else {
+        return Ok(());
+    };
+    if inserted_record
+        .prompt_cache_key
+        .as_deref()
+        .is_some_and(|key| !key.trim().is_empty())
+    {
+        invalidate_prompt_cache_conversations_cache(&state.prompt_cache_conversation_cache).await;
+    }
+
+    let invoke_id = inserted_record.invoke_id.clone();
+    if state.broadcaster.receiver_count() > 0
+        && let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
+            records: vec![inserted_record],
+        })
+    {
+        warn!(
+            ?err,
+            invoke_id = %invoke_id,
+            "failed to broadcast new proxy capture record"
+        );
+    }
+    schedule_proxy_capture_follow_up_worker(state, &invoke_id).await
 }
 
 pub(crate) async fn persist_proxy_capture_record(

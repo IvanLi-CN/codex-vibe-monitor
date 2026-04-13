@@ -64,11 +64,65 @@ async fn seed_invocation_archive_batch(
                     ttfb_ms: *ttfb_ms,
                     payload: Some("{}"),
                     detail_level: DETAIL_LEVEL_FULL,
+                    error_message: None,
+                    failure_kind: None,
+                    failure_class: Some("none"),
+                    is_actionable: Some(0),
                 }
             },
         )
         .collect::<Vec<_>>();
     seed_invocation_archive_batch_with_details(pool, config, batch_name, &rows).await
+}
+
+async fn run_background_invocation_summary_rollup_repair(pool: &SqlitePool) {
+    crate::stats::ensure_invocation_summary_rollups_ready(pool)
+        .await
+        .expect("run background invocation summary rollup repair");
+}
+
+async fn insert_materialized_rollup_bucket_marker(
+    pool: &SqlitePool,
+    target: &str,
+    bucket_start_epoch: i64,
+    source: &str,
+) {
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_materialized_buckets (
+            target,
+            bucket_start_epoch,
+            source,
+            materialized_at
+        )
+        VALUES (?1, ?2, ?3, datetime('now'))
+        "#,
+    )
+    .bind(target)
+    .bind(bucket_start_epoch)
+    .bind(source)
+    .execute(pool)
+    .await
+    .expect("insert materialized rollup bucket marker");
+}
+
+async fn insert_hourly_rollup_archive_replay_marker(
+    pool: &SqlitePool,
+    target: &str,
+    file_path: &Path,
+) {
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
+        VALUES (?1, ?2, ?3, datetime('now'))
+        "#,
+    )
+    .bind(target)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(file_path.to_string_lossy().to_string())
+    .execute(pool)
+    .await
+    .expect("insert hourly rollup archive replay marker");
 }
 
 #[derive(Clone, Copy)]
@@ -83,6 +137,10 @@ struct SeedInvocationArchiveBatchRow<'a> {
     ttfb_ms: Option<f64>,
     payload: Option<&'a str>,
     detail_level: &'a str,
+    error_message: Option<&'a str>,
+    failure_kind: Option<&'a str>,
+    failure_class: Option<&'a str>,
+    is_actionable: Option<i64>,
 }
 
 async fn seed_invocation_archive_batch_with_details(
@@ -119,9 +177,9 @@ async fn seed_invocation_archive_batch_with_details(
         sqlx::query(
             r#"
             INSERT INTO codex_invocations (
-                id, invoke_id, occurred_at, source, status, total_tokens, cost, t_upstream_ttfb_ms, payload, detail_level, raw_response, created_at
+                id, invoke_id, occurred_at, source, status, total_tokens, cost, t_upstream_ttfb_ms, payload, detail_level, error_message, failure_kind, failure_class, is_actionable, raw_response, created_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
             "#,
         )
         .bind(row.id)
@@ -134,6 +192,10 @@ async fn seed_invocation_archive_batch_with_details(
         .bind(row.ttfb_ms)
         .bind(row.payload)
         .bind(row.detail_level)
+        .bind(row.error_message)
+        .bind(row.failure_kind)
+        .bind(row.failure_class)
+        .bind(row.is_actionable)
         .bind("{}")
         .bind(row.occurred_at)
         .execute(&archive_pool)
@@ -1366,34 +1428,47 @@ async fn all_time_summary_preserves_archived_history_when_rollup_failures_are_st
     .await
     .expect("fetch all-time summary with archived history present");
 
-    assert_eq!(summary.total_count, 4);
-    assert_eq!(summary.success_count, 2);
-    assert_eq!(summary.failure_count, 1);
-    assert_eq!(summary.total_tokens, 40);
-    assert!((summary.total_cost - 0.31).abs() < 1e-9);
+    assert_eq!(summary.total_count, 3);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 2);
+    assert_eq!(summary.total_tokens, 30);
+    assert!((summary.total_cost - 0.30).abs() < 1e-9);
 
-    let repair_marker_cursor: i64 =
-        sqlx::query_scalar("SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1")
-            .bind("codex_invocations_summary_rollup_v2")
-            .fetch_one(&state.pool)
-            .await
-            .expect("load archived all-time summary repair marker");
-    assert_eq!(repair_marker_cursor, 1);
-    let repair_live_cursor: i64 =
-        sqlx::query_scalar("SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1")
-            .bind("codex_invocations_summary_rollup_v2_live_cursor")
-            .fetch_one(&state.pool)
-            .await
-            .expect("load archived all-time summary repair live cursor");
-    assert_eq!(repair_live_cursor, 10);
+    let repair_marker_cursor = sqlx::query_scalar::<_, i64>(
+        "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
+    )
+    .bind("codex_invocations_summary_rollup_v2")
+    .fetch_optional(&state.pool)
+    .await
+    .expect("load archived all-time summary repair marker presence");
+    assert_eq!(
+        repair_marker_cursor, None,
+        "read-only all-time summary should not materialize summary repair markers inline"
+    );
+    let repair_live_cursor = sqlx::query_scalar::<_, i64>(
+        "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
+    )
+    .bind("codex_invocations_summary_rollup_v2_live_cursor")
+    .fetch_optional(&state.pool)
+    .await
+    .expect("load archived all-time summary repair live cursor presence");
+    assert_eq!(
+        repair_live_cursor, None,
+        "read-only all-time summary should not materialize repair live-cursor markers inline"
+    );
     let invocation_rollup_cursor = sqlx::query_scalar::<_, i64>(
         "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
     )
     .bind("codex_invocations")
-    .fetch_one(&state.pool)
+    .fetch_optional(&state.pool)
     .await
-    .expect("load invocation hourly rollup live cursor after repair");
-    assert_eq!(invocation_rollup_cursor, 10);
+    .expect("load invocation hourly rollup live cursor presence after read-only summary");
+    assert_eq!(
+        invocation_rollup_cursor, None,
+        "read-only all-time summary should not advance the shared invocation hourly cursor inline"
+    );
+
+    run_background_invocation_summary_rollup_repair(&state.pool).await;
 
     let Json(summary_repeat) = fetch_summary(
         State(state.clone()),
@@ -1460,6 +1535,4492 @@ async fn all_time_summary_preserves_archived_history_when_rollup_failures_are_st
     assert_eq!(summary_with_live_tail.failure_count, 2);
     assert_eq!(summary_with_live_tail.total_tokens, 45);
     assert!((summary_with_live_tail.total_cost - 0.36).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn all_time_summary_includes_unmaterialized_archived_history_without_inline_repair() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(6, 0, 0)
+    .expect("valid archived local hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("archived success time"),
+    );
+    let archived_failed_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("archived failed time"),
+    );
+
+    seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-all-unmaterialized-archive",
+        &[
+            (
+                1_i64,
+                "summary-all-unmaterialized-success",
+                archived_success_at.as_str(),
+                SOURCE_PROXY,
+                "success",
+                10_i64,
+                0.10_f64,
+                Some(100.0),
+            ),
+            (
+                2_i64,
+                "summary-all-unmaterialized-failed",
+                archived_failed_at.as_str(),
+                SOURCE_PROXY,
+                "failed",
+                10_i64,
+                0.20_f64,
+                Some(120.0),
+            ),
+        ],
+    )
+    .await;
+
+    let Json(summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch all-time summary with unmaterialized archived history");
+
+    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 1);
+    assert_eq!(summary.total_tokens, 20);
+    assert!((summary.total_cost - 0.30).abs() < 1e-9);
+
+    let repair_marker_cursor = sqlx::query_scalar::<_, i64>(
+        "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
+    )
+    .bind("codex_invocations_summary_rollup_v2")
+    .fetch_optional(&state.pool)
+    .await
+    .expect("load pending archive repair marker presence");
+    assert_eq!(
+        repair_marker_cursor, None,
+        "all-time summary should not materialize summary repair markers inline"
+    );
+}
+
+#[tokio::test]
+async fn all_time_summary_skips_archive_fallback_rows_already_counted_in_live_tail() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(6, 0, 0)
+    .expect("valid archived overlap hour");
+    let first_archived_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("first archived overlap time"),
+    );
+    let second_archived_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("second archived overlap time"),
+    );
+
+    seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-all-live-tail-overlap",
+        &[
+            (
+                2_i64,
+                "summary-all-live-tail-overlap-success",
+                first_archived_at.as_str(),
+                SOURCE_PROXY,
+                "success",
+                10_i64,
+                0.10_f64,
+                Some(100.0),
+            ),
+            (
+                3_i64,
+                "summary-all-live-tail-overlap-failed",
+                second_archived_at.as_str(),
+                SOURCE_PROXY,
+                "failed",
+                20_i64,
+                0.20_f64,
+                Some(120.0),
+            ),
+        ],
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)
+        VALUES (?1, ?2, datetime('now'))
+        ON CONFLICT(dataset) DO UPDATE SET
+            cursor_id = excluded.cursor_id,
+            updated_at = datetime('now')
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(1_i64)
+    .execute(&state.pool)
+    .await
+    .expect("seed shared hourly rollup cursor before overlapping live tail");
+
+    for (id, invoke_id, occurred_at, status, total_tokens, cost, ttfb_ms) in [
+        (
+            2_i64,
+            "summary-all-live-tail-overlap-success",
+            first_archived_at.as_str(),
+            "success",
+            10_i64,
+            0.10_f64,
+            100.0_f64,
+        ),
+        (
+            3_i64,
+            "summary-all-live-tail-overlap-failed",
+            second_archived_at.as_str(),
+            "failed",
+            20_i64,
+            0.20_f64,
+            120.0_f64,
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id,
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                total_tokens,
+                cost,
+                t_upstream_ttfb_ms,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(id)
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(ttfb_ms)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert overlapping live tail invocation row");
+    }
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch all-time summary with overlapping archive/live tail");
+
+    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 1);
+    assert_eq!(summary.total_tokens, 30);
+    assert!((summary.total_cost - 0.30).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn archived_range_reads_include_unmaterialized_batches_without_inline_repair() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(9, 0, 0)
+    .expect("valid archived local hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("archived success time"),
+    );
+    let archived_failed_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(35))
+            .expect("archived failed time"),
+    );
+
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "summary-range-unmaterialized-archive",
+        &[
+            SeedInvocationArchiveBatchRow {
+                id: 1_i64,
+                invoke_id: "summary-range-unmaterialized-success",
+                occurred_at: archived_success_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 10_i64,
+                cost: 0.10_f64,
+                ttfb_ms: Some(100.0),
+                payload: Some("{}"),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0_i64),
+            },
+            SeedInvocationArchiveBatchRow {
+                id: 2_i64,
+                invoke_id: "summary-range-unmaterialized-failed",
+                occurred_at: archived_failed_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "failed",
+                total_tokens: 20_i64,
+                cost: 0.20_f64,
+                ttfb_ms: Some(120.0),
+                payload: Some("{}"),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: Some("HTTP 429 too many requests"),
+                failure_kind: Some("upstream_response_failed"),
+                failure_class: Some("service_failure"),
+                is_actionable: Some(1_i64),
+            },
+        ],
+    )
+    .await;
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some(historical_range.clone()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch historical summary with unmaterialized archived range");
+    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 1);
+    assert_eq!(summary.total_tokens, 30);
+    assert!((summary.total_cost - 0.30).abs() < 1e-9);
+
+    let Json(failure_summary) = fetch_failure_summary(
+        State(state.clone()),
+        Query(FailureSummaryQuery {
+            range: historical_range.clone(),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch historical failure summary with unmaterialized archived range");
+    assert_eq!(failure_summary.total_failures, 1);
+    assert_eq!(failure_summary.service_failure_count, 1);
+    assert_eq!(failure_summary.client_failure_count, 0);
+    assert_eq!(failure_summary.client_abort_count, 0);
+    assert_eq!(failure_summary.actionable_failure_count, 1);
+    assert_f64_close(failure_summary.actionable_failure_rate, 1.0);
+
+    let Json(error_distribution) = fetch_error_distribution(
+        State(state.clone()),
+        Query(ErrorQuery {
+            range: historical_range,
+            top: None,
+            scope: Some("service".to_string()),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch historical error distribution with unmaterialized archived range");
+    assert!(
+        error_distribution
+            .items
+            .iter()
+            .any(|item| item.reason == "too_many_requests" && item.count == 1),
+        "historical error distribution should include archived service failures before background repair"
+    );
+
+    let repair_marker_cursor = sqlx::query_scalar::<_, i64>(
+        "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
+    )
+    .bind("codex_invocations_summary_rollup_v2")
+    .fetch_optional(&state.pool)
+    .await
+    .expect("load historical range repair marker presence");
+    assert_eq!(
+        repair_marker_cursor, None,
+        "historical archived reads should not materialize summary repair markers inline"
+    );
+}
+
+#[tokio::test]
+async fn archived_range_reads_skip_archive_fallback_rows_already_counted_in_live_tail() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(9, 0, 0)
+    .expect("valid archived range overlap hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("archived range overlap success time"),
+    );
+    let archived_failed_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(35))
+            .expect("archived range overlap failed time"),
+    );
+
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "summary-range-live-tail-overlap",
+        &[
+            SeedInvocationArchiveBatchRow {
+                id: 2_i64,
+                invoke_id: "summary-range-live-tail-overlap-success",
+                occurred_at: archived_success_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 10_i64,
+                cost: 0.10_f64,
+                ttfb_ms: Some(100.0),
+                payload: Some("{}"),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0_i64),
+            },
+            SeedInvocationArchiveBatchRow {
+                id: 3_i64,
+                invoke_id: "summary-range-live-tail-overlap-failed",
+                occurred_at: archived_failed_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "failed",
+                total_tokens: 20_i64,
+                cost: 0.20_f64,
+                ttfb_ms: Some(120.0),
+                payload: Some("{}"),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: Some("HTTP 429 too many requests"),
+                failure_kind: Some("upstream_response_failed"),
+                failure_class: Some("service_failure"),
+                is_actionable: Some(1_i64),
+            },
+        ],
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)
+        VALUES (?1, ?2, datetime('now'))
+        ON CONFLICT(dataset) DO UPDATE SET
+            cursor_id = excluded.cursor_id,
+            updated_at = datetime('now')
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(1_i64)
+    .execute(&state.pool)
+    .await
+    .expect("seed archived range shared hourly rollup cursor");
+
+    for (
+        id,
+        invoke_id,
+        occurred_at,
+        status,
+        total_tokens,
+        cost,
+        ttfb_ms,
+        error_message,
+        failure_kind,
+        failure_class,
+        is_actionable,
+    ) in [
+        (
+            2_i64,
+            "summary-range-live-tail-overlap-success",
+            archived_success_at.as_str(),
+            "success",
+            10_i64,
+            0.10_f64,
+            100.0_f64,
+            None,
+            None,
+            Some("none"),
+            Some(0_i64),
+        ),
+        (
+            3_i64,
+            "summary-range-live-tail-overlap-failed",
+            archived_failed_at.as_str(),
+            "failed",
+            20_i64,
+            0.20_f64,
+            120.0_f64,
+            Some("HTTP 429 too many requests"),
+            Some("upstream_response_failed"),
+            Some("service_failure"),
+            Some(1_i64),
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id,
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                total_tokens,
+                cost,
+                error_message,
+                failure_kind,
+                failure_class,
+                is_actionable,
+                detail_level,
+                t_upstream_ttfb_ms,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            "#,
+        )
+        .bind(id)
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(error_message)
+        .bind(failure_kind)
+        .bind(failure_class)
+        .bind(is_actionable)
+        .bind(DETAIL_LEVEL_FULL)
+        .bind(ttfb_ms)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert overlapping archived range live row");
+    }
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some(historical_range.clone()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch historical summary with overlapping archive/live tail");
+    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 1);
+    assert_eq!(summary.total_tokens, 30);
+    assert!((summary.total_cost - 0.30).abs() < 1e-9);
+
+    let Json(failure_summary) = fetch_failure_summary(
+        State(state.clone()),
+        Query(FailureSummaryQuery {
+            range: historical_range.clone(),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch historical failure summary with overlapping archive/live tail");
+    assert_eq!(failure_summary.total_failures, 1);
+    assert_eq!(failure_summary.service_failure_count, 1);
+    assert_eq!(failure_summary.client_failure_count, 0);
+    assert_eq!(failure_summary.client_abort_count, 0);
+    assert_eq!(failure_summary.actionable_failure_count, 1);
+    assert_f64_close(failure_summary.actionable_failure_rate, 1.0);
+
+    let Json(error_distribution) = fetch_error_distribution(
+        State(state),
+        Query(ErrorQuery {
+            range: historical_range,
+            top: None,
+            scope: Some("service".to_string()),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch historical error distribution with overlapping archive/live tail");
+    assert_eq!(error_distribution.items.len(), 1);
+    assert_eq!(error_distribution.items[0].reason, "too_many_requests");
+    assert_eq!(error_distribution.items[0].count, 1);
+}
+
+#[tokio::test]
+async fn all_time_summary_fallback_skips_already_materialized_archive_buckets() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_a_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(6, 0, 0)
+    .expect("valid first archived local hour");
+    let archived_hour_b_local = archived_hour_a_local
+        .checked_add_signed(ChronoDuration::hours(1))
+        .expect("second archived local hour");
+    let archived_first_at = format_naive(
+        archived_hour_a_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("first archived time"),
+    );
+    let archived_second_at = format_naive(
+        archived_hour_b_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("second archived time"),
+    );
+
+    seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-partial-materialized-archive",
+        &[
+            (
+                1_i64,
+                "summary-partial-materialized-first",
+                archived_first_at.as_str(),
+                SOURCE_PROXY,
+                "success",
+                10_i64,
+                0.10_f64,
+                Some(100.0),
+            ),
+            (
+                2_i64,
+                "summary-partial-materialized-second",
+                archived_second_at.as_str(),
+                SOURCE_PROXY,
+                "success",
+                20_i64,
+                0.20_f64,
+                Some(120.0),
+            ),
+        ],
+    )
+    .await;
+
+    let first_bucket_start_epoch = invocation_bucket_start_epoch(&archived_first_at)
+        .expect("first bucket start epoch should be derivable");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0, 0, ?8)
+        "#,
+    )
+    .bind(first_bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(10_i64)
+    .bind(0.10_f64)
+    .bind("[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&state.pool)
+    .await
+    .expect("seed already materialized first summary bucket");
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch all-time summary with partially materialized archive");
+
+    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.success_count, 2);
+    assert_eq!(summary.failure_count, 0);
+    assert_eq!(summary.total_tokens, 30);
+    assert!((summary.total_cost - 0.30).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn all_time_summary_fallback_includes_missing_rows_from_partially_materialized_bucket() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(7, 0, 0)
+    .expect("valid archived partial summary hour");
+    let archived_first_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("first archived partial summary time"),
+    );
+    let archived_second_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("second archived partial summary time"),
+    );
+
+    seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-partial-rowcount-archive",
+        &[
+            (
+                1_i64,
+                "summary-partial-rowcount-first",
+                archived_first_at.as_str(),
+                SOURCE_PROXY,
+                "success",
+                10_i64,
+                0.10_f64,
+                Some(100.0),
+            ),
+            (
+                2_i64,
+                "summary-partial-rowcount-second",
+                archived_second_at.as_str(),
+                SOURCE_PROXY,
+                "success",
+                20_i64,
+                0.20_f64,
+                Some(120.0),
+            ),
+        ],
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_first_at)
+        .expect("partial summary bucket start epoch should be derivable");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(10_i64)
+    .bind(0.10_f64)
+    .bind(1_i64)
+    .bind(100.0_f64)
+    .bind(100.0_f64)
+    .bind("[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&state.pool)
+    .await
+    .expect("seed partially materialized summary rollup row");
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch all-time summary with partially materialized archive bucket");
+
+    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.success_count, 2);
+    assert_eq!(summary.failure_count, 0);
+    assert_eq!(summary.total_tokens, 30);
+    assert!((summary.total_cost - 0.30).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn all_time_summary_fallback_aggregates_missing_rows_across_archive_parts() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(7, 0, 0)
+    .expect("valid archived multipart summary hour");
+    let archived_first_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("first archived multipart summary time"),
+    );
+    let archived_second_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("second archived multipart summary time"),
+    );
+
+    let first_archive_original_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-multipart-archive-a",
+        &[(
+            101_i64,
+            "summary-multipart-first",
+            archived_first_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+    let first_archive_path = state
+        .config
+        .archive_dir
+        .join("summary-multipart-archive-a.sqlite.gz");
+    let _ = fs::remove_file(&first_archive_path);
+    fs::rename(&first_archive_original_path, &first_archive_path)
+        .expect("move first multipart summary archive batch to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1 WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(first_archive_path.to_string_lossy().to_string())
+    .bind(first_archive_original_path.to_string_lossy().to_string())
+    .execute(&state.pool)
+    .await
+    .expect("update first multipart summary archive batch path after move");
+
+    seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-multipart-archive-b",
+        &[(
+            201_i64,
+            "summary-multipart-second",
+            archived_second_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            20_i64,
+            0.20_f64,
+            Some(120.0),
+        )],
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_first_at)
+        .expect("multipart summary bucket start epoch should be derivable");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(10_i64)
+    .bind(0.10_f64)
+    .bind(1_i64)
+    .bind(100.0_f64)
+    .bind(100.0_f64)
+    .bind("[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&state.pool)
+    .await
+    .expect("seed partially materialized multipart summary rollup row");
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch all-time summary with multipart partially materialized archive");
+
+    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.success_count, 2);
+    assert_eq!(summary.failure_count, 0);
+    assert_eq!(summary.total_tokens, 30);
+    assert!((summary.total_cost - 0.30).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn all_time_summary_fallback_keeps_unmaterialized_rows_when_sibling_archive_part_is_materialized(
+) {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(7, 0, 0)
+    .expect("valid archived mixed-state summary hour");
+    let archived_first_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("first archived mixed-state summary time"),
+    );
+    let archived_second_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("second archived mixed-state summary time"),
+    );
+
+    let first_archive_original_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-mixed-state-archive-a",
+        &[(
+            1_i64,
+            "summary-mixed-state-first",
+            archived_first_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+    let first_archive_path = state
+        .config
+        .archive_dir
+        .join("summary-mixed-state-archive-a.sqlite.gz");
+    let _ = fs::remove_file(&first_archive_path);
+    fs::rename(&first_archive_original_path, &first_archive_path)
+        .expect("move first mixed-state summary archive batch to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now') WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(first_archive_path.to_string_lossy().to_string())
+    .bind(first_archive_original_path.to_string_lossy().to_string())
+    .execute(&state.pool)
+    .await
+    .expect("mark first mixed-state summary archive batch as materialized");
+
+    seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-mixed-state-archive-b",
+        &[(
+            1_i64,
+            "summary-mixed-state-second",
+            archived_second_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            20_i64,
+            0.20_f64,
+            Some(120.0),
+        )],
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_first_at)
+        .expect("mixed-state summary bucket start epoch should be derivable");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(10_i64)
+    .bind(0.10_f64)
+    .bind(1_i64)
+    .bind(100.0_f64)
+    .bind(100.0_f64)
+    .bind("[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&state.pool)
+    .await
+    .expect("seed mixed-state materialized summary rollup row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch all-time summary with materialized sibling archive part");
+
+    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.success_count, 2);
+    assert_eq!(summary.failure_count, 0);
+    assert_eq!(summary.total_tokens, 30);
+    assert!((summary.total_cost - 0.30).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn all_time_summary_fallback_keeps_unmaterialized_rows_when_materialized_sibling_archive_is_unreadable(
+) {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(7, 0, 0)
+    .expect("valid archived unreadable mixed-state summary hour");
+    let archived_first_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("first archived unreadable mixed-state summary time"),
+    );
+    let archived_second_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("second archived unreadable mixed-state summary time"),
+    );
+
+    let first_archive_original_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-mixed-state-unreadable-archive-a",
+        &[(
+            1_i64,
+            "summary-mixed-state-unreadable-first",
+            archived_first_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+    let first_archive_path = state
+        .config
+        .archive_dir
+        .join("summary-mixed-state-unreadable-archive-a.sqlite.gz");
+    let _ = fs::remove_file(&first_archive_path);
+    fs::rename(&first_archive_original_path, &first_archive_path)
+        .expect("move first unreadable mixed-state summary archive batch to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now') WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(first_archive_path.to_string_lossy().to_string())
+    .bind(first_archive_original_path.to_string_lossy().to_string())
+    .execute(&state.pool)
+    .await
+    .expect("mark first unreadable mixed-state summary archive batch as materialized");
+
+    seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-mixed-state-unreadable-archive-b",
+        &[(
+            1_i64,
+            "summary-mixed-state-unreadable-second",
+            archived_second_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            20_i64,
+            0.20_f64,
+            Some(120.0),
+        )],
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_first_at)
+        .expect("unreadable mixed-state summary bucket start epoch should be derivable");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(10_i64)
+    .bind(0.10_f64)
+    .bind(1_i64)
+    .bind(100.0_f64)
+    .bind(100.0_f64)
+    .bind("[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&state.pool)
+    .await
+    .expect("seed unreadable mixed-state materialized summary rollup row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
+
+    fs::write(&first_archive_path, b"not-a-gzip-archive")
+        .expect("corrupt unreadable mixed-state summary archive batch");
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch all-time summary with unreadable materialized sibling archive part");
+
+    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.success_count, 2);
+    assert_eq!(summary.failure_count, 0);
+    assert_eq!(summary.total_tokens, 30);
+    assert!((summary.total_cost - 0.30).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn all_time_summary_skips_double_count_for_readable_materialized_archive_when_same_bucket_sibling_is_unreadable(
+) {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(7, 0, 0)
+    .expect("valid same-bucket summary hour");
+    let archived_readable_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("same-bucket readable summary archived time"),
+    );
+    let archived_unreadable_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("same-bucket unreadable summary archived time"),
+    );
+
+    let readable_archive_original_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-same-bucket-unreadable-sibling-materialized",
+        &[(
+            1_i64,
+            "summary-same-bucket-unreadable-sibling-materialized",
+            archived_readable_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+    let readable_archive_path = state
+        .config
+        .archive_dir
+        .join("summary-same-bucket-unreadable-sibling-materialized.sqlite.gz");
+    let _ = fs::remove_file(&readable_archive_path);
+    fs::rename(&readable_archive_original_path, &readable_archive_path)
+        .expect("move readable same-bucket summary archive batch to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now'), coverage_start_at = ?3, coverage_end_at = ?4 WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(readable_archive_path.to_string_lossy().to_string())
+    .bind(readable_archive_original_path.to_string_lossy().to_string())
+    .bind(archived_readable_at.as_str())
+    .bind(archived_readable_at.as_str())
+    .execute(&state.pool)
+    .await
+    .expect("mark readable same-bucket summary archive batch as materialized");
+
+    let unreadable_archive_original_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-same-bucket-unreadable-sibling-broken",
+        &[(
+            1_i64,
+            "summary-same-bucket-unreadable-sibling-broken",
+            archived_unreadable_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            20_i64,
+            0.20_f64,
+            Some(120.0),
+        )],
+    )
+    .await;
+    let unreadable_archive_path =
+        state
+            .config
+            .archive_dir
+            .join("summary-same-bucket-unreadable-sibling-broken.sqlite.gz");
+    let _ = fs::remove_file(&unreadable_archive_path);
+    fs::rename(&unreadable_archive_original_path, &unreadable_archive_path)
+        .expect("move unreadable same-bucket summary archive batch to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now'), coverage_start_at = ?3, coverage_end_at = ?4 WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(unreadable_archive_path.to_string_lossy().to_string())
+    .bind(unreadable_archive_original_path.to_string_lossy().to_string())
+    .bind(archived_unreadable_at.as_str())
+    .bind(archived_unreadable_at.as_str())
+    .execute(&state.pool)
+    .await
+    .expect("mark unreadable same-bucket summary archive batch as materialized");
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_readable_at)
+        .expect("same-bucket summary bucket start epoch should be derivable");
+    let mut histogram = empty_approx_histogram();
+    add_approx_histogram_sample(&mut histogram, 100.0);
+    add_approx_histogram_sample(&mut histogram, 120.0);
+    let encoded_histogram =
+        encode_approx_histogram(&histogram).expect("encode same-bucket summary histogram");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(2_i64)
+    .bind(2_i64)
+    .bind(0_i64)
+    .bind(30_i64)
+    .bind(0.30_f64)
+    .bind(2_i64)
+    .bind(220.0_f64)
+    .bind(120.0_f64)
+    .bind(encoded_histogram)
+    .execute(&state.pool)
+    .await
+    .expect("seed same-bucket summary rollup row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
+
+    fs::write(&unreadable_archive_path, b"not-a-gzip-archive")
+        .expect("corrupt unreadable same-bucket summary archive");
+
+    let Json(summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch all-time summary with unreadable same-bucket materialized sibling archive");
+
+    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.success_count, 2);
+    assert_eq!(summary.failure_count, 0);
+    assert_eq!(summary.total_tokens, 30);
+    assert!((summary.total_cost - 0.30).abs() < 1e-9);
+
+    let start = local_naive_to_utc(archived_hour_local, Shanghai);
+    let end = local_naive_to_utc(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::hours(1))
+            .expect("same-bucket summary timeseries end"),
+        Shanghai,
+    );
+    let Json(response) = fetch_timeseries_from_hourly_rollups(
+        state,
+        TimeseriesQuery {
+            range: "ignored".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        },
+        Shanghai,
+        InvocationSourceScope::ProxyOnly,
+        RangeWindow {
+            start,
+            end,
+            display_end: end,
+            duration: end - start,
+        },
+        TimeseriesBucketSelection {
+            bucket_seconds: 3_600,
+            effective_bucket: "1h".to_string(),
+            available_buckets: vec!["1h".to_string()],
+            bucket_limited_to_daily: false,
+        },
+    )
+    .await
+    .expect("fetch same-bucket historical timeseries with unreadable materialized sibling archive");
+
+    let archived_point = response
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(start))
+        .expect("same-bucket summary timeseries bucket should exist");
+    assert_eq!(archived_point.total_count, 2);
+    assert_eq!(archived_point.success_count, 2);
+    assert_eq!(archived_point.failure_count, 0);
+    assert_eq!(archived_point.total_tokens, 30);
+    assert_f64_close(archived_point.total_cost, 0.30);
+}
+
+#[tokio::test]
+async fn all_time_summary_skips_double_count_for_readable_materialized_archive_when_same_month_sibling_is_unreadable(
+) {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_materialized_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(7, 0, 0)
+    .expect("valid archived readable materialized summary hour");
+    let archived_unreadable_hour_local = archived_materialized_hour_local
+        .checked_add_signed(ChronoDuration::hours(2))
+        .expect("same-month unreadable summary sibling hour");
+    let archived_materialized_at = format_naive(
+        archived_materialized_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("readable materialized summary archived time"),
+    );
+    let archived_unreadable_at = format_naive(
+        archived_unreadable_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("unreadable summary sibling archived time"),
+    );
+
+    let materialized_archive_original_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-same-month-unreadable-sibling-materialized",
+        &[(
+            1_i64,
+            "summary-same-month-unreadable-sibling-materialized",
+            archived_materialized_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+    let materialized_archive_path = state.config.archive_dir.join(
+        "summary-same-month-unreadable-sibling-materialized.sqlite.gz",
+    );
+    let _ = fs::remove_file(&materialized_archive_path);
+    fs::rename(&materialized_archive_original_path, &materialized_archive_path).expect(
+        "move readable materialized summary archive batch to a unique same-month path",
+    );
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now'), coverage_start_at = ?3, coverage_end_at = ?4 WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(materialized_archive_path.to_string_lossy().to_string())
+    .bind(materialized_archive_original_path.to_string_lossy().to_string())
+    .bind(archived_materialized_at.as_str())
+    .bind(archived_materialized_at.as_str())
+    .execute(&state.pool)
+    .await
+    .expect("mark readable materialized same-month summary archive batch as materialized");
+
+    let unreadable_archive_original_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-same-month-unreadable-sibling-broken",
+        &[(
+            1_i64,
+            "summary-same-month-unreadable-sibling-broken",
+            archived_unreadable_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            20_i64,
+            0.20_f64,
+            Some(120.0),
+        )],
+    )
+    .await;
+    let unreadable_archive_path =
+        state
+            .config
+            .archive_dir
+            .join("summary-same-month-unreadable-sibling-broken.sqlite.gz");
+    let _ = fs::remove_file(&unreadable_archive_path);
+    fs::rename(&unreadable_archive_original_path, &unreadable_archive_path)
+        .expect("move unreadable summary sibling archive batch to a unique same-month path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now'), coverage_start_at = ?3, coverage_end_at = ?4 WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(unreadable_archive_path.to_string_lossy().to_string())
+    .bind(unreadable_archive_original_path.to_string_lossy().to_string())
+    .bind(archived_unreadable_at.as_str())
+    .bind(archived_unreadable_at.as_str())
+    .execute(&state.pool)
+    .await
+    .expect("mark unreadable same-month summary sibling archive batch as materialized");
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_materialized_at)
+        .expect("same-month summary bucket start epoch should be derivable");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(10_i64)
+    .bind(0.10_f64)
+    .bind(1_i64)
+    .bind(100.0_f64)
+    .bind(100.0_f64)
+    .bind("[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&state.pool)
+    .await
+    .expect("seed readable materialized summary rollup row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
+
+    fs::write(&unreadable_archive_path, b"not-a-gzip-archive")
+        .expect("corrupt unreadable same-month summary sibling archive");
+
+    let Json(summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch all-time summary with unreadable same-month materialized sibling archive");
+
+    assert_eq!(summary.total_count, 1);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 0);
+    assert_eq!(summary.total_tokens, 10);
+    assert!((summary.total_cost - 0.10).abs() < 1e-9);
+
+    let start = local_naive_to_utc(archived_materialized_hour_local, Shanghai);
+    let end = local_naive_to_utc(
+        archived_materialized_hour_local
+            .checked_add_signed(ChronoDuration::hours(1))
+            .expect("same-month summary timeseries end"),
+        Shanghai,
+    );
+    let Json(response) = fetch_timeseries_from_hourly_rollups(
+        state,
+        TimeseriesQuery {
+            range: "ignored".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        },
+        Shanghai,
+        InvocationSourceScope::ProxyOnly,
+        RangeWindow {
+            start,
+            end,
+            display_end: end,
+            duration: end - start,
+        },
+        TimeseriesBucketSelection {
+            bucket_seconds: 3_600,
+            effective_bucket: "1h".to_string(),
+            available_buckets: vec!["1h".to_string()],
+            bucket_limited_to_daily: false,
+        },
+    )
+    .await
+    .expect("fetch historical timeseries with unreadable same-month materialized sibling archive");
+
+    let archived_point = response
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(start))
+        .expect("same-month summary timeseries bucket should exist");
+    assert_eq!(archived_point.total_count, 1);
+    assert_eq!(archived_point.success_count, 1);
+    assert_eq!(archived_point.failure_count, 0);
+    assert_eq!(archived_point.total_tokens, 10);
+    assert_f64_close(archived_point.total_cost, 0.10);
+}
+
+#[tokio::test]
+async fn archived_failure_fallback_skips_already_materialized_archive_buckets() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_a_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid first archived failure hour");
+    let archived_hour_b_local = archived_hour_a_local
+        .checked_add_signed(ChronoDuration::hours(1))
+        .expect("second archived failure hour");
+    let archived_first_at = format_naive(
+        archived_hour_a_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("first archived failure time"),
+    );
+    let archived_second_at = format_naive(
+        archived_hour_b_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("second archived failure time"),
+    );
+
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "failure-partial-materialized-archive",
+        &[
+            SeedInvocationArchiveBatchRow {
+                id: 1_i64,
+                invoke_id: "failure-partial-materialized-first",
+                occurred_at: archived_first_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "failed",
+                total_tokens: 10_i64,
+                cost: 0.10_f64,
+                ttfb_ms: Some(100.0),
+                payload: Some("{}"),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: Some("HTTP 429 too many requests"),
+                failure_kind: Some("upstream_response_failed"),
+                failure_class: Some("service_failure"),
+                is_actionable: Some(1_i64),
+            },
+            SeedInvocationArchiveBatchRow {
+                id: 2_i64,
+                invoke_id: "failure-partial-materialized-second",
+                occurred_at: archived_second_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "failed",
+                total_tokens: 20_i64,
+                cost: 0.20_f64,
+                ttfb_ms: Some(120.0),
+                payload: Some("{}"),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: Some("upstream stream error"),
+                failure_kind: Some("upstream_stream_error"),
+                failure_class: Some("service_failure"),
+                is_actionable: Some(1_i64),
+            },
+        ],
+    )
+    .await;
+
+    let first_bucket_start_epoch = invocation_bucket_start_epoch(&archived_first_at)
+        .expect("first failure bucket start epoch should be derivable");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_failure_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            failure_class,
+            is_actionable,
+            error_category,
+            failure_count,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(first_bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind("service_failure")
+    .bind(1_i64)
+    .bind("too_many_requests")
+    .bind(1_i64)
+    .execute(&state.pool)
+    .await
+    .expect("seed already materialized first failure bucket");
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(failure_summary) = fetch_failure_summary(
+        State(state.clone()),
+        Query(FailureSummaryQuery {
+            range: historical_range.clone(),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch failure summary with partially materialized archive");
+    assert_eq!(failure_summary.total_failures, 2);
+    assert_eq!(failure_summary.service_failure_count, 2);
+    assert_eq!(failure_summary.client_failure_count, 0);
+    assert_eq!(failure_summary.client_abort_count, 0);
+    assert_eq!(failure_summary.actionable_failure_count, 2);
+
+    let Json(error_distribution) = fetch_error_distribution(
+        State(state),
+        Query(ErrorQuery {
+            range: historical_range,
+            top: None,
+            scope: Some("service".to_string()),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch error distribution with partially materialized archive");
+    let total_distribution_count: i64 = error_distribution.items.iter().map(|item| item.count).sum();
+    assert_eq!(total_distribution_count, 2);
+}
+
+#[tokio::test]
+async fn archived_failure_fallback_includes_missing_rows_from_partially_materialized_count() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(9, 0, 0)
+    .expect("valid archived partial failure count hour");
+    let archived_first_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("first archived partial failure count time"),
+    );
+    let archived_second_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("second archived partial failure count time"),
+    );
+
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "failure-partial-count-archive",
+        &[
+            SeedInvocationArchiveBatchRow {
+                id: 1_i64,
+                invoke_id: "failure-partial-count-first",
+                occurred_at: archived_first_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "failed",
+                total_tokens: 10_i64,
+                cost: 0.10_f64,
+                ttfb_ms: Some(100.0),
+                payload: Some("{}"),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: Some("HTTP 429 too many requests"),
+                failure_kind: Some("upstream_response_failed"),
+                failure_class: Some("service_failure"),
+                is_actionable: Some(1_i64),
+            },
+            SeedInvocationArchiveBatchRow {
+                id: 2_i64,
+                invoke_id: "failure-partial-count-second",
+                occurred_at: archived_second_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "failed",
+                total_tokens: 20_i64,
+                cost: 0.20_f64,
+                ttfb_ms: Some(120.0),
+                payload: Some("{}"),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: Some("HTTP 429 too many requests"),
+                failure_kind: Some("upstream_response_failed"),
+                failure_class: Some("service_failure"),
+                is_actionable: Some(1_i64),
+            },
+        ],
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_first_at)
+        .expect("partial failure count bucket start epoch should be derivable");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_failure_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            failure_class,
+            is_actionable,
+            error_category,
+            failure_count,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind("service_failure")
+    .bind(1_i64)
+    .bind("too_many_requests")
+    .bind(1_i64)
+    .execute(&state.pool)
+    .await
+    .expect("seed partially materialized failure count row");
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(failure_summary) = fetch_failure_summary(
+        State(state.clone()),
+        Query(FailureSummaryQuery {
+            range: historical_range.clone(),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch failure summary with partially materialized failure count");
+    assert_eq!(failure_summary.total_failures, 2);
+    assert_eq!(failure_summary.service_failure_count, 2);
+    assert_eq!(failure_summary.actionable_failure_count, 2);
+
+    let Json(error_distribution) = fetch_error_distribution(
+        State(state),
+        Query(ErrorQuery {
+            range: historical_range,
+            top: None,
+            scope: Some("service".to_string()),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch error distribution with partially materialized failure count");
+    assert!(
+        error_distribution
+            .items
+            .iter()
+            .any(|item| item.reason == "too_many_requests" && item.count == 2)
+    );
+}
+
+#[tokio::test]
+async fn archived_failure_fallback_aggregates_missing_rows_across_archive_parts() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(9, 0, 0)
+    .expect("valid archived multipart failure hour");
+    let archived_first_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("first archived multipart failure time"),
+    );
+    let archived_second_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("second archived multipart failure time"),
+    );
+
+    let first_archive_original_path = seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "failure-multipart-archive-a",
+        &[SeedInvocationArchiveBatchRow {
+            id: 301_i64,
+            invoke_id: "failure-multipart-first",
+            occurred_at: archived_first_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "failed",
+            total_tokens: 10_i64,
+            cost: 0.10_f64,
+            ttfb_ms: Some(100.0),
+            payload: Some("{}"),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: Some("HTTP 429 too many requests"),
+            failure_kind: Some("upstream_response_failed"),
+            failure_class: Some("service_failure"),
+            is_actionable: Some(1_i64),
+        }],
+    )
+    .await;
+    let first_archive_path = state
+        .config
+        .archive_dir
+        .join("failure-multipart-archive-a.sqlite.gz");
+    let _ = fs::remove_file(&first_archive_path);
+    fs::rename(&first_archive_original_path, &first_archive_path)
+        .expect("move first multipart failure archive batch to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1 WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(first_archive_path.to_string_lossy().to_string())
+    .bind(first_archive_original_path.to_string_lossy().to_string())
+    .execute(&state.pool)
+    .await
+    .expect("update first multipart failure archive batch path after move");
+
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "failure-multipart-archive-b",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1_i64,
+            invoke_id: "failure-multipart-second",
+            occurred_at: archived_second_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "failed",
+            total_tokens: 20_i64,
+            cost: 0.20_f64,
+            ttfb_ms: Some(120.0),
+            payload: Some("{}"),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: Some("HTTP 429 too many requests"),
+            failure_kind: Some("upstream_response_failed"),
+            failure_class: Some("service_failure"),
+            is_actionable: Some(1_i64),
+        }],
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_first_at)
+        .expect("multipart failure bucket start epoch should be derivable");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_failure_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            failure_class,
+            is_actionable,
+            error_category,
+            failure_count,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind("service_failure")
+    .bind(1_i64)
+    .bind("too_many_requests")
+    .bind(1_i64)
+    .execute(&state.pool)
+    .await
+    .expect("seed partially materialized multipart failure count row");
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(failure_summary) = fetch_failure_summary(
+        State(state.clone()),
+        Query(FailureSummaryQuery {
+            range: historical_range.clone(),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch failure summary with multipart partially materialized failure count");
+    assert_eq!(failure_summary.total_failures, 2);
+    assert_eq!(failure_summary.service_failure_count, 2);
+    assert_eq!(failure_summary.actionable_failure_count, 2);
+
+    let Json(error_distribution) = fetch_error_distribution(
+        State(state),
+        Query(ErrorQuery {
+            range: historical_range,
+            top: None,
+            scope: Some("service".to_string()),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch error distribution with multipart partially materialized failure count");
+    assert!(
+        error_distribution
+            .items
+            .iter()
+            .any(|item| item.reason == "too_many_requests" && item.count == 2)
+    );
+}
+
+#[tokio::test]
+async fn archived_failure_fallback_keeps_unmaterialized_rows_when_sibling_archive_part_is_materialized(
+) {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(9, 0, 0)
+    .expect("valid archived mixed-state failure hour");
+    let archived_first_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("first archived mixed-state failure time"),
+    );
+    let archived_second_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("second archived mixed-state failure time"),
+    );
+
+    let first_archive_original_path = seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "failure-mixed-state-archive-a",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1_i64,
+            invoke_id: "failure-mixed-state-first",
+            occurred_at: archived_first_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "failed",
+            total_tokens: 10_i64,
+            cost: 0.10_f64,
+            ttfb_ms: Some(100.0),
+            payload: Some("{}"),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: Some("HTTP 429 too many requests"),
+            failure_kind: Some("upstream_response_failed"),
+            failure_class: Some("service_failure"),
+            is_actionable: Some(1_i64),
+        }],
+    )
+    .await;
+    let first_archive_path = state
+        .config
+        .archive_dir
+        .join("failure-mixed-state-archive-a.sqlite.gz");
+    let _ = fs::remove_file(&first_archive_path);
+    fs::rename(&first_archive_original_path, &first_archive_path)
+        .expect("move first mixed-state failure archive batch to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now') WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(first_archive_path.to_string_lossy().to_string())
+    .bind(first_archive_original_path.to_string_lossy().to_string())
+    .execute(&state.pool)
+    .await
+    .expect("mark first mixed-state failure archive batch as materialized");
+
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "failure-mixed-state-archive-b",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1_i64,
+            invoke_id: "failure-mixed-state-second",
+            occurred_at: archived_second_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "failed",
+            total_tokens: 20_i64,
+            cost: 0.20_f64,
+            ttfb_ms: Some(120.0),
+            payload: Some("{}"),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: Some("HTTP 429 too many requests"),
+            failure_kind: Some("upstream_response_failed"),
+            failure_class: Some("service_failure"),
+            is_actionable: Some(1_i64),
+        }],
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_first_at)
+        .expect("mixed-state failure bucket start epoch should be derivable");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_failure_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            failure_class,
+            is_actionable,
+            error_category,
+            failure_count,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind("service_failure")
+    .bind(1_i64)
+    .bind("too_many_requests")
+    .bind(1_i64)
+    .execute(&state.pool)
+    .await
+    .expect("seed mixed-state materialized failure count row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
+        bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(failure_summary) = fetch_failure_summary(
+        State(state.clone()),
+        Query(FailureSummaryQuery {
+            range: historical_range.clone(),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch failure summary with materialized sibling archive part");
+    assert_eq!(failure_summary.total_failures, 2);
+    assert_eq!(failure_summary.service_failure_count, 2);
+    assert_eq!(failure_summary.actionable_failure_count, 2);
+
+    let Json(error_distribution) = fetch_error_distribution(
+        State(state),
+        Query(ErrorQuery {
+            range: historical_range,
+            top: None,
+            scope: Some("service".to_string()),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch error distribution with materialized sibling archive part");
+    assert!(
+        error_distribution
+            .items
+            .iter()
+            .any(|item| item.reason == "too_many_requests" && item.count == 2)
+    );
+}
+
+#[tokio::test]
+async fn archived_failure_fallback_keeps_unmaterialized_rows_when_materialized_sibling_archive_is_unreadable(
+) {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(9, 0, 0)
+    .expect("valid archived unreadable mixed-state failure hour");
+    let archived_first_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("first archived unreadable mixed-state failure time"),
+    );
+    let archived_second_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("second archived unreadable mixed-state failure time"),
+    );
+
+    let first_archive_original_path = seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "failure-mixed-state-unreadable-archive-a",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1_i64,
+            invoke_id: "failure-mixed-state-unreadable-first",
+            occurred_at: archived_first_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "failed",
+            total_tokens: 10_i64,
+            cost: 0.10_f64,
+            ttfb_ms: Some(100.0),
+            payload: Some("{}"),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: Some("HTTP 429 too many requests"),
+            failure_kind: Some("upstream_response_failed"),
+            failure_class: Some("service_failure"),
+            is_actionable: Some(1_i64),
+        }],
+    )
+    .await;
+    let first_archive_path = state
+        .config
+        .archive_dir
+        .join("failure-mixed-state-unreadable-archive-a.sqlite.gz");
+    let _ = fs::remove_file(&first_archive_path);
+    fs::rename(&first_archive_original_path, &first_archive_path)
+        .expect("move first unreadable mixed-state failure archive batch to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now') WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(first_archive_path.to_string_lossy().to_string())
+    .bind(first_archive_original_path.to_string_lossy().to_string())
+    .execute(&state.pool)
+    .await
+    .expect("mark first unreadable mixed-state failure archive batch as materialized");
+
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "failure-mixed-state-unreadable-archive-b",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1_i64,
+            invoke_id: "failure-mixed-state-unreadable-second",
+            occurred_at: archived_second_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "failed",
+            total_tokens: 20_i64,
+            cost: 0.20_f64,
+            ttfb_ms: Some(120.0),
+            payload: Some("{}"),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: Some("HTTP 429 too many requests"),
+            failure_kind: Some("upstream_response_failed"),
+            failure_class: Some("service_failure"),
+            is_actionable: Some(1_i64),
+        }],
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_first_at)
+        .expect("unreadable mixed-state failure bucket start epoch should be derivable");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_failure_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            failure_class,
+            is_actionable,
+            error_category,
+            failure_count,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind("service_failure")
+    .bind(1_i64)
+    .bind("too_many_requests")
+    .bind(1_i64)
+    .execute(&state.pool)
+    .await
+    .expect("seed unreadable mixed-state materialized failure count row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
+        bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
+
+    fs::write(&first_archive_path, b"not-a-gzip-archive")
+        .expect("corrupt unreadable mixed-state failure archive batch");
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(failure_summary) = fetch_failure_summary(
+        State(state.clone()),
+        Query(FailureSummaryQuery {
+            range: historical_range.clone(),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch failure summary with unreadable materialized sibling archive part");
+    assert_eq!(failure_summary.total_failures, 2);
+    assert_eq!(failure_summary.service_failure_count, 2);
+    assert_eq!(failure_summary.actionable_failure_count, 2);
+
+    let Json(error_distribution) = fetch_error_distribution(
+        State(state),
+        Query(ErrorQuery {
+            range: historical_range,
+            top: None,
+            scope: Some("service".to_string()),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch error distribution with unreadable materialized sibling archive part");
+    assert!(
+        error_distribution
+            .items
+            .iter()
+            .any(|item| item.reason == "too_many_requests" && item.count == 2)
+    );
+}
+
+#[tokio::test]
+async fn archived_failure_fallback_skips_double_count_for_readable_materialized_archive_when_same_bucket_sibling_is_unreadable(
+) {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(9, 0, 0)
+    .expect("valid same-bucket failure hour");
+    let archived_readable_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("same-bucket readable failure archived time"),
+    );
+    let archived_unreadable_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("same-bucket unreadable failure archived time"),
+    );
+
+    let readable_archive_original_path = seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "failure-same-bucket-unreadable-sibling-materialized",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1_i64,
+            invoke_id: "failure-same-bucket-unreadable-sibling-materialized",
+            occurred_at: archived_readable_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "failed",
+            total_tokens: 10_i64,
+            cost: 0.10_f64,
+            ttfb_ms: Some(100.0),
+            payload: Some("{}"),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: Some("HTTP 429 too many requests"),
+            failure_kind: Some("upstream_response_failed"),
+            failure_class: Some("service_failure"),
+            is_actionable: Some(1_i64),
+        }],
+    )
+    .await;
+    let readable_archive_path = state
+        .config
+        .archive_dir
+        .join("failure-same-bucket-unreadable-sibling-materialized.sqlite.gz");
+    let _ = fs::remove_file(&readable_archive_path);
+    fs::rename(&readable_archive_original_path, &readable_archive_path)
+        .expect("move readable same-bucket failure archive batch to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now'), coverage_start_at = ?3, coverage_end_at = ?4 WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(readable_archive_path.to_string_lossy().to_string())
+    .bind(readable_archive_original_path.to_string_lossy().to_string())
+    .bind(archived_readable_at.as_str())
+    .bind(archived_readable_at.as_str())
+    .execute(&state.pool)
+    .await
+    .expect("mark readable same-bucket failure archive batch as materialized");
+
+    let unreadable_archive_original_path = seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "failure-same-bucket-unreadable-sibling-broken",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1_i64,
+            invoke_id: "failure-same-bucket-unreadable-sibling-broken",
+            occurred_at: archived_unreadable_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "failed",
+            total_tokens: 20_i64,
+            cost: 0.20_f64,
+            ttfb_ms: Some(120.0),
+            payload: Some("{}"),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: Some("HTTP 429 too many requests"),
+            failure_kind: Some("upstream_response_failed"),
+            failure_class: Some("service_failure"),
+            is_actionable: Some(1_i64),
+        }],
+    )
+    .await;
+    let unreadable_archive_path =
+        state
+            .config
+            .archive_dir
+            .join("failure-same-bucket-unreadable-sibling-broken.sqlite.gz");
+    let _ = fs::remove_file(&unreadable_archive_path);
+    fs::rename(&unreadable_archive_original_path, &unreadable_archive_path)
+        .expect("move unreadable same-bucket failure archive batch to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now'), coverage_start_at = ?3, coverage_end_at = ?4 WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(unreadable_archive_path.to_string_lossy().to_string())
+    .bind(unreadable_archive_original_path.to_string_lossy().to_string())
+    .bind(archived_unreadable_at.as_str())
+    .bind(archived_unreadable_at.as_str())
+    .execute(&state.pool)
+    .await
+    .expect("mark unreadable same-bucket failure archive batch as materialized");
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_readable_at)
+        .expect("same-bucket failure bucket start epoch should be derivable");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_failure_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            failure_class,
+            is_actionable,
+            error_category,
+            failure_count,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind("service_failure")
+    .bind(1_i64)
+    .bind("too_many_requests")
+    .bind(2_i64)
+    .execute(&state.pool)
+    .await
+    .expect("seed same-bucket failure count row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
+        bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
+
+    fs::write(&unreadable_archive_path, b"not-a-gzip-archive")
+        .expect("corrupt unreadable same-bucket failure archive");
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(failure_summary) = fetch_failure_summary(
+        State(state.clone()),
+        Query(FailureSummaryQuery {
+            range: historical_range.clone(),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch failure summary with unreadable same-bucket materialized sibling archive");
+    assert_eq!(failure_summary.total_failures, 2);
+    assert_eq!(failure_summary.service_failure_count, 2);
+    assert_eq!(failure_summary.actionable_failure_count, 2);
+
+    let Json(error_distribution) = fetch_error_distribution(
+        State(state),
+        Query(ErrorQuery {
+            range: historical_range,
+            top: None,
+            scope: Some("service".to_string()),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch error distribution with unreadable same-bucket materialized sibling archive");
+    let too_many_requests = error_distribution
+        .items
+        .iter()
+        .find(|item| item.reason == "too_many_requests")
+        .expect("same-bucket failure distribution should keep materialized category count");
+    assert_eq!(too_many_requests.count, 2);
+}
+
+#[tokio::test]
+async fn historical_failure_read_path_skips_unreadable_pending_archives() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(9, 0, 0)
+    .expect("valid unreadable pending failure hour");
+    let archived_failed_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("unreadable pending failure time"),
+    );
+
+    let archive_path = seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "failure-pending-corrupt-read-path",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1_i64,
+            invoke_id: "failure-pending-corrupt-read-path-first",
+            occurred_at: archived_failed_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "failed",
+            total_tokens: 10_i64,
+            cost: 0.10_f64,
+            ttfb_ms: Some(100.0),
+            payload: Some("{}"),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: Some("HTTP 429 too many requests"),
+            failure_kind: Some("upstream_response_failed"),
+            failure_class: Some("service_failure"),
+            is_actionable: Some(1_i64),
+        }],
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_failed_at)
+        .expect("derive unreadable pending failure bucket epoch");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_failure_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            failure_class,
+            is_actionable,
+            error_category,
+            failure_count,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind("service_failure")
+    .bind(1_i64)
+    .bind("too_many_requests")
+    .bind(1_i64)
+    .execute(&state.pool)
+    .await
+    .expect("seed unreadable pending failure count row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
+        bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
+
+    fs::write(&archive_path, b"not-a-gzip-archive")
+        .expect("corrupt unreadable pending failure archive");
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(failure_summary) = fetch_failure_summary(
+        State(state.clone()),
+        Query(FailureSummaryQuery {
+            range: historical_range.clone(),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch failure summary with unreadable pending archive");
+    assert_eq!(failure_summary.total_failures, 1);
+    assert_eq!(failure_summary.service_failure_count, 1);
+    assert_eq!(failure_summary.actionable_failure_count, 1);
+
+    let Json(error_distribution) = fetch_error_distribution(
+        State(state),
+        Query(ErrorQuery {
+            range: historical_range,
+            top: None,
+            scope: Some("service".to_string()),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch error distribution with unreadable pending archive");
+    assert!(
+        error_distribution
+            .items
+            .iter()
+            .any(|item| item.reason == "too_many_requests" && item.count == 1)
+    );
+}
+
+#[tokio::test]
+async fn archived_failure_fallback_skips_double_count_for_readable_materialized_archive_when_same_month_sibling_is_unreadable(
+) {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_materialized_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(9, 0, 0)
+    .expect("valid readable materialized failure hour");
+    let archived_unreadable_hour_local = archived_materialized_hour_local
+        .checked_add_signed(ChronoDuration::hours(2))
+        .expect("valid unreadable same-month failure sibling hour");
+    let archived_materialized_at = format_naive(
+        archived_materialized_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("readable materialized failure archived time"),
+    );
+    let archived_unreadable_at = format_naive(
+        archived_unreadable_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("unreadable same-month failure archived time"),
+    );
+
+    let materialized_archive_original_path = seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "failure-same-month-unreadable-sibling-materialized",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1_i64,
+            invoke_id: "failure-same-month-unreadable-sibling-materialized",
+            occurred_at: archived_materialized_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "failed",
+            total_tokens: 10_i64,
+            cost: 0.10_f64,
+            ttfb_ms: Some(100.0),
+            payload: Some("{}"),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: Some("HTTP 429 too many requests"),
+            failure_kind: Some("upstream_response_failed"),
+            failure_class: Some("service_failure"),
+            is_actionable: Some(1_i64),
+        }],
+    )
+    .await;
+    let materialized_archive_path = state.config.archive_dir.join(
+        "failure-same-month-unreadable-sibling-materialized.sqlite.gz",
+    );
+    let _ = fs::remove_file(&materialized_archive_path);
+    fs::rename(&materialized_archive_original_path, &materialized_archive_path).expect(
+        "move readable materialized failure archive batch to a unique same-month path",
+    );
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now'), coverage_start_at = ?3, coverage_end_at = ?4 WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(materialized_archive_path.to_string_lossy().to_string())
+    .bind(materialized_archive_original_path.to_string_lossy().to_string())
+    .bind(archived_materialized_at.as_str())
+    .bind(archived_materialized_at.as_str())
+    .execute(&state.pool)
+    .await
+    .expect("mark readable materialized same-month failure archive batch as materialized");
+
+    let unreadable_archive_original_path = seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "failure-same-month-unreadable-sibling-broken",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1_i64,
+            invoke_id: "failure-same-month-unreadable-sibling-broken",
+            occurred_at: archived_unreadable_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "failed",
+            total_tokens: 20_i64,
+            cost: 0.20_f64,
+            ttfb_ms: Some(120.0),
+            payload: Some("{}"),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: Some("upstream stream error"),
+            failure_kind: Some("upstream_stream_error"),
+            failure_class: Some("service_failure"),
+            is_actionable: Some(1_i64),
+        }],
+    )
+    .await;
+    let unreadable_archive_path =
+        state
+            .config
+            .archive_dir
+            .join("failure-same-month-unreadable-sibling-broken.sqlite.gz");
+    let _ = fs::remove_file(&unreadable_archive_path);
+    fs::rename(&unreadable_archive_original_path, &unreadable_archive_path)
+        .expect("move unreadable same-month failure sibling archive batch to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now'), coverage_start_at = ?3, coverage_end_at = ?4 WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(unreadable_archive_path.to_string_lossy().to_string())
+    .bind(unreadable_archive_original_path.to_string_lossy().to_string())
+    .bind(archived_unreadable_at.as_str())
+    .bind(archived_unreadable_at.as_str())
+    .execute(&state.pool)
+    .await
+    .expect("mark unreadable same-month failure sibling archive batch as materialized");
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_materialized_at)
+        .expect("same-month failure bucket start epoch should be derivable");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_failure_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            failure_class,
+            is_actionable,
+            error_category,
+            failure_count,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind("service_failure")
+    .bind(1_i64)
+    .bind("too_many_requests")
+    .bind(1_i64)
+    .execute(&state.pool)
+    .await
+    .expect("seed readable materialized failure count row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
+        bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
+
+    fs::write(&unreadable_archive_path, b"not-a-gzip-archive")
+        .expect("corrupt unreadable same-month failure sibling archive");
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(failure_summary) = fetch_failure_summary(
+        State(state.clone()),
+        Query(FailureSummaryQuery {
+            range: historical_range.clone(),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch failure summary with unreadable same-month materialized sibling archive");
+    assert_eq!(failure_summary.total_failures, 1);
+    assert_eq!(failure_summary.service_failure_count, 1);
+    assert_eq!(failure_summary.actionable_failure_count, 1);
+
+    let Json(error_distribution) = fetch_error_distribution(
+        State(state),
+        Query(ErrorQuery {
+            range: historical_range,
+            top: None,
+            scope: Some("service".to_string()),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch error distribution with unreadable same-month materialized sibling archive");
+    let too_many_requests = error_distribution
+        .items
+        .iter()
+        .find(|item| item.reason == "too_many_requests")
+        .expect("same-month failure distribution should keep readable materialized category");
+    assert_eq!(too_many_requests.count, 1);
+}
+
+#[tokio::test]
+async fn archived_failure_fallback_includes_missing_categories_from_partially_materialized_bucket() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(10, 0, 0)
+    .expect("valid archived partial failure hour");
+    let archived_first_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("first archived partial failure time"),
+    );
+    let archived_second_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("second archived partial failure time"),
+    );
+
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "failure-partial-category-archive",
+        &[
+            SeedInvocationArchiveBatchRow {
+                id: 1_i64,
+                invoke_id: "failure-partial-category-first",
+                occurred_at: archived_first_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "failed",
+                total_tokens: 10_i64,
+                cost: 0.10_f64,
+                ttfb_ms: Some(100.0),
+                payload: Some("{}"),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: Some("HTTP 429 too many requests"),
+                failure_kind: Some("upstream_response_failed"),
+                failure_class: Some("service_failure"),
+                is_actionable: Some(1_i64),
+            },
+            SeedInvocationArchiveBatchRow {
+                id: 2_i64,
+                invoke_id: "failure-partial-category-second",
+                occurred_at: archived_second_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "failed",
+                total_tokens: 20_i64,
+                cost: 0.20_f64,
+                ttfb_ms: Some(120.0),
+                payload: Some("{}"),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: Some("upstream stream error"),
+                failure_kind: Some("upstream_stream_error"),
+                failure_class: Some("service_failure"),
+                is_actionable: Some(1_i64),
+            },
+        ],
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_first_at)
+        .expect("partial failure bucket start epoch should be derivable");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_failure_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            failure_class,
+            is_actionable,
+            error_category,
+            failure_count,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind("service_failure")
+    .bind(1_i64)
+    .bind("too_many_requests")
+    .bind(1_i64)
+    .execute(&state.pool)
+    .await
+    .expect("seed partially materialized failure category");
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(failure_summary) = fetch_failure_summary(
+        State(state.clone()),
+        Query(FailureSummaryQuery {
+            range: historical_range.clone(),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch failure summary with partially materialized failure categories");
+    assert_eq!(failure_summary.total_failures, 2);
+    assert_eq!(failure_summary.service_failure_count, 2);
+    assert_eq!(failure_summary.actionable_failure_count, 2);
+
+    let Json(error_distribution) = fetch_error_distribution(
+        State(state),
+        Query(ErrorQuery {
+            range: historical_range,
+            top: None,
+            scope: Some("service".to_string()),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch error distribution with partially materialized failure categories");
+    assert!(
+        error_distribution
+            .items
+            .iter()
+            .any(|item| item.reason == "too_many_requests" && item.count == 1)
+    );
+    assert!(
+        error_distribution
+            .items
+            .iter()
+            .any(|item| item.reason == "upstream stream error" && item.count == 1)
+    );
+}
+
+#[tokio::test]
+async fn historical_perf_stats_include_unmaterialized_archived_hours() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(11, 0, 0)
+    .expect("valid archived perf hour");
+    let archived_first_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("first archived perf time"),
+    );
+    let archived_second_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("second archived perf time"),
+    );
+
+    seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "perf-unmaterialized-archive",
+        &[
+            (
+                1_i64,
+                "perf-unmaterialized-first",
+                archived_first_at.as_str(),
+                SOURCE_PROXY,
+                "success",
+                10_i64,
+                0.10_f64,
+                Some(100.0),
+            ),
+            (
+                2_i64,
+                "perf-unmaterialized-second",
+                archived_second_at.as_str(),
+                SOURCE_PROXY,
+                "success",
+                20_i64,
+                0.20_f64,
+                Some(200.0),
+            ),
+        ],
+    )
+    .await;
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(perf_stats) = fetch_perf_stats(
+        State(state),
+        Query(PerfQuery {
+            range: historical_range,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch historical perf stats with unmaterialized archived hours");
+
+    let upstream_first_byte = perf_stats
+        .stages
+        .iter()
+        .find(|stage| stage.stage == "upstreamFirstByte")
+        .expect("historical perf stats should include archived upstream first byte samples");
+    assert_eq!(upstream_first_byte.count, 2);
+    assert_f64_close(upstream_first_byte.avg_ms, 150.0);
+    assert_f64_close(upstream_first_byte.max_ms, 200.0);
+}
+
+#[tokio::test]
+async fn historical_perf_stats_fill_missing_samples_from_partially_materialized_archived_hours() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(13, 0, 0)
+    .expect("valid archived partial perf hour");
+    let archived_first_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("first archived partial perf time"),
+    );
+    let archived_second_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("second archived partial perf time"),
+    );
+
+    seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "perf-partial-materialized-archive",
+        &[
+            (
+                1_i64,
+                "perf-partial-materialized-first",
+                archived_first_at.as_str(),
+                SOURCE_PROXY,
+                "success",
+                10_i64,
+                0.10_f64,
+                Some(100.0),
+            ),
+            (
+                2_i64,
+                "perf-partial-materialized-second",
+                archived_second_at.as_str(),
+                SOURCE_PROXY,
+                "success",
+                20_i64,
+                0.20_f64,
+                Some(200.0),
+            ),
+        ],
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_first_at)
+        .expect("partial perf bucket start epoch should be derivable");
+    let mut histogram = empty_approx_histogram();
+    add_approx_histogram_sample(&mut histogram, 100.0);
+    sqlx::query(
+        r#"
+        INSERT INTO proxy_perf_stage_hourly (
+            bucket_start_epoch,
+            stage,
+            sample_count,
+            sum_ms,
+            max_ms,
+            histogram,
+            updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind("upstreamFirstByte")
+    .bind(1_i64)
+    .bind(100.0_f64)
+    .bind(100.0_f64)
+    .bind(encode_approx_histogram(&histogram).expect("encode partial perf histogram"))
+    .execute(&state.pool)
+    .await
+    .expect("seed partially materialized perf row");
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(perf_stats) = fetch_perf_stats(
+        State(state),
+        Query(PerfQuery {
+            range: historical_range,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch historical perf stats with partially materialized archive bucket");
+
+    let upstream_first_byte = perf_stats
+        .stages
+        .iter()
+        .find(|stage| stage.stage == "upstreamFirstByte")
+        .expect("historical perf stats should include partially materialized archived samples");
+    assert_eq!(upstream_first_byte.count, 2);
+    assert_f64_close(upstream_first_byte.avg_ms, 150.0);
+    assert_f64_close(upstream_first_byte.max_ms, 200.0);
+}
+
+#[tokio::test]
+async fn historical_perf_stats_include_unreplayed_full_hour_tail_without_inline_catch_up() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let historical_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(14, 0, 0)
+    .expect("valid historical perf hour");
+    let historical_tail_at = format_naive(
+        historical_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("historical perf tail time"),
+    );
+    let bucket_start_epoch = invocation_bucket_start_epoch(&historical_tail_at)
+        .expect("historical perf bucket start epoch should be derivable");
+
+    let mut histogram = empty_approx_histogram();
+    add_approx_histogram_sample(&mut histogram, 100.0);
+    sqlx::query(
+        r#"
+        INSERT INTO proxy_perf_stage_hourly (
+            bucket_start_epoch,
+            stage,
+            sample_count,
+            sum_ms,
+            max_ms,
+            histogram,
+            updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind("upstreamFirstByte")
+    .bind(1_i64)
+    .bind(100.0_f64)
+    .bind(100.0_f64)
+    .bind(encode_approx_histogram(&histogram).expect("encode historical perf histogram"))
+    .execute(&state.pool)
+    .await
+    .expect("seed historical perf rollup row");
+
+    insert_timeseries_invocation(
+        &state.pool,
+        "historical-perf-unreplayed-tail",
+        &historical_tail_at,
+        "success",
+        Some(200.0),
+    )
+    .await;
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(perf_stats) = fetch_perf_stats(
+        State(state),
+        Query(PerfQuery {
+            range: historical_range,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch historical perf stats with unreplayed full-hour tail");
+
+    let upstream_first_byte = perf_stats
+        .stages
+        .iter()
+        .find(|stage| stage.stage == "upstreamFirstByte")
+        .expect("historical perf stats should include unreplayed full-hour tail samples");
+    assert_eq!(upstream_first_byte.count, 2);
+    assert_f64_close(upstream_first_byte.avg_ms, 150.0);
+    assert_f64_close(upstream_first_byte.max_ms, 200.0);
+}
+
+#[tokio::test]
+async fn historical_perf_archive_delta_distinguishes_materialized_sibling_parts_and_stale_pending_overlap(
+) {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(13, 0, 0)
+    .expect("valid archived mixed-state perf hour");
+    let archived_materialized_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("materialized mixed-state perf time"),
+    );
+    let archived_pending_first_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("first pending mixed-state perf time"),
+    );
+    let archived_pending_second_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(45))
+            .expect("second pending mixed-state perf time"),
+    );
+
+    let materialized_archive_original_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "perf-mixed-state-archive-a",
+        &[(
+            401_i64,
+            "perf-mixed-state-materialized",
+            archived_materialized_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(200.0),
+        )],
+    )
+    .await;
+    let materialized_archive_path = state
+        .config
+        .archive_dir
+        .join("perf-mixed-state-archive-a.sqlite.gz");
+    let _ = fs::remove_file(&materialized_archive_path);
+    fs::rename(&materialized_archive_original_path, &materialized_archive_path)
+        .expect("move mixed-state materialized perf archive batch to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now') WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(materialized_archive_path.to_string_lossy().to_string())
+    .bind(materialized_archive_original_path.to_string_lossy().to_string())
+    .execute(&state.pool)
+    .await
+    .expect("mark mixed-state materialized perf archive batch as materialized");
+
+    seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "perf-mixed-state-archive-b",
+        &[
+            (
+                1_i64,
+                "perf-mixed-state-pending-first",
+                archived_pending_first_at.as_str(),
+                SOURCE_PROXY,
+                "success",
+                20_i64,
+                0.20_f64,
+                Some(100.0),
+            ),
+            (
+                2_i64,
+                "perf-mixed-state-pending-second",
+                archived_pending_second_at.as_str(),
+                SOURCE_PROXY,
+                "success",
+                30_i64,
+                0.30_f64,
+                Some(300.0),
+            ),
+        ],
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_materialized_at)
+        .expect("mixed-state perf bucket start epoch should be derivable");
+    let mut histogram = empty_approx_histogram();
+    add_approx_histogram_sample(&mut histogram, 200.0);
+    add_approx_histogram_sample(&mut histogram, 300.0);
+    sqlx::query(
+        r#"
+        INSERT INTO proxy_perf_stage_hourly (
+            bucket_start_epoch,
+            stage,
+            sample_count,
+            sum_ms,
+            max_ms,
+            histogram,
+            updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind("upstreamFirstByte")
+    .bind(2_i64)
+    .bind(500.0_f64)
+    .bind(300.0_f64)
+    .bind(encode_approx_histogram(&histogram).expect("encode mixed-state perf histogram"))
+    .execute(&state.pool)
+    .await
+    .expect("seed mixed-state materialized perf row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_PROXY_PERF,
+        bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
+
+    let archived_start = Utc
+        .timestamp_opt(bucket_start_epoch, 0)
+        .single()
+        .expect("valid mixed-state perf archive start");
+    let archived_end = archived_start + ChronoDuration::hours(1);
+    let archived_perf = query_unmaterialized_proxy_perf_stage_rollups_from_archives(
+        &state.pool,
+        archived_start,
+        archived_end,
+        None,
+    )
+    .await
+    .expect("query mixed-state perf archive delta");
+    let upstream_first_byte = archived_perf
+        .get("upstreamFirstByte")
+        .expect("mixed-state perf delta should include upstreamFirstByte");
+    assert_eq!(upstream_first_byte.sample_count, 1);
+    assert_f64_close(upstream_first_byte.sum_ms, 100.0);
+    assert_f64_close(upstream_first_byte.max_ms, 100.0);
+}
+
+#[tokio::test]
+async fn historical_perf_archive_delta_keeps_pending_stage_rows_when_materialized_sibling_archive_is_unreadable(
+) {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(13, 0, 0)
+    .expect("valid archived unreadable mixed-state perf hour");
+    let archived_materialized_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("materialized unreadable mixed-state perf time"),
+    );
+    let archived_pending_first_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("first pending unreadable mixed-state perf time"),
+    );
+    let archived_pending_second_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(45))
+            .expect("second pending unreadable mixed-state perf time"),
+    );
+
+    let materialized_archive_original_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "perf-mixed-state-unreadable-archive-a",
+        &[(
+            1_i64,
+            "perf-mixed-state-unreadable-materialized",
+            archived_materialized_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(200.0),
+        )],
+    )
+    .await;
+    let materialized_archive_path = state
+        .config
+        .archive_dir
+        .join("perf-mixed-state-unreadable-archive-a.sqlite.gz");
+    let _ = fs::remove_file(&materialized_archive_path);
+    fs::rename(&materialized_archive_original_path, &materialized_archive_path)
+        .expect("move unreadable mixed-state materialized perf archive batch to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now') WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(materialized_archive_path.to_string_lossy().to_string())
+    .bind(materialized_archive_original_path.to_string_lossy().to_string())
+    .execute(&state.pool)
+    .await
+    .expect("mark unreadable mixed-state materialized perf archive batch as materialized");
+
+    seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "perf-mixed-state-unreadable-archive-b",
+        &[
+            (
+                1_i64,
+                "perf-mixed-state-unreadable-pending-first",
+                archived_pending_first_at.as_str(),
+                SOURCE_PROXY,
+                "success",
+                20_i64,
+                0.20_f64,
+                Some(100.0),
+            ),
+            (
+                2_i64,
+                "perf-mixed-state-unreadable-pending-second",
+                archived_pending_second_at.as_str(),
+                SOURCE_PROXY,
+                "success",
+                30_i64,
+                0.30_f64,
+                Some(300.0),
+            ),
+        ],
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_materialized_at)
+        .expect("unreadable mixed-state perf bucket start epoch should be derivable");
+    let mut histogram = empty_approx_histogram();
+    add_approx_histogram_sample(&mut histogram, 200.0);
+    add_approx_histogram_sample(&mut histogram, 300.0);
+    sqlx::query(
+        r#"
+        INSERT INTO proxy_perf_stage_hourly (
+            bucket_start_epoch,
+            stage,
+            sample_count,
+            sum_ms,
+            max_ms,
+            histogram,
+            updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind("upstreamFirstByte")
+    .bind(2_i64)
+    .bind(500.0_f64)
+    .bind(300.0_f64)
+    .bind(encode_approx_histogram(&histogram).expect("encode unreadable mixed-state perf histogram"))
+    .execute(&state.pool)
+    .await
+    .expect("seed unreadable mixed-state materialized perf row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_PROXY_PERF,
+        bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
+
+    fs::write(&materialized_archive_path, b"not-a-gzip-archive")
+        .expect("corrupt unreadable mixed-state materialized perf archive");
+
+    let archived_start = Utc
+        .timestamp_opt(bucket_start_epoch, 0)
+        .single()
+        .expect("valid unreadable mixed-state perf archive start");
+    let archived_end = archived_start + ChronoDuration::hours(1);
+    let archived_perf = query_unmaterialized_proxy_perf_stage_rollups_from_archives(
+        &state.pool,
+        archived_start,
+        archived_end,
+        None,
+    )
+    .await
+    .expect("query unreadable mixed-state perf archive delta");
+    let upstream_first_byte = archived_perf
+        .get("upstreamFirstByte")
+        .expect("unreadable mixed-state perf delta should include upstreamFirstByte");
+    assert_eq!(upstream_first_byte.sample_count, 2);
+    assert_f64_close(upstream_first_byte.sum_ms, 400.0);
+    assert_f64_close(upstream_first_byte.max_ms, 300.0);
+}
+
+#[tokio::test]
+async fn historical_perf_stats_skip_double_count_for_readable_materialized_archive_when_same_bucket_sibling_is_unreadable(
+) {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(13, 0, 0)
+    .expect("valid same-bucket perf hour");
+    let archived_readable_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("same-bucket readable perf archived time"),
+    );
+    let archived_unreadable_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("same-bucket unreadable perf archived time"),
+    );
+
+    let readable_archive_original_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "perf-same-bucket-unreadable-sibling-materialized",
+        &[(
+            1_i64,
+            "perf-same-bucket-unreadable-sibling-materialized",
+            archived_readable_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+    let readable_archive_path =
+        state
+            .config
+            .archive_dir
+            .join("perf-same-bucket-unreadable-sibling-materialized.sqlite.gz");
+    let _ = fs::remove_file(&readable_archive_path);
+    fs::rename(&readable_archive_original_path, &readable_archive_path)
+        .expect("move readable same-bucket perf archive batch to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now'), coverage_start_at = ?3, coverage_end_at = ?4 WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(readable_archive_path.to_string_lossy().to_string())
+    .bind(readable_archive_original_path.to_string_lossy().to_string())
+    .bind(archived_readable_at.as_str())
+    .bind(archived_readable_at.as_str())
+    .execute(&state.pool)
+    .await
+    .expect("mark readable same-bucket perf archive batch as materialized");
+
+    let unreadable_archive_original_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "perf-same-bucket-unreadable-sibling-broken",
+        &[(
+            1_i64,
+            "perf-same-bucket-unreadable-sibling-broken",
+            archived_unreadable_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            20_i64,
+            0.20_f64,
+            Some(200.0),
+        )],
+    )
+    .await;
+    let unreadable_archive_path =
+        state
+            .config
+            .archive_dir
+            .join("perf-same-bucket-unreadable-sibling-broken.sqlite.gz");
+    let _ = fs::remove_file(&unreadable_archive_path);
+    fs::rename(&unreadable_archive_original_path, &unreadable_archive_path)
+        .expect("move unreadable same-bucket perf archive batch to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now'), coverage_start_at = ?3, coverage_end_at = ?4 WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(unreadable_archive_path.to_string_lossy().to_string())
+    .bind(unreadable_archive_original_path.to_string_lossy().to_string())
+    .bind(archived_unreadable_at.as_str())
+    .bind(archived_unreadable_at.as_str())
+    .execute(&state.pool)
+    .await
+    .expect("mark unreadable same-bucket perf archive batch as materialized");
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_readable_at)
+        .expect("same-bucket perf bucket start epoch should be derivable");
+    let mut histogram = empty_approx_histogram();
+    add_approx_histogram_sample(&mut histogram, 100.0);
+    add_approx_histogram_sample(&mut histogram, 200.0);
+    sqlx::query(
+        r#"
+        INSERT INTO proxy_perf_stage_hourly (
+            bucket_start_epoch,
+            stage,
+            sample_count,
+            sum_ms,
+            max_ms,
+            histogram,
+            updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind("upstreamFirstByte")
+    .bind(2_i64)
+    .bind(300.0_f64)
+    .bind(200.0_f64)
+    .bind(encode_approx_histogram(&histogram).expect("encode same-bucket perf histogram"))
+    .execute(&state.pool)
+    .await
+    .expect("seed same-bucket perf row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_PROXY_PERF,
+        bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
+
+    fs::write(&unreadable_archive_path, b"not-a-gzip-archive")
+        .expect("corrupt unreadable same-bucket perf archive");
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(perf_stats) = fetch_perf_stats(
+        State(state),
+        Query(PerfQuery {
+            range: historical_range,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch historical perf stats with unreadable same-bucket materialized sibling archive");
+
+    let upstream_first_byte = perf_stats
+        .stages
+        .iter()
+        .find(|stage| stage.stage == "upstreamFirstByte")
+        .expect("same-bucket perf stats should include materialized stage");
+    assert_eq!(upstream_first_byte.count, 2);
+    assert_f64_close(upstream_first_byte.avg_ms, 150.0);
+    assert_f64_close(upstream_first_byte.max_ms, 200.0);
+}
+
+#[tokio::test]
+async fn historical_perf_stats_skip_double_count_for_readable_materialized_archive_when_same_month_sibling_is_unreadable(
+) {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_materialized_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(13, 0, 0)
+    .expect("valid readable materialized perf hour");
+    let archived_unreadable_hour_local = archived_materialized_hour_local
+        .checked_add_signed(ChronoDuration::hours(2))
+        .expect("valid unreadable same-month perf sibling hour");
+    let archived_materialized_at = format_naive(
+        archived_materialized_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("readable materialized perf archived time"),
+    );
+    let archived_unreadable_at = format_naive(
+        archived_unreadable_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("unreadable same-month perf archived time"),
+    );
+
+    let materialized_archive_original_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "perf-same-month-unreadable-sibling-materialized",
+        &[(
+            1_i64,
+            "perf-same-month-unreadable-sibling-materialized",
+            archived_materialized_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+    let materialized_archive_path =
+        state
+            .config
+            .archive_dir
+            .join("perf-same-month-unreadable-sibling-materialized.sqlite.gz");
+    let _ = fs::remove_file(&materialized_archive_path);
+    fs::rename(&materialized_archive_original_path, &materialized_archive_path).expect(
+        "move readable materialized perf archive batch to a unique same-month path",
+    );
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now'), coverage_start_at = ?3, coverage_end_at = ?4 WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(materialized_archive_path.to_string_lossy().to_string())
+    .bind(materialized_archive_original_path.to_string_lossy().to_string())
+    .bind(archived_materialized_at.as_str())
+    .bind(archived_materialized_at.as_str())
+    .execute(&state.pool)
+    .await
+    .expect("mark readable materialized same-month perf archive batch as materialized");
+
+    let unreadable_archive_original_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "perf-same-month-unreadable-sibling-broken",
+        &[(
+            1_i64,
+            "perf-same-month-unreadable-sibling-broken",
+            archived_unreadable_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            20_i64,
+            0.20_f64,
+            Some(120.0),
+        )],
+    )
+    .await;
+    let unreadable_archive_path =
+        state
+            .config
+            .archive_dir
+            .join("perf-same-month-unreadable-sibling-broken.sqlite.gz");
+    let _ = fs::remove_file(&unreadable_archive_path);
+    fs::rename(&unreadable_archive_original_path, &unreadable_archive_path)
+        .expect("move unreadable same-month perf sibling archive batch to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now'), coverage_start_at = ?3, coverage_end_at = ?4 WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(unreadable_archive_path.to_string_lossy().to_string())
+    .bind(unreadable_archive_original_path.to_string_lossy().to_string())
+    .bind(archived_unreadable_at.as_str())
+    .bind(archived_unreadable_at.as_str())
+    .execute(&state.pool)
+    .await
+    .expect("mark unreadable same-month perf sibling archive batch as materialized");
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_materialized_at)
+        .expect("same-month perf bucket start epoch should be derivable");
+    let mut histogram = empty_approx_histogram();
+    add_approx_histogram_sample(&mut histogram, 100.0);
+    sqlx::query(
+        r#"
+        INSERT INTO proxy_perf_stage_hourly (
+            bucket_start_epoch,
+            stage,
+            sample_count,
+            sum_ms,
+            max_ms,
+            histogram,
+            updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind("upstreamFirstByte")
+    .bind(1_i64)
+    .bind(100.0_f64)
+    .bind(100.0_f64)
+    .bind(encode_approx_histogram(&histogram).expect("encode same-month perf histogram"))
+    .execute(&state.pool)
+    .await
+    .expect("seed readable materialized perf row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_PROXY_PERF,
+        bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
+
+    fs::write(&unreadable_archive_path, b"not-a-gzip-archive")
+        .expect("corrupt unreadable same-month perf sibling archive");
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(perf_stats) = fetch_perf_stats(
+        State(state),
+        Query(PerfQuery {
+            range: historical_range,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch historical perf stats with unreadable same-month materialized sibling archive");
+
+    let upstream_first_byte = perf_stats
+        .stages
+        .iter()
+        .find(|stage| stage.stage == "upstreamFirstByte")
+        .expect("same-month perf stats should include readable materialized stage");
+    assert_eq!(upstream_first_byte.count, 1);
+    assert_f64_close(upstream_first_byte.avg_ms, 100.0);
+    assert_f64_close(upstream_first_byte.max_ms, 100.0);
+}
+
+#[tokio::test]
+async fn historical_perf_read_path_skips_unreadable_pending_archives() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(13, 0, 0)
+    .expect("valid unreadable pending perf hour");
+    let archived_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("unreadable pending perf time"),
+    );
+    let archive_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "perf-pending-corrupt-read-path",
+        &[(
+            1_i64,
+            "perf-pending-corrupt-read-path-first",
+            archived_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_at)
+        .expect("derive unreadable pending perf bucket epoch");
+    let mut histogram = empty_approx_histogram();
+    add_approx_histogram_sample(&mut histogram, 100.0);
+    sqlx::query(
+        r#"
+        INSERT INTO proxy_perf_stage_hourly (
+            bucket_start_epoch,
+            stage,
+            sample_count,
+            sum_ms,
+            max_ms,
+            histogram,
+            updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind("upstreamFirstByte")
+    .bind(1_i64)
+    .bind(100.0_f64)
+    .bind(100.0_f64)
+    .bind(encode_approx_histogram(&histogram).expect("encode unreadable pending perf histogram"))
+    .execute(&state.pool)
+    .await
+    .expect("seed unreadable pending perf row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_PROXY_PERF,
+        bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
+
+    fs::write(&archive_path, b"not-a-gzip-archive")
+        .expect("corrupt unreadable pending perf archive");
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(perf_stats) = fetch_perf_stats(
+        State(state),
+        Query(PerfQuery {
+            range: historical_range,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch historical perf stats with unreadable pending archive");
+
+    let upstream_first_byte = perf_stats
+        .stages
+        .iter()
+        .find(|stage| stage.stage == "upstreamFirstByte")
+        .expect("unreadable pending perf stats should include materialized stage");
+    assert_eq!(upstream_first_byte.count, 1);
+    assert_f64_close(upstream_first_byte.avg_ms, 100.0);
+    assert_f64_close(upstream_first_byte.max_ms, 100.0);
+}
+
+#[tokio::test]
+async fn historical_timeseries_includes_unmaterialized_archived_hours_without_inline_repair() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(12, 0, 0)
+    .expect("valid archived timeseries hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("archived timeseries success time"),
+    );
+    let archived_failed_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(35))
+            .expect("archived timeseries failure time"),
+    );
+
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "timeseries-unmaterialized-archive",
+        &[
+            SeedInvocationArchiveBatchRow {
+                id: 1_i64,
+                invoke_id: "timeseries-unmaterialized-success",
+                occurred_at: archived_success_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 10_i64,
+                cost: 0.10_f64,
+                ttfb_ms: Some(100.0),
+                payload: Some("{}"),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0_i64),
+            },
+            SeedInvocationArchiveBatchRow {
+                id: 2_i64,
+                invoke_id: "timeseries-unmaterialized-failed",
+                occurred_at: archived_failed_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "failed",
+                total_tokens: 20_i64,
+                cost: 0.20_f64,
+                ttfb_ms: Some(120.0),
+                payload: Some("{}"),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: Some("HTTP 429 too many requests"),
+                failure_kind: Some("upstream_response_failed"),
+                failure_class: Some("service_failure"),
+                is_actionable: Some(1_i64),
+            },
+        ],
+    )
+    .await;
+
+    let start = local_naive_to_utc(archived_hour_local, Shanghai);
+    let end = local_naive_to_utc(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::hours(1))
+            .expect("archived timeseries hour end"),
+        Shanghai,
+    );
+    let Json(response) = fetch_timeseries_from_hourly_rollups(
+        state,
+        TimeseriesQuery {
+            range: "ignored".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        },
+        Shanghai,
+        InvocationSourceScope::ProxyOnly,
+        RangeWindow {
+            start,
+            end,
+            display_end: end,
+            duration: end - start,
+        },
+        TimeseriesBucketSelection {
+            bucket_seconds: 3_600,
+            effective_bucket: "1h".to_string(),
+            available_buckets: vec!["1h".to_string()],
+            bucket_limited_to_daily: false,
+        },
+    )
+    .await
+    .expect("fetch historical timeseries with unmaterialized archived hour");
+
+    let archived_point = response
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(start))
+        .expect("historical timeseries bucket should exist");
+    assert_eq!(archived_point.total_count, 2);
+    assert_eq!(archived_point.success_count, 1);
+    assert_eq!(archived_point.failure_count, 1);
+    assert_eq!(archived_point.total_tokens, 30);
+    assert_f64_close(archived_point.total_cost, 0.30);
+}
+
+#[tokio::test]
+async fn historical_timeseries_skips_archive_fallback_rows_already_counted_in_live_tail() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(12, 0, 0)
+    .expect("valid overlapping archived timeseries hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("archived overlap timeseries success time"),
+    );
+    let archived_failed_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(35))
+            .expect("archived overlap timeseries failure time"),
+    );
+
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "timeseries-live-tail-overlap",
+        &[
+            SeedInvocationArchiveBatchRow {
+                id: 2_i64,
+                invoke_id: "timeseries-live-tail-overlap-success",
+                occurred_at: archived_success_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 10_i64,
+                cost: 0.10_f64,
+                ttfb_ms: Some(100.0),
+                payload: Some("{}"),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0_i64),
+            },
+            SeedInvocationArchiveBatchRow {
+                id: 3_i64,
+                invoke_id: "timeseries-live-tail-overlap-failed",
+                occurred_at: archived_failed_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "failed",
+                total_tokens: 20_i64,
+                cost: 0.20_f64,
+                ttfb_ms: Some(120.0),
+                payload: Some("{}"),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: Some("HTTP 429 too many requests"),
+                failure_kind: Some("upstream_response_failed"),
+                failure_class: Some("service_failure"),
+                is_actionable: Some(1_i64),
+            },
+        ],
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)
+        VALUES (?1, ?2, datetime('now'))
+        ON CONFLICT(dataset) DO UPDATE SET
+            cursor_id = excluded.cursor_id,
+            updated_at = datetime('now')
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(1_i64)
+    .execute(&state.pool)
+    .await
+    .expect("seed overlapping timeseries shared hourly rollup cursor");
+
+    for (
+        id,
+        invoke_id,
+        occurred_at,
+        status,
+        total_tokens,
+        cost,
+        ttfb_ms,
+        error_message,
+        failure_kind,
+        failure_class,
+        is_actionable,
+    ) in [
+        (
+            2_i64,
+            "timeseries-live-tail-overlap-success",
+            archived_success_at.as_str(),
+            "success",
+            10_i64,
+            0.10_f64,
+            100.0_f64,
+            None,
+            None,
+            Some("none"),
+            Some(0_i64),
+        ),
+        (
+            3_i64,
+            "timeseries-live-tail-overlap-failed",
+            archived_failed_at.as_str(),
+            "failed",
+            20_i64,
+            0.20_f64,
+            120.0_f64,
+            Some("HTTP 429 too many requests"),
+            Some("upstream_response_failed"),
+            Some("service_failure"),
+            Some(1_i64),
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id,
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                total_tokens,
+                cost,
+                error_message,
+                failure_kind,
+                failure_class,
+                is_actionable,
+                detail_level,
+                t_upstream_ttfb_ms,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            "#,
+        )
+        .bind(id)
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(error_message)
+        .bind(failure_kind)
+        .bind(failure_class)
+        .bind(is_actionable)
+        .bind(DETAIL_LEVEL_FULL)
+        .bind(ttfb_ms)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert overlapping timeseries live row");
+    }
+
+    let start = local_naive_to_utc(archived_hour_local, Shanghai);
+    let end = local_naive_to_utc(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::hours(1))
+            .expect("overlapping archived timeseries hour end"),
+        Shanghai,
+    );
+    let Json(response) = fetch_timeseries_from_hourly_rollups(
+        state,
+        TimeseriesQuery {
+            range: "ignored".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        },
+        Shanghai,
+        InvocationSourceScope::ProxyOnly,
+        RangeWindow {
+            start,
+            end,
+            display_end: end,
+            duration: end - start,
+        },
+        TimeseriesBucketSelection {
+            bucket_seconds: 3_600,
+            effective_bucket: "1h".to_string(),
+            available_buckets: vec!["1h".to_string()],
+            bucket_limited_to_daily: false,
+        },
+    )
+    .await
+    .expect("fetch historical timeseries with overlapping archive/live tail");
+
+    let archived_point = response
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(start))
+        .expect("overlapping historical timeseries bucket should exist");
+    assert_eq!(archived_point.total_count, 2);
+    assert_eq!(archived_point.success_count, 1);
+    assert_eq!(archived_point.failure_count, 1);
+    assert_eq!(archived_point.total_tokens, 30);
+    assert_f64_close(archived_point.total_cost, 0.30);
+}
+
+#[tokio::test]
+async fn historical_timeseries_skip_unreadable_materialized_archives() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(12, 0, 0)
+    .expect("valid archived materialized timeseries hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("archived timeseries success time"),
+    );
+    let archive_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "timeseries-materialized-corrupt-read-path",
+        &[(
+            1_i64,
+            "timeseries-materialized-corrupt-read-path-success",
+            archived_success_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET historical_rollups_materialized_at = datetime('now')
+        WHERE dataset = 'codex_invocations'
+          AND file_path = ?1
+        "#,
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .execute(&state.pool)
+    .await
+    .expect("mark timeseries archive as materialized");
+
+    let start = local_naive_to_utc(archived_hour_local, Shanghai);
+    let end = local_naive_to_utc(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::hours(1))
+            .expect("archived timeseries hour end"),
+        Shanghai,
+    );
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind(start.timestamp())
+    .bind(SOURCE_PROXY)
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(10_i64)
+    .bind(0.10_f64)
+    .bind(1_i64)
+    .bind(100.0_f64)
+    .bind(100.0_f64)
+    .bind("[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&state.pool)
+    .await
+    .expect("seed materialized timeseries rollup row");
+
+    fs::write(&archive_path, b"not-a-gzip-archive")
+        .expect("corrupt materialized timeseries archive");
+
+    let Json(response) = fetch_timeseries_from_hourly_rollups(
+        state,
+        TimeseriesQuery {
+            range: "ignored".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        },
+        Shanghai,
+        InvocationSourceScope::ProxyOnly,
+        RangeWindow {
+            start,
+            end,
+            display_end: end,
+            duration: end - start,
+        },
+        TimeseriesBucketSelection {
+            bucket_seconds: 3_600,
+            effective_bucket: "1h".to_string(),
+            available_buckets: vec!["1h".to_string()],
+            bucket_limited_to_daily: false,
+        },
+    )
+    .await
+    .expect("fetch historical timeseries with unreadable materialized archive");
+
+    let archived_point = response
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(start))
+        .expect("historical materialized timeseries bucket should exist");
+    assert_eq!(archived_point.total_count, 1);
+    assert_eq!(archived_point.success_count, 1);
+    assert_eq!(archived_point.failure_count, 0);
+    assert_eq!(archived_point.total_tokens, 10);
+    assert_f64_close(archived_point.total_cost, 0.10);
+}
+
+#[tokio::test]
+async fn historical_timeseries_skips_unreadable_replayed_legacy_archives() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(12, 0, 0)
+    .expect("valid archived replayed timeseries hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("archived replayed timeseries success time"),
+    );
+    let archive_path = seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "timeseries-replayed-corrupt-read-path",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1_i64,
+            invoke_id: "timeseries-replayed-corrupt-read-path-success",
+            occurred_at: archived_success_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 10_i64,
+            cost: 0.10_f64,
+            ttfb_ms: Some(100.0),
+            payload: Some(r#"{"promptCacheKey":"legacy-replayed"}"#),
+            detail_level: DETAIL_LEVEL_STRUCTURED_ONLY,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0_i64),
+        }],
+    )
+    .await;
+
+    insert_hourly_rollup_archive_replay_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        &archive_path,
+    )
+    .await;
+
+    let start = local_naive_to_utc(archived_hour_local, Shanghai);
+    let end = local_naive_to_utc(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::hours(1))
+            .expect("archived replayed timeseries hour end"),
+        Shanghai,
+    );
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind(start.timestamp())
+    .bind(SOURCE_PROXY)
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(10_i64)
+    .bind(0.10_f64)
+    .bind(1_i64)
+    .bind(100.0_f64)
+    .bind(100.0_f64)
+    .bind("[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&state.pool)
+    .await
+    .expect("seed replayed timeseries rollup row");
+
+    fs::write(&archive_path, b"not-a-gzip-archive")
+        .expect("corrupt replayed timeseries archive");
+
+    let Json(response) = fetch_timeseries_from_hourly_rollups(
+        state,
+        TimeseriesQuery {
+            range: "ignored".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        },
+        Shanghai,
+        InvocationSourceScope::ProxyOnly,
+        RangeWindow {
+            start,
+            end,
+            display_end: end,
+            duration: end - start,
+        },
+        TimeseriesBucketSelection {
+            bucket_seconds: 3_600,
+            effective_bucket: "1h".to_string(),
+            available_buckets: vec!["1h".to_string()],
+            bucket_limited_to_daily: false,
+        },
+    )
+    .await
+    .expect("fetch historical timeseries with unreadable replayed legacy archive");
+
+    let archived_point = response
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(start))
+        .expect("historical replayed timeseries bucket should exist");
+    assert_eq!(archived_point.total_count, 1);
+    assert_eq!(archived_point.success_count, 1);
+    assert_eq!(archived_point.failure_count, 0);
+    assert_eq!(archived_point.total_tokens, 10);
+    assert_f64_close(archived_point.total_cost, 0.10);
+}
+
+#[tokio::test]
+async fn historical_timeseries_read_path_skips_unreadable_pending_archives() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid unreadable pending timeseries hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("unreadable pending timeseries time"),
+    );
+    let archive_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "timeseries-pending-corrupt-read-path",
+        &[(
+            1_i64,
+            "timeseries-pending-corrupt-read-path-success",
+            archived_success_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+
+    let start = local_naive_to_utc(archived_hour_local, Shanghai);
+    let end = local_naive_to_utc(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::hours(1))
+            .expect("unreadable pending timeseries hour end"),
+        Shanghai,
+    );
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind(start.timestamp())
+    .bind(SOURCE_PROXY)
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(10_i64)
+    .bind(0.10_f64)
+    .bind(1_i64)
+    .bind(100.0_f64)
+    .bind(100.0_f64)
+    .bind("[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&state.pool)
+    .await
+    .expect("seed unreadable pending timeseries rollup row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        start.timestamp(),
+        SOURCE_PROXY,
+    )
+    .await;
+
+    fs::write(&archive_path, b"not-a-gzip-archive")
+        .expect("corrupt unreadable pending timeseries archive");
+
+    let Json(response) = fetch_timeseries_from_hourly_rollups(
+        state,
+        TimeseriesQuery {
+            range: "ignored".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        },
+        Shanghai,
+        InvocationSourceScope::ProxyOnly,
+        RangeWindow {
+            start,
+            end,
+            display_end: end,
+            duration: end - start,
+        },
+        TimeseriesBucketSelection {
+            bucket_seconds: 3_600,
+            effective_bucket: "1h".to_string(),
+            available_buckets: vec!["1h".to_string()],
+            bucket_limited_to_daily: false,
+        },
+    )
+    .await
+    .expect("fetch historical timeseries with unreadable pending archive");
+
+    let archived_point = response
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(start))
+        .expect("historical unreadable pending timeseries bucket should exist");
+    assert_eq!(archived_point.total_count, 1);
+    assert_eq!(archived_point.success_count, 1);
+    assert_eq!(archived_point.failure_count, 0);
+    assert_eq!(archived_point.total_tokens, 10);
+    assert_f64_close(archived_point.total_cost, 0.10);
 }
 
 #[tokio::test]
@@ -1560,6 +6121,8 @@ async fn timeseries_hourly_backed_repairs_stale_archived_rollup_counts_before_qu
     .execute(&state.pool)
     .await
     .expect("seed stale archived invocation rollup counts");
+
+    run_background_invocation_summary_rollup_repair(&state.pool).await;
 
     let start = local_naive_to_utc(archived_hour_local, Shanghai);
     let end = local_naive_to_utc(
@@ -1696,7 +6259,17 @@ async fn all_time_summary_missing_archive_does_not_mark_repair_complete() {
 
     fs::remove_file(&archive_path).expect("remove archived invocation batch from disk");
 
-    let response = fetch_summary(
+    let repair_err = crate::stats::ensure_invocation_summary_rollups_ready(&state.pool)
+        .await
+        .expect_err("missing archive should fail background summary repair");
+    assert!(
+        repair_err
+            .to_string()
+            .contains("completed invocation archive is missing"),
+        "missing archive should bubble the repair cause"
+    );
+
+    let Json(summary) = fetch_summary(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -1705,9 +6278,12 @@ async fn all_time_summary_missing_archive_does_not_mark_repair_complete() {
         }),
     )
     .await
-    .expect_err("missing archive should fail all-time summary repair")
-    .into_response();
-    assert_eq!(response.status().as_u16(), 500);
+    .expect("read-only all-time summary should fall back to current materialized rollups");
+    assert_eq!(summary.total_count, 99);
+    assert_eq!(summary.success_count, 99);
+    assert_eq!(summary.failure_count, 0);
+    assert_eq!(summary.total_tokens, 990);
+    assert!((summary.total_cost - 9.9).abs() < 1e-9);
 
     let repair_marker_cursor = sqlx::query_scalar::<_, i64>(
         "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
@@ -1874,6 +6450,8 @@ async fn all_time_summary_missing_summary_markers_do_not_replay_materialized_arc
     .execute(&state.pool)
     .await
     .expect("seed summary repair live cursor");
+
+    run_background_invocation_summary_rollup_repair(&state.pool).await;
 
     let Json(summary) = fetch_summary(
         State(state.clone()),
@@ -2116,6 +6694,8 @@ async fn all_time_summary_backfill_preserves_overall_rollups_when_only_failure_m
     .await
     .expect("seed shared invocation hourly rollup cursor for failure-only backfill");
 
+    run_background_invocation_summary_rollup_repair(&state.pool).await;
+
     let Json(summary) = fetch_summary(
         State(state.clone()),
         Query(SummaryQuery {
@@ -2276,6 +6856,8 @@ async fn all_time_summary_repair_preserves_pruned_materialized_archives() {
     .execute(&state.pool)
     .await
     .expect("insert live invocation row");
+
+    run_background_invocation_summary_rollup_repair(&state.pool).await;
 
     let Json(summary) = fetch_summary(
         State(state.clone()),
@@ -2500,6 +7082,8 @@ async fn all_time_summary_repair_replays_existing_materialized_archives_when_oth
     .await
     .expect("seed stale existing materialized rollup");
 
+    run_background_invocation_summary_rollup_repair(&state.pool).await;
+
     let Json(summary) = fetch_summary(
         State(state.clone()),
         Query(SummaryQuery {
@@ -2536,6 +7120,365 @@ async fn all_time_summary_repair_replays_existing_materialized_archives_when_oth
     .await
     .expect("load repaired failure count for existing materialized archive");
     assert_eq!(rollup_failure_count, 1);
+}
+
+#[tokio::test]
+async fn all_time_summary_read_path_skips_unreadable_materialized_archives() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived materialized summary hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("archived success time"),
+    );
+    let archive_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-materialized-corrupt-read-path",
+        &[(
+            1_i64,
+            "summary-materialized-corrupt-read-path-success",
+            archived_success_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET historical_rollups_materialized_at = datetime('now')
+        WHERE dataset = 'codex_invocations'
+          AND file_path = ?1
+        "#,
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .execute(&state.pool)
+    .await
+    .expect("mark summary archive as materialized");
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_success_at)
+        .expect("derive summary bucket epoch");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(10_i64)
+    .bind(0.10_f64)
+    .bind(1_i64)
+    .bind(100.0_f64)
+    .bind(100.0_f64)
+    .bind("[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&state.pool)
+    .await
+    .expect("seed materialized summary rollup row");
+
+    fs::write(&archive_path, b"not-a-gzip-archive").expect("corrupt materialized archive batch");
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch all-time summary with unreadable materialized archive");
+
+    assert_eq!(summary.total_count, 1);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 0);
+    assert_eq!(summary.total_tokens, 10);
+    assert!((summary.total_cost - 0.10).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn all_time_summary_read_path_skips_unreadable_replayed_legacy_archives() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived replayed summary hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("archived replayed success time"),
+    );
+    let archive_path = seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "summary-replayed-corrupt-read-path",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1_i64,
+            invoke_id: "summary-replayed-corrupt-read-path-success",
+            occurred_at: archived_success_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 10_i64,
+            cost: 0.10_f64,
+            ttfb_ms: Some(100.0),
+            payload: Some(r#"{"promptCacheKey":"legacy-replayed"}"#),
+            detail_level: DETAIL_LEVEL_STRUCTURED_ONLY,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0_i64),
+        }],
+    )
+    .await;
+
+    insert_hourly_rollup_archive_replay_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        &archive_path,
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_success_at)
+        .expect("derive replayed summary bucket epoch");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(10_i64)
+    .bind(0.10_f64)
+    .bind(1_i64)
+    .bind(100.0_f64)
+    .bind(100.0_f64)
+    .bind("[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&state.pool)
+    .await
+    .expect("seed replayed summary rollup row");
+
+    fs::write(&archive_path, b"not-a-gzip-archive")
+        .expect("corrupt replayed legacy archive batch");
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch all-time summary with unreadable replayed legacy archive");
+
+    assert_eq!(summary.total_count, 1);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 0);
+    assert_eq!(summary.total_tokens, 10);
+    assert!((summary.total_cost - 0.10).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn all_time_stats_and_summary_read_path_skip_unreadable_pending_archives() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid unreadable pending summary hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("unreadable pending summary time"),
+    );
+    let archive_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-pending-corrupt-read-path",
+        &[(
+            1_i64,
+            "summary-pending-corrupt-read-path-success",
+            archived_success_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_success_at)
+        .expect("derive unreadable pending summary bucket epoch");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(10_i64)
+    .bind(0.10_f64)
+    .bind(1_i64)
+    .bind(100.0_f64)
+    .bind(100.0_f64)
+    .bind("[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&state.pool)
+    .await
+    .expect("seed unreadable pending summary rollup row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
+
+    fs::write(&archive_path, b"not-a-gzip-archive").expect("corrupt pending archive batch");
+
+    let Json(stats) = fetch_stats(State(state.clone()))
+        .await
+        .expect("fetch stats with unreadable pending archive");
+    assert_eq!(stats.total_count, 1);
+    assert_eq!(stats.success_count, 1);
+    assert_eq!(stats.failure_count, 0);
+    assert_eq!(stats.total_tokens, 10);
+    assert!((stats.total_cost - 0.10).abs() < 1e-9);
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch all-time summary with unreadable pending archive");
+    assert_eq!(summary.total_count, 1);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 0);
+    assert_eq!(summary.total_tokens, 10);
+    assert!((summary.total_cost - 0.10).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn summary_rollup_repair_best_effort_skips_unreadable_pending_archives() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid unreadable pending summary hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("unreadable pending success time"),
+    );
+    let archive_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-pending-corrupt-best-effort",
+        &[(
+            1_i64,
+            "summary-pending-corrupt-best-effort-success",
+            archived_success_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+
+    fs::write(&archive_path, b"not-a-gzip-archive").expect("corrupt pending archive batch");
+
+    crate::stats::ensure_invocation_summary_rollups_ready_best_effort(&state.pool)
+        .await
+        .expect("best-effort summary repair should skip unreadable pending archive");
+
+    let repair_marker_cursor = sqlx::query_scalar::<_, i64>(
+        "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
+    )
+    .bind("codex_invocations_summary_rollup_v2")
+    .fetch_optional(&state.pool)
+    .await
+    .expect("load unreadable pending repair marker");
+    assert_eq!(repair_marker_cursor, None);
 }
 
 #[tokio::test]
@@ -2738,6 +7681,8 @@ async fn all_time_summary_repair_restores_live_rows_in_boundary_hours_when_prese
     .await
     .expect("seed shared invocation hourly rollup cursor");
 
+    run_background_invocation_summary_rollup_repair(&state.pool).await;
+
     let Json(summary) = fetch_summary(
         State(state.clone()),
         Query(SummaryQuery {
@@ -2930,6 +7875,8 @@ async fn all_time_summary_repair_rebuilds_non_materialized_archives_when_others_
     .await
     .expect("seed stale non-materialized rollup");
 
+    run_background_invocation_summary_rollup_repair(&state.pool).await;
+
     let Json(summary) = fetch_summary(
         State(state.clone()),
         Query(SummaryQuery {
@@ -3044,6 +7991,8 @@ async fn all_time_summary_repair_does_not_advance_shared_live_cursor_without_hou
     .await
     .expect("insert live invocation row");
 
+    run_background_invocation_summary_rollup_repair(&state.pool).await;
+
     let totals = query_combined_totals(
         &state.pool,
         state.config.crs_stats.as_ref(),
@@ -3114,6 +8063,8 @@ async fn all_time_summary_rollup_repair_counts_mixed_case_success_status() {
         )],
     )
     .await;
+
+    run_background_invocation_summary_rollup_repair(&state.pool).await;
 
     let Json(summary) = fetch_summary(
         State(state),

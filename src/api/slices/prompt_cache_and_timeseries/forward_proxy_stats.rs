@@ -3,7 +3,6 @@ use super::*;
 pub(crate) async fn fetch_forward_proxy_live_stats(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<ForwardProxyLiveStatsResponse>, ApiError> {
-    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let response = build_forward_proxy_live_stats_response(state.as_ref()).await?;
     Ok(Json(response))
 }
@@ -21,7 +20,6 @@ pub(crate) async fn fetch_forward_proxy_timeseries(
             "unsupported forward proxy bucket specification: {bucket_spec}; only 1h is supported"
         )));
     }
-    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let response = build_forward_proxy_timeseries_response(state.as_ref(), range_window).await?;
     Ok(Json(response))
 }
