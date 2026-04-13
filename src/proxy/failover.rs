@@ -57,6 +57,20 @@ pub(crate) fn parse_retry_after_delay(value: &HeaderValue) -> Option<Duration> {
     )))
 }
 
+async fn canonical_pool_attempt_proxy_binding_key(
+    state: &AppState,
+    selected_proxy_key: &str,
+) -> Option<String> {
+    let manager = state.forward_proxy.lock().await;
+    manager.canonicalize_bound_proxy_key(selected_proxy_key, None)
+}
+
+fn normalize_pool_attempt_group_name(group_name: Option<String>) -> Option<String> {
+    group_name
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 pub(crate) async fn resolve_pool_account_for_request_with_wait(
     state: &AppState,
     sticky_key: Option<&str>,
@@ -159,6 +173,7 @@ pub(crate) async fn send_pool_request_with_failover(
             upstream_error_message: None,
             downstream_error_message: None,
             upstream_request_id: None,
+            proxy_binding_key_snapshot: None,
             oauth_responses_debug: None,
             attempt_summary: pool_attempt_summary(
                 failover_progress.attempt_count,
@@ -293,6 +308,7 @@ pub(crate) async fn send_pool_request_with_failover(
                 upstream_error_message: None,
                 downstream_error_message: None,
                 upstream_request_id: None,
+                proxy_binding_key_snapshot: None,
                 oauth_responses_debug: None,
                 attempt_summary: PoolAttemptSummary::default(),
                 requested_service_tier: None,
@@ -506,6 +522,7 @@ pub(crate) async fn send_pool_request_with_failover(
                             upstream_error_message: None,
                             downstream_error_message: None,
                             upstream_request_id: None,
+                            proxy_binding_key_snapshot: None,
                             oauth_responses_debug: None,
                             attempt_summary: PoolAttemptSummary::default(),
                             requested_service_tier: None,
@@ -572,6 +589,7 @@ pub(crate) async fn send_pool_request_with_failover(
                             upstream_error_message: None,
                             downstream_error_message: None,
                             upstream_request_id: None,
+                            proxy_binding_key_snapshot: None,
                             oauth_responses_debug: None,
                             attempt_summary: PoolAttemptSummary::default(),
                             requested_service_tier: None,
@@ -676,6 +694,7 @@ pub(crate) async fn send_pool_request_with_failover(
                         canonical_error_message: None,
                         downstream_error_message: None,
                         upstream_request_id: None,
+                        proxy_binding_key_snapshot: None,
                         oauth_responses_debug: None,
                         attempt_summary: PoolAttemptSummary::default(),
                         requested_service_tier: None,
@@ -718,6 +737,7 @@ pub(crate) async fn send_pool_request_with_failover(
                         upstream_error_message: None,
                         downstream_error_message: None,
                         upstream_request_id: None,
+                        proxy_binding_key_snapshot: None,
                         oauth_responses_debug: None,
                         attempt_summary: pool_attempt_summary(
                             attempt_count,
@@ -757,6 +777,7 @@ pub(crate) async fn send_pool_request_with_failover(
                             upstream_error_message: None,
                             downstream_error_message: None,
                             upstream_request_id: None,
+                            proxy_binding_key_snapshot: None,
                             oauth_responses_debug: None,
                             attempt_summary: pool_attempt_summary(
                                 attempt_count,
@@ -899,6 +920,7 @@ pub(crate) async fn send_pool_request_with_failover(
                         canonical_error_message: None,
                         downstream_error_message: None,
                         upstream_request_id: None,
+                        proxy_binding_key_snapshot: None,
                         oauth_responses_debug: None,
                         attempt_summary: PoolAttemptSummary::default(),
                         requested_service_tier: None,
@@ -946,6 +968,7 @@ pub(crate) async fn send_pool_request_with_failover(
                                     upstream_error_message: None,
                                     downstream_error_message: None,
                                     upstream_request_id: None,
+                                    proxy_binding_key_snapshot: None,
                                     oauth_responses_debug: None,
                                     attempt_summary: PoolAttemptSummary::default(),
                                     requested_service_tier: attempted_requested_service_tier
@@ -1001,11 +1024,21 @@ pub(crate) async fn send_pool_request_with_failover(
                             "failed to record selected pool account"
                         );
                     }
+                    let group_name_snapshot =
+                        normalize_pool_attempt_group_name(account.group_name.clone());
+                    let proxy_binding_key_snapshot =
+                        canonical_pool_attempt_proxy_binding_key(
+                            state.as_ref(),
+                            selected_proxy.key.as_str(),
+                        )
+                        .await;
                     pending_attempt_record = if let Some(trace) = trace_context.as_ref() {
                         Some(
-                            begin_pool_upstream_request_attempt(
+                            begin_pool_upstream_request_attempt_with_scope(
                                 &state.pool,
                                 trace,
+                                group_name_snapshot.as_deref(),
+                                proxy_binding_key_snapshot.as_deref(),
                                 account.account_id,
                                 upstream_route_key.as_str(),
                                 attempt_index,
@@ -1189,6 +1222,7 @@ pub(crate) async fn send_pool_request_with_failover(
                                 upstream_error_message: None,
                                 downstream_error_message: None,
                                 upstream_request_id: None,
+                                proxy_binding_key_snapshot: proxy_binding_key_snapshot.clone(),
                                 oauth_responses_debug: None,
                                 attempt_summary: PoolAttemptSummary::default(),
                                 requested_service_tier: attempted_requested_service_tier.clone(),
@@ -1300,6 +1334,8 @@ pub(crate) async fn send_pool_request_with_failover(
                                         upstream_error_message: None,
                                         downstream_error_message: None,
                                         upstream_request_id: None,
+                                        proxy_binding_key_snapshot: proxy_binding_key_snapshot
+                                            .clone(),
                                         oauth_responses_debug: None,
                                         attempt_summary: PoolAttemptSummary::default(),
                                         requested_service_tier: attempted_requested_service_tier
@@ -1376,6 +1412,7 @@ pub(crate) async fn send_pool_request_with_failover(
                                 upstream_error_message: None,
                                 downstream_error_message: None,
                                 upstream_request_id: None,
+                                proxy_binding_key_snapshot: None,
                                 oauth_responses_debug: None,
                                 attempt_summary: PoolAttemptSummary::default(),
                                 requested_service_tier: attempted_requested_service_tier.clone(),
@@ -1429,6 +1466,7 @@ pub(crate) async fn send_pool_request_with_failover(
                                     upstream_error_message: None,
                                     downstream_error_message: None,
                                     upstream_request_id: None,
+                                    proxy_binding_key_snapshot: None,
                                     oauth_responses_debug: None,
                                     attempt_summary: PoolAttemptSummary::default(),
                                     requested_service_tier: attempted_requested_service_tier
@@ -1442,6 +1480,11 @@ pub(crate) async fn send_pool_request_with_failover(
                                 continue 'account_loop;
                             }
                         };
+                    let proxy_binding_key_snapshot = canonical_pool_attempt_proxy_binding_key(
+                        state.as_ref(),
+                        selected_proxy.key.as_str(),
+                    )
+                    .await;
                     let oauth_body = match &prepared_request_body.snapshot {
                         snapshot @ (PoolReplayBodySnapshot::Empty
                         | PoolReplayBodySnapshot::Memory(_))
@@ -1459,6 +1502,7 @@ pub(crate) async fn send_pool_request_with_failover(
                                     upstream_error_message: None,
                                     downstream_error_message: None,
                                     upstream_request_id: None,
+                                    proxy_binding_key_snapshot: proxy_binding_key_snapshot.clone(),
                                     oauth_responses_debug: None,
                                     attempt_summary: pool_attempt_summary(
                                         attempt_count,
@@ -1495,6 +1539,7 @@ pub(crate) async fn send_pool_request_with_failover(
                                     upstream_error_message: None,
                                     downstream_error_message: None,
                                     upstream_request_id: None,
+                                    proxy_binding_key_snapshot: proxy_binding_key_snapshot.clone(),
                                     oauth_responses_debug: None,
                                     attempt_summary: pool_attempt_summary(
                                         attempt_count,
@@ -1528,6 +1573,8 @@ pub(crate) async fn send_pool_request_with_failover(
                                         upstream_error_message: None,
                                         downstream_error_message: None,
                                         upstream_request_id: None,
+                                        proxy_binding_key_snapshot: proxy_binding_key_snapshot
+                                            .clone(),
                                         oauth_responses_debug: None,
                                         attempt_summary: pool_attempt_summary(
                                             attempt_count,
@@ -1571,11 +1618,15 @@ pub(crate) async fn send_pool_request_with_failover(
                             "failed to record selected pool account"
                         );
                     }
+                    let group_name_snapshot =
+                        normalize_pool_attempt_group_name(account.group_name.clone());
                     pending_attempt_record = if let Some(trace) = trace_context.as_ref() {
                         Some(
-                            begin_pool_upstream_request_attempt(
+                            begin_pool_upstream_request_attempt_with_scope(
                                 &state.pool,
                                 trace,
+                                group_name_snapshot.as_deref(),
+                                proxy_binding_key_snapshot.as_deref(),
                                 account.account_id,
                                 upstream_route_key.as_str(),
                                 attempt_index,
@@ -1881,6 +1932,17 @@ pub(crate) async fn send_pool_request_with_failover(
                     upstream_error_message,
                     downstream_error_message: normalized_failure.downstream_error_message,
                     upstream_request_id,
+                    proxy_binding_key_snapshot: if let Some((_, selected_proxy)) =
+                        forward_proxy_selection.as_ref()
+                    {
+                        canonical_pool_attempt_proxy_binding_key(
+                            state.as_ref(),
+                            selected_proxy.key.as_str(),
+                        )
+                        .await
+                    } else {
+                        None
+                    },
                     oauth_responses_debug: oauth_responses_debug.clone(),
                     attempt_summary: PoolAttemptSummary::default(),
                     requested_service_tier: attempted_requested_service_tier.clone(),
@@ -2005,6 +2067,17 @@ pub(crate) async fn send_pool_request_with_failover(
                                 upstream_error_message: None,
                                 downstream_error_message: None,
                                 upstream_request_id: None,
+                                proxy_binding_key_snapshot: if let Some((_, selected_proxy)) =
+                                    forward_proxy_selection.as_ref()
+                                {
+                                    canonical_pool_attempt_proxy_binding_key(
+                                        state.as_ref(),
+                                        selected_proxy.key.as_str(),
+                                    )
+                                    .await
+                                } else {
+                                    None
+                                },
                                 oauth_responses_debug: oauth_responses_debug.clone(),
                                 attempt_summary: PoolAttemptSummary::default(),
                                 requested_service_tier: attempted_requested_service_tier.clone(),
@@ -2074,6 +2147,17 @@ pub(crate) async fn send_pool_request_with_failover(
                         upstream_error_message: None,
                         downstream_error_message: None,
                         upstream_request_id: None,
+                        proxy_binding_key_snapshot: if let Some((_, selected_proxy)) =
+                            forward_proxy_selection.as_ref()
+                        {
+                            canonical_pool_attempt_proxy_binding_key(
+                                state.as_ref(),
+                                selected_proxy.key.as_str(),
+                            )
+                            .await
+                        } else {
+                            None
+                        },
                         oauth_responses_debug: oauth_responses_debug.clone(),
                         attempt_summary: PoolAttemptSummary::default(),
                         requested_service_tier: attempted_requested_service_tier.clone(),
@@ -2232,6 +2316,17 @@ pub(crate) async fn send_pool_request_with_failover(
                         upstream_error_message,
                         downstream_error_message: None,
                         upstream_request_id,
+                        proxy_binding_key_snapshot: if let Some((_, selected_proxy)) =
+                            forward_proxy_selection.as_ref()
+                        {
+                            canonical_pool_attempt_proxy_binding_key(
+                                state.as_ref(),
+                                selected_proxy.key.as_str(),
+                            )
+                            .await
+                        } else {
+                            None
+                        },
                         oauth_responses_debug: oauth_responses_debug.clone(),
                         attempt_summary: PoolAttemptSummary::default(),
                         requested_service_tier: attempted_requested_service_tier.clone(),
@@ -2310,6 +2405,17 @@ pub(crate) async fn send_pool_request_with_failover(
                         upstream_error_message: None,
                         downstream_error_message: None,
                         upstream_request_id: None,
+                        proxy_binding_key_snapshot: if let Some((_, selected_proxy)) =
+                            forward_proxy_selection.as_ref()
+                        {
+                            canonical_pool_attempt_proxy_binding_key(
+                                state.as_ref(),
+                                selected_proxy.key.as_str(),
+                            )
+                            .await
+                        } else {
+                            None
+                        },
                         oauth_responses_debug: oauth_responses_debug.clone(),
                         attempt_summary: PoolAttemptSummary::default(),
                         requested_service_tier: attempted_requested_service_tier.clone(),

@@ -47,6 +47,23 @@ function buildRequestBuckets(
   });
 }
 
+function buildFocusedRequestBuckets(
+  points: Record<number, { successCount?: number; failureCount?: number }>,
+): ForwardProxyBindingNode["last24h"] {
+  const start = Date.parse("2026-03-01T00:00:00.000Z");
+  return Array.from({ length: 24 }, (_, index) => {
+    const bucketStart = new Date(start + index * 3600_000).toISOString();
+    const bucketEnd = new Date(start + (index + 1) * 3600_000).toISOString();
+    const point = points[index] ?? {};
+    return {
+      bucketStart,
+      bucketEnd,
+      successCount: point.successCount ?? 0,
+      failureCount: point.failureCount ?? 0,
+    };
+  });
+}
+
 const directBindingKey = "__direct__";
 
 const defaultForwardProxyNodes: ForwardProxyBindingNode[] = [
@@ -195,6 +212,44 @@ const legacyAliasBindingNodes: ForwardProxyBindingNode[] = [
     penalized: false,
     selectable: true,
     last24h: buildRequestBuckets(6, 12, 5),
+  },
+];
+
+const groupScopedRealTrafficNodes: ForwardProxyBindingNode[] = [
+  {
+    key: directBindingKey,
+    source: "direct",
+    displayName: "Direct",
+    protocolLabel: "DIRECT",
+    penalized: false,
+    selectable: true,
+    last24h: buildFocusedRequestBuckets({
+      18: { successCount: 1 },
+      21: { successCount: 1 },
+    }),
+  },
+  {
+    key: "fpn_5a7b0c1d2e3f4a10",
+    source: "manual",
+    displayName: "JP Edge 01",
+    protocolLabel: "HTTP",
+    penalized: false,
+    selectable: true,
+    last24h: buildFocusedRequestBuckets({
+      17: { successCount: 2 },
+      18: { failureCount: 1 },
+      20: { successCount: 2 },
+      22: { failureCount: 1 },
+    }),
+  },
+  {
+    key: "fpn_0c1d2e3f4a5b6c40",
+    source: "subscription",
+    displayName: "US Edge 03",
+    protocolLabel: "VLESS",
+    penalized: true,
+    selectable: true,
+    last24h: buildFocusedRequestBuckets({}),
   },
 ];
 
@@ -424,6 +479,26 @@ export const HardBoundMultipleNodes: Story = {
     await expect(
       canvas.getByTestId("proxy-binding-options-scroll-region").className,
     ).toContain("overflow-y-auto");
+  },
+};
+
+export const GroupScopedRealTraffic: Story = {
+  args: {
+    groupName: "prod",
+    note: "Only this group's real pool attempts are shown here; global probe noise stays out of the 24H totals.",
+    boundProxyKeys: [
+      directBindingKey,
+      "fpn_5a7b0c1d2e3f4a10",
+      "fpn_0c1d2e3f4a5b6c40",
+    ],
+    availableProxyNodes: groupScopedRealTrafficNodes,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText(/^JP Edge 01$/i)).toBeInTheDocument();
+    await expect(canvas.getAllByText(/^2$/).length).toBeGreaterThan(0);
+    await expect(canvas.getByText(/^Direct$/i)).toBeInTheDocument();
+    await expect(canvas.getByText(/^US Edge 03$/i)).toBeInTheDocument();
   },
 };
 

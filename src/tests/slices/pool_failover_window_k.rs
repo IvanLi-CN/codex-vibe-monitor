@@ -2163,8 +2163,202 @@ async fn finalize_pool_upstream_request_attempt_updates_pending_row_in_place() {
     assert_eq!(rows[0].4.as_deref(), Some("2026-03-23 20:49:05"));
     assert_eq!(rows[0].5, Some(42.5));
     assert_eq!(rows[0].6, Some(15.0));
-    assert_eq!(rows[0].7, Some(188.4));
-    assert_eq!(rows[0].8.as_deref(), Some("req_pool_123"));
+   assert_eq!(rows[0].7, Some(188.4));
+   assert_eq!(rows[0].8.as_deref(), Some("req_pool_123"));
+}
+
+#[tokio::test]
+async fn begin_pool_upstream_request_attempt_with_scope_persists_group_and_proxy_snapshots() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(&state, "Scoped", "upstream-scoped").await;
+    let trace = PoolUpstreamAttemptTraceContext {
+        invoke_id: "pending-attempt-scope".to_string(),
+        occurred_at: "2026-03-23 20:59:00".to_string(),
+        endpoint: "/v1/responses".to_string(),
+        sticky_key: Some("sticky-scope".to_string()),
+        requester_ip: Some("192.168.31.9".to_string()),
+    };
+
+    let pending = begin_pool_upstream_request_attempt_with_scope(
+        &state.pool,
+        &trace,
+        Some("prod"),
+        Some(FORWARD_PROXY_DIRECT_KEY),
+        account_id,
+        "route-scoped",
+        1,
+        1,
+        0,
+        "2026-03-23 20:59:00",
+    )
+    .await;
+    let attempt_id = pending
+        .attempt_id
+        .expect("pending scoped attempt should be inserted immediately");
+
+    let row = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+        r#"
+        SELECT group_name_snapshot, proxy_binding_key_snapshot
+        FROM pool_upstream_request_attempts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(attempt_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load scoped attempt row");
+    assert_eq!(row.0.as_deref(), Some("prod"));
+    assert_eq!(row.1.as_deref(), Some(FORWARD_PROXY_DIRECT_KEY));
+}
+
+#[tokio::test]
+async fn finalize_pool_upstream_request_attempt_fallback_preserves_scope_snapshots() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(&state, "Scoped fallback", "upstream-fallback")
+        .await;
+    let pending = PendingPoolAttemptRecord {
+        attempt_id: None,
+        invoke_id: "pending-attempt-scope-fallback".to_string(),
+        occurred_at: "2026-03-23 21:00:00".to_string(),
+        endpoint: "/v1/responses".to_string(),
+        sticky_key: Some("sticky-scope-fallback".to_string()),
+        requester_ip: Some("192.168.31.10".to_string()),
+        group_name_snapshot: Some("prod".to_string()),
+        proxy_binding_key_snapshot: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
+        upstream_account_id: account_id,
+        upstream_route_key: "route-scoped-fallback".to_string(),
+        attempt_index: 2,
+        distinct_account_index: 1,
+        same_account_retry_index: 0,
+        started_at: "2026-03-23 21:00:00".to_string(),
+        connect_latency_ms: 0.0,
+        first_byte_latency_ms: 0.0,
+        compact_support_status: None,
+        compact_support_reason: None,
+    };
+
+    finalize_pool_upstream_request_attempt(
+        &state.pool,
+        &pending,
+        "2026-03-23 21:00:01",
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+        None,
+        None,
+        Some("fallback_transport_failure"),
+        Some("fallback transport failure"),
+        None,
+        Some(11.0),
+        Some(17.0),
+        None,
+        Some("req_scope_fallback"),
+        None,
+        None,
+    )
+    .await
+    .expect("finalize fallback scoped attempt");
+
+    let row = sqlx::query_as::<_, (Option<String>, Option<String>, String)>(
+        r#"
+        SELECT group_name_snapshot, proxy_binding_key_snapshot, status
+        FROM pool_upstream_request_attempts
+        WHERE invoke_id = ?1 AND occurred_at = ?2
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind("pending-attempt-scope-fallback")
+    .bind("2026-03-23 21:00:00")
+    .fetch_one(&state.pool)
+    .await
+    .expect("load fallback scoped attempt row");
+    assert_eq!(row.0.as_deref(), Some("prod"));
+    assert_eq!(row.1.as_deref(), Some(FORWARD_PROXY_DIRECT_KEY));
+    assert_eq!(row.2, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE);
+}
+
+#[tokio::test]
+async fn insert_pool_upstream_terminal_attempt_preserves_scope_snapshots() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Scoped terminal", "upstream-terminal-scoped")
+            .await;
+    let trace = PoolUpstreamAttemptTraceContext {
+        invoke_id: "terminal-scoped-snapshots".to_string(),
+        occurred_at: "2026-03-23 21:00:02".to_string(),
+        endpoint: "/v1/responses".to_string(),
+        sticky_key: Some("sticky-terminal-scoped".to_string()),
+        requester_ip: Some("192.168.31.11".to_string()),
+    };
+
+    insert_pool_upstream_terminal_attempt(
+        &state.pool,
+        &trace,
+        &PoolUpstreamError {
+            account: Some(PoolResolvedAccount {
+                account_id,
+                display_name: "Scoped terminal".to_string(),
+                kind: "api_key_codex".to_string(),
+                auth: PoolResolvedAuth::ApiKey {
+                    authorization: "Bearer sk-test-terminal".to_string(),
+                },
+                group_name: Some("prod".to_string()),
+                bound_proxy_keys: vec![FORWARD_PROXY_DIRECT_KEY.to_string()],
+                forward_proxy_scope: ForwardProxyRouteScope::pinned(FORWARD_PROXY_DIRECT_KEY),
+                group_upstream_429_retry_enabled: false,
+                group_upstream_429_max_retries: 0,
+                fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+                upstream_base_url: Url::parse("https://api.openai.com/")
+                    .expect("valid upstream base"),
+                routing_source: PoolRoutingSelectionSource::FreshAssignment,
+            }),
+            status: StatusCode::BAD_GATEWAY,
+            message: "terminal scoped failure".to_string(),
+            canonical_error_message: Some("terminal scoped failure".to_string()),
+            failure_kind: PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED,
+            connect_latency_ms: 0.0,
+            upstream_error_code: None,
+            upstream_error_message: None,
+            downstream_error_message: None,
+            upstream_request_id: Some("req_terminal_scope".to_string()),
+            proxy_binding_key_snapshot: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
+            oauth_responses_debug: None,
+            attempt_summary: PoolAttemptSummary::default(),
+            requested_service_tier: None,
+            request_body_for_capture: None,
+        },
+        3,
+        1,
+        PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED,
+    )
+    .await
+    .expect("insert scoped terminal attempt");
+
+    let row = sqlx::query_as::<_, (Option<String>, Option<String>, String)>(
+        r#"
+        SELECT group_name_snapshot, proxy_binding_key_snapshot, status
+        FROM pool_upstream_request_attempts
+        WHERE invoke_id = ?1 AND occurred_at = ?2
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind("terminal-scoped-snapshots")
+    .bind("2026-03-23 21:00:02")
+    .fetch_one(&state.pool)
+    .await
+    .expect("load scoped terminal attempt row");
+    assert_eq!(row.0.as_deref(), Some("prod"));
+    assert_eq!(row.1.as_deref(), Some(FORWARD_PROXY_DIRECT_KEY));
+    assert_eq!(row.2, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL);
 }
 
 #[tokio::test]
@@ -2201,6 +2395,7 @@ async fn insert_pool_upstream_terminal_attempt_preserves_oauth_transport_normali
                     .to_string(),
             ),
             upstream_request_id: Some("req_oauth_terminal_1".to_string()),
+            proxy_binding_key_snapshot: None,
             oauth_responses_debug: None,
             attempt_summary: PoolAttemptSummary::default(),
             requested_service_tier: None,
@@ -2449,6 +2644,7 @@ async fn insert_and_broadcast_pool_upstream_terminal_attempt_emits_final_snapsho
         upstream_error_message: None,
         downstream_error_message: None,
         upstream_request_id: Some("req_terminal_123".to_string()),
+        proxy_binding_key_snapshot: None,
         oauth_responses_debug: None,
         attempt_summary: pool_attempt_summary(
             3,
@@ -3108,6 +3304,8 @@ async fn recover_guard_dropped_pool_early_phase_orphan_without_persisted_attempt
         endpoint: "/v1/responses".to_string(),
         sticky_key: Some("sticky-guard-skip".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
+        group_name_snapshot: None,
+        proxy_binding_key_snapshot: None,
         upstream_account_id: account_id,
         upstream_route_key: "route-primary".to_string(),
         attempt_index: 1,
@@ -4187,6 +4385,8 @@ async fn pool_early_phase_orphan_cleanup_guard_disarm_keeps_invocation_running_w
         endpoint: "/v1/responses".to_string(),
         sticky_key: Some("sticky-guard-disarm".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
+        group_name_snapshot: None,
+        proxy_binding_key_snapshot: None,
         upstream_account_id: account_id,
         upstream_route_key: "route-primary".to_string(),
         attempt_index: 1,
@@ -4239,6 +4439,8 @@ async fn finalize_deferred_pool_early_phase_cleanup_guard_after_terminal_invocat
         endpoint: "/v1/responses".to_string(),
         sticky_key: Some("sticky-guard-complete-after-invocation".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
+        group_name_snapshot: None,
+        proxy_binding_key_snapshot: None,
         upstream_account_id: 18,
         upstream_route_key: "route-primary".to_string(),
         attempt_index: 1,
@@ -4278,6 +4480,8 @@ async fn complete_deferred_pool_early_phase_cleanup_guard_marks_terminal_and_dis
         endpoint: "/v1/responses".to_string(),
         sticky_key: Some("sticky-guard-complete".to_string()),
         requester_ip: Some("192.168.31.6".to_string()),
+        group_name_snapshot: None,
+        proxy_binding_key_snapshot: None,
         upstream_account_id: 17,
         upstream_route_key: "route-primary".to_string(),
         attempt_index: 1,

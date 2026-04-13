@@ -1344,6 +1344,8 @@ async fn ensure_pool_upstream_request_attempts_archive_schema(
         ("downstream_error_message", "TEXT"),
         ("compact_support_status", "TEXT"),
         ("compact_support_reason", "TEXT"),
+        ("group_name_snapshot", "TEXT"),
+        ("proxy_binding_key_snapshot", "TEXT"),
     ] {
         if !archive_columns.contains(column) {
             let statement = format!(

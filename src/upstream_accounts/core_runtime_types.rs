@@ -818,6 +818,7 @@ pub(crate) struct ListForwardProxyBindingNodesQuery {
     pub(crate) key: Vec<String>,
     #[serde(default)]
     pub(crate) include_current: bool,
+    pub(crate) group_name: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]

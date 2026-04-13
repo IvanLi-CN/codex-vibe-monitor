@@ -86,6 +86,432 @@
         }
     }
 
+    async fn seed_group_scoped_pool_attempt(
+        pool: &SqlitePool,
+        invoke_id: &str,
+        occurred_at: &str,
+        group_name_snapshot: Option<&str>,
+        proxy_binding_key_snapshot: Option<&str>,
+        status: &str,
+    ) {
+        let phase = if status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS {
+            POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED
+        } else {
+            POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED
+        };
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_request_attempts (
+                invoke_id,
+                occurred_at,
+                endpoint,
+                route_mode,
+                sticky_key,
+                group_name_snapshot,
+                proxy_binding_key_snapshot,
+                upstream_account_id,
+                upstream_route_key,
+                attempt_index,
+                distinct_account_index,
+                same_account_retry_index,
+                requester_ip,
+                started_at,
+                finished_at,
+                status,
+                phase,
+                http_status,
+                error_message,
+                created_at
+            )
+            VALUES (
+                ?1, ?2, '/v1/responses', ?3, 'sticky-group-scope', ?4, ?5, 41, 'route-group-scope',
+                1, 1, 0, '203.0.113.9', ?2, ?2, ?6, ?7, ?8, ?9, datetime('now')
+            )
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(INVOCATION_ROUTE_MODE_POOL)
+        .bind(group_name_snapshot)
+        .bind(proxy_binding_key_snapshot)
+        .bind(status)
+        .bind(phase)
+        .bind((status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS).then_some(200_i64))
+        .bind(
+            (status != POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
+                .then_some("group-scoped failure"),
+        )
+        .execute(pool)
+        .await
+        .expect("seed group-scoped pool attempt");
+    }
+
+    async fn seed_forward_proxy_hourly_bucket_at(
+        pool: &SqlitePool,
+        proxy_key: &str,
+        bucket_start_epoch: i64,
+        success_count: i64,
+        failure_count: i64,
+    ) {
+        let attempts = success_count + failure_count;
+        sqlx::query(
+            r#"
+            INSERT INTO forward_proxy_attempt_hourly (
+                proxy_key,
+                bucket_start_epoch,
+                attempts,
+                success_count,
+                failure_count,
+                latency_sample_count,
+                latency_sum_ms,
+                latency_max_ms,
+                updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))
+            ON CONFLICT(proxy_key, bucket_start_epoch) DO UPDATE SET
+                attempts = excluded.attempts,
+                success_count = excluded.success_count,
+                failure_count = excluded.failure_count,
+                latency_sample_count = excluded.latency_sample_count,
+                latency_sum_ms = excluded.latency_sum_ms,
+                latency_max_ms = excluded.latency_max_ms,
+                updated_at = datetime('now')
+            "#,
+        )
+        .bind(proxy_key)
+        .bind(bucket_start_epoch)
+        .bind(attempts)
+        .bind(success_count)
+        .bind(failure_count)
+        .bind(success_count.max(0))
+        .bind(if success_count > 0 {
+            success_count as f64 * 120.0
+        } else {
+            0.0
+        })
+        .bind(if success_count > 0 { 120.0 } else { 0.0 })
+        .execute(pool)
+        .await
+        .expect("seed forward proxy hourly bucket");
+    }
+
+    async fn seed_forward_proxy_metadata_history(
+        pool: &SqlitePool,
+        proxy_key: &str,
+        display_name: &str,
+        source: &str,
+        endpoint_url: &str,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO forward_proxy_metadata_history (
+                proxy_key,
+                display_name,
+                source,
+                endpoint_url,
+                updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, datetime('now'))
+            ON CONFLICT(proxy_key) DO UPDATE SET
+                display_name = excluded.display_name,
+                source = excluded.source,
+                endpoint_url = excluded.endpoint_url,
+                updated_at = datetime('now')
+            "#,
+        )
+        .bind(proxy_key)
+        .bind(display_name)
+        .bind(source)
+        .bind(endpoint_url)
+        .execute(pool)
+        .await
+        .expect("seed forward proxy metadata history");
+    }
+
+    async fn seed_group_scoped_pool_attempt_archive_batch(
+        pool: &SqlitePool,
+        archive_dir: &Path,
+        batch_name: &str,
+        rows: &[(&str, &str, Option<&str>, Option<&str>, &str)],
+    ) -> PathBuf {
+        std::fs::create_dir_all(archive_dir).expect("create archive dir");
+        let archive_db_path = archive_dir.join(format!("{batch_name}.sqlite"));
+        let archive_gzip_path = archive_dir.join(format!("{batch_name}.sqlite.gz"));
+        let _ = std::fs::remove_file(&archive_db_path);
+        let _ = std::fs::remove_file(&archive_gzip_path);
+        std::fs::File::create(&archive_db_path).expect("create archive sqlite");
+
+        let archive_pool = SqlitePool::connect(&sqlite_url_for_path(&archive_db_path))
+            .await
+            .expect("open archive sqlite");
+        let create_sql =
+            POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");
+        sqlx::query(&create_sql)
+            .execute(&archive_pool)
+            .await
+            .expect("create archive pool attempt schema");
+
+        for (index, row) in rows.iter().enumerate() {
+            let phase = if row.4 == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS {
+                POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED
+            } else {
+                POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED
+            };
+            sqlx::query(
+                r#"
+                INSERT INTO pool_upstream_request_attempts (
+                    id,
+                    invoke_id,
+                    occurred_at,
+                    endpoint,
+                    route_mode,
+                    sticky_key,
+                    group_name_snapshot,
+                    proxy_binding_key_snapshot,
+                    upstream_account_id,
+                    upstream_route_key,
+                    attempt_index,
+                    distinct_account_index,
+                    same_account_retry_index,
+                    requester_ip,
+                    started_at,
+                    finished_at,
+                    status,
+                    phase,
+                    http_status,
+                    error_message,
+                    created_at
+                )
+                VALUES (
+                    ?1, ?2, ?3, '/v1/responses', ?4, 'archived-group-scope', ?5, ?6, 41,
+                    'archived-route-group-scope', 1, 1, 0, '203.0.113.19', ?3, ?3, ?7, ?8, ?9, ?10,
+                    datetime('now')
+                )
+                "#,
+            )
+            .bind(10_000_i64 + index as i64)
+            .bind(row.0)
+            .bind(row.1)
+            .bind(INVOCATION_ROUTE_MODE_POOL)
+            .bind(row.2)
+            .bind(row.3)
+            .bind(row.4)
+            .bind(phase)
+            .bind((row.4 == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS).then_some(200_i64))
+            .bind(
+                (row.4 != POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
+                    .then_some("group-scoped archived failure"),
+            )
+            .execute(&archive_pool)
+            .await
+            .expect("insert archive group-scoped pool attempt row");
+        }
+
+        archive_pool.close().await;
+        deflate_sqlite_file_to_gzip(&archive_db_path, &archive_gzip_path)
+            .expect("compress archive sqlite");
+        let archive_manifest_path =
+            std::fs::canonicalize(&archive_gzip_path).expect("canonicalize archive gzip");
+
+        let coverage_start_at = rows
+            .iter()
+            .map(|row| row.1)
+            .min()
+            .expect("archive coverage start");
+        let coverage_end_at = rows
+            .iter()
+            .map(|row| row.1)
+            .max()
+            .expect("archive coverage end");
+        let month_key = &coverage_start_at[..7];
+        let day_key = &coverage_start_at[..10];
+
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                dataset,
+                month_key,
+                day_key,
+                part_key,
+                file_path,
+                sha256,
+                row_count,
+                status,
+                coverage_start_at,
+                coverage_end_at,
+                created_at
+            )
+            VALUES (
+                'pool_upstream_request_attempts',
+                ?1,
+                ?2,
+                'part-000',
+                ?3,
+                ?4,
+                ?5,
+                ?6,
+                ?7,
+                ?8,
+                datetime('now')
+            )
+            "#,
+        )
+        .bind(month_key)
+        .bind(day_key)
+        .bind(archive_manifest_path.to_string_lossy().to_string())
+        .bind(sha256_hex_file(&archive_gzip_path).expect("archive sha256"))
+        .bind(rows.len() as i64)
+        .bind(ARCHIVE_STATUS_COMPLETED)
+        .bind(coverage_start_at)
+        .bind(coverage_end_at)
+        .execute(pool)
+        .await
+        .expect("insert pool attempt archive batch manifest");
+
+        archive_gzip_path
+    }
+
+    async fn seed_legacy_group_scoped_pool_attempt_archive_batch_without_scope_columns(
+        pool: &SqlitePool,
+        archive_dir: &Path,
+        batch_name: &str,
+        rows: &[(&str, &str, &str)],
+    ) -> PathBuf {
+        std::fs::create_dir_all(archive_dir).expect("create legacy archive dir");
+        let archive_db_path = archive_dir.join(format!("{batch_name}.sqlite"));
+        let archive_gzip_path = archive_dir.join(format!("{batch_name}.sqlite.gz"));
+        let _ = std::fs::remove_file(&archive_db_path);
+        let _ = std::fs::remove_file(&archive_gzip_path);
+        std::fs::File::create(&archive_db_path).expect("create legacy archive sqlite");
+
+        let archive_pool = SqlitePool::connect(&sqlite_url_for_path(&archive_db_path))
+            .await
+            .expect("open legacy archive sqlite");
+        let create_sql = POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_CREATE_SQL
+            .replace("archive_db.", "")
+            .replace("    group_name_snapshot TEXT,\n", "")
+            .replace("    proxy_binding_key_snapshot TEXT,\n", "");
+        sqlx::query(&create_sql)
+            .execute(&archive_pool)
+            .await
+            .expect("create legacy archive pool attempt schema");
+
+        for (index, row) in rows.iter().enumerate() {
+            let phase = if row.2 == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS {
+                POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED
+            } else {
+                POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED
+            };
+            sqlx::query(
+                r#"
+                INSERT INTO pool_upstream_request_attempts (
+                    id,
+                    invoke_id,
+                    occurred_at,
+                    endpoint,
+                    route_mode,
+                    sticky_key,
+                    upstream_account_id,
+                    upstream_route_key,
+                    attempt_index,
+                    distinct_account_index,
+                    same_account_retry_index,
+                    requester_ip,
+                    started_at,
+                    finished_at,
+                    status,
+                    phase,
+                    http_status,
+                    error_message,
+                    created_at
+                )
+                VALUES (
+                    ?1, ?2, ?3, '/v1/responses', ?4, 'legacy-archived-group-scope', 41,
+                    'legacy-archived-route-group-scope', 1, 1, 0, '203.0.113.29', ?3, ?3, ?5, ?6,
+                    ?7, ?8, datetime('now')
+                )
+                "#,
+            )
+            .bind(20_000_i64 + index as i64)
+            .bind(row.0)
+            .bind(row.1)
+            .bind(INVOCATION_ROUTE_MODE_POOL)
+            .bind(row.2)
+            .bind(phase)
+            .bind((row.2 == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS).then_some(200_i64))
+            .bind(
+                (row.2 != POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
+                    .then_some("legacy archived failure"),
+            )
+            .execute(&archive_pool)
+            .await
+            .expect("insert legacy archive pool attempt row");
+        }
+
+        archive_pool.close().await;
+        deflate_sqlite_file_to_gzip(&archive_db_path, &archive_gzip_path)
+            .expect("compress legacy archive sqlite");
+        let archive_manifest_path =
+            std::fs::canonicalize(&archive_gzip_path).expect("canonicalize legacy archive gzip");
+
+        let coverage_start_at = rows
+            .iter()
+            .map(|row| row.1)
+            .min()
+            .expect("legacy archive coverage start");
+        let coverage_end_at = rows
+            .iter()
+            .map(|row| row.1)
+            .max()
+            .expect("legacy archive coverage end");
+        let month_key = &coverage_start_at[..7];
+        let day_key = &coverage_start_at[..10];
+
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                dataset,
+                month_key,
+                day_key,
+                part_key,
+                file_path,
+                sha256,
+                row_count,
+                status,
+                coverage_start_at,
+                coverage_end_at,
+                created_at
+            )
+            VALUES (
+                'pool_upstream_request_attempts',
+                ?1,
+                ?2,
+                'part-legacy-000',
+                ?3,
+                ?4,
+                ?5,
+                ?6,
+                ?7,
+                ?8,
+                datetime('now')
+            )
+            "#,
+        )
+        .bind(month_key)
+        .bind(day_key)
+        .bind(archive_manifest_path.to_string_lossy().to_string())
+        .bind(sha256_hex_file(&archive_gzip_path).expect("legacy archive sha256"))
+        .bind(rows.len() as i64)
+        .bind(ARCHIVE_STATUS_COMPLETED)
+        .bind(coverage_start_at)
+        .bind(coverage_end_at)
+        .execute(pool)
+        .await
+        .expect("insert legacy pool attempt archive batch manifest");
+
+        archive_gzip_path
+    }
+
     #[test]
     fn derive_secret_key_is_stable() {
         let lhs = derive_secret_key("alpha");
@@ -192,13 +618,14 @@
     #[test]
     fn forward_proxy_binding_nodes_query_keeps_repeated_keys_and_include_current() {
         let query = parse_list_forward_proxy_binding_nodes_query(
-            &"/api/pool/forward-proxy-binding-nodes?includeCurrent=1&key=legacy-a&key=&key=legacy-b"
+            &"/api/pool/forward-proxy-binding-nodes?includeCurrent=1&groupName=prod&key=legacy-a&key=&key=legacy-b"
                 .parse()
                 .expect("parse uri"),
         )
         .expect("deserialize binding query");
 
         assert!(query.include_current);
+        assert_eq!(query.group_name.as_deref(), Some("prod"));
         assert_eq!(
             query.key,
             vec![
@@ -209,10 +636,26 @@
         );
     }
 
+    #[test]
+    fn forward_proxy_binding_nodes_query_ignores_blank_group_name() {
+        let query = parse_list_forward_proxy_binding_nodes_query(
+            &"/api/pool/forward-proxy-binding-nodes?groupName=%20%20&includeCurrent=1"
+                .parse()
+                .expect("parse uri"),
+        )
+        .expect("deserialize blank group binding query");
+
+        assert!(query.include_current);
+        assert_eq!(query.group_name, None);
+    }
+
     #[tokio::test]
     async fn list_forward_proxy_binding_nodes_returns_current_nodes_and_deduplicated_requested_missing_keys()
      {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        crate::ensure_schema(&state.pool)
+            .await
+            .expect("ensure full schema for grouped binding stats");
         crate::ensure_schema(&state.pool)
             .await
             .expect("ensure full schema for forward proxy settings");
@@ -254,6 +697,409 @@
             nodes.iter().any(|node| node.selectable),
             "current selectable binding nodes should still be returned for dialog choices"
         );
+    }
+
+    #[tokio::test]
+    async fn list_forward_proxy_binding_nodes_uses_group_scoped_real_pool_attempts_when_group_name_is_present()
+     {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        crate::ensure_schema(&state.pool)
+            .await
+            .expect("ensure full schema for forward proxy settings");
+
+        let _ = put_forward_proxy_settings(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(ForwardProxySettingsUpdateRequest {
+                proxy_urls: vec!["socks5://127.0.0.1:1080".to_string()],
+                subscription_urls: vec![],
+                subscription_update_interval_secs: 3600,
+                insert_direct: true,
+            }),
+        )
+        .await
+        .expect("persist forward proxy settings");
+
+        let (manual_key, manual_display_name) = {
+            let manager = state.forward_proxy.lock().await;
+            manager
+                .binding_nodes()
+                .into_iter()
+                .find(|node| node.key != FORWARD_PROXY_DIRECT_KEY)
+                .map(|node| (node.key, node.display_name))
+                .expect("manual binding key")
+        };
+        let now_epoch = Utc::now().timestamp();
+        let range_end_epoch = align_bucket_epoch(now_epoch, 3600, 0) + 3600;
+        let range_start_epoch = range_end_epoch - 24 * 3600;
+        let manual_bucket_epoch = range_start_epoch + 6 * 3600;
+        let direct_bucket_epoch = range_start_epoch + 7 * 3600;
+        seed_forward_proxy_hourly_bucket_at(&state.pool, &manual_key, manual_bucket_epoch, 9, 7)
+            .await;
+
+        let manual_bucket_local = format_naive(
+            Utc.timestamp_opt(manual_bucket_epoch + 300, 0)
+                .single()
+                .expect("manual bucket timestamp")
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        let direct_bucket_local = format_naive(
+            Utc.timestamp_opt(direct_bucket_epoch + 300, 0)
+                .single()
+                .expect("direct bucket timestamp")
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        seed_group_scoped_pool_attempt(
+            &state.pool,
+            "group-prod-manual-success",
+            &manual_bucket_local,
+            Some("prod"),
+            Some(&manual_key),
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+        )
+        .await;
+        seed_group_scoped_pool_attempt(
+            &state.pool,
+            "group-prod-manual-failure",
+            &manual_bucket_local,
+            Some("prod"),
+            Some(&manual_key),
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+        )
+        .await;
+        seed_group_scoped_pool_attempt(
+            &state.pool,
+            "group-prod-manual-summary-final",
+            &manual_bucket_local,
+            Some("prod"),
+            Some(&manual_key),
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
+        )
+        .await;
+        seed_group_scoped_pool_attempt(
+            &state.pool,
+            "group-prod-direct-success",
+            &direct_bucket_local,
+            Some("prod"),
+            Some(FORWARD_PROXY_DIRECT_KEY),
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+        )
+        .await;
+        seed_group_scoped_pool_attempt(
+            &state.pool,
+            "group-other-manual-success",
+            &manual_bucket_local,
+            Some("staging"),
+            Some(&manual_key),
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+        )
+        .await;
+        seed_group_scoped_pool_attempt(
+            &state.pool,
+            "group-prod-legacy-no-snapshot",
+            &manual_bucket_local,
+            Some("prod"),
+            None,
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+        )
+        .await;
+        let historical_manual_key = format!("{manual_key}-legacy");
+        seed_forward_proxy_metadata_history(
+            &state.pool,
+            &historical_manual_key,
+            &manual_display_name,
+            "manual",
+            "socks5://127.0.0.1:1080",
+        )
+        .await;
+        let archived_manual_bucket_local = format_naive(
+            Utc.timestamp_opt(manual_bucket_epoch + 900, 0)
+                .single()
+                .expect("archived manual bucket timestamp")
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        let _archive_path = seed_group_scoped_pool_attempt_archive_batch(
+            &state.pool,
+            &state.config.archive_dir,
+            "group-scoped-binding-prod",
+            &[(
+                "group-prod-archived-manual-success",
+                archived_manual_bucket_local.as_str(),
+                Some("prod"),
+                Some(historical_manual_key.as_str()),
+                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+            )],
+        )
+        .await;
+        let _legacy_archive_path =
+            seed_legacy_group_scoped_pool_attempt_archive_batch_without_scope_columns(
+                &state.pool,
+                &state.config.archive_dir,
+                "group-scoped-binding-prod-legacy",
+                &[(
+                    "group-prod-legacy-archive-without-scope-columns",
+                    archived_manual_bucket_local.as_str(),
+                    POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+                )],
+            )
+            .await;
+        let global_baseline_nodes =
+            build_forward_proxy_binding_nodes_response_with_options(state.as_ref(), &[], false)
+                .await
+                .expect("build baseline global binding nodes");
+        let global_baseline_manual = global_baseline_nodes
+            .iter()
+            .find(|node| node.key == manual_key)
+            .expect("baseline global manual node");
+        let global_baseline_manual_success = global_baseline_manual
+            .last24h
+            .iter()
+            .map(|bucket| bucket.success_count)
+            .sum::<i64>();
+        let global_baseline_manual_failure = global_baseline_manual
+            .last24h
+            .iter()
+            .map(|bucket| bucket.failure_count)
+            .sum::<i64>();
+
+        let Json(group_nodes) = list_forward_proxy_binding_nodes(
+            State(state.clone()),
+            "/api/pool/forward-proxy-binding-nodes?includeCurrent=1&groupName=prod"
+                .parse()
+                .expect("parse grouped binding uri"),
+        )
+        .await
+        .expect("list grouped binding nodes");
+
+        let Json(group_only_nodes) = list_forward_proxy_binding_nodes(
+            State(state.clone()),
+            "/api/pool/forward-proxy-binding-nodes?groupName=prod"
+                .parse()
+                .expect("parse grouped-only binding uri"),
+        )
+        .await
+        .expect("list grouped binding nodes without explicit keys");
+        assert!(
+            !group_only_nodes.is_empty(),
+            "groupName alone should still return the grouped binding catalog",
+        );
+
+        let grouped_manual = group_nodes
+            .iter()
+            .find(|node| node.key == manual_key)
+            .expect("grouped manual node");
+        let grouped_only_manual = group_only_nodes
+            .iter()
+            .find(|node| node.key == manual_key)
+            .expect("grouped-only manual node");
+        assert_eq!(
+            grouped_only_manual
+                .last24h
+                .iter()
+                .map(|bucket| bucket.success_count)
+                .sum::<i64>(),
+            2,
+            "groupName-only requests should still expose grouped manual successes",
+        );
+        assert_eq!(
+            grouped_only_manual
+                .last24h
+                .iter()
+                .map(|bucket| bucket.failure_count)
+                .sum::<i64>(),
+            1,
+            "groupName-only requests should still expose grouped manual failures",
+        );
+        assert_eq!(
+            grouped_manual
+                .last24h
+                .iter()
+                .map(|bucket| bucket.success_count)
+                .sum::<i64>(),
+            2,
+            "grouped stats should include this group's live and archived manual successes after alias remapping",
+        );
+        assert_eq!(
+            grouped_manual
+                .last24h
+                .iter()
+                .map(|bucket| bucket.failure_count)
+                .sum::<i64>(),
+            1,
+            "grouped stats should include only this group's real manual failures",
+        );
+        let grouped_direct = group_nodes
+            .iter()
+            .find(|node| node.key == FORWARD_PROXY_DIRECT_KEY)
+            .expect("grouped direct node");
+        assert_eq!(
+            grouped_direct
+                .last24h
+                .iter()
+                .map(|bucket| bucket.success_count)
+                .sum::<i64>(),
+            1,
+            "direct real traffic should remain visible in grouped stats",
+        );
+        assert_eq!(
+            grouped_direct
+                .last24h
+                .iter()
+                .map(|bucket| bucket.failure_count)
+                .sum::<i64>(),
+            0,
+        );
+
+        let global_nodes =
+            build_forward_proxy_binding_nodes_response_with_options(state.as_ref(), &[], false)
+                .await
+                .expect("build global binding nodes");
+        let global_manual = global_nodes
+            .iter()
+            .find(|node| node.key == manual_key)
+            .expect("global manual node");
+        let global_manual_success = global_manual
+            .last24h
+            .iter()
+            .map(|bucket| bucket.success_count)
+            .sum::<i64>();
+        let global_manual_failure = global_manual
+            .last24h
+            .iter()
+            .map(|bucket| bucket.failure_count)
+            .sum::<i64>();
+        assert!(
+            global_manual_success >= global_baseline_manual_success,
+            "omitting groupName must preserve the existing global hourly baseline instead of collapsing to grouped-only stats",
+        );
+        assert!(global_manual_failure >= global_baseline_manual_failure);
+    }
+
+    #[tokio::test]
+    async fn list_forward_proxy_binding_nodes_without_group_name_preserves_write_path_hourly_stats()
+    {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        crate::ensure_schema(&state.pool)
+            .await
+            .expect("ensure full schema for forward proxy settings");
+
+        let _ = put_forward_proxy_settings(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(ForwardProxySettingsUpdateRequest {
+                proxy_urls: vec!["socks5://127.0.0.1:1080".to_string()],
+                subscription_urls: vec![],
+                subscription_update_interval_secs: 3600,
+                insert_direct: false,
+            }),
+        )
+        .await
+        .expect("persist forward proxy settings");
+
+        let manual_key = {
+            let manager = state.forward_proxy.lock().await;
+            manager
+                .binding_nodes()
+                .into_iter()
+                .find(|node| node.key != FORWARD_PROXY_DIRECT_KEY)
+                .map(|node| node.key)
+                .expect("manual binding key")
+        };
+        insert_forward_proxy_attempt(&state.pool, &manual_key, true, Some(12.5), None, false)
+            .await
+            .expect("insert live forward proxy attempt");
+
+        let hourly_before: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(success_count), 0) FROM forward_proxy_attempt_hourly WHERE proxy_key = ?1",
+        )
+        .bind(&manual_key)
+        .fetch_one(&state.pool)
+        .await
+        .expect("load hourly baseline");
+        assert_eq!(
+            hourly_before, 1,
+            "test setup should seed the ungrouped view through the real write path"
+        );
+
+        let Json(nodes) = list_forward_proxy_binding_nodes(
+            State(state.clone()),
+            "/api/pool/forward-proxy-binding-nodes?includeCurrent=1"
+                .parse()
+                .expect("parse ungrouped binding uri"),
+        )
+        .await
+        .expect("list forward proxy binding nodes");
+
+        let manual = nodes
+            .iter()
+            .find(|node| node.key == manual_key)
+            .expect("manual node");
+        assert_eq!(
+            manual
+                .last24h
+                .iter()
+                .map(|bucket| bucket.success_count)
+                .sum::<i64>(),
+            1,
+            "ungrouped binding nodes should preserve fresh hourly stats emitted by the write path",
+        );
+
+        let hourly_after: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(success_count), 0) FROM forward_proxy_attempt_hourly WHERE proxy_key = ?1",
+        )
+        .bind(&manual_key)
+        .fetch_one(&state.pool)
+        .await
+        .expect("load hourly after route catch-up");
+        assert_eq!(hourly_after, 1);
+    }
+
+    #[tokio::test]
+    async fn live_first_proxy_binding_key_snapshot_canonicalizes_endpoint_storage_key() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        crate::ensure_schema(&state.pool)
+            .await
+            .expect("ensure full schema for forward proxy settings");
+
+        let settings = ForwardProxySettings {
+            proxy_urls: vec!["http://127.0.0.1:17890#JP Edge 01".to_string()],
+            subscription_urls: Vec::new(),
+            subscription_update_interval_secs: 3600,
+            insert_direct: false,
+        };
+        save_forward_proxy_settings(&state.pool, settings.clone())
+            .await
+            .expect("persist forward proxy settings");
+
+        let (selected_proxy, binding_key) = {
+            let mut manager = state.forward_proxy.lock().await;
+            manager.apply_settings(settings);
+            let endpoint = manager
+                .endpoints
+                .iter()
+                .find(|endpoint| endpoint.key != FORWARD_PROXY_DIRECT_KEY)
+                .cloned()
+                .expect("manual forward proxy endpoint");
+            let binding_key = manager
+                .binding_nodes()
+                .into_iter()
+                .find(|node| node.key != FORWARD_PROXY_DIRECT_KEY)
+                .map(|node| node.key)
+                .expect("manual binding key");
+            let selected_proxy = SelectedForwardProxy::from_endpoint(&endpoint);
+            assert_ne!(
+                selected_proxy.key, binding_key,
+                "regression test requires the runtime endpoint storage key to differ from the canonical binding key"
+            );
+            (selected_proxy, binding_key)
+        };
+
+        let snapshot =
+            live_first_proxy_binding_key_snapshot(state.as_ref(), Some(&selected_proxy)).await;
+        assert_eq!(snapshot.as_deref(), Some(binding_key.as_str()));
     }
 
     #[test]
