@@ -198,10 +198,7 @@ fn usage_snapshot_error_is_network_failure(err: &anyhow::Error) -> bool {
 }
 
 fn usage_snapshot_error_skips_browser_user_agent_retry(err: &anyhow::Error) -> bool {
-    let normalized = err.to_string().to_ascii_lowercase();
-    normalized.contains("deactivated_workspace")
-        || normalized.contains("upstream_http_402")
-        || normalized.contains("upstream rejected")
+    maintenance_upstream_rejected_error_message(&err.to_string())
 }
 
 async fn fetch_usage_snapshot_via_forward_proxy(
@@ -1272,6 +1269,29 @@ fn is_upstream_rejected_error_message(message: &str) -> bool {
         || msg.contains("http_401")
         || msg.contains("http 403")
         || msg.contains("http_403")
+}
+
+fn maintenance_upstream_rejected_error_message(message: &str) -> bool {
+    let msg = message.to_ascii_lowercase();
+    msg.contains("deactivated_workspace")
+        || msg.contains("upstream_http_402")
+        || msg.contains("upstream rejected")
+        || (msg.contains("oauth_upstream_rejected_request")
+            && (msg.contains("forbidden")
+                || msg.contains("unauthorized")
+                || msg.contains("payment required")
+                || msg.contains("http 401")
+                || msg.contains("http_401")
+                || msg.contains("http 402")
+                || msg.contains("http_402")
+                || msg.contains("http 403")
+                || msg.contains("http_403")
+                || msg.contains("responded with 401")
+                || msg.contains("responded with 402")
+                || msg.contains("responded with 403")
+                || msg.contains("returned 401")
+                || msg.contains("returned 402")
+                || msg.contains("returned 403")))
 }
 
 fn is_reauth_error(err: &anyhow::Error) -> bool {

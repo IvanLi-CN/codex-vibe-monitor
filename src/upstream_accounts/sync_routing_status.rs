@@ -757,12 +757,7 @@ fn sync_failure_requires_upstream_rejected_maintenance_cooldown(
 ) -> bool {
     account_reason_is_maintenance_upstream_rejected(Some(reason_code))
         || route_failure_kind_is_maintenance_upstream_rejected(Some(failure_kind))
-        || {
-            let normalized = error_message.to_ascii_lowercase();
-            normalized.contains("deactivated_workspace")
-                || normalized.contains("upstream_http_402")
-                || normalized.contains("upstream rejected")
-        }
+        || maintenance_upstream_rejected_error_message(error_message)
 }
 
 fn route_failure_is_current(

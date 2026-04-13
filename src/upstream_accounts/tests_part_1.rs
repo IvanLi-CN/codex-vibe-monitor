@@ -2709,6 +2709,65 @@
         server.abort();
     }
 
+    #[tokio::test]
+    async fn fetch_usage_snapshot_skips_browser_user_agent_retry_for_wrapped_upstream_rejected_error()
+    {
+        #[derive(Clone)]
+        struct UsageSnapshotTestState {
+            requests: Arc<Mutex<Vec<String>>>,
+        }
+
+        async fn handler(
+            State(state): State<UsageSnapshotTestState>,
+            headers: HeaderMap,
+        ) -> (StatusCode, String) {
+            let user_agent = headers
+                .get(header::USER_AGENT)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            state.requests.lock().await.push(user_agent);
+            (
+                StatusCode::FORBIDDEN,
+                "oauth_upstream_rejected_request: pool upstream responded with 403: Forbidden"
+                    .to_string(),
+            )
+        }
+
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let app = Router::new()
+            .route("/backend-api/wham/usage", get(handler))
+            .with_state(UsageSnapshotTestState {
+                requests: requests.clone(),
+            });
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve test app");
+        });
+
+        let client = Client::builder().build().expect("client");
+        let config = usage_snapshot_test_config(
+            &format!("http://{addr}/backend-api"),
+            "codex-vibe-monitor/0.2.0",
+        );
+
+        let err = fetch_usage_snapshot(&client, &config, "access-token", Some("acct_test"))
+            .await
+            .expect_err("wrapped upstream rejected error should stay terminal");
+        assert!(
+            err.to_string().contains("403 Forbidden"),
+            "expected original 403 error, got: {err:#}"
+        );
+
+        let recorded = requests.lock().await.clone();
+        assert_eq!(recorded, vec!["codex-vibe-monitor/0.2.0".to_string()]);
+
+        server.abort();
+    }
+
     #[test]
     fn build_manual_callback_redirect_uri_targets_localhost() {
         let redirect = build_manual_callback_redirect_uri().expect("redirect uri");

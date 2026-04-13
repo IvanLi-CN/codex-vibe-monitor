@@ -2583,6 +2583,16 @@ fn create_gzip_streaming_raw_encoder(
     ))
 }
 
+async fn run_blocking_raw_writer_io<T, F>(op: F) -> io::Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> io::Result<T> + Send + 'static,
+{
+    tokio::task::spawn_blocking(op)
+        .await
+        .map_err(|err| io::Error::other(format!("raw writer task join failed: {err}")))?
+}
+
 pub(crate) struct AsyncStreamingRawPayloadWriter {
     tx: Option<mpsc::Sender<Bytes>>,
     meta_rx: Option<oneshot::Receiver<RawPayloadMeta>>,
@@ -2740,21 +2750,22 @@ pub(crate) async fn write_streaming_raw_payload_to_file(
                 buffer.extend_from_slice(&bytes[..write_len]);
                 match immediate_gzip_bytes {
                     Some(threshold) if buffer.len() >= threshold => {
-                        match create_gzip_streaming_raw_encoder(&gzip_path) {
-                            Ok(mut encoder) => match encoder.write_all(&buffer) {
-                                Ok(()) => {
-                                    meta.path = Some(gzip_path.to_string_lossy().to_string());
-                                    writer = StreamingRawPayloadWriterState::Gzip {
-                                        path: gzip_path.clone(),
-                                        encoder,
-                                    };
-                                    Ok(())
-                                }
-                                Err(err) => {
-                                    failed_path = Some(gzip_path.clone());
-                                    Err(err)
-                                }
-                            },
+                        let write_path = gzip_path.clone();
+                        match run_blocking_raw_writer_io(move || {
+                            let mut encoder = create_gzip_streaming_raw_encoder(&write_path)?;
+                            encoder.write_all(&buffer)?;
+                            Ok(encoder)
+                        })
+                        .await
+                        {
+                            Ok(encoder) => {
+                                meta.path = Some(gzip_path.to_string_lossy().to_string());
+                                writer = StreamingRawPayloadWriterState::Gzip {
+                                    path: gzip_path.clone(),
+                                    encoder,
+                                };
+                                Ok(())
+                            }
                             Err(err) => {
                                 failed_path = Some(gzip_path.clone());
                                 Err(err)
@@ -2766,21 +2777,22 @@ pub(crate) async fn write_streaming_raw_payload_to_file(
                         Ok(())
                     }
                     None => {
-                        match create_plain_streaming_raw_file(&path) {
-                            Ok(mut file) => match file.write_all(&buffer) {
-                                Ok(()) => {
-                                    meta.path = Some(path.to_string_lossy().to_string());
-                                    writer = StreamingRawPayloadWriterState::Plain {
-                                        path: path.clone(),
-                                        file,
-                                    };
-                                    Ok(())
-                                }
-                                Err(err) => {
-                                    failed_path = Some(path.clone());
-                                    Err(err)
-                                }
-                            },
+                        let write_path = path.clone();
+                        match run_blocking_raw_writer_io(move || {
+                            let mut file = create_plain_streaming_raw_file(&write_path)?;
+                            file.write_all(&buffer)?;
+                            Ok(file)
+                        })
+                        .await
+                        {
+                            Ok(file) => {
+                                meta.path = Some(path.to_string_lossy().to_string());
+                                writer = StreamingRawPayloadWriterState::Plain {
+                                    path: path.clone(),
+                                    file,
+                                };
+                                Ok(())
+                            }
                             Err(err) => {
                                 failed_path = Some(path.clone());
                                 Err(err)
@@ -2790,8 +2802,14 @@ pub(crate) async fn write_streaming_raw_payload_to_file(
                 }
             }
             StreamingRawPayloadWriterState::Plain { path, mut file } => {
-                match file.write_all(&bytes[..write_len]) {
-                    Ok(()) => {
+                let chunk = bytes.slice(..write_len);
+                match run_blocking_raw_writer_io(move || {
+                    file.write_all(chunk.as_ref())?;
+                    Ok(file)
+                })
+                .await
+                {
+                    Ok(file) => {
                         writer = StreamingRawPayloadWriterState::Plain { path, file };
                         Ok(())
                     }
@@ -2802,8 +2820,14 @@ pub(crate) async fn write_streaming_raw_payload_to_file(
                 }
             }
             StreamingRawPayloadWriterState::Gzip { path, mut encoder } => {
-                match encoder.write_all(&bytes[..write_len]) {
-                    Ok(()) => {
+                let chunk = bytes.slice(..write_len);
+                match run_blocking_raw_writer_io(move || {
+                    encoder.write_all(chunk.as_ref())?;
+                    Ok(encoder)
+                })
+                .await
+                {
+                    Ok(encoder) => {
                         writer = StreamingRawPayloadWriterState::Gzip { path, encoder };
                         Ok(())
                     }
@@ -2836,27 +2860,32 @@ pub(crate) async fn write_streaming_raw_payload_to_file(
             if buffer.is_empty() {
                 Ok(())
             } else {
-                match create_plain_streaming_raw_file(&path) {
-                    Ok(mut file) => {
-                        let write_result = file.write_all(&buffer).and_then(|_| file.flush());
-                        if write_result.is_ok() {
-                            meta.path = Some(path.to_string_lossy().to_string());
-                        }
-                        write_result
-                    }
-                    Err(err) => Err(err),
+                let final_plain_path = path.clone();
+                let write_result = run_blocking_raw_writer_io(move || {
+                    let mut file = create_plain_streaming_raw_file(&final_plain_path)?;
+                    file.write_all(&buffer)?;
+                    file.flush()
+                })
+                .await;
+                if write_result.is_ok() {
+                    meta.path = Some(path.to_string_lossy().to_string());
                 }
+                write_result
             }
         }
         StreamingRawPayloadWriterState::Plain { path, mut file } => {
-            let flush_result = file.flush();
+            let flush_result = run_blocking_raw_writer_io(move || file.flush()).await;
             if flush_result.is_ok() {
                 meta.path = Some(path.to_string_lossy().to_string());
             }
             flush_result
         }
         StreamingRawPayloadWriterState::Gzip { path, encoder } => {
-            let finish_result = encoder.finish().and_then(|mut writer| writer.flush());
+            let finish_result = run_blocking_raw_writer_io(move || {
+                let mut writer = encoder.finish()?;
+                writer.flush()
+            })
+            .await;
             if finish_result.is_ok() {
                 meta.path = Some(path.to_string_lossy().to_string());
             }
