@@ -1654,7 +1654,6 @@ pub(crate) async fn fetch_invocation_suggestions(
 pub(crate) async fn fetch_stats(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<StatsResponse>, ApiError> {
-    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let totals = query_combined_totals(
         &state.pool,
@@ -1675,7 +1674,6 @@ pub(crate) async fn fetch_summary(
     let default_limit = state.config.list_limit_max as i64;
     let window = parse_summary_window(&params, default_limit)?;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
-    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
 
     let totals = match window {

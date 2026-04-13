@@ -1198,6 +1198,10 @@ async fn materialize_historical_rollups_keeps_pruned_detail_archives_pending() {
             ttfb_ms: Some(120.0),
             payload: Some(r#"{"upstreamAccountId":17}"#),
             detail_level: DETAIL_LEVEL_STRUCTURED_ONLY,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
         }],
     )
     .await;

@@ -2409,6 +2409,77 @@ async fn build_account_sticky_keys_response_keeps_attached_keys_without_recent_a
     );
 }
 
+#[tokio::test]
+async fn upstream_account_sticky_keys_reads_inline_rollups_without_read_time_catch_up() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let sticky_key = "sticky-inline-rollup";
+    let recent_time = format_naive(
+        (Utc::now() - ChronoDuration::minutes(15))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+
+    upsert_sticky_route(&state.pool, sticky_key, account_id, &recent_time)
+        .await
+        .expect("seed sticky route");
+
+    let mut record = test_proxy_capture_record("sticky-inline-rollup-invoke", &recent_time);
+    record.model = Some("gpt-5.4".to_string());
+    record.usage.input_tokens = Some(51);
+    record.usage.output_tokens = Some(26);
+    record.usage.cache_input_tokens = Some(0);
+    record.usage.reasoning_tokens = Some(0);
+    record.usage.total_tokens = Some(77);
+    record.cost = Some(0.18);
+    record.payload = Some(
+        json!({
+            "stickyKey": sticky_key,
+            "upstreamAccountId": account_id,
+            "upstreamAccountName": "Primary",
+            "routeMode": "sticky",
+            "endpoint": "/v1/responses",
+            "model": "gpt-5.4",
+        })
+        .to_string(),
+    );
+    persist_proxy_capture_record(&state.pool, std::time::Instant::now(), record)
+        .await
+        .expect("persist sticky proxy capture")
+        .expect("sticky invocation should persist");
+
+    let response = build_account_sticky_keys_response(
+        &state.pool,
+        account_id,
+        AccountStickyKeySelection::Count(20),
+    )
+    .await
+    .expect("sticky-key endpoint should stay fresh without read-time catch-up");
+    let json = serde_json::to_value(&response).expect("serialize sticky response");
+    let conversations = json["conversations"]
+        .as_array()
+        .expect("sticky conversations array");
+    assert_eq!(conversations.len(), 1);
+    let conversation = &conversations[0];
+    assert_eq!(conversation["stickyKey"].as_str(), Some(sticky_key));
+    assert_eq!(conversation["requestCount"].as_i64(), Some(1));
+    assert_eq!(conversation["totalTokens"].as_i64(), Some(77));
+    assert_eq!(conversation["totalCost"].as_f64(), Some(0.18));
+    assert_eq!(
+        conversation["recentInvocations"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        conversation["recentInvocations"][0]["invokeId"].as_str(),
+        Some("sticky-inline-rollup-invoke")
+    );
+}
+
 #[test]
 fn resolve_sticky_key_selection_rejects_mutually_exclusive_params() {
     let err = crate::upstream_accounts::resolve_sticky_key_selection(&AccountStickyKeysQuery {
@@ -2832,10 +2903,14 @@ async fn prompt_cache_views_ignore_sticky_only_internal_keys() {
         .bind(0.01_f64)
         .bind(payload.to_string())
         .bind("{}")
-        .execute(&state.pool)
-        .await
-        .expect("insert prompt cache test invocation");
+    .execute(&state.pool)
+    .await
+    .expect("insert prompt cache test invocation");
     }
+
+    sync_hourly_rollups_from_live_tables(&state.pool)
+        .await
+        .expect("materialize prompt cache rollups before sticky-only prompt-cache read");
 
     let Json(response) = fetch_prompt_cache_conversations(
         State(state.clone()),

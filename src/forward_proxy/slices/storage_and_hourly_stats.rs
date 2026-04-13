@@ -769,20 +769,15 @@ pub(crate) async fn build_forward_proxy_binding_nodes_response(
     state: &AppState,
     extra_proxy_keys: &[String],
 ) -> Result<Vec<ForwardProxyBindingNodeResponse>> {
-    build_forward_proxy_binding_nodes_response_with_options(state, extra_proxy_keys, true).await
+    build_forward_proxy_binding_nodes_response_with_options(state, extra_proxy_keys).await
 }
 
 pub(crate) async fn build_forward_proxy_binding_nodes_response_with_options(
     state: &AppState,
     extra_proxy_keys: &[String],
-    catch_up_hourly_rollups: bool,
 ) -> Result<Vec<ForwardProxyBindingNodeResponse>> {
     const BUCKET_SECONDS: i64 = 3600;
     const BUCKET_COUNT: i64 = 24;
-
-    if catch_up_hourly_rollups {
-        crate::ensure_hourly_rollups_caught_up(state).await?;
-    }
 
     let mut nodes = {
         let manager = state.forward_proxy.lock().await;
@@ -853,6 +848,9 @@ pub(crate) async fn build_forward_proxy_binding_nodes_response_with_options(
         .iter()
         .map(|node| node.key.clone())
         .collect::<HashSet<_>>();
+    // Keep this surface strictly read-only. `insert_forward_proxy_attempt()` updates
+    // `forward_proxy_attempt_hourly` inline on the write path, so fresh attempt counts
+    // are available here without request-time rollup catch-up.
     let hourly_map = query_forward_proxy_binding_hourly_stats(
         state,
         &final_node_keys,
@@ -1014,6 +1012,9 @@ pub(crate) async fn build_forward_proxy_live_stats_response(
     let now_epoch = Utc::now().timestamp();
     let range_end_epoch = align_bucket_epoch(now_epoch, BUCKET_SECONDS, 0) + BUCKET_SECONDS;
     let range_start_epoch = range_end_epoch - BUCKET_COUNT * BUCKET_SECONDS;
+    // Keep this surface strictly read-only. `insert_forward_proxy_attempt()` updates
+    // `forward_proxy_attempt_hourly` inline on the write path, so fresh attempt counts
+    // are available here without request-time rollup catch-up.
     let hourly_map =
         query_forward_proxy_hourly_stats(&state.pool, range_start_epoch, range_end_epoch).await?;
     let weight_hourly_map =

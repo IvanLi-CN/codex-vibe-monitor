@@ -1884,6 +1884,7 @@ async fn finish_summary_quota_broadcast_idle_flushes_pending_tail_when_shutdown_
             broadcast_running: state.proxy_summary_quota_broadcast_running.as_ref(),
             shutdown: &state.shutdown,
             pool: &state.pool,
+            hourly_rollup_sync_lock: state.hourly_rollup_sync_lock.as_ref(),
             broadcaster: &state.broadcaster,
             broadcast_state_cache: state.broadcast_state_cache.as_ref(),
             relay_config: state.config.crs_stats.as_ref(),

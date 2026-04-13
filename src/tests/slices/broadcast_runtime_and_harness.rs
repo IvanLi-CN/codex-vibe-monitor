@@ -2085,6 +2085,123 @@ async fn forward_proxy_timeseries_keeps_single_partial_hour_ranges_non_empty() {
 }
 
 #[tokio::test]
+async fn forward_proxy_live_stats_include_inline_attempt_rollups_without_read_time_catch_up() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.example.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let settings_response = apply_forward_proxy_settings_without_bootstrap(
+        &state,
+        ForwardProxySettings {
+            proxy_urls: vec!["socks5://127.0.0.1:1086".to_string()],
+            subscription_urls: vec![],
+            subscription_update_interval_secs: 3600,
+            insert_direct: true,
+        },
+    )
+    .await;
+    let manual_key = settings_response
+        .nodes
+        .iter()
+        .find(|node| node.source == FORWARD_PROXY_SOURCE_MANUAL)
+        .map(|node| node.key.clone())
+        .expect("manual node should exist");
+
+    insert_forward_proxy_attempt(&state.pool, &manual_key, true, Some(120.0), None, false)
+        .await
+        .expect("insert successful forward proxy attempt");
+    insert_forward_proxy_attempt(
+        &state.pool,
+        &manual_key,
+        false,
+        None,
+        Some(FORWARD_PROXY_FAILURE_STREAM_ERROR),
+        false,
+    )
+    .await
+    .expect("insert failed forward proxy attempt");
+
+    let response = build_forward_proxy_live_stats_response(state.as_ref())
+        .await
+        .expect("forward proxy live stats should succeed");
+
+    let manual = response
+        .nodes
+        .iter()
+        .find(|node| node.key == manual_key)
+        .expect("manual node should remain queryable");
+    let bucket = manual
+        .last24h
+        .iter()
+        .find(|bucket| bucket.success_count == 1 && bucket.failure_count == 1)
+        .expect("inline-attempt bucket should be present without read-time catch-up");
+    assert_eq!(bucket.success_count, 1);
+    assert_eq!(bucket.failure_count, 1);
+}
+
+#[tokio::test]
+async fn forward_proxy_binding_nodes_include_inline_attempt_rollups_without_read_time_catch_up() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.example.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let proxy_url = "socks5://127.0.0.1:1087".to_string();
+    let settings_response = apply_forward_proxy_settings_without_bootstrap(
+        &state,
+        ForwardProxySettings {
+            proxy_urls: vec![proxy_url.clone()],
+            subscription_urls: vec![],
+            subscription_update_interval_secs: 3600,
+            insert_direct: true,
+        },
+    )
+    .await;
+    let manual_key = settings_response
+        .nodes
+        .iter()
+        .find(|node| node.source == FORWARD_PROXY_SOURCE_MANUAL)
+        .map(|node| node.key.clone())
+        .expect("manual node should exist");
+    let binding_key = forward_proxy_binding_key_candidates(
+        &forward_proxy_binding_parts_from_raw(&proxy_url, None)
+            .expect("binding parts from proxy url"),
+    )[0]
+    .clone();
+
+    insert_forward_proxy_attempt(&state.pool, &manual_key, true, Some(90.0), None, false)
+        .await
+        .expect("insert successful forward proxy attempt");
+    insert_forward_proxy_attempt(
+        &state.pool,
+        &manual_key,
+        false,
+        None,
+        Some(FORWARD_PROXY_FAILURE_STREAM_ERROR),
+        false,
+    )
+    .await
+    .expect("insert failed forward proxy attempt");
+
+    let nodes =
+        build_forward_proxy_binding_nodes_response(state.as_ref(), std::slice::from_ref(&manual_key))
+            .await
+            .expect("build binding nodes response");
+    let manual = nodes
+        .iter()
+        .find(|node| node.key == binding_key)
+        .expect("binding node should remain queryable");
+    let bucket = manual
+        .last24h
+        .iter()
+        .find(|bucket| bucket.success_count == 1 && bucket.failure_count == 1)
+        .expect("binding-node bucket should be present without read-time catch-up");
+    assert_eq!(bucket.success_count, 1);
+    assert_eq!(bucket.failure_count, 1);
+}
+
+#[tokio::test]
 async fn forward_proxy_timeseries_seeds_leading_weight_buckets_from_first_historical_sample() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.example.com/").expect("valid upstream base url"),

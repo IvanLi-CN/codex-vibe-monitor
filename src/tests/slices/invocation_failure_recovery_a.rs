@@ -2205,6 +2205,71 @@ async fn resolve_pool_account_for_request_with_wait_respects_external_deadline()
 }
 
 #[tokio::test]
+async fn resolve_pool_account_for_request_with_wait_accepts_recovery_after_wait_starts() {
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        Duration::from_secs(2),
+        Duration::from_millis(100),
+    )
+    .await;
+    let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
+    let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
+    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+    set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+
+    let wait_started_rx = crate::proxy::register_pool_no_available_wait_hook(&state);
+    let pool = state.pool.clone();
+    let runtime_handle = tokio::runtime::Handle::current();
+    let delayed_release_task = std::thread::spawn(move || {
+        wait_started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("helper should signal once the bounded wait starts");
+        runtime_handle.block_on(async move {
+            set_test_account_status(&pool, delayed_id, "active").await;
+        });
+    });
+
+    let started = Instant::now();
+    let mut wait_deadline = None;
+    let resolution = resolve_pool_account_for_request_with_wait(
+        state.as_ref(),
+        None,
+        &[],
+        &HashSet::new(),
+        None,
+        true,
+        &mut wait_deadline,
+        Some(Instant::now() + Duration::from_millis(650)),
+    )
+    .await
+    .expect("helper resolution should succeed");
+    let elapsed = started.elapsed();
+
+    delayed_release_task
+        .join()
+        .expect("delayed release thread should join");
+
+    assert!(
+        elapsed < Duration::from_millis(850),
+        "helper should still resolve once the account recovers after the bounded wait begins, elapsed={elapsed:?}"
+    );
+    match resolution {
+        PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Resolved(account)) => {
+            assert_eq!(account.account_id, delayed_id);
+            assert_eq!(
+                account.auth.authorization_header_value(),
+                Some("Bearer upstream-delayed")
+            );
+        }
+        other => panic!("expected post-wait recovery to succeed, got {other:?}"),
+    }
+    assert!(
+        wait_deadline.is_some(),
+        "bounded waits should record the deadline once they actually start"
+    );
+}
+
+#[tokio::test]
 async fn resolve_pool_account_for_request_with_wait_rejects_recovery_after_external_deadline() {
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

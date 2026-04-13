@@ -5,7 +5,6 @@ pub(crate) async fn fetch_timeseries(
     State(state): State<Arc<AppState>>,
     Query(params): Query<TimeseriesQuery>,
 ) -> Result<Json<TimeseriesResponse>, ApiError> {
-    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
@@ -201,7 +200,6 @@ pub(crate) async fn fetch_parallel_work_stats(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ParallelWorkStatsQuery>,
 ) -> Result<Json<ParallelWorkStatsResponse>, ApiError> {
-    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
     let requested_reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let now = Utc::now();
@@ -341,8 +339,8 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
         bucket_cursor = next_reporting_bucket_epoch(bucket_cursor, bucket_seconds, reporting_tz)?;
     }
 
-    let (snapshot_id, hourly_rows, exact_records) = if range_plan.full_hour_range.is_some() {
-        ensure_invocation_summary_rollups_ready_best_effort(&state.pool).await?;
+    let (snapshot_id, hourly_rows, exact_records, archive_overlap_ids) =
+        if range_plan.full_hour_range.is_some() {
         let mut tx = state.pool.begin().await?;
         let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
         let rollup_live_cursor = load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
@@ -359,26 +357,50 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
         let mut exact_records =
             query_invocation_exact_records_tx(tx.as_mut(), &range_plan, source_scope, snapshot_id)
                 .await?;
-        exact_records.extend(
-            query_invocation_full_hour_tail_records_tx(
-                tx.as_mut(),
-                &range_plan,
-                source_scope,
-                rollup_live_cursor,
-                snapshot_id,
-            )
-            .await?,
-        );
-        (snapshot_id, hourly_rows, exact_records)
+        let tail_records = query_invocation_full_hour_tail_records_tx(
+            tx.as_mut(),
+            &range_plan,
+            source_scope,
+            rollup_live_cursor,
+            snapshot_id,
+        )
+        .await?;
+        let archive_overlap_ids = tail_records
+            .iter()
+            .map(|record| record.id)
+            .collect::<HashSet<_>>();
+        exact_records.extend(tail_records);
+        (snapshot_id, hourly_rows, exact_records, archive_overlap_ids)
     } else {
         let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
         let exact_records =
             query_invocation_exact_records(&state.pool, &range_plan, source_scope, snapshot_id)
                 .await?;
-        (snapshot_id, Vec::new(), exact_records)
+        (snapshot_id, Vec::new(), exact_records, HashSet::new())
+    };
+    let archived_hourly_rows = if let Some((range_start_epoch, range_end_epoch)) =
+        range_plan.full_hour_range
+    {
+        let archived_start = Utc
+            .timestamp_opt(range_start_epoch, 0)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid archived timeseries start epoch")))?;
+        let archived_end = Utc
+            .timestamp_opt(range_end_epoch, 0)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid archived timeseries end epoch")))?;
+        crate::stats::query_unmaterialized_invocation_archive_hourly_rollup_deltas(
+            &state.pool,
+            source_scope,
+            Some((archived_start, archived_end)),
+            Some(&archive_overlap_ids),
+        )
+        .await?
+    } else {
+        Vec::new()
     };
 
-    for row in hourly_rows {
+    for row in hourly_rows.into_iter().chain(archived_hourly_rows) {
         let bucket_epoch =
             align_reporting_bucket_epoch(row.bucket_start_epoch, bucket_seconds, reporting_tz)?;
         let entry = aggregates.entry(bucket_epoch).or_default();
