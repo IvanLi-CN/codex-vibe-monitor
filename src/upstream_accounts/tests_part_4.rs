@@ -2444,7 +2444,7 @@
     }
 
     #[tokio::test]
-    async fn classified_sync_wrapped_upstream_rejected_permission_sets_maintenance_cooldown() {
+    async fn classified_sync_wrapped_upstream_rejected_permission_keeps_existing_cooldown_policy() {
         let pool = test_pool().await;
         let account_id = insert_oauth_account(&pool, "Wrapped upstream rejected cooldown").await;
 
@@ -2471,9 +2471,9 @@
             after.last_route_failure_kind.as_deref(),
             Some(PROXY_FAILURE_UPSTREAM_HTTP_AUTH)
         );
-        assert!(
-            after.cooldown_until.is_some(),
-            "wrapped upstream rejected permission errors should enter cooldown"
+        assert_eq!(
+            after.cooldown_until, None,
+            "wrapped upstream auth errors should keep the old no-cooldown behavior"
         );
     }
 

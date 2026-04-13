@@ -1277,21 +1277,11 @@ fn maintenance_upstream_rejected_error_message(message: &str) -> bool {
         || msg.contains("upstream_http_402")
         || msg.contains("upstream rejected")
         || (msg.contains("oauth_upstream_rejected_request")
-            && (msg.contains("forbidden")
-                || msg.contains("unauthorized")
-                || msg.contains("payment required")
-                || msg.contains("http 401")
-                || msg.contains("http_401")
+            && (msg.contains("payment required")
                 || msg.contains("http 402")
                 || msg.contains("http_402")
-                || msg.contains("http 403")
-                || msg.contains("http_403")
-                || msg.contains("responded with 401")
                 || msg.contains("responded with 402")
-                || msg.contains("responded with 403")
-                || msg.contains("returned 401")
-                || msg.contains("returned 402")
-                || msg.contains("returned 403")))
+                || msg.contains("returned 402")))
 }
 
 fn is_reauth_error(err: &anyhow::Error) -> bool {

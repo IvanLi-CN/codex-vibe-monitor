@@ -2228,7 +2228,7 @@
     }
 
     #[test]
-    fn maintenance_plan_is_not_due_during_wrapped_upstream_rejected_auth_cooldown() {
+    fn maintenance_plan_ignores_wrapped_upstream_auth_errors_for_cooldown_blocking() {
         let now = Utc
             .with_ymd_and_hms(2026, 4, 13, 12, 0, 0)
             .single()
@@ -2260,8 +2260,8 @@
         ));
 
         assert!(
-            !maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now),
-            "wrapped upstream-rejected auth cooldown should suppress maintenance scheduling"
+            maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now),
+            "wrapped upstream auth errors should not enter the maintenance cooldown path"
         );
     }
 

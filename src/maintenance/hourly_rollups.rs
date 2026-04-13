@@ -23,6 +23,12 @@ enum HistoricalRollupArchiveReplayOutcome {
     HitBudget,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct HistoricalRollupArchiveReplaySummary {
+    budget_consumed_batches: u64,
+    materialized_batches: u64,
+}
+
 #[derive(Debug, FromRow)]
 struct HistoricalRollupArchiveCoverageBoundsRow {
     coverage_start_at: Option<String>,
@@ -325,9 +331,9 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
     tx: &mut SqliteConnection,
     max_archive_batches: Option<u64>,
     max_elapsed: Option<Duration>,
-) -> Result<u64> {
+) -> Result<HistoricalRollupArchiveReplaySummary> {
     let started_at = Instant::now();
-    let mut replayed = 0_u64;
+    let mut summary = HistoricalRollupArchiveReplaySummary::default();
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
         r#"
         SELECT id, file_path, coverage_start_at, coverage_end_at
@@ -345,7 +351,7 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
     for archive_file in archive_files {
         if historical_rollup_materialization_budget_reached(
             started_at,
-            replayed,
+            summary.budget_consumed_batches,
             max_archive_batches,
             max_elapsed,
         ) {
@@ -479,6 +485,7 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
         if replay_outcome == HistoricalRollupArchiveReplayOutcome::HitBudget {
             break;
         }
+        summary.budget_consumed_batches += 1;
         for target in pending_targets {
             mark_hourly_rollup_archive_replayed_tx(
                 tx,
@@ -495,7 +502,7 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
                 &archive_file.file_path,
             )
             .await?;
-            replayed += 1;
+            summary.materialized_batches += 1;
         } else {
             warn!(
                 dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
@@ -506,12 +513,12 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
         }
     }
 
-    Ok(replayed)
+    Ok(summary)
 }
 
 async fn replay_invocation_archives_into_hourly_rollups_tx(
     tx: &mut SqliteConnection,
-) -> Result<u64> {
+) -> Result<HistoricalRollupArchiveReplaySummary> {
     replay_invocation_archives_into_hourly_rollups_tx_with_limits(tx, None, None).await
 }
 
@@ -519,9 +526,9 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
     tx: &mut SqliteConnection,
     max_archive_batches: Option<u64>,
     max_elapsed: Option<Duration>,
-) -> Result<u64> {
+) -> Result<HistoricalRollupArchiveReplaySummary> {
     let started_at = Instant::now();
-    let mut replayed = 0_u64;
+    let mut summary = HistoricalRollupArchiveReplaySummary::default();
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
         r#"
         SELECT id, file_path, coverage_start_at, coverage_end_at
@@ -539,7 +546,7 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
     for archive_file in archive_files {
         if historical_rollup_materialization_budget_reached(
             started_at,
-            replayed,
+            summary.budget_consumed_batches,
             max_archive_batches,
             max_elapsed,
         ) {
@@ -622,6 +629,7 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
         if replay_outcome == HistoricalRollupArchiveReplayOutcome::HitBudget {
             break;
         }
+        summary.budget_consumed_batches += 1;
         mark_archive_batch_historical_rollups_materialized_tx(
             tx,
             HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS,
@@ -635,10 +643,10 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
             &archive_file.file_path,
         )
         .await?;
-        replayed += 1;
+        summary.materialized_batches += 1;
     }
 
-    Ok(replayed)
+    Ok(summary)
 }
 
 #[cfg(test)]
@@ -707,7 +715,7 @@ mod hourly_rollup_budget_tests {
 
 async fn replay_forward_proxy_archives_into_hourly_rollups_tx(
     tx: &mut SqliteConnection,
-) -> Result<u64> {
+) -> Result<HistoricalRollupArchiveReplaySummary> {
     replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(tx, None, None).await
 }
 

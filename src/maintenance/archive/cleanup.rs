@@ -592,7 +592,7 @@ pub(crate) async fn materialize_historical_rollups_bounded(
     }
 
     let mut tx = pool.begin().await?;
-    let materialized_invocation_batches = replay_invocation_archives_into_hourly_rollups_tx_with_limits(
+    let invocation_summary = replay_invocation_archives_into_hourly_rollups_tx_with_limits(
         tx.as_mut(),
         max_archive_batches,
         max_elapsed,
@@ -600,11 +600,11 @@ pub(crate) async fn materialize_historical_rollups_bounded(
     .await?;
     let remaining_budget =
         historical_rollup_materialization_remaining_budget(started_at, max_elapsed);
-    let materialized_forward_proxy_batches =
+    let forward_proxy_summary =
         replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
             tx.as_mut(),
             max_archive_batches
-                .map(|limit| limit.saturating_sub(materialized_invocation_batches)),
+                .map(|limit| limit.saturating_sub(invocation_summary.budget_consumed_batches)),
             remaining_budget,
         )
         .await?;
@@ -624,12 +624,12 @@ pub(crate) async fn materialize_historical_rollups_bounded(
 
     Ok(HistoricalRollupMaterializationSummary {
         scanned_archive_batches: scanned_archive_batches as usize,
-        materialized_archive_batches: (materialized_invocation_batches
-            + materialized_forward_proxy_batches) as usize,
+        materialized_archive_batches: (invocation_summary.materialized_batches
+            + forward_proxy_summary.materialized_batches) as usize,
         materialized_bucket_count: count_materialized_historical_rollup_buckets(pool).await?
             as usize,
-        materialized_invocation_batches: materialized_invocation_batches as usize,
-        materialized_forward_proxy_batches: materialized_forward_proxy_batches as usize,
+        materialized_invocation_batches: invocation_summary.materialized_batches as usize,
+        materialized_forward_proxy_batches: forward_proxy_summary.materialized_batches as usize,
         last_materialized_bucket_start_epoch:
             load_latest_materialized_legacy_invocation_rollup_bucket_epoch(pool, config).await?,
     })

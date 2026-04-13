@@ -2710,8 +2710,7 @@
     }
 
     #[tokio::test]
-    async fn fetch_usage_snapshot_skips_browser_user_agent_retry_for_wrapped_upstream_rejected_error()
-    {
+    async fn fetch_usage_snapshot_retries_browser_user_agent_for_wrapped_upstream_auth_error() {
         #[derive(Clone)]
         struct UsageSnapshotTestState {
             requests: Arc<Mutex<Vec<String>>>,
@@ -2726,12 +2725,31 @@
                 .and_then(|value| value.to_str().ok())
                 .unwrap_or_default()
                 .to_string();
+            let is_browser_user_agent = user_agent == UPSTREAM_USAGE_BROWSER_USER_AGENT;
             state.requests.lock().await.push(user_agent);
-            (
-                StatusCode::FORBIDDEN,
-                "oauth_upstream_rejected_request: pool upstream responded with 403: Forbidden"
+            if is_browser_user_agent
+            {
+                (
+                    StatusCode::OK,
+                    json!({
+                        "planType": "pro",
+                        "rateLimit": {
+                            "primaryWindow": {
+                                "usedPercent": 9,
+                                "windowDurationMins": 300,
+                                "resetsAt": 1771322400
+                            }
+                        }
+                    })
                     .to_string(),
-            )
+                )
+            } else {
+                (
+                    StatusCode::FORBIDDEN,
+                    "oauth_upstream_rejected_request: pool upstream responded with 403: Forbidden"
+                        .to_string(),
+                )
+            }
         }
 
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -2754,16 +2772,19 @@
             "codex-vibe-monitor/0.2.0",
         );
 
-        let err = fetch_usage_snapshot(&client, &config, "access-token", Some("acct_test"))
+        let snapshot = fetch_usage_snapshot(&client, &config, "access-token", Some("acct_test"))
             .await
-            .expect_err("wrapped upstream rejected error should stay terminal");
-        assert!(
-            err.to_string().contains("403 Forbidden"),
-            "expected original 403 error, got: {err:#}"
-        );
+            .expect("wrapped upstream auth error should still retry browser user agent");
+        assert_eq!(snapshot.plan_type.as_deref(), Some("pro"));
 
         let recorded = requests.lock().await.clone();
-        assert_eq!(recorded, vec!["codex-vibe-monitor/0.2.0".to_string()]);
+        assert_eq!(
+            recorded,
+            vec![
+                "codex-vibe-monitor/0.2.0".to_string(),
+                UPSTREAM_USAGE_BROWSER_USER_AGENT.to_string()
+            ]
+        );
 
         server.abort();
     }
