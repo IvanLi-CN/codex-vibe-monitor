@@ -23,6 +23,12 @@ enum HistoricalRollupArchiveReplayOutcome {
     HitBudget,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HistoricalRollupArchiveReplayResult {
+    outcome: HistoricalRollupArchiveReplayOutcome,
+    cursor_id: i64,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct HistoricalRollupArchiveReplaySummary {
     scanned_batches: u64,
@@ -56,40 +62,7 @@ fn historical_rollup_materialization_budget_reached(
         || historical_rollup_elapsed_budget_reached(started_at, max_elapsed)
 }
 
-fn historical_rollup_archive_savepoint_name(prefix: &str, archive_batch_id: i64) -> String {
-    format!("{prefix}_{archive_batch_id}")
-}
-
-async fn begin_historical_rollup_archive_savepoint(
-    tx: &mut SqliteConnection,
-    savepoint_name: &str,
-) -> Result<()> {
-    sqlx::query(&format!("SAVEPOINT {savepoint_name}"))
-        .execute(&mut *tx)
-        .await?;
-    Ok(())
-}
-
-async fn release_historical_rollup_archive_savepoint(
-    tx: &mut SqliteConnection,
-    savepoint_name: &str,
-) -> Result<()> {
-    sqlx::query(&format!("RELEASE SAVEPOINT {savepoint_name}"))
-        .execute(&mut *tx)
-        .await?;
-    Ok(())
-}
-
-async fn rollback_historical_rollup_archive_savepoint(
-    tx: &mut SqliteConnection,
-    savepoint_name: &str,
-) -> Result<()> {
-    sqlx::query(&format!("ROLLBACK TO SAVEPOINT {savepoint_name}"))
-        .execute(&mut *tx)
-        .await?;
-    release_historical_rollup_archive_savepoint(tx, savepoint_name).await
-}
-
+#[cfg(test)]
 fn inflate_gzip_sqlite_file_with_budget(
     source: &Path,
     destination: &Path,
@@ -130,6 +103,36 @@ fn inflate_gzip_sqlite_file_with_budget(
 
     writer.flush()?;
     Ok(true)
+}
+
+async fn open_historical_rollup_archive_pool(
+    archive_path: &Path,
+    temp_path: &Path,
+) -> Result<Pool<Sqlite>> {
+    if !temp_path.exists() {
+        inflate_gzip_sqlite_file(archive_path, temp_path)?;
+    }
+
+    let connect = || async {
+        SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&sqlite_url_for_path(temp_path))
+            .await
+    };
+
+    match connect().await {
+        Ok(pool) => Ok(pool),
+        Err(first_err) => {
+            let _ = fs::remove_file(temp_path);
+            inflate_gzip_sqlite_file(archive_path, temp_path)?;
+            connect().await.with_context(|| {
+                format!(
+                    "failed to reopen archive batch {} after resetting temp db (initial error: {first_err})",
+                    archive_path.display()
+                )
+            })
+        }
+    }
 }
 
 async fn load_invocation_archive_rows_chunk(
@@ -247,26 +250,26 @@ async fn invocation_archive_has_pruned_success_details_in_db(
 async fn replay_invocation_archive_rows_into_hourly_rollups_tx_with_budget(
     tx: &mut SqliteConnection,
     archive_pool: &Pool<Sqlite>,
-    archive_batch_id: i64,
+    initial_cursor_id: i64,
     pending_targets: &[&str],
     started_at: Instant,
     max_elapsed: Option<Duration>,
-) -> Result<HistoricalRollupArchiveReplayOutcome> {
-    let savepoint_name =
-        historical_rollup_archive_savepoint_name("historical_rollup_invocation_archive", archive_batch_id);
-    begin_historical_rollup_archive_savepoint(tx, &savepoint_name).await?;
-
-    let mut start_after_id = 0_i64;
+) -> Result<HistoricalRollupArchiveReplayResult> {
+    let mut start_after_id = initial_cursor_id.max(0);
     loop {
         if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
-            rollback_historical_rollup_archive_savepoint(tx, &savepoint_name).await?;
-            return Ok(HistoricalRollupArchiveReplayOutcome::HitBudget);
+            return Ok(HistoricalRollupArchiveReplayResult {
+                outcome: HistoricalRollupArchiveReplayOutcome::HitBudget,
+                cursor_id: start_after_id,
+            });
         }
 
         let (rows, has_more) = load_invocation_archive_rows_chunk(archive_pool, start_after_id).await?;
         if rows.is_empty() {
-            release_historical_rollup_archive_savepoint(tx, &savepoint_name).await?;
-            return Ok(HistoricalRollupArchiveReplayOutcome::Completed);
+            return Ok(HistoricalRollupArchiveReplayResult {
+                outcome: HistoricalRollupArchiveReplayOutcome::Completed,
+                cursor_id: start_after_id,
+            });
         }
 
         upsert_invocation_hourly_rollups_tx(tx, &rows, pending_targets).await?;
@@ -277,13 +280,17 @@ async fn replay_invocation_archive_rows_into_hourly_rollups_tx_with_budget(
             .ok_or_else(|| anyhow!("missing invocation archive row id"))?;
 
         if !has_more {
-            release_historical_rollup_archive_savepoint(tx, &savepoint_name).await?;
-            return Ok(HistoricalRollupArchiveReplayOutcome::Completed);
+            return Ok(HistoricalRollupArchiveReplayResult {
+                outcome: HistoricalRollupArchiveReplayOutcome::Completed,
+                cursor_id: start_after_id,
+            });
         }
 
         if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
-            rollback_historical_rollup_archive_savepoint(tx, &savepoint_name).await?;
-            return Ok(HistoricalRollupArchiveReplayOutcome::HitBudget);
+            return Ok(HistoricalRollupArchiveReplayResult {
+                outcome: HistoricalRollupArchiveReplayOutcome::HitBudget,
+                cursor_id: start_after_id,
+            });
         }
     }
 }
@@ -291,25 +298,25 @@ async fn replay_invocation_archive_rows_into_hourly_rollups_tx_with_budget(
 async fn replay_forward_proxy_archive_rows_into_hourly_rollups_tx_with_budget(
     tx: &mut SqliteConnection,
     archive_pool: &Pool<Sqlite>,
-    archive_batch_id: i64,
+    initial_cursor_id: i64,
     started_at: Instant,
     max_elapsed: Option<Duration>,
-) -> Result<HistoricalRollupArchiveReplayOutcome> {
-    let savepoint_name =
-        historical_rollup_archive_savepoint_name("historical_rollup_forward_proxy_archive", archive_batch_id);
-    begin_historical_rollup_archive_savepoint(tx, &savepoint_name).await?;
-
-    let mut start_after_id = 0_i64;
+) -> Result<HistoricalRollupArchiveReplayResult> {
+    let mut start_after_id = initial_cursor_id.max(0);
     loop {
         if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
-            rollback_historical_rollup_archive_savepoint(tx, &savepoint_name).await?;
-            return Ok(HistoricalRollupArchiveReplayOutcome::HitBudget);
+            return Ok(HistoricalRollupArchiveReplayResult {
+                outcome: HistoricalRollupArchiveReplayOutcome::HitBudget,
+                cursor_id: start_after_id,
+            });
         }
 
         let (rows, has_more) = load_forward_proxy_archive_rows_chunk(archive_pool, start_after_id).await?;
         if rows.is_empty() {
-            release_historical_rollup_archive_savepoint(tx, &savepoint_name).await?;
-            return Ok(HistoricalRollupArchiveReplayOutcome::Completed);
+            return Ok(HistoricalRollupArchiveReplayResult {
+                outcome: HistoricalRollupArchiveReplayOutcome::Completed,
+                cursor_id: start_after_id,
+            });
         }
 
         upsert_forward_proxy_attempt_hourly_rollups_tx(tx, &rows).await?;
@@ -320,13 +327,17 @@ async fn replay_forward_proxy_archive_rows_into_hourly_rollups_tx_with_budget(
             .ok_or_else(|| anyhow!("missing forward proxy archive row id"))?;
 
         if !has_more {
-            release_historical_rollup_archive_savepoint(tx, &savepoint_name).await?;
-            return Ok(HistoricalRollupArchiveReplayOutcome::Completed);
+            return Ok(HistoricalRollupArchiveReplayResult {
+                outcome: HistoricalRollupArchiveReplayOutcome::Completed,
+                cursor_id: start_after_id,
+            });
         }
 
         if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
-            rollback_historical_rollup_archive_savepoint(tx, &savepoint_name).await?;
-            return Ok(HistoricalRollupArchiveReplayOutcome::HitBudget);
+            return Ok(HistoricalRollupArchiveReplayResult {
+                outcome: HistoricalRollupArchiveReplayOutcome::HitBudget,
+                cursor_id: start_after_id,
+            });
         }
     }
 }
@@ -400,6 +411,12 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
             .await?;
             continue;
         }
+        let replay_cursor = load_hourly_rollup_archive_progress_tx(
+            tx,
+            HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            &archive_file.file_path,
+        )
+        .await?;
 
         let archive_path = PathBuf::from(&archive_file.file_path);
         if !archive_path.exists() {
@@ -408,6 +425,12 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
                 file_path = archive_file.file_path,
                 "skipping missing archive batch during historical rollup materialization"
             );
+            delete_hourly_rollup_archive_progress_tx(
+                tx,
+                HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                &archive_file.file_path,
+            )
+            .await?;
             continue;
         }
         let temp_path = PathBuf::from(format!(
@@ -415,22 +438,8 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
             archive_path.display(),
             retention_temp_suffix()
         ));
-        if temp_path.exists() {
-            let _ = fs::remove_file(&temp_path);
-        }
         let temp_cleanup = TempSqliteCleanup(temp_path.clone());
-        if !inflate_gzip_sqlite_file_with_budget(&archive_path, &temp_path, started_at, max_elapsed)?
-        {
-            break;
-        }
-        if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
-            break;
-        }
-        let archive_pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect(&sqlite_url_for_path(&temp_path))
-            .await
-            .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
+        let archive_pool = open_historical_rollup_archive_pool(&archive_path, &temp_path).await?;
         let has_pruned_success_details =
             invocation_archive_has_pruned_success_details_in_db(&archive_pool).await?;
         if has_pruned_success_details {
@@ -459,6 +468,12 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
         if pending_targets.is_empty() {
             archive_pool.close().await;
             drop(temp_cleanup);
+            delete_hourly_rollup_archive_progress_tx(
+                tx,
+                HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                &archive_file.file_path,
+            )
+            .await?;
             summary.blocked_batches += 1;
             summary.budget_consumed_batches += 1;
             warn!(
@@ -468,11 +483,6 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
                 "legacy archive batch contains pruned success details; keeping historical rollup materialization pending for keyed conversation targets"
             );
             continue;
-        }
-        if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
-            archive_pool.close().await;
-            drop(temp_cleanup);
-            break;
         }
 
         if archive_file.coverage_start_at.is_none() || archive_file.coverage_end_at.is_none() {
@@ -489,18 +499,35 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
         let replay_outcome = replay_invocation_archive_rows_into_hourly_rollups_tx_with_budget(
             tx,
             &archive_pool,
-            archive_file.id,
+            replay_cursor,
             &pending_targets,
             started_at,
             max_elapsed,
         )
         .await?;
         archive_pool.close().await;
-        drop(temp_cleanup);
-        if replay_outcome == HistoricalRollupArchiveReplayOutcome::HitBudget {
+        if replay_outcome.outcome == HistoricalRollupArchiveReplayOutcome::HitBudget {
+            summary.budget_consumed_batches += 1;
+            if replay_outcome.cursor_id > replay_cursor {
+                save_hourly_rollup_archive_progress_tx(
+                    tx,
+                    HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                    &archive_file.file_path,
+                    replay_outcome.cursor_id,
+                )
+                .await?;
+            }
+            std::mem::forget(temp_cleanup);
             break;
         }
+        drop(temp_cleanup);
         summary.budget_consumed_batches += 1;
+        delete_hourly_rollup_archive_progress_tx(
+            tx,
+            HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            &archive_file.file_path,
+        )
+        .await?;
         for target in pending_targets {
             mark_hourly_rollup_archive_replayed_tx(
                 tx,
@@ -600,6 +627,12 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
             .await?;
             continue;
         }
+        let replay_cursor = load_hourly_rollup_archive_progress_tx(
+            tx,
+            HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS,
+            &archive_file.file_path,
+        )
+        .await?;
 
         let archive_path = PathBuf::from(&archive_file.file_path);
         if !archive_path.exists() {
@@ -608,6 +641,12 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
                 file_path = archive_file.file_path,
                 "skipping missing archive batch during historical rollup materialization"
             );
+            delete_hourly_rollup_archive_progress_tx(
+                tx,
+                HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS,
+                &archive_file.file_path,
+            )
+            .await?;
             continue;
         }
         let temp_path = PathBuf::from(format!(
@@ -615,22 +654,8 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
             archive_path.display(),
             retention_temp_suffix()
         ));
-        if temp_path.exists() {
-            let _ = fs::remove_file(&temp_path);
-        }
         let temp_cleanup = TempSqliteCleanup(temp_path.clone());
-        if !inflate_gzip_sqlite_file_with_budget(&archive_path, &temp_path, started_at, max_elapsed)?
-        {
-            break;
-        }
-        if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
-            break;
-        }
-        let archive_pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect(&sqlite_url_for_path(&temp_path))
-            .await
-            .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
+        let archive_pool = open_historical_rollup_archive_pool(&archive_path, &temp_path).await?;
 
         if archive_file.coverage_start_at.is_none() || archive_file.coverage_end_at.is_none() {
             let bounds = load_archive_coverage_bounds(&archive_pool, "forward_proxy_attempts").await?;
@@ -642,26 +667,38 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
             )
             .await?;
         }
-        if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
-            archive_pool.close().await;
-            drop(temp_cleanup);
-            break;
-        }
 
         let replay_outcome = replay_forward_proxy_archive_rows_into_hourly_rollups_tx_with_budget(
             tx,
             &archive_pool,
-            archive_file.id,
+            replay_cursor,
             started_at,
             max_elapsed,
         )
         .await?;
         archive_pool.close().await;
-        drop(temp_cleanup);
-        if replay_outcome == HistoricalRollupArchiveReplayOutcome::HitBudget {
+        if replay_outcome.outcome == HistoricalRollupArchiveReplayOutcome::HitBudget {
+            summary.budget_consumed_batches += 1;
+            if replay_outcome.cursor_id > replay_cursor {
+                save_hourly_rollup_archive_progress_tx(
+                    tx,
+                    HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS,
+                    &archive_file.file_path,
+                    replay_outcome.cursor_id,
+                )
+                .await?;
+            }
+            std::mem::forget(temp_cleanup);
             break;
         }
+        drop(temp_cleanup);
         summary.budget_consumed_batches += 1;
+        delete_hourly_rollup_archive_progress_tx(
+            tx,
+            HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS,
+            &archive_file.file_path,
+        )
+        .await?;
         mark_archive_batch_historical_rollups_materialized_tx(
             tx,
             HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS,

@@ -40,6 +40,76 @@ pub(crate) async fn mark_archive_batch_historical_rollups_materialized_tx(
     .bind(file_path)
     .execute(&mut *tx)
     .await?;
+    delete_hourly_rollup_archive_progress_tx(tx, dataset, file_path).await?;
+    Ok(())
+}
+
+pub(crate) async fn load_hourly_rollup_archive_progress_tx(
+    tx: &mut SqliteConnection,
+    dataset: &str,
+    file_path: &str,
+) -> Result<i64> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT cursor_id
+        FROM hourly_rollup_archive_progress
+        WHERE dataset = ?1
+          AND file_path = ?2
+        LIMIT 1
+        "#,
+    )
+    .bind(dataset)
+    .bind(file_path)
+    .fetch_optional(&mut *tx)
+    .await?
+    .unwrap_or(0)
+    .max(0))
+}
+
+pub(crate) async fn save_hourly_rollup_archive_progress_tx(
+    tx: &mut SqliteConnection,
+    dataset: &str,
+    file_path: &str,
+    cursor_id: i64,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_archive_progress (
+            dataset,
+            file_path,
+            cursor_id,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, datetime('now'))
+        ON CONFLICT(dataset, file_path) DO UPDATE SET
+            cursor_id = MAX(hourly_rollup_archive_progress.cursor_id, excluded.cursor_id),
+            updated_at = datetime('now')
+        "#,
+    )
+    .bind(dataset)
+    .bind(file_path)
+    .bind(cursor_id.max(0))
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn delete_hourly_rollup_archive_progress_tx(
+    tx: &mut SqliteConnection,
+    dataset: &str,
+    file_path: &str,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        DELETE FROM hourly_rollup_archive_progress
+        WHERE dataset = ?1
+          AND file_path = ?2
+        "#,
+    )
+    .bind(dataset)
+    .bind(file_path)
+    .execute(&mut *tx)
+    .await?;
     Ok(())
 }
 

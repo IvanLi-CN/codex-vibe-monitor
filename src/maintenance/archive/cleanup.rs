@@ -362,6 +362,13 @@ pub(crate) async fn cleanup_expired_archive_batches(
         .bind(&candidate.file_path)
         .execute(tx.as_mut())
         .await?;
+        sqlx::query(
+            "DELETE FROM hourly_rollup_archive_progress WHERE dataset = ?1 AND file_path = ?2",
+        )
+        .bind(&candidate.dataset)
+        .bind(&candidate.file_path)
+        .execute(tx.as_mut())
+        .await?;
         tx.commit().await?;
         deleted += 1;
     }
@@ -764,6 +771,13 @@ pub(crate) async fn prune_legacy_archive_batches(
             .await?;
         sqlx::query(
             "DELETE FROM hourly_rollup_archive_replay WHERE dataset = ?1 AND file_path = ?2",
+        )
+        .bind(&candidate.dataset)
+        .bind(&candidate.file_path)
+        .execute(tx.as_mut())
+        .await?;
+        sqlx::query(
+            "DELETE FROM hourly_rollup_archive_progress WHERE dataset = ?1 AND file_path = ?2",
         )
         .bind(&candidate.dataset)
         .bind(&candidate.file_path)

@@ -910,6 +910,21 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS hourly_rollup_archive_progress (
+            dataset TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            cursor_id INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (dataset, file_path)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure hourly_rollup_archive_progress table existence")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS hourly_rollup_live_progress (
             dataset TEXT PRIMARY KEY,
             cursor_id INTEGER NOT NULL DEFAULT 0,

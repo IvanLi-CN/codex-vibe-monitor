@@ -1567,6 +1567,159 @@ async fn replay_invocation_archives_into_hourly_rollups_respects_caller_elapsed_
 }
 
 #[tokio::test]
+async fn materialize_historical_rollups_resumes_invocation_archive_from_saved_progress_cursor() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("historical-rollup-resume-progress-cursor").await;
+    let archive_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days((config.invocation_max_days + 45) as i64))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let bucket_start_epoch = align_bucket_epoch(
+        local_naive_to_utc(archive_hour_local, Shanghai).timestamp(),
+        3_600,
+        0,
+    );
+    let first_occurred_at = format_naive(
+        archive_hour_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("valid first archived occurred_at"),
+    );
+    let second_occurred_at = format_naive(
+        archive_hour_local
+            .checked_add_signed(ChronoDuration::minutes(20))
+            .expect("valid second archived occurred_at"),
+    );
+
+    let archive_path = seed_invocation_archive_batch_with_details(
+        &pool,
+        &config,
+        "historical-rollup-resume-progress-cursor",
+        &[
+            SeedInvocationArchiveBatchRow {
+                id: 1,
+                invoke_id: "historical-rollup-resume-progress-cursor-1",
+                occurred_at: first_occurred_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 12,
+                cost: 0.12,
+                ttfb_ms: Some(120.0),
+                payload: Some(r#"{"upstreamAccountId":17}"#),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0),
+            },
+            SeedInvocationArchiveBatchRow {
+                id: 2,
+                invoke_id: "historical-rollup-resume-progress-cursor-2",
+                occurred_at: second_occurred_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 21,
+                cost: 0.21,
+                ttfb_ms: Some(210.0),
+                payload: Some(r#"{"upstreamAccountId":18}"#),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0),
+            },
+        ],
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(12_i64)
+    .bind(0.12_f64)
+    .bind(1_i64)
+    .bind(120.0_f64)
+    .bind(120.0_f64)
+    .bind("[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1]")
+    .execute(&pool)
+    .await
+    .expect("seed previously materialized first row rollup");
+
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_archive_progress (
+            dataset,
+            file_path,
+            cursor_id,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, datetime('now'))
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(1_i64)
+    .execute(&pool)
+    .await
+    .expect("seed historical rollup archive cursor");
+
+    let summary = materialize_historical_rollups_bounded(&pool, &config, false, Some(1), None)
+        .await
+        .expect("resume archive replay from saved cursor");
+    assert_eq!(summary.materialized_invocation_batches, 1);
+
+    let (total_count, total_tokens): (i64, i64) = sqlx::query_as::<_, (i64, i64)>(
+        r#"
+        SELECT
+            COALESCE(SUM(total_count), 0) AS total_count,
+            COALESCE(SUM(total_tokens), 0) AS total_tokens
+        FROM invocation_rollup_hourly
+        WHERE source = ?1
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load resumed invocation rollup totals");
+    assert_eq!(
+        total_count, 2,
+        "resume should only apply the remaining archived row instead of replaying the whole archive"
+    );
+    assert_eq!(total_tokens, 33);
+
+    let progress_cursor: Option<i64> = sqlx::query_scalar(
+        "SELECT cursor_id FROM hourly_rollup_archive_progress WHERE dataset = ?1 AND file_path = ?2",
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(archive_path.to_string_lossy().to_string())
+    .fetch_optional(&pool)
+    .await
+    .expect("load archive progress after resumed materialization");
+    assert_eq!(progress_cursor, None);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn materialize_historical_rollups_bounded_skips_live_replay_when_elapsed_budget_is_zero() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("historical-rollup-bounded-live-budget-zero").await;
