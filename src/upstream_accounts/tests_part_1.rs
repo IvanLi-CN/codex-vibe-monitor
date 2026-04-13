@@ -874,10 +874,45 @@
         .await
         .expect("list grouped binding nodes");
 
+        let Json(group_only_nodes) = list_forward_proxy_binding_nodes(
+            State(state.clone()),
+            "/api/pool/forward-proxy-binding-nodes?groupName=prod"
+                .parse()
+                .expect("parse grouped-only binding uri"),
+        )
+        .await
+        .expect("list grouped binding nodes without explicit keys");
+        assert!(
+            !group_only_nodes.is_empty(),
+            "groupName alone should still return the grouped binding catalog",
+        );
+
         let grouped_manual = group_nodes
             .iter()
             .find(|node| node.key == manual_key)
             .expect("grouped manual node");
+        let grouped_only_manual = group_only_nodes
+            .iter()
+            .find(|node| node.key == manual_key)
+            .expect("grouped-only manual node");
+        assert_eq!(
+            grouped_only_manual
+                .last24h
+                .iter()
+                .map(|bucket| bucket.success_count)
+                .sum::<i64>(),
+            2,
+            "groupName-only requests should still expose grouped manual successes",
+        );
+        assert_eq!(
+            grouped_only_manual
+                .last24h
+                .iter()
+                .map(|bucket| bucket.failure_count)
+                .sum::<i64>(),
+            1,
+            "groupName-only requests should still expose grouped manual failures",
+        );
         assert_eq!(
             grouped_manual
                 .last24h

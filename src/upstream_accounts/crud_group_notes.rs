@@ -119,7 +119,7 @@ pub(crate) async fn list_forward_proxy_binding_nodes(
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    if requested_keys.is_empty() && !params.include_current {
+    if requested_keys.is_empty() && !params.include_current && params.group_name.is_none() {
         return Ok(Json(Vec::new()));
     }
     let nodes = if let Some(group_name) = params.group_name.as_deref() {
