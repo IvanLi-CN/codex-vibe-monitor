@@ -2228,6 +2228,44 @@
     }
 
     #[test]
+    fn maintenance_plan_is_not_due_during_wrapped_upstream_rejected_auth_cooldown() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 13, 12, 0, 0)
+            .single()
+            .expect("valid time");
+        let settings = PoolRoutingMaintenanceSettings {
+            primary_sync_interval_secs: 300,
+            secondary_sync_interval_secs: 1800,
+            priority_available_account_cap: 1,
+        };
+        let mut candidate = maintenance_candidates(
+            42,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            Some("2026-04-13T05:00:00Z"),
+            Some("2026-04-13T05:00:00Z"),
+            Some("2026-05-13T12:00:00Z"),
+            Some(10.0),
+            Some(10.0),
+        );
+        candidate.last_error = Some(
+            "oauth_upstream_rejected_request: pool upstream responded with 403: Forbidden"
+                .to_string(),
+        );
+        candidate.last_action_reason_code = Some("upstream_http_403".to_string());
+        candidate.last_route_failure_kind = Some(PROXY_FAILURE_UPSTREAM_HTTP_AUTH.to_string());
+        candidate.cooldown_until = Some(format_utc_iso(
+            now + ChronoDuration::seconds(
+                UPSTREAM_ACCOUNT_UPSTREAM_REJECTED_MAINTENANCE_COOLDOWN_SECS,
+            ),
+        ));
+
+        assert!(
+            !maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now),
+            "wrapped upstream-rejected auth cooldown should suppress maintenance scheduling"
+        );
+    }
+
+    #[test]
     fn resolve_due_maintenance_dispatch_plans_keeps_refresh_due_accounts_on_primary_cadence() {
         let now = Utc
             .with_ymd_and_hms(2026, 3, 23, 12, 0, 0)

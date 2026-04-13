@@ -358,7 +358,10 @@ fn maintenance_candidate_has_active_upstream_rejected_cooldown(
             candidate.last_action_reason_code.as_deref(),
         ) || route_failure_kind_is_maintenance_upstream_rejected(
             candidate.last_route_failure_kind.as_deref(),
-        ))
+        ) || candidate
+            .last_error
+            .as_deref()
+            .is_some_and(maintenance_upstream_rejected_error_message))
 }
 
 fn maintenance_candidate_blocks_upstream_rejected_cooldown(
