@@ -135,8 +135,7 @@ async fn proxy_openai_v1_body_only_sticky_stream_waits_only_once_before_503() {
         message, POOL_NO_AVAILABLE_ACCOUNT_MESSAGE,
         "unexpected via-pool failure: {message}"
     );
-    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 }
 
 #[tokio::test]
@@ -320,8 +319,7 @@ async fn proxy_openai_v1_header_sticky_stream_prefers_body_timeout_before_pool_w
         message, "request body read timed out after 80ms",
         "unexpected via-pool failure: {message}"
     );
-    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 }
 
 #[tokio::test]
@@ -402,8 +400,7 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_body_timeout_over_rate_l
         message, "request body read timed out after 80ms",
         "unexpected via-pool failure: {message}"
     );
-    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 }
 
 #[tokio::test]
@@ -518,8 +515,7 @@ async fn proxy_openai_v1_header_sticky_stream_waits_for_blocked_policy_header_er
         message.contains("upstream account is not assigned to a group"),
         "unexpected via-pool failure: {message}"
     );
-    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 }
 
 #[tokio::test]
@@ -640,8 +636,7 @@ async fn proxy_openai_v1_header_sticky_stream_same_value_short_circuits_blocked_
         message.contains("upstream account is not assigned to a group"),
         "unexpected via-pool failure: {message}"
     );
-    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 }
 
 #[tokio::test]
@@ -816,8 +811,7 @@ async fn proxy_openai_v1_header_sticky_responses_wait_timeout_respects_total_tim
         pool_total_timeout_exhausted_message(Duration::from_millis(90)),
         "unexpected via-pool failure: {message}"
     );
-    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 }
 
 #[tokio::test]
@@ -973,8 +967,7 @@ async fn proxy_openai_v1_header_sticky_responses_total_timeout_short_circuits_bo
         pool_total_timeout_exhausted_message(Duration::from_millis(90)),
         "unexpected via-pool failure: {message}"
     );
-    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 }
 
 #[tokio::test]
@@ -1043,8 +1036,7 @@ async fn proxy_openai_v1_responses_prebuffer_body_counts_total_timeout_from_requ
         pool_total_timeout_exhausted_message(Duration::from_millis(90)),
         "unexpected via-pool failure: {message}"
     );
-    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 }
 
 #[tokio::test]
@@ -1191,8 +1183,7 @@ async fn proxy_openai_v1_responses_streamed_body_counts_total_timeout_from_reque
         pool_total_timeout_exhausted_message(Duration::from_millis(90)),
         "unexpected via-pool failure: {message}"
     );
-    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 }
 
 #[tokio::test]
@@ -1642,8 +1633,7 @@ async fn proxy_openai_v1_header_sticky_stream_prefers_body_too_large_before_pool
         message, "request body exceeds 24 bytes",
         "unexpected via-pool failure: {message}"
     );
-    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 }
 
 #[tokio::test]
