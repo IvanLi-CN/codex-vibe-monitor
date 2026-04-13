@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.46.16",
+  "base_stable_version": "1.46.15",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-13T15:07:37Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.46.16",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "9d16db38ef2ba40466de3081f3f66bc3d3a463be",
+  "pr_number": 344,
+  "pr_title": "feat: born-gzip raw capture and auto-heal legacy rollups",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.46.16",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.46.16",
+  "target_sha": "a8933b517faeff4fa76b7b74fe10df9138581a58",
+  "type_label": "type:patch"
+}
