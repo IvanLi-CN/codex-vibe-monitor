@@ -414,7 +414,7 @@ pub(crate) async fn store_raw_payload_file(
     config: &AppConfig,
     invoke_id: &str,
     kind: &str,
-    bytes: &[u8],
+    bytes: Bytes,
 ) -> RawPayloadMeta {
     let mut meta = RawPayloadMeta {
         path: None,
@@ -427,31 +427,46 @@ pub(crate) async fn store_raw_payload_file(
         return meta;
     }
 
-    let mut write_len = bytes.len();
+    let mut content = bytes;
     if let Some(limit) = config.proxy_raw_max_bytes
-        && write_len > limit
+        && content.len() > limit
     {
-        write_len = limit;
+        content = content.slice(..limit);
         meta.truncated = true;
         meta.truncated_reason = Some("max_bytes_exceeded".to_string());
     }
-    let content = &bytes[..write_len];
 
     let raw_dir = config.resolved_proxy_raw_dir();
 
-    if let Err(err) = tokio::fs::create_dir_all(&raw_dir).await {
-        meta.truncated = true;
-        meta.truncated_reason = Some(format!("write_failed:{err}"));
-        return meta;
-    }
-
-    let filename = format!("{invoke_id}-{kind}.bin");
-    let path = raw_dir.join(filename);
-    match tokio::fs::write(&path, content).await {
+    let born_gzip = config
+        .proxy_raw_immediate_gzip_threshold()
+        .is_some_and(|threshold| content.len() >= threshold);
+    let path = raw_payload_path_for_kind(&raw_dir, invoke_id, kind, born_gzip);
+    let write_result = if born_gzip {
+        let write_path = path.clone();
+        run_blocking_raw_writer_io(move || {
+            let mut encoder = create_gzip_streaming_raw_encoder(&write_path)?;
+            encoder.write_all(content.as_ref())?;
+            let mut writer = encoder.finish()?;
+            writer.flush()
+        })
+        .await
+    } else {
+        if let Err(err) = tokio::fs::create_dir_all(&raw_dir).await {
+            meta.truncated = true;
+            meta.truncated_reason = Some(format!("write_failed:{err}"));
+            return meta;
+        }
+        tokio::fs::write(&path, content).await
+    };
+    match write_result {
         Ok(_) => {
             meta.path = Some(path.to_string_lossy().to_string());
         }
         Err(err) => {
+            if born_gzip {
+                let _ = fs::remove_file(&path);
+            }
             meta.truncated = true;
             meta.truncated_reason = Some(format!("write_failed:{err}"));
         }
@@ -830,10 +845,12 @@ pub(crate) async fn persist_proxy_capture_record(
             payload,
             raw_response,
             request_raw_path,
+            request_raw_codec,
             request_raw_size,
             request_raw_truncated,
             request_raw_truncated_reason,
             response_raw_path,
+            response_raw_codec,
             response_raw_size,
             response_raw_truncated,
             response_raw_truncated_reason,
@@ -849,7 +866,8 @@ pub(crate) async fn persist_proxy_capture_record(
         )
         VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
-            ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36
+            ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36,
+            ?37, ?38
         )
         "#,
     )
@@ -873,10 +891,12 @@ pub(crate) async fn persist_proxy_capture_record(
     .bind(record.payload.as_deref())
     .bind(&record.raw_response)
     .bind(record.req_raw.path.as_deref())
+    .bind(raw_payload_meta_codec(&record.req_raw))
     .bind(record.req_raw.path.as_ref().map(|_| record.req_raw.size_bytes))
     .bind(record.req_raw.truncated as i64)
     .bind(record.req_raw.truncated_reason.as_deref())
     .bind(record.resp_raw.path.as_deref())
+    .bind(raw_payload_meta_codec(&record.resp_raw))
     .bind(record.resp_raw.path.as_ref().map(|_| record.resp_raw.size_bytes))
     .bind(record.resp_raw.truncated as i64)
     .bind(record.resp_raw.truncated_reason.as_deref())
@@ -936,21 +956,23 @@ pub(crate) async fn persist_proxy_capture_record(
                 payload = ?17,
                 raw_response = ?18,
                 request_raw_path = ?19,
-                request_raw_size = ?20,
-                request_raw_truncated = ?21,
-                request_raw_truncated_reason = ?22,
-                response_raw_path = ?23,
-                response_raw_size = ?24,
-                response_raw_truncated = ?25,
-                response_raw_truncated_reason = ?26,
-                t_total_ms = ?27,
-                t_req_read_ms = ?28,
-                t_req_parse_ms = ?29,
-                t_upstream_connect_ms = ?30,
-                t_upstream_ttfb_ms = ?31,
-                t_upstream_stream_ms = ?32,
-                t_resp_parse_ms = ?33,
-                t_persist_ms = ?34
+                request_raw_codec = ?20,
+                request_raw_size = ?21,
+                request_raw_truncated = ?22,
+                request_raw_truncated_reason = ?23,
+                response_raw_path = ?24,
+                response_raw_codec = ?25,
+                response_raw_size = ?26,
+                response_raw_truncated = ?27,
+                response_raw_truncated_reason = ?28,
+                t_total_ms = ?29,
+                t_req_read_ms = ?30,
+                t_req_parse_ms = ?31,
+                t_upstream_connect_ms = ?32,
+                t_upstream_ttfb_ms = ?33,
+                t_upstream_stream_ms = ?34,
+                t_resp_parse_ms = ?35,
+                t_persist_ms = ?36
             WHERE id = ?1
               AND (
                     LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
@@ -980,10 +1002,12 @@ pub(crate) async fn persist_proxy_capture_record(
         .bind(record.payload.as_deref())
         .bind(&record.raw_response)
         .bind(record.req_raw.path.as_deref())
+        .bind(raw_payload_meta_codec(&record.req_raw))
         .bind(record.req_raw.path.as_ref().map(|_| record.req_raw.size_bytes))
         .bind(record.req_raw.truncated as i64)
         .bind(record.req_raw.truncated_reason.as_deref())
         .bind(record.resp_raw.path.as_deref())
+        .bind(raw_payload_meta_codec(&record.resp_raw))
         .bind(record.resp_raw.path.as_ref().map(|_| record.resp_raw.size_bytes))
         .bind(record.resp_raw.truncated as i64)
         .bind(record.resp_raw.truncated_reason.as_deref())

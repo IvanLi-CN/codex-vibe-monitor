@@ -2440,6 +2440,40 @@
     }
 
     #[tokio::test]
+    async fn classified_sync_wrapped_upstream_rejected_permission_keeps_existing_cooldown_policy() {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Wrapped upstream rejected cooldown").await;
+
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load fresh row")
+            .expect("fresh row exists");
+        record_classified_account_sync_failure(
+            &pool,
+            &row,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
+            "oauth_upstream_rejected_request: pool upstream responded with 403: Forbidden",
+        )
+        .await
+        .expect("record wrapped upstream rejected sync failure");
+
+        let after = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row after wrapped upstream rejected sync failure")
+            .expect("row after wrapped upstream rejected sync failure exists");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+        assert_eq!(after.last_action_reason_code.as_deref(), Some("upstream_http_403"));
+        assert_eq!(
+            after.last_route_failure_kind.as_deref(),
+            Some(PROXY_FAILURE_UPSTREAM_HTTP_AUTH)
+        );
+        assert_eq!(
+            after.cooldown_until, None,
+            "wrapped upstream auth errors should keep the old no-cooldown behavior"
+        );
+    }
+
+    #[tokio::test]
     async fn classified_sync_failure_preserves_quota_marker_from_current_syncing_row() {
         let pool = test_pool().await;
         let account_id = insert_oauth_account(&pool, "Quota Syncing Preserve").await;

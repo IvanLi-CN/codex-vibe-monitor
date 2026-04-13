@@ -2517,6 +2517,7 @@
             .await
             .expect("load sync-triggered 402 row")
             .expect("sync-triggered 402 row exists");
+        assert!(row.cooldown_until.is_none());
         let summary = build_summary_from_row(
             &row,
             None,

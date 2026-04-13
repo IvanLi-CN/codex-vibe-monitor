@@ -362,6 +362,13 @@ pub(crate) async fn cleanup_expired_archive_batches(
         .bind(&candidate.file_path)
         .execute(tx.as_mut())
         .await?;
+        sqlx::query(
+            "DELETE FROM hourly_rollup_archive_progress WHERE dataset = ?1 AND file_path = ?2",
+        )
+        .bind(&candidate.dataset)
+        .bind(&candidate.file_path)
+        .execute(tx.as_mut())
+        .await?;
         tx.commit().await?;
         deleted += 1;
     }
@@ -566,12 +573,48 @@ pub(crate) async fn materialize_historical_rollups(
     config: &AppConfig,
     dry_run: bool,
 ) -> Result<HistoricalRollupMaterializationSummary> {
-    let scanned_archive_batches = count_historical_rollup_archive_batches(pool, false).await?;
+    materialize_historical_rollups_bounded(pool, config, dry_run, None, None).await
+}
+
+pub(crate) async fn materialize_historical_rollups_bounded(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    dry_run: bool,
+    max_archive_batches: Option<u64>,
+    max_elapsed: Option<Duration>,
+) -> Result<HistoricalRollupMaterializationSummary> {
+    materialize_historical_rollups_bounded_from_skip(
+        pool,
+        config,
+        dry_run,
+        max_archive_batches,
+        max_elapsed,
+        0,
+    )
+    .await
+}
+
+pub(crate) async fn materialize_historical_rollups_bounded_from_skip(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    dry_run: bool,
+    max_archive_batches: Option<u64>,
+    max_elapsed: Option<Duration>,
+    skip_pending_archives: usize,
+) -> Result<HistoricalRollupMaterializationSummary> {
+    let started_at = Instant::now();
     let pending_snapshot = load_historical_rollup_backfill_snapshot(pool, config).await?;
+    let bounded_skip = if pending_snapshot.legacy_archive_pending == 0 {
+        0
+    } else {
+        skip_pending_archives % pending_snapshot.legacy_archive_pending as usize
+    };
     if dry_run {
         return Ok(HistoricalRollupMaterializationSummary {
-            scanned_archive_batches: scanned_archive_batches as usize,
+            scanned_archive_batches: pending_snapshot.legacy_archive_pending as usize,
+            skipped_archive_batches: 0,
             materialized_archive_batches: pending_snapshot.legacy_archive_pending as usize,
+            blocked_archive_batches: 0,
             materialized_bucket_count: pending_snapshot.pending_buckets as usize,
             materialized_invocation_batches: 0,
             materialized_forward_proxy_batches: 0,
@@ -581,17 +624,39 @@ pub(crate) async fn materialize_historical_rollups(
     }
 
     let mut tx = pool.begin().await?;
-    let materialized_invocation_batches =
-        replay_invocation_archives_into_hourly_rollups_tx(tx.as_mut()).await?;
-    let materialized_forward_proxy_batches =
-        replay_forward_proxy_archives_into_hourly_rollups_tx(tx.as_mut()).await?;
+    let invocation_summary = replay_invocation_archives_into_hourly_rollups_tx_with_limits(
+        tx.as_mut(),
+        started_at,
+        max_archive_batches,
+        max_elapsed,
+        bounded_skip,
+    )
+    .await?;
+    let remaining_budget =
+        historical_rollup_materialization_remaining_budget(started_at, max_elapsed);
+    let forward_proxy_summary =
+        replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
+            tx.as_mut(),
+            started_at,
+            max_archive_batches
+                .map(|limit| limit.saturating_sub(invocation_summary.budget_consumed_batches)),
+            remaining_budget,
+            invocation_summary.remaining_skip_batches,
+        )
+        .await?;
     loop {
+        if historical_rollup_materialization_budget_exhausted(started_at, max_elapsed) {
+            break;
+        }
         let updated = replay_live_invocation_hourly_rollups_tx(tx.as_mut()).await?;
         if updated == 0 {
             break;
         }
     }
     loop {
+        if historical_rollup_materialization_budget_exhausted(started_at, max_elapsed) {
+            break;
+        }
         let updated = replay_live_forward_proxy_attempt_hourly_rollups_tx(tx.as_mut()).await?;
         if updated == 0 {
             break;
@@ -600,13 +665,17 @@ pub(crate) async fn materialize_historical_rollups(
     tx.commit().await?;
 
     Ok(HistoricalRollupMaterializationSummary {
-        scanned_archive_batches: scanned_archive_batches as usize,
-        materialized_archive_batches: (materialized_invocation_batches
-            + materialized_forward_proxy_batches) as usize,
+        scanned_archive_batches: (invocation_summary.scanned_batches
+            + forward_proxy_summary.scanned_batches) as usize,
+        skipped_archive_batches: (invocation_summary.skipped_batches
+            + forward_proxy_summary.skipped_batches) as usize,
+        materialized_archive_batches: (invocation_summary.materialized_batches
+            + forward_proxy_summary.materialized_batches) as usize,
+        blocked_archive_batches: invocation_summary.blocked_batches as usize,
         materialized_bucket_count: count_materialized_historical_rollup_buckets(pool).await?
             as usize,
-        materialized_invocation_batches: materialized_invocation_batches as usize,
-        materialized_forward_proxy_batches: materialized_forward_proxy_batches as usize,
+        materialized_invocation_batches: invocation_summary.materialized_batches as usize,
+        materialized_forward_proxy_batches: forward_proxy_summary.materialized_batches as usize,
         last_materialized_bucket_start_epoch:
             load_latest_materialized_legacy_invocation_rollup_bucket_epoch(pool, config).await?,
     })
@@ -707,6 +776,13 @@ pub(crate) async fn prune_legacy_archive_batches(
         .bind(&candidate.file_path)
         .execute(tx.as_mut())
         .await?;
+        sqlx::query(
+            "DELETE FROM hourly_rollup_archive_progress WHERE dataset = ?1 AND file_path = ?2",
+        )
+        .bind(&candidate.dataset)
+        .bind(&candidate.file_path)
+        .execute(tx.as_mut())
+        .await?;
         sqlx::query("DELETE FROM archive_batches WHERE id = ?1")
             .bind(candidate.id)
             .execute(tx.as_mut())
@@ -716,6 +792,66 @@ pub(crate) async fn prune_legacy_archive_batches(
     }
 
     Ok(summary)
+}
+
+fn historical_rollup_materialization_remaining_budget(
+    started_at: Instant,
+    max_elapsed: Option<Duration>,
+) -> Option<Duration> {
+    max_elapsed.map(|limit| limit.saturating_sub(started_at.elapsed()))
+}
+
+fn historical_rollup_materialization_budget_exhausted(
+    started_at: Instant,
+    max_elapsed: Option<Duration>,
+) -> bool {
+    matches!(
+        historical_rollup_materialization_remaining_budget(started_at, max_elapsed),
+        Some(remaining) if remaining.is_zero()
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{thread, time::Duration};
+
+    #[test]
+    fn historical_rollup_materialization_remaining_budget_clamps_to_zero_when_elapsed() {
+        let started_at = Instant::now();
+        thread::sleep(Duration::from_millis(10));
+
+        let remaining = historical_rollup_materialization_remaining_budget(
+            started_at,
+            Some(Duration::from_millis(1)),
+        );
+
+        assert_eq!(remaining, Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn historical_rollup_materialization_remaining_budget_preserves_unbounded_mode() {
+        assert_eq!(
+            historical_rollup_materialization_remaining_budget(Instant::now(), None),
+            None
+        );
+    }
+
+    #[test]
+    fn historical_rollup_materialization_budget_exhausted_only_when_bounded_budget_is_zero() {
+        assert!(historical_rollup_materialization_budget_exhausted(
+            Instant::now(),
+            Some(Duration::ZERO),
+        ));
+        assert!(!historical_rollup_materialization_budget_exhausted(
+            Instant::now(),
+            None,
+        ));
+        assert!(!historical_rollup_materialization_budget_exhausted(
+            Instant::now(),
+            Some(Duration::from_secs(1)),
+        ));
+    }
 }
 
 pub(crate) async fn prune_archive_batches(

@@ -647,6 +647,10 @@ fn account_reason_is_upstream_rejected(reason_code: Option<&str>) -> bool {
     )
 }
 
+fn account_reason_is_maintenance_upstream_rejected(reason_code: Option<&str>) -> bool {
+    matches!(reason_code, Some("upstream_http_402" | "upstream_rejected"))
+}
+
 fn account_reason_is_quota_exhausted(reason_code: Option<&str>) -> bool {
     matches!(
         reason_code,
@@ -726,6 +730,15 @@ fn route_failure_kind_is_upstream_rejected(failure_kind: Option<&str>) -> bool {
             .map(str::trim)
             .filter(|value| !value.is_empty()),
         Some(PROXY_FAILURE_UPSTREAM_HTTP_AUTH | PROXY_FAILURE_UPSTREAM_HTTP_402)
+    )
+}
+
+fn route_failure_kind_is_maintenance_upstream_rejected(failure_kind: Option<&str>) -> bool {
+    matches!(
+        failure_kind
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        Some(PROXY_FAILURE_UPSTREAM_HTTP_402)
     )
 }
 

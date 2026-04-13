@@ -125,7 +125,8 @@ OPENAI_PROXY_MAX_REQUEST_BODY_BYTES=268435456    # (256MiB)
 PROXY_RAW_DIR=proxy_raw_payloads                 # (相对路径时锚定到 DATABASE_PATH 同级目录)
 PROXY_RAW_MAX_BYTES=0                            # (0=unlimited, set >0 to cap)
 PROXY_RAW_COMPRESSION=gzip                       # (gzip; set none to disable cold compression)
-PROXY_RAW_HOT_SECS=86400                         # (24h; raw files older than this become *.bin.gz)
+PROXY_RAW_IMMEDIATE_GZIP_BYTES=1048576           # (1MiB; 0 disables born-gzip, only when compression=gzip)
+PROXY_RAW_HOT_SECS=86400                         # (24h; plain raw older than this become *.bin.gz)
 PROXY_ENFORCE_STREAM_INCLUDE_USAGE=true          # (true)
 PROXY_USAGE_BACKFILL_ON_STARTUP=true             # (兼容保留；当前历史补数改为后台有界执行，不再阻塞 /health)
 FORWARD_PROXY_ALGO=v2                            # (v2，正向代理权重算法开关: v1|v2)
@@ -176,8 +177,8 @@ CRS_STATS_POLL_INTERVAL_SECS=10                  # (10，默认跟随 POLL_INTER
 号池维护同步配置同样支持运行期在线编辑：在 Web 的 `号池 -> 上游账号 -> 高级路由与同步设置` 中，可直接调整主频、次频与主层账号上限。`working` / `degraded` 的 OAuth 账号固定按 `60` 秒高频同步；其他账号继续按原有主频 / 次频与主层上限策略执行。若主限制或次限制的 `resetsAt` 已跨过当前时间，则该账号会在下一个 `60` 秒 maintenance tick 尽快补一次同步。`UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS` 仅作为新库或旧库缺失维护字段时的主频默认值回退；次频默认 `1800` 秒、主层上限默认 `100`。
 `OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS` 仍作为后端默认回退项存在：未配置时，`/v1/responses/compact` 的“响应体首字超时”默认使用 `300` 秒；其他代理路径默认继续使用 `OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS=60` 作为非 responses 类请求的上游发送等待回退。账号池页的 `Pool routing settings` 现在只在线暴露 4 项请求链路超时：一般请求响应体首字超时、压缩请求响应体首字超时、一般请求流结束超时、压缩请求流结束超时；保存后对后续请求即时生效。
 成本估算默认采用“精确模型优先 + 日期后缀模型回退”（如 `gpt-5.2-2025-12-11 -> gpt-5.2`），历史 `cost IS NULL` 的成功代理记录会在启动后由后台任务按批次增量补算（仅回填空成本，不覆盖已有值）。
-raw 请求/响应文件的生命周期不再由独立环境变量控制，而是跟随 retention 窗口：新写入文件保持热数据明文 `*.bin`，超过 `PROXY_RAW_HOT_SECS=86400` 后由 retention 自动转为 `*.bin.gz`；成功调用按 `INVOCATION_SUCCESS_FULL_DAYS` 进入结构化保留，超出 `INVOCATION_MAX_DAYS` 后再归档出主库。`requestRawPath` / `responseRawPath` 应视为 opaque path，而不是假定固定后缀。
-raw 冷压缩现在使用显式状态字段 `request_raw_codec` / `response_raw_codec` 跟踪 `identity | gzip`，retention 候选不再依赖 `*.gz` 后缀；当 backlog 存在时，单次 maintenance 会在 `RETENTION_CATCHUP_BUDGET_SECS` 预算内连续追平，而不是每小时只跑一小批。
+raw 请求/响应文件的生命周期不再由独立环境变量控制，而是跟随 retention 窗口：默认启用 `PROXY_RAW_IMMEDIATE_GZIP_BYTES=1048576`，当 `PROXY_RAW_COMPRESSION=gzip` 且单个 request/response raw 大于等于 1 MiB 时，文件会在首次落盘时直接写成 `*.bin.gz`；更小的 raw 继续先写热明文 `*.bin`，并在超过 `PROXY_RAW_HOT_SECS=86400` 后由 retention 自动转为 `*.bin.gz`。成功调用按 `INVOCATION_SUCCESS_FULL_DAYS` 进入结构化保留，超出 `INVOCATION_MAX_DAYS` 后再归档出主库；born-gzip 不改变这两段 retention 语义。将 `PROXY_RAW_IMMEDIATE_GZIP_BYTES=0` 可完整回退到“热明文 + 冷压缩”路径。`requestRawPath` / `responseRawPath` 应视为 opaque path，而不是假定固定后缀。
+raw codec 继续由显式状态字段 `request_raw_codec` / `response_raw_codec` 跟踪 `identity | gzip`；详情、preview、backfill、`search-raw`、retention 与 orphan sweep 都按 codec 透明兼容 `.bin` / `.bin.gz`。当 backlog 存在时，单次 maintenance 仍会在 `RETENTION_CATCHUP_BUDGET_SECS` 预算内连续追平，而不是每小时只跑一小批。
 `codex_invocations` archive 现在默认写成不可变日分片：`ARCHIVE_DIR/codex_invocations/YYYY/MM/DD/part-<seq>.sqlite.gz`。retention 只追加新 segment，不再打开旧月包做“解压 -> 追加 -> 重压缩”；legacy 月归档仅保留为 backup-only 兼容形态。
 `codex_invocations` archive batch 会额外写入 `archive_batch_upstream_activity` manifest，并默认按 `INVOCATION_ARCHIVE_TTL_DAYS` 在 archive 层继续保留；startup 的 upstream activity archive backfill 只读取 manifest，不再临时解压 `*.sqlite.gz`。
 
@@ -260,7 +261,8 @@ cargo run -- maintenance prune-archive-batches --dry-run
 cargo run -- maintenance prune-archive-batches
 ```
 
-- 正常服务启动会在 startup backfill 后台维护里自动补齐仍缺失的 `codex_invocations` archive upstream-activity manifest，并只把主库 live tail sync 到 hourly rollups；若 `maintenance.historicalRollupBackfill.legacyArchivePending > 0`，需要显式执行 `maintenance materialize-historical-rollups` 才会把 legacy archive 物化进主库统计表。在 remaining legacy `codex_invocations` 仍未完成物化前，`maintenance.historicalRollupBackfill.alertLevel` 会保持 `critical`，且这批 pending legacy archive 不会被 TTL 自动提前删掉；已经缺失的 legacy archive 文件会在物化时被跳过，不再把 backlog 永久卡死，可随后用 `maintenance prune-legacy-archive-batches` 清掉残留元数据。
+- 正常服务启动会在 startup backfill 后台维护里自动补齐仍缺失的 `codex_invocations` archive upstream-activity manifest，并在有界预算内持续推进 legacy `materialize-historical-rollups`：每轮 follow-up 会自动吃掉一部分 pending archive，同时继续把主库 live tail sync 到 hourly rollups，因此 `maintenance.historicalRollupBackfill` 默认会自愈，而不是长期停在 `critical`。若 operator 需要一次性追平 backlog，仍可显式执行 `maintenance materialize-historical-rollups`；已经缺失的 legacy archive 文件会在物化时被跳过，不再把 backlog 永久卡死，可随后用 `maintenance prune-legacy-archive-batches` 清掉残留元数据。
+- 对 `deactivated_workspace` / 结构化 `upstream_http_402` / `upstream_rejected` 的账号，maintenance 会直接跳过同轮 browser-UA fallback retry，并写入 6 小时 cooldown；这类账号在 cooldown 结束前不会被高频重复同步。
 - `maintenance prune-archive-batches` 会统一处理“已过期 segment + 可安全删除的 legacy backup-only archive”；`maintenance prune-legacy-archive-batches` 仍保留为兼容别名。
 - `maintenance verify-archive-storage` 会扫描 manifest 与磁盘文件，输出 `missing_files`、`orphan_files` 与 `stale_temp_files`，用于发现手工删档或失败残留。
 - `maintenance ... --dry-run` 与 `--retention-run-once --retention-dry-run` 不会再顺手执行 archive TTL 回填、manifest rebuild 或历史 rollup 物化，便于先做真正只读的容量预演。

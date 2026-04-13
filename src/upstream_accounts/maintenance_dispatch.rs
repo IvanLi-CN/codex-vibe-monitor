@@ -349,6 +349,73 @@ pub(crate) fn maintenance_candidate_force_priority(
         || !maintenance_candidate_has_complete_usage(candidate)
 }
 
+fn maintenance_candidate_has_active_upstream_rejected_cooldown(
+    candidate: &MaintenanceCandidateRow,
+    now: DateTime<Utc>,
+) -> bool {
+    if !matches!(
+        candidate.last_action_source.as_deref(),
+        Some(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE)
+    ) {
+        return false;
+    }
+    let has_maintenance_upstream_rejected_marker =
+        account_reason_is_maintenance_upstream_rejected(
+            candidate.last_action_reason_code.as_deref(),
+        ) || route_failure_kind_is_maintenance_upstream_rejected(
+            candidate.last_route_failure_kind.as_deref(),
+        ) || candidate
+            .last_error
+            .as_deref()
+            .is_some_and(maintenance_upstream_rejected_error_message);
+    if !has_maintenance_upstream_rejected_marker {
+        return false;
+    }
+
+    candidate
+        .last_action_at
+        .as_deref()
+        .and_then(parse_rfc3339_utc)
+        .or_else(|| {
+            candidate
+                .last_route_failure_at
+                .as_deref()
+                .and_then(parse_rfc3339_utc)
+        })
+        .or_else(|| {
+            candidate
+                .last_error_at
+                .as_deref()
+                .and_then(parse_rfc3339_utc)
+        })
+        .is_some_and(|failed_at| {
+            failed_at
+                + ChronoDuration::seconds(
+                    UPSTREAM_ACCOUNT_UPSTREAM_REJECTED_MAINTENANCE_COOLDOWN_SECS,
+                )
+                > now
+        })
+}
+
+fn maintenance_candidate_blocks_upstream_rejected_cooldown(
+    candidate: &MaintenanceCandidateRow,
+    now: DateTime<Utc>,
+) -> bool {
+    maintenance_candidate_has_active_upstream_rejected_cooldown(candidate, now)
+        && !maintenance_reset_due(candidate, now)
+}
+
+fn maintenance_candidate_counts_toward_available_priority_slot(
+    candidate: &MaintenanceCandidateRow,
+    refresh_lead_time: Duration,
+    now: DateTime<Utc>,
+) -> bool {
+    maintenance_candidate_is_available(candidate)
+        && !maintenance_candidate_is_high_frequency(candidate, now)
+        && !maintenance_candidate_force_priority(candidate, refresh_lead_time, now)
+        && !maintenance_candidate_blocks_upstream_rejected_cooldown(candidate, now)
+}
+
 pub(crate) fn compare_maintenance_candidates(
     lhs: &MaintenanceCandidateRow,
     rhs: &MaintenanceCandidateRow,
@@ -472,12 +539,17 @@ pub(crate) fn maintenance_plan_is_due(
     settings: PoolRoutingMaintenanceSettings,
     now: DateTime<Utc>,
 ) -> bool {
-    maintenance_reset_due(candidate, now)
-        || maintenance_interval_is_due(
-            candidate,
-            maintenance_interval_for_tier(tier, settings),
-            now,
-        )
+    if maintenance_reset_due(candidate, now) {
+        return true;
+    }
+    if maintenance_candidate_blocks_upstream_rejected_cooldown(candidate, now) {
+        return false;
+    }
+    maintenance_interval_is_due(
+        candidate,
+        maintenance_interval_for_tier(tier, settings),
+        now,
+    )
 }
 
 pub(crate) async fn load_maintenance_candidates_ranked_before(
@@ -629,14 +701,11 @@ pub(crate) async fn current_maintenance_interval_for_queued_high_frequency_candi
             return Ok(settings.primary_sync_interval_secs);
         }
         for other in &batch {
-            if maintenance_candidate_is_high_frequency(other, now)
-                || maintenance_candidate_force_priority(
-                    other,
-                    state.config.upstream_accounts_refresh_lead_time,
-                    now,
-                )
-                || !maintenance_candidate_is_available(other)
-            {
+            if !maintenance_candidate_counts_toward_available_priority_slot(
+                other,
+                state.config.upstream_accounts_refresh_lead_time,
+                now,
+            ) {
                 continue;
             }
             better_available += 1;
@@ -668,6 +737,9 @@ pub(crate) async fn execute_queued_maintenance_sync(
     } else {
         plan.sync_interval_secs
     };
+    if maintenance_candidate_blocks_upstream_rejected_cooldown(&candidate, now) {
+        return Ok(None);
+    }
     if !maintenance_reset_due(&candidate, now)
         && !maintenance_interval_is_due(&candidate, interval_secs, now)
     {
@@ -706,6 +778,7 @@ pub(crate) fn resolve_due_maintenance_dispatch_plans(
     secondary.sort_by(compare_maintenance_candidates);
 
     let mut plans = Vec::new();
+    let mut available_priority_slots_used = 0usize;
     for candidate in forced_priority {
         if maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now) {
             plans.push(MaintenanceDispatchPlan {
@@ -724,12 +797,23 @@ pub(crate) fn resolve_due_maintenance_dispatch_plans(
             });
         }
     }
-    for (index, candidate) in ranked_available.into_iter().enumerate() {
-        let tier = if index < settings.priority_available_account_cap {
+    for candidate in ranked_available {
+        let counts_toward_priority_slot =
+            maintenance_candidate_counts_toward_available_priority_slot(
+                &candidate,
+                refresh_lead_time,
+                now,
+            );
+        let tier = if counts_toward_priority_slot
+            && available_priority_slots_used < settings.priority_available_account_cap
+        {
             MaintenanceTier::Priority
         } else {
             MaintenanceTier::Secondary
         };
+        if counts_toward_priority_slot {
+            available_priority_slots_used += 1;
+        }
         if maintenance_plan_is_due(&candidate, tier, settings, now) {
             plans.push(MaintenanceDispatchPlan {
                 account_id: candidate.id,

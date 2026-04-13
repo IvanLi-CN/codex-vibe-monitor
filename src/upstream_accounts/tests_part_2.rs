@@ -2159,6 +2159,222 @@
     }
 
     #[test]
+    fn maintenance_plan_is_not_due_during_upstream_rejected_cooldown() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 13, 12, 0, 0)
+            .single()
+            .expect("valid time");
+        let settings = PoolRoutingMaintenanceSettings {
+            primary_sync_interval_secs: 300,
+            secondary_sync_interval_secs: 1800,
+            priority_available_account_cap: 1,
+        };
+        let mut candidate = maintenance_candidates(
+            42,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            Some("2026-04-13T05:00:00Z"),
+            Some("2026-04-13T11:00:00Z"),
+            Some("2026-05-13T12:00:00Z"),
+            Some(10.0),
+            Some(10.0),
+        );
+        candidate.last_action_reason_code = Some("upstream_http_402".to_string());
+        candidate.last_route_failure_kind = Some(PROXY_FAILURE_UPSTREAM_HTTP_402.to_string());
+        candidate.last_action_source =
+            Some(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE.to_string());
+        candidate.last_action_at = Some("2026-04-13T11:00:00Z".to_string());
+
+        assert!(
+            !maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now),
+            "active upstream-rejected cooldown should suppress maintenance scheduling"
+        );
+    }
+
+    #[test]
+    fn maintenance_plan_is_due_when_reset_window_passes_even_during_upstream_rejected_cooldown() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 13, 12, 0, 0)
+            .single()
+            .expect("valid time");
+        let settings = PoolRoutingMaintenanceSettings {
+            primary_sync_interval_secs: 300,
+            secondary_sync_interval_secs: 1800,
+            priority_available_account_cap: 1,
+        };
+        let mut candidate = maintenance_candidates(
+            42,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            Some("2026-04-13T05:00:00Z"),
+            Some("2026-04-13T11:00:00Z"),
+            Some("2026-04-13T11:59:00Z"),
+            Some(10.0),
+            Some(10.0),
+        );
+        candidate.last_action_reason_code = Some("upstream_http_402".to_string());
+        candidate.last_route_failure_kind = Some(PROXY_FAILURE_UPSTREAM_HTTP_402.to_string());
+        candidate.primary_resets_at = Some(format_utc_iso(now - ChronoDuration::minutes(1)));
+        candidate.last_action_source =
+            Some(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE.to_string());
+        candidate.last_action_at = Some("2026-04-13T11:00:00Z".to_string());
+
+        assert!(
+            maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now),
+            "reset-due accounts should bypass the temporary upstream-rejected cooldown"
+        );
+    }
+
+    #[test]
+    fn maintenance_plan_ignores_wrapped_upstream_auth_errors_for_cooldown_blocking() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 13, 12, 0, 0)
+            .single()
+            .expect("valid time");
+        let settings = PoolRoutingMaintenanceSettings {
+            primary_sync_interval_secs: 300,
+            secondary_sync_interval_secs: 1800,
+            priority_available_account_cap: 1,
+        };
+        let mut candidate = maintenance_candidates(
+            42,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            Some("2026-04-13T05:00:00Z"),
+            Some("2026-04-13T11:00:00Z"),
+            Some("2026-05-13T12:00:00Z"),
+            Some(10.0),
+            Some(10.0),
+        );
+        candidate.last_error = Some(
+            "oauth_upstream_rejected_request: pool upstream responded with 403: Forbidden"
+                .to_string(),
+        );
+        candidate.last_action_reason_code = Some("upstream_http_403".to_string());
+        candidate.last_route_failure_kind = Some(PROXY_FAILURE_UPSTREAM_HTTP_AUTH.to_string());
+
+        assert!(
+            maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now),
+            "wrapped upstream auth errors should not enter the maintenance cooldown path"
+        );
+    }
+
+    #[test]
+    fn resolve_due_maintenance_dispatch_plans_does_not_let_cooldown_blocked_accounts_consume_priority_slots() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 13, 12, 0, 0)
+            .single()
+            .expect("valid time");
+        let settings = PoolRoutingMaintenanceSettings {
+            primary_sync_interval_secs: 300,
+            secondary_sync_interval_secs: 1800,
+            priority_available_account_cap: 1,
+        };
+
+        let mut cooldown_blocked = maintenance_candidates(
+            1,
+            UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+            Some("2026-04-13T05:00:00Z"),
+            Some("2026-04-13T11:58:00Z"),
+            Some("2026-05-13T12:00:00Z"),
+            Some(5.0),
+            Some(5.0),
+        );
+        cooldown_blocked.last_action_reason_code = Some("upstream_http_402".to_string());
+        cooldown_blocked.last_route_failure_kind = Some(PROXY_FAILURE_UPSTREAM_HTTP_402.to_string());
+        cooldown_blocked.last_action_source =
+            Some(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE.to_string());
+        cooldown_blocked.last_action_at = Some("2026-04-13T11:58:00Z".to_string());
+
+        let healthy_due = maintenance_candidates(
+            2,
+            UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+            Some("2026-04-13T05:00:00Z"),
+            Some("2026-04-13T11:00:00Z"),
+            Some("2026-05-13T12:00:00Z"),
+            Some(10.0),
+            Some(10.0),
+        );
+
+        let plans = resolve_due_maintenance_dispatch_plans(
+            vec![cooldown_blocked, healthy_due],
+            settings,
+            Duration::from_secs(900),
+            now,
+        );
+
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].account_id, 2);
+        assert_eq!(plans[0].tier, MaintenanceTier::Priority);
+        assert_eq!(plans[0].sync_interval_secs, settings.primary_sync_interval_secs);
+    }
+
+    #[test]
+    fn maintenance_plan_is_due_for_call_driven_upstream_rejected_errors() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 13, 12, 0, 0)
+            .single()
+            .expect("valid time");
+        let settings = PoolRoutingMaintenanceSettings {
+            primary_sync_interval_secs: 300,
+            secondary_sync_interval_secs: 1800,
+            priority_available_account_cap: 1,
+        };
+        let mut candidate = maintenance_candidates(
+            77,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            Some("2026-04-13T05:00:00Z"),
+            Some("2026-04-13T11:00:00Z"),
+            Some("2026-05-13T12:00:00Z"),
+            Some(10.0),
+            Some(10.0),
+        );
+        candidate.last_action_source = Some(UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL.to_string());
+        candidate.last_action_at = Some("2026-04-13T11:00:00Z".to_string());
+        candidate.last_action_reason_code = Some("upstream_http_402".to_string());
+        candidate.last_route_failure_at = Some("2026-04-13T11:00:00Z".to_string());
+        candidate.last_route_failure_kind = Some(PROXY_FAILURE_UPSTREAM_HTTP_402.to_string());
+        candidate.last_error = Some("deactivated_workspace".to_string());
+
+        assert!(
+            maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now),
+            "ordinary routed 402s should still allow maintenance to retry promptly"
+        );
+    }
+
+    #[test]
+    fn maintenance_plan_is_due_for_generic_403_upstream_rejected_text() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 13, 12, 0, 0)
+            .single()
+            .expect("valid time");
+        let settings = PoolRoutingMaintenanceSettings {
+            primary_sync_interval_secs: 300,
+            secondary_sync_interval_secs: 1800,
+            priority_available_account_cap: 1,
+        };
+        let mut candidate = maintenance_candidates(
+            88,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            Some("2026-04-13T05:00:00Z"),
+            Some("2026-04-13T11:55:00Z"),
+            Some("2026-05-13T12:00:00Z"),
+            Some(10.0),
+            Some(10.0),
+        );
+        candidate.last_action_source =
+            Some(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE.to_string());
+        candidate.last_action_at = Some("2026-04-13T11:55:00Z".to_string());
+        candidate.last_action_reason_code = Some("upstream_http_403".to_string());
+        candidate.last_route_failure_at = Some("2026-04-13T11:55:00Z".to_string());
+        candidate.last_route_failure_kind = Some(PROXY_FAILURE_UPSTREAM_HTTP_AUTH.to_string());
+        candidate.last_error =
+            Some("usage endpoint returned 403 Forbidden: upstream rejected request by policy".to_string());
+
+        assert!(
+            maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now),
+            "generic 403 text that happens to mention upstream rejected should not trigger the 402-only maintenance cooldown"
+        );
+    }
+
+    #[test]
     fn resolve_due_maintenance_dispatch_plans_keeps_refresh_due_accounts_on_primary_cadence() {
         let now = Utc
             .with_ymd_and_hms(2026, 3, 23, 12, 0, 0)

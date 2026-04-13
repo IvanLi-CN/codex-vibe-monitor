@@ -188,7 +188,9 @@ struct ArchiveBackfillSummary {
 #[derive(Debug, Default)]
 pub(crate) struct HistoricalRollupMaterializationSummary {
     scanned_archive_batches: usize,
+    skipped_archive_batches: usize,
     materialized_archive_batches: usize,
+    blocked_archive_batches: usize,
     materialized_bucket_count: usize,
     materialized_invocation_batches: usize,
     materialized_forward_proxy_batches: usize,

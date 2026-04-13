@@ -89,7 +89,8 @@ labels:
 - `PROXY_RAW_DIR`：原始请求/响应落盘目录；相对路径会锚定到 `DATABASE_PATH` 同级目录，避免跟随容器工作目录漂移。
 - `PROXY_RAW_MAX_BYTES`：单次请求/响应原文采集上限；默认 `0=unlimited`（支持显式配置正整数上限）。
 - `PROXY_RAW_COMPRESSION`：raw 冷压缩 codec；默认 `gzip`，可设为 `none` 关闭冷压缩。
-- `PROXY_RAW_HOT_SECS`：热明文保留窗口；默认 `86400`，超过窗口的 raw 文件会在 retention 中转为 `*.bin.gz`。
+- `PROXY_RAW_IMMEDIATE_GZIP_BYTES`：born-gzip 阈值；默认 `1048576`（1 MiB），仅在 `PROXY_RAW_COMPRESSION=gzip` 时生效，`0` 表示禁用“首次落盘直接 gzip”。
+- `PROXY_RAW_HOT_SECS`：热明文保留窗口；默认 `86400`，超过窗口的 plain raw 文件会在 retention 中转为 `*.bin.gz`。
 - `PROXY_ENFORCE_STREAM_INCLUDE_USAGE`：是否在 `chat.completions` 流式请求中强制注入 `stream_options.include_usage=true`。
 - `PROXY_USAGE_BACKFILL_ON_STARTUP`：兼容保留的历史补数开关说明；当前版本的历史补数已经改为后台有界执行，不再阻塞 readiness。
 - `OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS`：非 compact 代理路径的上游等待超时，默认 `60` 秒。
@@ -99,7 +100,7 @@ labels:
 - `UPSTREAM_ACCOUNTS_OAUTH_CLIENT_ID` / `UPSTREAM_ACCOUNTS_OAUTH_ISSUER`：Codex OAuth 登录的 client / issuer；默认沿用官方 Codex CLI 当前参数。
 - `UPSTREAM_ACCOUNTS_USAGE_BASE_URL`：OAuth 账号 usage 抓取基址；默认 `https://chatgpt.com/backend-api`，会自动拼接 `/wham/usage`。
 - `UPSTREAM_ACCOUNTS_LOGIN_SESSION_TTL_SECS`：一次性 OAuth 登录会话 TTL；默认 10 分钟。
-- `UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS` / `UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS`：后台账号保活与配额同步主频默认值回退 / 提前刷新窗口。运行期实际使用的主频、次频与主层账号上限由 Web `号池 -> 上游账号 -> 高级路由与同步设置` 持久化到 SQLite；缺失 DB 字段时默认回退为 `300 / 1800 / 100`。
+- `UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS` / `UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS`：后台账号保活与配额同步主频默认值回退 / 提前刷新窗口。运行期实际使用的主频、次频与主层账号上限由 Web `号池 -> 上游账号 -> 高级路由与同步设置` 持久化到 SQLite；缺失 DB 字段时默认回退为 `300 / 1800 / 100`。对 `deactivated_workspace` / `upstream_http_402` / `upstream_rejected` 这类明确上游拒绝账号，维护调度会额外施加 6 小时 cooldown，并跳过同轮 browser-UA fallback retry。
 - `UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS`：上游账号 `5 小时 / 7 天` 历史样本保留天数。
 - `RETENTION_ENABLED`：是否启用后台 retention/archive 维护任务，默认 `false`，上线时需要显式开启。
 - `RETENTION_DRY_RUN`：全局 dry-run 开关；开启后 maintenance 只输出计划与计数，不删除数据。
@@ -191,11 +192,12 @@ services:
 
 - 首次 backlog cleanup 先执行 `cargo run -- --retention-run-once --retention-dry-run`，确认预计归档行数、目标 archive 路径与磁盘变化。
 - 正式清理使用 `cargo run -- --retention-run-once`；执行顺序必须保持 `导出成功 -> archive_batches manifest 成功 -> 删除源数据`。
-- retention 在 prune/archive 前会先执行 raw cold-compress：最近 24h 默认保留明文 `*.bin`，更老 raw 文件转成 `*.bin.gz`，数据库 raw path 同步更新，但 `request_raw_size` / `response_raw_size` 仍表示原始 payload 字节。
-- archive 文件按上海自然月切分；若 `ARCHIVE_DIR` 为相对路径，则实际目录形如 `<DATABASE_PATH 同级目录>/<ARCHIVE_DIR 的值>/<table>/<yyyy>/<table>-<yyyy-mm>.sqlite.gz`（例如 `archives/...`）。
+- retention 在 prune/archive 前会先执行 raw cold-compress：默认 `>= PROXY_RAW_IMMEDIATE_GZIP_BYTES` 的 raw 在首次落盘时就直接写成 `*.bin.gz`，其余小 payload 仍先保留明文 `*.bin`，并在超过 `PROXY_RAW_HOT_SECS` 后转成 `*.bin.gz`；数据库 raw path / codec 会与真实文件同步，`request_raw_size` / `response_raw_size` 仍表示原始 payload 字节。
+- `codex_invocations` archive 文件按上海自然日切成不可变 segment；若 `ARCHIVE_DIR` 为相对路径，则实际目录形如 `<DATABASE_PATH 同级目录>/<ARCHIVE_DIR 的值>/codex_invocations/YYYY/MM/DD/part-<seq>.sqlite.gz`。
 - `codex_invocations` 成功记录超过 30 个上海自然日后，会先把完整行写入离线 archive，再在主库内精简为 `structured_only`；任意调用超过 90 天后清理主库明细。
 - `forward_proxy_attempts`、`stats_source_snapshots` 只保留近 30 天在线明细；`codex_quota_snapshots` 近 30 天逐条保留，更老日期压缩为每天最后一条。
 - 原始 payload / preview / raw file 只保证短期排障；长期依赖离线 archive 中的 SQLite 归档行，超窗 raw file 本体不保证继续可用，而不是在线 UI。orphan sweep 只会清理超过宽限期的未引用文件，以避免误删进行中的请求落盘文件。
 - 运维在宿主机上统一通过容器内脚本搜索 raw：`docker exec ai-codex-vibe-monitor search-raw '<needle>'`。脚本默认按容器内 `DATABASE_PATH + PROXY_RAW_DIR` 解析搜索根目录，同时搜索明文 `*.bin` 和 gzip `*.bin.gz`；若需要正则，改用 `docker exec ai-codex-vibe-monitor search-raw --regex '<pattern>'`，若要扫非默认目录再显式传 `--root`。
+- startup / follow-up maintenance 会在不阻塞 `/health` 的前提下，按固定 batch 与时间预算持续推进 legacy `materialize-historical-rollups`，因此 `historicalRollupBackfill` 默认会自愈；若 backlog 需要立即追平，仍可手工执行 `cargo run -- maintenance materialize-historical-rollups`。
 - 常驻 maintenance 只做 `wal_checkpoint(PASSIVE)` 与 `PRAGMA optimize`；首次真实 cleanup 完成后，再在维护窗口人工执行一次 `VACUUM`。
 - 若要在 shared-testbox 上复现完整的“镜像构建 -> retention cold-compress -> search-raw”链路，可在仓库根目录运行 `scripts/shared-testbox-raw-smoke`；脚本默认会保留远端 run 目录作为排查证据，追加 `--cleanup` 可在成功后删除本次 run 目录与镜像。
