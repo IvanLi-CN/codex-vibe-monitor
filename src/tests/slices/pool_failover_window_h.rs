@@ -2696,6 +2696,211 @@ async fn all_time_summary_fallback_keeps_unmaterialized_rows_when_materialized_s
 }
 
 #[tokio::test]
+async fn all_time_summary_skips_double_count_for_readable_materialized_archive_when_same_bucket_sibling_is_unreadable(
+) {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(7, 0, 0)
+    .expect("valid same-bucket summary hour");
+    let archived_readable_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("same-bucket readable summary archived time"),
+    );
+    let archived_unreadable_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("same-bucket unreadable summary archived time"),
+    );
+
+    let readable_archive_original_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-same-bucket-unreadable-sibling-materialized",
+        &[(
+            1_i64,
+            "summary-same-bucket-unreadable-sibling-materialized",
+            archived_readable_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+    let readable_archive_path = state
+        .config
+        .archive_dir
+        .join("summary-same-bucket-unreadable-sibling-materialized.sqlite.gz");
+    let _ = fs::remove_file(&readable_archive_path);
+    fs::rename(&readable_archive_original_path, &readable_archive_path)
+        .expect("move readable same-bucket summary archive batch to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now'), coverage_start_at = ?3, coverage_end_at = ?4 WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(readable_archive_path.to_string_lossy().to_string())
+    .bind(readable_archive_original_path.to_string_lossy().to_string())
+    .bind(archived_readable_at.as_str())
+    .bind(archived_readable_at.as_str())
+    .execute(&state.pool)
+    .await
+    .expect("mark readable same-bucket summary archive batch as materialized");
+
+    let unreadable_archive_original_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-same-bucket-unreadable-sibling-broken",
+        &[(
+            1_i64,
+            "summary-same-bucket-unreadable-sibling-broken",
+            archived_unreadable_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            20_i64,
+            0.20_f64,
+            Some(120.0),
+        )],
+    )
+    .await;
+    let unreadable_archive_path =
+        state
+            .config
+            .archive_dir
+            .join("summary-same-bucket-unreadable-sibling-broken.sqlite.gz");
+    let _ = fs::remove_file(&unreadable_archive_path);
+    fs::rename(&unreadable_archive_original_path, &unreadable_archive_path)
+        .expect("move unreadable same-bucket summary archive batch to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now'), coverage_start_at = ?3, coverage_end_at = ?4 WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(unreadable_archive_path.to_string_lossy().to_string())
+    .bind(unreadable_archive_original_path.to_string_lossy().to_string())
+    .bind(archived_unreadable_at.as_str())
+    .bind(archived_unreadable_at.as_str())
+    .execute(&state.pool)
+    .await
+    .expect("mark unreadable same-bucket summary archive batch as materialized");
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_readable_at)
+        .expect("same-bucket summary bucket start epoch should be derivable");
+    let mut histogram = empty_approx_histogram();
+    add_approx_histogram_sample(&mut histogram, 100.0);
+    add_approx_histogram_sample(&mut histogram, 120.0);
+    let encoded_histogram =
+        encode_approx_histogram(&histogram).expect("encode same-bucket summary histogram");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(2_i64)
+    .bind(2_i64)
+    .bind(0_i64)
+    .bind(30_i64)
+    .bind(0.30_f64)
+    .bind(2_i64)
+    .bind(220.0_f64)
+    .bind(120.0_f64)
+    .bind(encoded_histogram)
+    .execute(&state.pool)
+    .await
+    .expect("seed same-bucket summary rollup row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
+
+    fs::write(&unreadable_archive_path, b"not-a-gzip-archive")
+        .expect("corrupt unreadable same-bucket summary archive");
+
+    let Json(summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch all-time summary with unreadable same-bucket materialized sibling archive");
+
+    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.success_count, 2);
+    assert_eq!(summary.failure_count, 0);
+    assert_eq!(summary.total_tokens, 30);
+    assert!((summary.total_cost - 0.30).abs() < 1e-9);
+
+    let start = local_naive_to_utc(archived_hour_local, Shanghai);
+    let end = local_naive_to_utc(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::hours(1))
+            .expect("same-bucket summary timeseries end"),
+        Shanghai,
+    );
+    let Json(response) = fetch_timeseries_from_hourly_rollups(
+        state,
+        TimeseriesQuery {
+            range: "ignored".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        },
+        Shanghai,
+        InvocationSourceScope::ProxyOnly,
+        RangeWindow {
+            start,
+            end,
+            display_end: end,
+            duration: end - start,
+        },
+        TimeseriesBucketSelection {
+            bucket_seconds: 3_600,
+            effective_bucket: "1h".to_string(),
+            available_buckets: vec!["1h".to_string()],
+            bucket_limited_to_daily: false,
+        },
+    )
+    .await
+    .expect("fetch same-bucket historical timeseries with unreadable materialized sibling archive");
+
+    let archived_point = response
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(start))
+        .expect("same-bucket summary timeseries bucket should exist");
+    assert_eq!(archived_point.total_count, 2);
+    assert_eq!(archived_point.success_count, 2);
+    assert_eq!(archived_point.failure_count, 0);
+    assert_eq!(archived_point.total_tokens, 30);
+    assert_f64_close(archived_point.total_cost, 0.30);
+}
+
+#[tokio::test]
 async fn all_time_summary_skips_double_count_for_readable_materialized_archive_when_same_month_sibling_is_unreadable(
 ) {
     let mut config = test_config();
@@ -3594,6 +3799,180 @@ async fn archived_failure_fallback_keeps_unmaterialized_rows_when_materialized_s
 }
 
 #[tokio::test]
+async fn archived_failure_fallback_skips_double_count_for_readable_materialized_archive_when_same_bucket_sibling_is_unreadable(
+) {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(9, 0, 0)
+    .expect("valid same-bucket failure hour");
+    let archived_readable_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("same-bucket readable failure archived time"),
+    );
+    let archived_unreadable_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("same-bucket unreadable failure archived time"),
+    );
+
+    let readable_archive_original_path = seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "failure-same-bucket-unreadable-sibling-materialized",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1_i64,
+            invoke_id: "failure-same-bucket-unreadable-sibling-materialized",
+            occurred_at: archived_readable_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "failed",
+            total_tokens: 10_i64,
+            cost: 0.10_f64,
+            ttfb_ms: Some(100.0),
+            payload: Some("{}"),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: Some("HTTP 429 too many requests"),
+            failure_kind: Some("upstream_response_failed"),
+            failure_class: Some("service_failure"),
+            is_actionable: Some(1_i64),
+        }],
+    )
+    .await;
+    let readable_archive_path = state
+        .config
+        .archive_dir
+        .join("failure-same-bucket-unreadable-sibling-materialized.sqlite.gz");
+    let _ = fs::remove_file(&readable_archive_path);
+    fs::rename(&readable_archive_original_path, &readable_archive_path)
+        .expect("move readable same-bucket failure archive batch to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now'), coverage_start_at = ?3, coverage_end_at = ?4 WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(readable_archive_path.to_string_lossy().to_string())
+    .bind(readable_archive_original_path.to_string_lossy().to_string())
+    .bind(archived_readable_at.as_str())
+    .bind(archived_readable_at.as_str())
+    .execute(&state.pool)
+    .await
+    .expect("mark readable same-bucket failure archive batch as materialized");
+
+    let unreadable_archive_original_path = seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "failure-same-bucket-unreadable-sibling-broken",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1_i64,
+            invoke_id: "failure-same-bucket-unreadable-sibling-broken",
+            occurred_at: archived_unreadable_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "failed",
+            total_tokens: 20_i64,
+            cost: 0.20_f64,
+            ttfb_ms: Some(120.0),
+            payload: Some("{}"),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: Some("HTTP 429 too many requests"),
+            failure_kind: Some("upstream_response_failed"),
+            failure_class: Some("service_failure"),
+            is_actionable: Some(1_i64),
+        }],
+    )
+    .await;
+    let unreadable_archive_path =
+        state
+            .config
+            .archive_dir
+            .join("failure-same-bucket-unreadable-sibling-broken.sqlite.gz");
+    let _ = fs::remove_file(&unreadable_archive_path);
+    fs::rename(&unreadable_archive_original_path, &unreadable_archive_path)
+        .expect("move unreadable same-bucket failure archive batch to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now'), coverage_start_at = ?3, coverage_end_at = ?4 WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(unreadable_archive_path.to_string_lossy().to_string())
+    .bind(unreadable_archive_original_path.to_string_lossy().to_string())
+    .bind(archived_unreadable_at.as_str())
+    .bind(archived_unreadable_at.as_str())
+    .execute(&state.pool)
+    .await
+    .expect("mark unreadable same-bucket failure archive batch as materialized");
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_readable_at)
+        .expect("same-bucket failure bucket start epoch should be derivable");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_failure_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            failure_class,
+            is_actionable,
+            error_category,
+            failure_count,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind("service_failure")
+    .bind(1_i64)
+    .bind("too_many_requests")
+    .bind(2_i64)
+    .execute(&state.pool)
+    .await
+    .expect("seed same-bucket failure count row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
+        bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
+
+    fs::write(&unreadable_archive_path, b"not-a-gzip-archive")
+        .expect("corrupt unreadable same-bucket failure archive");
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(failure_summary) = fetch_failure_summary(
+        State(state.clone()),
+        Query(FailureSummaryQuery {
+            range: historical_range.clone(),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch failure summary with unreadable same-bucket materialized sibling archive");
+    assert_eq!(failure_summary.total_failures, 2);
+    assert_eq!(failure_summary.service_failure_count, 2);
+    assert_eq!(failure_summary.actionable_failure_count, 2);
+
+    let Json(error_distribution) = fetch_error_distribution(
+        State(state),
+        Query(ErrorQuery {
+            range: historical_range,
+            top: None,
+            scope: Some("service".to_string()),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch error distribution with unreadable same-bucket materialized sibling archive");
+    let too_many_requests = error_distribution
+        .items
+        .iter()
+        .find(|item| item.reason == "too_many_requests")
+        .expect("same-bucket failure distribution should keep materialized category count");
+    assert_eq!(too_many_requests.count, 2);
+}
+
+#[tokio::test]
 async fn archived_failure_fallback_skips_double_count_for_readable_materialized_archive_when_same_month_sibling_is_unreadable(
 ) {
     let mut config = test_config();
@@ -4440,6 +4819,159 @@ async fn historical_perf_archive_delta_keeps_pending_stage_rows_when_materialize
     assert_eq!(upstream_first_byte.sample_count, 2);
     assert_f64_close(upstream_first_byte.sum_ms, 400.0);
     assert_f64_close(upstream_first_byte.max_ms, 300.0);
+}
+
+#[tokio::test]
+async fn historical_perf_stats_skip_double_count_for_readable_materialized_archive_when_same_bucket_sibling_is_unreadable(
+) {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(13, 0, 0)
+    .expect("valid same-bucket perf hour");
+    let archived_readable_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("same-bucket readable perf archived time"),
+    );
+    let archived_unreadable_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("same-bucket unreadable perf archived time"),
+    );
+
+    let readable_archive_original_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "perf-same-bucket-unreadable-sibling-materialized",
+        &[(
+            1_i64,
+            "perf-same-bucket-unreadable-sibling-materialized",
+            archived_readable_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+    let readable_archive_path =
+        state
+            .config
+            .archive_dir
+            .join("perf-same-bucket-unreadable-sibling-materialized.sqlite.gz");
+    let _ = fs::remove_file(&readable_archive_path);
+    fs::rename(&readable_archive_original_path, &readable_archive_path)
+        .expect("move readable same-bucket perf archive batch to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now'), coverage_start_at = ?3, coverage_end_at = ?4 WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(readable_archive_path.to_string_lossy().to_string())
+    .bind(readable_archive_original_path.to_string_lossy().to_string())
+    .bind(archived_readable_at.as_str())
+    .bind(archived_readable_at.as_str())
+    .execute(&state.pool)
+    .await
+    .expect("mark readable same-bucket perf archive batch as materialized");
+
+    let unreadable_archive_original_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "perf-same-bucket-unreadable-sibling-broken",
+        &[(
+            1_i64,
+            "perf-same-bucket-unreadable-sibling-broken",
+            archived_unreadable_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            20_i64,
+            0.20_f64,
+            Some(200.0),
+        )],
+    )
+    .await;
+    let unreadable_archive_path =
+        state
+            .config
+            .archive_dir
+            .join("perf-same-bucket-unreadable-sibling-broken.sqlite.gz");
+    let _ = fs::remove_file(&unreadable_archive_path);
+    fs::rename(&unreadable_archive_original_path, &unreadable_archive_path)
+        .expect("move unreadable same-bucket perf archive batch to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches SET file_path = ?1, historical_rollups_materialized_at = datetime('now'), coverage_start_at = ?3, coverage_end_at = ?4 WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(unreadable_archive_path.to_string_lossy().to_string())
+    .bind(unreadable_archive_original_path.to_string_lossy().to_string())
+    .bind(archived_unreadable_at.as_str())
+    .bind(archived_unreadable_at.as_str())
+    .execute(&state.pool)
+    .await
+    .expect("mark unreadable same-bucket perf archive batch as materialized");
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&archived_readable_at)
+        .expect("same-bucket perf bucket start epoch should be derivable");
+    let mut histogram = empty_approx_histogram();
+    add_approx_histogram_sample(&mut histogram, 100.0);
+    add_approx_histogram_sample(&mut histogram, 200.0);
+    sqlx::query(
+        r#"
+        INSERT INTO proxy_perf_stage_hourly (
+            bucket_start_epoch,
+            stage,
+            sample_count,
+            sum_ms,
+            max_ms,
+            histogram,
+            updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind("upstreamFirstByte")
+    .bind(2_i64)
+    .bind(300.0_f64)
+    .bind(200.0_f64)
+    .bind(encode_approx_histogram(&histogram).expect("encode same-bucket perf histogram"))
+    .execute(&state.pool)
+    .await
+    .expect("seed same-bucket perf row");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_PROXY_PERF,
+        bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
+
+    fs::write(&unreadable_archive_path, b"not-a-gzip-archive")
+        .expect("corrupt unreadable same-bucket perf archive");
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(perf_stats) = fetch_perf_stats(
+        State(state),
+        Query(PerfQuery {
+            range: historical_range,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch historical perf stats with unreadable same-bucket materialized sibling archive");
+
+    let upstream_first_byte = perf_stats
+        .stages
+        .iter()
+        .find(|stage| stage.stage == "upstreamFirstByte")
+        .expect("same-bucket perf stats should include materialized stage");
+    assert_eq!(upstream_first_byte.count, 2);
+    assert_f64_close(upstream_first_byte.avg_ms, 150.0);
+    assert_f64_close(upstream_first_byte.max_ms, 200.0);
 }
 
 #[tokio::test]

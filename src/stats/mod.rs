@@ -1334,6 +1334,125 @@ fn materialized_archive_path_row(
     }
 }
 
+#[derive(Debug, Default)]
+struct PendingInvocationArchiveOverallState {
+    unmaterialized: BTreeMap<(i64, String), InvocationHourlyRollupDelta>,
+    materialized: BTreeMap<(i64, String), InvocationHourlyRollupDelta>,
+    unreadable_materialized_bucket_start_epochs: HashSet<i64>,
+}
+
+#[derive(Debug, Default)]
+struct PendingProxyPerfArchiveState {
+    unmaterialized: BTreeMap<(i64, String), ProxyPerfStageHourlyDelta>,
+    materialized: BTreeMap<(i64, String), ProxyPerfStageHourlyDelta>,
+    unreadable_materialized_bucket_start_epochs: HashSet<i64>,
+}
+
+#[derive(Debug, Default)]
+struct PendingInvocationArchiveFailureState {
+    unmaterialized_rows: Vec<ArchivedInvocationFailureRow>,
+    materialized_row_counts: HashMap<(i64, String, String, i64, String), usize>,
+    unreadable_materialized_bucket_start_epochs: HashSet<i64>,
+}
+
+fn merge_invocation_hourly_rollup_delta(
+    target: &mut InvocationHourlyRollupDelta,
+    delta: &InvocationHourlyRollupDelta,
+) -> Result<()> {
+    target.total_count += delta.total_count;
+    target.success_count += delta.success_count;
+    target.failure_count += delta.failure_count;
+    target.total_tokens += delta.total_tokens;
+    target.total_cost += delta.total_cost;
+    target.first_byte_sample_count += delta.first_byte_sample_count;
+    target.first_byte_sum_ms += delta.first_byte_sum_ms;
+    target.first_byte_max_ms = target.first_byte_max_ms.max(delta.first_byte_max_ms);
+    if target.first_byte_histogram.is_empty() {
+        target.first_byte_histogram = delta.first_byte_histogram.clone();
+    } else if !delta.first_byte_histogram.is_empty() {
+        merge_approx_histogram_into(
+            &mut target.first_byte_histogram,
+            &delta.first_byte_histogram,
+        )?;
+    }
+    target.first_response_byte_total_sample_count += delta.first_response_byte_total_sample_count;
+    target.first_response_byte_total_sum_ms += delta.first_response_byte_total_sum_ms;
+    target.first_response_byte_total_max_ms = target
+        .first_response_byte_total_max_ms
+        .max(delta.first_response_byte_total_max_ms);
+    if target.first_response_byte_total_histogram.is_empty() {
+        target.first_response_byte_total_histogram =
+            delta.first_response_byte_total_histogram.clone();
+    } else if !delta.first_response_byte_total_histogram.is_empty() {
+        merge_approx_histogram_into(
+            &mut target.first_response_byte_total_histogram,
+            &delta.first_response_byte_total_histogram,
+        )?;
+    }
+    Ok(())
+}
+
+fn merge_invocation_hourly_rollup_delta_map(
+    target: &mut BTreeMap<(i64, String), InvocationHourlyRollupDelta>,
+    source: &BTreeMap<(i64, String), InvocationHourlyRollupDelta>,
+) -> Result<()> {
+    for (key, delta) in source {
+        let entry = target
+            .entry(key.clone())
+            .or_insert_with(|| InvocationHourlyRollupDelta {
+                first_byte_histogram: empty_approx_histogram(),
+                first_response_byte_total_histogram: empty_approx_histogram(),
+                ..InvocationHourlyRollupDelta::default()
+            });
+        merge_invocation_hourly_rollup_delta(entry, delta)?;
+    }
+    Ok(())
+}
+
+fn merge_proxy_perf_stage_hourly_delta(
+    target: &mut ProxyPerfStageHourlyDelta,
+    delta: &ProxyPerfStageHourlyDelta,
+) -> Result<()> {
+    target.sample_count += delta.sample_count;
+    target.sum_ms += delta.sum_ms;
+    target.max_ms = target.max_ms.max(delta.max_ms);
+    if target.histogram.is_empty() {
+        target.histogram = delta.histogram.clone();
+    } else if !delta.histogram.is_empty() {
+        merge_approx_histogram_into(&mut target.histogram, &delta.histogram)?;
+    }
+    Ok(())
+}
+
+fn merge_proxy_perf_stage_hourly_delta_map(
+    target: &mut BTreeMap<(i64, String), ProxyPerfStageHourlyDelta>,
+    source: &BTreeMap<(i64, String), ProxyPerfStageHourlyDelta>,
+) -> Result<()> {
+    for (key, delta) in source {
+        let entry = target
+            .entry(key.clone())
+            .or_insert_with(|| ProxyPerfStageHourlyDelta {
+                histogram: empty_approx_histogram(),
+                ..ProxyPerfStageHourlyDelta::default()
+            });
+        merge_proxy_perf_stage_hourly_delta(entry, delta)?;
+    }
+    Ok(())
+}
+
+fn accumulate_failure_rollup_row_counts(
+    counts: &mut HashMap<(i64, String, String, i64, String), usize>,
+    rows: impl IntoIterator<Item = ArchivedInvocationFailureRow>,
+) -> Result<()> {
+    for row in rows {
+        let Some(key) = archived_failure_rollup_key(&row)? else {
+            continue;
+        };
+        *counts.entry(key).or_default() += 1;
+    }
+    Ok(())
+}
+
 async fn load_materialized_invocation_archive_hourly_rollup_deltas_for_bucket_sources(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
@@ -1691,18 +1810,23 @@ pub(crate) async fn query_unmaterialized_invocation_archive_hourly_rollup_deltas
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
     exclude_invocation_ids: Option<&HashSet<i64>>,
 ) -> Result<Vec<InvocationHourlyRollupRecord>> {
-    let (pending_overall, unreadable_pending_materialized_bucket_start_epochs) =
-        load_pending_invocation_archive_hourly_rollup_deltas(
-            pool,
-            source_scope,
-            range,
-            exclude_invocation_ids,
-        )
-        .await?;
+    let pending_state = load_pending_invocation_archive_hourly_rollup_deltas(
+        pool,
+        source_scope,
+        range,
+        exclude_invocation_ids,
+    )
+    .await?;
+    let mut pending_bucket_sources = pending_state
+        .unmaterialized
+        .keys()
+        .cloned()
+        .collect::<HashSet<_>>();
+    pending_bucket_sources.extend(pending_state.materialized.keys().cloned());
     let materialized_bucket_sources = load_materialized_rollup_bucket_sources(
         pool,
         HOURLY_ROLLUP_TARGET_INVOCATIONS,
-        &pending_overall.keys().cloned().collect::<HashSet<_>>(),
+        &pending_bucket_sources,
     )
     .await?;
     let (materialized_overall, mut unreadable_materialized_bucket_start_epochs) =
@@ -1713,25 +1837,31 @@ pub(crate) async fn query_unmaterialized_invocation_archive_hourly_rollup_deltas
             &materialized_bucket_sources,
         )
         .await?;
+    let mut known_materialized_overall = materialized_overall;
+    merge_invocation_hourly_rollup_delta_map(
+        &mut known_materialized_overall,
+        &pending_state.materialized,
+    )?;
     unreadable_materialized_bucket_start_epochs
-        .extend(unreadable_pending_materialized_bucket_start_epochs);
+        .extend(pending_state.unreadable_materialized_bucket_start_epochs);
     let mut delta_rows = Vec::new();
-    for ((bucket_start_epoch, source), archive_delta) in pending_overall {
-        let materialized_overlap =
-            if unreadable_materialized_bucket_start_epochs.contains(&bucket_start_epoch) {
-                None
-            } else {
-                build_materialized_pending_invocation_rollup_overlap_record(
-                    bucket_start_epoch,
-                    load_materialized_invocation_rollup_record(pool, bucket_start_epoch, &source)
-                        .await?
-                        .as_ref(),
-                    materialized_bucket_sources
-                        .contains(&(bucket_start_epoch, source.clone()))
-                        .then(|| materialized_overall.get(&(bucket_start_epoch, source.clone())))
-                        .flatten(),
-                )?
-            };
+    for ((bucket_start_epoch, source), archive_delta) in pending_state.unmaterialized {
+        let materialized_overlap = if unreadable_materialized_bucket_start_epochs
+            .contains(&bucket_start_epoch)
+        {
+            None
+        } else {
+            build_materialized_pending_invocation_rollup_overlap_record(
+                bucket_start_epoch,
+                load_materialized_invocation_rollup_record(pool, bucket_start_epoch, &source)
+                    .await?
+                    .as_ref(),
+                materialized_bucket_sources
+                    .contains(&(bucket_start_epoch, source.clone()))
+                    .then(|| known_materialized_overall.get(&(bucket_start_epoch, source.clone())))
+                    .flatten(),
+            )?
+        };
         if let Some(delta_row) = build_invocation_hourly_rollup_delta_record(
             bucket_start_epoch,
             &archive_delta,
@@ -1750,22 +1880,19 @@ async fn load_pending_invocation_archive_hourly_rollup_deltas(
     source_scope: InvocationSourceScope,
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
     exclude_invocation_ids: Option<&HashSet<i64>>,
-) -> Result<(
-    BTreeMap<(i64, String), InvocationHourlyRollupDelta>,
-    HashSet<i64>,
-)> {
+) -> Result<PendingInvocationArchiveOverallState> {
     let archive_rows =
         load_invocation_archives_missing_rollup_target(pool, HOURLY_ROLLUP_TARGET_INVOCATIONS)
             .await?;
-    let mut pending = BTreeMap::<(i64, String), InvocationHourlyRollupDelta>::new();
-    let mut unreadable_materialized_bucket_start_epochs = HashSet::new();
+    let mut pending_state = PendingInvocationArchiveOverallState::default();
 
     for archive_row in archive_rows {
         let Some((archive_pool, temp_cleanup)) =
             open_invocation_archive_batch_pool(&archive_row, "stats-summary").await?
         else {
             if archive_row.historical_rollups_materialized_at.is_some() {
-                unreadable_materialized_bucket_start_epochs
+                pending_state
+                    .unreadable_materialized_bucket_start_epochs
                     .extend(archive_bucket_start_epochs_for_row(&archive_row)?);
             }
             continue;
@@ -1794,14 +1921,21 @@ async fn load_pending_invocation_archive_hourly_rollup_deltas(
             if filtered_rows.is_empty() {
                 continue;
             }
-            accumulate_invocation_hourly_overall_rollups(&mut pending, &filtered_rows)?;
+            accumulate_invocation_hourly_overall_rollups(
+                if archive_row.historical_rollups_materialized_at.is_some() {
+                    &mut pending_state.materialized
+                } else {
+                    &mut pending_state.unmaterialized
+                },
+                &filtered_rows,
+            )?;
         }
 
         archive_pool.close().await;
         drop(temp_cleanup);
     }
 
-    Ok((pending, unreadable_materialized_bucket_start_epochs))
+    Ok(pending_state)
 }
 
 fn invocation_hourly_source_record_matches_range(
@@ -2026,22 +2160,19 @@ async fn load_proxy_perf_stage_rollups_by_materialization_state(
     start: DateTime<Utc>,
     end: DateTime<Utc>,
     exclude_invocation_ids: Option<&HashSet<i64>>,
-) -> Result<(
-    BTreeMap<(i64, String), ProxyPerfStageHourlyDelta>,
-    HashSet<i64>,
-)> {
+) -> Result<PendingProxyPerfArchiveState> {
     let archive_rows =
         load_invocation_archives_missing_rollup_target(pool, HOURLY_ROLLUP_TARGET_PROXY_PERF)
             .await?;
-    let mut pending = BTreeMap::<(i64, String), ProxyPerfStageHourlyDelta>::new();
-    let mut unreadable_materialized_bucket_start_epochs = HashSet::new();
+    let mut pending_state = PendingProxyPerfArchiveState::default();
 
     for archive_row in archive_rows {
         let Some((archive_pool, temp_cleanup)) =
             open_invocation_archive_batch_pool(&archive_row, "proxy-perf").await?
         else {
             if archive_row.historical_rollups_materialized_at.is_some() {
-                unreadable_materialized_bucket_start_epochs
+                pending_state
+                    .unreadable_materialized_bucket_start_epochs
                     .extend(archive_bucket_start_epochs_for_row(&archive_row)?);
             }
             continue;
@@ -2067,7 +2198,14 @@ async fn load_proxy_perf_stage_rollups_by_materialization_state(
                 if !invocation_hourly_source_record_matches_range(&row, Some((start, end))) {
                     continue;
                 }
-                add_invocation_hourly_source_record_to_proxy_perf_rollups(&mut pending, &row)?;
+                add_invocation_hourly_source_record_to_proxy_perf_rollups(
+                    if archive_row.historical_rollups_materialized_at.is_some() {
+                        &mut pending_state.materialized
+                    } else {
+                        &mut pending_state.unmaterialized
+                    },
+                    &row,
+                )?;
             }
         }
 
@@ -2075,7 +2213,7 @@ async fn load_proxy_perf_stage_rollups_by_materialization_state(
         drop(temp_cleanup);
     }
 
-    Ok((pending, unreadable_materialized_bucket_start_epochs))
+    Ok(pending_state)
 }
 
 async fn load_materialized_proxy_perf_stage_rollups_for_buckets(
@@ -2154,25 +2292,35 @@ pub(crate) async fn query_unmaterialized_proxy_perf_stage_rollups_from_archives(
     end: DateTime<Utc>,
     exclude_invocation_ids: Option<&HashSet<i64>>,
 ) -> Result<BTreeMap<String, ProxyPerfStageHourlyDelta>> {
-    let (archive_perf_by_bucket_stage, unreadable_pending_materialized_bucket_start_epochs) =
-        load_proxy_perf_stage_rollups_by_materialization_state(
-            pool,
-            start,
-            end,
-            exclude_invocation_ids,
-        )
-        .await?;
+    let pending_state = load_proxy_perf_stage_rollups_by_materialization_state(
+        pool,
+        start,
+        end,
+        exclude_invocation_ids,
+    )
+    .await?;
 
-    if archive_perf_by_bucket_stage.is_empty() {
+    if pending_state.unmaterialized.is_empty() {
         return Ok(BTreeMap::new());
     }
 
+    let mut pending_bucket_start_epochs = pending_state
+        .unmaterialized
+        .keys()
+        .map(|(bucket_start_epoch, _)| *bucket_start_epoch)
+        .collect::<HashSet<_>>();
+    pending_bucket_start_epochs.extend(
+        pending_state
+            .materialized
+            .keys()
+            .map(|(bucket_start_epoch, _)| *bucket_start_epoch),
+    );
     let materialized_bucket_sources = load_materialized_rollup_bucket_sources(
         pool,
         HOURLY_ROLLUP_TARGET_PROXY_PERF,
-        &archive_perf_by_bucket_stage
-            .keys()
-            .map(|(bucket_start_epoch, _)| (*bucket_start_epoch, SOURCE_PROXY.to_string()))
+        &pending_bucket_start_epochs
+            .iter()
+            .map(|bucket_start_epoch| (*bucket_start_epoch, SOURCE_PROXY.to_string()))
             .collect::<HashSet<_>>(),
     )
     .await?;
@@ -2183,18 +2331,28 @@ pub(crate) async fn query_unmaterialized_proxy_perf_stage_rollups_from_archives(
         pool,
         start,
         end,
-        &materialized_bucket_sources
+        &pending_bucket_start_epochs
             .iter()
-            .map(|(bucket_start_epoch, _)| *bucket_start_epoch)
+            .copied()
+            .filter(|bucket_start_epoch| {
+                materialized_bucket_sources
+                    .contains(&(*bucket_start_epoch, SOURCE_PROXY.to_string()))
+            })
             .collect::<HashSet<_>>(),
     )
     .await?;
+    let mut known_materialized_archive_perf_by_bucket_stage =
+        materialized_archive_perf_by_bucket_stage;
+    merge_proxy_perf_stage_hourly_delta_map(
+        &mut known_materialized_archive_perf_by_bucket_stage,
+        &pending_state.materialized,
+    )?;
     unreadable_materialized_bucket_start_epochs
-        .extend(unreadable_pending_materialized_bucket_start_epochs);
+        .extend(pending_state.unreadable_materialized_bucket_start_epochs);
     let materialized_by_bucket_stage =
         load_materialized_proxy_perf_rollups_for_range(pool, start, end).await?;
     let mut by_stage = BTreeMap::new();
-    for ((bucket_start_epoch, stage), archive_delta) in archive_perf_by_bucket_stage {
+    for ((bucket_start_epoch, stage), archive_delta) in pending_state.unmaterialized {
         let materialized_overlap =
             if unreadable_materialized_bucket_start_epochs.contains(&bucket_start_epoch) {
                 None
@@ -2204,7 +2362,7 @@ pub(crate) async fn query_unmaterialized_proxy_perf_stage_rollups_from_archives(
                     materialized_bucket_sources
                         .contains(&(bucket_start_epoch, SOURCE_PROXY.to_string()))
                         .then(|| {
-                            materialized_archive_perf_by_bucket_stage
+                            known_materialized_archive_perf_by_bucket_stage
                                 .get(&(bucket_start_epoch, stage.clone()))
                         })
                         .flatten(),
@@ -2290,15 +2448,15 @@ pub(crate) async fn load_unmaterialized_invocation_archive_failure_rows(
         HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
     )
     .await?;
-    let mut archive_failure_rows = Vec::new();
-    let mut unreadable_pending_materialized_bucket_start_epochs = HashSet::new();
+    let mut pending_state = PendingInvocationArchiveFailureState::default();
 
     for archive_row in archive_rows {
         let Some((archive_pool, temp_cleanup)) =
             open_invocation_archive_batch_pool(&archive_row, "failure-breakdown").await?
         else {
             if archive_row.historical_rollups_materialized_at.is_some() {
-                unreadable_pending_materialized_bucket_start_epochs
+                pending_state
+                    .unreadable_materialized_bucket_start_epochs
                     .extend(archive_bucket_start_epochs_for_row(&archive_row)?);
             }
             continue;
@@ -2312,27 +2470,41 @@ pub(crate) async fn load_unmaterialized_invocation_archive_failure_rows(
                         .is_some_and(|excluded_ids| excluded_ids.contains(&row.id))
                 })
                 .collect::<Vec<_>>();
-        archive_failure_rows.extend(batch_rows);
+        if archive_row.historical_rollups_materialized_at.is_some() {
+            accumulate_failure_rollup_row_counts(
+                &mut pending_state.materialized_row_counts,
+                batch_rows.into_iter(),
+            )?;
+        } else {
+            pending_state.unmaterialized_rows.extend(batch_rows);
+        }
         archive_pool.close().await;
         drop(temp_cleanup);
     }
 
-    let materialized_bucket_sources = load_materialized_rollup_bucket_sources(
-        pool,
-        HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
-        &archive_failure_rows
-            .iter()
-            .filter_map(|row| {
-                summary_rollup_bucket_start_epoch(&row.occurred_at)
-                    .ok()
-                    .map(|bucket_start_epoch| (bucket_start_epoch, row.source.clone()))
-            })
-            .collect::<HashSet<_>>(),
-    )
-    .await?;
-    let relevant_failure_keys = archive_failure_rows
+    let materialized_bucket_sources =
+        load_materialized_rollup_bucket_sources(
+            pool,
+            HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
+            &pending_state
+                .unmaterialized_rows
+                .iter()
+                .filter_map(|row| {
+                    summary_rollup_bucket_start_epoch(&row.occurred_at)
+                        .ok()
+                        .map(|bucket_start_epoch| (bucket_start_epoch, row.source.clone()))
+                })
+                .chain(pending_state.materialized_row_counts.keys().map(
+                    |(bucket_start_epoch, source, _, _, _)| (*bucket_start_epoch, source.clone()),
+                ))
+                .collect::<HashSet<_>>(),
+        )
+        .await?;
+    let relevant_failure_keys = pending_state
+        .unmaterialized_rows
         .iter()
         .filter_map(|row| archived_failure_rollup_key(row).ok().flatten())
+        .chain(pending_state.materialized_row_counts.keys().cloned())
         .filter(|(bucket_start_epoch, source, _, _, _)| {
             materialized_bucket_sources.contains(&(*bucket_start_epoch, source.clone()))
         })
@@ -2346,13 +2518,19 @@ pub(crate) async fn load_unmaterialized_invocation_archive_failure_rows(
             &relevant_failure_keys,
         )
         .await?;
+    let mut known_materialized_row_counts = completed_archive_row_counts;
+    for (key, count) in &pending_state.materialized_row_counts {
+        *known_materialized_row_counts
+            .entry(key.clone())
+            .or_default() += *count;
+    }
     unreadable_materialized_bucket_start_epochs
-        .extend(unreadable_pending_materialized_bucket_start_epochs);
+        .extend(pending_state.unreadable_materialized_bucket_start_epochs);
     let missing_row_counts = load_missing_failure_rollup_row_counts_for_rows(
         pool,
-        &archive_failure_rows,
+        &pending_state.unmaterialized_rows,
         &materialized_bucket_sources,
-        &completed_archive_row_counts,
+        &known_materialized_row_counts,
         &unreadable_materialized_bucket_start_epochs,
     )
     .await?;
@@ -2361,7 +2539,8 @@ pub(crate) async fn load_unmaterialized_invocation_archive_failure_rows(
     }
 
     let mut emitted_row_counts = HashMap::<(i64, String, String, i64, String), usize>::new();
-    Ok(archive_failure_rows
+    Ok(pending_state
+        .unmaterialized_rows
         .into_iter()
         .filter(|row| {
             let Ok(Some(key)) = archived_failure_rollup_key(row) else {
