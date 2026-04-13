@@ -6,6 +6,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { DashboardWorkingConversationCardModel } from "../lib/dashboardWorkingConversations";
 import {
   DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
+  getDashboardPerformanceDiagnosticsSnapshot,
   publishWorkingConversationPatchMetrics,
   recordTodayChartRender,
   recordTodaySummaryRefresh,
@@ -306,6 +307,7 @@ afterEach(() => {
   root = null;
   window.localStorage.clear();
   resetDashboardPerformanceDiagnostics();
+  vi.useRealTimers();
   vi.clearAllMocks();
 });
 
@@ -532,6 +534,68 @@ describe("DashboardPage", () => {
         '[data-testid="dashboard-performance-diagnostics-today-chart-render-count"]',
       )?.textContent,
     ).toBe("1");
+  });
+
+  it("reacts to the debug toggle on an already-open dashboard", () => {
+    vi.useFakeTimers();
+    installSummaryMocks();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [createWorkingConversationCard()],
+      totalMatched: 1,
+      hasMore: false,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore: vi.fn(),
+      setRefreshTargetCount: vi.fn(),
+    });
+
+    render(<DashboardPage />);
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-performance-diagnostics"]'),
+    ).toBeNull();
+
+    act(() => {
+      window.localStorage.setItem(
+        DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
+        "1",
+      );
+      vi.advanceTimersByTime(1_000);
+    });
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-performance-diagnostics"]'),
+    ).not.toBeNull();
+
+    act(() => {
+      window.localStorage.removeItem(
+        DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
+      );
+      vi.advanceTimersByTime(1_000);
+    });
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-performance-diagnostics"]'),
+    ).toBeNull();
+  });
+
+  it("dedupes identical chart render signatures in diagnostics", () => {
+    window.localStorage.setItem(
+      DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
+      "1",
+    );
+    resetDashboardPerformanceDiagnostics();
+
+    act(() => {
+      recordTodayChartRender("today:stable");
+      recordTodayChartRender("today:stable");
+      recordTodayChartRender("today:updated");
+    });
+
+    expect(
+      getDashboardPerformanceDiagnosticsSnapshot().todayChartRenderCount,
+    ).toBe(2);
   });
 
   it("switches between the invocation drawer and the shared account drawer from dashboard interactions", () => {

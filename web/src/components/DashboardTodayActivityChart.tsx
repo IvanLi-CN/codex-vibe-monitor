@@ -38,6 +38,54 @@ export interface DashboardTodayActivityChartProps {
   closedNaturalDay?: boolean;
 }
 
+function buildChartRenderSignature({
+  response,
+  loading,
+  error,
+  metric,
+  closedNaturalDay,
+}: DashboardTodayActivityChartProps) {
+  if (!response) {
+    return JSON.stringify({
+      metric,
+      closedNaturalDay,
+      loading,
+      error: error ?? null,
+      response: null,
+    });
+  }
+
+  const aggregate = response.points.reduce(
+    (current, point) => ({
+      totalCount: current.totalCount + point.totalCount,
+      failureCount: current.failureCount + point.failureCount,
+      totalTokens: current.totalTokens + point.totalTokens,
+      totalCost: current.totalCost + point.totalCost,
+    }),
+    {
+      totalCount: 0,
+      failureCount: 0,
+      totalTokens: 0,
+      totalCost: 0,
+    },
+  );
+  const lastPoint = response.points.at(-1) ?? null;
+
+  return JSON.stringify({
+    metric,
+    closedNaturalDay,
+    loading,
+    error: error ?? null,
+    rangeStart: response.rangeStart,
+    rangeEnd: response.rangeEnd,
+    bucketSeconds: response.bucketSeconds,
+    snapshotId: response.snapshotId ?? null,
+    pointCount: response.points.length,
+    aggregate,
+    lastPoint,
+  });
+}
+
 function formatCountValue(
   value: number,
   unitLabel: string,
@@ -121,9 +169,21 @@ function DashboardTodayActivityChartImpl({
   metric,
   closedNaturalDay = false,
 }: DashboardTodayActivityChartProps) {
+  const renderSignature = useMemo(
+    () =>
+      buildChartRenderSignature({
+        response,
+        loading,
+        error,
+        metric,
+        closedNaturalDay,
+      }),
+    [closedNaturalDay, error, loading, metric, response],
+  );
+
   useEffect(() => {
-    recordTodayChartRender();
-  });
+    recordTodayChartRender(renderSignature);
+  }, [renderSignature]);
 
   const { t, locale } = useTranslation();
   const { themeMode } = useTheme();
