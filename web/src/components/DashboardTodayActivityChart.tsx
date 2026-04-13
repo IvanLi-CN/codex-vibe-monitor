@@ -28,7 +28,10 @@ import {
   buildTodayMinuteChartData,
   type DashboardTodayMinuteDatum,
 } from "./dashboardTodayActivityChartData";
-import { recordTodayChartRender } from "../lib/dashboardPerformanceDiagnostics";
+import {
+  isDashboardPerformanceDiagnosticsEnabled,
+  recordTodayChartRender,
+} from "../lib/dashboardPerformanceDiagnostics";
 
 export interface DashboardTodayActivityChartProps {
   response: TimeseriesResponse | null;
@@ -169,21 +172,34 @@ function DashboardTodayActivityChartImpl({
   metric,
   closedNaturalDay = false,
 }: DashboardTodayActivityChartProps) {
+  const diagnosticsEnabled = isDashboardPerformanceDiagnosticsEnabled();
   const renderSignature = useMemo(
     () =>
-      buildChartRenderSignature({
-        response,
-        loading,
-        error,
-        metric,
-        closedNaturalDay,
-      }),
-    [closedNaturalDay, error, loading, metric, response],
+      diagnosticsEnabled
+        ? buildChartRenderSignature({
+            response,
+            loading,
+            error,
+            metric,
+            closedNaturalDay,
+          })
+        : null,
+    [
+      closedNaturalDay,
+      diagnosticsEnabled,
+      error,
+      loading,
+      metric,
+      response,
+    ],
   );
 
   useEffect(() => {
+    if (!diagnosticsEnabled || renderSignature == null) {
+      return;
+    }
     recordTodayChartRender(renderSignature);
-  }, [renderSignature]);
+  }, [diagnosticsEnabled, renderSignature]);
 
   const { t, locale } = useTranslation();
   const { themeMode } = useTheme();

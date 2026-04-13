@@ -1,6 +1,6 @@
-import { useEffect, useMemo } from "react";
+import { useMemo } from "react";
 import {
-  syncDashboardPerformanceDiagnosticsEnabled,
+  useDashboardPerformanceDiagnosticsEnabled,
   useDashboardPerformanceDiagnosticsSnapshot,
 } from "../lib/dashboardPerformanceDiagnostics";
 
@@ -10,11 +10,17 @@ function formatTimestamp(value: string | null) {
 }
 
 export function DashboardPerformanceDiagnostics() {
-  const snapshot = useDashboardPerformanceDiagnosticsSnapshot();
+  const enabled = useDashboardPerformanceDiagnosticsEnabled();
 
-  useEffect(() => {
-    syncDashboardPerformanceDiagnosticsEnabled();
-  }, []);
+  if (!enabled) {
+    return null;
+  }
+
+  return <DashboardPerformanceDiagnosticsPanel />;
+}
+
+function DashboardPerformanceDiagnosticsPanel() {
+  const snapshot = useDashboardPerformanceDiagnosticsSnapshot();
 
   const rows = useMemo(
     () => [
@@ -45,10 +51,6 @@ export function DashboardPerformanceDiagnostics() {
     ],
     [snapshot],
   );
-
-  if (!snapshot.enabled) {
-    return null;
-  }
 
   return (
     <section

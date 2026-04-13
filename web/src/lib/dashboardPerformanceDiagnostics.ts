@@ -36,10 +36,14 @@ declare global {
 }
 
 const listeners = new Set<() => void>();
-const DIAGNOSTICS_ENABLE_SYNC_INTERVAL_MS = 1_000;
+const diagnosticsEnabledListeners = new Set<() => void>();
+const DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_EVENT =
+  "dashboard-performance-diagnostics-storage-change";
 
 let lastTodayChartRenderSignature: string | null = null;
-let enableSyncCleanup: (() => void) | null = null;
+let restoreStorageBridge: (() => void) | null = null;
+let storageBridgeRefCount = 0;
+let stopDiagnosticsEnabledSync: (() => void) | null = null;
 
 function readDiagnosticsEnabled() {
   if (typeof window === "undefined") return false;
@@ -123,6 +127,10 @@ export function getDashboardPerformanceDiagnosticsSnapshot() {
   return snapshot;
 }
 
+export function isDashboardPerformanceDiagnosticsEnabled() {
+  return readDiagnosticsEnabled();
+}
+
 export function publishWorkingConversationPatchMetrics(
   patchMetrics: DashboardPatchMetrics,
 ) {
@@ -163,18 +171,90 @@ export function recordTodayChartRender(signature?: string | null) {
   });
 }
 
-function ensureDiagnosticsEnableSync() {
-  if (typeof window === "undefined" || enableSyncCleanup) {
+function ensureDashboardDiagnosticsStorageBridge() {
+  if (typeof window === "undefined") {
+    return () => {};
+  }
+  storageBridgeRefCount += 1;
+  if (restoreStorageBridge) {
+    return () => {
+      storageBridgeRefCount = Math.max(0, storageBridgeRefCount - 1);
+      if (storageBridgeRefCount === 0) {
+        restoreStorageBridge?.();
+      }
+    };
+  }
+
+  const storage = window.localStorage as Storage & {
+    setItem: Storage["setItem"];
+    removeItem: Storage["removeItem"];
+    clear: Storage["clear"];
+  };
+  const storageTarget =
+    Object.prototype.hasOwnProperty.call(storage, "setItem") ||
+    Object.prototype.hasOwnProperty.call(storage, "removeItem") ||
+    Object.prototype.hasOwnProperty.call(storage, "clear")
+      ? storage
+      : ((Object.getPrototypeOf(storage) as
+          | typeof storage
+          | null) ?? storage);
+  const originalSetItem = storageTarget.setItem;
+  const originalRemoveItem = storageTarget.removeItem;
+  const originalClear = storageTarget.clear;
+
+  const dispatchStorageEvent = (key: string | null) => {
+    window.dispatchEvent(
+      new CustomEvent(DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_EVENT, {
+        detail: { key },
+      }),
+    );
+  };
+
+  storageTarget.setItem = function patchedSetItem(
+    key: string,
+    value: string,
+  ) {
+    originalSetItem.call(this, key, value);
+    dispatchStorageEvent(key);
+  };
+  storageTarget.removeItem = function patchedRemoveItem(key: string) {
+    originalRemoveItem.call(this, key);
+    dispatchStorageEvent(key);
+  };
+  storageTarget.clear = function patchedClear() {
+    originalClear.call(this);
+    dispatchStorageEvent(null);
+  };
+
+  restoreStorageBridge = () => {
+    storageTarget.setItem = originalSetItem;
+    storageTarget.removeItem = originalRemoveItem;
+    storageTarget.clear = originalClear;
+    restoreStorageBridge = null;
+  };
+
+  return () => {
+    storageBridgeRefCount = Math.max(0, storageBridgeRefCount - 1);
+    if (storageBridgeRefCount === 0) {
+      restoreStorageBridge?.();
+    }
+  };
+}
+
+function emitDiagnosticsEnabledListeners() {
+  diagnosticsEnabledListeners.forEach((listener) => listener());
+}
+
+function ensureDashboardDiagnosticsEnabledSync() {
+  if (typeof window === "undefined" || stopDiagnosticsEnabledSync) {
     return;
   }
 
   const sync = () => {
     syncDashboardPerformanceDiagnosticsEnabled();
+    emitDiagnosticsEnabledListeners();
   };
-  const intervalHandle = window.setInterval(
-    sync,
-    DIAGNOSTICS_ENABLE_SYNC_INTERVAL_MS,
-  );
+  const releaseStorageBridge = ensureDashboardDiagnosticsStorageBridge();
   const onStorage = (event: StorageEvent) => {
     if (
       event.key !== null &&
@@ -184,41 +264,62 @@ function ensureDiagnosticsEnableSync() {
     }
     sync();
   };
-  const onFocus = () => {
+  const onSameTabStorageChange = (event: Event) => {
+    const customEvent = event as CustomEvent<{ key: string | null }>;
+    if (
+      customEvent.detail?.key !== null &&
+      customEvent.detail?.key !== DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY
+    ) {
+      return;
+    }
     sync();
   };
 
   window.addEventListener("storage", onStorage);
-  window.addEventListener("focus", onFocus);
-  if (typeof document !== "undefined") {
-    document.addEventListener("visibilitychange", onFocus);
-  }
+  window.addEventListener(
+    DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_EVENT,
+    onSameTabStorageChange,
+  );
+  sync();
 
-  enableSyncCleanup = () => {
-    window.clearInterval(intervalHandle);
+  stopDiagnosticsEnabledSync = () => {
     window.removeEventListener("storage", onStorage);
-    window.removeEventListener("focus", onFocus);
-    if (typeof document !== "undefined") {
-      document.removeEventListener("visibilitychange", onFocus);
-    }
-    enableSyncCleanup = null;
+    window.removeEventListener(
+      DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_EVENT,
+      onSameTabStorageChange,
+    );
+    releaseStorageBridge();
+    stopDiagnosticsEnabledSync = null;
   };
 }
 
-function maybeStopDiagnosticsEnableSync() {
-  if (listeners.size === 0) {
-    enableSyncCleanup?.();
+function maybeStopDashboardDiagnosticsEnabledSync() {
+  if (diagnosticsEnabledListeners.size === 0) {
+    stopDiagnosticsEnabledSync?.();
   }
+}
+
+export function useDashboardPerformanceDiagnosticsEnabled() {
+  return useSyncExternalStore(
+    (listener) => {
+      diagnosticsEnabledListeners.add(listener);
+      ensureDashboardDiagnosticsEnabledSync();
+      return () => {
+        diagnosticsEnabledListeners.delete(listener);
+        maybeStopDashboardDiagnosticsEnabledSync();
+      };
+    },
+    isDashboardPerformanceDiagnosticsEnabled,
+    () => false,
+  );
 }
 
 export function useDashboardPerformanceDiagnosticsSnapshot() {
   return useSyncExternalStore(
     (listener) => {
       listeners.add(listener);
-      ensureDiagnosticsEnableSync();
       return () => {
         listeners.delete(listener);
-        maybeStopDiagnosticsEnableSync();
       };
     },
     getDashboardPerformanceDiagnosticsSnapshot,

@@ -537,7 +537,6 @@ describe("DashboardPage", () => {
   });
 
   it("reacts to the debug toggle on an already-open dashboard", () => {
-    vi.useFakeTimers();
     installSummaryMocks();
     hookMocks.useDashboardWorkingConversations.mockReturnValue({
       cards: [createWorkingConversationCard()],
@@ -561,7 +560,6 @@ describe("DashboardPage", () => {
         DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
         "1",
       );
-      vi.advanceTimersByTime(1_000);
     });
 
     expect(
@@ -572,7 +570,6 @@ describe("DashboardPage", () => {
       window.localStorage.removeItem(
         DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
       );
-      vi.advanceTimersByTime(1_000);
     });
 
     expect(
