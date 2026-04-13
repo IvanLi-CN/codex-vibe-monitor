@@ -2009,10 +2009,12 @@ pub(crate) async fn persist_proxy_capture_runtime_record(
             payload,
             raw_response,
             request_raw_path,
+            request_raw_codec,
             request_raw_size,
             request_raw_truncated,
             request_raw_truncated_reason,
             response_raw_path,
+            response_raw_codec,
             response_raw_size,
             response_raw_truncated,
             response_raw_truncated_reason,
@@ -2028,7 +2030,8 @@ pub(crate) async fn persist_proxy_capture_runtime_record(
         )
         VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
-            ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36
+            ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36,
+            ?37, ?38
         )
         "#,
     )
@@ -2052,10 +2055,12 @@ pub(crate) async fn persist_proxy_capture_runtime_record(
     .bind(record.payload.as_deref())
     .bind(&record.raw_response)
     .bind(record.req_raw.path.as_deref())
+    .bind(raw_payload_meta_codec(&record.req_raw))
     .bind(record.req_raw.path.as_ref().map(|_| record.req_raw.size_bytes))
     .bind(record.req_raw.truncated as i64)
     .bind(record.req_raw.truncated_reason.as_deref())
     .bind(record.resp_raw.path.as_deref())
+    .bind(raw_payload_meta_codec(&record.resp_raw))
     .bind(record.resp_raw.path.as_ref().map(|_| record.resp_raw.size_bytes))
     .bind(record.resp_raw.truncated as i64)
     .bind(record.resp_raw.truncated_reason.as_deref())
@@ -2155,21 +2160,23 @@ pub(crate) async fn persist_proxy_capture_runtime_record(
                 payload = ?17,
                 raw_response = ?18,
                 request_raw_path = ?19,
-                request_raw_size = ?20,
-                request_raw_truncated = ?21,
-                request_raw_truncated_reason = ?22,
-                response_raw_path = ?23,
-                response_raw_size = ?24,
-                response_raw_truncated = ?25,
-                response_raw_truncated_reason = ?26,
-                t_total_ms = ?27,
-                t_req_read_ms = ?28,
-                t_req_parse_ms = ?29,
-                t_upstream_connect_ms = ?30,
-                t_upstream_ttfb_ms = ?31,
-                t_upstream_stream_ms = ?32,
-                t_resp_parse_ms = ?33,
-                t_persist_ms = ?34
+                request_raw_codec = ?20,
+                request_raw_size = ?21,
+                request_raw_truncated = ?22,
+                request_raw_truncated_reason = ?23,
+                response_raw_path = ?24,
+                response_raw_codec = ?25,
+                response_raw_size = ?26,
+                response_raw_truncated = ?27,
+                response_raw_truncated_reason = ?28,
+                t_total_ms = ?29,
+                t_req_read_ms = ?30,
+                t_req_parse_ms = ?31,
+                t_upstream_connect_ms = ?32,
+                t_upstream_ttfb_ms = ?33,
+                t_upstream_stream_ms = ?34,
+                t_resp_parse_ms = ?35,
+                t_persist_ms = ?36
             WHERE id = ?1
               AND (
                     LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
@@ -2199,10 +2206,12 @@ pub(crate) async fn persist_proxy_capture_runtime_record(
         .bind(record.payload.as_deref())
         .bind(&record.raw_response)
         .bind(record.req_raw.path.as_deref())
+        .bind(raw_payload_meta_codec(&record.req_raw))
         .bind(record.req_raw.path.as_ref().map(|_| record.req_raw.size_bytes))
         .bind(record.req_raw.truncated as i64)
         .bind(record.req_raw.truncated_reason.as_deref())
         .bind(record.resp_raw.path.as_deref())
+        .bind(raw_payload_meta_codec(&record.resp_raw))
         .bind(record.resp_raw.path.as_ref().map(|_| record.resp_raw.size_bytes))
         .bind(record.resp_raw.truncated as i64)
         .bind(record.resp_raw.truncated_reason.as_deref())
@@ -2495,6 +2504,85 @@ pub(crate) fn spawn_raw_payload_file_write(
     }))
 }
 
+fn raw_payload_path_for_kind(raw_dir: &Path, invoke_id: &str, kind: &str, gzip: bool) -> PathBuf {
+    let filename = if gzip {
+        format!("{invoke_id}-{kind}.bin.gz")
+    } else {
+        format!("{invoke_id}-{kind}.bin")
+    };
+    raw_dir.join(filename)
+}
+
+fn raw_payload_path_is_gzip(path: Option<&str>) -> bool {
+    path.is_some_and(|value| value.ends_with(".gz"))
+}
+
+fn raw_payload_meta_codec(meta: &RawPayloadMeta) -> &'static str {
+    if raw_payload_path_is_gzip(meta.path.as_deref()) {
+        RAW_CODEC_GZIP
+    } else {
+        RAW_CODEC_IDENTITY
+    }
+}
+
+fn compress_raw_payload_bytes_to_gzip(bytes: &[u8]) -> io::Result<Vec<u8>> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(bytes)?;
+    encoder.finish()
+}
+
+fn raw_payload_gzip_path(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.gz", path.display()))
+}
+
+enum StreamingRawPayloadWriterState {
+    Buffer(Vec<u8>),
+    Plain {
+        path: PathBuf,
+        file: fs::File,
+    },
+    Gzip {
+        path: PathBuf,
+        encoder: GzEncoder<io::BufWriter<fs::File>>,
+    },
+}
+
+impl StreamingRawPayloadWriterState {
+    fn current_path(&self) -> Option<&Path> {
+        match self {
+            Self::Buffer(_) => None,
+            Self::Plain { path, .. } | Self::Gzip { path, .. } => Some(path.as_path()),
+        }
+    }
+}
+
+fn prepare_streaming_raw_parent(path: &Path) -> io::Result<&Path> {
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("raw payload path has no parent: {}", path.display()),
+        )
+    })?;
+    fs::create_dir_all(parent)?;
+    Ok(parent)
+}
+
+fn create_plain_streaming_raw_file(path: &Path) -> io::Result<fs::File> {
+    prepare_streaming_raw_parent(path)?;
+    fs::File::create(path)
+}
+
+fn create_gzip_streaming_raw_encoder(
+    path: &Path,
+) -> io::Result<GzEncoder<io::BufWriter<fs::File>>> {
+    prepare_streaming_raw_parent(path)?;
+    let file = fs::File::create(path)?;
+    Ok(GzEncoder::new(
+        io::BufWriter::new(file),
+        Compression::default(),
+    ))
+}
+
 pub(crate) struct AsyncStreamingRawPayloadWriter {
     tx: Option<mpsc::Sender<Bytes>>,
     meta_rx: Option<oneshot::Receiver<RawPayloadMeta>>,
@@ -2517,16 +2605,25 @@ impl AsyncStreamingRawPayloadWriter {
             };
         };
 
-        let path = state
-            .config
-            .resolved_proxy_raw_dir()
-            .join(format!("{invoke_id}-{kind}.bin"));
+        let path = raw_payload_path_for_kind(
+            &state.config.resolved_proxy_raw_dir(),
+            invoke_id,
+            kind,
+            false,
+        );
         let max_bytes = state.config.proxy_raw_max_bytes;
+        let immediate_gzip_bytes = state.config.proxy_raw_immediate_gzip_threshold();
         let (tx, mut rx) = mpsc::channel::<Bytes>(ASYNC_STREAMING_RAW_WRITER_QUEUE_CAPACITY);
         let (meta_tx, meta_rx) = oneshot::channel();
         tokio::spawn(async move {
             let _permit = permit;
-            let meta = write_streaming_raw_payload_to_file(path, max_bytes, &mut rx).await;
+            let meta = write_streaming_raw_payload_to_file(
+                path,
+                max_bytes,
+                immediate_gzip_bytes,
+                &mut rx,
+            )
+            .await;
             let _ = meta_tx.send(meta);
         });
 
@@ -2599,18 +2696,12 @@ impl AsyncStreamingRawPayloadWriter {
 pub(crate) async fn write_streaming_raw_payload_to_file(
     path: PathBuf,
     max_bytes: Option<usize>,
+    immediate_gzip_bytes: Option<usize>,
     rx: &mut mpsc::Receiver<Bytes>,
 ) -> RawPayloadMeta {
     let mut meta = RawPayloadMeta::default();
-    let Some(parent) = path.parent() else {
-        meta.truncated = true;
-        meta.truncated_reason = Some(format!(
-            "write_failed:raw payload path has no parent: {}",
-            path.display()
-        ));
-        return meta;
-    };
-    let mut file: Option<tokio::fs::File> = None;
+    let gzip_path = raw_payload_gzip_path(&path);
+    let mut writer = StreamingRawPayloadWriterState::Buffer(Vec::new());
     let mut written_bytes = 0usize;
     while let Some(bytes) = rx.recv().await {
         if bytes.is_empty() {
@@ -2641,48 +2732,126 @@ pub(crate) async fn write_streaming_raw_payload_to_file(
             continue;
         }
 
-        if file.is_none() {
-            if let Err(err) = tokio::fs::create_dir_all(parent).await {
-                meta.truncated = true;
-                meta.truncated_reason = Some(format!("write_failed:{err}"));
-                return meta;
-            }
-            match tokio::fs::File::create(&path).await {
-                Ok(created) => {
-                    meta.path = Some(path.to_string_lossy().to_string());
-                    file = Some(created);
+        let current_writer =
+            std::mem::replace(&mut writer, StreamingRawPayloadWriterState::Buffer(Vec::new()));
+        let result = match current_writer {
+            StreamingRawPayloadWriterState::Buffer(mut buffer) => {
+                buffer.extend_from_slice(&bytes[..write_len]);
+                match immediate_gzip_bytes {
+                    Some(threshold) if buffer.len() >= threshold => {
+                        match create_gzip_streaming_raw_encoder(&gzip_path) {
+                            Ok(mut encoder) => match encoder.write_all(&buffer) {
+                                Ok(()) => {
+                                    meta.path = Some(gzip_path.to_string_lossy().to_string());
+                                    writer = StreamingRawPayloadWriterState::Gzip {
+                                        path: gzip_path.clone(),
+                                        encoder,
+                                    };
+                                    Ok(())
+                                }
+                                Err(err) => Err(err),
+                            },
+                            Err(err) => Err(err),
+                        }
+                    }
+                    Some(_) => {
+                        writer = StreamingRawPayloadWriterState::Buffer(buffer);
+                        Ok(())
+                    }
+                    None => {
+                        match create_plain_streaming_raw_file(&path) {
+                            Ok(mut file) => match file.write_all(&buffer) {
+                                Ok(()) => {
+                                    meta.path = Some(path.to_string_lossy().to_string());
+                                    writer = StreamingRawPayloadWriterState::Plain {
+                                        path: path.clone(),
+                                        file,
+                                    };
+                                    Ok(())
+                                }
+                                Err(err) => Err(err),
+                            },
+                            Err(err) => Err(err),
+                        }
+                    }
                 }
-                Err(err) => {
-                    meta.truncated = true;
-                    meta.truncated_reason = Some(format!("write_failed:{err}"));
-                    return meta;
+            }
+            StreamingRawPayloadWriterState::Plain { path, mut file } => {
+                match file.write_all(&bytes[..write_len]) {
+                    Ok(()) => {
+                        writer = StreamingRawPayloadWriterState::Plain { path, file };
+                        Ok(())
+                    }
+                    Err(err) => Err(err),
                 }
             }
-        }
+            StreamingRawPayloadWriterState::Gzip { path, mut encoder } => {
+                match encoder.write_all(&bytes[..write_len]) {
+                    Ok(()) => {
+                        writer = StreamingRawPayloadWriterState::Gzip { path, encoder };
+                        Ok(())
+                    }
+                    Err(err) => Err(err),
+                }
+            }
+        };
 
-        if let Some(file) = file.as_mut() {
-            if let Err(err) = file.write_all(&bytes[..write_len]).await {
-                meta.truncated = true;
-                meta.truncated_reason = Some(format!("write_failed:{err}"));
-                if meta.path.is_some() {
-                    let _ = tokio::fs::remove_file(&path).await;
-                    meta.path = None;
-                }
-                return meta;
+        if let Err(err) = result {
+            meta.truncated = true;
+            meta.truncated_reason = Some(format!("write_failed:{err}"));
+            if let Some(current_path) = writer.current_path() {
+                let _ = fs::remove_file(current_path);
             }
-            written_bytes = written_bytes.saturating_add(write_len);
+            meta.path = None;
+            return meta;
         }
+        written_bytes = written_bytes.saturating_add(write_len);
     }
 
-    if let Some(file) = file.as_mut()
-        && let Err(err) = file.flush().await
-    {
+    let final_path = writer
+        .current_path()
+        .map(|value| value.to_path_buf())
+        .or_else(|| meta.path.as_ref().map(PathBuf::from));
+    let finish_result = match writer {
+        StreamingRawPayloadWriterState::Buffer(buffer) => {
+            if buffer.is_empty() {
+                Ok(())
+            } else {
+                match create_plain_streaming_raw_file(&path) {
+                    Ok(mut file) => {
+                        let write_result = file.write_all(&buffer).and_then(|_| file.flush());
+                        if write_result.is_ok() {
+                            meta.path = Some(path.to_string_lossy().to_string());
+                        }
+                        write_result
+                    }
+                    Err(err) => Err(err),
+                }
+            }
+        }
+        StreamingRawPayloadWriterState::Plain { path, mut file } => {
+            let flush_result = file.flush();
+            if flush_result.is_ok() {
+                meta.path = Some(path.to_string_lossy().to_string());
+            }
+            flush_result
+        }
+        StreamingRawPayloadWriterState::Gzip { path, encoder } => {
+            let finish_result = encoder.finish().and_then(|mut writer| writer.flush());
+            if finish_result.is_ok() {
+                meta.path = Some(path.to_string_lossy().to_string());
+            }
+            finish_result
+        }
+    };
+
+    if let Err(err) = finish_result {
         meta.truncated = true;
         meta.truncated_reason = Some(format!("write_failed:{err}"));
-        if meta.path.is_some() {
-            let _ = tokio::fs::remove_file(&path).await;
-            meta.path = None;
+        if let Some(path) = final_path.as_deref() {
+            let _ = fs::remove_file(path);
         }
+        meta.path = None;
     }
 
     meta

@@ -349,6 +349,18 @@ pub(crate) fn maintenance_candidate_force_priority(
         || !maintenance_candidate_has_complete_usage(candidate)
 }
 
+fn maintenance_candidate_has_active_upstream_rejected_cooldown(
+    candidate: &MaintenanceCandidateRow,
+    now: DateTime<Utc>,
+) -> bool {
+    account_has_active_cooldown(candidate.cooldown_until.as_deref(), now)
+        && (account_reason_is_maintenance_upstream_rejected(
+            candidate.last_action_reason_code.as_deref(),
+        ) || route_failure_kind_is_maintenance_upstream_rejected(
+            candidate.last_route_failure_kind.as_deref(),
+        ))
+}
+
 pub(crate) fn compare_maintenance_candidates(
     lhs: &MaintenanceCandidateRow,
     rhs: &MaintenanceCandidateRow,
@@ -472,6 +484,9 @@ pub(crate) fn maintenance_plan_is_due(
     settings: PoolRoutingMaintenanceSettings,
     now: DateTime<Utc>,
 ) -> bool {
+    if maintenance_candidate_has_active_upstream_rejected_cooldown(candidate, now) {
+        return false;
+    }
     maintenance_reset_due(candidate, now)
         || maintenance_interval_is_due(
             candidate,
@@ -668,6 +683,9 @@ pub(crate) async fn execute_queued_maintenance_sync(
     } else {
         plan.sync_interval_secs
     };
+    if maintenance_candidate_has_active_upstream_rejected_cooldown(&candidate, now) {
+        return Ok(None);
+    }
     if !maintenance_reset_due(&candidate, now)
         && !maintenance_interval_is_due(&candidate, interval_secs, now)
     {

@@ -2410,7 +2410,11 @@
             );
             assert_eq!(after.last_route_failure_kind.as_deref(), Some(failure_kind));
             assert_eq!(after.last_route_failure_at, after.last_error_at);
-            assert_eq!(after.cooldown_until, None);
+            if reason_code == "upstream_http_402" {
+                assert!(after.cooldown_until.is_some());
+            } else {
+                assert_eq!(after.cooldown_until, None);
+            }
             assert_eq!(after.temporary_route_failure_streak_started_at, None);
 
             let summary = build_summary_from_row(

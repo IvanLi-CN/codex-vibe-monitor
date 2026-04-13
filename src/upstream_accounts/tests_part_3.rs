@@ -1926,7 +1926,7 @@
             row.last_route_failure_kind.as_deref(),
             Some(PROXY_FAILURE_UPSTREAM_HTTP_402)
         );
-        assert!(row.cooldown_until.is_none());
+        assert!(row.cooldown_until.is_some());
     }
 
     #[tokio::test]
@@ -2517,6 +2517,7 @@
             .await
             .expect("load sync-triggered 402 row")
             .expect("sync-triggered 402 row exists");
+        assert!(row.cooldown_until.is_some());
         let summary = build_summary_from_row(
             &row,
             None,

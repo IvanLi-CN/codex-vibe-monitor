@@ -647,6 +647,10 @@ fn account_reason_is_upstream_rejected(reason_code: Option<&str>) -> bool {
     )
 }
 
+fn account_reason_is_maintenance_upstream_rejected(reason_code: Option<&str>) -> bool {
+    matches!(reason_code, Some("upstream_http_402" | "upstream_rejected"))
+}
+
 fn account_reason_is_quota_exhausted(reason_code: Option<&str>) -> bool {
     matches!(
         reason_code,
@@ -727,6 +731,38 @@ fn route_failure_kind_is_upstream_rejected(failure_kind: Option<&str>) -> bool {
             .filter(|value| !value.is_empty()),
         Some(PROXY_FAILURE_UPSTREAM_HTTP_AUTH | PROXY_FAILURE_UPSTREAM_HTTP_402)
     )
+}
+
+fn route_failure_kind_is_maintenance_upstream_rejected(failure_kind: Option<&str>) -> bool {
+    matches!(
+        failure_kind
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        Some(PROXY_FAILURE_UPSTREAM_HTTP_402)
+    )
+}
+
+fn upstream_rejected_maintenance_cooldown_until(now: DateTime<Utc>) -> String {
+    format_utc_iso(
+        now + ChronoDuration::seconds(
+            UPSTREAM_ACCOUNT_UPSTREAM_REJECTED_MAINTENANCE_COOLDOWN_SECS,
+        ),
+    )
+}
+
+fn sync_failure_requires_upstream_rejected_maintenance_cooldown(
+    reason_code: &str,
+    failure_kind: &str,
+    error_message: &str,
+) -> bool {
+    account_reason_is_maintenance_upstream_rejected(Some(reason_code))
+        || route_failure_kind_is_maintenance_upstream_rejected(Some(failure_kind))
+        || {
+            let normalized = error_message.to_ascii_lowercase();
+            normalized.contains("deactivated_workspace")
+                || normalized.contains("upstream rejected")
+                || normalized.contains("payment required")
+        }
 }
 
 fn route_failure_is_current(
@@ -1071,6 +1107,12 @@ async fn record_account_sync_hard_unavailable(
     failure_kind: &'static str,
 ) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
+    let cooldown_until = sync_failure_requires_upstream_rejected_maintenance_cooldown(
+        reason_code,
+        failure_kind,
+        reason_message,
+    )
+    .then(|| upstream_rejected_maintenance_cooldown_until(Utc::now()));
     sqlx::query(
         r#"
         UPDATE pool_upstream_accounts
@@ -1080,7 +1122,7 @@ async fn record_account_sync_hard_unavailable(
             last_error_at = ?3,
             last_route_failure_at = ?3,
             last_route_failure_kind = ?5,
-            cooldown_until = NULL,
+            cooldown_until = ?6,
             temporary_route_failure_streak_started_at = NULL,
             updated_at = ?3
         WHERE id = ?1
@@ -1091,6 +1133,7 @@ async fn record_account_sync_hard_unavailable(
     .bind(&now_iso)
     .bind(reason_message)
     .bind(failure_kind)
+    .bind(cooldown_until.as_deref())
     .execute(pool)
     .await?;
     record_upstream_account_action(
@@ -1125,6 +1168,12 @@ async fn record_account_sync_failure(
     clear_transient_route_failure_state: bool,
 ) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
+    let cooldown_until = sync_failure_requires_upstream_rejected_maintenance_cooldown(
+        reason_code,
+        failure_kind,
+        error_message,
+    )
+    .then(|| upstream_rejected_maintenance_cooldown_until(Utc::now()));
     sqlx::query(
         r#"
         UPDATE pool_upstream_accounts
@@ -1141,7 +1190,11 @@ async fn record_account_sync_failure(
                 WHEN ?6 = 1 AND ?5 IS NULL THEN NULL
                 ELSE COALESCE(?5, last_route_failure_kind)
             END,
-            cooldown_until = CASE WHEN ?6 = 1 THEN NULL ELSE cooldown_until END,
+            cooldown_until = CASE
+                WHEN ?7 IS NOT NULL THEN ?7
+                WHEN ?6 = 1 THEN NULL
+                ELSE cooldown_until
+            END,
             temporary_route_failure_streak_started_at = CASE
                 WHEN ?6 = 1 THEN NULL
                 ELSE temporary_route_failure_streak_started_at
@@ -1156,6 +1209,7 @@ async fn record_account_sync_failure(
     .bind(error_message)
     .bind(preserved_route_failure_kind)
     .bind(clear_transient_route_failure_state)
+    .bind(cooldown_until.as_deref())
     .execute(pool)
     .await?;
     record_upstream_account_action(

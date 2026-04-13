@@ -566,6 +566,17 @@ pub(crate) async fn materialize_historical_rollups(
     config: &AppConfig,
     dry_run: bool,
 ) -> Result<HistoricalRollupMaterializationSummary> {
+    materialize_historical_rollups_bounded(pool, config, dry_run, None, None).await
+}
+
+pub(crate) async fn materialize_historical_rollups_bounded(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    dry_run: bool,
+    max_archive_batches: Option<u64>,
+    max_elapsed: Option<Duration>,
+) -> Result<HistoricalRollupMaterializationSummary> {
+    let started_at = Instant::now();
     let scanned_archive_batches = count_historical_rollup_archive_batches(pool, false).await?;
     let pending_snapshot = load_historical_rollup_backfill_snapshot(pool, config).await?;
     if dry_run {
@@ -581,10 +592,21 @@ pub(crate) async fn materialize_historical_rollups(
     }
 
     let mut tx = pool.begin().await?;
-    let materialized_invocation_batches =
-        replay_invocation_archives_into_hourly_rollups_tx(tx.as_mut()).await?;
+    let materialized_invocation_batches = replay_invocation_archives_into_hourly_rollups_tx_with_limits(
+        tx.as_mut(),
+        max_archive_batches,
+        max_elapsed,
+    )
+    .await?;
+    let remaining_budget = max_elapsed.and_then(|limit| limit.checked_sub(started_at.elapsed()));
     let materialized_forward_proxy_batches =
-        replay_forward_proxy_archives_into_hourly_rollups_tx(tx.as_mut()).await?;
+        replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
+            tx.as_mut(),
+            max_archive_batches
+                .map(|limit| limit.saturating_sub(materialized_invocation_batches)),
+            remaining_budget,
+        )
+        .await?;
     loop {
         let updated = replay_live_invocation_hourly_rollups_tx(tx.as_mut()).await?;
         if updated == 0 {

@@ -1149,6 +1149,7 @@ fn app_config_from_sources_reads_renamed_public_envs() {
         (ENV_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS, Some("33")),
         (ENV_QUOTA_SNAPSHOT_FULL_DAYS, Some("34")),
         (ENV_PROXY_RAW_COMPRESSION, Some("none")),
+        (ENV_PROXY_RAW_IMMEDIATE_GZIP_BYTES, Some("2097152")),
         (ENV_PROXY_RAW_HOT_SECS, Some("1234")),
         (ENV_FORWARD_PROXY_ALGO, Some("v2")),
     ]);
@@ -1204,6 +1205,7 @@ fn app_config_from_sources_reads_renamed_public_envs() {
     assert_eq!(config.stats_source_snapshots_retention_days, 33);
     assert_eq!(config.quota_snapshot_full_days, 34);
     assert_eq!(config.proxy_raw_compression, RawCompressionCodec::None);
+    assert_eq!(config.proxy_raw_immediate_gzip_bytes, Some(2 * 1024 * 1024));
     assert_eq!(config.proxy_raw_hot_secs, 1234);
 }
 
@@ -1395,6 +1397,7 @@ fn test_config() -> AppConfig {
         proxy_raw_max_bytes: DEFAULT_PROXY_RAW_MAX_BYTES,
         proxy_raw_dir: PathBuf::from("target/proxy-raw-tests"),
         proxy_raw_compression: DEFAULT_PROXY_RAW_COMPRESSION,
+        proxy_raw_immediate_gzip_bytes: DEFAULT_PROXY_RAW_IMMEDIATE_GZIP_BYTES,
         proxy_raw_hot_secs: DEFAULT_PROXY_RAW_HOT_SECS,
         xray_binary: DEFAULT_XRAY_BINARY.to_string(),
         xray_runtime_dir: PathBuf::from("target/xray-forward-tests"),
@@ -1537,6 +1540,71 @@ fn store_raw_payload_file_anchors_relative_dir_to_database_parent() {
             .exists(),
         "raw payload should not follow the current working directory"
     );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[test]
+fn store_raw_payload_file_born_gzips_large_payloads_when_threshold_is_reached() {
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
+    let temp_dir = make_temp_test_dir("proxy-raw-store-born-gzip");
+    let db_root = temp_dir.join("db-root");
+    fs::create_dir_all(&db_root).expect("create db root");
+
+    let mut config = test_config();
+    config.database_path = db_root.join("codex_vibe_monitor.db");
+    config.proxy_raw_dir = PathBuf::from("proxy_raw_payloads");
+    config.proxy_raw_compression = RawCompressionCodec::Gzip;
+    config.proxy_raw_immediate_gzip_bytes = Some(16);
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build current-thread runtime");
+    let payload = br#"{"large":"payload-that-should-be-gzipped"}"#;
+    let meta = runtime.block_on(store_raw_payload_file(
+        &config,
+        "proxy-born-gzip",
+        "request",
+        payload,
+    ));
+
+    let path = PathBuf::from(meta.path.expect("born-gzip path"));
+    assert!(path.ends_with("proxy-born-gzip-request.bin.gz"));
+    assert!(path.exists(), "gzip raw payload should be written");
+    let decoded = read_proxy_raw_bytes(path.to_string_lossy().as_ref(), None)
+        .expect("read born-gzip payload back");
+    assert_eq!(decoded, payload);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn write_streaming_raw_payload_to_file_born_gzips_large_streams() {
+    let temp_dir = make_temp_test_dir("proxy-stream-born-gzip");
+    let raw_path = temp_dir.join("stream-response.bin");
+    let (tx, mut rx) = mpsc::channel::<Bytes>(4);
+    tx.send(Bytes::from_static(b"hello-"))
+        .await
+        .expect("send first chunk");
+    tx.send(Bytes::from_static(b"world-large"))
+        .await
+        .expect("send second chunk");
+    drop(tx);
+
+    let meta = write_streaming_raw_payload_to_file(
+        raw_path.clone(),
+        None,
+        Some(8),
+        &mut rx,
+    )
+    .await;
+
+    let stored_path = PathBuf::from(meta.path.expect("streaming born-gzip path"));
+    assert!(stored_path.ends_with("stream-response.bin.gz"));
+    let decoded = read_proxy_raw_bytes(stored_path.to_string_lossy().as_ref(), None)
+        .expect("read streaming born-gzip payload");
+    assert_eq!(decoded, b"hello-world-large");
 
     cleanup_temp_test_dir(&temp_dir);
 }

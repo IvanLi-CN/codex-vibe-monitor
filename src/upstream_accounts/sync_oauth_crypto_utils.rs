@@ -162,6 +162,9 @@ async fn fetch_usage_snapshot(
         Ok(snapshot) => return Ok(snapshot),
         Err(err) => err,
     };
+    if usage_snapshot_error_skips_browser_user_agent_retry(&primary_error) {
+        return Err(primary_error);
+    }
 
     warn!(
         error = ?primary_error,
@@ -194,6 +197,15 @@ fn usage_snapshot_error_is_network_failure(err: &anyhow::Error) -> bool {
         || normalized.contains("transport")
 }
 
+fn usage_snapshot_error_skips_browser_user_agent_retry(err: &anyhow::Error) -> bool {
+    let normalized = err.to_string().to_ascii_lowercase();
+    normalized.contains("deactivated_workspace")
+        || normalized.contains("upstream_http_402")
+        || normalized.contains("payment required")
+        || normalized.contains("usage endpoint returned 402")
+        || normalized.contains("upstream rejected")
+}
+
 async fn fetch_usage_snapshot_via_forward_proxy(
     state: &AppState,
     scope: &ForwardProxyRouteScope,
@@ -219,6 +231,9 @@ async fn fetch_usage_snapshot_via_forward_proxy(
         Ok(snapshot) => return Ok(snapshot),
         Err(err) => err,
     };
+    if usage_snapshot_error_skips_browser_user_agent_retry(&primary_error) {
+        return Err(primary_error);
+    }
 
     warn!(
         error = ?primary_error,

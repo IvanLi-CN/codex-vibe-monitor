@@ -14,9 +14,23 @@ async fn sync_hourly_rollups_from_live_tables(pool: &Pool<Sqlite>) -> Result<()>
     Ok(())
 }
 
-async fn replay_invocation_archives_into_hourly_rollups_tx(
+fn historical_rollup_materialization_budget_reached(
+    started_at: Instant,
+    replayed: u64,
+    max_archive_batches: Option<u64>,
+    max_elapsed: Option<Duration>,
+) -> bool {
+    max_archive_batches.is_some_and(|limit| replayed >= limit)
+        || max_elapsed.is_some_and(|limit| started_at.elapsed() >= limit)
+}
+
+async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
     tx: &mut SqliteConnection,
+    max_archive_batches: Option<u64>,
+    max_elapsed: Option<Duration>,
 ) -> Result<u64> {
+    let started_at = Instant::now();
+    let mut replayed = 0_u64;
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
         r#"
         SELECT id, file_path, coverage_start_at, coverage_end_at
@@ -30,9 +44,16 @@ async fn replay_invocation_archives_into_hourly_rollups_tx(
     .bind(ARCHIVE_STATUS_COMPLETED)
     .fetch_all(&mut *tx)
     .await?;
-    let mut replayed = 0_u64;
 
     for archive_file in archive_files {
+        if historical_rollup_materialization_budget_reached(
+            started_at,
+            replayed,
+            max_archive_batches,
+            max_elapsed,
+        ) {
+            break;
+        }
         let mut pending_targets = Vec::new();
         let mut blocked_targets = Vec::new();
         for target in [
@@ -178,9 +199,19 @@ async fn replay_invocation_archives_into_hourly_rollups_tx(
     Ok(replayed)
 }
 
-async fn replay_forward_proxy_archives_into_hourly_rollups_tx(
+async fn replay_invocation_archives_into_hourly_rollups_tx(
     tx: &mut SqliteConnection,
 ) -> Result<u64> {
+    replay_invocation_archives_into_hourly_rollups_tx_with_limits(tx, None, None).await
+}
+
+async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
+    tx: &mut SqliteConnection,
+    max_archive_batches: Option<u64>,
+    max_elapsed: Option<Duration>,
+) -> Result<u64> {
+    let started_at = Instant::now();
+    let mut replayed = 0_u64;
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
         r#"
         SELECT id, file_path, coverage_start_at, coverage_end_at
@@ -194,9 +225,16 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx(
     .bind(ARCHIVE_STATUS_COMPLETED)
     .fetch_all(&mut *tx)
     .await?;
-    let mut replayed = 0_u64;
 
     for archive_file in archive_files {
+        if historical_rollup_materialization_budget_reached(
+            started_at,
+            replayed,
+            max_archive_batches,
+            max_elapsed,
+        ) {
+            break;
+        }
         if hourly_rollup_archive_replayed_tx(
             tx,
             HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS,
@@ -286,6 +324,12 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx(
     }
 
     Ok(replayed)
+}
+
+async fn replay_forward_proxy_archives_into_hourly_rollups_tx(
+    tx: &mut SqliteConnection,
+) -> Result<u64> {
+    replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(tx, None, None).await
 }
 
 async fn bootstrap_hourly_rollups(pool: &Pool<Sqlite>) -> Result<()> {

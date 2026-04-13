@@ -291,6 +291,7 @@ struct AppConfig {
     proxy_raw_max_bytes: Option<usize>,
     proxy_raw_dir: PathBuf,
     proxy_raw_compression: RawCompressionCodec,
+    proxy_raw_immediate_gzip_bytes: Option<usize>,
     proxy_raw_hot_secs: u64,
     xray_binary: String,
     xray_runtime_dir: PathBuf,
@@ -500,6 +501,22 @@ impl AppConfig {
         let proxy_raw_compression = resolve_raw_compression_codec_config(
             env::var(ENV_PROXY_RAW_COMPRESSION).ok().as_deref(),
         )?;
+        let proxy_raw_immediate_gzip_bytes = match env::var(ENV_PROXY_RAW_IMMEDIATE_GZIP_BYTES) {
+            Ok(value) => {
+                let parsed = value.parse::<usize>().with_context(|| {
+                    format!(
+                        "invalid {ENV_PROXY_RAW_IMMEDIATE_GZIP_BYTES}: {value}"
+                    )
+                })?;
+                if parsed == 0 { None } else { Some(parsed) }
+            }
+            Err(env::VarError::NotPresent) => DEFAULT_PROXY_RAW_IMMEDIATE_GZIP_BYTES,
+            Err(err) => {
+                return Err(anyhow!(
+                    "failed to read {ENV_PROXY_RAW_IMMEDIATE_GZIP_BYTES}: {err}"
+                ));
+            }
+        };
         let proxy_raw_hot_secs =
             parse_u64_env_var(ENV_PROXY_RAW_HOT_SECS, DEFAULT_PROXY_RAW_HOT_SECS)?;
         let xray_binary =
@@ -749,6 +766,7 @@ impl AppConfig {
             proxy_raw_max_bytes,
             proxy_raw_dir,
             proxy_raw_compression,
+            proxy_raw_immediate_gzip_bytes,
             proxy_raw_hot_secs,
             xray_binary,
             xray_runtime_dir,
@@ -795,6 +813,12 @@ impl AppConfig {
 
     fn resolved_proxy_raw_dir(&self) -> PathBuf {
         resolve_path_from_database_parent(&self.database_path, &self.proxy_raw_dir)
+    }
+
+    fn proxy_raw_immediate_gzip_threshold(&self) -> Option<usize> {
+        (self.proxy_raw_compression == RawCompressionCodec::Gzip)
+            .then_some(self.proxy_raw_immediate_gzip_bytes)
+            .flatten()
     }
 }
 

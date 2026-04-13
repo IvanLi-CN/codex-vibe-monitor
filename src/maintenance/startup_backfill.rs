@@ -15,6 +15,7 @@ enum StartupBackfillTask {
     FailureClassification,
     UpstreamActivityLive,
     UpstreamActivityArchives,
+    HistoricalRollups,
 }
 
 impl StartupBackfillTask {
@@ -29,6 +30,7 @@ impl StartupBackfillTask {
             Self::FailureClassification,
             Self::UpstreamActivityLive,
             Self::UpstreamActivityArchives,
+            Self::HistoricalRollups,
         ]
     }
 
@@ -43,6 +45,7 @@ impl StartupBackfillTask {
             Self::FailureClassification => STARTUP_BACKFILL_TASK_FAILURE_CLASSIFICATION,
             Self::UpstreamActivityLive => STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_LIVE,
             Self::UpstreamActivityArchives => STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES,
+            Self::HistoricalRollups => STARTUP_BACKFILL_TASK_HISTORICAL_ROLLUPS,
         }
     }
 
@@ -57,6 +60,7 @@ impl StartupBackfillTask {
             Self::FailureClassification => "invocation failure classification",
             Self::UpstreamActivityLive => "upstream activity live rows",
             Self::UpstreamActivityArchives => "upstream activity archives",
+            Self::HistoricalRollups => "historical rollup materialization",
         }
     }
 }
@@ -709,6 +713,53 @@ async fn run_startup_backfill_task(
                 format!(
                     "pending_accounts={pending_accounts} waiting_for_manifest_backfill={}",
                     summary.waiting_for_manifest_backfill
+                ),
+            ))
+        }
+        StartupBackfillTask::HistoricalRollups => {
+            let before = load_historical_rollup_backfill_snapshot(&state.pool, &state.config).await?;
+            if before.legacy_archive_pending == 0 {
+                return Ok((
+                    StartupBackfillRunState {
+                        next_cursor_id: cursor_id,
+                        scanned: 0,
+                        updated: 0,
+                        hit_scan_limit: false,
+                        force_idle: true,
+                        samples: Vec::new(),
+                    },
+                    "pending_archive_batches=0".to_string(),
+                ));
+            }
+
+            let summary = materialize_historical_rollups_bounded(
+                &state.pool,
+                &state.config,
+                false,
+                Some(1),
+                Some(Duration::from_secs(STARTUP_BACKFILL_RUN_BUDGET_SECS)),
+            )
+            .await?;
+            let after = load_historical_rollup_backfill_snapshot(&state.pool, &state.config).await?;
+            let archive_progress = before
+                .legacy_archive_pending
+                .saturating_sub(after.legacy_archive_pending);
+            let bucket_progress = before.pending_buckets.saturating_sub(after.pending_buckets);
+            Ok((
+                StartupBackfillRunState {
+                    next_cursor_id: cursor_id,
+                    scanned: summary.scanned_archive_batches as u64,
+                    updated: archive_progress.max(bucket_progress),
+                    hit_scan_limit: after.legacy_archive_pending > 0,
+                    force_idle: after.legacy_archive_pending == 0,
+                    samples: Vec::new(),
+                },
+                format!(
+                    "pending_before={} pending_after={} bucket_progress={} alert_level={:?}",
+                    before.legacy_archive_pending,
+                    after.legacy_archive_pending,
+                    bucket_progress,
+                    after.alert_level
                 ),
             ))
         }
