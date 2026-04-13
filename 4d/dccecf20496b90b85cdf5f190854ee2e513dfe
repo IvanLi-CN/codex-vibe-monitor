@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.46.15",
+  "base_stable_version": "1.46.14",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-13T14:52:24Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.46.15",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "5a87daf6b6e4ca4f61c486c6ddbd8bbe6416b7c1",
+  "pr_number": 345,
+  "pr_title": "fix(web): harden dashboard long-running stability",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.46.15",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.46.15",
+  "target_sha": "4ddccecf20496b90b85cdf5f190854ee2e513dfe",
+  "type_label": "type:patch"
+}
