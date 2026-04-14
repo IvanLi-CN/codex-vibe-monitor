@@ -15,6 +15,12 @@ export default meta
 
 type Story = StoryObj<typeof meta>
 
+function buildJwt(payload: Record<string, unknown>) {
+  const encode = (value: Record<string, unknown>) =>
+    btoa(JSON.stringify(value)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+  return `${encode({ alg: 'none', typ: 'JWT' })}.${encode(payload)}.signature`
+}
+
 function renderImportedOauthStory(defaultGroupName = 'production') {
   return (
     <AccountPoolStoryRouter
@@ -49,7 +55,12 @@ function buildPastedCredential(
     expired: overrides?.expired ?? '2026-03-20T00:00:00.000Z',
     access_token: 'access-token',
     refresh_token: 'refresh-token',
-    id_token: 'header.payload.signature',
+    id_token: buildJwt({
+      email: overrides?.email ?? 'paste-story@duckmail.sbs',
+      auth: {
+        chatgpt_account_id: overrides?.account_id ?? 'acct_paste_story',
+      },
+    }),
     ...(overrides?._storybookStatus
       ? { _storybookStatus: overrides._storybookStatus }
       : {}),
@@ -74,7 +85,12 @@ async function uploadImportFixture(canvasElement: HTMLElement) {
         expired: '2026-03-20T00:00:00.000Z',
         access_token: 'access-token',
         refresh_token: 'refresh-token',
-        id_token: 'header.payload.signature',
+        id_token: buildJwt({
+          email: 'story-import@duckmail.sbs',
+          auth: {
+            chatgpt_account_id: 'acct_story_import',
+          },
+        }),
       }),
     ],
     'story-import@duckmail.sbs.json',
@@ -128,6 +144,22 @@ export const PasteAddedToQueue: Story = {
     await userEvent.paste(buildPastedCredential())
     await expect(canvas.getByText(/pasted credential #1\.json/i)).toBeInTheDocument()
     await expect(editor).toHaveValue('')
+  },
+}
+
+export const PasteDuplicateBlocked: Story = {
+  render: () => renderImportedOauthStory(),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const editor = canvas.getByLabelText(/paste one credential json/i)
+    const credential = buildPastedCredential()
+    await userEvent.click(editor)
+    await userEvent.paste(credential)
+    await expect(canvas.getByText(/pasted credential #1\.json/i)).toBeInTheDocument()
+    await userEvent.click(editor)
+    await userEvent.paste(credential)
+    await expect(canvas.getByText(/already queued/i)).toBeInTheDocument()
+    await expect(canvas.getAllByText(/pasted credential #1\.json/i)).toHaveLength(1)
   },
 }
 

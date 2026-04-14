@@ -116,7 +116,6 @@ export default function UpstreamAccountCreatePage() {
     removeOauthMailboxSession,
     completeOauthLogin,
     createApiKeyAccount,
-    runImportedOauthValidation,
     startImportedOauthValidationJob,
     stopImportedOauthValidationJob,
     importOauthAccounts,
@@ -279,6 +278,11 @@ export default function UpstreamAccountCreatePage() {
   const [importFiles, setImportFiles] = useState<
     ImportOauthCredentialFilePayload[]
   >([]);
+  const importFilesRef = useRef<ImportOauthCredentialFilePayload[]>([]);
+  const [importSelectionFeedback, setImportSelectionFeedback] = useState<{
+    variant: "warning" | "error";
+    messages: string[];
+  } | null>(null);
   const [importValidationDialogOpen, setImportValidationDialogOpen] =
     useState(false);
   const [importValidationState, setImportValidationState] =
@@ -565,6 +569,10 @@ export default function UpstreamAccountCreatePage() {
     }
     return null;
   };
+  useEffect(() => {
+    importFilesRef.current = importFiles;
+  }, [importFiles]);
+
   const invalidateCurrentSingleOauthSession = useCallback(() => {
     invalidatePendingSingleOauthSession(
       session,
@@ -1685,6 +1693,7 @@ export default function UpstreamAccountCreatePage() {
     groupDraftNotes,
     groups,
     importFiles,
+    importFilesRef,
     importFilesRevisionRef,
     importFileSourceSequenceRef,
     importGroupName,
@@ -1701,7 +1710,6 @@ export default function UpstreamAccountCreatePage() {
     importValidationJobIdRef,
     importValidationState,
     persistDraftGroupSettings,
-    runImportedOauthValidation,
     setActionError,
     setImportFiles,
     setImportInputKey,
@@ -1709,6 +1717,7 @@ export default function UpstreamAccountCreatePage() {
     setImportPasteDraft,
     setImportPasteDraftSerial,
     setImportPasteError,
+    setImportSelectionFeedback,
     setImportValidationDialogOpen,
     setImportValidationState,
     startImportedOauthValidationJob,
@@ -1990,6 +1999,7 @@ export default function UpstreamAccountCreatePage() {
     importPasteBusy,
     importPasteDraft,
     importPasteError,
+    importSelectionFeedback,
     importSelectionLabel,
     importTagIds,
     importValidationDialogOpen,
@@ -2061,6 +2071,7 @@ export default function UpstreamAccountCreatePage() {
     setImportPasteDraft,
     setImportPasteDraftSerial,
     setImportPasteError,
+    setImportSelectionFeedback,
     setImportTagIds,
     setManualCopyOpen,
     setOauthCallbackUrl,

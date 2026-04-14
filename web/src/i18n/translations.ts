@@ -291,7 +291,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.import.createTitle":
       "Import Codex OAuth JSON",
     "accountPool.upstreamAccounts.import.createDescription":
-      "Select exported credential files or paste one credential JSON at a time, pre-validate each item, then batch-import the usable accounts.",
+      "Select exported credential files or paste one credential JSON at a time, run local checks and dedupe first, then use Validate and review for the actual server-side preview.",
     "accountPool.upstreamAccounts.import.fileInputLabel":
       "Credential JSON files",
     "accountPool.upstreamAccounts.import.paste.label":
@@ -299,11 +299,11 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.import.paste.placeholder":
       '{\n  "type": "codex",\n  "email": "owner@example.com",\n  ...\n}',
     "accountPool.upstreamAccounts.import.paste.hint":
-      "Paste exactly one credential JSON object. A successful paste is added to the queue automatically; if validation fails, you can edit and retry here.",
+      "Paste exactly one credential JSON object. A successful paste is checked locally and added to the queue automatically; actual API validation waits for Validate and review.",
     "accountPool.upstreamAccounts.import.paste.validating":
-      "Pre-validating pasted credential…",
+      "Checking pasted credential locally…",
     "accountPool.upstreamAccounts.import.paste.action":
-      "Validate and add to queue",
+      "Check and add to queue",
     "accountPool.upstreamAccounts.import.paste.clearDraft": "Clear editor",
     "accountPool.upstreamAccounts.import.paste.emptyError":
       "Paste one credential JSON object before validating.",
@@ -313,6 +313,26 @@ const baseTranslations = {
       "Paste exactly one credential JSON object.",
     "accountPool.upstreamAccounts.import.paste.unexpectedResponse":
       "The pasted credential returned an unexpected validation response.",
+    "accountPool.upstreamAccounts.import.local.invalidType":
+      "type must be codex.",
+    "accountPool.upstreamAccounts.import.local.requiredField":
+      "{{fieldName}} is required.",
+    "accountPool.upstreamAccounts.import.local.invalidJwt":
+      "{{tokenName}} must be a valid JWT.",
+    "accountPool.upstreamAccounts.import.local.invalidExpired":
+      "expired must be a valid RFC3339 timestamp.",
+    "accountPool.upstreamAccounts.import.local.missingExpiry":
+      "expired is required when token exp is unavailable.",
+    "accountPool.upstreamAccounts.import.local.emailMismatch":
+      "email does not match id_token.",
+    "accountPool.upstreamAccounts.import.local.accountIdMismatch":
+      "account_id does not match id_token.",
+    "accountPool.upstreamAccounts.import.local.pasteDuplicate":
+      "This credential is already queued.",
+    "accountPool.upstreamAccounts.import.local.fileRejected":
+      'Skipped "{{fileName}}": {{reason}}',
+    "accountPool.upstreamAccounts.import.local.duplicateSkipped":
+      'Skipped duplicate credential "{{fileName}}" because the same account is already queued.',
     "accountPool.upstreamAccounts.import.selectedFilesTitle":
       "Queued credentials",
     "accountPool.upstreamAccounts.import.selectedFilesEmpty":
@@ -327,9 +347,9 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.import.validateAction": "Validate and review",
     "accountPool.upstreamAccounts.import.validation.title": "Import validation",
     "accountPool.upstreamAccounts.import.validation.description":
-      "Checked {{checked}} of {{total}} unique credentials from {{files}} selected files.",
+      "Checked {{checked}} of {{total}} unique credentials from {{files}} queued items.",
     "accountPool.upstreamAccounts.import.validation.checking":
-      "Validating selected credential files…",
+      "Validating queued credentials…",
     "accountPool.upstreamAccounts.import.validation.empty":
       "No validation rows to show yet.",
     "accountPool.upstreamAccounts.import.validation.clearFilter":
@@ -2027,16 +2047,16 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.createPage.tabs.apiKey": "API Key",
     "accountPool.upstreamAccounts.import.createTitle": "导入 Codex OAuth JSON",
     "accountPool.upstreamAccounts.import.createDescription":
-      "选择导出的凭据 JSON 文件，或一次粘贴一条凭据 JSON，先逐条预校验，再批量导入可用账号。",
+      "选择导出的凭据 JSON 文件，或一次粘贴一条凭据 JSON，先做本地检查与去重，再通过“验证并预览”执行真正的服务端预览。",
     "accountPool.upstreamAccounts.import.fileInputLabel": "凭据 JSON 文件",
     "accountPool.upstreamAccounts.import.paste.label": "粘贴单条凭据 JSON",
     "accountPool.upstreamAccounts.import.paste.placeholder":
       '{\n  "type": "codex",\n  "email": "owner@example.com",\n  ...\n}',
     "accountPool.upstreamAccounts.import.paste.hint":
-      "每次只粘贴一条凭据 JSON object。粘贴后会自动预校验，成功就加入列表；失败时可在这里继续编辑后重试。",
+      "每次只粘贴一条凭据 JSON object。粘贴成功后会先做本地检查并自动加入列表；真正的接口校验会在“验证并预览”时统一执行。",
     "accountPool.upstreamAccounts.import.paste.validating":
-      "正在预校验粘贴的凭据…",
-    "accountPool.upstreamAccounts.import.paste.action": "校验并加入列表",
+      "正在本地检查粘贴的凭据…",
+    "accountPool.upstreamAccounts.import.paste.action": "检查并加入列表",
     "accountPool.upstreamAccounts.import.paste.clearDraft": "清空编辑框",
     "accountPool.upstreamAccounts.import.paste.emptyError":
       "请先粘贴一条凭据 JSON object。",
@@ -2046,7 +2066,27 @@ const baseTranslations = {
       "一次只能粘贴一条凭据 JSON object。",
     "accountPool.upstreamAccounts.import.paste.unexpectedResponse":
       "粘贴凭据返回了无法识别的校验结果。",
-    "accountPool.upstreamAccounts.import.selectedFilesTitle": "待导入凭据",
+    "accountPool.upstreamAccounts.import.local.invalidType":
+      "type 必须是 codex。",
+    "accountPool.upstreamAccounts.import.local.requiredField":
+      "{{fieldName}} 不能为空。",
+    "accountPool.upstreamAccounts.import.local.invalidJwt":
+      "{{tokenName}} 必须是合法 JWT。",
+    "accountPool.upstreamAccounts.import.local.invalidExpired":
+      "expired 必须是合法 RFC3339 时间戳。",
+    "accountPool.upstreamAccounts.import.local.missingExpiry":
+      "当 token 缺少 exp 时，必须提供 expired。",
+    "accountPool.upstreamAccounts.import.local.emailMismatch":
+      "email 与 id_token 不一致。",
+    "accountPool.upstreamAccounts.import.local.accountIdMismatch":
+      "account_id 与 id_token 不一致。",
+    "accountPool.upstreamAccounts.import.local.pasteDuplicate":
+      "这条凭据已经在待验证列表里了。",
+    "accountPool.upstreamAccounts.import.local.fileRejected":
+      "已跳过 {{fileName}}：{{reason}}",
+    "accountPool.upstreamAccounts.import.local.duplicateSkipped":
+      "已跳过重复凭据 {{fileName}}：同一账号已经在待验证列表里。",
+    "accountPool.upstreamAccounts.import.selectedFilesTitle": "待验证凭据",
     "accountPool.upstreamAccounts.import.selectedFilesEmpty":
       "还没有加入任何凭据。",
     "accountPool.upstreamAccounts.import.filesSelected":
@@ -2059,9 +2099,9 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.import.validateAction": "验证并预览",
     "accountPool.upstreamAccounts.import.validation.title": "导入验证",
     "accountPool.upstreamAccounts.import.validation.description":
-      "已检查 {{files}} 个文件中的 {{checked}} / {{total}} 个唯一凭据。",
+      "已检查 {{files}} 个输入项中的 {{checked}} / {{total}} 条唯一凭据。",
     "accountPool.upstreamAccounts.import.validation.checking":
-      "正在验证所选凭据文件…",
+      "正在验证待选凭据…",
     "accountPool.upstreamAccounts.import.validation.empty":
       "暂时没有可显示的验证结果。",
     "accountPool.upstreamAccounts.import.validation.clearFilter": "清除筛选",
