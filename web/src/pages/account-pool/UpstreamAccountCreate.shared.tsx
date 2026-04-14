@@ -552,6 +552,278 @@ export function createImportedOauthPastedFileName(serial: number) {
   return `Pasted credential #${serial}.json`;
 }
 
+function normalizeImportedOauthRequiredString(
+  value: unknown,
+  fieldName: string,
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return {
+      ok: false as const,
+      error: t("accountPool.upstreamAccounts.import.local.requiredField", {
+        fieldName,
+      }),
+    };
+  }
+  return {
+    ok: true as const,
+    value: value.trim(),
+  };
+}
+
+function decodeImportedOauthBase64UrlUtf8(input: string) {
+  const normalized = input.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(
+    normalized.length + ((4 - (normalized.length % 4)) % 4),
+    "=",
+  );
+  const binary = atob(padded);
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
+function parseImportedOauthJwtPayload(
+  token: string,
+  tokenName: "access_token" | "id_token",
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  const parts = token.split(".");
+  if (
+    parts.length !== 3 ||
+    parts.some((part) => part.trim().length === 0)
+  ) {
+    return {
+      ok: false as const,
+      error: t("accountPool.upstreamAccounts.import.local.invalidJwt", {
+        tokenName,
+      }),
+    };
+  }
+
+  try {
+    const decoded = decodeImportedOauthBase64UrlUtf8(parts[1]);
+    const payload = JSON.parse(decoded) as Record<string, unknown>;
+    return {
+      ok: true as const,
+      payload,
+    };
+  } catch {
+    return {
+      ok: false as const,
+      error: t("accountPool.upstreamAccounts.import.local.invalidJwt", {
+        tokenName,
+      }),
+    };
+  }
+}
+
+function parseImportedOauthJwtExpiration(payload: Record<string, unknown>) {
+  const exp = payload.exp;
+  if (typeof exp !== "number" || !Number.isFinite(exp)) {
+    return null;
+  }
+  return exp;
+}
+
+function isImportedOauthRfc3339Timestamp(value: string) {
+  const normalized = value.trim();
+  if (
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(
+      normalized,
+    )
+  ) {
+    return false;
+  }
+  return !Number.isNaN(Date.parse(normalized));
+}
+
+function extractImportedOauthJwtEmail(payload: Record<string, unknown>) {
+  if (typeof payload.email === "string" && payload.email.trim().length > 0) {
+    return payload.email.trim();
+  }
+  const profile = payload.profile;
+  if (
+    profile &&
+    typeof profile === "object" &&
+    typeof (profile as Record<string, unknown>).email === "string"
+  ) {
+    return ((profile as Record<string, unknown>).email as string).trim();
+  }
+  return null;
+}
+
+function extractImportedOauthJwtAccountId(payload: Record<string, unknown>) {
+  const auth = payload.auth;
+  if (
+    !auth ||
+    typeof auth !== "object" ||
+    typeof (auth as Record<string, unknown>).chatgpt_account_id !== "string"
+  ) {
+    return null;
+  }
+  return ((auth as Record<string, unknown>).chatgpt_account_id as string).trim();
+}
+
+export function buildImportedOauthMatchKeyFromValues(
+  email: string | null | undefined,
+  chatgptAccountId: string | null | undefined,
+) {
+  const normalizedAccountId = chatgptAccountId?.trim().toLocaleLowerCase();
+  if (normalizedAccountId) {
+    return `account:${normalizedAccountId}`;
+  }
+  const normalizedEmail = email?.trim().toLocaleLowerCase();
+  if (normalizedEmail) {
+    return `email:${normalizedEmail}`;
+  }
+  return null;
+}
+
+export function validateImportedOauthCredentialLocally(
+  content: string,
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  const normalizedContent = content.trim();
+  if (!normalizedContent) {
+    return {
+      ok: false as const,
+      error: t("accountPool.upstreamAccounts.import.paste.emptyError"),
+    };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(normalizedContent);
+  } catch {
+    return {
+      ok: false as const,
+      error: t("accountPool.upstreamAccounts.import.paste.invalidJsonError"),
+    };
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {
+      ok: false as const,
+      error: t("accountPool.upstreamAccounts.import.paste.singleObjectError"),
+    };
+  }
+
+  const record = parsed as Record<string, unknown>;
+  const sourceType = record.type;
+  if (
+    typeof sourceType !== "string" ||
+    sourceType.trim().length === 0 ||
+    sourceType.trim().toLowerCase() !== "codex"
+  ) {
+    return {
+      ok: false as const,
+      error: t("accountPool.upstreamAccounts.import.local.invalidType"),
+    };
+  }
+
+  const emailResult = normalizeImportedOauthRequiredString(record.email, "email", t);
+  if (!emailResult.ok) return emailResult;
+  const accountIdResult = normalizeImportedOauthRequiredString(
+    record.account_id,
+    "account_id",
+    t,
+  );
+  if (!accountIdResult.ok) return accountIdResult;
+  const accessTokenResult = normalizeImportedOauthRequiredString(
+    record.access_token,
+    "access_token",
+    t,
+  );
+  if (!accessTokenResult.ok) return accessTokenResult;
+  const refreshTokenResult = normalizeImportedOauthRequiredString(
+    record.refresh_token,
+    "refresh_token",
+    t,
+  );
+  if (!refreshTokenResult.ok) return refreshTokenResult;
+  const idTokenResult = normalizeImportedOauthRequiredString(
+    record.id_token,
+    "id_token",
+    t,
+  );
+  if (!idTokenResult.ok) return idTokenResult;
+
+  if (
+    Object.prototype.hasOwnProperty.call(record, "expired") &&
+    record.expired != null &&
+    typeof record.expired !== "string"
+  ) {
+    return {
+      ok: false as const,
+      error: t("accountPool.upstreamAccounts.import.local.invalidExpired"),
+    };
+  }
+
+  const idTokenPayload = parseImportedOauthJwtPayload(
+    idTokenResult.value,
+    "id_token",
+    t,
+  );
+  if (!idTokenPayload.ok) return idTokenPayload;
+
+  const jwtEmail = extractImportedOauthJwtEmail(idTokenPayload.payload);
+  if (
+    jwtEmail &&
+    jwtEmail.toLowerCase() !== emailResult.value.toLowerCase()
+  ) {
+    return {
+      ok: false as const,
+      error: t("accountPool.upstreamAccounts.import.local.emailMismatch"),
+    };
+  }
+
+  const jwtAccountId = extractImportedOauthJwtAccountId(idTokenPayload.payload);
+  if (jwtAccountId && jwtAccountId !== accountIdResult.value) {
+    return {
+      ok: false as const,
+      error: t("accountPool.upstreamAccounts.import.local.accountIdMismatch"),
+    };
+  }
+
+  const rawExpired =
+    typeof record.expired === "string" ? record.expired.trim() : "";
+  if (rawExpired) {
+    if (!isImportedOauthRfc3339Timestamp(rawExpired)) {
+      return {
+        ok: false as const,
+        error: t("accountPool.upstreamAccounts.import.local.invalidExpired"),
+      };
+    }
+  } else {
+    const accessTokenPayload = parseImportedOauthJwtPayload(
+      accessTokenResult.value,
+      "access_token",
+      t,
+    );
+    const accessTokenExp = accessTokenPayload.ok
+      ? parseImportedOauthJwtExpiration(accessTokenPayload.payload)
+      : null;
+    const idTokenExp = parseImportedOauthJwtExpiration(idTokenPayload.payload);
+    if (accessTokenExp == null && idTokenExp == null) {
+      return {
+        ok: false as const,
+        error: t("accountPool.upstreamAccounts.import.local.missingExpiry"),
+      };
+    }
+  }
+
+  return {
+    ok: true as const,
+    normalizedContent,
+    email: emailResult.value,
+    chatgptAccountId: accountIdResult.value,
+    matchKey: buildImportedOauthMatchKeyFromValues(
+      emailResult.value,
+      accountIdResult.value,
+    ),
+  };
+}
+
 export function getImportedOauthValidationStatusLabel(
   status: ImportedOauthValidationRow["status"],
   t: (key: string, values?: Record<string, string | number>) => string,
@@ -582,32 +854,7 @@ export function parseImportedOauthPasteDraft(
   content: string,
   t: (key: string, values?: Record<string, string | number>) => string,
 ) {
-  const normalizedContent = content.trim();
-  if (!normalizedContent) {
-    return {
-      ok: false as const,
-      error: t("accountPool.upstreamAccounts.import.paste.emptyError"),
-    };
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(normalizedContent);
-  } catch {
-    return {
-      ok: false as const,
-      error: t("accountPool.upstreamAccounts.import.paste.invalidJsonError"),
-    };
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return {
-      ok: false as const,
-      error: t("accountPool.upstreamAccounts.import.paste.singleObjectError"),
-    };
-  }
-  return {
-    ok: true as const,
-    normalizedContent,
-  };
+  return validateImportedOauthCredentialLocally(content, t);
 }
 
 export function getImportedOauthPasteValidationError(
@@ -702,15 +949,7 @@ export function chunkImportedOauthItems(
 export function buildImportedOauthMatchKey(
   row: Pick<ImportedOauthValidationRow, "email" | "chatgptAccountId">,
 ) {
-  const normalizedAccountId = row.chatgptAccountId?.trim().toLocaleLowerCase();
-  if (normalizedAccountId) {
-    return `account:${normalizedAccountId}`;
-  }
-  const normalizedEmail = row.email?.trim().toLocaleLowerCase();
-  if (normalizedEmail) {
-    return `email:${normalizedEmail}`;
-  }
-  return null;
+  return buildImportedOauthMatchKeyFromValues(row.email, row.chatgptAccountId);
 }
 
 export function applyImportedOauthDuplicateStatuses(
