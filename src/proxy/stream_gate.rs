@@ -310,7 +310,7 @@ pub(crate) fn pool_same_account_attempt_budget(
         if distinct_account_count <= 1 {
             initial_same_account_attempts.max(1)
         } else {
-            1
+            initial_same_account_attempts.max(POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS)
         }
     } else if distinct_account_count <= 1 {
         initial_same_account_attempts.max(1)

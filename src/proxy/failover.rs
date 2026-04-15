@@ -811,11 +811,10 @@ pub(crate) async fn send_pool_request_with_failover(
         let mut first_response_attempt_started_at = None;
 
         for same_account_attempt in 0..same_account_attempt_loop_budget {
-            if original_uri.path() == "/v1/responses" && first_response_attempt_started_at.is_none()
-            {
+            if uses_timeout_route_failover && first_response_attempt_started_at.is_none() {
                 first_response_attempt_started_at = Some(Instant::now());
             }
-            let attempt_total_timeout_started_at = if original_uri.path() == "/v1/responses" {
+            let attempt_total_timeout_started_at = if uses_timeout_route_failover {
                 if let Some(started_at) = responses_total_timeout_started_at {
                     Some(started_at)
                 } else if same_account_attempt > 0 {
@@ -1784,11 +1783,15 @@ pub(crate) async fn send_pool_request_with_failover(
                     Some(status),
                     Some(route_error_message.as_str()),
                 );
+                let compact_support_is_unsupported = compact_support_observation
+                    .as_ref()
+                    .is_some_and(|value| value.status == COMPACT_SUPPORT_STATUS_UNSUPPORTED);
                 let timeout_shaped_failure = status.is_server_error()
                     && pool_failure_is_timeout_shaped(failure_kind, &message);
                 let should_timeout_route_failover =
                     uses_timeout_route_failover && timeout_shaped_failure;
                 let retry_delay = (has_retry_budget
+                    && !compact_support_is_unsupported
                     && !should_timeout_route_failover
                     && status.is_server_error()
                     && status != StatusCode::TOO_MANY_REQUESTS)

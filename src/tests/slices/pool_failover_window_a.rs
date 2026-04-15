@@ -1291,6 +1291,147 @@ async fn pool_openai_v1_responses_total_timeout_caps_same_account_retry_before_f
 }
 
 #[tokio::test]
+async fn pool_openai_v1_responses_compact_total_timeout_caps_same_account_retry_before_first_byte()
+{
+    #[derive(Debug, sqlx::FromRow)]
+    struct PersistedPayloadRow {
+        error_message: Option<String>,
+        payload: Option<String>,
+    }
+
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRouteRow {
+        attempt_index: i64,
+        distinct_account_index: i64,
+        status: String,
+        failure_kind: Option<String>,
+    }
+
+    let (retry_upstream_base, retry_attempts, retry_upstream_handle) =
+        spawn_pool_retry_upstream(&[("Bearer route-one", 2)]).await;
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.openai_proxy_compact_handshake_timeout = Duration::from_millis(180);
+    config.pool_upstream_responses_total_timeout = Duration::from_millis(300);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Retry Route One",
+        "route-one",
+        None,
+        None,
+        Some(retry_upstream_base.as_str()),
+    )
+    .await;
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "previous_response_id": "resp_prev_timeout_001",
+        "input": [{"role": "user", "content": "compact timeout budget"}],
+    }))
+    .expect("serialize compact timeout request body");
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses/compact".parse().expect("valid compact uri")),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(request_body),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read compact same-account retry timeout response");
+    let response_payload: Value =
+        serde_json::from_slice(&body).expect("decode compact same-account retry timeout body");
+    assert_eq!(
+        response_payload["error"].as_str(),
+        Some("pool upstream total timeout exhausted after 300ms"),
+    );
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 2).await;
+
+    let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
+        r#"
+        SELECT
+            attempt_index,
+            distinct_account_index,
+            status,
+            failure_kind
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load compact same-account retry timeout rows");
+    assert_eq!(attempt_rows.len(), 2);
+    assert_eq!(attempt_rows[0].attempt_index, 1);
+    assert_eq!(attempt_rows[0].distinct_account_index, 1);
+    assert_eq!(
+        attempt_rows[0].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+    );
+    assert_eq!(attempt_rows[1].attempt_index, 2);
+    assert_eq!(attempt_rows[1].distinct_account_index, 1);
+    assert_eq!(
+        attempt_rows[1].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
+    );
+    assert_eq!(
+        attempt_rows[1].failure_kind.as_deref(),
+        Some(PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED),
+    );
+
+    let attempts = retry_attempts.lock().expect("lock compact retry route attempts");
+    assert_eq!(attempts.get("Bearer route-one").copied(), Some(1));
+    drop(attempts);
+
+    let row = sqlx::query_as::<_, PersistedPayloadRow>(
+        r#"
+        SELECT error_message, payload
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load compact same-account timeout exhaustion payload");
+    let payload: Value = serde_json::from_str(
+        row.payload
+            .as_deref()
+            .expect("compact same-account retry timeout payload should be present"),
+    )
+    .expect("decode compact same-account retry timeout payload");
+    assert!(
+        row.error_message.as_deref().is_some_and(|msg| {
+            msg.contains("pool upstream total timeout exhausted after 300ms")
+        })
+    );
+    assert_eq!(payload["poolAttemptCount"].as_i64(), Some(1));
+    assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(1));
+    assert_eq!(
+        payload["poolAttemptTerminalReason"].as_str(),
+        Some(PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED),
+    );
+
+    retry_upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn pool_openai_v1_responses_retries_same_account_on_server_overloaded_before_forwarding() {
     #[derive(Debug, sqlx::FromRow)]
     struct AttemptRouteRow {
@@ -1647,7 +1788,7 @@ async fn pool_openai_v1_responses_overload_falls_back_to_alternate_route_after_s
     assert_eq!(payload["authorization"].as_str(), Some("Bearer route-two"));
 
     wait_for_codex_invocations(&state.pool, 1).await;
-    wait_for_pool_attempt_row_count(&state.pool, 6).await;
+    wait_for_pool_attempt_row_count(&state.pool, 8).await;
 
     let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
         r#"
@@ -1664,7 +1805,7 @@ async fn pool_openai_v1_responses_overload_falls_back_to_alternate_route_after_s
             .iter()
             .map(|row| row.distinct_account_index)
             .collect::<Vec<_>>(),
-        vec![1, 1, 1, 1, 2, 3]
+        vec![1, 1, 1, 1, 2, 2, 2, 3]
     );
     assert_eq!(
         load_test_sticky_route_account_id(&state.pool, "sticky-overload-alternate-route").await,
@@ -1683,7 +1824,7 @@ async fn pool_openai_v1_responses_overload_falls_back_to_alternate_route_after_s
         same_route_attempts
             .get("Bearer route-one-secondary")
             .copied(),
-        Some(1)
+        Some(3)
     );
     drop(same_route_attempts);
 
@@ -1780,7 +1921,7 @@ async fn pool_openai_v1_compact_overload_falls_back_to_alternate_route_before_bo
     );
 
     wait_for_codex_invocations(&state.pool, 1).await;
-    wait_for_pool_attempt_row_count(&state.pool, 6).await;
+    wait_for_pool_attempt_row_count(&state.pool, 8).await;
 
     let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
         r#"
@@ -1797,7 +1938,7 @@ async fn pool_openai_v1_compact_overload_falls_back_to_alternate_route_before_bo
             .iter()
             .map(|row| row.distinct_account_index)
             .collect::<Vec<_>>(),
-        vec![1, 1, 1, 1, 2, 3]
+        vec![1, 1, 1, 1, 2, 2, 2, 3]
     );
     assert_eq!(
         load_test_sticky_route_account_id(&state.pool, "sticky-compact-overload").await,
@@ -1813,7 +1954,7 @@ async fn pool_openai_v1_compact_overload_falls_back_to_alternate_route_before_bo
     );
     assert_eq!(
         same_route_attempts.get("Bearer compact-secondary").copied(),
-        Some(1)
+        Some(3)
     );
     drop(same_route_attempts);
 

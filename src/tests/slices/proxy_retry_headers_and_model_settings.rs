@@ -2453,7 +2453,7 @@ async fn proxy_request_timeouts_only_apply_pool_overrides_to_pool_routes() {
 }
 
 #[test]
-fn pool_same_account_attempt_budget_limits_follow_up_accounts_for_responses_family() {
+fn pool_same_account_attempt_budget_keeps_follow_up_accounts_retryable_for_responses_family() {
     assert_eq!(
         pool_same_account_attempt_budget(
             &"/v1/responses".parse().expect("valid uri"),
@@ -2470,7 +2470,7 @@ fn pool_same_account_attempt_budget_limits_follow_up_accounts_for_responses_fami
             2,
             3,
         ),
-        1
+        3
     );
     assert_eq!(
         pool_same_account_attempt_budget(
@@ -2479,7 +2479,7 @@ fn pool_same_account_attempt_budget_limits_follow_up_accounts_for_responses_fami
             3,
             3,
         ),
-        1
+        3
     );
     assert_eq!(
         pool_same_account_attempt_budget(
@@ -2489,5 +2489,14 @@ fn pool_same_account_attempt_budget_limits_follow_up_accounts_for_responses_fami
             2,
         ),
         2
+    );
+    assert_eq!(
+        pool_same_account_attempt_budget(
+            &"/v1/responses".parse().expect("valid uri"),
+            &Method::POST,
+            2,
+            2,
+        ),
+        POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS
     );
 }

@@ -251,6 +251,78 @@ async fn proxy_openai_v1_chunked_json_without_header_sticky_uses_live_first_atte
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_responses_live_first_failover_restores_full_retry_budget_for_follow_up_accounts(
+) {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[
+        ("Bearer upstream-primary", 99),
+        ("Bearer upstream-secondary", 2),
+        ("Bearer upstream-tertiary", 0),
+    ])
+    .await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(180),
+        Duration::from_millis(10),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+    insert_test_pool_api_key_account(&state, "Tertiary", "upstream-tertiary").await;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    let first_chunk = format!(
+        "{{\"model\":\"gpt-5\",\"input\":\"{}",
+        "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 256)
+    );
+    tokio::spawn(async move {
+        let _ = tx.send(Ok(Bytes::from(first_chunk))).await;
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        let _ = tx.send(Ok(Bytes::from_static(b"\"}"))).await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        5343,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("live-first responses request should eventually succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read via-pool responses response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode via-pool responses body");
+    assert_eq!(payload["authorization"], "Bearer upstream-secondary");
+    assert_eq!(payload["attempt"], 3);
+
+    let attempts = attempts.lock().expect("lock live-first failover attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(3));
+    assert_eq!(attempts.get("Bearer upstream-tertiary").copied(), None);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_header_sticky_stream_prefers_body_timeout_before_pool_wait() {
     let mut config = test_config();
     config.openai_upstream_base_url =
