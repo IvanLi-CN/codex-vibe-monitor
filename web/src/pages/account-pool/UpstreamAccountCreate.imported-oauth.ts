@@ -30,14 +30,20 @@ import {
   createImportedOauthPastedFileName,
   createImportedOauthPastedSourceId,
   createImportedOauthSourceId,
-  getImportedOauthPasteValidationError,
   markImportedOauthRowsAsError,
   mergeImportedOauthValidationRow,
   mergeImportedOauthValidationRows,
   parseImportedOauthPasteDraft,
   replaceImportedOauthValidationRows,
   summarizeImportedOauthBatchErrors,
+  validateImportedOauthCredentialLocally,
 } from "./UpstreamAccountCreate.shared";
+
+type LocalImportedOauthCandidate = {
+  fileName: string;
+  payload: ImportOauthCredentialFilePayload;
+  matchKey: string;
+};
 
 export function useUpstreamAccountCreateImportedOauth(
   ctx: UpstreamAccountCreateControllerContext,
@@ -47,6 +53,7 @@ export function useUpstreamAccountCreateImportedOauth(
     groupDraftNotes,
     groups,
     importFiles,
+    importFilesRef,
     importFilesRevisionRef,
     importFileSourceSequenceRef,
     importGroupName,
@@ -62,7 +69,6 @@ export function useUpstreamAccountCreateImportedOauth(
     importValidationJobIdRef,
     importValidationState,
     persistDraftGroupSettings,
-    runImportedOauthValidation,
     importOauthAccounts,
     setActionError,
     setImportFiles,
@@ -71,6 +77,7 @@ export function useUpstreamAccountCreateImportedOauth(
     setImportPasteDraft,
     setImportPasteDraftSerial,
     setImportPasteError,
+    setImportSelectionFeedback,
     setImportValidationDialogOpen,
     setImportValidationState,
     startImportedOauthValidationJob,
@@ -448,6 +455,47 @@ export function useUpstreamAccountCreateImportedOauth(
     ],
   );
 
+  const summarizeRejectedImportedOauthItems = useCallback(
+    (
+      rejected: Array<{
+        fileName: string;
+        reason: string;
+        duplicate?: boolean;
+      }>,
+    ) => {
+      if (rejected.length === 0) {
+        setImportSelectionFeedback(null);
+        return;
+      }
+      setImportSelectionFeedback({
+        variant: rejected.some((item) => item.duplicate !== true)
+          ? "error"
+          : "warning",
+        messages: rejected.map((item) =>
+          item.duplicate
+            ? t("accountPool.upstreamAccounts.import.local.duplicateSkipped", {
+                fileName: item.fileName,
+              })
+            : t("accountPool.upstreamAccounts.import.local.fileRejected", {
+                fileName: item.fileName,
+                reason: item.reason,
+              }),
+        ),
+      });
+    },
+    [t],
+  );
+
+  const collectQueuedImportedOauthMatchKeys = useCallback(() => {
+    const matchKeys = new Set<string>();
+    for (const item of importFilesRef.current as ImportOauthCredentialFilePayload[]) {
+      const parsed = validateImportedOauthCredentialLocally(item.content, t);
+      if (!parsed.ok || !parsed.matchKey) continue;
+      matchKeys.add(parsed.matchKey);
+    }
+    return matchKeys;
+  }, [importFilesRef, t]);
+
   const validateAndQueueImportedOauthPaste = useCallback(
     async (
       draftContent: string,
@@ -460,10 +508,6 @@ export function useUpstreamAccountCreateImportedOauth(
         setImportPasteError(parsedDraft.error);
         return;
       }
-      if (importGroupProxyState.error) {
-        setImportPasteError(importGroupProxyState.error);
-        return;
-      }
       const serial =
         options?.serial && options.serial > 0
           ? options.serial
@@ -473,11 +517,11 @@ export function useUpstreamAccountCreateImportedOauth(
             })();
       const validationToken = importPasteValidationTokenRef.current + 1;
       importPasteValidationTokenRef.current = validationToken;
-      const importFilesRevision = importFilesRevisionRef.current;
       setImportPasteDraftSerial(serial);
       setImportPasteBusy(true);
       setImportPasteError(null);
       setActionError(null);
+      setImportSelectionFeedback(null);
 
       const item: ImportOauthCredentialFilePayload = {
         sourceId: createImportedOauthPastedSourceId(serial),
@@ -486,43 +530,38 @@ export function useUpstreamAccountCreateImportedOauth(
       };
 
       try {
-        const response = await runImportedOauthValidation({
-          items: [item],
-          groupName: importGroupProxyState.normalizedGroupName || undefined,
-          groupBoundProxyKeys: importGroupProxyState.boundProxyKeys,
-        });
+        const seenKeys = collectQueuedImportedOauthMatchKeys();
+        if (parsedDraft.matchKey && seenKeys.has(parsedDraft.matchKey)) {
+          setImportPasteError(
+            t("accountPool.upstreamAccounts.import.local.pasteDuplicate"),
+          );
+          return;
+        }
+        await resetImportValidationForSelectionChange();
         if (
           validationToken !== importPasteValidationTokenRef.current ||
-          importFilesRevision !== importFilesRevisionRef.current ||
           importPasteDraftRef.current.trim() !== parsedDraft.normalizedContent
         ) {
           return;
         }
-        const row = response.rows[0];
-        if (!row || response.rows.length !== 1) {
+        const refreshedSeenKeys = collectQueuedImportedOauthMatchKeys();
+        if (
+          parsedDraft.matchKey &&
+          refreshedSeenKeys.has(parsedDraft.matchKey)
+        ) {
           setImportPasteError(
-            t("accountPool.upstreamAccounts.import.paste.unexpectedResponse"),
+            t("accountPool.upstreamAccounts.import.local.pasteDuplicate"),
           );
           return;
         }
-        if (row.status === "ok" || row.status === "ok_exhausted") {
-          await resetImportValidationForSelectionChange();
-          if (
-            validationToken !== importPasteValidationTokenRef.current ||
-            importFilesRevision !== importFilesRevisionRef.current ||
-            importPasteDraftRef.current.trim() !== parsedDraft.normalizedContent
-          ) {
-            return;
-          }
-          importFilesRevisionRef.current += 1;
-          setImportFiles((current: ImportOauthCredentialFilePayload[]) => [...current, item]);
-          importPasteDraftRef.current = "";
-          setImportPasteDraft("");
-          setImportPasteDraftSerial(null);
-          setImportPasteError(null);
-          return;
-        }
-        setImportPasteError(getImportedOauthPasteValidationError(row, t));
+        importFilesRevisionRef.current += 1;
+        const nextItems = [...(importFilesRef.current as ImportOauthCredentialFilePayload[]), item];
+        importFilesRef.current = nextItems;
+        setImportFiles(nextItems);
+        importPasteDraftRef.current = "";
+        setImportPasteDraft("");
+        setImportPasteDraftSerial(null);
+        setImportPasteError(null);
       } catch (err) {
         if (validationToken === importPasteValidationTokenRef.current) {
           setImportPasteError(err instanceof Error ? err.message : String(err));
@@ -534,11 +573,9 @@ export function useUpstreamAccountCreateImportedOauth(
       }
     },
     [
-      importGroupProxyState.boundProxyKeys,
-      importGroupProxyState.error,
-      importGroupProxyState.normalizedGroupName,
+      collectQueuedImportedOauthMatchKeys,
+      importFilesRef,
       resetImportValidationForSelectionChange,
-      runImportedOauthValidation,
       t,
     ],
   );
@@ -570,6 +607,7 @@ export function useUpstreamAccountCreateImportedOauth(
       setImportPasteBusy(false);
       setImportPasteError(null);
       setActionError(null);
+      setImportSelectionFeedback(null);
       void validateAndQueueImportedOauthPaste(nextDraft, {
         serial,
       });
@@ -599,24 +637,113 @@ export function useUpstreamAccountCreateImportedOauth(
       try {
         importPasteValidationTokenRef.current += 1;
         setImportPasteBusy(false);
-        await resetImportValidationForSelectionChange();
         const sourceIdOffset = importFileSourceSequenceRef.current;
         importFileSourceSequenceRef.current += selectedFiles.length;
-        const items = await Promise.all(
-          selectedFiles.map(async (file, index) => ({
-            sourceId: createImportedOauthSourceId(file, sourceIdOffset + index),
-            fileName: file.name,
-            content: await file.text(),
-          })),
+        const parsedItems = await Promise.all(
+          selectedFiles.map(async (file, index) => {
+            const content = await file.text();
+            const parsed = validateImportedOauthCredentialLocally(content, t);
+            return {
+              fileName: file.name,
+              sourceId: createImportedOauthSourceId(file, sourceIdOffset + index),
+              content,
+              parsed,
+            };
+          }),
         );
-        importFilesRevisionRef.current += 1;
-        setImportFiles((current: ImportOauthCredentialFilePayload[]) => [...current, ...items]);
+        const validCandidates: LocalImportedOauthCandidate[] = [];
+        const rejectedItems: Array<{
+          fileName: string;
+          reason: string;
+          duplicate?: boolean;
+        }> = [];
+
+        for (const item of parsedItems) {
+          if (!item.parsed.ok) {
+            rejectedItems.push({
+              fileName: item.fileName,
+              reason: item.parsed.error,
+            });
+            continue;
+          }
+          if (!item.parsed.matchKey) {
+            rejectedItems.push({
+              fileName: item.fileName,
+              reason: t("accountPool.upstreamAccounts.import.local.requiredField", {
+                fieldName: "account_id",
+              }),
+            });
+            continue;
+          }
+          validCandidates.push({
+            fileName: item.fileName,
+            matchKey: item.parsed.matchKey,
+            payload: {
+              sourceId: item.sourceId,
+              fileName: item.fileName,
+              content: item.parsed.normalizedContent,
+            },
+          });
+        }
+
+        const seenKeys = collectQueuedImportedOauthMatchKeys();
+        const acceptedCandidates: LocalImportedOauthCandidate[] = [];
+        for (const candidate of validCandidates) {
+          if (seenKeys.has(candidate.matchKey)) {
+            rejectedItems.push({
+              fileName: candidate.fileName,
+              reason: "",
+              duplicate: true,
+            });
+            continue;
+          }
+          seenKeys.add(candidate.matchKey);
+          acceptedCandidates.push(candidate);
+        }
+        if (acceptedCandidates.length > 0) {
+          await resetImportValidationForSelectionChange();
+          const refreshedSeenKeys = collectQueuedImportedOauthMatchKeys();
+          const acceptedItems: ImportOauthCredentialFilePayload[] = [];
+          for (const candidate of acceptedCandidates) {
+            if (refreshedSeenKeys.has(candidate.matchKey)) {
+              rejectedItems.push({
+                fileName: candidate.fileName,
+                reason: "",
+                duplicate: true,
+              });
+              continue;
+            }
+            refreshedSeenKeys.add(candidate.matchKey);
+            acceptedItems.push(candidate.payload);
+          }
+          if (acceptedItems.length === 0) {
+            summarizeRejectedImportedOauthItems(rejectedItems);
+            setImportInputKey((current: number) => current + 1);
+            return;
+          }
+          importFilesRevisionRef.current += 1;
+          const nextItems = [
+            ...(importFilesRef.current as ImportOauthCredentialFilePayload[]),
+            ...acceptedItems,
+          ];
+          importFilesRef.current = nextItems;
+          setImportFiles(nextItems);
+        }
+
+        summarizeRejectedImportedOauthItems(rejectedItems);
         setImportInputKey((current: number) => current + 1);
       } catch (err) {
         setActionError(err instanceof Error ? err.message : String(err));
       }
     },
-    [resetImportValidationForSelectionChange],
+    [
+      collectQueuedImportedOauthMatchKeys,
+      importFileSourceSequenceRef,
+      importFilesRef,
+      resetImportValidationForSelectionChange,
+      summarizeRejectedImportedOauthItems,
+      t,
+    ],
   );
 
   const handleClearImportSelection = useCallback(() => {
@@ -625,10 +752,12 @@ export function useUpstreamAccountCreateImportedOauth(
       setImportPasteBusy(false);
       await resetImportValidationForSelectionChange();
       importFilesRevisionRef.current += 1;
+      importFilesRef.current = [];
       setImportFiles([]);
+      setImportSelectionFeedback(null);
       setImportInputKey((current: number) => current + 1);
     })();
-  }, [resetImportValidationForSelectionChange]);
+  }, [importFilesRef, resetImportValidationForSelectionChange]);
 
   const handleValidateImportedOauth = useCallback(async () => {
     if (!writesEnabled || importFiles.length === 0) return;
@@ -790,6 +919,7 @@ export function useUpstreamAccountCreateImportedOauth(
           });
 
         importFilesRevisionRef.current += 1;
+        importFilesRef.current = workingItems;
         setImportFiles(workingItems);
         setImportValidationState(() => {
           if (workingRows.length === 0) {
@@ -849,6 +979,7 @@ export function useUpstreamAccountCreateImportedOauth(
     groupDraftConcurrencyLimits,
     groups,
     importFiles,
+    importFilesRef,
     importGroupName,
     importGroupProxyState.boundProxyKeys,
     importGroupProxyState.error,

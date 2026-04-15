@@ -1,15 +1,40 @@
 describe("UpstreamAccountCreatePage imported oauth", () => {
-  function createImportedOauthFixture(index: number) {
-    const email = `mailbox-${index}@duckmail.sbs`;
+  function buildJwt(payload: Record<string, unknown>) {
+    const encode = (value: Record<string, unknown>) =>
+      btoa(JSON.stringify(value))
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_")
+        .replace(/=+$/g, "");
+    return `${encode({ alg: "none", typ: "JWT" })}.${encode(payload)}.signature`;
+  }
+
+  function createImportedOauthFixture(
+    index: number,
+    overrides?: Partial<{
+      email: string;
+      accountId: string;
+      expired: string;
+      idToken: string;
+    }>,
+  ) {
+    const email = overrides?.email ?? `mailbox-${index}@duckmail.sbs`;
+    const accountId = overrides?.accountId ?? `acct_${index}`;
     const fileName = `${email}.json`;
     const content = JSON.stringify({
       type: "codex",
       email,
-      account_id: `acct_${index}`,
-      expired: "2026-03-20T00:00:00.000Z",
+      account_id: accountId,
+      expired: overrides?.expired ?? "2026-03-20T00:00:00.000Z",
       access_token: "access",
       refresh_token: "refresh",
-      id_token: "header.payload.signature",
+      id_token:
+        overrides?.idToken ??
+        buildJwt({
+          email,
+          auth: {
+            chatgpt_account_id: accountId,
+          },
+        }),
     });
     const file = new File([content], fileName, {
       type: "application/json",
@@ -20,7 +45,7 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
       content,
       fileName,
       email,
-      chatgptAccountId: `acct_${index}`,
+      chatgptAccountId: accountId,
     };
   }
 
@@ -289,21 +314,9 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     expect(document.body.textContent).toContain(fixture.fileName);
   });
 
-  it("auto-validates a pasted credential and adds it to the queue", async () => {
+  it("checks a pasted credential locally and adds it to the queue without calling the validation API", async () => {
     const fixture = createImportedOauthFixture(1);
-    const runImportedOauthValidation = vi.fn().mockResolvedValue({
-      inputFiles: 1,
-      uniqueInInput: 1,
-      duplicateInInput: 0,
-      rows: [
-        buildImportedOauthRow(
-          "pasted:1",
-          "Pasted credential #1.json",
-          fixture.email,
-          fixture.chatgptAccountId,
-        ),
-      ],
-    });
+    const runImportedOauthValidation = vi.fn();
     mockUpstreamAccounts({ runImportedOauthValidation });
     render("/account-pool/upstream-accounts/new?mode=import");
 
@@ -318,54 +331,17 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     await flushAsync();
     await flushAsync();
 
-    expect(runImportedOauthValidation).toHaveBeenCalledWith({
-      groupName: TEST_REQUIRED_GROUP_NAME,
-      groupBoundProxyKeys: [...TEST_REQUIRED_BOUND_PROXY_KEYS],
-      items: [
-        {
-          sourceId: "pasted:1",
-          fileName: "Pasted credential #1.json",
-          content: fixture.content,
-        },
-      ],
-    });
+    expect(runImportedOauthValidation).not.toHaveBeenCalled();
     expect(pasteField.value).toBe("");
     expect(pageTextContent()).toContain("Pasted credential #1.json");
   });
 
-  it("keeps pasted content editable after failed pre-validation and retries only on explicit action", async () => {
-    const invalidFixture = createImportedOauthFixture(1);
+  it("keeps pasted content editable after failed local validation and retries only on explicit action", async () => {
+    const invalidFixture = createImportedOauthFixture(1, {
+      idToken: "invalid.jwt",
+    });
     const fixedFixture = createImportedOauthFixture(2);
-    const runImportedOauthValidation = vi
-      .fn()
-      .mockResolvedValueOnce({
-        inputFiles: 1,
-        uniqueInInput: 1,
-        duplicateInInput: 0,
-        rows: [
-          buildImportedOauthRow(
-            "pasted:1",
-            "Pasted credential #1.json",
-            invalidFixture.email,
-            invalidFixture.chatgptAccountId,
-            "invalid",
-            "Broken credential",
-          ),
-        ],
-      })
-      .mockResolvedValueOnce({
-        inputFiles: 1,
-        uniqueInInput: 1,
-        duplicateInInput: 0,
-        rows: [
-          buildImportedOauthRow(
-            "pasted:1",
-            "Pasted credential #1.json",
-            fixedFixture.email,
-            fixedFixture.chatgptAccountId,
-          ),
-        ],
-      });
+    const runImportedOauthValidation = vi.fn();
     mockUpstreamAccounts({ runImportedOauthValidation });
     render("/account-pool/upstream-accounts/new?mode=import");
 
@@ -380,33 +356,82 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     await flushAsync();
     await flushAsync();
 
-    expect(runImportedOauthValidation).toHaveBeenCalledTimes(1);
-    expect(pageTextContent()).toContain("Broken credential");
+    expect(runImportedOauthValidation).not.toHaveBeenCalled();
+    expect(pageTextContent()).toContain("id_token must be a valid JWT.");
     expect(pasteField.value).toBe(invalidFixture.content);
 
     setFieldValue(pasteField, fixedFixture.content);
     await flushAsync();
 
-    expect(runImportedOauthValidation).toHaveBeenCalledTimes(1);
+    expect(runImportedOauthValidation).not.toHaveBeenCalled();
 
-    clickButton(/validate and add to queue/i);
+    clickButton(/check and add to queue/i);
     await flushAsync();
     await flushAsync();
 
-    expect(runImportedOauthValidation).toHaveBeenCalledTimes(2);
-    expect(runImportedOauthValidation.mock.calls[1]?.[0]).toEqual({
-      groupName: TEST_REQUIRED_GROUP_NAME,
-      groupBoundProxyKeys: [...TEST_REQUIRED_BOUND_PROXY_KEYS],
-      items: [
-        {
-          sourceId: "pasted:1",
-          fileName: "Pasted credential #1.json",
-          content: fixedFixture.content,
-        },
-      ],
-    });
+    expect(runImportedOauthValidation).not.toHaveBeenCalled();
     expect(pasteField.value).toBe("");
     expect(pageTextContent()).toContain("Pasted credential #1.json");
+  });
+
+  it("rejects two-part JWTs during local validation before queueing", async () => {
+    const email = "two-part@duckmail.sbs";
+    const accountId = "acct_two_part";
+    const invalidFixture = createImportedOauthFixture(1, {
+      email,
+      accountId,
+      idToken: buildJwt({
+        email,
+        auth: {
+          chatgpt_account_id: accountId,
+        },
+      })
+        .split(".")
+        .slice(0, 2)
+        .join("."),
+    });
+    mockUpstreamAccounts({ runImportedOauthValidation: vi.fn() });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    const pasteField = host?.querySelector(
+      'textarea[name="importOauthPasteDraft"]',
+    );
+    if (!(pasteField instanceof HTMLTextAreaElement)) {
+      throw new Error("missing import paste textarea");
+    }
+
+    await pasteIntoField(pasteField, invalidFixture.content);
+    await flushAsync();
+    await flushAsync();
+
+    expect(pageTextContent()).toContain("id_token must be a valid JWT.");
+    expect(pageTextContent()).not.toContain("Pasted credential #1.json");
+    expect(pasteField.value).toBe(invalidFixture.content);
+  });
+
+  it("rejects non-RFC3339 expired values during local validation", async () => {
+    const invalidFixture = createImportedOauthFixture(1, {
+      expired: "2026-03-20 00:00:00",
+    });
+    mockUpstreamAccounts({ runImportedOauthValidation: vi.fn() });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    const pasteField = host?.querySelector(
+      'textarea[name="importOauthPasteDraft"]',
+    );
+    if (!(pasteField instanceof HTMLTextAreaElement)) {
+      throw new Error("missing import paste textarea");
+    }
+
+    await pasteIntoField(pasteField, invalidFixture.content);
+    await flushAsync();
+    await flushAsync();
+
+    expect(pageTextContent()).toContain(
+      "expired must be a valid RFC3339 timestamp.",
+    );
+    expect(pageTextContent()).not.toContain("Pasted credential #1.json");
+    expect(pasteField.value).toBe(invalidFixture.content);
   });
 
   it("rejects non-single-object pasted content before network validation", async () => {
@@ -455,64 +480,134 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     expect(pasteField.value).not.toBe(firstDraft);
   });
 
-  it("ignores stale paste validation results after the queue is cleared", async () => {
-    const queuedFixture = createImportedOauthFixture(1);
-    const pastedFixture = createImportedOauthFixture(2);
-    let resolveValidation:
-      | ((value: ImportedOauthValidationResponse) => void)
-      | null = null;
-    const runImportedOauthValidation = vi.fn().mockImplementation(
-      () =>
-        new Promise<ImportedOauthValidationResponse>((resolve) => {
-          resolveValidation = resolve;
-        }),
-    );
+  it("blocks duplicate pasted credentials locally and keeps the editor content", async () => {
+    const fixture = createImportedOauthFixture(1);
+    const runImportedOauthValidation = vi.fn();
     mockUpstreamAccounts({ runImportedOauthValidation });
     render("/account-pool/upstream-accounts/new?mode=import");
 
-    const fileInput = host?.querySelector('input[name="importOauthFiles"]');
     const pasteField = host?.querySelector(
       'textarea[name="importOauthPasteDraft"]',
     );
-    if (!(fileInput instanceof HTMLInputElement)) {
-      throw new Error("missing import file input");
-    }
     if (!(pasteField instanceof HTMLTextAreaElement)) {
       throw new Error("missing import paste textarea");
     }
 
-    await setFileInputFiles(fileInput, [queuedFixture.file]);
+    await pasteIntoField(pasteField, fixture.content);
+    await flushAsync();
     await flushAsync();
 
-    await pasteIntoField(pasteField, pastedFixture.content);
+    await pasteIntoField(pasteField, fixture.content);
+    await flushAsync();
     await flushAsync();
 
-    clickButton(/clear selection/i);
-    await flushAsync();
+    expect(runImportedOauthValidation).not.toHaveBeenCalled();
+    expect(pageTextContent()).toContain("This credential is already queued.");
+    expect(pageTextContent()).toContain("Pasted credential #1.json");
+    expect(pasteField.value).toBe(fixture.content);
+  });
 
-    if (!resolveValidation) {
-      throw new Error("missing paste validation resolver");
+  it("keeps the current validation preview when a duplicate paste is rejected", async () => {
+    const fixture = createImportedOauthFixture(1);
+    const sourceId = "pasted:1";
+    const { startImportedOauthValidationJob } =
+      installImportedOauthValidationJobFlow({
+        rowsBySourceId: {
+          [sourceId]: buildImportedOauthRow(
+            sourceId,
+            "Pasted credential #1.json",
+            fixture.email,
+            fixture.chatgptAccountId,
+          ),
+        },
+      });
+    mockUpstreamAccounts({ startImportedOauthValidationJob });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    const pasteField = host?.querySelector(
+      'textarea[name="importOauthPasteDraft"]',
+    );
+    if (!(pasteField instanceof HTMLTextAreaElement)) {
+      throw new Error("missing import paste textarea");
     }
-    const completeValidation: (value: ImportedOauthValidationResponse) => void =
-      resolveValidation;
-    completeValidation({
-      inputFiles: 1,
-      uniqueInInput: 1,
-      duplicateInInput: 0,
-      rows: [
-        buildImportedOauthRow(
-          "pasted:1",
-          "Pasted credential #1.json",
-          pastedFixture.email,
-          pastedFixture.chatgptAccountId,
-        ),
+
+    await pasteIntoField(pasteField, fixture.content);
+    await flushAsync();
+    await flushAsync();
+
+    clickButton(/validate and review/i);
+    await flushAsync();
+    await flushTimers();
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Import validation");
+    expect(document.body.textContent).toContain("Pasted credential #1.json");
+
+    await pasteIntoField(pasteField, fixture.content);
+    await flushAsync();
+    await flushAsync();
+
+    expect(pageTextContent()).toContain("This credential is already queued.");
+    expect(document.body.textContent).toContain("Import validation");
+    expect(document.body.textContent).toContain("Pasted credential #1.json");
+    expect(startImportedOauthValidationJob).toHaveBeenCalledTimes(1);
+  });
+
+  it("deduplicates repeated accounts across file imports before validation", async () => {
+    const firstFixture = createImportedOauthFixture(1, {
+      email: "first-duplicate@duckmail.sbs",
+      accountId: "acct_duplicate",
+    });
+    const secondFixture = createImportedOauthFixture(2, {
+      email: "second-duplicate@duckmail.sbs",
+      accountId: "acct_duplicate",
+    });
+    const firstSourceId = getImportedOauthSourceId(firstFixture, 0);
+    const { startImportedOauthValidationJob } =
+      installImportedOauthValidationJobFlow({
+        rowsBySourceId: {
+          [firstSourceId]: buildImportedOauthRow(
+            firstSourceId,
+            firstFixture.fileName,
+            firstFixture.email,
+            firstFixture.chatgptAccountId,
+          ),
+        },
+      });
+    mockUpstreamAccounts({ startImportedOauthValidationJob });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    const fileInput = host?.querySelector('input[name="importOauthFiles"]');
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error("missing import file input");
+    }
+
+    await setFileInputFiles(fileInput, [firstFixture.file, secondFixture.file]);
+    await flushAsync();
+    await flushAsync();
+
+    expect(pageTextContent()).toContain(firstFixture.fileName);
+    expect(pageTextContent()).toContain(
+      `Skipped duplicate credential "${secondFixture.fileName}" because the same account is already queued.`,
+    );
+
+    clickButton(/validate and review/i);
+    await flushAsync();
+    await flushTimers();
+    await flushAsync();
+
+    expect(startImportedOauthValidationJob).toHaveBeenCalledWith({
+      ...expectedGroupSelection(TEST_REQUIRED_GROUP_NAME, {
+        includeConcurrencyLimit: false,
+      }),
+      items: [
+        expect.objectContaining({
+          sourceId: firstSourceId,
+          fileName: firstFixture.fileName,
+          content: firstFixture.content,
+        }),
       ],
     });
-    await flushAsync();
-    await flushAsync();
-
-    expect(pageTextContent()).not.toContain(queuedFixture.fileName);
-    expect(pageTextContent()).not.toContain("Pasted credential #1.json");
   });
 
   it("assigns unique file source ids across overlapping file selections", async () => {
@@ -603,19 +698,7 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     const pastedFixture = createImportedOauthFixture(1);
     const fileFixture = createImportedOauthFixture(2);
     const fileSourceId = getImportedOauthSourceId(fileFixture, 0);
-    const runImportedOauthValidation = vi.fn().mockResolvedValue({
-      inputFiles: 1,
-      uniqueInInput: 1,
-      duplicateInInput: 0,
-      rows: [
-        buildImportedOauthRow(
-          "pasted:1",
-          "Pasted credential #1.json",
-          pastedFixture.email,
-          pastedFixture.chatgptAccountId,
-        ),
-      ],
-    });
+    const runImportedOauthValidation = vi.fn();
     const { startImportedOauthValidationJob } =
       installImportedOauthValidationJobFlow({
         rowsBySourceId: {
@@ -658,6 +741,7 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
 
     expect(pageTextContent()).toContain("Pasted credential #1.json");
     expect(pageTextContent()).toContain(fileFixture.fileName);
+    expect(runImportedOauthValidation).not.toHaveBeenCalled();
 
     clickButton(/validate and review/i);
     await flushAsync();

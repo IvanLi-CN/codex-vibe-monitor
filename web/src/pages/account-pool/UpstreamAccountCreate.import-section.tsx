@@ -6,6 +6,7 @@ import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Spinner } from "../../components/ui/spinner";
 import { AccountTagField } from "../../components/AccountTagField";
+import { Alert } from "../../components/ui/alert";
 import { UpstreamAccountGroupCombobox } from "../../components/UpstreamAccountGroupCombobox";
 import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.controller-context";
 
@@ -29,6 +30,7 @@ export function UpstreamAccountCreateImportSection() {
     importPasteBusy,
     importPasteDraft,
     importPasteError,
+    importSelectionFeedback,
     importSelectionLabel,
     importTagIds,
     normalizeGroupName,
@@ -173,6 +175,18 @@ export function UpstreamAccountCreateImportSection() {
           </Badge>
         ))}
       </div>
+    ) : null}
+    {importSelectionFeedback?.messages?.length ? (
+      <Alert
+        variant={importSelectionFeedback.variant}
+        className="mt-3"
+      >
+        <div className="space-y-1">
+          {importSelectionFeedback.messages.map((message: string) => (
+            <div key={message}>{message}</div>
+          ))}
+        </div>
+      </Alert>
     ) : null}
   </div>
   <label className="field md:col-span-2">
