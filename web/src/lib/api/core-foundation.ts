@@ -1159,6 +1159,29 @@ export interface SettingsPayload {
   pricing: PricingSettings;
 }
 
+export interface ExternalApiKeySummary {
+  id: number;
+  name: string;
+  status: string;
+  prefix: string;
+  lastUsedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ExternalApiKeyListResponse {
+  items: ExternalApiKeySummary[];
+}
+
+export interface ExternalApiKeyMutationResponse {
+  key: ExternalApiKeySummary;
+}
+
+export interface ExternalApiKeySecretResponse {
+  key: ExternalApiKeySummary;
+  secret: string;
+}
+
 export function normalizeStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string");
@@ -2018,6 +2041,78 @@ function normalizeSettingsPayload(raw: unknown): SettingsPayload {
   };
 }
 
+function normalizeExternalApiKeySummary(
+  raw: unknown,
+): ExternalApiKeySummary | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const id = normalizeFiniteNumber(payload.id);
+  const name = typeof payload.name === "string" ? payload.name : "";
+  const status = typeof payload.status === "string" ? payload.status : "";
+  const prefix = typeof payload.prefix === "string" ? payload.prefix : "";
+  const createdAt =
+    typeof payload.createdAt === "string" ? payload.createdAt : "";
+  const updatedAt =
+    typeof payload.updatedAt === "string" ? payload.updatedAt : "";
+  if (
+    id == null ||
+    !name ||
+    !status ||
+    !prefix ||
+    !createdAt ||
+    !updatedAt
+  ) {
+    return null;
+  }
+  return {
+    id,
+    name,
+    status,
+    prefix,
+    lastUsedAt:
+      typeof payload.lastUsedAt === "string" ? payload.lastUsedAt : undefined,
+    createdAt,
+    updatedAt,
+  };
+}
+
+function normalizeExternalApiKeyListResponse(
+  raw: unknown,
+): ExternalApiKeyListResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const items = Array.isArray(payload.items)
+    ? payload.items
+        .map((item) => normalizeExternalApiKeySummary(item))
+        .filter((item): item is ExternalApiKeySummary => item != null)
+    : [];
+  return { items };
+}
+
+function normalizeExternalApiKeyMutationResponse(
+  raw: unknown,
+): ExternalApiKeyMutationResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const key = normalizeExternalApiKeySummary(payload.key);
+  if (!key) {
+    throw new Error("invalid external API key response");
+  }
+  return { key };
+}
+
+function normalizeExternalApiKeySecretResponse(
+  raw: unknown,
+): ExternalApiKeySecretResponse {
+  const payload = normalizeExternalApiKeyMutationResponse(raw);
+  const response = (raw ?? {}) as Record<string, unknown>;
+  const secret = typeof response.secret === "string" ? response.secret : "";
+  if (!secret) {
+    throw new Error("invalid external API key secret response");
+  }
+  return {
+    key: payload.key,
+    secret,
+  };
+}
+
 export async function fetchVersion(): Promise<VersionResponse> {
   return fetchJson<VersionResponse>("/api/version");
 }
@@ -2025,6 +2120,45 @@ export async function fetchVersion(): Promise<VersionResponse> {
 export async function fetchSettings(): Promise<SettingsPayload> {
   const response = await fetchJson<unknown>("/api/settings");
   return normalizeSettingsPayload(response);
+}
+
+export async function fetchExternalApiKeys(): Promise<ExternalApiKeyListResponse> {
+  const response = await fetchJson<unknown>("/api/settings/external-api-keys");
+  return normalizeExternalApiKeyListResponse(response);
+}
+
+export async function createExternalApiKey(payload: {
+  name: string;
+}): Promise<ExternalApiKeySecretResponse> {
+  const response = await fetchJson<unknown>("/api/settings/external-api-keys", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return normalizeExternalApiKeySecretResponse(response);
+}
+
+export async function rotateExternalApiKey(
+  id: number,
+): Promise<ExternalApiKeySecretResponse> {
+  const response = await fetchJson<unknown>(
+    `/api/settings/external-api-keys/${id}/rotate`,
+    {
+      method: "POST",
+    },
+  );
+  return normalizeExternalApiKeySecretResponse(response);
+}
+
+export async function disableExternalApiKey(
+  id: number,
+): Promise<ExternalApiKeyMutationResponse> {
+  const response = await fetchJson<unknown>(
+    `/api/settings/external-api-keys/${id}/disable`,
+    {
+      method: "POST",
+    },
+  );
+  return normalizeExternalApiKeyMutationResponse(response);
 }
 
 export async function updatePricingSettings(

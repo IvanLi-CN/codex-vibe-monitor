@@ -1540,6 +1540,7 @@ pub(crate) async fn import_validated_oauth_accounts(
                         claims: &probe.claims,
                         encrypted_credentials,
                         token_expires_at: &probe.token_expires_at,
+                        external_identity: None,
                     },
                 )
                 .await

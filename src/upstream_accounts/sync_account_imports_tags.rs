@@ -600,10 +600,27 @@ async fn persist_imported_oauth_existing_inner(
             claims: &probe.claims,
             encrypted_credentials,
             token_expires_at: &probe.token_expires_at,
+            external_identity: None,
         },
     )
     .await
     .map_err(internal_error_tuple)?;
+    if existing_row.enabled != 1 {
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET enabled = ?2,
+                updated_at = ?3
+            WHERE id = ?1
+            "#,
+        )
+        .bind(existing_row.id)
+        .bind(existing_row.enabled)
+        .bind(format_utc_iso(Utc::now()))
+        .execute(tx.as_mut())
+        .await
+        .map_err(internal_error_tuple)?;
+    }
     tx.commit().await.map_err(internal_error_tuple)?;
 
     match apply_imported_oauth_probe_result(state, account_id, &probe).await {
@@ -632,6 +649,7 @@ struct OauthAccountUpsert<'a> {
     claims: &'a ChatgptJwtClaims,
     encrypted_credentials: String,
     token_expires_at: &'a str,
+    external_identity: Option<&'a ExternalAccountIdentity>,
 }
 
 fn duplicate_display_name_error() -> (StatusCode, String) {
@@ -692,10 +710,13 @@ async fn upsert_oauth_account(
         claims,
         encrypted_credentials,
         token_expires_at,
+        external_identity,
     } = payload;
     let target_group_name = group_name.clone();
     let now_iso = format_utc_iso(Utc::now());
     let resolved_account_id = account_id;
+    let external_client_id = external_identity.map(|value| value.client_id.as_str());
+    let external_source_account_id = external_identity.map(|value| value.source_account_id.as_str());
 
     if let Some(existing_id) = resolved_account_id {
         let previous_group_name = load_upstream_account_row_conn(tx.as_mut(), existing_id)
@@ -723,6 +744,8 @@ async fn upsert_oauth_account(
                 encrypted_credentials = ?13,
                 token_expires_at = ?14,
                 last_refreshed_at = ?15,
+                external_client_id = COALESCE(?16, external_client_id),
+                external_source_account_id = COALESCE(?17, external_source_account_id),
                 last_error = NULL,
                 last_error_at = NULL,
                 updated_at = ?15
@@ -744,6 +767,8 @@ async fn upsert_oauth_account(
         .bind(encrypted_credentials)
         .bind(token_expires_at)
         .bind(&now_iso)
+        .bind(external_client_id)
+        .bind(external_source_account_id)
         .execute(tx.as_mut())
         .await?;
         save_group_metadata_after_account_write(
@@ -768,14 +793,15 @@ async fn upsert_oauth_account(
                 masked_api_key, encrypted_credentials, token_expires_at,
                 last_refreshed_at, last_synced_at, last_successful_sync_at,
                 last_error, last_error_at, local_primary_limit, local_secondary_limit,
-                local_limit_unit, created_at, updated_at
+                local_limit_unit, external_client_id, external_source_account_id,
+                created_at, updated_at
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, 1,
                 ?8, ?9, ?10, ?11, ?12,
                 NULL, ?13, ?14,
                 ?15, NULL, NULL,
                 NULL, NULL, NULL, NULL,
-                NULL, ?15, ?15
+                NULL, ?16, ?17, ?15, ?15
             ) RETURNING id
             "#,
         )
@@ -799,6 +825,8 @@ async fn upsert_oauth_account(
         .bind(encrypted_credentials)
         .bind(token_expires_at)
         .bind(&now_iso)
+        .bind(external_client_id)
+        .bind(external_source_account_id)
         .fetch_one(tx.as_mut())
         .await?;
         save_group_metadata_after_account_write(
@@ -1855,13 +1883,62 @@ async fn load_upstream_account_row_conn(
             consecutive_route_failures, temporary_route_failure_streak_started_at,
             compact_support_status, compact_support_observed_at,
             compact_support_reason, local_primary_limit, local_secondary_limit,
-            local_limit_unit, upstream_base_url, created_at, updated_at
+            local_limit_unit, upstream_base_url, external_client_id,
+            external_source_account_id, created_at, updated_at
         FROM pool_upstream_accounts
         WHERE id = ?1
         LIMIT 1
         "#,
     )
     .bind(id)
+    .fetch_optional(conn)
+    .await
+    .map_err(Into::into)
+}
+
+async fn load_upstream_account_row_by_external_identity(
+    pool: &Pool<Sqlite>,
+    external_client_id: &str,
+    external_source_account_id: &str,
+) -> Result<Option<UpstreamAccountRow>> {
+    let mut conn = pool.acquire().await?;
+    load_upstream_account_row_by_external_identity_conn(
+        &mut conn,
+        external_client_id,
+        external_source_account_id,
+    )
+    .await
+}
+
+async fn load_upstream_account_row_by_external_identity_conn(
+    conn: &mut SqliteConnection,
+    external_client_id: &str,
+    external_source_account_id: &str,
+) -> Result<Option<UpstreamAccountRow>> {
+    sqlx::query_as::<_, UpstreamAccountRow>(
+        r#"
+        SELECT
+            id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
+            chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
+            encrypted_credentials, token_expires_at, last_refreshed_at,
+            last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
+            last_action, last_action_source, last_action_reason_code, last_action_reason_message,
+            last_action_http_status, last_action_invoke_id, last_action_at,
+            last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
+            consecutive_route_failures, temporary_route_failure_streak_started_at,
+            compact_support_status, compact_support_observed_at,
+            compact_support_reason, local_primary_limit, local_secondary_limit,
+            local_limit_unit, upstream_base_url, external_client_id,
+            external_source_account_id, created_at, updated_at
+        FROM pool_upstream_accounts
+        WHERE external_client_id = ?1
+          AND external_source_account_id = ?2
+        ORDER BY id ASC
+        LIMIT 1
+        "#,
+    )
+    .bind(external_client_id)
+    .bind(external_source_account_id)
     .fetch_optional(conn)
     .await
     .map_err(Into::into)

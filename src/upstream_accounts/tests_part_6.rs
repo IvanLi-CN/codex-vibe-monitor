@@ -144,6 +144,7 @@
                 ),
                 encrypted_credentials: "encrypted-original".to_string(),
                 token_expires_at: "2026-03-14T00:00:00Z",
+            external_identity: None,
             },
         )
         .await
@@ -180,6 +181,7 @@
                 ),
                 encrypted_credentials: "encrypted-updated".to_string(),
                 token_expires_at: "2026-03-15T00:00:00Z",
+            external_identity: None,
             },
         )
         .await
@@ -230,6 +232,7 @@
                 claims: &test_claims("first@example.com", Some("org_shared"), Some("user_1")),
                 encrypted_credentials: "encrypted-1".to_string(),
                 token_expires_at: "2026-03-14T00:00:00Z",
+            external_identity: None,
             },
         )
         .await
@@ -253,6 +256,7 @@
                 claims: &test_claims("second@example.com", Some("org_shared"), Some("user_2")),
                 encrypted_credentials: "encrypted-2".to_string(),
                 token_expires_at: "2026-03-14T00:00:00Z",
+            external_identity: None,
             },
         )
         .await
@@ -352,6 +356,7 @@
                     claims: &test_claims(email, Some(account_id), Some("user_shared")),
                     encrypted_credentials: format!("encrypted-{display_name}"),
                     token_expires_at: "2026-03-14T00:00:00Z",
+                external_identity: None,
                 },
             )
             .await
@@ -417,6 +422,7 @@
                     claims: &test_claims_with_plan_type(email, Some("org_shared"), None, plan_type),
                     encrypted_credentials: format!("encrypted-{display_name}"),
                     token_expires_at: "2026-03-14T00:00:00Z",
+                external_identity: None,
                 },
             )
             .await
@@ -482,6 +488,7 @@
                     ),
                     encrypted_credentials: format!("encrypted-{display_name}"),
                     token_expires_at: "2026-03-14T00:00:00Z",
+                external_identity: None,
                 },
             )
             .await
@@ -543,6 +550,7 @@
                     ),
                     encrypted_credentials: format!("encrypted-{display_name}"),
                     token_expires_at: "2026-03-14T00:00:00Z",
+                external_identity: None,
                 },
             )
             .await
@@ -654,6 +662,7 @@
                     ),
                     encrypted_credentials: format!("encrypted-{display_name}"),
                     token_expires_at: "2026-03-14T00:00:00Z",
+                external_identity: None,
                 },
             )
             .await
@@ -716,6 +725,7 @@
                     ),
                     encrypted_credentials: format!("encrypted-{display_name}"),
                     token_expires_at: "2026-03-14T00:00:00Z",
+                external_identity: None,
                 },
             )
             .await
@@ -759,6 +769,7 @@
                 ),
                 encrypted_credentials: "encrypted-snapshot".to_string(),
                 token_expires_at: "2026-03-14T00:00:00Z",
+            external_identity: None,
             },
         )
         .await
@@ -834,6 +845,7 @@
                 )
                 .expect("encrypt oauth credentials"),
                 token_expires_at: "2026-03-14T00:00:00Z",
+            external_identity: None,
             },
         )
         .await
@@ -916,6 +928,7 @@
                 ),
                 encrypted_credentials: "encrypted-fallback".to_string(),
                 token_expires_at: "2026-03-14T00:00:00Z",
+            external_identity: None,
             },
         )
         .await
@@ -982,6 +995,7 @@
                 ),
                 encrypted_credentials: "encrypted-refreshed-fallback".to_string(),
                 token_expires_at: "2026-03-14T00:00:00Z",
+            external_identity: None,
             },
         )
         .await
@@ -1053,6 +1067,7 @@
                     ),
                     encrypted_credentials: format!("encrypted-{display_name}"),
                     token_expires_at: "2026-03-14T00:00:00Z",
+                external_identity: None,
                 },
             )
             .await
@@ -1139,6 +1154,7 @@
                     ),
                     encrypted_credentials: format!("encrypted-{display_name}"),
                     token_expires_at: "2026-03-14T00:00:00Z",
+                external_identity: None,
                 },
             )
             .await
@@ -1216,6 +1232,7 @@
                     ),
                     encrypted_credentials: format!("encrypted-{display_name}"),
                     token_expires_at: "2026-03-14T00:00:00Z",
+                external_identity: None,
                 },
             )
             .await
@@ -1293,6 +1310,7 @@
                     ),
                     encrypted_credentials: format!("encrypted-{display_name}"),
                     token_expires_at: "2026-03-14T00:00:00Z",
+                external_identity: None,
                 },
             )
             .await
@@ -1370,6 +1388,7 @@
                 claims: &test_claims("first@example.com", Some("org_shared"), Some("user_1")),
                 encrypted_credentials: "encrypted-1".to_string(),
                 token_expires_at: "2026-03-14T00:00:00Z",
+            external_identity: None,
             },
         )
         .await
@@ -1393,6 +1412,7 @@
                 claims: &test_claims("second@example.com", Some("org_shared"), Some("user_9")),
                 encrypted_credentials: "encrypted-2".to_string(),
                 token_expires_at: "2026-03-15T00:00:00Z",
+            external_identity: None,
             },
         )
         .await

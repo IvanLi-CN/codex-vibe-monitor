@@ -1,9 +1,10 @@
 import { useEffect, useRef, type ReactNode } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { expect, within } from 'storybook/test'
+import { expect, userEvent, within } from 'storybook/test'
 import { I18nProvider } from '../i18n'
 import SettingsPage from '../pages/Settings'
 import type {
+  ExternalApiKeySummary,
   ForwardProxyNode,
   ForwardProxyNodeStats,
   ForwardProxySettings,
@@ -70,6 +71,29 @@ const MOCK_SUBSCRIPTION_NODE_TEMPLATES: Array<Pick<ForwardProxyNode, 'displayNam
 type StorySettingsOverrides = {
   forwardProxy?: Partial<Omit<ForwardProxySettings, 'nodes'>>
   pricing?: Partial<PricingSettings>
+}
+
+function createMockExternalApiKeys(): ExternalApiKeySummary[] {
+  return [
+    {
+      id: 11,
+      name: 'Vendor A upstream sync',
+      status: 'active',
+      prefix: 'cvm_ext_ven',
+      lastUsedAt: '2026-04-16T09:30:00Z',
+      createdAt: '2026-04-15T08:00:00Z',
+      updatedAt: '2026-04-16T09:30:00Z',
+    },
+    {
+      id: 12,
+      name: 'Vendor B repair',
+      status: 'disabled',
+      prefix: 'cvm_ext_rep',
+      lastUsedAt: undefined,
+      createdAt: '2026-04-10T12:00:00Z',
+      updatedAt: '2026-04-12T18:45:00Z',
+    },
+  ]
 }
 
 function statsPreset(index: number): ForwardProxyNodeStats {
@@ -179,13 +203,21 @@ function StorybookSettingsMock({
   children,
   initialSettings,
   storageKey,
+  initialExternalApiKeys,
 }: {
   children: ReactNode
   initialSettings?: SettingsPayload
   storageKey: string
+  initialExternalApiKeys?: ExternalApiKeySummary[]
 }) {
   const fallbackSettings = initialSettings ? cloneSettings(initialSettings) : createStorySettings()
   const settingsRef = useRef<SettingsPayload>(loadPersistedSettings(storageKey, fallbackSettings))
+  const externalApiKeysRef = useRef<ExternalApiKeySummary[]>(
+    initialExternalApiKeys ? [...initialExternalApiKeys] : createMockExternalApiKeys(),
+  )
+  const nextExternalApiKeyIdRef = useRef(
+    externalApiKeysRef.current.reduce((max, item) => Math.max(max, item.id), 0) + 1,
+  )
   const originalFetchRef = useRef<typeof window.fetch | null>(null)
   const mockInstalledRef = useRef(false)
 
@@ -226,6 +258,77 @@ function StorybookSettingsMock({
 
       if (path === '/api/settings' && method === 'GET') {
         return jsonResponse(cloneSettings(settingsRef.current))
+      }
+
+      if (path === '/api/settings/external-api-keys' && method === 'GET') {
+        return jsonResponse({
+          items: [...externalApiKeysRef.current],
+        })
+      }
+
+      if (path === '/api/settings/external-api-keys' && method === 'POST') {
+        const body = parseBody<{ name: string }>({ name: '' })
+        const id = nextExternalApiKeyIdRef.current++
+        const name = String(body.name || '').trim() || `External key ${id}`
+        const secret = `cvm_ext_story_${id.toString(16).padStart(6, '0')}`
+        const nowIso = new Date().toISOString()
+        const key: ExternalApiKeySummary = {
+          id,
+          name,
+          status: 'active',
+          prefix: secret.slice(0, 12),
+          lastUsedAt: undefined,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        }
+        externalApiKeysRef.current = [...externalApiKeysRef.current, key]
+        return jsonResponse({ key, secret })
+      }
+
+      const rotateMatch = path.match(/^\/api\/settings\/external-api-keys\/(\d+)\/rotate$/)
+      if (rotateMatch && method === 'POST') {
+        const targetId = Number(rotateMatch[1])
+        const target = externalApiKeysRef.current.find((item) => item.id === targetId)
+        if (!target) {
+          return jsonResponse({ message: 'not found' }, 404)
+        }
+        const id = nextExternalApiKeyIdRef.current++
+        const secret = `cvm_ext_story_${id.toString(16).padStart(6, '0')}`
+        const nowIso = new Date().toISOString()
+        const key: ExternalApiKeySummary = {
+          id,
+          name: target.name,
+          status: 'active',
+          prefix: secret.slice(0, 12),
+          lastUsedAt: undefined,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        }
+        externalApiKeysRef.current = [
+          ...externalApiKeysRef.current.filter((item) => item.id !== targetId),
+          key,
+        ]
+        return jsonResponse({ key, secret })
+      }
+
+      const disableMatch = path.match(/^\/api\/settings\/external-api-keys\/(\d+)\/disable$/)
+      if (disableMatch && method === 'POST') {
+        const targetId = Number(disableMatch[1])
+        const nowIso = new Date().toISOString()
+        let key: ExternalApiKeySummary | null = null
+        externalApiKeysRef.current = externalApiKeysRef.current.map((item) => {
+          if (item.id !== targetId) return item
+          key = {
+            ...item,
+            status: 'disabled',
+            updatedAt: nowIso,
+          }
+          return key
+        })
+        if (!key) {
+          return jsonResponse({ message: 'not found' }, 404)
+        }
+        return jsonResponse({ key })
       }
 
       if (path === '/api/settings/forward-proxy' && method === 'PUT') {
@@ -339,6 +442,7 @@ function StorybookSettingsMock({
 
 type SettingsStoryParameters = {
   mockSettings?: SettingsPayload
+  mockExternalApiKeys?: ExternalApiKeySummary[]
 }
 
 const meta = {
@@ -352,11 +456,13 @@ const meta = {
   decorators: [
     (Story, context) => {
       const mockSettings = (context.parameters as SettingsStoryParameters).mockSettings
+      const mockExternalApiKeys = (context.parameters as SettingsStoryParameters).mockExternalApiKeys
       return (
         <I18nProvider>
           <StorybookSettingsMock
             initialSettings={mockSettings}
             storageKey={`${STORYBOOK_SETTINGS_STORAGE_PREFIX}.${context.id}`}
+            initialExternalApiKeys={mockExternalApiKeys}
           >
             <div className="min-h-screen bg-base-200 text-base-content">
               <div className="app-shell-boundary px-4 py-6">
@@ -381,6 +487,35 @@ export const Default: Story = {
     await expect(canvas.getByRole('heading', { name: '设置' })).toBeVisible()
     await expect(canvas.getByText('正向代理路由')).toBeVisible()
     await expect(canvas.getByText('价格配置')).toBeVisible()
+    await expect(canvas.getByText('External API Keys')).toBeVisible()
+  },
+}
+
+export const ExternalApiKeysCreateReveal: Story = {
+  render: () => <SettingsPage />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getByRole('button', { name: '创建 Key' }))
+    const dialog = within(document.body)
+    await userEvent.type(
+      dialog.getByLabelText('Key 名称'),
+      'Vendor C realtime fill',
+    )
+    await userEvent.click(dialog.getByRole('button', { name: '创建 Key' }))
+    await expect(canvas.getByTestId('external-api-key-secret-alert')).toBeVisible()
+    await expect(canvas.getByText('cvm_ext_story_')).toBeVisible()
+  },
+}
+
+export const ExternalApiKeysDisableConfirm: Story = {
+  render: () => <SettingsPage />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getAllByRole('button', { name: '停用' })[0]!)
+    const dialog = within(document.body)
+    await expect(dialog.getByRole('heading', { name: '停用 External API Key' })).toBeVisible()
+    await userEvent.click(dialog.getByRole('button', { name: '立即停用' }))
+    await expect(canvas.getAllByText('已停用')[0]!).toBeVisible()
   },
 }
 
