@@ -428,6 +428,58 @@ struct UpstreamAccountActionPayload<'a> {
     occurred_at: &'a str,
 }
 
+fn maintenance_upstream_rejected_failed_at(
+    last_action_source: Option<&str>,
+    last_action_reason_code: Option<&str>,
+    last_action_at: Option<&str>,
+    last_route_failure_at: Option<&str>,
+    last_route_failure_kind: Option<&str>,
+    last_error_at: Option<&str>,
+    last_error: Option<&str>,
+) -> Option<DateTime<Utc>> {
+    if !matches!(
+        last_action_source,
+        Some(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE)
+    ) {
+        return None;
+    }
+    let has_maintenance_upstream_rejected_marker =
+        account_reason_is_maintenance_upstream_rejected(last_action_reason_code)
+            || route_failure_kind_is_maintenance_upstream_rejected(last_route_failure_kind)
+            || last_error.is_some_and(maintenance_upstream_rejected_error_message);
+    if !has_maintenance_upstream_rejected_marker {
+        return None;
+    }
+
+    last_action_at
+        .and_then(parse_rfc3339_utc)
+        .or_else(|| last_route_failure_at.and_then(parse_rfc3339_utc))
+        .or_else(|| last_error_at.and_then(parse_rfc3339_utc))
+}
+
+fn maintenance_sync_rejected_cooldown_until(
+    source: &str,
+    reason_code: &str,
+    reason_message: &str,
+    occurred_at: &str,
+) -> Option<String> {
+    if source != UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE {
+        return None;
+    }
+    if !account_reason_is_maintenance_upstream_rejected(Some(reason_code))
+        && !maintenance_upstream_rejected_error_message(reason_message)
+    {
+        return None;
+    }
+    let occurred_at = parse_rfc3339_utc(occurred_at)?;
+    Some(format_utc_iso(
+        occurred_at
+            + ChronoDuration::seconds(
+                UPSTREAM_ACCOUNT_UPSTREAM_REJECTED_MAINTENANCE_COOLDOWN_SECS,
+            ),
+    ))
+}
+
 fn sync_cause_action_source(cause: SyncCause) -> &'static str {
     match cause {
         SyncCause::Manual => UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MANUAL,
@@ -975,6 +1027,11 @@ async fn mark_account_sync_success(
                     last_successful_sync_at = ?3,
                     last_error = NULL,
                     last_error_at = NULL,
+                    cooldown_until = CASE
+                        WHEN last_action_source = ?4
+                             AND last_action_reason_code IN (?5, ?6) THEN NULL
+                        ELSE cooldown_until
+                    END,
                     updated_at = ?3
                 WHERE id = ?1
                 "#,
@@ -982,6 +1039,9 @@ async fn mark_account_sync_success(
             .bind(account_id)
             .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
             .bind(&now_iso)
+            .bind(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE)
+            .bind("upstream_http_402")
+            .bind("upstream_rejected")
             .execute(pool)
             .await?;
         }
@@ -1046,6 +1106,11 @@ async fn record_account_sync_recovery_blocked(
         SET status = ?2,
             last_synced_at = ?3,
             last_error = COALESCE(?4, last_error),
+            cooldown_until = CASE
+                WHEN last_action_source = ?5
+                     AND last_action_reason_code IN (?6, ?7) THEN NULL
+                ELSE cooldown_until
+            END,
             updated_at = ?3
         WHERE id = ?1
         "#,
@@ -1054,6 +1119,9 @@ async fn record_account_sync_recovery_blocked(
     .bind(status)
     .bind(&now_iso)
     .bind(preserved_error)
+    .bind(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE)
+    .bind("upstream_http_402")
+    .bind("upstream_rejected")
     .execute(pool)
     .await?;
     record_upstream_account_action(
@@ -1084,6 +1152,8 @@ async fn record_account_sync_hard_unavailable(
     failure_kind: &'static str,
 ) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
+    let cooldown_until =
+        maintenance_sync_rejected_cooldown_until(source, reason_code, reason_message, &now_iso);
     sqlx::query(
         r#"
         UPDATE pool_upstream_accounts
@@ -1093,7 +1163,7 @@ async fn record_account_sync_hard_unavailable(
             last_error_at = ?3,
             last_route_failure_at = ?3,
             last_route_failure_kind = ?5,
-            cooldown_until = NULL,
+            cooldown_until = ?6,
             temporary_route_failure_streak_started_at = NULL,
             updated_at = ?3
         WHERE id = ?1
@@ -1104,6 +1174,7 @@ async fn record_account_sync_hard_unavailable(
     .bind(&now_iso)
     .bind(reason_message)
     .bind(failure_kind)
+    .bind(cooldown_until)
     .execute(pool)
     .await?;
     record_upstream_account_action(
@@ -1138,6 +1209,8 @@ async fn record_account_sync_failure(
     clear_transient_route_failure_state: bool,
 ) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
+    let cooldown_until =
+        maintenance_sync_rejected_cooldown_until(source, reason_code, error_message, &now_iso);
     sqlx::query(
         r#"
         UPDATE pool_upstream_accounts
@@ -1154,7 +1227,13 @@ async fn record_account_sync_failure(
                 WHEN ?6 = 1 AND ?5 IS NULL THEN NULL
                 ELSE COALESCE(?5, last_route_failure_kind)
             END,
-            cooldown_until = CASE WHEN ?6 = 1 THEN NULL ELSE cooldown_until END,
+            cooldown_until = CASE
+                WHEN ?7 IS NOT NULL THEN ?7
+                WHEN ?6 = 1 THEN NULL
+                WHEN last_action_source = ?8
+                     AND last_action_reason_code IN (?9, ?10) THEN NULL
+                ELSE cooldown_until
+            END,
             temporary_route_failure_streak_started_at = CASE
                 WHEN ?6 = 1 THEN NULL
                 ELSE temporary_route_failure_streak_started_at
@@ -1169,6 +1248,10 @@ async fn record_account_sync_failure(
     .bind(error_message)
     .bind(preserved_route_failure_kind)
     .bind(clear_transient_route_failure_state)
+    .bind(cooldown_until)
+    .bind(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE)
+    .bind("upstream_http_402")
+    .bind("upstream_rejected")
     .execute(pool)
     .await?;
     record_upstream_account_action(

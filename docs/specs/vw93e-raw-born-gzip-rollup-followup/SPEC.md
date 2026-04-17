@@ -4,7 +4,7 @@
 
 - Status: 已实现，待 PR / CI / review-proof 收敛
 - Created: 2026-04-13
-- Last: 2026-04-13
+- Last: 2026-04-17
 
 ## 背景 / 问题陈述
 
@@ -151,12 +151,13 @@
 
 - 2026-04-13: 创建 follow-up spec，冻结 born-gzip、bounded historical rollup auto-heal 与 upstream-rejected cooldown 的范围与验收。
 - 2026-04-13: 完成 born-gzip raw capture、bounded historical rollup auto-heal、upstream-rejected 6h cooldown、README/deployment 同步，以及本地 + shared-testbox 验证。
+- 2026-04-17: 修正 maintenance-upstream-rejected cooldown 的实现漂移：`cooldown_until` 改为显式真相源，并为 legacy 空字段行补齐 bounded reconciliation。
 
 ## 实施结果
 
 - `src/proxy/raw_capture.rs` 与 `src/proxy/usage_persistence.rs` 现在会按 `PROXY_RAW_IMMEDIATE_GZIP_BYTES` 在首次落盘时选择 plain / gzip writer，并同步持久化正确的 `*_raw_path` / `*_raw_codec`。
 - `src/maintenance/archive/cleanup.rs`、`src/maintenance/hourly_rollups.rs`、`src/maintenance/startup_backfill.rs` 现在会在 startup/follow-up maintenance 中按有界预算持续推进 legacy hourly rollup materialization。
-- `src/upstream_accounts/**` 现在把 `deactivated_workspace` / `upstream_http_402` / `upstream_rejected` 视为明确上游拒绝：同轮跳过 browser-UA fallback retry，并施加 6 小时 maintenance cooldown。
+- `src/upstream_accounts/**` 现在把 `deactivated_workspace` / `upstream_http_402` / `upstream_rejected` 视为明确上游拒绝：同轮跳过 browser-UA fallback retry，并写入 6 小时显式 `cooldown_until`；maintenance 调度优先信任该字段，同时会自动补齐仍处于窗口内的 legacy 空字段行。
 
 ## 验证记录
 
@@ -165,7 +166,9 @@
 - `cargo test born_gzip -- --test-threads=1`
 - `cargo test materialize_historical_rollups_marks_batches_and_prune_removes_files -- --test-threads=1`
 - `cargo test fetch_usage_snapshot_skips_browser_user_agent_retry_for_upstream_rejected_402 -- --test-threads=1`
+- `cargo test maintenance_pass_reconciles_legacy_upstream_rejected_cooldown_rows -- --test-threads=1`
 - `cargo test maintenance_plan_is_not_due_during_upstream_rejected_cooldown -- --test-threads=1`
+- `cargo test maintenance_plan_prefers_explicit_upstream_rejected_cooldown_until -- --test-threads=1`
 - `cargo test record_pool_route_http_failure_marks_402_as_hard_error_and_records_reason -- --test-threads=1`
 - `cargo test sync_triggered_402_summary_and_detail_export_as_upstream_rejected -- --test-threads=1`
 - `scripts/shared-testbox-raw-smoke`

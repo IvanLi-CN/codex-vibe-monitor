@@ -2517,7 +2517,22 @@
             .await
             .expect("load sync-triggered 402 row")
             .expect("sync-triggered 402 row exists");
-        assert!(row.cooldown_until.is_none());
+        let cooldown_until = row
+            .cooldown_until
+            .as_deref()
+            .and_then(parse_rfc3339_utc)
+            .expect("maintenance-triggered 402 should write explicit cooldown");
+        let failed_at = row
+            .last_action_at
+            .as_deref()
+            .and_then(parse_rfc3339_utc)
+            .expect("sync-triggered 402 should record last_action_at");
+        assert_eq!(
+            cooldown_until - failed_at,
+            ChronoDuration::seconds(
+                UPSTREAM_ACCOUNT_UPSTREAM_REJECTED_MAINTENANCE_COOLDOWN_SECS,
+            )
+        );
         let summary = build_summary_from_row(
             &row,
             None,
@@ -2554,6 +2569,7 @@
                 "initial usage snapshot attempt with configured user agent failed: usage endpoint returned 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}"
             )
         );
+        assert_eq!(summary.cooldown_until, row.cooldown_until);
 
         let detail = load_upstream_account_detail(&pool, account_id)
             .await
@@ -2575,6 +2591,7 @@
             detail.summary.last_action_reason_code.as_deref(),
             Some("upstream_http_402")
         );
+        assert_eq!(detail.summary.cooldown_until, row.cooldown_until);
         assert_eq!(
             detail
                 .recent_actions

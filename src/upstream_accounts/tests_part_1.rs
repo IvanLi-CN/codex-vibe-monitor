@@ -58,6 +58,7 @@
             last_action_http_status: None,
             last_action_invoke_id: None,
             last_action_at: None,
+            cooldown_until: None,
             token_expires_at: None,
             primary_window: None,
             secondary_window: None,

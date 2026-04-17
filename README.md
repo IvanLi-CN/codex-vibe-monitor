@@ -262,7 +262,7 @@ cargo run -- maintenance prune-archive-batches
 ```
 
 - 正常服务启动会在 startup backfill 后台维护里自动补齐仍缺失的 `codex_invocations` archive upstream-activity manifest，并在有界预算内持续推进 legacy `materialize-historical-rollups`：每轮 follow-up 会自动吃掉一部分 pending archive，同时继续把主库 live tail sync 到 hourly rollups，因此 `maintenance.historicalRollupBackfill` 默认会自愈，而不是长期停在 `critical`。若 operator 需要一次性追平 backlog，仍可显式执行 `maintenance materialize-historical-rollups`；已经缺失的 legacy archive 文件会在物化时被跳过，不再把 backlog 永久卡死，可随后用 `maintenance prune-legacy-archive-batches` 清掉残留元数据。
-- 对 `deactivated_workspace` / 结构化 `upstream_http_402` / `upstream_rejected` 的账号，maintenance 会直接跳过同轮 browser-UA fallback retry，并写入 6 小时 cooldown；这类账号在 cooldown 结束前不会被高频重复同步。
+- 对 `deactivated_workspace` / 结构化 `upstream_http_402` / `upstream_rejected` 的账号，maintenance 会直接跳过同轮 browser-UA fallback retry，并写入 6 小时 `cooldown_until`；maintenance 调度以这个显式字段为真相源，同时会自动回填仍处于窗口内的 legacy 空字段行，避免升级后短时间重复拉起。
 - `maintenance prune-archive-batches` 会统一处理“已过期 segment + 可安全删除的 legacy backup-only archive”；`maintenance prune-legacy-archive-batches` 仍保留为兼容别名。
 - `maintenance verify-archive-storage` 会扫描 manifest 与磁盘文件，输出 `missing_files`、`orphan_files` 与 `stale_temp_files`，用于发现手工删档或失败残留。
 - `maintenance ... --dry-run` 与 `--retention-run-once --retention-dry-run` 不会再顺手执行 archive TTL 回填、manifest rebuild 或历史 rollup 物化，便于先做真正只读的容量预演。
