@@ -1093,6 +1093,53 @@ const baseTranslations = {
     "settings.loadError": "Settings request failed: {{error}}",
     "settings.saving": "Saving…",
     "settings.autoSaved": "Auto save enabled",
+    "settings.externalApiKeys.title": "External API Keys",
+    "settings.externalApiKeys.description":
+      "Manage third-party API keys for external upstream-account operations.",
+    "settings.externalApiKeys.summary": "Active {{count}} / Total {{total}}",
+    "settings.externalApiKeys.loading": "Loading external API keys…",
+    "settings.externalApiKeys.empty":
+      "No external API key yet. Create one to hand off to a partner.",
+    "settings.externalApiKeys.error": "External API key request failed: {{error}}",
+    "settings.externalApiKeys.create": "Create key",
+    "settings.externalApiKeys.rotate": "Rotate",
+    "settings.externalApiKeys.disable": "Disable",
+    "settings.externalApiKeys.cancel": "Cancel",
+    "settings.externalApiKeys.columns.name": "Name",
+    "settings.externalApiKeys.columns.prefix": "Prefix",
+    "settings.externalApiKeys.columns.status": "Status",
+    "settings.externalApiKeys.columns.lastUsedAt": "Last used",
+    "settings.externalApiKeys.columns.createdAt": "Created",
+    "settings.externalApiKeys.columns.actions": "Actions",
+    "settings.externalApiKeys.status.active": "Active",
+    "settings.externalApiKeys.status.disabled": "Disabled",
+    "settings.externalApiKeys.validation.nameRequired":
+      "Please enter an API key name first.",
+    "settings.externalApiKeys.secret.createdTitle":
+      "External API key created",
+    "settings.externalApiKeys.secret.rotatedTitle":
+      "External API key rotated",
+    "settings.externalApiKeys.secret.description":
+      "Copy this secret now. It will only be shown once.",
+    "settings.externalApiKeys.secret.dismiss": "Dismiss",
+    "settings.externalApiKeys.createDialog.title":
+      "Create external API key",
+    "settings.externalApiKeys.createDialog.description":
+      "Give this partner key a readable name for internal operations.",
+    "settings.externalApiKeys.createDialog.nameLabel": "Key name",
+    "settings.externalApiKeys.createDialog.namePlaceholder":
+      "Example: Vendor A upstream sync",
+    "settings.externalApiKeys.createDialog.confirm": "Create key",
+    "settings.externalApiKeys.rotateDialog.title":
+      "Rotate external API key",
+    "settings.externalApiKeys.rotateDialog.description":
+      "Rotate {{name}} now? The current secret will stop working immediately.",
+    "settings.externalApiKeys.rotateDialog.confirm": "Rotate now",
+    "settings.externalApiKeys.disableDialog.title":
+      "Disable external API key",
+    "settings.externalApiKeys.disableDialog.description":
+      "Disable {{name}} now? The secret will be rejected right away.",
+    "settings.externalApiKeys.disableDialog.confirm": "Disable key",
     "settings.proxy.title": "Proxy configuration",
     "settings.proxy.description":
       "Control /v1/models hijack and upstream merge behavior.",
@@ -2792,6 +2839,52 @@ const baseTranslations = {
     "settings.loadError": "设置请求失败：{{error}}",
     "settings.saving": "保存中…",
     "settings.autoSaved": "已启用自动保存",
+    "settings.externalApiKeys.title": "External API Keys",
+    "settings.externalApiKeys.description":
+      "管理第三方开放接口使用的 API Key，用于外部上游账号操作。",
+    "settings.externalApiKeys.summary": "已启用 {{count}} / 总计 {{total}}",
+    "settings.externalApiKeys.loading": "正在加载 External API Keys…",
+    "settings.externalApiKeys.empty":
+      "还没有 External API Key，先创建一个再交给第三方使用。",
+    "settings.externalApiKeys.error": "External API Key 请求失败：{{error}}",
+    "settings.externalApiKeys.create": "创建 Key",
+    "settings.externalApiKeys.rotate": "轮换",
+    "settings.externalApiKeys.disable": "停用",
+    "settings.externalApiKeys.cancel": "取消",
+    "settings.externalApiKeys.columns.name": "名称",
+    "settings.externalApiKeys.columns.prefix": "前缀",
+    "settings.externalApiKeys.columns.status": "状态",
+    "settings.externalApiKeys.columns.lastUsedAt": "最近使用",
+    "settings.externalApiKeys.columns.createdAt": "创建时间",
+    "settings.externalApiKeys.columns.actions": "操作",
+    "settings.externalApiKeys.status.active": "启用中",
+    "settings.externalApiKeys.status.disabled": "已停用",
+    "settings.externalApiKeys.validation.nameRequired": "请先输入 Key 名称。",
+    "settings.externalApiKeys.secret.createdTitle":
+      "External API Key 已创建",
+    "settings.externalApiKeys.secret.rotatedTitle":
+      "External API Key 已轮换",
+    "settings.externalApiKeys.secret.description":
+      "请现在复制这段 secret；它只会展示这一次。",
+    "settings.externalApiKeys.secret.dismiss": "我已复制",
+    "settings.externalApiKeys.createDialog.title":
+      "创建 External API Key",
+    "settings.externalApiKeys.createDialog.description":
+      "给这把第三方 Key 起一个便于运营识别的名字。",
+    "settings.externalApiKeys.createDialog.nameLabel": "Key 名称",
+    "settings.externalApiKeys.createDialog.namePlaceholder":
+      "例如：Vendor A upstream sync",
+    "settings.externalApiKeys.createDialog.confirm": "创建 Key",
+    "settings.externalApiKeys.rotateDialog.title":
+      "轮换 External API Key",
+    "settings.externalApiKeys.rotateDialog.description":
+      "确定现在轮换 {{name}} 吗？旧 secret 会立刻失效。",
+    "settings.externalApiKeys.rotateDialog.confirm": "立即轮换",
+    "settings.externalApiKeys.disableDialog.title":
+      "停用 External API Key",
+    "settings.externalApiKeys.disableDialog.description":
+      "确定现在停用 {{name}} 吗？该 secret 会立即被拒绝。",
+    "settings.externalApiKeys.disableDialog.confirm": "立即停用",
     "settings.proxy.title": "代理配置",
     "settings.proxy.description": "配置 /v1/models 劫持与上游合并行为。",
     "settings.proxy.hijackLabel": "劫持 /v1/models",

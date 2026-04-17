@@ -166,6 +166,7 @@ pub(crate) struct UpstreamAccountsRuntime {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AccountCommand {
     UpdateAccount,
+    ExternalOauthUpsert,
     DeleteAccount,
     ManualSync,
     MaintenanceSync,
@@ -545,6 +546,35 @@ impl AccountOpCoordinator {
         .await
         .map_err(map_account_dispatch_http)?
         .expect_completed(AccountCommand::UpdateAccount)
+    }
+
+    async fn run_external_oauth_upsert(
+        &self,
+        state: Arc<AppState>,
+        id: i64,
+        identity: ExternalAccountIdentity,
+        metadata: ExternalUpstreamAccountMetadataRequest,
+        probe: ImportedOauthProbeOutcome,
+    ) -> Result<UpstreamAccountDetail, (StatusCode, String)> {
+        self.submit_command(
+            state,
+            id,
+            AccountCommand::ExternalOauthUpsert,
+            false,
+            move |state, id| async move {
+                persist_external_existing_oauth_upsert(
+                    state.as_ref(),
+                    &identity,
+                    id,
+                    &metadata,
+                    probe,
+                )
+                .await
+            },
+        )
+        .await
+        .map_err(map_account_dispatch_http)?
+        .expect_completed(AccountCommand::ExternalOauthUpsert)
     }
 
     async fn run_delete_account(
@@ -1884,6 +1914,57 @@ pub(crate) struct UpdateUpstreamAccountRequest {
     local_secondary_limit: Option<f64>,
     local_limit_unit: Option<String>,
     tag_ids: Option<Vec<i64>>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ExternalAccountIdentity {
+    pub(crate) client_id: String,
+    pub(crate) source_account_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExternalOauthCredentialsRequest {
+    pub(crate) email: String,
+    pub(crate) access_token: String,
+    pub(crate) refresh_token: String,
+    pub(crate) id_token: String,
+    #[serde(default)]
+    pub(crate) token_type: Option<String>,
+    #[serde(default)]
+    pub(crate) expired: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExternalUpstreamAccountMetadataRequest {
+    pub(crate) display_name: Option<String>,
+    pub(crate) group_name: Option<String>,
+    #[serde(default)]
+    pub(crate) group_bound_proxy_keys: Option<Vec<String>>,
+    #[serde(default)]
+    pub(crate) group_node_shunt_enabled: Option<bool>,
+    pub(crate) note: Option<String>,
+    pub(crate) group_note: Option<String>,
+    pub(crate) concurrency_limit: Option<i64>,
+    pub(crate) enabled: Option<bool>,
+    pub(crate) is_mother: Option<bool>,
+    #[serde(default)]
+    pub(crate) tag_ids: Option<Vec<i64>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExternalUpstreamAccountUpsertRequest {
+    #[serde(flatten)]
+    pub(crate) metadata: ExternalUpstreamAccountMetadataRequest,
+    pub(crate) oauth: ExternalOauthCredentialsRequest,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExternalUpstreamAccountReloginRequest {
+    pub(crate) oauth: ExternalOauthCredentialsRequest,
 }
 
 #[derive(Debug, Deserialize)]

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { AppIcon } from '../components/AppIcon'
+import { ExternalApiKeysSettingsCard } from '../components/ExternalApiKeysSettingsCard'
 import { Badge } from '../components/ui/badge'
 import { Alert } from '../components/ui/alert'
 import { Button } from '../components/ui/button'
@@ -1152,6 +1153,8 @@ export default function SettingsPage() {
             </div>
           </CardContent>
         </Card>
+
+        <ExternalApiKeysSettingsCard />
       </div>
 
       <Card className="overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">

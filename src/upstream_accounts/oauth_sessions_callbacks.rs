@@ -1940,6 +1940,7 @@ pub(crate) async fn persist_oauth_callback_inner(
             claims: &input.claims,
             encrypted_credentials: input.encrypted_credentials,
             token_expires_at: &input.token_expires_at,
+            external_identity: None,
         },
     )
     .await
