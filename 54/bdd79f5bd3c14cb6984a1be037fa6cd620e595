@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.47.0",
+  "base_stable_version": "1.46.18",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-17T09:16:44Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.47.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "604f227de98437563d29ea7def46c5dfabf065f0",
+  "pr_number": 348,
+  "pr_title": "feat: add external upstream API key management",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.47.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.47.0",
+  "target_sha": "54bdd79f5bd3c14cb6984a1be037fa6cd620e595",
+  "type_label": "type:minor"
+}
