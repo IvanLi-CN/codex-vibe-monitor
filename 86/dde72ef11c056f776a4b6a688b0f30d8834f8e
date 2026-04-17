@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.47.1",
+  "base_stable_version": "1.47.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-17T10:31:56Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.47.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "d41b0789d3e39f6a62d9f08f5b1d5c5fa03802d1",
+  "pr_number": 349,
+  "pr_title": "fix: persist explicit maintenance rejected cooldown",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.47.1",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.47.1",
+  "target_sha": "86dde72ef11c056f776a4b6a688b0f30d8834f8e",
+  "type_label": "type:patch"
+}
