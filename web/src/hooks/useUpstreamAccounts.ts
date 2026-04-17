@@ -131,6 +131,7 @@ export function buildUpstreamAccountsListQueryKey(query?: FetchUpstreamAccountsQ
     healthStatus: normalizeQueryStringArray(query.healthStatus),
     page: query.page ?? undefined,
     pageSize: query.pageSize ?? undefined,
+    includeAll: query.includeAll === true ? true : undefined,
     tagIds: normalizeQueryNumberArray(query.tagIds),
   })
 }

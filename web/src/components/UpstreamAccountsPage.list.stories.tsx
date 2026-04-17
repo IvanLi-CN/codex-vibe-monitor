@@ -802,3 +802,51 @@ export const TeamSharedOrgCoexistence: Story = {
     await expect(dialog).not.toHaveTextContent(/重复账号|Duplicate/i)
   },
 }
+
+export const GroupedView: Story = {
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
+  play: async ({ canvasElement, step }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    await step('switches to grouped roster and hides pagination footer', async () => {
+      const groupedTab = await documentScope.findByRole('tab', {
+        name: /grouped|分组/i,
+      })
+      await userEvent.click(groupedTab)
+      await expect(
+        await documentScope.findByTestId('upstream-accounts-grouped-roster'),
+      ).toBeInTheDocument()
+      await waitFor(() => {
+        expect(
+          documentScope.queryByTestId('upstream-accounts-pagination-footer'),
+        ).not.toBeInTheDocument()
+      })
+    })
+  },
+}
+
+export const GridView: Story = {
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
+  play: async ({ canvasElement, step }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    await step('switches to grouped grid and hides pagination footer plus bulk actions', async () => {
+      const gridTab = await documentScope.findByRole('tab', {
+        name: /grid|网格/i,
+      })
+      await userEvent.click(gridTab)
+      await expect(
+        await documentScope.findByTestId('upstream-accounts-grouped-roster'),
+      ).toBeInTheDocument()
+      await expect(
+        await documentScope.findByTestId('upstream-accounts-group-members-grid'),
+      ).toBeInTheDocument()
+      await waitFor(() => {
+        expect(
+          documentScope.queryByTestId('upstream-accounts-pagination-footer'),
+        ).not.toBeInTheDocument()
+      })
+      expect(
+        documentScope.queryByText(/selected count|已选择|clear selection|清空选择/i),
+      ).not.toBeInTheDocument()
+    })
+  },
+}

@@ -313,6 +313,24 @@ describe("useUpstreamAccounts", () => {
     });
   });
 
+  it("treats grouped includeAll queries as a distinct roster key", async () => {
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(createDetail(1, "Alpha"));
+
+    render(<Probe query={{ page: 1, pageSize: 20 }} />);
+    await flushAsync();
+
+    rerender(<Probe query={{ includeAll: true }} />);
+    await flushAsync();
+
+    expect(apiMocks.fetchUpstreamAccounts).toHaveBeenNthCalledWith(1, {
+      page: 1,
+      pageSize: 20,
+    });
+    expect(apiMocks.fetchUpstreamAccounts).toHaveBeenNthCalledWith(2, {
+      includeAll: true,
+    });
+  });
+
   it("marks a query switch as stale until the new roster lands", async () => {
     const nextPage = deferred<UpstreamAccountListResponse>();
     apiMocks.fetchUpstreamAccounts

@@ -1207,3 +1207,288 @@ evalChunk(suite4);
 evalChunk(suite5);
 evalChunk(suite6);
 evalChunk(suite7);
+
+describe('UpstreamAccountsPage grouped roster toggle', () => {
+  it('switches to grouped view and hides the pagination footer', async () => {
+    mockRosterFreshnessPage()
+    render()
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    const groupedToggle = Array.from(
+      host?.querySelectorAll('button[role="tab"]') ?? [],
+    ).find((candidate) => /grouped|分组/i.test(candidate.textContent ?? ''))
+    expect(groupedToggle).toBeTruthy()
+
+    act(() => {
+      groupedToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(
+      host?.querySelector('[data-testid="upstream-accounts-grouped-roster"]'),
+    ).toBeTruthy()
+    expect(
+      Array.from(host?.querySelectorAll('input[type="checkbox"]') ?? []).find(
+        (candidate) =>
+          /select current page|选择当前页/i.test(
+            candidate.getAttribute('aria-label') ?? '',
+          ),
+      ),
+    ).toBeTruthy()
+    expect(
+      host?.querySelector('[data-testid="upstream-accounts-pagination-footer"]'),
+    ).toBeNull()
+  })
+
+  it('switches to grid view without bulk selection controls', async () => {
+    mockRosterFreshnessPage()
+    render()
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    const gridToggle = Array.from(
+      host?.querySelectorAll('button[role="tab"]') ?? [],
+    ).find((candidate) => /grid|网格/i.test(candidate.textContent ?? ''))
+    expect(gridToggle).toBeTruthy()
+
+    act(() => {
+      gridToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(
+      host?.querySelector('[data-testid="upstream-accounts-grouped-roster"]'),
+    ).toBeTruthy()
+    expect(gridToggle?.getAttribute('aria-selected')).toBe('true')
+    expect(
+      Array.from(host?.querySelectorAll('input[type="checkbox"]') ?? []).find(
+        (candidate) =>
+          /select current page|选择当前页/i.test(
+            candidate.getAttribute('aria-label') ?? '',
+          ),
+      ),
+    ).toBeFalsy()
+    expect(
+      host?.querySelector('[data-testid="upstream-accounts-pagination-footer"]'),
+    ).toBeNull()
+  })
+
+  it('blocks grouped roster interactions while the include-all query is still switching', async () => {
+    mockRosterFreshnessPage({
+      listState: {
+        queryKey: '{"includeAll":true}',
+        dataQueryKey: '{"page":2,"pageSize":20}',
+        freshness: 'stale',
+        loadingState: 'switching',
+        status: 'ready',
+        hasCurrentQueryData: true,
+        isPending: true,
+      },
+    })
+    render()
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    const groupedToggle = Array.from(
+      host?.querySelectorAll('button[role="tab"]') ?? [],
+    ).find((candidate) => /grouped|分组/i.test(candidate.textContent ?? ''))
+    expect(groupedToggle).toBeTruthy()
+
+    act(() => {
+      groupedToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(
+      host?.querySelector('[data-testid="upstream-accounts-grouped-loading"]'),
+    ).toBeTruthy()
+    expect(
+      host?.querySelector('[data-testid="upstream-accounts-grouped-roster"]'),
+    ).toBeNull()
+    expect(
+      Array.from(host?.querySelectorAll('input[type="checkbox"]') ?? []).find(
+        (candidate) =>
+          /select current page|选择当前页/i.test(
+            candidate.getAttribute('aria-label') ?? '',
+          ),
+      ),
+    ).toBeFalsy()
+  })
+
+  it('blocks flat roster interactions while switching away from grouped include-all data', async () => {
+    mockRosterFreshnessPage({
+      listState: {
+        queryKey: '{"page":2,"pageSize":20}',
+        dataQueryKey: '{"includeAll":true}',
+        freshness: 'stale',
+        loadingState: 'switching',
+        status: 'ready',
+        hasCurrentQueryData: true,
+        isPending: true,
+      },
+    })
+    render()
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(
+      host?.querySelector('[data-testid="upstream-accounts-table-loading"]'),
+    ).toBeTruthy()
+    expect(
+      host?.querySelector('[data-testid="upstream-accounts-pagination-footer"]'),
+    ).toBeTruthy()
+    expect(host?.textContent ?? '').not.toContain('Existing OAuth')
+    expect(host?.textContent ?? '').not.toContain('Another OAuth')
+  })
+
+  it('preserves the flat page selection when toggling grouped view', async () => {
+    const items = [
+      {
+        id: 5,
+        kind: 'oauth_codex',
+        provider: 'codex',
+        displayName: 'Existing OAuth',
+        groupName: 'prod',
+        status: 'active',
+        displayStatus: 'active',
+        enabled: true,
+        isMother: false,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+    ]
+    const sharedCallbacks = {
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      beginOauthMailboxSession: vi.fn(),
+      beginOauthMailboxSessionForAddress: vi.fn(),
+      getOauthMailboxStatuses: vi.fn(),
+      removeOauthMailboxSession: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      saveGroupNote: vi.fn(),
+      runBulkAction: vi.fn(),
+      startBulkSyncJob: vi.fn(),
+      getBulkSyncJob: vi.fn(),
+      stopBulkSyncJob: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+    }
+    const sharedRouting = {
+      writesEnabled: true,
+      apiKeyConfigured: false,
+      maskedApiKey: null,
+    }
+    const sharedBase = {
+      items,
+      hasUngroupedAccounts: true,
+      writesEnabled: true,
+      total: 45,
+      metrics: {
+        total: 45,
+        oauth: 45,
+        apiKey: 0,
+        attention: 0,
+      },
+      selectedId: null,
+      selectedSummary: null,
+      detail: null,
+      isLoading: false,
+      isDetailLoading: false,
+      listError: null,
+      detailError: null,
+      error: null,
+      groups: [],
+      routing: sharedRouting,
+      ...sharedCallbacks,
+    }
+    const flatPage1 = {
+      ...sharedBase,
+      page: 1,
+      pageSize: 20,
+      listState: {
+        queryKey: '{"page":1,"pageSize":20}',
+        dataQueryKey: '{"page":1,"pageSize":20}',
+        freshness: 'fresh',
+        loadingState: 'idle',
+        status: 'ready',
+        hasCurrentQueryData: true,
+        isPending: false,
+      },
+    }
+    const flatPage2 = {
+      ...sharedBase,
+      page: 2,
+      pageSize: 20,
+      listState: {
+        queryKey: '{"page":2,"pageSize":20}',
+        dataQueryKey: '{"page":2,"pageSize":20}',
+        freshness: 'fresh',
+        loadingState: 'idle',
+        status: 'ready',
+        hasCurrentQueryData: true,
+        isPending: false,
+      },
+    }
+    const groupedAll = {
+      ...sharedBase,
+      page: 1,
+      pageSize: 45,
+      listState: {
+        queryKey: '{"includeAll":true}',
+        dataQueryKey: '{"includeAll":true}',
+        freshness: 'fresh',
+        loadingState: 'idle',
+        status: 'ready',
+        hasCurrentQueryData: true,
+        isPending: false,
+      },
+    }
+    hookMocks.useUpstreamAccounts.mockImplementation((query) => {
+      if (query?.includeAll) return groupedAll
+      if (query?.page === 2) return flatPage2
+      return flatPage1
+    })
+
+    render()
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    const nextButton = findButton(/next|下一页/i)
+    expect(nextButton).toBeTruthy()
+    act(() => {
+      nextButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expectRosterHookQuery({ page: 2, pageSize: 20 })
+
+    const groupedToggle = Array.from(
+      host?.querySelectorAll('button[role="tab"]') ?? [],
+    ).find((candidate) => /grouped|分组/i.test(candidate.textContent ?? ''))
+    const flatToggle = Array.from(
+      host?.querySelectorAll('button[role="tab"]') ?? [],
+    ).find((candidate) => /flat|平铺/i.test(candidate.textContent ?? ''))
+    expect(groupedToggle).toBeTruthy()
+    expect(flatToggle).toBeTruthy()
+
+    act(() => {
+      groupedToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expectRosterHookQuery({ includeAll: true })
+
+    act(() => {
+      flatToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expectRosterHookQuery({ page: 2, pageSize: 20 })
+  })
+})

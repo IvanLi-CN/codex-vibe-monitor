@@ -1355,6 +1355,22 @@ impl ForwardProxyManager {
             .or(Some(normalized))
     }
 
+    pub(crate) fn current_bound_group_binding_key(
+        &self,
+        group_name: &str,
+        bound_proxy_keys: &[String],
+    ) -> Option<String> {
+        let available_keys = self.selectable_bound_proxy_keys_in_order(bound_proxy_keys);
+        if available_keys.is_empty() {
+            return None;
+        }
+        self.bound_group_runtime
+            .get(group_name)
+            .and_then(|state| state.current_binding_key.as_deref())
+            .and_then(|key| self.resolve_current_bound_proxy_key(key).or_else(|| normalize_bound_proxy_key(key)))
+            .filter(|key| available_keys.contains(key))
+    }
+
     fn migrate_runtime_aliases_to_endpoint(&mut self, endpoint: &ForwardProxyEndpoint) {
         let Some(raw_url) = endpoint.raw_url.as_deref() else {
             return;

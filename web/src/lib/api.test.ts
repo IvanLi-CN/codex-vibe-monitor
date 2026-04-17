@@ -1591,6 +1591,59 @@ describe("account pool frontend API helpers", () => {
     });
   });
 
+  it("normalizes current forward proxy fields from upstream account payloads", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            writesEnabled: true,
+            groups: [],
+            hasUngroupedAccounts: false,
+            items: [
+              {
+                id: 21,
+                kind: "oauth_codex",
+                provider: "codex",
+                displayName: "Assigned OAuth",
+                isMother: false,
+                status: "active",
+                enabled: true,
+                currentForwardProxyKey: "jp-edge-01",
+                currentForwardProxyDisplayName: "JP Edge 01",
+                currentForwardProxyState: "assigned",
+              },
+              {
+                id: 22,
+                kind: "api_key_codex",
+                provider: "codex",
+                displayName: "Pending API Key",
+                isMother: false,
+                status: "active",
+                enabled: true,
+                currentForwardProxyState: "pending",
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch,
+    );
+
+    const response = await fetchUpstreamAccounts();
+
+    expect(response.items[0]).toMatchObject({
+      currentForwardProxyKey: "jp-edge-01",
+      currentForwardProxyDisplayName: "JP Edge 01",
+      currentForwardProxyState: "assigned",
+    });
+    expect(response.items[1]).toMatchObject({
+      currentForwardProxyKey: null,
+      currentForwardProxyDisplayName: null,
+      currentForwardProxyState: "pending",
+    });
+  });
+
   it("saves pool routing settings through the dedicated endpoint", async () => {
     const fetchMock = vi.fn(
       async (_input: RequestInfo | URL, init?: RequestInit) => {

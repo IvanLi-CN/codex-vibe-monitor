@@ -1206,3 +1206,62 @@ describe('UpstreamAccountsTable', () => {
     expect(document.body.textContent).toContain('6,048')
   })
 })
+
+describe('UpstreamAccountsTable current proxy badge', () => {
+  it('renders the backend-provided forward proxy badge on flat rows', () => {
+    const html = renderTable([
+      {
+        id: 91,
+        kind: 'oauth_codex',
+        provider: 'codex',
+        displayName: 'Assigned proxy account',
+        groupName: 'prod',
+        isMother: false,
+        status: 'active',
+        displayStatus: 'active',
+        enabled: true,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+        currentForwardProxyState: 'assigned',
+        currentForwardProxyKey: 'jp-edge-01',
+        currentForwardProxyDisplayName: 'JP Edge 01',
+      },
+      {
+        id: 92,
+        kind: 'oauth_codex',
+        provider: 'codex',
+        displayName: 'Pending proxy account',
+        groupName: 'prod',
+        isMother: false,
+        status: 'active',
+        displayStatus: 'active',
+        enabled: true,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+        currentForwardProxyState: 'pending',
+        currentForwardProxyKey: null,
+        currentForwardProxyDisplayName: null,
+      },
+      {
+        id: 93,
+        kind: 'oauth_codex',
+        provider: 'codex',
+        displayName: 'Unconfigured proxy account',
+        groupName: 'prod',
+        isMother: false,
+        status: 'active',
+        displayStatus: 'active',
+        enabled: true,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+        currentForwardProxyState: 'unconfigured',
+        currentForwardProxyKey: null,
+        currentForwardProxyDisplayName: null,
+      },
+    ])
+
+    expect(html).toContain('JP Edge 01')
+    expect(html).toContain('Pending')
+    expect(html).toContain('Unconfigured proxy')
+  })
+})

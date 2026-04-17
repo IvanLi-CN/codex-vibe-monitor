@@ -30,11 +30,13 @@ import {
 } from "../../components/ui/dialog";
 import { formFieldSpanVariants } from "../../components/ui/form-control";
 import { SelectField } from "../../components/ui/select-field";
+import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
 import { Spinner } from "../../components/ui/spinner";
 import { AccountTagFilterCombobox } from "../../components/AccountTagFilterCombobox";
 import { MultiSelectFilterCombobox } from "../../components/MultiSelectFilterCombobox";
 import { UpstreamAccountGroupCombobox } from "../../components/UpstreamAccountGroupCombobox";
-import { UpstreamAccountsTable } from "../../components/UpstreamAccountsTable";
+import { UpstreamAccountsGroupedRoster, type UpstreamAccountsGroupedRosterGroup } from "../../components/UpstreamAccountsGroupedRoster";
+import { UpstreamAccountsTable, type UpstreamAccountsTableLabels } from "../../components/UpstreamAccountsTable";
 import { usePoolTags } from "../../hooks/usePoolTags";
 import { useUpstreamAccountDetailRoute } from "../../hooks/useUpstreamAccountDetailRoute";
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
@@ -89,6 +91,24 @@ import {
   SharedUpstreamAccountDetailDrawer,
 } from "./UpstreamAccounts.page-local-shared";
 export { SharedUpstreamAccountDetailDrawer } from "./UpstreamAccounts.page-local-shared";
+
+type AccountRosterViewMode = "flat" | "grouped" | "grid";
+
+function normalizeRosterGroupName(value?: string | null) {
+  const normalized = value?.trim();
+  return normalized ? normalized : null;
+}
+
+function parseListQueryIncludeAll(queryKey: string | null): boolean | null {
+  if (!queryKey) return null;
+  try {
+    const parsed = JSON.parse(queryKey) as { includeAll?: boolean };
+    return parsed.includeAll === true;
+  } catch {
+    return null;
+  }
+}
+
 export default function UpstreamAccountsPage() {
   const { t } = useTranslation();
   const location = useLocation();
@@ -115,6 +135,7 @@ export default function UpstreamAccountsPage() {
   );
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
+  const [rosterViewMode, setRosterViewMode] = useState<AccountRosterViewMode>("flat");
   const [selectedAccountIds, setSelectedAccountIds] = useState<number[]>([]);
   const [selectedAccountSummaries, setSelectedAccountSummaries] = useState<
     Record<number, UpstreamAccountSummary>
@@ -176,8 +197,9 @@ export default function UpstreamAccountsPage() {
         enableStatusFilter.length > 0 ? enableStatusFilter : undefined,
       healthStatus:
         healthStatusFilter.length > 0 ? healthStatusFilter : undefined,
-      page,
-      pageSize,
+      ...(rosterViewMode === "flat"
+        ? { page, pageSize }
+        : { includeAll: true }),
       tagIds:
         appliedSelectedTagIds.length > 0 ? appliedSelectedTagIds : undefined,
     };
@@ -188,6 +210,7 @@ export default function UpstreamAccountsPage() {
     healthStatusFilter,
     page,
     pageSize,
+    rosterViewMode,
     shouldDeferRosterQuery,
     workStatusFilter,
   ]);
@@ -287,6 +310,7 @@ export default function UpstreamAccountsPage() {
     startBulkSyncJob,
     getBulkSyncJob,
     stopBulkSyncJob,
+    forwardProxyNodes = [],
     total,
     metrics: listMetrics,
   } = useUpstreamAccounts(accountListQuery);
@@ -343,16 +367,30 @@ export default function UpstreamAccountsPage() {
   const routingWritesEnabled = routing
     ? (routing.writesEnabled ?? writesEnabled)
     : false;
+  const currentRosterViewRequiresIncludeAll = rosterViewMode !== "flat";
+  const activeDataQueryIncludeAll = useMemo(
+    () => parseListQueryIncludeAll(listState.dataQueryKey),
+    [listState.dataQueryKey],
+  );
+  const shouldBlockSwitchingRoster =
+    listState.loadingState === "switching" &&
+    activeDataQueryIncludeAll != null &&
+    activeDataQueryIncludeAll !== currentRosterViewRequiresIncludeAll;
   const showGraceRoster =
-    listState.loadingState === "switching" && !isStaleRosterGraceExpired;
+    listState.loadingState === "switching" &&
+    !isStaleRosterGraceExpired &&
+    !shouldBlockSwitchingRoster;
   const showBlockingRosterLoading =
     listState.loadingState === "initial" ||
+    shouldBlockSwitchingRoster ||
     (listState.loadingState === "switching" && isStaleRosterGraceExpired);
   const showBlockingRosterError = listState.status === "error";
   const showBlockingRosterState =
     showBlockingRosterLoading || showBlockingRosterError;
   const visibleRosterItems = showBlockingRosterLoading
-    ? items
+    ? shouldBlockSwitchingRoster
+      ? []
+      : items
     : showBlockingRosterError && !showGraceRoster
       ? []
       : items;
@@ -378,7 +416,8 @@ export default function UpstreamAccountsPage() {
       ? null
       : Math.max(1, Math.ceil(effectiveTotal / Math.max(pageSize, 1)));
   const nextPageLimit = pageCount ?? page;
-  const showPaginationFooter = pageCount != null || showBlockingRosterState;
+  const showPaginationFooter =
+    rosterViewMode === "flat" && (pageCount != null || showBlockingRosterState);
   const paginationStatusText = showBlockingRosterError
     ? t("accountPool.upstreamAccounts.pagination.error")
     : null;
@@ -586,6 +625,7 @@ export default function UpstreamAccountsPage() {
 
   useEffect(() => {
     if (
+      rosterViewMode === "flat" &&
       effectiveTotal != null &&
       pageCount != null &&
       effectiveTotal > 0 &&
@@ -593,7 +633,7 @@ export default function UpstreamAccountsPage() {
     ) {
       setPage(pageCount);
     }
-  }, [effectiveTotal, page, pageCount]);
+  }, [effectiveTotal, page, pageCount, rosterViewMode]);
 
   useEffect(() => {
     const state = location.state as UpstreamAccountsLocationState | null;
@@ -830,6 +870,201 @@ export default function UpstreamAccountsPage() {
     const translated = t(key);
     return translated === key ? reason : translated;
   };
+  const accountRosterLabels = useMemo<UpstreamAccountsTableLabels>(
+    () => ({
+      selectPage: t("accountPool.upstreamAccounts.bulk.selectPage"),
+      selectRow: (name) =>
+        t("accountPool.upstreamAccounts.bulk.selectRow", { name }),
+      account: t("accountPool.upstreamAccounts.table.account"),
+      sync: t("accountPool.upstreamAccounts.table.syncAndCall"),
+      lastSuccess: t("accountPool.upstreamAccounts.table.lastSuccessShort"),
+      lastCall: t("accountPool.upstreamAccounts.table.lastCallShort"),
+      routingBlock: t("accountPool.upstreamAccounts.table.routingBlockShort"),
+      latestAction: t("accountPool.upstreamAccounts.table.latestActionShort"),
+      windows: t("accountPool.upstreamAccounts.table.windows"),
+      never: t("accountPool.upstreamAccounts.never"),
+      primary: t("accountPool.upstreamAccounts.primaryWindowLabel"),
+      primaryShort: t("accountPool.upstreamAccounts.primaryWindowShortLabel"),
+      secondary: t("accountPool.upstreamAccounts.secondaryWindowLabel"),
+      secondaryShort: t("accountPool.upstreamAccounts.secondaryWindowShortLabel"),
+      nextReset: t("accountPool.upstreamAccounts.table.nextReset"),
+      nextResetCompact: t("accountPool.upstreamAccounts.table.nextResetCompact"),
+      requestsMetric: t("accountPool.upstreamAccounts.table.requestsMetric"),
+      tokensMetric: t("accountPool.upstreamAccounts.table.tokensMetric"),
+      costMetric: t("accountPool.upstreamAccounts.table.costMetric"),
+      inputTokensMetric: t("accountPool.upstreamAccounts.table.inputTokensMetric"),
+      outputTokensMetric: t("accountPool.upstreamAccounts.table.outputTokensMetric"),
+      cacheInputTokensMetric: t(
+        "accountPool.upstreamAccounts.table.cacheInputTokensMetric",
+      ),
+      unknown: t("accountPool.upstreamAccounts.latestAction.unknown"),
+      unavailable: t("accountPool.upstreamAccounts.unavailable"),
+      oauth: t("accountPool.upstreamAccounts.kind.oauth"),
+      apiKey: t("accountPool.upstreamAccounts.kind.apiKey"),
+      mother: t("accountPool.upstreamAccounts.mother.badge"),
+      duplicate: t("accountPool.upstreamAccounts.duplicate.badge"),
+      hiddenTagsA11y: (count, names) =>
+        t("accountPool.upstreamAccounts.table.hiddenTagsA11y", {
+          count,
+          names,
+        }),
+      workStatus: accountWorkStatusLabel,
+      workStatusCount: accountWorkingCountLabel,
+      enableStatus: accountEnableStatusLabel,
+      healthStatus: accountHealthStatusLabel,
+      syncState: accountSyncStateLabel,
+      action: accountActionLabel,
+      compactSupport: (item) => compactSupportLabel(item.compactSupport, t),
+      compactSupportHint: (item) => compactSupportHint(item.compactSupport, t),
+      actionSource: (
+        value: UpstreamAccountSummary | string | null | undefined,
+      ) =>
+        accountActionSourceLabel(
+          typeof value === "string" || value == null
+            ? value
+            : value.lastActionSource,
+        ),
+      actionReason: (
+        value: UpstreamAccountSummary | string | null | undefined,
+      ) =>
+        accountActionReasonLabel(
+          typeof value === "string" || value == null
+            ? value
+            : value.lastActionReasonCode,
+        ),
+      latestActionFieldAction: t(
+        "accountPool.upstreamAccounts.latestAction.fields.action",
+      ),
+      latestActionFieldSource: t(
+        "accountPool.upstreamAccounts.latestAction.fields.source",
+      ),
+      latestActionFieldReason: t(
+        "accountPool.upstreamAccounts.latestAction.fields.reason",
+      ),
+      latestActionFieldHttpStatus: t(
+        "accountPool.upstreamAccounts.latestAction.fields.httpStatus",
+      ),
+      latestActionFieldOccurredAt: t(
+        "accountPool.upstreamAccounts.latestAction.fields.occurredAt",
+      ),
+      latestActionFieldMessage: t(
+        "accountPool.upstreamAccounts.latestAction.fields.message",
+      ),
+      forwardProxyPending: t("accountPool.upstreamAccounts.proxy.pending"),
+      forwardProxyUnconfigured: t(
+        "accountPool.upstreamAccounts.proxy.unconfigured",
+      ),
+    }),
+    [
+      accountActionLabel,
+      accountActionReasonLabel,
+      accountActionSourceLabel,
+      accountEnableStatusLabel,
+      accountHealthStatusLabel,
+      accountSyncStateLabel,
+      accountWorkStatusLabel,
+      accountWorkingCountLabel,
+      t,
+    ],
+  );
+  const groupedPlanLabel = useCallback(
+    (planType?: string | null) => {
+      const normalized = planType?.trim().toLowerCase();
+      if (!normalized) return null;
+      switch (normalized) {
+        case "free":
+          return t("accountPool.upstreamAccounts.plan.free");
+        case "pro":
+          return t("accountPool.upstreamAccounts.plan.plus");
+        case "team":
+          return t("accountPool.upstreamAccounts.plan.team");
+        case "enterprise":
+          return t("accountPool.upstreamAccounts.plan.enterprise");
+        default:
+          return normalized;
+      }
+    },
+    [t],
+  );
+  const groupedRosterGroups = useMemo<UpstreamAccountsGroupedRosterGroup[]>(() => {
+    if (hideRosterDerivedUi) {
+      return [];
+    }
+    const forwardProxyNodeLabelMap = new Map(
+      forwardProxyNodes.map((node) => [node.key, node.displayName?.trim() || node.key] as const),
+    );
+    const groupOrder = new Map(
+      groups.map((group, index) => [group.groupName, index] as const),
+    );
+    const grouped = new Map<string, UpstreamAccountsGroupedRosterGroup>();
+    for (const item of visibleRosterItems) {
+      const normalizedGroupName = normalizeRosterGroupName(item.groupName);
+      const groupKey = normalizedGroupName ?? "__ungrouped__";
+      const groupSummary = normalizedGroupName
+        ? groups.find((candidate) => candidate.groupName === normalizedGroupName)
+        : null;
+      const current = grouped.get(groupKey) ?? {
+        id: groupKey,
+        groupName: normalizedGroupName,
+        displayName:
+          normalizedGroupName ??
+          t("accountPool.upstreamAccounts.groupFilter.ungrouped"),
+        items: [],
+        note: groupSummary?.note ?? null,
+        boundProxyLabels:
+          groupSummary?.boundProxyKeys?.map(
+            (proxyKey) => forwardProxyNodeLabelMap.get(proxyKey) ?? proxyKey,
+          ) ?? [],
+        concurrencyLimit: groupSummary?.concurrencyLimit ?? null,
+        nodeShuntEnabled: groupSummary?.nodeShuntEnabled ?? false,
+        planCounts: [],
+      };
+      current.items.push(item);
+      grouped.set(groupKey, current);
+    }
+
+    const planOrder = ["free", "pro", "team", "enterprise"];
+    const result = Array.from(grouped.values()).map((group) => {
+      const counts = new Map<string, number>();
+      for (const item of group.items) {
+        if (item.kind === "api_key_codex") {
+          counts.set("api", (counts.get("api") ?? 0) + 1);
+        }
+        const normalizedPlan = item.planType?.trim().toLowerCase();
+        if (!normalizedPlan || normalizedPlan === "local") continue;
+        counts.set(normalizedPlan, (counts.get(normalizedPlan) ?? 0) + 1);
+      }
+      const orderedKeys = [
+        ...planOrder.filter((key) => counts.has(key)),
+        ...(counts.has("api") ? ["api"] : []),
+        ...Array.from(counts.keys())
+          .filter((key) => key !== "api" && !planOrder.includes(key))
+          .sort(),
+      ];
+      return {
+        ...group,
+        planCounts: orderedKeys
+          .map((key) => ({
+            key,
+            label:
+              key === "api"
+                ? t("accountPool.upstreamAccounts.grouped.apiBadge")
+                : (groupedPlanLabel(key) ?? key),
+            count: counts.get(key) ?? 0,
+          }))
+          .filter((plan) => plan.count > 0),
+      };
+    });
+
+    result.sort((left, right) => {
+      const leftOrder =
+        left.groupName == null ? Number.MAX_SAFE_INTEGER : (groupOrder.get(left.groupName) ?? Number.MAX_SAFE_INTEGER - 1);
+      const rightOrder =
+        right.groupName == null ? Number.MAX_SAFE_INTEGER : (groupOrder.get(right.groupName) ?? Number.MAX_SAFE_INTEGER - 1);
+      return leftOrder - rightOrder || left.displayName.localeCompare(right.displayName);
+    });
+    return result;
+  }, [forwardProxyNodes, groupedPlanLabel, groups, hideRosterDerivedUi, t, visibleRosterItems]);
   const bulkRemovableTagIds = useMemo(() => {
     const removableIds = new Set<number>();
     for (const summary of Object.values(selectedAccountSummaries)) {
@@ -1535,11 +1770,49 @@ export default function UpstreamAccountsPage() {
                     {t("accountPool.upstreamAccounts.listDescription")}
                   </p>
                 </div>
-                {isLoading ? (
-                  <div className="flex items-center justify-start lg:justify-end">
-                    <Spinner className="text-primary" />
-                  </div>
-                ) : null}
+                <div className="flex items-center justify-start gap-3 lg:justify-end">
+                  <SegmentedControl
+                    size="compact"
+                    role="tablist"
+                    aria-label={t("accountPool.upstreamAccounts.viewToggleAria")}
+                  >
+                    <SegmentedControlItem
+                      type="button"
+                      role="tab"
+                      aria-selected={rosterViewMode === "flat"}
+                      aria-pressed={rosterViewMode === "flat"}
+                      active={rosterViewMode === "flat"}
+                      onClick={() => setRosterViewMode("flat")}
+                    >
+                      {t("accountPool.upstreamAccounts.viewMode.flat")}
+                    </SegmentedControlItem>
+                    <SegmentedControlItem
+                      type="button"
+                      role="tab"
+                      aria-selected={rosterViewMode === "grouped"}
+                      aria-pressed={rosterViewMode === "grouped"}
+                      active={rosterViewMode === "grouped"}
+                      onClick={() => setRosterViewMode("grouped")}
+                    >
+                      {t("accountPool.upstreamAccounts.viewMode.grouped")}
+                    </SegmentedControlItem>
+                    <SegmentedControlItem
+                      type="button"
+                      role="tab"
+                      aria-selected={rosterViewMode === "grid"}
+                      aria-pressed={rosterViewMode === "grid"}
+                      active={rosterViewMode === "grid"}
+                      onClick={() => setRosterViewMode("grid")}
+                    >
+                      {t("accountPool.upstreamAccounts.viewMode.grid")}
+                    </SegmentedControlItem>
+                  </SegmentedControl>
+                  {isLoading ? (
+                    <div className="flex items-center justify-start lg:justify-end">
+                      <Spinner className="text-primary" />
+                    </div>
+                  ) : null}
+                </div>
               </div>
 
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-12">
@@ -1718,7 +1991,9 @@ export default function UpstreamAccountsPage() {
                   : undefined
               }
             >
-              {selectedAccountIds.length > 0 && !hideRosterDerivedUi ? (
+              {selectedAccountIds.length > 0 &&
+              !hideRosterDerivedUi &&
+              rosterViewMode !== "grid" ? (
                 <div className="rounded-[1.25rem] border border-primary/25 bg-primary/8 px-4 py-3">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                     <div className="text-sm text-base-content/80">
@@ -1866,137 +2141,82 @@ export default function UpstreamAccountsPage() {
                 </Alert>
               ) : null}
 
-              <UpstreamAccountsTable
-                items={visibleRosterItems}
-                isLoading={showBlockingRosterLoading}
-                error={showBlockingRosterError ? listError : null}
-                loadingTitle={t("accountPool.upstreamAccounts.loadingTitle")}
-                loadingDescription={t(
-                  "accountPool.upstreamAccounts.loadingDescription",
-                )}
-                errorTitle={t("accountPool.upstreamAccounts.listErrorTitle")}
-                retryLabel={t("accountPool.upstreamAccounts.listRetry")}
-                onRetry={() => void refresh()}
-                selectedId={upstreamAccountId}
-                selectedAccountIds={selectedAccountIdSet}
-                onSelect={handleSelectAccount}
-                onToggleSelected={handleToggleSelectedAccount}
-                onToggleSelectAllCurrentPage={handleToggleSelectAllCurrentPage}
-                emptyTitle={t("accountPool.upstreamAccounts.emptyTitle")}
-                emptyDescription={t(
-                  "accountPool.upstreamAccounts.emptyDescription",
-                )}
-                labels={{
-                  selectPage: t("accountPool.upstreamAccounts.bulk.selectPage"),
-                  selectRow: (name) =>
-                    t("accountPool.upstreamAccounts.bulk.selectRow", { name }),
-                  account: t("accountPool.upstreamAccounts.table.account"),
-                  sync: t("accountPool.upstreamAccounts.table.syncAndCall"),
-                  lastSuccess: t(
-                    "accountPool.upstreamAccounts.table.lastSuccessShort",
-                  ),
-                  lastCall: t(
-                    "accountPool.upstreamAccounts.table.lastCallShort",
-                  ),
-                  routingBlock: t(
-                    "accountPool.upstreamAccounts.table.routingBlockShort",
-                  ),
-                  latestAction: t(
-                    "accountPool.upstreamAccounts.table.latestActionShort",
-                  ),
-                  windows: t("accountPool.upstreamAccounts.table.windows"),
-                  never: t("accountPool.upstreamAccounts.never"),
-                  primary: t("accountPool.upstreamAccounts.primaryWindowLabel"),
-                  primaryShort: t(
-                    "accountPool.upstreamAccounts.primaryWindowShortLabel",
-                  ),
-                  secondary: t(
-                    "accountPool.upstreamAccounts.secondaryWindowLabel",
-                  ),
-                  secondaryShort: t(
-                    "accountPool.upstreamAccounts.secondaryWindowShortLabel",
-                  ),
-                  nextReset: t("accountPool.upstreamAccounts.table.nextReset"),
-                  nextResetCompact: t(
-                    "accountPool.upstreamAccounts.table.nextResetCompact",
-                  ),
-                  requestsMetric: t(
-                    "accountPool.upstreamAccounts.table.requestsMetric",
-                  ),
-                  tokensMetric: t(
-                    "accountPool.upstreamAccounts.table.tokensMetric",
-                  ),
-                  costMetric: t(
-                    "accountPool.upstreamAccounts.table.costMetric",
-                  ),
-                  inputTokensMetric: t(
-                    "accountPool.upstreamAccounts.table.inputTokensMetric",
-                  ),
-                  outputTokensMetric: t(
-                    "accountPool.upstreamAccounts.table.outputTokensMetric",
-                  ),
-                  cacheInputTokensMetric: t(
-                    "accountPool.upstreamAccounts.table.cacheInputTokensMetric",
-                  ),
-                  unknown: t(
-                    "accountPool.upstreamAccounts.latestAction.unknown",
-                  ),
-                  unavailable: t("accountPool.upstreamAccounts.unavailable"),
-                  oauth: t("accountPool.upstreamAccounts.kind.oauth"),
-                  apiKey: t("accountPool.upstreamAccounts.kind.apiKey"),
-                  mother: t("accountPool.upstreamAccounts.mother.badge"),
-                  duplicate: t("accountPool.upstreamAccounts.duplicate.badge"),
-                  hiddenTagsA11y: (count, names) =>
-                    t("accountPool.upstreamAccounts.table.hiddenTagsA11y", {
-                      count,
-                      names,
-                    }),
-                  workStatus: accountWorkStatusLabel,
-                  workStatusCount: accountWorkingCountLabel,
-                  enableStatus: accountEnableStatusLabel,
-                  healthStatus: accountHealthStatusLabel,
-                  syncState: accountSyncStateLabel,
-                  action: accountActionLabel,
-                  compactSupport: (item) =>
-                    compactSupportLabel(item.compactSupport, t),
-                  compactSupportHint: (item) =>
-                    compactSupportHint(item.compactSupport, t),
-                  actionSource: (
-                    value: UpstreamAccountSummary | string | null | undefined,
-                  ) =>
-                    accountActionSourceLabel(
-                      typeof value === "string" || value == null
-                        ? value
-                        : value.lastActionSource,
+              {rosterViewMode === "flat" ? (
+                <UpstreamAccountsTable
+                  items={visibleRosterItems}
+                  isLoading={showBlockingRosterLoading}
+                  error={showBlockingRosterError ? listError : null}
+                  loadingTitle={t("accountPool.upstreamAccounts.loadingTitle")}
+                  loadingDescription={t(
+                    "accountPool.upstreamAccounts.loadingDescription",
+                  )}
+                  errorTitle={t("accountPool.upstreamAccounts.listErrorTitle")}
+                  retryLabel={t("accountPool.upstreamAccounts.listRetry")}
+                  onRetry={() => void refresh()}
+                  selectedId={upstreamAccountId}
+                  selectedAccountIds={selectedAccountIdSet}
+                  onSelect={handleSelectAccount}
+                  onToggleSelected={handleToggleSelectedAccount}
+                  onToggleSelectAllCurrentPage={handleToggleSelectAllCurrentPage}
+                  emptyTitle={t("accountPool.upstreamAccounts.emptyTitle")}
+                  emptyDescription={t(
+                    "accountPool.upstreamAccounts.emptyDescription",
+                  )}
+                  labels={accountRosterLabels}
+                />
+              ) : (
+                <UpstreamAccountsGroupedRoster
+                  groups={groupedRosterGroups}
+                  isLoading={showBlockingRosterLoading}
+                  error={showBlockingRosterError ? listError : null}
+                  loadingTitle={t("accountPool.upstreamAccounts.loadingTitle")}
+                  loadingDescription={t(
+                    "accountPool.upstreamAccounts.loadingDescription",
+                  )}
+                  errorTitle={t("accountPool.upstreamAccounts.listErrorTitle")}
+                  retryLabel={t("accountPool.upstreamAccounts.listRetry")}
+                  onRetry={() => void refresh()}
+                  selectedId={upstreamAccountId}
+                  selectedAccountIds={selectedAccountIdSet}
+                  onSelect={handleSelectAccount}
+                  onToggleSelected={
+                    rosterViewMode === "grouped"
+                      ? handleToggleSelectedAccount
+                      : undefined
+                  }
+                  onToggleSelectAllVisible={
+                    rosterViewMode === "grouped"
+                      ? handleToggleSelectAllCurrentPage
+                      : undefined
+                  }
+                  emptyTitle={t("accountPool.upstreamAccounts.emptyTitle")}
+                  emptyDescription={t(
+                    "accountPool.upstreamAccounts.emptyDescription",
+                  )}
+                  labels={accountRosterLabels}
+                  memberLayout={rosterViewMode === "grid" ? "grid" : "list"}
+                  selectionMode={rosterViewMode === "grid" ? "none" : "multi"}
+                  groupLabels={{
+                    count: (count) =>
+                      t("accountPool.upstreamAccounts.grouped.accountCount", {
+                        count,
+                      }),
+                    concurrency: (value) =>
+                      t("accountPool.upstreamAccounts.grouped.concurrency", {
+                        value,
+                      }),
+                    exclusiveNode: t(
+                      "accountPool.upstreamAccounts.grouped.exclusiveNode",
                     ),
-                  actionReason: (
-                    value: UpstreamAccountSummary | string | null | undefined,
-                  ) =>
-                    accountActionReasonLabel(
-                      typeof value === "string" || value == null
-                        ? value
-                        : value.lastActionReasonCode,
-                    ),
-                  latestActionFieldAction: t(
-                    "accountPool.upstreamAccounts.latestAction.fields.action",
-                  ),
-                  latestActionFieldSource: t(
-                    "accountPool.upstreamAccounts.latestAction.fields.source",
-                  ),
-                  latestActionFieldReason: t(
-                    "accountPool.upstreamAccounts.latestAction.fields.reason",
-                  ),
-                  latestActionFieldHttpStatus: t(
-                    "accountPool.upstreamAccounts.latestAction.fields.httpStatus",
-                  ),
-                  latestActionFieldOccurredAt: t(
-                    "accountPool.upstreamAccounts.latestAction.fields.occurredAt",
-                  ),
-                  latestActionFieldMessage: t(
-                    "accountPool.upstreamAccounts.latestAction.fields.message",
-                  ),
-                }}
-              />
+                    selectVisible: t("accountPool.upstreamAccounts.bulk.selectPage"),
+                    infoTitle: t("accountPool.upstreamAccounts.grouped.infoTitle"),
+                    noteLabel: t("accountPool.upstreamAccounts.grouped.noteLabel"),
+                    noteEmpty: t("accountPool.upstreamAccounts.grouped.noteEmpty"),
+                    proxiesLabel: t("accountPool.upstreamAccounts.grouped.proxiesLabel"),
+                    proxiesEmpty: t("accountPool.upstreamAccounts.grouped.proxiesEmpty"),
+                  }}
+                />
+              )}
 
               {visibleListWarning ? (
                 <Alert variant="warning">

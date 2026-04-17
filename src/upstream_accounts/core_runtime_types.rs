@@ -105,6 +105,9 @@ const UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_GROUP_NODE_SHUNT_UNASSIGNED: &str =
     "group_node_shunt_unassigned";
 const UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_GROUP_NODE_SHUNT_UNASSIGNED_MESSAGE: &str =
     "分组节点分流策略控制，未排节点";
+const UPSTREAM_ACCOUNT_FORWARD_PROXY_STATE_ASSIGNED: &str = "assigned";
+const UPSTREAM_ACCOUNT_FORWARD_PROXY_STATE_PENDING: &str = "pending";
+const UPSTREAM_ACCOUNT_FORWARD_PROXY_STATE_UNCONFIGURED: &str = "unconfigured";
 const BULK_UPSTREAM_ACCOUNT_ACTION_ENABLE: &str = "enable";
 const BULK_UPSTREAM_ACCOUNT_ACTION_DISABLE: &str = "disable";
 const BULK_UPSTREAM_ACCOUNT_ACTION_DELETE: &str = "delete";
@@ -866,6 +869,7 @@ pub(crate) struct ListUpstreamAccountsQuery {
     pub(crate) health_status: Vec<String>,
     pub(crate) page: Option<usize>,
     pub(crate) page_size: Option<usize>,
+    pub(crate) include_all: Option<bool>,
     #[serde(default)]
     pub(crate) tag_ids: Vec<i64>,
 }
@@ -1113,6 +1117,9 @@ pub(crate) struct UpstreamAccountSummary {
     last_action_invoke_id: Option<String>,
     last_action_at: Option<String>,
     cooldown_until: Option<String>,
+    current_forward_proxy_key: Option<String>,
+    current_forward_proxy_display_name: Option<String>,
+    current_forward_proxy_state: String,
     routing_block_reason_code: Option<String>,
     routing_block_reason_message: Option<String>,
     token_expires_at: Option<String>,

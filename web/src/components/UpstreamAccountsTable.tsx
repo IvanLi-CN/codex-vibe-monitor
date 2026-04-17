@@ -14,7 +14,7 @@ type ActionDetailLabelResolver =
   | ((item: UpstreamAccountSummary) => string | null)
   | ((value?: string | null) => string | null)
 
-interface UpstreamAccountsTableProps {
+export interface UpstreamAccountsTableProps {
   items: UpstreamAccountSummary[]
   isLoading?: boolean
   error?: string | null
@@ -76,10 +76,14 @@ interface UpstreamAccountsTableProps {
     latestActionFieldHttpStatus: string
     latestActionFieldOccurredAt: string
     latestActionFieldMessage: string
+    forwardProxyPending?: string
+    forwardProxyUnconfigured?: string
   }
 }
 
-const WINDOW_PLACEHOLDER = '-'
+export type UpstreamAccountsTableLabels = UpstreamAccountsTableProps['labels']
+
+export const WINDOW_PLACEHOLDER = '-'
 
 function SelectAllCheckbox({
   checked,
@@ -113,12 +117,12 @@ function SelectAllCheckbox({
   )
 }
 
-function windowPercent(value?: number | null) {
+export function windowPercent(value?: number | null) {
   if (!Number.isFinite(value ?? NaN)) return 0
   return Math.max(0, Math.min(value ?? 0, 100))
 }
 
-function formatDateTime(value?: string | null, fallback = '—') {
+export function formatDateTime(value?: string | null, fallback = '—') {
   if (!value) return fallback
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
@@ -150,15 +154,20 @@ function formatCost(value: number) {
   }).format(value)
 }
 
-function kindLabel(item: UpstreamAccountSummary, labels: UpstreamAccountsTableProps['labels']) {
+export function kindLabel(item: UpstreamAccountSummary, labels: UpstreamAccountsTableProps['labels']) {
   return item.kind === 'oauth_codex' ? labels.oauth : labels.apiKey
 }
 
-function accountEnableStatus(item: UpstreamAccountSummary) {
+function shouldShowPlanBadge(planType?: string | null) {
+  const normalized = planType?.trim().toLowerCase()
+  return Boolean(normalized && normalized !== 'local')
+}
+
+export function accountEnableStatus(item: UpstreamAccountSummary) {
   return item.enableStatus ?? (item.enabled === false || item.displayStatus === 'disabled' ? 'disabled' : 'enabled')
 }
 
-function accountHealthStatus(item: UpstreamAccountSummary) {
+export function accountHealthStatus(item: UpstreamAccountSummary) {
   if (item.healthStatus) return item.healthStatus
   const legacyStatus = item.displayStatus ?? item.status
   if (
@@ -175,23 +184,23 @@ function accountHealthStatus(item: UpstreamAccountSummary) {
   return 'normal'
 }
 
-function accountSyncState(item: UpstreamAccountSummary) {
+export function accountSyncState(item: UpstreamAccountSummary) {
   if (item.syncState) return item.syncState
   return (item.displayStatus ?? item.status) === 'syncing' ? 'syncing' : 'idle'
 }
 
-function enableBadgeVariant(status: string): 'success' | 'secondary' {
+export function enableBadgeVariant(status: string): 'success' | 'secondary' {
   return status === 'enabled' ? 'success' : 'secondary'
 }
 
-function workBadgeVariant(status: string): 'info' | 'warning' | 'secondary' {
+export function workBadgeVariant(status: string): 'info' | 'warning' | 'secondary' {
   if (status === 'working') return 'info'
   if (status === 'degraded') return 'warning'
   if (status === 'rate_limited') return 'warning'
   return 'secondary'
 }
 
-function resolveAvailabilityBadge(
+export function resolveAvailabilityBadge(
   item: UpstreamAccountSummary,
   labels: UpstreamAccountsTableProps['labels'],
 ) {
@@ -248,7 +257,7 @@ function resolveAvailabilityBadge(
   return null
 }
 
-function healthBadgeVariant(status: string): 'warning' | 'error' | 'secondary' {
+export function healthBadgeVariant(status: string): 'warning' | 'error' | 'secondary' {
   if (status === 'upstream_unavailable') return 'warning'
   if (
     status === 'needs_reauth' ||
@@ -261,11 +270,11 @@ function healthBadgeVariant(status: string): 'warning' | 'error' | 'secondary' {
   return 'secondary'
 }
 
-function syncBadgeVariant(status: string): 'warning' | 'secondary' {
+export function syncBadgeVariant(status: string): 'warning' | 'secondary' {
   return status === 'syncing' ? 'warning' : 'secondary'
 }
 
-function compactBadge(
+export function compactBadge(
   content: ReactNode,
   variant: 'default' | 'accent' | 'secondary' | 'success' | 'warning' | 'error' | 'info',
   options?: {
@@ -296,7 +305,7 @@ function splitVisibleAndHiddenTags(tags?: AccountTagSummary[] | null) {
   }
 }
 
-function renderTagBadges(tags?: AccountTagSummary[] | null) {
+export function renderTagBadges(tags?: AccountTagSummary[] | null) {
   const { visible } = splitVisibleAndHiddenTags(tags)
   return (
     <>
@@ -314,7 +323,7 @@ function renderTagBadges(tags?: AccountTagSummary[] | null) {
   )
 }
 
-function renderTagOverflowBadge(
+export function renderTagOverflowBadge(
   labels: UpstreamAccountsTableProps['labels'],
   tags?: AccountTagSummary[] | null,
 ) {
@@ -340,7 +349,7 @@ function renderTagOverflowBadge(
   )
 }
 
-function CompactWindowLine({
+export function CompactWindowLine({
   window,
   label,
   percent,
@@ -485,7 +494,7 @@ function CompactWindowLine({
   )
 }
 
-function CompactTimestampLine({
+export function CompactTimestampLine({
   label,
   value,
   title,
@@ -506,7 +515,7 @@ function CompactTimestampLine({
   )
 }
 
-function formatWindowShortLabel(windowDurationMins?: number | null) {
+export function formatWindowShortLabel(windowDurationMins?: number | null) {
   if (!Number.isFinite(windowDurationMins ?? NaN)) return null
   const minutes = Math.max(0, Math.round(windowDurationMins ?? 0))
   if (minutes === 300) return '5H'
@@ -545,7 +554,7 @@ function resolveActionReasonLabel(
   return runActionDetailResolver(labels.actionReason, item.lastActionReasonCode)
 }
 
-function buildLatestActionTitle(
+export function buildLatestActionTitle(
   item: UpstreamAccountSummary,
   labels: UpstreamAccountsTableProps['labels'],
 ) {
@@ -575,7 +584,7 @@ function buildLatestActionTitle(
   return parts.join(' · ')
 }
 
-function buildLatestActionSummary(
+export function buildLatestActionSummary(
   item: UpstreamAccountSummary,
   labels: UpstreamAccountsTableProps['labels'],
 ) {
@@ -594,7 +603,7 @@ function buildLatestActionSummary(
   return timestamp === labels.never ? compact : `${compact} · ${timestamp}`
 }
 
-function handleRowKeyDown(
+export function handleRowKeyDown(
   event: KeyboardEvent<HTMLTableRowElement>,
   accountId: number,
   onSelect: (accountId: number) => void,
@@ -603,6 +612,25 @@ function handleRowKeyDown(
     event.preventDefault()
     onSelect(accountId)
   }
+}
+
+export function resolveCurrentForwardProxyBadgeLabel(
+  item: UpstreamAccountSummary,
+  labels: UpstreamAccountsTableLabels,
+) {
+  if (item.currentForwardProxyState === 'assigned') {
+    return item.currentForwardProxyDisplayName ?? item.currentForwardProxyKey ?? labels.unknown
+  }
+  if (item.currentForwardProxyState === 'pending') {
+    return labels.forwardProxyPending ?? 'Pending'
+  }
+  return labels.forwardProxyUnconfigured ?? 'Unconfigured proxy'
+}
+
+export function resolveCurrentForwardProxyBadgeVariant(item: UpstreamAccountSummary) {
+  if (item.currentForwardProxyState === 'assigned') return 'info' as const
+  if (item.currentForwardProxyState === 'pending') return 'warning' as const
+  return 'secondary' as const
 }
 
 export function UpstreamAccountsTable({
@@ -826,7 +854,8 @@ export function UpstreamAccountsTable({
             const primaryWindowTitle = [item.primaryWindow?.limitText, primaryResetText].filter(Boolean).join(' · ') || undefined
             const secondaryWindowTitle =
               [item.secondaryWindow?.limitText, secondaryResetText].filter(Boolean).join(' · ') || undefined
-            const planBadge = upstreamPlanBadgeRecipe(item.planType)
+            const showPlanBadge = shouldShowPlanBadge(item.planType)
+            const planBadge = showPlanBadge ? upstreamPlanBadgeRecipe(item.planType) : null
             return (
               <tr
                 key={item.id}
@@ -892,15 +921,20 @@ export function UpstreamAccountsTable({
                             },
                           )
                           : null}
-                        {item.planType && planBadge
+                        {showPlanBadge && item.planType && planBadge
                           ? compactBadge(item.planType, planBadge.variant, {
                             className: planBadge.className,
                             dataPlan: planBadge.dataPlan,
                             title: item.planType,
                           })
-                          : item.planType
+                          : showPlanBadge && item.planType
                             ? compactBadge(item.planType, 'accent', { title: item.planType })
-                          : null}
+                            : null}
+                        {compactBadge(
+                          resolveCurrentForwardProxyBadgeLabel(item, labels),
+                          resolveCurrentForwardProxyBadgeVariant(item),
+                          { title: resolveCurrentForwardProxyBadgeLabel(item, labels) },
+                        )}
                       </div>
                       <div className="flex min-w-0 flex-wrap items-center gap-1">
                         <div className="flex min-w-0 flex-wrap items-center gap-1">

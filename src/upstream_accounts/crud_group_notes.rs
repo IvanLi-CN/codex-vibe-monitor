@@ -29,46 +29,54 @@ pub(crate) async fn list_upstream_accounts_from_params(
         .map_err(internal_error_tuple)?;
     let page = normalize_upstream_account_list_page(params.page);
     let page_size = normalize_upstream_account_list_page_size(params.page_size);
+    let include_all = params.include_all.unwrap_or(false);
     let filters = normalize_upstream_account_list_filters(&params);
     let load_summaries_started_at = Instant::now();
     let mut all_items = load_upstream_account_summaries_for_query(&state.pool, &params)
         .await
         .map_err(internal_error_tuple)?;
     let load_summaries_ms = load_summaries_started_at.elapsed().as_millis() as u64;
+    let load_groups_started_at = Instant::now();
+    let groups = load_canonicalized_upstream_account_groups(state.as_ref())
+        .await
+        .map_err(internal_error_tuple)?;
+    let load_groups_ms = load_groups_started_at.elapsed().as_millis() as u64;
     let enrich_block_reason_started_at = Instant::now();
     enrich_node_shunt_routing_block_reasons(state.as_ref(), &mut all_items)
+        .await
+        .map_err(internal_error_tuple)?;
+    enrich_current_forward_proxy_for_summaries(state.as_ref(), &groups, &mut all_items)
         .await
         .map_err(internal_error_tuple)?;
     let enrich_block_reason_ms = enrich_block_reason_started_at.elapsed().as_millis() as u64;
     let filtered_items = filter_upstream_account_summaries(all_items, &filters);
     let total = filtered_items.len();
     let metrics = build_upstream_account_list_metrics(&filtered_items);
+    let forward_proxy_catalog_keys = collect_forward_proxy_catalog_keys(&groups, &filtered_items);
     let offset = page.saturating_sub(1).saturating_mul(page_size);
-    let mut items = if offset >= total {
+    let mut items = if include_all {
+        filtered_items.clone()
+    } else if offset >= total {
         Vec::new()
     } else {
         filtered_items
-            .into_iter()
+            .iter()
             .skip(offset)
             .take(page_size)
+            .cloned()
             .collect::<Vec<_>>()
+    };
+    let response_page = if include_all { 1 } else { page };
+    let response_page_size = if include_all {
+        total.max(page_size)
+    } else {
+        page_size
     };
     let enrich_window_usage_started_at = Instant::now();
     enrich_window_actual_usage_for_summaries(state.as_ref(), &mut items)
         .await
         .map_err(internal_error_tuple)?;
     let enrich_window_usage_ms = enrich_window_usage_started_at.elapsed().as_millis() as u64;
-    let load_groups_started_at = Instant::now();
-    let mut groups = load_upstream_account_groups(&state.pool)
-        .await
-        .map_err(internal_error_tuple)?;
-    for group in &mut groups {
-        group.bound_proxy_keys =
-            canonicalize_forward_proxy_bound_keys(state.as_ref(), &group.bound_proxy_keys)
-                .await
-                .map_err(internal_error_tuple)?;
-    }
-    let load_groups_ms = load_groups_started_at.elapsed().as_millis() as u64;
     let has_ungrouped_accounts = has_ungrouped_upstream_accounts(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
@@ -77,16 +85,25 @@ pub(crate) async fn list_upstream_accounts_from_params(
         .await
         .map_err(internal_error_tuple)?;
     let load_routing_ms = load_routing_started_at.elapsed().as_millis() as u64;
+    let load_forward_proxy_catalog_started_at = Instant::now();
+    let forward_proxy_nodes =
+        build_forward_proxy_binding_nodes_response(state.as_ref(), &forward_proxy_catalog_keys)
+            .await
+            .map_err(internal_error_tuple)?;
+    let load_forward_proxy_catalog_ms =
+        load_forward_proxy_catalog_started_at.elapsed().as_millis() as u64;
     let total_ms = started_at.elapsed().as_millis() as u64;
     tracing::info!(
-        page,
-        page_size,
+        page = response_page,
+        page_size = response_page_size,
+        include_all,
         total,
         load_summaries_ms,
         enrich_block_reason_ms,
         enrich_window_usage_ms,
         load_groups_ms,
         load_routing_ms,
+        load_forward_proxy_catalog_ms,
         total_ms,
         "upstream accounts roster request completed"
     );
@@ -94,11 +111,11 @@ pub(crate) async fn list_upstream_accounts_from_params(
         writes_enabled: state.upstream_accounts.writes_enabled(),
         items,
         total,
-        page,
-        page_size,
+        page: response_page,
+        page_size: response_page_size,
         metrics,
         groups,
-        forward_proxy_nodes: Vec::new(),
+        forward_proxy_nodes,
         has_ungrouped_accounts,
         routing: build_pool_routing_settings_response(state.as_ref(), &routing),
     }))
@@ -185,6 +202,17 @@ pub(crate) fn parse_list_upstream_accounts_query(
             "workStatus" => params.work_status.push(value.into_owned()),
             "enableStatus" => params.enable_status.push(value.into_owned()),
             "healthStatus" => params.health_status.push(value.into_owned()),
+            "includeAll" => {
+                params.include_all = match value.as_ref() {
+                    "" | "0" | "false" | "False" | "FALSE" | "no" | "off" => Some(false),
+                    "1" | "true" | "True" | "TRUE" | "yes" | "on" => Some(true),
+                    other => {
+                        return Err(format!(
+                            "invalid includeAll value `{other}`; expected true/false"
+                        ));
+                    }
+                };
+            }
             _ => {}
         }
     }
