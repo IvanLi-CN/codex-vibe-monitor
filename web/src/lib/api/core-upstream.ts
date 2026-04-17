@@ -172,6 +172,7 @@ export interface UpstreamAccountSummary {
   lastActionHttpStatus?: number | null;
   lastActionInvokeId?: string | null;
   lastActionAt?: string | null;
+  cooldownUntil?: string | null;
   tokenExpiresAt?: string | null;
   primaryWindow?: RateWindowSnapshot | null;
   secondaryWindow?: RateWindowSnapshot | null;
@@ -949,6 +950,8 @@ function normalizeUpstreamAccountSummary(
         : null,
     lastActionAt:
       typeof payload.lastActionAt === "string" ? payload.lastActionAt : null,
+    cooldownUntil:
+      typeof payload.cooldownUntil === "string" ? payload.cooldownUntil : null,
     tokenExpiresAt:
       typeof payload.tokenExpiresAt === "string"
         ? payload.tokenExpiresAt

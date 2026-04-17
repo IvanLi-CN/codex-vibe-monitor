@@ -1,11 +1,21 @@
 use super::*;
 
+const LEGACY_UPSTREAM_REJECTED_COOLDOWN_RECONCILIATION_BATCH_SIZE: i64 = 64;
+
 pub(crate) async fn run_upstream_account_maintenance_once(state: Arc<AppState>) -> Result<()> {
     expire_pending_login_sessions(&state.pool).await?;
     cleanup_expired_oauth_mailbox_sessions(state.as_ref()).await?;
     let Some(_) = state.upstream_accounts.crypto_key else {
         return Ok(());
     };
+    let now = Utc::now();
+    let reconciled_legacy_upstream_rejected_cooldowns =
+        reconcile_legacy_upstream_rejected_cooldowns(
+            &state.pool,
+            now,
+            LEGACY_UPSTREAM_REJECTED_COOLDOWN_RECONCILIATION_BATCH_SIZE,
+        )
+        .await?;
     let routing = load_pool_routing_settings(&state.pool).await?;
     let maintenance = resolve_pool_routing_maintenance_settings(&routing, &state.config);
     let candidates = load_maintenance_candidates(&state.pool).await?;
@@ -13,7 +23,7 @@ pub(crate) async fn run_upstream_account_maintenance_once(state: Arc<AppState>) 
         candidates,
         maintenance,
         state.config.upstream_accounts_refresh_lead_time,
-        Utc::now(),
+        now,
     );
 
     let mut queued = 0usize;
@@ -55,10 +65,116 @@ pub(crate) async fn run_upstream_account_maintenance_once(state: Arc<AppState>) 
         queued,
         deduped,
         failed,
+        reconciled_legacy_upstream_rejected_cooldowns,
         "upstream account maintenance pass finished"
     );
 
     Ok(())
+}
+
+async fn reconcile_legacy_upstream_rejected_cooldowns(
+    pool: &Pool<Sqlite>,
+    now: DateTime<Utc>,
+    limit: i64,
+) -> Result<usize> {
+    if limit <= 0 {
+        return Ok(0);
+    }
+
+    let rows = sqlx::query_as::<
+        _,
+        (
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ),
+    >(
+        r#"
+        SELECT
+            id,
+            last_action_source,
+            last_action_reason_code,
+            last_action_at,
+            last_route_failure_at,
+            last_route_failure_kind,
+            last_error_at,
+            last_error
+        FROM pool_upstream_accounts
+        WHERE enabled = 1
+          AND kind = ?1
+          AND cooldown_until IS NULL
+          AND last_action_source = ?2
+          AND last_action_reason_code IN (?3, ?4)
+        ORDER BY COALESCE(last_action_at, last_route_failure_at, last_error_at) DESC, id DESC
+        LIMIT ?5
+        "#,
+    )
+    .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
+    .bind(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE)
+    .bind("upstream_http_402")
+    .bind("upstream_rejected")
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    let mut reconciled = 0usize;
+    for (
+        account_id,
+        last_action_source,
+        last_action_reason_code,
+        last_action_at,
+        last_route_failure_at,
+        last_route_failure_kind,
+        last_error_at,
+        last_error,
+    ) in rows
+    {
+        let Some(failed_at) = maintenance_upstream_rejected_failed_at(
+            last_action_source.as_deref(),
+            last_action_reason_code.as_deref(),
+            last_action_at.as_deref(),
+            last_route_failure_at.as_deref(),
+            last_route_failure_kind.as_deref(),
+            last_error_at.as_deref(),
+            last_error.as_deref(),
+        ) else {
+            continue;
+        };
+        let cooldown_until = failed_at
+            + ChronoDuration::seconds(UPSTREAM_ACCOUNT_UPSTREAM_REJECTED_MAINTENANCE_COOLDOWN_SECS);
+        if cooldown_until <= now {
+            continue;
+        }
+        let update_result = sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET cooldown_until = ?2,
+                updated_at = ?3
+            WHERE id = ?1
+              AND cooldown_until IS NULL
+              AND last_action_source = ?4
+              AND last_action_reason_code IN (?5, ?6)
+            "#,
+        )
+        .bind(account_id)
+        .bind(format_utc_iso(cooldown_until))
+        .bind(format_utc_iso(now))
+        .bind(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE)
+        .bind("upstream_http_402")
+        .bind("upstream_rejected")
+        .execute(pool)
+        .await?;
+        if update_result.rows_affected() > 0 {
+            reconciled += 1;
+        }
+    }
+
+    Ok(reconciled)
 }
 
 pub(crate) async fn ensure_integer_column_with_default(
@@ -353,48 +469,23 @@ fn maintenance_candidate_has_active_upstream_rejected_cooldown(
     candidate: &MaintenanceCandidateRow,
     now: DateTime<Utc>,
 ) -> bool {
-    if !matches!(
+    let Some(failed_at) = maintenance_upstream_rejected_failed_at(
         candidate.last_action_source.as_deref(),
-        Some(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE)
-    ) {
+        candidate.last_action_reason_code.as_deref(),
+        candidate.last_action_at.as_deref(),
+        candidate.last_route_failure_at.as_deref(),
+        candidate.last_route_failure_kind.as_deref(),
+        candidate.last_error_at.as_deref(),
+        candidate.last_error.as_deref(),
+    ) else {
         return false;
+    };
+    if candidate.cooldown_until.is_some() {
+        return account_has_active_cooldown(candidate.cooldown_until.as_deref(), now);
     }
-    let has_maintenance_upstream_rejected_marker =
-        account_reason_is_maintenance_upstream_rejected(
-            candidate.last_action_reason_code.as_deref(),
-        ) || route_failure_kind_is_maintenance_upstream_rejected(
-            candidate.last_route_failure_kind.as_deref(),
-        ) || candidate
-            .last_error
-            .as_deref()
-            .is_some_and(maintenance_upstream_rejected_error_message);
-    if !has_maintenance_upstream_rejected_marker {
-        return false;
-    }
-
-    candidate
-        .last_action_at
-        .as_deref()
-        .and_then(parse_rfc3339_utc)
-        .or_else(|| {
-            candidate
-                .last_route_failure_at
-                .as_deref()
-                .and_then(parse_rfc3339_utc)
-        })
-        .or_else(|| {
-            candidate
-                .last_error_at
-                .as_deref()
-                .and_then(parse_rfc3339_utc)
-        })
-        .is_some_and(|failed_at| {
-            failed_at
-                + ChronoDuration::seconds(
-                    UPSTREAM_ACCOUNT_UPSTREAM_REJECTED_MAINTENANCE_COOLDOWN_SECS,
-                )
-                > now
-        })
+    failed_at
+        + ChronoDuration::seconds(UPSTREAM_ACCOUNT_UPSTREAM_REJECTED_MAINTENANCE_COOLDOWN_SECS)
+        > now
 }
 
 fn maintenance_candidate_blocks_upstream_rejected_cooldown(

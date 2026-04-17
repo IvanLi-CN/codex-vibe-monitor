@@ -2139,6 +2139,7 @@ fn build_summary_from_row(
             .and_then(|value| u16::try_from(value).ok()),
         last_action_invoke_id: row.last_action_invoke_id.clone(),
         last_action_at: row.last_action_at.clone(),
+        cooldown_until: row.cooldown_until.clone(),
         routing_block_reason_code: None,
         routing_block_reason_message: None,
         token_expires_at: row.token_expires_at.clone(),

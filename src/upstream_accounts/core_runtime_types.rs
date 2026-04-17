@@ -1112,6 +1112,7 @@ pub(crate) struct UpstreamAccountSummary {
     last_action_http_status: Option<u16>,
     last_action_invoke_id: Option<String>,
     last_action_at: Option<String>,
+    cooldown_until: Option<String>,
     routing_block_reason_code: Option<String>,
     routing_block_reason_message: Option<String>,
     token_expires_at: Option<String>,

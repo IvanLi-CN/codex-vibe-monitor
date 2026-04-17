@@ -864,6 +864,77 @@
     }
 
     #[tokio::test]
+    async fn maintenance_pass_reconciles_legacy_upstream_rejected_cooldown_rows() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Legacy Rejected Cooldown OAuth",
+            "legacy-rejected@example.com",
+            "org_legacy_rejected",
+            "user_legacy_rejected",
+        )
+        .await;
+        let failed_at = Utc::now() - ChronoDuration::hours(1);
+        let failed_at_iso = format_utc_iso(failed_at);
+
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET status = ?2,
+                last_error = ?3,
+                last_error_at = ?4,
+                last_route_failure_at = ?4,
+                last_route_failure_kind = ?5,
+                last_action = ?6,
+                last_action_source = ?7,
+                last_action_reason_code = ?8,
+                last_action_reason_message = ?9,
+                last_action_http_status = 402,
+                last_action_at = ?4,
+                cooldown_until = NULL
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind(UPSTREAM_ACCOUNT_STATUS_ERROR)
+        .bind("usage endpoint returned 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}")
+        .bind(&failed_at_iso)
+        .bind(PROXY_FAILURE_UPSTREAM_HTTP_402)
+        .bind(UPSTREAM_ACCOUNT_ACTION_SYNC_HARD_UNAVAILABLE)
+        .bind(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE)
+        .bind("upstream_http_402")
+        .bind("usage endpoint returned 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}")
+        .execute(&state.pool)
+        .await
+        .expect("seed legacy maintenance rejected row");
+
+        run_upstream_account_maintenance_once(state.clone())
+            .await
+            .expect("run maintenance pass");
+
+        let after = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load reconciled row")
+            .expect("reconciled row exists");
+        assert_eq!(
+            after.cooldown_until,
+            Some(format_utc_iso(
+                failed_at
+                    + ChronoDuration::seconds(
+                        UPSTREAM_ACCOUNT_UPSTREAM_REJECTED_MAINTENANCE_COOLDOWN_SECS,
+                    ),
+            ))
+        );
+        assert_eq!(after.last_synced_at, None);
+    }
+
+    #[tokio::test]
     async fn maintenance_dispatch_respects_parallelism_limit() {
         async fn handler(
             State((requests, release)): State<(Arc<AtomicUsize>, Arc<Semaphore>)>,
@@ -2187,6 +2258,39 @@
         assert!(
             !maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now),
             "active upstream-rejected cooldown should suppress maintenance scheduling"
+        );
+    }
+
+    #[test]
+    fn maintenance_plan_prefers_explicit_upstream_rejected_cooldown_until() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 13, 12, 0, 0)
+            .single()
+            .expect("valid time");
+        let settings = PoolRoutingMaintenanceSettings {
+            primary_sync_interval_secs: 300,
+            secondary_sync_interval_secs: 1800,
+            priority_available_account_cap: 1,
+        };
+        let mut candidate = maintenance_candidates(
+            42,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            Some("2026-04-13T05:00:00Z"),
+            Some("2026-04-13T11:00:00Z"),
+            Some("2026-05-13T12:00:00Z"),
+            Some(10.0),
+            Some(10.0),
+        );
+        candidate.last_action_reason_code = Some("upstream_http_402".to_string());
+        candidate.last_route_failure_kind = Some(PROXY_FAILURE_UPSTREAM_HTTP_402.to_string());
+        candidate.last_action_source =
+            Some(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE.to_string());
+        candidate.last_action_at = Some("2026-04-13T11:00:00Z".to_string());
+        candidate.cooldown_until = Some("2026-04-13T17:00:00Z".to_string());
+
+        assert!(
+            !maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now),
+            "explicit cooldown_until should be the canonical maintenance suppression signal"
         );
     }
 

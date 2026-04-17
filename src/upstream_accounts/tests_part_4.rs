@@ -2410,7 +2410,26 @@
             );
             assert_eq!(after.last_route_failure_kind.as_deref(), Some(failure_kind));
             assert_eq!(after.last_route_failure_at, after.last_error_at);
-            assert_eq!(after.cooldown_until, None);
+            if reason_code == "upstream_http_402" {
+                let cooldown_until = after
+                    .cooldown_until
+                    .as_deref()
+                    .and_then(parse_rfc3339_utc)
+                    .expect("maintenance-triggered 402 should write explicit cooldown");
+                let failed_at = after
+                    .last_action_at
+                    .as_deref()
+                    .and_then(parse_rfc3339_utc)
+                    .expect("maintenance-triggered 402 should record last_action_at");
+                assert_eq!(
+                    cooldown_until - failed_at,
+                    ChronoDuration::seconds(
+                        UPSTREAM_ACCOUNT_UPSTREAM_REJECTED_MAINTENANCE_COOLDOWN_SECS,
+                    )
+                );
+            } else {
+                assert_eq!(after.cooldown_until, None);
+            }
             assert_eq!(after.temporary_route_failure_streak_started_at, None);
 
             let summary = build_summary_from_row(
@@ -2470,6 +2489,89 @@
         assert_eq!(
             after.cooldown_until, None,
             "wrapped upstream auth errors should keep the old no-cooldown behavior"
+        );
+    }
+
+    #[tokio::test]
+    async fn classified_sync_non_rejected_failure_clears_existing_maintenance_rejected_cooldown() {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Rejected Cooldown Replaced").await;
+
+        record_account_sync_hard_unavailable(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
+            "upstream_http_402",
+            "usage endpoint returned 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}",
+            PROXY_FAILURE_UPSTREAM_HTTP_402,
+        )
+        .await
+        .expect("seed maintenance rejected cooldown");
+
+        let before = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row before replacement failure")
+            .expect("row exists before replacement failure");
+        assert!(before.cooldown_until.is_some());
+
+        record_classified_account_sync_failure(
+            &pool,
+            &before,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
+            "usage endpoint returned 403 Forbidden: You have insufficient permissions for this operation.",
+        )
+        .await
+        .expect("record replacement sync failure");
+
+        let after = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row after replacement failure")
+            .expect("row exists after replacement failure");
+        assert_eq!(after.last_action_reason_code.as_deref(), Some("upstream_http_403"));
+        assert_eq!(after.cooldown_until, None);
+    }
+
+    #[tokio::test]
+    async fn mark_account_sync_success_clears_explicit_maintenance_upstream_rejected_cooldown() {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Rejected Cooldown Success").await;
+
+        record_account_sync_hard_unavailable(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
+            "upstream_http_402",
+            "usage endpoint returned 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}",
+            PROXY_FAILURE_UPSTREAM_HTTP_402,
+        )
+        .await
+        .expect("seed maintenance rejected cooldown");
+
+        let before = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row before success")
+            .expect("row exists before success");
+        assert!(before.cooldown_until.is_some());
+
+        mark_account_sync_success(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MANUAL,
+            SyncSuccessRouteState::PreserveFailureState,
+        )
+        .await
+        .expect("mark sync success");
+
+        let after = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row after success")
+            .expect("row exists after success");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert!(after.cooldown_until.is_none());
+        assert_eq!(
+            after.last_route_failure_kind.as_deref(),
+            Some(PROXY_FAILURE_UPSTREAM_HTTP_402),
+            "preserve-failure success should keep the last route failure marker while clearing the explicit maintenance cooldown"
         );
     }
 
