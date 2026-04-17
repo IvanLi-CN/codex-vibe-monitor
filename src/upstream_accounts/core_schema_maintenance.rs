@@ -88,6 +88,16 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "upstream_base_url")
         .await
         .context("failed to ensure pool_upstream_accounts.upstream_base_url")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "external_client_id")
+        .await
+        .context("failed to ensure pool_upstream_accounts.external_client_id")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_accounts",
+        "external_source_account_id",
+    )
+    .await
+    .context("failed to ensure pool_upstream_accounts.external_source_account_id")?;
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "plan_type_observed_at")
         .await
         .context("failed to ensure pool_upstream_accounts.plan_type_observed_at")?;
@@ -184,6 +194,90 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure idx_pool_upstream_accounts_chatgpt_account_id")?;
+
+    sqlx::query(
+        r#"
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_pool_upstream_accounts_external_source
+        ON pool_upstream_accounts (external_client_id, external_source_account_id)
+        WHERE external_client_id IS NOT NULL
+          AND external_source_account_id IS NOT NULL
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure idx_pool_upstream_accounts_external_source")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS external_api_keys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            secret_hash TEXT NOT NULL,
+            secret_prefix TEXT NOT NULL,
+            status TEXT NOT NULL,
+            last_used_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            rotated_from_key_id INTEGER,
+            FOREIGN KEY(rotated_from_key_id) REFERENCES external_api_keys(id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure external_api_keys table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_external_api_keys_secret_hash
+        ON external_api_keys (secret_hash)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure idx_external_api_keys_secret_hash")?;
+
+    sqlx::query("DROP INDEX IF EXISTS idx_external_api_keys_client_id")
+        .execute(pool)
+        .await
+        .context("failed to drop legacy idx_external_api_keys_client_id")?;
+
+    sqlx::query("DROP INDEX IF EXISTS idx_external_api_keys_active_client_id")
+        .execute(pool)
+        .await
+        .context("failed to drop stale idx_external_api_keys_active_client_id")?;
+
+    sqlx::query(
+        r#"
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_external_api_keys_active_client_id
+        ON external_api_keys (client_id)
+        WHERE status = 'active'
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure idx_external_api_keys_active_client_id")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_external_api_keys_client_status
+        ON external_api_keys (client_id, status)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure idx_external_api_keys_client_status")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_external_api_keys_rotated_from
+        ON external_api_keys (rotated_from_key_id)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure idx_external_api_keys_rotated_from")?;
 
     sqlx::query(
         r#"

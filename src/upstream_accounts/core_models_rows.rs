@@ -44,6 +44,10 @@ pub(crate) struct UpstreamAccountRow {
     local_secondary_limit: Option<f64>,
     local_limit_unit: Option<String>,
     upstream_base_url: Option<String>,
+    #[sqlx(default)]
+    external_client_id: Option<String>,
+    #[sqlx(default)]
+    external_source_account_id: Option<String>,
     created_at: String,
     updated_at: String,
 }

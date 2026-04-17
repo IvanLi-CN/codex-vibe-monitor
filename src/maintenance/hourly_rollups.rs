@@ -1026,6 +1026,18 @@ fn build_settings_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>>
     router
         .route("/api/settings", get(get_settings))
         .route(
+            "/api/settings/external-api-keys",
+            get(list_external_api_keys).post(create_external_api_key),
+        )
+        .route(
+            "/api/settings/external-api-keys/:id/rotate",
+            post(rotate_external_api_key),
+        )
+        .route(
+            "/api/settings/external-api-keys/:id/disable",
+            post(disable_external_api_key),
+        )
+        .route(
             "/api/settings/proxy-models",
             any(removed_proxy_model_settings_endpoint),
         )
@@ -1209,15 +1221,28 @@ fn build_event_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
     router.route("/events", get(sse_stream))
 }
 
+fn build_external_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
+    router
+        .route(
+            "/api/external/v1/upstream-accounts/oauth/:sourceAccountId",
+            put(external_upsert_oauth_upstream_account_route)
+                .patch(external_patch_oauth_upstream_account_route),
+        )
+        .route(
+            "/api/external/v1/upstream-accounts/oauth/:sourceAccountId/relogin",
+            post(external_relogin_oauth_upstream_account_route),
+        )
+}
+
 fn build_proxy_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
     router.route("/v1/*path", any(proxy_openai_v1_with_connect_info))
 }
 
 async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHandle<()>)> {
     let cors_layer = build_cors_layer(&state.config);
-    let mut router = build_proxy_routes(build_event_routes(build_pool_routes(
-        build_stats_routes(build_invocation_routes(build_settings_routes(build_health_routes(
-            Router::new(),
+    let mut router = build_proxy_routes(build_event_routes(build_external_routes(
+        build_pool_routes(build_stats_routes(build_invocation_routes(build_settings_routes(
+            build_health_routes(Router::new()),
         )))),
     )))
     .with_state(state.clone())

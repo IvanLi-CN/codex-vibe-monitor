@@ -72,6 +72,7 @@ use tower_http::{
 };
 use tracing::{debug, error, info, warn};
 mod api;
+mod external_api;
 mod forward_proxy;
 mod maintenance;
 mod oauth_bridge;
@@ -82,6 +83,7 @@ mod tests;
 mod upstream_accounts;
 
 use api::*;
+use external_api::*;
 use forward_proxy::*;
 use proxy::*;
 use stats::*;

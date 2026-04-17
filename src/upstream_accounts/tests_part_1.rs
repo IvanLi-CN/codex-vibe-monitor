@@ -2273,6 +2273,8 @@
                 note: None,
                 status: UPSTREAM_ACCOUNT_STATUS_ACTIVE.to_string(),
                 enabled: 1,
+                external_client_id: None,
+                external_source_account_id: None,
                 email: None,
                 chatgpt_account_id: None,
                 chatgpt_user_id: None,
