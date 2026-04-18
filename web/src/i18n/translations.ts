@@ -1100,7 +1100,8 @@ const baseTranslations = {
     "settings.externalApiKeys.loading": "Loading external API keys…",
     "settings.externalApiKeys.empty":
       "No external API key yet. Create one to hand off to a partner.",
-    "settings.externalApiKeys.error": "External API key request failed: {{error}}",
+    "settings.externalApiKeys.error":
+      "External API key request failed: {{error}}",
     "settings.externalApiKeys.create": "Create key",
     "settings.externalApiKeys.rotate": "Rotate",
     "settings.externalApiKeys.disable": "Disable",
@@ -1115,28 +1116,23 @@ const baseTranslations = {
     "settings.externalApiKeys.status.disabled": "Disabled",
     "settings.externalApiKeys.validation.nameRequired":
       "Please enter an API key name first.",
-    "settings.externalApiKeys.secret.createdTitle":
-      "External API key created",
-    "settings.externalApiKeys.secret.rotatedTitle":
-      "External API key rotated",
+    "settings.externalApiKeys.secret.createdTitle": "External API key created",
+    "settings.externalApiKeys.secret.rotatedTitle": "External API key rotated",
     "settings.externalApiKeys.secret.description":
       "Copy this secret now. It will only be shown once.",
     "settings.externalApiKeys.secret.dismiss": "Dismiss",
-    "settings.externalApiKeys.createDialog.title":
-      "Create external API key",
+    "settings.externalApiKeys.createDialog.title": "Create external API key",
     "settings.externalApiKeys.createDialog.description":
       "Give this partner key a readable name for internal operations.",
     "settings.externalApiKeys.createDialog.nameLabel": "Key name",
     "settings.externalApiKeys.createDialog.namePlaceholder":
       "Example: Vendor A upstream sync",
     "settings.externalApiKeys.createDialog.confirm": "Create key",
-    "settings.externalApiKeys.rotateDialog.title":
-      "Rotate external API key",
+    "settings.externalApiKeys.rotateDialog.title": "Rotate external API key",
     "settings.externalApiKeys.rotateDialog.description":
       "Rotate {{name}} now? The current secret will stop working immediately.",
     "settings.externalApiKeys.rotateDialog.confirm": "Rotate now",
-    "settings.externalApiKeys.disableDialog.title":
-      "Disable external API key",
+    "settings.externalApiKeys.disableDialog.title": "Disable external API key",
     "settings.externalApiKeys.disableDialog.description":
       "Disable {{name}} now? The secret will be rejected right away.",
     "settings.externalApiKeys.disableDialog.confirm": "Disable key",
@@ -1686,7 +1682,8 @@ const baseTranslations = {
     "table.column.error": "Error",
     "table.account.reverseProxy": "Reverse proxy",
     "table.account.poolRoutingPending": "Pool routing...",
-    "table.account.poolAccountUnavailable": "Pool account unavailable",
+    "table.account.poolAccountUnknown": "Pool account unavailable",
+    "table.account.poolAccountUnavailable": "No upstream account assigned",
     "table.status.success": "Success",
     "table.status.failed": "Failed",
     "table.status.interrupted": "Interrupted",
@@ -2860,28 +2857,23 @@ const baseTranslations = {
     "settings.externalApiKeys.status.active": "启用中",
     "settings.externalApiKeys.status.disabled": "已停用",
     "settings.externalApiKeys.validation.nameRequired": "请先输入 Key 名称。",
-    "settings.externalApiKeys.secret.createdTitle":
-      "External API Key 已创建",
-    "settings.externalApiKeys.secret.rotatedTitle":
-      "External API Key 已轮换",
+    "settings.externalApiKeys.secret.createdTitle": "External API Key 已创建",
+    "settings.externalApiKeys.secret.rotatedTitle": "External API Key 已轮换",
     "settings.externalApiKeys.secret.description":
       "请现在复制这段 secret；它只会展示这一次。",
     "settings.externalApiKeys.secret.dismiss": "我已复制",
-    "settings.externalApiKeys.createDialog.title":
-      "创建 External API Key",
+    "settings.externalApiKeys.createDialog.title": "创建 External API Key",
     "settings.externalApiKeys.createDialog.description":
       "给这把第三方 Key 起一个便于运营识别的名字。",
     "settings.externalApiKeys.createDialog.nameLabel": "Key 名称",
     "settings.externalApiKeys.createDialog.namePlaceholder":
       "例如：Vendor A upstream sync",
     "settings.externalApiKeys.createDialog.confirm": "创建 Key",
-    "settings.externalApiKeys.rotateDialog.title":
-      "轮换 External API Key",
+    "settings.externalApiKeys.rotateDialog.title": "轮换 External API Key",
     "settings.externalApiKeys.rotateDialog.description":
       "确定现在轮换 {{name}} 吗？旧 secret 会立刻失效。",
     "settings.externalApiKeys.rotateDialog.confirm": "立即轮换",
-    "settings.externalApiKeys.disableDialog.title":
-      "停用 External API Key",
+    "settings.externalApiKeys.disableDialog.title": "停用 External API Key",
     "settings.externalApiKeys.disableDialog.description":
       "确定现在停用 {{name}} 吗？该 secret 会立即被拒绝。",
     "settings.externalApiKeys.disableDialog.confirm": "立即停用",
@@ -3413,7 +3405,8 @@ const baseTranslations = {
     "table.column.error": "错误",
     "table.account.reverseProxy": "反向代理",
     "table.account.poolRoutingPending": "号池路由中",
-    "table.account.poolAccountUnavailable": "号池账号未知",
+    "table.account.poolAccountUnknown": "号池账号未知",
+    "table.account.poolAccountUnavailable": "未分配上游账号",
     "table.status.success": "成功",
     "table.status.failed": "失败",
     "table.status.interrupted": "已中断",

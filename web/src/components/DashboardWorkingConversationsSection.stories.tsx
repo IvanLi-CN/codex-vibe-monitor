@@ -63,10 +63,18 @@ function createPreview(
     model: overrides.model ?? "gpt-5.4",
     totalTokens: overrides.totalTokens ?? 240,
     cost: overrides.cost ?? 0.0182,
-    proxyDisplayName: overrides.proxyDisplayName ?? "tokyo-edge-01",
-    upstreamAccountId: overrides.upstreamAccountId ?? 42,
+    proxyDisplayName:
+      "proxyDisplayName" in overrides
+        ? (overrides.proxyDisplayName ?? null)
+        : "tokyo-edge-01",
+    upstreamAccountId:
+      "upstreamAccountId" in overrides
+        ? (overrides.upstreamAccountId ?? null)
+        : 42,
     upstreamAccountName:
-      overrides.upstreamAccountName ?? "pool-alpha@example.com",
+      "upstreamAccountName" in overrides
+        ? (overrides.upstreamAccountName ?? null)
+        : "pool-alpha@example.com",
     endpoint: overrides.endpoint ?? "/v1/responses",
     source: overrides.source ?? "pool",
     inputTokens: overrides.inputTokens ?? 148,
@@ -317,6 +325,76 @@ const interruptedRecoveryResponse = createResponse([
       upstreamAccountId: 77,
       upstreamAccountName: "pool-account-77@example.com",
       model: "gpt-5.4-mini",
+    }),
+  ]),
+]);
+
+const assignedAccountFailureSemanticsResponse = createResponse([
+  createConversation("pck-assigned-account-blocked", [
+    createPreview({
+      id: 53,
+      invokeId: "invoke-assigned-account-blocked-current",
+      occurredAt: "2026-04-04T10:04:36Z",
+      status: "failed",
+      failureClass: "service_failure",
+      failureKind: "pool_assigned_account_blocked",
+      errorMessage:
+        '[pool_assigned_account_blocked] upstream account group "sticky-preflight-missing" has no bound forward proxy nodes',
+      upstreamAccountId: 52,
+      upstreamAccountName: "sticky-account-52@example.com",
+      proxyDisplayName: "tokyo-edge-blocked",
+      endpoint: "/v1/responses",
+      requestedServiceTier: "priority",
+      serviceTier: "priority",
+      responseContentEncoding: "identity",
+      tUpstreamTtfbMs: null,
+      tUpstreamStreamMs: null,
+      tTotalMs: 42,
+    }),
+    createPreview({
+      id: 52,
+      invokeId: "invoke-assigned-account-blocked-previous",
+      occurredAt: "2026-04-04T10:02:12Z",
+      status: "completed",
+      upstreamAccountId: 52,
+      upstreamAccountName: "sticky-account-52@example.com",
+      model: "gpt-5.4-mini",
+      requestedServiceTier: "priority",
+      serviceTier: "priority",
+    }),
+  ]),
+  createConversation("pck-true-no-account", [
+    createPreview({
+      id: 63,
+      invokeId: "invoke-true-no-account-current",
+      occurredAt: "2026-04-04T10:03:44Z",
+      status: "failed",
+      failureClass: "service_failure",
+      failureKind: "pool_no_available_account",
+      errorMessage:
+        "[pool_no_available_account] no assignable upstream account remains",
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      proxyDisplayName: null,
+      endpoint: "/v1/responses",
+      requestedServiceTier: "priority",
+      serviceTier: "priority",
+      responseContentEncoding: "identity",
+      tUpstreamTtfbMs: null,
+      tUpstreamStreamMs: null,
+      tTotalMs: 38,
+    }),
+    createPreview({
+      id: 62,
+      invokeId: "invoke-true-no-account-previous",
+      occurredAt: "2026-04-04T10:01:08Z",
+      status: "completed",
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      proxyDisplayName: null,
+      model: "gpt-5.4-mini",
+      requestedServiceTier: "priority",
+      serviceTier: "priority",
     }),
   ]),
 ]);
@@ -1113,6 +1191,22 @@ export const InterruptedRecoveryDrawerOpen: Story = {
       description: {
         story:
           "Recovered interrupted invocation that is immediately queryable from the dashboard drawer and keeps the dedicated interrupted status badge.",
+      },
+    },
+  },
+};
+
+export const AssignedAccountFailureSemantics: Story = {
+  args: {
+    cards: buildCards(assignedAccountFailureSemanticsResponse),
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Current dashboard working-conversation cards proving that assigned-account failures keep the concrete upstream account label, while true no-account failures alone fall back to the unassigned-account label.",
       },
     },
   },

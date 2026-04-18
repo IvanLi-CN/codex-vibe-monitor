@@ -70,10 +70,18 @@ function createPreview(
     model: overrides.model ?? "gpt-5.4",
     totalTokens: overrides.totalTokens ?? 200,
     cost: overrides.cost ?? 0.02,
-    proxyDisplayName: overrides.proxyDisplayName ?? "tokyo-edge-01",
-    upstreamAccountId: overrides.upstreamAccountId ?? 42,
+    proxyDisplayName:
+      "proxyDisplayName" in overrides
+        ? (overrides.proxyDisplayName ?? null)
+        : "tokyo-edge-01",
+    upstreamAccountId:
+      "upstreamAccountId" in overrides
+        ? (overrides.upstreamAccountId ?? null)
+        : 42,
     upstreamAccountName:
-      overrides.upstreamAccountName ?? "pool-alpha@example.com",
+      "upstreamAccountName" in overrides
+        ? (overrides.upstreamAccountName ?? null)
+        : "pool-alpha@example.com",
     endpoint: overrides.endpoint ?? "/v1/responses",
     inputTokens: overrides.inputTokens ?? 120,
     outputTokens: overrides.outputTokens ?? 80,
@@ -1072,6 +1080,82 @@ describe("DashboardWorkingConversationsSection", () => {
       "pool-account-77@example.com",
     );
     expect(onOpenInvocation).not.toHaveBeenCalled();
+  });
+
+  it("keeps the concrete upstream account label on assigned-account blocked dashboard cards", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-assigned-account-blocked", [
+          createPreview({
+            id: 61,
+            invokeId: "invoke-assigned-account-blocked",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "failed",
+            failureClass: "service_failure",
+            failureKind: "pool_assigned_account_blocked",
+            errorMessage:
+              '[pool_assigned_account_blocked] upstream account group "sticky-preflight-missing" has no bound forward proxy nodes',
+            upstreamAccountId: 52,
+            upstreamAccountName: "sticky-account-52@example.com",
+            proxyDisplayName: "tokyo-edge-blocked",
+            tUpstreamTtfbMs: null,
+            tUpstreamStreamMs: null,
+            tTotalMs: 42,
+          }),
+          createPreview({
+            id: 60,
+            invokeId: "invoke-assigned-account-blocked-previous",
+            occurredAt: "2026-04-04T10:02:00Z",
+            status: "completed",
+            upstreamAccountId: 52,
+            upstreamAccountName: "sticky-account-52@example.com",
+          }),
+        ]),
+      ]),
+    );
+
+    const accountLabel = host?.querySelector(
+      '[title="sticky-account-52@example.com"]',
+    );
+    expect(accountLabel).not.toBeNull();
+    expect(host?.textContent ?? "").not.toContain("未分配上游账号");
+  });
+
+  it("uses the unassigned-account fallback only for true no-account dashboard cards", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-true-no-account", [
+          createPreview({
+            id: 71,
+            invokeId: "invoke-true-no-account",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "failed",
+            failureClass: "service_failure",
+            failureKind: "pool_no_available_account",
+            errorMessage:
+              "[pool_no_available_account] no assignable upstream account remains",
+            upstreamAccountId: null,
+            upstreamAccountName: null,
+            proxyDisplayName: null,
+            tUpstreamTtfbMs: null,
+            tUpstreamStreamMs: null,
+            tTotalMs: 38,
+          }),
+          createPreview({
+            id: 70,
+            invokeId: "invoke-true-no-account-previous",
+            occurredAt: "2026-04-04T10:02:00Z",
+            status: "completed",
+            upstreamAccountId: null,
+            upstreamAccountName: null,
+            proxyDisplayName: null,
+          }),
+        ]),
+      ]),
+    );
+
+    const accountLabel = host?.querySelector('[title="未分配上游账号"]');
+    expect(accountLabel).not.toBeNull();
   });
 
   it("opens invocation details from the slot container by click and keyboard", () => {

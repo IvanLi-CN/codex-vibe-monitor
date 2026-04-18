@@ -126,7 +126,7 @@ async fn capture_target_pool_route_timeout_prefers_real_alternate_group_proxy_er
     );
     assert_eq!(
         attempt_rows[1].failure_kind.as_deref(),
-        Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT),
+        Some(PROXY_FAILURE_POOL_ROUTING_BLOCKED),
     );
     assert!(attempt_rows[1].error_message.as_deref().is_some_and(|msg| {
         msg.contains("upstream account group \"broken-alt-group\" has no bound forward proxy nodes")
@@ -156,7 +156,7 @@ async fn capture_target_pool_route_timeout_prefers_real_alternate_group_proxy_er
     assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(1));
     assert_eq!(
         payload["poolAttemptTerminalReason"].as_str(),
-        Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT),
+        Some(PROXY_FAILURE_POOL_ROUTING_BLOCKED),
     );
     assert!(payload["upstreamErrorMessage"].is_null());
 
@@ -2629,4 +2629,133 @@ async fn pool_route_oauth_responses_sends_uuid_account_header_and_persists_obser
 
     upstream_handle.abort();
     oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn failover_preserves_assigned_account_when_sticky_owner_is_preflight_blocked() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRow {
+        upstream_account_id: Option<i64>,
+        failure_kind: Option<String>,
+        error_message: Option<String>,
+    }
+
+    let state = test_state_with_openai_base(Url::parse("http://127.0.0.1:9").expect("valid url")).await;
+    let sticky_account = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Sticky Missing Binding",
+        "sk-sticky-missing-binding",
+        None,
+        None,
+        Some("https://sticky-preflight.example.com/backend-api/codex"),
+    )
+    .await;
+    let _fallback_account = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Fallback Healthy Account",
+        "sk-fallback-healthy",
+        None,
+        None,
+        Some("https://fallback-healthy.example.com/backend-api/codex"),
+    )
+    .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET group_name = ?2 WHERE id = ?1")
+        .bind(sticky_account)
+        .bind("sticky-preflight-missing")
+        .execute(&state.pool)
+        .await
+        .expect("mark sticky account missing binding");
+    let tag_payload = serde_json::from_value::<CreateTagRequest>(json!({
+        "name": "sticky-preflight-lock",
+        "guardEnabled": false,
+        "allowCutOut": false,
+        "allowCutIn": true,
+        "priorityTier": "normal",
+        "fastModeRewriteMode": "keep_original"
+    }))
+    .expect("deserialize sticky lock tag payload");
+    let Json(_) = create_tag(State(state.clone()), HeaderMap::new(), Json(tag_payload))
+        .await
+        .expect("create sticky lock tag");
+    let lock_tag_id: i64 = sqlx::query_scalar("SELECT id FROM pool_tags WHERE name = ?1")
+        .bind("sticky-preflight-lock")
+        .fetch_one(&state.pool)
+        .await
+        .expect("load sticky lock tag id");
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_tags (account_id, tag_id, created_at, updated_at)
+        VALUES (?1, ?2, ?3, ?3)
+        "#,
+    )
+    .bind(sticky_account)
+    .bind(lock_tag_id)
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await
+    .expect("attach sticky lock tag");
+    upsert_sticky_route(
+        &state.pool,
+        "sticky-preflight-blocked",
+        sticky_account,
+        &now_iso,
+    )
+    .await
+    .expect("seed sticky route");
+
+    let err = send_pool_request_with_failover(
+        state.clone(),
+        700701,
+        Method::POST,
+        &"/v1/responses".parse().expect("valid uri"),
+        &HeaderMap::from_iter([(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )]),
+        Some(PoolReplayBodySnapshot::Memory(Bytes::from_static(br#"{"input":"hello"}"#))),
+        Duration::from_secs(5),
+        Some(PoolUpstreamAttemptTraceContext {
+            invoke_id: "sticky-preflight-blocked-invoke".to_string(),
+            occurred_at: shanghai_now_string(),
+            endpoint: "/v1/responses".to_string(),
+            sticky_key: Some("sticky-preflight-blocked".to_string()),
+            requester_ip: None,
+        }),
+        None,
+        Some("sticky-preflight-blocked"),
+        None,
+        PoolFailoverProgress::default(),
+        1,
+    )
+    .await
+    .expect_err("sticky preflight block should fail");
+
+    assert_eq!(err.failure_kind, PROXY_FAILURE_POOL_ASSIGNED_ACCOUNT_BLOCKED);
+    assert_eq!(err.account.as_ref().map(|account| account.account_id), Some(sticky_account));
+    assert!(err.message.contains(
+        "upstream account group \"sticky-preflight-missing\" has no bound forward proxy nodes"
+    ));
+
+    wait_for_pool_attempt_row_count(&state.pool, 1).await;
+    let attempt_rows = sqlx::query_as::<_, AttemptRow>(
+        r#"
+        SELECT upstream_account_id, failure_kind, error_message
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load sticky preflight blocked attempts");
+    assert_eq!(attempt_rows.len(), 1);
+    assert_eq!(attempt_rows[0].upstream_account_id, Some(sticky_account));
+    assert_eq!(
+        attempt_rows[0].failure_kind.as_deref(),
+        Some(PROXY_FAILURE_POOL_ASSIGNED_ACCOUNT_BLOCKED)
+    );
+    assert!(attempt_rows[0]
+        .error_message
+        .as_deref()
+        .is_some_and(|message| message.contains("sticky-preflight-missing")));
 }

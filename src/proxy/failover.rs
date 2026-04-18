@@ -668,6 +668,49 @@ pub(crate) async fn send_pool_request_with_failover(
                     );
                 }
                 Ok(PoolAccountResolutionWithWait::Resolution(
+                    PoolAccountResolution::AssignedBlocked(blocked),
+                )) => {
+                    if let Some(err) = take_and_record_sticky_owner_terminal_error(
+                        state.as_ref(),
+                        trace_context.as_ref(),
+                        preserve_sticky_owner_terminal_error,
+                        &mut last_error,
+                        attempt_count,
+                        distinct_account_count,
+                    )
+                    .await
+                    {
+                        return Err(err);
+                    }
+                    let terminal_failure_kind = blocked.failure_kind;
+                    let err = build_pool_assigned_account_blocked_error(
+                        blocked.account,
+                        blocked.message,
+                        terminal_failure_kind,
+                        attempt_count,
+                        distinct_account_count,
+                    );
+                    if let Some(trace) = trace_context.as_ref()
+                        && let Err(record_err) =
+                            insert_and_broadcast_pool_upstream_terminal_attempt(
+                                state.as_ref(),
+                                trace,
+                                &err,
+                                (attempt_count + 1) as i64,
+                                distinct_account_count as i64,
+                                terminal_failure_kind,
+                            )
+                            .await
+                    {
+                        warn!(
+                            invoke_id = trace.invoke_id,
+                            error = %record_err,
+                            "failed to persist pool assigned-blocked terminal attempt"
+                        );
+                    }
+                    return Err(err);
+                }
+                Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::BlockedByPolicy(message),
                 )) => {
                     if let Some(err) = take_and_record_sticky_owner_terminal_error(
@@ -682,7 +725,7 @@ pub(crate) async fn send_pool_request_with_failover(
                     {
                         return Err(err);
                     }
-                    let terminal_failure_kind = PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT;
+                    let terminal_failure_kind = PROXY_FAILURE_POOL_ROUTING_BLOCKED;
                     let mut err = PoolUpstreamError {
                         account: None,
                         status: StatusCode::SERVICE_UNAVAILABLE,

@@ -489,9 +489,80 @@ pub(crate) enum PoolRoutingSelectionSource {
     FreshAssignment,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PoolRoutingCandidateEligibility {
+    Assignable,
+    SoftDegraded,
+    HardBlocked,
+}
+
+impl PoolRoutingCandidateEligibility {
+    fn rank(self) -> u8 {
+        match self {
+            Self::Assignable => 0,
+            Self::SoftDegraded => 1,
+            Self::HardBlocked => 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PoolRoutingCandidateCapacityLane {
+    Primary,
+    Overflow,
+}
+
+impl PoolRoutingCandidateCapacityLane {
+    fn rank(self) -> u8 {
+        match self {
+            Self::Primary => 0,
+            Self::Overflow => 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PoolRoutingCandidateDispatchState {
+    ReadyOnOwnedNode,
+    ReadyAfterMigration,
+    RetryOriginalNode,
+    HardBlocked,
+}
+
+impl PoolRoutingCandidateDispatchState {
+    fn rank(self) -> u8 {
+        match self {
+            Self::ReadyOnOwnedNode => 0,
+            Self::ReadyAfterMigration => 1,
+            Self::RetryOriginalNode => 2,
+            Self::HardBlocked => 3,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PoolRoutingCandidateScore {
+    pub(crate) eligibility: PoolRoutingCandidateEligibility,
+    pub(crate) routing_priority_rank: u8,
+    pub(crate) capacity_lane: PoolRoutingCandidateCapacityLane,
+    pub(crate) dispatch_state: PoolRoutingCandidateDispatchState,
+    pub(crate) scarcity_score: f64,
+    pub(crate) effective_load: i64,
+    pub(crate) last_selected_at: Option<String>,
+    pub(crate) account_id: i64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PoolAssignedBlockedAccount {
+    pub(crate) account: PoolResolvedAccount,
+    pub(crate) message: String,
+    pub(crate) failure_kind: &'static str,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum PoolAccountResolution {
     Resolved(PoolResolvedAccount),
+    AssignedBlocked(PoolAssignedBlockedAccount),
     RateLimited,
     DegradedOnly,
     Unavailable,

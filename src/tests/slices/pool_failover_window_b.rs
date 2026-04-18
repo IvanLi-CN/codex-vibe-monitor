@@ -239,8 +239,7 @@ async fn proxy_openai_v1_chunked_json_without_header_sticky_uses_live_first_atte
         "live-first grouped stats should persist the canonical binding key",
     );
     assert_eq!(
-        latest_attempt.2,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+        latest_attempt.2, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
         "successful live-first requests should land as real success attempts",
     );
 
@@ -251,8 +250,8 @@ async fn proxy_openai_v1_chunked_json_without_header_sticky_uses_live_first_atte
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_responses_live_first_failover_restores_full_retry_budget_for_follow_up_accounts(
-) {
+async fn proxy_openai_v1_responses_live_first_failover_restores_full_retry_budget_for_follow_up_accounts()
+ {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[
         ("Bearer upstream-primary", 99),
         ("Bearer upstream-secondary", 2),
@@ -477,6 +476,13 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_body_timeout_over_rate_l
 
 #[tokio::test]
 async fn proxy_openai_v1_header_sticky_stream_waits_for_blocked_policy_header_error() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRow {
+        upstream_account_id: Option<i64>,
+        failure_kind: Option<String>,
+        error_message: Option<String>,
+    }
+
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -587,11 +593,39 @@ async fn proxy_openai_v1_header_sticky_stream_waits_for_blocked_policy_header_er
         message.contains("upstream account is not assigned to a group"),
         "unexpected via-pool failure: {message}"
     );
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
+    let attempt_row = sqlx::query_as::<_, AttemptRow>(
+        r#"
+        SELECT upstream_account_id, failure_kind, error_message
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load via-pool delayed assigned-blocked attempt");
+    assert_eq!(attempt_row.upstream_account_id, Some(sticky_source_id));
+    assert_eq!(
+        attempt_row.failure_kind.as_deref(),
+        Some(PROXY_FAILURE_POOL_ASSIGNED_ACCOUNT_BLOCKED),
+    );
+    assert!(attempt_row
+        .error_message
+        .as_deref()
+        .is_some_and(|value| value.contains("not assigned to a group")));
 }
 
 #[tokio::test]
 async fn proxy_openai_v1_header_sticky_stream_same_value_short_circuits_blocked_policy_error() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRow {
+        upstream_account_id: Option<i64>,
+        failure_kind: Option<String>,
+        error_message: Option<String>,
+    }
+
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -708,7 +742,30 @@ async fn proxy_openai_v1_header_sticky_stream_same_value_short_circuits_blocked_
         message.contains("upstream account is not assigned to a group"),
         "unexpected via-pool failure: {message}"
     );
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
+    let attempt_row = sqlx::query_as::<_, AttemptRow>(
+        r#"
+        SELECT upstream_account_id, failure_kind, error_message
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load via-pool assigned-blocked attempt");
+    assert_eq!(attempt_row.upstream_account_id, Some(sticky_source_id));
+    assert_eq!(
+        attempt_row.failure_kind.as_deref(),
+        Some(PROXY_FAILURE_POOL_ASSIGNED_ACCOUNT_BLOCKED),
+    );
+    assert!(
+        attempt_row
+            .error_message
+            .as_deref()
+            .is_some_and(|value| value.contains("not assigned to a group"))
+    );
 }
 
 #[tokio::test]
@@ -890,8 +947,7 @@ async fn proxy_openai_v1_header_sticky_responses_wait_timeout_respects_total_tim
 async fn proxy_openai_v1_header_sticky_recovers_after_wait_starts() {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let mut config = test_config();
-    config.openai_upstream_base_url =
-        Url::parse(&upstream_base).expect("valid upstream base url");
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
     config.pool_upstream_responses_total_timeout = Duration::from_millis(650);
     let state = test_state_from_config_with_pool_no_available_wait(
         config,
@@ -1842,7 +1898,9 @@ async fn proxy_openai_v1_header_sticky_stream_reroute_preserves_original_wait_wi
 
     let pool = state.pool.clone();
     let delayed_release_task = tokio::spawn(async move {
-        body_reroute_rx.await.expect("body reroute signal should arrive");
+        body_reroute_rx
+            .await
+            .expect("body reroute signal should arrive");
         tokio::time::sleep(Duration::from_millis(80)).await;
         set_test_account_status(&pool, delayed_id, "active").await;
     });
