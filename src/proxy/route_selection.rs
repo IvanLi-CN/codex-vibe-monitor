@@ -12,7 +12,10 @@ pub(crate) fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
     }
 }
 
-pub(crate) async fn request_matches_pool_route(state: &AppState, headers: &HeaderMap) -> Result<bool> {
+pub(crate) async fn request_matches_pool_route(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<bool> {
     let Some(api_key) = extract_bearer_token(headers) else {
         return Ok(false);
     };
@@ -93,7 +96,10 @@ pub(crate) async fn extract_sticky_key_from_replay_snapshot(
     }
 }
 
-pub(crate) fn pool_account_supports_live_request_body(account: &PoolResolvedAccount, original_uri: &Uri) -> bool {
+pub(crate) fn pool_account_supports_live_request_body(
+    account: &PoolResolvedAccount,
+    original_uri: &Uri,
+) -> bool {
     match &account.auth {
         PoolResolvedAuth::ApiKey { .. } => true,
         PoolResolvedAuth::Oauth { .. } => original_uri.path() != "/v1/responses",
@@ -106,11 +112,8 @@ pub(crate) fn should_prebuffer_for_body_sticky_probe(
     body_size_hint_exact: Option<usize>,
 ) -> bool {
     !has_header_sticky_key
-        && content_type.is_some_and(|value| {
-            value
-                .to_ascii_lowercase()
-                .starts_with("application/json")
-        })
+        && content_type
+            .is_some_and(|value| value.to_ascii_lowercase().starts_with("application/json"))
         && body_size_hint_exact
             .is_some_and(|value| value <= POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES)
 }
@@ -137,6 +140,129 @@ fn build_via_pool_attempt_trace_context(
         sticky_key,
         requester_ip: None,
     }
+}
+
+#[derive(Debug, Clone)]
+struct ViaPoolResolutionTerminalError {
+    status: StatusCode,
+    message: String,
+    assigned_blocked: Option<PoolAssignedBlockedAccount>,
+}
+
+impl ViaPoolResolutionTerminalError {
+    fn plain(status: StatusCode, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            message: message.into(),
+            assigned_blocked: None,
+        }
+    }
+
+    fn assigned_blocked(blocked: PoolAssignedBlockedAccount) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: blocked.message.clone(),
+            assigned_blocked: Some(blocked),
+        }
+    }
+
+    async fn persist_if_needed(
+        &self,
+        state: &AppState,
+        trace_context: Option<&PoolUpstreamAttemptTraceContext>,
+    ) {
+        let Some(trace_context) = trace_context else {
+            return;
+        };
+        let Some(blocked) = self.assigned_blocked.clone() else {
+            return;
+        };
+
+        let terminal_failure_kind = blocked.failure_kind;
+        let err = build_pool_assigned_account_blocked_error(
+            blocked.account,
+            blocked.message,
+            terminal_failure_kind,
+            1,
+            1,
+        );
+        if let Err(record_err) = insert_and_broadcast_pool_upstream_terminal_attempt(
+            state,
+            trace_context,
+            &err,
+            1,
+            1,
+            terminal_failure_kind,
+        )
+        .await
+        {
+            warn!(
+                invoke_id = trace_context.invoke_id,
+                error = %record_err,
+                "failed to persist via-pool preflight terminal attempt"
+            );
+        }
+    }
+}
+
+async fn unwrap_via_pool_initial_account(
+    state: &AppState,
+    trace_context: Option<&PoolUpstreamAttemptTraceContext>,
+    resolution: Result<PoolAccountResolutionWithWait>,
+    no_available_wait_deadline: Option<Instant>,
+    responses_total_timeout: Option<Duration>,
+) -> Result<(PoolResolvedAccount, Option<Instant>), (StatusCode, String)> {
+    let initial_account = match resolution {
+        Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Resolved(account))) => {
+            account
+        }
+        Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired) => {
+            let total_timeout = responses_total_timeout
+                .expect("pre-attempt total-timeout expiry requires responses timeout");
+            return Err((
+                StatusCode::GATEWAY_TIMEOUT,
+                pool_total_timeout_exhausted_message(total_timeout),
+            ));
+        }
+        Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Unavailable))
+        | Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::NoCandidate)) => {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                POOL_NO_AVAILABLE_ACCOUNT_MESSAGE.to_string(),
+            ));
+        }
+        Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::RateLimited)) => {
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
+            ));
+        }
+        Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::DegradedOnly)) => {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
+            ));
+        }
+        Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::AssignedBlocked(
+            blocked,
+        ))) => {
+            let terminal_error = ViaPoolResolutionTerminalError::assigned_blocked(blocked);
+            terminal_error.persist_if_needed(state, trace_context).await;
+            return Err((terminal_error.status, terminal_error.message));
+        }
+        Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::BlockedByPolicy(
+            message,
+        ))) => {
+            return Err((StatusCode::SERVICE_UNAVAILABLE, message));
+        }
+        Err(err) => {
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                format!("failed to resolve pool account: {err}"),
+            ));
+        }
+    };
+    Ok((initial_account, no_available_wait_deadline))
 }
 
 async fn finalize_tracked_live_first_pool_attempt(
@@ -368,9 +494,9 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                 .as_ref()
                 .and_then(|pending| pending.attempt_id)
                 .map(|attempt_id| PoolLiveAttemptActivityLease::new(state.clone(), attempt_id));
-            deferred_early_phase_cleanup_guard = pending_attempt_record
-                .as_ref()
-                .map(|pending| PoolEarlyPhaseOrphanCleanupGuard::new(state.clone(), pending.clone()));
+            deferred_early_phase_cleanup_guard = pending_attempt_record.as_ref().map(|pending| {
+                PoolEarlyPhaseOrphanCleanupGuard::new(state.clone(), pending.clone())
+            });
             if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                 && let Err(err) = advance_pool_upstream_request_attempt_phase(
                     state.as_ref(),
@@ -560,9 +686,9 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                 .as_ref()
                 .and_then(|pending| pending.attempt_id)
                 .map(|attempt_id| PoolLiveAttemptActivityLease::new(state.clone(), attempt_id));
-            deferred_early_phase_cleanup_guard = pending_attempt_record
-                .as_ref()
-                .map(|pending| PoolEarlyPhaseOrphanCleanupGuard::new(state.clone(), pending.clone()));
+            deferred_early_phase_cleanup_guard = pending_attempt_record.as_ref().map(|pending| {
+                PoolEarlyPhaseOrphanCleanupGuard::new(state.clone(), pending.clone())
+            });
             if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                 && let Err(err) = advance_pool_upstream_request_attempt_phase(
                     state.as_ref(),
@@ -819,7 +945,9 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                 None,
             )
             .await;
-            complete_deferred_pool_early_phase_cleanup_guard(&mut deferred_early_phase_cleanup_guard);
+            complete_deferred_pool_early_phase_cleanup_guard(
+                &mut deferred_early_phase_cleanup_guard,
+            );
             maybe_backfill_oauth_request_debug_from_replay_status(
                 &mut oauth_responses_debug,
                 original_uri,
@@ -1024,8 +1152,7 @@ pub(crate) async fn continue_or_retry_pool_live_request(
         if !matches!(current, PoolReplayBodyStatus::Reading) {
             break current;
         }
-        let replay_wait_remaining =
-            replay_wait_deadline.saturating_duration_since(Instant::now());
+        let replay_wait_remaining = replay_wait_deadline.saturating_duration_since(Instant::now());
         if replay_wait_remaining.is_zero() {
             replay_cancel.cancel();
             release_pool_routing_reservation(state.as_ref(), &reservation_key);
@@ -1062,8 +1189,10 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                     replay_cancel.cancel();
                     release_pool_routing_reservation(state.as_ref(), &reservation_key);
                     let attempt_count = first_error.attempt_summary.pool_attempt_count.max(1);
-                    let distinct_account_count =
-                        first_error.attempt_summary.pool_distinct_account_count.max(1);
+                    let distinct_account_count = first_error
+                        .attempt_summary
+                        .pool_distinct_account_count
+                        .max(1);
                     return Err(build_pool_total_timeout_exhausted_error(
                         total_timeout,
                         Some(first_error),
@@ -1092,8 +1221,10 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                     && pool_total_timeout_exhausted(total_timeout, started_at)
                 {
                     let attempt_count = first_error.attempt_summary.pool_attempt_count.max(1);
-                    let distinct_account_count =
-                        first_error.attempt_summary.pool_distinct_account_count.max(1);
+                    let distinct_account_count = first_error
+                        .attempt_summary
+                        .pool_distinct_account_count
+                        .max(1);
                     return Err(build_pool_total_timeout_exhausted_error(
                         total_timeout,
                         Some(first_error),
@@ -1132,8 +1263,10 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                 && pool_total_timeout_exhausted(total_timeout, started_at)
             {
                 let attempt_count = first_error.attempt_summary.pool_attempt_count.max(1);
-                let distinct_account_count =
-                    first_error.attempt_summary.pool_distinct_account_count.max(1);
+                let distinct_account_count = first_error
+                    .attempt_summary
+                    .pool_distinct_account_count
+                    .max(1);
                 replay_cancel.cancel();
                 release_pool_routing_reservation(state.as_ref(), &reservation_key);
                 return Err(build_pool_total_timeout_exhausted_error(
@@ -1397,65 +1530,6 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 body_sticky_key,
             )
         } else {
-            let unwrap_initial_pool_account = |resolution,
-                                               no_available_wait_deadline|
-             -> Result<
-                (PoolResolvedAccount, Option<Instant>),
-                (StatusCode, String),
-            > {
-                let initial_account = match resolution {
-                    Ok(PoolAccountResolutionWithWait::Resolution(
-                        PoolAccountResolution::Resolved(account),
-                    )) => account,
-                    Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired) => {
-                        let total_timeout = responses_total_timeout
-                            .expect("pre-attempt total-timeout expiry requires responses timeout");
-                        return Err((
-                            StatusCode::GATEWAY_TIMEOUT,
-                            pool_total_timeout_exhausted_message(total_timeout),
-                        ));
-                    }
-                    Ok(PoolAccountResolutionWithWait::Resolution(
-                        PoolAccountResolution::Unavailable,
-                    ))
-                    | Ok(PoolAccountResolutionWithWait::Resolution(
-                        PoolAccountResolution::NoCandidate,
-                    )) => {
-                        return Err((
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            POOL_NO_AVAILABLE_ACCOUNT_MESSAGE.to_string(),
-                        ));
-                    }
-                    Ok(PoolAccountResolutionWithWait::Resolution(
-                        PoolAccountResolution::RateLimited,
-                    )) => {
-                        return Err((
-                            StatusCode::TOO_MANY_REQUESTS,
-                            POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
-                        ));
-                    }
-                    Ok(PoolAccountResolutionWithWait::Resolution(
-                        PoolAccountResolution::DegradedOnly,
-                    )) => {
-                        return Err((
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
-                        ));
-                    }
-                    Ok(PoolAccountResolutionWithWait::Resolution(
-                        PoolAccountResolution::BlockedByPolicy(message),
-                    )) => {
-                        return Err((StatusCode::SERVICE_UNAVAILABLE, message));
-                    }
-                    Err(err) => {
-                        return Err((
-                            StatusCode::BAD_GATEWAY,
-                            format!("failed to resolve pool account: {err}"),
-                        ));
-                    }
-                };
-                Ok((initial_account, no_available_wait_deadline))
-            };
             let (
                 request_body_snapshot,
                 body_sticky_key,
@@ -1499,10 +1573,12 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         .await;
                         if matches!(
                             resolution,
-                            Ok(PoolAccountResolution::Unavailable | PoolAccountResolution::NoCandidate)
+                            Ok(PoolAccountResolution::Unavailable
+                                | PoolAccountResolution::NoCandidate)
                         ) && no_available_wait_deadline.is_none()
                         {
-                            let deadline = Instant::now() + state_for_wait.pool_no_available_wait.timeout;
+                            let deadline =
+                                Instant::now() + state_for_wait.pool_no_available_wait.timeout;
                             no_available_wait_deadline = Some(deadline);
                             *shared_wait_deadline_for_task
                                 .lock()
@@ -1571,7 +1647,9 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 };
                 tokio::pin!(header_sticky_resolution);
                 let mut header_sticky_resolution_finished = false;
-                let mut pending_header_sticky_terminal_error: Option<(StatusCode, String)> = None;
+                let mut pending_header_sticky_terminal_error: Option<
+                    ViaPoolResolutionTerminalError,
+                > = None;
                 let mut resolved_header_sticky_account: Option<PoolResolvedAccount> = None;
                 let mut header_sticky_wait_deadline = None;
                 match initial_header_sticky_resolution {
@@ -1580,32 +1658,44 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         header_sticky_resolution_finished = true;
                     }
                     Ok(PoolAccountResolution::RateLimited) => {
-                        pending_header_sticky_terminal_error = Some((
-                            StatusCode::TOO_MANY_REQUESTS,
-                            POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
-                        ));
+                        pending_header_sticky_terminal_error =
+                            Some(ViaPoolResolutionTerminalError::plain(
+                                StatusCode::TOO_MANY_REQUESTS,
+                                POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
+                            ));
                         header_sticky_resolution_finished = true;
                     }
                     Ok(PoolAccountResolution::DegradedOnly) => {
-                        pending_header_sticky_terminal_error = Some((
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
-                        ));
+                        pending_header_sticky_terminal_error =
+                            Some(ViaPoolResolutionTerminalError::plain(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
+                            ));
                         header_sticky_resolution_finished = true;
                     }
                     Ok(PoolAccountResolution::BlockedByPolicy(message)) => {
                         pending_header_sticky_terminal_error =
-                            Some((StatusCode::SERVICE_UNAVAILABLE, message));
+                            Some(ViaPoolResolutionTerminalError::plain(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                message,
+                            ));
+                        header_sticky_resolution_finished = true;
+                    }
+                    Ok(PoolAccountResolution::AssignedBlocked(blocked)) => {
+                        pending_header_sticky_terminal_error =
+                            Some(ViaPoolResolutionTerminalError::assigned_blocked(blocked));
                         header_sticky_resolution_finished = true;
                     }
                     Err(err) => {
-                        pending_header_sticky_terminal_error = Some((
-                            StatusCode::BAD_GATEWAY,
-                            format!("failed to resolve pool account: {err}"),
-                        ));
+                        pending_header_sticky_terminal_error =
+                            Some(ViaPoolResolutionTerminalError::plain(
+                                StatusCode::BAD_GATEWAY,
+                                format!("failed to resolve pool account: {err}"),
+                            ));
                         header_sticky_resolution_finished = true;
                     }
-                    Ok(PoolAccountResolution::Unavailable | PoolAccountResolution::NoCandidate) => {}
+                    Ok(PoolAccountResolution::Unavailable | PoolAccountResolution::NoCandidate) => {
+                    }
                 }
                 let mut request_body_buffer = PoolReplayBodyBuffer::new(proxy_request_id);
                 let mut request_body_stream = body.into_data_stream();
@@ -1655,30 +1745,47 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                 Ok(PoolAccountResolutionWithWait::Resolution(
                                     PoolAccountResolution::RateLimited,
                                 )) => {
-                                    pending_header_sticky_terminal_error = Some((
-                                        StatusCode::TOO_MANY_REQUESTS,
-                                        POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
-                                    ));
+                                    pending_header_sticky_terminal_error = Some(
+                                        ViaPoolResolutionTerminalError::plain(
+                                            StatusCode::TOO_MANY_REQUESTS,
+                                            POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
+                                        ),
+                                    );
                                 }
                                 Ok(PoolAccountResolutionWithWait::Resolution(
                                     PoolAccountResolution::DegradedOnly,
                                 )) => {
-                                    pending_header_sticky_terminal_error = Some((
-                                        StatusCode::SERVICE_UNAVAILABLE,
-                                        POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
-                                    ));
+                                    pending_header_sticky_terminal_error = Some(
+                                        ViaPoolResolutionTerminalError::plain(
+                                            StatusCode::SERVICE_UNAVAILABLE,
+                                            POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
+                                        ),
+                                    );
+                                }
+                                Ok(PoolAccountResolutionWithWait::Resolution(
+                                    PoolAccountResolution::AssignedBlocked(blocked),
+                                )) => {
+                                    pending_header_sticky_terminal_error = Some(
+                                        ViaPoolResolutionTerminalError::assigned_blocked(blocked),
+                                    );
                                 }
                                 Ok(PoolAccountResolutionWithWait::Resolution(
                                     PoolAccountResolution::BlockedByPolicy(message),
                                 )) => {
-                                    pending_header_sticky_terminal_error =
-                                        Some((StatusCode::SERVICE_UNAVAILABLE, message));
+                                    pending_header_sticky_terminal_error = Some(
+                                        ViaPoolResolutionTerminalError::plain(
+                                            StatusCode::SERVICE_UNAVAILABLE,
+                                            message,
+                                        ),
+                                    );
                                 }
                                 Err(err) => {
-                                    pending_header_sticky_terminal_error = Some((
-                                        StatusCode::BAD_GATEWAY,
-                                        format!("failed to resolve pool account: {err}"),
-                                    ));
+                                    pending_header_sticky_terminal_error = Some(
+                                        ViaPoolResolutionTerminalError::plain(
+                                            StatusCode::BAD_GATEWAY,
+                                            format!("failed to resolve pool account: {err}"),
+                                        ),
+                                    );
                                 }
                                 Ok(PoolAccountResolutionWithWait::Resolution(
                                     PoolAccountResolution::Unavailable,
@@ -1688,10 +1795,18 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                 )) => {}
                             }
                             if observed_body_sticky_key.as_deref() == Some(sticky_key.as_str())
-                                && let Some((status, message)) =
+                                && let Some(terminal_error) =
                                     pending_header_sticky_terminal_error.as_ref()
                             {
-                                return Err((*status, message.clone()));
+                                let trace_context = build_via_pool_attempt_trace_context(
+                                    proxy_request_id,
+                                    original_uri.path(),
+                                    Some(sticky_key.clone()),
+                                );
+                                terminal_error
+                                    .persist_if_needed(state.as_ref(), Some(&trace_context))
+                                    .await;
+                                return Err((terminal_error.status, terminal_error.message.clone()));
                             }
                         }
                         next_chunk = timeout(remaining, request_body_stream.next()) => {
@@ -1750,10 +1865,18 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             }
                             if header_sticky_resolution_finished
                                 && observed_body_sticky_key.as_deref() == Some(sticky_key.as_str())
-                                && let Some((status, message)) =
+                                && let Some(terminal_error) =
                                     pending_header_sticky_terminal_error.as_ref()
                             {
-                                return Err((*status, message.clone()));
+                                let trace_context = build_via_pool_attempt_trace_context(
+                                    proxy_request_id,
+                                    original_uri.path(),
+                                    Some(sticky_key.clone()),
+                                );
+                                terminal_error
+                                    .persist_if_needed(state.as_ref(), Some(&trace_context))
+                                    .await;
+                                return Err((terminal_error.status, terminal_error.message.clone()));
                             }
                         }
                     }
@@ -1789,30 +1912,42 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             Ok(PoolAccountResolutionWithWait::Resolution(
                                 PoolAccountResolution::RateLimited,
                             )) => {
-                                pending_header_sticky_terminal_error = Some((
-                                    StatusCode::TOO_MANY_REQUESTS,
-                                    POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
-                                ));
+                                pending_header_sticky_terminal_error =
+                                    Some(ViaPoolResolutionTerminalError::plain(
+                                        StatusCode::TOO_MANY_REQUESTS,
+                                        POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
+                                    ));
                             }
                             Ok(PoolAccountResolutionWithWait::Resolution(
                                 PoolAccountResolution::DegradedOnly,
                             )) => {
-                                pending_header_sticky_terminal_error = Some((
-                                    StatusCode::SERVICE_UNAVAILABLE,
-                                    POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
-                                ));
+                                pending_header_sticky_terminal_error =
+                                    Some(ViaPoolResolutionTerminalError::plain(
+                                        StatusCode::SERVICE_UNAVAILABLE,
+                                        POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
+                                    ));
+                            }
+                            Ok(PoolAccountResolutionWithWait::Resolution(
+                                PoolAccountResolution::AssignedBlocked(blocked),
+                            )) => {
+                                pending_header_sticky_terminal_error =
+                                    Some(ViaPoolResolutionTerminalError::assigned_blocked(blocked));
                             }
                             Ok(PoolAccountResolutionWithWait::Resolution(
                                 PoolAccountResolution::BlockedByPolicy(message),
                             )) => {
                                 pending_header_sticky_terminal_error =
-                                    Some((StatusCode::SERVICE_UNAVAILABLE, message));
+                                    Some(ViaPoolResolutionTerminalError::plain(
+                                        StatusCode::SERVICE_UNAVAILABLE,
+                                        message,
+                                    ));
                             }
                             Err(err) => {
-                                pending_header_sticky_terminal_error = Some((
-                                    StatusCode::BAD_GATEWAY,
-                                    format!("failed to resolve pool account: {err}"),
-                                ));
+                                pending_header_sticky_terminal_error =
+                                    Some(ViaPoolResolutionTerminalError::plain(
+                                        StatusCode::BAD_GATEWAY,
+                                        format!("failed to resolve pool account: {err}"),
+                                    ));
                             }
                             Ok(PoolAccountResolutionWithWait::Resolution(
                                 PoolAccountResolution::Unavailable,
@@ -1824,9 +1959,17 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     }
                 }
                 if body_sticky_key.as_deref() == Some(sticky_key.as_str())
-                    && let Some((status, message)) = pending_header_sticky_terminal_error
+                    && let Some(terminal_error) = pending_header_sticky_terminal_error
                 {
-                    return Err((status, message));
+                    let trace_context = build_via_pool_attempt_trace_context(
+                        proxy_request_id,
+                        original_uri.path(),
+                        Some(sticky_key.clone()),
+                    );
+                    terminal_error
+                        .persist_if_needed(state.as_ref(), Some(&trace_context))
+                        .await;
+                    return Err((terminal_error.status, terminal_error.message));
                 }
                 let mut no_available_wait_deadline =
                     header_sticky_wait_deadline.or(*shared_wait_deadline
@@ -1848,7 +1991,18 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         )
                         .await;
                         let (initial_account, updated_no_available_wait_deadline) =
-                            unwrap_initial_pool_account(resolution, no_available_wait_deadline)?;
+                            unwrap_via_pool_initial_account(
+                                state.as_ref(),
+                                Some(&build_via_pool_attempt_trace_context(
+                                    proxy_request_id,
+                                    original_uri.path(),
+                                    body_sticky_key.clone(),
+                                )),
+                                resolution,
+                                no_available_wait_deadline,
+                                responses_total_timeout,
+                            )
+                            .await?;
                         no_available_wait_deadline = updated_no_available_wait_deadline;
                         initial_account
                     }
@@ -1865,7 +2019,18 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     )
                     .await;
                     let (initial_account, updated_no_available_wait_deadline) =
-                        unwrap_initial_pool_account(resolution, no_available_wait_deadline)?;
+                        unwrap_via_pool_initial_account(
+                            state.as_ref(),
+                            Some(&build_via_pool_attempt_trace_context(
+                                proxy_request_id,
+                                original_uri.path(),
+                                body_sticky_key.clone(),
+                            )),
+                            resolution,
+                            no_available_wait_deadline,
+                            responses_total_timeout,
+                        )
+                        .await?;
                     no_available_wait_deadline = updated_no_available_wait_deadline;
                     initial_account
                 };
@@ -1883,7 +2048,9 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 let is_json_body = headers
                     .get(header::CONTENT_TYPE)
                     .and_then(|value| value.to_str().ok())
-                    .is_some_and(|value| value.to_ascii_lowercase().starts_with("application/json"));
+                    .is_some_and(|value| {
+                        value.to_ascii_lowercase().starts_with("application/json")
+                    });
                 let replayable_body = spawn_pool_replayable_request_body(
                     body,
                     body_limit,
@@ -1918,7 +2085,18 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 )
                 .await;
                 let (initial_account, no_available_wait_deadline) =
-                    unwrap_initial_pool_account(resolution, no_available_wait_deadline)?;
+                    unwrap_via_pool_initial_account(
+                        state.as_ref(),
+                        Some(&build_via_pool_attempt_trace_context(
+                            proxy_request_id,
+                            original_uri.path(),
+                            live_body_sticky_key.clone(),
+                        )),
+                        resolution,
+                        no_available_wait_deadline,
+                        responses_total_timeout,
+                    )
+                    .await?;
                 let live_responses_total_timeout_started_at =
                     responses_total_timeout_started_at_from_request;
                 let pool_attempt_trace_context = build_via_pool_attempt_trace_context(
@@ -2072,7 +2250,8 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     let invoke_id_for_record = upstream_invoke_id.clone();
                     let pending_pool_attempt_record_for_task = pending_pool_attempt_record;
                     let upstream_request_id_for_task = upstream_request_id;
-                    let upstream_attempt_started_at_utc_for_record = upstream_attempt_started_at_utc;
+                    let upstream_attempt_started_at_utc_for_record =
+                        upstream_attempt_started_at_utc;
                     let proxy_request_permit_for_task = proxy_request_permit;
                     tokio::spawn(async move {
                         let mut deferred_pool_early_phase_cleanup_guard_for_task =
@@ -2216,9 +2395,10 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     live_responses_total_timeout_started_at,
                 )
                 .await?;
-                let body_sticky_key = extract_sticky_key_from_replay_snapshot(&request_body_snapshot)
-                    .await
-                    .or(live_body_sticky_key);
+                let body_sticky_key =
+                    extract_sticky_key_from_replay_snapshot(&request_body_snapshot)
+                        .await
+                        .or(live_body_sticky_key);
                 let mut no_available_wait_deadline = None;
                 let resolution = resolve_pool_account_for_request_with_wait(
                     state.as_ref(),
@@ -2232,7 +2412,18 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 )
                 .await;
                 let (initial_account, no_available_wait_deadline) =
-                    unwrap_initial_pool_account(resolution, no_available_wait_deadline)?;
+                    unwrap_via_pool_initial_account(
+                        state.as_ref(),
+                        Some(&build_via_pool_attempt_trace_context(
+                            proxy_request_id,
+                            original_uri.path(),
+                            body_sticky_key.clone(),
+                        )),
+                        resolution,
+                        no_available_wait_deadline,
+                        responses_total_timeout,
+                    )
+                    .await?;
                 (
                     request_body_snapshot,
                     body_sticky_key,

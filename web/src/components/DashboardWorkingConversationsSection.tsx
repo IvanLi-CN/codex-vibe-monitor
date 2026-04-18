@@ -147,15 +147,6 @@ function formatStatusLabel(status: string) {
   return normalized;
 }
 
-function formatCompactAccountLabel(accountLabel: string) {
-  const normalized = accountLabel.trim();
-  if (!normalized) return FALLBACK_CELL;
-
-  const atIndex = normalized.indexOf("@");
-  const base = atIndex > 0 ? normalized.slice(0, atIndex) : normalized;
-  return base.length > 20 ? `${base.slice(0, 20)}…` : base;
-}
-
 function CompactReasoningEffortBadge({ value }: { value: string }) {
   if (value === FALLBACK_CELL) {
     return (
@@ -467,7 +458,6 @@ function InvocationSlot({
       ? timeOnlyFormatter.format(new Date(invocation.occurredAtEpoch))
       : occurredAtLabel;
 
-  const compactAccountLabel = formatCompactAccountLabel(viewModel.accountLabel);
   const lineLabels = resolveInvocationLineLabels(locale);
   const fastIndicator = renderFastIndicator(viewModel.fastIndicatorState, t);
   const displayConversationSequenceId =
@@ -577,13 +567,13 @@ function InvocationSlot({
         <InvocationMetaLine
           label={lineLabels.account}
           value={
-            <div className="flex min-w-0 items-center gap-1 text-[8.5px] leading-[1.3] text-base-content">
-              <div className="min-w-0 truncate font-mono font-semibold">
-                <div className="min-w-0 truncate">
+            <div className="flex min-w-0 flex-col gap-1 text-[8.5px] leading-[1.3] text-base-content">
+              <div className="min-w-0 font-mono font-semibold">
+                <div className="min-w-0">
                   {viewModel.accountClickable && viewModel.accountId != null ? (
                     <button
                       type="button"
-                      className="inline-flex min-w-0 cursor-pointer appearance-none items-center truncate border-0 bg-transparent p-0 text-left font-mono text-[8.5px] font-semibold text-base-content no-underline transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                      className="inline-flex min-w-0 max-w-full cursor-pointer appearance-none items-start rounded-[0.45rem] border border-base-300/55 bg-base-100/12 px-1.5 py-0.75 text-left font-mono text-[8.5px] font-semibold text-base-content no-underline transition-colors duration-200 hover:bg-base-100/18 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                       onClick={(event) => {
                         event.stopPropagation();
                         onOpenUpstreamAccount?.(
@@ -597,18 +587,22 @@ function InvocationSlot({
                       title={viewModel.accountLabel}
                       aria-label={viewModel.accountLabel}
                     >
-                      {compactAccountLabel}
+                      <span className="line-clamp-2 break-all text-left">
+                        {viewModel.accountLabel}
+                      </span>
                     </button>
                   ) : (
-                    <span className="truncate" title={viewModel.accountLabel}>
-                      {compactAccountLabel}
+                    <span
+                      className="line-clamp-2 break-all rounded-[0.45rem] border border-base-300/45 bg-base-100/8 px-1.5 py-0.75 text-left"
+                      title={viewModel.accountLabel}
+                    >
+                      {viewModel.accountLabel}
                     </span>
                   )}
                 </div>
               </div>
-              <span className="shrink-0 text-base-content/28">·</span>
               <div
-                className="flex min-w-0 items-center gap-1 text-base-content/70"
+                className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5 text-base-content/70"
                 title={`${viewModel.modelValue} · ${viewModel.reasoningEffortValue} · ${viewModel.serviceTierValue} · ${viewModel.proxyDisplayName}`}
               >
                 <span

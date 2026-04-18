@@ -187,12 +187,60 @@ pub(crate) fn summarize_pool_group_proxy_blocked_messages(messages: &[String]) -
     ))
 }
 
-pub(crate) async fn prepare_pool_account(
+async fn canonical_group_bound_proxy_keys(
+    state: &AppState,
+    bound_proxy_keys: &[String],
+) -> Vec<String> {
+    let manager = state.forward_proxy.lock().await;
+    let mut seen = HashSet::new();
+    bound_proxy_keys
+        .iter()
+        .filter_map(|value| manager.canonicalize_bound_proxy_key(value, None))
+        .filter(|value| seen.insert(value.clone()))
+        .collect()
+}
+
+async fn selectable_group_bound_proxy_keys(
+    state: &AppState,
+    bound_proxy_keys: &[String],
+) -> Vec<String> {
+    let manager = state.forward_proxy.lock().await;
+    manager.selectable_bound_proxy_keys_in_order(bound_proxy_keys)
+}
+
+fn build_pool_resolved_account(
+    row: &UpstreamAccountRow,
+    effective_rule: &EffectiveRoutingRule,
+    group_metadata: &UpstreamAccountGroupMetadata,
+    auth: PoolResolvedAuth,
+    upstream_base_url: Url,
+    forward_proxy_scope: ForwardProxyRouteScope,
+    routing_source: PoolRoutingSelectionSource,
+) -> PoolResolvedAccount {
+    PoolResolvedAccount {
+        account_id: row.id,
+        display_name: row.display_name.clone(),
+        kind: row.kind.clone(),
+        auth,
+        group_name: row.group_name.clone(),
+        bound_proxy_keys: group_metadata.bound_proxy_keys.clone(),
+        forward_proxy_scope,
+        group_upstream_429_retry_enabled: group_metadata.upstream_429_retry_enabled,
+        group_upstream_429_max_retries: group_metadata.upstream_429_max_retries,
+        fast_mode_rewrite_mode: effective_rule.fast_mode_rewrite_mode,
+        upstream_base_url,
+        routing_source,
+    }
+}
+
+async fn prepare_pool_account_with_scopes(
     state: &AppState,
     row: &UpstreamAccountRow,
     effective_rule: &EffectiveRoutingRule,
     group_metadata: UpstreamAccountGroupMetadata,
-    node_shunt_assignments: &UpstreamAccountNodeShuntAssignments,
+    refresh_proxy_scope: ForwardProxyRouteScope,
+    forward_proxy_scope: ForwardProxyRouteScope,
+    routing_source: PoolRoutingSelectionSource,
 ) -> Result<Option<PoolResolvedAccount>> {
     let Some(crypto_key) = state.upstream_accounts.crypto_key.as_ref() else {
         return Ok(None);
@@ -200,36 +248,21 @@ pub(crate) async fn prepare_pool_account(
     let Some(encrypted_credentials) = row.encrypted_credentials.as_deref() else {
         return Ok(None);
     };
-    let refresh_proxy_scope = required_account_forward_proxy_scope(
-        row.group_name.as_deref(),
-        group_metadata.bound_proxy_keys.clone(),
-    )?;
-    let forward_proxy_scope = resolve_account_forward_proxy_scope_from_assignments(
-        row.id,
-        row.group_name.as_deref(),
-        &group_metadata,
-        node_shunt_assignments,
-    )?;
     let upstream_base_url =
         resolve_pool_account_upstream_base_url(row, &state.config.openai_upstream_base_url)?;
     let credentials = decrypt_credentials(crypto_key, encrypted_credentials)?;
     match credentials {
-        StoredCredentials::ApiKey(value) => Ok(Some(PoolResolvedAccount {
-            account_id: row.id,
-            display_name: row.display_name.clone(),
-            kind: row.kind.clone(),
-            auth: PoolResolvedAuth::ApiKey {
+        StoredCredentials::ApiKey(value) => Ok(Some(build_pool_resolved_account(
+            row,
+            effective_rule,
+            &group_metadata,
+            PoolResolvedAuth::ApiKey {
                 authorization: format!("Bearer {}", value.api_key),
             },
-            group_name: row.group_name.clone(),
-            bound_proxy_keys: group_metadata.bound_proxy_keys.clone(),
-            forward_proxy_scope,
-            group_upstream_429_retry_enabled: group_metadata.upstream_429_retry_enabled,
-            group_upstream_429_max_retries: group_metadata.upstream_429_max_retries,
-            fast_mode_rewrite_mode: effective_rule.fast_mode_rewrite_mode,
             upstream_base_url,
-            routing_source: PoolRoutingSelectionSource::FreshAssignment,
-        })),
+            forward_proxy_scope,
+            routing_source,
+        ))),
         StoredCredentials::Oauth(mut value) => {
             let expires_at = row.token_expires_at.as_deref().and_then(parse_rfc3339_utc);
             let refresh_due = expires_at
@@ -380,25 +413,85 @@ pub(crate) async fn prepare_pool_account(
                 }
             }
 
-            Ok(Some(PoolResolvedAccount {
-                account_id: row.id,
-                display_name: row.display_name.clone(),
-                kind: row.kind.clone(),
-                auth: PoolResolvedAuth::Oauth {
+            Ok(Some(build_pool_resolved_account(
+                row,
+                effective_rule,
+                &group_metadata,
+                PoolResolvedAuth::Oauth {
                     access_token: value.access_token,
                     chatgpt_account_id: row.chatgpt_account_id.clone(),
                 },
-                group_name: row.group_name.clone(),
-                bound_proxy_keys: group_metadata.bound_proxy_keys,
-                forward_proxy_scope,
-                group_upstream_429_retry_enabled: group_metadata.upstream_429_retry_enabled,
-                group_upstream_429_max_retries: group_metadata.upstream_429_max_retries,
-                fast_mode_rewrite_mode: effective_rule.fast_mode_rewrite_mode,
                 upstream_base_url,
-                routing_source: PoolRoutingSelectionSource::FreshAssignment,
-            }))
+                forward_proxy_scope,
+                routing_source,
+            )))
         }
     }
+}
+
+pub(crate) async fn prepare_pool_account_identity_only(
+    state: &AppState,
+    row: &UpstreamAccountRow,
+    effective_rule: &EffectiveRoutingRule,
+    group_metadata: UpstreamAccountGroupMetadata,
+    routing_source: PoolRoutingSelectionSource,
+) -> Result<Option<PoolResolvedAccount>> {
+    let Some(crypto_key) = state.upstream_accounts.crypto_key.as_ref() else {
+        return Ok(None);
+    };
+    let Some(encrypted_credentials) = row.encrypted_credentials.as_deref() else {
+        return Ok(None);
+    };
+    let upstream_base_url =
+        resolve_pool_account_upstream_base_url(row, &state.config.openai_upstream_base_url)?;
+    let credentials = decrypt_credentials(crypto_key, encrypted_credentials)?;
+    let auth = match credentials {
+        StoredCredentials::ApiKey(value) => PoolResolvedAuth::ApiKey {
+            authorization: format!("Bearer {}", value.api_key),
+        },
+        StoredCredentials::Oauth(value) => PoolResolvedAuth::Oauth {
+            access_token: value.access_token,
+            chatgpt_account_id: row.chatgpt_account_id.clone(),
+        },
+    };
+    Ok(Some(build_pool_resolved_account(
+        row,
+        effective_rule,
+        &group_metadata,
+        auth,
+        upstream_base_url,
+        ForwardProxyRouteScope::Automatic,
+        routing_source,
+    )))
+}
+
+pub(crate) async fn prepare_pool_account(
+    state: &AppState,
+    row: &UpstreamAccountRow,
+    effective_rule: &EffectiveRoutingRule,
+    group_metadata: UpstreamAccountGroupMetadata,
+    node_shunt_assignments: &UpstreamAccountNodeShuntAssignments,
+) -> Result<Option<PoolResolvedAccount>> {
+    let refresh_proxy_scope = required_account_forward_proxy_scope(
+        row.group_name.as_deref(),
+        group_metadata.bound_proxy_keys.clone(),
+    )?;
+    let forward_proxy_scope = resolve_account_forward_proxy_scope_from_assignments(
+        row.id,
+        row.group_name.as_deref(),
+        &group_metadata,
+        node_shunt_assignments,
+    )?;
+    prepare_pool_account_with_scopes(
+        state,
+        row,
+        effective_rule,
+        group_metadata,
+        refresh_proxy_scope,
+        forward_proxy_scope,
+        PoolRoutingSelectionSource::FreshAssignment,
+    )
+    .await
 }
 
 pub(crate) fn is_account_selectable_for_sticky_reuse(

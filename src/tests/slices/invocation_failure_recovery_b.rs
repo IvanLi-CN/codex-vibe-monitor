@@ -2316,7 +2316,7 @@ async fn capture_target_pool_route_timeout_surfaces_blocked_policy_terminal() {
     );
     assert_eq!(
         attempt_rows[1].failure_kind.as_deref(),
-        Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT),
+        Some(PROXY_FAILURE_POOL_ROUTING_BLOCKED),
     );
 
     let row = sqlx::query_as::<_, PersistedPayloadRow>(
@@ -2345,7 +2345,7 @@ async fn capture_target_pool_route_timeout_surfaces_blocked_policy_terminal() {
     assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(1));
     assert_eq!(
         payload["poolAttemptTerminalReason"].as_str(),
-        Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT),
+        Some(PROXY_FAILURE_POOL_ROUTING_BLOCKED),
     );
     assert!(payload["upstreamErrorMessage"].is_null());
 

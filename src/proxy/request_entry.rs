@@ -633,6 +633,36 @@ pub(crate) fn build_pool_no_available_account_error(
     }
 }
 
+pub(crate) fn build_pool_assigned_account_blocked_error(
+    account: PoolResolvedAccount,
+    message: String,
+    failure_kind: &'static str,
+    attempt_count: usize,
+    distinct_account_count: usize,
+) -> PoolUpstreamError {
+    PoolUpstreamError {
+        account: Some(account),
+        status: StatusCode::SERVICE_UNAVAILABLE,
+        message,
+        canonical_error_message: None,
+        failure_kind,
+        connect_latency_ms: 0.0,
+        upstream_error_code: None,
+        upstream_error_message: None,
+        downstream_error_message: None,
+        upstream_request_id: None,
+        proxy_binding_key_snapshot: None,
+        oauth_responses_debug: None,
+        attempt_summary: pool_attempt_summary(
+            attempt_count,
+            distinct_account_count,
+            Some(failure_kind.to_string()),
+        ),
+        requested_service_tier: None,
+        request_body_for_capture: None,
+    }
+}
+
 pub(crate) fn retry_after_secs_for_proxy_error(
     status: StatusCode,
     message: &str,

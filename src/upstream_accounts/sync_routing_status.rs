@@ -474,9 +474,7 @@ fn maintenance_sync_rejected_cooldown_until(
     let occurred_at = parse_rfc3339_utc(occurred_at)?;
     Some(format_utc_iso(
         occurred_at
-            + ChronoDuration::seconds(
-                UPSTREAM_ACCOUNT_UPSTREAM_REJECTED_MAINTENANCE_COOLDOWN_SECS,
-            ),
+            + ChronoDuration::seconds(UPSTREAM_ACCOUNT_UPSTREAM_REJECTED_MAINTENANCE_COOLDOWN_SECS),
     ))
 }
 
