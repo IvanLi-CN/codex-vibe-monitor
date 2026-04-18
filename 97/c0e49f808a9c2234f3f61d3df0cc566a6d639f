@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.47.2",
+  "base_stable_version": "1.47.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-18T20:30:57Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.47.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "d135e6b8e6805eac4af2697c944cf8d906bf0467",
+  "pr_number": 350,
+  "pr_title": "feat(pool): preserve assigned-account routing semantics",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.47.2",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.47.2",
+  "target_sha": "97c0e49f808a9c2234f3f61d3df0cc566a6d639f",
+  "type_label": "type:patch"
+}
