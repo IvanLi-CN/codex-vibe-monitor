@@ -625,7 +625,7 @@ describe("InvocationTable", () => {
         failureClass: "service_failure",
         failureKind: "pool_assigned_account_blocked",
         errorMessage:
-          '[pool_assigned_account_blocked] upstream account group \"sticky-preflight-missing\" has no bound forward proxy nodes',
+          '[pool_assigned_account_blocked] upstream account group "sticky-preflight-missing" has no bound forward proxy nodes',
       },
     ]);
 
