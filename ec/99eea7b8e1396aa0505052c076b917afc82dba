@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.47.4",
+  "base_stable_version": "1.47.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-19T11:26:40Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.47.4",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "fbc434ab61bbf4b58e591612e266eda8f6b063ca",
+  "pr_number": 351,
+  "pr_title": "feat(account-pool): add grouped upstream account roster",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.47.4",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.47.4",
+  "target_sha": "ec99eea7b8e1396aa0505052c076b917afc82dba",
+  "type_label": "type:patch"
+}
