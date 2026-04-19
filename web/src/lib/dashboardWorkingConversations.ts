@@ -57,6 +57,18 @@ export interface DashboardWorkingConversationInvocationSelection {
   invocation: DashboardWorkingConversationInvocationModel;
 }
 
+export interface DashboardWorkingConversationSelection {
+  conversationSequenceId: string;
+  promptCacheKey: string;
+  createdAtEpoch: number | null;
+  lastActivityAtEpoch: number | null;
+  requestCount: number;
+  totalTokens: number;
+  totalCost: number;
+  currentInvocation: DashboardWorkingConversationInvocationModel;
+  previousInvocation: DashboardWorkingConversationInvocationModel | null;
+}
+
 interface DashboardWorkingConversationSequenceOptions {
   hashFn?: (value: string) => string;
   collisionHashFn?: (value: string) => string;
@@ -325,4 +337,20 @@ export function mapPromptCacheConversationsToDashboardCards(
       conversationSequenceId,
     };
   });
+}
+
+export function createDashboardWorkingConversationSelection(
+  card: DashboardWorkingConversationCardModel,
+): DashboardWorkingConversationSelection {
+  return {
+    conversationSequenceId: card.conversationSequenceId,
+    promptCacheKey: card.promptCacheKey,
+    createdAtEpoch: card.createdAtEpoch,
+    lastActivityAtEpoch: card.currentInvocation.occurredAtEpoch,
+    requestCount: card.requestCount,
+    totalTokens: card.totalTokens,
+    totalCost: card.totalCost,
+    currentInvocation: card.currentInvocation,
+    previousInvocation: card.previousInvocation,
+  };
 }

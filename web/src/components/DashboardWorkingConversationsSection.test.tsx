@@ -191,6 +191,17 @@ function renderSection(
       promptCacheKey: string;
       invocation: { record: { invokeId: string } };
     }) => void;
+    onOpenConversation?: (selection: {
+      conversationSequenceId: string;
+      promptCacheKey: string;
+      createdAtEpoch: number | null;
+      lastActivityAtEpoch: number | null;
+      requestCount: number;
+      totalTokens: number;
+      totalCost: number;
+      currentInvocation: { record: { invokeId: string } };
+      previousInvocation: { record: { invokeId: string } } | null;
+    }) => void;
   },
 ) {
   return renderSectionWithCards(
@@ -216,6 +227,17 @@ function renderSectionWithCards(
       promptCacheKey: string;
       invocation: { record: { invokeId: string } };
     }) => void;
+    onOpenConversation?: (selection: {
+      conversationSequenceId: string;
+      promptCacheKey: string;
+      createdAtEpoch: number | null;
+      lastActivityAtEpoch: number | null;
+      requestCount: number;
+      totalTokens: number;
+      totalCost: number;
+      currentInvocation: { record: { invokeId: string } };
+      previousInvocation: { record: { invokeId: string } } | null;
+    }) => void;
   },
 ) {
   host = document.createElement("div");
@@ -235,6 +257,7 @@ function renderSectionWithCards(
           setRefreshTargetCount={options?.setRefreshTargetCount}
           onOpenUpstreamAccount={options?.onOpenUpstreamAccount}
           onOpenInvocation={options?.onOpenInvocation}
+          onOpenConversation={options?.onOpenConversation}
         />
       </I18nProvider>,
     );
@@ -258,6 +281,17 @@ function rerenderSection(
       conversationSequenceId: string;
       promptCacheKey: string;
       invocation: { record: { invokeId: string } };
+    }) => void;
+    onOpenConversation?: (selection: {
+      conversationSequenceId: string;
+      promptCacheKey: string;
+      createdAtEpoch: number | null;
+      lastActivityAtEpoch: number | null;
+      requestCount: number;
+      totalTokens: number;
+      totalCost: number;
+      currentInvocation: { record: { invokeId: string } };
+      previousInvocation: { record: { invokeId: string } } | null;
     }) => void;
   },
 ) {
@@ -284,6 +318,17 @@ function rerenderSectionWithCards(
       promptCacheKey: string;
       invocation: { record: { invokeId: string } };
     }) => void;
+    onOpenConversation?: (selection: {
+      conversationSequenceId: string;
+      promptCacheKey: string;
+      createdAtEpoch: number | null;
+      lastActivityAtEpoch: number | null;
+      requestCount: number;
+      totalTokens: number;
+      totalCost: number;
+      currentInvocation: { record: { invokeId: string } };
+      previousInvocation: { record: { invokeId: string } } | null;
+    }) => void;
   },
 ) {
   if (!root) {
@@ -303,6 +348,7 @@ function rerenderSectionWithCards(
           setRefreshTargetCount={options?.setRefreshTargetCount}
           onOpenUpstreamAccount={options?.onOpenUpstreamAccount}
           onOpenInvocation={options?.onOpenInvocation}
+          onOpenConversation={options?.onOpenConversation}
         />
       </I18nProvider>,
     );
@@ -1212,6 +1258,61 @@ describe("DashboardWorkingConversationsSection", () => {
     });
 
     expect(onOpenInvocation).toHaveBeenCalledTimes(2);
+  });
+
+  it("opens conversation details only from the sequence button", () => {
+    const onOpenConversation = vi.fn();
+    const onOpenInvocation = vi.fn();
+    const response = createResponse([
+      createConversation("pck-sequence-open", [
+        createPreview({
+          id: 12,
+          invokeId: "invoke-sequence-current",
+          occurredAt: "2026-04-04T10:04:00Z",
+          status: "running",
+        }),
+        createPreview({
+          id: 11,
+          invokeId: "invoke-sequence-previous",
+          occurredAt: "2026-04-04T10:02:00Z",
+          status: "completed",
+        }),
+      ]),
+    ]);
+    const cards = renderSection(response, {
+      onOpenConversation,
+      onOpenInvocation,
+    });
+
+    const sequenceButton = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-sequence-button"]',
+    );
+    if (!(sequenceButton instanceof HTMLButtonElement)) {
+      throw new Error("missing conversation sequence button");
+    }
+
+    expect(sequenceButton.getAttribute("aria-label")).toContain(
+      cards[0]?.conversationSequenceId.replace(/^WC-/, "") ?? "",
+    );
+    expect(sequenceButton.getAttribute("aria-label")).toContain(
+      "pck-sequence-open",
+    );
+
+    act(() => {
+      sequenceButton.click();
+    });
+
+    expect(onOpenConversation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationSequenceId: cards[0]?.conversationSequenceId,
+        promptCacheKey: "pck-sequence-open",
+        requestCount: 2,
+      }),
+    );
+    expect(
+      onOpenConversation.mock.calls[0]?.[0]?.currentInvocation?.record?.invokeId,
+    ).toBe("invoke-sequence-current");
+    expect(onOpenInvocation).not.toHaveBeenCalled();
   });
 
   it("uses theme-aware surface classes instead of a hardcoded dark canvas surface", () => {
