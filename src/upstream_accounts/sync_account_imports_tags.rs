@@ -847,12 +847,15 @@ struct UpstreamAccountIdentityRow {
     id: i64,
     chatgpt_account_id: Option<String>,
     chatgpt_user_id: Option<String>,
+    group_name: Option<String>,
     plan_type: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 struct UpstreamAccountIdentityClusterMember {
     id: i64,
+    chatgpt_user_id: Option<String>,
+    group_name: Option<String>,
     plan_type: Option<String>,
 }
 
@@ -861,6 +864,12 @@ fn normalize_plan_type(plan_type: Option<&str>) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+fn is_team_plan_type(plan_type: Option<&str>) -> bool {
+    normalize_plan_type(plan_type)
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case("team"))
 }
 
 fn should_flag_duplicate_identity_pair(
@@ -874,6 +883,22 @@ fn should_flag_duplicate_identity_pair(
         (Some(current), Some(peer)) => current.eq_ignore_ascii_case(&peer),
         _ => true,
     }
+}
+
+fn is_team_shared_org_cluster_member(member: &UpstreamAccountIdentityClusterMember) -> bool {
+    is_team_plan_type(member.plan_type.as_deref())
+        && member.group_name.is_some()
+        && member.chatgpt_user_id.is_some()
+}
+
+fn is_team_shared_org_peer_pair(
+    current: &UpstreamAccountIdentityClusterMember,
+    peer: &UpstreamAccountIdentityClusterMember,
+) -> bool {
+    is_team_shared_org_cluster_member(current)
+        && is_team_shared_org_cluster_member(peer)
+        && current.group_name == peer.group_name
+        && current.chatgpt_user_id != peer.chatgpt_user_id
 }
 
 fn resolve_effective_plan_type(
@@ -907,6 +932,7 @@ async fn load_duplicate_info_map(
             account.id,
             account.chatgpt_account_id,
             account.chatgpt_user_id,
+            account.group_name,
             COALESCE(
                 CASE
                     WHEN NULLIF(TRIM(account.plan_type), '') IS NOT NULL
@@ -951,7 +977,9 @@ async fn load_duplicate_info_map(
             by_account_id.entry(chatgpt_account_id).or_default().push(
                 UpstreamAccountIdentityClusterMember {
                     id: row.id,
-                    plan_type: row.plan_type.clone(),
+                    chatgpt_user_id: normalize_optional_text(row.chatgpt_user_id.clone()),
+                    group_name: normalize_optional_text(row.group_name.clone()),
+                    plan_type: normalize_plan_type(row.plan_type.as_deref()),
                 },
             );
         }
@@ -959,7 +987,9 @@ async fn load_duplicate_info_map(
             by_user_id.entry(chatgpt_user_id).or_default().push(
                 UpstreamAccountIdentityClusterMember {
                     id: row.id,
-                    plan_type: row.plan_type.clone(),
+                    chatgpt_user_id: normalize_optional_text(row.chatgpt_user_id.clone()),
+                    group_name: normalize_optional_text(row.group_name.clone()),
+                    plan_type: normalize_plan_type(row.plan_type.as_deref()),
                 },
             );
         }
@@ -967,6 +997,12 @@ async fn load_duplicate_info_map(
 
     let mut duplicate_info = std::collections::HashMap::new();
     for row in rows {
+        let current_member = UpstreamAccountIdentityClusterMember {
+            id: row.id,
+            chatgpt_user_id: normalize_optional_text(row.chatgpt_user_id.clone()),
+            group_name: normalize_optional_text(row.group_name.clone()),
+            plan_type: normalize_plan_type(row.plan_type.as_deref()),
+        };
         let mut peer_ids = std::collections::BTreeSet::new();
         let mut reasons = Vec::new();
 
@@ -977,8 +1013,9 @@ async fn load_duplicate_info_map(
         {
             for member in cluster {
                 if member.id != row.id
+                    && !is_team_shared_org_peer_pair(&current_member, member)
                     && should_flag_duplicate_identity_pair(
-                        row.plan_type.as_deref(),
+                        current_member.plan_type.as_deref(),
                         member.plan_type.as_deref(),
                     )
                 {
@@ -987,8 +1024,9 @@ async fn load_duplicate_info_map(
             }
             if cluster.iter().any(|member| {
                 member.id != row.id
+                    && !is_team_shared_org_peer_pair(&current_member, member)
                     && should_flag_duplicate_identity_pair(
-                        row.plan_type.as_deref(),
+                        current_member.plan_type.as_deref(),
                         member.plan_type.as_deref(),
                     )
             }) {
@@ -1004,7 +1042,7 @@ async fn load_duplicate_info_map(
             for member in cluster {
                 if member.id != row.id
                     && should_flag_duplicate_identity_pair(
-                        row.plan_type.as_deref(),
+                        current_member.plan_type.as_deref(),
                         member.plan_type.as_deref(),
                     )
                 {
@@ -1014,7 +1052,7 @@ async fn load_duplicate_info_map(
             if cluster.iter().any(|member| {
                 member.id != row.id
                     && should_flag_duplicate_identity_pair(
-                        row.plan_type.as_deref(),
+                        current_member.plan_type.as_deref(),
                         member.plan_type.as_deref(),
                     )
             }) {
@@ -1821,16 +1859,17 @@ async fn load_upstream_account_detail(
             .get(&row.id)
             .copied()
             .unwrap_or_default();
+    let summary = build_summary_from_row(
+        &row,
+        latest.as_ref(),
+        row.last_activity_at.clone(),
+        tags,
+        duplicate_info_map.get(&row.id).cloned(),
+        active_conversation_count,
+        now,
+    );
     Ok(Some(UpstreamAccountDetail {
-        summary: build_summary_from_row(
-            &row,
-            latest.as_ref(),
-            row.last_activity_at.clone(),
-            tags,
-            duplicate_info_map.get(&row.id).cloned(),
-            active_conversation_count,
-            now,
-        ),
+        summary,
         note: row.note,
         upstream_base_url: row.upstream_base_url,
         chatgpt_user_id: row.chatgpt_user_id,

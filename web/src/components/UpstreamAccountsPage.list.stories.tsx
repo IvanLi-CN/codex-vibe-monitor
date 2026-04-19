@@ -770,3 +770,35 @@ export const MixedPlanCoexistence: Story = {
     await expect(dialog).not.toHaveTextContent(/重复账号|Duplicate/i)
   },
 }
+
+export const TeamSharedOrgCoexistence: Story = {
+  render: () => (
+    <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
+  ),
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const memberARow = await documentScope.findByRole('button', {
+      name: /Fixture Team Member A/i,
+    })
+    const memberBRow = await documentScope.findByRole('button', {
+      name: /Fixture Team Member B/i,
+    })
+
+    await expect(memberARow).toHaveTextContent(/team/i)
+    await expect(memberARow).not.toHaveTextContent(/母号|Mother/i)
+    await expect(memberARow).not.toHaveTextContent(/重复账号|Duplicate/i)
+    await expect(memberBRow).toHaveTextContent(/team/i)
+    await expect(memberBRow).not.toHaveTextContent(/母号|Mother/i)
+    await expect(memberBRow).not.toHaveTextContent(/重复账号|Duplicate/i)
+
+    await userEvent.click(memberARow)
+
+    const dialog = await documentScope.findByRole('dialog', {
+      name: /Fixture Team Member A/i,
+    })
+    await expect(dialog).toHaveTextContent(/team/i)
+    await expect(dialog).not.toHaveTextContent(/母号|Mother/i)
+    await expect(dialog).not.toHaveTextContent(/命中原因：|Matched reasons:/i)
+    await expect(dialog).not.toHaveTextContent(/重复账号|Duplicate/i)
+  },
+}
