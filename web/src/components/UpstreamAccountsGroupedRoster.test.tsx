@@ -466,6 +466,95 @@ describe('UpstreamAccountsGroupedRoster', () => {
     expect(gridLayout?.style.gridTemplateColumns).toBe('repeat(1, minmax(0, 1fr))')
   })
 
+  it('uses the viewport xl breakpoint when estimating grouped grid columns before member widths are measured', () => {
+    const groups = [
+      makeGroup('analytics', [
+        makeItem(1),
+        makeItem(2, { displayName: 'Account 2' }),
+        makeItem(3, { displayName: 'Account 3' }),
+      ]),
+    ]
+
+    renderRoster(groups, {
+      memberLayout: 'grid',
+      selectionMode: 'none',
+      onToggleSelected: undefined,
+      onToggleSelectAllVisible: undefined,
+    })
+
+    const roster = host?.querySelector(
+      '[data-testid="upstream-accounts-grouped-roster"]',
+    ) as HTMLDivElement | null
+    const spacer = host?.querySelector(
+      '[data-testid="upstream-accounts-grouped-roster-spacer"]',
+    ) as HTMLDivElement | null
+    const membersGrid = host?.querySelector(
+      '[data-testid="upstream-accounts-group-members-grid"]',
+    ) as HTMLDivElement | null
+    const gridLayout = membersGrid?.querySelector(':scope > div') as HTMLDivElement | null
+
+    expect(roster).toBeTruthy()
+    expect(spacer).toBeTruthy()
+    expect(membersGrid).toBeTruthy()
+    expect(gridLayout).toBeTruthy()
+
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: 1600,
+    })
+    Object.defineProperty(roster!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () =>
+        ({
+          top: 160,
+          left: 0,
+          right: 1180,
+          bottom: 760,
+          width: 1180,
+          height: 600,
+          x: 0,
+          y: 160,
+          toJSON: () => ({}),
+        }) satisfies DOMRect,
+    })
+    Object.defineProperty(spacer!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () =>
+        ({
+          top: 160,
+          left: 0,
+          right: 1180,
+          bottom: 760,
+          width: 1180,
+          height: 600,
+          x: 0,
+          y: 160,
+          toJSON: () => ({}),
+        }) satisfies DOMRect,
+    })
+    Object.defineProperty(membersGrid!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () =>
+        ({
+          top: 210,
+          left: 0,
+          right: 1180,
+          bottom: 560,
+          width: 0,
+          height: 350,
+          x: 0,
+          y: 210,
+          toJSON: () => ({}),
+        }) satisfies DOMRect,
+    })
+
+    act(() => {
+      window.dispatchEvent(new Event('resize'))
+    })
+
+    expect(gridLayout?.style.gridTemplateColumns).toBe('repeat(1, minmax(0, 1fr))')
+  })
+
   it('keeps the bottom spacer sized to the remaining virtualized groups below the viewport', () => {
     virtualizerMocks.visibleIndexes = [1, 2]
     const groups = Array.from({ length: 6 }, (_, index) =>
@@ -539,6 +628,36 @@ describe('UpstreamAccountsGroupedRoster', () => {
 
     expect(virtualizerMocks.lastScrollMargin).toBe(588)
     expect(virtualizerMocks.measureCalls).toBeGreaterThan(initialMeasureCalls)
+    expect(spacer?.style.paddingBottom).toBe(`${expectedPaddingBottom}px`)
+  })
+
+  it('includes inter-card gaps in the fallback spacer height when the virtualizer has not returned items yet', () => {
+    virtualizerMocks.visibleIndexes = []
+    Object.defineProperty(window, 'scrollY', {
+      configurable: true,
+      value: 0,
+    })
+    const groups = Array.from({ length: 6 }, (_, index) =>
+      makeGroup(`group-${index + 1}`, [
+        makeItem(index + 1, {
+          groupName: `group-${index + 1}`,
+          displayName: `Group ${index + 1} Account`,
+        }),
+      ]),
+    )
+
+    renderRoster(groups)
+
+    const spacer = host?.querySelector(
+      '[data-testid="upstream-accounts-grouped-roster-spacer"]',
+    ) as HTMLDivElement | null
+
+    expect(spacer).toBeTruthy()
+
+    const expectedPaddingBottom = virtualizerMocks.sizes
+      .slice(4)
+      .reduce((sum, size) => sum + size, 0)
+
     expect(spacer?.style.paddingBottom).toBe(`${expectedPaddingBottom}px`)
   })
 
