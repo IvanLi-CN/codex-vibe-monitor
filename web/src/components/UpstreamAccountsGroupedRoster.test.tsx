@@ -631,6 +631,29 @@ describe('UpstreamAccountsGroupedRoster', () => {
     expect(spacer?.style.paddingBottom).toBe(`${expectedPaddingBottom}px`)
   })
 
+  it('keeps the virtualized card gap on the last rendered non-terminal group', () => {
+    virtualizerMocks.visibleIndexes = [1, 2]
+    const groups = Array.from({ length: 6 }, (_, index) =>
+      makeGroup(`group-${index + 1}`, [
+        makeItem(index + 1, {
+          groupName: `group-${index + 1}`,
+          displayName: `Group ${index + 1} Account`,
+        }),
+      ]),
+    )
+
+    renderRoster(groups)
+
+    const renderedGroupCards = host?.querySelectorAll(
+      '[data-testid="upstream-accounts-group-card"]',
+    ) ?? []
+    const lastRenderedCard = renderedGroupCards[renderedGroupCards.length - 1] as HTMLElement | undefined
+
+    expect(renderedGroupCards).toHaveLength(2)
+    expect(lastRenderedCard?.dataset.index).toBe('2')
+    expect(lastRenderedCard?.className).toContain('pb-4')
+  })
+
   it('includes inter-card gaps in the fallback spacer height when the virtualizer has not returned items yet', () => {
     virtualizerMocks.visibleIndexes = []
     Object.defineProperty(window, 'scrollY', {

@@ -950,7 +950,7 @@ export function UpstreamAccountsGroupedRoster({
               ref={groupVirtualizer.measureElement}
               data-index={virtualGroup.index}
               data-testid="upstream-accounts-group-card"
-              className="w-full pb-4 last:pb-0"
+              className={cn('w-full', virtualGroup.index === groups.length - 1 ? '' : 'pb-4')}
             >
               <article className="rounded-[1.1rem] border border-base-300/65 bg-base-100/76 px-3.5 py-3 shadow-[0_8px_24px_rgba(2,6,23,0.06)]">
                 <div className="grid items-start gap-3.5 xl:grid-cols-[12.5rem_minmax(0,1fr)]">
