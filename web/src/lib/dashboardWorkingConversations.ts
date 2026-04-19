@@ -38,6 +38,7 @@ export interface DashboardWorkingConversationCardModel {
   normalizedPromptCacheKey: string;
   conversationSequenceId: string;
   createdAtEpoch: number | null;
+  lastActivityAtEpoch: number | null;
   currentInvocation: DashboardWorkingConversationInvocationModel;
   previousInvocation: DashboardWorkingConversationInvocationModel | null;
   hasPreviousPlaceholder: boolean;
@@ -206,6 +207,7 @@ function buildPendingCardModel(
     promptCacheKey: conversation.promptCacheKey,
     normalizedPromptCacheKey,
     createdAtEpoch: parseEpoch(conversation.createdAt),
+    lastActivityAtEpoch: parseEpoch(conversation.lastActivityAt),
     currentInvocation,
     previousInvocation,
     hasPreviousPlaceholder: previousInvocation == null,
@@ -346,7 +348,7 @@ export function createDashboardWorkingConversationSelection(
     conversationSequenceId: card.conversationSequenceId,
     promptCacheKey: card.promptCacheKey,
     createdAtEpoch: card.createdAtEpoch,
-    lastActivityAtEpoch: card.currentInvocation.occurredAtEpoch,
+    lastActivityAtEpoch: card.lastActivityAtEpoch,
     requestCount: card.requestCount,
     totalTokens: card.totalTokens,
     totalCost: card.totalCost,

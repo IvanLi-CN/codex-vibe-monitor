@@ -193,8 +193,7 @@ vi.mock("../components/DashboardWorkingConversationsSection", () => ({
                 conversationSequenceId: cards[0].conversationSequenceId,
                 promptCacheKey: cards[0].promptCacheKey,
                 createdAtEpoch: cards[0].createdAtEpoch,
-                lastActivityAtEpoch:
-                  cards[0].currentInvocation.occurredAtEpoch ?? null,
+                lastActivityAtEpoch: cards[0].lastActivityAtEpoch,
                 requestCount: cards[0].requestCount,
                 totalTokens: cards[0].totalTokens,
                 totalCost: cards[0].totalCost,
@@ -466,6 +465,7 @@ function createWorkingConversationCard(): DashboardWorkingConversationCardModel 
     previousInvocation: null,
     hasPreviousPlaceholder: true,
     createdAtEpoch: Date.parse("2026-04-06T10:20:00Z"),
+    lastActivityAtEpoch: Date.parse("2026-04-06T10:20:00Z"),
     sortAnchorEpoch: Date.parse("2026-04-06T10:20:00Z"),
     lastTerminalAtEpoch: Date.parse("2026-04-06T10:20:00Z"),
     lastInFlightAtEpoch: null,
