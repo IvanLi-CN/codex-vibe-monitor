@@ -5,40 +5,44 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const virtualizerMocks = vi.hoisted(() => ({
   visibleIndexes: null as number[] | null,
+  sizes: [] as number[],
+  lastScrollMargin: 0,
 }))
 
 vi.mock('@tanstack/react-virtual', () => ({
   useWindowVirtualizer: ({
     count,
     estimateSize,
+    scrollMargin = 0,
   }: {
     count: number
     estimateSize: (index: number) => number
+    scrollMargin?: number
   }) => {
+    const sizes = Array.from({ length: count }, (_, index) => estimateSize(index))
+    virtualizerMocks.sizes = sizes
+    virtualizerMocks.lastScrollMargin = scrollMargin
+
     const indexes =
       virtualizerMocks.visibleIndexes ??
       Array.from({ length: Math.min(count, 3) }, (_, index) => index)
-
-    let cursor = 0
     const items = indexes
       .filter((index) => index >= 0 && index < count)
       .map((index) => {
-        const size = estimateSize(index)
+        const size = sizes[index] ?? estimateSize(index)
+        const start =
+          scrollMargin +
+          sizes.slice(0, index).reduce((sum, candidateSize) => sum + candidateSize, 0)
         const item = {
           index,
           key: index,
-          start: cursor,
+          start,
           size,
-          end: cursor + size,
+          end: start + size,
         }
-        cursor += size
         return item
       })
-
-    const totalSize = Array.from({ length: count }, (_, index) => estimateSize(index)).reduce(
-      (sum, size) => sum + size,
-      0,
-    )
+    const totalSize = sizes.reduce((sum, size) => sum + size, 0)
 
     return {
       getVirtualItems: () => items,
@@ -235,6 +239,8 @@ let root: Root | null = null
 
 afterEach(() => {
   virtualizerMocks.visibleIndexes = null
+  virtualizerMocks.sizes = []
+  virtualizerMocks.lastScrollMargin = 0
   act(() => {
     root?.unmount()
   })
@@ -359,5 +365,60 @@ describe('UpstreamAccountsGroupedRoster', () => {
     expect(renderedGroupCards.length).toBeLessThan(groups.length)
     expect(gridCards.length).toBeGreaterThan(0)
     expect(gridCards.length).toBe(18)
+  })
+
+  it('keeps the bottom spacer sized to the remaining virtualized groups below the viewport', () => {
+    virtualizerMocks.visibleIndexes = [1, 2]
+    const groups = Array.from({ length: 6 }, (_, index) =>
+      makeGroup(`group-${index + 1}`, [
+        makeItem(index + 1, {
+          groupName: `group-${index + 1}`,
+          displayName: `Group ${index + 1} Account`,
+        }),
+      ]),
+    )
+
+    renderRoster(groups)
+
+    const roster = host?.querySelector(
+      '[data-testid="upstream-accounts-grouped-roster"]',
+    ) as HTMLDivElement | null
+    expect(roster).toBeTruthy()
+
+    Object.defineProperty(window, 'scrollY', {
+      configurable: true,
+      value: 300,
+    })
+    Object.defineProperty(roster!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () =>
+        ({
+          top: 240,
+          left: 0,
+          right: 1200,
+          bottom: 900,
+          width: 1200,
+          height: 660,
+          x: 0,
+          y: 240,
+          toJSON: () => ({}),
+        }) satisfies DOMRect,
+    })
+
+    act(() => {
+      window.dispatchEvent(new Event('resize'))
+    })
+
+    const spacer = host?.querySelector(
+      '[data-testid="upstream-accounts-grouped-roster-spacer"]',
+    ) as HTMLDivElement | null
+    expect(spacer).toBeTruthy()
+
+    const expectedPaddingBottom = virtualizerMocks.sizes
+      .slice(3)
+      .reduce((sum, size) => sum + size, 0)
+
+    expect(virtualizerMocks.lastScrollMargin).toBe(540)
+    expect(spacer?.style.paddingBottom).toBe(`${expectedPaddingBottom}px`)
   })
 })

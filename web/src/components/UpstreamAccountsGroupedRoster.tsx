@@ -779,7 +779,7 @@ export function UpstreamAccountsGroupedRoster({
   }))
   const totalMeasuredSize =
     virtualGroups.length > 0
-      ? Math.max(0, groupVirtualizer.getTotalSize() - scrollMargin)
+      ? Math.max(0, groupVirtualizer.getTotalSize())
       : groups.reduce(
           (sum, group) => sum + estimateGroupCardHeight(group, memberLayout, viewportWidth),
           0,
@@ -875,7 +875,10 @@ export function UpstreamAccountsGroupedRoster({
         </div>
       ) : null}
 
-      <div style={{ paddingTop: `${paddingTop}px`, paddingBottom: `${paddingBottom}px` }}>
+      <div
+        data-testid="upstream-accounts-grouped-roster-spacer"
+        style={{ paddingTop: `${paddingTop}px`, paddingBottom: `${paddingBottom}px` }}
+      >
         {normalizedVirtualGroups.map((virtualGroup) => {
           const group = groups[virtualGroup.index]
           if (!group) return null
