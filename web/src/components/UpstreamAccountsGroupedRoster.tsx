@@ -693,6 +693,7 @@ export function UpstreamAccountsGroupedRoster({
 }: UpstreamAccountsGroupedRosterProps) {
   const selectAllRef = useRef<HTMLInputElement | null>(null)
   const [containerElement, setContainerElement] = useState<HTMLDivElement | null>(null)
+  const [spacerElement, setSpacerElement] = useState<HTMLDivElement | null>(null)
   const [scrollMargin, setScrollMargin] = useState(0)
   const [viewportWidth, setViewportWidth] = useState(() =>
     typeof window === 'undefined' ? 0 : window.innerWidth,
@@ -726,14 +727,19 @@ export function UpstreamAccountsGroupedRoster({
   }, [partiallySelected])
 
   useEffect(() => {
+    groupVirtualizer.measure()
+  }, [groupVirtualizer, groups, memberLayout, viewportWidth])
+
+  useEffect(() => {
     const updateMetrics = () => {
       setViewportWidth(typeof window === 'undefined' ? 0 : window.innerWidth)
-      if (!containerElement || typeof window === 'undefined') {
+      const measurementTarget = spacerElement ?? containerElement
+      if (!measurementTarget || typeof window === 'undefined') {
         setScrollMargin(0)
         return
       }
       const nextScrollMargin =
-        containerElement.getBoundingClientRect().top + window.scrollY
+        measurementTarget.getBoundingClientRect().top + window.scrollY
       setScrollMargin((current) =>
         Math.abs(current - nextScrollMargin) > 0.5 ? nextScrollMargin : current,
       )
@@ -756,6 +762,9 @@ export function UpstreamAccountsGroupedRoster({
       updateMetrics()
     })
     observer.observe(containerElement)
+    if (spacerElement && spacerElement !== containerElement) {
+      observer.observe(spacerElement)
+    }
     if (document.body) {
       observer.observe(document.body)
     }
@@ -765,7 +774,7 @@ export function UpstreamAccountsGroupedRoster({
       window.removeEventListener('resize', updateMetrics)
       window.removeEventListener('scroll', updateMetrics)
     }
-  }, [containerElement])
+  }, [containerElement, spacerElement])
 
   const virtualGroups = groupVirtualizer.getVirtualItems()
   const renderedGroups =
@@ -876,6 +885,7 @@ export function UpstreamAccountsGroupedRoster({
       ) : null}
 
       <div
+        ref={setSpacerElement}
         data-testid="upstream-accounts-grouped-roster-spacer"
         style={{ paddingTop: `${paddingTop}px`, paddingBottom: `${paddingBottom}px` }}
       >

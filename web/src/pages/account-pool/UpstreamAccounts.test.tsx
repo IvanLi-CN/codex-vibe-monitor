@@ -106,36 +106,41 @@ vi.mock("@tanstack/react-virtual", () => ({
   useWindowVirtualizer: ({
     count,
     estimateSize,
+    scrollMargin = 0,
   }: {
     count: number;
     estimateSize: (index: number) => number;
+    scrollMargin?: number;
   }) => {
+    const sizes = Array.from({ length: count }, (_, index) => estimateSize(index));
     const indexes =
       virtualizerMocks.visibleIndexes ??
       Array.from({ length: Math.min(count, 4) }, (_, index) => index);
-    let cursor = 0;
     const items = indexes
       .filter((index) => index >= 0 && index < count)
       .map((index) => {
-        const size = estimateSize(index);
-        const item = {
+        const size = sizes[index] ?? estimateSize(index);
+        return {
           key: index,
           index,
-          start: cursor,
+          start:
+            scrollMargin +
+            sizes
+              .slice(0, index)
+              .reduce((sum, candidateSize) => sum + candidateSize, 0),
           size,
-          end: cursor + size,
+          end:
+            scrollMargin +
+            sizes
+              .slice(0, index + 1)
+              .reduce((sum, candidateSize) => sum + candidateSize, 0),
         };
-        cursor += size;
-        return item;
       });
     return {
       measureElement: () => undefined,
+      measure: () => undefined,
       getVirtualItems: () => items,
-      getTotalSize: () =>
-        Array.from({ length: count }, (_, index) => estimateSize(index)).reduce(
-          (sum, size) => sum + size,
-          0,
-        ),
+      getTotalSize: () => sizes.reduce((sum, size) => sum + size, 0),
     };
   },
 }));

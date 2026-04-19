@@ -7,6 +7,7 @@ const virtualizerMocks = vi.hoisted(() => ({
   visibleIndexes: null as number[] | null,
   sizes: [] as number[],
   lastScrollMargin: 0,
+  measureCalls: 0,
 }))
 
 vi.mock('@tanstack/react-virtual', () => ({
@@ -48,6 +49,9 @@ vi.mock('@tanstack/react-virtual', () => ({
       getVirtualItems: () => items,
       getTotalSize: () => totalSize,
       measureElement: () => undefined,
+      measure: () => {
+        virtualizerMocks.measureCalls += 1
+      },
     }
   },
 }))
@@ -241,6 +245,7 @@ afterEach(() => {
   virtualizerMocks.visibleIndexes = null
   virtualizerMocks.sizes = []
   virtualizerMocks.lastScrollMargin = 0
+  virtualizerMocks.measureCalls = 0
   act(() => {
     root?.unmount()
   })
@@ -248,6 +253,25 @@ afterEach(() => {
   host = null
   root = null
 })
+
+function createRosterProps(
+  groups: UpstreamAccountsGroupedRosterGroup[],
+  overrides: Partial<ComponentProps<typeof UpstreamAccountsGroupedRoster>> = {},
+) {
+  return {
+    groups,
+    selectedId: null,
+    selectedAccountIds: new Set<number>(),
+    onSelect: () => undefined,
+    onToggleSelected: () => undefined,
+    onToggleSelectAllVisible: () => undefined,
+    emptyTitle: 'Empty',
+    emptyDescription: 'Nothing here',
+    labels,
+    groupLabels,
+    ...overrides,
+  } satisfies ComponentProps<typeof UpstreamAccountsGroupedRoster>
+}
 
 function renderRoster(
   groups: UpstreamAccountsGroupedRosterGroup[],
@@ -257,21 +281,7 @@ function renderRoster(
   document.body.appendChild(host)
   root = createRoot(host)
   act(() => {
-    root?.render(
-      <UpstreamAccountsGroupedRoster
-        groups={groups}
-        selectedId={null}
-        selectedAccountIds={new Set<number>()}
-        onSelect={() => undefined}
-        onToggleSelected={() => undefined}
-        onToggleSelectAllVisible={() => undefined}
-        emptyTitle="Empty"
-        emptyDescription="Nothing here"
-        labels={labels}
-        groupLabels={groupLabels}
-        {...overrides}
-      />,
-    )
+    root?.render(<UpstreamAccountsGroupedRoster {...createRosterProps(groups, overrides)} />)
   })
 }
 
@@ -383,11 +393,19 @@ describe('UpstreamAccountsGroupedRoster', () => {
     const roster = host?.querySelector(
       '[data-testid="upstream-accounts-grouped-roster"]',
     ) as HTMLDivElement | null
+    const spacer = host?.querySelector(
+      '[data-testid="upstream-accounts-grouped-roster-spacer"]',
+    ) as HTMLDivElement | null
     expect(roster).toBeTruthy()
+    expect(spacer).toBeTruthy()
 
     Object.defineProperty(window, 'scrollY', {
       configurable: true,
       value: 300,
+    })
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: 1440,
     })
     Object.defineProperty(roster!, 'getBoundingClientRect', {
       configurable: true,
@@ -404,21 +422,62 @@ describe('UpstreamAccountsGroupedRoster', () => {
           toJSON: () => ({}),
         }) satisfies DOMRect,
     })
+    Object.defineProperty(spacer!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () =>
+        ({
+          top: 288,
+          left: 0,
+          right: 1200,
+          bottom: 900,
+          width: 1200,
+          height: 612,
+          x: 0,
+          y: 288,
+          toJSON: () => ({}),
+        }) satisfies DOMRect,
+    })
+
+    const initialMeasureCalls = virtualizerMocks.measureCalls
 
     act(() => {
       window.dispatchEvent(new Event('resize'))
     })
 
-    const spacer = host?.querySelector(
-      '[data-testid="upstream-accounts-grouped-roster-spacer"]',
-    ) as HTMLDivElement | null
-    expect(spacer).toBeTruthy()
-
     const expectedPaddingBottom = virtualizerMocks.sizes
       .slice(3)
       .reduce((sum, size) => sum + size, 0)
 
-    expect(virtualizerMocks.lastScrollMargin).toBe(540)
+    expect(virtualizerMocks.lastScrollMargin).toBe(588)
+    expect(virtualizerMocks.measureCalls).toBeGreaterThan(initialMeasureCalls)
     expect(spacer?.style.paddingBottom).toBe(`${expectedPaddingBottom}px`)
+  })
+
+  it('re-measures cached group heights when the layout mode changes', () => {
+    const groups = Array.from({ length: 4 }, (_, index) =>
+      makeGroup(`group-${index + 1}`, [
+        makeItem(index + 1, {
+          groupName: `group-${index + 1}`,
+        }),
+      ]),
+    )
+
+    renderRoster(groups, { memberLayout: 'list' })
+    const initialMeasureCalls = virtualizerMocks.measureCalls
+
+    act(() => {
+      root?.render(
+        <UpstreamAccountsGroupedRoster
+          {...createRosterProps(groups, {
+            memberLayout: 'grid',
+            selectionMode: 'none',
+            onToggleSelected: undefined,
+            onToggleSelectAllVisible: undefined,
+          })}
+        />,
+      )
+    })
+
+    expect(virtualizerMocks.measureCalls).toBeGreaterThan(initialMeasureCalls)
   })
 })
