@@ -169,7 +169,9 @@ function buildFallbackVirtualGroups(
   const count = Math.min(groups.length, 4)
   let cursor = 0
   return Array.from({ length: count }, (_, index) => {
-    const size = estimateGroupCardHeight(groups[index], memberLayout, viewportWidth)
+    const size =
+      estimateGroupCardHeight(groups[index], memberLayout, viewportWidth) +
+      (index === groups.length - 1 ? 0 : GROUP_CARD_VERTICAL_GAP_PX)
     const item = {
       key: index,
       index,
@@ -731,7 +733,8 @@ export function UpstreamAccountsGroupedRoster({
     selectedVisibleCount > 0 && selectedVisibleCount < totalVisibleCount
 
   const estimateSize = (index: number) =>
-    estimateGroupCardHeight(groups[index], memberLayout, effectiveMemberViewportWidth)
+    estimateGroupCardHeight(groups[index], memberLayout, effectiveMemberViewportWidth) +
+    (index === groups.length - 1 ? 0 : GROUP_CARD_VERTICAL_GAP_PX)
 
   const groupVirtualizer = useWindowVirtualizer({
     count: groups.length,
@@ -770,8 +773,7 @@ export function UpstreamAccountsGroupedRoster({
           ? nextMemberViewportWidth
           : current,
       )
-      const nextScrollMargin =
-        measurementTarget.getBoundingClientRect().top + window.scrollY
+      const nextScrollMargin = measurementTarget.getBoundingClientRect().top + window.scrollY
       setScrollMargin((current) =>
         Math.abs(current - nextScrollMargin) > 0.5 ? nextScrollMargin : current,
       )
@@ -781,12 +783,10 @@ export function UpstreamAccountsGroupedRoster({
     if (!containerElement) return
 
     window.addEventListener('resize', updateMetrics)
-    window.addEventListener('scroll', updateMetrics, { passive: true })
 
     if (typeof ResizeObserver === 'undefined') {
       return () => {
         window.removeEventListener('resize', updateMetrics)
-        window.removeEventListener('scroll', updateMetrics)
       }
     }
 
@@ -807,7 +807,6 @@ export function UpstreamAccountsGroupedRoster({
     return () => {
       observer.disconnect()
       window.removeEventListener('resize', updateMetrics)
-      window.removeEventListener('scroll', updateMetrics)
     }
   }, [containerElement, spacerElement, memberElement])
 
