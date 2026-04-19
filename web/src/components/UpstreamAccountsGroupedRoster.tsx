@@ -180,8 +180,10 @@ function GroupSummaryPanel({
   canEditGroupSettings?: boolean
   onEditGroupSettings?: (group: UpstreamAccountsGroupedRosterGroup) => void
 }) {
-  const showSettingsAction = typeof onEditGroupSettings === 'function' || canEditGroupSettings
-  const settingsDisabled = !canEditGroupSettings || !group.groupName
+  const showSettingsAction =
+    canEditGroupSettings &&
+    Boolean(group.groupName) &&
+    typeof onEditGroupSettings === 'function'
 
   return (
     <div
@@ -213,7 +215,6 @@ function GroupSummaryPanel({
             aria-label={groupLabels.settingsLabel}
             title={groupLabels.settingsLabel}
             onClick={() => onEditGroupSettings?.(group)}
-            disabled={settingsDisabled}
           >
             <AppIcon name="file-document-edit-outline" className="h-4 w-4" aria-hidden />
           </Button>

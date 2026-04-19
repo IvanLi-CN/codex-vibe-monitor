@@ -310,6 +310,28 @@ describe('UpstreamAccountsGroupedRoster', () => {
     expect(host?.textContent).not.toContain('This note should not render in grouped list mode.')
   })
 
+  it('hides the group settings action for read-only and ungrouped summaries', () => {
+    renderRoster(
+      [
+        makeGroup('analytics', [makeItem(1)]),
+        makeGroup('__ungrouped__', [makeItem(2, { groupName: null })], {
+          groupName: null,
+          displayName: 'Ungrouped',
+        }),
+      ],
+      {
+        canEditGroupSettings: false,
+        onEditGroupSettings: vi.fn(),
+      },
+    )
+
+    const settingsButtons = host?.querySelectorAll(
+      'button[aria-label="Edit group settings"]',
+    ) ?? []
+
+    expect(settingsButtons).toHaveLength(0)
+  })
+
   it('virtualizes large rosters by group card instead of member rows', () => {
     const groups = Array.from({ length: 12 }, (_, groupIndex) =>
       makeGroup(

@@ -341,15 +341,9 @@ export function useUpstreamAccountGroupSettingsDialog(
         proxyBindingsChartEmptyLabel={t(
           "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartEmpty",
         )}
-        proxyBindingsChartTotalLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartTotal",
-        )}
-        proxyBindingsChartAriaLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartAriaLabel",
-        )}
-        proxyBindingsChartInteractionHint={t(
-          "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartInteractionHint",
-        )}
+        proxyBindingsChartTotalLabel={t("live.proxy.table.requestTooltip.total")}
+        proxyBindingsChartAriaLabel={t("live.proxy.table.requestTrendAria")}
+        proxyBindingsChartInteractionHint={t("live.chart.tooltip.instructions")}
         proxyBindingsChartLocaleTag={locale === "zh" ? "zh-CN" : "en-US"}
       />
     ),

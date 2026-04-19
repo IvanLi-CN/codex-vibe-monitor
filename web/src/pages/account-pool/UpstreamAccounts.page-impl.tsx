@@ -1104,7 +1104,7 @@ export default function UpstreamAccountsPage() {
       [groups],
     ),
     saveGroupSettings: useCallback(
-      async (groupName, payload, _options) => {
+      async (groupName, payload) => {
         await saveGroupNote(groupName, payload);
       },
       [saveGroupNote],
