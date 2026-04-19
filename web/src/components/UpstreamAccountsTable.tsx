@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- grouped/grid roster reuses the row rendering helpers from this module */
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { AppIcon } from './AppIcon'
 import { MotherAccountBadge } from './MotherAccountToggle'

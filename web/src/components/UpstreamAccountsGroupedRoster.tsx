@@ -1,4 +1,4 @@
-import { useEffect, useRef, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { AppIcon } from './AppIcon'
 import { Button } from './ui/button'
@@ -38,10 +38,11 @@ const GROUP_MEMBER_ROW_ESTIMATE_PX = 104
 const GROUP_MEMBER_ROW_GAP_PX = 8
 const GROUP_MEMBER_MIN_VISIBLE_ROWS = 2
 const GROUP_MEMBER_MAX_VISIBLE_ROWS = 10
-const GROUP_MEMBER_GRID_CARD_ESTIMATE_PX = 184
+const GROUP_MEMBER_GRID_CARD_ESTIMATE_PX = 144
 const GROUP_MEMBER_GRID_GAP_PX = 12
-const GROUP_MEMBER_GRID_MIN_VISIBLE_ROWS = 1
 const GROUP_MEMBER_GRID_MAX_VISIBLE_ROWS = 5
+const GROUP_MEMBER_GRID_TWO_COLUMN_BREAKPOINT_PX = 560
+const GROUP_MEMBER_GRID_THREE_COLUMN_BREAKPOINT_PX = 960
 
 type GroupPlanCount = {
   key: string
@@ -211,12 +212,15 @@ function memberGridViewportHeightForRows(rowCount: number) {
   )
 }
 
-const GROUP_MEMBER_GRID_MIN_HEIGHT_PX = memberGridViewportHeightForRows(
-  GROUP_MEMBER_GRID_MIN_VISIBLE_ROWS,
-)
 const GROUP_MEMBER_GRID_MAX_HEIGHT_PX = memberGridViewportHeightForRows(
   GROUP_MEMBER_GRID_MAX_VISIBLE_ROWS,
 )
+
+function resolveGridColumnCount(width: number) {
+  if (width >= GROUP_MEMBER_GRID_THREE_COLUMN_BREAKPOINT_PX) return 3
+  if (width >= GROUP_MEMBER_GRID_TWO_COLUMN_BREAKPOINT_PX) return 2
+  return 1
+}
 
 function shouldShowPlanBadge(planType?: string | null) {
   const normalized = planType?.trim().toLowerCase()
@@ -555,51 +559,134 @@ function GroupMembersVirtualList({
   memberLayout?: 'list' | 'grid'
   selectionMode?: 'multi' | 'none'
 }) {
-  if (memberLayout === 'grid') {
-    return (
-      <div
-        className="self-start min-w-0 overflow-auto py-1"
-        style={{
-          minHeight: `${GROUP_MEMBER_GRID_MIN_HEIGHT_PX}px`,
-          maxHeight: `${GROUP_MEMBER_GRID_MAX_HEIGHT_PX}px`,
-        }}
-        data-testid="upstream-accounts-group-members-grid"
-      >
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {items.map((item) => (
-            <GroupMemberGridCard
-              key={item.id}
-              item={item}
-              selectedId={selectedId}
-              onSelect={onSelect}
-              labels={labels}
-            />
-          ))}
-        </div>
-      </div>
-    )
-  }
-
+  const isGridLayout = memberLayout === 'grid'
   const scrollRef = useRef<HTMLDivElement | null>(null)
-  const virtualized = shouldVirtualizeGroupMembers(items.length)
-  const viewportHeight = virtualized ? GROUP_MEMBER_MAX_HEIGHT_PX : undefined
+  const [gridColumnCount, setGridColumnCount] = useState(() =>
+    resolveGridColumnCount(typeof window === 'undefined' ? 0 : window.innerWidth),
+  )
+
+  useEffect(() => {
+    if (!isGridLayout) return
+    const element = scrollRef.current
+    if (!element) return
+
+    const updateColumnCount = (width?: number) => {
+      const fallbackWidth =
+        width ??
+        element.getBoundingClientRect().width ??
+        (typeof window === 'undefined' ? 0 : window.innerWidth)
+      const next = resolveGridColumnCount(fallbackWidth)
+      setGridColumnCount((current) => (current === next ? current : next))
+    }
+
+    updateColumnCount()
+
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver((entries) => {
+      updateColumnCount(entries[0]?.contentRect.width)
+    })
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [isGridLayout])
+
+  const safeGridColumnCount = Math.max(1, gridColumnCount)
+  const gridRowCount = Math.ceil(items.length / safeGridColumnCount)
+  const gridVirtualized = isGridLayout && gridRowCount > GROUP_MEMBER_GRID_MAX_VISIBLE_ROWS
+  const listVirtualized = !isGridLayout && shouldVirtualizeGroupMembers(items.length)
+  const viewportHeight = listVirtualized ? GROUP_MEMBER_MAX_HEIGHT_PX : undefined
   const minimumVisibleRows = Math.max(1, Math.min(items.length, GROUP_MEMBER_MIN_VISIBLE_ROWS))
   const minimumHeight = memberViewportHeightForRows(minimumVisibleRows)
   const rowVirtualizer = useVirtualizer({
     count: items.length,
-    getScrollElement: () => (virtualized ? scrollRef.current : null),
+    getScrollElement: () => (listVirtualized ? scrollRef.current : null),
     estimateSize: () => GROUP_MEMBER_ROW_ESTIMATE_PX,
     overscan: 4,
     gap: GROUP_MEMBER_ROW_GAP_PX,
-    enabled: virtualized,
+    enabled: listVirtualized,
   })
+  const gridRowVirtualizer = useVirtualizer({
+    count: gridRowCount,
+    getScrollElement: () => (gridVirtualized ? scrollRef.current : null),
+    estimateSize: () => GROUP_MEMBER_GRID_CARD_ESTIMATE_PX,
+    overscan: 2,
+    gap: GROUP_MEMBER_GRID_GAP_PX,
+    enabled: gridVirtualized,
+  })
+
+  if (isGridLayout) {
+    return (
+      <div
+        ref={scrollRef}
+        className="self-start min-w-0 overflow-auto py-1"
+        style={{
+          ...(gridVirtualized ? { height: `${GROUP_MEMBER_GRID_MAX_HEIGHT_PX}px` } : null),
+        }}
+        data-testid="upstream-accounts-group-members-grid"
+      >
+        {gridVirtualized ? (
+          <div
+            className="relative w-full"
+            style={{ height: `${gridRowVirtualizer.getTotalSize()}px` }}
+          >
+            {gridRowVirtualizer.getVirtualItems().map((virtualRow) => {
+              const startIndex = virtualRow.index * safeGridColumnCount
+              const rowItems = items.slice(startIndex, startIndex + safeGridColumnCount)
+              return (
+                <div
+                  key={`grid-row-${virtualRow.index}`}
+                  ref={gridRowVirtualizer.measureElement}
+                  data-index={virtualRow.index}
+                  className="absolute left-0 top-0 w-full"
+                  style={{ transform: `translateY(${virtualRow.start}px)` }}
+                >
+                  <div
+                    className="grid gap-3"
+                    style={{
+                      gridTemplateColumns: `repeat(${safeGridColumnCount}, minmax(0, 1fr))`,
+                    }}
+                  >
+                    {rowItems.map((item) => (
+                      <GroupMemberGridCard
+                        key={item.id}
+                        item={item}
+                        selectedId={selectedId}
+                        onSelect={onSelect}
+                        labels={labels}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        ) : (
+          <div
+            className="grid gap-3"
+            style={{
+              gridTemplateColumns: `repeat(${safeGridColumnCount}, minmax(0, 1fr))`,
+            }}
+          >
+            {items.map((item) => (
+              <GroupMemberGridCard
+                key={item.id}
+                item={item}
+                selectedId={selectedId}
+                onSelect={onSelect}
+                labels={labels}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
 
   return (
     <div
       ref={scrollRef}
       className={cn(
         'min-w-0',
-        virtualized ? 'overflow-auto' : 'overflow-hidden',
+        listVirtualized ? 'overflow-auto' : 'overflow-hidden',
       )}
       style={{
         minHeight: `${minimumHeight}px`,
@@ -607,7 +694,7 @@ function GroupMembersVirtualList({
       }}
       data-testid="upstream-accounts-group-members"
     >
-      {virtualized ? (
+      {listVirtualized ? (
         <div
           className="relative w-full"
           style={{ height: `${rowVirtualizer.getTotalSize()}px` }}

@@ -3437,6 +3437,8 @@
                 day_key,
                 part_key,
                 file_path,
+                sha256,
+                row_count,
                 status,
                 coverage_start_at,
                 coverage_end_at,
@@ -3450,13 +3452,17 @@
                 ?4,
                 ?5,
                 ?6,
-                ?7
+                ?7,
+                ?8,
+                ?9
             )
             "#,
         )
         .bind(month_key)
         .bind(day_key)
         .bind(format!("{batch_name}.sqlite.gz"))
+        .bind(sha256_hex_file(&archive_gzip_path).expect("archive sha256"))
+        .bind(rows.len() as i64)
         .bind(ARCHIVE_STATUS_COMPLETED)
         .bind(coverage_start_at)
         .bind(coverage_end_at)

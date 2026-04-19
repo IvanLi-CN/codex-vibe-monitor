@@ -993,6 +993,9 @@ export default function UpstreamAccountsPage() {
     const forwardProxyNodeLabelMap = new Map(
       forwardProxyNodes.map((node) => [node.key, node.displayName?.trim() || node.key] as const),
     );
+    const groupSummaryMap = new Map(
+      groups.map((group) => [group.groupName, group] as const),
+    );
     const groupOrder = new Map(
       groups.map((group, index) => [group.groupName, index] as const),
     );
@@ -1001,7 +1004,7 @@ export default function UpstreamAccountsPage() {
       const normalizedGroupName = normalizeRosterGroupName(item.groupName);
       const groupKey = normalizedGroupName ?? "__ungrouped__";
       const groupSummary = normalizedGroupName
-        ? groups.find((candidate) => candidate.groupName === normalizedGroupName)
+        ? groupSummaryMap.get(normalizedGroupName) ?? null
         : null;
       const current = grouped.get(groupKey) ?? {
         id: groupKey,

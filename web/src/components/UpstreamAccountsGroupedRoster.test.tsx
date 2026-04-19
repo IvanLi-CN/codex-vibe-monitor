@@ -4,11 +4,22 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@tanstack/react-virtual', () => ({
-  useVirtualizer: ({ count, estimateSize, gap = 0 }: { count: number; estimateSize: () => number; gap?: number }) => {
+  useVirtualizer: ({
+    count,
+    estimateSize,
+    gap = 0,
+    enabled = true,
+  }: {
+    count: number
+    estimateSize: () => number
+    gap?: number
+    enabled?: boolean
+  }) => {
     const size = estimateSize()
+    const visibleCount = enabled ? Math.min(count, 3) : count
     return {
       getVirtualItems: () =>
-        Array.from({ length: count }, (_, index) => ({
+        Array.from({ length: visibleCount }, (_, index) => ({
           index,
           key: index,
           start: index * (size + gap),
@@ -245,5 +256,36 @@ describe('UpstreamAccountsGroupedRoster', () => {
     expect(members).toBeTruthy()
     expect(members?.style.minHeight).toBe('104px')
     expect(host?.textContent).not.toContain('This note should not render in grouped list mode.')
+  })
+
+  it('virtualizes large grid groups by row instead of mounting every card', () => {
+    const items = Array.from({ length: 24 }, (_, index) => makeItem(index + 1))
+
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    root = createRoot(host)
+
+    act(() => {
+      root?.render(
+        <UpstreamAccountsGroupedRoster
+          groups={[makeGroup(items)]}
+          selectedId={null}
+          selectedAccountIds={new Set<number>()}
+          onSelect={() => undefined}
+          onToggleSelected={() => undefined}
+          onToggleSelectAllVisible={() => undefined}
+          emptyTitle="Empty"
+          emptyDescription="Nothing here"
+          labels={labels}
+          groupLabels={groupLabels}
+          memberLayout="grid"
+          selectionMode="none"
+        />,
+      )
+    })
+
+    const cards = host?.querySelectorAll('[data-testid="upstream-accounts-group-grid-card"]') ?? []
+    expect(cards.length).toBeGreaterThan(0)
+    expect(cards.length).toBeLessThan(items.length)
   })
 })
