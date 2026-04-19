@@ -371,6 +371,7 @@ export function DashboardConversationDetailDrawer({
         "dashboard.workingConversations.conversationDrawer.close",
       )}
       onClose={onClose}
+      shellClassName="max-w-[72rem]"
       header={
         <div className="space-y-2">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary/70">
@@ -428,7 +429,7 @@ export function DashboardConversationDetailDrawer({
                   "dashboard.workingConversations.promptCacheKeyLabel",
                 )}
                 value={
-                  <span className="block truncate">
+                  <span className="block break-all">
                     {selection?.promptCacheKey ?? FALLBACK_CELL}
                   </span>
                 }

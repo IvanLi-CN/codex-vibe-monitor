@@ -67,13 +67,17 @@ export function PromptCacheConversationHistoryDrawer({
       labelledBy={titleId}
       closeLabel={t("live.conversations.drawer.close")}
       onClose={onClose}
+      shellClassName="max-w-[78rem]"
       header={
         <div className="space-y-2">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary/70">
             {t("live.conversations.drawer.eyebrow")}
           </p>
           <div className="space-y-1">
-            <h2 id={titleId} className="text-xl font-semibold text-base-content">
+            <h2
+              id={titleId}
+              className="break-all text-xl font-semibold text-base-content"
+            >
               {conversationKey?.trim() || FALLBACK_CELL}
             </h2>
             <p className="text-sm leading-6 text-base-content/70">
