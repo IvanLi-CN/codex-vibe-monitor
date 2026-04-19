@@ -59,6 +59,10 @@
             last_action_invoke_id: None,
             last_action_at: None,
             cooldown_until: None,
+            current_forward_proxy_key: None,
+            current_forward_proxy_display_name: None,
+            current_forward_proxy_state: UPSTREAM_ACCOUNT_FORWARD_PROXY_STATE_UNCONFIGURED
+                .to_string(),
             token_expires_at: None,
             primary_window: None,
             secondary_window: None,
@@ -614,6 +618,32 @@
             query.health_status,
             vec![UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL.to_string()]
         );
+    }
+
+    #[test]
+    fn list_query_parses_include_all_flag() {
+        let query = parse_list_upstream_accounts_query(
+            &"/api/pool/upstream-accounts?includeAll=1&page=3&pageSize=50"
+                .parse()
+                .expect("parse uri"),
+        )
+        .expect("deserialize includeAll");
+
+        assert_eq!(query.include_all, Some(true));
+        assert_eq!(query.page, Some(3));
+        assert_eq!(query.page_size, Some(50));
+    }
+
+    #[test]
+    fn list_query_rejects_invalid_include_all_flag() {
+        let err = parse_list_upstream_accounts_query(
+            &"/api/pool/upstream-accounts?includeAll=maybe"
+                .parse()
+                .expect("parse uri"),
+        )
+        .expect_err("invalid includeAll should fail");
+
+        assert!(err.contains("invalid includeAll value"));
     }
 
     #[test]
@@ -3022,7 +3052,7 @@
         let pool = SqlitePool::connect("sqlite::memory:")
             .await
             .expect("connect sqlite");
-        ensure_upstream_accounts_schema(&pool)
+        crate::ensure_schema(&pool)
             .await
             .expect("ensure schema");
         pool
@@ -3407,6 +3437,8 @@
                 day_key,
                 part_key,
                 file_path,
+                sha256,
+                row_count,
                 status,
                 coverage_start_at,
                 coverage_end_at,
@@ -3420,13 +3452,17 @@
                 ?4,
                 ?5,
                 ?6,
-                ?7
+                ?7,
+                ?8,
+                ?9
             )
             "#,
         )
         .bind(month_key)
         .bind(day_key)
         .bind(format!("{batch_name}.sqlite.gz"))
+        .bind(sha256_hex_file(&archive_gzip_path).expect("archive sha256"))
+        .bind(rows.len() as i64)
         .bind(ARCHIVE_STATUS_COMPLETED)
         .bind(coverage_start_at)
         .bind(coverage_end_at)

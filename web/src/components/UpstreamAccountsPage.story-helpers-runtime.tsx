@@ -99,16 +99,18 @@ export function StorybookUpstreamAccountsMock({
         const rawPageSize = Number(parsedUrl.searchParams.get('pageSize') || 20)
         const requestedPageSize =
           Number.isFinite(rawPageSize) && rawPageSize > 0 ? rawPageSize : 20
+        const includeAll = parsedUrl.searchParams.get('includeAll') === 'true'
         const total = filteredItems.length
         const pageCount = Math.max(1, Math.ceil(total / requestedPageSize))
         const rawPage = Number(parsedUrl.searchParams.get('page') || 1)
         const requestedPage =
           Number.isFinite(rawPage) && rawPage > 0 ? rawPage : 1
-        const page = Math.min(requestedPage, pageCount)
+        const page = includeAll ? 1 : Math.min(requestedPage, pageCount)
         const start = (page - 1) * requestedPageSize
-        const pageItems = filteredItems
-          .slice(start, start + requestedPageSize)
-          .map((item) => clone(item))
+        const pageItems = (includeAll
+          ? filteredItems
+          : filteredItems.slice(start, start + requestedPageSize)
+        ).map((item) => clone(item))
         const payload: UpstreamAccountListResponse = {
           writesEnabled: store.writesEnabled,
           groups: listGroupSummaries(store),
@@ -120,7 +122,7 @@ export function StorybookUpstreamAccountsMock({
           items: pageItems,
           total,
           page,
-          pageSize: requestedPageSize,
+          pageSize: includeAll ? Math.max(total, requestedPageSize) : requestedPageSize,
           metrics: {
             total,
             oauth: filteredItems.filter((item) => item.kind === 'oauth_codex')

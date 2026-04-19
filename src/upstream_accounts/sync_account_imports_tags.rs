@@ -1890,10 +1890,17 @@ async fn load_upstream_account_detail_with_actual_usage(
         Some(detail) => detail,
         None => return Ok(None),
     };
+    let groups = load_canonicalized_upstream_account_groups(state).await?;
     enrich_window_actual_usage_for_summaries(state, std::slice::from_mut(&mut detail.summary))
         .await?;
     enrich_node_shunt_routing_block_reasons(state, std::slice::from_mut(&mut detail.summary))
         .await?;
+    enrich_current_forward_proxy_for_summaries(
+        state,
+        &groups,
+        std::slice::from_mut(&mut detail.summary),
+    )
+    .await?;
     Ok(Some(detail))
 }
 
@@ -2179,6 +2186,9 @@ fn build_summary_from_row(
         last_action_invoke_id: row.last_action_invoke_id.clone(),
         last_action_at: row.last_action_at.clone(),
         cooldown_until: row.cooldown_until.clone(),
+        current_forward_proxy_key: None,
+        current_forward_proxy_display_name: None,
+        current_forward_proxy_state: UPSTREAM_ACCOUNT_FORWARD_PROXY_STATE_UNCONFIGURED.to_string(),
         routing_block_reason_code: None,
         routing_block_reason_message: None,
         token_expires_at: row.token_expires_at.clone(),
@@ -2231,6 +2241,182 @@ async fn enrich_node_shunt_routing_block_reasons(
     let assignments = build_upstream_account_node_shunt_assignments(state).await?;
     apply_node_shunt_routing_block_reasons_to_summaries(items, &assignments);
     Ok(())
+}
+
+async fn load_canonicalized_upstream_account_groups(
+    state: &AppState,
+) -> Result<Vec<UpstreamAccountGroupSummary>> {
+    let mut groups = load_upstream_account_groups(&state.pool).await?;
+    for group in &mut groups {
+        group.bound_proxy_keys =
+            canonicalize_forward_proxy_bound_keys(state, &group.bound_proxy_keys).await?;
+    }
+    Ok(groups)
+}
+
+fn assign_current_forward_proxy(
+    item: &mut UpstreamAccountSummary,
+    state: &'static str,
+    proxy_key: Option<String>,
+    proxy_display_name: Option<String>,
+) {
+    item.current_forward_proxy_key = proxy_key;
+    item.current_forward_proxy_display_name = proxy_display_name;
+    item.current_forward_proxy_state = state.to_string();
+}
+
+fn resolve_current_forward_proxy_display_name(
+    manager: &crate::forward_proxy::ForwardProxyManager,
+    binding_display_names: &HashMap<String, String>,
+    metadata_map: &HashMap<String, crate::forward_proxy::ForwardProxyMetadataHistoryRow>,
+    binding_key: &str,
+) -> Option<String> {
+    binding_display_names.get(binding_key).cloned().or_else(|| {
+        let history_row = metadata_map.get(binding_key);
+        manager
+            .resolve_current_or_historical_bound_proxy_key(binding_key, history_row)
+            .and_then(|resolved_key| binding_display_names.get(&resolved_key).cloned())
+            .or_else(|| {
+                history_row
+                    .map(|row| row.display_name.trim())
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned)
+            })
+    })
+}
+
+async fn enrich_current_forward_proxy_for_summaries(
+    state: &AppState,
+    groups: &[UpstreamAccountGroupSummary],
+    items: &mut [UpstreamAccountSummary],
+) -> Result<()> {
+    if items.is_empty() {
+        return Ok(());
+    }
+
+    let group_map = groups
+        .iter()
+        .cloned()
+        .map(|group| (group.group_name.clone(), group))
+        .collect::<HashMap<_, _>>();
+    let node_shunt_assignments = build_upstream_account_node_shunt_assignments(state).await?;
+    let (binding_display_names, shared_group_current_bindings) = {
+        let manager = state.forward_proxy.lock().await;
+        let binding_display_names = manager
+            .binding_nodes()
+            .into_iter()
+            .map(|node| (node.key, node.display_name))
+            .collect::<HashMap<_, _>>();
+        let shared_group_current_bindings = groups
+            .iter()
+            .filter(|group| !group.node_shunt_enabled)
+            .filter_map(|group| {
+                manager
+                    .current_bound_group_binding_key(&group.group_name, &group.bound_proxy_keys)
+                    .map(|binding_key| (group.group_name.clone(), binding_key))
+            })
+            .collect::<HashMap<_, _>>();
+        (binding_display_names, shared_group_current_bindings)
+    };
+    let relevant_binding_keys = shared_group_current_bindings
+        .values()
+        .cloned()
+        .chain(node_shunt_assignments.account_proxy_keys.values().cloned())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let metadata_map = crate::forward_proxy::load_forward_proxy_metadata_history(
+        &state.pool,
+        &relevant_binding_keys,
+    )
+    .await?;
+    let recovered_binding_display_names = {
+        let manager = state.forward_proxy.lock().await;
+        relevant_binding_keys
+            .into_iter()
+            .filter_map(|binding_key| {
+                resolve_current_forward_proxy_display_name(
+                    &manager,
+                    &binding_display_names,
+                    &metadata_map,
+                    &binding_key,
+                )
+                .map(|display_name| (binding_key, display_name))
+            })
+            .collect::<HashMap<_, _>>()
+    };
+
+    for item in items {
+        assign_current_forward_proxy(
+            item,
+            UPSTREAM_ACCOUNT_FORWARD_PROXY_STATE_UNCONFIGURED,
+            None,
+            None,
+        );
+        let Some(group_name) = normalize_optional_text(item.group_name.clone()) else {
+            continue;
+        };
+        let Some(group) = group_map.get(&group_name) else {
+            continue;
+        };
+
+        if group.node_shunt_enabled {
+            if let Some(binding_key) = node_shunt_assignments.account_proxy_keys.get(&item.id) {
+                assign_current_forward_proxy(
+                    item,
+                    UPSTREAM_ACCOUNT_FORWARD_PROXY_STATE_ASSIGNED,
+                    Some(binding_key.clone()),
+                    recovered_binding_display_names.get(binding_key).cloned(),
+                );
+            } else if node_shunt_assignments.eligible_account_ids.contains(&item.id)
+                && node_shunt_assignments
+                    .group_slots
+                    .get(&group_name)
+                    .is_some_and(|slots| !slots.valid_proxy_keys.is_empty())
+            {
+                assign_current_forward_proxy(
+                    item,
+                    UPSTREAM_ACCOUNT_FORWARD_PROXY_STATE_PENDING,
+                    None,
+                    None,
+                );
+            }
+            continue;
+        }
+
+        let Some(binding_key) = shared_group_current_bindings.get(&group_name).cloned() else {
+            continue;
+        };
+        assign_current_forward_proxy(
+            item,
+            UPSTREAM_ACCOUNT_FORWARD_PROXY_STATE_ASSIGNED,
+            Some(binding_key.clone()),
+            recovered_binding_display_names.get(&binding_key).cloned(),
+        );
+    }
+
+    Ok(())
+}
+
+fn collect_forward_proxy_catalog_keys(
+    groups: &[UpstreamAccountGroupSummary],
+    items: &[UpstreamAccountSummary],
+) -> Vec<String> {
+    let relevant_group_names = items
+        .iter()
+        .filter_map(|item| normalize_optional_text(item.group_name.clone()))
+        .collect::<HashSet<_>>();
+    groups
+        .iter()
+        .filter(|group| relevant_group_names.contains(&group.group_name))
+        .flat_map(|group| group.bound_proxy_keys.iter().cloned())
+        .chain(
+            items.iter()
+                .filter_map(|item| item.current_forward_proxy_key.clone()),
+        )
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 async fn enrich_window_actual_usage_for_summaries(

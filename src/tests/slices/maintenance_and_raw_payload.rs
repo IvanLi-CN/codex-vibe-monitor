@@ -1236,6 +1236,7 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
             health_status: Vec::new(),
             page: None,
             page_size: None,
+            include_all: None,
             tag_ids: vec![vip_tag_id, burst_safe_tag_id, vip_tag_id],
         }),
     )
@@ -1266,6 +1267,7 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
             health_status: Vec::new(),
             page: None,
             page_size: None,
+            include_all: None,
             tag_ids: vec![vip_tag_id, burst_safe_tag_id],
         }),
     )
@@ -1336,6 +1338,7 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
             health_status: Vec::new(),
             page: Some(2),
             page_size: Some(20),
+            include_all: None,
             tag_ids: Vec::new(),
         }),
     )
@@ -1371,6 +1374,7 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
             health_status: Vec::new(),
             page: Some(1),
             page_size: Some(20),
+            include_all: None,
             tag_ids: Vec::new(),
         }),
     )
@@ -1420,6 +1424,7 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
             health_status: vec!["normal".to_string()],
             page: Some(1),
             page_size: Some(20),
+            include_all: None,
             tag_ids: Vec::new(),
         }),
     )
@@ -1528,6 +1533,7 @@ async fn list_upstream_accounts_clamps_work_status_for_abnormal_or_syncing_accou
             health_status: Vec::new(),
             page: Some(1),
             page_size: Some(20),
+            include_all: None,
             tag_ids: Vec::new(),
         }),
     )
@@ -1730,6 +1736,7 @@ async fn list_upstream_accounts_keeps_generic_retry_cooldown_idle() {
             health_status: Vec::new(),
             page: Some(1),
             page_size: Some(20),
+            include_all: None,
             tag_ids: Vec::new(),
         }),
     )

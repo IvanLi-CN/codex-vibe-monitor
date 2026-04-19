@@ -119,6 +119,12 @@ export interface TagListResponse {
   items: TagSummary[];
 }
 
+export type UpstreamAccountForwardProxyState =
+  | "assigned"
+  | "pending"
+  | "unconfigured"
+  | string;
+
 export interface UpstreamAccountSummary {
   id: number;
   kind: "oauth_codex" | "api_key_codex" | string;
@@ -173,6 +179,9 @@ export interface UpstreamAccountSummary {
   lastActionInvokeId?: string | null;
   lastActionAt?: string | null;
   cooldownUntil?: string | null;
+  currentForwardProxyKey?: string | null;
+  currentForwardProxyDisplayName?: string | null;
+  currentForwardProxyState?: UpstreamAccountForwardProxyState;
   tokenExpiresAt?: string | null;
   primaryWindow?: RateWindowSnapshot | null;
   secondaryWindow?: RateWindowSnapshot | null;
@@ -272,6 +281,7 @@ export interface FetchUpstreamAccountsQuery {
   healthStatus?: string[];
   page?: number;
   pageSize?: number;
+  includeAll?: boolean;
   tagIds?: number[];
 }
 
@@ -952,6 +962,18 @@ function normalizeUpstreamAccountSummary(
       typeof payload.lastActionAt === "string" ? payload.lastActionAt : null,
     cooldownUntil:
       typeof payload.cooldownUntil === "string" ? payload.cooldownUntil : null,
+    currentForwardProxyKey:
+      typeof payload.currentForwardProxyKey === "string"
+        ? payload.currentForwardProxyKey
+        : null,
+    currentForwardProxyDisplayName:
+      typeof payload.currentForwardProxyDisplayName === "string"
+        ? payload.currentForwardProxyDisplayName
+        : null,
+    currentForwardProxyState:
+      typeof payload.currentForwardProxyState === "string"
+        ? payload.currentForwardProxyState
+        : undefined,
     tokenExpiresAt:
       typeof payload.tokenExpiresAt === "string"
         ? payload.tokenExpiresAt
@@ -1670,6 +1692,7 @@ export async function fetchUpstreamAccounts(
   }
   if (query?.page != null) search.set("page", String(query.page));
   if (query?.pageSize != null) search.set("pageSize", String(query.pageSize));
+  if (query?.includeAll != null) search.set("includeAll", String(query.includeAll));
   for (const tagId of query?.tagIds ?? []) {
     search.append("tagIds", String(tagId));
   }

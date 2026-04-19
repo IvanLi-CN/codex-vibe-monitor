@@ -1285,6 +1285,29 @@ mod tests {
     }
 
     #[test]
+    fn current_bound_group_binding_key_normalizes_alias_backed_runtime_key() {
+        let mut manager = manager_with_manual_proxy();
+        let node = current_binding_node(&manager);
+        let alias_key = node
+            .alias_keys
+            .first()
+            .cloned()
+            .expect("binding node should expose an alias key");
+        manager.bound_group_runtime.insert(
+            "latam".to_string(),
+            BoundForwardProxyGroupState {
+                current_binding_key: Some(alias_key),
+                consecutive_network_failures: 0,
+            },
+        );
+
+        assert_eq!(
+            manager.current_bound_group_binding_key("latam", &[node.key.clone()]),
+            Some(node.key),
+        );
+    }
+
+    #[test]
     fn bound_group_network_failures_can_switch_from_direct_to_proxy() {
         let mut manager = manager_with_manual_proxy();
         let binding_key = manager
