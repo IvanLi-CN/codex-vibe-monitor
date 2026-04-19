@@ -218,6 +218,45 @@
 
 ![账号页网格视图（无重叠）](./assets/grid-view-page-level-scroll.png)
 
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 1600x1400
+  viewport_strategy: storybook-viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Account Pool/Pages/Upstream Accounts/List — Dynamic · Flat
+  state: flat roster live refresh with 46 accounts
+  evidence_note: 验证动态平铺 Story 使用 46 条账号 mock 数据，播放刷新后表格内容会实时重排并出现新的分组文案，用于观察平铺布局在 live refresh 下不会异常抖动或错位。
+
+![账号页平铺视图（动态刷新）](./assets/dynamic-layout-flat-live-refresh.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 1600x1400
+  viewport_strategy: storybook-viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Account Pool/Pages/Upstream Accounts/List — Dynamic · Grouped
+  state: grouped roster live refresh after re-measure
+  evidence_note: 验证动态分组 Story 在 46 条账号数据、分组成员数与代理绑定实时变化后，页面级虚拟化会重新测量组卡高度，后续组卡继续顺序排布且不发生内容重叠。
+
+![账号页分组视图（动态刷新无重叠）](./assets/dynamic-layout-grouped-live-refresh.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 1600x1400
+  viewport_strategy: storybook-viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Account Pool/Pages/Upstream Accounts/List — Dynamic · Grid
+  state: grouped grid live refresh after reflow
+  evidence_note: 验证动态网格 Story 在 46 条账号数据持续刷新时，左侧分组摘要与右侧成员网格会一起重排，组卡之间保持文档流顺序且不出现重叠。
+
+![账号页网格视图（动态刷新无重叠）](./assets/dynamic-layout-grid-live-refresh.png)
+
 ## 风险 / 假设
 
 - 假设：共享 bound-group 的“当前代理”以当前 group runtime `current_binding_key` 作为真相源；若组从未发生 live selection，则可退化为 `unconfigured`，而不是伪造一个默认代理。

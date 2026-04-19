@@ -155,6 +155,123 @@ function AutomatedRosterStoryRouter({
   return <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
 }
 
+type DynamicRosterLayout = 'flat' | 'grouped' | 'grid'
+
+function dynamicRosterLayoutMatcher(layout: DynamicRosterLayout) {
+  switch (layout) {
+    case 'grouped':
+      return /grouped|分组/i
+    case 'grid':
+      return /grid|网格/i
+    case 'flat':
+    default:
+      return /flat|平铺/i
+  }
+}
+
+function findDynamicRosterLayoutTab(
+  root: ParentNode,
+  layout: DynamicRosterLayout,
+) {
+  const matcher = dynamicRosterLayoutMatcher(layout)
+  return Array.from(root.querySelectorAll('button[role="tab"]')).find((candidate) =>
+    matcher.test(candidate.textContent || candidate.getAttribute('aria-label') || ''),
+  ) as HTMLButtonElement | undefined
+}
+
+function findDynamicRosterRefreshButton(root: ParentNode) {
+  return Array.from(root.querySelectorAll('button')).find((candidate) =>
+    /refresh|刷新/i.test(candidate.textContent || candidate.getAttribute('aria-label') || ''),
+  ) as HTMLButtonElement | undefined
+}
+
+function isDynamicRosterLayoutReady(root: ParentNode, layout: DynamicRosterLayout) {
+  if (layout === 'flat') {
+    return root.querySelectorAll('table tbody tr').length > 0
+  }
+  const groupedRoster = root.querySelector('[data-testid="upstream-accounts-grouped-roster"]')
+  if (layout === 'grouped') return groupedRoster != null
+  return (
+    groupedRoster != null &&
+    root.querySelector('[data-testid="upstream-accounts-group-members-grid"]') != null
+  )
+}
+
+function DynamicRosterStoryRouter({
+  layout,
+}: {
+  layout: DynamicRosterLayout
+}) {
+  const initialLayoutTimerRef = useRef<number | null>(null)
+  const refreshIntervalRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    const syncLayout = () => {
+      const tab = findDynamicRosterLayoutTab(document.body, layout)
+      if (tab && tab.getAttribute('aria-selected') !== 'true') {
+        tab.click()
+      }
+    }
+
+    initialLayoutTimerRef.current = window.setTimeout(() => {
+      syncLayout()
+    }, 120)
+
+    refreshIntervalRef.current = window.setInterval(() => {
+      syncLayout()
+      if (!isDynamicRosterLayoutReady(document.body, layout)) return
+      const refreshButton = findDynamicRosterRefreshButton(document.body)
+      refreshButton?.click()
+    }, 2200)
+
+    return () => {
+      if (initialLayoutTimerRef.current != null) {
+        window.clearTimeout(initialLayoutTimerRef.current)
+      }
+      if (refreshIntervalRef.current != null) {
+        window.clearInterval(refreshIntervalRef.current)
+      }
+      initialLayoutTimerRef.current = null
+      refreshIntervalRef.current = null
+    }
+  }, [layout])
+
+  return <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
+}
+
+async function switchToDynamicLayout(
+  canvasElement: HTMLElement,
+  layout: DynamicRosterLayout,
+) {
+  const documentScope = within(canvasElement.ownerDocument.body)
+  const tab = await documentScope.findByRole('tab', {
+    name: dynamicRosterLayoutMatcher(layout),
+  })
+  if (tab.getAttribute('aria-selected') !== 'true') {
+    await userEvent.click(tab)
+  }
+}
+
+async function clickDynamicRosterRefresh(canvasElement: HTMLElement) {
+  const documentScope = within(canvasElement.ownerDocument.body)
+  const refreshButton = await documentScope.findByRole('button', {
+    name: /refresh|刷新/i,
+  })
+  await userEvent.click(refreshButton)
+}
+
+function expectNonOverlappingGroupCards(root: ParentNode) {
+  const cards = Array.from(
+    root.querySelectorAll<HTMLElement>('[data-testid="upstream-accounts-group-card"]'),
+  )
+  expect(cards.length).toBeGreaterThan(1)
+  for (let index = 1; index < cards.length; index += 1) {
+    const previousRect = cards[index - 1]!.getBoundingClientRect()
+    const nextRect = cards[index]!.getBoundingClientRect()
+    expect(nextRect.top).toBeGreaterThanOrEqual(previousRect.bottom - 1)
+  }
+}
+
 async function chooseSelectOption(
   canvasElement: HTMLElement,
   triggerMatcher: RegExp,
@@ -858,6 +975,105 @@ export const GridView: Story = {
         expect(
           documentScope.queryByTestId('upstream-accounts-pagination-footer'),
         ).not.toBeInTheDocument()
+      })
+      expect(
+        documentScope.queryByText(/selected count|已选择|clear selection|清空选择/i),
+      ).not.toBeInTheDocument()
+    })
+  },
+}
+
+export const DynamicLayoutFlat: Story = {
+  name: 'Dynamic · Flat',
+  render: () => <DynamicRosterStoryRouter layout="flat" />,
+  play: async ({ canvasElement, step }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    await step('renders a 20-50 account roster and updates the flat table on refresh', async () => {
+      await switchToDynamicLayout(canvasElement, 'flat')
+      await waitFor(() => {
+        const rows = canvasElement.ownerDocument.body.querySelectorAll('table tbody tr')
+        expect(rows.length).toBeGreaterThanOrEqual(20)
+      })
+      await clickDynamicRosterRefresh(canvasElement)
+      await expect(
+        await documentScope.findByText(/night-ops|staging-overflow|rescue/i),
+      ).toBeInTheDocument()
+      expect(
+        documentScope.queryByTestId('upstream-accounts-grouped-roster'),
+      ).not.toBeInTheDocument()
+    })
+  },
+}
+
+export const DynamicLayoutGrouped: Story = {
+  name: 'Dynamic · Grouped',
+  render: () => <DynamicRosterStoryRouter layout="grouped" />,
+  play: async ({ canvasElement, step }) => {
+    const root = canvasElement.ownerDocument.body
+    const documentScope = within(root)
+    await step('re-measures grouped cards after live refresh without overlap', async () => {
+      await switchToDynamicLayout(canvasElement, 'grouped')
+      await expect(
+        await documentScope.findByTestId('upstream-accounts-grouped-roster'),
+      ).toBeInTheDocument()
+      await waitFor(() => {
+        expectNonOverlappingGroupCards(root)
+      })
+      await clickDynamicRosterRefresh(canvasElement)
+      await expect(
+        await documentScope.findByText(/night-ops|staging-overflow|rescue/i),
+      ).toBeInTheDocument()
+      await waitFor(() => {
+        expectNonOverlappingGroupCards(root)
+      })
+      await clickDynamicRosterRefresh(canvasElement)
+      await expect(
+        await documentScope.findByText(/production-apac-weekly|production-apac-burst|latam/i),
+      ).toBeInTheDocument()
+      await waitFor(() => {
+        expectNonOverlappingGroupCards(root)
+      })
+      const groupedRoster = await documentScope.findByTestId(
+        'upstream-accounts-grouped-roster',
+      )
+      expect(groupedRoster.className).not.toContain('overflow-auto')
+      expect(
+        documentScope.queryByTestId('upstream-accounts-pagination-footer'),
+      ).not.toBeInTheDocument()
+    })
+  },
+}
+
+export const DynamicLayoutGrid: Story = {
+  name: 'Dynamic · Grid',
+  render: () => <DynamicRosterStoryRouter layout="grid" />,
+  play: async ({ canvasElement, step }) => {
+    const root = canvasElement.ownerDocument.body
+    const documentScope = within(root)
+    await step('keeps the grouped grid non-overlapping while live data refreshes', async () => {
+      await switchToDynamicLayout(canvasElement, 'grid')
+      await expect(
+        await documentScope.findByTestId('upstream-accounts-grouped-roster'),
+      ).toBeInTheDocument()
+      await expect(
+        await documentScope.findByTestId('upstream-accounts-group-members-grid'),
+      ).toBeInTheDocument()
+      await waitFor(() => {
+        expectNonOverlappingGroupCards(root)
+      })
+      await clickDynamicRosterRefresh(canvasElement)
+      await expect(
+        await documentScope.findByText(/night-ops|staging-overflow|rescue/i),
+      ).toBeInTheDocument()
+      await waitFor(() => {
+        expectNonOverlappingGroupCards(root)
+      })
+      await clickDynamicRosterRefresh(canvasElement)
+      await expect(
+        await documentScope.findByText(/production-apac-weekly|production-apac-burst|latam/i),
+      ).toBeInTheDocument()
+      await waitFor(() => {
+        expectNonOverlappingGroupCards(root)
       })
       expect(
         documentScope.queryByText(/selected count|已选择|clear selection|清空选择/i),
