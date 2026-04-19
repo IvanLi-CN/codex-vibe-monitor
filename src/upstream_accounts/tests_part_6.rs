@@ -383,7 +383,7 @@
             summaries
                 .iter()
                 .filter(|summary| inserted_ids.contains(&summary.id))
-                .all(|summary| summary.duplicate_info.is_none())
+                .all(|summary| summary.duplicate_info.is_none() && !summary.is_mother)
         );
 
         for account_id in inserted_ids {
@@ -392,72 +392,12 @@
                 .expect("load detail")
                 .expect("detail exists");
             assert!(detail.summary.duplicate_info.is_none());
+            assert!(!detail.summary.is_mother);
         }
     }
 
     #[tokio::test]
-    async fn same_group_team_shared_org_accounts_auto_select_oldest_member_as_mother() {
-        let pool = test_pool().await;
-
-        let mut inserted_ids = Vec::new();
-        for (display_name, email, user_id) in [
-            ("Auto Mother One", "auto-mother-1@example.com", "auto_user_1"),
-            ("Auto Mother Two", "auto-mother-2@example.com", "auto_user_2"),
-            ("Auto Mother Three", "auto-mother-3@example.com", "auto_user_3"),
-        ] {
-            let mut tx = pool.begin().await.expect("begin tx");
-            ensure_display_name_available(&mut *tx, display_name, None)
-                .await
-                .expect("name available");
-            let account_id = upsert_oauth_account(
-                &mut tx,
-                OauthAccountUpsert {
-                    account_id: None,
-                    display_name,
-                    group_name: Some("shared-team".to_string()),
-                    is_mother: false,
-                    note: None,
-                    tag_ids: vec![],
-                    requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
-                    claims: &test_claims_with_plan_type(
-                        email,
-                        Some("shared_team_org_auto"),
-                        Some(user_id),
-                        Some("team"),
-                    ),
-                    encrypted_credentials: format!("encrypted-{display_name}"),
-                    token_expires_at: "2026-03-14T00:00:00Z",
-                    external_identity: None,
-                },
-            )
-            .await
-            .expect("oauth insert");
-            tx.commit().await.expect("commit tx");
-            inserted_ids.push(account_id);
-        }
-
-        let summaries = load_upstream_account_summaries(&pool)
-            .await
-            .expect("load summaries");
-        let auto_mother_ids = summaries
-            .iter()
-            .filter(|summary| inserted_ids.contains(&summary.id) && summary.is_mother)
-            .map(|summary| summary.id)
-            .collect::<Vec<_>>();
-        assert_eq!(auto_mother_ids, vec![inserted_ids[0]]);
-
-        for account_id in inserted_ids.iter().copied() {
-            let detail = load_upstream_account_detail(&pool, account_id)
-                .await
-                .expect("load detail")
-                .expect("detail exists");
-            assert_eq!(detail.summary.is_mother, account_id == inserted_ids[0]);
-            assert!(detail.summary.duplicate_info.is_none());
-        }
-    }
-
-    #[tokio::test]
-    async fn manual_team_shared_org_mother_assignment_overrides_auto_detection() {
+    async fn same_group_team_shared_org_accounts_keep_manual_mother_only() {
         let pool = test_pool().await;
 
         let mut inserted_ids = Vec::new();

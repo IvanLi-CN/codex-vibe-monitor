@@ -1393,15 +1393,15 @@ export function createStore(): StoryStore {
           }
       : teamSharedOrgCoexistenceStory
         ? {
-            displayName: 'Fixture Team Mother',
-            email: 'mother@team-fixture.example.invalid',
+            displayName: 'Fixture Team Member A',
+            email: 'member-a@team-fixture.example.invalid',
             groupName: 'fixture-team',
-            isMother: true,
+            isMother: false,
             chatgptAccountId: 'fixture_shared_team_org',
-            chatgptUserId: 'fixture_team_owner',
+            chatgptUserId: 'fixture_team_member_a',
             planType: 'team',
             duplicateInfo: null,
-            note: 'Synthetic mother account for the shared team org fixture.',
+            note: 'Synthetic team member fixture sharing the same upstream org intentionally.',
           }
       : compactStory
         ? {
@@ -1481,12 +1481,12 @@ export function createStore(): StoryStore {
           displayName: mixedPlanCoexistenceStory
             ? 'Fixture Billing Free'
             : teamSharedOrgCoexistenceStory
-              ? 'Fixture Team Member'
+              ? 'Fixture Team Member B'
             : 'Codex Pro - Seoul',
           email: mixedPlanCoexistenceStory
             ? 'free@billing-fixture.example.invalid'
             : teamSharedOrgCoexistenceStory
-              ? 'member@team-fixture.example.invalid'
+              ? 'member-b@team-fixture.example.invalid'
             : 'seoul@example.com',
           chatgptAccountId: mixedPlanCoexistenceStory
             ? 'fixture_shared_billing_org'
@@ -1496,7 +1496,7 @@ export function createStore(): StoryStore {
           chatgptUserId: mixedPlanCoexistenceStory
             ? 'fixture_shared_billing_user'
             : teamSharedOrgCoexistenceStory
-              ? 'fixture_team_member'
+              ? 'fixture_team_member_b'
             : 'user_tokyo',
           groupName: teamSharedOrgCoexistenceStory ? 'fixture-team' : 'production',
           planType: mixedPlanCoexistenceStory

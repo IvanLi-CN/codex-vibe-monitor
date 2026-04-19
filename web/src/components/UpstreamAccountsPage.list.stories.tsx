@@ -777,26 +777,27 @@ export const TeamSharedOrgCoexistence: Story = {
   ),
   play: async ({ canvasElement }) => {
     const documentScope = within(canvasElement.ownerDocument.body)
-    const motherRow = await documentScope.findByRole('button', {
-      name: /Fixture Team Mother/i,
+    const memberARow = await documentScope.findByRole('button', {
+      name: /Fixture Team Member A/i,
     })
-    const memberRow = await documentScope.findByRole('button', {
-      name: /Fixture Team Member/i,
+    const memberBRow = await documentScope.findByRole('button', {
+      name: /Fixture Team Member B/i,
     })
 
-    await expect(motherRow).toHaveTextContent(/team/i)
-    await expect(motherRow).toHaveTextContent(/母号|Mother/i)
-    await expect(motherRow).not.toHaveTextContent(/重复账号|Duplicate/i)
-    await expect(memberRow).toHaveTextContent(/team/i)
-    await expect(memberRow).not.toHaveTextContent(/重复账号|Duplicate/i)
+    await expect(memberARow).toHaveTextContent(/team/i)
+    await expect(memberARow).not.toHaveTextContent(/母号|Mother/i)
+    await expect(memberARow).not.toHaveTextContent(/重复账号|Duplicate/i)
+    await expect(memberBRow).toHaveTextContent(/team/i)
+    await expect(memberBRow).not.toHaveTextContent(/母号|Mother/i)
+    await expect(memberBRow).not.toHaveTextContent(/重复账号|Duplicate/i)
 
-    await userEvent.click(motherRow)
+    await userEvent.click(memberARow)
 
     const dialog = await documentScope.findByRole('dialog', {
-      name: /Fixture Team Mother/i,
+      name: /Fixture Team Member A/i,
     })
-    await expect(dialog).toHaveTextContent(/母号|Mother/i)
     await expect(dialog).toHaveTextContent(/team/i)
+    await expect(dialog).not.toHaveTextContent(/母号|Mother/i)
     await expect(dialog).not.toHaveTextContent(/命中原因：|Matched reasons:/i)
     await expect(dialog).not.toHaveTextContent(/重复账号|Duplicate/i)
   },
