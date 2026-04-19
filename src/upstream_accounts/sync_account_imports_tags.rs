@@ -847,13 +847,26 @@ struct UpstreamAccountIdentityRow {
     id: i64,
     chatgpt_account_id: Option<String>,
     chatgpt_user_id: Option<String>,
+    group_name: Option<String>,
+    is_mother: i64,
     plan_type: Option<String>,
+    created_at: String,
 }
 
 #[derive(Debug, Clone)]
 struct UpstreamAccountIdentityClusterMember {
     id: i64,
+    chatgpt_user_id: Option<String>,
+    group_name: Option<String>,
+    is_mother: bool,
     plan_type: Option<String>,
+    created_at: String,
+}
+
+#[derive(Debug, Default)]
+struct UpstreamAccountIdentityClusterAnalysis {
+    duplicate_info_map: std::collections::HashMap<i64, DuplicateInfo>,
+    effective_mother_ids: std::collections::HashSet<i64>,
 }
 
 fn normalize_plan_type(plan_type: Option<&str>) -> Option<String> {
@@ -861,6 +874,12 @@ fn normalize_plan_type(plan_type: Option<&str>) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+fn is_team_plan_type(plan_type: Option<&str>) -> bool {
+    normalize_plan_type(plan_type)
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case("team"))
 }
 
 fn should_flag_duplicate_identity_pair(
@@ -874,6 +893,59 @@ fn should_flag_duplicate_identity_pair(
         (Some(current), Some(peer)) => current.eq_ignore_ascii_case(&peer),
         _ => true,
     }
+}
+
+fn is_team_shared_org_cluster_member(member: &UpstreamAccountIdentityClusterMember) -> bool {
+    is_team_plan_type(member.plan_type.as_deref())
+        && member.group_name.is_some()
+        && member.chatgpt_user_id.is_some()
+}
+
+fn is_team_shared_org_peer_pair(
+    current: &UpstreamAccountIdentityClusterMember,
+    peer: &UpstreamAccountIdentityClusterMember,
+) -> bool {
+    is_team_shared_org_cluster_member(current)
+        && is_team_shared_org_cluster_member(peer)
+        && current.group_name == peer.group_name
+        && current.chatgpt_user_id != peer.chatgpt_user_id
+}
+
+fn resolve_effective_mother_id(
+    cluster: &[UpstreamAccountIdentityClusterMember],
+) -> Option<i64> {
+    if cluster.len() < 2 || !cluster.iter().all(is_team_shared_org_cluster_member) {
+        return None;
+    }
+    let first_group = cluster.first()?.group_name.as_deref()?;
+    if cluster
+        .iter()
+        .any(|member| member.group_name.as_deref() != Some(first_group))
+    {
+        return None;
+    }
+    let distinct_user_count = cluster
+        .iter()
+        .filter_map(|member| member.chatgpt_user_id.as_deref())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    if distinct_user_count < 2 {
+        return None;
+    }
+    cluster
+        .iter()
+        .find(|member| member.is_mother)
+        .map(|member| member.id)
+        .or_else(|| {
+            cluster
+                .iter()
+                .min_by(|left, right| {
+                    left.created_at
+                        .cmp(&right.created_at)
+                        .then_with(|| left.id.cmp(&right.id))
+                })
+                .map(|member| member.id)
+        })
 }
 
 fn resolve_effective_plan_type(
@@ -898,15 +970,17 @@ async fn resolve_snapshot_plan_type(
     Ok(latest_sample_plan_type.or_else(|| normalize_plan_type(row.plan_type.as_deref())))
 }
 
-async fn load_duplicate_info_map(
+async fn load_upstream_account_identity_cluster_analysis(
     pool: &Pool<Sqlite>,
-) -> Result<std::collections::HashMap<i64, DuplicateInfo>> {
+) -> Result<UpstreamAccountIdentityClusterAnalysis> {
     let rows = sqlx::query_as::<_, UpstreamAccountIdentityRow>(
         r#"
         SELECT
             account.id,
             account.chatgpt_account_id,
             account.chatgpt_user_id,
+            account.group_name,
+            account.is_mother,
             COALESCE(
                 CASE
                     WHEN NULLIF(TRIM(account.plan_type), '') IS NOT NULL
@@ -932,7 +1006,8 @@ async fn load_duplicate_info_map(
                     )
                 END,
                 NULLIF(TRIM(account.plan_type), '')
-            ) AS plan_type
+            ) AS plan_type,
+            account.created_at
         FROM pool_upstream_accounts account
         WHERE account.kind = ?1
         ORDER BY id ASC
@@ -951,7 +1026,11 @@ async fn load_duplicate_info_map(
             by_account_id.entry(chatgpt_account_id).or_default().push(
                 UpstreamAccountIdentityClusterMember {
                     id: row.id,
-                    plan_type: row.plan_type.clone(),
+                    chatgpt_user_id: normalize_optional_text(row.chatgpt_user_id.clone()),
+                    group_name: normalize_optional_text(row.group_name.clone()),
+                    is_mother: row.is_mother != 0,
+                    plan_type: normalize_plan_type(row.plan_type.as_deref()),
+                    created_at: row.created_at.clone(),
                 },
             );
         }
@@ -959,14 +1038,33 @@ async fn load_duplicate_info_map(
             by_user_id.entry(chatgpt_user_id).or_default().push(
                 UpstreamAccountIdentityClusterMember {
                     id: row.id,
-                    plan_type: row.plan_type.clone(),
+                    chatgpt_user_id: normalize_optional_text(row.chatgpt_user_id.clone()),
+                    group_name: normalize_optional_text(row.group_name.clone()),
+                    is_mother: row.is_mother != 0,
+                    plan_type: normalize_plan_type(row.plan_type.as_deref()),
+                    created_at: row.created_at.clone(),
                 },
             );
         }
     }
 
+    let mut effective_mother_ids = std::collections::HashSet::new();
+    for cluster in by_account_id.values() {
+        if let Some(mother_id) = resolve_effective_mother_id(cluster) {
+            effective_mother_ids.insert(mother_id);
+        }
+    }
+
     let mut duplicate_info = std::collections::HashMap::new();
     for row in rows {
+        let current_member = UpstreamAccountIdentityClusterMember {
+            id: row.id,
+            chatgpt_user_id: normalize_optional_text(row.chatgpt_user_id.clone()),
+            group_name: normalize_optional_text(row.group_name.clone()),
+            is_mother: row.is_mother != 0,
+            plan_type: normalize_plan_type(row.plan_type.as_deref()),
+            created_at: row.created_at,
+        };
         let mut peer_ids = std::collections::BTreeSet::new();
         let mut reasons = Vec::new();
 
@@ -977,8 +1075,9 @@ async fn load_duplicate_info_map(
         {
             for member in cluster {
                 if member.id != row.id
+                    && !is_team_shared_org_peer_pair(&current_member, member)
                     && should_flag_duplicate_identity_pair(
-                        row.plan_type.as_deref(),
+                        current_member.plan_type.as_deref(),
                         member.plan_type.as_deref(),
                     )
                 {
@@ -987,8 +1086,9 @@ async fn load_duplicate_info_map(
             }
             if cluster.iter().any(|member| {
                 member.id != row.id
+                    && !is_team_shared_org_peer_pair(&current_member, member)
                     && should_flag_duplicate_identity_pair(
-                        row.plan_type.as_deref(),
+                        current_member.plan_type.as_deref(),
                         member.plan_type.as_deref(),
                     )
             }) {
@@ -1004,7 +1104,7 @@ async fn load_duplicate_info_map(
             for member in cluster {
                 if member.id != row.id
                     && should_flag_duplicate_identity_pair(
-                        row.plan_type.as_deref(),
+                        current_member.plan_type.as_deref(),
                         member.plan_type.as_deref(),
                     )
                 {
@@ -1014,7 +1114,7 @@ async fn load_duplicate_info_map(
             if cluster.iter().any(|member| {
                 member.id != row.id
                     && should_flag_duplicate_identity_pair(
-                        row.plan_type.as_deref(),
+                        current_member.plan_type.as_deref(),
                         member.plan_type.as_deref(),
                     )
             }) {
@@ -1033,7 +1133,18 @@ async fn load_duplicate_info_map(
         }
     }
 
-    Ok(duplicate_info)
+    Ok(UpstreamAccountIdentityClusterAnalysis {
+        duplicate_info_map: duplicate_info,
+        effective_mother_ids,
+    })
+}
+
+async fn load_duplicate_info_map(
+    pool: &Pool<Sqlite>,
+) -> Result<std::collections::HashMap<i64, DuplicateInfo>> {
+    Ok(load_upstream_account_identity_cluster_analysis(pool)
+        .await?
+        .duplicate_info_map)
 }
 
 async fn load_account_tag_map(
@@ -1519,7 +1630,7 @@ async fn load_upstream_account_summaries_for_query(
     pool: &Pool<Sqlite>,
     params: &ListUpstreamAccountsQuery,
 ) -> Result<Vec<UpstreamAccountSummary>> {
-    let duplicate_info_map = load_duplicate_info_map(pool).await?;
+    let identity_cluster_analysis = load_upstream_account_identity_cluster_analysis(pool).await?;
     let mut normalized_tag_ids = params
         .tag_ids
         .iter()
@@ -1589,18 +1700,25 @@ async fn load_upstream_account_summaries_for_query(
     for row in rows {
         let latest = load_latest_usage_sample(pool, row.id).await?;
         let tags = tag_map.get(&row.id).cloned().unwrap_or_default();
-        items.push(build_summary_from_row(
+        let mut summary = build_summary_from_row(
             &row,
             latest.as_ref(),
             row.last_activity_at.clone(),
             tags,
-            duplicate_info_map.get(&row.id).cloned(),
+            identity_cluster_analysis
+                .duplicate_info_map
+                .get(&row.id)
+                .cloned(),
             active_conversation_count_map
                 .get(&row.id)
                 .copied()
                 .unwrap_or_default(),
             now.clone(),
-        ));
+        );
+        if identity_cluster_analysis.effective_mother_ids.contains(&row.id) {
+            summary.is_mother = true;
+        }
+        items.push(summary);
     }
     Ok(items)
 }
@@ -1813,7 +1931,7 @@ async fn load_upstream_account_detail(
     .fetch_all(pool)
     .await?;
 
-    let duplicate_info_map = load_duplicate_info_map(pool).await?;
+    let identity_cluster_analysis = load_upstream_account_identity_cluster_analysis(pool).await?;
     let now = Utc::now();
     let active_conversation_count =
         load_account_active_conversation_count_map(pool, &[row.id], now.clone())
@@ -1821,16 +1939,23 @@ async fn load_upstream_account_detail(
             .get(&row.id)
             .copied()
             .unwrap_or_default();
+    let mut summary = build_summary_from_row(
+        &row,
+        latest.as_ref(),
+        row.last_activity_at.clone(),
+        tags,
+        identity_cluster_analysis
+            .duplicate_info_map
+            .get(&row.id)
+            .cloned(),
+        active_conversation_count,
+        now,
+    );
+    if identity_cluster_analysis.effective_mother_ids.contains(&row.id) {
+        summary.is_mother = true;
+    }
     Ok(Some(UpstreamAccountDetail {
-        summary: build_summary_from_row(
-            &row,
-            latest.as_ref(),
-            row.last_activity_at.clone(),
-            tags,
-            duplicate_info_map.get(&row.id).cloned(),
-            active_conversation_count,
-            now,
-        ),
+        summary,
         note: row.note,
         upstream_base_url: row.upstream_base_url,
         chatgpt_user_id: row.chatgpt_user_id,

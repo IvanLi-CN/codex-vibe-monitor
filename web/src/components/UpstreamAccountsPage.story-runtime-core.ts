@@ -1329,6 +1329,8 @@ export function createStore(): StoryStore {
     storyId?.endsWith('--duplicate-oauth-detail') === true
   const mixedPlanCoexistenceStory =
     storyId?.endsWith('--mixed-plan-coexistence') === true
+  const teamSharedOrgCoexistenceStory =
+    storyId?.endsWith('--team-shared-org-coexistence') === true
   const compactStory = storyId?.endsWith('--compact-long-labels') === true
   const tagFilterStory = storyId?.endsWith('--tag-filter-all-match') === true
   const availabilityBadgeStory =
@@ -1388,6 +1390,18 @@ export function createStore(): StoryStore {
             planType: 'team',
             duplicateInfo: null,
             note: 'Synthetic team-billed OAuth fixture sharing the same upstream identity intentionally.',
+          }
+      : teamSharedOrgCoexistenceStory
+        ? {
+            displayName: 'Fixture Team Mother',
+            email: 'mother@team-fixture.example.invalid',
+            groupName: 'fixture-team',
+            isMother: true,
+            chatgptAccountId: 'fixture_shared_team_org',
+            chatgptUserId: 'fixture_team_owner',
+            planType: 'team',
+            duplicateInfo: null,
+            note: 'Synthetic mother account for the shared team org fixture.',
           }
       : compactStory
         ? {
@@ -1462,22 +1476,35 @@ export function createStore(): StoryStore {
           : undefined,
   )
   const duplicateOauth =
-    duplicateStory || mixedPlanCoexistenceStory
+    duplicateStory || mixedPlanCoexistenceStory || teamSharedOrgCoexistenceStory
       ? createOauthAccount(103, {
           displayName: mixedPlanCoexistenceStory
             ? 'Fixture Billing Free'
+            : teamSharedOrgCoexistenceStory
+              ? 'Fixture Team Member'
             : 'Codex Pro - Seoul',
           email: mixedPlanCoexistenceStory
             ? 'free@billing-fixture.example.invalid'
+            : teamSharedOrgCoexistenceStory
+              ? 'member@team-fixture.example.invalid'
             : 'seoul@example.com',
           chatgptAccountId: mixedPlanCoexistenceStory
             ? 'fixture_shared_billing_org'
+            : teamSharedOrgCoexistenceStory
+              ? 'fixture_shared_team_org'
             : 'org_tokyo',
           chatgptUserId: mixedPlanCoexistenceStory
             ? 'fixture_shared_billing_user'
+            : teamSharedOrgCoexistenceStory
+              ? 'fixture_team_member'
             : 'user_tokyo',
-          groupName: 'production',
-          planType: mixedPlanCoexistenceStory ? 'free' : 'pro',
+          groupName: teamSharedOrgCoexistenceStory ? 'fixture-team' : 'production',
+          planType: mixedPlanCoexistenceStory
+            ? 'free'
+            : teamSharedOrgCoexistenceStory
+              ? 'team'
+              : 'pro',
+          isMother: false,
           duplicateInfo: duplicateStory
             ? {
                 peerAccountIds: [101],
@@ -1486,6 +1513,8 @@ export function createStore(): StoryStore {
             : null,
           note: mixedPlanCoexistenceStory
             ? 'Synthetic personal-billed OAuth fixture sharing the same upstream identity intentionally.'
+            : teamSharedOrgCoexistenceStory
+              ? 'Synthetic sibling team member sharing the same upstream org intentionally.'
             : 'Sibling OAuth account kept for duplicate identity review.',
         })
       : null
