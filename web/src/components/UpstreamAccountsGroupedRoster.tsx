@@ -46,6 +46,10 @@ const GROUP_MEMBER_GRID_CARD_ESTIMATE_PX = 144
 const GROUP_MEMBER_GRID_GAP_PX = 12
 const GROUP_MEMBER_GRID_TWO_COLUMN_BREAKPOINT_PX = 960
 const GROUP_MEMBER_GRID_THREE_COLUMN_BREAKPOINT_PX = 1280
+const GROUP_CARD_HORIZONTAL_PADDING_PX = 28
+const GROUP_SUMMARY_COLUMN_WIDTH_PX = 200
+const GROUP_SUMMARY_GRID_BREAKPOINT_PX = 1280
+const GROUP_SUMMARY_GRID_GAP_PX = 14
 
 type GroupPlanCount = {
   key: string
@@ -116,6 +120,17 @@ function resolveGridColumnCount(width: number) {
   if (width >= GROUP_MEMBER_GRID_THREE_COLUMN_BREAKPOINT_PX) return 3
   if (width >= GROUP_MEMBER_GRID_TWO_COLUMN_BREAKPOINT_PX) return 2
   return 1
+}
+
+function estimateMemberGridWidth(rosterWidth: number) {
+  const contentWidth = Math.max(0, rosterWidth - GROUP_CARD_HORIZONTAL_PADDING_PX)
+  if (contentWidth >= GROUP_SUMMARY_GRID_BREAKPOINT_PX) {
+    return Math.max(
+      0,
+      contentWidth - GROUP_SUMMARY_COLUMN_WIDTH_PX - GROUP_SUMMARY_GRID_GAP_PX,
+    )
+  }
+  return contentWidth
 }
 
 function estimateGroupCardHeight(
@@ -606,6 +621,7 @@ function GroupMembersList({
   memberLayout = 'list',
   selectionMode = 'multi',
   gridColumnCount,
+  containerRef,
 }: {
   items: UpstreamAccountSummary[]
   selectedId: number | null
@@ -616,10 +632,12 @@ function GroupMembersList({
   memberLayout?: 'list' | 'grid'
   selectionMode?: 'multi' | 'none'
   gridColumnCount: number
+  containerRef?: (node: HTMLDivElement | null) => void
 }) {
   if (memberLayout === 'grid') {
     return (
       <div
+        ref={containerRef}
         className="self-start min-w-0 py-1"
         data-testid="upstream-accounts-group-members-grid"
       >
@@ -644,7 +662,7 @@ function GroupMembersList({
   }
 
   return (
-    <div className="min-w-0" data-testid="upstream-accounts-group-members">
+    <div ref={containerRef} className="min-w-0" data-testid="upstream-accounts-group-members">
       <div className="divide-y divide-base-300/60">
         {items.map((item) => (
           <div
@@ -694,11 +712,13 @@ export function UpstreamAccountsGroupedRoster({
   const selectAllRef = useRef<HTMLInputElement | null>(null)
   const [containerElement, setContainerElement] = useState<HTMLDivElement | null>(null)
   const [spacerElement, setSpacerElement] = useState<HTMLDivElement | null>(null)
+  const [memberElement, setMemberElement] = useState<HTMLDivElement | null>(null)
   const [scrollMargin, setScrollMargin] = useState(0)
-  const [viewportWidth, setViewportWidth] = useState(() =>
-    typeof window === 'undefined' ? 0 : window.innerWidth,
-  )
-  const gridColumnCount = Math.max(1, resolveGridColumnCount(viewportWidth))
+  const [rosterWidth, setRosterWidth] = useState(0)
+  const [memberViewportWidth, setMemberViewportWidth] = useState(0)
+  const effectiveMemberViewportWidth =
+    memberViewportWidth > 0 ? memberViewportWidth : estimateMemberGridWidth(rosterWidth)
+  const gridColumnCount = Math.max(1, resolveGridColumnCount(effectiveMemberViewportWidth))
   const selectionEnabled = selectionMode === 'multi' && typeof onToggleSelected === 'function'
   const totalVisibleCount = groups.reduce((sum, group) => sum + group.items.length, 0)
   const selectedVisibleCount = groups.reduce(
@@ -711,7 +731,7 @@ export function UpstreamAccountsGroupedRoster({
     selectedVisibleCount > 0 && selectedVisibleCount < totalVisibleCount
 
   const estimateSize = (index: number) =>
-    estimateGroupCardHeight(groups[index], memberLayout, viewportWidth)
+    estimateGroupCardHeight(groups[index], memberLayout, effectiveMemberViewportWidth)
 
   const groupVirtualizer = useWindowVirtualizer({
     count: groups.length,
@@ -728,16 +748,28 @@ export function UpstreamAccountsGroupedRoster({
 
   useEffect(() => {
     groupVirtualizer.measure()
-  }, [groupVirtualizer, groups, memberLayout, viewportWidth])
+  }, [groupVirtualizer, groups, memberLayout, effectiveMemberViewportWidth])
 
   useEffect(() => {
     const updateMetrics = () => {
-      setViewportWidth(typeof window === 'undefined' ? 0 : window.innerWidth)
       const measurementTarget = spacerElement ?? containerElement
       if (!measurementTarget || typeof window === 'undefined') {
+        setRosterWidth(0)
+        setMemberViewportWidth(0)
         setScrollMargin(0)
         return
       }
+      const nextRosterWidth = measurementTarget.getBoundingClientRect().width
+      setRosterWidth((current) =>
+        Math.abs(current - nextRosterWidth) > 0.5 ? nextRosterWidth : current,
+      )
+      const nextMemberViewportWidth =
+        memberElement?.getBoundingClientRect().width ?? estimateMemberGridWidth(nextRosterWidth)
+      setMemberViewportWidth((current) =>
+        Math.abs(current - nextMemberViewportWidth) > 0.5
+          ? nextMemberViewportWidth
+          : current,
+      )
       const nextScrollMargin =
         measurementTarget.getBoundingClientRect().top + window.scrollY
       setScrollMargin((current) =>
@@ -765,6 +797,9 @@ export function UpstreamAccountsGroupedRoster({
     if (spacerElement && spacerElement !== containerElement) {
       observer.observe(spacerElement)
     }
+    if (memberElement && memberElement !== spacerElement && memberElement !== containerElement) {
+      observer.observe(memberElement)
+    }
     if (document.body) {
       observer.observe(document.body)
     }
@@ -774,13 +809,13 @@ export function UpstreamAccountsGroupedRoster({
       window.removeEventListener('resize', updateMetrics)
       window.removeEventListener('scroll', updateMetrics)
     }
-  }, [containerElement, spacerElement])
+  }, [containerElement, spacerElement, memberElement])
 
   const virtualGroups = groupVirtualizer.getVirtualItems()
   const renderedGroups =
     virtualGroups.length > 0
       ? virtualGroups
-      : buildFallbackVirtualGroups(groups, memberLayout, viewportWidth)
+      : buildFallbackVirtualGroups(groups, memberLayout, effectiveMemberViewportWidth)
   const normalizedVirtualGroups = renderedGroups.map((virtualGroup) => ({
     ...virtualGroup,
     start: Math.max(0, virtualGroup.start - scrollMargin),
@@ -790,7 +825,8 @@ export function UpstreamAccountsGroupedRoster({
     virtualGroups.length > 0
       ? Math.max(0, groupVirtualizer.getTotalSize())
       : groups.reduce(
-          (sum, group) => sum + estimateGroupCardHeight(group, memberLayout, viewportWidth),
+          (sum, group) =>
+            sum + estimateGroupCardHeight(group, memberLayout, effectiveMemberViewportWidth),
           0,
         )
   const paddingTop =
@@ -802,6 +838,8 @@ export function UpstreamAccountsGroupedRoster({
           totalMeasuredSize - normalizedVirtualGroups[normalizedVirtualGroups.length - 1]!.end,
         )
       : 0
+  const firstRenderedGroupIndex =
+    normalizedVirtualGroups.length > 0 ? normalizedVirtualGroups[0]!.index : null
 
   if (isLoading && groups.length === 0) {
     return (
@@ -920,6 +958,9 @@ export function UpstreamAccountsGroupedRoster({
                     memberLayout={memberLayout}
                     selectionMode={selectionMode}
                     gridColumnCount={gridColumnCount}
+                    containerRef={
+                      virtualGroup.index === firstRenderedGroupIndex ? setMemberElement : undefined
+                    }
                   />
                 </div>
               </article>

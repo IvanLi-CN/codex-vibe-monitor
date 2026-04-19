@@ -377,6 +377,95 @@ describe('UpstreamAccountsGroupedRoster', () => {
     expect(gridCards.length).toBe(18)
   })
 
+  it('uses the rendered roster width instead of window.innerWidth for grouped grid columns', () => {
+    const groups = [
+      makeGroup('analytics', [
+        makeItem(1),
+        makeItem(2, { displayName: 'Account 2' }),
+        makeItem(3, { displayName: 'Account 3' }),
+      ]),
+    ]
+
+    renderRoster(groups, {
+      memberLayout: 'grid',
+      selectionMode: 'none',
+      onToggleSelected: undefined,
+      onToggleSelectAllVisible: undefined,
+    })
+
+    const roster = host?.querySelector(
+      '[data-testid="upstream-accounts-grouped-roster"]',
+    ) as HTMLDivElement | null
+    const spacer = host?.querySelector(
+      '[data-testid="upstream-accounts-grouped-roster-spacer"]',
+    ) as HTMLDivElement | null
+    const membersGrid = host?.querySelector(
+      '[data-testid="upstream-accounts-group-members-grid"]',
+    ) as HTMLDivElement | null
+    const gridLayout = membersGrid?.querySelector(':scope > div') as HTMLDivElement | null
+
+    expect(roster).toBeTruthy()
+    expect(spacer).toBeTruthy()
+    expect(membersGrid).toBeTruthy()
+    expect(gridLayout).toBeTruthy()
+
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: 1600,
+    })
+    Object.defineProperty(roster!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () =>
+        ({
+          top: 160,
+          left: 0,
+          right: 920,
+          bottom: 760,
+          width: 920,
+          height: 600,
+          x: 0,
+          y: 160,
+          toJSON: () => ({}),
+        }) satisfies DOMRect,
+    })
+    Object.defineProperty(spacer!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () =>
+        ({
+          top: 160,
+          left: 0,
+          right: 920,
+          bottom: 760,
+          width: 920,
+          height: 600,
+          x: 0,
+          y: 160,
+          toJSON: () => ({}),
+        }) satisfies DOMRect,
+    })
+    Object.defineProperty(membersGrid!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () =>
+        ({
+          top: 210,
+          left: 0,
+          right: 920,
+          bottom: 560,
+          width: 920,
+          height: 350,
+          x: 0,
+          y: 210,
+          toJSON: () => ({}),
+        }) satisfies DOMRect,
+    })
+
+    act(() => {
+      window.dispatchEvent(new Event('resize'))
+    })
+
+    expect(gridLayout?.style.gridTemplateColumns).toBe('repeat(1, minmax(0, 1fr))')
+  })
+
   it('keeps the bottom spacer sized to the remaining virtualized groups below the viewport', () => {
     virtualizerMocks.visibleIndexes = [1, 2]
     const groups = Array.from({ length: 6 }, (_, index) =>
