@@ -90,6 +90,7 @@ import {
   RoutingSettingsDialog,
   SharedUpstreamAccountDetailDrawer,
 } from "./UpstreamAccounts.page-local-shared";
+import { useUpstreamAccountGroupSettingsDialog } from "./useUpstreamAccountGroupSettingsDialog";
 export { SharedUpstreamAccountDetailDrawer } from "./UpstreamAccounts.page-local-shared";
 
 type AccountRosterViewMode = "flat" | "grouped" | "grid";
@@ -306,6 +307,7 @@ export default function UpstreamAccountsPage() {
     refresh,
     routing,
     saveRouting,
+    saveGroupNote,
     runBulkAction,
     startBulkSyncJob,
     getBulkSyncJob,
@@ -1020,6 +1022,13 @@ export default function UpstreamAccountsPage() {
           ) ?? [],
         concurrencyLimit: groupSummary?.concurrencyLimit ?? null,
         nodeShuntEnabled: groupSummary?.nodeShuntEnabled ?? false,
+        hasCustomSettings:
+          Boolean(groupSummary?.note?.trim()) ||
+          (groupSummary?.boundProxyKeys?.length ?? 0) > 0 ||
+          (groupSummary?.concurrencyLimit ?? 0) > 0 ||
+          groupSummary?.nodeShuntEnabled === true ||
+          groupSummary?.upstream429RetryEnabled === true ||
+          (groupSummary?.upstream429MaxRetries ?? 0) > 0,
         planCounts: [],
       };
       current.items.push(item);
@@ -1068,6 +1077,39 @@ export default function UpstreamAccountsPage() {
     });
     return result;
   }, [forwardProxyNodes, groupedPlanLabel, groups, hideRosterDerivedUi, t, visibleRosterItems]);
+  const {
+    openEditor: openGroupSettingsEditor,
+    dialog: groupSettingsDialog,
+  } = useUpstreamAccountGroupSettingsDialog({
+    writesEnabled,
+    resolveGroupState: useCallback(
+      (groupName) => {
+        const normalizedGroupName = normalizeRosterGroupName(groupName);
+        if (!normalizedGroupName) return null;
+        const groupSummary =
+          groups.find((group) => group.groupName === normalizedGroupName) ??
+          null;
+        return {
+          groupName: normalizedGroupName,
+          note: groupSummary?.note ?? "",
+          existing: groupSummary != null,
+          concurrencyLimit: groupSummary?.concurrencyLimit ?? 0,
+          boundProxyKeys: groupSummary?.boundProxyKeys ?? [],
+          nodeShuntEnabled: groupSummary?.nodeShuntEnabled ?? false,
+          upstream429RetryEnabled:
+            groupSummary?.upstream429RetryEnabled ?? false,
+          upstream429MaxRetries: groupSummary?.upstream429MaxRetries ?? 0,
+        };
+      },
+      [groups],
+    ),
+    saveGroupSettings: useCallback(
+      async (groupName, payload, _options) => {
+        await saveGroupNote(groupName, payload);
+      },
+      [saveGroupNote],
+    ),
+  });
   const bulkRemovableTagIds = useMemo(() => {
     const removableIds = new Set<number>();
     for (const summary of Object.values(selectedAccountSummaries)) {
@@ -2199,6 +2241,11 @@ export default function UpstreamAccountsPage() {
                   labels={accountRosterLabels}
                   memberLayout={rosterViewMode === "grid" ? "grid" : "list"}
                   selectionMode={rosterViewMode === "grid" ? "none" : "multi"}
+                  canEditGroupSettings={writesEnabled}
+                  onEditGroupSettings={(group) => {
+                    if (!group.groupName) return;
+                    openGroupSettingsEditor(group.groupName);
+                  }}
                   groupLabels={{
                     count: (count) =>
                       t("accountPool.upstreamAccounts.grouped.accountCount", {
@@ -2217,6 +2264,9 @@ export default function UpstreamAccountsPage() {
                     noteEmpty: t("accountPool.upstreamAccounts.grouped.noteEmpty"),
                     proxiesLabel: t("accountPool.upstreamAccounts.grouped.proxiesLabel"),
                     proxiesEmpty: t("accountPool.upstreamAccounts.grouped.proxiesEmpty"),
+                    settingsLabel: t(
+                      "accountPool.upstreamAccounts.groupNotes.actions.edit",
+                    ),
                   }}
                 />
               )}
@@ -2332,6 +2382,8 @@ export default function UpstreamAccountsPage() {
           </div>
         </div>
       </section>
+
+      {groupSettingsDialog}
 
       <Dialog
         open={bulkGroupDialogOpen}

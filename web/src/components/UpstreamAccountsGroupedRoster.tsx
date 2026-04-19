@@ -1,5 +1,10 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import { useVirtualizer } from '@tanstack/react-virtual'
+import {
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from 'react'
+import { useWindowVirtualizer } from '@tanstack/react-virtual'
 import { AppIcon } from './AppIcon'
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
@@ -33,16 +38,14 @@ import {
 } from './UpstreamAccountsTable'
 import { MotherAccountBadge } from './MotherAccountToggle'
 
-const GROUP_CARD_ESTIMATE_PX = 420
+const GROUP_CARD_VERTICAL_GAP_PX = 16
+const GROUP_SUMMARY_ESTIMATE_PX = 176
 const GROUP_MEMBER_ROW_ESTIMATE_PX = 104
 const GROUP_MEMBER_ROW_GAP_PX = 8
-const GROUP_MEMBER_MIN_VISIBLE_ROWS = 2
-const GROUP_MEMBER_MAX_VISIBLE_ROWS = 10
 const GROUP_MEMBER_GRID_CARD_ESTIMATE_PX = 144
 const GROUP_MEMBER_GRID_GAP_PX = 12
-const GROUP_MEMBER_GRID_MAX_VISIBLE_ROWS = 5
-const GROUP_MEMBER_GRID_TWO_COLUMN_BREAKPOINT_PX = 560
-const GROUP_MEMBER_GRID_THREE_COLUMN_BREAKPOINT_PX = 960
+const GROUP_MEMBER_GRID_TWO_COLUMN_BREAKPOINT_PX = 960
+const GROUP_MEMBER_GRID_THREE_COLUMN_BREAKPOINT_PX = 1280
 
 type GroupPlanCount = {
   key: string
@@ -59,6 +62,7 @@ export interface UpstreamAccountsGroupedRosterGroup {
   boundProxyLabels?: string[]
   concurrencyLimit?: number | null
   nodeShuntEnabled?: boolean
+  hasCustomSettings?: boolean
   planCounts: GroupPlanCount[]
 }
 
@@ -81,6 +85,8 @@ interface UpstreamAccountsGroupedRosterProps {
   labels: UpstreamAccountsTableLabels
   memberLayout?: 'list' | 'grid'
   selectionMode?: 'multi' | 'none'
+  canEditGroupSettings?: boolean
+  onEditGroupSettings?: (group: UpstreamAccountsGroupedRosterGroup) => void
   groupLabels: {
     count: (count: number) => string
     concurrency: (value: number) => string
@@ -91,6 +97,7 @@ interface UpstreamAccountsGroupedRosterProps {
     noteEmpty: string
     proxiesLabel: string
     proxiesEmpty: string
+    settingsLabel: string
   }
 }
 
@@ -105,15 +112,77 @@ function groupPlanBadgeRecipe(planKey: string) {
   return upstreamPlanBadgeRecipe(planKey)
 }
 
+function resolveGridColumnCount(width: number) {
+  if (width >= GROUP_MEMBER_GRID_THREE_COLUMN_BREAKPOINT_PX) return 3
+  if (width >= GROUP_MEMBER_GRID_TWO_COLUMN_BREAKPOINT_PX) return 2
+  return 1
+}
+
+function estimateGroupCardHeight(
+  group: UpstreamAccountsGroupedRosterGroup | undefined,
+  memberLayout: 'list' | 'grid',
+  viewportWidth: number,
+) {
+  if (!group) {
+    return GROUP_SUMMARY_ESTIMATE_PX + GROUP_CARD_VERTICAL_GAP_PX
+  }
+
+  if (memberLayout === 'grid') {
+    const columnCount = Math.max(1, resolveGridColumnCount(viewportWidth))
+    const rowCount = Math.max(1, Math.ceil(group.items.length / columnCount))
+    return (
+      GROUP_SUMMARY_ESTIMATE_PX +
+      rowCount * GROUP_MEMBER_GRID_CARD_ESTIMATE_PX +
+      Math.max(0, rowCount - 1) * GROUP_MEMBER_GRID_GAP_PX +
+      72
+    )
+  }
+
+  return (
+    GROUP_SUMMARY_ESTIMATE_PX +
+    group.items.length * GROUP_MEMBER_ROW_ESTIMATE_PX +
+    Math.max(0, group.items.length - 1) * GROUP_MEMBER_ROW_GAP_PX +
+    56
+  )
+}
+
+function buildFallbackVirtualGroups(
+  groups: UpstreamAccountsGroupedRosterGroup[],
+  memberLayout: 'list' | 'grid',
+  viewportWidth: number,
+) {
+  const count = Math.min(groups.length, 4)
+  let cursor = 0
+  return Array.from({ length: count }, (_, index) => {
+    const size = estimateGroupCardHeight(groups[index], memberLayout, viewportWidth)
+    const item = {
+      key: index,
+      index,
+      start: cursor,
+      size,
+      end: cursor + size,
+    }
+    cursor += size
+    return item
+  })
+}
+
 function GroupSummaryPanel({
   group,
   groupLabels,
   compact = false,
+  canEditGroupSettings = false,
+  onEditGroupSettings,
 }: {
   group: UpstreamAccountsGroupedRosterGroup
   groupLabels: UpstreamAccountsGroupedRosterProps['groupLabels']
   compact?: boolean
+  canEditGroupSettings?: boolean
+  onEditGroupSettings?: (group: UpstreamAccountsGroupedRosterGroup) => void
 }) {
+  const showSettingsAction = typeof onEditGroupSettings === 'function' || canEditGroupSettings
+  const settingsDisabled = !canEditGroupSettings || !group.groupName
+
   return (
     <div
       className={cn(
@@ -121,16 +190,34 @@ function GroupSummaryPanel({
         !compact && 'xl:border-r xl:border-base-300/65',
       )}
     >
-      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <h3
-          className="min-w-0 text-[16px] font-semibold leading-5 text-base-content"
-          title={group.displayName}
-        >
-          <span className="block truncate">{group.displayName}</span>
-        </h3>
-        <span className="shrink-0 text-[11px] font-medium leading-4 text-base-content/46">
-          {groupLabels.count(group.items.length)}
-        </span>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+            <h3
+              className="min-w-0 text-[16px] font-semibold leading-5 text-base-content"
+              title={group.displayName}
+            >
+              <span className="block truncate">{group.displayName}</span>
+            </h3>
+            <span className="shrink-0 text-[11px] font-medium leading-4 text-base-content/46">
+              {groupLabels.count(group.items.length)}
+            </span>
+          </div>
+        </div>
+        {showSettingsAction ? (
+          <Button
+            type="button"
+            size="icon"
+            variant={group.hasCustomSettings ? 'secondary' : 'outline'}
+            className="h-9 w-9 shrink-0 rounded-full"
+            aria-label={groupLabels.settingsLabel}
+            title={groupLabels.settingsLabel}
+            onClick={() => onEditGroupSettings?.(group)}
+            disabled={settingsDisabled}
+          >
+            <AppIcon name="file-document-edit-outline" className="h-4 w-4" aria-hidden />
+          </Button>
+        ) : null}
       </div>
 
       <div className="flex flex-wrap items-center gap-1.5">
@@ -188,38 +275,6 @@ function GroupSummaryPanel({
       </div>
     </div>
   )
-}
-
-function memberViewportHeightForRows(rowCount: number) {
-  return (
-    rowCount * GROUP_MEMBER_ROW_ESTIMATE_PX +
-    Math.max(0, rowCount - 1) * GROUP_MEMBER_ROW_GAP_PX
-  )
-}
-
-const GROUP_MEMBER_MAX_HEIGHT_PX = memberViewportHeightForRows(
-  GROUP_MEMBER_MAX_VISIBLE_ROWS,
-)
-
-function shouldVirtualizeGroupMembers(count: number) {
-  return count > GROUP_MEMBER_MAX_VISIBLE_ROWS
-}
-
-function memberGridViewportHeightForRows(rowCount: number) {
-  return (
-    rowCount * GROUP_MEMBER_GRID_CARD_ESTIMATE_PX +
-    Math.max(0, rowCount - 1) * GROUP_MEMBER_GRID_GAP_PX
-  )
-}
-
-const GROUP_MEMBER_GRID_MAX_HEIGHT_PX = memberGridViewportHeightForRows(
-  GROUP_MEMBER_GRID_MAX_VISIBLE_ROWS,
-)
-
-function resolveGridColumnCount(width: number) {
-  if (width >= GROUP_MEMBER_GRID_THREE_COLUMN_BREAKPOINT_PX) return 3
-  if (width >= GROUP_MEMBER_GRID_TWO_COLUMN_BREAKPOINT_PX) return 2
-  return 1
 }
 
 function shouldShowPlanBadge(planType?: string | null) {
@@ -540,7 +595,7 @@ function GroupMemberGridCard({
   )
 }
 
-function GroupMembersVirtualList({
+function GroupMembersList({
   items,
   selectedId,
   selectedAccountIds,
@@ -549,6 +604,7 @@ function GroupMembersVirtualList({
   labels,
   memberLayout = 'list',
   selectionMode = 'multi',
+  gridColumnCount,
 }: {
   items: UpstreamAccountSummary[]
   selectedId: number | null
@@ -558,200 +614,55 @@ function GroupMembersVirtualList({
   labels: UpstreamAccountsTableLabels
   memberLayout?: 'list' | 'grid'
   selectionMode?: 'multi' | 'none'
+  gridColumnCount: number
 }) {
-  const isGridLayout = memberLayout === 'grid'
-  const scrollRef = useRef<HTMLDivElement | null>(null)
-  const [gridColumnCount, setGridColumnCount] = useState(() =>
-    resolveGridColumnCount(typeof window === 'undefined' ? 0 : window.innerWidth),
-  )
-
-  useEffect(() => {
-    if (!isGridLayout) return
-    const element = scrollRef.current
-    if (!element) return
-
-    const updateColumnCount = (width?: number) => {
-      const fallbackWidth =
-        width ??
-        element.getBoundingClientRect().width ??
-        (typeof window === 'undefined' ? 0 : window.innerWidth)
-      const next = resolveGridColumnCount(fallbackWidth)
-      setGridColumnCount((current) => (current === next ? current : next))
-    }
-
-    updateColumnCount()
-
-    if (typeof ResizeObserver === 'undefined') return
-    const observer = new ResizeObserver((entries) => {
-      updateColumnCount(entries[0]?.contentRect.width)
-    })
-    observer.observe(element)
-    return () => observer.disconnect()
-  }, [isGridLayout])
-
-  const safeGridColumnCount = Math.max(1, gridColumnCount)
-  const gridRowCount = Math.ceil(items.length / safeGridColumnCount)
-  const gridVirtualized = isGridLayout && gridRowCount > GROUP_MEMBER_GRID_MAX_VISIBLE_ROWS
-  const listVirtualized = !isGridLayout && shouldVirtualizeGroupMembers(items.length)
-  const viewportHeight = listVirtualized ? GROUP_MEMBER_MAX_HEIGHT_PX : undefined
-  const minimumVisibleRows = Math.max(1, Math.min(items.length, GROUP_MEMBER_MIN_VISIBLE_ROWS))
-  const minimumHeight = memberViewportHeightForRows(minimumVisibleRows)
-  const rowVirtualizer = useVirtualizer({
-    count: items.length,
-    getScrollElement: () => (listVirtualized ? scrollRef.current : null),
-    estimateSize: () => GROUP_MEMBER_ROW_ESTIMATE_PX,
-    overscan: 4,
-    gap: GROUP_MEMBER_ROW_GAP_PX,
-    enabled: listVirtualized,
-  })
-  const gridRowVirtualizer = useVirtualizer({
-    count: gridRowCount,
-    getScrollElement: () => (gridVirtualized ? scrollRef.current : null),
-    estimateSize: () => GROUP_MEMBER_GRID_CARD_ESTIMATE_PX,
-    overscan: 2,
-    gap: GROUP_MEMBER_GRID_GAP_PX,
-    enabled: gridVirtualized,
-  })
-
-  if (isGridLayout) {
+  if (memberLayout === 'grid') {
     return (
       <div
-        ref={scrollRef}
-        className="self-start min-w-0 overflow-auto py-1"
-        style={{
-          ...(gridVirtualized ? { height: `${GROUP_MEMBER_GRID_MAX_HEIGHT_PX}px` } : null),
-        }}
+        className="self-start min-w-0 py-1"
         data-testid="upstream-accounts-group-members-grid"
       >
-        {gridVirtualized ? (
-          <div
-            className="relative w-full"
-            style={{ height: `${gridRowVirtualizer.getTotalSize()}px` }}
-          >
-            {gridRowVirtualizer.getVirtualItems().map((virtualRow) => {
-              const startIndex = virtualRow.index * safeGridColumnCount
-              const rowItems = items.slice(startIndex, startIndex + safeGridColumnCount)
-              return (
-                <div
-                  key={`grid-row-${virtualRow.index}`}
-                  ref={gridRowVirtualizer.measureElement}
-                  data-index={virtualRow.index}
-                  className="absolute left-0 top-0 w-full"
-                  style={{ transform: `translateY(${virtualRow.start}px)` }}
-                >
-                  <div
-                    className="grid gap-3"
-                    style={{
-                      gridTemplateColumns: `repeat(${safeGridColumnCount}, minmax(0, 1fr))`,
-                    }}
-                  >
-                    {rowItems.map((item) => (
-                      <GroupMemberGridCard
-                        key={item.id}
-                        item={item}
-                        selectedId={selectedId}
-                        onSelect={onSelect}
-                        labels={labels}
-                      />
-                    ))}
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        ) : (
-          <div
-            className="grid gap-3"
-            style={{
-              gridTemplateColumns: `repeat(${safeGridColumnCount}, minmax(0, 1fr))`,
-            }}
-          >
-            {items.map((item) => (
-              <GroupMemberGridCard
-                key={item.id}
-                item={item}
-                selectedId={selectedId}
-                onSelect={onSelect}
-                labels={labels}
-              />
-            ))}
-          </div>
-        )}
+        <div
+          className="grid gap-3"
+          style={{
+            gridTemplateColumns: `repeat(${Math.max(1, gridColumnCount)}, minmax(0, 1fr))`,
+          }}
+        >
+          {items.map((item) => (
+            <GroupMemberGridCard
+              key={item.id}
+              item={item}
+              selectedId={selectedId}
+              onSelect={onSelect}
+              labels={labels}
+            />
+          ))}
+        </div>
       </div>
     )
   }
 
   return (
-    <div
-      ref={scrollRef}
-      className={cn(
-        'min-w-0',
-        listVirtualized ? 'overflow-auto' : 'overflow-hidden',
-      )}
-      style={{
-        minHeight: `${minimumHeight}px`,
-        ...(viewportHeight != null ? { height: `${viewportHeight}px` } : null),
-      }}
-      data-testid="upstream-accounts-group-members"
-    >
-      {listVirtualized ? (
-        <div
-          className="relative w-full"
-          style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
-        >
-          {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-            const item = items[virtualRow.index]
-            return (
-              <div
-                key={item.id}
-                ref={rowVirtualizer.measureElement}
-                data-index={virtualRow.index}
-                data-testid="upstream-accounts-group-row"
-                className="absolute left-0 top-0 w-full"
-                style={{ transform: `translateY(${virtualRow.start}px)` }}
-              >
-                <div
-                  className={cn(
-                    virtualRow.index === 0
-                      ? 'pb-2'
-                      : 'border-t border-base-300/60 py-2',
-                  )}
-                >
-                  <GroupMemberRow
-                    item={item}
-                    selectedId={selectedId}
-                    selectedAccountIds={selectedAccountIds}
-                    onSelect={onSelect}
-                    onToggleSelected={onToggleSelected}
-                    labels={labels}
-                    selectionMode={selectionMode}
-                  />
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      ) : (
-        <div className="divide-y divide-base-300/60">
-          {items.map((item) => (
-            <div
-              key={item.id}
-              data-testid="upstream-accounts-group-row"
-              className="py-2 first:pt-0 last:pb-0"
-            >
-              <GroupMemberRow
-                item={item}
-                selectedId={selectedId}
-                selectedAccountIds={selectedAccountIds}
-                onSelect={onSelect}
-                onToggleSelected={onToggleSelected}
-                labels={labels}
-                selectionMode={selectionMode}
-              />
-            </div>
-          ))}
-        </div>
-      )}
+    <div className="min-w-0" data-testid="upstream-accounts-group-members">
+      <div className="divide-y divide-base-300/60">
+        {items.map((item) => (
+          <div
+            key={item.id}
+            data-testid="upstream-accounts-group-row"
+            className="py-2 first:pt-0 last:pb-0"
+          >
+            <GroupMemberRow
+              item={item}
+              selectedId={selectedId}
+              selectedAccountIds={selectedAccountIds}
+              onSelect={onSelect}
+              onToggleSelected={onToggleSelected}
+              labels={labels}
+              selectionMode={selectionMode}
+            />
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
@@ -775,17 +686,17 @@ export function UpstreamAccountsGroupedRoster({
   labels,
   memberLayout = 'list',
   selectionMode = 'multi',
+  canEditGroupSettings = false,
+  onEditGroupSettings,
   groupLabels,
 }: UpstreamAccountsGroupedRosterProps) {
-  const scrollRef = useRef<HTMLDivElement | null>(null)
   const selectAllRef = useRef<HTMLInputElement | null>(null)
-  const groupVirtualizer = useVirtualizer({
-    count: groups.length,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => GROUP_CARD_ESTIMATE_PX,
-    overscan: 3,
-    gap: 16,
-  })
+  const [containerElement, setContainerElement] = useState<HTMLDivElement | null>(null)
+  const [scrollMargin, setScrollMargin] = useState(0)
+  const [viewportWidth, setViewportWidth] = useState(() =>
+    typeof window === 'undefined' ? 0 : window.innerWidth,
+  )
+  const gridColumnCount = Math.max(1, resolveGridColumnCount(viewportWidth))
   const selectionEnabled = selectionMode === 'multi' && typeof onToggleSelected === 'function'
   const totalVisibleCount = groups.reduce((sum, group) => sum + group.items.length, 0)
   const selectedVisibleCount = groups.reduce(
@@ -797,11 +708,90 @@ export function UpstreamAccountsGroupedRoster({
   const partiallySelected =
     selectedVisibleCount > 0 && selectedVisibleCount < totalVisibleCount
 
+  const estimateSize = (index: number) =>
+    estimateGroupCardHeight(groups[index], memberLayout, viewportWidth)
+
+  const groupVirtualizer = useWindowVirtualizer({
+    count: groups.length,
+    estimateSize,
+    overscan: 3,
+    scrollMargin,
+  })
+
   useEffect(() => {
     if (selectAllRef.current) {
       selectAllRef.current.indeterminate = partiallySelected
     }
   }, [partiallySelected])
+
+  useEffect(() => {
+    const updateMetrics = () => {
+      setViewportWidth(typeof window === 'undefined' ? 0 : window.innerWidth)
+      if (!containerElement || typeof window === 'undefined') {
+        setScrollMargin(0)
+        return
+      }
+      const nextScrollMargin =
+        containerElement.getBoundingClientRect().top + window.scrollY
+      setScrollMargin((current) =>
+        Math.abs(current - nextScrollMargin) > 0.5 ? nextScrollMargin : current,
+      )
+    }
+
+    updateMetrics()
+    if (!containerElement) return
+
+    window.addEventListener('resize', updateMetrics)
+    window.addEventListener('scroll', updateMetrics, { passive: true })
+
+    if (typeof ResizeObserver === 'undefined') {
+      return () => {
+        window.removeEventListener('resize', updateMetrics)
+        window.removeEventListener('scroll', updateMetrics)
+      }
+    }
+
+    const observer = new ResizeObserver(() => {
+      updateMetrics()
+    })
+    observer.observe(containerElement)
+    if (document.body) {
+      observer.observe(document.body)
+    }
+
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', updateMetrics)
+      window.removeEventListener('scroll', updateMetrics)
+    }
+  }, [containerElement])
+
+  const virtualGroups = groupVirtualizer.getVirtualItems()
+  const renderedGroups =
+    virtualGroups.length > 0
+      ? virtualGroups
+      : buildFallbackVirtualGroups(groups, memberLayout, viewportWidth)
+  const normalizedVirtualGroups = renderedGroups.map((virtualGroup) => ({
+    ...virtualGroup,
+    start: Math.max(0, virtualGroup.start - scrollMargin),
+    end: Math.max(0, virtualGroup.end - scrollMargin),
+  }))
+  const totalMeasuredSize =
+    virtualGroups.length > 0
+      ? Math.max(0, groupVirtualizer.getTotalSize() - scrollMargin)
+      : groups.reduce(
+          (sum, group) => sum + estimateGroupCardHeight(group, memberLayout, viewportWidth),
+          0,
+        )
+  const paddingTop =
+    normalizedVirtualGroups.length > 0 ? normalizedVirtualGroups[0]!.start : 0
+  const paddingBottom =
+    normalizedVirtualGroups.length > 0
+      ? Math.max(
+          0,
+          totalMeasuredSize - normalizedVirtualGroups[normalizedVirtualGroups.length - 1]!.end,
+        )
+      : 0
 
   if (isLoading && groups.length === 0) {
     return (
@@ -857,16 +847,16 @@ export function UpstreamAccountsGroupedRoster({
 
   return (
     <div
-      ref={scrollRef}
+      ref={setContainerElement}
       className={cn(
-        "relative max-h-[960px] overflow-auto",
-        isLoading && "pointer-events-none select-none opacity-60",
+        'relative',
+        isLoading && 'pointer-events-none select-none opacity-60',
       )}
       data-testid="upstream-accounts-grouped-roster"
       aria-busy={isLoading ? 'true' : undefined}
     >
       {selectionEnabled && onToggleSelectAllVisible ? (
-        <div className="sticky top-0 z-10 mb-4 flex items-center justify-between border-b border-base-300/70 bg-base-100/94 px-2 pb-3 pt-1 backdrop-blur">
+        <div className="mb-4 flex items-center justify-between rounded-[0.9rem] border border-base-300/70 bg-base-100/80 px-3 py-2.5 shadow-sm backdrop-blur">
           <label className="flex items-center gap-2 text-sm font-medium text-base-content">
             <input
               ref={selectAllRef}
@@ -883,17 +873,18 @@ export function UpstreamAccountsGroupedRoster({
           </span>
         </div>
       ) : null}
-      <div className="relative w-full" style={{ height: `${groupVirtualizer.getTotalSize()}px` }}>
-        {groupVirtualizer.getVirtualItems().map((virtualGroup) => {
+
+      <div style={{ paddingTop: `${paddingTop}px`, paddingBottom: `${paddingBottom}px` }}>
+        {normalizedVirtualGroups.map((virtualGroup) => {
           const group = groups[virtualGroup.index]
+          if (!group) return null
           return (
             <div
               key={group.id}
               ref={groupVirtualizer.measureElement}
               data-index={virtualGroup.index}
               data-testid="upstream-accounts-group-card"
-              className="absolute left-0 top-0 w-full"
-              style={{ transform: `translateY(${virtualGroup.start}px)` }}
+              className="w-full pb-4 last:pb-0"
             >
               <article className="rounded-[1.1rem] border border-base-300/65 bg-base-100/76 px-3.5 py-3 shadow-[0_8px_24px_rgba(2,6,23,0.06)]">
                 <div className="grid items-start gap-3.5 xl:grid-cols-[12.5rem_minmax(0,1fr)]">
@@ -901,9 +892,11 @@ export function UpstreamAccountsGroupedRoster({
                     group={group}
                     groupLabels={groupLabels}
                     compact={memberLayout === 'grid'}
+                    canEditGroupSettings={canEditGroupSettings}
+                    onEditGroupSettings={onEditGroupSettings}
                   />
 
-                  <GroupMembersVirtualList
+                  <GroupMembersList
                     items={group.items}
                     selectedId={selectedId}
                     selectedAccountIds={selectedAccountIds}
@@ -912,6 +905,7 @@ export function UpstreamAccountsGroupedRoster({
                     labels={labels}
                     memberLayout={memberLayout}
                     selectionMode={selectionMode}
+                    gridColumnCount={gridColumnCount}
                   />
                 </div>
               </article>

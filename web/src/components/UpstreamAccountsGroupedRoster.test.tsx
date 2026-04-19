@@ -1,31 +1,48 @@
 /** @vitest-environment jsdom */
-import { act } from 'react'
+import { act, type ComponentProps } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+const virtualizerMocks = vi.hoisted(() => ({
+  visibleIndexes: null as number[] | null,
+}))
+
 vi.mock('@tanstack/react-virtual', () => ({
-  useVirtualizer: ({
+  useWindowVirtualizer: ({
     count,
     estimateSize,
-    gap = 0,
-    enabled = true,
   }: {
     count: number
-    estimateSize: () => number
-    gap?: number
-    enabled?: boolean
+    estimateSize: (index: number) => number
   }) => {
-    const size = estimateSize()
-    const visibleCount = enabled ? Math.min(count, 3) : count
-    return {
-      getVirtualItems: () =>
-        Array.from({ length: visibleCount }, (_, index) => ({
+    const indexes =
+      virtualizerMocks.visibleIndexes ??
+      Array.from({ length: Math.min(count, 3) }, (_, index) => index)
+
+    let cursor = 0
+    const items = indexes
+      .filter((index) => index >= 0 && index < count)
+      .map((index) => {
+        const size = estimateSize(index)
+        const item = {
           index,
           key: index,
-          start: index * (size + gap),
+          start: cursor,
           size,
-        })),
-      getTotalSize: () => count * size + Math.max(0, count - 1) * gap,
+          end: cursor + size,
+        }
+        cursor += size
+        return item
+      })
+
+    const totalSize = Array.from({ length: count }, (_, index) => estimateSize(index)).reduce(
+      (sum, size) => sum + size,
+      0,
+    )
+
+    return {
+      getVirtualItems: () => items,
+      getTotalSize: () => totalSize,
       measureElement: () => undefined,
     }
   },
@@ -115,6 +132,7 @@ const groupLabels = {
   noteEmpty: 'No note',
   proxiesLabel: 'Forward proxies',
   proxiesEmpty: 'No bound proxy',
+  settingsLabel: 'Edit group settings',
 }
 
 function usage(requestCount: number, totalTokens: number, totalCost: number) {
@@ -192,17 +210,23 @@ function makeItem(id: number, overrides: Partial<UpstreamAccountSummary> = {}): 
   }
 }
 
-function makeGroup(items: UpstreamAccountSummary[]): UpstreamAccountsGroupedRosterGroup {
+function makeGroup(
+  id: string,
+  items: UpstreamAccountSummary[],
+  overrides: Partial<UpstreamAccountsGroupedRosterGroup> = {},
+): UpstreamAccountsGroupedRosterGroup {
   return {
-    id: 'analytics',
-    groupName: 'analytics',
-    displayName: 'analytics',
+    id,
+    groupName: id,
+    displayName: id,
     items,
     note: 'This note should not render in grouped list mode.',
     boundProxyLabels: [],
     concurrencyLimit: 2,
     nodeShuntEnabled: false,
+    hasCustomSettings: false,
     planCounts: [{ key: 'api', label: 'API', count: items.length }],
+    ...overrides,
   }
 }
 
@@ -210,6 +234,7 @@ let host: HTMLDivElement | null = null
 let root: Root | null = null
 
 afterEach(() => {
+  virtualizerMocks.visibleIndexes = null
   act(() => {
     root?.unmount()
   })
@@ -218,7 +243,10 @@ afterEach(() => {
   root = null
 })
 
-function renderRoster(groups: UpstreamAccountsGroupedRosterGroup[]) {
+function renderRoster(
+  groups: UpstreamAccountsGroupedRosterGroup[],
+  overrides: Partial<ComponentProps<typeof UpstreamAccountsGroupedRoster>> = {},
+) {
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -235,57 +263,79 @@ function renderRoster(groups: UpstreamAccountsGroupedRosterGroup[]) {
         emptyDescription="Nothing here"
         labels={labels}
         groupLabels={groupLabels}
+        {...overrides}
       />,
     )
   })
 }
 
 describe('UpstreamAccountsGroupedRoster', () => {
-  it('keeps grouped list minimum height aligned with the flattened row density', () => {
-    renderRoster([makeGroup([makeItem(1), makeItem(2)])])
+  it('uses page-level rendering without internal roster scrolling', () => {
+    renderRoster([makeGroup('analytics', [makeItem(1), makeItem(2)])])
 
+    const roster = host?.querySelector('[data-testid="upstream-accounts-grouped-roster"]') as HTMLElement | null
     const members = host?.querySelector('[data-testid="upstream-accounts-group-members"]') as HTMLElement | null
+
+    expect(roster).toBeTruthy()
+    expect(roster?.className).not.toContain('overflow-auto')
     expect(members).toBeTruthy()
-    expect(members?.style.minHeight).toBe('216px')
+    expect(members?.className).not.toContain('overflow-auto')
+    expect(members?.style.minHeight).toBe('')
+    expect(members?.style.height).toBe('')
   })
 
-  it('shrinks single-account groups to a single compact row and omits the group note', () => {
-    renderRoster([makeGroup([makeItem(1)])])
+  it('renders a group settings action and keeps group notes out of the summary', () => {
+    const onEditGroupSettings = vi.fn()
+    renderRoster(
+      [
+        makeGroup('analytics', [makeItem(1)], {
+          hasCustomSettings: true,
+          boundProxyLabels: ['JP Edge 01'],
+        }),
+      ],
+      {
+        canEditGroupSettings: true,
+        onEditGroupSettings,
+      },
+    )
 
-    const members = host?.querySelector('[data-testid="upstream-accounts-group-members"]') as HTMLElement | null
-    expect(members).toBeTruthy()
-    expect(members?.style.minHeight).toBe('104px')
+    const settingsButton = host?.querySelector('button[aria-label="Edit group settings"]') as HTMLButtonElement | null
+    expect(settingsButton).toBeTruthy()
+
+    act(() => {
+      settingsButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(onEditGroupSettings).toHaveBeenCalledTimes(1)
     expect(host?.textContent).not.toContain('This note should not render in grouped list mode.')
   })
 
-  it('virtualizes large grid groups by row instead of mounting every card', () => {
-    const items = Array.from({ length: 24 }, (_, index) => makeItem(index + 1))
+  it('virtualizes large rosters by group card instead of member rows', () => {
+    const groups = Array.from({ length: 12 }, (_, groupIndex) =>
+      makeGroup(
+        `group-${groupIndex + 1}`,
+        Array.from({ length: 6 }, (_, itemIndex) =>
+          makeItem(groupIndex * 10 + itemIndex + 1, {
+            groupName: `group-${groupIndex + 1}`,
+            displayName: `Group ${groupIndex + 1} Account ${itemIndex + 1}`,
+          }),
+        ),
+      ),
+    )
 
-    host = document.createElement('div')
-    document.body.appendChild(host)
-    root = createRoot(host)
-
-    act(() => {
-      root?.render(
-        <UpstreamAccountsGroupedRoster
-          groups={[makeGroup(items)]}
-          selectedId={null}
-          selectedAccountIds={new Set<number>()}
-          onSelect={() => undefined}
-          onToggleSelected={() => undefined}
-          onToggleSelectAllVisible={() => undefined}
-          emptyTitle="Empty"
-          emptyDescription="Nothing here"
-          labels={labels}
-          groupLabels={groupLabels}
-          memberLayout="grid"
-          selectionMode="none"
-        />,
-      )
+    renderRoster(groups, {
+      memberLayout: 'grid',
+      selectionMode: 'none',
+      onToggleSelected: undefined,
+      onToggleSelectAllVisible: undefined,
     })
 
-    const cards = host?.querySelectorAll('[data-testid="upstream-accounts-group-grid-card"]') ?? []
-    expect(cards.length).toBeGreaterThan(0)
-    expect(cards.length).toBeLessThan(items.length)
+    const renderedGroupCards = host?.querySelectorAll('[data-testid="upstream-accounts-group-card"]') ?? []
+    const gridCards = host?.querySelectorAll('[data-testid="upstream-accounts-group-grid-card"]') ?? []
+
+    expect(renderedGroupCards.length).toBeGreaterThan(0)
+    expect(renderedGroupCards.length).toBeLessThan(groups.length)
+    expect(gridCards.length).toBeGreaterThan(0)
+    expect(gridCards.length).toBe(18)
   })
 })

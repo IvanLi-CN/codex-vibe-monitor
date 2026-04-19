@@ -821,6 +821,17 @@ export const GroupedView: Story = {
         ).not.toBeInTheDocument()
       })
     })
+    await step('opens the shared group settings dialog from the grouped summary action', async () => {
+      const settingsButton = await documentScope.findByRole('button', {
+        name: /edit group settings|编辑分组设置/i,
+      })
+      await userEvent.click(settingsButton)
+      await expect(
+        await documentScope.findByRole('dialog', {
+          name: /group settings|分组设置/i,
+        }),
+      ).toBeInTheDocument()
+    })
   },
 }
 
@@ -839,6 +850,10 @@ export const GridView: Story = {
       await expect(
         await documentScope.findByTestId('upstream-accounts-group-members-grid'),
       ).toBeInTheDocument()
+      const groupedRoster = await documentScope.findByTestId(
+        'upstream-accounts-grouped-roster',
+      )
+      expect(groupedRoster.className).not.toContain('overflow-auto')
       await waitFor(() => {
         expect(
           documentScope.queryByTestId('upstream-accounts-pagination-footer'),

@@ -60,6 +60,9 @@ const hookMocks = vi.hoisted(() => ({
 const apiMocks = vi.hoisted(() => ({
   createBulkUpstreamAccountSyncJobEventSource: vi.fn(),
 }));
+const virtualizerMocks = vi.hoisted(() => ({
+  visibleIndexes: null as number[] | null,
+}));
 const storage = new Map<string, string>();
 
 vi.mock("react-router-dom", async () => {
@@ -98,6 +101,44 @@ vi.mock("../../lib/api", async () => {
       apiMocks.createBulkUpstreamAccountSyncJobEventSource,
   };
 });
+
+vi.mock("@tanstack/react-virtual", () => ({
+  useWindowVirtualizer: ({
+    count,
+    estimateSize,
+  }: {
+    count: number;
+    estimateSize: (index: number) => number;
+  }) => {
+    const indexes =
+      virtualizerMocks.visibleIndexes ??
+      Array.from({ length: Math.min(count, 4) }, (_, index) => index);
+    let cursor = 0;
+    const items = indexes
+      .filter((index) => index >= 0 && index < count)
+      .map((index) => {
+        const size = estimateSize(index);
+        const item = {
+          key: index,
+          index,
+          start: cursor,
+          size,
+          end: cursor + size,
+        };
+        cursor += size;
+        return item;
+      });
+    return {
+      measureElement: () => undefined,
+      getVirtualItems: () => items,
+      getTotalSize: () =>
+        Array.from({ length: count }, (_, index) => estimateSize(index)).reduce(
+          (sum, size) => sum + size,
+          0,
+        ),
+    };
+  },
+}));
 
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -220,6 +261,7 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  virtualizerMocks.visibleIndexes = null;
   storage.clear();
   storage.set(LOCALE_STORAGE_KEY, "en");
   vi.mocked(window.localStorage.getItem).mockImplementation(
@@ -1032,8 +1074,11 @@ function mockRosterFreshnessPage(options?: {
   };
   listError?: string | null;
   refresh?: ReturnType<typeof vi.fn>;
+  saveGroupNote?: ReturnType<typeof vi.fn>;
+  groups?: Array<Record<string, unknown>>;
 }) {
   const refresh = options?.refresh ?? vi.fn();
+  const saveGroupNote = options?.saveGroupNote ?? vi.fn();
   hookMocks.useUpstreamAccounts.mockReturnValue({
     items: [
       {
@@ -1105,14 +1150,14 @@ function mockRosterFreshnessPage(options?: {
     createApiKeyAccount: vi.fn(),
     saveAccount: vi.fn(),
     saveRouting: vi.fn(),
-    saveGroupNote: vi.fn(),
+    saveGroupNote,
     runBulkAction: vi.fn(),
     startBulkSyncJob: vi.fn(),
     getBulkSyncJob: vi.fn(),
     stopBulkSyncJob: vi.fn(),
     runSync: vi.fn(),
     removeAccount: vi.fn(),
-    groups: [],
+    groups: options?.groups ?? [],
     routing: {
       writesEnabled: true,
       apiKeyConfigured: false,
@@ -1225,9 +1270,11 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
       groupedToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    expect(
-      host?.querySelector('[data-testid="upstream-accounts-grouped-roster"]'),
-    ).toBeTruthy()
+    const groupedRoster = host?.querySelector(
+      '[data-testid="upstream-accounts-grouped-roster"]',
+    ) as HTMLElement | null
+    expect(groupedRoster).toBeTruthy()
+    expect(groupedRoster?.className ?? "").not.toContain("overflow-auto")
     expect(
       Array.from(host?.querySelectorAll('input[type="checkbox"]') ?? []).find(
         (candidate) =>
@@ -1257,10 +1304,12 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
       gridToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    expect(
-      host?.querySelector('[data-testid="upstream-accounts-grouped-roster"]'),
-    ).toBeTruthy()
+    const groupedRoster = host?.querySelector(
+      '[data-testid="upstream-accounts-grouped-roster"]',
+    ) as HTMLElement | null
+    expect(groupedRoster).toBeTruthy()
     expect(gridToggle?.getAttribute('aria-selected')).toBe('true')
+    expect(groupedRoster?.className ?? "").not.toContain("overflow-auto")
     expect(
       Array.from(host?.querySelectorAll('input[type="checkbox"]') ?? []).find(
         (candidate) =>
@@ -1490,5 +1539,61 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
     })
 
     expectRosterHookQuery({ page: 2, pageSize: 20 })
+  })
+
+  it('opens the shared group settings dialog from the grouped summary action', async () => {
+    const saveGroupNote = vi.fn()
+    mockRosterFreshnessPage({
+      saveGroupNote,
+      groups: [
+        {
+          groupName: 'prod',
+          note: 'Production routing group',
+          boundProxyKeys: ['jp-edge-01'],
+          concurrencyLimit: 3,
+          nodeShuntEnabled: true,
+          upstream429RetryEnabled: true,
+          upstream429MaxRetries: 2,
+        },
+      ],
+    })
+    render()
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    const groupedToggle = Array.from(
+      host?.querySelectorAll('button[role="tab"]') ?? [],
+    ).find((candidate) => /grouped|分组/i.test(candidate.textContent ?? ''))
+    expect(groupedToggle).toBeTruthy()
+
+    act(() => {
+      groupedToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    const settingsButton = Array.from(host?.querySelectorAll('button') ?? []).find(
+      (candidate) =>
+        /edit group settings|编辑分组设置/i.test(
+          candidate.getAttribute('aria-label') ?? candidate.textContent ?? '',
+        ),
+    )
+    expect(settingsButton).toBeTruthy()
+
+    act(() => {
+      settingsButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    const dialogs = Array.from(host?.ownerDocument.querySelectorAll('[role="dialog"]') ?? [])
+    const groupSettingsDialog = dialogs.find((candidate) =>
+      /group settings|分组设置/i.test(candidate.textContent ?? ''),
+    )
+    expect(groupSettingsDialog).toBeTruthy()
+    expect(groupSettingsDialog?.textContent ?? '').toContain('prod')
+    expect(groupSettingsDialog?.textContent ?? '').toContain('JP Edge 01')
+    expect(saveGroupNote).not.toHaveBeenCalled()
   })
 })
