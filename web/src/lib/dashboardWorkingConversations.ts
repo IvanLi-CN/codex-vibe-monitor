@@ -38,6 +38,7 @@ export interface DashboardWorkingConversationCardModel {
   normalizedPromptCacheKey: string;
   conversationSequenceId: string;
   createdAtEpoch: number | null;
+  lastActivityAtEpoch: number | null;
   currentInvocation: DashboardWorkingConversationInvocationModel;
   previousInvocation: DashboardWorkingConversationInvocationModel | null;
   hasPreviousPlaceholder: boolean;
@@ -55,6 +56,18 @@ export interface DashboardWorkingConversationInvocationSelection {
   conversationSequenceId: string;
   promptCacheKey: string;
   invocation: DashboardWorkingConversationInvocationModel;
+}
+
+export interface DashboardWorkingConversationSelection {
+  conversationSequenceId: string;
+  promptCacheKey: string;
+  createdAtEpoch: number | null;
+  lastActivityAtEpoch: number | null;
+  requestCount: number;
+  totalTokens: number;
+  totalCost: number;
+  currentInvocation: DashboardWorkingConversationInvocationModel;
+  previousInvocation: DashboardWorkingConversationInvocationModel | null;
 }
 
 interface DashboardWorkingConversationSequenceOptions {
@@ -194,6 +207,7 @@ function buildPendingCardModel(
     promptCacheKey: conversation.promptCacheKey,
     normalizedPromptCacheKey,
     createdAtEpoch: parseEpoch(conversation.createdAt),
+    lastActivityAtEpoch: parseEpoch(conversation.lastActivityAt),
     currentInvocation,
     previousInvocation,
     hasPreviousPlaceholder: previousInvocation == null,
@@ -325,4 +339,20 @@ export function mapPromptCacheConversationsToDashboardCards(
       conversationSequenceId,
     };
   });
+}
+
+export function createDashboardWorkingConversationSelection(
+  card: DashboardWorkingConversationCardModel,
+): DashboardWorkingConversationSelection {
+  return {
+    conversationSequenceId: card.conversationSequenceId,
+    promptCacheKey: card.promptCacheKey,
+    createdAtEpoch: card.createdAtEpoch,
+    lastActivityAtEpoch: card.lastActivityAtEpoch,
+    requestCount: card.requestCount,
+    totalTokens: card.totalTokens,
+    totalCost: card.totalCost,
+    currentInvocation: card.currentInvocation,
+    previousInvocation: card.previousInvocation,
+  };
 }

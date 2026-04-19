@@ -1313,6 +1313,8 @@ const baseTranslations = {
     "dashboard.workingConversations.currentInvocation": "Current invocation",
     "dashboard.workingConversations.previousInvocation": "Previous invocation",
     "dashboard.workingConversations.openInvocation": "Open invocation details",
+    "dashboard.workingConversations.openConversation":
+      "Open conversation details for {{sequenceId}} · {{promptCacheKey}}",
     "dashboard.workingConversations.placeholderBadge": "Waiting",
     "dashboard.workingConversations.previousPlaceholder":
       "No previous invocation is available for this conversation yet.",
@@ -1335,6 +1337,32 @@ const baseTranslations = {
       "Invocation unavailable",
     "dashboard.workingConversations.drawer.emptyBody":
       "The full retained record may already be pruned, or this invoke ID is no longer available.",
+    "dashboard.workingConversations.conversationDrawer.close":
+      "Close conversation details",
+    "dashboard.workingConversations.conversationDrawer.subtitle":
+      "Working conversation history",
+    "dashboard.workingConversations.conversationDrawer.title":
+      "Conversation {{sequenceId}}",
+    "dashboard.workingConversations.conversationDrawer.description":
+      "Shows the dashboard summary plus every retained raw invocation for this Prompt Cache Key, newest first.",
+    "dashboard.workingConversations.conversationDrawer.createdAtLabel":
+      "Created",
+    "dashboard.workingConversations.conversationDrawer.lastActivityAtLabel":
+      "Last activity",
+    "dashboard.workingConversations.conversationDrawer.occurredAtLabel":
+      "Occurred",
+    "dashboard.workingConversations.conversationDrawer.accountLabel":
+      "Account",
+    "dashboard.workingConversations.conversationDrawer.historyTitle":
+      "Retained call history",
+    "dashboard.workingConversations.conversationDrawer.historyProgress":
+      "Loaded {{loaded}} / {{total}} retained record(s)",
+    "dashboard.workingConversations.conversationDrawer.historyProgressComplete":
+      "{{count}} retained record(s)",
+    "dashboard.workingConversations.conversationDrawer.historyLoadingMore":
+      "Loading more records…",
+    "dashboard.workingConversations.conversationDrawer.historyEmpty":
+      "No retained call records for this conversation.",
     "dashboard.today.title": "Today summary",
     "dashboard.today.subtitle": "Accumulated in natural day ({{timezone}})",
     "dashboard.today.dayBadge": "Today",
@@ -3043,6 +3071,8 @@ const baseTranslations = {
     "dashboard.workingConversations.currentInvocation": "当前调用",
     "dashboard.workingConversations.previousInvocation": "上一条调用",
     "dashboard.workingConversations.openInvocation": "打开调用详情",
+    "dashboard.workingConversations.openConversation":
+      "打开对话详情：{{sequenceId}} · {{promptCacheKey}}",
     "dashboard.workingConversations.placeholderBadge": "占位",
     "dashboard.workingConversations.previousPlaceholder":
       "这条对话还没有可展示的上一条调用。",
@@ -3061,6 +3091,32 @@ const baseTranslations = {
     "dashboard.workingConversations.drawer.emptyTitle": "调用记录不可用",
     "dashboard.workingConversations.drawer.emptyBody":
       "这条调用的完整保留记录可能已经被裁剪，或当前 invoke ID 已不再可用。",
+    "dashboard.workingConversations.conversationDrawer.close":
+      "关闭对话详情",
+    "dashboard.workingConversations.conversationDrawer.subtitle":
+      "工作中对话历史",
+    "dashboard.workingConversations.conversationDrawer.title":
+      "对话 {{sequenceId}}",
+    "dashboard.workingConversations.conversationDrawer.description":
+      "在工作中对话摘要之上，继续按时间倒序展示当前 Prompt Cache Key 下仍保留的全部原始调用记录。",
+    "dashboard.workingConversations.conversationDrawer.createdAtLabel":
+      "创建时间",
+    "dashboard.workingConversations.conversationDrawer.lastActivityAtLabel":
+      "最近活动",
+    "dashboard.workingConversations.conversationDrawer.occurredAtLabel":
+      "发生时间",
+    "dashboard.workingConversations.conversationDrawer.accountLabel":
+      "账号",
+    "dashboard.workingConversations.conversationDrawer.historyTitle":
+      "保留调用记录",
+    "dashboard.workingConversations.conversationDrawer.historyProgress":
+      "已加载 {{loaded}} / {{total}} 条保留调用记录",
+    "dashboard.workingConversations.conversationDrawer.historyProgressComplete":
+      "共 {{count}} 条保留调用记录",
+    "dashboard.workingConversations.conversationDrawer.historyLoadingMore":
+      "继续加载调用记录中…",
+    "dashboard.workingConversations.conversationDrawer.historyEmpty":
+      "当前对话暂无可回放的调用记录。",
     "dashboard.today.title": "今日统计信息",
     "dashboard.today.subtitle": "按 {{timezone}} 自然日累计",
     "dashboard.today.dayBadge": "今日",

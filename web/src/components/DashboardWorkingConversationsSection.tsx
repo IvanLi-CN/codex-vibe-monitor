@@ -15,10 +15,12 @@ import type {
   DashboardWorkingConversationCardModel,
   DashboardWorkingConversationInvocationModel,
   DashboardWorkingConversationInvocationSelection,
+  DashboardWorkingConversationSelection,
   DashboardWorkingConversationTone,
 } from "../lib/dashboardWorkingConversations";
 import {
   DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE,
+  createDashboardWorkingConversationSelection,
   formatDashboardWorkingConversationSequenceId,
 } from "../lib/dashboardWorkingConversations";
 import { cn } from "../lib/utils";
@@ -49,6 +51,9 @@ interface DashboardWorkingConversationsSectionProps {
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
   onOpenInvocation?: (
     selection: DashboardWorkingConversationInvocationSelection,
+  ) => void;
+  onOpenConversation?: (
+    selection: DashboardWorkingConversationSelection,
   ) => void;
 }
 
@@ -803,6 +808,7 @@ export function DashboardWorkingConversationsSection({
   setRefreshTargetCount,
   onOpenUpstreamAccount,
   onOpenInvocation,
+  onOpenConversation,
 }: DashboardWorkingConversationsSectionProps) {
   const { t, locale } = useTranslation();
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -1211,9 +1217,29 @@ export function DashboardWorkingConversationsSection({
                           >
                             <div className="relative">
                               <div className="flex min-w-0 items-center justify-between gap-3">
-                                <div className="min-w-0 shrink truncate font-mono text-[0.95rem] font-semibold tracking-[0.08em] text-base-content">
+                                <button
+                                  type="button"
+                                  data-testid="dashboard-working-conversation-sequence-button"
+                                  data-prompt-cache-key={card.promptCacheKey}
+                                  className="min-w-0 shrink truncate rounded-[0.65rem] border border-transparent bg-transparent px-0 py-0 text-left font-mono text-[0.95rem] font-semibold tracking-[0.08em] text-base-content transition hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                                  onClick={() =>
+                                    onOpenConversation?.(
+                                      createDashboardWorkingConversationSelection(
+                                        card,
+                                      ),
+                                    )
+                                  }
+                                  title={card.promptCacheKey}
+                                  aria-label={t(
+                                    "dashboard.workingConversations.openConversation",
+                                    {
+                                      sequenceId: displaySequenceId,
+                                      promptCacheKey: card.promptCacheKey,
+                                    },
+                                  )}
+                                >
                                   {displaySequenceId}
-                                </div>
+                                </button>
                                 <div className="flex shrink-0 items-center justify-end gap-2 whitespace-nowrap text-[10px] text-base-content/62">
                                   <span className="font-mono">
                                     {sortAnchorLabel}
