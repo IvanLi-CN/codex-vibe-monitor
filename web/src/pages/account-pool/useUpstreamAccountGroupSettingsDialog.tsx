@@ -119,7 +119,7 @@ export function useUpstreamAccountGroupSettingsDialog(
         open: true,
         groupName: normalizedGroupName,
         note: snapshot?.note ?? "",
-        existing: snapshot?.existing !== false,
+        existing: snapshot?.existing === true,
         concurrencyLimit: apiConcurrencyLimitToSliderValue(
           snapshot?.concurrencyLimit ?? 0,
         ),
