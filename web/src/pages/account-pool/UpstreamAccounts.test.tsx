@@ -1601,4 +1601,68 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
     expect(groupSettingsDialog?.textContent ?? '').toContain('JP Edge 01')
     expect(saveGroupNote).not.toHaveBeenCalled()
   })
+
+  it('treats grouped summary actions as existing groups even before metadata is persisted', async () => {
+    const saveGroupNote = vi.fn()
+    mockRosterFreshnessPage({
+      saveGroupNote,
+      groups: [],
+    })
+    render()
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    const groupedToggle = Array.from(
+      host?.querySelectorAll('button[role="tab"]') ?? [],
+    ).find((candidate) => /grouped|分组/i.test(candidate.textContent ?? ''))
+    expect(groupedToggle).toBeTruthy()
+
+    act(() => {
+      groupedToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    const settingsButton = Array.from(host?.querySelectorAll('button') ?? []).find(
+      (candidate) =>
+        /edit group settings|编辑分组设置/i.test(
+          candidate.getAttribute('aria-label') ?? candidate.textContent ?? '',
+        ),
+    )
+    expect(settingsButton).toBeTruthy()
+
+    act(() => {
+      settingsButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    const dialogs = Array.from(host?.ownerDocument.querySelectorAll('[role="dialog"]') ?? [])
+    const groupSettingsDialog = dialogs.find((candidate) =>
+      /group settings|分组设置/i.test(candidate.textContent ?? ''),
+    )
+    expect(groupSettingsDialog).toBeTruthy()
+    expect(groupSettingsDialog?.textContent ?? '').toContain(
+      'already exists',
+    )
+    expect(groupSettingsDialog?.textContent ?? '').not.toContain(
+      'creates its shared settings in advance',
+    )
+
+    const saveButton = Array.from(
+      groupSettingsDialog?.querySelectorAll('button') ?? [],
+    ).find((candidate) => /save|保存/i.test(candidate.textContent ?? ''))
+    expect(saveButton).toBeTruthy()
+
+    act(() => {
+      saveButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(saveGroupNote).toHaveBeenCalledTimes(1)
+  })
 })

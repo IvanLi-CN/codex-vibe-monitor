@@ -5,24 +5,38 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const virtualizerMocks = vi.hoisted(() => ({
   visibleIndexes: null as number[] | null,
-  sizes: [] as number[],
-  lastScrollMargin: 0,
-  measureCalls: 0,
+  byOverscan: {} as Record<
+    number,
+    {
+      sizes: number[]
+      lastScrollMargin: number
+      measureCalls: number
+    }
+  >,
 }))
 
 vi.mock('@tanstack/react-virtual', () => ({
   useWindowVirtualizer: ({
     count,
     estimateSize,
+    overscan = 0,
     scrollMargin = 0,
   }: {
     count: number
     estimateSize: (index: number) => number
+    overscan?: number
     scrollMargin?: number
   }) => {
     const sizes = Array.from({ length: count }, (_, index) => estimateSize(index))
-    virtualizerMocks.sizes = sizes
-    virtualizerMocks.lastScrollMargin = scrollMargin
+    const metrics =
+      virtualizerMocks.byOverscan[overscan] ??
+      (virtualizerMocks.byOverscan[overscan] = {
+        sizes: [],
+        lastScrollMargin: 0,
+        measureCalls: 0,
+      })
+    metrics.sizes = sizes
+    metrics.lastScrollMargin = scrollMargin
 
     const indexes =
       virtualizerMocks.visibleIndexes ??
@@ -50,7 +64,7 @@ vi.mock('@tanstack/react-virtual', () => ({
       getTotalSize: () => totalSize,
       measureElement: () => undefined,
       measure: () => {
-        virtualizerMocks.measureCalls += 1
+        metrics.measureCalls += 1
       },
     }
   },
@@ -65,6 +79,18 @@ import {
   UpstreamAccountsGroupedRoster,
   type UpstreamAccountsGroupedRosterGroup,
 } from './UpstreamAccountsGroupedRoster'
+
+const OUTER_OVERSCAN = 3
+
+function outerVirtualizerMetrics() {
+  return (
+    virtualizerMocks.byOverscan[OUTER_OVERSCAN] ?? {
+      sizes: [],
+      lastScrollMargin: 0,
+      measureCalls: 0,
+    }
+  )
+}
 
 const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
   guardEnabled: false,
@@ -243,9 +269,7 @@ let root: Root | null = null
 
 afterEach(() => {
   virtualizerMocks.visibleIndexes = null
-  virtualizerMocks.sizes = []
-  virtualizerMocks.lastScrollMargin = 0
-  virtualizerMocks.measureCalls = 0
+  virtualizerMocks.byOverscan = {}
   act(() => {
     root?.unmount()
   })
@@ -374,7 +398,46 @@ describe('UpstreamAccountsGroupedRoster', () => {
     expect(renderedGroupCards.length).toBeGreaterThan(0)
     expect(renderedGroupCards.length).toBeLessThan(groups.length)
     expect(gridCards.length).toBeGreaterThan(0)
-    expect(gridCards.length).toBe(18)
+    expect(gridCards.length).toBeLessThan(18)
+  })
+
+  it('keeps member virtualization for a single large grouped roster', () => {
+    const items = Array.from({ length: 120 }, (_, index) =>
+      makeItem(index + 1, {
+        groupName: 'analytics',
+        displayName: `Analytics ${index + 1}`,
+      }),
+    )
+
+    renderRoster([makeGroup('analytics', items)])
+
+    const renderedRows =
+      host?.querySelectorAll('[data-testid="upstream-accounts-group-row"]') ?? []
+
+    expect(renderedRows.length).toBeGreaterThan(0)
+    expect(renderedRows.length).toBeLessThan(items.length)
+  })
+
+  it('keeps member grid virtualization for a single large grouped roster', () => {
+    const items = Array.from({ length: 120 }, (_, index) =>
+      makeItem(index + 1, {
+        groupName: 'analytics',
+        displayName: `Analytics ${index + 1}`,
+      }),
+    )
+
+    renderRoster([makeGroup('analytics', items)], {
+      memberLayout: 'grid',
+      selectionMode: 'none',
+      onToggleSelected: undefined,
+      onToggleSelectAllVisible: undefined,
+    })
+
+    const renderedCards =
+      host?.querySelectorAll('[data-testid="upstream-accounts-group-grid-card"]') ?? []
+
+    expect(renderedCards.length).toBeGreaterThan(0)
+    expect(renderedCards.length).toBeLessThan(items.length)
   })
 
   it('uses the rendered roster width instead of window.innerWidth for grouped grid columns', () => {
@@ -402,7 +465,9 @@ describe('UpstreamAccountsGroupedRoster', () => {
     const membersGrid = host?.querySelector(
       '[data-testid="upstream-accounts-group-members-grid"]',
     ) as HTMLDivElement | null
-    const gridLayout = membersGrid?.querySelector(':scope > div') as HTMLDivElement | null
+    const gridLayout = membersGrid?.querySelector(
+      '[data-testid="upstream-accounts-group-grid-row"]',
+    ) as HTMLDivElement | null
 
     expect(roster).toBeTruthy()
     expect(spacer).toBeTruthy()
@@ -491,7 +556,9 @@ describe('UpstreamAccountsGroupedRoster', () => {
     const membersGrid = host?.querySelector(
       '[data-testid="upstream-accounts-group-members-grid"]',
     ) as HTMLDivElement | null
-    const gridLayout = membersGrid?.querySelector(':scope > div') as HTMLDivElement | null
+    const gridLayout = membersGrid?.querySelector(
+      '[data-testid="upstream-accounts-group-grid-row"]',
+    ) as HTMLDivElement | null
 
     expect(roster).toBeTruthy()
     expect(spacer).toBeTruthy()
@@ -580,7 +647,9 @@ describe('UpstreamAccountsGroupedRoster', () => {
     const membersGrid = host?.querySelector(
       '[data-testid="upstream-accounts-group-members-grid"]',
     ) as HTMLDivElement | null
-    const gridLayout = membersGrid?.querySelector(':scope > div') as HTMLDivElement | null
+    const gridLayout = membersGrid?.querySelector(
+      '[data-testid="upstream-accounts-group-grid-row"]',
+    ) as HTMLDivElement | null
 
     expect(roster).toBeTruthy()
     expect(spacer).toBeTruthy()
@@ -705,18 +774,18 @@ describe('UpstreamAccountsGroupedRoster', () => {
         }) satisfies DOMRect,
     })
 
-    const initialMeasureCalls = virtualizerMocks.measureCalls
+    const initialMeasureCalls = outerVirtualizerMetrics().measureCalls
 
     act(() => {
       window.dispatchEvent(new Event('resize'))
     })
 
-    const expectedPaddingBottom = virtualizerMocks.sizes
+    const expectedPaddingBottom = outerVirtualizerMetrics().sizes
       .slice(3)
       .reduce((sum, size) => sum + size, 0)
 
-    expect(virtualizerMocks.lastScrollMargin).toBe(588)
-    expect(virtualizerMocks.measureCalls).toBeGreaterThan(initialMeasureCalls)
+    expect(outerVirtualizerMetrics().lastScrollMargin).toBe(588)
+    expect(outerVirtualizerMetrics().measureCalls).toBeGreaterThan(initialMeasureCalls)
     expect(spacer?.style.paddingBottom).toBe(`${expectedPaddingBottom}px`)
   })
 
@@ -766,7 +835,7 @@ describe('UpstreamAccountsGroupedRoster', () => {
 
     expect(spacer).toBeTruthy()
 
-    const expectedPaddingBottom = virtualizerMocks.sizes
+    const expectedPaddingBottom = outerVirtualizerMetrics().sizes
       .slice(4)
       .reduce((sum, size) => sum + size, 0)
 
@@ -783,7 +852,7 @@ describe('UpstreamAccountsGroupedRoster', () => {
     )
 
     renderRoster(groups, { memberLayout: 'list' })
-    const initialMeasureCalls = virtualizerMocks.measureCalls
+    const initialMeasureCalls = outerVirtualizerMetrics().measureCalls
 
     act(() => {
       root?.render(
@@ -798,7 +867,7 @@ describe('UpstreamAccountsGroupedRoster', () => {
       )
     })
 
-    expect(virtualizerMocks.measureCalls).toBeGreaterThan(initialMeasureCalls)
+    expect(outerVirtualizerMetrics().measureCalls).toBeGreaterThan(initialMeasureCalls)
   })
 
   it('recomputes the window scroll margin when grouped toolbar chrome toggles', () => {
@@ -863,7 +932,7 @@ describe('UpstreamAccountsGroupedRoster', () => {
       window.dispatchEvent(new Event('resize'))
     })
 
-    expect(virtualizerMocks.lastScrollMargin).toBe(260)
+    expect(outerVirtualizerMetrics().lastScrollMargin).toBe(260)
 
     rosterTop = 172
     spacerTop = 172
@@ -881,6 +950,6 @@ describe('UpstreamAccountsGroupedRoster', () => {
       )
     })
 
-    expect(virtualizerMocks.lastScrollMargin).toBe(212)
+    expect(outerVirtualizerMetrics().lastScrollMargin).toBe(212)
   })
 })

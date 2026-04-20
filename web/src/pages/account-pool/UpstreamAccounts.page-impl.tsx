@@ -1030,12 +1030,15 @@ export default function UpstreamAccountsPage() {
           t("accountPool.upstreamAccounts.groupFilter.ungrouped"),
         items: [],
         note: groupSummary?.note ?? null,
+        boundProxyKeys: groupSummary?.boundProxyKeys ?? [],
         boundProxyLabels:
           groupSummary?.boundProxyKeys?.map(
             (proxyKey) => forwardProxyNodeLabelMap.get(proxyKey) ?? proxyKey,
           ) ?? [],
         concurrencyLimit: groupSummary?.concurrencyLimit ?? null,
         nodeShuntEnabled: groupSummary?.nodeShuntEnabled ?? false,
+        upstream429RetryEnabled: groupSummary?.upstream429RetryEnabled ?? false,
+        upstream429MaxRetries: groupSummary?.upstream429MaxRetries ?? 0,
         hasCustomSettings:
           Boolean(groupSummary?.note?.trim()) ||
           (groupSummary?.boundProxyKeys?.length ?? 0) > 0 ||
@@ -1100,25 +1103,24 @@ export default function UpstreamAccountsPage() {
       (groupName) => {
         const normalizedGroupName = normalizeRosterGroupName(groupName);
         if (!normalizedGroupName) return null;
-        const groupSummary =
-          groups.find(
-            (group) =>
-              normalizeRosterGroupName(group.groupName) === normalizedGroupName,
+        const rosterGroup =
+          groupedRosterGroups.find(
+            (group) => group.groupName === normalizedGroupName,
           ) ??
           null;
         return {
           groupName: normalizedGroupName,
-          note: groupSummary?.note ?? "",
-          existing: groupSummary != null,
-          concurrencyLimit: groupSummary?.concurrencyLimit ?? 0,
-          boundProxyKeys: groupSummary?.boundProxyKeys ?? [],
-          nodeShuntEnabled: groupSummary?.nodeShuntEnabled ?? false,
+          note: rosterGroup?.note ?? "",
+          existing: rosterGroup != null,
+          concurrencyLimit: rosterGroup?.concurrencyLimit ?? 0,
+          boundProxyKeys: rosterGroup?.boundProxyKeys ?? [],
+          nodeShuntEnabled: rosterGroup?.nodeShuntEnabled ?? false,
           upstream429RetryEnabled:
-            groupSummary?.upstream429RetryEnabled ?? false,
-          upstream429MaxRetries: groupSummary?.upstream429MaxRetries ?? 0,
+            rosterGroup?.upstream429RetryEnabled ?? false,
+          upstream429MaxRetries: rosterGroup?.upstream429MaxRetries ?? 0,
         };
       },
-      [groups],
+      [groupedRosterGroups],
     ),
     saveGroupSettings: useCallback(
       async (groupName, payload) => {
