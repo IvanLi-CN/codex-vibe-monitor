@@ -1552,7 +1552,7 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
       saveGroupNote,
       groups: [
         {
-          groupName: 'prod',
+          groupName: '  prod  ',
           note: 'Production routing group',
           boundProxyKeys: ['jp-edge-01'],
           concurrencyLimit: 3,

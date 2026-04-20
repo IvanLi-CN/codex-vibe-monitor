@@ -992,14 +992,28 @@ export default function UpstreamAccountsPage() {
     if (hideRosterDerivedUi) {
       return [];
     }
+    const normalizedGroupEntries = groups.map((group, index) => ({
+      group,
+      index,
+      normalizedGroupName: normalizeRosterGroupName(group.groupName),
+    }));
+    const namedGroupEntries = normalizedGroupEntries.filter(
+      (
+        entry,
+      ): entry is {
+        group: (typeof groups)[number];
+        index: number;
+        normalizedGroupName: string;
+      } => entry.normalizedGroupName != null,
+    );
     const forwardProxyNodeLabelMap = new Map(
       forwardProxyNodes.map((node) => [node.key, node.displayName?.trim() || node.key] as const),
     );
     const groupSummaryMap = new Map(
-      groups.map((group) => [group.groupName, group] as const),
+      namedGroupEntries.map((entry) => [entry.normalizedGroupName, entry.group] as const),
     );
     const groupOrder = new Map(
-      groups.map((group, index) => [group.groupName, index] as const),
+      namedGroupEntries.map((entry) => [entry.normalizedGroupName, entry.index] as const),
     );
     const grouped = new Map<string, UpstreamAccountsGroupedRosterGroup>();
     for (const item of visibleRosterItems) {
@@ -1087,7 +1101,10 @@ export default function UpstreamAccountsPage() {
         const normalizedGroupName = normalizeRosterGroupName(groupName);
         if (!normalizedGroupName) return null;
         const groupSummary =
-          groups.find((group) => group.groupName === normalizedGroupName) ??
+          groups.find(
+            (group) =>
+              normalizeRosterGroupName(group.groupName) === normalizedGroupName,
+          ) ??
           null;
         return {
           groupName: normalizedGroupName,
