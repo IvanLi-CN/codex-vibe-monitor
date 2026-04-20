@@ -1283,7 +1283,7 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
     expect(
       Array.from(host?.querySelectorAll('input[type="checkbox"]') ?? []).find(
         (candidate) =>
-          /select current page|选择当前页/i.test(
+          /select filtered accounts|选择筛选结果/i.test(
             candidate.getAttribute('aria-label') ?? '',
           ),
       ),
@@ -1318,7 +1318,7 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
     expect(
       Array.from(host?.querySelectorAll('input[type="checkbox"]') ?? []).find(
         (candidate) =>
-          /select current page|选择当前页/i.test(
+          /select filtered accounts|选择筛选结果/i.test(
             candidate.getAttribute('aria-label') ?? '',
           ),
       ),
@@ -1363,7 +1363,7 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
     expect(
       Array.from(host?.querySelectorAll('input[type="checkbox"]') ?? []).find(
         (candidate) =>
-          /select current page|选择当前页/i.test(
+          /select filtered accounts|选择筛选结果/i.test(
             candidate.getAttribute('aria-label') ?? '',
           ),
       ),

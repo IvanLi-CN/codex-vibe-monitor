@@ -2275,7 +2275,9 @@ export default function UpstreamAccountsPage() {
                     exclusiveNode: t(
                       "accountPool.upstreamAccounts.grouped.exclusiveNode",
                     ),
-                    selectVisible: t("accountPool.upstreamAccounts.bulk.selectPage"),
+                    selectVisible: t(
+                      "accountPool.upstreamAccounts.bulk.selectFiltered",
+                    ),
                     infoTitle: t("accountPool.upstreamAccounts.grouped.infoTitle"),
                     noteLabel: t("accountPool.upstreamAccounts.grouped.noteLabel"),
                     noteEmpty: t("accountPool.upstreamAccounts.grouped.noteEmpty"),
