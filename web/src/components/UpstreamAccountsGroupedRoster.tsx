@@ -1,5 +1,4 @@
 import {
-  useCallback,
   useEffect,
   useRef,
   useState,
@@ -52,8 +51,6 @@ const GROUP_SUMMARY_COLUMN_WIDTH_PX = 200
 const GROUP_SUMMARY_GRID_BREAKPOINT_PX = 1280
 const GROUP_SUMMARY_GRID_GAP_PX = 14
 const GROUP_OUTER_OVERSCAN = 3
-const GROUP_MEMBER_LIST_OVERSCAN = 5
-const GROUP_MEMBER_GRID_OVERSCAN = 2
 
 type GroupPlanCount = {
   key: string
@@ -166,29 +163,6 @@ function estimateGroupCardHeight(
     Math.max(0, group.items.length - 1) * GROUP_MEMBER_ROW_GAP_PX +
     56
   )
-}
-
-function buildFallbackVirtualGroups(
-  groups: UpstreamAccountsGroupedRosterGroup[],
-  memberLayout: 'list' | 'grid',
-  viewportWidth: number,
-) {
-  const count = Math.min(groups.length, 4)
-  let cursor = 0
-  return Array.from({ length: count }, (_, index) => {
-    const size =
-      estimateGroupCardHeight(groups[index], memberLayout, viewportWidth) +
-      (index === groups.length - 1 ? 0 : GROUP_CARD_VERTICAL_GAP_PX)
-    const item = {
-      key: index,
-      index,
-      start: cursor,
-      size,
-      end: cursor + size,
-    }
-    cursor += size
-    return item
-  })
 }
 
 type FallbackVirtualItem = {
@@ -435,6 +409,10 @@ function GroupMemberRow({
         'rounded-[0.85rem] px-2.5 py-1.5 outline-none transition-colors hover:bg-base-200/55 focus-visible:bg-base-200/55',
         selected && 'bg-primary/8 ring-1 ring-primary/18',
       )}
+      style={{
+        contentVisibility: 'auto',
+        containIntrinsicSize: `${GROUP_MEMBER_ROW_ESTIMATE_PX}px`,
+      }}
     >
       <div className="flex items-start gap-3">
         {selectionEnabled ? (
@@ -621,6 +599,10 @@ function GroupMemberGridCard({
         selected && 'border-primary/30 bg-primary/8 shadow-[0_0_0_1px_rgba(59,130,246,0.08)]',
       )}
       data-testid="upstream-accounts-group-grid-card"
+      style={{
+        contentVisibility: 'auto',
+        containIntrinsicSize: `${GROUP_MEMBER_GRID_CARD_ESTIMATE_PX}px`,
+      }}
     >
       <div className="min-w-0">
         <p className="truncate text-[14px] font-semibold leading-5 text-base-content" title={item.displayName}>
@@ -702,168 +684,45 @@ function GroupMembersList({
   gridColumnCount: number
   containerRef?: (node: HTMLDivElement | null) => void
 }) {
-  const [containerElement, setContainerElement] = useState<HTMLDivElement | null>(null)
-  const [memberScrollMargin, setMemberScrollMargin] = useState(0)
-  const resolvedGridColumnCount = Math.max(1, gridColumnCount)
-  const virtualCount =
-    memberLayout === 'grid'
-      ? Math.max(1, Math.ceil(items.length / resolvedGridColumnCount))
-      : items.length
-  const estimateSize = useCallback(
-    (index: number) => {
-      if (memberLayout === 'grid') {
-        return (
-          GROUP_MEMBER_GRID_CARD_ESTIMATE_PX +
-          (index === virtualCount - 1 ? 0 : GROUP_MEMBER_GRID_GAP_PX)
-        )
-      }
-      return GROUP_MEMBER_ROW_ESTIMATE_PX + (index === items.length - 1 ? 0 : GROUP_MEMBER_ROW_GAP_PX)
-    },
-    [items.length, memberLayout, virtualCount],
-  )
-  const overscan =
-    memberLayout === 'grid' ? GROUP_MEMBER_GRID_OVERSCAN : GROUP_MEMBER_LIST_OVERSCAN
-  const memberVirtualizer = useWindowVirtualizer({
-    count: virtualCount,
-    estimateSize,
-    overscan,
-    scrollMargin: memberScrollMargin,
-  })
-
-  const setMergedContainerRef = useCallback(
-    (node: HTMLDivElement | null) => {
-      setContainerElement(node)
-      containerRef?.(node)
-    },
-    [containerRef],
-  )
-
-  useEffect(() => {
-    memberVirtualizer.measure()
-  }, [gridColumnCount, items, memberLayout, memberVirtualizer, selectionMode])
-
-  useEffect(() => {
-    const updateMetrics = () => {
-      if (typeof window === 'undefined') {
-        setMemberScrollMargin(0)
-        return
-      }
-      if (!containerElement) {
-        setMemberScrollMargin(0)
-        return
-      }
-
-      const nextScrollMargin = containerElement.getBoundingClientRect().top + window.scrollY
-      setMemberScrollMargin((current) =>
-        Math.abs(current - nextScrollMargin) > 0.5 ? nextScrollMargin : current,
-      )
-    }
-
-    updateMetrics()
-    if (!containerElement) return
-
-    window.addEventListener('resize', updateMetrics)
-
-    if (typeof ResizeObserver === 'undefined') {
-      return () => {
-        window.removeEventListener('resize', updateMetrics)
-      }
-    }
-
-    const observer = new ResizeObserver(() => {
-      updateMetrics()
-    })
-    observer.observe(containerElement)
-    if (document.body) {
-      observer.observe(document.body)
-    }
-
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', updateMetrics)
-    }
-  }, [containerElement, gridColumnCount, items.length, memberLayout, selectionMode])
-
-  const virtualRows = memberVirtualizer.getVirtualItems()
-  const renderedRows =
-    virtualRows.length > 0
-      ? toFallbackVirtualItems(virtualRows)
-      : buildFallbackVirtualItems(virtualCount, estimateSize, memberScrollMargin)
-  const normalizedRows = normalizeVirtualItems(renderedRows, memberScrollMargin)
-  const totalMeasuredSize =
-    virtualRows.length > 0
-      ? Math.max(0, memberVirtualizer.getTotalSize())
-      : Array.from({ length: virtualCount }, (_, index) => estimateSize(index)).reduce(
-          (sum, size) => sum + size,
-          0,
-        )
-  const paddingTop = normalizedRows.length > 0 ? normalizedRows[0]!.start : 0
-  const paddingBottom =
-    normalizedRows.length > 0
-      ? Math.max(0, totalMeasuredSize - normalizedRows[normalizedRows.length - 1]!.end)
-      : 0
-
   if (memberLayout === 'grid') {
     return (
       <div
-        ref={setMergedContainerRef}
+        ref={containerRef}
         className="self-start min-w-0 py-1"
         data-testid="upstream-accounts-group-members-grid"
       >
-        <div style={{ paddingTop: `${paddingTop}px`, paddingBottom: `${paddingBottom}px` }}>
-          {normalizedRows.map((virtualRow) => {
-            const rowItems = items.slice(
-              virtualRow.index * resolvedGridColumnCount,
-              (virtualRow.index + 1) * resolvedGridColumnCount,
-            )
-            return (
-              <div
-                key={`row-${virtualRow.index}`}
-                ref={memberVirtualizer.measureElement}
-                data-index={virtualRow.index}
-                className={cn(virtualRow.index === virtualCount - 1 ? '' : 'pb-3')}
-              >
-                <div
-                  data-testid="upstream-accounts-group-grid-row"
-                  className="grid gap-3"
-                  style={{
-                    gridTemplateColumns: `repeat(${resolvedGridColumnCount}, minmax(0, 1fr))`,
-                  }}
-                >
-                  {rowItems.map((item) => (
-                    <GroupMemberGridCard
-                      key={item.id}
-                      item={item}
-                      selectedId={selectedId}
-                      onSelect={onSelect}
-                      labels={labels}
-                    />
-                  ))}
-                </div>
-              </div>
-            )
-          })}
+        <div
+          data-testid="upstream-accounts-group-grid-row"
+          className="grid gap-3"
+          style={{
+            gridTemplateColumns: `repeat(${Math.max(1, gridColumnCount)}, minmax(0, 1fr))`,
+          }}
+        >
+          {items.map((item) => (
+            <GroupMemberGridCard
+              key={item.id}
+              item={item}
+              selectedId={selectedId}
+              onSelect={onSelect}
+              labels={labels}
+            />
+          ))}
         </div>
       </div>
     )
   }
 
   return (
-    <div ref={setMergedContainerRef} className="min-w-0" data-testid="upstream-accounts-group-members">
-      <div style={{ paddingTop: `${paddingTop}px`, paddingBottom: `${paddingBottom}px` }}>
-        {normalizedRows.map((virtualRow) => {
-          const item = items[virtualRow.index]
-          if (!item) return null
-          return (
+    <div ref={containerRef} className="min-w-0" data-testid="upstream-accounts-group-members">
+      <div>
+        {items.map((item, index) => (
           <div
             key={item.id}
-            ref={memberVirtualizer.measureElement}
-            data-index={virtualRow.index}
             data-testid="upstream-accounts-group-row"
             className={cn(
-              virtualRow.index > 0 && 'border-t border-base-300/60 pt-2',
-              virtualRow.index === 0 && 'pt-0',
-              virtualRow.index === items.length - 1 ? 'pb-0' : 'pb-2',
+              index > 0 && 'border-t border-base-300/60 pt-2',
+              index === 0 && 'pt-0',
+              index === items.length - 1 ? 'pb-0' : 'pb-2',
             )}
           >
             <GroupMemberRow
@@ -876,8 +735,7 @@ function GroupMembersList({
               selectionMode={selectionMode}
             />
           </div>
-          )
-        })}
+        ))}
       </div>
     </div>
   )
@@ -1028,7 +886,7 @@ export function UpstreamAccountsGroupedRoster({
   const renderedGroups =
     virtualGroups.length > 0
       ? toFallbackVirtualItems(virtualGroups)
-      : buildFallbackVirtualGroups(groups, memberLayout, effectiveMemberViewportWidth)
+      : buildFallbackVirtualItems(groups.length, estimateSize)
   const normalizedVirtualGroups = normalizeVirtualItems(renderedGroups, scrollMargin)
   const totalMeasuredSize =
     virtualGroups.length > 0

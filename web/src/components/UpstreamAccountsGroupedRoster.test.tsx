@@ -398,46 +398,7 @@ describe('UpstreamAccountsGroupedRoster', () => {
     expect(renderedGroupCards.length).toBeGreaterThan(0)
     expect(renderedGroupCards.length).toBeLessThan(groups.length)
     expect(gridCards.length).toBeGreaterThan(0)
-    expect(gridCards.length).toBeLessThan(18)
-  })
-
-  it('keeps member virtualization for a single large grouped roster', () => {
-    const items = Array.from({ length: 120 }, (_, index) =>
-      makeItem(index + 1, {
-        groupName: 'analytics',
-        displayName: `Analytics ${index + 1}`,
-      }),
-    )
-
-    renderRoster([makeGroup('analytics', items)])
-
-    const renderedRows =
-      host?.querySelectorAll('[data-testid="upstream-accounts-group-row"]') ?? []
-
-    expect(renderedRows.length).toBeGreaterThan(0)
-    expect(renderedRows.length).toBeLessThan(items.length)
-  })
-
-  it('keeps member grid virtualization for a single large grouped roster', () => {
-    const items = Array.from({ length: 120 }, (_, index) =>
-      makeItem(index + 1, {
-        groupName: 'analytics',
-        displayName: `Analytics ${index + 1}`,
-      }),
-    )
-
-    renderRoster([makeGroup('analytics', items)], {
-      memberLayout: 'grid',
-      selectionMode: 'none',
-      onToggleSelected: undefined,
-      onToggleSelectAllVisible: undefined,
-    })
-
-    const renderedCards =
-      host?.querySelectorAll('[data-testid="upstream-accounts-group-grid-card"]') ?? []
-
-    expect(renderedCards.length).toBeGreaterThan(0)
-    expect(renderedCards.length).toBeLessThan(items.length)
+    expect(gridCards.length).toBe(18)
   })
 
   it('uses the rendered roster width instead of window.innerWidth for grouped grid columns', () => {
@@ -836,7 +797,7 @@ describe('UpstreamAccountsGroupedRoster', () => {
     expect(spacer).toBeTruthy()
 
     const expectedPaddingBottom = outerVirtualizerMetrics().sizes
-      .slice(4)
+      .slice(3)
       .reduce((sum, size) => sum + size, 0)
 
     expect(spacer?.style.paddingBottom).toBe(`${expectedPaddingBottom}px`)
