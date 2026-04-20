@@ -827,7 +827,7 @@ export function UpstreamAccountsGroupedRoster({
       observer.disconnect()
       window.removeEventListener('resize', updateMetrics)
     }
-  }, [containerElement, spacerElement, memberElement])
+  }, [containerElement, spacerElement, memberElement, memberLayout, selectionEnabled])
 
   const virtualGroups = groupVirtualizer.getVirtualItems()
   const renderedGroups =

@@ -711,4 +711,87 @@ describe('UpstreamAccountsGroupedRoster', () => {
 
     expect(virtualizerMocks.measureCalls).toBeGreaterThan(initialMeasureCalls)
   })
+
+  it('recomputes the window scroll margin when grouped toolbar chrome toggles', () => {
+    const groups = Array.from({ length: 3 }, (_, index) =>
+      makeGroup(`group-${index + 1}`, [
+        makeItem(index + 1, {
+          groupName: `group-${index + 1}`,
+        }),
+      ]),
+    )
+
+    renderRoster(groups, { memberLayout: 'list' })
+
+    const roster = host?.querySelector(
+      '[data-testid="upstream-accounts-grouped-roster"]',
+    ) as HTMLDivElement | null
+    const spacer = host?.querySelector(
+      '[data-testid="upstream-accounts-grouped-roster-spacer"]',
+    ) as HTMLDivElement | null
+
+    expect(roster).toBeTruthy()
+    expect(spacer).toBeTruthy()
+
+    let rosterTop = 220
+    let spacerTop = 220
+    Object.defineProperty(window, 'scrollY', {
+      configurable: true,
+      value: 40,
+    })
+    Object.defineProperty(roster!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () =>
+        ({
+          top: rosterTop,
+          left: 0,
+          right: 1100,
+          bottom: rosterTop + 640,
+          width: 1100,
+          height: 640,
+          x: 0,
+          y: rosterTop,
+          toJSON: () => ({}),
+        }) satisfies DOMRect,
+    })
+    Object.defineProperty(spacer!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () =>
+        ({
+          top: spacerTop,
+          left: 0,
+          right: 1100,
+          bottom: spacerTop + 600,
+          width: 1100,
+          height: 600,
+          x: 0,
+          y: spacerTop,
+          toJSON: () => ({}),
+        }) satisfies DOMRect,
+    })
+
+    act(() => {
+      window.dispatchEvent(new Event('resize'))
+    })
+
+    expect(virtualizerMocks.lastScrollMargin).toBe(260)
+
+    rosterTop = 172
+    spacerTop = 172
+
+    act(() => {
+      root?.render(
+        <UpstreamAccountsGroupedRoster
+          {...createRosterProps(groups, {
+            memberLayout: 'grid',
+            selectionMode: 'none',
+            onToggleSelected: undefined,
+            onToggleSelectAllVisible: undefined,
+          })}
+        />,
+      )
+    })
+
+    expect(virtualizerMocks.lastScrollMargin).toBe(212)
+  })
 })
