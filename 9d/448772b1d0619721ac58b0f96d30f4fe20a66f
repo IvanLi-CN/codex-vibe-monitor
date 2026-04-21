@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.47.5",
+  "base_stable_version": "1.47.4",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-21T17:12:05Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.47.5",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "1456388731dc1dd63b3c75c8276fc00fab2d33a6",
+  "pr_number": 354,
+  "pr_title": "fix(web): stabilize grouped roster page virtualization",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.47.5",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.47.5",
+  "target_sha": "9d448772b1d0619721ac58b0f96d30f4fe20a66f",
+  "type_label": "type:patch"
+}
