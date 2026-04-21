@@ -1,33 +1,28 @@
 import {
   Fragment,
-  useCallback,
   useEffect,
-  useId,
   useMemo,
-  useRef,
   useState,
 } from "react";
 import { useTranslation } from "../i18n";
 import type {
-  ApiInvocation,
-  InvocationRecordsQuery,
   PromptCacheConversation,
   PromptCacheConversationUpstreamAccount,
   PromptCacheConversationsResponse,
 } from "../lib/api";
-import { fetchInvocationRecords } from "../lib/api";
-import { mergeInvocationRecordCollections } from "../lib/invocationLiveMerge";
-import { invocationStableKey } from "../lib/invocation";
 import { buildInvocationFromPromptCachePreview } from "../lib/promptCacheLive";
-import { subscribeToSse, subscribeToSseOpen } from "../lib/sse";
-import { AccountDetailDrawerShell } from "./AccountDetailDrawerShell";
 import { AppIcon } from "./AppIcon";
-import { InvocationTable } from "./InvocationTable";
 import { ConversationSparkline } from "./KeyedConversationTable";
+import { PromptCacheConversationHistoryDrawer } from "./PromptCacheConversationHistoryDrawer";
 import {
   FALLBACK_CELL,
   findVisibleConversationChartMax,
 } from "./keyedConversationChart";
+import {
+  type PromptCacheConversationHistoryQueryBuilder,
+  type PromptCacheConversationHistoryRecordMatcher,
+  PromptCacheConversationInvocationTable,
+} from "./prompt-cache-conversation-history-shared";
 import { Alert } from "./ui/alert";
 import { Spinner } from "./ui/spinner";
 
@@ -40,26 +35,12 @@ interface PromptCacheConversationTableProps {
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
   keyColumnLabel?: string;
   emptyLabel?: string;
-  historyQueryForConversationKey?: (
-    conversationKey: string,
-  ) => Partial<InvocationRecordsQuery>;
-  historyRecordMatchesConversationKey?: (
-    record: ApiInvocation,
-    conversationKey: string,
-  ) => boolean;
+  historyQueryForConversationKey?: PromptCacheConversationHistoryQueryBuilder;
+  historyRecordMatchesConversationKey?: PromptCacheConversationHistoryRecordMatcher;
 }
-
-type ConversationHistoryQueryBuilder = NonNullable<
-  PromptCacheConversationTableProps["historyQueryForConversationKey"]
->;
-type ConversationHistoryRecordMatcher = NonNullable<
-  PromptCacheConversationTableProps["historyRecordMatchesConversationKey"]
->;
 
 const PROMPT_CACHE_NOW_TICK_MS = 30_000;
 const PROMPT_CACHE_CHART_MAX_WINDOW_MS = 24 * 3_600_000;
-const PROMPT_CACHE_HISTORY_PAGE_SIZE = 200;
-const PROMPT_CACHE_HISTORY_RESYNC_THROTTLE_MS = 1_000;
 
 function parseEpoch(raw?: string | null) {
   if (!raw) return null;
@@ -225,354 +206,6 @@ function UpstreamAccountsBlock({
         );
       })}
     </div>
-  );
-}
-
-function PromptCacheConversationInvocationTable({
-  records,
-  isLoading,
-  error,
-  emptyLabel,
-  onOpenUpstreamAccount,
-}: {
-  records: ApiInvocation[];
-  isLoading: boolean;
-  error?: string | null;
-  emptyLabel: string;
-  onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
-}) {
-  const hasLoadedRecords = records.length > 0;
-
-  if (hasLoadedRecords) {
-    return (
-      <div className="space-y-3">
-        {error ? (
-          <Alert variant="error">
-            <span>{error}</span>
-          </Alert>
-        ) : null}
-        <InvocationTable
-          records={records}
-          isLoading={false}
-          error={null}
-          emptyLabel={emptyLabel}
-          onOpenUpstreamAccount={onOpenUpstreamAccount}
-        />
-      </div>
-    );
-  }
-
-  return (
-    <InvocationTable
-      records={records}
-      isLoading={isLoading}
-      error={error}
-      emptyLabel={emptyLabel}
-      onOpenUpstreamAccount={onOpenUpstreamAccount}
-    />
-  );
-}
-
-function PromptCacheConversationHistoryDrawer({
-  open,
-  conversationKey,
-  onClose,
-  t,
-  onOpenUpstreamAccount,
-  historyQueryForConversationKey,
-  historyRecordMatchesConversationKey,
-}: {
-  open: boolean;
-  conversationKey: string | null;
-  onClose: () => void;
-  t: (key: string, values?: Record<string, string | number>) => string;
-  onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
-  historyQueryForConversationKey?: ConversationHistoryQueryBuilder;
-  historyRecordMatchesConversationKey?: ConversationHistoryRecordMatcher;
-}) {
-  const titleId = useId();
-  const requestSeqRef = useRef(0);
-  const hasHydratedRef = useRef(false);
-  const inFlightRef = useRef(false);
-  const pendingLoadRef = useRef<{ silent?: boolean } | null>(null);
-  const pendingOpenResyncRef = useRef(false);
-  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastRefreshAtRef = useRef(0);
-  const [records, setRecords] = useState<ApiInvocation[]>([]);
-  const [liveRecords, setLiveRecords] = useState<ApiInvocation[]>([]);
-  const [total, setTotal] = useState(0);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const clearPendingRefreshTimer = useCallback(() => {
-    if (!refreshTimerRef.current) return;
-    clearTimeout(refreshTimerRef.current);
-    refreshTimerRef.current = null;
-  }, []);
-
-  const runLoad = useCallback(
-    async ({ silent = false }: { silent?: boolean } = {}) => {
-      if (!open || !conversationKey) return;
-
-      inFlightRef.current = true;
-      const requestSeq = requestSeqRef.current + 1;
-      requestSeqRef.current = requestSeq;
-      const shouldShowLoading = !(silent && hasHydratedRef.current);
-      if (shouldShowLoading) setIsLoading(true);
-      try {
-        let page = 1;
-        let snapshotId: number | undefined;
-        let loaded: ApiInvocation[] = [];
-        let totalRecords = 0;
-
-        while (true) {
-          const historyFilters = historyQueryForConversationKey?.(
-            conversationKey,
-          ) ?? {
-            promptCacheKey: conversationKey,
-          };
-          const response = await fetchInvocationRecords({
-            ...historyFilters,
-            page,
-            pageSize: PROMPT_CACHE_HISTORY_PAGE_SIZE,
-            sortBy: "occurredAt",
-            sortOrder: "desc",
-            ...(snapshotId != null ? { snapshotId } : {}),
-          });
-          if (requestSeq !== requestSeqRef.current) return;
-
-          snapshotId = response.snapshotId;
-          totalRecords = response.total;
-          loaded = [...loaded, ...response.records];
-          setRecords(loaded);
-          setTotal(totalRecords);
-
-          if (loaded.length >= totalRecords || response.records.length === 0) {
-            break;
-          }
-          page += 1;
-        }
-
-        if (requestSeq !== requestSeqRef.current) return;
-        hasHydratedRef.current = true;
-        const loadedStableKeys = new Set(loaded.map(invocationStableKey));
-        setLiveRecords((current) =>
-          current.filter(
-            (record) => !loadedStableKeys.has(invocationStableKey(record)),
-          ),
-        );
-        setError(null);
-        if (pendingOpenResyncRef.current) {
-          pendingOpenResyncRef.current = false;
-          const pendingSilent = pendingLoadRef.current?.silent ?? true;
-          pendingLoadRef.current = { silent: pendingSilent };
-        }
-      } catch (err) {
-        if (requestSeq !== requestSeqRef.current) return;
-        setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        if (requestSeq === requestSeqRef.current && shouldShowLoading) {
-          setIsLoading(false);
-        }
-        if (requestSeq === requestSeqRef.current) {
-          inFlightRef.current = false;
-        }
-        const pendingLoad = pendingLoadRef.current;
-        if (requestSeq === requestSeqRef.current && pendingLoad) {
-          pendingLoadRef.current = null;
-          void runLoad(pendingLoad);
-        }
-      }
-    },
-    [conversationKey, historyQueryForConversationKey, open],
-  );
-
-  const load = useCallback(
-    async (options: { silent?: boolean } = {}) => {
-      const silent = options.silent ?? false;
-      if (inFlightRef.current) {
-        const pendingSilent = pendingLoadRef.current?.silent ?? true;
-        pendingLoadRef.current = { silent: pendingSilent && silent };
-        return;
-      }
-      await runLoad({ silent });
-    },
-    [runLoad],
-  );
-
-  const triggerSseRefresh = useCallback(() => {
-    const now = Date.now();
-    const delay = Math.max(
-      0,
-      PROMPT_CACHE_HISTORY_RESYNC_THROTTLE_MS -
-        (now - lastRefreshAtRef.current),
-    );
-    const run = () => {
-      refreshTimerRef.current = null;
-      lastRefreshAtRef.current = Date.now();
-      void load({ silent: true });
-    };
-    if (delay === 0) {
-      clearPendingRefreshTimer();
-      run();
-      return;
-    }
-    if (refreshTimerRef.current) return;
-    refreshTimerRef.current = setTimeout(run, delay);
-  }, [clearPendingRefreshTimer, load]);
-
-  const triggerOpenResync = useCallback(
-    (force = false) => {
-      if (!hasHydratedRef.current) {
-        pendingOpenResyncRef.current = true;
-        return;
-      }
-      const now = Date.now();
-      if (
-        !force &&
-        now - lastRefreshAtRef.current < PROMPT_CACHE_HISTORY_RESYNC_THROTTLE_MS
-      ) {
-        return;
-      }
-      lastRefreshAtRef.current = now;
-      void load({ silent: true });
-    },
-    [load],
-  );
-
-  useEffect(() => {
-    requestSeqRef.current += 1;
-    hasHydratedRef.current = false;
-    inFlightRef.current = false;
-    pendingLoadRef.current = null;
-    pendingOpenResyncRef.current = false;
-    lastRefreshAtRef.current = 0;
-    clearPendingRefreshTimer();
-
-    if (!open || !conversationKey) {
-      setRecords([]);
-      setLiveRecords([]);
-      setTotal(0);
-      setIsLoading(false);
-      setError(null);
-      return;
-    }
-
-    setRecords([]);
-    setLiveRecords([]);
-    setTotal(0);
-    setIsLoading(false);
-    setError(null);
-    void load();
-  }, [clearPendingRefreshTimer, conversationKey, load, open]);
-
-  useEffect(() => {
-    if (!open || !conversationKey) return;
-    const unsubscribe = subscribeToSse((payload) => {
-      if (payload.type !== "records") return;
-      const matching = payload.records.filter(
-        (record) =>
-          historyRecordMatchesConversationKey?.(record, conversationKey) ??
-          record.promptCacheKey?.trim() === conversationKey,
-      );
-      if (matching.length === 0) return;
-      setLiveRecords((current) =>
-        mergeInvocationRecordCollections(matching, current).slice(
-          0,
-          PROMPT_CACHE_HISTORY_PAGE_SIZE,
-        ),
-      );
-      triggerSseRefresh();
-    });
-    return unsubscribe;
-  }, [
-    conversationKey,
-    historyRecordMatchesConversationKey,
-    open,
-    triggerSseRefresh,
-  ]);
-
-  useEffect(() => {
-    if (!open) return;
-    const unsubscribe = subscribeToSseOpen(() => {
-      triggerOpenResync(true);
-    });
-    return unsubscribe;
-  }, [open, triggerOpenResync]);
-
-  useEffect(
-    () => () => {
-      clearPendingRefreshTimer();
-      pendingLoadRef.current = null;
-      pendingOpenResyncRef.current = false;
-    },
-    [clearPendingRefreshTimer],
-  );
-
-  const visibleRecords = useMemo(
-    () => mergeInvocationRecordCollections(liveRecords, records),
-    [liveRecords, records],
-  );
-  const effectiveTotal = useMemo(() => {
-    const loadedStableKeys = new Set(records.map(invocationStableKey));
-    const optimisticCount = liveRecords.reduce(
-      (count, record) =>
-        count + (loadedStableKeys.has(invocationStableKey(record)) ? 0 : 1),
-      0,
-    );
-    return total + optimisticCount;
-  }, [liveRecords, records, total]);
-  const loadedCount = visibleRecords.length;
-
-  return (
-    <AccountDetailDrawerShell
-      open={open}
-      labelledBy={titleId}
-      closeLabel={t("live.conversations.drawer.close")}
-      onClose={onClose}
-      shellClassName="max-w-[78rem]"
-      header={
-        <div className="space-y-3">
-          <div className="section-heading">
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary/75">
-              {t("live.conversations.drawer.eyebrow")}
-            </p>
-            <h2 id={titleId} className="section-title break-all">
-              {conversationKey || FALLBACK_CELL}
-            </h2>
-            <p className="section-description">
-              {t("live.conversations.drawer.description")}
-            </p>
-          </div>
-          <div className="text-sm text-base-content/70">
-            {effectiveTotal > 0 && loadedCount >= effectiveTotal
-              ? t("live.conversations.drawer.progressComplete", {
-                  count: effectiveTotal,
-                })
-              : t("live.conversations.drawer.progress", {
-                  loaded: loadedCount,
-                  total: effectiveTotal,
-                })}
-          </div>
-        </div>
-      }
-    >
-      <div className="space-y-3">
-        <PromptCacheConversationInvocationTable
-          records={visibleRecords}
-          isLoading={isLoading}
-          error={error}
-          emptyLabel={t("live.conversations.drawer.empty")}
-          onOpenUpstreamAccount={onOpenUpstreamAccount}
-        />
-        {isLoading && visibleRecords.length > 0 ? (
-          <div className="flex items-center justify-center gap-2 py-2 text-sm text-base-content/60">
-            <Spinner size="sm" aria-label={t("chart.loadingDetailed")} />
-            <span>{t("live.conversations.drawer.loadingMore")}</span>
-          </div>
-        ) : null}
-      </div>
-    </AccountDetailDrawerShell>
   );
 }
 
@@ -1155,7 +788,6 @@ export function PromptCacheConversationTable({
         open={historyDrawerPromptCacheKey != null}
         conversationKey={historyDrawerPromptCacheKey}
         onClose={closeHistoryDrawer}
-        t={t}
         onOpenUpstreamAccount={onOpenUpstreamAccount}
         historyQueryForConversationKey={historyQueryForConversationKey}
         historyRecordMatchesConversationKey={

@@ -19,11 +19,14 @@ import type {
   PromptCacheConversationsResponse,
 } from "../lib/api";
 import {
+  createDashboardWorkingConversationSelection,
   formatDashboardWorkingConversationSequenceId,
   hashDashboardWorkingConversationKey,
   mapPromptCacheConversationsToDashboardCards,
+  type DashboardWorkingConversationSelection,
   type DashboardWorkingConversationInvocationSelection,
 } from "../lib/dashboardWorkingConversations";
+import { DashboardConversationDetailDrawer } from "./DashboardConversationDetailDrawer";
 import { DashboardInvocationDetailDrawer } from "./DashboardInvocationDetailDrawer";
 import { DashboardWorkingConversationsSection } from "./DashboardWorkingConversationsSection";
 import { AccountDetailDrawerShell } from "./AccountDetailDrawerShell";
@@ -798,6 +801,7 @@ function HeadInsertAnchorStory() {
 
 function buildStoryMockData(response: PromptCacheConversationsResponse) {
   const recordsByInvokeId = new Map<string, ApiInvocation>();
+  const recordsByPromptCacheKey = new Map<string, ApiInvocation[]>();
   const detailByRecordId = new Map<number, ApiInvocationRecordDetailResponse>();
   const responseBodyByRecordId = new Map<
     number,
@@ -809,9 +813,11 @@ function buildStoryMockData(response: PromptCacheConversationsResponse) {
   >();
 
   for (const conversation of response.conversations) {
+    const historyRecords: ApiInvocation[] = [];
     for (const preview of conversation.recentInvocations) {
       const record = buildRecordFromPreview(preview);
       recordsByInvokeId.set(record.invokeId, record);
+      historyRecords.push(record);
 
       const normalizedStatus = (record.status ?? "").trim().toLowerCase();
       const isAbnormal =
@@ -868,10 +874,18 @@ function buildStoryMockData(response: PromptCacheConversationsResponse) {
         ]);
       }
     }
+    recordsByPromptCacheKey.set(
+      conversation.promptCacheKey,
+      historyRecords.sort(
+        (left, right) =>
+          Date.parse(right.occurredAt) - Date.parse(left.occurredAt),
+      ),
+    );
   }
 
   return {
     recordsByInvokeId,
+    recordsByPromptCacheKey,
     detailByRecordId,
     responseBodyByRecordId,
     poolAttemptsByInvokeId,
@@ -901,6 +915,17 @@ function resolveInitialSelection(
     promptCacheKey: card.promptCacheKey,
     invocation,
   };
+}
+
+function resolveInitialConversationSelection(
+  cards: ReturnType<typeof buildCards>,
+  promptCacheKey?: string,
+): DashboardWorkingConversationSelection | null {
+  if (!promptCacheKey) return null;
+  const card = cards.find(
+    (candidate) => candidate.promptCacheKey === promptCacheKey,
+  );
+  return card ? createDashboardWorkingConversationSelection(card) : null;
 }
 
 function StoryAccountDrawer({
@@ -953,16 +978,25 @@ function StoryAccountDrawer({
 function DrawerPreviewStory({
   response,
   initialSelection,
+  initialConversationPromptCacheKey,
 }: {
   response: PromptCacheConversationsResponse;
   initialSelection?: {
     promptCacheKey: string;
     slotKind: "current" | "previous";
   };
+  initialConversationPromptCacheKey?: string;
 }) {
   const cards = useMemo(() => buildCards(response), [response]);
   const storyMocks = useMemo(() => buildStoryMockData(response), [response]);
   const originalFetchRef = useRef<typeof window.fetch | null>(null);
+  const [selectedConversation, setSelectedConversation] =
+    useState<DashboardWorkingConversationSelection | null>(() =>
+      resolveInitialConversationSelection(
+        cards,
+        initialConversationPromptCacheKey,
+      ),
+    );
   const [selectedInvocation, setSelectedInvocation] =
     useState<DashboardWorkingConversationInvocationSelection | null>(() =>
       resolveInitialSelection(cards, initialSelection),
@@ -973,9 +1007,15 @@ function DrawerPreviewStory({
   } | null>(null);
 
   useEffect(() => {
+    setSelectedConversation(
+      resolveInitialConversationSelection(
+        cards,
+        initialConversationPromptCacheKey,
+      ),
+    );
     setSelectedInvocation(resolveInitialSelection(cards, initialSelection));
     setSelectedAccount(null);
-  }, [cards, initialSelection]);
+  }, [cards, initialConversationPromptCacheKey, initialSelection]);
 
   useEffect(() => {
     if (!originalFetchRef.current) {
@@ -1001,6 +1041,22 @@ function DrawerPreviewStory({
             page: 1,
             pageSize: 1,
             records: record ? [record] : [],
+          });
+        }
+        const promptCacheKey = url.searchParams.get("promptCacheKey");
+        if (promptCacheKey) {
+          const page = Number(url.searchParams.get("page") ?? "1");
+          const pageSize = Number(url.searchParams.get("pageSize") ?? "200");
+          const allRecords =
+            storyMocks.recordsByPromptCacheKey.get(promptCacheKey) ?? [];
+          const startIndex = Math.max(0, (page - 1) * pageSize);
+          const pageRecords = allRecords.slice(startIndex, startIndex + pageSize);
+          return jsonResponse({
+            snapshotId: 1,
+            total: allRecords.length,
+            page,
+            pageSize,
+            records: pageRecords,
           });
         }
       }
@@ -1065,12 +1121,29 @@ function DrawerPreviewStory({
         isLoading={false}
         error={null}
         onOpenUpstreamAccount={(accountId, accountLabel) => {
+          setSelectedConversation(null);
           setSelectedInvocation(null);
           setSelectedAccount({ id: accountId, label: accountLabel });
         }}
         onOpenInvocation={(selection) => {
+          setSelectedConversation(null);
           setSelectedAccount(null);
           setSelectedInvocation(selection);
+        }}
+        onOpenConversation={(selection) => {
+          setSelectedInvocation(null);
+          setSelectedAccount(null);
+          setSelectedConversation(selection);
+        }}
+      />
+      <DashboardConversationDetailDrawer
+        open={selectedConversation != null}
+        selection={selectedConversation}
+        onClose={() => setSelectedConversation(null)}
+        onOpenUpstreamAccount={(accountId, accountLabel) => {
+          setSelectedConversation(null);
+          setSelectedInvocation(null);
+          setSelectedAccount({ id: accountId, label: accountLabel });
         }}
       />
       <DashboardInvocationDetailDrawer
@@ -1078,6 +1151,7 @@ function DrawerPreviewStory({
         selection={selectedInvocation}
         onClose={() => setSelectedInvocation(null)}
         onOpenUpstreamAccount={(accountId, accountLabel) => {
+          setSelectedConversation(null);
           setSelectedInvocation(null);
           setSelectedAccount({ id: accountId, label: accountLabel });
         }}
@@ -1089,7 +1163,9 @@ function DrawerPreviewStory({
       <div className="rounded-xl border border-base-300/75 bg-base-100/70 px-4 py-3 text-sm text-base-content/75">
         <span className="font-semibold">Drawer state:</span>{" "}
         <span data-testid="story-drawer-state" className="font-mono">
-          {selectedInvocation
+          {selectedConversation
+            ? `conversation:${selectedConversation.promptCacheKey}`
+            : selectedInvocation
             ? `invocation:${selectedInvocation.invocation.record.invokeId}`
             : selectedAccount
               ? `account:${selectedAccount.id}`
@@ -1166,6 +1242,42 @@ export const InvocationDrawerOpen: Story = {
       description: {
         story:
           "Dashboard card section with the new invocation detail drawer opened by default, backed by stable request-id lookups and mock response-body detail data.",
+      },
+    },
+  },
+};
+
+export const ConversationDrawerOpen: Story = {
+  args: {
+    cards: [],
+    isLoading: false,
+    error: null,
+  },
+  render: () => <DrawerPreviewStory response={failedClickableResponse} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const sequenceButton = await canvas.findByTestId(
+      "dashboard-working-conversation-sequence-button",
+    );
+
+    await userEvent.click(sequenceButton);
+
+    await waitFor(() => {
+      expect(
+        document.body.querySelector(
+          '[data-testid="dashboard-conversation-detail-drawer"]',
+        ),
+      ).not.toBeNull();
+    });
+    await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
+      "conversation:pck-failed-clickable",
+    );
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Only the compact conversation sequence label opens the new conversation drawer, which combines stable summary fields with the full retained call history for the same Prompt Cache Key.",
       },
     },
   },

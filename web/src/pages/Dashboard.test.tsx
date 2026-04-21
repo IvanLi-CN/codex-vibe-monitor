@@ -128,6 +128,7 @@ vi.mock("../components/DashboardWorkingConversationsSection", () => ({
     setRefreshTargetCount,
     onOpenUpstreamAccount,
     onOpenInvocation,
+    onOpenConversation,
   }: {
     cards: DashboardWorkingConversationCardModel[];
     setRefreshTargetCount?: (count: number) => void;
@@ -137,6 +138,17 @@ vi.mock("../components/DashboardWorkingConversationsSection", () => ({
       conversationSequenceId: string;
       promptCacheKey: string;
       invocation: { record: { invokeId: string } };
+    }) => void;
+    onOpenConversation?: (selection: {
+      conversationSequenceId: string;
+      promptCacheKey: string;
+      createdAtEpoch: number | null;
+      lastActivityAtEpoch: number | null;
+      requestCount: number;
+      totalTokens: number;
+      totalCost: number;
+      currentInvocation: { record: { invokeId: string } };
+      previousInvocation: { record: { invokeId: string } } | null;
     }) => void;
   }) => (
     <div data-testid="dashboard-working-conversations-section">
@@ -173,10 +185,73 @@ vi.mock("../components/DashboardWorkingConversationsSection", () => ({
           >
             open account
           </button>
+          <button
+            type="button"
+            data-testid="dashboard-open-conversation"
+            onClick={() =>
+              onOpenConversation?.({
+                conversationSequenceId: cards[0].conversationSequenceId,
+                promptCacheKey: cards[0].promptCacheKey,
+                createdAtEpoch: cards[0].createdAtEpoch,
+                lastActivityAtEpoch: cards[0].lastActivityAtEpoch,
+                requestCount: cards[0].requestCount,
+                totalTokens: cards[0].totalTokens,
+                totalCost: cards[0].totalCost,
+                currentInvocation: cards[0].currentInvocation,
+                previousInvocation: cards[0].previousInvocation,
+              })
+            }
+          >
+            open conversation
+          </button>
         </>
       ) : null}
     </div>
   ),
+}));
+
+vi.mock("../components/DashboardConversationDetailDrawer", () => ({
+  DashboardConversationDetailDrawer: ({
+    open,
+    selection,
+    onClose,
+    onOpenUpstreamAccount,
+  }: {
+    open: boolean;
+    selection: {
+      conversationSequenceId: string;
+      promptCacheKey: string;
+      currentInvocation: { record: { invokeId: string } };
+    } | null;
+    onClose: () => void;
+    onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+  }) =>
+    open ? (
+      <div data-testid="dashboard-conversation-detail-drawer-mock">
+        <span data-testid="dashboard-conversation-drawer-selection">
+          {selection?.conversationSequenceId ?? "none"}
+        </span>
+        <span data-testid="dashboard-conversation-drawer-prompt-cache-key">
+          {selection?.promptCacheKey ?? "none"}
+        </span>
+        <button
+          type="button"
+          data-testid="dashboard-conversation-drawer-close"
+          onClick={onClose}
+        >
+          close conversation drawer
+        </button>
+        <button
+          type="button"
+          data-testid="dashboard-conversation-drawer-open-account"
+          onClick={() =>
+            onOpenUpstreamAccount?.(66, "conversation-account@example.com")
+          }
+        >
+          open account from conversation drawer
+        </button>
+      </div>
+    ) : null,
 }));
 
 vi.mock("../components/DashboardInvocationDetailDrawer", () => ({
@@ -390,6 +465,7 @@ function createWorkingConversationCard(): DashboardWorkingConversationCardModel 
     previousInvocation: null,
     hasPreviousPlaceholder: true,
     createdAtEpoch: Date.parse("2026-04-06T10:20:00Z"),
+    lastActivityAtEpoch: Date.parse("2026-04-06T10:20:00Z"),
     sortAnchorEpoch: Date.parse("2026-04-06T10:20:00Z"),
     lastTerminalAtEpoch: Date.parse("2026-04-06T10:20:00Z"),
     lastInFlightAtEpoch: null,
@@ -652,7 +728,7 @@ describe("DashboardPage", () => {
     ).toBe(2);
   });
 
-  it("switches between the invocation drawer and the shared account drawer from dashboard interactions", () => {
+  it("switches between the conversation drawer, invocation drawer, and shared account drawer from dashboard interactions", () => {
     installSummaryMocks();
     const setRefreshTargetCount = vi.fn();
     hookMocks.useDashboardWorkingConversations.mockReturnValue({
@@ -668,6 +744,33 @@ describe("DashboardPage", () => {
 
     render(<DashboardPage />);
 
+    const openConversationButton = host?.querySelector(
+      '[data-testid="dashboard-open-conversation"]',
+    );
+    if (!(openConversationButton instanceof HTMLButtonElement)) {
+      throw new Error("missing conversation trigger");
+    }
+
+    act(() => {
+      openConversationButton.click();
+    });
+
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-conversation-detail-drawer-mock"]',
+      ),
+    ).not.toBeNull();
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-conversation-drawer-selection"]',
+      )?.textContent,
+    ).toBe("WC-ABCD12");
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-invocation-detail-drawer-mock"]',
+      ),
+    ).toBeNull();
+
     const openInvocationButton = host?.querySelector(
       '[data-testid="dashboard-open-invocation"]',
     );
@@ -679,6 +782,11 @@ describe("DashboardPage", () => {
       openInvocationButton.click();
     });
 
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-conversation-detail-drawer-mock"]',
+      ),
+    ).toBeNull();
     expect(
       host?.querySelector(
         '[data-testid="dashboard-invocation-detail-drawer-mock"]',
@@ -706,6 +814,11 @@ describe("DashboardPage", () => {
       openAccountFromSectionButton.click();
     });
 
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-conversation-detail-drawer-mock"]',
+      ),
+    ).toBeNull();
     expect(
       host?.querySelector(
         '[data-testid="dashboard-invocation-detail-drawer-mock"]',
@@ -753,6 +866,45 @@ describe("DashboardPage", () => {
         '[data-testid="shared-upstream-account-drawer-account-id"]',
       )?.textContent,
     ).toBe("88");
+
+    act(() => {
+      openConversationButton.click();
+    });
+
+    expect(
+      host?.querySelector(
+        '[data-testid="shared-upstream-account-detail-drawer-mock"]',
+      ),
+    ).toBeNull();
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-conversation-detail-drawer-mock"]',
+      ),
+    ).not.toBeNull();
+
+    const openAccountFromConversationDrawerButton = host?.querySelector(
+      '[data-testid="dashboard-conversation-drawer-open-account"]',
+    );
+    if (
+      !(openAccountFromConversationDrawerButton instanceof HTMLButtonElement)
+    ) {
+      throw new Error("missing conversation drawer account trigger");
+    }
+
+    act(() => {
+      openAccountFromConversationDrawerButton.click();
+    });
+
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-conversation-detail-drawer-mock"]',
+      ),
+    ).toBeNull();
+    expect(
+      host?.querySelector(
+        '[data-testid="shared-upstream-account-drawer-account-id"]',
+      )?.textContent,
+    ).toBe("66");
   });
 
   it("passes refresh target updates from the working conversations section back into the hook", () => {
