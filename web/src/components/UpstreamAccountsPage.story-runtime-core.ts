@@ -21,7 +21,6 @@ export type StoryStore = {
   routing: PoolRoutingSettings
   accounts: UpstreamAccountSummary[]
   details: Record<number, UpstreamAccountDetail>
-  rosterFetchCount: number
   groupNotes: Record<string, string>
   groupBoundProxyKeys: Record<string, string[]>
   forwardProxyNodes: ForwardProxyBindingNode[]
@@ -822,272 +821,6 @@ function buildOperationalRosterAccounts(replicaCount = 1) {
   })
 }
 
-function applyDynamicLiveStatus(
-  detail: UpstreamAccountDetail,
-  index: number,
-  phase: number,
-) {
-  const seed = index + phase * 11
-  if ((index + phase) % 6 === 0) {
-    return withDerivedStatusFields({
-      ...detail,
-      status: 'syncing',
-      displayStatus: 'syncing',
-      enabled: true,
-      enableStatus: 'enabled',
-      workStatus: 'idle',
-      healthStatus: 'normal',
-      syncState: 'syncing',
-      lastError: null,
-      lastErrorAt: null,
-      lastAction: 'manual_sync_started',
-      lastActionReasonMessage: `Live refresh cycle ${phase + 1} is replaying the roster snapshot.`,
-      lastActionAt: atMinuteOffset(-(seed + 1)),
-      lastSyncedAt: atMinuteOffset(-(seed + 2)),
-      lastSuccessfulSyncAt: atMinuteOffset(-(seed + 4)),
-      lastActivityAt: atMinuteOffset(-(seed + 1)),
-      note: `${detail.displayName} live fixture is re-syncing during cycle ${phase + 1}.`,
-      ...(detail.kind === 'oauth_codex'
-        ? buildOauthUsage(34 + (seed % 18), 12 + (seed % 16))
-        : buildApiKeyUsage(24 + (seed % 28), 90 + (seed % 120))),
-    })
-  }
-
-  if ((index + phase) % 5 === 0) {
-    return withDerivedStatusFields({
-      ...detail,
-      status: 'active',
-      displayStatus: 'upstream_unavailable',
-      enabled: true,
-      enableStatus: 'enabled',
-      workStatus: 'idle',
-      healthStatus: 'upstream_unavailable',
-      syncState: 'idle',
-      lastError: 'upstream timeout',
-      lastErrorAt: atMinuteOffset(-(seed + 2)),
-      lastAction: 'route_retryable_failure',
-      lastActionReasonCode: 'upstream_http_503',
-      lastActionReasonMessage: `Live refresh cycle ${phase + 1} caught an upstream timeout while rebalancing.`,
-      lastActionHttpStatus: 503,
-      lastActionAt: atMinuteOffset(-(seed + 2)),
-      lastSyncedAt: atMinuteOffset(-(seed + 3)),
-      lastSuccessfulSyncAt: atMinuteOffset(-(seed + 6)),
-      lastActivityAt: atMinuteOffset(-(seed + 2)),
-      note: `${detail.displayName} live fixture is simulating a transient upstream timeout.`,
-      ...(detail.kind === 'oauth_codex'
-        ? buildOauthUsage(76 + (seed % 12), 54 + (seed % 18))
-        : buildApiKeyUsage(98 + (seed % 18), 360 + (seed % 80))),
-    })
-  }
-
-  if ((index + phase) % 4 === 0) {
-    return withDerivedStatusFields({
-      ...detail,
-      status: 'active',
-      displayStatus: 'active',
-      enabled: true,
-      enableStatus: 'enabled',
-      workStatus: 'rate_limited',
-      healthStatus: 'normal',
-      syncState: 'idle',
-      lastError: null,
-      lastErrorAt: null,
-      lastAction: 'route_retryable_failure',
-      lastActionReasonCode: 'upstream_http_429_rate_limit',
-      lastActionReasonMessage: `Live refresh cycle ${phase + 1} is rate-limited and waiting for the next window.`,
-      lastActionHttpStatus: 429,
-      lastActionAt: atMinuteOffset(-(seed + 2)),
-      lastSyncedAt: atMinuteOffset(-(seed + 3)),
-      lastSuccessfulSyncAt: atMinuteOffset(-(seed + 5)),
-      lastActivityAt: atMinuteOffset(-(seed + 2)),
-      note: `${detail.displayName} live fixture is currently throttled by the upstream window.`,
-      ...(detail.kind === 'oauth_codex'
-        ? buildOauthUsage(84 + (seed % 10), 61 + (seed % 14))
-        : buildApiKeyUsage(108 + (seed % 10), 410 + (seed % 60))),
-    })
-  }
-
-  return withDerivedStatusFields({
-    ...detail,
-    status: 'active',
-    displayStatus: 'active',
-    enabled: true,
-    enableStatus: 'enabled',
-    workStatus: 'working',
-    healthStatus: 'normal',
-    syncState: 'idle',
-    lastError: null,
-    lastErrorAt: null,
-    lastAction: 'sync_completed',
-    lastActionReasonCode: null,
-    lastActionReasonMessage: `Live refresh cycle ${phase + 1} completed successfully.`,
-    lastActionHttpStatus: null,
-    lastActionAt: atMinuteOffset(-(seed + 1)),
-    lastSyncedAt: atMinuteOffset(-(seed + 1)),
-    lastSuccessfulSyncAt: atMinuteOffset(-(seed + 1)),
-    lastActivityAt: atMinuteOffset(-(seed + 1)),
-    note: `${detail.displayName} live fixture was refreshed successfully in cycle ${phase + 1}.`,
-    ...(detail.kind === 'oauth_codex'
-      ? buildOauthUsage(42 + (seed % 18), 18 + (seed % 14))
-      : buildApiKeyUsage(26 + (seed % 30), 120 + (seed % 140))),
-  })
-}
-
-function buildDynamicOperationalRosterAccounts(phase: number) {
-  const phaseAGroupOverrides: Record<number, string | null> = {
-    108: 'night-ops',
-    112: 'night-ops',
-    118: 'night-ops',
-    128: 'night-ops',
-    208: 'night-ops',
-    212: 'night-ops',
-    218: 'night-ops',
-    228: 'night-ops',
-    111: 'staging-overflow',
-    123: 'staging-overflow',
-    211: 'staging-overflow',
-    223: 'staging-overflow',
-    114: 'rescue',
-    119: 'rescue',
-    122: 'rescue',
-    124: 'rescue',
-    214: 'rescue',
-    219: 'rescue',
-    222: 'rescue',
-    224: 'rescue',
-  }
-  const phaseBGroupOverrides: Record<number, string | null> = {
-    108: 'production-apac-weekly',
-    112: 'production-apac-weekly',
-    118: 'production-apac-burst',
-    128: 'production-apac-burst',
-    208: 'production-apac-burst',
-    212: 'production-apac-weekly',
-    218: 'latam',
-    228: 'ops',
-    109: 'experiments',
-    115: 'experiments',
-    209: 'analytics',
-    215: 'analytics',
-    111: 'overflow',
-    123: 'latam',
-    211: 'rescue',
-    223: 'ops',
-    114: 'ops',
-    119: 'latam',
-    122: 'production-apac-burst',
-    124: 'rescue',
-    214: 'enterprise-ops',
-    219: 'latam',
-    222: 'ops',
-    224: 'rescue',
-  }
-  const groupOverrides = phase % 2 === 0 ? phaseAGroupOverrides : phaseBGroupOverrides
-
-  return buildOperationalRosterAccounts(2).map((detail, index) => {
-    const overrideGroupName = Object.prototype.hasOwnProperty.call(
-      groupOverrides,
-      detail.id,
-    )
-      ? groupOverrides[detail.id] ?? null
-      : detail.groupName ?? null
-    return applyDynamicLiveStatus(
-      {
-        ...clone(detail),
-        groupName: overrideGroupName,
-      },
-      index,
-      phase,
-    )
-  })
-}
-
-function buildDynamicGroupSettings(phase: number): {
-  groupNotes: Record<string, string>
-  groupBoundProxyKeys: Record<string, string[]>
-} {
-  if (phase % 2 === 0) {
-    return {
-      groupNotes: {
-        production: 'Static pinned OAuth fixture group for live refresh coverage.',
-        staging: 'Static pinned API key fixture group for live refresh coverage.',
-        'night-ops':
-          'Cycle A packs multiple APAC lanes into one tall group card to stress page-level virtualization.',
-        rescue:
-          'Cycle A concentrates recovery traffic into a denser summary with changing member counts.',
-        'staging-overflow':
-          'Cycle A rebinds overflow lanes onto the fallback proxy catalog.',
-        analytics:
-          'Cycle A keeps analytics lanes visible as a shorter comparison group.',
-      },
-      groupBoundProxyKeys: {
-        production: [directBindingKey, subscriptionVlessKey],
-        staging: ['drain-node'],
-        'night-ops': [subscriptionVlessKey, directBindingKey],
-        rescue: [subscriptionSsKey],
-        'staging-overflow': ['drain-node', subscriptionSsKey],
-        analytics: [directBindingKey],
-      },
-    }
-  }
-
-  return {
-    groupNotes: {
-      production: 'Static pinned OAuth fixture group for live refresh coverage.',
-      staging: 'Static pinned API key fixture group for live refresh coverage.',
-      'production-apac-weekly':
-        'Cycle B splits one large group into weekly APAC lanes so the roster height shrinks and reflows.',
-      'production-apac-burst':
-        'Cycle B fans burst-heavy members into a separate lane with its own proxy chips.',
-      latam:
-        'Cycle B moves several accounts into LATAM fallback to verify later cards do not overlap after re-measure.',
-      ops: 'Cycle B routes support-heavy members through ops and exclusive handling.',
-      rescue:
-        'Cycle B keeps a smaller rescue lane visible so the previous tall card collapses cleanly.',
-      experiments:
-        'Cycle B adds a short experiments group for another height transition target.',
-    },
-    groupBoundProxyKeys: {
-      production: [directBindingKey, subscriptionVlessKey],
-      staging: ['drain-node'],
-      'production-apac-weekly': [subscriptionVlessKey],
-      'production-apac-burst': [subscriptionSsKey, directBindingKey],
-      latam: [subscriptionSsKey],
-      ops: [directBindingKey, 'drain-node'],
-      rescue: ['drain-node'],
-      experiments: [directBindingKey],
-    },
-  }
-}
-
-export function isDynamicRosterStoryId(storyId: string | null) {
-  return (
-    storyId?.endsWith('--dynamic-layout-flat') === true ||
-    storyId?.endsWith('--dynamic-layout-grouped') === true ||
-    storyId?.endsWith('--dynamic-layout-grid') === true
-  )
-}
-
-export function applyDynamicRosterLiveRefresh(
-  store: StoryStore,
-  fetchCount: number,
-) {
-  const phase = Math.max(0, fetchCount - 2) % 2
-  const stableDetails = Object.values(store.details)
-    .filter((detail) => detail.id < 108)
-    .sort((left, right) => left.id - right.id)
-    .map((detail) => clone(detail))
-  const dynamicOperationalDetails = buildDynamicOperationalRosterAccounts(phase)
-  const nextDetails = [...stableDetails, ...dynamicOperationalDetails]
-  const { groupNotes, groupBoundProxyKeys } = buildDynamicGroupSettings(phase)
-
-  store.details = Object.fromEntries(nextDetails.map((detail) => [detail.id, detail]))
-  store.accounts = nextDetails.map((detail) => toSummary(detail))
-  store.groupNotes = groupNotes
-  store.groupBoundProxyKeys = groupBoundProxyKeys
-  store.nextId = Math.max(...nextDetails.map((detail) => detail.id)) + 1
-}
-
 export function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
 }
@@ -1629,7 +1362,6 @@ export function createStore(): StoryStore {
     storyId?.endsWith('--status-filters') === true ||
     storyId?.endsWith('--bulk-selection') === true ||
     storyId?.endsWith('--slow-page-switch') === true
-  const dynamicRosterStory = isDynamicRosterStoryId(storyId)
 
   const baseOauthStoryOverrides: Partial<UpstreamAccountDetail> = {
     tags: pickStoryTags('vip', 'stickyPool', 'priority'),
@@ -2324,7 +2056,7 @@ export function createStore(): StoryStore {
     : []
   const operationalRosterAccounts = compactStory
     ? []
-    : buildOperationalRosterAccounts(denseRosterStory ? 3 : dynamicRosterStory ? 2 : 1)
+    : buildOperationalRosterAccounts(denseRosterStory ? 3 : 1)
   const storyAccounts = oauthRetryTerminalStateStory
     ? oauthRetryTerminalStateAccounts
     : quotaExhaustedOauthStory
@@ -2390,7 +2122,6 @@ export function createStore(): StoryStore {
     },
     accounts,
     details,
-    rosterFetchCount: 0,
     nextId: Math.max(...Object.keys(details).map((value) => Number(value))) + 1,
     sessions: {},
     mailboxStatuses: {},
