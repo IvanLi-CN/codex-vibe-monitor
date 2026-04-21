@@ -1,32 +1,71 @@
 /** @vitest-environment jsdom */
-import { act } from 'react'
+import { act, type ComponentProps } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+const virtualizerMocks = vi.hoisted(() => ({
+  visibleIndexes: null as number[] | null,
+  byOverscan: {} as Record<
+    number,
+    {
+      sizes: number[]
+      lastScrollMargin: number
+      measureCalls: number
+    }
+  >,
+}))
+
 vi.mock('@tanstack/react-virtual', () => ({
-  useVirtualizer: ({
+  useWindowVirtualizer: ({
     count,
     estimateSize,
-    gap = 0,
-    enabled = true,
+    overscan = 0,
+    scrollMargin = 0,
   }: {
     count: number
-    estimateSize: () => number
-    gap?: number
-    enabled?: boolean
+    estimateSize: (index: number) => number
+    overscan?: number
+    scrollMargin?: number
   }) => {
-    const size = estimateSize()
-    const visibleCount = enabled ? Math.min(count, 3) : count
-    return {
-      getVirtualItems: () =>
-        Array.from({ length: visibleCount }, (_, index) => ({
+    const sizes = Array.from({ length: count }, (_, index) => estimateSize(index))
+    const metrics =
+      virtualizerMocks.byOverscan[overscan] ??
+      (virtualizerMocks.byOverscan[overscan] = {
+        sizes: [],
+        lastScrollMargin: 0,
+        measureCalls: 0,
+      })
+    metrics.sizes = sizes
+    metrics.lastScrollMargin = scrollMargin
+
+    const indexes =
+      virtualizerMocks.visibleIndexes ??
+      Array.from({ length: Math.min(count, 3) }, (_, index) => index)
+    const items = indexes
+      .filter((index) => index >= 0 && index < count)
+      .map((index) => {
+        const size = sizes[index] ?? estimateSize(index)
+        const start =
+          scrollMargin +
+          sizes.slice(0, index).reduce((sum, candidateSize) => sum + candidateSize, 0)
+        const item = {
           index,
           key: index,
-          start: index * (size + gap),
+          start,
           size,
-        })),
-      getTotalSize: () => count * size + Math.max(0, count - 1) * gap,
+          end: start + size,
+        }
+        return item
+      })
+    const totalSize = sizes.reduce((sum, size) => sum + size, 0)
+
+    return {
+      getVirtualItems: () => items,
+      getTotalSize: () => totalSize,
       measureElement: () => undefined,
+      measure: () => {
+        metrics.measureCalls += 1
+      },
     }
   },
 }))
@@ -40,6 +79,18 @@ import {
   UpstreamAccountsGroupedRoster,
   type UpstreamAccountsGroupedRosterGroup,
 } from './UpstreamAccountsGroupedRoster'
+
+const OUTER_OVERSCAN = 3
+
+function outerVirtualizerMetrics() {
+  return (
+    virtualizerMocks.byOverscan[OUTER_OVERSCAN] ?? {
+      sizes: [],
+      lastScrollMargin: 0,
+      measureCalls: 0,
+    }
+  )
+}
 
 const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
   guardEnabled: false,
@@ -115,6 +166,7 @@ const groupLabels = {
   noteEmpty: 'No note',
   proxiesLabel: 'Forward proxies',
   proxiesEmpty: 'No bound proxy',
+  settingsLabel: 'Edit group settings',
 }
 
 function usage(requestCount: number, totalTokens: number, totalCost: number) {
@@ -192,17 +244,23 @@ function makeItem(id: number, overrides: Partial<UpstreamAccountSummary> = {}): 
   }
 }
 
-function makeGroup(items: UpstreamAccountSummary[]): UpstreamAccountsGroupedRosterGroup {
+function makeGroup(
+  id: string,
+  items: UpstreamAccountSummary[],
+  overrides: Partial<UpstreamAccountsGroupedRosterGroup> = {},
+): UpstreamAccountsGroupedRosterGroup {
   return {
-    id: 'analytics',
-    groupName: 'analytics',
-    displayName: 'analytics',
+    id,
+    groupName: id,
+    displayName: id,
     items,
     note: 'This note should not render in grouped list mode.',
     boundProxyLabels: [],
     concurrencyLimit: 2,
     nodeShuntEnabled: false,
+    hasCustomSettings: false,
     planCounts: [{ key: 'api', label: 'API', count: items.length }],
+    ...overrides,
   }
 }
 
@@ -210,6 +268,8 @@ let host: HTMLDivElement | null = null
 let root: Root | null = null
 
 afterEach(() => {
+  virtualizerMocks.visibleIndexes = null
+  virtualizerMocks.byOverscan = {}
   act(() => {
     root?.unmount()
   })
@@ -218,74 +278,639 @@ afterEach(() => {
   root = null
 })
 
-function renderRoster(groups: UpstreamAccountsGroupedRosterGroup[]) {
+function createRosterProps(
+  groups: UpstreamAccountsGroupedRosterGroup[],
+  overrides: Partial<ComponentProps<typeof UpstreamAccountsGroupedRoster>> = {},
+) {
+  return {
+    groups,
+    selectedId: null,
+    selectedAccountIds: new Set<number>(),
+    onSelect: () => undefined,
+    onToggleSelected: () => undefined,
+    onToggleSelectAllVisible: () => undefined,
+    emptyTitle: 'Empty',
+    emptyDescription: 'Nothing here',
+    labels,
+    groupLabels,
+    ...overrides,
+  } satisfies ComponentProps<typeof UpstreamAccountsGroupedRoster>
+}
+
+function renderRoster(
+  groups: UpstreamAccountsGroupedRosterGroup[],
+  overrides: Partial<ComponentProps<typeof UpstreamAccountsGroupedRoster>> = {},
+) {
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
   act(() => {
-    root?.render(
-      <UpstreamAccountsGroupedRoster
-        groups={groups}
-        selectedId={null}
-        selectedAccountIds={new Set<number>()}
-        onSelect={() => undefined}
-        onToggleSelected={() => undefined}
-        onToggleSelectAllVisible={() => undefined}
-        emptyTitle="Empty"
-        emptyDescription="Nothing here"
-        labels={labels}
-        groupLabels={groupLabels}
-      />,
-    )
+    root?.render(<UpstreamAccountsGroupedRoster {...createRosterProps(groups, overrides)} />)
   })
 }
 
 describe('UpstreamAccountsGroupedRoster', () => {
-  it('keeps grouped list minimum height aligned with the flattened row density', () => {
-    renderRoster([makeGroup([makeItem(1), makeItem(2)])])
+  it('uses page-level rendering without internal roster scrolling', () => {
+    renderRoster([makeGroup('analytics', [makeItem(1), makeItem(2)])])
 
+    const roster = host?.querySelector('[data-testid="upstream-accounts-grouped-roster"]') as HTMLElement | null
     const members = host?.querySelector('[data-testid="upstream-accounts-group-members"]') as HTMLElement | null
+
+    expect(roster).toBeTruthy()
+    expect(roster?.className).not.toContain('overflow-auto')
     expect(members).toBeTruthy()
-    expect(members?.style.minHeight).toBe('216px')
+    expect(members?.className).not.toContain('overflow-auto')
+    expect(members?.style.minHeight).toBe('')
+    expect(members?.style.height).toBe('')
   })
 
-  it('shrinks single-account groups to a single compact row and omits the group note', () => {
-    renderRoster([makeGroup([makeItem(1)])])
+  it('renders a group settings action and keeps group notes out of the summary', () => {
+    const onEditGroupSettings = vi.fn()
+    renderRoster(
+      [
+        makeGroup('analytics', [makeItem(1)], {
+          hasCustomSettings: true,
+          boundProxyLabels: ['JP Edge 01'],
+        }),
+      ],
+      {
+        canEditGroupSettings: true,
+        onEditGroupSettings,
+      },
+    )
 
-    const members = host?.querySelector('[data-testid="upstream-accounts-group-members"]') as HTMLElement | null
-    expect(members).toBeTruthy()
-    expect(members?.style.minHeight).toBe('104px')
+    const settingsButton = host?.querySelector('button[aria-label="Edit group settings"]') as HTMLButtonElement | null
+    expect(settingsButton).toBeTruthy()
+
+    act(() => {
+      settingsButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(onEditGroupSettings).toHaveBeenCalledTimes(1)
     expect(host?.textContent).not.toContain('This note should not render in grouped list mode.')
   })
 
-  it('virtualizes large grid groups by row instead of mounting every card', () => {
-    const items = Array.from({ length: 24 }, (_, index) => makeItem(index + 1))
+  it('hides the group settings action for read-only and ungrouped summaries', () => {
+    renderRoster(
+      [
+        makeGroup('analytics', [makeItem(1)]),
+        makeGroup('__ungrouped__', [makeItem(2, { groupName: null })], {
+          groupName: null,
+          displayName: 'Ungrouped',
+        }),
+      ],
+      {
+        canEditGroupSettings: false,
+        onEditGroupSettings: vi.fn(),
+      },
+    )
 
-    host = document.createElement('div')
-    document.body.appendChild(host)
-    root = createRoot(host)
+    const settingsButtons = host?.querySelectorAll(
+      'button[aria-label="Edit group settings"]',
+    ) ?? []
+
+    expect(settingsButtons).toHaveLength(0)
+  })
+
+  it('virtualizes large rosters by group card instead of member rows', () => {
+    const groups = Array.from({ length: 12 }, (_, groupIndex) =>
+      makeGroup(
+        `group-${groupIndex + 1}`,
+        Array.from({ length: 6 }, (_, itemIndex) =>
+          makeItem(groupIndex * 10 + itemIndex + 1, {
+            groupName: `group-${groupIndex + 1}`,
+            displayName: `Group ${groupIndex + 1} Account ${itemIndex + 1}`,
+          }),
+        ),
+      ),
+    )
+
+    renderRoster(groups, {
+      memberLayout: 'grid',
+      selectionMode: 'none',
+      onToggleSelected: undefined,
+      onToggleSelectAllVisible: undefined,
+    })
+
+    const renderedGroupCards = host?.querySelectorAll('[data-testid="upstream-accounts-group-card"]') ?? []
+    const gridCards = host?.querySelectorAll('[data-testid="upstream-accounts-group-grid-card"]') ?? []
+
+    expect(renderedGroupCards.length).toBeGreaterThan(0)
+    expect(renderedGroupCards.length).toBeLessThan(groups.length)
+    expect(gridCards.length).toBeGreaterThan(0)
+    expect(gridCards.length).toBe(18)
+  })
+
+  it('uses the rendered roster width instead of window.innerWidth for grouped grid columns', () => {
+    const groups = [
+      makeGroup('analytics', [
+        makeItem(1),
+        makeItem(2, { displayName: 'Account 2' }),
+        makeItem(3, { displayName: 'Account 3' }),
+      ]),
+    ]
+
+    renderRoster(groups, {
+      memberLayout: 'grid',
+      selectionMode: 'none',
+      onToggleSelected: undefined,
+      onToggleSelectAllVisible: undefined,
+    })
+
+    const roster = host?.querySelector(
+      '[data-testid="upstream-accounts-grouped-roster"]',
+    ) as HTMLDivElement | null
+    const spacer = host?.querySelector(
+      '[data-testid="upstream-accounts-grouped-roster-spacer"]',
+    ) as HTMLDivElement | null
+    const membersGrid = host?.querySelector(
+      '[data-testid="upstream-accounts-group-members-grid"]',
+    ) as HTMLDivElement | null
+    const gridLayout = membersGrid?.querySelector(
+      '[data-testid="upstream-accounts-group-grid-row"]',
+    ) as HTMLDivElement | null
+
+    expect(roster).toBeTruthy()
+    expect(spacer).toBeTruthy()
+    expect(membersGrid).toBeTruthy()
+    expect(gridLayout).toBeTruthy()
+
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: 1600,
+    })
+    Object.defineProperty(roster!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () =>
+        ({
+          top: 160,
+          left: 0,
+          right: 920,
+          bottom: 760,
+          width: 920,
+          height: 600,
+          x: 0,
+          y: 160,
+          toJSON: () => ({}),
+        }) satisfies DOMRect,
+    })
+    Object.defineProperty(spacer!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () =>
+        ({
+          top: 160,
+          left: 0,
+          right: 920,
+          bottom: 760,
+          width: 920,
+          height: 600,
+          x: 0,
+          y: 160,
+          toJSON: () => ({}),
+        }) satisfies DOMRect,
+    })
+    Object.defineProperty(membersGrid!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () =>
+        ({
+          top: 210,
+          left: 0,
+          right: 920,
+          bottom: 560,
+          width: 920,
+          height: 350,
+          x: 0,
+          y: 210,
+          toJSON: () => ({}),
+        }) satisfies DOMRect,
+    })
+
+    act(() => {
+      window.dispatchEvent(new Event('resize'))
+    })
+
+    expect(gridLayout?.style.gridTemplateColumns).toBe('repeat(1, minmax(0, 1fr))')
+  })
+
+  it('uses the viewport xl breakpoint when estimating grouped grid columns before member widths are measured', () => {
+    const groups = [
+      makeGroup('analytics', [
+        makeItem(1),
+        makeItem(2, { displayName: 'Account 2' }),
+        makeItem(3, { displayName: 'Account 3' }),
+      ]),
+    ]
+
+    renderRoster(groups, {
+      memberLayout: 'grid',
+      selectionMode: 'none',
+      onToggleSelected: undefined,
+      onToggleSelectAllVisible: undefined,
+    })
+
+    const roster = host?.querySelector(
+      '[data-testid="upstream-accounts-grouped-roster"]',
+    ) as HTMLDivElement | null
+    const spacer = host?.querySelector(
+      '[data-testid="upstream-accounts-grouped-roster-spacer"]',
+    ) as HTMLDivElement | null
+    const membersGrid = host?.querySelector(
+      '[data-testid="upstream-accounts-group-members-grid"]',
+    ) as HTMLDivElement | null
+    const gridLayout = membersGrid?.querySelector(
+      '[data-testid="upstream-accounts-group-grid-row"]',
+    ) as HTMLDivElement | null
+
+    expect(roster).toBeTruthy()
+    expect(spacer).toBeTruthy()
+    expect(membersGrid).toBeTruthy()
+    expect(gridLayout).toBeTruthy()
+
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: 1600,
+    })
+    Object.defineProperty(roster!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () =>
+        ({
+          top: 160,
+          left: 0,
+          right: 1180,
+          bottom: 760,
+          width: 1180,
+          height: 600,
+          x: 0,
+          y: 160,
+          toJSON: () => ({}),
+        }) satisfies DOMRect,
+    })
+    Object.defineProperty(spacer!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () =>
+        ({
+          top: 160,
+          left: 0,
+          right: 1180,
+          bottom: 760,
+          width: 1180,
+          height: 600,
+          x: 0,
+          y: 160,
+          toJSON: () => ({}),
+        }) satisfies DOMRect,
+    })
+    Object.defineProperty(membersGrid!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () =>
+        ({
+          top: 210,
+          left: 0,
+          right: 1180,
+          bottom: 560,
+          width: 0,
+          height: 350,
+          x: 0,
+          y: 210,
+          toJSON: () => ({}),
+        }) satisfies DOMRect,
+    })
+
+    act(() => {
+      window.dispatchEvent(new Event('resize'))
+    })
+
+    expect(gridLayout?.style.gridTemplateColumns).toBe('repeat(1, minmax(0, 1fr))')
+  })
+
+  it('restores the three-column desktop grouped grid once the member pane is wide enough', () => {
+    const groups = [
+      makeGroup('analytics', [
+        makeItem(1),
+        makeItem(2, { displayName: 'Account 2' }),
+        makeItem(3, { displayName: 'Account 3' }),
+      ]),
+    ]
+
+    renderRoster(groups, {
+      memberLayout: 'grid',
+      selectionMode: 'none',
+      onToggleSelected: undefined,
+      onToggleSelectAllVisible: undefined,
+    })
+
+    const roster = host?.querySelector(
+      '[data-testid="upstream-accounts-grouped-roster"]',
+    ) as HTMLDivElement | null
+    const spacer = host?.querySelector(
+      '[data-testid="upstream-accounts-grouped-roster-spacer"]',
+    ) as HTMLDivElement | null
+    const membersGrid = host?.querySelector(
+      '[data-testid="upstream-accounts-group-members-grid"]',
+    ) as HTMLDivElement | null
+    const gridLayout = membersGrid?.querySelector(
+      '[data-testid="upstream-accounts-group-grid-row"]',
+    ) as HTMLDivElement | null
+
+    expect(roster).toBeTruthy()
+    expect(spacer).toBeTruthy()
+    expect(membersGrid).toBeTruthy()
+    expect(gridLayout).toBeTruthy()
+
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: 1660,
+    })
+    Object.defineProperty(roster!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () =>
+        ({
+          top: 160,
+          left: 0,
+          right: 1440,
+          bottom: 760,
+          width: 1440,
+          height: 600,
+          x: 0,
+          y: 160,
+          toJSON: () => ({}),
+        }) satisfies DOMRect,
+    })
+    Object.defineProperty(spacer!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () =>
+        ({
+          top: 160,
+          left: 0,
+          right: 1440,
+          bottom: 760,
+          width: 1440,
+          height: 600,
+          x: 0,
+          y: 160,
+          toJSON: () => ({}),
+        }) satisfies DOMRect,
+    })
+    Object.defineProperty(membersGrid!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () =>
+        ({
+          top: 210,
+          left: 0,
+          right: 1048,
+          bottom: 560,
+          width: 1048,
+          height: 350,
+          x: 0,
+          y: 210,
+          toJSON: () => ({}),
+        }) satisfies DOMRect,
+    })
+
+    act(() => {
+      window.dispatchEvent(new Event('resize'))
+    })
+
+    expect(gridLayout?.style.gridTemplateColumns).toBe('repeat(3, minmax(0, 1fr))')
+  })
+
+  it('keeps the bottom spacer sized to the remaining virtualized groups below the viewport', () => {
+    virtualizerMocks.visibleIndexes = [1, 2]
+    const groups = Array.from({ length: 6 }, (_, index) =>
+      makeGroup(`group-${index + 1}`, [
+        makeItem(index + 1, {
+          groupName: `group-${index + 1}`,
+          displayName: `Group ${index + 1} Account`,
+        }),
+      ]),
+    )
+
+    renderRoster(groups)
+
+    const roster = host?.querySelector(
+      '[data-testid="upstream-accounts-grouped-roster"]',
+    ) as HTMLDivElement | null
+    const spacer = host?.querySelector(
+      '[data-testid="upstream-accounts-grouped-roster-spacer"]',
+    ) as HTMLDivElement | null
+    expect(roster).toBeTruthy()
+    expect(spacer).toBeTruthy()
+
+    Object.defineProperty(window, 'scrollY', {
+      configurable: true,
+      value: 300,
+    })
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: 1440,
+    })
+    Object.defineProperty(roster!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () =>
+        ({
+          top: 240,
+          left: 0,
+          right: 1200,
+          bottom: 900,
+          width: 1200,
+          height: 660,
+          x: 0,
+          y: 240,
+          toJSON: () => ({}),
+        }) satisfies DOMRect,
+    })
+    Object.defineProperty(spacer!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () =>
+        ({
+          top: 288,
+          left: 0,
+          right: 1200,
+          bottom: 900,
+          width: 1200,
+          height: 612,
+          x: 0,
+          y: 288,
+          toJSON: () => ({}),
+        }) satisfies DOMRect,
+    })
+
+    const initialMeasureCalls = outerVirtualizerMetrics().measureCalls
+
+    act(() => {
+      window.dispatchEvent(new Event('resize'))
+    })
+
+    const expectedPaddingBottom = outerVirtualizerMetrics().sizes
+      .slice(3)
+      .reduce((sum, size) => sum + size, 0)
+
+    expect(outerVirtualizerMetrics().lastScrollMargin).toBe(588)
+    expect(outerVirtualizerMetrics().measureCalls).toBeGreaterThan(initialMeasureCalls)
+    expect(spacer?.style.paddingBottom).toBe(`${expectedPaddingBottom}px`)
+  })
+
+  it('keeps the virtualized card gap on the last rendered non-terminal group', () => {
+    virtualizerMocks.visibleIndexes = [1, 2]
+    const groups = Array.from({ length: 6 }, (_, index) =>
+      makeGroup(`group-${index + 1}`, [
+        makeItem(index + 1, {
+          groupName: `group-${index + 1}`,
+          displayName: `Group ${index + 1} Account`,
+        }),
+      ]),
+    )
+
+    renderRoster(groups)
+
+    const renderedGroupCards = host?.querySelectorAll(
+      '[data-testid="upstream-accounts-group-card"]',
+    ) ?? []
+    const lastRenderedCard = renderedGroupCards[renderedGroupCards.length - 1] as HTMLElement | undefined
+
+    expect(renderedGroupCards).toHaveLength(2)
+    expect(lastRenderedCard?.dataset.index).toBe('2')
+    expect(lastRenderedCard?.className).toContain('pb-4')
+  })
+
+  it('includes inter-card gaps in the fallback spacer height when the virtualizer has not returned items yet', () => {
+    virtualizerMocks.visibleIndexes = []
+    Object.defineProperty(window, 'scrollY', {
+      configurable: true,
+      value: 0,
+    })
+    const groups = Array.from({ length: 6 }, (_, index) =>
+      makeGroup(`group-${index + 1}`, [
+        makeItem(index + 1, {
+          groupName: `group-${index + 1}`,
+          displayName: `Group ${index + 1} Account`,
+        }),
+      ]),
+    )
+
+    renderRoster(groups)
+
+    const spacer = host?.querySelector(
+      '[data-testid="upstream-accounts-grouped-roster-spacer"]',
+    ) as HTMLDivElement | null
+
+    expect(spacer).toBeTruthy()
+
+    const expectedPaddingBottom = outerVirtualizerMetrics().sizes
+      .slice(3)
+      .reduce((sum, size) => sum + size, 0)
+
+    expect(spacer?.style.paddingBottom).toBe(`${expectedPaddingBottom}px`)
+  })
+
+  it('re-measures cached group heights when the layout mode changes', () => {
+    const groups = Array.from({ length: 4 }, (_, index) =>
+      makeGroup(`group-${index + 1}`, [
+        makeItem(index + 1, {
+          groupName: `group-${index + 1}`,
+        }),
+      ]),
+    )
+
+    renderRoster(groups, { memberLayout: 'list' })
+    const initialMeasureCalls = outerVirtualizerMetrics().measureCalls
 
     act(() => {
       root?.render(
         <UpstreamAccountsGroupedRoster
-          groups={[makeGroup(items)]}
-          selectedId={null}
-          selectedAccountIds={new Set<number>()}
-          onSelect={() => undefined}
-          onToggleSelected={() => undefined}
-          onToggleSelectAllVisible={() => undefined}
-          emptyTitle="Empty"
-          emptyDescription="Nothing here"
-          labels={labels}
-          groupLabels={groupLabels}
-          memberLayout="grid"
-          selectionMode="none"
+          {...createRosterProps(groups, {
+            memberLayout: 'grid',
+            selectionMode: 'none',
+            onToggleSelected: undefined,
+            onToggleSelectAllVisible: undefined,
+          })}
         />,
       )
     })
 
-    const cards = host?.querySelectorAll('[data-testid="upstream-accounts-group-grid-card"]') ?? []
-    expect(cards.length).toBeGreaterThan(0)
-    expect(cards.length).toBeLessThan(items.length)
+    expect(outerVirtualizerMetrics().measureCalls).toBeGreaterThan(initialMeasureCalls)
+  })
+
+  it('recomputes the window scroll margin when grouped toolbar chrome toggles', () => {
+    const groups = Array.from({ length: 3 }, (_, index) =>
+      makeGroup(`group-${index + 1}`, [
+        makeItem(index + 1, {
+          groupName: `group-${index + 1}`,
+        }),
+      ]),
+    )
+
+    renderRoster(groups, { memberLayout: 'list' })
+
+    const roster = host?.querySelector(
+      '[data-testid="upstream-accounts-grouped-roster"]',
+    ) as HTMLDivElement | null
+    const spacer = host?.querySelector(
+      '[data-testid="upstream-accounts-grouped-roster-spacer"]',
+    ) as HTMLDivElement | null
+
+    expect(roster).toBeTruthy()
+    expect(spacer).toBeTruthy()
+
+    let rosterTop = 220
+    let spacerTop = 220
+    Object.defineProperty(window, 'scrollY', {
+      configurable: true,
+      value: 40,
+    })
+    Object.defineProperty(roster!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () =>
+        ({
+          top: rosterTop,
+          left: 0,
+          right: 1100,
+          bottom: rosterTop + 640,
+          width: 1100,
+          height: 640,
+          x: 0,
+          y: rosterTop,
+          toJSON: () => ({}),
+        }) satisfies DOMRect,
+    })
+    Object.defineProperty(spacer!, 'getBoundingClientRect', {
+      configurable: true,
+      value: () =>
+        ({
+          top: spacerTop,
+          left: 0,
+          right: 1100,
+          bottom: spacerTop + 600,
+          width: 1100,
+          height: 600,
+          x: 0,
+          y: spacerTop,
+          toJSON: () => ({}),
+        }) satisfies DOMRect,
+    })
+
+    act(() => {
+      window.dispatchEvent(new Event('resize'))
+    })
+
+    expect(outerVirtualizerMetrics().lastScrollMargin).toBe(260)
+
+    rosterTop = 172
+    spacerTop = 172
+
+    act(() => {
+      root?.render(
+        <UpstreamAccountsGroupedRoster
+          {...createRosterProps(groups, {
+            memberLayout: 'grid',
+            selectionMode: 'none',
+            onToggleSelected: undefined,
+            onToggleSelectAllVisible: undefined,
+          })}
+        />,
+      )
+    })
+
+    expect(outerVirtualizerMetrics().lastScrollMargin).toBe(212)
   })
 })

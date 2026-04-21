@@ -17,6 +17,7 @@ import UpstreamAccountCreatePage from '../pages/account-pool/UpstreamAccountCrea
 import UpstreamAccountsPage from '../pages/account-pool/UpstreamAccounts'
 
 import {
+  applyDynamicRosterLiveRefresh,
   buildBulkSyncCounts,
   buildBulkSyncSnapshot,
   buildBulkSyncSnapshotEvent,
@@ -29,6 +30,7 @@ import {
   defaultRoutingMaintenance,
   defaultRoutingTimeouts,
   filterAccountsForQuery,
+  isDynamicRosterStoryId,
   listGroupSummaries,
   listTagSummaries,
   maskApiKey,
@@ -95,6 +97,12 @@ export function StorybookUpstreamAccountsMock({
       const store = storeRef.current
 
       if (path === '/api/pool/upstream-accounts' && method === 'GET') {
+        if (isDynamicRosterStoryId(storyId)) {
+          store.rosterFetchCount += 1
+          if (store.rosterFetchCount > 1) {
+            applyDynamicRosterLiveRefresh(store, store.rosterFetchCount)
+          }
+        }
         const filteredItems = filterAccountsForQuery(store, parsedUrl)
         const rawPageSize = Number(parsedUrl.searchParams.get('pageSize') || 20)
         const requestedPageSize =

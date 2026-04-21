@@ -53,15 +53,13 @@ import { AccountTagField } from "../../components/AccountTagField";
 import { EffectiveRoutingRuleCard } from "../../components/EffectiveRoutingRuleCard";
 import { InvocationTable } from "../../components/InvocationTable";
 import { UpstreamAccountGroupCombobox } from "../../components/UpstreamAccountGroupCombobox";
-import { UpstreamAccountGroupNoteDialog } from "../../components/UpstreamAccountGroupNoteDialog";
 import { UpstreamAccountUsageCard } from "../../components/UpstreamAccountUsageCard";
 import { StickyKeyConversationTable } from "../../components/StickyKeyConversationTable";
 import { usePoolTags } from "../../hooks/usePoolTags";
-import { useForwardProxyBindingNodes } from "../../hooks/useForwardProxyBindingNodes";
 import { useMotherSwitchNotifications } from "../../hooks/useMotherSwitchNotifications";
 import { useUpstreamAccountDetailRoute } from "../../hooks/useUpstreamAccountDetailRoute";
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
-import { useGroupNoteCatalogAutoRefresh } from "./useGroupNoteCatalogAutoRefresh";
+import { useUpstreamAccountGroupSettingsDialog } from "./useUpstreamAccountGroupSettingsDialog";
 import { useUpstreamStickyConversations } from "../../hooks/useUpstreamStickyConversations";
 import type {
   ApiInvocation,
@@ -79,8 +77,6 @@ import {
   resolveGroupNote,
 } from "../../lib/upstreamAccountGroups";
 import {
-  apiConcurrencyLimitToSliderValue,
-  sliderConcurrencyLimitToApiValue,
 } from "../../lib/concurrencyLimit";
 import {
   areAccountDraftsEqual,
@@ -230,20 +226,6 @@ const STICKY_CONVERSATION_SELECTION_LOOKUP = new Map<
     option.selection,
   ]),
 );
-const GROUP_UPSTREAM_429_RETRY_OPTIONS = [1, 2, 3, 4, 5] as const;
-
-type GroupSettingsEditorState = {
-  open: boolean;
-  groupName: string;
-  note: string;
-  existing: boolean;
-  concurrencyLimit: number;
-  boundProxyKeys: string[];
-  nodeShuntEnabled: boolean;
-  upstream429RetryEnabled: boolean;
-  upstream429MaxRetries: number;
-};
-
 type OauthRecoveryHint = {
   titleKey: string;
   bodyKey: string;
@@ -827,7 +809,7 @@ function SharedUpstreamAccountDetailDrawerInner({
   onInitialDeleteConfirmHandled,
   onClose,
 }: SharedUpstreamAccountDetailDrawerProps) {
-  const { t, locale } = useTranslation();
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const { openUpstreamAccount } = useUpstreamAccountDetailRoute();
   const {
@@ -893,28 +875,6 @@ function SharedUpstreamAccountDetailDrawerInner({
   ] = useState<Record<string, boolean>>({});
   const [groupDraftUpstream429MaxRetries, setGroupDraftUpstream429MaxRetries] =
     useState<Record<string, number>>({});
-  const [groupNoteEditor, setGroupNoteEditor] =
-    useState<GroupSettingsEditorState>({
-      open: false,
-      groupName: "",
-      note: "",
-      existing: false,
-      concurrencyLimit: apiConcurrencyLimitToSliderValue(0),
-      boundProxyKeys: [],
-      nodeShuntEnabled: false,
-      upstream429RetryEnabled: false,
-      upstream429MaxRetries: 0,
-    });
-  const {
-    nodes: forwardProxyNodes,
-    catalogState: forwardProxyCatalogState,
-    refresh: refreshForwardProxyBindings,
-  } = useForwardProxyBindingNodes(groupNoteEditor.boundProxyKeys, {
-    enabled: groupNoteEditor.open,
-    groupName: groupNoteEditor.groupName,
-  });
-  const [groupNoteBusy, setGroupNoteBusy] = useState(false);
-  const [groupNoteError, setGroupNoteError] = useState<string | null>(null);
   const [detailDrawerPortalContainer, setDetailDrawerPortalContainer] =
     useState<HTMLElement | null>(null);
   const [detailTab, setDetailTab] = useState<AccountDetailTab>("overview");
@@ -1513,165 +1473,137 @@ function SharedUpstreamAccountDetailDrawerInner({
     ],
   );
 
-  const openGroupNoteEditor = useCallback(
-    (groupName: string) => {
-      if (!writesEnabled) return;
-      const normalized = normalizeGroupName(groupName);
-      if (!normalized) return;
-      const existingGroup = resolveGroupSummaryForName(normalized);
-      setGroupNoteError(null);
-      setGroupNoteEditor({
-        open: true,
-        groupName: normalized,
-        note: resolveGroupNoteForName(normalized),
-        existing: existingGroup != null,
-        concurrencyLimit: apiConcurrencyLimitToSliderValue(
-          resolveGroupConcurrencyLimitForName(normalized),
-        ),
-        boundProxyKeys: resolveGroupBoundProxyKeysForName(normalized),
-        nodeShuntEnabled: resolveGroupNodeShuntEnabledForName(normalized),
-        upstream429RetryEnabled:
-          resolveGroupUpstream429RetryEnabledForName(normalized),
-        upstream429MaxRetries:
-          resolveGroupUpstream429MaxRetriesForName(normalized),
-      });
-    },
-    [
-      resolveGroupBoundProxyKeysForName,
-      resolveGroupConcurrencyLimitForName,
-      resolveGroupNodeShuntEnabledForName,
-      resolveGroupNoteForName,
-      resolveGroupSummaryForName,
-      resolveGroupUpstream429MaxRetriesForName,
-      resolveGroupUpstream429RetryEnabledForName,
-      writesEnabled,
-    ],
-  );
-
-  const closeGroupNoteEditor = useCallback(() => {
-    if (groupNoteBusy) return;
-    setGroupNoteEditor((current) => ({ ...current, open: false }));
-    setGroupNoteError(null);
-  }, [groupNoteBusy]);
-  useGroupNoteCatalogAutoRefresh({
-    open: groupNoteEditor.open,
-    refresh: refreshForwardProxyBindings,
-    catalogState: forwardProxyCatalogState,
-  });
-
-  const handleSaveGroupNote = useCallback(async () => {
-    if (!writesEnabled) return;
-    const normalizedGroupName = normalizeGroupName(groupNoteEditor.groupName);
-    if (!normalizedGroupName) return;
-    const normalizedNote = groupNoteEditor.note.trim();
-    const normalizedConcurrencyLimit = sliderConcurrencyLimitToApiValue(
-      groupNoteEditor.concurrencyLimit,
-    );
-    const normalizedBoundProxyKeys = Array.from(
-      new Set(
-        groupNoteEditor.boundProxyKeys
-          .map((value) => value.trim())
-          .filter((value) => value.length > 0),
-      ),
-    );
-    const normalizedNodeShuntEnabled =
-      groupNoteEditor.nodeShuntEnabled === true;
-    const normalizedUpstream429RetryEnabled =
-      groupNoteEditor.upstream429RetryEnabled === true;
-    const normalizedUpstream429MaxRetries = normalizedUpstream429RetryEnabled
-      ? normalizeEnabledGroupUpstream429MaxRetries(
-          groupNoteEditor.upstream429MaxRetries,
-        )
-      : normalizeGroupUpstream429MaxRetries(
-          groupNoteEditor.upstream429MaxRetries,
-        );
-    setGroupNoteError(null);
-
-    if (!groupNoteEditor.existing) {
-      setGroupDraftNotes((current) => {
-        const next = { ...current };
-        if (normalizedNote) next[normalizedGroupName] = normalizedNote;
-        else delete next[normalizedGroupName];
-        return next;
-      });
-      setGroupDraftBoundProxyKeys((current) => {
-        const next = { ...current };
-        if (normalizedBoundProxyKeys.length > 0)
-          next[normalizedGroupName] = normalizedBoundProxyKeys;
-        else delete next[normalizedGroupName];
-        return next;
-      });
-      setGroupDraftNodeShuntEnabled((current) => {
-        const next = { ...current };
-        if (normalizedNodeShuntEnabled) next[normalizedGroupName] = true;
-        else delete next[normalizedGroupName];
-        return next;
-      });
-      setGroupDraftConcurrencyLimits((current) => {
-        const next = { ...current };
-        if (normalizedConcurrencyLimit > 0)
-          next[normalizedGroupName] = normalizedConcurrencyLimit;
-        else delete next[normalizedGroupName];
-        return next;
-      });
-      setGroupDraftUpstream429RetryEnabled((current) => {
-        const next = { ...current };
-        if (
-          normalizedUpstream429RetryEnabled ||
-          normalizedUpstream429MaxRetries > 0
-        ) {
-          next[normalizedGroupName] = normalizedUpstream429RetryEnabled;
-        } else {
-          delete next[normalizedGroupName];
-        }
-        return next;
-      });
-      setGroupDraftUpstream429MaxRetries((current) => {
-        const next = { ...current };
-        if (
-          normalizedUpstream429RetryEnabled ||
-          normalizedUpstream429MaxRetries > 0
-        ) {
-          next[normalizedGroupName] = normalizedUpstream429MaxRetries;
-        } else {
-          delete next[normalizedGroupName];
-        }
-        return next;
-      });
-      setGroupNoteEditor((current) => ({ ...current, open: false }));
-      return;
-    }
-
-    setGroupNoteBusy(true);
-    try {
-      await saveGroupNote(normalizedGroupName, {
-        note: normalizedNote || undefined,
-        boundProxyKeys: normalizedBoundProxyKeys,
-        concurrencyLimit: normalizedConcurrencyLimit,
-        nodeShuntEnabled: normalizedNodeShuntEnabled,
-        upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
-        upstream429MaxRetries: normalizedUpstream429MaxRetries,
-      });
-      clearDraftGroupSettings(normalizedGroupName);
-      setGroupNoteEditor((current) => ({ ...current, open: false }));
-    } catch (err) {
-      setGroupNoteError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setGroupNoteBusy(false);
-    }
-  }, [
-    clearDraftGroupSettings,
-    groupNoteEditor.boundProxyKeys,
-    groupNoteEditor.concurrencyLimit,
-    groupNoteEditor.existing,
-    groupNoteEditor.groupName,
-    groupNoteEditor.nodeShuntEnabled,
-    groupNoteEditor.note,
-    groupNoteEditor.upstream429MaxRetries,
-    groupNoteEditor.upstream429RetryEnabled,
-    saveGroupNote,
+  const {
+    openEditor: openGroupNoteEditor,
+    dialog: groupNoteDialog,
+  } = useUpstreamAccountGroupSettingsDialog({
     writesEnabled,
-  ]);
+    container: detailDrawerPortalContainer,
+    resolveGroupState: useCallback(
+      (groupName) => {
+        const normalized = normalizeGroupName(groupName);
+        if (!normalized) return null;
+        const existingGroup = resolveGroupSummaryForName(normalized);
+        return {
+          groupName: normalized,
+          note: resolveGroupNoteForName(normalized),
+          existing: existingGroup != null,
+          concurrencyLimit: resolveGroupConcurrencyLimitForName(normalized),
+          boundProxyKeys: resolveGroupBoundProxyKeysForName(normalized),
+          nodeShuntEnabled: resolveGroupNodeShuntEnabledForName(normalized),
+          upstream429RetryEnabled:
+            resolveGroupUpstream429RetryEnabledForName(normalized),
+          upstream429MaxRetries:
+            resolveGroupUpstream429MaxRetriesForName(normalized),
+        };
+      },
+      [
+        resolveGroupBoundProxyKeysForName,
+        resolveGroupConcurrencyLimitForName,
+        resolveGroupNodeShuntEnabledForName,
+        resolveGroupNoteForName,
+        resolveGroupSummaryForName,
+        resolveGroupUpstream429MaxRetriesForName,
+        resolveGroupUpstream429RetryEnabledForName,
+      ],
+    ),
+    saveGroupSettings: useCallback(
+      async (groupName, payload, options) => {
+        const normalizedGroupName = normalizeGroupName(groupName);
+        if (!normalizedGroupName) return;
+
+        const normalizedNote = payload.note?.trim() ?? "";
+        const normalizedBoundProxyKeys = Array.from(
+          new Set(
+            (payload.boundProxyKeys ?? [])
+              .map((value) => value.trim())
+              .filter((value) => value.length > 0),
+          ),
+        );
+        const normalizedConcurrencyLimit = payload.concurrencyLimit ?? 0;
+        const normalizedNodeShuntEnabled = payload.nodeShuntEnabled === true;
+        const normalizedUpstream429RetryEnabled =
+          payload.upstream429RetryEnabled === true;
+        const normalizedUpstream429MaxRetries =
+          normalizedUpstream429RetryEnabled
+            ? normalizeEnabledGroupUpstream429MaxRetries(
+                payload.upstream429MaxRetries,
+              )
+            : normalizeGroupUpstream429MaxRetries(
+                payload.upstream429MaxRetries,
+              );
+
+        if (!options.existing) {
+          setGroupDraftNotes((current) => {
+            const next = { ...current };
+            if (normalizedNote) next[normalizedGroupName] = normalizedNote;
+            else delete next[normalizedGroupName];
+            return next;
+          });
+          setGroupDraftBoundProxyKeys((current) => {
+            const next = { ...current };
+            if (normalizedBoundProxyKeys.length > 0) {
+              next[normalizedGroupName] = normalizedBoundProxyKeys;
+            } else {
+              delete next[normalizedGroupName];
+            }
+            return next;
+          });
+          setGroupDraftNodeShuntEnabled((current) => {
+            const next = { ...current };
+            if (normalizedNodeShuntEnabled) next[normalizedGroupName] = true;
+            else delete next[normalizedGroupName];
+            return next;
+          });
+          setGroupDraftConcurrencyLimits((current) => {
+            const next = { ...current };
+            if (normalizedConcurrencyLimit > 0) {
+              next[normalizedGroupName] = normalizedConcurrencyLimit;
+            } else {
+              delete next[normalizedGroupName];
+            }
+            return next;
+          });
+          setGroupDraftUpstream429RetryEnabled((current) => {
+            const next = { ...current };
+            if (
+              normalizedUpstream429RetryEnabled ||
+              normalizedUpstream429MaxRetries > 0
+            ) {
+              next[normalizedGroupName] = normalizedUpstream429RetryEnabled;
+            } else {
+              delete next[normalizedGroupName];
+            }
+            return next;
+          });
+          setGroupDraftUpstream429MaxRetries((current) => {
+            const next = { ...current };
+            if (
+              normalizedUpstream429RetryEnabled ||
+              normalizedUpstream429MaxRetries > 0
+            ) {
+              next[normalizedGroupName] = normalizedUpstream429MaxRetries;
+            } else {
+              delete next[normalizedGroupName];
+            }
+            return next;
+          });
+          return;
+        }
+
+        await saveGroupNote(normalizedGroupName, {
+          note: normalizedNote || undefined,
+          boundProxyKeys: normalizedBoundProxyKeys,
+          concurrencyLimit: normalizedConcurrencyLimit,
+          nodeShuntEnabled: normalizedNodeShuntEnabled,
+          upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
+          upstream429MaxRetries: normalizedUpstream429MaxRetries,
+        });
+        clearDraftGroupSettings(normalizedGroupName);
+      },
+      [clearDraftGroupSettings, saveGroupNote],
+    ),
+  });
 
   const handleCreateTag = useCallback(
     async (payload: Parameters<typeof createTag>[0]) => {
@@ -3576,182 +3508,7 @@ function SharedUpstreamAccountDetailDrawerInner({
         </AccountDetailDrawerShell>
       ) : null}
 
-      <UpstreamAccountGroupNoteDialog
-        open={groupNoteEditor.open}
-        container={detailDrawerPortalContainer}
-        groupName={groupNoteEditor.groupName}
-        note={groupNoteEditor.note}
-        concurrencyLimit={groupNoteEditor.concurrencyLimit}
-        boundProxyKeys={groupNoteEditor.boundProxyKeys}
-        nodeShuntEnabled={groupNoteEditor.nodeShuntEnabled}
-        availableProxyNodes={forwardProxyNodes}
-        proxyBindingsCatalogKind={forwardProxyCatalogState?.kind}
-        proxyBindingsCatalogFreshness={forwardProxyCatalogState?.freshness}
-        busy={groupNoteBusy}
-        error={groupNoteError}
-        existing={groupNoteEditor.existing}
-        onNoteChange={(value) => {
-          setGroupNoteError(null);
-          setGroupNoteEditor((current) => ({ ...current, note: value }));
-        }}
-        onConcurrencyLimitChange={(value) => {
-          setGroupNoteError(null);
-          setGroupNoteEditor((current) => ({
-            ...current,
-            concurrencyLimit: value,
-          }));
-        }}
-        onBoundProxyKeysChange={(value) => {
-          setGroupNoteError(null);
-          setGroupNoteEditor((current) => ({
-            ...current,
-            boundProxyKeys: value,
-          }));
-        }}
-        onNodeShuntEnabledChange={(value) => {
-          setGroupNoteError(null);
-          setGroupNoteEditor((current) => ({
-            ...current,
-            nodeShuntEnabled: value,
-          }));
-        }}
-        upstream429RetryEnabled={groupNoteEditor.upstream429RetryEnabled}
-        upstream429MaxRetries={groupNoteEditor.upstream429MaxRetries}
-        onUpstream429RetryEnabledChange={(value) => {
-          setGroupNoteError(null);
-          setGroupNoteEditor((current) => ({
-            ...current,
-            upstream429RetryEnabled: value,
-            upstream429MaxRetries: value
-              ? normalizeEnabledGroupUpstream429MaxRetries(
-                  current.upstream429MaxRetries,
-                )
-              : normalizeGroupUpstream429MaxRetries(
-                  current.upstream429MaxRetries,
-                ),
-          }));
-        }}
-        onUpstream429MaxRetriesChange={(value) => {
-          setGroupNoteError(null);
-          setGroupNoteEditor((current) => ({
-            ...current,
-            upstream429MaxRetries: current.upstream429RetryEnabled
-              ? normalizeEnabledGroupUpstream429MaxRetries(value)
-              : normalizeGroupUpstream429MaxRetries(value),
-          }));
-        }}
-        onClose={closeGroupNoteEditor}
-        onSave={() => void handleSaveGroupNote()}
-        title={t("accountPool.upstreamAccounts.groupNotes.dialogTitle")}
-        existingDescription={t(
-          "accountPool.upstreamAccounts.groupNotes.existingDescription",
-        )}
-        draftDescription={t(
-          "accountPool.upstreamAccounts.groupNotes.draftDescription",
-        )}
-        noteLabel={t("accountPool.upstreamAccounts.fields.note")}
-        notePlaceholder={t(
-          "accountPool.upstreamAccounts.groupNotes.notePlaceholder",
-        )}
-        concurrencyLimitLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.concurrency.label",
-        )}
-        concurrencyLimitHint={t(
-          "accountPool.upstreamAccounts.groupNotes.concurrency.hint",
-        )}
-        concurrencyLimitCurrentLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.concurrency.current",
-        )}
-        concurrencyLimitUnlimitedLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.concurrency.unlimited",
-        )}
-        cancelLabel={t("accountPool.upstreamAccounts.actions.cancel")}
-        saveLabel={t("accountPool.upstreamAccounts.actions.save")}
-        closeLabel={t("accountPool.upstreamAccounts.actions.closeDetails")}
-        existingBadgeLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.badges.existing",
-        )}
-        draftBadgeLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.badges.draft",
-        )}
-        nodeShuntLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.nodeShunt.label",
-        )}
-        nodeShuntHint={t(
-          "accountPool.upstreamAccounts.groupNotes.nodeShunt.hint",
-        )}
-        nodeShuntToggleLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.nodeShunt.toggle",
-        )}
-        nodeShuntWarning={t(
-          "accountPool.upstreamAccounts.groupNotes.nodeShunt.warning",
-        )}
-        upstream429RetryLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.upstream429.label",
-        )}
-        upstream429RetryHint={t(
-          "accountPool.upstreamAccounts.groupNotes.upstream429.hint",
-        )}
-        upstream429RetryToggleLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.upstream429.toggle",
-        )}
-        upstream429RetryCountLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.upstream429.countLabel",
-        )}
-        upstream429RetryCountOptions={GROUP_UPSTREAM_429_RETRY_OPTIONS.map(
-          (value) => ({
-            value,
-            label:
-              value === 1
-                ? t(
-                    "accountPool.upstreamAccounts.groupNotes.upstream429.countOnce",
-                  )
-                : t(
-                    "accountPool.upstreamAccounts.groupNotes.upstream429.countMany",
-                    { count: value },
-                  ),
-          }),
-        )}
-        proxyBindingsLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.proxyBindings.label",
-        )}
-        proxyBindingsHint={t(
-          "accountPool.upstreamAccounts.groupNotes.proxyBindings.hint",
-        )}
-        proxyBindingsAutomaticLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.proxyBindings.automatic",
-        )}
-        proxyBindingsLoadingLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.proxyBindings.loading",
-        )}
-        proxyBindingsEmptyLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.proxyBindings.empty",
-        )}
-        proxyBindingsMissingLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.proxyBindings.missing",
-        )}
-        proxyBindingsUnavailableLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.proxyBindings.unavailable",
-        )}
-        proxyBindingsChartLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartLabel",
-        )}
-        proxyBindingsChartSuccessLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartSuccess",
-        )}
-        proxyBindingsChartFailureLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartFailure",
-        )}
-        proxyBindingsChartEmptyLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartEmpty",
-        )}
-        proxyBindingsChartTotalLabel={t(
-          "live.proxy.table.requestTooltip.total",
-        )}
-        proxyBindingsChartAriaLabel={t("live.proxy.table.requestTrendAria")}
-        proxyBindingsChartInteractionHint={t("live.chart.tooltip.instructions")}
-        proxyBindingsChartLocaleTag={locale === "zh" ? "zh-CN" : "en-US"}
-      />
+      {groupNoteDialog}
     </>
   );
 }

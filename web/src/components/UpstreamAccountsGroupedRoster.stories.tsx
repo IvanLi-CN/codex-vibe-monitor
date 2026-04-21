@@ -182,6 +182,7 @@ function buildGroup(
     boundProxyLabels: [],
     concurrencyLimit: 3,
     nodeShuntEnabled: false,
+    hasCustomSettings: false,
     planCounts: [
       ...orderedPlans.map((plan) => ({
         key: plan,
@@ -240,6 +241,8 @@ const meta = {
     selectedAccountIds: new Set<number>(),
     onSelect: () => undefined,
     onToggleSelected: () => undefined,
+    canEditGroupSettings: true,
+    onEditGroupSettings: () => undefined,
     memberLayout: 'list',
     selectionMode: 'multi',
     emptyTitle: 'No upstream account yet',
@@ -255,6 +258,7 @@ const meta = {
       noteEmpty: 'No group note',
       proxiesLabel: 'Forward proxies',
       proxiesEmpty: 'No bound proxy',
+      settingsLabel: 'Edit group settings',
     },
   },
 } satisfies Meta<typeof UpstreamAccountsGroupedRoster>
@@ -303,36 +307,45 @@ export const UngroupedBucket: Story = {
 
 export const VirtualizedLargeRoster: Story = {
   args: {
-    groups: [
-      buildGroup(
-        'production-apac',
-        'production-apac',
-        Array.from({ length: 90 }, (_, index) =>
-          makeItem(100 + index, {
-            displayName: `APAC Account ${index + 1}`,
-            groupName: 'production-apac',
-            currentForwardProxyDisplayName: index % 4 === 0 ? 'JP Edge 01' : 'SG Transit 03',
+    groups: Array.from({ length: 36 }, (_, groupIndex) => {
+      const groupId = `virtual-group-${groupIndex + 1}`
+      return buildGroup(
+        groupId,
+        `virtual-group-${groupIndex + 1}`,
+        Array.from({ length: 4 + (groupIndex % 5) }, (_, itemIndex) =>
+          makeItem(groupIndex * 20 + itemIndex + 100, {
+            displayName: `Group ${groupIndex + 1} Account ${itemIndex + 1}`,
+            groupName: groupId,
+            planType:
+              itemIndex % 4 === 0
+                ? 'team'
+                : itemIndex % 3 === 0
+                  ? 'free'
+                  : 'pro',
+            currentForwardProxyDisplayName:
+              itemIndex % 3 === 0 ? 'JP Edge 01' : 'SG Transit 03',
             currentForwardProxyState:
-              index % 9 === 0 ? 'pending' : index % 11 === 0 ? 'unconfigured' : 'assigned',
+              itemIndex % 6 === 0
+                ? 'pending'
+                : itemIndex % 7 === 0
+                  ? 'unconfigured'
+                  : 'assigned',
             currentForwardProxyKey:
-              index % 11 === 0 ? null : index % 4 === 0 ? 'jp-edge-01' : 'sg-transit-03',
+              itemIndex % 7 === 0
+                ? null
+                : itemIndex % 3 === 0
+                  ? 'jp-edge-01'
+                  : 'sg-transit-03',
           }),
         ),
-        { concurrencyLimit: 12, nodeShuntEnabled: true },
-      ),
-      buildGroup(
-        'overflow',
-        'overflow',
-        Array.from({ length: 64 }, (_, index) =>
-          makeItem(300 + index, {
-            displayName: `Overflow Account ${index + 1}`,
-            groupName: 'overflow',
-            planType: index % 2 === 0 ? 'team' : 'pro',
-            currentForwardProxyDisplayName: 'DE Transit 02',
-          }),
-        ),
-        { concurrencyLimit: 8 },
-      ),
-    ],
+        {
+          concurrencyLimit: 2 + (groupIndex % 5),
+          nodeShuntEnabled: groupIndex % 4 === 0,
+          hasCustomSettings: groupIndex % 3 === 0,
+          boundProxyLabels:
+            groupIndex % 2 === 0 ? ['JP Edge 01', 'SG Transit 03'] : ['DE Transit 02'],
+        },
+      )
+    }),
   },
 }

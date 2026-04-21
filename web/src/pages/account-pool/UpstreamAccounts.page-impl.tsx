@@ -90,6 +90,7 @@ import {
   RoutingSettingsDialog,
   SharedUpstreamAccountDetailDrawer,
 } from "./UpstreamAccounts.page-local-shared";
+import { useUpstreamAccountGroupSettingsDialog } from "./useUpstreamAccountGroupSettingsDialog";
 export { SharedUpstreamAccountDetailDrawer } from "./UpstreamAccounts.page-local-shared";
 
 type AccountRosterViewMode = "flat" | "grouped" | "grid";
@@ -306,6 +307,7 @@ export default function UpstreamAccountsPage() {
     refresh,
     routing,
     saveRouting,
+    saveGroupNote,
     runBulkAction,
     startBulkSyncJob,
     getBulkSyncJob,
@@ -990,14 +992,28 @@ export default function UpstreamAccountsPage() {
     if (hideRosterDerivedUi) {
       return [];
     }
+    const normalizedGroupEntries = groups.map((group, index) => ({
+      group,
+      index,
+      normalizedGroupName: normalizeRosterGroupName(group.groupName),
+    }));
+    const namedGroupEntries = normalizedGroupEntries.filter(
+      (
+        entry,
+      ): entry is {
+        group: (typeof groups)[number];
+        index: number;
+        normalizedGroupName: string;
+      } => entry.normalizedGroupName != null,
+    );
     const forwardProxyNodeLabelMap = new Map(
       forwardProxyNodes.map((node) => [node.key, node.displayName?.trim() || node.key] as const),
     );
     const groupSummaryMap = new Map(
-      groups.map((group) => [group.groupName, group] as const),
+      namedGroupEntries.map((entry) => [entry.normalizedGroupName, entry.group] as const),
     );
     const groupOrder = new Map(
-      groups.map((group, index) => [group.groupName, index] as const),
+      namedGroupEntries.map((entry) => [entry.normalizedGroupName, entry.index] as const),
     );
     const grouped = new Map<string, UpstreamAccountsGroupedRosterGroup>();
     for (const item of visibleRosterItems) {
@@ -1014,12 +1030,22 @@ export default function UpstreamAccountsPage() {
           t("accountPool.upstreamAccounts.groupFilter.ungrouped"),
         items: [],
         note: groupSummary?.note ?? null,
+        boundProxyKeys: groupSummary?.boundProxyKeys ?? [],
         boundProxyLabels:
           groupSummary?.boundProxyKeys?.map(
             (proxyKey) => forwardProxyNodeLabelMap.get(proxyKey) ?? proxyKey,
           ) ?? [],
         concurrencyLimit: groupSummary?.concurrencyLimit ?? null,
         nodeShuntEnabled: groupSummary?.nodeShuntEnabled ?? false,
+        upstream429RetryEnabled: groupSummary?.upstream429RetryEnabled ?? false,
+        upstream429MaxRetries: groupSummary?.upstream429MaxRetries ?? 0,
+        hasCustomSettings:
+          Boolean(groupSummary?.note?.trim()) ||
+          (groupSummary?.boundProxyKeys?.length ?? 0) > 0 ||
+          (groupSummary?.concurrencyLimit ?? 0) > 0 ||
+          groupSummary?.nodeShuntEnabled === true ||
+          groupSummary?.upstream429RetryEnabled === true ||
+          (groupSummary?.upstream429MaxRetries ?? 0) > 0,
         planCounts: [],
       };
       current.items.push(item);
@@ -1068,6 +1094,41 @@ export default function UpstreamAccountsPage() {
     });
     return result;
   }, [forwardProxyNodes, groupedPlanLabel, groups, hideRosterDerivedUi, t, visibleRosterItems]);
+  const {
+    openEditor: openGroupSettingsEditor,
+    dialog: groupSettingsDialog,
+  } = useUpstreamAccountGroupSettingsDialog({
+    writesEnabled,
+    resolveGroupState: useCallback(
+      (groupName) => {
+        const normalizedGroupName = normalizeRosterGroupName(groupName);
+        if (!normalizedGroupName) return null;
+        const rosterGroup =
+          groupedRosterGroups.find(
+            (group) => group.groupName === normalizedGroupName,
+          ) ??
+          null;
+        return {
+          groupName: normalizedGroupName,
+          note: rosterGroup?.note ?? "",
+          existing: rosterGroup != null,
+          concurrencyLimit: rosterGroup?.concurrencyLimit ?? 0,
+          boundProxyKeys: rosterGroup?.boundProxyKeys ?? [],
+          nodeShuntEnabled: rosterGroup?.nodeShuntEnabled ?? false,
+          upstream429RetryEnabled:
+            rosterGroup?.upstream429RetryEnabled ?? false,
+          upstream429MaxRetries: rosterGroup?.upstream429MaxRetries ?? 0,
+        };
+      },
+      [groupedRosterGroups],
+    ),
+    saveGroupSettings: useCallback(
+      async (groupName, payload) => {
+        await saveGroupNote(groupName, payload);
+      },
+      [saveGroupNote],
+    ),
+  });
   const bulkRemovableTagIds = useMemo(() => {
     const removableIds = new Set<number>();
     for (const summary of Object.values(selectedAccountSummaries)) {
@@ -2199,6 +2260,11 @@ export default function UpstreamAccountsPage() {
                   labels={accountRosterLabels}
                   memberLayout={rosterViewMode === "grid" ? "grid" : "list"}
                   selectionMode={rosterViewMode === "grid" ? "none" : "multi"}
+                  canEditGroupSettings={writesEnabled}
+                  onEditGroupSettings={(group) => {
+                    if (!group.groupName) return;
+                    openGroupSettingsEditor(group.groupName);
+                  }}
                   groupLabels={{
                     count: (count) =>
                       t("accountPool.upstreamAccounts.grouped.accountCount", {
@@ -2211,12 +2277,17 @@ export default function UpstreamAccountsPage() {
                     exclusiveNode: t(
                       "accountPool.upstreamAccounts.grouped.exclusiveNode",
                     ),
-                    selectVisible: t("accountPool.upstreamAccounts.bulk.selectPage"),
+                    selectVisible: t(
+                      "accountPool.upstreamAccounts.bulk.selectFiltered",
+                    ),
                     infoTitle: t("accountPool.upstreamAccounts.grouped.infoTitle"),
                     noteLabel: t("accountPool.upstreamAccounts.grouped.noteLabel"),
                     noteEmpty: t("accountPool.upstreamAccounts.grouped.noteEmpty"),
                     proxiesLabel: t("accountPool.upstreamAccounts.grouped.proxiesLabel"),
                     proxiesEmpty: t("accountPool.upstreamAccounts.grouped.proxiesEmpty"),
+                    settingsLabel: t(
+                      "accountPool.upstreamAccounts.groupNotes.actions.edit",
+                    ),
                   }}
                 />
               )}
@@ -2332,6 +2403,8 @@ export default function UpstreamAccountsPage() {
           </div>
         </div>
       </section>
+
+      {groupSettingsDialog}
 
       <Dialog
         open={bulkGroupDialogOpen}
