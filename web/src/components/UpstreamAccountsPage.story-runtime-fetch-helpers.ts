@@ -63,6 +63,17 @@ export function getRosterResponseFailure(storyId: string | null, url: URL) {
   return null
 }
 
+export function getWindowUsageResponseDelay(storyId: string | null) {
+  if (
+    storyId?.endsWith('--grouped-view') === true ||
+    storyId?.endsWith('--grid-view') === true
+  ) {
+    return 400
+  }
+
+  return 0
+}
+
 export function noContent() {
   return Promise.resolve(new Response(null, { status: 204 }))
 }

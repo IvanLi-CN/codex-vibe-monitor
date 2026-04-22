@@ -57,6 +57,7 @@ import {
   buildStoryImportedOauthValidationResponse,
   getRosterResponseDelay,
   getRosterResponseFailure,
+  getWindowUsageResponseDelay,
   jsonResponse,
   MockStoryBulkSyncEventSource,
   noContent,
@@ -65,6 +66,33 @@ import {
 } from './UpstreamAccountsPage.story-runtime-fetch-helpers'
 
 export type { StoryInitialEntry } from './UpstreamAccountsPage.story-runtime-core'
+
+function stripActualUsageFromRosterWindow<T extends { actualUsage?: unknown } | null | undefined>(
+  window: T,
+): T {
+  if (!window || typeof window !== 'object') return window
+  return {
+    ...window,
+    actualUsage: null,
+  } as T
+}
+
+function buildStoryWindowActualUsage(accountId: number, multiplier: number) {
+  const requestCount = Math.max(1, Math.round((accountId % 17) + multiplier * 3))
+  const totalTokens = requestCount * 3200 + accountId * 11
+  const totalCost = Number((requestCount * 0.041 + multiplier * 0.09).toFixed(4))
+  const cacheInputTokens = Math.round(totalTokens * 0.12)
+  const inputTokens = Math.round(totalTokens * 0.56)
+  const outputTokens = totalTokens - inputTokens - cacheInputTokens
+  return {
+    requestCount,
+    totalTokens,
+    totalCost,
+    inputTokens,
+    outputTokens,
+    cacheInputTokens,
+  }
+}
 
 export function StorybookUpstreamAccountsMock({
   children,
@@ -118,7 +146,12 @@ export function StorybookUpstreamAccountsMock({
         const pageItems = (includeAll
           ? filteredItems
           : filteredItems.slice(start, start + requestedPageSize)
-        ).map((item) => clone(item))
+        ).map((item) => {
+          const rosterItem = clone(item)
+          rosterItem.primaryWindow = stripActualUsageFromRosterWindow(rosterItem.primaryWindow)
+          rosterItem.secondaryWindow = stripActualUsageFromRosterWindow(rosterItem.secondaryWindow)
+          return rosterItem
+        })
         const payload: UpstreamAccountListResponse = {
           writesEnabled: store.writesEnabled,
           groups: listGroupSummaries(store),
@@ -158,6 +191,36 @@ export function StorybookUpstreamAccountsMock({
           return jsonResponse({ message: failureMessage }, 503)
         }
         return jsonResponse(payload)
+      }
+
+      if (
+        path === '/api/pool/upstream-accounts/window-usage' &&
+        method === 'POST'
+      ) {
+        const body = parseBody<{ accountIds?: number[] }>(init?.body, {})
+        const accountIds = Array.isArray(body.accountIds)
+          ? body.accountIds.filter(
+              (accountId) => Number.isFinite(accountId) && accountId > 0,
+            )
+          : []
+        const delayMs = getWindowUsageResponseDelay(storyId)
+        if (delayMs > 0) {
+          await wait(delayMs)
+        }
+        return jsonResponse({
+          items: accountIds.map((accountId) => {
+            const account = store.accounts.find((item) => item.id === accountId)
+            return {
+              accountId,
+              primaryActualUsage: account?.primaryWindow
+                ? buildStoryWindowActualUsage(accountId, 1)
+                : null,
+              secondaryActualUsage: account?.secondaryWindow
+                ? buildStoryWindowActualUsage(accountId, 2)
+                : null,
+            }
+          }),
+        })
       }
 
       if (path === '/api/pool/tags' && method === 'GET') {

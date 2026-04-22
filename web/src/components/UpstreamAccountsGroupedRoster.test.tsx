@@ -297,6 +297,13 @@ function createRosterProps(
   } satisfies ComponentProps<typeof UpstreamAccountsGroupedRoster>
 }
 
+async function flushAsync() {
+  await act(async () => {
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+}
+
 function renderRoster(
   groups: UpstreamAccountsGroupedRosterGroup[],
   overrides: Partial<ComponentProps<typeof UpstreamAccountsGroupedRoster>> = {},
@@ -348,6 +355,49 @@ describe('UpstreamAccountsGroupedRoster', () => {
 
     expect(onEditGroupSettings).toHaveBeenCalledTimes(1)
     expect(host?.textContent).not.toContain('This note should not render in grouped list mode.')
+  })
+
+  it('reports visible member ids for rendered groups', async () => {
+    const onVisibleAccountIdsChange = vi.fn()
+
+    renderRoster([makeGroup('analytics', [makeItem(1), makeItem(2)])], {
+      onVisibleAccountIdsChange,
+    })
+    await flushAsync()
+
+    expect(onVisibleAccountIdsChange).toHaveBeenLastCalledWith([1, 2])
+  })
+
+  it('reports only visible group-card accounts and clears them on unmount', async () => {
+    virtualizerMocks.visibleIndexes = [1]
+    const onVisibleAccountIdsChange = vi.fn()
+
+    renderRoster(
+      [
+        makeGroup('group-a', [makeItem(1), makeItem(2)]),
+        makeGroup('group-b', [
+          makeItem(3, { groupName: 'group-b' }),
+          makeItem(4, { groupName: 'group-b' }),
+        ]),
+      ],
+      {
+        onVisibleAccountIdsChange,
+        memberLayout: 'grid',
+        selectionMode: 'none',
+        onToggleSelected: undefined,
+        onToggleSelectAllVisible: undefined,
+      },
+    )
+    await flushAsync()
+
+    expect(onVisibleAccountIdsChange).toHaveBeenLastCalledWith([3, 4])
+
+    act(() => {
+      root?.unmount()
+    })
+    await flushAsync()
+
+    expect(onVisibleAccountIdsChange).toHaveBeenLastCalledWith([])
   })
 
   it('hides the group settings action for read-only and ungrouped summaries', () => {

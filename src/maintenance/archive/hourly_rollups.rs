@@ -23,6 +23,71 @@ pub(crate) async fn mark_retention_archived_hourly_rollup_targets_tx(
     Ok(())
 }
 
+async fn load_archive_table_columns(
+    pool: &Pool<Sqlite>,
+    table_name: &str,
+) -> Result<HashSet<String>> {
+    let pragma = format!("PRAGMA table_info('{table_name}')");
+    let columns = sqlx::query(&pragma)
+        .fetch_all(pool)
+        .await
+        .with_context(|| format!("failed to inspect {table_name} schema"))?
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect::<HashSet<_>>();
+    Ok(columns)
+}
+
+fn legacy_compatible_archive_select_expr(
+    archive_columns: &HashSet<String>,
+    column_name: &str,
+) -> String {
+    if archive_columns.contains(column_name) {
+        column_name.to_string()
+    } else {
+        format!("NULL AS {column_name}")
+    }
+}
+
+fn build_legacy_compatible_invocation_archive_query(archive_columns: &HashSet<String>) -> String {
+    let input_tokens = legacy_compatible_archive_select_expr(archive_columns, "input_tokens");
+    let output_tokens = legacy_compatible_archive_select_expr(archive_columns, "output_tokens");
+    let cache_input_tokens =
+        legacy_compatible_archive_select_expr(archive_columns, "cache_input_tokens");
+    format!(
+        r#"
+        SELECT
+            id,
+            occurred_at,
+            source,
+            status,
+            detail_level,
+            {input_tokens},
+            {output_tokens},
+            {cache_input_tokens},
+            total_tokens,
+            cost,
+            error_message,
+            failure_kind,
+            failure_class,
+            is_actionable,
+            payload,
+            t_total_ms,
+            t_req_read_ms,
+            t_req_parse_ms,
+            t_upstream_connect_ms,
+            t_upstream_ttfb_ms,
+            t_upstream_stream_ms,
+            t_resp_parse_ms,
+            t_persist_ms
+        FROM codex_invocations
+        WHERE id > ?1
+        ORDER BY id ASC
+        LIMIT ?2
+        "#
+    )
+}
+
 pub(crate) async fn mark_archive_batch_historical_rollups_materialized_tx(
     tx: &mut SqliteConnection,
     dataset: &str,
@@ -167,10 +232,12 @@ pub(crate) async fn mark_invocation_hourly_rollup_buckets_materialized_tx(
     rows: &[InvocationHourlySourceRecord],
 ) -> Result<()> {
     let mut overall_targets = HashSet::new();
+    let mut upstream_account_usage_targets = HashSet::new();
     let mut sticky_targets = HashSet::new();
     for row in rows {
         let bucket_start_epoch = invocation_bucket_start_epoch(&row.occurred_at)?;
         overall_targets.insert((bucket_start_epoch, row.source.clone()));
+        upstream_account_usage_targets.insert(bucket_start_epoch);
         sticky_targets.insert(bucket_start_epoch);
     }
 
@@ -204,6 +271,22 @@ pub(crate) async fn mark_invocation_hourly_rollup_buckets_materialized_tx(
             )
             .await?;
         }
+    }
+
+    for bucket_start_epoch in upstream_account_usage_targets {
+        if live_targets
+            .iter()
+            .any(|(live_bucket_start_epoch, _)| *live_bucket_start_epoch == bucket_start_epoch)
+        {
+            continue;
+        }
+        mark_hourly_rollup_bucket_materialized_tx(
+            tx,
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
+            bucket_start_epoch,
+            HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE,
+        )
+        .await?;
     }
 
     for bucket_start_epoch in sticky_targets {
@@ -366,6 +449,8 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
     let upsert_prompt_cache = targets.contains(&HOURLY_ROLLUP_TARGET_PROMPT_CACHE);
     let upsert_prompt_cache_upstream_accounts =
         targets.contains(&HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS);
+    let upsert_upstream_account_usage =
+        targets.contains(&HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE);
     let upsert_sticky_keys = targets.contains(&HOURLY_ROLLUP_TARGET_STICKY_KEYS);
 
     let mut overall: BTreeMap<(i64, String), InvocationHourlyRollupDelta> = BTreeMap::new();
@@ -377,6 +462,8 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
         (i64, String, String, String, Option<i64>, Option<String>),
         KeyedConversationHourlyDelta,
     > = BTreeMap::new();
+    let mut upstream_account_usage: BTreeMap<(i64, i64), UpstreamAccountUsageHourlyDelta> =
+        BTreeMap::new();
     let mut sticky_keys: BTreeMap<(i64, i64, String), KeyedConversationHourlyDelta> =
         BTreeMap::new();
 
@@ -520,6 +607,31 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                 entry.total_tokens += row.total_tokens.unwrap_or_default();
                 entry.total_cost += row.cost.unwrap_or_default();
             }
+        }
+
+        if upsert_upstream_account_usage
+            && let Some(upstream_account_id) =
+                upstream_account_id_from_payload(row.payload.as_deref())
+        {
+            let entry = upstream_account_usage
+                .entry((bucket_start_epoch, upstream_account_id))
+                .or_insert_with(|| UpstreamAccountUsageHourlyDelta {
+                    first_seen_at: row.occurred_at.clone(),
+                    last_seen_at: row.occurred_at.clone(),
+                    ..UpstreamAccountUsageHourlyDelta::default()
+                });
+            if row.occurred_at < entry.first_seen_at {
+                entry.first_seen_at = row.occurred_at.clone();
+            }
+            if row.occurred_at > entry.last_seen_at {
+                entry.last_seen_at = row.occurred_at.clone();
+            }
+            entry.request_count += 1;
+            entry.total_tokens += row.total_tokens.unwrap_or_default();
+            entry.total_cost += row.cost.unwrap_or_default();
+            entry.input_tokens += row.input_tokens.unwrap_or_default();
+            entry.output_tokens += row.output_tokens.unwrap_or_default();
+            entry.cache_input_tokens += row.cache_input_tokens.unwrap_or_default();
         }
 
         if upsert_sticky_keys
@@ -837,6 +949,51 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
         }
     }
 
+    if upsert_upstream_account_usage {
+        for ((bucket_start_epoch, upstream_account_id), delta) in upstream_account_usage {
+            sqlx::query(
+                r#"
+                INSERT INTO upstream_account_usage_hourly (
+                    bucket_start_epoch,
+                    upstream_account_id,
+                    request_count,
+                    total_tokens,
+                    total_cost,
+                    input_tokens,
+                    output_tokens,
+                    cache_input_tokens,
+                    first_seen_at,
+                    last_seen_at,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now'))
+                ON CONFLICT(bucket_start_epoch, upstream_account_id) DO UPDATE SET
+                    request_count = upstream_account_usage_hourly.request_count + excluded.request_count,
+                    total_tokens = upstream_account_usage_hourly.total_tokens + excluded.total_tokens,
+                    total_cost = upstream_account_usage_hourly.total_cost + excluded.total_cost,
+                    input_tokens = upstream_account_usage_hourly.input_tokens + excluded.input_tokens,
+                    output_tokens = upstream_account_usage_hourly.output_tokens + excluded.output_tokens,
+                    cache_input_tokens = upstream_account_usage_hourly.cache_input_tokens + excluded.cache_input_tokens,
+                    first_seen_at = MIN(upstream_account_usage_hourly.first_seen_at, excluded.first_seen_at),
+                    last_seen_at = MAX(upstream_account_usage_hourly.last_seen_at, excluded.last_seen_at),
+                    updated_at = datetime('now')
+                "#,
+            )
+            .bind(bucket_start_epoch)
+            .bind(upstream_account_id)
+            .bind(delta.request_count)
+            .bind(delta.total_tokens)
+            .bind(delta.total_cost)
+            .bind(delta.input_tokens)
+            .bind(delta.output_tokens)
+            .bind(delta.cache_input_tokens)
+            .bind(&delta.first_seen_at)
+            .bind(&delta.last_seen_at)
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
+
     if upsert_sticky_keys {
         for ((bucket_start_epoch, upstream_account_id, sticky_key), delta) in sticky_keys {
             sqlx::query(
@@ -889,6 +1046,7 @@ pub(crate) fn invocation_archive_target_needs_full_payload(target: &str) -> bool
         target,
         HOURLY_ROLLUP_TARGET_PROMPT_CACHE
             | HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS
+            | HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE
             | HOURLY_ROLLUP_TARGET_STICKY_KEYS
     )
 }
@@ -1017,6 +1175,9 @@ pub(crate) async fn load_live_invocation_hourly_rows_for_bucket_epochs_tx(
             source,
             status,
             detail_level,
+            input_tokens,
+            output_tokens,
+            cache_input_tokens,
             total_tokens,
             cost,
             error_message,
@@ -1093,6 +1254,7 @@ pub(crate) async fn recompute_invocation_hourly_rollups_for_ids_tx(
         HOURLY_ROLLUP_TARGET_PROXY_PERF,
         HOURLY_ROLLUP_TARGET_PROMPT_CACHE,
         HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
         HOURLY_ROLLUP_TARGET_STICKY_KEYS,
     ] {
         delete_hourly_rollup_rows_for_bucket_epochs_tx(tx, table, &bucket_epochs).await?;
@@ -1114,6 +1276,9 @@ pub(crate) async fn replay_live_invocation_hourly_rollups(pool: &Pool<Sqlite>) -
             source,
             status,
             detail_level,
+            input_tokens,
+            output_tokens,
+            cache_input_tokens,
             total_tokens,
             cost,
             error_message,
@@ -1164,6 +1329,9 @@ pub(crate) async fn replay_live_invocation_hourly_rollups_tx(tx: &mut SqliteConn
             source,
             status,
             detail_level,
+            input_tokens,
+            output_tokens,
+            cache_input_tokens,
             total_tokens,
             cost,
             error_message,
@@ -1315,37 +1483,11 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(pool: &Pool<S
             .connect(&sqlite_url_for_path(&temp_path))
             .await
             .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
+        let archive_columns = load_archive_table_columns(&archive_pool, "codex_invocations").await?;
+        let archive_query_sql = build_legacy_compatible_invocation_archive_query(&archive_columns);
         let mut archive_cursor_id = 0_i64;
         loop {
-            let mut rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(
-                r#"
-                SELECT
-                    id,
-                    occurred_at,
-                    source,
-                    status,
-                    detail_level,
-                    total_tokens,
-                    cost,
-                    error_message,
-                    failure_kind,
-                    failure_class,
-                    is_actionable,
-                    payload,
-                    t_total_ms,
-                    t_req_read_ms,
-                    t_req_parse_ms,
-                    t_upstream_connect_ms,
-                    t_upstream_ttfb_ms,
-                    t_upstream_stream_ms,
-                    t_resp_parse_ms,
-                    t_persist_ms
-                FROM codex_invocations
-                WHERE id > ?1
-                ORDER BY id ASC
-                LIMIT ?2
-                "#,
-            )
+            let mut rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(&archive_query_sql)
             .bind(archive_cursor_id)
             .bind(BACKFILL_BATCH_SIZE)
             .fetch_all(&archive_pool)
@@ -1374,6 +1516,9 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(pool: &Pool<S
                 source,
                 status,
                 detail_level,
+                input_tokens,
+                output_tokens,
+                cache_input_tokens,
                 total_tokens,
                 cost,
                 error_message,

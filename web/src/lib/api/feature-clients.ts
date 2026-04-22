@@ -29,6 +29,7 @@ export {
   fetchPerfStats,
   fetchQuotaSnapshot,
   fetchUpstreamAccounts,
+  fetchUpstreamAccountWindowUsage,
   fetchForwardProxyBindingNodes,
   fetchTags,
   createTag,

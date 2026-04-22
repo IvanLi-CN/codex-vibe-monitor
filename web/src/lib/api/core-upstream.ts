@@ -272,6 +272,16 @@ export interface UpstreamAccountListResponse {
   routing?: PoolRoutingSettings | null;
 }
 
+export interface UpstreamAccountWindowUsageItem {
+  accountId: number;
+  primaryActualUsage: RateWindowActualUsage | null;
+  secondaryActualUsage: RateWindowActualUsage | null;
+}
+
+export interface UpstreamAccountWindowUsageResponse {
+  items: UpstreamAccountWindowUsageItem[];
+}
+
 export interface FetchUpstreamAccountsQuery {
   groupSearch?: string;
   groupUngrouped?: boolean;
@@ -1174,6 +1184,34 @@ function normalizeUpstreamAccountListResponse(
   };
 }
 
+function normalizeUpstreamAccountWindowUsageResponse(
+  raw: unknown,
+): UpstreamAccountWindowUsageResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const itemsRaw = Array.isArray(payload.items) ? payload.items : [];
+  return {
+    items: itemsRaw
+      .map((item) => {
+        const entry = (item ?? {}) as Record<string, unknown>;
+        const accountId = normalizeFiniteNumber(entry.accountId);
+        if (accountId == null) return null;
+        const normalized: UpstreamAccountWindowUsageItem = {
+          accountId,
+          primaryActualUsage: normalizeRateWindowActualUsage(
+            entry.primaryActualUsage,
+          ),
+          secondaryActualUsage: normalizeRateWindowActualUsage(
+            entry.secondaryActualUsage,
+          ),
+        };
+        return normalized;
+      })
+      .filter(
+        (item): item is UpstreamAccountWindowUsageItem => item != null,
+      ),
+  };
+}
+
 function normalizeTagListResponse(raw: unknown): TagListResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const itemsRaw = Array.isArray(payload.items) ? payload.items : [];
@@ -1702,6 +1740,28 @@ export async function fetchUpstreamAccounts(
       : "/api/pool/upstream-accounts",
   );
   return normalizeUpstreamAccountListResponse(response);
+}
+
+export async function fetchUpstreamAccountWindowUsage(
+  accountIds: number[],
+): Promise<UpstreamAccountWindowUsageResponse> {
+  const normalizedAccountIds = Array.from(
+    new Set(
+      accountIds.filter(
+        (accountId) => Number.isFinite(accountId) && accountId > 0,
+      ),
+    ),
+  );
+  if (normalizedAccountIds.length === 0) {
+    return { items: [] };
+  }
+  const response = await fetchJson<unknown>("/api/pool/upstream-accounts/window-usage", {
+    method: "POST",
+    body: JSON.stringify({
+      accountIds: normalizedAccountIds,
+    }),
+  });
+  return normalizeUpstreamAccountWindowUsageResponse(response);
 }
 
 export async function fetchForwardProxyBindingNodes(

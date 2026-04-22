@@ -3460,7 +3460,7 @@
         )
         .bind(month_key)
         .bind(day_key)
-        .bind(format!("{batch_name}.sqlite.gz"))
+        .bind(archive_gzip_path.to_string_lossy().to_string())
         .bind(sha256_hex_file(&archive_gzip_path).expect("archive sha256"))
         .bind(rows.len() as i64)
         .bind(ARCHIVE_STATUS_COMPLETED)

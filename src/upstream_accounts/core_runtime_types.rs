@@ -847,6 +847,27 @@ pub(crate) struct UpstreamAccountListResponse {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct UpstreamAccountWindowUsageRequest {
+    #[serde(default)]
+    pub(crate) account_ids: Vec<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpstreamAccountWindowUsageItem {
+    account_id: i64,
+    primary_actual_usage: Option<RateWindowActualUsage>,
+    secondary_actual_usage: Option<RateWindowActualUsage>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpstreamAccountWindowUsageResponse {
+    items: Vec<UpstreamAccountWindowUsageItem>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct ListForwardProxyBindingNodesQuery {
     #[serde(default)]
     pub(crate) key: Vec<String>,

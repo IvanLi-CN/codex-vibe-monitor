@@ -137,6 +137,7 @@ export default function UpstreamAccountsPage() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [rosterViewMode, setRosterViewMode] = useState<AccountRosterViewMode>("flat");
+  const [visibleGroupedAccountIds, setVisibleGroupedAccountIds] = useState<number[]>([]);
   const [selectedAccountIds, setSelectedAccountIds] = useState<number[]>([]);
   const [selectedAccountSummaries, setSelectedAccountSummaries] = useState<
     Record<number, UpstreamAccountSummary>
@@ -304,6 +305,7 @@ export default function UpstreamAccountsPage() {
       hasCurrentQueryData: true,
       isPending: false,
     },
+    hydrateWindowUsage = async () => {},
     refresh,
     routing,
     saveRouting,
@@ -399,6 +401,26 @@ export default function UpstreamAccountsPage() {
   const visibleListWarning =
     listState.hasCurrentQueryData && listError ? listError : null;
   const hideRosterDerivedUi = showBlockingRosterState && !showGraceRoster;
+  const visibleHydrationAccountIds = useMemo(() => {
+    if (rosterViewMode === "flat") {
+      return visibleRosterItems.map((item) => item.id);
+    }
+    const visibleRosterIdSet = new Set(visibleRosterItems.map((item) => item.id));
+    return Array.from(
+      new Set(
+        visibleGroupedAccountIds.filter((accountId) =>
+          visibleRosterIdSet.has(accountId),
+        ),
+      ),
+    );
+  }, [rosterViewMode, visibleGroupedAccountIds, visibleRosterItems]);
+  const visibleHydrationAccountIdsKey = useMemo(
+    () =>
+      [...visibleHydrationAccountIds]
+        .sort((left, right) => left - right)
+        .join(","),
+    [visibleHydrationAccountIds],
+  );
   const effectiveMetrics = listMetrics ?? {
     total: items.length,
     oauth: items.filter((item) => item.kind === "oauth_codex").length,
@@ -449,6 +471,29 @@ export default function UpstreamAccountsPage() {
     },
     [clearBulkSelection],
   );
+
+  useEffect(() => {
+    if (rosterViewMode === "flat") {
+      setVisibleGroupedAccountIds([]);
+    }
+  }, [rosterViewMode]);
+
+  useEffect(() => {
+    if (
+      !listState.hasCurrentQueryData ||
+      showBlockingRosterState ||
+      visibleHydrationAccountIds.length === 0
+    ) {
+      return;
+    }
+    void hydrateWindowUsage(visibleHydrationAccountIds);
+  }, [
+    hydrateWindowUsage,
+    listState.hasCurrentQueryData,
+    showBlockingRosterState,
+    visibleHydrationAccountIds,
+    visibleHydrationAccountIdsKey,
+  ]);
   const handleWorkStatusFilterChange = useCallback(
     (value: string[]) => {
       setWorkStatusFilter(value);
@@ -2260,6 +2305,7 @@ export default function UpstreamAccountsPage() {
                   labels={accountRosterLabels}
                   memberLayout={rosterViewMode === "grid" ? "grid" : "list"}
                   selectionMode={rosterViewMode === "grid" ? "none" : "multi"}
+                  onVisibleAccountIdsChange={setVisibleGroupedAccountIds}
                   canEditGroupSettings={writesEnabled}
                   onEditGroupSettings={(group) => {
                     if (!group.groupName) return;

@@ -75,6 +75,7 @@ async fn load_window_actual_usage_rows_from_pool(
     start_at: &str,
     end_at: &str,
     end_before: Option<&str>,
+    min_id_exclusive: Option<i64>,
 ) -> Result<Vec<AccountWindowUsageRow>> {
     if account_ids.is_empty() {
         return Ok(Vec::new());
@@ -111,6 +112,9 @@ async fn load_window_actual_usage_rows_from_pool(
     if let Some(end_before) = end_before {
         query.push(" AND occurred_at < ").push_bind(end_before);
     }
+    if let Some(min_id_exclusive) = min_id_exclusive {
+        query.push(" AND id > ").push_bind(min_id_exclusive.max(0));
+    }
 
     query
         .push(" AND ")
@@ -126,6 +130,130 @@ async fn load_window_actual_usage_rows_from_pool(
 
     query
         .build_query_as::<AccountWindowUsageRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
+async fn load_window_actual_usage_rows_for_bucket_epochs_from_pool(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+    bucket_epochs: &HashSet<i64>,
+    min_id_exclusive: Option<i64>,
+) -> Result<Vec<AccountWindowUsageRow>> {
+    if account_ids.is_empty() || bucket_epochs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut sorted_bucket_epochs = bucket_epochs.iter().copied().collect::<Vec<_>>();
+    sorted_bucket_epochs.sort_unstable();
+    let upstream_account_id_sql = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            occurred_at,
+        "#,
+    );
+    query
+        .push(upstream_account_id_sql)
+        .push(
+            r#"
+            AS upstream_account_id,
+            input_tokens,
+            output_tokens,
+            cache_input_tokens,
+            total_tokens,
+            cost
+        FROM codex_invocations
+        WHERE
+        "#,
+        );
+
+    if let Some(min_id_exclusive) = min_id_exclusive {
+        query.push(" id > ").push_bind(min_id_exclusive.max(0)).push(" AND");
+    }
+
+    query.push(" (");
+    for (index, bucket_epoch) in sorted_bucket_epochs.iter().enumerate() {
+        if index > 0 {
+            query.push(" OR ");
+        }
+        let bucket_start = Utc
+            .timestamp_opt(*bucket_epoch, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid usage bucket epoch: {bucket_epoch}"))?;
+        let bucket_end = Utc
+            .timestamp_opt(bucket_epoch.saturating_add(3_600), 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid usage bucket end epoch: {bucket_epoch}"))?;
+        query
+            .push("(occurred_at >= ")
+            .push_bind(format_naive(bucket_start.with_timezone(&Shanghai).naive_local()))
+            .push(" AND occurred_at < ")
+            .push_bind(format_naive(bucket_end.with_timezone(&Shanghai).naive_local()))
+            .push(")");
+    }
+    query
+        .push(") AND ")
+        .push(upstream_account_id_sql)
+        .push(" IS NOT NULL AND ")
+        .push(upstream_account_id_sql)
+        .push(" IN (");
+    {
+        let mut separated = query.separated(", ");
+        for account_id in account_ids {
+            separated.push_bind(account_id);
+        }
+    }
+    query.push(") ORDER BY occurred_at ASC");
+
+    query
+        .build_query_as::<AccountWindowUsageRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
+async fn load_window_actual_usage_hourly_rows_from_pool(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+    start_bucket_epoch: i64,
+    end_bucket_epoch_exclusive: i64,
+) -> Result<Vec<AccountWindowUsageHourlyRow>> {
+    if account_ids.is_empty() || start_bucket_epoch >= end_bucket_epoch_exclusive {
+        return Ok(Vec::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            bucket_start_epoch,
+            upstream_account_id,
+            request_count,
+            total_tokens,
+            total_cost,
+            input_tokens,
+            output_tokens,
+            cache_input_tokens
+        FROM upstream_account_usage_hourly
+        WHERE bucket_start_epoch >=
+        "#,
+    );
+    query
+        .push_bind(start_bucket_epoch)
+        .push(" AND bucket_start_epoch < ")
+        .push_bind(end_bucket_epoch_exclusive)
+        .push(" AND upstream_account_id IN (");
+    {
+        let mut separated = query.separated(", ");
+        for account_id in account_ids {
+            separated.push_bind(account_id);
+        }
+    }
+    query.push(") ORDER BY bucket_start_epoch ASC");
+
+    query
+        .build_query_as::<AccountWindowUsageHourlyRow>()
         .fetch_all(pool)
         .await
         .map_err(Into::into)
@@ -192,6 +320,7 @@ async fn load_window_actual_usage_rows_from_archives(
                 start_at,
                 end_at,
                 None,
+                None,
             )
             .await?,
         );
@@ -206,9 +335,89 @@ fn resolve_archive_batch_path(archive_dir: &Path, file_path: &str) -> PathBuf {
     let path = PathBuf::from(file_path);
     if path.is_absolute() {
         path
+    } else if path.starts_with(archive_dir) {
+        path
     } else {
         archive_dir.join(path)
     }
+}
+
+fn collect_account_window_partial_bucket_epochs(
+    plans: &HashMap<i64, AccountWindowUsagePlan>,
+) -> Result<HashSet<i64>> {
+    let mut bucket_epochs = HashSet::new();
+    for range in plans
+        .values()
+        .flat_map(|plan| [plan.primary.as_ref(), plan.secondary.as_ref()])
+        .flatten()
+    {
+        let start_bucket_epoch = invocation_bucket_start_epoch(&range.start_at)?;
+        if range.full_hour_start_epoch != Some(start_bucket_epoch) {
+            bucket_epochs.insert(start_bucket_epoch);
+        }
+        bucket_epochs.insert(invocation_bucket_start_epoch(&range.end_at)?);
+    }
+    Ok(bucket_epochs)
+}
+
+fn collect_account_window_full_hour_bounds(
+    plans: &HashMap<i64, AccountWindowUsagePlan>,
+) -> Option<(i64, i64)> {
+    let mut minimum_start_epoch: Option<i64> = None;
+    let mut maximum_end_epoch: Option<i64> = None;
+
+    for range in plans
+        .values()
+        .flat_map(|plan| [plan.primary.as_ref(), plan.secondary.as_ref()])
+        .flatten()
+    {
+        let (Some(full_hour_start_epoch), Some(full_hour_end_epoch)) =
+            (range.full_hour_start_epoch, range.full_hour_end_epoch)
+        else {
+            continue;
+        };
+        minimum_start_epoch = Some(
+            minimum_start_epoch
+                .map(|value| value.min(full_hour_start_epoch))
+                .unwrap_or(full_hour_start_epoch),
+        );
+        maximum_end_epoch = Some(
+            maximum_end_epoch
+                .map(|value| value.max(full_hour_end_epoch))
+                .unwrap_or(full_hour_end_epoch),
+        );
+    }
+
+    Some((minimum_start_epoch?, maximum_end_epoch?))
+}
+
+fn collect_account_window_missing_full_hour_bucket_epochs(
+    plans: &HashMap<i64, AccountWindowUsagePlan>,
+    covered_hourly_keys: &HashSet<(i64, i64)>,
+) -> HashSet<i64> {
+    let mut missing_bucket_epochs = HashSet::new();
+
+    for (account_id, plan) in plans {
+        for range in [plan.primary.as_ref(), plan.secondary.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            let (Some(start_epoch), Some(end_epoch)) =
+                (range.full_hour_start_epoch, range.full_hour_end_epoch)
+            else {
+                continue;
+            };
+            let mut bucket_epoch = start_epoch;
+            while bucket_epoch < end_epoch {
+                if !covered_hourly_keys.contains(&(*account_id, bucket_epoch)) {
+                    missing_bucket_epochs.insert(bucket_epoch);
+                }
+                bucket_epoch = bucket_epoch.saturating_add(3_600);
+            }
+        }
+    }
+
+    missing_bucket_epochs
 }
 
 fn fold_account_window_usage_rows(
@@ -241,6 +450,74 @@ fn fold_account_window_usage_rows(
     }
 
     usage
+}
+
+fn fold_account_window_usage_hourly_rows(
+    usage: &mut HashMap<i64, AccountWindowUsageSummary>,
+    rows: &[AccountWindowUsageHourlyRow],
+    plans: &HashMap<i64, AccountWindowUsagePlan>,
+) {
+    for row in rows {
+        let Some(plan) = plans.get(&row.upstream_account_id) else {
+            continue;
+        };
+        let entry = usage.entry(row.upstream_account_id).or_default();
+        if plan.primary.as_ref().is_some_and(|range| {
+            range
+                .full_hour_start_epoch
+                .zip(range.full_hour_end_epoch)
+                .is_some_and(|(start_epoch, end_epoch)| {
+                    row.bucket_start_epoch >= start_epoch && row.bucket_start_epoch < end_epoch
+                })
+        }) {
+            entry.primary.add_hourly_row(row);
+        }
+        if plan.secondary.as_ref().is_some_and(|range| {
+            range
+                .full_hour_start_epoch
+                .zip(range.full_hour_end_epoch)
+                .is_some_and(|(start_epoch, end_epoch)| {
+                    row.bucket_start_epoch >= start_epoch && row.bucket_start_epoch < end_epoch
+                })
+        }) {
+            entry.secondary.add_hourly_row(row);
+        }
+    }
+}
+
+fn collect_account_window_hourly_coverage_keys(
+    rows: &[AccountWindowUsageHourlyRow],
+) -> HashSet<(i64, i64)> {
+    rows.iter()
+        .map(|row| (row.upstream_account_id, row.bucket_start_epoch))
+        .collect()
+}
+
+fn filter_account_window_usage_rows_for_uncovered_buckets(
+    rows: Vec<AccountWindowUsageRow>,
+    partial_bucket_epochs: &HashSet<i64>,
+    missing_full_hour_bucket_epochs: &HashSet<i64>,
+    covered_hourly_keys: &HashSet<(i64, i64)>,
+) -> Result<Vec<AccountWindowUsageRow>> {
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut filtered_rows = Vec::with_capacity(rows.len());
+    for row in rows {
+        let bucket_epoch = invocation_bucket_start_epoch(&row.occurred_at)?;
+        let include = if partial_bucket_epochs.contains(&bucket_epoch) {
+            true
+        } else if missing_full_hour_bucket_epochs.contains(&bucket_epoch) {
+            !covered_hourly_keys.contains(&(row.upstream_account_id, bucket_epoch))
+        } else {
+            false
+        };
+        if include {
+            filtered_rows.push(row);
+        }
+    }
+    Ok(filtered_rows)
 }
 
 fn apply_window_actual_usage_to_summaries(

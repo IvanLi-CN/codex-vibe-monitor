@@ -89,6 +89,8 @@ export type {
   PoolRoutingTimeoutSettings,
   UpdatePoolRoutingSettingsPayload,
   UpstreamAccountListResponse,
+  UpstreamAccountWindowUsageItem,
+  UpstreamAccountWindowUsageResponse,
   FetchUpstreamAccountsQuery,
   UpstreamAccountListMetrics,
   BulkUpstreamAccountActionPayload,

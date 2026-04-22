@@ -1622,14 +1622,15 @@ async fn load_upstream_account_summaries_for_query(
     let tag_map = load_account_tag_map(pool, &account_ids).await?;
     let active_conversation_count_map =
         load_account_active_conversation_count_map(pool, &account_ids, now.clone()).await?;
+    let latest_sample_map = load_latest_usage_sample_map(pool, &account_ids).await?;
 
     let mut items = Vec::with_capacity(rows.len());
     for row in rows {
-        let latest = load_latest_usage_sample(pool, row.id).await?;
+        let latest = latest_sample_map.get(&row.id);
         let tags = tag_map.get(&row.id).cloned().unwrap_or_default();
         items.push(build_summary_from_row(
             &row,
-            latest.as_ref(),
+            latest,
             row.last_activity_at.clone(),
             tags,
             duplicate_info_map.get(&row.id).cloned(),
@@ -1641,6 +1642,207 @@ async fn load_upstream_account_summaries_for_query(
         ));
     }
     Ok(items)
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct LatestUpstreamAccountSampleByAccountRow {
+    account_id: i64,
+    captured_at: String,
+    limit_id: Option<String>,
+    limit_name: Option<String>,
+    plan_type: Option<String>,
+    primary_used_percent: Option<f64>,
+    primary_window_minutes: Option<i64>,
+    primary_resets_at: Option<String>,
+    secondary_used_percent: Option<f64>,
+    secondary_window_minutes: Option<i64>,
+    secondary_resets_at: Option<String>,
+    credits_has_credits: Option<i64>,
+    credits_unlimited: Option<i64>,
+    credits_balance: Option<String>,
+}
+
+async fn load_latest_usage_sample_map(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+) -> Result<HashMap<i64, UpstreamAccountSampleRow>> {
+    if account_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        WITH ranked_samples AS (
+            SELECT
+                sample.account_id,
+                sample.captured_at,
+                sample.limit_id,
+                sample.limit_name,
+                COALESCE(
+                    CASE
+                        WHEN NULLIF(TRIM(account.plan_type), '') IS NOT NULL
+                             AND account.plan_type_observed_at IS NOT NULL
+                             AND julianday(account.plan_type_observed_at) >= julianday((
+                                SELECT previous_sample.captured_at
+                                FROM pool_upstream_account_limit_samples previous_sample
+                                WHERE previous_sample.account_id = sample.account_id
+                                  AND previous_sample.plan_type IS NOT NULL
+                                  AND TRIM(previous_sample.plan_type) <> ''
+                                ORDER BY previous_sample.captured_at DESC
+                                LIMIT 1
+                             ))
+                            THEN NULLIF(TRIM(account.plan_type), '')
+                        ELSE (
+                            SELECT NULLIF(TRIM(previous_sample.plan_type), '')
+                            FROM pool_upstream_account_limit_samples previous_sample
+                            WHERE previous_sample.account_id = sample.account_id
+                              AND previous_sample.plan_type IS NOT NULL
+                              AND TRIM(previous_sample.plan_type) <> ''
+                            ORDER BY previous_sample.captured_at DESC
+                            LIMIT 1
+                        )
+                    END,
+                    NULLIF(TRIM(account.plan_type), '')
+                ) AS plan_type,
+                sample.primary_used_percent,
+                sample.primary_window_minutes,
+                sample.primary_resets_at,
+                sample.secondary_used_percent,
+                sample.secondary_window_minutes,
+                sample.secondary_resets_at,
+                sample.credits_has_credits,
+                sample.credits_unlimited,
+                sample.credits_balance,
+                ROW_NUMBER() OVER (
+                    PARTITION BY sample.account_id
+                    ORDER BY sample.captured_at DESC
+                ) AS row_number
+            FROM pool_upstream_account_limit_samples sample
+            INNER JOIN pool_upstream_accounts account ON account.id = sample.account_id
+            WHERE sample.account_id IN (
+        "#,
+    );
+    {
+        let mut separated = query.separated(", ");
+        for account_id in account_ids {
+            separated.push_bind(account_id);
+        }
+    }
+    query.push(
+        r#"
+            )
+        )
+        SELECT
+            account_id,
+            captured_at,
+            limit_id,
+            limit_name,
+            plan_type,
+            primary_used_percent,
+            primary_window_minutes,
+            primary_resets_at,
+            secondary_used_percent,
+            secondary_window_minutes,
+            secondary_resets_at,
+            credits_has_credits,
+            credits_unlimited,
+            credits_balance
+        FROM ranked_samples
+        WHERE row_number = 1
+        "#,
+    );
+    let rows = query
+        .build_query_as::<LatestUpstreamAccountSampleByAccountRow>()
+        .fetch_all(pool)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            (
+                row.account_id,
+                UpstreamAccountSampleRow {
+                    captured_at: row.captured_at,
+                    limit_id: row.limit_id,
+                    limit_name: row.limit_name,
+                    plan_type: row.plan_type,
+                    primary_used_percent: row.primary_used_percent,
+                    primary_window_minutes: row.primary_window_minutes,
+                    primary_resets_at: row.primary_resets_at,
+                    secondary_used_percent: row.secondary_used_percent,
+                    secondary_window_minutes: row.secondary_window_minutes,
+                    secondary_resets_at: row.secondary_resets_at,
+                    credits_has_credits: row.credits_has_credits,
+                    credits_unlimited: row.credits_unlimited,
+                    credits_balance: row.credits_balance,
+                },
+            )
+        })
+        .collect())
+}
+
+async fn load_upstream_account_rows_by_ids(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+) -> Result<Vec<UpstreamAccountRow>> {
+    if account_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
+            chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
+            encrypted_credentials, token_expires_at, last_refreshed_at,
+            last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
+            last_action, last_action_source, last_action_reason_code, last_action_reason_message,
+            last_action_http_status, last_action_invoke_id, last_action_at,
+            last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
+            consecutive_route_failures, temporary_route_failure_streak_started_at,
+            compact_support_status, compact_support_observed_at,
+            compact_support_reason, local_primary_limit, local_secondary_limit,
+            local_limit_unit, upstream_base_url, created_at, updated_at
+        FROM pool_upstream_accounts
+        WHERE id IN (
+        "#,
+    );
+    {
+        let mut separated = query.separated(", ");
+        for account_id in account_ids {
+            separated.push_bind(account_id);
+        }
+    }
+    query.push(") ORDER BY updated_at DESC, id DESC");
+    query
+        .build_query_as::<UpstreamAccountRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
+async fn load_upstream_account_window_usage_summaries(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+) -> Result<Vec<UpstreamAccountSummary>> {
+    let rows = load_upstream_account_rows_by_ids(pool, account_ids).await?;
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let latest_sample_map = load_latest_usage_sample_map(pool, account_ids).await?;
+    let now = Utc::now();
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            build_summary_from_row(
+                &row,
+                latest_sample_map.get(&row.id),
+                row.last_activity_at.clone(),
+                Vec::new(),
+                None,
+                0,
+                now.clone(),
+            )
+        })
+        .collect())
 }
 
 async fn build_bulk_upstream_account_sync_pending_rows(
@@ -1994,52 +2196,9 @@ async fn load_latest_usage_sample(
     pool: &Pool<Sqlite>,
     account_id: i64,
 ) -> Result<Option<UpstreamAccountSampleRow>> {
-    sqlx::query_as::<_, UpstreamAccountSampleRow>(
-        r#"
-        SELECT
-            sample.captured_at,
-            sample.limit_id,
-            sample.limit_name,
-            COALESCE(
-                CASE
-                    WHEN NULLIF(TRIM(account.plan_type), '') IS NOT NULL
-                         AND account.plan_type_observed_at IS NOT NULL
-                         AND julianday(account.plan_type_observed_at) >= julianday((
-                            SELECT previous_sample.captured_at
-                            FROM pool_upstream_account_limit_samples previous_sample
-                            WHERE previous_sample.account_id = sample.account_id
-                              AND previous_sample.plan_type IS NOT NULL
-                              AND TRIM(previous_sample.plan_type) <> ''
-                            ORDER BY previous_sample.captured_at DESC
-                            LIMIT 1
-                         ))
-                        THEN NULLIF(TRIM(account.plan_type), '')
-                    ELSE (
-                        SELECT NULLIF(TRIM(previous_sample.plan_type), '')
-                        FROM pool_upstream_account_limit_samples previous_sample
-                        WHERE previous_sample.account_id = sample.account_id
-                          AND previous_sample.plan_type IS NOT NULL
-                          AND TRIM(previous_sample.plan_type) <> ''
-                        ORDER BY previous_sample.captured_at DESC
-                        LIMIT 1
-                    )
-                END,
-                NULLIF(TRIM(account.plan_type), '')
-            ) AS plan_type,
-            primary_used_percent, primary_window_minutes, primary_resets_at,
-            secondary_used_percent, secondary_window_minutes, secondary_resets_at,
-            credits_has_credits, credits_unlimited, credits_balance
-        FROM pool_upstream_account_limit_samples sample
-        INNER JOIN pool_upstream_accounts account ON account.id = sample.account_id
-        WHERE sample.account_id = ?1
-        ORDER BY sample.captured_at DESC
-        LIMIT 1
-        "#,
-    )
-    .bind(account_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(Into::into)
+    Ok(load_latest_usage_sample_map(pool, &[account_id])
+        .await?
+        .remove(&account_id))
 }
 
 fn build_summary_from_row(
@@ -2423,7 +2582,7 @@ async fn enrich_window_actual_usage_for_summaries(
     state: &AppState,
     items: &mut [UpstreamAccountSummary],
 ) -> Result<()> {
-    if items.is_empty() || !sqlite_table_exists(&state.pool, "codex_invocations").await? {
+    if items.is_empty() {
         return Ok(());
     }
 
@@ -2437,44 +2596,126 @@ async fn enrich_window_actual_usage_for_summaries(
         return Ok(());
     }
 
-    let query_start_at = format_naive(query_start.with_timezone(&Shanghai).naive_local());
-    let query_end_at = format_naive(query_end.with_timezone(&Shanghai).naive_local());
-    let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
-    let mut rows = Vec::new();
-
-    let live_start = query_start.max(retention_cutoff);
-    if live_start <= query_end {
-        let live_start_at = format_naive(live_start.with_timezone(&Shanghai).naive_local());
-        rows.extend(
-            load_window_actual_usage_rows_from_pool(
-                &state.pool,
-                &account_ids,
-                &live_start_at,
-                &query_end_at,
-                None,
-            )
-            .await?,
-        );
+    let has_live_invocations = sqlite_table_exists(&state.pool, "codex_invocations").await?;
+    let has_hourly_usage_rollups =
+        sqlite_table_exists(&state.pool, "upstream_account_usage_hourly").await?;
+    if !has_live_invocations && !has_hourly_usage_rollups {
+        return Ok(());
     }
 
-    if query_start < retention_cutoff {
-        let archive_end = query_end.min(retention_cutoff - ChronoDuration::seconds(1));
-        if query_start <= archive_end {
-            let archive_end_at = format_naive(archive_end.with_timezone(&Shanghai).naive_local());
-            rows.extend(
-                load_window_actual_usage_rows_from_archives(
+    let query_start_at = format_naive(query_start.with_timezone(&Shanghai).naive_local());
+    let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
+    let retention_cutoff_epoch = retention_cutoff.timestamp();
+    let mut usage = account_ids
+        .iter()
+        .copied()
+        .map(|account_id| (account_id, AccountWindowUsageSummary::default()))
+        .collect::<HashMap<_, _>>();
+    let mut covered_hourly_keys = HashSet::new();
+
+    if has_hourly_usage_rollups
+        && let Some((full_hour_start_epoch, full_hour_end_epoch)) =
+            collect_account_window_full_hour_bounds(&plans)
+    {
+        let hourly_rows = load_window_actual_usage_hourly_rows_from_pool(
+            &state.pool,
+            &account_ids,
+            full_hour_start_epoch,
+            full_hour_end_epoch,
+        )
+        .await?;
+        covered_hourly_keys = collect_account_window_hourly_coverage_keys(&hourly_rows);
+        fold_account_window_usage_hourly_rows(&mut usage, &hourly_rows, &plans);
+    }
+
+    if has_live_invocations {
+        let partial_bucket_epochs = collect_account_window_partial_bucket_epochs(&plans)?;
+        let missing_full_hour_bucket_epochs =
+            collect_account_window_missing_full_hour_bucket_epochs(&plans, &covered_hourly_keys);
+
+        let archived_partial_bucket_epochs = partial_bucket_epochs
+            .iter()
+            .copied()
+            .filter(|bucket_epoch| {
+                Utc.timestamp_opt(*bucket_epoch, 0)
+                    .single()
+                    .map(|bucket_start_at| bucket_start_at < retention_cutoff)
+                    .unwrap_or(false)
+            })
+            .collect::<HashSet<_>>();
+        let archived_missing_full_hour_bucket_epochs = missing_full_hour_bucket_epochs
+            .iter()
+            .copied()
+            .filter(|bucket_epoch| *bucket_epoch < retention_cutoff_epoch)
+            .collect::<HashSet<_>>();
+        if query_start < retention_cutoff
+            && (!archived_partial_bucket_epochs.is_empty()
+                || !archived_missing_full_hour_bucket_epochs.is_empty())
+        {
+            let archive_end = query_end.min(retention_cutoff - ChronoDuration::seconds(1));
+            if query_start <= archive_end {
+                let archive_end_at = format_naive(archive_end.with_timezone(&Shanghai).naive_local());
+                let archived_rows = load_window_actual_usage_rows_from_archives(
                     &state.pool,
                     &account_ids,
                     &query_start_at,
                     &archive_end_at,
                     &state.config.archive_dir,
                 )
-                .await?,
-            );
+                .await?;
+                let archived_rows = filter_account_window_usage_rows_for_uncovered_buckets(
+                    archived_rows,
+                    &archived_partial_bucket_epochs,
+                    &archived_missing_full_hour_bucket_epochs,
+                    &covered_hourly_keys,
+                )?;
+                for (account_id, summary) in fold_account_window_usage_rows(archived_rows, &plans) {
+                    usage.entry(account_id).or_default().merge(summary);
+                }
+            }
+        }
+
+        let live_bucket_epochs = partial_bucket_epochs
+            .iter()
+            .copied()
+            .filter(|bucket_epoch| *bucket_epoch >= retention_cutoff_epoch)
+            .chain(
+                missing_full_hour_bucket_epochs
+                    .iter()
+                    .copied()
+                    .filter(|bucket_epoch| *bucket_epoch >= retention_cutoff_epoch),
+            )
+            .collect::<HashSet<_>>();
+        if !live_bucket_epochs.is_empty() {
+            let live_rows = load_window_actual_usage_rows_for_bucket_epochs_from_pool(
+                &state.pool,
+                &account_ids,
+                &live_bucket_epochs,
+                None,
+            )
+            .await?;
+            let live_partial_bucket_epochs = partial_bucket_epochs
+                .iter()
+                .copied()
+                .filter(|bucket_epoch| *bucket_epoch >= retention_cutoff_epoch)
+                .collect::<HashSet<_>>();
+            let live_missing_full_hour_bucket_epochs = missing_full_hour_bucket_epochs
+                .iter()
+                .copied()
+                .filter(|bucket_epoch| *bucket_epoch >= retention_cutoff_epoch)
+                .collect::<HashSet<_>>();
+            let live_rows = filter_account_window_usage_rows_for_uncovered_buckets(
+                live_rows,
+                &live_partial_bucket_epochs,
+                &live_missing_full_hour_bucket_epochs,
+                &covered_hourly_keys,
+            )?;
+            for (account_id, summary) in fold_account_window_usage_rows(live_rows, &plans) {
+                usage.entry(account_id).or_default().merge(summary);
+            }
         }
     }
 
-    let usage = fold_account_window_usage_rows(rows, &plans);
     apply_window_actual_usage_to_summaries(items, &usage);
     Ok(())
 }

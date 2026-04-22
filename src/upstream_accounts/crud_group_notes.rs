@@ -54,7 +54,7 @@ pub(crate) async fn list_upstream_accounts_from_params(
     let metrics = build_upstream_account_list_metrics(&filtered_items);
     let forward_proxy_catalog_keys = collect_forward_proxy_catalog_keys(&groups, &filtered_items);
     let offset = page.saturating_sub(1).saturating_mul(page_size);
-    let mut items = if include_all {
+    let items = if include_all {
         filtered_items.clone()
     } else if offset >= total {
         Vec::new()
@@ -72,11 +72,8 @@ pub(crate) async fn list_upstream_accounts_from_params(
     } else {
         page_size
     };
-    let enrich_window_usage_started_at = Instant::now();
-    enrich_window_actual_usage_for_summaries(state.as_ref(), &mut items)
-        .await
-        .map_err(internal_error_tuple)?;
-    let enrich_window_usage_ms = enrich_window_usage_started_at.elapsed().as_millis() as u64;
+    let roster_core_ms = started_at.elapsed().as_millis() as u64;
+    let usage_batch_ms = 0_u64;
     let has_ungrouped_accounts = has_ungrouped_upstream_accounts(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
@@ -98,9 +95,10 @@ pub(crate) async fn list_upstream_accounts_from_params(
         page_size = response_page_size,
         include_all,
         total,
+        roster_core_ms,
         load_summaries_ms,
         enrich_block_reason_ms,
-        enrich_window_usage_ms,
+        usage_batch_ms,
         load_groups_ms,
         load_routing_ms,
         load_forward_proxy_catalog_ms,
@@ -118,6 +116,60 @@ pub(crate) async fn list_upstream_accounts_from_params(
         forward_proxy_nodes,
         has_ungrouped_accounts,
         routing: build_pool_routing_settings_response(state.as_ref(), &routing),
+    }))
+}
+
+pub(crate) async fn get_upstream_account_window_usage(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<UpstreamAccountWindowUsageRequest>,
+) -> Result<Json<UpstreamAccountWindowUsageResponse>, (StatusCode, String)> {
+    let started_at = Instant::now();
+    let mut account_ids = payload
+        .account_ids
+        .into_iter()
+        .filter(|account_id| *account_id > 0)
+        .collect::<Vec<_>>();
+    account_ids.sort_unstable();
+    account_ids.dedup();
+
+    if account_ids.is_empty() {
+        return Ok(Json(UpstreamAccountWindowUsageResponse {
+            items: Vec::new(),
+        }));
+    }
+
+    let load_summaries_started_at = Instant::now();
+    let mut summaries = load_upstream_account_window_usage_summaries(&state.pool, &account_ids)
+        .await
+        .map_err(internal_error_tuple)?;
+    let load_summaries_ms = load_summaries_started_at.elapsed().as_millis() as u64;
+    let usage_batch_started_at = Instant::now();
+    enrich_window_actual_usage_for_summaries(state.as_ref(), &mut summaries)
+        .await
+        .map_err(internal_error_tuple)?;
+    let usage_batch_ms = usage_batch_started_at.elapsed().as_millis() as u64;
+    let total_ms = started_at.elapsed().as_millis() as u64;
+    tracing::info!(
+        account_count = account_ids.len(),
+        load_summaries_ms,
+        usage_batch_ms,
+        total_ms,
+        "upstream account window usage batch completed"
+    );
+
+    Ok(Json(UpstreamAccountWindowUsageResponse {
+        items: summaries
+            .into_iter()
+            .map(|summary| UpstreamAccountWindowUsageItem {
+                account_id: summary.id,
+                primary_actual_usage: summary
+                    .primary_window
+                    .and_then(|window| window.actual_usage),
+                secondary_actual_usage: summary
+                    .secondary_window
+                    .and_then(|window| window.actual_usage),
+            })
+            .collect(),
     }))
 }
 

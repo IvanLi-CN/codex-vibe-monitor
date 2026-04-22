@@ -430,6 +430,18 @@ struct AccountWindowUsageRow {
     cost: Option<f64>,
 }
 
+#[derive(Debug, Clone, FromRow)]
+struct AccountWindowUsageHourlyRow {
+    bucket_start_epoch: i64,
+    upstream_account_id: i64,
+    request_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_input_tokens: i64,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct AccountWindowUsageAccumulator {
     request_count: i64,
@@ -441,6 +453,15 @@ struct AccountWindowUsageAccumulator {
 }
 
 impl AccountWindowUsageAccumulator {
+    fn merge(&mut self, other: Self) {
+        self.request_count += other.request_count;
+        self.total_tokens += other.total_tokens;
+        self.total_cost += other.total_cost;
+        self.input_tokens += other.input_tokens;
+        self.output_tokens += other.output_tokens;
+        self.cache_input_tokens += other.cache_input_tokens;
+    }
+
     fn add_row(&mut self, row: &AccountWindowUsageRow) {
         self.request_count += 1;
         self.total_tokens += row.total_tokens.unwrap_or_default();
@@ -448,6 +469,15 @@ impl AccountWindowUsageAccumulator {
         self.input_tokens += row.input_tokens.unwrap_or_default();
         self.output_tokens += row.output_tokens.unwrap_or_default();
         self.cache_input_tokens += row.cache_input_tokens.unwrap_or_default();
+    }
+
+    fn add_hourly_row(&mut self, row: &AccountWindowUsageHourlyRow) {
+        self.request_count += row.request_count.max(0);
+        self.total_tokens += row.total_tokens.max(0);
+        self.total_cost += row.total_cost.max(0.0);
+        self.input_tokens += row.input_tokens.max(0);
+        self.output_tokens += row.output_tokens.max(0);
+        self.cache_input_tokens += row.cache_input_tokens.max(0);
     }
 
     fn into_snapshot(self) -> RateWindowActualUsage {
@@ -472,6 +502,8 @@ struct AccountWindowUsagePlan {
 struct AccountWindowUsageRange {
     start_at: String,
     end_at: String,
+    full_hour_start_epoch: Option<i64>,
+    full_hour_end_epoch: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -482,9 +514,21 @@ struct AccountWindowUsageRangeBounds {
 
 impl AccountWindowUsageRangeBounds {
     fn into_range(self) -> AccountWindowUsageRange {
+        let start_epoch = self.start_at.timestamp();
+        let end_epoch = self.end_at.timestamp();
+        let full_hour_start_epoch = if start_epoch.rem_euclid(3_600) == 0 {
+            start_epoch
+        } else {
+            align_bucket_epoch(start_epoch.saturating_add(3_599), 3_600, 0)
+        };
+        let full_hour_end_epoch = align_bucket_epoch(end_epoch, 3_600, 0);
         AccountWindowUsageRange {
             start_at: format_naive(self.start_at.with_timezone(&Shanghai).naive_local()),
             end_at: format_naive(self.end_at.with_timezone(&Shanghai).naive_local()),
+            full_hour_start_epoch: (full_hour_start_epoch < full_hour_end_epoch)
+                .then_some(full_hour_start_epoch),
+            full_hour_end_epoch: (full_hour_start_epoch < full_hour_end_epoch)
+                .then_some(full_hour_end_epoch),
         }
     }
 }
@@ -493,6 +537,13 @@ impl AccountWindowUsageRangeBounds {
 struct AccountWindowUsageSummary {
     primary: AccountWindowUsageAccumulator,
     secondary: AccountWindowUsageAccumulator,
+}
+
+impl AccountWindowUsageSummary {
+    fn merge(&mut self, other: Self) {
+        self.primary.merge(other.primary);
+        self.secondary.merge(other.secondary);
+    }
 }
 
 #[derive(Debug, Clone, FromRow)]
