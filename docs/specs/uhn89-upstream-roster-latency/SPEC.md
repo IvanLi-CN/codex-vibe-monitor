@@ -179,7 +179,7 @@
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Account Pool/Pages/Upstream Accounts/List — Grouped View
   state: light roster first render + grouped visible usage hydrate
   evidence_note: 验证切换到 grouped 后先渲染轻量 roster，再对当前可见成员延迟补齐窗口 usage。
@@ -190,7 +190,7 @@
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Account Pool/Pages/Upstream Accounts/List — Grid View
   state: light roster first render + grid visible usage hydrate
   evidence_note: 验证 grid 视图同样保持 roster 先出、可见账号再 hydrate，且不恢复分页 footer 或 bulk selection。
