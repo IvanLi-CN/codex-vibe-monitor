@@ -320,6 +320,7 @@ pub(crate) fn pool_same_account_attempt_budget(
 }
 
 pub(crate) const POOL_RESPONSES_FAMILY_INITIAL_OVERLOAD_ATTEMPT_BUDGET: u8 = 4;
+pub(crate) const POOL_INITIAL_RESPONSE_GATE_BUFFER_LIMIT: usize = STREAM_RESPONSE_LINE_BUFFER_LIMIT;
 
 pub(crate) fn pool_overload_same_account_attempt_budget(
     original_uri: &Uri,
@@ -1320,7 +1321,7 @@ pub(crate) async fn gate_pool_initial_response_stream(
         if saw_non_metadata_event {
             break;
         }
-        if buffered.len() >= RAW_RESPONSE_PREVIEW_LIMIT {
+        if buffered.len() >= POOL_INITIAL_RESPONSE_GATE_BUFFER_LIMIT {
             break;
         }
 
