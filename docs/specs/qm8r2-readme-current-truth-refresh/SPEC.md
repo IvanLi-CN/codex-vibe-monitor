@@ -131,7 +131,7 @@
   - `dashboard-overview-1680-readme-dense.png`
   - `live-monitoring-1680.png`
   - `records-analysis-1680.png`
-  - `account-pool-grouped-1680.png`
+  - `account-pool-grid-1680.png`
 - Visual evidence source: Storybook canvas
 
 ## Visual Evidence
@@ -150,7 +150,7 @@
 
 - Account Pool 页面 README 截图：
 
-  ![Account Pool README](../../readme-assets/final/account-pool-grouped-1680.png)
+  ![Account Pool README](../../readme-assets/final/account-pool-grid-1680.png)
 
 ## 资产晋升（Asset promotion）
 

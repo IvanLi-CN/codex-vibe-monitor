@@ -30,9 +30,9 @@ Codex Vibe Monitor 是一套面向自部署的 **OpenAI 兼容代理观测工作
 
 ![Records analysis](docs/readme-assets/final/records-analysis-1680.png)
 
-### Account Pool：上游账号与分组视图
+### Account Pool：上游账号网格与分组概览
 
-![Account pool grouped](docs/readme-assets/final/account-pool-grouped-1680.png)
+![Account pool grid](docs/readme-assets/final/account-pool-grid-1680.png)
 
 ## 当前交付的核心能力
 
