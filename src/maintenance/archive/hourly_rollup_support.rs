@@ -46,6 +46,18 @@ pub(crate) struct KeyedConversationHourlyDelta {
 }
 
 #[derive(Debug, Default)]
+pub(crate) struct UpstreamAccountUsageHourlyDelta {
+    pub(crate) request_count: i64,
+    pub(crate) total_tokens: i64,
+    pub(crate) total_cost: f64,
+    pub(crate) input_tokens: i64,
+    pub(crate) output_tokens: i64,
+    pub(crate) cache_input_tokens: i64,
+    pub(crate) first_seen_at: String,
+    pub(crate) last_seen_at: String,
+}
+
+#[derive(Debug, Default)]
 pub(crate) struct ForwardProxyAttemptHourlyDelta {
     pub(crate) attempts: i64,
     pub(crate) success_count: i64,

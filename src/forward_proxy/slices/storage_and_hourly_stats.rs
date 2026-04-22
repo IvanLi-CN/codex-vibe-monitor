@@ -1317,6 +1317,8 @@ fn resolve_group_forward_proxy_binding_archive_path(archive_dir: &Path, file_pat
     let path = PathBuf::from(file_path);
     if path.is_absolute() {
         path
+    } else if path.starts_with(archive_dir) {
+        path
     } else {
         archive_dir.join(path)
     }

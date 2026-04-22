@@ -346,6 +346,20 @@ function expectBadgeAlignment(reference: HTMLElement, candidate: HTMLElement) {
   expect(Math.abs(candidateRect.height - referenceRect.height)).toBeLessThanOrEqual(0.5)
 }
 
+function expectWindowUsagePlaceholders(container: HTMLElement) {
+  expect(container).toHaveTextContent(/Req\s*-/i)
+  expect(container).toHaveTextContent(/Token\s*-/i)
+  expect(container).toHaveTextContent(/Cost\s*-/i)
+}
+
+async function waitForWindowUsageHydration(container: HTMLElement) {
+  await waitFor(() => {
+    expect(container).not.toHaveTextContent(/Req\s*-/i)
+    expect(container).not.toHaveTextContent(/Token\s*-/i)
+    expect(container).not.toHaveTextContent(/Cost\s*-/i)
+  })
+}
+
 export const Operational: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
   play: async ({ canvasElement, step }) => {
@@ -949,6 +963,13 @@ export const GroupedView: Story = {
         }),
       ).toBeInTheDocument()
     })
+    await step('hydrates grouped visible account usage after the light roster first renders', async () => {
+      const row = await documentScope.findByRole('button', {
+        name: /Codex Pro - Tokyo/i,
+      })
+      expectWindowUsagePlaceholders(row)
+      await waitForWindowUsageHydration(row)
+    })
   },
 }
 
@@ -979,6 +1000,13 @@ export const GridView: Story = {
       expect(
         documentScope.queryByText(/selected count|已选择|clear selection|清空选择/i),
       ).not.toBeInTheDocument()
+    })
+    await step('hydrates grid visible account usage after the cards appear', async () => {
+      const card = await documentScope.findByRole('button', {
+        name: /Codex Pro - Tokyo/i,
+      })
+      expectWindowUsagePlaceholders(card)
+      await waitForWindowUsageHydration(card)
     })
   },
 }

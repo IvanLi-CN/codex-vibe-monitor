@@ -147,6 +147,9 @@ async fn load_invocation_archive_rows_chunk(
             source,
             status,
             detail_level,
+            input_tokens,
+            output_tokens,
+            cache_input_tokens,
             total_tokens,
             cost,
             error_message,
@@ -389,6 +392,7 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
             HOURLY_ROLLUP_TARGET_PROXY_PERF,
             HOURLY_ROLLUP_TARGET_PROMPT_CACHE,
             HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS,
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
             HOURLY_ROLLUP_TARGET_STICKY_KEYS,
         ] {
             if !hourly_rollup_archive_replayed_tx(
@@ -1125,6 +1129,10 @@ fn build_pool_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         .route(
             "/api/pool/upstream-accounts",
             get(list_upstream_accounts_from_uri).post(bulk_update_upstream_accounts),
+        )
+        .route(
+            "/api/pool/upstream-accounts/window-usage",
+            post(get_upstream_account_window_usage),
         )
         .route(
             "/api/pool/upstream-accounts/bulk-sync-jobs",

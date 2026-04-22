@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -95,6 +96,7 @@ interface UpstreamAccountsGroupedRosterProps {
   selectionMode?: 'multi' | 'none'
   canEditGroupSettings?: boolean
   onEditGroupSettings?: (group: UpstreamAccountsGroupedRosterGroup) => void
+  onVisibleAccountIdsChange?: (accountIds: number[]) => void
   groupLabels: {
     count: (count: number) => string
     concurrency: (value: number) => string
@@ -672,6 +674,7 @@ function GroupMembersList({
   selectionMode = 'multi',
   gridColumnCount,
   containerRef,
+  onVisibleAccountIdsChange,
 }: {
   items: UpstreamAccountSummary[]
   selectedId: number | null
@@ -683,7 +686,31 @@ function GroupMembersList({
   selectionMode?: 'multi' | 'none'
   gridColumnCount: number
   containerRef?: (node: HTMLDivElement | null) => void
+  onVisibleAccountIdsChange?: (accountIds: number[]) => void
 }) {
+  const visibleAccountIds = items.map((item) => item.id)
+  const visibleAccountIdsKey = visibleAccountIds.join(',')
+  const lastReportedVisibleAccountIdsKeyRef = useRef<string | null>(null)
+  const onVisibleAccountIdsChangeRef = useRef(onVisibleAccountIdsChange)
+
+  useEffect(() => {
+    onVisibleAccountIdsChangeRef.current = onVisibleAccountIdsChange
+  }, [onVisibleAccountIdsChange])
+
+  useEffect(() => {
+    if (lastReportedVisibleAccountIdsKeyRef.current === visibleAccountIdsKey) return
+    lastReportedVisibleAccountIdsKeyRef.current = visibleAccountIdsKey
+    onVisibleAccountIdsChangeRef.current?.(visibleAccountIds)
+  }, [visibleAccountIds, visibleAccountIdsKey])
+
+  useEffect(
+    () => () => {
+      lastReportedVisibleAccountIdsKeyRef.current = null
+      onVisibleAccountIdsChangeRef.current?.([])
+    },
+    [],
+  )
+
   if (memberLayout === 'grid') {
     return (
       <div
@@ -762,9 +789,12 @@ export function UpstreamAccountsGroupedRoster({
   selectionMode = 'multi',
   canEditGroupSettings = false,
   onEditGroupSettings,
+  onVisibleAccountIdsChange,
   groupLabels,
 }: UpstreamAccountsGroupedRosterProps) {
   const selectAllRef = useRef<HTMLInputElement | null>(null)
+  const visibleAccountIdsByGroupRef = useRef(new Map<string, number[]>())
+  const lastEmittedVisibleAccountIdsKeyRef = useRef<string | null>(null)
   const [containerElement, setContainerElement] = useState<HTMLDivElement | null>(null)
   const [spacerElement, setSpacerElement] = useState<HTMLDivElement | null>(null)
   const [memberElement, setMemberElement] = useState<HTMLDivElement | null>(null)
@@ -806,6 +836,38 @@ export function UpstreamAccountsGroupedRoster({
       selectAllRef.current.indeterminate = partiallySelected
     }
   }, [partiallySelected])
+
+  const emitVisibleAccountIds = useCallback(() => {
+    if (!onVisibleAccountIdsChange) return
+    const nextVisibleAccountIds = Array.from(
+      new Set(Array.from(visibleAccountIdsByGroupRef.current.values()).flat()),
+    )
+    const nextKey = nextVisibleAccountIds.join(',')
+    if (lastEmittedVisibleAccountIdsKeyRef.current === nextKey) return
+    lastEmittedVisibleAccountIdsKeyRef.current = nextKey
+    onVisibleAccountIdsChange(nextVisibleAccountIds)
+  }, [onVisibleAccountIdsChange])
+
+  const handleGroupVisibleAccountIdsChange = useCallback(
+    (groupId: string, accountIds: number[]) => {
+      if (accountIds.length === 0) {
+        visibleAccountIdsByGroupRef.current.delete(groupId)
+      } else {
+        visibleAccountIdsByGroupRef.current.set(groupId, accountIds)
+      }
+      emitVisibleAccountIds()
+    },
+    [emitVisibleAccountIds],
+  )
+
+  useEffect(
+    () => () => {
+      visibleAccountIdsByGroupRef.current.clear()
+      lastEmittedVisibleAccountIdsKeyRef.current = null
+      onVisibleAccountIdsChange?.([])
+    },
+    [onVisibleAccountIdsChange],
+  )
 
   useEffect(() => {
     groupVirtualizer.measure()
@@ -1023,6 +1085,9 @@ export function UpstreamAccountsGroupedRoster({
                     gridColumnCount={gridColumnCount}
                     containerRef={
                       virtualGroup.index === firstRenderedGroupIndex ? setMemberElement : undefined
+                    }
+                    onVisibleAccountIdsChange={(accountIds) =>
+                      handleGroupVisibleAccountIdsChange(group.id, accountIds)
                     }
                   />
                 </div>

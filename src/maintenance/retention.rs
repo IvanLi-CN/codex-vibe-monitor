@@ -84,8 +84,12 @@ struct InvocationArchiveCandidate {
     occurred_at: String,
     source: String,
     status: Option<String>,
+    input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    cache_input_tokens: Option<i64>,
     total_tokens: Option<i64>,
     cost: Option<f64>,
+    payload: Option<String>,
     request_raw_path: Option<String>,
     response_raw_path: Option<String>,
 }
@@ -230,18 +234,20 @@ const HOURLY_ROLLUP_TARGET_PROXY_PERF: &str = "proxy_perf_stage_hourly";
 const HOURLY_ROLLUP_TARGET_PROMPT_CACHE: &str = "prompt_cache_rollup_hourly";
 const HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS: &str =
     "prompt_cache_upstream_account_hourly";
+const HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE: &str = "upstream_account_usage_hourly";
 const HOURLY_ROLLUP_TARGET_STICKY_KEYS: &str = "upstream_sticky_key_hourly";
 const HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS: &str = "forward_proxy_attempt_hourly";
 const HISTORICAL_ROLLUP_ARCHIVE_DATASETS: [&str; 2] = [
     HOURLY_ROLLUP_DATASET_INVOCATIONS,
     HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS,
 ];
-const INVOCATION_HOURLY_ROLLUP_TARGETS: [&str; 6] = [
+const INVOCATION_HOURLY_ROLLUP_TARGETS: [&str; 7] = [
     HOURLY_ROLLUP_TARGET_INVOCATIONS,
     HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
     HOURLY_ROLLUP_TARGET_PROXY_PERF,
     HOURLY_ROLLUP_TARGET_PROMPT_CACHE,
     HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS,
+    HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
     HOURLY_ROLLUP_TARGET_STICKY_KEYS,
 ];
 const PERF_STAGE_TOTAL: &str = "total";
@@ -261,6 +267,9 @@ struct InvocationHourlySourceRecord {
     source: String,
     status: Option<String>,
     detail_level: String,
+    input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    cache_input_tokens: Option<i64>,
     total_tokens: Option<i64>,
     cost: Option<f64>,
     error_message: Option<String>,
@@ -1470,8 +1479,12 @@ async fn archive_old_invocations(
                 occurred_at,
                 source,
                 status,
+                input_tokens,
+                output_tokens,
+                cache_input_tokens,
                 total_tokens,
                 cost,
+                payload,
                 request_raw_path,
                 response_raw_path
             FROM codex_invocations
@@ -1525,8 +1538,12 @@ async fn archive_old_invocations(
                 occurred_at,
                 source,
                 status,
+                input_tokens,
+                output_tokens,
+                cache_input_tokens,
                 total_tokens,
                 cost,
+                payload,
                 request_raw_path,
                 response_raw_path
             FROM codex_invocations
@@ -1575,13 +1592,16 @@ async fn archive_old_invocations(
                     source: candidate.source.clone(),
                     status: candidate.status.clone(),
                     detail_level: DETAIL_LEVEL_FULL.to_string(),
-                    total_tokens: None,
-                    cost: None,
+                    input_tokens: candidate.input_tokens,
+                    output_tokens: candidate.output_tokens,
+                    cache_input_tokens: candidate.cache_input_tokens,
+                    total_tokens: candidate.total_tokens,
+                    cost: candidate.cost,
                     error_message: None,
                     failure_kind: None,
                     failure_class: None,
                     is_actionable: None,
-                    payload: None,
+                    payload: candidate.payload.clone(),
                     t_total_ms: None,
                     t_req_read_ms: None,
                     t_req_parse_ms: None,

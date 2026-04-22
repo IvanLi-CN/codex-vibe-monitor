@@ -833,6 +833,38 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS upstream_account_usage_hourly (
+            bucket_start_epoch INTEGER NOT NULL,
+            upstream_account_id INTEGER NOT NULL,
+            request_count INTEGER NOT NULL,
+            total_tokens INTEGER NOT NULL,
+            total_cost REAL NOT NULL,
+            input_tokens INTEGER NOT NULL,
+            output_tokens INTEGER NOT NULL,
+            cache_input_tokens INTEGER NOT NULL,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (bucket_start_epoch, upstream_account_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure upstream_account_usage_hourly table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_upstream_account_usage_hourly_account_bucket
+        ON upstream_account_usage_hourly (upstream_account_id, bucket_start_epoch)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_upstream_account_usage_hourly_account_bucket")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS upstream_sticky_key_hourly (
             bucket_start_epoch INTEGER NOT NULL,
             upstream_account_id INTEGER NOT NULL,

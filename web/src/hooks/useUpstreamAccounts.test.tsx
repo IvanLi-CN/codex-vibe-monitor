@@ -5,9 +5,11 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import type {
   FetchUpstreamAccountsQuery,
   ForwardProxyBindingNode,
+  RateWindowActualUsage,
   UpstreamAccountDetail,
   UpstreamAccountListResponse,
   UpstreamAccountSummary,
+  UpstreamAccountWindowUsageResponse,
 } from "../lib/api";
 import {
   UPSTREAM_ACCOUNTS_OPEN_RESYNC_COOLDOWN_MS,
@@ -21,6 +23,9 @@ const apiMocks = vi.hoisted(() => ({
   >(),
   fetchUpstreamAccountDetail: vi.fn<
     (accountId: number, signal?: AbortSignal) => Promise<UpstreamAccountDetail>
+  >(),
+  fetchUpstreamAccountWindowUsage: vi.fn<
+    (accountIds: number[]) => Promise<UpstreamAccountWindowUsageResponse>
   >(),
   syncUpstreamAccount: vi.fn<(accountId: number) => Promise<UpstreamAccountDetail>>(),
   reloginUpstreamAccount: vi.fn<(accountId: number) => Promise<{ loginId: string }>>(),
@@ -38,6 +43,7 @@ vi.mock("../lib/api", async () => {
     ...actual,
     fetchUpstreamAccounts: apiMocks.fetchUpstreamAccounts,
     fetchUpstreamAccountDetail: apiMocks.fetchUpstreamAccountDetail,
+    fetchUpstreamAccountWindowUsage: apiMocks.fetchUpstreamAccountWindowUsage,
     syncUpstreamAccount: apiMocks.syncUpstreamAccount,
     reloginUpstreamAccount: apiMocks.reloginUpstreamAccount,
     deleteUpstreamAccount: apiMocks.deleteUpstreamAccount,
@@ -156,6 +162,24 @@ function emitOpenEvent() {
   }
 }
 
+function createRateWindowActualUsage(
+  requestCount: number,
+  totalTokens: number,
+  totalCost: number,
+): RateWindowActualUsage {
+  const cacheInputTokens = Math.round(totalTokens * 0.1);
+  const inputTokens = Math.round(totalTokens * 0.55);
+  const outputTokens = totalTokens - inputTokens - cacheInputTokens;
+  return {
+    requestCount,
+    totalTokens,
+    totalCost,
+    inputTokens,
+    outputTokens,
+    cacheInputTokens,
+  };
+}
+
 function createSummary(
   id: number,
   displayName: string,
@@ -191,6 +215,54 @@ function createDetail(id: number, displayName: string): UpstreamAccountDetail {
   };
 }
 
+function createWindowedSummary(
+  id: number,
+  displayName: string,
+): UpstreamAccountSummary {
+  return {
+    ...createSummary(id, displayName),
+    primaryWindow: {
+      usedPercent: 42,
+      usedText: "42% used",
+      limitText: "5h rolling window",
+      resetsAt: "2026-03-29T14:27:00.000Z",
+      windowDurationMins: 300,
+      actualUsage: null,
+    },
+    secondaryWindow: {
+      usedPercent: 18,
+      usedText: "18% used",
+      limitText: "7d rolling window",
+      resetsAt: "2026-04-05T14:27:00.000Z",
+      windowDurationMins: 10080,
+      actualUsage: null,
+    },
+    localLimits: {
+      primaryLimit: null,
+      secondaryLimit: null,
+      limitUnit: "requests",
+    },
+  };
+}
+
+function createWindowUsageResponse(accountIds: number[]): UpstreamAccountWindowUsageResponse {
+  return {
+    items: accountIds.map((accountId, index) => ({
+      accountId,
+      primaryActualUsage: createRateWindowActualUsage(
+        10 + index,
+        20_000 + accountId * 100,
+        Number((0.4 + index * 0.05).toFixed(4)),
+      ),
+      secondaryActualUsage: createRateWindowActualUsage(
+        30 + index,
+        80_000 + accountId * 200,
+        Number((1.2 + index * 0.08).toFixed(4)),
+      ),
+    })),
+  };
+}
+
 function createForwardProxyNode(
   key: string,
   displayName = "JP Edge 01",
@@ -222,6 +294,7 @@ function createListResponse(
 
 function Probe({ query }: { query?: FetchUpstreamAccountsQuery | null }) {
   const {
+    items,
     selectedId,
     selectedSummary,
     detail,
@@ -229,11 +302,13 @@ function Probe({ query }: { query?: FetchUpstreamAccountsQuery | null }) {
     listError,
     listState,
     forwardProxyCatalogState,
+    isWindowUsagePending,
     detailError,
     error,
     selectAccount,
     runSync,
     refresh,
+    hydrateWindowUsage,
     beginRelogin,
     removeAccount,
   } =
@@ -257,6 +332,16 @@ function Probe({ query }: { query?: FetchUpstreamAccountsQuery | null }) {
       <div data-testid="proxy-catalog-freshness">
         {forwardProxyCatalogState.freshness}
       </div>
+      <div data-testid="window-usage-pending">
+        {isWindowUsagePending ? "true" : "false"}
+      </div>
+      <div data-testid="first-item-id">{items[0]?.id ?? ""}</div>
+      <div data-testid="first-item-primary-requests">
+        {items[0]?.primaryWindow?.actualUsage?.requestCount ?? ""}
+      </div>
+      <div data-testid="first-item-secondary-requests">
+        {items[0]?.secondaryWindow?.actualUsage?.requestCount ?? ""}
+      </div>
       <div data-testid="detail-error">{detailError ?? ""}</div>
       <div data-testid="error">{error ?? ""}</div>
       <button data-testid="select-beta" onClick={() => selectAccount(2)}>
@@ -273,6 +358,12 @@ function Probe({ query }: { query?: FetchUpstreamAccountsQuery | null }) {
       </button>
       <button data-testid="refresh" onClick={() => void refresh()}>
         refresh
+      </button>
+      <button
+        data-testid="hydrate-visible"
+        onClick={() => void hydrateWindowUsage(items.map((item) => item.id))}
+      >
+        hydrate visible
       </button>
       <button data-testid="relogin-alpha" onClick={() => void beginRelogin(1)}>
         relogin alpha
@@ -329,6 +420,142 @@ describe("useUpstreamAccounts", () => {
     expect(apiMocks.fetchUpstreamAccounts).toHaveBeenNthCalledWith(2, {
       includeAll: true,
     });
+  });
+
+  it("auto-hydrates window usage for the current flat roster page", async () => {
+    const hydration = deferred<UpstreamAccountWindowUsageResponse>();
+    apiMocks.fetchUpstreamAccounts.mockResolvedValueOnce(
+      createListResponse({
+        items: [createWindowedSummary(1, "Alpha"), createWindowedSummary(2, "Beta")],
+      }),
+    );
+    apiMocks.fetchUpstreamAccountWindowUsage.mockImplementationOnce(
+      async () => hydration.promise,
+    );
+
+    render(<Probe query={{ page: 1, pageSize: 20 }} />);
+    await flushAsync();
+
+    expect(text("window-usage-pending")).toBe("true");
+    expect(text("first-item-primary-requests")).toBe("");
+    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledWith([1, 2]);
+
+    hydration.resolve(createWindowUsageResponse([1, 2]));
+    await flushAsync();
+
+    expect(text("window-usage-pending")).toBe("false");
+    expect(text("first-item-primary-requests")).toBe("10");
+    expect(text("first-item-secondary-requests")).toBe("30");
+  });
+
+  it("does not auto-hydrate includeAll roster queries until the page requests visible accounts", async () => {
+    apiMocks.fetchUpstreamAccounts.mockResolvedValueOnce(
+      createListResponse({
+        items: [createWindowedSummary(1, "Alpha"), createWindowedSummary(2, "Beta")],
+      }),
+    );
+    apiMocks.fetchUpstreamAccountWindowUsage.mockResolvedValueOnce(
+      createWindowUsageResponse([1, 2]),
+    );
+
+    render(<Probe query={{ includeAll: true }} />);
+    await flushAsync();
+
+    expect(apiMocks.fetchUpstreamAccountWindowUsage).not.toHaveBeenCalled();
+    expect(text("window-usage-pending")).toBe("false");
+    expect(text("first-item-primary-requests")).toBe("");
+
+    click("hydrate-visible");
+    await flushAsync();
+    await flushAsync();
+
+    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledWith([1, 2]);
+    expect(text("first-item-primary-requests")).toBe("10");
+  });
+
+  it("drops stale window-usage responses after the roster query changes", async () => {
+    const firstHydration = deferred<UpstreamAccountWindowUsageResponse>();
+    apiMocks.fetchUpstreamAccounts
+      .mockResolvedValueOnce(
+        createListResponse({
+          items: [createWindowedSummary(1, "Alpha"), createWindowedSummary(2, "Beta")],
+        }),
+      )
+      .mockResolvedValueOnce(
+        createListResponse({
+          items: [createWindowedSummary(3, "Gamma"), createWindowedSummary(4, "Delta")],
+          total: 4,
+          page: 2,
+          pageSize: 20,
+        }),
+      );
+    apiMocks.fetchUpstreamAccountWindowUsage.mockImplementationOnce(
+      async () => firstHydration.promise,
+    );
+
+    render(<Probe query={{ page: 1, pageSize: 20 }} />);
+    await flushAsync();
+
+    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledWith([1, 2]);
+    expect(text("window-usage-pending")).toBe("true");
+
+    rerender(<Probe query={{ includeAll: true }} />);
+    await flushAsync();
+
+    expect(text("first-item-id")).toBe("3");
+    expect(text("window-usage-pending")).toBe("false");
+    expect(text("first-item-primary-requests")).toBe("");
+
+    firstHydration.resolve(createWindowUsageResponse([1, 2]));
+    await flushAsync();
+
+    expect(text("first-item-id")).toBe("3");
+    expect(text("first-item-primary-requests")).toBe("");
+    expect(text("first-item-secondary-requests")).toBe("");
+  });
+
+  it("keeps window-usage pending while a refreshed hydration supersedes an older request", async () => {
+    const firstHydration = deferred<UpstreamAccountWindowUsageResponse>();
+    const secondHydration = deferred<UpstreamAccountWindowUsageResponse>();
+    apiMocks.fetchUpstreamAccounts
+      .mockResolvedValueOnce(
+        createListResponse({
+          items: [createWindowedSummary(1, "Alpha"), createWindowedSummary(2, "Beta")],
+        }),
+      )
+      .mockResolvedValueOnce(
+        createListResponse({
+          items: [createWindowedSummary(1, "Alpha"), createWindowedSummary(2, "Beta")],
+        }),
+      );
+    apiMocks.fetchUpstreamAccountWindowUsage
+      .mockImplementationOnce(async () => firstHydration.promise)
+      .mockImplementationOnce(async () => secondHydration.promise);
+
+    render(<Probe query={{ page: 1, pageSize: 20 }} />);
+    await flushAsync();
+
+    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenNthCalledWith(1, [1, 2]);
+    expect(text("window-usage-pending")).toBe("true");
+
+    click("refresh");
+    await flushAsync();
+
+    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenNthCalledWith(2, [1, 2]);
+    expect(text("window-usage-pending")).toBe("true");
+
+    firstHydration.resolve(createWindowUsageResponse([1, 2]));
+    await flushAsync();
+
+    expect(text("window-usage-pending")).toBe("true");
+    expect(text("first-item-primary-requests")).toBe("");
+
+    secondHydration.resolve(createWindowUsageResponse([1, 2]));
+    await flushAsync();
+
+    expect(text("window-usage-pending")).toBe("false");
+    expect(text("first-item-primary-requests")).toBe("10");
+    expect(text("first-item-secondary-requests")).toBe("30");
   });
 
   it("marks a query switch as stale until the new roster lands", async () => {

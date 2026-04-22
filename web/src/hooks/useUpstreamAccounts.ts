@@ -15,6 +15,7 @@ import {
   fetchOauthMailboxStatuses,
   fetchOauthLoginSession,
   fetchUpstreamAccountDetail,
+  fetchUpstreamAccountWindowUsage,
   fetchUpstreamAccounts,
   importValidatedOauthAccounts,
   reloginUpstreamAccount,
@@ -41,6 +42,7 @@ import {
   type OauthMailboxSession,
   type OauthMailboxStatus,
   type PoolRoutingSettings,
+  type RateWindowActualUsage,
   type UpstreamAccountListMetrics,
   type UpstreamAccountGroupSummary,
   type UpdateOauthLoginSessionPayload,
@@ -102,6 +104,11 @@ interface LoadOptions {
   silent?: boolean
 }
 
+type HydratedWindowUsage = {
+  primaryActualUsage: RateWindowActualUsage | null
+  secondaryActualUsage: RateWindowActualUsage | null
+}
+
 function normalizeQueryStringArray(values?: string[]) {
   if (!values || values.length === 0) return undefined
   const normalized = values
@@ -117,6 +124,38 @@ function normalizeQueryNumberArray(values?: number[]) {
     .filter((value) => Number.isFinite(value) && value > 0)
     .sort((left, right) => left - right)
   return normalized.length > 0 ? normalized : undefined
+}
+
+function applyWindowUsageToSummary(
+  item: UpstreamAccountSummary,
+  usage?: HydratedWindowUsage,
+) {
+  if (!usage) return item
+  return {
+    ...item,
+    primaryWindow: item.primaryWindow
+      ? {
+          ...item.primaryWindow,
+          actualUsage: usage.primaryActualUsage,
+        }
+      : item.primaryWindow,
+    secondaryWindow: item.secondaryWindow
+      ? {
+          ...item.secondaryWindow,
+          actualUsage: usage.secondaryActualUsage,
+        }
+      : item.secondaryWindow,
+  }
+}
+
+function applyWindowUsageToRoster(
+  items: UpstreamAccountSummary[],
+  usageByAccount: Record<number, HydratedWindowUsage>,
+) {
+  if (items.length === 0 || Object.keys(usageByAccount).length === 0) {
+    return items
+  }
+  return items.map((item) => applyWindowUsageToSummary(item, usageByAccount[item.id]))
 }
 
 export function buildUpstreamAccountsListQueryKey(query?: FetchUpstreamAccountsQuery | null) {
@@ -155,7 +194,8 @@ export function useUpstreamAccounts(
     ...DEFAULT_OPTIONS,
     ...options,
   }
-  const [items, setItems] = useState<UpstreamAccountSummary[]>([])
+  const [rosterItems, setRosterItems] = useState<UpstreamAccountSummary[]>([])
+  const [windowUsageByAccount, setWindowUsageByAccount] = useState<Record<number, HydratedWindowUsage>>({})
   const [groups, setGroups] = useState<UpstreamAccountGroupSummary[]>([])
   const [forwardProxyNodes, setForwardProxyNodes] = useState<ForwardProxyBindingNode[] | null>(null)
   const [hasUngroupedAccounts, setHasUngroupedAccounts] = useState(false)
@@ -177,12 +217,14 @@ export function useUpstreamAccounts(
   const [isDetailLoading, setIsDetailLoading] = useState(false)
   const [listError, setListError] = useState<string | null>(null)
   const [listDataQueryKey, setListDataQueryKey] = useState<string | null>(null)
+  const [isWindowUsagePending, setIsWindowUsagePending] = useState(false)
   const [detailErrors, setDetailErrors] = useState<Record<number, string>>({})
   const [missingDetailAccountId, setMissingDetailAccountId] = useState<number | null>(null)
   const selectedIdRef = useRef<number | null>(null)
   const currentListQueryKeyRef = useRef<string | null>(currentListQueryKey)
   const listDataQueryKeyRef = useRef<string | null>(null)
   const autoLoadQueryKeyRef = useRef<string | null>(null)
+  const rosterItemsRef = useRef<UpstreamAccountSummary[]>([])
   const listRequestSeqRef = useRef(0)
   const listRequestInFlightSeqRef = useRef<number | null>(null)
   const listRequestPromiseRef = useRef<Promise<number | null | typeof LOAD_LIST_FAILED> | null>(null)
@@ -196,6 +238,10 @@ export function useUpstreamAccounts(
   const detailAbortControllerRef = useRef<AbortController | null>(null)
   const hasHydratedRef = useRef(false)
   const detailHydratedAccountIdsRef = useRef(new Set<number>())
+  const usageHydrationGenerationRef = useRef(0)
+  const windowUsageQueryKeyRef = useRef<string | null>(null)
+  const hydratedWindowUsageIdsRef = useRef(new Set<number>())
+  const pendingWindowUsageGenerationByIdRef = useRef(new Map<number, number>())
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastRefreshAtRef = useRef(0)
   const lastOpenResyncAtRef = useRef(0)
@@ -208,6 +254,15 @@ export function useUpstreamAccounts(
   useEffect(() => {
     listDataQueryKeyRef.current = listDataQueryKey
   }, [listDataQueryKey])
+
+  useEffect(() => {
+    rosterItemsRef.current = rosterItems
+  }, [rosterItems])
+
+  const items = useMemo(
+    () => applyWindowUsageToRoster(rosterItems, windowUsageByAccount),
+    [rosterItems, windowUsageByAccount],
+  )
 
   const setSelectedAccount = useCallback((accountId: number | null) => {
     selectedIdRef.current = accountId
@@ -238,6 +293,20 @@ export function useUpstreamAccounts(
     setIsDetailLoading(false)
   }, [])
 
+  const resetWindowUsageHydration = useCallback(
+    (queryKey: string | null, options?: { preserveData?: boolean }) => {
+      usageHydrationGenerationRef.current += 1
+      windowUsageQueryKeyRef.current = queryKey
+      hydratedWindowUsageIdsRef.current = new Set()
+      pendingWindowUsageGenerationByIdRef.current = new Map()
+      setIsWindowUsagePending(false)
+      if (!options?.preserveData) {
+        setWindowUsageByAccount({})
+      }
+    },
+    [],
+  )
+
   const invalidateListRequest = useCallback(() => {
     autoLoadQueryKeyRef.current = null
     listRequestSeqRef.current += 1
@@ -245,9 +314,12 @@ export function useUpstreamAccounts(
     listRequestPromiseRef.current = null
     listRequestQueryKeyRef.current = null
     queuedSameQueryRefreshRef.current = null
+    resetWindowUsageHydration(currentListQueryKeyRef.current, {
+      preserveData: true,
+    })
     setIsListPending(false)
     setIsLoading(false)
-  }, [])
+  }, [resetWindowUsageHydration])
 
   const clearPendingRefreshTimer = useCallback(() => {
     if (!refreshTimerRef.current) return
@@ -314,7 +386,10 @@ export function useUpstreamAccounts(
                   ? response.items[0]?.id ?? null
                   : null
 
-          setItems(response.items)
+          const shouldPreserveWindowUsage =
+            windowUsageQueryKeyRef.current != null &&
+            windowUsageQueryKeyRef.current === requestQueryKey
+          setRosterItems(response.items)
           setGroups(response.groups)
           setForwardProxyNodes(response.forwardProxyNodes ?? [])
           setHasUngroupedAccounts(response.hasUngroupedAccounts)
@@ -332,6 +407,9 @@ export function useUpstreamAccounts(
           lastRefreshAtRef.current = Date.now()
           setListDataQueryKey(requestQueryKey)
           hasHydratedRef.current = true
+          resetWindowUsageHydration(requestQueryKey, {
+            preserveData: shouldPreserveWindowUsage,
+          })
           setListError(null)
           setSelectedAccount(nextSelectedId)
           return nextSelectedId
@@ -432,6 +510,7 @@ export function useUpstreamAccounts(
   useEffect(() => {
     if (query == null) {
       autoLoadQueryKeyRef.current = null
+      resetWindowUsageHydration(null)
       setIsLoading(true)
       setIsListPending(false)
       setListError(null)
@@ -445,7 +524,7 @@ export function useUpstreamAccounts(
     }
     autoLoadQueryKeyRef.current = currentListQueryKey
     void loadList()
-  }, [currentListQueryKey, loadList, query])
+  }, [currentListQueryKey, loadList, query, resetWindowUsageHydration])
 
   useEffect(() => {
     void loadDetail(selectedId)
@@ -455,6 +534,122 @@ export function useUpstreamAccounts(
     () => items.find((item) => item.id === selectedId) ?? null,
     [items, selectedId],
   )
+
+  const hydrateWindowUsage = useCallback(async (accountIds: number[]) => {
+    const requestQueryKey = currentListQueryKeyRef.current
+    if (
+      requestQueryKey == null ||
+      listDataQueryKeyRef.current !== requestQueryKey
+    ) {
+      return
+    }
+
+    const currentRosterIdSet = new Set(
+      rosterItemsRef.current
+        .filter((item) => item.primaryWindow != null || item.secondaryWindow != null)
+        .map((item) => item.id),
+    )
+    const normalizedAccountIds = Array.from(
+      new Set(
+        accountIds.filter(
+          (accountId) =>
+            Number.isFinite(accountId) &&
+            accountId > 0 &&
+            currentRosterIdSet.has(accountId),
+        ),
+      ),
+    ).filter(
+      (accountId) =>
+        !hydratedWindowUsageIdsRef.current.has(accountId) &&
+        !pendingWindowUsageGenerationByIdRef.current.has(accountId),
+    )
+
+    if (normalizedAccountIds.length === 0) {
+      return
+    }
+
+    const generation = usageHydrationGenerationRef.current
+    normalizedAccountIds.forEach((accountId) => {
+      pendingWindowUsageGenerationByIdRef.current.set(accountId, generation)
+    })
+    setIsWindowUsagePending(true)
+
+    try {
+      const response = await fetchUpstreamAccountWindowUsage(normalizedAccountIds)
+      if (
+        generation !== usageHydrationGenerationRef.current ||
+        requestQueryKey !== currentListQueryKeyRef.current ||
+        listDataQueryKeyRef.current !== requestQueryKey
+      ) {
+        return
+      }
+
+      const usageEntries = Object.fromEntries(
+        response.items.map((item) => [
+          item.accountId,
+          {
+            primaryActualUsage: item.primaryActualUsage ?? null,
+            secondaryActualUsage: item.secondaryActualUsage ?? null,
+          } satisfies HydratedWindowUsage,
+        ]),
+      ) as Record<number, HydratedWindowUsage>
+
+      setWindowUsageByAccount((current) => {
+        if (
+          generation !== usageHydrationGenerationRef.current ||
+          requestQueryKey !== currentListQueryKeyRef.current
+        ) {
+          return current
+        }
+        const next = { ...current }
+        for (const accountId of normalizedAccountIds) {
+          if (usageEntries[accountId]) {
+            next[accountId] = usageEntries[accountId]
+          }
+        }
+        return next
+      })
+
+      normalizedAccountIds.forEach((accountId) => {
+        hydratedWindowUsageIdsRef.current.add(accountId)
+      })
+    } finally {
+      if (
+        generation !== usageHydrationGenerationRef.current ||
+        requestQueryKey !== currentListQueryKeyRef.current ||
+        listDataQueryKeyRef.current !== requestQueryKey
+      ) {
+        return
+      }
+      normalizedAccountIds.forEach((accountId) => {
+        if (pendingWindowUsageGenerationByIdRef.current.get(accountId) === generation) {
+          pendingWindowUsageGenerationByIdRef.current.delete(accountId)
+        }
+      })
+      if (pendingWindowUsageGenerationByIdRef.current.size === 0) {
+        setIsWindowUsagePending(false)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    if (
+      query == null ||
+      effectiveQuery.includeAll === true ||
+      listDataQueryKey !== currentListQueryKey ||
+      rosterItems.length === 0
+    ) {
+      return
+    }
+    void hydrateWindowUsage(rosterItems.map((item) => item.id))
+  }, [
+    currentListQueryKey,
+    effectiveQuery.includeAll,
+    hydrateWindowUsage,
+    listDataQueryKey,
+    query,
+    rosterItems,
+  ])
 
   const refreshCurrentSelectedDetail = useCallback(
     async (skipAccountId?: number | null, options: LoadOptions = {}) => {
@@ -815,6 +1010,9 @@ export function useUpstreamAccounts(
       detailRequestAccountIdRef.current = null
       detailAbortControllerRef.current?.abort()
       detailAbortControllerRef.current = null
+      usageHydrationGenerationRef.current += 1
+      hydratedWindowUsageIdsRef.current = new Set()
+      pendingWindowUsageGenerationByIdRef.current = new Map()
       hasSeenSseOpenRef.current = false
       autoLoadQueryKeyRef.current = null
       clearPendingRefreshTimer()
@@ -909,11 +1107,13 @@ export function useUpstreamAccounts(
     isDetailLoading,
     listError,
     listState,
+    isWindowUsagePending,
     detailError: selectedDetailError,
     error: selectedDetailError ?? listError,
     missingDetailAccountId,
     selectAccount,
     refresh,
+    hydrateWindowUsage,
     loadDetail,
     beginOauthLogin,
     beginRelogin,
