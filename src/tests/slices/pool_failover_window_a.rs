@@ -1572,6 +1572,93 @@ async fn pool_openai_v1_responses_retries_same_account_on_server_overloaded_befo
 }
 
 #[tokio::test]
+async fn pool_openai_v1_responses_retries_after_metadata_prefix_exceeds_preview_limit() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRouteRow {
+        distinct_account_index: i64,
+        same_account_retry_index: i64,
+        status: String,
+    }
+
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_large_metadata_prefixed_response_failed_retry_upstream(&[("Bearer route-one", 1)])
+            .await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Retry Route One Large Metadata",
+        "route-one",
+        None,
+        None,
+        Some(upstream_base.as_str()),
+    )
+    .await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5.4","stream":true,"input":"hello","stickyKey":"sticky-overloaded-large-metadata-001"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read retryable overloaded large-metadata response");
+    let response_payload: Value =
+        serde_json::from_slice(&body).expect("decode retryable overloaded large-metadata success body");
+    assert_eq!(response_payload["ok"].as_bool(), Some(true));
+    assert_eq!(
+        response_payload["authorization"].as_str(),
+        Some("Bearer route-one"),
+    );
+    let body_text = String::from_utf8(body.to_vec()).expect("utf8 retryable overloaded large-metadata body");
+    assert!(!body_text.contains("response.failed"));
+    assert!(!body_text.contains("server_is_overloaded"));
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 2).await;
+
+    let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
+        r#"
+        SELECT distinct_account_index, same_account_retry_index, status
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load overloaded large-metadata retry attempt rows");
+    assert_eq!(attempt_rows.len(), 2);
+    assert_eq!(attempt_rows[0].status, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE);
+    assert_eq!(attempt_rows[0].distinct_account_index, 1);
+    assert_eq!(attempt_rows[0].same_account_retry_index, 1);
+    assert_eq!(attempt_rows[1].status, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS);
+    assert_eq!(attempt_rows[1].distinct_account_index, 1);
+    assert_eq!(attempt_rows[1].same_account_retry_index, 2);
+
+    let attempts = attempts
+        .lock()
+        .expect("lock retryable overloaded large-metadata attempts");
+    assert_eq!(attempts.get("Bearer route-one").copied(), Some(2));
+    drop(attempts);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn pool_openai_v1_responses_overload_prefers_same_route_before_alternate_route() {
     #[derive(Debug, sqlx::FromRow)]
     struct AttemptRouteRow {
@@ -2011,6 +2098,51 @@ async fn gate_pool_initial_response_stream_keeps_non_overload_response_failed_on
     assert!(body_text.contains("response.created"));
     assert!(body_text.contains("server_error"));
     assert!(!body_text.contains("server_is_overloaded"));
+}
+
+#[tokio::test]
+async fn gate_pool_initial_response_stream_retries_overload_after_metadata_prefix_exceeds_preview_limit()
+{
+    let oversized_metadata = less_compressible_test_string(RAW_RESPONSE_PREVIEW_LIMIT + 8 * 1024);
+    let created = format!(
+        "event: response.created\n\
+         data: {}\n\n",
+        serde_json::to_string(&json!({
+            "type": "response.created",
+            "response": {
+                "id": "resp_gate_large_test",
+                "model": "gpt-5.4",
+                "status": "in_progress",
+                "metadata": oversized_metadata,
+            },
+        }))
+        .expect("serialize oversized metadata gate payload")
+    );
+    let failed = [
+        "event: response.failed\n",
+        r#"data: {"type":"response.failed","response":{"id":"resp_gate_large_test","model":"gpt-5.4","status":"failed","error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}}"#,
+        "\n\n",
+    ]
+    .concat();
+    let response = ProxyUpstreamResponseBody::Axum(
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(http_header::CONTENT_TYPE, "text/event-stream")
+            .body(Body::from_stream(stream::iter(vec![
+                Ok::<Bytes, Infallible>(Bytes::from(created)),
+                Ok::<Bytes, Infallible>(Bytes::from(failed)),
+            ])))
+            .expect("build oversized metadata gate response"),
+    );
+
+    let outcome =
+        gate_pool_initial_response_stream(response, None, Duration::from_secs(1), Instant::now())
+            .await
+            .expect("gate oversized metadata initial response stream");
+
+    let PoolInitialResponseGateOutcome::RetrySameAccount { .. } = outcome else {
+        panic!("oversized metadata-only prefix should still keep overload retryable before forwarding");
+    };
 }
 
 #[tokio::test]
