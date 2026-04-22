@@ -422,6 +422,140 @@ describe('UpstreamAccountsGroupedRoster', () => {
     expect(settingsButtons).toHaveLength(0)
   })
 
+  it('renders actionable-only status badges in grid cards and hides neutral statuses', async () => {
+    renderRoster(
+      [
+        makeGroup('status-states', [
+          makeItem(11, {
+            displayName: 'Working burst lane',
+            workStatus: 'working',
+            activeConversationCount: 3,
+          }),
+          makeItem(12, {
+            displayName: 'Temporary degraded lane',
+            workStatus: 'degraded',
+          }),
+          makeItem(13, {
+            displayName: 'Quota limited lane',
+            workStatus: 'rate_limited',
+          }),
+          makeItem(14, {
+            displayName: 'Manual sync in progress',
+            displayStatus: 'syncing',
+            syncState: 'syncing',
+            workStatus: 'idle',
+          }),
+          makeItem(15, {
+            displayName: 'OAuth needs reauth',
+            displayStatus: 'needs_reauth',
+            healthStatus: 'needs_reauth',
+            workStatus: 'unavailable',
+          }),
+          makeItem(16, {
+            displayName: 'Data plane unavailable',
+            displayStatus: 'upstream_unavailable',
+            healthStatus: 'upstream_unavailable',
+            workStatus: 'unavailable',
+          }),
+          makeItem(17, {
+            displayName: 'Upstream rejected',
+            displayStatus: 'upstream_rejected',
+            healthStatus: 'upstream_rejected',
+            workStatus: 'unavailable',
+          }),
+          makeItem(18, {
+            displayName: 'Disabled fallback key',
+            enabled: false,
+            enableStatus: 'disabled',
+            displayStatus: 'disabled',
+            workStatus: 'idle',
+            healthStatus: 'normal',
+            syncState: 'idle',
+            kind: 'api_key_codex',
+          }),
+          makeItem(19, {
+            displayName: 'Other error account',
+            displayStatus: 'error_other',
+            healthStatus: 'error_other',
+            workStatus: 'unavailable',
+          }),
+        ]),
+      ],
+      {
+        memberLayout: 'grid',
+        selectionMode: 'none',
+        onToggleSelected: undefined,
+        onToggleSelectAllVisible: undefined,
+      },
+    )
+    await flushAsync()
+
+    const content = host?.textContent ?? ''
+    expect(content).toContain('Working 3')
+    expect(content).toContain('degraded')
+    expect(content).toContain('rate_limited')
+    expect(content).toContain('syncing')
+    expect(content).toContain('needs_reauth')
+    expect(content).toContain('upstream_unavailable')
+    expect(content).toContain('upstream_rejected')
+    expect(content).toContain('error_other')
+    expect(content).toContain('disabled')
+    expect(content).not.toContain('Enabled')
+    expect(content).not.toContain('Idle')
+    expect(content).not.toContain('Normal')
+    expect(content).not.toContain('Sync idle')
+  })
+
+  it('prioritizes disabled, syncing, and health badges ahead of work-state badges in grid cards', async () => {
+    renderRoster(
+      [
+        makeGroup('precedence', [
+          makeItem(21, {
+            displayName: 'Syncing beats rate limit',
+            displayStatus: 'syncing',
+            syncState: 'syncing',
+            workStatus: 'rate_limited',
+          }),
+          makeItem(22, {
+            displayName: 'Health beats working',
+            displayStatus: 'upstream_unavailable',
+            healthStatus: 'upstream_unavailable',
+            workStatus: 'working',
+            activeConversationCount: 2,
+          }),
+          makeItem(23, {
+            displayName: 'Disabled precedence lane',
+            enabled: false,
+            enableStatus: 'disabled',
+            displayStatus: 'disabled',
+            workStatus: 'degraded',
+          }),
+        ]),
+      ],
+      {
+        memberLayout: 'grid',
+        selectionMode: 'none',
+        onToggleSelected: undefined,
+        onToggleSelectAllVisible: undefined,
+      },
+    )
+    await flushAsync()
+
+    const cards = Array.from(
+      host?.querySelectorAll('[data-testid="upstream-accounts-group-grid-card"]') ?? [],
+    ) as HTMLDivElement[]
+    expect(cards).toHaveLength(3)
+
+    expect(cards[0]?.textContent).toContain('syncing')
+    expect(cards[0]?.textContent).not.toContain('rate_limited')
+
+    expect(cards[1]?.textContent).toContain('upstream_unavailable')
+    expect(cards[1]?.textContent).not.toContain('Working 2')
+
+    expect(cards[2]?.textContent).toContain('disabled')
+    expect(cards[2]?.textContent).not.toContain('degraded')
+  })
+
   it('virtualizes large rosters by group card instead of member rows', () => {
     const groups = Array.from({ length: 12 }, (_, groupIndex) =>
       makeGroup(

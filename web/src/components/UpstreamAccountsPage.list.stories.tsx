@@ -1005,6 +1005,7 @@ export const GridView: Story = {
       const card = await documentScope.findByRole('button', {
         name: /Codex Pro - Tokyo/i,
       })
+      await expect(card).toHaveTextContent(/working|工作/i)
       expectWindowUsagePlaceholders(card)
       await waitForWindowUsageHydration(card)
     })
