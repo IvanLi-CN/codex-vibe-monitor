@@ -23,6 +23,71 @@ pub(crate) async fn mark_retention_archived_hourly_rollup_targets_tx(
     Ok(())
 }
 
+async fn load_archive_table_columns(
+    pool: &Pool<Sqlite>,
+    table_name: &str,
+) -> Result<HashSet<String>> {
+    let pragma = format!("PRAGMA table_info('{table_name}')");
+    let columns = sqlx::query(&pragma)
+        .fetch_all(pool)
+        .await
+        .with_context(|| format!("failed to inspect {table_name} schema"))?
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect::<HashSet<_>>();
+    Ok(columns)
+}
+
+fn legacy_compatible_archive_select_expr(
+    archive_columns: &HashSet<String>,
+    column_name: &str,
+) -> String {
+    if archive_columns.contains(column_name) {
+        column_name.to_string()
+    } else {
+        format!("NULL AS {column_name}")
+    }
+}
+
+fn build_legacy_compatible_invocation_archive_query(archive_columns: &HashSet<String>) -> String {
+    let input_tokens = legacy_compatible_archive_select_expr(archive_columns, "input_tokens");
+    let output_tokens = legacy_compatible_archive_select_expr(archive_columns, "output_tokens");
+    let cache_input_tokens =
+        legacy_compatible_archive_select_expr(archive_columns, "cache_input_tokens");
+    format!(
+        r#"
+        SELECT
+            id,
+            occurred_at,
+            source,
+            status,
+            detail_level,
+            {input_tokens},
+            {output_tokens},
+            {cache_input_tokens},
+            total_tokens,
+            cost,
+            error_message,
+            failure_kind,
+            failure_class,
+            is_actionable,
+            payload,
+            t_total_ms,
+            t_req_read_ms,
+            t_req_parse_ms,
+            t_upstream_connect_ms,
+            t_upstream_ttfb_ms,
+            t_upstream_stream_ms,
+            t_resp_parse_ms,
+            t_persist_ms
+        FROM codex_invocations
+        WHERE id > ?1
+        ORDER BY id ASC
+        LIMIT ?2
+        "#
+    )
+}
+
 pub(crate) async fn mark_archive_batch_historical_rollups_materialized_tx(
     tx: &mut SqliteConnection,
     dataset: &str,
@@ -1418,37 +1483,11 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(pool: &Pool<S
             .connect(&sqlite_url_for_path(&temp_path))
             .await
             .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
+        let archive_columns = load_archive_table_columns(&archive_pool, "codex_invocations").await?;
+        let archive_query_sql = build_legacy_compatible_invocation_archive_query(&archive_columns);
         let mut archive_cursor_id = 0_i64;
         loop {
-            let mut rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(
-                r#"
-                SELECT
-                    id,
-                    occurred_at,
-                    source,
-                    status,
-                    detail_level,
-                    total_tokens,
-                    cost,
-                    error_message,
-                    failure_kind,
-                    failure_class,
-                    is_actionable,
-                    payload,
-                    t_total_ms,
-                    t_req_read_ms,
-                    t_req_parse_ms,
-                    t_upstream_connect_ms,
-                    t_upstream_ttfb_ms,
-                    t_upstream_stream_ms,
-                    t_resp_parse_ms,
-                    t_persist_ms
-                FROM codex_invocations
-                WHERE id > ?1
-                ORDER BY id ASC
-                LIMIT ?2
-                "#,
-            )
+            let mut rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(&archive_query_sql)
             .bind(archive_cursor_id)
             .bind(BACKFILL_BATCH_SIZE)
             .fetch_all(&archive_pool)
@@ -1477,6 +1516,9 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(pool: &Pool<S
                 source,
                 status,
                 detail_level,
+                input_tokens,
+                output_tokens,
+                cache_input_tokens,
                 total_tokens,
                 cost,
                 error_message,

@@ -614,20 +614,19 @@ export function useUpstreamAccounts(
         hydratedWindowUsageIdsRef.current.add(accountId)
       })
     } finally {
-      if (
-        generation !== usageHydrationGenerationRef.current ||
-        requestQueryKey !== currentListQueryKeyRef.current ||
-        listDataQueryKeyRef.current !== requestQueryKey
-      ) {
-        return
-      }
-      normalizedAccountIds.forEach((accountId) => {
-        if (pendingWindowUsageGenerationByIdRef.current.get(accountId) === generation) {
-          pendingWindowUsageGenerationByIdRef.current.delete(accountId)
+      const isStillCurrent =
+        generation === usageHydrationGenerationRef.current &&
+        requestQueryKey === currentListQueryKeyRef.current &&
+        listDataQueryKeyRef.current === requestQueryKey
+      if (isStillCurrent) {
+        normalizedAccountIds.forEach((accountId) => {
+          if (pendingWindowUsageGenerationByIdRef.current.get(accountId) === generation) {
+            pendingWindowUsageGenerationByIdRef.current.delete(accountId)
+          }
+        })
+        if (pendingWindowUsageGenerationByIdRef.current.size === 0) {
+          setIsWindowUsagePending(false)
         }
-      })
-      if (pendingWindowUsageGenerationByIdRef.current.size === 0) {
-        setIsWindowUsagePending(false)
       }
     }
   }, [])

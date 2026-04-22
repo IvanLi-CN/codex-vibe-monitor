@@ -135,11 +135,23 @@ async fn open_historical_rollup_archive_pool(
     }
 }
 
-async fn load_invocation_archive_rows_chunk(
-    archive_pool: &Pool<Sqlite>,
-    start_after_id: i64,
-) -> Result<(Vec<InvocationHourlySourceRecord>, bool)> {
-    let mut rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(
+fn legacy_compatible_archive_select_expr(
+    archive_columns: &HashSet<String>,
+    column_name: &str,
+) -> String {
+    if archive_columns.contains(column_name) {
+        column_name.to_string()
+    } else {
+        format!("NULL AS {column_name}")
+    }
+}
+
+fn build_invocation_archive_rows_chunk_query(archive_columns: &HashSet<String>) -> String {
+    let input_tokens = legacy_compatible_archive_select_expr(archive_columns, "input_tokens");
+    let output_tokens = legacy_compatible_archive_select_expr(archive_columns, "output_tokens");
+    let cache_input_tokens =
+        legacy_compatible_archive_select_expr(archive_columns, "cache_input_tokens");
+    format!(
         r#"
         SELECT
             id,
@@ -147,9 +159,9 @@ async fn load_invocation_archive_rows_chunk(
             source,
             status,
             detail_level,
-            input_tokens,
-            output_tokens,
-            cache_input_tokens,
+            {input_tokens},
+            {output_tokens},
+            {cache_input_tokens},
             total_tokens,
             cost,
             error_message,
@@ -169,8 +181,16 @@ async fn load_invocation_archive_rows_chunk(
         WHERE id > ?1
         ORDER BY id ASC
         LIMIT ?2
-        "#,
+        "#
     )
+}
+
+async fn load_invocation_archive_rows_chunk(
+    archive_pool: &Pool<Sqlite>,
+    query_sql: &str,
+    start_after_id: i64,
+) -> Result<(Vec<InvocationHourlySourceRecord>, bool)> {
+    let mut rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(query_sql)
     .bind(start_after_id)
     .bind(HISTORICAL_ROLLUP_ARCHIVE_REPLAY_BATCH_SIZE + 1)
     .fetch_all(archive_pool)
@@ -259,6 +279,8 @@ async fn replay_invocation_archive_rows_into_hourly_rollups_tx_with_budget(
     max_elapsed: Option<Duration>,
 ) -> Result<HistoricalRollupArchiveReplayResult> {
     let mut start_after_id = initial_cursor_id.max(0);
+    let archive_columns = load_sqlite_table_columns(archive_pool, "codex_invocations").await?;
+    let query_sql = build_invocation_archive_rows_chunk_query(&archive_columns);
     loop {
         if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
             return Ok(HistoricalRollupArchiveReplayResult {
@@ -267,7 +289,8 @@ async fn replay_invocation_archive_rows_into_hourly_rollups_tx_with_budget(
             });
         }
 
-        let (rows, has_more) = load_invocation_archive_rows_chunk(archive_pool, start_after_id).await?;
+        let (rows, has_more) =
+            load_invocation_archive_rows_chunk(archive_pool, &query_sql, start_after_id).await?;
         if rows.is_empty() {
             return Ok(HistoricalRollupArchiveReplayResult {
                 outcome: HistoricalRollupArchiveReplayOutcome::Completed,
@@ -405,6 +428,15 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
             {
                 pending_targets.push(target);
             }
+        }
+        if pending_targets.as_slice() == [HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE] {
+            mark_archive_batch_historical_rollups_materialized_tx(
+                tx,
+                HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                &archive_file.file_path,
+            )
+            .await?;
+            continue;
         }
         if pending_targets.is_empty() {
             mark_archive_batch_historical_rollups_materialized_tx(
