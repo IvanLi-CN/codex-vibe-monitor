@@ -172,8 +172,6 @@ def fetch_ruleset(api_root: str, owner: str, repo: str, ruleset_id: int) -> dict
     payload = fetch_json(api_root, path)
     if not isinstance(payload, dict):
         raise ValidationError(f"Unsupported GitHub ruleset payload type for ruleset {ruleset_id}")
-    if "bypass_actors" not in payload:
-        payload["bypass_actors"] = []
     return payload
 
 
@@ -273,7 +271,7 @@ def validate_bypass_actors(
     declaration: dict[str, Any],
     rulesets: list[dict[str, Any]],
     branch: str,
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str], str]:
     notes: list[str] = []
     errors: list[str] = []
     bypass_reason = branch_waivers(declaration, branch)
@@ -281,8 +279,8 @@ def validate_bypass_actors(
         if bypass_reason:
             notes.append(f"{branch}: bypass actor verification waived explicitly ({bypass_reason})")
         else:
-            errors.append(f"{branch}: bypass actor verification unavailable without explicit waiver")
-        return errors, notes
+            notes.append(f"{branch}: bypass actor verification unavailable (status=unverified)")
+        return errors, notes, "unverified"
 
     unavailable_rulesets: list[str] = []
     violating_rulesets: list[str] = []
@@ -302,13 +300,14 @@ def validate_bypass_actors(
     if unavailable_rulesets:
         if bypass_reason:
             notes.append(
-                f"{branch}: bypass actor verification waived explicitly for {', '.join(unavailable_rulesets)} ({bypass_reason})"
+                f"{branch}: bypass actor verification waived explicitly for {', '.join(unavailable_rulesets)} ({bypass_reason}; status=unverified)"
             )
         else:
-            errors.append(
-                f"{branch}: bypass actor verification unavailable for {', '.join(unavailable_rulesets)} without explicit waiver"
+            notes.append(
+                f"{branch}: bypass actor verification unavailable for {', '.join(unavailable_rulesets)} (status=unverified)"
             )
-    return errors, notes
+        return errors, notes, "unverified"
+    return errors, notes, "verified"
 
 
 def bool_field(parameters: dict[str, Any], name: str) -> bool:
@@ -381,7 +380,7 @@ def validate_rules(
     rules: list[dict[str, Any]],
     rulesets: list[dict[str, Any]],
     branch: str,
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str], str]:
     notes: list[str] = []
     errors: list[str] = []
     policy = declaration.get("policy", {})
@@ -583,11 +582,11 @@ def validate_rules(
                 f"{branch}: required_status_check integrations drift ({'; '.join(integration_errors)})"
             )
 
-    bypass_errors, bypass_notes = validate_bypass_actors(declaration, rulesets, branch)
+    bypass_errors, bypass_notes, bypass_status = validate_bypass_actors(declaration, rulesets, branch)
     errors.extend(bypass_errors)
     notes.extend(bypass_notes)
 
-    return errors, notes
+    return errors, notes, bypass_status
 
 
 def main() -> int:
@@ -603,6 +602,7 @@ def main() -> int:
         errors: list[str] = []
         notes: list[str] = []
         checked_rules: dict[str, list[str]] = {}
+        bypass_actor_status: dict[str, str] = {}
         for branch in branches:
             rules, rulesets, unresolved_rulesets = extract_rules(
                 rules_fixture if rules_fixture is not None else fetch_branch_rules(args.api_root, owner, repo, branch)
@@ -633,9 +633,15 @@ def main() -> int:
                 )
                 known_ruleset_ids.add(ref.ruleset_id)
             checked_rules[branch] = sorted({rule.get("type", "") for rule in rules})
-            branch_errors, branch_notes = validate_rules(declaration, rules, hydrated_rulesets, branch)
+            branch_errors, branch_notes, branch_bypass_status = validate_rules(
+                declaration,
+                rules,
+                hydrated_rulesets,
+                branch,
+            )
             errors.extend(branch_errors)
             notes.extend(branch_notes)
+            bypass_actor_status[branch] = branch_bypass_status
     except ValidationError as exc:
         print(f"[live-quality-gates] {exc}", file=sys.stderr)
         return 1
@@ -653,8 +659,9 @@ def main() -> int:
                 "repo": args.repo,
                 "branches": branches,
                 "checked_rules": checked_rules,
+                "bypass_actor_status": bypass_actor_status,
                 "notes": [
-                    "Validated effective branch rules and bypass actors via GET /repos/{owner}/{repo}/rules/branches/{branch} or a local fixture.",
+                    "Validated effective branch rules; bypass actor status is reported per branch and remains unverified unless ruleset payloads explicitly expose bypass_actors.",
                     *notes,
                 ],
             },

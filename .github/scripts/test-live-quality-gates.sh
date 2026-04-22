@@ -11,7 +11,17 @@ python3 "$script" \
   --repo IvanLi-CN/codex-vibe-monitor \
   --declaration "$declaration" \
   --rules-file "$fixtures_dir/rules-main-ok.json" \
-  --branch main >/dev/null
+  --branch main >"$fixtures_dir/.rules-main-ok.out"
+
+python3 - <<'PY' "$fixtures_dir/.rules-main-ok.out"
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(Path(sys.argv[1]).read_text())
+assert payload["bypass_actor_status"]["main"] == "verified", payload
+PY
+rm -f "$fixtures_dir/.rules-main-ok.out"
 
 if python3 "$script" \
   --mode require \
@@ -111,18 +121,24 @@ payload = json.loads(source.read_text())
 target.write_text(json.dumps(payload[0]["rules"], indent=2) + "\n")
 PY
 
-if python3 "$script" \
+python3 "$script" \
   --mode require \
   --repo IvanLi-CN/codex-vibe-monitor \
   --declaration "$declaration" \
   --rules-file "$legacy_rules" \
-  --branch main >/dev/null 2>"$fixtures_dir/.legacy-bypass.log"; then
-  echo "expected legacy flat rules fixture to require explicit waiver" >&2
-  exit 1
-fi
+  --branch main >"$fixtures_dir/.legacy-bypass.out"
 
-grep -q "bypass actor verification unavailable without explicit waiver" "$fixtures_dir/.legacy-bypass.log"
-rm -f "$fixtures_dir/.legacy-bypass.log" "$legacy_rules"
+python3 - <<'PY' "$fixtures_dir/.legacy-bypass.out"
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(Path(sys.argv[1]).read_text())
+assert payload["bypass_actor_status"]["main"] == "unverified", payload
+assert any("status=unverified" in note for note in payload["notes"]), payload
+assert not any("Validated effective branch rules and bypass actors" in note for note in payload["notes"]), payload
+PY
+rm -f "$fixtures_dir/.legacy-bypass.out" "$legacy_rules"
 
 python3 - <<'PY' "$script" "$fixtures_dir/rules-main-ok.json" "$declaration"
 import importlib.util
@@ -157,9 +173,10 @@ hydrated = [
     module.fetch_ruleset("https://api.github.com", "IvanLi-CN", "codex-vibe-monitor", ref.ruleset_id)
     for ref in refs
 ]
-errors, notes = module.validate_rules(json.loads(declaration_path.read_text()), rules, hydrated, "main")
+errors, notes, bypass_status = module.validate_rules(json.loads(declaration_path.read_text()), rules, hydrated, "main")
 assert errors == [], f"expected hydrated flat rules to pass, got {errors!r}"
 assert notes == [], f"expected no notes for hydrated flat rules, got {notes!r}"
+assert bypass_status == "verified", bypass_status
 PY
 
 linear_history_rules="$fixtures_dir/.rules-main-linear-history.json"

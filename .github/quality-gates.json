@@ -20,6 +20,8 @@
         "integrations": {
           "Validate PR labels": 15368,
           "Lint & Format Check": 15368,
+          "Front-end Tests": 15368,
+          "Records Overlay E2E": 15368,
           "Backend Tests": 15368,
           "Build Artifacts": 15368,
           "Review Policy Gate": 15368
@@ -48,14 +50,13 @@
   "required_checks": [
     "Validate PR labels",
     "Lint & Format Check",
+    "Front-end Tests",
+    "Records Overlay E2E",
     "Backend Tests",
     "Build Artifacts",
     "Review Policy Gate"
   ],
-  "informational_checks": [
-    "Front-end Tests",
-    "Records Overlay E2E"
-  ],
+  "informational_checks": [],
   "waivers": [],
   "expected_pr_workflows": [
     {

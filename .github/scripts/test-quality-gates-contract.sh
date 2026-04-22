@@ -101,7 +101,27 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-r
   exit 1
 fi
 
-grep -q "expected_pr_workflows jobs must exactly cover required_checks + informational_checks" "$tmp_dir/coverage.log"
+grep -q "expected_pr_workflows jobs must exactly cover required_checks" "$tmp_dir/coverage.log"
+
+informational_repo="$tmp_dir/informational-repo"
+copy_repo_snapshot "$baseline_repo" "$informational_repo"
+python3 - <<'PY' "$informational_repo"
+from pathlib import Path
+import json
+import sys
+repo = Path(sys.argv[1])
+path = repo / ".github/quality-gates.json"
+payload = json.loads(path.read_text())
+payload["informational_checks"] = ["Docs Preview"]
+path.write_text(json.dumps(payload, indent=2) + "\n")
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$informational_repo" --profile final >/dev/null 2>"$tmp_dir/informational.log"; then
+  echo "expected informational checks fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "informational_checks must stay empty" "$tmp_dir/informational.log"
 
 release_dispatch_repo="$tmp_dir/release-dispatch-repo"
 copy_repo_snapshot "$baseline_repo" "$release_dispatch_repo"

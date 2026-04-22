@@ -49,6 +49,14 @@
               "integration_id": 15368
             },
             {
+              "context": "Front-end Tests",
+              "integration_id": 15368
+            },
+            {
+              "context": "Records Overlay E2E",
+              "integration_id": 15368
+            },
+            {
               "context": "Backend Tests",
               "integration_id": 15368
             },
