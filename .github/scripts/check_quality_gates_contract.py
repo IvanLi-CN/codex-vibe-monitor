@@ -338,6 +338,7 @@ def validate_quality_gates(payload: dict[str, Any]) -> ContractModel:
     required_checks = require_string_set(payload.get("required_checks"), "quality-gates.json.required_checks")
     informational_checks = require_string_set(payload.get("informational_checks"), "quality-gates.json.informational_checks")
     require(required_checks.isdisjoint(informational_checks), "quality-gates.json: required_checks and informational_checks must be disjoint")
+    require(not informational_checks, "quality-gates.json: informational_checks must stay empty")
     require(set(integrations) == required_checks, f"quality-gates.json: required_status_checks.integrations drifted: {sorted(integrations)}")
     normalized_integrations: dict[str, int] = {}
     for context, integration_id in integrations.items():
@@ -370,8 +371,8 @@ def validate_quality_gates(payload: dict[str, Any]) -> ContractModel:
 
     declared_pr_jobs = {job for jobs in expected_pr_workflows.values() for job in jobs}
     require(
-        declared_pr_jobs == (required_checks | informational_checks),
-        "quality-gates.json: expected_pr_workflows jobs must exactly cover required_checks + informational_checks",
+        declared_pr_jobs == required_checks,
+        "quality-gates.json: expected_pr_workflows jobs must exactly cover required_checks",
     )
 
     label_jobs = set(expected_pr_workflows.get("Label Gate", ()))
