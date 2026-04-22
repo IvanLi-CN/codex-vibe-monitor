@@ -608,21 +608,17 @@ function GroupMemberGridCard({
             : showPlanBadge && item.planType
               ? compactBadge(item.planType, 'accent', { title: item.planType })
               : null}
+          {actionableStatusBadges.map((badge) => (
+            <Badge
+              key={`${badge.key}:${badge.label}`}
+              variant={badge.variant}
+              className="shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4"
+              title={badge.title}
+            >
+              {badge.label}
+            </Badge>
+          ))}
         </div>
-        {actionableStatusBadges.length > 0 ? (
-          <div className="mt-2 flex flex-wrap items-center gap-1">
-            {actionableStatusBadges.map((badge) => (
-              <Badge
-                key={`${badge.key}:${badge.label}`}
-                variant={badge.variant}
-                className="shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4"
-                title={badge.title}
-              >
-                {badge.label}
-              </Badge>
-            ))}
-          </div>
-        ) : null}
       </div>
       <div className="mt-3 space-y-1.5">
         <CompactWindowLine
