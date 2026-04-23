@@ -7,12 +7,16 @@ import {
 } from 'react'
 import { useWindowVirtualizer } from '@tanstack/react-virtual'
 import { AppIcon } from './AppIcon'
+import {
+  AccountPoolGroupSummary,
+  type AccountPoolGroupSummaryLabels,
+} from './AccountPoolGroupSummary'
 import { Button } from './ui/button'
-import { Badge } from './ui/badge'
 import { Spinner } from './ui/spinner'
 import { cn } from '../lib/utils'
 import { upstreamPlanBadgeRecipe } from '../lib/upstreamAccountBadges'
 import type { UpstreamAccountSummary } from '../lib/api'
+import type { AccountPoolGroupSummaryData } from '../lib/accountPoolGroups'
 import {
   CompactTimestampLine,
   CompactWindowLine,
@@ -53,27 +57,7 @@ const GROUP_SUMMARY_GRID_BREAKPOINT_PX = 1280
 const GROUP_SUMMARY_GRID_GAP_PX = 14
 const GROUP_OUTER_OVERSCAN = 3
 
-type GroupPlanCount = {
-  key: string
-  label: string
-  count: number
-}
-
-export interface UpstreamAccountsGroupedRosterGroup {
-  id: string
-  groupName: string | null
-  displayName: string
-  items: UpstreamAccountSummary[]
-  note?: string | null
-  boundProxyKeys?: string[]
-  boundProxyLabels?: string[]
-  concurrencyLimit?: number | null
-  nodeShuntEnabled?: boolean
-  upstream429RetryEnabled?: boolean
-  upstream429MaxRetries?: number
-  hasCustomSettings?: boolean
-  planCounts: GroupPlanCount[]
-}
+export type UpstreamAccountsGroupedRosterGroup = AccountPoolGroupSummaryData
 
 interface UpstreamAccountsGroupedRosterProps {
   groups: UpstreamAccountsGroupedRosterGroup[]
@@ -97,29 +81,10 @@ interface UpstreamAccountsGroupedRosterProps {
   canEditGroupSettings?: boolean
   onEditGroupSettings?: (group: UpstreamAccountsGroupedRosterGroup) => void
   onVisibleAccountIdsChange?: (accountIds: number[]) => void
-  groupLabels: {
-    count: (count: number) => string
-    concurrency: (value: number) => string
-    exclusiveNode: string
+  groupLabels: AccountPoolGroupSummaryLabels & {
     selectVisible: string
     infoTitle: string
-    noteLabel: string
-    noteEmpty: string
-    proxiesLabel: string
-    proxiesEmpty: string
-    settingsLabel: string
   }
-}
-
-function groupPlanBadgeRecipe(planKey: string) {
-  if (planKey === 'api') {
-    return {
-      variant: 'info' as const,
-      className: undefined,
-      dataPlan: undefined,
-    }
-  }
-  return upstreamPlanBadgeRecipe(planKey)
 }
 
 function resolveGridColumnCount(width: number) {
@@ -224,117 +189,6 @@ function normalizeVirtualItems(
     start: Math.max(0, item.start - scrollMargin),
     end: Math.max(0, item.end - scrollMargin),
   }))
-}
-
-function GroupSummaryPanel({
-  group,
-  groupLabels,
-  compact = false,
-  canEditGroupSettings = false,
-  onEditGroupSettings,
-}: {
-  group: UpstreamAccountsGroupedRosterGroup
-  groupLabels: UpstreamAccountsGroupedRosterProps['groupLabels']
-  compact?: boolean
-  canEditGroupSettings?: boolean
-  onEditGroupSettings?: (group: UpstreamAccountsGroupedRosterGroup) => void
-}) {
-  const showSettingsAction =
-    canEditGroupSettings &&
-    Boolean(group.groupName) &&
-    typeof onEditGroupSettings === 'function'
-
-  return (
-    <div
-      className={cn(
-        'flex flex-col gap-2 xl:pr-3.5',
-        !compact && 'xl:border-r xl:border-base-300/65',
-      )}
-    >
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-            <h3
-              className="min-w-0 text-[16px] font-semibold leading-5 text-base-content"
-              title={group.displayName}
-            >
-              <span className="block truncate">{group.displayName}</span>
-            </h3>
-            <span className="shrink-0 text-[11px] font-medium leading-4 text-base-content/46">
-              {groupLabels.count(group.items.length)}
-            </span>
-          </div>
-        </div>
-        {showSettingsAction ? (
-          <Button
-            type="button"
-            size="icon"
-            variant={group.hasCustomSettings ? 'secondary' : 'outline'}
-            className="h-9 w-9 shrink-0 rounded-full"
-            aria-label={groupLabels.settingsLabel}
-            title={groupLabels.settingsLabel}
-            onClick={() => onEditGroupSettings?.(group)}
-          >
-            <AppIcon name="file-document-edit-outline" className="h-4 w-4" aria-hidden />
-          </Button>
-        ) : null}
-      </div>
-
-      <div className="flex flex-wrap items-center gap-1.5">
-        {group.planCounts.map((plan) => {
-          const recipe = groupPlanBadgeRecipe(plan.key)
-          const content = `${plan.label} ${plan.count}`
-          return (
-            <Badge
-              key={plan.key}
-              variant={recipe?.variant ?? 'secondary'}
-              className={cn(
-                'shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4',
-                recipe?.className,
-              )}
-              data-plan={recipe?.dataPlan}
-            >
-              {content}
-            </Badge>
-          )
-        })}
-        {typeof group.concurrencyLimit === 'number' && group.concurrencyLimit > 0 ? (
-          <Badge variant="secondary" className="px-2 py-px text-[11px] font-medium leading-4">
-            {groupLabels.concurrency(group.concurrencyLimit)}
-          </Badge>
-        ) : null}
-        {group.nodeShuntEnabled ? (
-          <Badge variant="info" className="px-2 py-px text-[11px] font-medium leading-4">
-            {groupLabels.exclusiveNode}
-          </Badge>
-        ) : null}
-      </div>
-
-      <div className="flex flex-wrap items-center gap-1.5 text-[12px] leading-5 text-base-content/54">
-        <span className="shrink-0 font-medium uppercase tracking-[0.12em] text-base-content/42">
-          {groupLabels.proxiesLabel}
-        </span>
-        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-          {Array.isArray(group.boundProxyLabels) && group.boundProxyLabels.length > 0 ? (
-            group.boundProxyLabels.map((label) => (
-              <Badge
-                key={label}
-                variant="secondary"
-                className="max-w-full px-2 py-px text-[11px] font-medium leading-4"
-                title={label}
-              >
-                <span className="truncate">{label}</span>
-              </Badge>
-            ))
-          ) : (
-            <span className="text-[12px] leading-5 text-base-content/58">
-              {groupLabels.proxiesEmpty}
-            </span>
-          )}
-        </div>
-      </div>
-    </div>
-  )
 }
 
 function shouldShowPlanBadge(planType?: string | null) {
@@ -1065,9 +919,9 @@ export function UpstreamAccountsGroupedRoster({
             >
               <article className="rounded-[1.1rem] border border-base-300/65 bg-base-100/76 px-3.5 py-3 shadow-[0_8px_24px_rgba(2,6,23,0.06)]">
                 <div className="grid items-start gap-3.5 xl:grid-cols-[12.5rem_minmax(0,1fr)]">
-                  <GroupSummaryPanel
+                  <AccountPoolGroupSummary
                     group={group}
-                    groupLabels={groupLabels}
+                    labels={groupLabels}
                     compact={memberLayout === 'grid'}
                     canEditGroupSettings={canEditGroupSettings}
                     onEditGroupSettings={onEditGroupSettings}

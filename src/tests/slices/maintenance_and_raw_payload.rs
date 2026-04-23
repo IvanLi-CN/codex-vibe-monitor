@@ -1144,7 +1144,7 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
         &state,
         "Alpha",
         "upstream-alpha",
-        Some("prod-blue"),
+        Some("prod"),
         Some(false),
         None,
     )
@@ -1153,7 +1153,7 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
         &state,
         "Beta",
         "upstream-beta",
-        Some("prod-blue"),
+        Some("production"),
         Some(false),
         None,
     )
@@ -1163,6 +1163,15 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
         "Gamma",
         "upstream-gamma",
         None,
+        Some(false),
+        None,
+    )
+    .await;
+    let delta_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Delta",
+        "upstream-delta",
+        Some("Prod"),
         Some(false),
         None,
     )
@@ -1209,6 +1218,7 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
         (beta_id, vip_tag_id),
         (gamma_id, vip_tag_id),
         (gamma_id, burst_safe_tag_id),
+        (delta_id, vip_tag_id),
     ] {
         sqlx::query(
             r#"
@@ -1228,6 +1238,7 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
     let Json(group_filtered) = list_upstream_accounts(
         State(state.clone()),
         Query(ListUpstreamAccountsQuery {
+            group_exact: None,
             group_search: Some("prod".to_string()),
             group_ungrouped: None,
             status: None,
@@ -1256,9 +1267,38 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
         Some(true)
     );
 
+    let Json(exact_group_filtered) = list_upstream_accounts(
+        State(state.clone()),
+        Query(ListUpstreamAccountsQuery {
+            group_exact: Some("Prod".to_string()),
+            group_search: None,
+            group_ungrouped: None,
+            status: None,
+            work_status: Vec::new(),
+            enable_status: Vec::new(),
+            health_status: Vec::new(),
+            page: None,
+            page_size: None,
+            include_all: None,
+            tag_ids: vec![vip_tag_id],
+        }),
+    )
+    .await
+    .expect("list exact-group filtered upstream accounts");
+    let exact_group_filtered_json =
+        serde_json::to_value(exact_group_filtered).expect("serialize exact-group filtered roster");
+    let exact_group_filtered_names = exact_group_filtered_json["items"]
+        .as_array()
+        .expect("exact-group filtered items array")
+        .iter()
+        .filter_map(|item| item.get("displayName").and_then(serde_json::Value::as_str))
+        .collect::<Vec<_>>();
+    assert_eq!(exact_group_filtered_names, vec!["Delta"]);
+
     let Json(ungrouped_filtered) = list_upstream_accounts(
         State(state),
         Query(ListUpstreamAccountsQuery {
+            group_exact: None,
             group_search: None,
             group_ungrouped: Some(true),
             status: None,
@@ -1330,6 +1370,7 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
     let Json(active_page_two) = list_upstream_accounts(
         State(state.clone()),
         Query(ListUpstreamAccountsQuery {
+            group_exact: None,
             group_search: None,
             group_ungrouped: None,
             status: Some("active".to_string()),
@@ -1366,6 +1407,7 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
     let Json(disabled_only) = list_upstream_accounts(
         State(state.clone()),
         Query(ListUpstreamAccountsQuery {
+            group_exact: None,
             group_search: None,
             group_ungrouped: None,
             status: Some("disabled".to_string()),
@@ -1416,6 +1458,7 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
     let Json(split_status_filtered) = list_upstream_accounts(
         State(state),
         Query(ListUpstreamAccountsQuery {
+            group_exact: None,
             group_search: None,
             group_ungrouped: None,
             status: None,
@@ -1525,6 +1568,7 @@ async fn list_upstream_accounts_clamps_work_status_for_abnormal_or_syncing_accou
     let Json(response) = list_upstream_accounts(
         State(state),
         Query(ListUpstreamAccountsQuery {
+            group_exact: None,
             group_search: None,
             group_ungrouped: None,
             status: None,
@@ -1728,6 +1772,7 @@ async fn list_upstream_accounts_keeps_generic_retry_cooldown_idle() {
     let Json(response) = list_upstream_accounts(
         State(state),
         Query(ListUpstreamAccountsQuery {
+            group_exact: None,
             group_search: None,
             group_ungrouped: None,
             status: None,

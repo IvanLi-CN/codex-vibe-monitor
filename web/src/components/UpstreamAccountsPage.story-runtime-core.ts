@@ -1335,6 +1335,7 @@ export function listTagSummaries(store: StoryStore): TagSummary[] {
 }
 
 export function filterAccountsForQuery(store: StoryStore, url: URL) {
+  const groupExact = (url.searchParams.get('groupExact') || '').trim()
   const groupSearch = (url.searchParams.get('groupSearch') || '')
     .trim()
     .toLowerCase()
@@ -1357,8 +1358,8 @@ export function filterAccountsForQuery(store: StoryStore, url: URL) {
     .filter((value) => value.length > 0)
 
   return store.accounts.filter((account) => {
-    const normalizedGroup =
-      normalizeGroupName(account.groupName)?.toLowerCase() ?? ''
+    const normalizedGroup = normalizeGroupName(account.groupName) ?? ''
+    const normalizedGroupLower = normalizedGroup.toLowerCase()
     const derivedHealthStatus = storyHealthStatus(account)
     const derivedSyncState = storySyncState(account)
     const derivedWorkStatus = storyWorkStatus(
@@ -1367,9 +1368,11 @@ export function filterAccountsForQuery(store: StoryStore, url: URL) {
       derivedSyncState,
     )
     const matchesGroup = groupUngrouped
-      ? !normalizeGroupName(account.groupName)
+      ? !normalizedGroup
+      : groupExact
+        ? normalizedGroup === groupExact
       : groupSearch
-        ? normalizedGroup.includes(groupSearch)
+        ? normalizedGroupLower.includes(groupSearch)
         : true
     if (!matchesGroup) return false
     if (workStatuses.length > 0 && !workStatuses.includes(derivedWorkStatus)) return false

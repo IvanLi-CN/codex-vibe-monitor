@@ -879,6 +879,7 @@ pub(crate) struct ListForwardProxyBindingNodesQuery {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ListUpstreamAccountsQuery {
+    pub(crate) group_exact: Option<String>,
     pub(crate) group_search: Option<String>,
     pub(crate) group_ungrouped: Option<bool>,
     pub(crate) status: Option<String>,
@@ -898,6 +899,7 @@ pub(crate) struct ListUpstreamAccountsQuery {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ListUpstreamAccountsBaseQuery {
+    group_exact: Option<String>,
     group_search: Option<String>,
     group_ungrouped: Option<bool>,
     status: Option<String>,

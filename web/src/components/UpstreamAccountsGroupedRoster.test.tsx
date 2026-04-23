@@ -167,6 +167,8 @@ const groupLabels = {
   proxiesLabel: 'Forward proxies',
   proxiesEmpty: 'No bound proxy',
   settingsLabel: 'Edit group settings',
+  upstream429Enabled: (count: number) => `429 retry × ${count}`,
+  upstream429Disabled: '429 retry off',
 }
 
 function usage(requestCount: number, totalTokens: number, totalCost: number) {

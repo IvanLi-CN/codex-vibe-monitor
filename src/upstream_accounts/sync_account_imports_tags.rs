@@ -1587,6 +1587,15 @@ async fn load_upstream_account_summaries_for_query(
 
     if params.group_ungrouped.unwrap_or(false) {
         query.push(" AND NULLIF(TRIM(COALESCE(group_name, '')), '') IS NULL");
+    } else if let Some(group_exact) = params
+        .group_exact
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        query
+            .push(" AND TRIM(COALESCE(group_name, '')) = ")
+            .push_bind(group_exact.to_string());
     } else if let Some(group_search) = params
         .group_search
         .as_deref()

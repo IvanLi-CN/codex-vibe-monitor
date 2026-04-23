@@ -21,7 +21,7 @@ export const DEFAULT_ROUTING_TIMEOUTS: PoolRoutingTimeoutSettings = {
 
 export const UPSTREAM_ACCOUNTS_QUERY_STALE_GRACE_MS = 600;
 
-type GroupFilterMode = "all" | "ungrouped" | "search";
+type GroupFilterMode = "all" | "ungrouped" | "search" | "exact";
 
 export type GroupFilterState = {
   mode: GroupFilterMode;
@@ -40,6 +40,7 @@ export type UpstreamAccountsLocationState = {
   selectedAccountId?: number;
   openDetail?: boolean;
   openDeleteConfirm?: boolean;
+  presetGroupFilter?: GroupFilterState | null;
   postCreateWarning?: string | null;
   duplicateWarning?: {
     accountId: number;

@@ -60,6 +60,9 @@ import {
   buildGroupNameSuggestions,
 } from "../../lib/upstreamAccountGroups";
 import { generatePoolRoutingKey } from "../../lib/poolRouting";
+import {
+  buildAccountPoolGroupSummaries,
+} from "../../lib/accountPoolGroups";
 import { cn } from "../../lib/utils";
 import { useTranslation } from "../../i18n";
 import {
@@ -110,17 +113,54 @@ function parseListQueryIncludeAll(queryKey: string | null): boolean | null {
   }
 }
 
+function sanitizePresetGroupFilter(
+  value?: GroupFilterState | null,
+): GroupFilterState | null {
+  if (value?.mode === "ungrouped") {
+    return {
+      mode: "ungrouped",
+      query: "",
+    };
+  }
+  if (
+    (value?.mode === "search" || value?.mode === "exact") &&
+    value.query.trim()
+  ) {
+    return {
+      mode: value.mode,
+      query: value.query.trim(),
+    };
+  }
+  return null;
+}
+
+function areGroupFiltersEqual(
+  left: GroupFilterState,
+  right: GroupFilterState,
+): boolean {
+  return left.mode === right.mode && left.query === right.query;
+}
+
 export default function UpstreamAccountsPage() {
   const { t } = useTranslation();
   const location = useLocation();
+  const locationState = location.state as UpstreamAccountsLocationState | null;
   const navigate = useNavigate();
   const { upstreamAccountId, openUpstreamAccount, closeUpstreamAccount } =
     useUpstreamAccountDetailRoute();
   const [initialFilters] = useState(() =>
     readPersistedUpstreamAccountFilters(),
   );
+  const initialGroupFilter = useMemo(
+    () =>
+      sanitizePresetGroupFilter(locationState?.presetGroupFilter) ??
+      initialFilters.groupFilter,
+    [initialFilters.groupFilter, locationState?.presetGroupFilter],
+  );
+  const [hasTransientPresetGroupFilter, setHasTransientPresetGroupFilter] =
+    useState(() => sanitizePresetGroupFilter(locationState?.presetGroupFilter) != null);
   const [groupFilter, setGroupFilter] = useState<GroupFilterState>(
-    () => initialFilters.groupFilter,
+    () => initialGroupFilter,
   );
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>(
     () => initialFilters.tagIds,
@@ -142,6 +182,7 @@ export default function UpstreamAccountsPage() {
   const [selectedAccountSummaries, setSelectedAccountSummaries] = useState<
     Record<number, UpstreamAccountSummary>
   >({});
+  const persistedGroupFilterRef = useRef(initialFilters.groupFilter);
   const {
     items: tagItems,
     isLoading: isTagCatalogLoading,
@@ -191,6 +232,8 @@ export default function UpstreamAccountsPage() {
       return null;
     }
     return {
+      groupExact:
+        groupFilter.mode === "exact" ? groupFilter.query : undefined,
       groupSearch:
         groupFilter.mode === "search" ? groupFilter.query : undefined,
       groupUngrouped: groupFilter.mode === "ungrouped" ? true : undefined,
@@ -457,6 +500,7 @@ export default function UpstreamAccountsPage() {
   }, []);
   const handleGroupFilterChange = useCallback(
     (value: string) => {
+      setHasTransientPresetGroupFilter(false);
       setGroupFilter(parseGroupFilterValue(value, groupFilterLabels));
       setPage(1);
       clearBulkSelection();
@@ -614,16 +658,23 @@ export default function UpstreamAccountsPage() {
   }, [canSanitizeSelectedTagIds, validTagIds]);
 
   useEffect(() => {
+    const persistedGroupFilter = hasTransientPresetGroupFilter
+      ? persistedGroupFilterRef.current
+      : groupFilter;
+    if (!hasTransientPresetGroupFilter) {
+      persistedGroupFilterRef.current = groupFilter;
+    }
     persistUpstreamAccountFilters({
       workStatus: workStatusFilter,
       enableStatus: enableStatusFilter,
       healthStatus: healthStatusFilter,
       tagIds: persistedSelectedTagIds,
-      groupFilter,
+      groupFilter: persistedGroupFilter,
     });
   }, [
     enableStatusFilter,
     groupFilter,
+    hasTransientPresetGroupFilter,
     healthStatusFilter,
     persistedSelectedTagIds,
     workStatusFilter,
@@ -683,10 +734,22 @@ export default function UpstreamAccountsPage() {
   }, [effectiveTotal, page, pageCount, rosterViewMode]);
 
   useEffect(() => {
-    const state = location.state as UpstreamAccountsLocationState | null;
+    const state = locationState;
     if (!state) return;
 
     const nextSearchParams = new URLSearchParams(location.search);
+    const presetGroupFilter = sanitizePresetGroupFilter(
+      state.presetGroupFilter,
+    );
+    if (
+      presetGroupFilter &&
+      !areGroupFiltersEqual(groupFilter, presetGroupFilter)
+    ) {
+      setHasTransientPresetGroupFilter(true);
+      setGroupFilter(presetGroupFilter);
+      setPage(1);
+      clearBulkSelection();
+    }
     if (typeof state.selectedAccountId === "number" && state.openDetail) {
       nextSearchParams.set(
         "upstreamAccountId",
@@ -709,11 +772,13 @@ export default function UpstreamAccountsPage() {
       { replace: true, state: null },
     );
   }, [
+    groupFilter,
     location.pathname,
     location.search,
-    location.state,
+    locationState,
     navigate,
     openUpstreamAccount,
+    clearBulkSelection,
   ]);
 
   useEffect(() => {
@@ -1037,107 +1102,16 @@ export default function UpstreamAccountsPage() {
     if (hideRosterDerivedUi) {
       return [];
     }
-    const normalizedGroupEntries = groups.map((group, index) => ({
-      group,
-      index,
-      normalizedGroupName: normalizeRosterGroupName(group.groupName),
-    }));
-    const namedGroupEntries = normalizedGroupEntries.filter(
-      (
-        entry,
-      ): entry is {
-        group: (typeof groups)[number];
-        index: number;
-        normalizedGroupName: string;
-      } => entry.normalizedGroupName != null,
-    );
-    const forwardProxyNodeLabelMap = new Map(
-      forwardProxyNodes.map((node) => [node.key, node.displayName?.trim() || node.key] as const),
-    );
-    const groupSummaryMap = new Map(
-      namedGroupEntries.map((entry) => [entry.normalizedGroupName, entry.group] as const),
-    );
-    const groupOrder = new Map(
-      namedGroupEntries.map((entry) => [entry.normalizedGroupName, entry.index] as const),
-    );
-    const grouped = new Map<string, UpstreamAccountsGroupedRosterGroup>();
-    for (const item of visibleRosterItems) {
-      const normalizedGroupName = normalizeRosterGroupName(item.groupName);
-      const groupKey = normalizedGroupName ?? "__ungrouped__";
-      const groupSummary = normalizedGroupName
-        ? groupSummaryMap.get(normalizedGroupName) ?? null
-        : null;
-      const current = grouped.get(groupKey) ?? {
-        id: groupKey,
-        groupName: normalizedGroupName,
-        displayName:
-          normalizedGroupName ??
-          t("accountPool.upstreamAccounts.groupFilter.ungrouped"),
-        items: [],
-        note: groupSummary?.note ?? null,
-        boundProxyKeys: groupSummary?.boundProxyKeys ?? [],
-        boundProxyLabels:
-          groupSummary?.boundProxyKeys?.map(
-            (proxyKey) => forwardProxyNodeLabelMap.get(proxyKey) ?? proxyKey,
-          ) ?? [],
-        concurrencyLimit: groupSummary?.concurrencyLimit ?? null,
-        nodeShuntEnabled: groupSummary?.nodeShuntEnabled ?? false,
-        upstream429RetryEnabled: groupSummary?.upstream429RetryEnabled ?? false,
-        upstream429MaxRetries: groupSummary?.upstream429MaxRetries ?? 0,
-        hasCustomSettings:
-          Boolean(groupSummary?.note?.trim()) ||
-          (groupSummary?.boundProxyKeys?.length ?? 0) > 0 ||
-          (groupSummary?.concurrencyLimit ?? 0) > 0 ||
-          groupSummary?.nodeShuntEnabled === true ||
-          groupSummary?.upstream429RetryEnabled === true ||
-          (groupSummary?.upstream429MaxRetries ?? 0) > 0,
-        planCounts: [],
-      };
-      current.items.push(item);
-      grouped.set(groupKey, current);
-    }
-
-    const planOrder = ["free", "pro", "team", "enterprise"];
-    const result = Array.from(grouped.values()).map((group) => {
-      const counts = new Map<string, number>();
-      for (const item of group.items) {
-        if (item.kind === "api_key_codex") {
-          counts.set("api", (counts.get("api") ?? 0) + 1);
-        }
-        const normalizedPlan = item.planType?.trim().toLowerCase();
-        if (!normalizedPlan || normalizedPlan === "local") continue;
-        counts.set(normalizedPlan, (counts.get(normalizedPlan) ?? 0) + 1);
-      }
-      const orderedKeys = [
-        ...planOrder.filter((key) => counts.has(key)),
-        ...(counts.has("api") ? ["api"] : []),
-        ...Array.from(counts.keys())
-          .filter((key) => key !== "api" && !planOrder.includes(key))
-          .sort(),
-      ];
-      return {
-        ...group,
-        planCounts: orderedKeys
-          .map((key) => ({
-            key,
-            label:
-              key === "api"
-                ? t("accountPool.upstreamAccounts.grouped.apiBadge")
-                : (groupedPlanLabel(key) ?? key),
-            count: counts.get(key) ?? 0,
-          }))
-          .filter((plan) => plan.count > 0),
-      };
+    return buildAccountPoolGroupSummaries({
+      items: visibleRosterItems,
+      groups,
+      forwardProxyNodes,
+      ungroupedLabel: t("accountPool.upstreamAccounts.groupFilter.ungrouped"),
+      groupedPlanLabel: (planType) =>
+        planType === "api"
+          ? t("accountPool.upstreamAccounts.grouped.apiBadge")
+          : groupedPlanLabel(planType),
     });
-
-    result.sort((left, right) => {
-      const leftOrder =
-        left.groupName == null ? Number.MAX_SAFE_INTEGER : (groupOrder.get(left.groupName) ?? Number.MAX_SAFE_INTEGER - 1);
-      const rightOrder =
-        right.groupName == null ? Number.MAX_SAFE_INTEGER : (groupOrder.get(right.groupName) ?? Number.MAX_SAFE_INTEGER - 1);
-      return leftOrder - rightOrder || left.displayName.localeCompare(right.displayName);
-    });
-    return result;
   }, [forwardProxyNodes, groupedPlanLabel, groups, hideRosterDerivedUi, t, visibleRosterItems]);
   const {
     openEditor: openGroupSettingsEditor,
@@ -2333,6 +2307,11 @@ export default function UpstreamAccountsPage() {
                     proxiesEmpty: t("accountPool.upstreamAccounts.grouped.proxiesEmpty"),
                     settingsLabel: t(
                       "accountPool.upstreamAccounts.groupNotes.actions.edit",
+                    ),
+                    upstream429Enabled: (count) =>
+                      t("accountPool.groups.upstream429Enabled", { count }),
+                    upstream429Disabled: t(
+                      "accountPool.groups.upstream429Disabled",
                     ),
                   }}
                 />

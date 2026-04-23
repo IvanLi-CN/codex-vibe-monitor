@@ -14,7 +14,9 @@ import type {
 } from '../lib/api'
 import AccountPoolLayout from '../pages/account-pool/AccountPoolLayout'
 import UpstreamAccountCreatePage from '../pages/account-pool/UpstreamAccountCreate'
+import GroupsPage from '../pages/account-pool/Groups'
 import UpstreamAccountsPage from '../pages/account-pool/UpstreamAccounts'
+import TagsPage from '../pages/account-pool/Tags'
 
 import {
   applyDynamicRosterLiveRefresh,
@@ -882,6 +884,8 @@ export function AccountPoolStoryRouter({
               path="upstream-accounts/new"
               element={<UpstreamAccountCreatePage />}
             />
+            <Route path="groups" element={<GroupsPage />} />
+            <Route path="tags" element={<TagsPage />} />
           </Route>
         </Routes>
       </MemoryRouter>

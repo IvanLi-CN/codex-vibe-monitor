@@ -1592,6 +1592,34 @@ describe("account pool frontend API helpers", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("serializes exact upstream account group filters into the query string", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL) => {
+      expect(String(_input)).toContain(
+        "/api/pool/upstream-accounts?groupExact=production",
+      );
+      return new Response(
+        JSON.stringify({
+          writesEnabled: true,
+          groups: [],
+          hasUngroupedAccounts: false,
+          items: [],
+          routing: {
+            apiKeyConfigured: false,
+            maskedApiKey: null,
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    await fetchUpstreamAccounts({
+      groupExact: "production",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("normalizes split status dimensions from legacy upstream account payloads", async () => {
     vi.stubGlobal(
       "fetch",

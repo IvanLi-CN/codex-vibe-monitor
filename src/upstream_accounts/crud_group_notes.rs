@@ -240,6 +240,7 @@ pub(crate) fn parse_list_upstream_accounts_query(
         .map_err(|err| err.body_text())?
         .0;
     let mut params = ListUpstreamAccountsQuery {
+        group_exact: base.group_exact,
         group_search: base.group_search,
         group_ungrouped: base.group_ungrouped,
         status: base.status,
