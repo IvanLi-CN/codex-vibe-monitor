@@ -13,7 +13,7 @@
 - 在 `号池` 二级导航中新增第三个页签 `分组 / Groups`，路由固定为 `/account-pool/groups`。
 - 新页面默认展示“分组总览 + 编辑入口”，不在该页直接展开组内账号明细。
 - 复用当前账号池读接口、`groups[]`、`includeAll`、分组设置弹窗与 grouped roster 的聚合口径，不新增后端 schema 或新 endpoint；若需要精确回跳，只允许在现有列表接口上扩展可选查询语义。
-- 每张命名分组卡展示：
+- 每个命名分组列表项展示：
   - 组名
   - 账号数
   - 套餐计数 badge
@@ -24,7 +24,7 @@
   - `429` 重试状态
   - `编辑分组设置`
   - `查看上游账号`
-- 存在未分组账号时，页末保留一个 `未分组` 汇总卡；该卡只允许查看账号，不提供分组设置。
+- 存在未分组账号时，页末保留一个 `未分组` 汇总列表项；该项只允许查看账号，不提供分组设置。
 - 从分组页点击 `查看上游账号` 后，账号页会通过一次性 `location.state` 自动应用对应的命名分组/未分组筛选，并在首轮消费后清空 state。
 
 ### Non-goals
@@ -108,11 +108,11 @@ presetGroupFilter?: {
   - `loading`：展示分组页专属加载态
   - `error`：展示错误提示与 retry
   - `empty`：当没有命名分组且没有未分组账号时，展示“创建上游账号”空态
-  - `ready`：展示命名分组卡 + 可选 `未分组` 卡
+  - `ready`：展示命名分组列表 + 可选 `未分组` 列表项
 
-### 分组卡片
+### 分组列表
 
-- 命名分组卡显示：
+- 命名分组列表项显示：
   - 组名与账号数
   - 非零套餐计数 badge（`local` 不单独显示，API Key 账号统一以 `API` badge 表示）
   - 并发 badge（仅 > 0 时显示）
@@ -125,19 +125,19 @@ presetGroupFilter?: {
 - `编辑分组设置` 复用现有 `Group settings` 弹窗，并带入当前分组已有配置。
 - `查看上游账号` 跳转到 `/account-pool/upstream-accounts`，并附带 `presetGroupFilter`。
 
-### 未分组卡
+### 未分组列表项
 
-- 仅当存在未分组账号时显示，且固定排在命名分组卡之后。
+- 仅当存在未分组账号时显示，且固定排在命名分组列表项之后。
 - 显示未分组账号的账号数、套餐计数、备注占位、代理占位。
 - 不显示 `编辑分组设置`，仅显示 `查看上游账号`。
 
 ## 验收标准（Acceptance Criteria）
 
 - Given 访问 `/account-pool/groups`，When 页面加载完成，Then 二级导航显示 `上游账号 / 分组 / 标签` 三个页签，且 `分组` 高亮。
-- Given 页面存在命名分组，When 查看分组卡，Then 每张卡都展示组名、账号数、套餐 badge、备注、绑定代理、并发、`独占节点` 与 `429` 状态。
+- Given 页面存在命名分组，When 查看分组列表，Then 每个列表项都展示组名、账号数、套餐 badge、备注、绑定代理、并发、`独占节点` 与 `429` 状态。
 - Given 点击命名分组的 `编辑分组设置`，When 弹窗打开，Then 直接复用现有分组设置弹窗并带入对应分组名与配置。
 - Given 点击命名分组的 `查看上游账号`，When 跳转到账号页，Then 首轮自动命中对应 `group filter`，之后清空一次性 state。
-- Given 存在未分组账号，When 查看分组页末尾，Then 可见 `未分组` 汇总卡，且只有 `查看上游账号`。
+- Given 存在未分组账号，When 查看分组页末尾，Then 可见 `未分组` 汇总列表项，且只有 `查看上游账号`。
 - Given 没有命名分组且没有未分组账号，When 打开分组页，Then 渲染分组页专属空态，不复用标签页或账号页空态。
 
 ## 质量门槛（Quality Gates）
@@ -149,7 +149,7 @@ presetGroupFilter?: {
 
 ## 里程碑（Milestones）
 
-- [x] M1: 新建增量 spec，冻结路由、卡片信息密度、未分组处理与跳转语义。
+- [x] M1: 新建增量 spec，冻结路由、列表信息密度、未分组处理与跳转语义。
 - [x] M2: 抽取共享分组聚合 helper 与分组摘要组件，统一 grouped roster / groups page 口径。
 - [x] M3: 落地 `/account-pool/groups` 页面、二级页签与 preset group filter state 协议。
 - [x] M4: 补齐 i18n、Storybook、Vitest 与人类项目文档。
@@ -165,8 +165,8 @@ presetGroupFilter?: {
   sensitive_exclusion: N/A
   submission_gate: pending-owner-approval
   story_id_or_title: Account Pool/Pages/Groups — Default
-  state: named groups + ungrouped summary with groups tab active
-  evidence_note: 验证号池二级导航新增 `分组` 页签、默认分组总览卡片、命名分组的套餐/并发/独占节点/429 状态，以及 `未分组` 汇总卡与回跳账号入口同时可见。
+  state: named groups list + ungrouped summary row with groups tab active
+  evidence_note: 验证号池二级导航新增 `分组` 页签、默认分组总览列表、命名分组的套餐/并发/独占节点/429 状态，以及 `未分组` 汇总列表项与回跳账号入口同时可见。
 
 ![分组总览默认态](./assets/groups-default.png)
 
@@ -178,8 +178,8 @@ presetGroupFilter?: {
   sensitive_exclusion: N/A
   submission_gate: pending-owner-approval
   story_id_or_title: Account Pool/Pages/Groups — Ungrouped Only
-  state: ungrouped-only summary card
-  evidence_note: 验证没有命名分组时页面仍会展示 `未分组` 汇总卡，且卡片只保留查看账号入口，不暴露分组设置按钮。
+  state: ungrouped-only summary row
+  evidence_note: 验证没有命名分组时页面仍会展示 `未分组` 汇总列表项，且该项只保留查看账号入口，不暴露分组设置按钮。
 
 ![分组总览未分组态](./assets/groups-ungrouped.png)
 

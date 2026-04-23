@@ -352,6 +352,9 @@ export const Default: Story = {
       canvas.findByRole("heading", { name: "分组总览" }),
     ).resolves.toBeTruthy();
     await expect(canvas.findByText("production")).resolves.toBeTruthy();
+    await expect(
+      canvas.findByTestId("account-pool-groups-list"),
+    ).resolves.toBeTruthy();
 
     const viewAccountsLink = await canvas.findByRole("link", {
       name: "查看上游账号",
@@ -374,10 +377,10 @@ export const UngroupedOnly: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(
-      canvas.findByText("未分组账号"),
+      canvas.findByText("未分组"),
     ).resolves.toBeTruthy();
     await expect(
-      canvas.findByTestId("account-pool-group-card-ungrouped"),
+      canvas.findByTestId("account-pool-group-row-ungrouped"),
     ).resolves.toBeTruthy();
   },
 };

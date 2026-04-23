@@ -7,19 +7,13 @@ import {
 } from "../../components/AccountPoolGroupSummary";
 import { Alert } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "../../components/ui/card";
 import { Spinner } from "../../components/ui/spinner";
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
 import { useTranslation } from "../../i18n";
 import {
   buildAccountPoolGroupSummaries,
   normalizeAccountPoolGroupName,
+  type AccountPoolGroupSummaryData,
 } from "../../lib/accountPoolGroups";
 import { useUpstreamAccountGroupSettingsDialog } from "./useUpstreamAccountGroupSettingsDialog";
 
@@ -150,6 +144,69 @@ export default function GroupsPage() {
 
   const showEmptyState = !isLoading && !listError && groupSummaries.length === 0;
 
+  const renderGroupRow = useCallback(
+    (group: AccountPoolGroupSummaryData, options?: { ungrouped?: boolean }) => {
+      const isUngrouped = options?.ungrouped === true;
+      return (
+        <article
+          key={group.id}
+          role="listitem"
+          data-testid={
+            isUngrouped
+              ? "account-pool-group-row-ungrouped"
+              : "account-pool-group-row"
+          }
+          className={isUngrouped ? "bg-base-100/48" : "bg-base-100/72"}
+        >
+          <div className="grid gap-4 px-4 py-4 sm:px-5 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start">
+            <AccountPoolGroupSummary
+              group={group}
+              labels={groupSummaryLabels}
+              showNote
+              showRetryState={!isUngrouped}
+            />
+            <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:justify-end xl:min-w-[12rem] xl:flex-col xl:flex-nowrap xl:justify-center">
+              {!isUngrouped ? (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={!writesEnabled}
+                  onClick={() => {
+                    if (!group.groupName) return;
+                    openGroupSettingsEditor(group.groupName);
+                  }}
+                >
+                  <AppIcon
+                    name="file-document-edit-outline"
+                    className="mr-2 h-4 w-4"
+                    aria-hidden
+                  />
+                  {t("accountPool.groups.editGroup")}
+                </Button>
+              ) : null}
+              <Button asChild>
+                <Link
+                  to="/account-pool/upstream-accounts"
+                  state={{
+                    presetGroupFilter: buildPresetGroupFilter(group.groupName),
+                  }}
+                >
+                  <AppIcon
+                    name="account-details-outline"
+                    className="mr-2 h-4 w-4"
+                    aria-hidden
+                  />
+                  {t("accountPool.groups.viewAccounts")}
+                </Link>
+              </Button>
+            </div>
+          </div>
+        </article>
+      );
+    },
+    [groupSummaryLabels, openGroupSettingsEditor, t, writesEnabled],
+  );
+
   return (
     <div className="grid gap-6">
       <section className="surface-panel overflow-hidden">
@@ -162,7 +219,11 @@ export default function GroupsPage() {
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2 text-sm text-base-content/60">
-              <span>{t("accountPool.groups.namedGroupsCount", { count: namedGroups.length })}</span>
+              <span>
+                {t("accountPool.groups.namedGroupsCount", {
+                  count: namedGroups.length,
+                })}
+              </span>
               {ungroupedGroup ? (
                 <span>
                   {t("accountPool.groups.ungroupedAccountsCount", {
@@ -182,7 +243,11 @@ export default function GroupsPage() {
               />
               <div className="flex flex-1 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <span>{listError}</span>
-                <Button type="button" variant="secondary" onClick={() => void refresh()}>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => void refresh()}
+                >
                   <AppIcon name="refresh" className="mr-2 h-4 w-4" aria-hidden />
                   {t("accountPool.groups.retry")}
                 </Button>
@@ -233,110 +298,16 @@ export default function GroupsPage() {
           ) : null}
 
           {groupSummaries.length > 0 ? (
-            <div
-              data-testid="account-pool-groups-grid"
-              className="grid gap-4 xl:grid-cols-2"
-            >
-              {namedGroups.map((group) => (
-                <Card
-                  key={group.id}
-                  data-testid="account-pool-group-card"
-                  className="border-base-300/70 bg-base-100/80 shadow-[0_12px_30px_rgba(15,23,42,0.07)]"
-                >
-                  <CardHeader className="pb-3">
-                    <CardTitle className="text-base">
-                      {t("accountPool.groups.cardTitle")}
-                    </CardTitle>
-                    <CardDescription>
-                      {t("accountPool.groups.cardDescription")}
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto]">
-                    <AccountPoolGroupSummary
-                      group={group}
-                      labels={groupSummaryLabels}
-                      showNote
-                      showRetryState
-                    />
-                    <div className="flex flex-col items-stretch gap-2 xl:justify-end">
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        disabled={!writesEnabled}
-                        onClick={() => {
-                          if (!group.groupName) return;
-                          openGroupSettingsEditor(group.groupName);
-                        }}
-                      >
-                        <AppIcon
-                          name="file-document-edit-outline"
-                          className="mr-2 h-4 w-4"
-                          aria-hidden
-                        />
-                        {t("accountPool.groups.editGroup")}
-                      </Button>
-                      <Button asChild>
-                        <Link
-                          to="/account-pool/upstream-accounts"
-                          state={{
-                            presetGroupFilter: buildPresetGroupFilter(
-                              group.groupName,
-                            ),
-                          }}
-                        >
-                          <AppIcon
-                            name="account-details-outline"
-                            className="mr-2 h-4 w-4"
-                            aria-hidden
-                          />
-                          {t("accountPool.groups.viewAccounts")}
-                        </Link>
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-
-              {ungroupedGroup ? (
-                <Card
-                  data-testid="account-pool-group-card-ungrouped"
-                  className="border-dashed border-base-300/80 bg-base-100/70"
-                >
-                  <CardHeader className="pb-3">
-                    <CardTitle className="text-base">
-                      {t("accountPool.groups.ungroupedTitle")}
-                    </CardTitle>
-                    <CardDescription>
-                      {t("accountPool.groups.ungroupedDescription")}
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto]">
-                    <AccountPoolGroupSummary
-                      group={ungroupedGroup}
-                      labels={groupSummaryLabels}
-                      showNote
-                      showRetryState={false}
-                    />
-                    <div className="flex flex-col items-stretch gap-2 xl:justify-end">
-                      <Button asChild>
-                        <Link
-                          to="/account-pool/upstream-accounts"
-                          state={{
-                            presetGroupFilter: buildPresetGroupFilter(null),
-                          }}
-                        >
-                          <AppIcon
-                            name="account-details-outline"
-                            className="mr-2 h-4 w-4"
-                            aria-hidden
-                          />
-                          {t("accountPool.groups.viewAccounts")}
-                        </Link>
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              ) : null}
+            <div className="overflow-hidden rounded-[1.35rem] border border-base-300/80 bg-base-100/72">
+              <div
+                data-testid="account-pool-groups-list"
+                role="list"
+                aria-label={t("accountPool.groups.title")}
+                className="divide-y divide-base-300/70"
+              >
+                {namedGroups.map((group) => renderGroupRow(group))}
+                {ungroupedGroup ? renderGroupRow(ungroupedGroup, { ungrouped: true }) : null}
+              </div>
             </div>
           ) : null}
         </div>

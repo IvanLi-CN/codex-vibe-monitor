@@ -360,9 +360,12 @@ describe("GroupsPage", () => {
     );
     expect(activeLink?.getAttribute("aria-current")).toBe("page");
     expect(
-      document.body.querySelectorAll('[data-testid="account-pool-group-card"]')
+      document.body.querySelectorAll('[data-testid="account-pool-group-row"]')
         .length,
     ).toBe(2);
+    expect(
+      document.body.querySelector('[data-testid="account-pool-groups-list"]'),
+    ).not.toBeNull();
   });
 
   it("opens the existing group settings dialog from the edit action", async () => {
@@ -429,14 +432,14 @@ describe("GroupsPage", () => {
     render();
     await flushAsync();
 
-    const ungroupedCard = document.body.querySelector(
-      '[data-testid="account-pool-group-card-ungrouped"]',
+    const ungroupedRow = document.body.querySelector(
+      '[data-testid="account-pool-group-row-ungrouped"]',
     ) as HTMLElement | null;
-    expect(ungroupedCard).not.toBeNull();
-    expect(ungroupedCard?.textContent).toContain("未分组账号");
-    expect(findButton("编辑分组设置", ungroupedCard ?? document.body)).toBeFalsy();
+    expect(ungroupedRow).not.toBeNull();
+    expect(ungroupedRow?.textContent).toContain("未分组");
+    expect(findButton("编辑分组设置", ungroupedRow ?? document.body)).toBeFalsy();
 
-    const viewAccountsLink = findLink("查看上游账号", ungroupedCard ?? document.body);
+    const viewAccountsLink = findLink("查看上游账号", ungroupedRow ?? document.body);
     expect(viewAccountsLink).toBeTruthy();
 
     act(() => {
