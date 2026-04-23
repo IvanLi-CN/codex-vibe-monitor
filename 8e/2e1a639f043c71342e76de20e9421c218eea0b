@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.48.0",
+  "base_stable_version": "1.47.8",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-23T08:30:07Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.48.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "77f060a1e4a615babbccac1919928460076c9747",
+  "pr_number": 359,
+  "pr_title": "feat(account-pool): add groups overview tab",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.48.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.48.0",
+  "target_sha": "8e2e1a639f043c71342e76de20e9421c218eea0b",
+  "type_label": "type:minor"
+}
