@@ -2,9 +2,9 @@
 
 ## 状态
 
-- Status: 已完成（5/5）
+- Status: 已实现，待 PR / CI / review-proof 收敛
 - Created: 2026-04-08
-- Last: 2026-04-08
+- Last: 2026-04-24
 
 ## 背景 / 问题陈述
 
@@ -35,6 +35,8 @@
 
 - `web/src/lib/dashboardWorkingConversations.ts`：新增可复用的工作中对话序列号展示 formatter。
 - `web/src/components/DashboardWorkingConversationsSection.tsx`：压缩卡片头部布局，移除头部 raw key，并在测试/Storybook 需要时用非可见属性保留识别能力。
+- `web/src/components/DashboardWorkingConversationsSection.tsx`：把账号 chip 与模型 / reasoning / service-tier 指示收敛到同一行，桌面与 README dense 宽度优先单行、窄宽度再安全回退。
+- `web/src/components/DashboardWorkingConversationsSection.tsx`：确保 compact endpoint badge 能在 Dashboard 工作中对话卡片中稳定可见，不再只落在默认 `Responses` mock。
 - `web/src/components/DashboardInvocationDetailDrawer.tsx`：抽屉 header 改用 bare hash 标签，保留 Prompt Cache Key 诊断字段。
 - `web/src/lib/dashboardWorkingConversations.test.ts`、`web/src/components/DashboardWorkingConversationsSection.test.tsx`、`web/src/components/DashboardInvocationDetailDrawer.test.tsx`、`web/src/components/DashboardWorkingConversationsSection.stories.tsx`：补齐展示与行为回归。
 - `docs/specs/README.md` 与本 spec：登记 follow-up 状态与后续视觉证据资产。
@@ -52,6 +54,8 @@
 - Given 打开 Dashboard 调用详情抽屉，When 查看 header，Then 对话序列标签与卡片一致地显示 bare hash，但 Prompt Cache Key 仍可在详情诊断区读取。
 - Given 现有账号点击、调用槽打开、placeholder 非交互语义，When 本轮改动完成，Then 这些交互不回退。
 - Given 使用 Storybook `StateGallery`、`WideDesktop1660`、`InvocationDrawerOpen`，When 作为证据源复核，Then 能稳定证明卡片头部压缩后的密度与可读性。
+- Given 桌面或 README dense 宽度下的工作中对话卡片，When 账号名较长，Then 账号 chip 与模型 / reasoning / service-tier 指示保持同排，账号名优先截断而不是强制拆成两层。
+- Given recent invocation endpoint 为 `/v1/responses/compact`，When Dashboard 卡片渲染当前调用槽，Then 顶部 endpoint badge 必须显示 compact 语义，而不是退回 `Responses`。
 - Given 视觉证据截图需要写回 spec 或进入 PR，When 尚未获得主人明确许可，Then 相关截图只允许本地回图，不得先 push。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
@@ -62,6 +66,7 @@
 - 状态仍需保留文字 + 彩色状态点的双通道提示，不能退化成只靠颜色识别。
 - raw Prompt Cache Key 从卡片头部完全移除，不再保留 hover title。
 - 宽屏四栏与窄屏单列合同保持不变。
+- 账号展示优先使用单行截断策略，不再依赖 `line-clamp-2 break-all`。
 
 ### Testing
 
@@ -87,6 +92,7 @@
 - [x] M3: 补齐 Vitest 与 Storybook 覆盖，锁定“无 raw key 可见文本、无 `WC-` 前缀、交互不回退”。
 - [x] M4: 完成 lint / targeted Vitest / build / Storybook build，并生成本地视觉证据。
 - [x] M5: 在主人确认截图可提交后，把最终视觉证据写回 spec，并继续推进 PR 到 merge-ready。
+- [ ] M6: 账号 chip 改为桌面优先单行截断，并把 compact endpoint 可见性同步到 Dashboard 卡片与 README dense Storybook 证据源。
 
 ## 方案概述（Approach, high-level）
 
@@ -94,13 +100,25 @@
 - 卡片头部改成左右双区：左侧 hash 固定占位，右侧用紧凑 inline stack 展示时间 / 状态标签 / 状态点，从而消掉原来专门给状态占的一整行。
 - 为了不把 raw Prompt Cache Key 暴露给终端用户，同时仍能让测试与 Storybook 稳定断言顺序，可在卡片节点上保留非可见测试属性，而不恢复任何用户可见 key 文本。
 - 视觉证据继续走 Storybook canvas，先本地回图，再按主人许可决定是否落盘 / push。
+- README dense 的 Dashboard 主图继续复用 `DashboardPage#ReadmeDense` 作为上游证据源，因此账号单行与 compact badge 的修复必须同时回灌到该 story。
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
 - 风险：如果 bare hash formatter 分散写在多个组件里，后续 follow-up 容易再次出现卡片 / 抽屉标签不一致；本轮要求抽到共享 formatter。
 - 风险：若仅删除 raw Prompt Cache Key 文本而不补充非可见识别锚点，现有 Storybook / Vitest 顺序断言会退化成脆弱的文案匹配。
+- 风险：如果 Dashboard 卡片继续使用 `line-clamp-2 break-all` 展示账号，README dense 与真实桌面宽度仍会出现账号和模型摘要意外换行。
+- 假设：`/v1/responses/compact` 的数据链路继续沿用现有 `endpoint` 字段透传，Dashboard 侧只需补稳定 mock、回归覆盖与展示验证。
 - 假设：raw Prompt Cache Key 在卡片摘要层不再需要任何 hover 或次级暴露，详情抽屉已足够承担诊断入口。
 - 假设：本轮视觉证据以 Storybook canvas 为主，不额外要求真实 Dashboard 页面截图。
+
+## 变更记录（Change log）
+
+- 2026-04-08: 新建 follow-up spec 并登记 `docs/specs/README.md`。
+- 2026-04-08: 工作中对话卡片头部压成单行，bare hash formatter 复用到卡片与抽屉 header。
+- 2026-04-08: 补齐 Vitest 与 Storybook 覆盖，锁定“无 raw key 可见文本、无 `WC-` 前缀、交互不回退”。
+- 2026-04-08: 完成 lint / targeted Vitest / build / Storybook build，并生成本地视觉证据。
+- 2026-04-08: 在主人确认截图可提交后，把最终视觉证据写回 spec，并继续推进 PR 到 merge-ready。
+- 2026-04-24: 复用同一 topic spec 记录后续修复：账号 chip 改为桌面优先单行截断，并把 compact endpoint 可见性同步到 Dashboard 卡片与 README dense 证据源。
 
 ## Visual Evidence
 

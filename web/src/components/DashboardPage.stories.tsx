@@ -347,8 +347,9 @@ function createReadmeDenseWorkingConversationSeeds(): ReadmeWorkingConversationS
         outputTokens: 734,
         cacheInputTokens: 144,
         cost: 0.0941,
-        upstreamAccountName: 'batch-alpha@prod.example.com',
+        upstreamAccountName: 'paisleeeinar5710 Team sandbox workflow monitor',
         proxyDisplayName: 'tokyo-edge-01',
+        endpoint: '/v1/responses/compact',
         tTotalMs: null,
       },
       previous: {
@@ -362,8 +363,9 @@ function createReadmeDenseWorkingConversationSeeds(): ReadmeWorkingConversationS
         outputTokens: 488,
         cacheInputTokens: 128,
         cost: 0.0624,
-        upstreamAccountName: 'batch-alpha@prod.example.com',
+        upstreamAccountName: 'paisleeeinar5710 Team sandbox workflow monitor',
         proxyDisplayName: 'tokyo-edge-01',
+        endpoint: '/v1/responses/compact',
       },
       extraHistory: [
         {
@@ -374,8 +376,9 @@ function createReadmeDenseWorkingConversationSeeds(): ReadmeWorkingConversationS
           model: 'gpt-5.4-mini',
           totalTokens: 1194,
           cost: 0.0486,
-          upstreamAccountName: 'batch-alpha@prod.example.com',
+          upstreamAccountName: 'paisleeeinar5710 Team sandbox workflow monitor',
           proxyDisplayName: 'tokyo-edge-01',
+          endpoint: '/v1/responses/compact',
         },
       ],
     },
@@ -1195,7 +1198,16 @@ export const ReadmeDense: Story = {
       { timeout: 4000 },
     )
     await expect(canvas.getByText(/当前 12 条/i)).toBeVisible()
-    await expect(canvas.getByText(/batch-alpha@prod.example.com/i)).toBeVisible()
+    await expect(
+      canvas.getByText(/paisleeeinar5710 Team sandbox workflow monitor/i),
+    ).toBeVisible()
     await expect(canvas.getByText(/enterprise-review@team.example.com/i)).toBeVisible()
+    await waitFor(() => {
+      expect(
+        canvasElement.querySelector(
+          '[data-testid="invocation-endpoint-badge"][data-endpoint-kind="compact"]',
+        ),
+      ).not.toBeNull()
+    })
   },
 }

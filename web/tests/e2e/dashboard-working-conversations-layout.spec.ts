@@ -85,6 +85,12 @@ function createConversation(
   promptCacheKey: string,
   recentInvocations: PromptCacheConversationInvocationPreview[],
 ) {
+  const lastInFlightPreview = recentInvocations.find(
+    (invocation) => invocation.status === 'running' || invocation.status === 'pending',
+  )
+  const lastTerminalPreview = recentInvocations.find(
+    (invocation) => invocation.status !== 'running' && invocation.status !== 'pending',
+  )
   return {
     promptCacheKey,
     requestCount: recentInvocations.length,
@@ -94,6 +100,9 @@ function createConversation(
     ),
     createdAt: recentInvocations.at(-1)?.occurredAt ?? '2026-04-06T12:00:00.000Z',
     lastActivityAt: recentInvocations[0]?.occurredAt ?? '2026-04-06T12:00:00.000Z',
+    lastTerminalAt: lastTerminalPreview?.occurredAt ?? null,
+    lastInFlightAt: lastInFlightPreview?.occurredAt ?? null,
+    cursor: promptCacheKey,
     upstreamAccounts: [],
     recentInvocations,
     last24hRequests: recentInvocations.map((invocation, index) => ({
@@ -107,170 +116,179 @@ function createConversation(
 }
 
 function buildWorkingConversationsResponse() {
+  const conversations = [
+    createConversation('wc-current-1', [
+      createPreview({
+        id: 1,
+        invokeId: 'wc-1-a',
+        occurredAt: '2026-04-06T12:00:00.000Z',
+        status: 'running',
+        upstreamAccountName: 'paisleeeinar5710 Team sandbox workflow monitor',
+        endpoint: '/v1/responses/compact',
+        tTotalMs: null,
+      }),
+      createPreview({
+        id: 2,
+        invokeId: 'wc-1-b',
+        occurredAt: '2026-04-06T11:57:20.000Z',
+        status: 'success',
+        model: 'gpt-5.4-mini',
+        upstreamAccountName: 'paisleeeinar5710 Team sandbox workflow monitor',
+        endpoint: '/v1/responses/compact',
+      }),
+    ]),
+    createConversation('wc-current-2', [
+      createPreview({
+        id: 3,
+        invokeId: 'wc-2-a',
+        occurredAt: '2026-04-06T11:59:10.000Z',
+        status: 'http_502',
+        failureClass: 'service_failure',
+        failureKind: 'upstream_timeout',
+        errorMessage: 'upstream gateway closed before first byte',
+        upstreamAccountName: 'pool-beta@example.com',
+        requestedServiceTier: 'auto',
+        serviceTier: 'auto',
+      }),
+      createPreview({
+        id: 4,
+        invokeId: 'wc-2-b',
+        occurredAt: '2026-04-06T11:56:10.000Z',
+        status: 'success',
+        upstreamAccountName: 'pool-beta@example.com',
+      }),
+    ]),
+    createConversation('wc-current-3', [
+      createPreview({
+        id: 5,
+        invokeId: 'wc-3-a',
+        occurredAt: '2026-04-06T11:58:40.000Z',
+        status: 'completed',
+        upstreamAccountName: 'pool-gamma@example.com',
+        totalTokens: 364,
+        cost: 0.0204,
+        inputTokens: 218,
+        outputTokens: 146,
+        cacheInputTokens: 68,
+      }),
+    ]),
+    createConversation('wc-current-4', [
+      createPreview({
+        id: 6,
+        invokeId: 'wc-4-a',
+        occurredAt: '2026-04-06T11:58:02.000Z',
+        status: 'pending',
+        upstreamAccountName: 'pool-delta@example.com',
+        tTotalMs: null,
+      }),
+      createPreview({
+        id: 7,
+        invokeId: 'wc-4-b',
+        occurredAt: '2026-04-06T11:54:32.000Z',
+        status: 'success',
+        upstreamAccountName: 'pool-delta@example.com',
+      }),
+    ]),
+    createConversation('wc-current-5', [
+      createPreview({
+        id: 8,
+        invokeId: 'wc-5-a',
+        occurredAt: '2026-04-06T11:57:24.000Z',
+        status: 'completed',
+        upstreamAccountName: 'pool-epsilon@example.com',
+        totalTokens: 412,
+        cost: 0.0236,
+        inputTokens: 244,
+        outputTokens: 168,
+        cacheInputTokens: 72,
+      }),
+      createPreview({
+        id: 9,
+        invokeId: 'wc-5-b',
+        occurredAt: '2026-04-06T11:53:50.000Z',
+        status: 'success',
+        upstreamAccountName: 'pool-epsilon@example.com',
+        model: 'gpt-5.4-mini',
+      }),
+    ]),
+    createConversation('wc-current-6', [
+      createPreview({
+        id: 10,
+        invokeId: 'wc-6-a',
+        occurredAt: '2026-04-06T11:56:48.000Z',
+        status: 'running',
+        upstreamAccountName: 'pool-zeta@example.com',
+        tTotalMs: null,
+      }),
+      createPreview({
+        id: 11,
+        invokeId: 'wc-6-b',
+        occurredAt: '2026-04-06T11:52:18.000Z',
+        status: 'success',
+        upstreamAccountName: 'pool-zeta@example.com',
+      }),
+    ]),
+    createConversation('wc-current-7', [
+      createPreview({
+        id: 12,
+        invokeId: 'wc-7-a',
+        occurredAt: '2026-04-06T11:56:06.000Z',
+        status: 'http_429',
+        failureClass: 'service_failure',
+        failureKind: 'upstream_rate_limit',
+        errorMessage: 'upstream rate limit reached for the current account',
+        upstreamAccountName: 'pool-eta@example.com',
+        requestedServiceTier: 'priority',
+        serviceTier: 'priority',
+        tUpstreamTtfbMs: null,
+        tUpstreamStreamMs: null,
+        tTotalMs: 1820,
+      }),
+      createPreview({
+        id: 13,
+        invokeId: 'wc-7-b',
+        occurredAt: '2026-04-06T11:51:12.000Z',
+        status: 'success',
+        upstreamAccountName: 'pool-eta@example.com',
+      }),
+    ]),
+    createConversation('wc-current-8', [
+      createPreview({
+        id: 14,
+        invokeId: 'wc-8-a',
+        occurredAt: '2026-04-06T11:55:20.000Z',
+        status: 'completed',
+        upstreamAccountName: 'pool-theta@example.com',
+        totalTokens: 396,
+        cost: 0.0228,
+        inputTokens: 228,
+        outputTokens: 168,
+        cacheInputTokens: 66,
+      }),
+      createPreview({
+        id: 15,
+        invokeId: 'wc-8-b',
+        occurredAt: '2026-04-06T11:50:20.000Z',
+        status: 'success',
+        upstreamAccountName: 'pool-theta@example.com',
+        model: 'gpt-5.4-mini',
+      }),
+    ]),
+  ]
+
   return {
     rangeStart: '2026-04-06T11:55:00.000Z',
     rangeEnd: '2026-04-06T12:00:00.000Z',
+    snapshotAt: '2026-04-06T12:00:00.000Z',
     selectionMode: 'activityWindow',
     selectedLimit: null,
     selectedActivityHours: null,
     selectedActivityMinutes: 5,
     implicitFilter: { kind: null, filteredCount: 0 },
-    conversations: [
-      createConversation('wc-current-1', [
-        createPreview({
-          id: 1,
-          invokeId: 'wc-1-a',
-          occurredAt: '2026-04-06T12:00:00.000Z',
-          status: 'running',
-          upstreamAccountName: 'pool-alpha@example.com',
-          tTotalMs: null,
-        }),
-        createPreview({
-          id: 2,
-          invokeId: 'wc-1-b',
-          occurredAt: '2026-04-06T11:57:20.000Z',
-          status: 'success',
-          model: 'gpt-5.4-mini',
-        }),
-      ]),
-      createConversation('wc-current-2', [
-        createPreview({
-          id: 3,
-          invokeId: 'wc-2-a',
-          occurredAt: '2026-04-06T11:59:10.000Z',
-          status: 'http_502',
-          failureClass: 'service_failure',
-          failureKind: 'upstream_timeout',
-          errorMessage: 'upstream gateway closed before first byte',
-          upstreamAccountName: 'pool-beta@example.com',
-          requestedServiceTier: 'auto',
-          serviceTier: 'auto',
-        }),
-        createPreview({
-          id: 4,
-          invokeId: 'wc-2-b',
-          occurredAt: '2026-04-06T11:56:10.000Z',
-          status: 'success',
-          upstreamAccountName: 'pool-beta@example.com',
-        }),
-      ]),
-      createConversation('wc-current-3', [
-        createPreview({
-          id: 5,
-          invokeId: 'wc-3-a',
-          occurredAt: '2026-04-06T11:58:40.000Z',
-          status: 'completed',
-          upstreamAccountName: 'pool-gamma@example.com',
-          totalTokens: 364,
-          cost: 0.0204,
-          inputTokens: 218,
-          outputTokens: 146,
-          cacheInputTokens: 68,
-        }),
-      ]),
-      createConversation('wc-current-4', [
-        createPreview({
-          id: 6,
-          invokeId: 'wc-4-a',
-          occurredAt: '2026-04-06T11:58:02.000Z',
-          status: 'pending',
-          upstreamAccountName: 'pool-delta@example.com',
-          tTotalMs: null,
-        }),
-        createPreview({
-          id: 7,
-          invokeId: 'wc-4-b',
-          occurredAt: '2026-04-06T11:54:32.000Z',
-          status: 'success',
-          upstreamAccountName: 'pool-delta@example.com',
-        }),
-      ]),
-      createConversation('wc-current-5', [
-        createPreview({
-          id: 8,
-          invokeId: 'wc-5-a',
-          occurredAt: '2026-04-06T11:57:24.000Z',
-          status: 'completed',
-          upstreamAccountName: 'pool-epsilon@example.com',
-          totalTokens: 412,
-          cost: 0.0236,
-          inputTokens: 244,
-          outputTokens: 168,
-          cacheInputTokens: 72,
-        }),
-        createPreview({
-          id: 9,
-          invokeId: 'wc-5-b',
-          occurredAt: '2026-04-06T11:53:50.000Z',
-          status: 'success',
-          upstreamAccountName: 'pool-epsilon@example.com',
-          model: 'gpt-5.4-mini',
-        }),
-      ]),
-      createConversation('wc-current-6', [
-        createPreview({
-          id: 10,
-          invokeId: 'wc-6-a',
-          occurredAt: '2026-04-06T11:56:48.000Z',
-          status: 'running',
-          upstreamAccountName: 'pool-zeta@example.com',
-          tTotalMs: null,
-        }),
-        createPreview({
-          id: 11,
-          invokeId: 'wc-6-b',
-          occurredAt: '2026-04-06T11:52:18.000Z',
-          status: 'success',
-          upstreamAccountName: 'pool-zeta@example.com',
-        }),
-      ]),
-      createConversation('wc-current-7', [
-        createPreview({
-          id: 12,
-          invokeId: 'wc-7-a',
-          occurredAt: '2026-04-06T11:56:06.000Z',
-          status: 'http_429',
-          failureClass: 'service_failure',
-          failureKind: 'upstream_rate_limit',
-          errorMessage: 'upstream rate limit reached for the current account',
-          upstreamAccountName: 'pool-eta@example.com',
-          requestedServiceTier: 'priority',
-          serviceTier: 'priority',
-          tUpstreamTtfbMs: null,
-          tUpstreamStreamMs: null,
-          tTotalMs: 1820,
-        }),
-        createPreview({
-          id: 13,
-          invokeId: 'wc-7-b',
-          occurredAt: '2026-04-06T11:51:12.000Z',
-          status: 'success',
-          upstreamAccountName: 'pool-eta@example.com',
-        }),
-      ]),
-      createConversation('wc-current-8', [
-        createPreview({
-          id: 14,
-          invokeId: 'wc-8-a',
-          occurredAt: '2026-04-06T11:55:20.000Z',
-          status: 'completed',
-          upstreamAccountName: 'pool-theta@example.com',
-          totalTokens: 396,
-          cost: 0.0228,
-          inputTokens: 228,
-          outputTokens: 168,
-          cacheInputTokens: 66,
-        }),
-        createPreview({
-          id: 15,
-          invokeId: 'wc-8-b',
-          occurredAt: '2026-04-06T11:50:20.000Z',
-          status: 'success',
-          upstreamAccountName: 'pool-theta@example.com',
-          model: 'gpt-5.4-mini',
-        }),
-      ]),
-    ],
+    totalMatched: conversations.length,
+    hasMore: false,
+    nextCursor: null,
+    conversations,
   }
 }
 
@@ -456,4 +474,62 @@ test.describe('Dashboard working conversations responsive layout', () => {
       }
     })
   }
+
+  test('keeps account metadata inline on wide desktop cards and shows compact endpoint badges', async ({
+    page,
+  }) => {
+    await installDashboardRoutes(page)
+    await page.setViewportSize({ width: 1660, height: 1180 })
+    await page.goto('/dashboard')
+
+    const compactBadge = page.locator(
+      '[data-testid="invocation-endpoint-badge"][data-endpoint-kind="compact"]',
+    )
+    await expect(compactBadge.first()).toContainText(/远程压缩|Compact/)
+
+    const compactCard = page
+      .getByTestId('dashboard-working-conversation-card')
+      .filter({
+        has: page.locator(
+          '[data-testid="invocation-endpoint-badge"][data-endpoint-kind="compact"]',
+        ),
+      })
+      .first()
+    await expect(compactCard).toBeVisible()
+
+    const layout = await compactCard.evaluate((card) => {
+      const slot = card.querySelector<HTMLElement>(
+        '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+      )
+      const accountLine = slot?.querySelector<HTMLElement>(
+        '[data-testid="dashboard-working-conversation-account-line"]',
+      )
+      const accountChip = slot?.querySelector<HTMLElement>(
+        '[data-testid="dashboard-working-conversation-account-chip"]',
+      )
+      const accountMeta = slot?.querySelector<HTMLElement>(
+        '[data-testid="dashboard-working-conversation-account-meta"]',
+      )
+      if (!slot || !accountLine || !accountChip || !accountMeta) {
+        throw new Error('missing account line geometry anchors')
+      }
+
+      const slotRect = slot.getBoundingClientRect()
+      const lineRect = accountLine.getBoundingClientRect()
+      const chipRect = accountChip.getBoundingClientRect()
+      const metaRect = accountMeta.getBoundingClientRect()
+
+      return {
+        chipMetaTopDelta: Math.abs(chipRect.top - metaRect.top),
+        lineOverflowRight: lineRect.right - slotRect.right,
+        lineHeight: lineRect.height,
+        chipBottomDelta: Math.abs(chipRect.bottom - metaRect.bottom),
+      }
+    })
+
+    expect(layout.chipMetaTopDelta).toBeLessThanOrEqual(4)
+    expect(layout.chipBottomDelta).toBeLessThanOrEqual(8)
+    expect(layout.lineOverflowRight).toBeLessThanOrEqual(1)
+    expect(layout.lineHeight).toBeLessThan(32)
+  })
 })

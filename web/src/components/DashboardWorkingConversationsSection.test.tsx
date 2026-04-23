@@ -441,6 +441,70 @@ describe("DashboardWorkingConversationsSection", () => {
     ).not.toBe(0);
   });
 
+  it("keeps the account chip inline with model metadata and surfaces compact endpoint badges", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-account-inline-compact", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-account-inline-compact",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "running",
+            upstreamAccountName:
+              "paisleeeinar5710 Team sandbox workflow monitor",
+            endpoint: "/v1/responses/compact",
+            reasoningEffort: "medium",
+            tTotalMs: null,
+          }),
+        ]),
+      ]),
+    );
+
+    const currentSlot = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+    );
+    if (!(currentSlot instanceof HTMLDivElement)) {
+      throw new Error("missing current invocation slot");
+    }
+
+    const accountLine = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-account-line"]',
+    );
+    const accountChip = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-account-chip"]',
+    );
+    const accountName = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-account-name"]',
+    );
+    const accountMeta = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-account-meta"]',
+    );
+    const compactBadge = currentSlot.querySelector(
+      '[data-testid="invocation-endpoint-badge"][data-endpoint-kind="compact"]',
+    );
+
+    if (
+      !(accountLine instanceof HTMLDivElement) ||
+      !(accountChip instanceof HTMLElement) ||
+      !(accountName instanceof HTMLElement) ||
+      !(accountMeta instanceof HTMLDivElement) ||
+      !(compactBadge instanceof HTMLElement)
+    ) {
+      throw new Error("missing account row or compact endpoint markers");
+    }
+
+    expect(accountLine.className).toContain("sm:flex-nowrap");
+    expect(accountName.className).toContain("truncate");
+    expect(accountName.className).toContain("whitespace-nowrap");
+    expect(accountName.className).not.toContain("line-clamp-2");
+    expect(accountName.className).not.toContain("break-all");
+    expect(
+      accountChip.compareDocumentPosition(accountMeta) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+    expect(compactBadge.textContent).toMatch(/远程压缩|Compact/);
+  });
+
   it("keeps the virtualized viewport spanning the full responsive grid width", () => {
     renderSection(
       createResponse([
