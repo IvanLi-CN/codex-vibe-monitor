@@ -72,7 +72,34 @@ const baseTranslations = {
     "accountPool.description":
       "Manage Codex upstream accounts, persistent login sessions, and normalized 5h / 7d quota snapshots.",
     "accountPool.nav.upstreamAccounts": "Upstream Accounts",
+    "accountPool.nav.groups": "Groups",
     "accountPool.nav.tags": "Tags",
+    "accountPool.groups.title": "Group overview",
+    "accountPool.groups.description":
+      "Review every active account group in one place, inspect shared settings, and jump straight back to the roster when needed.",
+    "accountPool.groups.namedGroupsCount": "{{count}} named groups",
+    "accountPool.groups.ungroupedAccountsCount":
+      "{{count}} ungrouped accounts",
+    "accountPool.groups.retry": "Retry",
+    "accountPool.groups.loadingTitle": "Loading group overview",
+    "accountPool.groups.loadingDescription":
+      "Collecting the latest account roster, shared group settings, and proxy bindings.",
+    "accountPool.groups.emptyTitle": "No account groups yet",
+    "accountPool.groups.emptyDescription":
+      "Create or import upstream accounts first. Once accounts carry a group name, the shared group overview will appear here automatically.",
+    "accountPool.groups.emptyCta": "Create upstream account",
+    "accountPool.groups.cardTitle": "Shared group settings",
+    "accountPool.groups.cardDescription":
+      "Review the group-level routing context before opening the full roster.",
+    "accountPool.groups.editGroup": "Edit group settings",
+    "accountPool.groups.viewAccounts": "View upstream accounts",
+    "accountPool.groups.ungroupedTitle": "Ungrouped accounts",
+    "accountPool.groups.ungroupedDescription":
+      "Accounts without a group stay visible here so you can jump back and organize them from the roster.",
+    "accountPool.groups.noteLabel": "Group note",
+    "accountPool.groups.noteEmpty": "No shared note yet.",
+    "accountPool.groups.upstream429Enabled": "429 retry ×{{count}}",
+    "accountPool.groups.upstream429Disabled": "429 retry off",
     "accountPool.upstreamAccounts.title": "Upstream accounts",
     "accountPool.upstreamAccounts.description":
       "Add single OAuth, batch OAuth, and API key accounts, then keep their login state and quota snapshots healthy.",
@@ -1915,7 +1942,33 @@ const baseTranslations = {
     "accountPool.description":
       "集中管理 Codex 上游账号、持久登录状态，以及归一化后的 5 小时 / 7 天额度快照。",
     "accountPool.nav.upstreamAccounts": "上游账号",
+    "accountPool.nav.groups": "分组",
     "accountPool.nav.tags": "标签",
+    "accountPool.groups.title": "分组总览",
+    "accountPool.groups.description":
+      "集中查看当前账号分组、共享设置与绑定代理，需要时再跳回账号列表继续处理。",
+    "accountPool.groups.namedGroupsCount": "{{count}} 个命名分组",
+    "accountPool.groups.ungroupedAccountsCount": "{{count}} 个未分组账号",
+    "accountPool.groups.retry": "重试",
+    "accountPool.groups.loadingTitle": "正在加载分组总览",
+    "accountPool.groups.loadingDescription":
+      "正在汇总最新账号列表、共享分组设置与绑定代理信息。",
+    "accountPool.groups.emptyTitle": "还没有可展示的分组",
+    "accountPool.groups.emptyDescription":
+      "先创建或导入上游账号吧；当账号带上分组后，这里会自动汇总共享分组信息。",
+    "accountPool.groups.emptyCta": "创建上游账号",
+    "accountPool.groups.cardTitle": "共享分组设置",
+    "accountPool.groups.cardDescription":
+      "先确认分组级路由与共享设置，再进入完整账号列表继续处理。",
+    "accountPool.groups.editGroup": "编辑分组设置",
+    "accountPool.groups.viewAccounts": "查看上游账号",
+    "accountPool.groups.ungroupedTitle": "未分组账号",
+    "accountPool.groups.ungroupedDescription":
+      "还没归到任何分组的账号会保留在这里，方便你回到账号列表继续整理。",
+    "accountPool.groups.noteLabel": "分组备注",
+    "accountPool.groups.noteEmpty": "还没有共享备注。",
+    "accountPool.groups.upstream429Enabled": "429 重试 ×{{count}}",
+    "accountPool.groups.upstream429Disabled": "429 重试关闭",
     "accountPool.upstreamAccounts.title": "上游账号",
     "accountPool.upstreamAccounts.description":
       "新增单个 OAuth、批量 OAuth 与 API Key 账号，并持续维护登录状态和额度快照。",

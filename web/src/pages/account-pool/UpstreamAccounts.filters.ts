@@ -69,7 +69,7 @@ function sanitizeGroupFilterState(value: unknown): GroupFilterState {
       query: "",
     };
   }
-  if (mode === "search") {
+  if (mode === "search" || mode === "exact") {
     const query = typeof value.query === "string" ? value.query.trim() : "";
     if (query) {
       return {
@@ -138,7 +138,7 @@ export function formatGroupFilterValue(
   if (groupFilter.mode === "ungrouped") {
     return labels.ungrouped;
   }
-  if (groupFilter.mode === "search") {
+  if (groupFilter.mode === "search" || groupFilter.mode === "exact") {
     return groupFilter.query;
   }
   return "";

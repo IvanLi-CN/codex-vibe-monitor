@@ -1665,4 +1665,108 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
 
     expect(saveGroupNote).toHaveBeenCalledTimes(1)
   })
+
+  it('consumes a named presetGroupFilter from location state and clears the one-shot navigation state', async () => {
+    mockRosterFreshnessPage()
+    writeStoredUpstreamFilters({
+      workStatus: [],
+      enableStatus: [],
+      healthStatus: [],
+      tagIds: [],
+      groupFilter: {
+        mode: 'search',
+        query: 'stale-group',
+      },
+    })
+    render({
+      pathname: '/account-pool/upstream-accounts',
+      state: {
+        presetGroupFilter: {
+          mode: 'exact',
+          query: '  prod  ',
+        },
+      },
+    })
+
+    await flushAsync()
+    await flushAsync()
+
+    expect(hookMocks.useUpstreamAccounts.mock.calls[0]?.[0]).toEqual({
+      page: 1,
+      pageSize: 20,
+      groupExact: 'prod',
+    })
+    expectRosterHookQuery({
+      page: 1,
+      pageSize: 20,
+      groupExact: 'prod',
+    })
+    expect(hookMocks.useUpstreamAccounts.mock.calls).not.toContainEqual([
+      {
+        page: 1,
+        pageSize: 20,
+        groupSearch: 'stale-group',
+      },
+    ])
+    expect(readStoredUpstreamFilters()?.groupFilter).toEqual({
+      mode: 'search',
+      query: 'stale-group',
+    })
+    expect(navigateMock).toHaveBeenCalledWith(
+      {
+        pathname: '/account-pool/upstream-accounts',
+        search: '',
+      },
+      {
+        replace: true,
+        state: null,
+      },
+    )
+  })
+
+  it('consumes an ungrouped presetGroupFilter from location state and resets the roster to page 1', async () => {
+    mockRosterFreshnessPage()
+    writeStoredUpstreamFilters({
+      workStatus: [],
+      enableStatus: [],
+      healthStatus: [],
+      tagIds: [],
+      groupFilter: {
+        mode: 'search',
+        query: 'stale-group',
+      },
+    })
+    render({
+      pathname: '/account-pool/upstream-accounts',
+      state: {
+        presetGroupFilter: {
+          mode: 'ungrouped',
+          query: '',
+        },
+      },
+    })
+
+    await flushAsync()
+    await flushAsync()
+
+    expectRosterHookQuery({
+      page: 1,
+      pageSize: 20,
+      groupUngrouped: true,
+    })
+    expect(readStoredUpstreamFilters()?.groupFilter).toEqual({
+      mode: 'search',
+      query: 'stale-group',
+    })
+    expect(navigateMock).toHaveBeenCalledWith(
+      {
+        pathname: '/account-pool/upstream-accounts',
+        search: '',
+      },
+      {
+        replace: true,
+        state: null,
+      },
+    )
+  })
 })
