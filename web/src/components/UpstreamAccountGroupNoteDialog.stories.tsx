@@ -643,11 +643,17 @@ export const DeleteBlockedWithMembers: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    const documentScope = within(document.body);
+    await userEvent.click(
+      canvas.getByRole("button", { name: /delete group/i }),
+    );
     await expect(
       canvas.getByRole("button", { name: /delete group/i }),
-    ).toBeDisabled();
+    ).toHaveAttribute("aria-disabled", "true");
     await expect(
-      canvas.getByText(/move the remaining 4 account\(s\) out before deleting this group\./i),
+      documentScope.getByText(
+        /move the remaining 4 account\(s\) out before deleting this group\./i,
+      ),
     ).toBeInTheDocument();
   },
 };

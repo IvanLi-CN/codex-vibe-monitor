@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AppIcon } from "./AppIcon";
 import { ConcurrencyLimitSlider } from "./ConcurrencyLimitSlider";
 import type { ForwardProxyBindingNode } from "../lib/api";
@@ -16,6 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "./ui/dialog";
+import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { Switch } from "./ui/switch";
 
 type GroupProxyOption = ForwardProxyBindingNode & {
@@ -468,8 +469,16 @@ export function UpstreamAccountGroupNoteDialog({
     !hasSelectableBoundProxySelection;
   const blockingNodeShuntSelection =
     normalizedNodeShuntEnabled && canonicalBoundProxyKeys.length === 0;
-  const deleteDisabled = busy || accountCount > 0;
   const showDelete = existing && onDelete != null;
+  const deleteBlockedByMembers = accountCount > 0;
+  const deleteBusyDisabled = busy;
+  const deleteBlockedPopoverEnabled =
+    showDelete &&
+    deleteBlockedByMembers &&
+    !deleteBusyDisabled &&
+    Boolean(deleteDisabledHint);
+  const [deleteBlockedPopoverOpen, setDeleteBlockedPopoverOpen] =
+    useState(false);
   const showNodeShuntSection =
     Boolean(onNodeShuntEnabledChange) ||
     Boolean(nodeShuntLabel) ||
@@ -479,6 +488,20 @@ export function UpstreamAccountGroupNoteDialog({
     Boolean(onUpstream429MaxRetriesChange) ||
     Boolean(upstream429RetryLabel) ||
     Boolean(upstream429RetryHint);
+
+  useEffect(() => {
+    if (!open || !deleteBlockedPopoverEnabled) {
+      setDeleteBlockedPopoverOpen(false);
+    }
+  }, [deleteBlockedPopoverEnabled, open]);
+
+  const handleDeleteClick = () => {
+    if (deleteBlockedPopoverEnabled) {
+      setDeleteBlockedPopoverOpen((current) => !current);
+      return;
+    }
+    onDelete?.();
+  };
 
   return (
     <Dialog
@@ -811,34 +834,67 @@ export function UpstreamAccountGroupNoteDialog({
         </div>
 
         <DialogFooter className="flex flex-col gap-3 border-t border-base-300/80 px-6 py-5 sm:flex-row sm:items-end sm:justify-between">
-          <div className="flex min-w-0 flex-col items-start gap-2">
+          <div className="flex min-w-0 items-end">
             {showDelete ? (
-              <Button
-                type="button"
-                variant="destructive"
-                onClick={onDelete}
-                disabled={deleteDisabled}
+              <Popover
+                open={deleteBlockedPopoverEnabled ? deleteBlockedPopoverOpen : false}
+                onOpenChange={
+                  deleteBlockedPopoverEnabled
+                    ? setDeleteBlockedPopoverOpen
+                    : undefined
+                }
               >
-                {deleting ? (
-                  <AppIcon
-                    name="loading"
-                    className="mr-2 h-4 w-4 animate-spin"
-                    aria-hidden
-                  />
-                ) : (
-                  <AppIcon
-                    name="trash-can-outline"
-                    className="mr-2 h-4 w-4"
-                    aria-hidden
-                  />
-                )}
-                {deleteLabel ?? "Delete group"}
-              </Button>
-            ) : null}
-            {showDelete && deleteDisabledHint ? (
-              <p className="text-xs leading-5 text-base-content/60">
-                {deleteDisabledHint}
-              </p>
+                <PopoverTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    onClick={handleDeleteClick}
+                    disabled={deleteBusyDisabled}
+                    aria-disabled={deleteBlockedPopoverEnabled}
+                    className={cn(
+                      deleteBlockedPopoverEnabled
+                        ? "opacity-50 focus-visible:ring-error/25"
+                        : undefined,
+                    )}
+                  >
+                    {deleting ? (
+                      <AppIcon
+                        name="loading"
+                        className="mr-2 h-4 w-4 animate-spin"
+                        aria-hidden
+                      />
+                    ) : (
+                      <AppIcon
+                        name="trash-can-outline"
+                        className="mr-2 h-4 w-4"
+                        aria-hidden
+                      />
+                    )}
+                    {deleteLabel ?? "Delete group"}
+                  </Button>
+                </PopoverTrigger>
+                {deleteBlockedPopoverEnabled ? (
+                  <PopoverContent
+                    side="top"
+                    align="start"
+                    sideOffset={12}
+                    className="w-[min(22rem,calc(100vw-2rem))] rounded-2xl border-error/20 bg-base-100 px-4 py-3 shadow-xl"
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="mt-0.5 rounded-full bg-error/10 p-1 text-error">
+                        <AppIcon
+                          name="information-outline"
+                          className="h-4 w-4"
+                          aria-hidden
+                        />
+                      </div>
+                      <p className="text-sm leading-6 text-base-content/78">
+                        {deleteDisabledHint}
+                      </p>
+                    </div>
+                  </PopoverContent>
+                ) : null}
+              </Popover>
             ) : null}
           </div>
           <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
