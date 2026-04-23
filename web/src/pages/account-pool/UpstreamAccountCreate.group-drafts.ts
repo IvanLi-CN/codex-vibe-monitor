@@ -13,12 +13,18 @@ import {
 import { resolvePersistedGroupNodeShuntEnabled } from "../../lib/upstreamAccountGroupDrafts";
 import type { UpstreamAccountCreateControllerContext } from "./UpstreamAccountCreate.controller-context";
 import {
+  type BatchOauthRow,
   formatImportedOauthSelectionLabel,
   type GroupNoteEditorState,
   normalizeBoundProxyKeys,
   normalizeEnabledGroupUpstream429MaxRetries,
   normalizeGroupUpstream429MaxRetries,
 } from "./UpstreamAccountCreate.shared";
+
+type OpenGroupNoteEditorOptions = {
+  onSaved?: (groupName: string) => void;
+  onDeleted?: (groupName: string) => void;
+};
 
 type GroupSummaryLike = {
   groupName: string;
@@ -39,6 +45,8 @@ export function useUpstreamAccountCreateGroupDrafts(
 ) {
   const {
     apiKeyGroupName,
+    batchDefaultGroupName,
+    batchRows,
     forwardProxyNodes,
     forwardProxyCatalogState,
     groupDraftBoundProxyKeys,
@@ -55,6 +63,7 @@ export function useUpstreamAccountCreateGroupDrafts(
     invalidateSingleOauthSessionForMetadataEdit,
     locale,
     oauthGroupName,
+    deleteGroupNote,
     saveGroupNote,
     setGroupDraftBoundProxyKeys,
     setGroupDraftConcurrencyLimits,
@@ -65,7 +74,12 @@ export function useUpstreamAccountCreateGroupDrafts(
     setGroupNoteBusy,
     setGroupNoteEditor,
     setGroupNoteError,
+    setApiKeyGroupName,
+    setBatchDefaultGroupName,
+    setBatchRows,
     t,
+    setImportGroupName,
+    setOauthGroupName,
     writesEnabled,
   } = ctx;
 
@@ -292,6 +306,62 @@ export function useUpstreamAccountCreateGroupDrafts(
     });
   }, []);
 
+  const clearSelectedGroupReferences = useCallback(
+    (groupName: string) => {
+      const normalizedGroupName = normalizeGroupName(groupName);
+      if (!normalizedGroupName) return;
+      if (normalizeGroupName(oauthGroupName) === normalizedGroupName) {
+        setOauthGroupName("");
+      }
+      if (normalizeGroupName(importGroupName) === normalizedGroupName) {
+        setImportGroupName("");
+      }
+      if (normalizeGroupName(apiKeyGroupName) === normalizedGroupName) {
+        setApiKeyGroupName("");
+      }
+      const deletedDefaultGroup =
+        normalizeGroupName(batchDefaultGroupName) === normalizedGroupName;
+      if (deletedDefaultGroup) {
+        setBatchDefaultGroupName("");
+      }
+      if (
+        Array.isArray(batchRows) &&
+        batchRows.some(
+          (row: BatchOauthRow) =>
+            normalizeGroupName(row.groupName) === normalizedGroupName,
+        )
+      ) {
+        setBatchRows((current: BatchOauthRow[]) =>
+          current.map((row: BatchOauthRow) => {
+            if (normalizeGroupName(row.groupName) !== normalizedGroupName) {
+              return row;
+            }
+            return {
+              ...row,
+              groupName: "",
+              inheritsDefaultGroup:
+                deletedDefaultGroup && row.inheritsDefaultGroup === true,
+              metadataError: null,
+              actionError: null,
+            };
+          }),
+        );
+      }
+    },
+    [
+      apiKeyGroupName,
+      batchDefaultGroupName,
+      batchRows,
+      importGroupName,
+      oauthGroupName,
+      setApiKeyGroupName,
+      setBatchDefaultGroupName,
+      setBatchRows,
+      setImportGroupName,
+      setOauthGroupName,
+    ],
+  );
+
   const persistDraftGroupSettings = useCallback(
     async (groupName: string) => {
       const normalizedGroupName = normalizeGroupName(groupName);
@@ -364,7 +434,10 @@ export function useUpstreamAccountCreateGroupDrafts(
     ],
   );
 
-  const openGroupNoteEditor = (groupName: string) => {
+  const openGroupNoteEditor = (
+    groupName: string,
+    options?: OpenGroupNoteEditorOptions,
+  ) => {
     if (!writesEnabled) return;
     const normalized = normalizeGroupName(groupName);
     if (!normalized) return;
@@ -375,6 +448,7 @@ export function useUpstreamAccountCreateGroupDrafts(
       groupName: normalized,
       note: existingGroup?.note ?? resolveGroupNoteForName(normalized),
       existing: existingGroup != null,
+      accountCount: existingGroup?.accountCount ?? 0,
       concurrencyLimit: apiConcurrencyLimitToSliderValue(
         resolveGroupConcurrencyLimitForName(normalized),
       ),
@@ -391,6 +465,8 @@ export function useUpstreamAccountCreateGroupDrafts(
               existingGroup.upstream429MaxRetries,
             )
           : resolveGroupUpstream429MaxRetriesForName(normalized),
+      onSaved: options?.onSaved ?? null,
+      onDeleted: options?.onDeleted ?? null,
     });
   };
 
@@ -442,74 +518,6 @@ export function useUpstreamAccountCreateGroupDrafts(
           (value: string, index: number) => value !== normalizedBoundProxyKeys[index],
         ));
     setGroupNoteError(null);
-    if (!groupNoteEditor.existing) {
-      setGroupDraftNotes((current: Record<string, string>) => {
-        const next = { ...current };
-        if (normalizedNote) {
-          next[normalizedGroupName] = normalizedNote;
-        } else {
-          delete next[normalizedGroupName];
-        }
-        return next;
-      });
-      setGroupDraftBoundProxyKeys((current: Record<string, string[]>) => {
-        const next = { ...current };
-        if (normalizedBoundProxyKeys.length > 0) {
-          next[normalizedGroupName] = normalizedBoundProxyKeys;
-        } else {
-          delete next[normalizedGroupName];
-        }
-        return next;
-      });
-      setGroupDraftNodeShuntEnabled((current: Record<string, boolean>) => {
-        const next = { ...current };
-        if (normalizedNodeShuntEnabled) {
-          next[normalizedGroupName] = true;
-        } else {
-          delete next[normalizedGroupName];
-        }
-        return next;
-      });
-      setGroupDraftConcurrencyLimits((current: Record<string, number>) => {
-        const next = { ...current };
-        if (normalizedConcurrencyLimit > 0) {
-          next[normalizedGroupName] = normalizedConcurrencyLimit;
-        } else {
-          delete next[normalizedGroupName];
-        }
-        return next;
-      });
-      setGroupDraftUpstream429RetryEnabled((current: Record<string, boolean>) => {
-        const next = { ...current };
-        if (
-          normalizedUpstream429RetryEnabled ||
-          normalizedUpstream429MaxRetries > 0
-        ) {
-          next[normalizedGroupName] = normalizedUpstream429RetryEnabled;
-        } else {
-          delete next[normalizedGroupName];
-        }
-        return next;
-      });
-      setGroupDraftUpstream429MaxRetries((current: Record<string, number>) => {
-        const next = { ...current };
-        if (
-          normalizedUpstream429RetryEnabled ||
-          normalizedUpstream429MaxRetries > 0
-        ) {
-          next[normalizedGroupName] = normalizedUpstream429MaxRetries;
-        } else {
-          delete next[normalizedGroupName];
-        }
-        return next;
-      });
-      if (shouldInvalidateSingleOauthSessionForGroupMetadataChange) {
-        invalidateSingleOauthSessionForMetadataEdit();
-      }
-      setGroupNoteEditor((current: GroupNoteEditorState) => ({ ...current, open: false }));
-      return;
-    }
-
     setGroupNoteBusy(true);
     try {
       await saveGroupNote(normalizedGroupName, {
@@ -520,11 +528,37 @@ export function useUpstreamAccountCreateGroupDrafts(
         upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
         upstream429MaxRetries: normalizedUpstream429MaxRetries,
       });
+      groupNoteEditor.onSaved?.(normalizedGroupName);
       if (shouldInvalidateSingleOauthSessionForGroupMetadataChange) {
         invalidateSingleOauthSessionForMetadataEdit();
       }
       clearDraftGroupSettings(normalizedGroupName);
       setGroupNoteEditor((current: GroupNoteEditorState) => ({ ...current, open: false }));
+    } catch (err) {
+      setGroupNoteError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGroupNoteBusy(false);
+    }
+  };
+
+  const handleDeleteGroupNote = async () => {
+    if (!writesEnabled) return;
+    const normalizedGroupName = normalizeGroupName(groupNoteEditor.groupName);
+    if (!normalizedGroupName || groupNoteEditor.accountCount > 0) return;
+    setGroupNoteError(null);
+    setGroupNoteBusy(true);
+    try {
+      await deleteGroupNote(normalizedGroupName);
+      clearDraftGroupSettings(normalizedGroupName);
+      clearSelectedGroupReferences(normalizedGroupName);
+      groupNoteEditor.onDeleted?.(normalizedGroupName);
+      setGroupNoteEditor((current: GroupNoteEditorState) => ({
+        ...current,
+        open: false,
+      }));
+      if (normalizeGroupName(oauthGroupName) === normalizedGroupName) {
+        invalidateSingleOauthSessionForMetadataEdit();
+      }
     } catch (err) {
       setGroupNoteError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -555,5 +589,6 @@ export function useUpstreamAccountCreateGroupDrafts(
     openGroupNoteEditor,
     closeGroupNoteEditor,
     handleSaveGroupNote,
+    handleDeleteGroupNote,
   };
 }

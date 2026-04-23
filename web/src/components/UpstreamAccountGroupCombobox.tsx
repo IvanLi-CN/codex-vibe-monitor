@@ -12,45 +12,67 @@ import {
   CommandSeparator,
 } from './ui/command'
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
+import type { UpstreamAccountGroupOption } from '../lib/upstreamAccountGroups'
 import { cn } from '../lib/utils'
 
 interface UpstreamAccountGroupComboboxProps {
   value: string
   onValueChange: (value: string) => void
-  suggestions: string[]
+  suggestions?: string[]
+  options?: UpstreamAccountGroupOption[]
   disabled?: boolean
   name?: string
   placeholder?: string
   searchPlaceholder?: string
   emptyLabel?: string
   createLabel?: (value: string) => string
+  onCreateRequested?: (value: string) => void
+  formatAccountCountLabel?: (count: number) => string
   ariaLabel?: string
   className?: string
   triggerClassName?: string
   size?: FormControlSize
 }
 
-function normalizeSuggestions(suggestions: string[]) {
-  const deduped = new Set<string>()
-  for (const suggestion of suggestions) {
-    const normalized = suggestion.trim()
+function normalizeOptions(
+  suggestions: string[] | undefined,
+  options: UpstreamAccountGroupOption[] | undefined,
+) {
+  const deduped = new Map<string, UpstreamAccountGroupOption>()
+  for (const option of options ?? []) {
+    const normalized = option.groupName.trim()
     if (normalized) {
-      deduped.add(normalized)
+      deduped.set(normalized, {
+        groupName: normalized,
+        accountCount: option.accountCount,
+        isPersisted: option.isPersisted,
+      })
     }
   }
-  return Array.from(deduped)
+  for (const suggestion of suggestions ?? []) {
+    const normalized = suggestion.trim()
+    if (normalized && !deduped.has(normalized)) {
+      deduped.set(normalized, {
+        groupName: normalized,
+      })
+    }
+  }
+  return Array.from(deduped.values())
 }
 
 export function UpstreamAccountGroupCombobox({
   value,
   onValueChange,
   suggestions,
+  options,
   disabled = false,
   name,
   placeholder,
   searchPlaceholder,
   emptyLabel = 'No groups found.',
   createLabel = (nextValue) => `Use "${nextValue}"`,
+  onCreateRequested,
+  formatAccountCountLabel = (count) => String(count),
   ariaLabel,
   className,
   triggerClassName,
@@ -58,19 +80,32 @@ export function UpstreamAccountGroupCombobox({
 }: UpstreamAccountGroupComboboxProps) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
-  const uniqueSuggestions = useMemo(() => normalizeSuggestions(suggestions), [suggestions])
+  const uniqueOptions = useMemo(
+    () => normalizeOptions(suggestions, options),
+    [options, suggestions],
+  )
   const trimmedValue = value.trim()
   const trimmedQuery = query.trim()
   const showCreateOption =
     trimmedQuery.length > 0
-    && !uniqueSuggestions.some(
-      (suggestion) => suggestion.toLocaleLowerCase() === trimmedQuery.toLocaleLowerCase(),
+    && !uniqueOptions.some(
+      (option) => option.groupName === trimmedQuery,
     )
 
   const commitValue = (nextValue: string) => {
     onValueChange(nextValue)
     setQuery('')
     setOpen(false)
+  }
+
+  const handleCreate = () => {
+    setQuery('')
+    setOpen(false)
+    if (onCreateRequested) {
+      onCreateRequested(trimmedQuery)
+      return
+    }
+    onValueChange(trimmedQuery)
   }
 
   return (
@@ -121,24 +156,35 @@ export function UpstreamAccountGroupCombobox({
               <CommandGroup>
                 {showCreateOption ? (
                   <>
-                    <CommandItem value={trimmedQuery} onSelect={() => commitValue(trimmedQuery)}>
+                    <CommandItem value={trimmedQuery} onSelect={handleCreate}>
                       <AppIcon name="plus-circle-outline" className="mr-2 h-4 w-4 text-primary" aria-hidden />
                       <span className="truncate">{createLabel(trimmedQuery)}</span>
                     </CommandItem>
                     <CommandSeparator />
                   </>
                 ) : null}
-                {uniqueSuggestions.map((suggestion) => (
-                  <CommandItem key={suggestion} value={suggestion} onSelect={() => commitValue(suggestion)}>
+                {uniqueOptions.map((option) => (
+                  <CommandItem
+                    key={option.groupName}
+                    value={option.groupName}
+                    onSelect={() => commitValue(option.groupName)}
+                  >
                     <AppIcon
                       name="check"
                       className={cn(
                         'mr-2 h-4 w-4 text-primary transition-opacity',
-                        suggestion === trimmedValue ? 'opacity-100' : 'opacity-0',
+                        option.groupName === trimmedValue ? 'opacity-100' : 'opacity-0',
                       )}
                       aria-hidden
                     />
-                    <span className="truncate">{suggestion}</span>
+                    <div className="flex min-w-0 flex-1 items-center gap-2">
+                      <span className="truncate">{option.groupName}</span>
+                      {typeof option.accountCount === 'number' ? (
+                        <span className="ml-auto shrink-0 rounded-full border border-base-300/80 bg-base-200/70 px-2 py-0.5 text-[11px] font-medium text-base-content/70">
+                          {formatAccountCountLabel(option.accountCount)}
+                        </span>
+                      ) : null}
+                    </div>
                   </CommandItem>
                 ))}
               </CommandGroup>

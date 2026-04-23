@@ -1068,25 +1068,6 @@ async fn save_group_metadata_record_conn(
     let normalized_concurrency_limit =
         normalize_concurrency_limit(Some(metadata.concurrency_limit), "concurrencyLimit")
             .map_err(|(status, message)| anyhow!("{status}: {message}"))?;
-    if normalized_note.is_none()
-        && normalized_bound_proxy_keys.is_empty()
-        && !normalized_node_shunt_enabled
-        && !normalized_upstream_429_retry_enabled
-        && normalized_upstream_429_max_retries == 0
-        && normalized_concurrency_limit == 0
-    {
-        sqlx::query(
-            r#"
-            DELETE FROM pool_upstream_account_group_notes
-            WHERE group_name = ?1
-            "#,
-        )
-        .bind(group_name)
-        .execute(conn)
-        .await?;
-        return Ok(());
-    }
-
     let now_iso = format_utc_iso(Utc::now());
     let bound_proxy_keys_json = encode_group_bound_proxy_keys_json(&normalized_bound_proxy_keys)?;
     sqlx::query(
@@ -1198,21 +1179,8 @@ async fn cleanup_orphaned_group_metadata(
     conn: &mut SqliteConnection,
     group_name: Option<&str>,
 ) -> Result<()> {
-    let Some(group_name) = group_name else {
-        return Ok(());
-    };
-    if group_has_accounts_conn(conn, group_name).await? {
-        return Ok(());
-    }
-    sqlx::query(
-        r#"
-        DELETE FROM pool_upstream_account_group_notes
-        WHERE group_name = ?1
-        "#,
-    )
-    .bind(group_name)
-    .execute(conn)
-    .await?;
+    let _ = conn;
+    let _ = group_name;
     Ok(())
 }
 

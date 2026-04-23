@@ -182,7 +182,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     });
   });
 
-  it("keeps pending batch oauth sessions when a draft group note changes", async () => {
+  it("keeps pending batch oauth sessions usable when a persisted group note changes", async () => {
     vi.useFakeTimers();
     const beginOauthLogin = vi.fn().mockResolvedValue({
       loginId: "login-1",
@@ -208,8 +208,6 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     setComboboxValue('input[name="batchOauthDefaultGroupName"]', "new-team");
     await flushAsync();
 
-    clickButton(/Edit group settings|Edit group note/i);
-    await flushAsync();
     const pendingGroupDialog = Array.from(
       document.body.querySelectorAll('[role="dialog"]'),
     ).at(-1);
@@ -229,10 +227,11 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     });
     clickBodyButton(/Save changes/i);
     await flushAsync();
+    expect(host?.textContent ?? "").toContain("new-team");
 
     clickButton(/Generate OAuth URL/i);
     await flushAsync();
-    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
+    expect(beginOauthLogin).toHaveBeenCalledTimes(1);
 
     clickButton(/Edit group settings|Edit group note/i);
     await flushAsync();

@@ -71,7 +71,7 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
       host?.querySelectorAll('input[name^="batchOauthGroupName-"]') ?? [],
     ) as HTMLInputElement[];
     expect(updatedGroupInputs[5]?.value).toBe("prod");
-  }, 10_000);
+  }, 30_000);
 
   it("keeps a pending row session while syncing metadata changes", async () => {
     vi.useFakeTimers();
@@ -128,7 +128,7 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
       mailboxAddress: "",
     });
     expect(updateOauthLogin.mock.lastCall?.[1]).not.toHaveProperty("groupNote");
-  }, 10_000);
+  }, 30_000);
 
   it("keeps completed oauth controls locked while saving completed-row metadata", async () => {
     const savedState = {

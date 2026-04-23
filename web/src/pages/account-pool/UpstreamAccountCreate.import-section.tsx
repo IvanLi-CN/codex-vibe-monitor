@@ -13,13 +13,15 @@ import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.con
 export function UpstreamAccountCreateImportSection() {
   const {
     cn,
-    groupSuggestions,
+    formatGroupAccountCountLabel,
+    groupOptions,
     handleClearImportSelection,
     handleCreateTag,
     handleDeleteTag,
     handleImportFilesChange,
     handleImportedOauthPaste,
     handleImportedOauthPasteDraftChange,
+    handleImportGroupCreateRequest,
     handleValidateImportedOauth,
     handleValidateImportedOauthPasteDraft,
     hasGroupSettings,
@@ -197,7 +199,7 @@ export function UpstreamAccountCreateImportSection() {
       <UpstreamAccountGroupCombobox
         name="importGroupName"
         value={importGroupName}
-        suggestions={groupSuggestions}
+        options={groupOptions}
         placeholder={t(
           "accountPool.upstreamAccounts.import.defaultGroupPlaceholder",
         )}
@@ -209,10 +211,12 @@ export function UpstreamAccountCreateImportSection() {
         )}
         createLabel={(value) =>
           t(
-            "accountPool.upstreamAccounts.fields.groupNameUseValue",
+            "accountPool.upstreamAccounts.fields.groupNameConfigureValue",
             { value },
           )
         }
+        onCreateRequested={handleImportGroupCreateRequest}
+        formatAccountCountLabel={formatGroupAccountCountLabel}
         onValueChange={setImportGroupName}
         className="min-w-0 flex-1"
       />

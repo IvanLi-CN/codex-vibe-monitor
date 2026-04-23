@@ -26,7 +26,9 @@ export function UpstreamAccountCreatePrimaryCard() {
     batchTagIds,
     buildActionTooltip,
     cn,
-    groupSuggestions,
+    formatGroupAccountCountLabel,
+    groupOptions,
+    handleBatchDefaultGroupCreateRequest,
     handleBatchDefaultGroupChange,
     handleCreateTag,
     handleDeleteTag,
@@ -81,7 +83,7 @@ export function UpstreamAccountCreatePrimaryCard() {
                 <UpstreamAccountGroupCombobox
                   name="batchOauthDefaultGroupName"
                   value={batchDefaultGroupName}
-                  suggestions={groupSuggestions}
+                  options={groupOptions}
                   placeholder={t(
                     "accountPool.upstreamAccounts.batchOauth.defaultGroupPlaceholder",
                   )}
@@ -93,10 +95,12 @@ export function UpstreamAccountCreatePrimaryCard() {
                   )}
                   createLabel={(value) =>
                     t(
-                      "accountPool.upstreamAccounts.fields.groupNameUseValue",
+                      "accountPool.upstreamAccounts.fields.groupNameConfigureValue",
                       { value },
                     )
                   }
+                  onCreateRequested={handleBatchDefaultGroupCreateRequest}
+                  formatAccountCountLabel={formatGroupAccountCountLabel}
                   onValueChange={handleBatchDefaultGroupChange}
                   ariaLabel={t(
                     "accountPool.upstreamAccounts.batchOauth.defaultGroupLabel",

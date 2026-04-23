@@ -70,21 +70,18 @@ import type {
 } from "../../lib/api";
 import { fetchInvocationRecords } from "../../lib/api";
 import {
-  buildGroupNameSuggestions,
+  buildGroupOptions,
   isExistingGroup,
   normalizeGroupName,
   resolveGroupConcurrencyLimit,
   resolveGroupNote,
 } from "../../lib/upstreamAccountGroups";
 import {
-} from "../../lib/concurrencyLimit";
-import {
   areAccountDraftsEqual,
   mergeDraftAfterAccountSave,
   type AccountDraft,
 } from "../../lib/upstreamAccountDrafts";
 import { resolveDisplayNameAfterEmailChange } from "./UpstreamAccountCreate.shared";
-import { resolvePersistedGroupNodeShuntEnabled } from "../../lib/upstreamAccountGroupDrafts";
 import { validateUpstreamBaseUrl } from "../../lib/upstreamBaseUrl";
 import { applyMotherUpdateToItems } from "../../lib/upstreamMother";
 import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
@@ -829,6 +826,7 @@ function SharedUpstreamAccountDetailDrawerInner({
     runSync,
     removeAccount,
     saveGroupNote,
+    deleteGroupNote,
     missingDetailAccountId,
   } = useUpstreamAccounts(undefined, {
     allowSelectionOutsideList: true,
@@ -1228,7 +1226,7 @@ function SharedUpstreamAccountDetailDrawerInner({
       ]),
     ]);
     return {
-      names: buildGroupNameSuggestions(
+      options: buildGroupOptions(
         items.map((item) => item.groupName),
         groups,
         draftNames,
@@ -1246,6 +1244,11 @@ function SharedUpstreamAccountDetailDrawerInner({
     hasUngroupedAccounts,
     items,
   ]);
+  const formatGroupAccountCountLabel = useCallback(
+    (count: number) =>
+      t("accountPool.upstreamAccounts.groupOptionCount", { count }),
+    [t],
+  );
 
   const resolveGroupSummaryForName = useCallback(
     (groupName: string) => {
@@ -1399,82 +1402,6 @@ function SharedUpstreamAccountDetailDrawerInner({
     });
   }, []);
 
-  const persistDraftGroupSettings = useCallback(
-    async (groupName: string) => {
-      const normalizedGroupName = normalizeGroupName(groupName);
-      if (!normalizedGroupName) return;
-      const hasDraftNote = normalizedGroupName in groupDraftNotes;
-      const hasDraftBindings = normalizedGroupName in groupDraftBoundProxyKeys;
-      const hasDraftConcurrency =
-        normalizedGroupName in groupDraftConcurrencyLimits;
-      const hasDraftNodeShuntEnabled =
-        normalizedGroupName in groupDraftNodeShuntEnabled;
-      const hasDraftUpstream429RetryEnabled =
-        normalizedGroupName in groupDraftUpstream429RetryEnabled;
-      const hasDraftUpstream429MaxRetries =
-        normalizedGroupName in groupDraftUpstream429MaxRetries;
-      if (
-        !hasDraftNote &&
-        !hasDraftBindings &&
-        !hasDraftConcurrency &&
-        !hasDraftNodeShuntEnabled &&
-        !hasDraftUpstream429RetryEnabled &&
-        !hasDraftUpstream429MaxRetries
-      )
-        return;
-
-      const normalizedNote = hasDraftNote
-        ? (groupDraftNotes[normalizedGroupName]?.trim() ?? "")
-        : "";
-      const normalizedBoundProxyKeys = Array.from(
-        new Set(
-          (groupDraftBoundProxyKeys[normalizedGroupName] ?? [])
-            .map((value) => value.trim())
-            .filter((value) => value.length > 0),
-        ),
-      );
-      const normalizedConcurrencyLimit = hasDraftConcurrency
-        ? (groupDraftConcurrencyLimits[normalizedGroupName] ?? 0)
-        : 0;
-      const normalizedNodeShuntEnabled = resolvePersistedGroupNodeShuntEnabled(
-        hasDraftNodeShuntEnabled,
-        groupDraftNodeShuntEnabled[normalizedGroupName],
-        resolveGroupNodeShuntEnabledForName(normalizedGroupName),
-      );
-      const normalizedUpstream429RetryEnabled = hasDraftUpstream429RetryEnabled
-        ? groupDraftUpstream429RetryEnabled[normalizedGroupName] === true
-        : false;
-      const normalizedUpstream429MaxRetries = normalizedUpstream429RetryEnabled
-        ? normalizeEnabledGroupUpstream429MaxRetries(
-            groupDraftUpstream429MaxRetries[normalizedGroupName],
-          )
-        : normalizeGroupUpstream429MaxRetries(
-            groupDraftUpstream429MaxRetries[normalizedGroupName],
-          );
-
-      await saveGroupNote(normalizedGroupName, {
-        note: normalizedNote || undefined,
-        boundProxyKeys: normalizedBoundProxyKeys,
-        concurrencyLimit: normalizedConcurrencyLimit,
-        nodeShuntEnabled: normalizedNodeShuntEnabled,
-        upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
-        upstream429MaxRetries: normalizedUpstream429MaxRetries,
-      });
-      clearDraftGroupSettings(normalizedGroupName);
-    },
-    [
-      clearDraftGroupSettings,
-      groupDraftBoundProxyKeys,
-      groupDraftConcurrencyLimits,
-      groupDraftNodeShuntEnabled,
-      groupDraftNotes,
-      groupDraftUpstream429MaxRetries,
-      groupDraftUpstream429RetryEnabled,
-      resolveGroupNodeShuntEnabledForName,
-      saveGroupNote,
-    ],
-  );
-
   const {
     openEditor: openGroupNoteEditor,
     dialog: groupNoteDialog,
@@ -1490,6 +1417,7 @@ function SharedUpstreamAccountDetailDrawerInner({
           groupName: normalized,
           note: resolveGroupNoteForName(normalized),
           existing: existingGroup != null,
+          accountCount: existingGroup?.accountCount ?? 0,
           concurrencyLimit: resolveGroupConcurrencyLimitForName(normalized),
           boundProxyKeys: resolveGroupBoundProxyKeysForName(normalized),
           nodeShuntEnabled: resolveGroupNodeShuntEnabledForName(normalized),
@@ -1510,7 +1438,7 @@ function SharedUpstreamAccountDetailDrawerInner({
       ],
     ),
     saveGroupSettings: useCallback(
-      async (groupName, payload, options) => {
+      async (groupName, payload) => {
         const normalizedGroupName = normalizeGroupName(groupName);
         if (!normalizedGroupName) return;
 
@@ -1535,64 +1463,6 @@ function SharedUpstreamAccountDetailDrawerInner({
                 payload.upstream429MaxRetries,
               );
 
-        if (!options.existing) {
-          setGroupDraftNotes((current) => {
-            const next = { ...current };
-            if (normalizedNote) next[normalizedGroupName] = normalizedNote;
-            else delete next[normalizedGroupName];
-            return next;
-          });
-          setGroupDraftBoundProxyKeys((current) => {
-            const next = { ...current };
-            if (normalizedBoundProxyKeys.length > 0) {
-              next[normalizedGroupName] = normalizedBoundProxyKeys;
-            } else {
-              delete next[normalizedGroupName];
-            }
-            return next;
-          });
-          setGroupDraftNodeShuntEnabled((current) => {
-            const next = { ...current };
-            if (normalizedNodeShuntEnabled) next[normalizedGroupName] = true;
-            else delete next[normalizedGroupName];
-            return next;
-          });
-          setGroupDraftConcurrencyLimits((current) => {
-            const next = { ...current };
-            if (normalizedConcurrencyLimit > 0) {
-              next[normalizedGroupName] = normalizedConcurrencyLimit;
-            } else {
-              delete next[normalizedGroupName];
-            }
-            return next;
-          });
-          setGroupDraftUpstream429RetryEnabled((current) => {
-            const next = { ...current };
-            if (
-              normalizedUpstream429RetryEnabled ||
-              normalizedUpstream429MaxRetries > 0
-            ) {
-              next[normalizedGroupName] = normalizedUpstream429RetryEnabled;
-            } else {
-              delete next[normalizedGroupName];
-            }
-            return next;
-          });
-          setGroupDraftUpstream429MaxRetries((current) => {
-            const next = { ...current };
-            if (
-              normalizedUpstream429RetryEnabled ||
-              normalizedUpstream429MaxRetries > 0
-            ) {
-              next[normalizedGroupName] = normalizedUpstream429MaxRetries;
-            } else {
-              delete next[normalizedGroupName];
-            }
-            return next;
-          });
-          return;
-        }
-
         await saveGroupNote(normalizedGroupName, {
           note: normalizedNote || undefined,
           boundProxyKeys: normalizedBoundProxyKeys,
@@ -1605,7 +1475,44 @@ function SharedUpstreamAccountDetailDrawerInner({
       },
       [clearDraftGroupSettings, saveGroupNote],
     ),
+    deleteGroupSettings: useCallback(
+      async (groupName: string) => {
+        await deleteGroupNote(groupName);
+        clearDraftGroupSettings(groupName);
+        setDraft((current) =>
+          normalizeGroupName(current.groupName) ===
+          normalizeGroupName(groupName)
+            ? {
+                ...current,
+                groupName: "",
+              }
+            : current,
+        );
+      },
+      [clearDraftGroupSettings, deleteGroupNote],
+    ),
   });
+  const handleDetailGroupCreateRequest = useCallback(
+    (groupName: string) => {
+      openGroupNoteEditor(groupName, {
+        onSaved: (savedGroupName) =>
+          setDraft((current) => ({
+            ...current,
+            groupName: savedGroupName,
+          })),
+        onDeleted: (deletedGroupName) =>
+          setDraft((current) =>
+            normalizeGroupName(current.groupName) === deletedGroupName
+              ? {
+                  ...current,
+                  groupName: "",
+                }
+              : current,
+          ),
+      });
+    },
+    [openGroupNoteEditor],
+  );
 
   const handleCreateTag = useCallback(
     async (payload: Parameters<typeof createTag>[0]) => {
@@ -2073,17 +1980,6 @@ function SharedUpstreamAccountDetailDrawerInner({
               ? draft.localLimitUnit.trim() || undefined
               : undefined,
         });
-        let partialWarning: string | null = null;
-        try {
-          await persistDraftGroupSettings(normalizedGroupName);
-        } catch (error) {
-          partialWarning = t(
-            "accountPool.upstreamAccounts.partialSuccess.savedButGroupSettingsFailed",
-            {
-              error: error instanceof Error ? error.message : String(error),
-            },
-          );
-        }
         notifyMotherChange(response);
         applySavedAccountDraftResponse(
           source.id,
@@ -2092,14 +1988,37 @@ function SharedUpstreamAccountDetailDrawerInner({
           pendingSaveSession.fallbackDraft,
           response,
         );
-        if (partialWarning) {
-          setActionError((current) => ({
-            ...current,
-            accountMessages: {
-              ...current.accountMessages,
-              [source.id]: partialWarning,
-            },
-          }));
+        if (
+          selectedIdRef.current === source.id &&
+          activeDraftSessionKeyRef.current != null
+        ) {
+          const recentSaveResponseGuard = {
+            accountId: source.id,
+            sessionKey: saveDraftSessionKey,
+            startedDraft,
+            draft: responseDraft,
+            fallbackDraft: responseFallbackDraft,
+            retainedDraft: retainedServerDraft,
+          };
+          recentSaveResponseGuardsRef.current.set(
+            source.id,
+            recentSaveResponseGuard,
+          );
+        }
+        if (
+          selectedIdRef.current === source.id &&
+          saveDraftSessionKey != null &&
+          activeDraftSessionKeyRef.current === saveDraftSessionKey
+        ) {
+          draftBaselineRef.current = responseDraft;
+          latestServerDraftRef.current = responseDraft;
+          setDraft((current) =>
+            mergeDraftAfterAccountSave(
+              current,
+              saveStartedDraft,
+              responseDraft,
+            ),
+          );
         }
       } catch (err) {
         if (handleNotFoundClose(source.id, err)) return;
@@ -2131,10 +2050,8 @@ function SharedUpstreamAccountDetailDrawerInner({
       draftUpstreamBaseUrlError,
       handleNotFoundClose,
       notifyMotherChange,
-      persistDraftGroupSettings,
       resolvePendingGroupNoteForName,
       saveAccount,
-      t,
     ],
   );
 
@@ -2901,7 +2818,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                           <UpstreamAccountGroupCombobox
                             name="detailGroupName"
                             value={draft.groupName}
-                            suggestions={availableGroups.names}
+                            options={availableGroups.options}
                             placeholder={t(
                               "accountPool.upstreamAccounts.fields.groupNamePlaceholder",
                             )}
@@ -2913,9 +2830,13 @@ function SharedUpstreamAccountDetailDrawerInner({
                             )}
                             createLabel={(value) =>
                               t(
-                                "accountPool.upstreamAccounts.fields.groupNameUseValue",
+                                "accountPool.upstreamAccounts.fields.groupNameConfigureValue",
                                 { value },
                               )
+                            }
+                            onCreateRequested={handleDetailGroupCreateRequest}
+                            formatAccountCountLabel={
+                              formatGroupAccountCountLabel
                             }
                             onValueChange={(value) =>
                               setDraft((current) => ({
@@ -2940,7 +2861,20 @@ function SharedUpstreamAccountDetailDrawerInner({
                             title={t(
                               "accountPool.upstreamAccounts.groupNotes.actions.edit",
                             )}
-                            onClick={() => openGroupNoteEditor(draft.groupName)}
+                            onClick={() =>
+                              openGroupNoteEditor(draft.groupName, {
+                                onDeleted: (deletedGroupName) =>
+                                  setDraft((current) =>
+                                    normalizeGroupName(current.groupName) ===
+                                    deletedGroupName
+                                      ? {
+                                          ...current,
+                                          groupName: "",
+                                        }
+                                      : current,
+                                  ),
+                              })
+                            }
                             disabled={
                               !writesEnabled ||
                               !normalizeGroupName(draft.groupName)

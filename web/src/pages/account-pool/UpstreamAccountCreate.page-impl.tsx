@@ -19,7 +19,7 @@ import { copyText, selectAllReadonlyText } from "../../lib/clipboard";
 import { emitUpstreamAccountsChanged } from "../../lib/upstreamAccountsEvents";
 import { apiConcurrencyLimitToSliderValue } from "../../lib/concurrencyLimit";
 import {
-  buildGroupNameSuggestions,
+  buildGroupOptions,
   isExistingGroup,
   normalizeGroupName,
 } from "../../lib/upstreamAccountGroups";
@@ -128,6 +128,7 @@ export default function UpstreamAccountCreatePage() {
     refresh,
     saveAccount,
     saveGroupNote,
+    deleteGroupNote,
   } = useUpstreamAccounts();
   const { items: tagItems, createTag, updateTag, deleteTag } = usePoolTags();
   const notifyMotherSwitches = useMotherSwitchNotifications();
@@ -344,11 +345,14 @@ export default function UpstreamAccountCreatePage() {
     groupName: "",
     note: "",
     existing: false,
+    accountCount: 0,
     concurrencyLimit: apiConcurrencyLimitToSliderValue(0),
     boundProxyKeys: [],
     nodeShuntEnabled: false,
     upstream429RetryEnabled: false,
     upstream429MaxRetries: 0,
+    onSaved: null,
+    onDeleted: null,
   });
   const {
     nodes: forwardProxyNodes,
@@ -498,9 +502,9 @@ export default function UpstreamAccountCreatePage() {
   const batchRowIdRef = useRef(getNextBatchRowIndex(initialBatchRows));
   const manualCopyFieldRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const groupSuggestions = useMemo(
+  const groupOptions = useMemo(
     () =>
-      buildGroupNameSuggestions(
+      buildGroupOptions(
         items.map((item) => item.groupName),
         groups,
         {
@@ -547,6 +551,11 @@ export default function UpstreamAccountCreatePage() {
       groups,
       items,
     ],
+  );
+  const formatGroupAccountCountLabel = useCallback(
+    (count: number) =>
+      t("accountPool.upstreamAccounts.groupOptionCount", { count }),
+    [t],
   );
   const oauthConflictExcludeId =
     relinkAccountId ??
@@ -649,8 +658,11 @@ export default function UpstreamAccountCreatePage() {
     openGroupNoteEditor,
     closeGroupNoteEditor,
     handleSaveGroupNote,
+    handleDeleteGroupNote,
   } = useUpstreamAccountCreateGroupDrafts({
     apiKeyGroupName,
+    batchDefaultGroupName,
+    batchRows,
     forwardProxyNodes,
     forwardProxyCatalogState,
     groupDraftBoundProxyKeys,
@@ -667,6 +679,7 @@ export default function UpstreamAccountCreatePage() {
     invalidateSingleOauthSessionForMetadataEdit,
     locale,
     oauthGroupName,
+    deleteGroupNote,
     saveGroupNote,
     setGroupDraftBoundProxyKeys,
     setGroupDraftConcurrencyLimits,
@@ -677,6 +690,11 @@ export default function UpstreamAccountCreatePage() {
     setGroupNoteBusy,
     setGroupNoteEditor,
     setGroupNoteError,
+    setApiKeyGroupName,
+    setBatchDefaultGroupName,
+    setBatchRows,
+    setImportGroupName,
+    setOauthGroupName,
     t,
     writesEnabled,
   });
@@ -1713,6 +1731,52 @@ export default function UpstreamAccountCreatePage() {
     t,
   });
 
+  const handleOauthGroupCreateRequest = useCallback(
+    (groupName: string) => {
+      openGroupNoteEditor(groupName, {
+        onSaved: (savedGroupName) => setOauthGroupName(savedGroupName),
+      });
+    },
+    [openGroupNoteEditor],
+  );
+
+  const handleImportGroupCreateRequest = useCallback(
+    (groupName: string) => {
+      openGroupNoteEditor(groupName, {
+        onSaved: (savedGroupName) => setImportGroupName(savedGroupName),
+      });
+    },
+    [openGroupNoteEditor],
+  );
+
+  const handleApiKeyGroupCreateRequest = useCallback(
+    (groupName: string) => {
+      openGroupNoteEditor(groupName, {
+        onSaved: (savedGroupName) => setApiKeyGroupName(savedGroupName),
+      });
+    },
+    [openGroupNoteEditor],
+  );
+
+  const handleBatchDefaultGroupCreateRequest = useCallback(
+    (groupName: string) => {
+      openGroupNoteEditor(groupName, {
+        onSaved: (savedGroupName) => handleBatchDefaultGroupChange(savedGroupName),
+      });
+    },
+    [handleBatchDefaultGroupChange, openGroupNoteEditor],
+  );
+
+  const handleBatchRowGroupCreateRequest = useCallback(
+    (rowId: string, groupName: string) => {
+      openGroupNoteEditor(groupName, {
+        onSaved: (savedGroupName) =>
+          handleBatchGroupValueChange(rowId, savedGroupName),
+      });
+    },
+    [handleBatchGroupValueChange, openGroupNoteEditor],
+  );
+
 
   const {
     handleImportedOauthPasteDraftChange,
@@ -1997,7 +2061,8 @@ export default function UpstreamAccountCreatePage() {
     groupNoteBusy,
     groupNoteEditor,
     groupNoteError,
-    groupSuggestions,
+    groupOptions,
+    formatGroupAccountCountLabel,
     handleAttachOauthMailbox,
     handleBatchAttachMailbox,
     handleBatchCancelMailboxEdit,
@@ -2007,9 +2072,11 @@ export default function UpstreamAccountCreatePage() {
     handleBatchCopyMailbox,
     handleBatchCopyMailboxCode,
     handleBatchCopyOauthUrl,
+    handleBatchDefaultGroupCreateRequest,
     handleBatchDefaultGroupChange,
     handleBatchGenerateMailbox,
     handleBatchGenerateOauthUrl,
+    handleBatchRowGroupCreateRequest,
     handleBatchGroupValueChange,
     handleBatchMailboxEditorValueChange,
     handleBatchMailboxFetch,
@@ -2025,19 +2092,23 @@ export default function UpstreamAccountCreatePage() {
     handleCopySingleMailbox,
     handleCopySingleMailboxCode,
     handleCreateApiKey,
+    handleApiKeyGroupCreateRequest,
     handleCreateTag,
     handleDeleteTag,
     handleGenerateOauthMailbox,
     handleGenerateOauthUrl,
     handleResolveOauthEmailChoice,
     handleImportFilesChange,
+    handleImportGroupCreateRequest,
     handleImportValidatedOauth,
     handleImportedOauthPaste,
     handleImportedOauthPasteDraftChange,
     handleRetryImportedOauthFailed,
     handleRetryImportedOauthOne,
     handleSaveGroupNote,
+    handleDeleteGroupNote,
     handleTabChange,
+    handleOauthGroupCreateRequest,
     handleValidateImportedOauth,
     handleValidateImportedOauthPasteDraft,
     hasBatchMetadataBusy,

@@ -15,9 +15,11 @@ import {
 type DialogHarnessProps = {
   groupName: string;
   note: string;
+  accountCount?: number;
   concurrencyLimit?: number;
   existing: boolean;
   busy?: boolean;
+  deleting?: boolean;
   error?: string | null;
   boundProxyKeys?: string[];
   nodeShuntEnabled?: boolean;
@@ -207,6 +209,7 @@ const legacyAliasBindingNodes: ForwardProxyBindingNode[] = [
 
 function DialogHarness({
   note: initialNote,
+  accountCount = 0,
   boundProxyKeys: initialBoundProxyKeys = [],
   nodeShuntEnabled: initialNodeShuntEnabled = false,
   upstream429RetryEnabled: initialUpstream429RetryEnabled = false,
@@ -278,6 +281,12 @@ function DialogHarness({
           concurrencyLimitUnlimitedLabel="Unlimited"
           cancelLabel="Cancel"
           saveLabel="Save group settings"
+          deleteLabel="Delete group"
+          deleteDisabledHint={
+            accountCount > 0
+              ? `Move the remaining ${accountCount} account(s) out before deleting this group.`
+              : undefined
+          }
           closeLabel="Close dialog"
           existingBadgeLabel="Persisted group"
           draftBadgeLabel="Draft group"
@@ -311,6 +320,9 @@ function DialogHarness({
           proxyBindingsChartAriaLabel="Last 24h request volume chart"
           proxyBindingsChartInteractionHint="Hover or tap for details. Focus the chart and use arrow keys to switch points."
           proxyBindingsChartLocaleTag="en-US"
+          accountCount={accountCount}
+          deleting={args.deleting}
+          onDelete={() => undefined}
         />
       </div>
     </div>
@@ -328,9 +340,11 @@ const meta = {
   args: {
     groupName: "production",
     note: "Primary team group for premium traffic and shared routing policies.",
+    accountCount: 3,
     concurrencyLimit: 6,
     existing: true,
     busy: false,
+    deleting: false,
     error: null,
     boundProxyKeys: [],
     nodeShuntEnabled: false,
@@ -599,5 +613,41 @@ export const UnlimitedDraft: Story = {
     concurrencyLimit: 0,
     existing: false,
     boundProxyKeys: [],
+  },
+};
+
+export const PersistedEmptyGroup: Story = {
+  args: {
+    groupName: "launch-team",
+    note: "Saved ahead of the first account so it stays visible in every dropdown.",
+    accountCount: 0,
+    existing: true,
+    boundProxyKeys: [directBindingKey],
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      canvas.getByRole("button", { name: /delete group/i }),
+    ).toBeEnabled();
+    await expect(canvas.getByText(/save group settings/i)).toBeInTheDocument();
+  },
+};
+
+export const DeleteBlockedWithMembers: Story = {
+  args: {
+    groupName: "production",
+    note: "Existing production group with active members still attached.",
+    accountCount: 4,
+    existing: true,
+    boundProxyKeys: [directBindingKey, "fpn_5a7b0c1d2e3f4a10"],
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      canvas.getByRole("button", { name: /delete group/i }),
+    ).toBeDisabled();
+    await expect(
+      canvas.getByText(/move the remaining 4 account\(s\) out before deleting this group\./i),
+    ).toBeInTheDocument();
   },
 };

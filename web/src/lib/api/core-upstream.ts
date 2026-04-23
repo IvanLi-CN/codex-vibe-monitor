@@ -219,6 +219,7 @@ export interface UpstreamAccountDetail extends UpstreamAccountSummary {
 
 export interface UpstreamAccountGroupSummary {
   groupName: string;
+  accountCount?: number;
   note?: string | null;
   boundProxyKeys?: string[];
   concurrencyLimit?: number | null;
@@ -1146,6 +1147,10 @@ function normalizeUpstreamAccountGroupSummary(
   if (!groupName) return null;
   return {
     groupName,
+    accountCount: (() => {
+      const value = normalizeFiniteNumber(payload.accountCount);
+      return value != null && value >= 0 ? Math.trunc(value) : 0;
+    })(),
     note: typeof payload.note === "string" ? payload.note : null,
     boundProxyKeys: normalizeStringArray(payload.boundProxyKeys)
       .map((item) => item.trim())
@@ -2117,6 +2122,17 @@ export async function updateUpstreamAccountGroup(
     throw new Error("Request failed: invalid upstream account group payload");
   }
   return normalized;
+}
+
+export async function deleteUpstreamAccountGroup(
+  groupName: string,
+): Promise<void> {
+  await fetchJson(
+    `/api/pool/upstream-account-groups/${encodeURIComponent(groupName)}`,
+    {
+      method: "DELETE",
+    },
+  );
 }
 
 export async function bulkUpdateUpstreamAccounts(
