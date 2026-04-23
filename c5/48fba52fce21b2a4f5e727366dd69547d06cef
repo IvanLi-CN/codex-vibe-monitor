@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.48.1",
+  "base_stable_version": "1.48.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-23T20:19:06Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.48.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "6e16b06b2c12750a50af7b5284760a063277c54d",
+  "pr_number": 361,
+  "pr_title": "fix(web): keep dashboard account row inline",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.48.1",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.48.1",
+  "target_sha": "c548fba52fce21b2a4f5e727366dd69547d06cef",
+  "type_label": "type:patch"
+}
