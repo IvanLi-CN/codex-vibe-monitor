@@ -567,42 +567,54 @@ function InvocationSlot({
         <InvocationMetaLine
           label={lineLabels.account}
           value={
-            <div className="flex min-w-0 flex-col gap-1 text-[8.5px] leading-[1.3] text-base-content">
-              <div className="min-w-0 font-mono font-semibold">
-                <div className="min-w-0">
-                  {viewModel.accountClickable && viewModel.accountId != null ? (
-                    <button
-                      type="button"
-                      className="inline-flex min-w-0 max-w-full cursor-pointer appearance-none items-start rounded-[0.45rem] border border-base-300/55 bg-base-100/12 px-1.5 py-0.75 text-left font-mono text-[8.5px] font-semibold text-base-content no-underline transition-colors duration-200 hover:bg-base-100/18 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onOpenUpstreamAccount?.(
-                          viewModel.accountId ?? 0,
-                          viewModel.accountLabel,
-                        );
-                      }}
-                      onKeyDown={(event) => {
-                        event.stopPropagation();
-                      }}
-                      title={viewModel.accountLabel}
-                      aria-label={viewModel.accountLabel}
-                    >
-                      <span className="line-clamp-2 break-all text-left">
-                        {viewModel.accountLabel}
-                      </span>
-                    </button>
-                  ) : (
+            <div
+              data-testid="dashboard-working-conversation-account-line"
+              className="flex min-w-0 flex-wrap items-start gap-1.5 text-[8.5px] leading-[1.3] text-base-content sm:flex-nowrap sm:items-center"
+            >
+              <div className="min-w-0 flex-1 font-mono font-semibold">
+                {viewModel.accountClickable && viewModel.accountId != null ? (
+                  <button
+                    type="button"
+                    data-testid="dashboard-working-conversation-account-chip"
+                    className="inline-flex min-w-0 max-w-full cursor-pointer appearance-none items-center rounded-[0.45rem] border border-base-300/55 bg-base-100/12 px-1.5 py-0.75 text-left font-mono text-[8.5px] font-semibold text-base-content no-underline transition-colors duration-200 hover:bg-base-100/18 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onOpenUpstreamAccount?.(
+                        viewModel.accountId ?? 0,
+                        viewModel.accountLabel,
+                      );
+                    }}
+                    onKeyDown={(event) => {
+                      event.stopPropagation();
+                    }}
+                    title={viewModel.accountLabel}
+                    aria-label={viewModel.accountLabel}
+                  >
                     <span
-                      className="line-clamp-2 break-all rounded-[0.45rem] border border-base-300/45 bg-base-100/8 px-1.5 py-0.75 text-left"
-                      title={viewModel.accountLabel}
+                      data-testid="dashboard-working-conversation-account-name"
+                      className="block min-w-0 truncate whitespace-nowrap text-left"
                     >
                       {viewModel.accountLabel}
                     </span>
-                  )}
-                </div>
+                  </button>
+                ) : (
+                  <span
+                    data-testid="dashboard-working-conversation-account-chip"
+                    className="inline-flex min-w-0 max-w-full items-center rounded-[0.45rem] border border-base-300/45 bg-base-100/8 px-1.5 py-0.75"
+                    title={viewModel.accountLabel}
+                  >
+                    <span
+                      data-testid="dashboard-working-conversation-account-name"
+                      className="block min-w-0 truncate whitespace-nowrap text-left"
+                    >
+                      {viewModel.accountLabel}
+                    </span>
+                  </span>
+                )}
               </div>
               <div
-                className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5 text-base-content/70"
+                data-testid="dashboard-working-conversation-account-meta"
+                className="flex min-w-0 shrink-0 flex-wrap items-center gap-x-1 gap-y-0.5 text-base-content/70 sm:flex-nowrap"
                 title={`${viewModel.modelValue} · ${viewModel.reasoningEffortValue} · ${viewModel.serviceTierValue} · ${viewModel.proxyDisplayName}`}
               >
                 <span

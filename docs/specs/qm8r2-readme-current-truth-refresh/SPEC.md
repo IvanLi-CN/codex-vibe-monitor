@@ -4,7 +4,7 @@
 
 - Status: 已实现，待 PR / CI / review-proof 收敛
 - Created: 2026-04-23
-- Last: 2026-04-23
+- Last: 2026-04-24
 
 ## 背景 / 问题陈述
 
@@ -48,6 +48,7 @@
 - README 必须以当前代码真相源为依据，覆盖当前存在的页面与能力边界。
 - README 必须替换旧截图，改用稳定 Storybook mock 生成的展示图。
 - Dashboard 主展示图必须使用更真实的 dense mock，并包含 12 个工作中对话，避免首页观感过空。
+- Dashboard 主展示图必须稳定呈现工作中对话卡片的账号单行布局，并至少出现一个 compact endpoint badge。
 - README 必须提供清晰的快速开始入口，区分镜像启动与本地开发路径。
 - README 必须把更深入的配置 / 部署 / 开发内容导向 `docs-site/` 与仓库内部文档，而不是在首页堆满长环境变量列表。
 
@@ -91,8 +92,8 @@
 - Given 打开根 `README.md`，When 读者浏览首页，Then 能快速理解项目定位、核心能力、关键页面与启动路径，而不再被旧口径误导。
 - Given README 的“页面地图”，When 对照 `web/src/App.tsx`，Then 页面列表与路径一致。
 - Given README 的“核心能力”说明，When 对照后端路由与 docs-site，Then 不出现已经过时或不存在的产品面描述。
-- Given README 的展示图，When 查看仓库首页，Then 能看到 Dashboard / Live / Records / Account Pool 四个当前主要界面，其中 Dashboard 图包含 12 个工作中对话。
-- Given `web/src/components/DashboardPage.stories.tsx` 的 `ReadmeDense` story，When 渲染 Storybook canvas，Then 能稳定产出 README 所需的 dense Dashboard 截图。
+- Given README 的展示图，When 查看仓库首页，Then 能看到 Dashboard / Live / Records / Account Pool 四个当前主要界面，其中 Dashboard 图包含 12 个工作中对话、长账号名保持单行截断且可见 compact badge。
+- Given `web/src/components/DashboardPage.stories.tsx` 的 `ReadmeDense` story，When 渲染 Storybook canvas，Then 能稳定产出 README 所需的 dense Dashboard 截图，并覆盖长账号名与 compact endpoint 的组合态。
 
 ## 实现前置条件（Definition of Ready / Preconditions）
 
@@ -136,7 +137,7 @@
 
 ## Visual Evidence
 
-- Dashboard dense README 截图，基于 Storybook canvas `pages-dashboardpage--readme-dense`，`1680px` 宽视口，包含 12 条工作中对话：
+- Dashboard dense README 截图，基于 Storybook canvas `pages-dashboardpage--readme-dense`，`1680px` 宽视口，包含 12 条工作中对话，并覆盖“长账号单行截断 + compact endpoint badge”组合态：
 
   ![Dashboard dense README](../../readme-assets/final/dashboard-overview-1680-readme-dense.png)
 
@@ -181,6 +182,7 @@
 - 2026-04-23: 为 Dashboard 补齐 `ReadmeDense` Storybook 场景，使用 12 条工作中对话重做 README 主展示图。
 - 2026-04-23: 重写根 `README.md`，把仓库首页从旧口径与长配置列表改为当前产品入口、能力地图、页面地图与快速开始。
 - 2026-04-23: 本地收口阶段修正 README dense Storybook mock 的类型漂移，并重新通过 `web` 的 `lint`（existing warnings only）、`build` 与 `build-storybook`，同时刷新当前 head 的 README 展示图资产。
+- 2026-04-24: README dense Dashboard follow-up 追加“账号 chip 与模型标签同排 + compact endpoint 可见性”要求，并刷新对应 Storybook mock 源。
 
 ## 参考（References）
 
