@@ -211,6 +211,7 @@ export interface UpstreamAccountDetail extends UpstreamAccountSummary {
   note?: string | null;
   upstreamBaseUrl?: string | null;
   chatgptUserId?: string | null;
+  verifiedEmail?: string | null;
   lastRefreshedAt?: string | null;
   history: UpstreamAccountHistoryPoint[];
   recentActions?: UpstreamAccountActionEvent[];
@@ -388,6 +389,7 @@ export interface LoginSessionStatusResponse {
   expiresAt: string;
   updatedAt?: string | null;
   accountId?: number | null;
+  email?: string | null;
   error?: string | null;
   syncApplied?: boolean | null;
 }
@@ -435,6 +437,7 @@ export interface OauthMailboxStatus {
 
 export interface CreateOauthLoginSessionPayload {
   displayName?: string;
+  email?: string;
   groupName?: string;
   groupBoundProxyKeys?: string[];
   groupNodeShuntEnabled?: boolean;
@@ -450,6 +453,7 @@ export interface CreateOauthLoginSessionPayload {
 
 export interface UpdateOauthLoginSessionPayload {
   displayName?: string;
+  email?: string | null;
   groupName?: string;
   groupBoundProxyKeys?: string[];
   groupNodeShuntEnabled?: boolean;
@@ -500,6 +504,7 @@ export interface OauthMailboxStatusRequestPayload {
 
 export interface CreateApiKeyAccountPayload {
   displayName: string;
+  email?: string;
   groupName?: string;
   groupBoundProxyKeys?: string[];
   groupNodeShuntEnabled?: boolean;
@@ -517,6 +522,7 @@ export interface CreateApiKeyAccountPayload {
 
 export interface UpdateUpstreamAccountPayload {
   displayName?: string;
+  email?: string | null;
   groupName?: string;
   groupBoundProxyKeys?: string[];
   concurrencyLimit?: number;
@@ -1102,6 +1108,8 @@ function normalizeUpstreamAccountDetail(raw: unknown): UpstreamAccountDetail {
   return {
     ...summary,
     note: typeof payload.note === "string" ? payload.note : null,
+    verifiedEmail:
+      typeof payload.verifiedEmail === "string" ? payload.verifiedEmail : null,
     upstreamBaseUrl:
       typeof payload.upstreamBaseUrl === "string"
         ? payload.upstreamBaseUrl
@@ -1244,6 +1252,7 @@ function normalizeLoginSessionStatusResponse(
     expiresAt,
     updatedAt: typeof payload.updatedAt === "string" ? payload.updatedAt : null,
     accountId: accountId == null ? null : accountId,
+    email: typeof payload.email === "string" ? payload.email : null,
     error: typeof payload.error === "string" ? payload.error : null,
     syncApplied:
       typeof payload.syncApplied === "boolean" ? payload.syncApplied : null,

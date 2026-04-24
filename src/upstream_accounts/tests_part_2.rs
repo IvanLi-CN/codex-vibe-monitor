@@ -1062,6 +1062,7 @@
                 updated_account_id,
                 UpdateUpstreamAccountRequest {
                     display_name: None,
+                    email: OptionalField::Missing,
                     group_name: None,
                     group_bound_proxy_keys: None,
                     group_node_shunt_enabled: None,
@@ -1238,6 +1239,7 @@
                         account_id,
                         UpdateUpstreamAccountRequest {
                             display_name: None,
+                            email: OptionalField::Missing,
                             group_name: None,
                             group_bound_proxy_keys: None,
                             group_node_shunt_enabled: None,

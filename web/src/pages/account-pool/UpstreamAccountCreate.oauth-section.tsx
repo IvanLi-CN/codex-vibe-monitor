@@ -16,8 +16,10 @@ import { OauthMailboxChip } from "../../components/account-pool/OauthMailboxChip
 import { AccountTagField } from "../../components/AccountTagField";
 import { UpstreamAccountGroupCombobox } from "../../components/UpstreamAccountGroupCombobox";
 import { MotherAccountToggle } from "../../components/MotherAccountToggle";
+import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
 import {
   DuplicateWarningPopover,
+  resolveDisplayNameAfterEmailChange,
 } from "./UpstreamAccountCreate.shared";
 import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.controller-context";
 
@@ -33,6 +35,7 @@ export function UpstreamAccountCreateOauthSection() {
     groupSuggestions,
     handleAttachOauthMailbox,
     handleCompleteOauth,
+    handleResolveOauthEmailChoice,
     handleCopyOauthUrl,
     handleCopySingleInvite,
     handleCopySingleMailbox,
@@ -53,6 +56,8 @@ export function UpstreamAccountCreateOauthSection() {
     oauthCallbackUrl,
     oauthDisplayName,
     oauthDisplayNameConflict,
+    oauthEmail,
+    oauthEmailResolution,
     oauthDuplicateWarning,
     oauthGroupName,
     oauthGroupProxyState,
@@ -77,6 +82,7 @@ export function UpstreamAccountCreateOauthSection() {
     setManualCopyOpen,
     setOauthCallbackUrl,
     setOauthDisplayName,
+    setOauthEmail,
     setOauthGroupName,
     setOauthIsMother,
     setOauthMailboxInput,
@@ -88,6 +94,9 @@ export function UpstreamAccountCreateOauthSection() {
     updateTag,
     writesEnabled,
   } = useUpstreamAccountCreateViewContext();
+  const oauthResolutionPlanBadge = upstreamPlanBadgeRecipe(
+    oauthEmailResolution?.detail.planType ?? null,
+  );
 
   return (
 <>
@@ -134,6 +143,14 @@ export function UpstreamAccountCreateOauthSection() {
           onChange={(event) => {
             const nextValue = event.target.value;
             setOauthMailboxInput(nextValue);
+            setOauthEmail(nextValue);
+            setOauthDisplayName((current: string) =>
+              resolveDisplayNameAfterEmailChange(
+                current,
+                oauthEmail,
+                nextValue,
+              ),
+            );
             setActionError(null);
             invalidateRelinkPendingOauthSessionForMailboxChange(
               nextValue,
@@ -590,7 +607,6 @@ export function UpstreamAccountCreateOauthSection() {
           disabled={
             busyAction === "oauth-generate" ||
             !writesEnabled ||
-            oauthDisplayNameConflict != null ||
             Boolean(oauthGroupProxyState.error) ||
             session?.status === "completed"
           }
@@ -704,6 +720,54 @@ export function UpstreamAccountCreateOauthSection() {
     </div>
   </div>
 
+  {oauthEmailResolution ? (
+    <Alert variant="warning">
+      <AppIcon
+        name="alert-circle-outline"
+        className="mt-0.5 h-4 w-4 shrink-0"
+        aria-hidden
+      />
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="font-medium">
+            {t("accountPool.upstreamAccounts.oauth.emailChoiceTitle")}
+          </p>
+          {oauthResolutionPlanBadge ? (
+            <Badge variant={oauthResolutionPlanBadge.variant}>
+              {oauthEmailResolution.detail.planType}
+            </Badge>
+          ) : null}
+        </div>
+        <p className="text-sm text-warning/90">
+          {t("accountPool.upstreamAccounts.oauth.emailChoiceBody", {
+            verifiedEmail: oauthEmailResolution.verifiedEmail,
+            chosenEmail: oauthEmailResolution.chosenEmail,
+          })}
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            disabled={busyAction === "oauth-email-choice"}
+            onClick={() => void handleResolveOauthEmailChoice("verified")}
+          >
+            {t("accountPool.upstreamAccounts.oauth.keepVerifiedEmail")}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={busyAction === "oauth-email-choice"}
+            onClick={() => void handleResolveOauthEmailChoice("entered")}
+          >
+            {t("accountPool.upstreamAccounts.oauth.keepEnteredEmail")}
+          </Button>
+        </div>
+      </div>
+    </Alert>
+  ) : null}
+
   <div className="flex flex-wrap justify-end gap-2">
     <Button asChild type="button" variant="ghost">
       <Link to="/account-pool/upstream-accounts">
@@ -717,8 +781,7 @@ export function UpstreamAccountCreateOauthSection() {
         !oauthSessionActive ||
         !oauthCallbackUrl.trim() ||
         busyAction === "oauth-complete" ||
-        !writesEnabled ||
-        oauthDisplayNameConflict != null
+        !writesEnabled
       }
     >
       {busyAction === "oauth-complete" ? (

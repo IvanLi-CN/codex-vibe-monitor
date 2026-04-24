@@ -7,6 +7,7 @@
             HeaderMap::new(),
             Json(CreateOauthLoginSessionRequest {
                 display_name: None,
+                email: None,
                 group_name: None,
                 group_bound_proxy_keys: None,
                 group_node_shunt_enabled: None,
@@ -52,6 +53,8 @@
             state.as_ref(),
             PersistOauthCallbackInput {
                 display_name: "Relogin Target".to_string(),
+                chosen_email: None,
+                verified_email: None,
                 session: pending_session,
                 claims: test_claims(
                     "relogin@example.com",
@@ -88,6 +91,7 @@
                 AxumPath(relogin.login_id.clone()),
                 Json(UpdateOauthLoginSessionRequest {
                     display_name: OptionalField::Value("Edited Relogin".to_string()),
+                    email: OptionalField::Missing,
                     group_name: OptionalField::Value("edited-group".to_string()),
                     group_bound_proxy_keys: OptionalField::Value(
                         test_required_group_bound_proxy_keys(),
@@ -132,6 +136,8 @@
             OauthAccountUpsert {
                 account_id: None,
                 display_name: "Cooldown OAuth Existing",
+                chosen_email: None,
+                verified_email: None,
                 group_name: None,
                 is_mother: false,
                 note: None,
@@ -169,6 +175,8 @@
             OauthAccountUpsert {
                 account_id: Some(account_id),
                 display_name: "Cooldown OAuth Existing",
+                chosen_email: None,
+                verified_email: None,
                 group_name: None,
                 is_mother: false,
                 note: Some("updated note".to_string()),
@@ -224,6 +232,8 @@
             OauthAccountUpsert {
                 account_id: None,
                 display_name: "First OAuth",
+                chosen_email: None,
+                verified_email: None,
                 group_name: None,
                 is_mother: false,
                 note: None,
@@ -248,6 +258,8 @@
             OauthAccountUpsert {
                 account_id: None,
                 display_name: "Second OAuth",
+                chosen_email: None,
+                verified_email: None,
                 group_name: None,
                 is_mother: false,
                 note: None,
@@ -349,6 +361,8 @@
                 OauthAccountUpsert {
                     account_id: None,
                     display_name,
+                    chosen_email: None,
+                    verified_email: None,
                     group_name: Some("0414-3".to_string()),
                     is_mother: false,
                     note: None,
@@ -424,6 +438,8 @@
                 OauthAccountUpsert {
                     account_id: None,
                     display_name,
+                    chosen_email: None,
+                    verified_email: None,
                     group_name: Some("shared-team-manual".to_string()),
                     is_mother,
                     note: None,
@@ -487,6 +503,8 @@
                 OauthAccountUpsert {
                     account_id: None,
                     display_name,
+                    chosen_email: None,
+                    verified_email: None,
                     group_name: None,
                     is_mother: false,
                     note: None,
@@ -553,6 +571,8 @@
                 OauthAccountUpsert {
                     account_id: None,
                     display_name,
+                    chosen_email: None,
+                    verified_email: None,
                     group_name: None,
                     is_mother: false,
                     note: None,
@@ -614,6 +634,8 @@
                 OauthAccountUpsert {
                     account_id: None,
                     display_name,
+                    chosen_email: None,
+                    verified_email: None,
                     group_name: None,
                     is_mother: false,
                     note: None,
@@ -676,6 +698,8 @@
                 OauthAccountUpsert {
                     account_id: None,
                     display_name,
+                    chosen_email: None,
+                    verified_email: None,
                     group_name: None,
                     is_mother: false,
                     note: None,
@@ -788,6 +812,8 @@
                 OauthAccountUpsert {
                     account_id: None,
                     display_name,
+                    chosen_email: None,
+                    verified_email: None,
                     group_name: None,
                     is_mother: false,
                     note: None,
@@ -835,6 +861,216 @@
     }
 
     #[tokio::test]
+    async fn update_uses_latest_sample_plan_type_for_current_mixed_plan_same_name_exemption() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let display_name = "Shared Mixed Plan";
+        let shared_account_id = "shared_mixed_plan_account";
+        let mut inserted_ids = Vec::new();
+
+        for (email, plan_type) in [
+            ("shared-mixed-team@example.com", Some("team")),
+            ("shared-mixed-pro@example.com", Some("pro")),
+        ] {
+            let mut tx = state.pool.begin().await.expect("begin tx");
+            ensure_display_name_available_for_oauth_identity(
+                &mut *tx,
+                display_name,
+                None,
+                Some(shared_account_id),
+                None,
+                None,
+                plan_type,
+            )
+            .await
+            .expect("mixed-plan same-name create should be allowed");
+            let account_id = upsert_oauth_account(
+                &mut tx,
+                OauthAccountUpsert {
+                    account_id: None,
+                    display_name,
+                    chosen_email: None,
+                    verified_email: None,
+                    group_name: None,
+                    is_mother: false,
+                    note: None,
+                    tag_ids: vec![],
+                    requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
+                    claims: &test_claims_with_plan_type(
+                        email,
+                        Some(shared_account_id),
+                        None,
+                        plan_type,
+                    ),
+                    encrypted_credentials: format!("encrypted-{email}"),
+                    token_expires_at: "2026-03-14T00:00:00Z",
+                    external_identity: None,
+                },
+            )
+            .await
+            .expect("oauth insert");
+            tx.commit().await.expect("commit tx");
+            inserted_ids.push(account_id);
+        }
+
+        let current_account_id = inserted_ids[1];
+        insert_limit_sample(
+            &state.pool,
+            current_account_id,
+            "2026-03-15T00:00:02Z",
+            Some("pro"),
+        )
+        .await;
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET plan_type = NULL,
+                plan_type_observed_at = NULL,
+                updated_at = '2026-03-15T00:00:03Z'
+            WHERE id = ?1
+            "#,
+        )
+        .bind(current_account_id)
+        .execute(&state.pool)
+        .await
+        .expect("clear current account plan type");
+
+        let detail = state
+            .upstream_accounts
+            .account_ops
+            .run_update_account(
+                state.clone(),
+                current_account_id,
+                UpdateUpstreamAccountRequest {
+                    display_name: None,
+                    email: OptionalField::Missing,
+                    group_name: None,
+                    group_bound_proxy_keys: None,
+                    group_node_shunt_enabled: None,
+                    note: Some("mixed-plan note update".to_string()),
+                    group_note: None,
+                    concurrency_limit: None,
+                    upstream_base_url: OptionalField::Missing,
+                    enabled: None,
+                    is_mother: None,
+                    api_key: None,
+                    local_primary_limit: None,
+                    local_secondary_limit: None,
+                    local_limit_unit: None,
+                    tag_ids: None,
+                },
+            )
+            .await
+            .expect("update should keep mixed-plan same-name exemption");
+
+        assert_eq!(detail.summary.display_name, display_name);
+        assert_eq!(detail.note.as_deref(), Some("mixed-plan note update"));
+    }
+
+    #[tokio::test]
+    async fn refresh_uses_latest_sample_plan_type_for_current_mixed_plan_same_name_exemption() {
+        let pool = test_pool().await;
+        let crypto_key = derive_secret_key("refresh-mixed-plan-sample-fallback");
+        let display_name = "Refresh Shared Mixed Plan";
+        let shared_account_id = "refresh_shared_mixed_plan_account";
+        let mut inserted_ids = Vec::new();
+
+        for (email, plan_type) in [
+            ("refresh-mixed-team@example.com", Some("team")),
+            ("refresh-mixed-pro@example.com", Some("pro")),
+        ] {
+            let mut tx = pool.begin().await.expect("begin tx");
+            ensure_display_name_available_for_oauth_identity(
+                &mut *tx,
+                display_name,
+                None,
+                Some(shared_account_id),
+                None,
+                None,
+                plan_type,
+            )
+            .await
+            .expect("mixed-plan same-name create should be allowed");
+            let account_id = upsert_oauth_account(
+                &mut tx,
+                OauthAccountUpsert {
+                    account_id: None,
+                    display_name,
+                    chosen_email: None,
+                    verified_email: None,
+                    group_name: None,
+                    is_mother: false,
+                    note: None,
+                    tag_ids: vec![],
+                    requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
+                    claims: &test_claims_with_plan_type(
+                        email,
+                        Some(shared_account_id),
+                        None,
+                        plan_type,
+                    ),
+                    encrypted_credentials: format!("encrypted-{email}"),
+                    token_expires_at: "2026-03-14T00:00:00Z",
+                    external_identity: None,
+                },
+            )
+            .await
+            .expect("oauth insert");
+            tx.commit().await.expect("commit tx");
+            inserted_ids.push(account_id);
+        }
+
+        let current_account_id = inserted_ids[1];
+        insert_limit_sample(
+            &pool,
+            current_account_id,
+            "2026-03-15T00:00:02Z",
+            Some("pro"),
+        )
+        .await;
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET plan_type = NULL,
+                plan_type_observed_at = NULL,
+                updated_at = '2026-03-15T00:00:03Z'
+            WHERE id = ?1
+            "#,
+        )
+        .bind(current_account_id)
+        .execute(&pool)
+        .await
+        .expect("clear current account plan type");
+
+        persist_oauth_credentials(
+            &pool,
+            current_account_id,
+            &crypto_key,
+            &StoredOauthCredentials {
+                access_token: "refresh-access-2".to_string(),
+                refresh_token: "refresh-token-2".to_string(),
+                id_token: test_id_token(
+                    "refresh-mixed-pro@example.com",
+                    Some(shared_account_id),
+                    None,
+                    None,
+                ),
+                token_type: Some("Bearer".to_string()),
+            },
+            "2026-03-16T00:00:00Z",
+        )
+        .await
+        .expect("refresh should keep mixed-plan same-name exemption");
+
+        let row = load_upstream_account_row(&pool, current_account_id)
+            .await
+            .expect("load refreshed account")
+            .expect("refreshed account exists");
+        assert_eq!(row.display_name, display_name);
+        assert_eq!(row.email.as_deref(), Some("refresh-mixed-pro@example.com"));
+        assert!(row.last_refreshed_at.is_some());
+    }
+
+    #[tokio::test]
     async fn unknown_plan_type_accounts_with_shared_account_id_remain_flagged() {
         let pool = test_pool().await;
 
@@ -851,6 +1087,8 @@
                 OauthAccountUpsert {
                     account_id: None,
                     display_name,
+                    chosen_email: None,
+                    verified_email: None,
                     group_name: None,
                     is_mother: false,
                     note: None,
@@ -895,6 +1133,8 @@
             OauthAccountUpsert {
                 account_id: None,
                 display_name: "Snapshot OAuth",
+                chosen_email: None,
+                verified_email: None,
                 group_name: None,
                 is_mother: false,
                 note: None,
@@ -957,6 +1197,8 @@
             OauthAccountUpsert {
                 account_id: None,
                 display_name: "Refresh OAuth",
+                chosen_email: None,
+                verified_email: None,
                 group_name: None,
                 is_mother: false,
                 note: None,
@@ -1042,6 +1284,72 @@
     }
 
     #[tokio::test]
+    async fn refresh_rejects_display_name_renames_that_conflict_with_other_accounts() {
+        let pool = test_pool().await;
+        let crypto_key = derive_secret_key("refresh-display-name-conflict");
+        let account_id = insert_syncable_oauth_account(
+            &pool,
+            &crypto_key,
+            "old@example.com",
+            "old@example.com",
+            "refresh_conflict_org",
+            "refresh_conflict_user",
+        )
+        .await;
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET verified_email = ?2
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind("old@example.com")
+        .execute(&pool)
+        .await
+        .expect("seed verified email");
+        let conflicting_id = insert_api_key_account(&pool, "renamed@example.com").await;
+
+        let err = persist_oauth_credentials(
+            &pool,
+            account_id,
+            &crypto_key,
+            &StoredOauthCredentials {
+                access_token: "access-2".to_string(),
+                refresh_token: "refresh-2".to_string(),
+                id_token: test_id_token(
+                    "renamed@example.com",
+                    Some("refresh_conflict_org"),
+                    Some("refresh_conflict_user"),
+                    Some("team"),
+                ),
+                token_type: Some("Bearer".to_string()),
+            },
+            "2026-03-16T00:00:00Z",
+        )
+        .await
+        .expect_err("reject conflicting refresh rename");
+        assert!(
+            err.to_string().contains("displayName must be unique"),
+            "unexpected error: {err:#}"
+        );
+
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load oauth row")
+            .expect("oauth row exists");
+        assert_eq!(row.display_name, "old@example.com");
+        assert_eq!(row.email.as_deref(), Some("old@example.com"));
+        assert_eq!(row.verified_email.as_deref(), Some("old@example.com"));
+
+        let conflict = load_upstream_account_row(&pool, conflicting_id)
+            .await
+            .expect("load conflicting row")
+            .expect("conflicting row exists");
+        assert_eq!(conflict.display_name, "renamed@example.com");
+    }
+
+    #[tokio::test]
     async fn snapshot_plan_type_fallback_prefers_latest_effective_sample() {
         let pool = test_pool().await;
 
@@ -1054,6 +1362,8 @@
             OauthAccountUpsert {
                 account_id: None,
                 display_name: "Fallback OAuth",
+                chosen_email: None,
+                verified_email: None,
                 group_name: None,
                 is_mother: false,
                 note: None,
@@ -1121,6 +1431,8 @@
             OauthAccountUpsert {
                 account_id: None,
                 display_name: "Refreshed Fallback OAuth",
+                chosen_email: None,
+                verified_email: None,
                 group_name: None,
                 is_mother: false,
                 note: None,
@@ -1193,6 +1505,8 @@
                 OauthAccountUpsert {
                     account_id: None,
                     display_name,
+                    chosen_email: None,
+                    verified_email: None,
                     group_name: None,
                     is_mother: false,
                     note: None,
@@ -1280,6 +1594,8 @@
                 OauthAccountUpsert {
                     account_id: None,
                     display_name,
+                    chosen_email: None,
+                    verified_email: None,
                     group_name: None,
                     is_mother: false,
                     note: None,
@@ -1358,6 +1674,8 @@
                 OauthAccountUpsert {
                     account_id: None,
                     display_name,
+                    chosen_email: None,
+                    verified_email: None,
                     group_name: None,
                     is_mother: false,
                     note: None,
@@ -1436,6 +1754,8 @@
                 OauthAccountUpsert {
                     account_id: None,
                     display_name,
+                    chosen_email: None,
+                    verified_email: None,
                     group_name: None,
                     is_mother: false,
                     note: None,
@@ -1519,6 +1839,8 @@
             OauthAccountUpsert {
                 account_id: None,
                 display_name: "Original OAuth",
+                chosen_email: None,
+                verified_email: None,
                 group_name: Some("prod".to_string()),
                 is_mother: false,
                 note: Some("note".to_string()),
@@ -1543,6 +1865,8 @@
             OauthAccountUpsert {
                 account_id: Some(original_id),
                 display_name: "Renamed OAuth",
+                chosen_email: None,
+                verified_email: None,
                 group_name: Some("prod".to_string()),
                 is_mother: false,
                 note: Some("fresh".to_string()),

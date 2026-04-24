@@ -30,6 +30,7 @@ export type StoryStore = {
     string,
     LoginSessionStatusResponse & {
       displayName?: string
+      email?: string
       groupName?: string
       isMother?: boolean
       note?: string
@@ -1606,6 +1607,9 @@ export function createStore(): StoryStore {
     storyId?.endsWith('--mixed-plan-coexistence') === true
   const teamSharedOrgCoexistenceStory =
     storyId?.endsWith('--team-shared-org-coexistence') === true
+  const oauthEditEmailHintStory =
+    storyId?.endsWith('--oauth-edit-email-hint') === true ||
+    storyId?.endsWith('--oauth-email-overview') === true
   const compactStory = storyId?.endsWith('--compact-long-labels') === true
   const tagFilterStory = storyId?.endsWith('--tag-filter-all-match') === true
   const availabilityBadgeStory =
@@ -1678,6 +1682,15 @@ export function createStore(): StoryStore {
             planType: 'team',
             duplicateInfo: null,
             note: 'Synthetic team member fixture sharing the same upstream org intentionally.',
+          }
+      : oauthEditEmailHintStory
+        ? {
+            displayName: 'old@storybook.example.com',
+            email: 'old@storybook.example.com',
+            verifiedEmail: 'verified@storybook.example.com',
+            planType: 'team',
+            duplicateInfo: null,
+            note: 'OAuth fixture showing the editable email alongside the latest verified email.',
           }
       : compactStory
         ? {

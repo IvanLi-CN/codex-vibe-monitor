@@ -96,6 +96,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(updateOauthLogin).toHaveBeenCalledTimes(2);
     expect(updateOauthLogin).toHaveBeenNthCalledWith(2, "login-1", {
       displayName: "Fresh OAuth Valid",
+      email: null,
       ...expectedGroupSelection(),
       note: "",
       tagIds: [],
@@ -165,6 +166,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "Fresh OAuth Renamed",
+      email: null,
       ...expectedGroupSelection(),
       note: "",
       tagIds: [],
@@ -250,6 +252,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "",
+      email: null,
       ...expectedGroupSelection("new-team"),
       note: "",
       groupNote: "Updated draft shared note",
@@ -818,6 +821,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "Row One Completed",
+      email: null,
       ...expectedGroupSelection(),
       note: "",
       tagIds: [],
@@ -881,6 +885,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "Row One Retry",
+      email: null,
       ...expectedGroupSelection(),
       note: "",
       tagIds: [],
@@ -1006,6 +1011,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       id: 41,
       displayName: "Fresh OAuth",
       duplicateInfo: null,
+      planType: "plus",
     });
     mockUpstreamAccounts({ completeOauthLogin });
     render();
@@ -1024,13 +1030,141 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     expect(document.body.textContent).not.toContain("Possible upstream duplicate");
     expect(document.body.textContent).not.toContain("Matched:");
-    expect(navigateMock).toHaveBeenCalledWith("/account-pool/upstream-accounts", {
-      state: {
-        selectedAccountId: 41,
-        openDetail: true,
-        duplicateWarning: null,
-      },
+    expect(navigateMock).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Authorization completed. The account list has been refreshed.");
+    expect(document.body.textContent).toContain("Fresh OAuth is ready.");
+    expect(document.body.textContent).toContain("plus");
+    expect(
+      Array.from(document.body.querySelectorAll("a")).some((candidate) =>
+        /Open details/i.test(candidate.textContent || ""),
+      ),
+    ).toBe(true);
+  });
+
+  it("prompts for the final oauth email and updates the generated display name when keeping the verified email", async () => {
+    const completeOauthLogin = vi.fn().mockResolvedValue({
+      id: 41,
+      kind: "oauth_codex",
+      provider: "codex",
+      displayName: "entered@example.com",
+      email: "entered@example.com",
+      verifiedEmail: "verified@example.com",
+      groupName: "prod",
+      isMother: false,
+      status: "active",
+      enabled: true,
+      duplicateInfo: null,
+      history: [],
+      note: null,
+      tags: [],
+      planType: "team",
     });
+    const saveAccount = vi.fn().mockImplementation(async (accountId, payload) => ({
+      id: accountId,
+      kind: "oauth_codex",
+      provider: "codex",
+      displayName: "verified@example.com",
+      email: payload.email,
+      verifiedEmail: "verified@example.com",
+      groupName: "prod",
+      isMother: false,
+      status: "active",
+      enabled: true,
+      duplicateInfo: null,
+      history: [],
+      note: null,
+      tags: [],
+      planType: "team",
+    }));
+    mockUpstreamAccounts({ completeOauthLogin, saveAccount });
+    render();
+
+    const displayNameInput = setInputValue(
+      'input[name="oauthMailboxInput"]',
+      "entered@example.com",
+    );
+    await flushAsync();
+
+    expect(
+      (host?.querySelector('input[name="oauthDisplayName"]') as HTMLInputElement)
+        .value,
+    ).toBe("entered@example.com");
+
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+    setInputValue(
+      'textarea[name="oauthCallbackUrl"]',
+      "http://localhost:1455/oauth/callback?code=test",
+    );
+    await flushAsync();
+    clickButton(/Complete OAuth login/i);
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Choose which email to keep");
+    expect(document.body.textContent).toContain("verified@example.com");
+    expect(document.body.textContent).toContain("entered@example.com");
+    expect(document.body.textContent).toContain("team");
+
+    clickButton(/Keep verified email/i);
+    await flushAsync();
+
+    expect(saveAccount).toHaveBeenCalledWith(41, {
+      email: "verified@example.com",
+    });
+    expect(
+      (host?.querySelector('input[name="oauthDisplayName"]') as HTMLInputElement)
+        .value,
+    ).toBe("verified@example.com");
+    expect(displayNameInput.value).toBe("verified@example.com");
+  });
+
+  it("prompts for the final oauth email when the chosen email stayed blank", async () => {
+    const completeOauthLogin = vi.fn().mockResolvedValue({
+      id: 41,
+      kind: "oauth_codex",
+      provider: "codex",
+      displayName: "Codex OAuth",
+      email: null,
+      verifiedEmail: "verified@example.com",
+      groupName: "prod",
+      isMother: false,
+      status: "active",
+      enabled: true,
+      duplicateInfo: null,
+      history: [],
+      note: null,
+      tags: [],
+      planType: "team",
+    });
+    const saveAccount = vi.fn();
+    mockUpstreamAccounts({ completeOauthLogin, saveAccount });
+    render();
+
+    setInputValue('input[name="oauthDisplayName"]', "Codex OAuth");
+    await flushAsync();
+
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+    setInputValue(
+      'textarea[name="oauthCallbackUrl"]',
+      "http://localhost:1455/oauth/callback?code=test",
+    );
+    await flushAsync();
+    clickButton(/Complete OAuth login/i);
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Choose which email to keep");
+    expect(document.body.textContent).toContain("verified@example.com");
+    expect(findButton(/Keep entered email/i)).toBeInstanceOf(HTMLButtonElement);
+
+    clickButton(/Keep entered email/i);
+    await flushAsync();
+
+    expect(saveAccount).not.toHaveBeenCalled();
+    expect(
+      (host?.querySelector('input[name="oauthDisplayName"]') as HTMLInputElement)
+        .value,
+    ).toBe("Codex OAuth");
   });
 
   it("clears a completed single oauth session after edits so a fresh url can be regenerated", async () => {
@@ -1216,18 +1350,10 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     expect(getLoginSession).toHaveBeenCalledWith("login-1");
     expect(apiMocks.fetchUpstreamAccountDetail).toHaveBeenCalledWith(41);
-    expect(navigateMock).toHaveBeenCalledWith(
-      "/account-pool/upstream-accounts",
-      {
-        state: {
-          selectedAccountId: 41,
-          openDetail: true,
-          duplicateWarning: null,
-        },
-      },
-    );
+    expect(navigateMock).not.toHaveBeenCalled();
     expect(document.body.textContent).not.toContain("network failed");
     expect(findButton(/Generate OAuth URL/i)?.disabled).toBe(true);
+    expect(document.body.textContent).toContain("Open details");
   });
 
   it("recovers a batch row when the callback already completed on the server", async () => {

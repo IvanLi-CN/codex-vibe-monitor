@@ -149,6 +149,7 @@ fn external_metadata_to_update_request(
 ) -> UpdateUpstreamAccountRequest {
     UpdateUpstreamAccountRequest {
         display_name: metadata.display_name,
+        email: OptionalField::Missing,
         group_name: metadata.group_name,
         group_bound_proxy_keys: metadata.group_bound_proxy_keys,
         group_node_shunt_enabled: metadata.group_node_shunt_enabled,
@@ -285,10 +286,11 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
     probe: ImportedOauthProbeOutcome,
 ) -> Result<UpstreamAccountDetail, (StatusCode, String)> {
     let existing_row = load_external_oauth_account_by_id(state, account_id, identity).await?;
-    let display_name = match metadata.display_name.as_deref() {
-        Some(value) => normalize_required_display_name(value)?,
-        None => existing_row.display_name.clone(),
-    };
+    let requested_display_name = metadata
+        .display_name
+        .as_deref()
+        .map(normalize_required_display_name)
+        .transpose()?;
     let target_group_name = normalize_external_group_name(metadata, Some(&existing_row));
     let normalized_group_note = normalize_optional_text(metadata.group_note.clone());
     let group_concurrency_limit =
@@ -326,18 +328,65 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
         &StoredCredentials::Oauth(probe.credentials.clone()),
     )
     .map_err(internal_error_tuple)?;
+    let next_verified_email = normalize_email_value(probe.claims.email.clone());
+    let should_follow_verified_email = should_replace_email_after_verified_email_change(
+        existing_row.email.as_deref(),
+        existing_row.verified_email.as_deref(),
+    );
+    let chosen_email = if should_follow_verified_email {
+        next_verified_email
+            .clone()
+            .or_else(|| existing_row.email.clone())
+    } else {
+        existing_row.email.clone()
+    };
+    let previous_display_email_source = if should_follow_verified_email {
+        existing_row
+            .email
+            .as_deref()
+            .or(existing_row.verified_email.as_deref())
+    } else {
+        existing_row.email.as_deref()
+    };
+    let display_name = resolve_display_name_after_email_change(
+        Some(existing_row.display_name.as_str()),
+        requested_display_name.as_deref(),
+        previous_display_email_source,
+        chosen_email.as_deref(),
+    )
+    .unwrap_or(existing_row.display_name.clone());
 
     let mut tx = state
         .pool
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(internal_error_tuple)?;
-    ensure_display_name_available(tx.as_mut(), &display_name, Some(existing_row.id)).await?;
+    let effective_existing_plan_type = resolve_effective_plan_type_for_account(
+        tx.as_mut(),
+        existing_row.id,
+        existing_row.plan_type.as_deref(),
+    )
+    .await
+    .map_err(internal_error_tuple)?;
+    ensure_display_name_available_for_oauth_identity(
+        tx.as_mut(),
+        &display_name,
+        Some(existing_row.id),
+        probe.claims.chatgpt_account_id.as_deref(),
+        probe.claims.chatgpt_user_id.as_deref(),
+        group_name.as_deref(),
+        normalize_plan_type(probe.claims.chatgpt_plan_type.as_deref())
+            .or(effective_existing_plan_type)
+            .as_deref(),
+    )
+    .await?;
     upsert_oauth_account(
         &mut tx,
         OauthAccountUpsert {
             account_id: Some(existing_row.id),
             display_name: &display_name,
+            chosen_email,
+            verified_email: next_verified_email,
             group_name,
             is_mother,
             note,
@@ -559,6 +608,8 @@ pub(crate) async fn external_upsert_oauth_upstream_account(
             OauthAccountUpsert {
                 account_id: None,
                 display_name: &display_name,
+                chosen_email: normalize_email_value(probe.claims.email.clone()),
+                verified_email: normalize_email_value(probe.claims.email.clone()),
                 group_name: create_group_name,
                 is_mother,
                 note,

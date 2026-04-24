@@ -83,6 +83,7 @@ import {
   mergeDraftAfterAccountSave,
   type AccountDraft,
 } from "../../lib/upstreamAccountDrafts";
+import { resolveDisplayNameAfterEmailChange } from "./UpstreamAccountCreate.shared";
 import { resolvePersistedGroupNodeShuntEnabled } from "../../lib/upstreamAccountGroupDrafts";
 import { validateUpstreamBaseUrl } from "../../lib/upstreamBaseUrl";
 import { applyMotherUpdateToItems } from "../../lib/upstreamMother";
@@ -370,6 +371,7 @@ function findDisplayNameConflict(
 function buildDraft(detail: UpstreamAccountDetail | null): AccountDraft {
   return {
     displayName: detail?.displayName ?? "",
+    email: detail?.email ?? "",
     groupName: detail?.groupName ?? "",
     isMother: detail?.isMother ?? false,
     note: detail?.note ?? "",
@@ -1780,12 +1782,14 @@ function SharedUpstreamAccountDetailDrawerInner({
       : null;
   const detailDisplayNameConflict = useMemo(
     () =>
-      findDisplayNameConflict(
-        items,
-        draft.displayName,
-        selectedDetail?.id ?? null,
-      ),
-    [draft.displayName, items, selectedDetail?.id],
+      selectedDetail?.kind === "api_key_codex"
+        ? findDisplayNameConflict(
+            items,
+            draft.displayName,
+            selectedDetail?.id ?? null,
+          )
+        : null,
+    [draft.displayName, items, selectedDetail?.id, selectedDetail?.kind],
   );
   const draftUpstreamBaseUrlError = useMemo(() => {
     const code = validateUpstreamBaseUrl(draft.upstreamBaseUrl);
@@ -1956,6 +1960,63 @@ function SharedUpstreamAccountDetailDrawerInner({
     [onClose],
   );
 
+  const applySavedAccountDraftResponse = useCallback(
+    (
+      sourceId: number,
+      saveDraftSessionKey: string | null,
+      saveStartedDraft: AccountDraft,
+      fallbackDraft: AccountDraft,
+      response: UpstreamAccountDetail,
+    ) => {
+      const responseFallbackDraft = removeAccountDraftTagIds(
+        fallbackDraft,
+        knownRemovedTagIdsRef.current,
+      );
+      const retainedServerDraft = removeAccountDraftTagIds(
+        latestServerDraftRef.current,
+        knownRemovedTagIdsRef.current,
+      );
+      const responseDraft = removeAccountDraftTagIds(
+        buildDraft(response),
+        knownRemovedTagIdsRef.current,
+      );
+      const startedDraft = removeAccountDraftTagIds(
+        saveStartedDraft,
+        knownRemovedTagIdsRef.current,
+      );
+      if (
+        selectedIdRef.current === sourceId &&
+        activeDraftSessionKeyRef.current != null
+      ) {
+        recentSaveResponseGuardsRef.current.set(sourceId, {
+          accountId: sourceId,
+          sessionKey: saveDraftSessionKey,
+          startedDraft,
+          draft: responseDraft,
+          fallbackDraft: responseFallbackDraft,
+          retainedDraft: retainedServerDraft,
+        });
+      }
+      if (
+        selectedIdRef.current === sourceId &&
+        saveDraftSessionKey != null &&
+        activeDraftSessionKeyRef.current === saveDraftSessionKey
+      ) {
+        draftBaselineRef.current = responseDraft;
+        latestServerDraftRef.current = responseDraft;
+        setDraft((current) =>
+          mergeDraftAfterAccountSave(
+            current,
+            saveStartedDraft,
+            responseDraft,
+          ),
+        );
+      }
+      return responseDraft;
+    },
+    [],
+  );
+
   const handleSave = useCallback(
     async (source: UpstreamAccountDetail) => {
       if (source.kind === "api_key_codex" && draftUpstreamBaseUrlError) return;
@@ -1982,8 +2043,10 @@ function SharedUpstreamAccountDetailDrawerInner({
         const normalizedGroupName = normalizeGroupName(draft.groupName);
         const pendingGroupNote =
           resolvePendingGroupNoteForName(normalizedGroupName);
+        const normalizedEmail = draft.email.trim();
         const response = await saveAccount(source.id, {
           displayName: draft.displayName.trim() || undefined,
+          email: normalizedEmail || null,
           groupName: draft.groupName.trim(),
           isMother: draft.isMother,
           note: draft.note.trim() || undefined,
@@ -2022,54 +2085,13 @@ function SharedUpstreamAccountDetailDrawerInner({
           );
         }
         notifyMotherChange(response);
-        const responseFallbackDraft = removeAccountDraftTagIds(
-          pendingSaveSession.fallbackDraft,
-          knownRemovedTagIdsRef.current,
-        );
-        const retainedServerDraft = removeAccountDraftTagIds(
-          latestServerDraftRef.current,
-          knownRemovedTagIdsRef.current,
-        );
-        const responseDraft = removeAccountDraftTagIds(
-          buildDraft(response),
-          knownRemovedTagIdsRef.current,
-        );
-        const startedDraft = removeAccountDraftTagIds(
+        applySavedAccountDraftResponse(
+          source.id,
+          saveDraftSessionKey,
           saveStartedDraft,
-          knownRemovedTagIdsRef.current,
+          pendingSaveSession.fallbackDraft,
+          response,
         );
-        if (
-          selectedIdRef.current === source.id &&
-          activeDraftSessionKeyRef.current != null
-        ) {
-          const recentSaveResponseGuard = {
-            accountId: source.id,
-            sessionKey: saveDraftSessionKey,
-            startedDraft,
-            draft: responseDraft,
-            fallbackDraft: responseFallbackDraft,
-            retainedDraft: retainedServerDraft,
-          };
-          recentSaveResponseGuardsRef.current.set(
-            source.id,
-            recentSaveResponseGuard,
-          );
-        }
-        if (
-          selectedIdRef.current === source.id &&
-          saveDraftSessionKey != null &&
-          activeDraftSessionKeyRef.current === saveDraftSessionKey
-        ) {
-          draftBaselineRef.current = responseDraft;
-          latestServerDraftRef.current = responseDraft;
-          setDraft((current) =>
-            mergeDraftAfterAccountSave(
-              current,
-              saveStartedDraft,
-              responseDraft,
-            ),
-          );
-        }
         if (partialWarning) {
           setActionError((current) => ({
             ...current,
@@ -2103,6 +2125,7 @@ function SharedUpstreamAccountDetailDrawerInner({
     },
     [
       activeDraftSessionKey,
+      applySavedAccountDraftResponse,
       busyAction,
       draft,
       draftUpstreamBaseUrlError,
@@ -2670,6 +2693,14 @@ function SharedUpstreamAccountDetailDrawerInner({
                       label={t("accountPool.upstreamAccounts.fields.email")}
                       value={selectedDetail.email ?? ""}
                     />
+                    {selectedDetail.kind === "oauth_codex" ? (
+                      <DetailField
+                        label={t(
+                          "accountPool.upstreamAccounts.fields.verifiedEmail",
+                        )}
+                        value={selectedDetail.verifiedEmail ?? ""}
+                      />
+                    ) : null}
                     <DetailField
                       label={t("accountPool.upstreamAccounts.fields.accountId")}
                       value={
@@ -2830,6 +2861,37 @@ function SharedUpstreamAccountDetailDrawerInner({
                             />
                           ) : null}
                         </div>
+                      </label>
+                      <label className="field md:col-span-2">
+                        <span className="field-label">
+                          {t("accountPool.upstreamAccounts.fields.email")}
+                        </span>
+                        <Input
+                          name="detailEmail"
+                          value={draft.email}
+                          onChange={(event) =>
+                            setDraft((current) => ({
+                              ...current,
+                              email: event.target.value,
+                              displayName: resolveDisplayNameAfterEmailChange(
+                                current.displayName,
+                                current.email,
+                                event.target.value,
+                              ),
+                            }))
+                          }
+                        />
+                        {selectedDetail.kind === "oauth_codex" &&
+                        selectedDetail.verifiedEmail ? (
+                          <p className="mt-2 text-xs leading-5 text-base-content/70">
+                            {t(
+                              "accountPool.upstreamAccounts.edit.verifiedEmailHint",
+                              {
+                                verifiedEmail: selectedDetail.verifiedEmail,
+                              },
+                            )}
+                          </p>
+                        ) : null}
                       </label>
                       <label className="field md:col-span-2">
                         <span className="field-label">

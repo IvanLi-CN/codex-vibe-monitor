@@ -1,5 +1,6 @@
 export type AccountDraft = {
   displayName: string;
+  email: string;
   groupName: string;
   isMother: boolean;
   note: string;
@@ -24,6 +25,7 @@ export function areAccountDraftsEqual(
 ): boolean {
   return (
     left.displayName === right.displayName &&
+    left.email === right.email &&
     left.groupName === right.groupName &&
     left.isMother === right.isMother &&
     left.note === right.note &&
@@ -46,6 +48,10 @@ export function mergeDraftAfterAccountSave(
       current.displayName === saveStartedDraft.displayName
         ? responseDraft.displayName
         : current.displayName,
+    email:
+      current.email === saveStartedDraft.email
+        ? responseDraft.email
+        : current.email,
     groupName:
       current.groupName === saveStartedDraft.groupName
         ? responseDraft.groupName

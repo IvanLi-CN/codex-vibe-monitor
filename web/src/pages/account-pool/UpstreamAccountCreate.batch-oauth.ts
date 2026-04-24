@@ -17,6 +17,7 @@ import {
   enforceBatchMotherDraftUniqueness,
   findDisplayNameConflict,
   normalizeBatchTagIds,
+  resolveDisplayNameAfterEmailChange,
   reconcileBatchOauthMotherRowsAfterSave,
   resolveCompletedBatchOauthRowBaselineTagIds,
   resolveCompletedBatchOauthRowPersistedTagIds,
@@ -328,16 +329,25 @@ export function useUpstreamAccountCreateBatchOauth(
 
   const handleBatchMetadataChange = (
     rowId: string,
-    field: "displayName" | "groupName" | "note" | "callbackUrl",
+    field: "displayName" | "email" | "groupName" | "note" | "callbackUrl",
     value: string,
   ) => {
     updateBatchRow(rowId, (row: BatchOauthRow) => {
       if (row.busyAction || row.mailboxBusyAction || row.metadataBusy) {
         return row;
       }
+      const nextDisplayName =
+        field === "email"
+          ? resolveDisplayNameAfterEmailChange(row.displayName, row.email, value)
+          : field === "displayName"
+            ? value
+            : row.displayName;
       const nextRow = {
         ...row,
         [field]: value,
+        displayName: nextDisplayName,
+        emailResolution:
+          field === "email" ? null : row.emailResolution,
         metadataError:
           canEditCompletedBatchOauthRowMetadata(row) && field !== "callbackUrl"
             ? null

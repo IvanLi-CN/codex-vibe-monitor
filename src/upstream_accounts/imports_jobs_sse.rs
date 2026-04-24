@@ -1526,12 +1526,23 @@ pub(crate) async fn import_validated_oauth_accounts(
                     .begin_with("BEGIN IMMEDIATE")
                     .await
                     .map_err(internal_error_tuple)?;
-                ensure_display_name_available(&mut *tx, &normalized.display_name, None).await?;
+                ensure_display_name_available_for_oauth_identity(
+                    &mut *tx,
+                    &normalized.display_name,
+                    None,
+                    probe.claims.chatgpt_account_id.as_deref(),
+                    probe.claims.chatgpt_user_id.as_deref(),
+                    group_name.as_deref(),
+                    probe.claims.chatgpt_plan_type.as_deref(),
+                )
+                .await?;
                 let account_id = upsert_oauth_account(
                     &mut tx,
                     OauthAccountUpsert {
                         account_id: None,
                         display_name: &normalized.display_name,
+                        chosen_email: Some(normalized.email.clone()),
+                        verified_email: normalize_email_value(probe.claims.email.clone()),
                         group_name: group_name.clone(),
                         is_mother: false,
                         note: None,

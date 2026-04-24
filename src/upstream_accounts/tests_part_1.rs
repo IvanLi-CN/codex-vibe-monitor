@@ -1991,6 +1991,7 @@
             AxumPath(account_id),
             Json(UpdateUpstreamAccountRequest {
                 display_name: None,
+                email: OptionalField::Missing,
                 group_name: None,
                 group_bound_proxy_keys: None,
                 group_node_shunt_enabled: Some(true),
@@ -2320,6 +2321,7 @@
                 external_client_id: None,
                 external_source_account_id: None,
                 email: None,
+                verified_email: None,
                 chatgpt_account_id: None,
                 chatgpt_user_id: None,
                 plan_type: None,
