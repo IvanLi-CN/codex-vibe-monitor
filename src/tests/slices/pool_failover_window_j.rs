@@ -2703,6 +2703,112 @@ async fn refreshing_pool_node_health_hourly_cache_from_row_cache_is_idempotent()
 }
 
 #[tokio::test]
+async fn missing_pool_node_health_archives_clear_stale_cached_rows_before_marking_replayed() {
+    let (pool, _config, temp_dir) =
+        retention_test_pool_and_config("pool-node-health-missing-archive-clears-cache").await;
+    let archive_file_path = temp_dir
+        .join("missing-node-health-archive.sqlite.gz")
+        .to_string_lossy()
+        .to_string();
+    let binding_key = "fpn-missing-archive-clears-cache";
+    let occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::days(45))
+            .with_timezone(&Shanghai)
+            .naive_local()
+            .with_minute(0)
+            .expect("set minute")
+            .with_second(0)
+            .expect("set second"),
+    );
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, datetime('now'))
+        "#,
+    )
+    .bind("pool_upstream_request_attempts")
+    .bind(&occurred_at[..7])
+    .bind(&archive_file_path)
+    .bind("missing-node-health-archive")
+    .bind(2_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&occurred_at)
+    .execute(&pool)
+    .await
+    .expect("insert missing pool upstream archive manifest");
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_node_health_archive (
+            archive_file_path,
+            archived_row_id,
+            occurred_at,
+            proxy_binding_key_snapshot,
+            is_success,
+            latency_ms
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind(&archive_file_path)
+    .bind(1_i64)
+    .bind(&occurred_at)
+    .bind(binding_key)
+    .bind(1_i64)
+    .bind(120.0_f64)
+    .execute(&pool)
+    .await
+    .expect("seed stale cached node health row");
+
+    let summary = backfill_pool_upstream_node_health_archives(&pool, None, None)
+        .await
+        .expect("backfill should clear stale cached rows for missing archives");
+    assert_eq!(summary.pending_batches, 0);
+
+    let cached_rows: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM pool_upstream_node_health_archive
+        WHERE archive_file_path = ?1
+        "#,
+    )
+    .bind(&archive_file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("count cached rows after missing archive replay");
+    assert_eq!(cached_rows, 0);
+
+    let replayed: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM hourly_rollup_archive_replay
+        WHERE target = ?1
+          AND dataset = 'pool_upstream_request_attempts'
+          AND file_path = ?2
+        "#,
+    )
+    .bind(POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET)
+    .bind(&archive_file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("count replay marker for missing archive");
+    assert_eq!(replayed, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn pool_upstream_node_health_archive_backfill_reuses_stable_temp_db_when_budget_is_hit() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("pool-node-health-archive-temp-reuse").await;

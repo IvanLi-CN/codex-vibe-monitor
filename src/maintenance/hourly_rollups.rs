@@ -1022,6 +1022,11 @@ async fn backfill_pool_upstream_node_health_archives_for_files(
                 file_path = archive_file.file_path,
                 "pool upstream node health cache backfill marking missing archive batch as replayed"
             );
+            delete_pool_upstream_node_health_archive_rows_for_file_tx(
+                tx.as_mut(),
+                &archive_file.file_path,
+            )
+            .await?;
             delete_hourly_rollup_archive_progress_tx(
                 tx.as_mut(),
                 "pool_upstream_request_attempts",

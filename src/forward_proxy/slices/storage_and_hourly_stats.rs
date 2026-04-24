@@ -7,6 +7,7 @@ struct PoolUpstreamBindingWindowStatsRow {
     attempts: i64,
     success_count: i64,
     latency_sum_ms: Option<f64>,
+    latency_sample_count: i64,
 }
 
 #[derive(Debug, FromRow)]
@@ -52,9 +53,14 @@ const POOL_UPSTREAM_BINDING_BUCKET_START_EPOCH_SQL: &str = r#"
 
 const POOL_UPSTREAM_BINDING_SUCCESS_LATENCY_SQL: &str =
     "COALESCE(first_byte_latency_ms, connect_latency_ms, stream_latency_ms)";
+const POOL_UPSTREAM_BINDING_HOURLY_BUCKET_SECONDS: i64 = 3600;
 fn ceil_hour_epoch(epoch: i64) -> i64 {
-    let floor = align_bucket_epoch(epoch, 3_600, 0);
-    if floor < epoch { floor + 3_600 } else { floor }
+    let floor = align_bucket_epoch(epoch, POOL_UPSTREAM_BINDING_HOURLY_BUCKET_SECONDS, 0);
+    if floor < epoch {
+        floor + POOL_UPSTREAM_BINDING_HOURLY_BUCKET_SECONDS
+    } else {
+        floor
+    }
 }
 
 pub(crate) async fn load_forward_proxy_settings(
@@ -517,17 +523,20 @@ fn resolve_pool_upstream_binding_target_key(
 fn record_pool_upstream_binding_window_stats(
     grouped: &mut HashMap<String, ForwardProxyAttemptWindowStats>,
     latency_totals: &mut HashMap<String, f64>,
+    latency_samples: &mut HashMap<String, i64>,
     proxy_key: String,
     attempts: i64,
     success_count: i64,
     latency_sum_ms: Option<f64>,
+    latency_sample_count: i64,
 ) {
     let stats = grouped
         .entry(proxy_key.clone())
         .or_insert_with(ForwardProxyAttemptWindowStats::default);
     stats.attempts += attempts;
     stats.success_count += success_count;
-    *latency_totals.entry(proxy_key).or_insert(0.0) += latency_sum_ms.unwrap_or(0.0);
+    *latency_totals.entry(proxy_key.clone()).or_insert(0.0) += latency_sum_ms.unwrap_or(0.0);
+    *latency_samples.entry(proxy_key).or_insert(0) += latency_sample_count;
 }
 
 fn record_pool_upstream_binding_hourly_stats(
@@ -635,7 +644,11 @@ async fn query_pending_pool_upstream_binding_window_stats_from_archive_file(
                 proxy_binding_key_snapshot,
                 COUNT(*) AS attempts,
                 SUM(CASE WHEN status = '{success}' THEN 1 ELSE 0 END) AS success_count,
-                SUM(CASE WHEN status = '{success}' THEN {latency_sql} END) AS latency_sum_ms
+                SUM(CASE WHEN status = '{success}' THEN {latency_sql} END) AS latency_sum_ms,
+                SUM(CASE
+                        WHEN status = '{success}' AND {latency_sql} IS NOT NULL THEN 1
+                        ELSE 0
+                    END) AS latency_sample_count
             FROM pool_upstream_request_attempts
             WHERE proxy_binding_key_snapshot IS NOT NULL
               AND finished_at IS NOT NULL
@@ -847,23 +860,67 @@ async fn query_materialized_pool_upstream_binding_hourly_stats(
     })
 }
 
+async fn query_materialized_pool_upstream_binding_window_stats(
+    pool: &Pool<Sqlite>,
+    range_start_epoch: i64,
+    range_end_epoch: i64,
+) -> Result<Vec<PoolUpstreamBindingWindowStatsRow>> {
+    sqlx::query_as::<_, PoolUpstreamBindingWindowStatsRow>(
+        r#"
+        SELECT
+            hourly.proxy_binding_key_snapshot,
+            SUM(hourly.success_count + hourly.failure_count) AS attempts,
+            SUM(hourly.success_count) AS success_count,
+            NULL AS latency_sum_ms,
+            0 AS latency_sample_count
+        FROM pool_upstream_node_health_hourly_archive AS hourly
+        WHERE hourly.bucket_start_epoch >= ?1
+          AND hourly.bucket_start_epoch < ?2
+          AND NOT EXISTS (
+                SELECT 1
+                FROM archive_batches AS batches
+                WHERE batches.dataset = 'pool_upstream_request_attempts'
+                  AND batches.status = ?3
+                  AND batches.file_path = hourly.archive_file_path
+          )
+        GROUP BY hourly.proxy_binding_key_snapshot
+        "#,
+    )
+    .bind(range_start_epoch)
+    .bind(range_end_epoch)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .fetch_all(pool)
+    .await
+    .with_context(|| {
+        format!(
+            "failed to query materialized pool upstream window stats within [{range_start_epoch}, {range_end_epoch})"
+        )
+    })
+}
+
 async fn query_pool_upstream_binding_window_stats(
     state: &AppState,
     start_at: &str,
     end_at: &str,
+    start_epoch: i64,
+    end_epoch: i64,
     target_keys: Option<&HashSet<String>>,
     pending_archive_file_paths: &[String],
 ) -> Result<HashMap<String, ForwardProxyAttemptWindowStats>> {
     let window_sql = format!(
         r#"
-        SELECT
-            proxy_binding_key_snapshot,
-            COUNT(*) AS attempts,
-            SUM(CASE WHEN status = '{success}' THEN 1 ELSE 0 END) AS success_count,
-            SUM(CASE WHEN status = '{success}' THEN {latency_sql} END) AS latency_sum_ms
-        FROM pool_upstream_request_attempts
-        WHERE proxy_binding_key_snapshot IS NOT NULL
-          AND finished_at IS NOT NULL
+            SELECT
+                proxy_binding_key_snapshot,
+                COUNT(*) AS attempts,
+                SUM(CASE WHEN status = '{success}' THEN 1 ELSE 0 END) AS success_count,
+                SUM(CASE WHEN status = '{success}' THEN {latency_sql} END) AS latency_sum_ms,
+                SUM(CASE
+                        WHEN status = '{success}' AND {latency_sql} IS NOT NULL THEN 1
+                        ELSE 0
+                    END) AS latency_sample_count
+            FROM pool_upstream_request_attempts
+            WHERE proxy_binding_key_snapshot IS NOT NULL
+              AND finished_at IS NOT NULL
           AND status != '{budget_exhausted}'
           AND occurred_at >= ?1
           AND occurred_at < ?2
@@ -889,7 +946,11 @@ async fn query_pool_upstream_binding_window_stats(
             proxy_binding_key_snapshot,
             COUNT(*) AS attempts,
             SUM(is_success) AS success_count,
-            SUM(CASE WHEN is_success != 0 THEN latency_ms END) AS latency_sum_ms
+            SUM(CASE WHEN is_success != 0 THEN latency_ms END) AS latency_sum_ms,
+            SUM(CASE
+                    WHEN is_success != 0 AND latency_ms IS NOT NULL THEN 1
+                    ELSE 0
+                END) AS latency_sample_count
         FROM pool_upstream_node_health_archive
         WHERE occurred_at >= "#,
     );
@@ -926,6 +987,22 @@ async fn query_pool_upstream_binding_window_stats(
         )
         .await?,
     );
+    let materialized_range_start_epoch = align_bucket_epoch(
+        start_epoch,
+        POOL_UPSTREAM_BINDING_HOURLY_BUCKET_SECONDS,
+        0,
+    );
+    let materialized_range_end_epoch = ceil_hour_epoch(end_epoch);
+    if materialized_range_start_epoch < materialized_range_end_epoch {
+        rows.extend(
+            query_materialized_pool_upstream_binding_window_stats(
+                &state.pool,
+                materialized_range_start_epoch,
+                materialized_range_end_epoch,
+            )
+            .await?,
+        );
+    }
 
     let raw_keys = rows
         .iter()
@@ -934,6 +1011,7 @@ async fn query_pool_upstream_binding_window_stats(
     let canonical_map = load_pool_upstream_binding_key_canonical_map(state, &raw_keys).await?;
     let mut grouped = HashMap::new();
     let mut latency_totals = HashMap::new();
+    let mut latency_samples = HashMap::new();
     for row in rows {
         let Some(proxy_key) = resolve_pool_upstream_binding_target_key(
             &row.proxy_binding_key_snapshot,
@@ -945,19 +1023,22 @@ async fn query_pool_upstream_binding_window_stats(
         record_pool_upstream_binding_window_stats(
             &mut grouped,
             &mut latency_totals,
+            &mut latency_samples,
             proxy_key,
             row.attempts,
             row.success_count,
             row.latency_sum_ms,
+            row.latency_sample_count,
         );
     }
 
     for (proxy_key, stats) in &mut grouped {
-        if stats.success_count > 0 {
+        let latency_sample_count = latency_samples.get(proxy_key).copied().unwrap_or_default();
+        if stats.success_count > 0 && latency_sample_count == stats.success_count {
             stats.avg_latency_ms = latency_totals
                 .get(proxy_key)
                 .copied()
-                .map(|value| value / stats.success_count as f64);
+                .map(|value| value / latency_sample_count as f64);
         }
     }
 
@@ -1311,12 +1392,15 @@ pub(crate) async fn build_forward_proxy_settings_response(
     ];
     let mut window_maps: Vec<HashMap<String, ForwardProxyAttemptWindowStats>> = Vec::new();
     for (window_duration, _) in &windows {
+        let window_start = now_utc - *window_duration;
         let window_start_at = db_occurred_at_lower_bound(now_utc - *window_duration);
         window_maps.push(
             query_pool_upstream_binding_window_stats(
                 state,
                 &window_start_at,
                 &window_end_at,
+                window_start.timestamp(),
+                (now_utc + ChronoDuration::seconds(1)).timestamp(),
                 Some(&runtime_health_keys),
                 &pending_archive_file_paths,
             )
@@ -1616,12 +1700,15 @@ pub(crate) async fn build_forward_proxy_live_stats_response(
     let window_end_at = db_occurred_at_lower_bound(now_utc + ChronoDuration::seconds(1));
     let mut window_maps: Vec<HashMap<String, ForwardProxyAttemptWindowStats>> = Vec::new();
     for (window_duration, _) in &windows {
+        let window_start = now_utc - *window_duration;
         let window_start_at = db_occurred_at_lower_bound(now_utc - *window_duration);
         window_maps.push(
             query_pool_upstream_binding_window_stats(
                 state,
                 &window_start_at,
                 &window_end_at,
+                window_start.timestamp(),
+                (now_utc + ChronoDuration::seconds(1)).timestamp(),
                 Some(&runtime_health_keys),
                 &pending_archive_file_paths,
             )

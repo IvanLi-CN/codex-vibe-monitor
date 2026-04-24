@@ -2753,6 +2753,101 @@ async fn forward_proxy_live_stats_use_real_pool_attempts_and_ignore_forward_prox
 }
 
 #[tokio::test]
+async fn forward_proxy_window_stats_include_materialized_hourly_node_health_history() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.example.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let settings_response = apply_forward_proxy_settings_without_bootstrap(
+        &state,
+        ForwardProxySettings {
+            proxy_urls: vec!["socks5://127.0.0.1:1091".to_string()],
+            subscription_urls: vec![],
+            subscription_update_interval_secs: 3600,
+            insert_direct: true,
+        },
+    )
+    .await;
+    let manual_runtime_key = settings_response
+        .nodes
+        .iter()
+        .find(|node| node.source == FORWARD_PROXY_SOURCE_MANUAL)
+        .map(|node| node.key.clone())
+        .expect("manual node should exist");
+    let manual_binding_key = {
+        let manager = state.forward_proxy.lock().await;
+        manager
+            .binding_nodes()
+            .into_iter()
+            .find(|node| node.key != FORWARD_PROXY_DIRECT_KEY)
+            .map(|node| node.key)
+            .expect("manual binding node should exist")
+    };
+
+    let bucket_start_epoch =
+        align_bucket_epoch((Utc::now() - ChronoDuration::hours(20)).timestamp(), 3600, 0);
+    let archive_file_path = state
+        .config
+        .database_path
+        .with_file_name("materialized-node-health-window-only.sqlite.gz")
+        .to_string_lossy()
+        .to_string();
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_node_health_hourly_archive (
+            archive_file_path,
+            proxy_binding_key_snapshot,
+            bucket_start_epoch,
+            success_count,
+            failure_count
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind(&archive_file_path)
+    .bind(&manual_binding_key)
+    .bind(bucket_start_epoch)
+    .bind(1_i64)
+    .bind(1_i64)
+    .execute(&state.pool)
+    .await
+    .expect("seed materialized-only node health hourly row");
+
+    let settings = build_forward_proxy_settings_response(state.as_ref())
+        .await
+        .expect("build forward proxy settings response with materialized hourly node health");
+    let manual_settings = settings
+        .nodes
+        .iter()
+        .find(|node| node.key == manual_runtime_key)
+        .expect("manual node should remain queryable in settings");
+    assert_eq!(manual_settings.stats.one_day.attempts, 2);
+    assert_eq!(manual_settings.stats.one_day.success_rate, Some(0.5));
+    assert!(
+        manual_settings.stats.one_day.avg_latency_ms.is_none(),
+        "materialized hourly counts should not fabricate latency"
+    );
+
+    let live = build_forward_proxy_live_stats_response(state.as_ref())
+        .await
+        .expect("build forward proxy live response with materialized hourly node health");
+    let manual_live = live
+        .nodes
+        .iter()
+        .find(|node| node.key == manual_runtime_key)
+        .expect("manual node should remain queryable in live stats");
+    assert_eq!(manual_live.stats.one_day.attempts, 2);
+    assert_eq!(manual_live.stats.one_day.success_rate, Some(0.5));
+    let last24h_attempt_total: i64 = manual_live
+        .last24h
+        .iter()
+        .map(|bucket| bucket.success_count + bucket.failure_count)
+        .sum();
+    assert_eq!(last24h_attempt_total, 2);
+}
+
+#[tokio::test]
 async fn forward_proxy_owner_facing_surfaces_include_direct_real_attempts() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.example.com/").expect("valid upstream base url"),

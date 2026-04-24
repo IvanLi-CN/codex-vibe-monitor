@@ -77,6 +77,7 @@
 - `Live` 与 `Settings` 的窗口统计统一从真实节点尝试聚合得出。
 - `forward-proxy/timeseries` 的请求桶统一从真实节点尝试小时桶得出。
 - long-range timeseries 不能依赖会过期的 raw archive 文件；归档后必须把真实节点尝试小时桶物化到可长期保留的 owner-facing 历史表，并在 raw archive cleanup 后继续可查询。
+- 当窗口统计只能从 long-lived 小时桶补回成功/失败计数，而对应 raw detail 已经清理时，owner-facing 页面必须继续返回真实 success/failure；`avg_latency_ms` 不得凭小时桶反推出伪值，应保持为空。
 - 当 retention 只是向已存在的月归档文件 append 新节点尝试时，只有在该文件原本就已完整 owner-facing materialized，或该文件本身就是本次新建时，才允许把它标记为 fully replayed；否则必须继续保持 pending，等待完整 backfill 覆盖旧行。
 - 绑定节点弹窗 / 创建入口里的 `24H` 节点成功失败桶也统一复用同一聚合 helper。
 - live retention 与 archive 覆盖窗口必须给出同一口径结果。
