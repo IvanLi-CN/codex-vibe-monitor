@@ -10,6 +10,7 @@ import type {
   ForwardProxySettings,
   PricingEntry,
   PricingSettings,
+  ProxySettings,
   SettingsPayload,
 } from '../lib/api'
 
@@ -17,30 +18,60 @@ const STORYBOOK_SETTINGS_STORAGE_PREFIX = 'storybook.settings-page.mock'
 
 const DEFAULT_PRICING_ENTRIES: PricingEntry[] = [
   {
-    model: 'gpt-5.3-codex',
-    inputPer1m: 8.5,
-    outputPer1m: 23.5,
-    cacheInputPer1m: 0.85,
-    reasoningPer1m: 4.2,
+    model: 'gpt-5.5',
+    inputPer1m: 5.0,
+    outputPer1m: 30.0,
+    cacheInputPer1m: 0.5,
+    reasoningPer1m: null,
     source: 'official',
   },
   {
-    model: 'gpt-5.2-codex',
-    inputPer1m: 6.2,
-    outputPer1m: 18.6,
-    cacheInputPer1m: 0.62,
-    reasoningPer1m: 3.8,
-    source: 'custom',
+    model: 'gpt-5.5-pro',
+    inputPer1m: 30.0,
+    outputPer1m: 180.0,
+    cacheInputPer1m: null,
+    reasoningPer1m: null,
+    source: 'official',
   },
   {
-    model: 'gpt-5.1-codex-mini',
-    inputPer1m: 1.9,
-    outputPer1m: 6.4,
-    cacheInputPer1m: 0.19,
-    reasoningPer1m: 1.2,
-    source: 'temporary',
+    model: 'gpt-5.4-mini',
+    inputPer1m: 0.75,
+    outputPer1m: 4.5,
+    cacheInputPer1m: 0.075,
+    reasoningPer1m: null,
+    source: 'official',
   },
 ]
+
+const DEFAULT_PROXY_SETTINGS: ProxySettings = {
+  hijackEnabled: true,
+  mergeUpstreamEnabled: true,
+  fastModeRewriteMode: 'disabled',
+  upstream429MaxRetries: 3,
+  defaultHijackEnabled: false,
+  models: [
+    'gpt-5.3-codex',
+    'gpt-5.2-codex',
+    'gpt-5.1-codex-max',
+    'gpt-5.1-codex-mini',
+    'gpt-5.2',
+    'gpt-5.4',
+    'gpt-5.4-pro',
+    'gpt-5.5',
+    'gpt-5.5-pro',
+  ],
+  enabledModels: [
+    'gpt-5.3-codex',
+    'gpt-5.2-codex',
+    'gpt-5.1-codex-max',
+    'gpt-5.1-codex-mini',
+    'gpt-5.2',
+    'gpt-5.4',
+    'gpt-5.4-pro',
+    'gpt-5.5',
+    'gpt-5.5-pro',
+  ],
+}
 
 const DEFAULT_FORWARD_PROXY_SETTINGS: Omit<ForwardProxySettings, 'nodes'> = {
   proxyUrls: [
@@ -69,6 +100,7 @@ const MOCK_SUBSCRIPTION_NODE_TEMPLATES: Array<Pick<ForwardProxyNode, 'displayNam
 ]
 
 type StorySettingsOverrides = {
+  proxy?: Partial<ProxySettings>
   forwardProxy?: Partial<Omit<ForwardProxySettings, 'nodes'>>
   pricing?: Partial<PricingSettings>
 }
@@ -152,6 +184,14 @@ function cloneSettings(payload: SettingsPayload): SettingsPayload {
 }
 
 function createStorySettings(overrides?: StorySettingsOverrides): SettingsPayload {
+  const proxy: ProxySettings = {
+    ...DEFAULT_PROXY_SETTINGS,
+    ...overrides?.proxy,
+    models: overrides?.proxy?.models ? [...overrides.proxy.models] : [...DEFAULT_PROXY_SETTINGS.models],
+    enabledModels: overrides?.proxy?.enabledModels
+      ? [...overrides.proxy.enabledModels]
+      : [...DEFAULT_PROXY_SETTINGS.enabledModels],
+  }
   const forwardProxyBase = {
     ...DEFAULT_FORWARD_PROXY_SETTINGS,
     ...overrides?.forwardProxy,
@@ -169,11 +209,12 @@ function createStorySettings(overrides?: StorySettingsOverrides): SettingsPayloa
   forwardProxy.nodes = buildNodesFromSettings(forwardProxy)
 
   const pricing: PricingSettings = {
-    catalogVersion: overrides?.pricing?.catalogVersion ?? 'storybook-2026-03-26',
+    catalogVersion: overrides?.pricing?.catalogVersion ?? 'openai-standard-2026-04-25',
     entries: overrides?.pricing?.entries ? [...overrides.pricing.entries] : DEFAULT_PRICING_ENTRIES,
   }
 
   return {
+    proxy,
     forwardProxy,
     pricing,
   }
@@ -223,6 +264,9 @@ function StorybookSettingsMock({
 
   if (typeof window !== 'undefined' && !mockInstalledRef.current) {
     mockInstalledRef.current = true
+    if (!settingsRef.current.proxy) {
+      settingsRef.current.proxy = cloneSettings(fallbackSettings).proxy
+    }
     if (!Array.isArray(settingsRef.current.forwardProxy.nodes) || settingsRef.current.forwardProxy.nodes.length === 0) {
       settingsRef.current.forwardProxy = {
         ...settingsRef.current.forwardProxy,
@@ -258,6 +302,35 @@ function StorybookSettingsMock({
 
       if (path === '/api/settings' && method === 'GET') {
         return jsonResponse(cloneSettings(settingsRef.current))
+      }
+
+      if (path === '/api/settings/proxy' && method === 'PUT') {
+        const body = parseBody<{
+          hijackEnabled: boolean
+          mergeUpstreamEnabled: boolean
+          fastModeRewriteMode?: 'disabled' | 'fill_missing' | 'force_priority'
+          upstream429MaxRetries: number
+          enabledModels: string[]
+        }>({
+          hijackEnabled: settingsRef.current.proxy.hijackEnabled,
+          mergeUpstreamEnabled: settingsRef.current.proxy.mergeUpstreamEnabled,
+          fastModeRewriteMode: settingsRef.current.proxy.fastModeRewriteMode,
+          upstream429MaxRetries: settingsRef.current.proxy.upstream429MaxRetries,
+          enabledModels: settingsRef.current.proxy.enabledModels,
+        })
+
+        const enabledSet = new Set((body.enabledModels || []).map((item) => item.trim()).filter(Boolean))
+        const nextProxy: ProxySettings = {
+          ...settingsRef.current.proxy,
+          hijackEnabled: body.hijackEnabled === true,
+          mergeUpstreamEnabled: body.hijackEnabled === true && body.mergeUpstreamEnabled === true,
+          fastModeRewriteMode: 'disabled',
+          upstream429MaxRetries: Math.max(0, Math.min(5, Math.trunc(body.upstream429MaxRetries || 0))),
+          enabledModels: settingsRef.current.proxy.models.filter((model) => enabledSet.has(model)),
+        }
+        settingsRef.current.proxy = nextProxy
+        persistSettings(storageKey, settingsRef.current)
+        return jsonResponse(nextProxy)
       }
 
       if (path === '/api/settings/external-api-keys' && method === 'GET') {
@@ -485,8 +558,10 @@ export const Default: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await expect(canvas.getByRole('heading', { name: '设置' })).toBeVisible()
+    await expect(canvas.getByText('代理配置')).toBeVisible()
     await expect(canvas.getByText('正向代理路由')).toBeVisible()
     await expect(canvas.getByText('价格配置')).toBeVisible()
+    await expect(canvas.getByText('gpt-5.5')).toBeVisible()
     await expect(canvas.getByText('External API Keys')).toBeVisible()
   },
 }

@@ -409,7 +409,8 @@ const PROXY_FAILURE_UPSTREAM_HTTP_AUTH: &str = "upstream_http_auth";
 const DEFAULT_XRAY_BINARY: &str = "xray";
 const DEFAULT_XRAY_RUNTIME_DIR: &str = ".codex/xray-forward";
 const XRAY_PROXY_READY_TIMEOUT_MS: u64 = 3_000;
-const DEFAULT_PRICING_CATALOG_VERSION: &str = "openai-standard-2026-03-06";
+const DEFAULT_PRICING_CATALOG_VERSION: &str = "openai-standard-2026-04-25";
+const PREVIOUS_DEFAULT_PRICING_CATALOG_VERSION: &str = "openai-standard-2026-03-06";
 const LEGACY_DEFAULT_PRICING_CATALOG_VERSION: &str = "openai-standard-2026-02-23";
 const DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE: bool = true;
 const DEFAULT_PROXY_MODELS_HIJACK_ENABLED: bool = false;
@@ -426,6 +427,17 @@ const PROMPT_CACHE_CONVERSATION_ACTIVITY_MODE_LIMIT: i64 = 50;
 const PROMPT_CACHE_CONVERSATION_CHART_MAX_HOURS: i64 = 24;
 const PROMPT_CACHE_CONVERSATION_CACHE_TTL_SECS: u64 = 5;
 const PROXY_PRESET_MODEL_IDS: &[&str] = &[
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex-max",
+    "gpt-5.1-codex-mini",
+    "gpt-5.2",
+    "gpt-5.4",
+    "gpt-5.4-pro",
+    "gpt-5.5",
+    "gpt-5.5-pro",
+];
+const PREVIOUS_PROXY_PRESET_MODEL_IDS: &[&str] = &[
     "gpt-5.3-codex",
     "gpt-5.2-codex",
     "gpt-5.1-codex-max",

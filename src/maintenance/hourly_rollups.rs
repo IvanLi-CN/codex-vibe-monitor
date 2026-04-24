@@ -1079,7 +1079,7 @@ fn build_settings_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>>
         )
         .route(
             "/api/settings/proxy",
-            any(removed_proxy_model_settings_endpoint),
+            put(put_proxy_settings),
         )
         .route(
             "/api/settings/forward-proxy",

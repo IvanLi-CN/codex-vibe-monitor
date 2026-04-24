@@ -8,6 +8,7 @@ import { Button } from '../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { Input } from '../components/ui/input'
 import { SelectField } from '../components/ui/select-field'
+import { Switch } from '../components/ui/switch'
 import { useSettings } from '../hooks/useSettings'
 import {
   type ForwardProxyNodeStats,
@@ -15,6 +16,7 @@ import {
   type ForwardProxySettings,
   type PricingEntry,
   type PricingSettings,
+  type ProxySettings,
 } from '../lib/api'
 import {
   extractProxyDisplayName,
@@ -118,6 +120,12 @@ function parsePricingValue(raw: string, allowEmpty: boolean): number | null | un
   const parsed = Number(text)
   if (!Number.isFinite(parsed)) return undefined
   return parsed
+}
+
+function normalizeProxyUpstream429MaxRetries(value: number): number {
+  if (!Number.isFinite(value)) return 3
+  const normalized = Math.trunc(value)
+  return Math.min(5, Math.max(0, normalized))
 }
 
 function parsePricingDraft(draft: PricingDraft): { value?: PricingSettings; error?: string } {
@@ -275,10 +283,12 @@ export default function SettingsPage() {
   const {
     settings,
     isLoading,
+    isProxySaving,
     isForwardProxySaving,
     isPricingSaving,
     pricingRollbackVersion,
     error,
+    saveProxy,
     saveForwardProxy,
     savePricing,
   } = useSettings()
@@ -363,7 +373,12 @@ export default function SettingsPage() {
     isForwardProxySaving,
     settings?.forwardProxy,
   ])
+  const currentProxy = settings?.proxy ?? null
   const currentForwardProxy = settings?.forwardProxy ?? null
+  const enabledPresetModelSet = useMemo(
+    () => new Set(currentProxy?.enabledModels ?? []),
+    [currentProxy?.enabledModels],
+  )
   const forwardProxyTableNodes = useMemo<ForwardProxyTableNode[]>(() => {
     const persistedNodes = currentForwardProxy?.nodes ?? []
     const tableNodes: ForwardProxyTableNode[] = persistedNodes.map((node) => ({
@@ -465,6 +480,52 @@ export default function SettingsPage() {
       }
     }
   }, [pricingDraft, triggerPricingSave])
+
+  const persistProxy = useCallback(
+    (nextProxy: ProxySettings) => {
+      const normalizedProxy: ProxySettings = {
+        ...nextProxy,
+        mergeUpstreamEnabled: nextProxy.hijackEnabled ? nextProxy.mergeUpstreamEnabled : false,
+        upstream429MaxRetries: normalizeProxyUpstream429MaxRetries(nextProxy.upstream429MaxRetries),
+        enabledModels: nextProxy.models.filter((candidate) => nextProxy.enabledModels.includes(candidate)),
+      }
+      void saveProxy(normalizedProxy)
+    },
+    [saveProxy],
+  )
+
+  const handleToggleHijack = useCallback(() => {
+    if (!currentProxy) return
+    persistProxy({
+      ...currentProxy,
+      hijackEnabled: !currentProxy.hijackEnabled,
+    })
+  }, [currentProxy, persistProxy])
+
+  const handleToggleMergeUpstream = useCallback(() => {
+    if (!currentProxy || !currentProxy.hijackEnabled) return
+    persistProxy({
+      ...currentProxy,
+      mergeUpstreamEnabled: !currentProxy.mergeUpstreamEnabled,
+    })
+  }, [currentProxy, persistProxy])
+
+  const handleTogglePresetModel = useCallback(
+    (modelId: string) => {
+      if (!currentProxy) return
+      const enabled = new Set(currentProxy.enabledModels)
+      if (enabled.has(modelId)) {
+        enabled.delete(modelId)
+      } else {
+        enabled.add(modelId)
+      }
+      persistProxy({
+        ...currentProxy,
+        enabledModels: currentProxy.models.filter((candidate) => enabled.has(candidate)),
+      })
+    },
+    [currentProxy, persistProxy],
+  )
 
   const handlePricingFieldChange = useCallback(
     (index: number, field: keyof PricingDraftEntry, value: string) => {
@@ -995,7 +1056,7 @@ export default function SettingsPage() {
     )
   }
 
-  if (!settings || !currentForwardProxy) {
+  if (!settings || !currentProxy || !currentForwardProxy) {
     return (
       <section className="mx-auto max-w-full space-y-4">
         <h1 className="text-2xl font-semibold">{t('settings.title')}</h1>
@@ -1021,138 +1082,228 @@ export default function SettingsPage() {
       </div>
 
       <div className="grid items-start gap-6 lg:grid-cols-2">
-        <Card className="overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
-          <CardHeader className="flex-row items-start justify-between gap-3 space-y-0 border-b border-base-300/70 pb-4">
-            <div className="space-y-1.5">
-              <CardTitle>{t('settings.pricing.title')}</CardTitle>
-              <div className="space-y-1">
-                <CardDescription>{t('settings.pricing.description')}</CardDescription>
-                <p className="text-xs text-base-content/65">{t('settings.pricing.compactNote')}</p>
-              </div>
-            </div>
-            <Button type="button" size="sm" className="h-9 gap-1.5 px-3.5" onClick={handleAddPricingEntry}>
-              <AppIcon name="plus" className="h-[18px] w-[18px]" aria-hidden />
-              {t('settings.pricing.add')}
-            </Button>
-          </CardHeader>
+        <div className="space-y-6">
+          <Card className="overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
+            <CardHeader className="gap-2 border-b border-base-300/70 pb-4">
+              <CardTitle>{t('settings.proxy.title')}</CardTitle>
+              <CardDescription>{t('settings.proxy.description')}</CardDescription>
+            </CardHeader>
 
-          <CardContent className="space-y-5 pt-4">
-            <div className="space-y-2">
-              <label htmlFor="pricing-catalog-version" className="block text-sm font-medium text-base-content/75">
-                {t('settings.pricing.catalogVersion')}
-              </label>
-              <Input
-                id="pricing-catalog-version"
-                type="text"
-                className="max-w-md"
-                value={pricingDraft.catalogVersion}
-                onChange={(event) => handleCatalogVersionChange(event.target.value)}
-                onBlur={() => triggerPricingSave(true)}
-              />
-            </div>
+            <CardContent className="space-y-4 pt-4">
+              <div className="grid gap-4 xl:grid-cols-2">
+                <div className="rounded-xl border border-base-300/75 bg-base-200/28 p-4">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="space-y-1">
+                      <div className="font-medium leading-snug">{t('settings.proxy.hijackLabel')}</div>
+                      <div className="text-sm leading-snug text-base-content/70">{t('settings.proxy.hijackHint')}</div>
+                    </div>
+                    <div className="pt-0.5">
+                      <Switch
+                        checked={currentProxy.hijackEnabled}
+                        disabled={isProxySaving}
+                        onCheckedChange={() => handleToggleHijack()}
+                      />
+                    </div>
+                  </div>
+                </div>
 
-            <div className="overflow-x-auto rounded-xl border border-base-300/80 bg-base-100/72">
-              <table className="w-full min-w-[56rem] table-fixed text-sm">
-                <thead className="bg-base-200/70 text-[11px] uppercase tracking-[0.08em] text-base-content/65">
-                  <tr>
-                    <th className={cn('w-44', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.model')}</th>
-                    <th className={cn('w-24', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.input')}</th>
-                    <th className={cn('w-24', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.output')}</th>
-                    <th className={cn('w-24', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.cacheInput')}</th>
-                    <th className={cn('w-24', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.reasoning')}</th>
-                    <th className={cn('w-28 whitespace-nowrap', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.source')}</th>
-                    <th className={cn('w-24 whitespace-nowrap text-right', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.actions')}</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-base-300/65">
-                  {pricingDraft.entries.map((entry, index) => (
-                    <tr
-                      key={index}
-                      className={cn(
-                        'transition-colors',
-                        index % 2 === 0 ? 'bg-base-100/38' : 'bg-base-200/22',
-                        'hover:bg-primary/6',
+                <div className="rounded-xl border border-base-300/75 bg-base-200/28 p-4">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="space-y-1">
+                      <div className="font-medium leading-snug">{t('settings.proxy.mergeLabel')}</div>
+                      <div className="text-sm leading-snug text-base-content/70">{t('settings.proxy.mergeHint')}</div>
+                      {!currentProxy.hijackEnabled && (
+                        <div className="mt-1 text-xs text-warning">{t('settings.proxy.mergeDisabledHint')}</div>
                       )}
-                    >
-                      <td className={pricingTableBodyCellClass}>
-                        <Input
-                          type="text"
-                          className="h-9 px-3"
-                          value={entry.model}
-                          onChange={(event) => handlePricingFieldChange(index, 'model', event.target.value)}
-                          onBlur={() => triggerPricingSave(true)}
-                        />
-                      </td>
-                      <td className={pricingTableBodyCellClass}>
-                        <Input
-                          type="number"
-                          step="any"
-                          className="h-9 px-3"
-                          value={entry.inputPer1m}
-                          onChange={(event) => handlePricingFieldChange(index, 'inputPer1m', event.target.value)}
-                          onBlur={() => triggerPricingSave(true)}
-                        />
-                      </td>
-                      <td className={pricingTableBodyCellClass}>
-                        <Input
-                          type="number"
-                          step="any"
-                          className="h-9 px-3"
-                          value={entry.outputPer1m}
-                          onChange={(event) => handlePricingFieldChange(index, 'outputPer1m', event.target.value)}
-                          onBlur={() => triggerPricingSave(true)}
-                        />
-                      </td>
-                      <td className={pricingTableBodyCellClass}>
-                        <Input
-                          type="number"
-                          step="any"
-                          className="h-9 px-3"
-                          value={entry.cacheInputPer1m}
-                          onChange={(event) => handlePricingFieldChange(index, 'cacheInputPer1m', event.target.value)}
-                          onBlur={() => triggerPricingSave(true)}
-                        />
-                      </td>
-                      <td className={pricingTableBodyCellClass}>
-                        <Input
-                          type="number"
-                          step="any"
-                          className="h-9 px-3"
-                          value={entry.reasoningPer1m}
-                          onChange={(event) => handlePricingFieldChange(index, 'reasoningPer1m', event.target.value)}
-                          onBlur={() => triggerPricingSave(true)}
-                        />
-                      </td>
-                      <td className={cn(pricingTableBodyCellClass, 'whitespace-nowrap')}>
-                        <Badge variant={sourceBadgeVariant(entry.source)} className="inline-flex min-w-[5rem] justify-center">
-                          {entry.source}
-                        </Badge>
-                      </td>
-                      <td className={cn(pricingTableBodyCellClass, 'text-right whitespace-nowrap')}>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="h-8 px-2.5 text-error hover:bg-error/10"
-                          onClick={() => handleRemovePricingEntry(index)}
-                        >
-                          {t('settings.pricing.remove')}
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                    </div>
+                    <div className="pt-0.5">
+                      <Switch
+                        checked={currentProxy.mergeUpstreamEnabled}
+                        disabled={isProxySaving || !currentProxy.hijackEnabled}
+                        onCheckedChange={() => handleToggleMergeUpstream()}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
 
-            <div className="flex flex-wrap items-center gap-2 text-xs">
-              <span className="text-base-content/70">
-                {isPricingSaving ? t('settings.saving') : t('settings.autoSaved')}
-              </span>
-              {pricingErrorKey && <span className="text-error">{t(pricingErrorKey)}</span>}
-            </div>
-          </CardContent>
-        </Card>
+              <div className="space-y-3 rounded-xl border border-base-300/75 bg-base-200/28 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="font-medium">{t('settings.proxy.presetModels')}</div>
+                  <span className="text-xs text-base-content/70">
+                    {t('settings.proxy.enabledCount', {
+                      count: currentProxy.enabledModels.length,
+                      total: currentProxy.models.length,
+                    })}
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {currentProxy.models.map((modelId) => {
+                    const enabled = enabledPresetModelSet.has(modelId)
+                    return (
+                      <label
+                        key={modelId}
+                        className={cn(
+                          'flex min-h-12 items-center gap-3 rounded-lg border px-3.5 py-2.5',
+                          enabled ? 'border-primary/45 bg-primary/10' : 'border-base-300/85 bg-base-100/68',
+                          isProxySaving ? 'opacity-70' : 'hover:border-primary/40',
+                        )}
+                      >
+                        <span className="truncate pr-2 font-mono text-sm">{modelId}</span>
+                        <div className="ml-auto shrink-0">
+                          <Switch
+                            checked={enabled}
+                            disabled={isProxySaving}
+                            aria-label={modelId}
+                            onCheckedChange={() => handleTogglePresetModel(modelId)}
+                          />
+                        </div>
+                      </label>
+                    )
+                  })}
+                </div>
+                {currentProxy.enabledModels.length === 0 && (
+                  <div className="mt-2 text-xs text-warning">{t('settings.proxy.noneEnabledHint')}</div>
+                )}
+              </div>
+
+              <div className="text-xs text-base-content/70">{isProxySaving ? t('settings.saving') : t('settings.autoSaved')}</div>
+            </CardContent>
+          </Card>
+
+          <Card className="overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
+            <CardHeader className="flex-row items-start justify-between gap-3 space-y-0 border-b border-base-300/70 pb-4">
+              <div className="space-y-1.5">
+                <CardTitle>{t('settings.pricing.title')}</CardTitle>
+                <div className="space-y-1">
+                  <CardDescription>{t('settings.pricing.description')}</CardDescription>
+                  <p className="text-xs text-base-content/65">{t('settings.pricing.compactNote')}</p>
+                </div>
+              </div>
+              <Button type="button" size="sm" className="h-9 gap-1.5 px-3.5" onClick={handleAddPricingEntry}>
+                <AppIcon name="plus" className="h-[18px] w-[18px]" aria-hidden />
+                {t('settings.pricing.add')}
+              </Button>
+            </CardHeader>
+
+            <CardContent className="space-y-5 pt-4">
+              <div className="space-y-2">
+                <label htmlFor="pricing-catalog-version" className="block text-sm font-medium text-base-content/75">
+                  {t('settings.pricing.catalogVersion')}
+                </label>
+                <Input
+                  id="pricing-catalog-version"
+                  type="text"
+                  className="max-w-md"
+                  value={pricingDraft.catalogVersion}
+                  onChange={(event) => handleCatalogVersionChange(event.target.value)}
+                  onBlur={() => triggerPricingSave(true)}
+                />
+              </div>
+
+              <div className="overflow-x-auto rounded-xl border border-base-300/80 bg-base-100/72">
+                <table className="w-full min-w-[56rem] table-fixed text-sm">
+                  <thead className="bg-base-200/70 text-[11px] uppercase tracking-[0.08em] text-base-content/65">
+                    <tr>
+                      <th className={cn('w-44', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.model')}</th>
+                      <th className={cn('w-24', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.input')}</th>
+                      <th className={cn('w-24', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.output')}</th>
+                      <th className={cn('w-24', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.cacheInput')}</th>
+                      <th className={cn('w-24', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.reasoning')}</th>
+                      <th className={cn('w-28 whitespace-nowrap', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.source')}</th>
+                      <th className={cn('w-24 whitespace-nowrap text-right', pricingTableHeaderCellClass)}>{t('settings.pricing.columns.actions')}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-base-300/65">
+                    {pricingDraft.entries.map((entry, index) => (
+                      <tr
+                        key={index}
+                        className={cn(
+                          'transition-colors',
+                          index % 2 === 0 ? 'bg-base-100/38' : 'bg-base-200/22',
+                          'hover:bg-primary/6',
+                        )}
+                      >
+                        <td className={pricingTableBodyCellClass}>
+                          <Input
+                            type="text"
+                            className="h-9 px-3"
+                            value={entry.model}
+                            onChange={(event) => handlePricingFieldChange(index, 'model', event.target.value)}
+                            onBlur={() => triggerPricingSave(true)}
+                          />
+                        </td>
+                        <td className={pricingTableBodyCellClass}>
+                          <Input
+                            type="number"
+                            step="any"
+                            className="h-9 px-3"
+                            value={entry.inputPer1m}
+                            onChange={(event) => handlePricingFieldChange(index, 'inputPer1m', event.target.value)}
+                            onBlur={() => triggerPricingSave(true)}
+                          />
+                        </td>
+                        <td className={pricingTableBodyCellClass}>
+                          <Input
+                            type="number"
+                            step="any"
+                            className="h-9 px-3"
+                            value={entry.outputPer1m}
+                            onChange={(event) => handlePricingFieldChange(index, 'outputPer1m', event.target.value)}
+                            onBlur={() => triggerPricingSave(true)}
+                          />
+                        </td>
+                        <td className={pricingTableBodyCellClass}>
+                          <Input
+                            type="number"
+                            step="any"
+                            className="h-9 px-3"
+                            value={entry.cacheInputPer1m}
+                            onChange={(event) => handlePricingFieldChange(index, 'cacheInputPer1m', event.target.value)}
+                            onBlur={() => triggerPricingSave(true)}
+                          />
+                        </td>
+                        <td className={pricingTableBodyCellClass}>
+                          <Input
+                            type="number"
+                            step="any"
+                            className="h-9 px-3"
+                            value={entry.reasoningPer1m}
+                            onChange={(event) => handlePricingFieldChange(index, 'reasoningPer1m', event.target.value)}
+                            onBlur={() => triggerPricingSave(true)}
+                          />
+                        </td>
+                        <td className={cn(pricingTableBodyCellClass, 'whitespace-nowrap')}>
+                          <Badge variant={sourceBadgeVariant(entry.source)} className="inline-flex min-w-[5rem] justify-center">
+                            {entry.source}
+                          </Badge>
+                        </td>
+                        <td className={cn(pricingTableBodyCellClass, 'text-right whitespace-nowrap')}>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 px-2.5 text-error hover:bg-error/10"
+                            onClick={() => handleRemovePricingEntry(index)}
+                          >
+                            {t('settings.pricing.remove')}
+                          </Button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="text-base-content/70">
+                  {isPricingSaving ? t('settings.saving') : t('settings.autoSaved')}
+                </span>
+                {pricingErrorKey && <span className="text-error">{t(pricingErrorKey)}</span>}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
 
         <ExternalApiKeysSettingsCard />
       </div>

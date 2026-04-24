@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ForwardProxySettings,
   PricingSettings,
+  ProxySettings,
   SettingsPayload,
 } from "../lib/api";
 import { UPSTREAM_ACCOUNTS_CHANGED_EVENT } from "../lib/upstreamAccountsEvents";
@@ -12,6 +13,13 @@ import { useSettings } from "./useSettings";
 
 const apiMocks = vi.hoisted(() => ({
   fetchSettings: vi.fn<() => Promise<SettingsPayload>>(),
+  updateProxySettings: vi.fn<(payload: {
+    hijackEnabled: boolean;
+    mergeUpstreamEnabled: boolean;
+    fastModeRewriteMode?: "disabled" | "fill_missing" | "force_priority";
+    upstream429MaxRetries: number;
+    enabledModels: string[];
+  }) => Promise<ProxySettings>>(),
   updateForwardProxySettings: vi.fn<
     (payload: {
       proxyUrls: string[];
@@ -27,6 +35,7 @@ vi.mock("../lib/api", async () => {
   return {
     ...actual,
     fetchSettings: apiMocks.fetchSettings,
+    updateProxySettings: apiMocks.updateProxySettings,
     updateForwardProxySettings: apiMocks.updateForwardProxySettings,
     updatePricingSettings: apiMocks.updatePricingSettings,
   };
@@ -51,6 +60,15 @@ function createSettingsPayload(
   overrides: Partial<SettingsPayload> = {},
 ): SettingsPayload {
   return {
+    proxy: {
+      hijackEnabled: false,
+      mergeUpstreamEnabled: false,
+      fastModeRewriteMode: "disabled",
+      upstream429MaxRetries: 3,
+      defaultHijackEnabled: false,
+      models: ["gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
+      enabledModels: ["gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
+    },
     forwardProxy: createForwardProxySettings(),
     pricing: {
       catalogVersion: "2026-04-12",
@@ -95,15 +113,33 @@ function text(testId: string) {
 }
 
 function Probe() {
-  const { settings, error, isLoading, saveForwardProxy } = useSettings();
+  const { settings, error, isLoading, saveProxy, saveForwardProxy } = useSettings();
 
   return (
     <div>
       <div data-testid="loading">{String(isLoading)}</div>
       <div data-testid="error">{error ?? ""}</div>
+      <div data-testid="proxy-enabled-models">
+        {settings?.proxy.enabledModels.join(",") ?? ""}
+      </div>
       <div data-testid="proxy-urls">
         {settings?.forwardProxy.proxyUrls.join(",") ?? ""}
       </div>
+      <button
+        data-testid="save-proxy"
+        disabled={!settings}
+        onClick={() => {
+          if (!settings) return;
+          void saveProxy({
+            ...settings.proxy,
+            hijackEnabled: true,
+            mergeUpstreamEnabled: true,
+            enabledModels: ["gpt-5.5", "gpt-5.5-pro"],
+          });
+        }}
+      >
+        save proxy
+      </button>
       <button
         data-testid="save-forward-proxy"
         disabled={!settings}
@@ -128,6 +164,17 @@ function Probe() {
 beforeEach(() => {
   vi.resetAllMocks();
   apiMocks.fetchSettings.mockResolvedValue(createSettingsPayload());
+  apiMocks.updateProxySettings.mockImplementation(async (payload) => ({
+    hijackEnabled: payload.hijackEnabled,
+    mergeUpstreamEnabled: payload.hijackEnabled
+      ? payload.mergeUpstreamEnabled
+      : false,
+    fastModeRewriteMode: payload.fastModeRewriteMode ?? "disabled",
+    upstream429MaxRetries: payload.upstream429MaxRetries,
+    defaultHijackEnabled: false,
+    models: ["gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
+    enabledModels: payload.enabledModels,
+  }));
   apiMocks.updatePricingSettings.mockResolvedValue({
     catalogVersion: "2026-04-12",
     entries: [],
@@ -151,6 +198,30 @@ afterEach(() => {
 });
 
 describe("useSettings", () => {
+  it("saves proxy settings and rolls back when save fails", async () => {
+    render(<Probe />);
+    await flushAsync();
+
+    expect(text("proxy-enabled-models")).toContain("gpt-5.4");
+
+    click("save-proxy");
+    await flushAsync();
+
+    expect(apiMocks.updateProxySettings).toHaveBeenCalledTimes(1);
+    expect(text("proxy-enabled-models")).toContain("gpt-5.5");
+    expect(text("proxy-enabled-models")).toContain("gpt-5.5-pro");
+    expect(text("error")).toBe("");
+
+    apiMocks.updateProxySettings.mockRejectedValueOnce(new Error("proxy save failed"));
+    click("save-proxy");
+    await flushAsync();
+
+    expect(apiMocks.updateProxySettings).toHaveBeenCalledTimes(2);
+    expect(text("error")).toBe("proxy save failed");
+    expect(text("proxy-enabled-models")).toContain("gpt-5.5");
+    expect(text("proxy-enabled-models")).toContain("gpt-5.5-pro");
+  });
+
   it("emits the upstream-accounts invalidation event after forward-proxy settings save succeeds", async () => {
     let eventCount = 0;
     const handleChanged = () => {

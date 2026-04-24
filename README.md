@@ -88,6 +88,7 @@ Codex Vibe Monitor 是一套面向自部署的 **OpenAI 兼容代理观测工作
 ### 5. 运行期配置入口
 
 - **Settings** 页面可在线维护：
+  - 当前 pool `/v1/models` 覆盖（preset / merge upstream）
   - 模型价格目录
   - forward proxy 配置
   - forward proxy 候选校验

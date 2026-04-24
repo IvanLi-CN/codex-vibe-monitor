@@ -877,6 +877,21 @@ export interface PricingSettings {
   entries: PricingEntry[];
 }
 
+export type ProxyFastModeRewriteMode =
+  | "disabled"
+  | "fill_missing"
+  | "force_priority";
+
+export interface ProxySettings {
+  hijackEnabled: boolean;
+  mergeUpstreamEnabled: boolean;
+  fastModeRewriteMode: ProxyFastModeRewriteMode;
+  upstream429MaxRetries: number;
+  defaultHijackEnabled: boolean;
+  models: string[];
+  enabledModels: string[];
+}
+
 export interface ForwardProxyWindowStats {
   attempts: number;
   successRate?: number;
@@ -1155,6 +1170,7 @@ function forwardProxyValidationTimeoutMs(
 }
 
 export interface SettingsPayload {
+  proxy: ProxySettings;
   forwardProxy: ForwardProxySettings;
   pricing: PricingSettings;
 }
@@ -1341,6 +1357,34 @@ function normalizePricingSettings(raw: unknown): PricingSettings {
         ? payload.catalogVersion.trim()
         : "custom",
     entries,
+  };
+}
+
+function normalizeProxyFastModeRewriteMode(
+  raw: unknown,
+): ProxyFastModeRewriteMode {
+  return raw === "fill_missing" || raw === "force_priority"
+    ? raw
+    : "disabled";
+}
+
+function normalizeProxySettings(raw: unknown): ProxySettings {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const models = normalizeStringArray(payload.models);
+  const enabledModelSet = new Set(normalizeStringArray(payload.enabledModels));
+  return {
+    hijackEnabled: payload.hijackEnabled === true,
+    mergeUpstreamEnabled: payload.mergeUpstreamEnabled === true,
+    fastModeRewriteMode: normalizeProxyFastModeRewriteMode(
+      payload.fastModeRewriteMode,
+    ),
+    upstream429MaxRetries: Math.max(
+      0,
+      Math.min(5, Math.trunc(normalizeFiniteNumber(payload.upstream429MaxRetries) ?? 3)),
+    ),
+    defaultHijackEnabled: payload.defaultHijackEnabled === true,
+    models,
+    enabledModels: models.filter((model) => enabledModelSet.has(model)),
   };
 }
 
@@ -2036,6 +2080,7 @@ function normalizeForwardProxyValidationResult(
 function normalizeSettingsPayload(raw: unknown): SettingsPayload {
   const payload = (raw ?? {}) as Record<string, unknown>;
   return {
+    proxy: normalizeProxySettings(payload.proxy),
     forwardProxy: normalizeForwardProxySettings(payload.forwardProxy),
     pricing: normalizePricingSettings(payload.pricing),
   };
@@ -2169,6 +2214,20 @@ export async function updatePricingSettings(
     body: JSON.stringify(payload),
   });
   return normalizePricingSettings(response);
+}
+
+export async function updateProxySettings(payload: {
+  hijackEnabled: boolean;
+  mergeUpstreamEnabled: boolean;
+  fastModeRewriteMode?: ProxyFastModeRewriteMode;
+  upstream429MaxRetries: number;
+  enabledModels: string[];
+}): Promise<ProxySettings> {
+  const response = await fetchJson<unknown>("/api/settings/proxy", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+  return normalizeProxySettings(response);
 }
 
 export async function updateForwardProxySettings(payload: {
