@@ -114,7 +114,7 @@
   requested_viewport: 1440x1200
   viewport_strategy: devtools-emulate
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Account Pool/Pages/Upstream Account Create/OAuth/CompletedEmailChoice
   state: completed email choice
   evidence_note: 验证单账号 OAuth 完成后立即出现计划 badge，并要求在可信邮箱与手填邮箱之间做最终选择。
@@ -127,7 +127,7 @@
   requested_viewport: 1440x1200
   viewport_strategy: devtools-emulate
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Account Pool/Pages/Upstream Account Create/Batch OAuth/CompletedWithPlanBadge
   state: completed batch row
   evidence_note: 验证批量 OAuth 完成行直接显示计划 badge，且保留邮箱字段与完成态说明。
@@ -140,7 +140,7 @@
   requested_viewport: 1440x1200
   viewport_strategy: devtools-emulate
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Account Pool/Pages/Upstream Accounts/Overlays/OauthEmailOverview（编辑 tab 态）
   state: oauth detail edit tab
   evidence_note: 验证账号详情沿用现有编辑 tab 里的 email 字段，不额外新增弹窗，同时展示最新 verifiedEmail 提示。
@@ -153,7 +153,7 @@
   requested_viewport: 1440x1200
   viewport_strategy: devtools-emulate
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Account Pool/Pages/Upstream Accounts/List/MixedPlanCoexistence
   state: same-upstream mixed-plan coexistence
   evidence_note: 验证同一真实上游身份的 team / free 账号可以同名共存，列表中不再出现 duplicate 标记。

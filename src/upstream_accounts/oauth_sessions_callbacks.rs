@@ -699,6 +699,7 @@ pub(crate) async fn update_oauth_login_session(
         let session_group_node_shunt_enabled_requested =
             decode_group_requested_flag(session.group_node_shunt_enabled_requested);
         session.display_name.as_deref() == Some(account.display_name.as_str())
+            && session.email == account.email
             && session.group_name == account.group_name
             && session.note == account.note
             && session.group_note == current_group_metadata.note

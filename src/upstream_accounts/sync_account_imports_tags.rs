@@ -408,7 +408,8 @@ async fn persist_oauth_credentials(
     token_expires_at: &str,
 ) -> Result<()> {
     let claims = parse_chatgpt_jwt_claims(&credentials.id_token).unwrap_or_default();
-    let Some(row) = load_upstream_account_row(pool, account_id).await? else {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let Some(row) = load_upstream_account_row_conn(tx.as_mut(), account_id).await? else {
         bail!("account not found");
     };
     let next_verified_email = normalize_email_value(claims.email.clone());
@@ -434,6 +435,23 @@ async fn persist_oauth_credentials(
         next_email.as_deref(),
     )
     .unwrap_or(row.display_name.clone());
+    ensure_display_name_available_for_oauth_identity(
+        tx.as_mut(),
+        &next_display_name,
+        Some(account_id),
+        claims
+            .chatgpt_account_id
+            .as_deref()
+            .or(row.chatgpt_account_id.as_deref()),
+        claims
+            .chatgpt_user_id
+            .as_deref()
+            .or(row.chatgpt_user_id.as_deref()),
+        row.group_name.as_deref(),
+        claims.chatgpt_plan_type.as_deref().or(row.plan_type.as_deref()),
+    )
+    .await
+    .map_err(|(_, message)| anyhow!(message))?;
     let encrypted =
         encrypt_credentials(crypto_key, &StoredCredentials::Oauth(credentials.clone()))?;
     let now_iso = format_utc_iso(Utc::now());
@@ -467,8 +485,9 @@ async fn persist_oauth_credentials(
     .bind(claims.chatgpt_account_id)
     .bind(claims.chatgpt_user_id)
     .bind(claims.chatgpt_plan_type)
-    .execute(pool)
+    .execute(tx.as_mut())
     .await?;
+    tx.commit().await?;
     Ok(())
 }
 

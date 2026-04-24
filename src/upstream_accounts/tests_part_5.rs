@@ -2206,6 +2206,131 @@ async fn update_oauth_login_session_rejects_completed_repairs_after_account_chan
 }
 
 #[tokio::test]
+async fn update_oauth_login_session_rejects_completed_repairs_after_account_email_changes() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let created = create_oauth_login_session(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(CreateOauthLoginSessionRequest {
+            display_name: Some("Race Before".to_string()),
+            email: Some("race@example.com".to_string()),
+            group_name: Some("race-group".to_string()),
+            group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
+            group_node_shunt_enabled: None,
+            note: Some("before note".to_string()),
+            group_note: Some("before group note".to_string()),
+            concurrency_limit: None,
+            account_id: None,
+            tag_ids: vec![],
+            is_mother: Some(false),
+            mailbox_session_id: None,
+            mailbox_address: None,
+        }),
+    )
+    .await
+    .expect("create oauth login session")
+    .0;
+
+    let pending_session = load_login_session_by_login_id(&state.pool, &created.login_id)
+        .await
+        .expect("load pending session")
+        .expect("pending session should exist");
+    let crypto_key = state
+        .upstream_accounts
+        .crypto_key
+        .as_ref()
+        .expect("test crypto key");
+    let encrypted_credentials = encrypt_credentials(
+        crypto_key,
+        &StoredCredentials::Oauth(StoredOauthCredentials {
+            access_token: "race-access".to_string(),
+            refresh_token: "race-refresh".to_string(),
+            id_token: test_id_token(
+                "race@example.com",
+                Some("org_race"),
+                Some("user_race"),
+                Some("team"),
+            ),
+            token_type: Some("Bearer".to_string()),
+        }),
+    )
+    .expect("encrypt oauth credentials");
+    let account_id = persist_oauth_callback_inner(
+        state.as_ref(),
+        PersistOauthCallbackInput {
+            display_name: pending_session
+                .display_name
+                .clone()
+                .expect("display name should be stored"),
+            chosen_email: Some("race@example.com".to_string()),
+            verified_email: Some("race@example.com".to_string()),
+            session: pending_session,
+            claims: test_claims("race@example.com", Some("org_race"), Some("user_race")),
+            encrypted_credentials,
+            token_expires_at: "2026-04-01T00:00:00Z".to_string(),
+        },
+    )
+    .await
+    .expect("persist oauth callback");
+
+    let newer_account_updated_at = next_login_session_updated_at(Some(&created.updated_at));
+    sqlx::query(
+        r#"
+            UPDATE pool_upstream_accounts
+            SET email = ?2,
+                updated_at = ?3
+            WHERE id = ?1
+            "#,
+    )
+    .bind(account_id)
+    .bind("manual.latest@example.com")
+    .bind(&newer_account_updated_at)
+    .execute(&state.pool)
+    .await
+    .expect("simulate newer account email edit");
+
+    let mut repair_headers = HeaderMap::new();
+    repair_headers.insert(
+        LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
+        header::HeaderValue::from_str(&created.updated_at).expect("valid updated_at header"),
+    );
+    let repair_err = update_oauth_login_session(
+        State(state.clone()),
+        repair_headers,
+        AxumPath(created.login_id.clone()),
+        Json(UpdateOauthLoginSessionRequest {
+            display_name: OptionalField::Value("Race Before".to_string()),
+            email: OptionalField::Missing,
+            group_name: OptionalField::Value("race-group".to_string()),
+            group_bound_proxy_keys: OptionalField::Value(test_required_group_bound_proxy_keys()),
+            group_node_shunt_enabled: OptionalField::Missing,
+            note: OptionalField::Value("before note".to_string()),
+            group_note: OptionalField::Value("before group note".to_string()),
+            concurrency_limit: OptionalField::Missing,
+            tag_ids: OptionalField::Value(vec![]),
+            is_mother: OptionalField::Value(false),
+            mailbox_session_id: OptionalField::Missing,
+            mailbox_address: OptionalField::Missing,
+        }),
+    )
+    .await
+    .expect_err("reject completed repair after account email changes");
+    assert_eq!(repair_err.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        repair_err.1,
+        "This login session can no longer be edited.".to_string()
+    );
+
+    let account = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("load account after rejecting stale email repair")
+        .expect("oauth account should exist");
+    assert_eq!(account.display_name, "Race Before");
+    assert_eq!(account.email.as_deref(), Some("manual.latest@example.com"));
+    assert_eq!(account.updated_at, newer_account_updated_at);
+}
+
+#[tokio::test]
 async fn update_oauth_login_session_rejects_completed_failed_and_expired_sessions() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let update_payload = || UpdateOauthLoginSessionRequest {

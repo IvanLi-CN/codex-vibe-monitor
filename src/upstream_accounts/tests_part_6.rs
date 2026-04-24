@@ -1074,6 +1074,72 @@
     }
 
     #[tokio::test]
+    async fn refresh_rejects_display_name_renames_that_conflict_with_other_accounts() {
+        let pool = test_pool().await;
+        let crypto_key = derive_secret_key("refresh-display-name-conflict");
+        let account_id = insert_syncable_oauth_account(
+            &pool,
+            &crypto_key,
+            "old@example.com",
+            "old@example.com",
+            "refresh_conflict_org",
+            "refresh_conflict_user",
+        )
+        .await;
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET verified_email = ?2
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind("old@example.com")
+        .execute(&pool)
+        .await
+        .expect("seed verified email");
+        let conflicting_id = insert_api_key_account(&pool, "renamed@example.com").await;
+
+        let err = persist_oauth_credentials(
+            &pool,
+            account_id,
+            &crypto_key,
+            &StoredOauthCredentials {
+                access_token: "access-2".to_string(),
+                refresh_token: "refresh-2".to_string(),
+                id_token: test_id_token(
+                    "renamed@example.com",
+                    Some("refresh_conflict_org"),
+                    Some("refresh_conflict_user"),
+                    Some("team"),
+                ),
+                token_type: Some("Bearer".to_string()),
+            },
+            "2026-03-16T00:00:00Z",
+        )
+        .await
+        .expect_err("reject conflicting refresh rename");
+        assert!(
+            err.to_string().contains("displayName must be unique"),
+            "unexpected error: {err:#}"
+        );
+
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load oauth row")
+            .expect("oauth row exists");
+        assert_eq!(row.display_name, "old@example.com");
+        assert_eq!(row.email.as_deref(), Some("old@example.com"));
+        assert_eq!(row.verified_email.as_deref(), Some("old@example.com"));
+
+        let conflict = load_upstream_account_row(&pool, conflicting_id)
+            .await
+            .expect("load conflicting row")
+            .expect("conflicting row exists");
+        assert_eq!(conflict.display_name, "renamed@example.com");
+    }
+
+    #[tokio::test]
     async fn snapshot_plan_type_fallback_prefers_latest_effective_sample() {
         let pool = test_pool().await;
 
