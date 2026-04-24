@@ -36,6 +36,10 @@ export const EmailDerivedName: Story = {
   },
 }
 
+export const Default: Story = {
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=apiKey" />,
+}
+
 export const NameConflict: Story = {
   render: () => (
     <AccountPoolStoryRouter

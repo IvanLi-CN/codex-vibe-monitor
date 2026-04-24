@@ -18,7 +18,7 @@
 
 ### Goals
 
-- 为单 OAuth、批量 OAuth、API Key 新增与账号详情编辑补齐 `email` 输入，并把 `email` 纳入 API / DB / 草稿恢复 / Storybook mock 全链路。
+- 为单 OAuth、批量 OAuth、API Key 新增与账号详情编辑补齐 `email` 可编辑能力；其中 OAuth 相关流程优先复用现有 mailbox / 编辑 tab 入口，并把 `email` 纳入 API / DB / 草稿恢复 / Storybook mock 全链路。
 - 固定“邮箱变化时是否自动改显示名称”的规则：仅当名称为空，或名称仍等于旧邮箱 / 旧邮箱生成名时，才自动切到新邮箱生成名。
 - 为 OAuth 账号新增 `verifiedEmail` 概念：`email` 表示运营最终选定值，`verifiedEmail` 表示最近一次 OAuth 可信邮箱；两者允许不同。
 - OAuth 完成 / relogin 后，若 `verifiedEmail` 与当前草稿邮箱不同，必须先展示二选一 UI，再根据用户选择决定最终 `email`。
@@ -35,7 +35,7 @@
 
 ### In scope
 
-- `POST /api/pool/upstream-accounts/api-keys`、`PATCH /api/pool/upstream-accounts/:id` 的 `email` 字段。
+- `POST /api/pool/upstream-accounts/api-keys`、`PATCH /api/pool/upstream-accounts/:id` 的 `email` 字段与对应前端入口。
 - `POST/PATCH /api/pool/upstream-accounts/oauth/login-sessions*` 的草稿 `email` 字段与 `LoginSessionStatusResponse.email`。
 - `UpstreamAccountDetail.verifiedEmail` 字段、SQLite schema 增量迁移与兼容回填。
 - OAuth callback / relogin / background refresh 的 `email` 与 `verifiedEmail` 同步规则。
@@ -83,7 +83,7 @@
 
 ## 验收标准（Acceptance Criteria）
 
-- Given 单 OAuth / 批量 OAuth / API Key 创建页与详情编辑页，When 用户修改 `email`，Then 页面允许保存，且名称联动只发生在空名称或旧邮箱生成名场景。
+- Given 单 OAuth / 批量 OAuth / API Key 创建页与详情编辑页，When 用户通过现有邮箱入口或详情编辑 tab 修改 `email`，Then 页面允许保存，且名称联动只发生在空名称或旧邮箱生成名场景。
 - Given OAuth 完成或 relogin 返回的 `verifiedEmail` 与手填 `email` 不同，When 用户完成流程，Then 页面必须先让用户显式选择保留哪一个邮箱，最终详情与保存结果一致。
 - Given OAuth background refresh 发现新的可信邮箱，When 当前 `email` 是运营手工改过的值，Then refresh 只更新 `verifiedEmail`，不覆盖当前 `email`。
 - Given 两个 OAuth 账号属于同一真实上游身份且计划分别为 `team` 与 `free/pro/plus`，When 两者 display name 相同，Then 服务端允许同名且前端不做硬阻断。
@@ -141,9 +141,9 @@
   viewport_strategy: devtools-emulate
   sensitive_exclusion: N/A
   submission_gate: pending-owner-approval
-  story_id_or_title: Account Pool/Pages/Upstream Accounts/Overlays/OauthEditEmailHint
-  state: oauth detail edit
-  evidence_note: 验证详情编辑页同时展示可编辑 email 与最新 verifiedEmail 提示。
+  story_id_or_title: Account Pool/Pages/Upstream Accounts/Overlays/OauthEmailOverview（编辑 tab 态）
+  state: oauth detail edit tab
+  evidence_note: 验证账号详情沿用现有编辑 tab 里的 email 字段，不额外新增弹窗，同时展示最新 verifiedEmail 提示。
   image:
   ![详情编辑中的 email 与 verifiedEmail](./assets/oauth-edit-email-hint.png)
 
@@ -163,7 +163,7 @@
 ## 方案概述（Approach, high-level）
 
 - 后端先补 schema、runtime types 与 session/account email persistence，固定 email/displayName 联动规则，再把 OAuth uniqueness 检查切到 same-upstream mixed-plan exemption。
-- 前端统一把 `email` 放入 create/edit draft 与 pending OAuth session payload，OAuth 完成后引入 email chooser，中间态不再用本地 display name 冲突做 OAuth 硬阻断。
+- 前端统一把 `email` 放入 create/edit draft 与 pending OAuth session payload，OAuth 流程复用现有 mailbox / 详情编辑 tab 入口，OAuth 完成后引入 email chooser，中间态不再用本地 display name 冲突做 OAuth 硬阻断。
 - 关键成功态与 duplicate detail 统一复用 `upstreamPlanBadgeRecipe`，避免新增新的计划视觉体系。
 
 ## 风险 / 假设

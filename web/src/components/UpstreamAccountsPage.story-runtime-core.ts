@@ -1608,7 +1608,8 @@ export function createStore(): StoryStore {
   const teamSharedOrgCoexistenceStory =
     storyId?.endsWith('--team-shared-org-coexistence') === true
   const oauthEditEmailHintStory =
-    storyId?.endsWith('--oauth-edit-email-hint') === true
+    storyId?.endsWith('--oauth-edit-email-hint') === true ||
+    storyId?.endsWith('--oauth-email-overview') === true
   const compactStory = storyId?.endsWith('--compact-long-labels') === true
   const tagFilterStory = storyId?.endsWith('--tag-filter-all-match') === true
   const availabilityBadgeStory =

@@ -129,34 +129,6 @@ export function UpstreamAccountCreateOauthSection() {
     </div>
   </div>
   <div className="field">
-    <label
-      htmlFor="oauth-email"
-      className="field-label shrink-0"
-    >
-      {t("accountPool.upstreamAccounts.fields.email")}
-    </label>
-    <Input
-      id="oauth-email"
-      name="oauthEmail"
-      value={oauthEmail}
-      autoCapitalize="none"
-      spellCheck={false}
-      onChange={(event) => {
-        const nextValue = event.target.value;
-        setOauthEmail(nextValue);
-        setOauthDisplayName((current: string) =>
-          resolveDisplayNameAfterEmailChange(
-            current,
-            oauthEmail,
-            nextValue,
-          ),
-        );
-        setActionError(null);
-        invalidateSingleOauthSessionForMetadataEdit();
-      }}
-    />
-  </div>
-  <div className="field">
     <span className="field-label">
       {t("accountPool.upstreamAccounts.fields.mailboxAddress")}
     </span>
@@ -171,6 +143,14 @@ export function UpstreamAccountCreateOauthSection() {
           onChange={(event) => {
             const nextValue = event.target.value;
             setOauthMailboxInput(nextValue);
+            setOauthEmail(nextValue);
+            setOauthDisplayName((current: string) =>
+              resolveDisplayNameAfterEmailChange(
+                current,
+                oauthEmail,
+                nextValue,
+              ),
+            );
             setActionError(null);
             invalidateRelinkPendingOauthSessionForMailboxChange(
               nextValue,

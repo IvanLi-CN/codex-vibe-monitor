@@ -174,8 +174,12 @@ export function UpstreamAccountCreateBatchOauthSection() {
               ? (row.session?.authUrl ?? "")
               : "";
             const rowMailboxAddress =
-              row.mailboxSession?.emailAddress ??
-              row.mailboxInput;
+              isCompleted || isRecoveredNeedsRefresh
+                ? row.email ||
+                  row.mailboxSession?.emailAddress ||
+                  row.mailboxInput
+                : row.mailboxSession?.emailAddress ??
+                  row.mailboxInput;
             const rowInvited = row.mailboxStatus?.invited;
             const rowPlanBadge = upstreamPlanBadgeRecipe(
               row.planType ?? row.emailResolution?.planType ?? null,
@@ -418,31 +422,6 @@ export function UpstreamAccountCreateBatchOauthSection() {
                         ) : null}
                       </div>
                     </div>
-                    <label className="field min-w-0 gap-2 whitespace-nowrap">
-                      <span className="field-label">
-                        {t("accountPool.upstreamAccounts.fields.email")}
-                      </span>
-                      <Input
-                        id={`batch-oauth-email-${row.id}`}
-                        name={`batchOauthEmail-${row.id}`}
-                        value={row.email}
-                        autoCapitalize="none"
-                        spellCheck={false}
-                        disabled={
-                          metadataLocked ||
-                          isCompleted ||
-                          isRecoveredNeedsRefresh
-                        }
-                        className="min-w-0"
-                        onChange={(event) =>
-                          handleBatchMetadataChange(
-                            row.id,
-                            "email",
-                            event.target.value,
-                          )
-                        }
-                      />
-                    </label>
                     <label className="field min-w-0 gap-2 whitespace-nowrap">
                       <span className="field-label">
                         {t(

@@ -1,5 +1,5 @@
 describe("UpstreamAccountCreatePage oauth mailbox", () => {
-  it("keeps the display name blank when a mailbox is generated", async () => {
+  it("derives the display name from the generated mailbox when it was blank", async () => {
     const beginOauthMailboxSession = vi.fn().mockResolvedValue({
       supported: true,
       sessionId: "mailbox-1",
@@ -19,7 +19,7 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     await flushAsync();
 
     expect(beginOauthMailboxSession).toHaveBeenCalledTimes(1);
-    expect(displayNameInput?.value).toBe("");
+    expect(displayNameInput?.value).toBe("temp-user@example.com");
     expect(host?.textContent).toContain("temp-user@example.com");
     expect(
       Array.from(host?.querySelectorAll("button") ?? []).some(
@@ -92,8 +92,8 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
       "Generate a fresh OAuth URL before completing login.",
     );
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
-      displayName: "",
-      email: null,
+      displayName: "new-target@example.com",
+      email: "new-target@example.com",
       ...expectedGroupSelection(),
       note: "",
       tagIds: [],
@@ -159,7 +159,7 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     expect(host?.textContent).not.toContain("Attached mailbox");
     expect(updateOauthLogin).toHaveBeenCalledWith("login-mailbox-bound", {
       displayName: "Mailbox Bound",
-      email: null,
+      email: "different@example.com",
       ...expectedGroupSelection(),
       note: "",
       tagIds: [],
@@ -248,8 +248,8 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
       "manual-existing@mail-tw.707079.xyz",
     );
     expect(beginOauthLogin).toHaveBeenCalledWith({
-      displayName: undefined,
-      email: undefined,
+      displayName: "manual-existing@mail-tw.707079.xyz",
+      email: "manual-existing@mail-tw.707079.xyz",
       ...expectedGroupSelection(),
       note: undefined,
       groupNote: undefined,
@@ -301,8 +301,8 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
       "finance.lab.d5r@mail-tw.707079.xyz",
     );
     expect(beginOauthLogin).toHaveBeenCalledWith({
-      displayName: undefined,
-      email: undefined,
+      displayName: "finance.lab.d5r@mail-tw.707079.xyz",
+      email: "finance.lab.d5r@mail-tw.707079.xyz",
       ...expectedGroupSelection(),
       note: undefined,
       groupNote: undefined,
@@ -371,6 +371,7 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
 
     expect(beginOauthLogin).toHaveBeenCalledWith({
       displayName: "Mailbox Drift",
+      email: "different@example.com",
       ...expectedGroupSelection(),
       note: undefined,
       groupNote: undefined,
@@ -393,6 +394,7 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
 
     expect(beginOauthLogin).toHaveBeenLastCalledWith({
       displayName: "Mailbox Drift",
+      email: "manual-existing@mail-tw.707079.xyz",
       ...expectedGroupSelection(),
       note: undefined,
       groupNote: undefined,
@@ -482,6 +484,7 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
 
     expect(beginOauthLogin).toHaveBeenCalledWith({
       displayName: "Mailbox Case",
+      email: "MANUAL-EXISTING@MAIL-TW.707079.XYZ",
       ...expectedGroupSelection(),
       note: undefined,
       groupNote: undefined,

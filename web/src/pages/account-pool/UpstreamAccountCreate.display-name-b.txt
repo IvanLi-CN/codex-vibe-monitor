@@ -1080,7 +1080,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     render();
 
     const displayNameInput = setInputValue(
-      'input[name="oauthEmail"]',
+      'input[name="oauthMailboxInput"]',
       "entered@example.com",
     );
     await flushAsync();

@@ -6,6 +6,7 @@ import type {
 } from "../../lib/api";
 import {
   normalizeEmailKey,
+  resolveDisplayNameAfterEmailChange,
   shouldPromptOauthEmailChoice,
   type BatchOauthRow,
 } from "./UpstreamAccountCreate.shared";
@@ -131,6 +132,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
     (detail: UpstreamAccountDetail) => {
       setOauthCompletedDetail(detail);
       setOauthEmail(detail.email ?? "");
+      setOauthMailboxInput(detail.email ?? "");
       setOauthDisplayName(detail.displayName);
       setOauthDuplicateWarning(
         detail.duplicateInfo
@@ -148,6 +150,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
       setOauthDisplayName,
       setOauthDuplicateWarning,
       setOauthEmail,
+      setOauthMailboxInput,
     ],
   );
 
@@ -216,6 +219,14 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
       if (!isSupportedMailboxSession(response)) {
         setOauthMailboxSession(response);
         setOauthMailboxInput(response.emailAddress);
+        setOauthEmail(response.emailAddress);
+        setOauthDisplayName((current: string) =>
+          resolveDisplayNameAfterEmailChange(
+            current,
+            oauthEmail,
+            response.emailAddress,
+          ),
+        );
         setOauthMailboxStatus(null);
         setOauthMailboxTone("idle");
         setOauthMailboxCodeTone("idle");
@@ -223,6 +234,14 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
       }
       setOauthMailboxSession(response);
       setOauthMailboxInput(response.emailAddress);
+      setOauthEmail(response.emailAddress);
+      setOauthDisplayName((current: string) =>
+        resolveDisplayNameAfterEmailChange(
+          current,
+          oauthEmail,
+          response.emailAddress,
+        ),
+      );
       setOauthMailboxStatus(null);
       setOauthMailboxError(null);
       setOauthMailboxTone("idle");
@@ -245,6 +264,10 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
     if (!normalizedAddress) {
       invalidateRelinkPendingOauthSessionForMailboxChange("");
       setOauthMailboxSession(null);
+      setOauthEmail("");
+      setOauthDisplayName((current: string) =>
+        resolveDisplayNameAfterEmailChange(current, oauthEmail, ""),
+      );
       setOauthMailboxStatus(null);
       setOauthMailboxError(null);
       return;
@@ -260,6 +283,14 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         await beginOauthMailboxSessionForAddress(normalizedAddress);
       setOauthMailboxSession(response);
       setOauthMailboxInput(response.emailAddress);
+      setOauthEmail(response.emailAddress);
+      setOauthDisplayName((current: string) =>
+        resolveDisplayNameAfterEmailChange(
+          current,
+          oauthEmail,
+          response.emailAddress,
+        ),
+      );
       setOauthMailboxStatus(null);
       setOauthMailboxTone("idle");
       setOauthMailboxCodeTone("idle");
@@ -518,6 +549,12 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         mailboxBusyAction: null,
         mailboxSession: response,
         mailboxInput: response.emailAddress,
+        email: response.emailAddress,
+        displayName: resolveDisplayNameAfterEmailChange(
+          current.displayName,
+          current.email,
+          response.emailAddress,
+        ),
         mailboxEditorValue: response.emailAddress,
         mailboxStatus: null,
         mailboxError: null,
@@ -622,6 +659,12 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         mailboxEditorError: null,
         mailboxSession: isSupportedMailboxSession(response) ? response : null,
         mailboxInput: response.emailAddress,
+        email: response.emailAddress,
+        displayName: resolveDisplayNameAfterEmailChange(
+          current.displayName,
+          current.email,
+          response.emailAddress,
+        ),
         mailboxStatus: null,
         mailboxError: unsupportedError,
         mailboxTone: "idle",

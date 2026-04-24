@@ -848,6 +848,7 @@ export default function UpstreamAccountCreatePage() {
           current?.loginId === loginId ? nextSession : current,
         );
         setOauthEmail(nextDraftEmail);
+        setOauthMailboxInput(nextDraftEmail);
         if (nextSession.status !== "pending") {
           setSessionHint(null);
           setActionError(null);

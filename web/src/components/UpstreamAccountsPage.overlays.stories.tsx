@@ -130,7 +130,7 @@ export const EditDraftSurvivesBackgroundRefresh: Story = {
   },
 }
 
-export const OauthEditEmailHint: Story = {
+export const OauthEmailOverview: Story = {
   render: () => (
     <AccountPoolStoryRouter
       initialEntry={{
@@ -145,14 +145,16 @@ export const OauthEditEmailHint: Story = {
     await userEvent.click(
       within(dialog).getByRole('tab', { name: /编辑|edit/i }),
     )
-    await waitFor(() => {
-      expect(dialog.querySelector('input[name="detailEmail"]')).not.toBeNull()
-    })
     await expect(
       within(dialog).getByDisplayValue('old@storybook.example.com'),
     ).toBeInTheDocument()
     await expect(
       within(dialog).getByText(/verified@storybook\.example\.com/i),
+    ).toBeInTheDocument()
+    await expect(
+      within(dialog).getByText(
+        /latest oauth verification reported|最近一次 oauth 可信邮箱是/i,
+      ),
     ).toBeInTheDocument()
   },
 }

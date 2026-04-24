@@ -606,6 +606,7 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
 
     expect(beginOauthLogin).toHaveBeenCalledWith({
       displayName: "Batch Row",
+      email: "edited-batch@mail-tw.707079.xyz",
       ...expectedGroupSelection(),
       note: undefined,
       tagIds: [],
@@ -707,6 +708,7 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
 
     expect(beginOauthLogin).toHaveBeenCalledWith({
       displayName: "Batch Row",
+      email: "finance.lab.d5r@mail-tw.707079.xyz",
       ...expectedGroupSelection(),
       note: undefined,
       tagIds: [],
@@ -987,7 +989,7 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
     expect(updateOauthLogin).toHaveBeenCalledWith("login-existing-row-1", {
       displayName: "Batch Row",
-      email: null,
+      email: "edited-batch@mail-tw.707079.xyz",
       ...expectedGroupSelection(),
       note: "",
       tagIds: [],

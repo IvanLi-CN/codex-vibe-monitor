@@ -996,7 +996,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     });
     await flushAsync();
 
-    setInputValue('input[name="oauthEmail"]', "local-one@example.com");
+    setInputValue('input[name="oauthMailboxInput"]', "local-one@example.com");
     await flushAsync();
     await flushSessionSyncDebounce();
 
@@ -1011,7 +1011,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       mailboxAddress: "",
     });
 
-    setInputValue('input[name="oauthEmail"]', "local-two@example.com");
+    setInputValue('input[name="oauthMailboxInput"]', "local-two@example.com");
     await flushAsync();
     await flushSessionSyncDebounce();
     expect(updateOauthLogin).toHaveBeenCalledTimes(1);
@@ -1054,7 +1054,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       },
     );
     expect(
-      (host?.querySelector('input[name="oauthEmail"]') as HTMLInputElement)
+      (host?.querySelector('input[name="oauthMailboxInput"]') as HTMLInputElement)
         .value,
     ).toBe("local-two@example.com");
 

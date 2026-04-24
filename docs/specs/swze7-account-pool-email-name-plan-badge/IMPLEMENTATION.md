@@ -11,10 +11,10 @@
 ## Web
 
 - [x] create payload / detail payload / story runtime 补齐 `email` 与 `verifiedEmail`
-- [x] 单 OAuth 新增页加 email 输入与 email chooser
-- [x] 批量 OAuth 行加 email 输入与 email chooser
-- [x] API Key 新增页加 email 输入
-- [x] 详情编辑页加 email / verifiedEmail 展示与联动
+- [x] 单 OAuth 新增页复用 mailbox 输入承载 email 与 email chooser
+- [x] 批量 OAuth 行复用 mailbox chip / popover 编辑邮箱并接入 email chooser
+- [x] API Key 新增页支持 email 输入
+- [x] 详情编辑页复用现有 edit tab 的 email 字段与 verifiedEmail 提示
 - [x] 关键完成态加计划 badge
 
 ## Validation

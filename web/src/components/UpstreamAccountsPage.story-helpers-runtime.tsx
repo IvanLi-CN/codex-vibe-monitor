@@ -14,6 +14,7 @@ import type {
 } from '../lib/api'
 import AccountPoolLayout from '../pages/account-pool/AccountPoolLayout'
 import UpstreamAccountCreatePage from '../pages/account-pool/UpstreamAccountCreate'
+import { resolveDisplayNameAfterEmailChange } from '../pages/account-pool/UpstreamAccountCreate.shared'
 import GroupsPage from '../pages/account-pool/Groups'
 import UpstreamAccountsPage from '../pages/account-pool/UpstreamAccounts'
 import TagsPage from '../pages/account-pool/Tags'
@@ -743,13 +744,19 @@ export function StorybookUpstreamAccountsMock({
         if (!detail)
           return jsonResponse({ message: 'missing mock account' }, 404)
         const body = parseBody<UpdateUpstreamAccountPayload>(init?.body, {})
+        const nextEmail = Object.prototype.hasOwnProperty.call(body, 'email')
+          ? (body.email ?? null)
+          : detail.email
         const updated = syncLocalWindows({
           ...detail,
-          displayName: body.displayName ?? detail.displayName,
-          email:
-            Object.prototype.hasOwnProperty.call(body, 'email')
-              ? (body.email ?? null)
-              : detail.email,
+          displayName:
+            body.displayName ??
+            resolveDisplayNameAfterEmailChange(
+              detail.displayName,
+              detail.email,
+              nextEmail,
+            ),
+          email: nextEmail,
           groupName: body.groupName ?? detail.groupName,
           isMother: body.isMother ?? detail.isMother,
           note: body.note ?? detail.note,
