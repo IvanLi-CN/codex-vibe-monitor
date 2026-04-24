@@ -860,50 +860,10 @@ async fn query_materialized_pool_upstream_binding_hourly_stats(
     })
 }
 
-async fn query_materialized_pool_upstream_binding_window_stats(
-    pool: &Pool<Sqlite>,
-    range_start_epoch: i64,
-    range_end_epoch: i64,
-) -> Result<Vec<PoolUpstreamBindingWindowStatsRow>> {
-    sqlx::query_as::<_, PoolUpstreamBindingWindowStatsRow>(
-        r#"
-        SELECT
-            hourly.proxy_binding_key_snapshot,
-            SUM(hourly.success_count + hourly.failure_count) AS attempts,
-            SUM(hourly.success_count) AS success_count,
-            NULL AS latency_sum_ms,
-            0 AS latency_sample_count
-        FROM pool_upstream_node_health_hourly_archive AS hourly
-        WHERE hourly.bucket_start_epoch >= ?1
-          AND hourly.bucket_start_epoch < ?2
-          AND NOT EXISTS (
-                SELECT 1
-                FROM archive_batches AS batches
-                WHERE batches.dataset = 'pool_upstream_request_attempts'
-                  AND batches.status = ?3
-                  AND batches.file_path = hourly.archive_file_path
-          )
-        GROUP BY hourly.proxy_binding_key_snapshot
-        "#,
-    )
-    .bind(range_start_epoch)
-    .bind(range_end_epoch)
-    .bind(ARCHIVE_STATUS_COMPLETED)
-    .fetch_all(pool)
-    .await
-    .with_context(|| {
-        format!(
-            "failed to query materialized pool upstream window stats within [{range_start_epoch}, {range_end_epoch})"
-        )
-    })
-}
-
 async fn query_pool_upstream_binding_window_stats(
     state: &AppState,
     start_at: &str,
     end_at: &str,
-    start_epoch: i64,
-    end_epoch: i64,
     target_keys: Option<&HashSet<String>>,
     pending_archive_file_paths: &[String],
 ) -> Result<HashMap<String, ForwardProxyAttemptWindowStats>> {
@@ -987,22 +947,6 @@ async fn query_pool_upstream_binding_window_stats(
         )
         .await?,
     );
-    let materialized_range_start_epoch = align_bucket_epoch(
-        start_epoch,
-        POOL_UPSTREAM_BINDING_HOURLY_BUCKET_SECONDS,
-        0,
-    );
-    let materialized_range_end_epoch = ceil_hour_epoch(end_epoch);
-    if materialized_range_start_epoch < materialized_range_end_epoch {
-        rows.extend(
-            query_materialized_pool_upstream_binding_window_stats(
-                &state.pool,
-                materialized_range_start_epoch,
-                materialized_range_end_epoch,
-            )
-            .await?,
-        );
-    }
 
     let raw_keys = rows
         .iter()
@@ -1392,15 +1336,12 @@ pub(crate) async fn build_forward_proxy_settings_response(
     ];
     let mut window_maps: Vec<HashMap<String, ForwardProxyAttemptWindowStats>> = Vec::new();
     for (window_duration, _) in &windows {
-        let window_start = now_utc - *window_duration;
         let window_start_at = db_occurred_at_lower_bound(now_utc - *window_duration);
         window_maps.push(
             query_pool_upstream_binding_window_stats(
                 state,
                 &window_start_at,
                 &window_end_at,
-                window_start.timestamp(),
-                (now_utc + ChronoDuration::seconds(1)).timestamp(),
                 Some(&runtime_health_keys),
                 &pending_archive_file_paths,
             )
@@ -1700,15 +1641,12 @@ pub(crate) async fn build_forward_proxy_live_stats_response(
     let window_end_at = db_occurred_at_lower_bound(now_utc + ChronoDuration::seconds(1));
     let mut window_maps: Vec<HashMap<String, ForwardProxyAttemptWindowStats>> = Vec::new();
     for (window_duration, _) in &windows {
-        let window_start = now_utc - *window_duration;
         let window_start_at = db_occurred_at_lower_bound(now_utc - *window_duration);
         window_maps.push(
             query_pool_upstream_binding_window_stats(
                 state,
                 &window_start_at,
                 &window_end_at,
-                window_start.timestamp(),
-                (now_utc + ChronoDuration::seconds(1)).timestamp(),
                 Some(&runtime_health_keys),
                 &pending_archive_file_paths,
             )

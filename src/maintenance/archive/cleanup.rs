@@ -284,6 +284,7 @@ pub(crate) async fn cleanup_expired_archive_batches(
     }
     let cutoff = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
     let invocation_archive_cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
+    let owner_facing_node_health_window_cutoff = shanghai_local_cutoff_string(7);
     let candidates = sqlx::query_as::<_, ArchiveBatchCleanupCandidate>(
         r#"
         SELECT id, dataset, file_path, historical_rollups_materialized_at, coverage_end_at
@@ -298,6 +299,19 @@ pub(crate) async fn cleanup_expired_archive_batches(
     .bind(&cutoff)
     .fetch_all(pool)
     .await?;
+    let materialized_pool_upstream_cache_files = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT file_path
+        FROM hourly_rollup_archive_replay
+        WHERE target = ?1
+          AND dataset = 'pool_upstream_request_attempts'
+        "#,
+    )
+    .bind(POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .collect::<HashSet<_>>();
     let materialized_pool_upstream_hourly_files = sqlx::query_scalar::<_, String>(
         r#"
         SELECT file_path
@@ -320,7 +334,20 @@ pub(crate) async fn cleanup_expired_archive_batches(
             continue;
         }
         if candidate.dataset == "pool_upstream_request_attempts"
-            && !materialized_pool_upstream_hourly_files.contains(&candidate.file_path)
+            && (candidate.historical_rollups_materialized_at.is_none()
+                || !materialized_pool_upstream_cache_files.contains(&candidate.file_path)
+                || !materialized_pool_upstream_hourly_files.contains(&candidate.file_path))
+        {
+            continue;
+        }
+        if candidate.dataset == "pool_upstream_request_attempts"
+            && candidate
+                .coverage_end_at
+                .as_deref()
+                .map(|coverage_end_at| {
+                    coverage_end_at >= owner_facing_node_health_window_cutoff.as_str()
+                })
+                .unwrap_or(true)
         {
             continue;
         }

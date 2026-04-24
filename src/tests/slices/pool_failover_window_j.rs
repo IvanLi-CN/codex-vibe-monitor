@@ -2809,6 +2809,153 @@ async fn missing_pool_node_health_archives_clear_stale_cached_rows_before_markin
 }
 
 #[tokio::test]
+async fn cleanup_expired_pool_upstream_archives_waits_for_cache_replay_completion() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("pool-node-health-cleanup-cache-replay-gate").await;
+    let coverage_end_at = shanghai_local_days_ago(14, 9, 0, 0);
+    let archive_file_path = archive_batch_file_path(&config, "pool_upstream_request_attempts", &coverage_end_at[..7])
+        .expect("resolve expired pool upstream archive path");
+    fs::create_dir_all(archive_file_path.parent().expect("archive parent"))
+        .expect("create archive parent for cleanup gate");
+    fs::write(&archive_file_path, b"placeholder-archive")
+        .expect("seed raw archive file for cleanup gate");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            historical_rollups_materialized_at,
+            archive_expires_at,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, datetime('now'))
+        "#,
+    )
+    .bind("pool_upstream_request_attempts")
+    .bind(&coverage_end_at[..7])
+    .bind(archive_file_path.to_string_lossy().to_string())
+    .bind("cache-replay-gate")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(shanghai_local_days_ago(1, 0, 0, 0))
+    .bind(&coverage_end_at)
+    .bind(&coverage_end_at)
+    .execute(&pool)
+    .await
+    .expect("insert expired pool upstream archive batch");
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
+        VALUES (?1, ?2, ?3, datetime('now'))
+        "#,
+    )
+    .bind(POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET)
+    .bind("pool_upstream_request_attempts")
+    .bind(archive_file_path.to_string_lossy().to_string())
+    .execute(&pool)
+    .await
+    .expect("mark hourly replay complete while cache replay stays pending");
+
+    let deleted = cleanup_expired_archive_batches(&pool, &config, false)
+        .await
+        .expect("cleanup should respect pending cache replay");
+    assert_eq!(deleted, 0);
+    assert!(
+        archive_file_path.exists(),
+        "raw archive must remain until cache replay completes"
+    );
+
+    let remaining_batches: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM archive_batches WHERE dataset = 'pool_upstream_request_attempts'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count remaining pool upstream archive batches");
+    assert_eq!(remaining_batches, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn cleanup_expired_pool_upstream_archives_preserves_recent_exact_window_history() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("pool-node-health-cleanup-window-gate").await;
+    let coverage_end_at = shanghai_local_days_ago(2, 9, 0, 0);
+    let archive_file_path = archive_batch_file_path(&config, "pool_upstream_request_attempts", &coverage_end_at[..7])
+        .expect("resolve recent pool upstream archive path");
+    fs::create_dir_all(archive_file_path.parent().expect("archive parent"))
+        .expect("create archive parent for window gate");
+    fs::write(&archive_file_path, b"placeholder-archive")
+        .expect("seed raw archive file for window gate");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            historical_rollups_materialized_at,
+            archive_expires_at,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), ?7, ?8, ?9, datetime('now'))
+        "#,
+    )
+    .bind("pool_upstream_request_attempts")
+    .bind(&coverage_end_at[..7])
+    .bind(archive_file_path.to_string_lossy().to_string())
+    .bind("recent-window-gate")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(shanghai_local_days_ago(1, 0, 0, 0))
+    .bind(&coverage_end_at)
+    .bind(&coverage_end_at)
+    .execute(&pool)
+    .await
+    .expect("insert recent expired pool upstream archive batch");
+    for target in [
+        POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET,
+        POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET,
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
+            VALUES (?1, ?2, ?3, datetime('now'))
+            "#,
+        )
+        .bind(target)
+        .bind("pool_upstream_request_attempts")
+        .bind(archive_file_path.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .expect("mark node health replay complete");
+    }
+
+    let deleted = cleanup_expired_archive_batches(&pool, &config, false)
+        .await
+        .expect("cleanup should keep recent exact node health history");
+    assert_eq!(deleted, 0);
+    assert!(
+        archive_file_path.exists(),
+        "raw archive should remain while Live/Settings windows can still overlap it"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn pool_upstream_node_health_archive_backfill_reuses_stable_temp_db_when_budget_is_hit() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("pool-node-health-archive-temp-reuse").await;
