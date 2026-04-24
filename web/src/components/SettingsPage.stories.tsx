@@ -222,7 +222,7 @@ function createStorySettings(overrides?: StorySettingsOverrides): SettingsPayloa
 }
 
 function createParitySettings(): SettingsPayload {
-  return {
+  const settings = createStorySettings({
     forwardProxy: {
       proxyUrls: [
         'http://jp-edge-01.internal:8080',
@@ -230,13 +230,14 @@ function createParitySettings(): SettingsPayload {
       ],
       subscriptionUrls: [],
       subscriptionUpdateIntervalSecs: 3600,
-      nodes: paritySettingsNodes,
     },
     pricing: {
       catalogVersion: 'storybook-node-health-parity',
       entries: DEFAULT_PRICING_ENTRIES,
     },
-  }
+  })
+  settings.forwardProxy.nodes = paritySettingsNodes
+  return settings
 }
 
 function loadPersistedSettings(storageKey: string, fallback: SettingsPayload): SettingsPayload {
