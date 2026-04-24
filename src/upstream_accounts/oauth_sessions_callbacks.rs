@@ -1925,10 +1925,7 @@ pub(crate) async fn complete_oauth_login_session_with_query(
         .clone()
         .and_then(|value| normalize_optional_text(Some(value)))
         .unwrap_or(default_display_name);
-    let chosen_email = session
-        .email
-        .clone()
-        .or_else(|| normalized_claim_email.clone());
+    let chosen_email = session.email.clone();
     let input = PersistOauthCallbackInput {
         session,
         display_name,

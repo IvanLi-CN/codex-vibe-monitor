@@ -1129,11 +1129,7 @@ export function shouldPromptOauthEmailChoice(
 ) {
   const normalizedVerified = normalizeEmailKey(verifiedEmail);
   const normalizedChosen = normalizeEmailKey(chosenEmail);
-  return (
-    normalizedVerified.length > 0 &&
-    normalizedChosen.length > 0 &&
-    normalizedVerified !== normalizedChosen
-  );
+  return normalizedVerified.length > 0 && normalizedVerified !== normalizedChosen;
 }
 
 export function normalizeMailboxAddressKey(value: string) {

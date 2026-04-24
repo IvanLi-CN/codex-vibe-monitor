@@ -189,7 +189,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
           normalizeEmailKey(nextEmail)
             ? currentResolution.detail
             : await saveAccount(currentResolution.detail.id, {
-                email: nextEmail,
+                email: nextEmail.trim() ? nextEmail : null,
               });
         setOauthEmailResolution(null);
         finalizeSingleOauthFlow(detail);
@@ -1179,7 +1179,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
     }
     try {
       const detail = await saveAccount(resolution.accountId, {
-        email: nextEmail,
+        email: nextEmail.trim() ? nextEmail : null,
       });
       notifyMotherChange(detail);
       updateBatchRow(rowId, (current: BatchOauthRow) => ({
