@@ -229,80 +229,38 @@ pub(crate) async fn delete_pool_upstream_node_health_hourly_archive_rows_for_fil
     Ok(())
 }
 
-pub(crate) async fn cache_pool_upstream_node_health_hourly_archive_rows_from_live_ids_tx(
+pub(crate) async fn refresh_pool_upstream_node_health_hourly_archive_rows_from_cache_tx(
     tx: &mut SqliteConnection,
     archive_file_path: &str,
-    ids: &[i64],
 ) -> Result<u64> {
-    if ids.is_empty() {
-        return Ok(0);
-    }
+    let rows = sqlx::query_as::<_, PoolUpstreamNodeHealthHourlyArchiveRollupRow>(
+        r#"
+        SELECT
+            proxy_binding_key_snapshot,
+            ((CASE
+                WHEN instr(occurred_at, 'T') > 0
+                    THEN CAST(strftime('%s', occurred_at) AS INTEGER)
+                ELSE CAST(strftime('%s', occurred_at || '+08:00') AS INTEGER)
+            END) / 3600) * 3600 AS bucket_start_epoch,
+            SUM(is_success) AS success_count,
+            SUM(CASE WHEN is_success = 0 THEN 1 ELSE 0 END) AS failure_count
+        FROM pool_upstream_node_health_archive
+        WHERE archive_file_path = ?1
+        GROUP BY proxy_binding_key_snapshot, bucket_start_epoch
+        "#,
+    )
+    .bind(archive_file_path)
+    .fetch_all(&mut *tx)
+    .await
+    .with_context(|| {
+        format!(
+            "failed to rebuild cached pool upstream node health hourly rows for {}",
+            archive_file_path
+        )
+    })?;
 
-    let mut rows_affected = 0_u64;
-    for chunk in ids.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
-        let mut query = QueryBuilder::<Sqlite>::new(
-            r#"
-            INSERT INTO pool_upstream_node_health_hourly_archive (
-                archive_file_path,
-                proxy_binding_key_snapshot,
-                bucket_start_epoch,
-                success_count,
-                failure_count,
-                updated_at
-            )
-            SELECT
-                "#,
-        );
-        query
-            .push_bind(archive_file_path)
-            .push(
-                r#",
-                proxy_binding_key_snapshot,
-                ((CASE
-                    WHEN instr(occurred_at, 'T') > 0
-                        THEN CAST(strftime('%s', occurred_at) AS INTEGER)
-                    ELSE CAST(strftime('%s', occurred_at || '+08:00') AS INTEGER)
-                END) / 3600) * 3600 AS bucket_start_epoch,
-                SUM(CASE WHEN status = "#,
-            )
-            .push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
-            .push(
-                r#" THEN 1 ELSE 0 END) AS success_count,
-                SUM(CASE WHEN status != "#,
-            )
-            .push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
-            .push(
-                r#" THEN 1 ELSE 0 END) AS failure_count,
-                datetime('now')
-            FROM pool_upstream_request_attempts
-            WHERE id IN ("#,
-            );
-        {
-            let mut separated = query.separated(", ");
-            for id in chunk {
-                separated.push_bind(id);
-            }
-        }
-        query.push(
-            r#")
-              AND proxy_binding_key_snapshot IS NOT NULL
-              AND finished_at IS NOT NULL
-              AND status != "#,
-        );
-        query.push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL);
-        query.push(
-            r#"
-            GROUP BY proxy_binding_key_snapshot, bucket_start_epoch
-            ON CONFLICT(archive_file_path, proxy_binding_key_snapshot, bucket_start_epoch) DO UPDATE SET
-                success_count = pool_upstream_node_health_hourly_archive.success_count + excluded.success_count,
-                failure_count = pool_upstream_node_health_hourly_archive.failure_count + excluded.failure_count,
-                updated_at = datetime('now')
-            "#,
-        );
-        rows_affected += query.build().execute(&mut *tx).await?.rows_affected();
-    }
-
-    Ok(rows_affected)
+    replace_pool_upstream_node_health_hourly_archive_rows_tx(tx, archive_file_path, &rows).await?;
+    Ok(rows.len() as u64)
 }
 
 pub(crate) async fn load_pool_upstream_node_health_hourly_archive_rollup_rows(

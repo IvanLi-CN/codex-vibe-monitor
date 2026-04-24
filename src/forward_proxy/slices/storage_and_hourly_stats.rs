@@ -594,6 +594,18 @@ async fn load_pending_pool_upstream_node_health_archive_file_paths(
         .collect())
 }
 
+async fn inflate_pending_pool_upstream_node_health_archive_to_temp(
+    archive_path: &Path,
+    temp_path: &Path,
+) -> Result<()> {
+    let archive_path = archive_path.to_path_buf();
+    let temp_path = temp_path.to_path_buf();
+    tokio::task::spawn_blocking(move || inflate_gzip_sqlite_file(&archive_path, &temp_path))
+        .await
+        .context("pending pool upstream node health archive inflate task panicked")??;
+    Ok(())
+}
+
 async fn query_pending_pool_upstream_binding_window_stats_from_archive_file(
     archive_file_path: &str,
     start_at: &str,
@@ -611,7 +623,8 @@ async fn query_pending_pool_upstream_binding_window_stats_from_archive_file(
     let temp_path = owner_facing_pool_upstream_pending_archive_temp_path(&archive_path);
     let temp_cleanup = TempSqliteCleanup(temp_path.clone());
     let query_result = async {
-        inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
+        inflate_pending_pool_upstream_node_health_archive_to_temp(&archive_path, &temp_path)
+            .await?;
         let mut conn = SqliteConnection::connect(&sqlite_url_for_path(&temp_path))
             .await
             .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
@@ -706,7 +719,8 @@ async fn query_pending_pool_upstream_binding_hourly_stats_from_archive_file(
     let temp_path = owner_facing_pool_upstream_pending_archive_temp_path(&archive_path);
     let temp_cleanup = TempSqliteCleanup(temp_path.clone());
     let query_result = async {
-        inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
+        inflate_pending_pool_upstream_node_health_archive_to_temp(&archive_path, &temp_path)
+            .await?;
         let mut conn = SqliteConnection::connect(&sqlite_url_for_path(&temp_path))
             .await
             .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;

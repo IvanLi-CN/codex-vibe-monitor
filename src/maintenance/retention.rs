@@ -1811,10 +1811,9 @@ async fn archive_timestamped_dataset(
                     &ids,
                 )
                 .await?;
-                cache_pool_upstream_node_health_hourly_archive_rows_from_live_ids_tx(
+                refresh_pool_upstream_node_health_hourly_archive_rows_from_cache_tx(
                     tx.as_mut(),
                     &archive_outcome.file_path,
-                    &ids,
                 )
                 .await?;
                 if archive_file_contains_only_new_rows || node_health_hourly_archive_already_replayed {

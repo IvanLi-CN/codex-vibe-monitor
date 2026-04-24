@@ -2594,6 +2594,115 @@ async fn retention_keeps_preexisting_pool_node_health_month_archives_pending_aft
 }
 
 #[tokio::test]
+async fn refreshing_pool_node_health_hourly_cache_from_row_cache_is_idempotent() {
+    let (pool, _config, temp_dir) =
+        retention_test_pool_and_config("pool-node-health-hourly-cache-idempotent").await;
+    let archive_file_path = temp_dir
+        .join("hourly-cache-idempotent.sqlite.gz")
+        .to_string_lossy()
+        .to_string();
+    let binding_key = "fpn-hourly-cache-idempotent";
+    let occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::days(40))
+            .with_timezone(&Shanghai)
+            .naive_local()
+            .with_minute(15)
+            .expect("set minute")
+            .with_second(0)
+            .expect("set second"),
+    );
+    let bucket_start_epoch = align_bucket_epoch(
+        parse_shanghai_local_naive(&occurred_at)
+            .expect("parse shanghai occurred_at")
+            .and_local_timezone(Shanghai)
+            .single()
+            .expect("localize shanghai occurred_at")
+            .with_timezone(&Utc)
+            .timestamp(),
+        3600,
+        0,
+    );
+
+    for (archived_row_id, is_success) in [(1_i64, 1_i64), (2_i64, 0_i64)] {
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_node_health_archive (
+                archive_file_path,
+                archived_row_id,
+                occurred_at,
+                proxy_binding_key_snapshot,
+                is_success,
+                latency_ms
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, NULL)
+            "#,
+        )
+        .bind(&archive_file_path)
+        .bind(archived_row_id)
+        .bind(&occurred_at)
+        .bind(binding_key)
+        .bind(is_success)
+        .execute(&pool)
+        .await
+        .expect("insert cached pool node health row");
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_node_health_hourly_archive (
+            archive_file_path,
+            proxy_binding_key_snapshot,
+            bucket_start_epoch,
+            success_count,
+            failure_count
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind(&archive_file_path)
+    .bind(binding_key)
+    .bind(bucket_start_epoch)
+    .bind(9_i64)
+    .bind(4_i64)
+    .execute(&pool)
+    .await
+    .expect("insert stale cached hourly row");
+
+    for _ in 0..2 {
+        let mut tx = pool.begin().await.expect("begin hourly refresh tx");
+        refresh_pool_upstream_node_health_hourly_archive_rows_from_cache_tx(
+            tx.as_mut(),
+            &archive_file_path,
+        )
+        .await
+        .expect("refresh hourly rows from cached rows");
+        tx.commit().await.expect("commit hourly refresh tx");
+    }
+
+    let refreshed = sqlx::query_as::<_, (i64, i64)>(
+        r#"
+        SELECT
+            COALESCE(SUM(success_count), 0) AS success_count,
+            COALESCE(SUM(failure_count), 0) AS failure_count
+        FROM pool_upstream_node_health_hourly_archive
+        WHERE archive_file_path = ?1
+          AND proxy_binding_key_snapshot = ?2
+          AND bucket_start_epoch = ?3
+        "#,
+    )
+    .bind(&archive_file_path)
+    .bind(binding_key)
+    .bind(bucket_start_epoch)
+    .fetch_one(&pool)
+    .await
+    .expect("load refreshed hourly cache row");
+    assert_eq!(refreshed.0, 1);
+    assert_eq!(refreshed.1, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn pool_upstream_node_health_archive_backfill_reuses_stable_temp_db_when_budget_is_hit() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("pool-node-health-archive-temp-reuse").await;
