@@ -861,6 +861,216 @@
     }
 
     #[tokio::test]
+    async fn update_uses_latest_sample_plan_type_for_current_mixed_plan_same_name_exemption() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let display_name = "Shared Mixed Plan";
+        let shared_account_id = "shared_mixed_plan_account";
+        let mut inserted_ids = Vec::new();
+
+        for (email, plan_type) in [
+            ("shared-mixed-team@example.com", Some("team")),
+            ("shared-mixed-pro@example.com", Some("pro")),
+        ] {
+            let mut tx = state.pool.begin().await.expect("begin tx");
+            ensure_display_name_available_for_oauth_identity(
+                &mut *tx,
+                display_name,
+                None,
+                Some(shared_account_id),
+                None,
+                None,
+                plan_type,
+            )
+            .await
+            .expect("mixed-plan same-name create should be allowed");
+            let account_id = upsert_oauth_account(
+                &mut tx,
+                OauthAccountUpsert {
+                    account_id: None,
+                    display_name,
+                    chosen_email: None,
+                    verified_email: None,
+                    group_name: None,
+                    is_mother: false,
+                    note: None,
+                    tag_ids: vec![],
+                    requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
+                    claims: &test_claims_with_plan_type(
+                        email,
+                        Some(shared_account_id),
+                        None,
+                        plan_type,
+                    ),
+                    encrypted_credentials: format!("encrypted-{email}"),
+                    token_expires_at: "2026-03-14T00:00:00Z",
+                    external_identity: None,
+                },
+            )
+            .await
+            .expect("oauth insert");
+            tx.commit().await.expect("commit tx");
+            inserted_ids.push(account_id);
+        }
+
+        let current_account_id = inserted_ids[1];
+        insert_limit_sample(
+            &state.pool,
+            current_account_id,
+            "2026-03-15T00:00:02Z",
+            Some("pro"),
+        )
+        .await;
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET plan_type = NULL,
+                plan_type_observed_at = NULL,
+                updated_at = '2026-03-15T00:00:03Z'
+            WHERE id = ?1
+            "#,
+        )
+        .bind(current_account_id)
+        .execute(&state.pool)
+        .await
+        .expect("clear current account plan type");
+
+        let detail = state
+            .upstream_accounts
+            .account_ops
+            .run_update_account(
+                state.clone(),
+                current_account_id,
+                UpdateUpstreamAccountRequest {
+                    display_name: None,
+                    email: OptionalField::Missing,
+                    group_name: None,
+                    group_bound_proxy_keys: None,
+                    group_node_shunt_enabled: None,
+                    note: Some("mixed-plan note update".to_string()),
+                    group_note: None,
+                    concurrency_limit: None,
+                    upstream_base_url: OptionalField::Missing,
+                    enabled: None,
+                    is_mother: None,
+                    api_key: None,
+                    local_primary_limit: None,
+                    local_secondary_limit: None,
+                    local_limit_unit: None,
+                    tag_ids: None,
+                },
+            )
+            .await
+            .expect("update should keep mixed-plan same-name exemption");
+
+        assert_eq!(detail.summary.display_name, display_name);
+        assert_eq!(detail.note.as_deref(), Some("mixed-plan note update"));
+    }
+
+    #[tokio::test]
+    async fn refresh_uses_latest_sample_plan_type_for_current_mixed_plan_same_name_exemption() {
+        let pool = test_pool().await;
+        let crypto_key = derive_secret_key("refresh-mixed-plan-sample-fallback");
+        let display_name = "Refresh Shared Mixed Plan";
+        let shared_account_id = "refresh_shared_mixed_plan_account";
+        let mut inserted_ids = Vec::new();
+
+        for (email, plan_type) in [
+            ("refresh-mixed-team@example.com", Some("team")),
+            ("refresh-mixed-pro@example.com", Some("pro")),
+        ] {
+            let mut tx = pool.begin().await.expect("begin tx");
+            ensure_display_name_available_for_oauth_identity(
+                &mut *tx,
+                display_name,
+                None,
+                Some(shared_account_id),
+                None,
+                None,
+                plan_type,
+            )
+            .await
+            .expect("mixed-plan same-name create should be allowed");
+            let account_id = upsert_oauth_account(
+                &mut tx,
+                OauthAccountUpsert {
+                    account_id: None,
+                    display_name,
+                    chosen_email: None,
+                    verified_email: None,
+                    group_name: None,
+                    is_mother: false,
+                    note: None,
+                    tag_ids: vec![],
+                    requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
+                    claims: &test_claims_with_plan_type(
+                        email,
+                        Some(shared_account_id),
+                        None,
+                        plan_type,
+                    ),
+                    encrypted_credentials: format!("encrypted-{email}"),
+                    token_expires_at: "2026-03-14T00:00:00Z",
+                    external_identity: None,
+                },
+            )
+            .await
+            .expect("oauth insert");
+            tx.commit().await.expect("commit tx");
+            inserted_ids.push(account_id);
+        }
+
+        let current_account_id = inserted_ids[1];
+        insert_limit_sample(
+            &pool,
+            current_account_id,
+            "2026-03-15T00:00:02Z",
+            Some("pro"),
+        )
+        .await;
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET plan_type = NULL,
+                plan_type_observed_at = NULL,
+                updated_at = '2026-03-15T00:00:03Z'
+            WHERE id = ?1
+            "#,
+        )
+        .bind(current_account_id)
+        .execute(&pool)
+        .await
+        .expect("clear current account plan type");
+
+        persist_oauth_credentials(
+            &pool,
+            current_account_id,
+            &crypto_key,
+            &StoredOauthCredentials {
+                access_token: "refresh-access-2".to_string(),
+                refresh_token: "refresh-token-2".to_string(),
+                id_token: test_id_token(
+                    "refresh-mixed-pro@example.com",
+                    Some(shared_account_id),
+                    None,
+                    None,
+                ),
+                token_type: Some("Bearer".to_string()),
+            },
+            "2026-03-16T00:00:00Z",
+        )
+        .await
+        .expect("refresh should keep mixed-plan same-name exemption");
+
+        let row = load_upstream_account_row(&pool, current_account_id)
+            .await
+            .expect("load refreshed account")
+            .expect("refreshed account exists");
+        assert_eq!(row.display_name, display_name);
+        assert_eq!(row.email.as_deref(), Some("refresh-mixed-pro@example.com"));
+        assert!(row.last_refreshed_at.is_some());
+    }
+
+    #[tokio::test]
     async fn unknown_plan_type_accounts_with_shared_account_id_remain_flagged() {
         let pool = test_pool().await;
 

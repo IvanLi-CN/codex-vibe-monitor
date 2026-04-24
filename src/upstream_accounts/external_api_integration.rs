@@ -333,6 +333,13 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(internal_error_tuple)?;
+    let effective_existing_plan_type = resolve_effective_plan_type_for_account(
+        tx.as_mut(),
+        existing_row.id,
+        existing_row.plan_type.as_deref(),
+    )
+    .await
+    .map_err(internal_error_tuple)?;
     ensure_display_name_available_for_oauth_identity(
         tx.as_mut(),
         &display_name,
@@ -340,7 +347,9 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
         probe.claims.chatgpt_account_id.as_deref(),
         probe.claims.chatgpt_user_id.as_deref(),
         group_name.as_deref(),
-        probe.claims.chatgpt_plan_type.as_deref(),
+        normalize_plan_type(probe.claims.chatgpt_plan_type.as_deref())
+            .or(effective_existing_plan_type)
+            .as_deref(),
     )
     .await?;
     upsert_oauth_account(

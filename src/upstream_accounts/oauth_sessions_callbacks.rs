@@ -1475,6 +1475,10 @@ pub(crate) async fn update_upstream_account_inner(
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(internal_error_tuple)?;
+    let effective_plan_type =
+        resolve_effective_plan_type_for_account(tx.as_mut(), id, row.plan_type.as_deref())
+            .await
+            .map_err(internal_error_tuple)?;
     if row.kind == UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX {
         ensure_display_name_available_for_oauth_identity(
             &mut *tx,
@@ -1483,7 +1487,7 @@ pub(crate) async fn update_upstream_account_inner(
             row.chatgpt_account_id.as_deref(),
             row.chatgpt_user_id.as_deref(),
             row.group_name.as_deref(),
-            row.plan_type.as_deref(),
+            effective_plan_type.as_deref(),
         )
         .await?;
     } else {
@@ -1587,6 +1591,10 @@ pub(crate) async fn apply_oauth_login_session_metadata_to_account_with_executor(
         email.as_deref().or(row.email.as_deref()),
     )
     .unwrap_or(row.display_name.clone());
+    let effective_plan_type =
+        resolve_effective_plan_type_for_account(tx.as_mut(), account_id, row.plan_type.as_deref())
+            .await
+            .map_err(internal_error_tuple)?;
     ensure_display_name_available_for_oauth_identity(
         tx.as_mut(),
         &next_display_name,
@@ -1594,7 +1602,7 @@ pub(crate) async fn apply_oauth_login_session_metadata_to_account_with_executor(
         row.chatgpt_account_id.as_deref(),
         row.chatgpt_user_id.as_deref(),
         group_name.as_deref().or(row.group_name.as_deref()),
-        row.plan_type.as_deref(),
+        effective_plan_type.as_deref(),
     )
     .await?;
 
@@ -1989,6 +1997,23 @@ pub(crate) async fn persist_oauth_callback_inner(
             "This login session has already been consumed.".to_string(),
         ));
     }
+    let current_plan_type = if let Some(account_id) = session.account_id {
+        let existing_plan_type = load_upstream_account_row_conn(tx.as_mut(), account_id)
+            .await
+            .map_err(internal_error_tuple)?
+            .and_then(|row| row.plan_type);
+        normalize_plan_type(input.claims.chatgpt_plan_type.as_deref()).or(
+            resolve_effective_plan_type_for_account(
+                tx.as_mut(),
+                account_id,
+                existing_plan_type.as_deref(),
+            )
+            .await
+            .map_err(internal_error_tuple)?,
+        )
+    } else {
+        normalize_plan_type(input.claims.chatgpt_plan_type.as_deref())
+    };
     if let Err((status, message)) = ensure_display_name_available_for_oauth_identity(
         &mut *tx,
         &input.display_name,
@@ -1996,7 +2021,7 @@ pub(crate) async fn persist_oauth_callback_inner(
         input.claims.chatgpt_account_id.as_deref(),
         input.claims.chatgpt_user_id.as_deref(),
         session.group_name.as_deref(),
-        input.claims.chatgpt_plan_type.as_deref(),
+        current_plan_type.as_deref(),
     )
     .await
     {

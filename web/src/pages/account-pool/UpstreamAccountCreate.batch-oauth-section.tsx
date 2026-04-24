@@ -14,6 +14,7 @@ import { MotherAccountToggle } from "../../components/MotherAccountToggle";
 import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
 import {
   DuplicateWarningPopover,
+  resolveBatchOauthMailboxAddress,
 } from "./UpstreamAccountCreate.shared";
 import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.controller-context";
 
@@ -173,13 +174,7 @@ export function UpstreamAccountCreateBatchOauthSection() {
             const authUrl = rowHasActiveOauthUrl
               ? (row.session?.authUrl ?? "")
               : "";
-            const rowMailboxAddress =
-              isCompleted || isRecoveredNeedsRefresh
-                ? row.email ||
-                  row.mailboxSession?.emailAddress ||
-                  row.mailboxInput
-                : row.mailboxSession?.emailAddress ??
-                  row.mailboxInput;
+            const rowMailboxAddress = resolveBatchOauthMailboxAddress(row);
             const rowInvited = row.mailboxStatus?.invited;
             const rowPlanBadge = upstreamPlanBadgeRecipe(
               row.planType ?? row.emailResolution?.planType ?? null,

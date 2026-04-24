@@ -1338,6 +1338,14 @@ export function batchRowStatus(row: BatchOauthRow) {
   return row.session?.status ?? "draft";
 }
 
+export function resolveBatchOauthMailboxAddress(row: BatchOauthRow) {
+  const status = batchRowStatus(row);
+  if (status === "completed" || status === "completedNeedsRefresh") {
+    return row.email || row.mailboxSession?.emailAddress || row.mailboxInput;
+  }
+  return row.mailboxSession?.emailAddress ?? row.mailboxInput;
+}
+
 export function canEditCompletedBatchOauthRowMetadata(row: BatchOauthRow) {
   const status = batchRowStatus(row);
   return Boolean(

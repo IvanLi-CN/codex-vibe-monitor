@@ -412,6 +412,9 @@ async fn persist_oauth_credentials(
     let Some(row) = load_upstream_account_row_conn(tx.as_mut(), account_id).await? else {
         bail!("account not found");
     };
+    let effective_row_plan_type =
+        resolve_effective_plan_type_for_account(tx.as_mut(), account_id, row.plan_type.as_deref())
+            .await?;
     let next_verified_email = normalize_email_value(claims.email.clone());
     let should_follow_verified_email =
         should_replace_email_after_verified_email_change(
@@ -448,7 +451,9 @@ async fn persist_oauth_credentials(
             .as_deref()
             .or(row.chatgpt_user_id.as_deref()),
         row.group_name.as_deref(),
-        claims.chatgpt_plan_type.as_deref().or(row.plan_type.as_deref()),
+        normalize_plan_type(claims.chatgpt_plan_type.as_deref())
+            .or(effective_row_plan_type)
+            .as_deref(),
     )
     .await
     .map_err(|(_, message)| anyhow!(message))?;
@@ -634,6 +639,13 @@ async fn persist_imported_oauth_existing_inner(
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(internal_error_tuple)?;
+    let effective_existing_plan_type = resolve_effective_plan_type_for_account(
+        tx.as_mut(),
+        existing_row.id,
+        existing_row.plan_type.as_deref(),
+    )
+    .await
+    .map_err(internal_error_tuple)?;
     ensure_display_name_available_for_oauth_identity(
         &mut *tx,
         &existing_row.display_name,
@@ -641,7 +653,9 @@ async fn persist_imported_oauth_existing_inner(
         probe.claims.chatgpt_account_id.as_deref(),
         probe.claims.chatgpt_user_id.as_deref(),
         existing_row.group_name.as_deref(),
-        probe.claims.chatgpt_plan_type.as_deref(),
+        normalize_plan_type(probe.claims.chatgpt_plan_type.as_deref())
+            .or(effective_existing_plan_type)
+            .as_deref(),
     )
     .await?;
     upsert_oauth_account(
@@ -1206,6 +1220,40 @@ fn resolve_effective_plan_type(
     sample_plan_type: Option<&str>,
 ) -> Option<String> {
     normalize_plan_type(sample_plan_type).or_else(|| normalize_plan_type(account_plan_type))
+}
+
+async fn load_latest_usage_sample_plan_type_with_executor(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    account_id: i64,
+) -> Result<Option<String>> {
+    let sample_plan_type = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT TRIM(plan_type)
+        FROM pool_upstream_account_limit_samples
+        WHERE account_id = ?1
+          AND plan_type IS NOT NULL
+          AND TRIM(plan_type) <> ''
+        ORDER BY captured_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_optional(executor)
+    .await?;
+    Ok(normalize_plan_type(sample_plan_type.as_deref()))
+}
+
+async fn resolve_effective_plan_type_for_account(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    account_id: i64,
+    account_plan_type: Option<&str>,
+) -> Result<Option<String>> {
+    let latest_sample_plan_type =
+        load_latest_usage_sample_plan_type_with_executor(executor, account_id).await?;
+    Ok(resolve_effective_plan_type(
+        account_plan_type,
+        latest_sample_plan_type.as_deref(),
+    ))
 }
 
 async fn resolve_snapshot_plan_type(

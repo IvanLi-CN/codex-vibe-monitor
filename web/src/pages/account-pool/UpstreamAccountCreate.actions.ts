@@ -6,6 +6,7 @@ import type {
 } from "../../lib/api";
 import {
   normalizeEmailKey,
+  resolveBatchOauthMailboxAddress,
   resolveDisplayNameAfterEmailChange,
   shouldPromptOauthEmailChoice,
   type BatchOauthRow,
@@ -692,7 +693,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
 
   const handleBatchCopyMailbox = async (rowId: string) => {
     const row = batchRows.find((item: BatchOauthRow) => item.id === rowId);
-    const value = row?.mailboxSession?.emailAddress ?? row?.mailboxInput ?? "";
+    const value = row ? resolveBatchOauthMailboxAddress(row) : "";
     if (!value) return;
     const result = await copyText(value, { preferExecCommand: true });
     if (!result.ok) {
