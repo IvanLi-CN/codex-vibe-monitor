@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.49.0",
+  "base_stable_version": "1.48.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-24T18:37:33Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.49.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "0c4e89d94effbd5b37eaab25269c297c9c5404f1",
+  "pr_number": 362,
+  "pr_title": "feat(account-pool): support upstream account email editing and mixed-plan badges",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.49.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.49.0",
+  "target_sha": "643078ee0ae8bbb4cfc0d16aff657f7244b7718f",
+  "type_label": "type:minor"
+}
