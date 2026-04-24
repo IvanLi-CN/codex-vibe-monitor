@@ -80,15 +80,21 @@ async fn ensure_proxy_enabled_models_contains_new_presets(pool: &Pool<Sqlite>) -
         .iter()
         .map(|id| (*id).to_string())
         .collect::<Vec<_>>();
-    if settings.enabled_preset_models != legacy_default {
+    let previous_default = PREVIOUS_PROXY_PRESET_MODEL_IDS
+        .iter()
+        .map(|id| (*id).to_string())
+        .collect::<Vec<_>>();
+    if settings.enabled_preset_models != legacy_default
+        && settings.enabled_preset_models != previous_default
+    {
         // Respect user customizations: only auto-append when the enabled list matches
-        // the legacy default preset list exactly.
+        // a repo-managed default preset list exactly.
         mark_proxy_preset_models_migrated(pool).await?;
         return Ok(());
     }
 
     let mut changed = false;
-    for required in ["gpt-5.4", "gpt-5.4-pro"] {
+    for required in ["gpt-5.4", "gpt-5.4-pro", "gpt-5.5", "gpt-5.5-pro"] {
         if !settings
             .enabled_preset_models
             .iter()
@@ -195,7 +201,52 @@ async fn ensure_pricing_models_present(pool: &Pool<Sqlite>) -> Result<()> {
         },
     )
     .await?;
+    ensure_pricing_model_present(
+        pool,
+        "gpt-5.4-mini",
+        ModelPricing {
+            input_per_1m: 0.75,
+            output_per_1m: 4.5,
+            cache_input_per_1m: Some(0.075),
+            reasoning_per_1m: None,
+            source: "official".to_string(),
+        },
+    )
+    .await?;
+    ensure_pricing_model_present(
+        pool,
+        "gpt-5.5",
+        ModelPricing {
+            input_per_1m: 5.0,
+            output_per_1m: 30.0,
+            cache_input_per_1m: Some(0.5),
+            reasoning_per_1m: None,
+            source: "official".to_string(),
+        },
+    )
+    .await?;
+    ensure_pricing_model_present(
+        pool,
+        "gpt-5.5-pro",
+        ModelPricing {
+            input_per_1m: 30.0,
+            output_per_1m: 180.0,
+            cache_input_per_1m: None,
+            reasoning_per_1m: None,
+            source: "official".to_string(),
+        },
+    )
+    .await?;
     Ok(())
+}
+
+fn is_repo_managed_default_pricing_catalog_version(version: &str) -> bool {
+    matches!(
+        version,
+        DEFAULT_PRICING_CATALOG_VERSION
+            | PREVIOUS_DEFAULT_PRICING_CATALOG_VERSION
+            | LEGACY_DEFAULT_PRICING_CATALOG_VERSION
+    )
 }
 
 async fn normalize_default_pricing_sources(pool: &Pool<Sqlite>) -> Result<()> {
@@ -248,9 +299,7 @@ async fn seed_default_pricing_catalog_with_legacy_path(
         .fetch_one(pool)
         .await
         .context("failed to load pricing_settings_meta row")?;
-        if version == DEFAULT_PRICING_CATALOG_VERSION
-            || version == LEGACY_DEFAULT_PRICING_CATALOG_VERSION
-        {
+        if is_repo_managed_default_pricing_catalog_version(&version) {
             ensure_pricing_models_present(pool).await?;
             normalize_default_pricing_sources(pool).await?;
         }
@@ -294,9 +343,7 @@ async fn seed_default_pricing_catalog_with_legacy_path(
                     "migrating legacy pricing catalog into sqlite"
                 );
                 save_pricing_catalog(pool, &catalog).await?;
-                if catalog.version == DEFAULT_PRICING_CATALOG_VERSION
-                    || catalog.version == LEGACY_DEFAULT_PRICING_CATALOG_VERSION
-                {
+                if is_repo_managed_default_pricing_catalog_version(&catalog.version) {
                     ensure_pricing_models_present(pool).await?;
                     normalize_default_pricing_sources(pool).await?;
                 }
@@ -558,6 +605,26 @@ fn default_pricing_catalog() -> PricingCatalog {
             },
         ),
         (
+            "gpt-5.4-mini",
+            ModelPricing {
+                input_per_1m: 0.75,
+                output_per_1m: 4.5,
+                cache_input_per_1m: Some(0.075),
+                reasoning_per_1m: None,
+                source: "official".to_string(),
+            },
+        ),
+        (
+            "gpt-5.5",
+            ModelPricing {
+                input_per_1m: 5.0,
+                output_per_1m: 30.0,
+                cache_input_per_1m: Some(0.5),
+                reasoning_per_1m: None,
+                source: "official".to_string(),
+            },
+        ),
+        (
             "gpt-5",
             ModelPricing {
                 input_per_1m: 1.25,
@@ -649,6 +716,16 @@ fn default_pricing_catalog() -> PricingCatalog {
         ),
         (
             "gpt-5.4-pro",
+            ModelPricing {
+                input_per_1m: 30.0,
+                output_per_1m: 180.0,
+                cache_input_per_1m: None,
+                reasoning_per_1m: None,
+                source: "official".to_string(),
+            },
+        ),
+        (
+            "gpt-5.5-pro",
             ModelPricing {
                 input_per_1m: 30.0,
                 output_per_1m: 180.0,

@@ -843,6 +843,7 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
         Json(ProxyModelSettingsUpdateRequest {
             hijack_enabled: true,
             merge_upstream_enabled: true,
+            fast_mode_rewrite_mode: None,
             upstream_429_max_retries: Some(5),
             enabled_models: vec!["gpt-5.2-codex".to_string(), "unknown-model".to_string()],
         }),
@@ -851,6 +852,7 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
     .expect("put settings should succeed");
     assert!(updated.hijack_enabled);
     assert!(updated.merge_upstream_enabled);
+    assert_eq!(updated.fast_mode_rewrite_mode, "disabled");
     assert_eq!(updated.upstream_429_max_retries, 5);
     assert_eq!(updated.enabled_models, vec!["gpt-5.2-codex".to_string()]);
 
@@ -871,6 +873,7 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
         Json(ProxyModelSettingsUpdateRequest {
             hijack_enabled: false,
             merge_upstream_enabled: true,
+            fast_mode_rewrite_mode: None,
             upstream_429_max_retries: Some(9),
             enabled_models: Vec::new(),
         }),
@@ -899,6 +902,7 @@ async fn proxy_model_settings_api_preserves_upstream_429_max_retries_when_field_
         Json(ProxyModelSettingsUpdateRequest {
             hijack_enabled: true,
             merge_upstream_enabled: true,
+            fast_mode_rewrite_mode: None,
             upstream_429_max_retries: Some(5),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
@@ -1042,6 +1046,61 @@ async fn ensure_schema_appends_new_proxy_models_when_enabled_list_matches_legacy
             .enabled_preset_models
             .contains(&"gpt-5.4-pro".to_string())
     );
+    assert!(
+        settings
+            .enabled_preset_models
+            .contains(&"gpt-5.5".to_string())
+    );
+    assert!(
+        settings
+            .enabled_preset_models
+            .contains(&"gpt-5.5-pro".to_string())
+    );
+}
+
+#[tokio::test]
+async fn ensure_schema_appends_latest_proxy_models_when_enabled_list_matches_previous_default() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    ensure_schema(&pool).await.expect("ensure schema");
+
+    let previous_enabled = PREVIOUS_PROXY_PRESET_MODEL_IDS
+        .iter()
+        .map(|id| (*id).to_string())
+        .collect::<Vec<_>>();
+    let previous_enabled_json =
+        serde_json::to_string(&previous_enabled).expect("serialize previous enabled list");
+
+    sqlx::query(
+        r#"
+        UPDATE proxy_model_settings
+        SET enabled_preset_models_json = ?1,
+            preset_models_migrated = 0
+        WHERE id = ?2
+        "#,
+    )
+    .bind(previous_enabled_json)
+    .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
+    .execute(&pool)
+    .await
+    .expect("force previous enabled preset models");
+
+    ensure_schema(&pool).await.expect("ensure schema rerun");
+
+    let settings = load_proxy_model_settings(&pool)
+        .await
+        .expect("load proxy model settings");
+    assert!(
+        settings
+            .enabled_preset_models
+            .contains(&"gpt-5.5".to_string())
+    );
+    assert!(
+        settings
+            .enabled_preset_models
+            .contains(&"gpt-5.5-pro".to_string())
+    );
 }
 
 #[tokio::test]
@@ -1119,6 +1178,16 @@ async fn ensure_schema_allows_opting_out_of_new_proxy_models_after_migration() {
         migrated
             .enabled_preset_models
             .contains(&"gpt-5.4-pro".to_string())
+    );
+    assert!(
+        migrated
+            .enabled_preset_models
+            .contains(&"gpt-5.5".to_string())
+    );
+    assert!(
+        migrated
+            .enabled_preset_models
+            .contains(&"gpt-5.5-pro".to_string())
     );
 
     // User explicitly removes the new models after migration; schema re-run should not
@@ -1214,6 +1283,7 @@ async fn proxy_model_settings_api_rejects_cross_origin_writes() {
         Json(ProxyModelSettingsUpdateRequest {
             hijack_enabled: true,
             merge_upstream_enabled: true,
+            fast_mode_rewrite_mode: None,
             upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
@@ -1251,6 +1321,7 @@ async fn proxy_model_settings_api_rejects_cross_site_request() {
         Json(ProxyModelSettingsUpdateRequest {
             hijack_enabled: true,
             merge_upstream_enabled: false,
+            fast_mode_rewrite_mode: None,
             upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
@@ -1284,6 +1355,7 @@ async fn proxy_model_settings_api_allows_loopback_proxy_origin_mismatch() {
         Json(ProxyModelSettingsUpdateRequest {
             hijack_enabled: true,
             merge_upstream_enabled: false,
+            fast_mode_rewrite_mode: None,
             upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
@@ -1331,6 +1403,7 @@ async fn proxy_model_settings_api_allows_forwarded_host_origin_match() {
         Json(ProxyModelSettingsUpdateRequest {
             hijack_enabled: true,
             merge_upstream_enabled: false,
+            fast_mode_rewrite_mode: None,
             upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
@@ -1382,6 +1455,7 @@ async fn proxy_model_settings_api_allows_forwarded_port_non_default_origin_port(
         Json(ProxyModelSettingsUpdateRequest {
             hijack_enabled: true,
             merge_upstream_enabled: false,
+            fast_mode_rewrite_mode: None,
             upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
@@ -1417,6 +1491,7 @@ async fn proxy_model_settings_api_allows_matching_origin_without_explicit_host_p
         Json(ProxyModelSettingsUpdateRequest {
             hijack_enabled: true,
             merge_upstream_enabled: false,
+            fast_mode_rewrite_mode: None,
             upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
@@ -2519,6 +2594,19 @@ async fn pricing_settings_api_reads_and_persists_updates() {
     let Json(initial) = get_settings(State(state.clone()))
         .await
         .expect("get settings should succeed");
+    assert_eq!(initial.proxy.fast_mode_rewrite_mode, "disabled");
+    assert!(
+        initial
+            .proxy
+            .models
+            .contains(&"gpt-5.5".to_string())
+    );
+    assert!(
+        initial
+            .proxy
+            .models
+            .contains(&"gpt-5.5-pro".to_string())
+    );
     assert!(!initial.pricing.entries.is_empty());
     assert!(
         initial
@@ -2526,6 +2614,27 @@ async fn pricing_settings_api_reads_and_persists_updates() {
             .entries
             .iter()
             .any(|entry| entry.model == "gpt-5.2-codex")
+    );
+    assert!(
+        initial
+            .pricing
+            .entries
+            .iter()
+            .any(|entry| entry.model == "gpt-5.5")
+    );
+    assert!(
+        initial
+            .pricing
+            .entries
+            .iter()
+            .any(|entry| entry.model == "gpt-5.5-pro")
+    );
+    assert!(
+        initial
+            .pricing
+            .entries
+            .iter()
+            .any(|entry| entry.model == "gpt-5.4-mini")
     );
 
     let Json(updated) = put_pricing_settings(

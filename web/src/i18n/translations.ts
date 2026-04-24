@@ -1147,7 +1147,7 @@ const baseTranslations = {
       "{{previous}} is no longer the mother account for {{group}}.",
     "settings.title": "Settings",
     "settings.description":
-      "Configure forward proxy routing and the pricing catalog used for cost estimation.",
+      "Configure the current pool /v1/models override, forward proxy routing, and the pricing catalog used for cost estimation.",
     "settings.loading": "Loading settings…",
     "settings.loadError": "Settings request failed: {{error}}",
     "settings.saving": "Saving…",
@@ -1197,7 +1197,7 @@ const baseTranslations = {
     "settings.externalApiKeys.disableDialog.confirm": "Disable key",
     "settings.proxy.title": "Proxy configuration",
     "settings.proxy.description":
-      "Control /v1/models hijack and upstream merge behavior.",
+      "Control how the current pool /v1/models path is overridden and merged.",
     "settings.proxy.hijackLabel": "Hijack /v1/models",
     "settings.proxy.hijackHint":
       "Return preset models from this proxy instead of pure upstream passthrough.",
@@ -1328,9 +1328,9 @@ const baseTranslations = {
     "settings.forwardProxy.table.empty": "No proxy entry available.",
     "settings.pricing.title": "Pricing configuration",
     "settings.pricing.description":
-      "Edit model pricing used by new request cost estimation.",
+      "Edit model pricing used by new request cost estimation. The default catalog now hardcodes GPT-5.5, GPT-5.5 Pro, and GPT-5.4 mini from the official release/pricing pages.",
     "settings.pricing.compactNote":
-      "Compact requests reuse the matched model pricing for cost estimation.",
+      "OpenAI's public API model docs still lean toward GPT-5.4, so this project keeps GPT-5.5 series entries based on the release post and pricing page.",
     "settings.pricing.add": "Add model",
     "settings.pricing.remove": "Remove",
     "settings.pricing.catalogVersion": "Catalog version",
@@ -2947,7 +2947,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.mother.notifications.cleared":
       "{{previous}} 已不再是 {{group}} 的母号。",
     "settings.title": "设置",
-    "settings.description": "集中配置正向代理路由与价格目录，用于成本估算。",
+    "settings.description": "集中配置当前 pool `/v1/models` 覆盖、正向代理路由与成本估算价格目录。",
     "settings.loading": "正在加载设置…",
     "settings.loadError": "设置请求失败：{{error}}",
     "settings.saving": "保存中…",
@@ -2994,7 +2994,7 @@ const baseTranslations = {
       "确定现在停用 {{name}} 吗？该 secret 会立即被拒绝。",
     "settings.externalApiKeys.disableDialog.confirm": "立即停用",
     "settings.proxy.title": "代理配置",
-    "settings.proxy.description": "配置 /v1/models 劫持与上游合并行为。",
+    "settings.proxy.description": "配置当前 pool `/v1/models` 路径的覆盖与上游合并行为。",
     "settings.proxy.hijackLabel": "劫持 /v1/models",
     "settings.proxy.hijackHint":
       "开启后由当前代理返回预置模型列表，而不是纯透传上游。",
@@ -3119,9 +3119,10 @@ const baseTranslations = {
     "settings.forwardProxy.table.avgLatency": "平均延迟：{{value}}",
     "settings.forwardProxy.table.empty": "暂无可用代理条目。",
     "settings.pricing.title": "价格配置",
-    "settings.pricing.description": "编辑用于新请求成本估算的模型价格。",
+    "settings.pricing.description":
+      "编辑用于新请求成本估算的模型价格；默认目录已按官方发布稿与 pricing 页面硬编码补齐 GPT-5.5、GPT-5.5 Pro 与 GPT-5.4 mini。",
     "settings.pricing.compactNote":
-      "compact / 远程压缩请求按命中的模型单价估算成本。",
+      "OpenAI 公开 API 模型文档目前仍以 GPT-5.4 为主；本项目按发布稿与 pricing 页继续保留 GPT-5.5 系列条目。",
     "settings.pricing.add": "新增模型",
     "settings.pricing.remove": "删除",
     "settings.pricing.catalogVersion": "价格版本",

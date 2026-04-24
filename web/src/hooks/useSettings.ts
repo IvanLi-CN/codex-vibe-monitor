@@ -3,8 +3,10 @@ import {
   fetchSettings,
   updateForwardProxySettings,
   updatePricingSettings,
+  updateProxySettings,
   type ForwardProxySettings,
   type PricingSettings,
+  type ProxySettings,
   type SettingsPayload,
 } from '../lib/api'
 import { emitUpstreamAccountsChanged } from '../lib/upstreamAccountsEvents'
@@ -32,6 +34,7 @@ function isSamePricingSettings(lhs: PricingSettings, rhs: PricingSettings): bool
 export function useSettings() {
   const [settings, setSettings] = useState<SettingsPayload | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [isProxySaving, setIsProxySaving] = useState(false)
   const [isForwardProxySaving, setIsForwardProxySaving] = useState(false)
   const [isPricingSaving, setIsPricingSaving] = useState(false)
   const [pricingRollbackVersion, setPricingRollbackVersion] = useState(0)
@@ -65,6 +68,69 @@ export function useSettings() {
       setSettings(serverSnapshotRef.current)
     }
   }, [])
+
+  const saveProxy = useCallback(
+    async (nextProxy: ProxySettings) => {
+      if (!serverSnapshotRef.current) return
+      const normalizedProxy: ProxySettings = {
+        hijackEnabled: nextProxy.hijackEnabled,
+        mergeUpstreamEnabled: nextProxy.hijackEnabled
+          ? nextProxy.mergeUpstreamEnabled
+          : false,
+        fastModeRewriteMode: nextProxy.fastModeRewriteMode,
+        upstream429MaxRetries: Math.max(
+          0,
+          Math.min(5, Math.trunc(nextProxy.upstream429MaxRetries)),
+        ),
+        defaultHijackEnabled: nextProxy.defaultHijackEnabled,
+        models: nextProxy.models,
+        enabledModels: nextProxy.models.filter((candidate) =>
+          nextProxy.enabledModels.includes(candidate),
+        ),
+      }
+
+      setSettings((current) => {
+        if (!current) return current
+        return {
+          ...current,
+          proxy: normalizedProxy,
+        }
+      })
+      setIsProxySaving(true)
+      try {
+        const savedProxy = await updateProxySettings({
+          hijackEnabled: normalizedProxy.hijackEnabled,
+          mergeUpstreamEnabled: normalizedProxy.mergeUpstreamEnabled,
+          fastModeRewriteMode: normalizedProxy.fastModeRewriteMode,
+          upstream429MaxRetries: normalizedProxy.upstream429MaxRetries,
+          enabledModels: normalizedProxy.enabledModels,
+        })
+        const confirmedSnapshot: SettingsPayload | null = serverSnapshotRef.current
+          ? {
+              ...serverSnapshotRef.current,
+              proxy: savedProxy,
+            }
+          : null
+        if (confirmedSnapshot) {
+          serverSnapshotRef.current = confirmedSnapshot
+        }
+        setSettings((current) => {
+          if (!current) return confirmedSnapshot ?? current
+          return {
+            ...current,
+            proxy: savedProxy,
+          }
+        })
+        setError(null)
+      } catch (err) {
+        rollback()
+        setError(err instanceof Error ? err.message : String(err))
+      } finally {
+        setIsProxySaving(false)
+      }
+    },
+    [rollback],
+  )
 
   const savePricing = useCallback(
     async (nextPricing: PricingSettings) => {
@@ -207,11 +273,13 @@ export function useSettings() {
   return {
     settings,
     isLoading,
+    isProxySaving,
     isForwardProxySaving,
     isPricingSaving,
     pricingRollbackVersion,
     error,
     refresh: load,
+    saveProxy,
     saveForwardProxy,
     savePricing,
   }

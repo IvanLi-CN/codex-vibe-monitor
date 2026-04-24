@@ -1,6 +1,6 @@
 # Deployment Guide
 
-本文档说明 `codex-vibe-monitor` 在生产环境的推荐部署方式，以及设置写接口（`/api/settings/proxy` 与 `/api/settings/pricing`）的安全边界。
+本文档说明 `codex-vibe-monitor` 在生产环境的推荐部署方式，以及设置写接口（`/api/settings/proxy`、`/api/settings/forward-proxy` 与 `/api/settings/pricing`）的安全边界。
 
 ## Recommended Topology
 
@@ -16,7 +16,7 @@ Browser -> Traefik (public 80/443) -> codex-vibe-monitor (private :8080)
 
 ## Security Boundary For Settings Writes
 
-`PUT /api/settings/proxy` 与 `PUT /api/settings/pricing` 会修改全局运行配置，属于状态变更接口。
+`PUT /api/settings/proxy`、`PUT /api/settings/forward-proxy` 与 `PUT /api/settings/pricing` 会修改全局运行配置，属于状态变更接口。
 
 服务端会执行来源校验：
 

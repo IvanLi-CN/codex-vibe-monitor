@@ -24,6 +24,57 @@ pub(crate) async fn proxy_openai_v1_inner(
     }
 
     if method == Method::GET && is_models_list_path(original_uri.path()) {
+        let proxy_settings = state.proxy_model_settings.read().await.clone();
+        if proxy_settings.hijack_enabled {
+            let mut payload = build_preset_models_payload(&proxy_settings.enabled_preset_models);
+            let mut merge_status: Option<&'static str> = None;
+            if proxy_settings.merge_upstream_enabled {
+                match fetch_upstream_models_payload(
+                    state.clone(),
+                    target_url.clone(),
+                    &headers,
+                    proxy_settings.upstream_429_max_retries,
+                )
+                .await
+                {
+                    Ok(upstream_payload) => match merge_models_payload_with_upstream(
+                        &upstream_payload,
+                        &proxy_settings.enabled_preset_models,
+                    ) {
+                        Ok(merged_payload) => {
+                            payload = merged_payload;
+                            merge_status = Some(PROXY_MODEL_MERGE_STATUS_SUCCESS);
+                        }
+                        Err(err) => {
+                            warn!(
+                                proxy_request_id,
+                                error = %err,
+                                "failed to merge upstream model list; falling back to preset models"
+                            );
+                            merge_status = Some(PROXY_MODEL_MERGE_STATUS_FAILED);
+                        }
+                    },
+                    Err(err) => {
+                        warn!(
+                            proxy_request_id,
+                            error = %err,
+                            "failed to fetch upstream model list for merge; falling back to preset models"
+                        );
+                        merge_status = Some(PROXY_MODEL_MERGE_STATUS_FAILED);
+                    }
+                }
+            }
+
+            let mut response = Json(payload).into_response();
+            if let Some(status) = merge_status {
+                response.headers_mut().insert(
+                    HeaderName::from_static(PROXY_MODEL_MERGE_STATUS_HEADER),
+                    HeaderValue::from_static(status),
+                );
+            }
+            return Ok(response);
+        }
+
         return proxy_openai_v1_via_pool(
             state,
             proxy_request_id,
