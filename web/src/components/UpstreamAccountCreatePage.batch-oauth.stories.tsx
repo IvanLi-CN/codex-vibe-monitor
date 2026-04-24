@@ -24,6 +24,9 @@ function buildCompletedBatchRow({
   id,
   accountId,
   displayName,
+  email = '',
+  verifiedEmail = null,
+  planType = null,
   groupName = 'production',
   isMother = false,
   note = 'Completed batch row metadata stays editable.',
@@ -36,6 +39,9 @@ function buildCompletedBatchRow({
   id: string
   accountId: number
   displayName: string
+  email?: string
+  verifiedEmail?: string | null
+  planType?: string | null
   groupName?: string
   isMother?: boolean
   note?: string
@@ -49,6 +55,9 @@ function buildCompletedBatchRow({
   return {
     id,
     displayName,
+    email,
+    verifiedEmail,
+    planType,
     groupName,
     isMother,
     note,
@@ -67,6 +76,38 @@ function buildCompletedBatchRow({
       tagIds,
     },
   }
+}
+
+export const CompletedWithPlanBadge: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts/new',
+        search: '?mode=batchOauth',
+        state: {
+          draft: {
+            batchOauth: {
+              rows: [
+                buildCompletedBatchRow({
+                  id: 'row-plan',
+                  accountId: 301,
+                  displayName: 'Fixture Team Billing',
+                  email: 'billing@storybook.example.com',
+                  verifiedEmail: 'billing@storybook.example.com',
+                  planType: 'team',
+                }),
+              ],
+            },
+          },
+        },
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText(/^team$/i)).toBeInTheDocument()
+    await expect(canvas.getByText(/fixture team billing is ready/i)).toBeInTheDocument()
+  },
 }
 
 export const Ready: Story = {

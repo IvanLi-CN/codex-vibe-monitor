@@ -320,6 +320,14 @@ const baseTranslations = {
       "OAuth callback completed",
     "accountPool.upstreamAccounts.oauth.status.failed": "OAuth login failed",
     "accountPool.upstreamAccounts.oauth.status.expired": "OAuth login expired",
+    "accountPool.upstreamAccounts.oauth.emailChoiceTitle":
+      "Choose which email to keep",
+    "accountPool.upstreamAccounts.oauth.emailChoiceBody":
+      "OAuth verified {{verifiedEmail}}, but this draft currently uses {{chosenEmail}}. Pick the email you want to keep on the account.",
+    "accountPool.upstreamAccounts.oauth.keepVerifiedEmail":
+      "Keep verified email",
+    "accountPool.upstreamAccounts.oauth.keepEnteredEmail":
+      "Keep entered email",
     "accountPool.upstreamAccounts.createPage.title": "Add upstream account",
     "accountPool.upstreamAccounts.createPage.description":
       "Use one dedicated screen to create single OAuth, batch OAuth, or API key accounts without squeezing the roster view.",
@@ -630,6 +638,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.editTitle": "Editable profile",
     "accountPool.upstreamAccounts.editDescription":
       "Update display metadata, the per-account upstream base URL, local placeholder limits, or rotate the API key without deleting the account.",
+    "accountPool.upstreamAccounts.edit.verifiedEmailHint":
+      "Latest OAuth verification reported {{verifiedEmail}}. Saving only updates the editable email field unless it is still following the verified address.",
     "accountPool.upstreamAccounts.healthTitle": "Login health",
     "accountPool.upstreamAccounts.healthDescription":
       "Keep the last successful sync, refresh, expiry, and error context visible so re-auth is never silent.",
@@ -990,6 +1000,7 @@ const baseTranslations = {
       "Generate a temp mailbox for this OAuth flow",
     "accountPool.upstreamAccounts.fields.mailboxAddress": "Mailbox address",
     "accountPool.upstreamAccounts.fields.email": "Email",
+    "accountPool.upstreamAccounts.fields.verifiedEmail": "Verified email",
     "accountPool.upstreamAccounts.fields.accountId": "Account ID",
     "accountPool.upstreamAccounts.fields.userId": "User ID",
     "accountPool.upstreamAccounts.fields.primaryLimit": "5h local limit",
@@ -2169,6 +2180,13 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.oauth.status.completed": "OAuth 回调已完成",
     "accountPool.upstreamAccounts.oauth.status.failed": "OAuth 登录失败",
     "accountPool.upstreamAccounts.oauth.status.expired": "OAuth 登录已过期",
+    "accountPool.upstreamAccounts.oauth.emailChoiceTitle": "选择要保留的邮箱",
+    "accountPool.upstreamAccounts.oauth.emailChoiceBody":
+      "OAuth 认证得到的可信邮箱是 {{verifiedEmail}}，当前草稿使用的是 {{chosenEmail}}。请选择最终要保留到账号上的邮箱。",
+    "accountPool.upstreamAccounts.oauth.keepVerifiedEmail":
+      "保留可信邮箱",
+    "accountPool.upstreamAccounts.oauth.keepEnteredEmail":
+      "保留手填邮箱",
     "accountPool.upstreamAccounts.createPage.title": "新增账号",
     "accountPool.upstreamAccounts.createPage.description":
       "把单个 OAuth、批量 OAuth 和 API Key 账号创建拆到独立页面，避免挤占账号列表的浏览空间。",
@@ -2454,6 +2472,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.editTitle": "账号编辑",
     "accountPool.upstreamAccounts.editDescription":
       "更新显示名称、备注、账号级上游地址、本地限额，或者轮换 API Key，不必删除后重建。",
+    "accountPool.upstreamAccounts.edit.verifiedEmailHint":
+      "最近一次 OAuth 可信邮箱是 {{verifiedEmail}}。保存时只会更新可编辑邮箱字段；只有它仍然跟随可信邮箱时才会自动联动。",
     "accountPool.upstreamAccounts.healthTitle": "登录健康度",
     "accountPool.upstreamAccounts.healthDescription":
       "持续保留最近成功同步、刷新、过期和错误上下文，避免账号静默掉线。",
@@ -2793,6 +2813,7 @@ const baseTranslations = {
       "为这次 OAuth 流程生成一个临时邮箱",
     "accountPool.upstreamAccounts.fields.mailboxAddress": "邮箱地址",
     "accountPool.upstreamAccounts.fields.email": "邮箱",
+    "accountPool.upstreamAccounts.fields.verifiedEmail": "可信邮箱",
     "accountPool.upstreamAccounts.fields.accountId": "账号 ID",
     "accountPool.upstreamAccounts.fields.userId": "用户 ID",
     "accountPool.upstreamAccounts.fields.primaryLimit": "5 小时本地限额",

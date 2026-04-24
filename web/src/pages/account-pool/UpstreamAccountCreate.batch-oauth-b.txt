@@ -987,6 +987,7 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
     expect(updateOauthLogin).toHaveBeenCalledWith("login-existing-row-1", {
       displayName: "Batch Row",
+      email: null,
       ...expectedGroupSelection(),
       note: "",
       tagIds: [],

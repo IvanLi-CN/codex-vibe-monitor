@@ -7,6 +7,7 @@
             HeaderMap::new(),
             Json(CreateOauthLoginSessionRequest {
                 display_name: None,
+                email: None,
                 group_name: None,
                 group_bound_proxy_keys: None,
                 group_node_shunt_enabled: None,
@@ -52,6 +53,8 @@
             state.as_ref(),
             PersistOauthCallbackInput {
                 display_name: "Relogin Target".to_string(),
+                chosen_email: None,
+                verified_email: None,
                 session: pending_session,
                 claims: test_claims(
                     "relogin@example.com",
@@ -88,6 +91,7 @@
                 AxumPath(relogin.login_id.clone()),
                 Json(UpdateOauthLoginSessionRequest {
                     display_name: OptionalField::Value("Edited Relogin".to_string()),
+                    email: OptionalField::Missing,
                     group_name: OptionalField::Value("edited-group".to_string()),
                     group_bound_proxy_keys: OptionalField::Value(
                         test_required_group_bound_proxy_keys(),
@@ -132,6 +136,8 @@
             OauthAccountUpsert {
                 account_id: None,
                 display_name: "Cooldown OAuth Existing",
+                chosen_email: None,
+                verified_email: None,
                 group_name: None,
                 is_mother: false,
                 note: None,
@@ -169,6 +175,8 @@
             OauthAccountUpsert {
                 account_id: Some(account_id),
                 display_name: "Cooldown OAuth Existing",
+                chosen_email: None,
+                verified_email: None,
                 group_name: None,
                 is_mother: false,
                 note: Some("updated note".to_string()),
@@ -224,6 +232,8 @@
             OauthAccountUpsert {
                 account_id: None,
                 display_name: "First OAuth",
+                chosen_email: None,
+                verified_email: None,
                 group_name: None,
                 is_mother: false,
                 note: None,
@@ -248,6 +258,8 @@
             OauthAccountUpsert {
                 account_id: None,
                 display_name: "Second OAuth",
+                chosen_email: None,
+                verified_email: None,
                 group_name: None,
                 is_mother: false,
                 note: None,
@@ -349,6 +361,8 @@
                 OauthAccountUpsert {
                     account_id: None,
                     display_name,
+                    chosen_email: None,
+                    verified_email: None,
                     group_name: Some("0414-3".to_string()),
                     is_mother: false,
                     note: None,
@@ -424,6 +438,8 @@
                 OauthAccountUpsert {
                     account_id: None,
                     display_name,
+                    chosen_email: None,
+                    verified_email: None,
                     group_name: Some("shared-team-manual".to_string()),
                     is_mother,
                     note: None,
@@ -487,6 +503,8 @@
                 OauthAccountUpsert {
                     account_id: None,
                     display_name,
+                    chosen_email: None,
+                    verified_email: None,
                     group_name: None,
                     is_mother: false,
                     note: None,
@@ -553,6 +571,8 @@
                 OauthAccountUpsert {
                     account_id: None,
                     display_name,
+                    chosen_email: None,
+                    verified_email: None,
                     group_name: None,
                     is_mother: false,
                     note: None,
@@ -614,6 +634,8 @@
                 OauthAccountUpsert {
                     account_id: None,
                     display_name,
+                    chosen_email: None,
+                    verified_email: None,
                     group_name: None,
                     is_mother: false,
                     note: None,
@@ -676,6 +698,8 @@
                 OauthAccountUpsert {
                     account_id: None,
                     display_name,
+                    chosen_email: None,
+                    verified_email: None,
                     group_name: None,
                     is_mother: false,
                     note: None,
@@ -788,6 +812,8 @@
                 OauthAccountUpsert {
                     account_id: None,
                     display_name,
+                    chosen_email: None,
+                    verified_email: None,
                     group_name: None,
                     is_mother: false,
                     note: None,
@@ -851,6 +877,8 @@
                 OauthAccountUpsert {
                     account_id: None,
                     display_name,
+                    chosen_email: None,
+                    verified_email: None,
                     group_name: None,
                     is_mother: false,
                     note: None,
@@ -895,6 +923,8 @@
             OauthAccountUpsert {
                 account_id: None,
                 display_name: "Snapshot OAuth",
+                chosen_email: None,
+                verified_email: None,
                 group_name: None,
                 is_mother: false,
                 note: None,
@@ -957,6 +987,8 @@
             OauthAccountUpsert {
                 account_id: None,
                 display_name: "Refresh OAuth",
+                chosen_email: None,
+                verified_email: None,
                 group_name: None,
                 is_mother: false,
                 note: None,
@@ -1054,6 +1086,8 @@
             OauthAccountUpsert {
                 account_id: None,
                 display_name: "Fallback OAuth",
+                chosen_email: None,
+                verified_email: None,
                 group_name: None,
                 is_mother: false,
                 note: None,
@@ -1121,6 +1155,8 @@
             OauthAccountUpsert {
                 account_id: None,
                 display_name: "Refreshed Fallback OAuth",
+                chosen_email: None,
+                verified_email: None,
                 group_name: None,
                 is_mother: false,
                 note: None,
@@ -1193,6 +1229,8 @@
                 OauthAccountUpsert {
                     account_id: None,
                     display_name,
+                    chosen_email: None,
+                    verified_email: None,
                     group_name: None,
                     is_mother: false,
                     note: None,
@@ -1280,6 +1318,8 @@
                 OauthAccountUpsert {
                     account_id: None,
                     display_name,
+                    chosen_email: None,
+                    verified_email: None,
                     group_name: None,
                     is_mother: false,
                     note: None,
@@ -1358,6 +1398,8 @@
                 OauthAccountUpsert {
                     account_id: None,
                     display_name,
+                    chosen_email: None,
+                    verified_email: None,
                     group_name: None,
                     is_mother: false,
                     note: None,
@@ -1436,6 +1478,8 @@
                 OauthAccountUpsert {
                     account_id: None,
                     display_name,
+                    chosen_email: None,
+                    verified_email: None,
                     group_name: None,
                     is_mother: false,
                     note: None,
@@ -1519,6 +1563,8 @@
             OauthAccountUpsert {
                 account_id: None,
                 display_name: "Original OAuth",
+                chosen_email: None,
+                verified_email: None,
                 group_name: Some("prod".to_string()),
                 is_mother: false,
                 note: Some("note".to_string()),
@@ -1543,6 +1589,8 @@
             OauthAccountUpsert {
                 account_id: Some(original_id),
                 display_name: "Renamed OAuth",
+                chosen_email: None,
+                verified_email: None,
                 group_name: Some("prod".to_string()),
                 is_mother: false,
                 note: Some("fresh".to_string()),

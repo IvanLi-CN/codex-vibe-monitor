@@ -342,6 +342,32 @@ function normalizeDisplayNameKey(value: string) {
   return value.trim().toLocaleLowerCase();
 }
 
+function normalizeEmailKey(value?: string | null) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed.toLocaleLowerCase() : "";
+}
+
+function generatedDisplayNameFromEmail(email?: string | null) {
+  return normalizeEmailKey(email);
+}
+
+function displayNameFollowsEmail(displayName: string, email?: string | null) {
+  const normalizedDisplayName = normalizeDisplayNameKey(displayName);
+  if (!normalizedDisplayName) return true;
+  const generated = generatedDisplayNameFromEmail(email);
+  return generated.length > 0 && normalizedDisplayName === generated;
+}
+
+function resolveDisplayNameAfterEmailChange(
+  displayName: string,
+  previousEmail?: string | null,
+  nextEmail?: string | null,
+) {
+  return displayNameFollowsEmail(displayName, previousEmail)
+    ? (generatedDisplayNameFromEmail(nextEmail) || displayName)
+    : displayName;
+}
+
 function normalizeGroupUpstream429MaxRetries(value?: number | null) {
   if (!Number.isFinite(value ?? NaN)) return 0;
   return Math.min(5, Math.max(0, Math.trunc(value ?? 0)));
@@ -370,6 +396,7 @@ function findDisplayNameConflict(
 function buildDraft(detail: UpstreamAccountDetail | null): AccountDraft {
   return {
     displayName: detail?.displayName ?? "",
+    email: detail?.email ?? "",
     groupName: detail?.groupName ?? "",
     isMother: detail?.isMother ?? false,
     note: detail?.note ?? "",
@@ -1780,12 +1807,14 @@ function SharedUpstreamAccountDetailDrawerInner({
       : null;
   const detailDisplayNameConflict = useMemo(
     () =>
-      findDisplayNameConflict(
-        items,
-        draft.displayName,
-        selectedDetail?.id ?? null,
-      ),
-    [draft.displayName, items, selectedDetail?.id],
+      selectedDetail?.kind === "api_key_codex"
+        ? findDisplayNameConflict(
+            items,
+            draft.displayName,
+            selectedDetail?.id ?? null,
+          )
+        : null,
+    [draft.displayName, items, selectedDetail?.id, selectedDetail?.kind],
   );
   const draftUpstreamBaseUrlError = useMemo(() => {
     const code = validateUpstreamBaseUrl(draft.upstreamBaseUrl);
@@ -1982,8 +2011,10 @@ function SharedUpstreamAccountDetailDrawerInner({
         const normalizedGroupName = normalizeGroupName(draft.groupName);
         const pendingGroupNote =
           resolvePendingGroupNoteForName(normalizedGroupName);
+        const normalizedEmail = draft.email.trim();
         const response = await saveAccount(source.id, {
           displayName: draft.displayName.trim() || undefined,
+          email: normalizedEmail || null,
           groupName: draft.groupName.trim(),
           isMother: draft.isMother,
           note: draft.note.trim() || undefined,
@@ -2670,6 +2701,14 @@ function SharedUpstreamAccountDetailDrawerInner({
                       label={t("accountPool.upstreamAccounts.fields.email")}
                       value={selectedDetail.email ?? ""}
                     />
+                    {selectedDetail.kind === "oauth_codex" ? (
+                      <DetailField
+                        label={t(
+                          "accountPool.upstreamAccounts.fields.verifiedEmail",
+                        )}
+                        value={selectedDetail.verifiedEmail ?? ""}
+                      />
+                    ) : null}
                     <DetailField
                       label={t("accountPool.upstreamAccounts.fields.accountId")}
                       value={
@@ -2830,6 +2869,40 @@ function SharedUpstreamAccountDetailDrawerInner({
                             />
                           ) : null}
                         </div>
+                      </label>
+                      <label className="field md:col-span-2">
+                        <span className="field-label">
+                          {t("accountPool.upstreamAccounts.fields.email")}
+                        </span>
+                        <Input
+                          name="detailEmail"
+                          value={draft.email}
+                          autoCapitalize="none"
+                          spellCheck={false}
+                          onChange={(event) => {
+                            const nextValue = event.target.value;
+                            setDraft((current) => ({
+                              ...current,
+                              email: nextValue,
+                              displayName: resolveDisplayNameAfterEmailChange(
+                                current.displayName,
+                                current.email,
+                                nextValue,
+                              ),
+                            }));
+                          }}
+                        />
+                        {selectedDetail.kind === "oauth_codex" &&
+                        selectedDetail.verifiedEmail ? (
+                          <p className="text-xs text-base-content/65">
+                            {t(
+                              "accountPool.upstreamAccounts.edit.verifiedEmailHint",
+                              {
+                                verifiedEmail: selectedDetail.verifiedEmail,
+                              },
+                            )}
+                          </p>
+                        ) : null}
                       </label>
                       <label className="field md:col-span-2">
                         <span className="field-label">

@@ -149,6 +149,7 @@ fn external_metadata_to_update_request(
 ) -> UpdateUpstreamAccountRequest {
     UpdateUpstreamAccountRequest {
         display_name: metadata.display_name,
+        email: OptionalField::Missing,
         group_name: metadata.group_name,
         group_bound_proxy_keys: metadata.group_bound_proxy_keys,
         group_node_shunt_enabled: metadata.group_node_shunt_enabled,
@@ -332,12 +333,23 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(internal_error_tuple)?;
-    ensure_display_name_available(tx.as_mut(), &display_name, Some(existing_row.id)).await?;
+    ensure_display_name_available_for_oauth_identity(
+        tx.as_mut(),
+        &display_name,
+        Some(existing_row.id),
+        probe.claims.chatgpt_account_id.as_deref(),
+        probe.claims.chatgpt_user_id.as_deref(),
+        group_name.as_deref(),
+        probe.claims.chatgpt_plan_type.as_deref(),
+    )
+    .await?;
     upsert_oauth_account(
         &mut tx,
         OauthAccountUpsert {
             account_id: Some(existing_row.id),
             display_name: &display_name,
+            chosen_email: normalize_email_value(probe.claims.email.clone()),
+            verified_email: normalize_email_value(probe.claims.email.clone()),
             group_name,
             is_mother,
             note,
@@ -559,6 +571,8 @@ pub(crate) async fn external_upsert_oauth_upstream_account(
             OauthAccountUpsert {
                 account_id: None,
                 display_name: &display_name,
+                chosen_email: normalize_email_value(probe.claims.email.clone()),
+                verified_email: normalize_email_value(probe.claims.email.clone()),
                 group_name: create_group_name,
                 is_mother,
                 note,

@@ -1164,6 +1164,7 @@ pub(crate) struct UpstreamAccountDetail {
     note: Option<String>,
     upstream_base_url: Option<String>,
     chatgpt_user_id: Option<String>,
+    verified_email: Option<String>,
     last_refreshed_at: Option<String>,
     history: Vec<UpstreamAccountHistoryPoint>,
     recent_actions: Vec<UpstreamAccountActionEvent>,
@@ -1454,6 +1455,7 @@ pub(crate) struct LoginSessionStatusResponse {
     expires_at: String,
     updated_at: String,
     account_id: Option<i64>,
+    email: Option<String>,
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     sync_applied: Option<bool>,
@@ -1513,6 +1515,7 @@ pub(crate) struct OauthMailboxStatusBatchResponse {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateOauthLoginSessionRequest {
     display_name: Option<String>,
+    email: Option<String>,
     group_name: Option<String>,
     #[serde(default)]
     group_bound_proxy_keys: Option<Vec<String>>,
@@ -1544,6 +1547,8 @@ pub(crate) struct CompleteOauthLoginSessionRequest {
 pub(crate) struct UpdateOauthLoginSessionRequest {
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     display_name: OptionalField<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    email: OptionalField<String>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     group_name: OptionalField<String>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
@@ -1587,6 +1592,7 @@ pub(crate) struct OauthMailboxStatusRequest {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateApiKeyAccountRequest {
     display_name: String,
+    email: Option<String>,
     group_name: Option<String>,
     #[serde(default)]
     group_bound_proxy_keys: Option<Vec<String>>,
@@ -1927,6 +1933,8 @@ pub(crate) struct ImportedOauthImportResponse {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpdateUpstreamAccountRequest {
     display_name: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    email: OptionalField<String>,
     group_name: Option<String>,
     #[serde(default)]
     group_bound_proxy_keys: Option<Vec<String>>,
@@ -2180,6 +2188,8 @@ pub(crate) struct ImportedOauthValidatedImportData {
 pub(crate) struct PersistOauthCallbackInput {
     session: OauthLoginSessionRow,
     display_name: String,
+    chosen_email: Option<String>,
+    verified_email: Option<String>,
     claims: ChatgptJwtClaims,
     encrypted_credentials: String,
     token_expires_at: String,

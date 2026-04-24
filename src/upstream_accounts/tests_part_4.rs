@@ -1292,6 +1292,7 @@ async fn updating_api_key_reactivates_manually_recoverable_account() {
             account_id,
             UpdateUpstreamAccountRequest {
                 display_name: None,
+                email: OptionalField::Missing,
                 group_name: None,
                 group_bound_proxy_keys: None,
                 group_node_shunt_enabled: None,

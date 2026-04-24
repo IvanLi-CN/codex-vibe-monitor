@@ -1,12 +1,14 @@
 import { AppIcon } from "../../components/AppIcon";
 import { Link } from "react-router-dom";
 import { Alert } from "../../components/ui/alert";
+import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import {
   SegmentedControl,
   SegmentedControlItem,
 } from "../../components/ui/segmented-control";
 import { Spinner } from "../../components/ui/spinner";
+import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
 import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.controller-context";
 import { UpstreamAccountCreateDialogs } from "./UpstreamAccountCreate.dialogs";
 import { UpstreamAccountCreatePrimaryCard } from "./UpstreamAccountCreate.primary-card";
@@ -22,12 +24,16 @@ export function UpstreamAccountCreatePageSections() {
     isLoading,
     isRelinking,
     listError,
+    oauthCompletedDetail,
     relinkSummary,
     session,
     sessionHint,
     t,
     writesEnabled,
   } = useUpstreamAccountCreateViewContext();
+  const oauthCompletedPlanBadge = upstreamPlanBadgeRecipe(
+    oauthCompletedDetail?.planType ?? null,
+  );
 
   return (
     <div className="grid gap-6">
@@ -140,6 +146,73 @@ export function UpstreamAccountCreatePageSections() {
                 aria-hidden
               />
               <div className="text-sm">{sessionHint}</div>
+            </Alert>
+          ) : null}
+
+          {oauthCompletedDetail ? (
+            <Alert
+              variant={
+                oauthCompletedDetail.duplicateInfo ? "warning" : "success"
+              }
+            >
+              <AppIcon
+                name={
+                  oauthCompletedDetail.duplicateInfo
+                    ? "alert-outline"
+                    : "check-circle-outline"
+                }
+                className="mt-0.5 h-4 w-4 shrink-0"
+                aria-hidden
+              />
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="font-medium">
+                    {t("accountPool.upstreamAccounts.oauth.completed")}
+                  </p>
+                  {oauthCompletedPlanBadge &&
+                  oauthCompletedDetail.planType ? (
+                    <Badge variant={oauthCompletedPlanBadge.variant}>
+                      {oauthCompletedDetail.planType}
+                    </Badge>
+                  ) : null}
+                  {oauthCompletedDetail.duplicateInfo ? (
+                    <Badge variant="warning">
+                      {t("accountPool.upstreamAccounts.duplicate.badge")}
+                    </Badge>
+                  ) : null}
+                </div>
+                <p className="text-sm opacity-90">
+                  {t("accountPool.upstreamAccounts.batchOauth.completed", {
+                    name:
+                      oauthCompletedDetail.displayName ||
+                      `#${oauthCompletedDetail.id}`,
+                  })}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Button asChild size="sm" variant="secondary">
+                    <Link
+                      to="/account-pool/upstream-accounts"
+                      state={{
+                        selectedAccountId: oauthCompletedDetail.id,
+                        openDetail: true,
+                        duplicateWarning: oauthCompletedDetail.duplicateInfo
+                          ? {
+                              accountId: oauthCompletedDetail.id,
+                              displayName: oauthCompletedDetail.displayName,
+                              peerAccountIds:
+                                oauthCompletedDetail.duplicateInfo
+                                  .peerAccountIds,
+                              reasons:
+                                oauthCompletedDetail.duplicateInfo.reasons,
+                            }
+                          : null,
+                      }}
+                    >
+                      {t("accountPool.upstreamAccounts.actions.openDetails")}
+                    </Link>
+                  </Button>
+                </div>
+              </div>
             </Alert>
           ) : null}
 

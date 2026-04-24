@@ -361,6 +361,7 @@ export function StorybookUpstreamAccountsMock({
       ) {
         const body = parseBody<{
           displayName?: string
+          email?: string
           groupName?: string
           note?: string
           groupNote?: string
@@ -381,6 +382,7 @@ export function StorybookUpstreamAccountsMock({
           accountId: null,
           error: null,
           displayName: body.displayName,
+          email: body.email?.trim() || undefined,
           groupName: body.groupName,
           isMother: body.isMother,
           note: body.note,
@@ -531,6 +533,7 @@ export function StorybookUpstreamAccountsMock({
           return jsonResponse({ message: 'missing mock session' }, 404)
         const body = parseBody<UpdateOauthLoginSessionPayload>(init?.body, {})
         session.displayName = body.displayName?.trim() || undefined
+        session.email = body.email?.trim() || undefined
         session.groupName = body.groupName?.trim() || undefined
         session.note = body.note?.trim() || undefined
         session.groupNote = body.groupNote?.trim() || undefined
@@ -572,11 +575,20 @@ export function StorybookUpstreamAccountsMock({
         }
         const nextId = session.accountId ?? store.nextId++
         const existing = store.details[nextId]
+        const emailChoiceStory =
+          storyId ===
+          'account-pool-pages-upstream-account-create-oauth--completed-email-choice'
+        const chosenEmail = session.email?.trim() || existing?.email || 'new-login@example.com'
+        const verifiedEmail = emailChoiceStory
+          ? 'verified@storybook.example.com'
+          : existing?.verifiedEmail ?? chosenEmail
         const detail = createOauthAccount(nextId, {
           displayName:
             session.displayName ||
             existing?.displayName ||
             'Codex Pro - New login',
+          email: chosenEmail,
+          verifiedEmail,
           groupName: session.groupName ?? existing?.groupName ?? 'default',
           isMother: session.isMother ?? existing?.isMother ?? false,
           note:
@@ -613,6 +625,7 @@ export function StorybookUpstreamAccountsMock({
         const nextId = store.nextId++
         const detail = createApiKeyAccount(nextId, {
           displayName: body.displayName,
+          email: body.email ?? null,
           groupName: body.groupName ?? 'default',
           isMother: body.isMother === true,
           note: body.note ?? null,
@@ -733,6 +746,10 @@ export function StorybookUpstreamAccountsMock({
         const updated = syncLocalWindows({
           ...detail,
           displayName: body.displayName ?? detail.displayName,
+          email:
+            Object.prototype.hasOwnProperty.call(body, 'email')
+              ? (body.email ?? null)
+              : detail.email,
           groupName: body.groupName ?? detail.groupName,
           isMother: body.isMother ?? detail.isMother,
           note: body.note ?? detail.note,

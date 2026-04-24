@@ -92,7 +92,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     });
   });
 
-  it("blocks completing single oauth when the display name already exists", async () => {
+  it("keeps the duplicate hint visible but does not locally block single oauth generation", async () => {
     const beginOauthLogin = vi.fn().mockResolvedValue({
       loginId: "login-1",
       status: "pending",
@@ -109,9 +109,21 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     await flushAsync();
 
     expect(pageTextContent()).toContain("Display name must be unique.");
-    expect(findButton(/Generate OAuth URL/i)?.disabled).toBe(true);
-    expect(findButton(/Complete OAuth login/i)?.disabled).toBe(true);
-    expect(beginOauthLogin).not.toHaveBeenCalled();
+    expect(findButton(/Generate OAuth URL/i)?.disabled).toBe(false);
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+    expect(beginOauthLogin).toHaveBeenCalledWith({
+      displayName: "existing oauth",
+      email: undefined,
+      ...expectedGroupSelection(),
+      tagIds: [],
+      groupNote: undefined,
+      note: undefined,
+      isMother: false,
+      mailboxSessionId: undefined,
+      mailboxAddress: undefined,
+      accountId: undefined,
+    });
   });
 
   it("keeps a pending single oauth session while syncing metadata changes", async () => {
@@ -152,6 +164,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "Fresh OAuth Renamed",
+      email: null,
       ...expectedGroupSelection(),
       note: "",
       tagIds: [],
@@ -217,6 +230,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(updateOauthLogin).toHaveBeenCalledTimes(1);
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "Fresh OAuth Edited",
+      email: null,
       ...expectedGroupSelection(),
       note: "",
       tagIds: [],
@@ -254,6 +268,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(updateOauthLogin).toHaveBeenCalledTimes(1);
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "Fresh OAuth Immediate",
+      email: null,
       ...expectedGroupSelection(),
       note: "",
       tagIds: [],
@@ -296,6 +311,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "Fresh OAuth Copied",
+      email: null,
       ...expectedGroupSelection(),
       note: "",
       tagIds: [],
@@ -370,6 +386,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "Fresh OAuth Completed",
+      email: null,
       ...expectedGroupSelection(),
       note: "",
       tagIds: [],
@@ -418,6 +435,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "Fresh OAuth Retry",
+      email: null,
       ...expectedGroupSelection(),
       note: "",
       tagIds: [],
@@ -533,6 +551,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       "login-1",
       {
         displayName: "Fresh OAuth Latest",
+        email: null,
         ...expectedGroupSelection(),
         note: "",
         tagIds: [],
@@ -597,6 +616,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       "login-1",
       {
         displayName: "Fresh OAuth Pagehide",
+        email: null,
         ...expectedGroupSelection(),
         note: "",
         tagIds: [],
@@ -657,6 +677,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       "login-1",
       {
         displayName: "Fresh OAuth Unmount",
+        email: null,
         ...expectedGroupSelection(),
         note: "",
         tagIds: [],
@@ -816,6 +837,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       "login-1",
       {
         displayName: "Fresh OAuth A",
+        email: null,
         ...expectedGroupSelection(),
         note: "",
         tagIds: [],
@@ -831,6 +853,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       "login-1",
       {
         displayName: "Fresh OAuth B",
+        email: null,
         ...expectedGroupSelection(),
         note: "",
         tagIds: [],
@@ -919,6 +942,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(updateOauthLogin).toHaveBeenCalledTimes(2);
     expect(updateOauthLogin).toHaveBeenLastCalledWith("login-1", {
       displayName: "Fresh OAuth AB",
+      email: null,
       ...expectedGroupSelection(),
       note: "",
       tagIds: [],
@@ -927,6 +951,128 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       mailboxAddress: "",
     });
     expect(updateOauthLogin.mock.lastCall?.[1]).not.toHaveProperty("groupNote");
+  });
+
+  it("preserves a newer local oauth email draft when a stale pending sync resolves", async () => {
+    vi.useFakeTimers();
+    let resolveFirstSync:
+      | ((value: LoginSessionStatusResponse) => void)
+      | undefined;
+    let resolveSecondSync:
+      | ((value: LoginSessionStatusResponse) => void)
+      | undefined;
+    const firstSync = new Promise<LoginSessionStatusResponse>((resolve) => {
+      resolveFirstSync = resolve;
+    });
+    const secondSync = new Promise<LoginSessionStatusResponse>((resolve) => {
+      resolveSecondSync = resolve;
+    });
+    const updateOauthLogin = vi
+      .fn()
+      .mockReturnValueOnce(firstSync)
+      .mockReturnValueOnce(secondSync);
+    mockUpstreamAccounts({ updateOauthLogin });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      state: {
+        draft: {
+          oauth: {
+            displayName: "Manual OAuth",
+            email: "server@example.com",
+            session: {
+              loginId: "login-1",
+              status: "pending",
+              authUrl: "https://auth.openai.com/authorize?login=1",
+              redirectUri: "http://localhost:1455/oauth/callback",
+              expiresAt: "2026-03-13T10:00:00.000Z",
+              accountId: null,
+              error: null,
+              email: "server@example.com",
+            },
+            sessionHint: "OAuth URL ready",
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    setInputValue('input[name="oauthEmail"]', "local-one@example.com");
+    await flushAsync();
+    await flushSessionSyncDebounce();
+
+    expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
+      displayName: "Manual OAuth",
+      email: "local-one@example.com",
+      ...expectedGroupSelection(),
+      note: "",
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "",
+      mailboxAddress: "",
+    });
+
+    setInputValue('input[name="oauthEmail"]', "local-two@example.com");
+    await flushAsync();
+    await flushSessionSyncDebounce();
+    expect(updateOauthLogin).toHaveBeenCalledTimes(1);
+
+    if (!resolveFirstSync || !resolveSecondSync) {
+      throw new Error("missing oauth email sync resolver");
+    }
+
+    const finishFirstSync = resolveFirstSync;
+    const finishSecondSync = resolveSecondSync;
+    await act(async () => {
+      finishFirstSync({
+        loginId: "login-1",
+        status: "pending",
+        authUrl: "https://auth.openai.com/authorize?login=1",
+        redirectUri: "http://localhost:1455/oauth/callback",
+        expiresAt: "2026-03-13T10:00:00.000Z",
+        accountId: null,
+        error: null,
+        email: "server@example.com",
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await flushAsync();
+
+    expect(updateOauthLogin).toHaveBeenCalledTimes(2);
+    expect(updateOauthLogin).toHaveBeenNthCalledWith(
+      2,
+      "login-1",
+      {
+        displayName: "Manual OAuth",
+        email: "local-two@example.com",
+        ...expectedGroupSelection(),
+        note: "",
+        tagIds: [],
+        isMother: false,
+        mailboxSessionId: "",
+        mailboxAddress: "",
+      },
+    );
+    expect(
+      (host?.querySelector('input[name="oauthEmail"]') as HTMLInputElement)
+        .value,
+    ).toBe("local-two@example.com");
+
+    await act(async () => {
+      finishSecondSync({
+        loginId: "login-1",
+        status: "pending",
+        authUrl: "https://auth.openai.com/authorize?login=1",
+        redirectUri: "http://localhost:1455/oauth/callback",
+        expiresAt: "2026-03-13T10:00:00.000Z",
+        accountId: null,
+        error: null,
+        email: "local-two@example.com",
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await flushAsync();
   });
 
   it("does not auto-sync pending oauth drafts when writes are disabled", async () => {
@@ -1007,6 +1153,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "Fresh OAuth",
+      email: null,
       ...expectedGroupSelection(),
       note: "",
       tagIds: [],
@@ -1064,6 +1211,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "Fresh OAuth",
+      email: null,
       ...expectedGroupSelection(),
       note: "",
       tagIds: [],
@@ -1120,6 +1268,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     expect(updateOauthLogin).toHaveBeenCalledWith("login-restored-1", {
       displayName: "Restored OAuth Draft",
+      email: null,
       ...expectedGroupSelection("restored-group"),
       note: "restored note",
       tagIds: [],
@@ -1283,6 +1432,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(updateOauthLogin).toHaveBeenCalledTimes(3);
     expect(updateOauthLogin).toHaveBeenLastCalledWith("login-1", {
       displayName: "Fresh OAuth Retry",
+      email: null,
       ...expectedGroupSelection(),
       note: "",
       tagIds: [],

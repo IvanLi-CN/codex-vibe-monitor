@@ -899,6 +899,7 @@ async fn update_oauth_login_session_preserves_pending_url_and_persists_metadata(
         HeaderMap::new(),
         Json(CreateOauthLoginSessionRequest {
             display_name: Some("Original Pending".to_string()),
+            email: None,
             group_name: Some("alpha".to_string()),
             group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
             group_node_shunt_enabled: None,
@@ -922,6 +923,7 @@ async fn update_oauth_login_session_preserves_pending_url_and_persists_metadata(
         AxumPath(created.login_id.clone()),
         Json(UpdateOauthLoginSessionRequest {
             display_name: OptionalField::Value("Updated Pending".to_string()),
+            email: OptionalField::Missing,
             group_name: OptionalField::Value("beta".to_string()),
             group_bound_proxy_keys: OptionalField::Value(test_required_group_bound_proxy_keys()),
             group_node_shunt_enabled: OptionalField::Missing,
@@ -974,6 +976,7 @@ async fn update_oauth_login_session_ignores_stale_baseline_updates() {
         HeaderMap::new(),
         Json(CreateOauthLoginSessionRequest {
             display_name: Some("Ordered Pending".to_string()),
+            email: None,
             group_name: Some("alpha".to_string()),
             group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
             group_node_shunt_enabled: None,
@@ -1002,6 +1005,7 @@ async fn update_oauth_login_session_ignores_stale_baseline_updates() {
         AxumPath(created.login_id.clone()),
         Json(UpdateOauthLoginSessionRequest {
             display_name: OptionalField::Value("Newest Pending".to_string()),
+            email: OptionalField::Missing,
             group_name: OptionalField::Value("beta".to_string()),
             group_bound_proxy_keys: OptionalField::Value(test_required_group_bound_proxy_keys()),
             group_node_shunt_enabled: OptionalField::Missing,
@@ -1031,6 +1035,7 @@ async fn update_oauth_login_session_ignores_stale_baseline_updates() {
         AxumPath(created.login_id.clone()),
         Json(UpdateOauthLoginSessionRequest {
             display_name: OptionalField::Value("Stale Pending".to_string()),
+            email: OptionalField::Missing,
             group_name: OptionalField::Value("gamma".to_string()),
             group_bound_proxy_keys: OptionalField::Value(test_required_group_bound_proxy_keys()),
             group_node_shunt_enabled: OptionalField::Missing,
@@ -1083,6 +1088,7 @@ async fn update_oauth_login_session_preserves_omitted_fields() {
         HeaderMap::new(),
         Json(CreateOauthLoginSessionRequest {
             display_name: Some("Keep Me".to_string()),
+            email: None,
             group_name: Some("partial-group".to_string()),
             group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
             group_node_shunt_enabled: None,
@@ -1106,6 +1112,7 @@ async fn update_oauth_login_session_preserves_omitted_fields() {
         AxumPath(created.login_id.clone()),
         Json(UpdateOauthLoginSessionRequest {
             display_name: OptionalField::Missing,
+            email: OptionalField::Missing,
             group_name: OptionalField::Missing,
             group_bound_proxy_keys: OptionalField::Missing,
             group_node_shunt_enabled: OptionalField::Missing,
@@ -1158,6 +1165,7 @@ async fn update_oauth_login_session_clears_omitted_group_note_when_group_changes
         HeaderMap::new(),
         Json(CreateOauthLoginSessionRequest {
             display_name: Some("Move Draft Group".to_string()),
+            email: None,
             group_name: Some("before-group".to_string()),
             group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
             group_node_shunt_enabled: None,
@@ -1181,6 +1189,7 @@ async fn update_oauth_login_session_clears_omitted_group_note_when_group_changes
         AxumPath(created.login_id.clone()),
         Json(UpdateOauthLoginSessionRequest {
             display_name: OptionalField::Missing,
+            email: OptionalField::Missing,
             group_name: OptionalField::Value("after-group".to_string()),
             group_bound_proxy_keys: OptionalField::Value(test_required_group_bound_proxy_keys()),
             group_node_shunt_enabled: OptionalField::Missing,
@@ -1219,6 +1228,7 @@ async fn update_oauth_login_session_rejects_group_removal() {
         HeaderMap::new(),
         Json(CreateOauthLoginSessionRequest {
             display_name: Some("Clear Group Note".to_string()),
+            email: None,
             group_name: Some("draft-group".to_string()),
             group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
             group_node_shunt_enabled: None,
@@ -1242,6 +1252,7 @@ async fn update_oauth_login_session_rejects_group_removal() {
         AxumPath(created.login_id.clone()),
         Json(UpdateOauthLoginSessionRequest {
             display_name: OptionalField::Missing,
+            email: OptionalField::Missing,
             group_name: OptionalField::Value(String::new()),
             group_bound_proxy_keys: OptionalField::Value(vec![]),
             group_node_shunt_enabled: OptionalField::Missing,
@@ -1289,6 +1300,7 @@ async fn updated_oauth_login_session_metadata_is_used_when_callback_persists_acc
         HeaderMap::new(),
         Json(CreateOauthLoginSessionRequest {
             display_name: Some("Before Patch".to_string()),
+            email: None,
             group_name: Some("old-group".to_string()),
             group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
             group_node_shunt_enabled: None,
@@ -1312,6 +1324,7 @@ async fn updated_oauth_login_session_metadata_is_used_when_callback_persists_acc
         AxumPath(created.login_id.clone()),
         Json(UpdateOauthLoginSessionRequest {
             display_name: OptionalField::Value("After Patch".to_string()),
+            email: OptionalField::Missing,
             group_name: OptionalField::Value("new-group".to_string()),
             group_bound_proxy_keys: OptionalField::Value(test_required_group_bound_proxy_keys()),
             group_node_shunt_enabled: OptionalField::Missing,
@@ -1358,6 +1371,8 @@ async fn updated_oauth_login_session_metadata_is_used_when_callback_persists_acc
                 .display_name
                 .clone()
                 .expect("display name should be stored"),
+            chosen_email: None,
+            verified_email: None,
             session: updated_session.clone(),
             claims: test_claims(
                 "callback@example.com",
@@ -1442,6 +1457,7 @@ async fn persist_oauth_callback_preserves_group_node_shunt_for_legacy_pending_se
         HeaderMap::new(),
         Json(CreateOauthLoginSessionRequest {
             display_name: Some("Legacy Pending".to_string()),
+            email: None,
             group_name: Some("legacy-group".to_string()),
             group_bound_proxy_keys: Some(bound_proxy_keys.clone()),
             group_node_shunt_enabled: None,
@@ -1503,6 +1519,8 @@ async fn persist_oauth_callback_preserves_group_node_shunt_for_legacy_pending_se
                 .display_name
                 .clone()
                 .expect("display name should be stored"),
+            chosen_email: None,
+            verified_email: None,
             session: pending_session,
             claims: test_claims(
                 "legacy@example.com",
@@ -1550,6 +1568,7 @@ async fn update_oauth_login_session_repairs_completed_callback_race_with_latest_
         HeaderMap::new(),
         Json(CreateOauthLoginSessionRequest {
             display_name: Some("Race Before".to_string()),
+            email: None,
             group_name: Some("race-group".to_string()),
             group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
             group_node_shunt_enabled: None,
@@ -1598,6 +1617,8 @@ async fn update_oauth_login_session_repairs_completed_callback_race_with_latest_
                 .display_name
                 .clone()
                 .expect("display name should be stored"),
+            chosen_email: None,
+            verified_email: None,
             session: pending_session,
             claims: test_claims("race@example.com", Some("org_race"), Some("user_race")),
             encrypted_credentials,
@@ -1618,6 +1639,7 @@ async fn update_oauth_login_session_repairs_completed_callback_race_with_latest_
         AxumPath(created.login_id.clone()),
         Json(UpdateOauthLoginSessionRequest {
             display_name: OptionalField::Value("Race After".to_string()),
+            email: OptionalField::Missing,
             group_name: OptionalField::Value("race-group".to_string()),
             group_bound_proxy_keys: OptionalField::Value(test_required_group_bound_proxy_keys()),
             group_node_shunt_enabled: OptionalField::Missing,
@@ -1694,6 +1716,7 @@ async fn update_oauth_login_session_repairs_completed_callback_race_with_latest_
         AxumPath(created.login_id.clone()),
         Json(UpdateOauthLoginSessionRequest {
             display_name: OptionalField::Value("Race Final".to_string()),
+            email: OptionalField::Missing,
             group_name: OptionalField::Missing,
             group_bound_proxy_keys: OptionalField::Missing,
             group_node_shunt_enabled: OptionalField::Missing,
@@ -1768,6 +1791,7 @@ async fn update_oauth_login_session_rejects_stale_completed_race_repairs() {
         HeaderMap::new(),
         Json(CreateOauthLoginSessionRequest {
             display_name: Some("Race Before".to_string()),
+            email: None,
             group_name: Some("race-group".to_string()),
             group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
             group_node_shunt_enabled: None,
@@ -1816,6 +1840,8 @@ async fn update_oauth_login_session_rejects_stale_completed_race_repairs() {
                 .display_name
                 .clone()
                 .expect("display name should be stored"),
+            chosen_email: None,
+            verified_email: None,
             session: pending_session,
             claims: test_claims("race@example.com", Some("org_race"), Some("user_race")),
             encrypted_credentials,
@@ -1843,6 +1869,7 @@ async fn update_oauth_login_session_rejects_stale_completed_race_repairs() {
         AxumPath(created.login_id.clone()),
         Json(UpdateOauthLoginSessionRequest {
             display_name: OptionalField::Value("Race Latest".to_string()),
+            email: OptionalField::Missing,
             group_name: OptionalField::Value("race-group".to_string()),
             group_bound_proxy_keys: OptionalField::Value(test_required_group_bound_proxy_keys()),
             group_node_shunt_enabled: OptionalField::Missing,
@@ -1873,6 +1900,7 @@ async fn update_oauth_login_session_rejects_stale_completed_race_repairs() {
         AxumPath(created.login_id.clone()),
         Json(UpdateOauthLoginSessionRequest {
             display_name: OptionalField::Value("Race Stale".to_string()),
+            email: OptionalField::Missing,
             group_name: OptionalField::Value("stale-group".to_string()),
             group_bound_proxy_keys: OptionalField::Value(test_required_group_bound_proxy_keys()),
             group_node_shunt_enabled: OptionalField::Missing,
@@ -1911,6 +1939,7 @@ async fn update_oauth_login_session_rejects_completed_repairs_after_group_note_c
         HeaderMap::new(),
         Json(CreateOauthLoginSessionRequest {
             display_name: Some("Race Before".to_string()),
+            email: None,
             group_name: Some("race-group".to_string()),
             group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
             group_node_shunt_enabled: None,
@@ -1959,6 +1988,8 @@ async fn update_oauth_login_session_rejects_completed_repairs_after_group_note_c
                 .display_name
                 .clone()
                 .expect("display name should be stored"),
+            chosen_email: None,
+            verified_email: None,
             session: pending_session,
             claims: test_claims("race@example.com", Some("org_race"), Some("user_race")),
             encrypted_credentials,
@@ -1995,6 +2026,7 @@ async fn update_oauth_login_session_rejects_completed_repairs_after_group_note_c
         AxumPath(created.login_id.clone()),
         Json(UpdateOauthLoginSessionRequest {
             display_name: OptionalField::Value("Race Latest".to_string()),
+            email: OptionalField::Missing,
             group_name: OptionalField::Value("race-group".to_string()),
             group_bound_proxy_keys: OptionalField::Value(test_required_group_bound_proxy_keys()),
             group_node_shunt_enabled: OptionalField::Missing,
@@ -2045,6 +2077,7 @@ async fn update_oauth_login_session_rejects_completed_repairs_after_account_chan
         HeaderMap::new(),
         Json(CreateOauthLoginSessionRequest {
             display_name: Some("Race Before".to_string()),
+            email: None,
             group_name: Some("race-group".to_string()),
             group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
             group_node_shunt_enabled: None,
@@ -2093,6 +2126,8 @@ async fn update_oauth_login_session_rejects_completed_repairs_after_account_chan
                 .display_name
                 .clone()
                 .expect("display name should be stored"),
+            chosen_email: None,
+            verified_email: None,
             session: pending_session,
             claims: test_claims("race@example.com", Some("org_race"), Some("user_race")),
             encrypted_credentials,
@@ -2139,6 +2174,7 @@ async fn update_oauth_login_session_rejects_completed_repairs_after_account_chan
         AxumPath(created.login_id.clone()),
         Json(UpdateOauthLoginSessionRequest {
             display_name: OptionalField::Value("Race Stale".to_string()),
+            email: OptionalField::Missing,
             group_name: OptionalField::Value("stale-group".to_string()),
             group_bound_proxy_keys: OptionalField::Value(test_required_group_bound_proxy_keys()),
             group_node_shunt_enabled: OptionalField::Missing,
@@ -2174,6 +2210,7 @@ async fn update_oauth_login_session_rejects_completed_failed_and_expired_session
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let update_payload = || UpdateOauthLoginSessionRequest {
         display_name: OptionalField::Value("Edited Session".to_string()),
+        email: OptionalField::Missing,
         group_name: OptionalField::Value("edited-group".to_string()),
         group_bound_proxy_keys: OptionalField::Value(test_required_group_bound_proxy_keys()),
         group_node_shunt_enabled: OptionalField::Missing,
@@ -2191,6 +2228,7 @@ async fn update_oauth_login_session_rejects_completed_failed_and_expired_session
         HeaderMap::new(),
         Json(CreateOauthLoginSessionRequest {
             display_name: Some("Completed Session".to_string()),
+            email: None,
             group_name: Some("completed-group".to_string()),
             group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
             group_node_shunt_enabled: None,
@@ -2232,6 +2270,7 @@ async fn update_oauth_login_session_rejects_completed_failed_and_expired_session
         HeaderMap::new(),
         Json(CreateOauthLoginSessionRequest {
             display_name: Some("Failed Session".to_string()),
+            email: None,
             group_name: Some("failed-group".to_string()),
             group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
             group_node_shunt_enabled: None,
@@ -2270,6 +2309,7 @@ async fn update_oauth_login_session_rejects_completed_failed_and_expired_session
         HeaderMap::new(),
         Json(CreateOauthLoginSessionRequest {
             display_name: Some("Expired Session".to_string()),
+            email: None,
             group_name: Some("expired-group".to_string()),
             group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
             group_node_shunt_enabled: None,
@@ -2322,6 +2362,7 @@ async fn update_oauth_login_session_rejects_relogin_sessions() {
         HeaderMap::new(),
         Json(CreateOauthLoginSessionRequest {
             display_name: None,
+            email: None,
             group_name: None,
             group_bound_proxy_keys: None,
             group_node_shunt_enabled: None,
@@ -2345,6 +2386,7 @@ async fn update_oauth_login_session_rejects_relogin_sessions() {
         AxumPath(relogin.login_id.clone()),
         Json(UpdateOauthLoginSessionRequest {
             display_name: OptionalField::Value("Edited Relogin".to_string()),
+            email: OptionalField::Missing,
             group_name: OptionalField::Missing,
             group_bound_proxy_keys: OptionalField::Missing,
             group_node_shunt_enabled: OptionalField::Missing,

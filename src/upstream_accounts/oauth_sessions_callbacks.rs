@@ -449,6 +449,7 @@ pub(crate) async fn create_oauth_login_session(
 
     let mut preserved_mother_flag = false;
     let mut preserved_display_name = None;
+    let mut preserved_email = None;
     let mut preserved_group_name = None;
     let mut preserved_note = None;
     let mut preserved_group_concurrency_limit = 0;
@@ -468,6 +469,7 @@ pub(crate) async fn create_oauth_login_session(
         }
         preserved_mother_flag = existing.is_mother != 0;
         preserved_display_name = Some(existing.display_name);
+        preserved_email = existing.email;
         preserved_group_name = existing.group_name;
         preserved_note = existing.note;
         preserved_group_concurrency_limit =
@@ -478,7 +480,15 @@ pub(crate) async fn create_oauth_login_session(
     }
 
     let is_mother = payload.is_mother.unwrap_or(preserved_mother_flag);
-    let display_name = normalize_optional_text(payload.display_name).or(preserved_display_name);
+    let requested_email = normalize_optional_email(payload.email, "email")?;
+    let email = requested_email.clone().or_else(|| preserved_email.clone());
+    let requested_display_name = normalize_optional_text(payload.display_name);
+    let display_name = resolve_display_name_after_email_change(
+        preserved_display_name.as_deref(),
+        requested_display_name.as_deref(),
+        preserved_email.as_deref(),
+        email.as_deref(),
+    );
     let group_name = normalize_optional_text(payload.group_name).or(preserved_group_name);
     let note = normalize_optional_text(payload.note).or(preserved_note);
     let requested_group_concurrency_limit =
@@ -533,23 +543,21 @@ pub(crate) async fn create_oauth_login_session(
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(internal_error_tuple)?;
-    if let Some(display_name) = display_name.as_deref() {
-        ensure_display_name_available(&mut *tx, display_name, payload.account_id).await?;
-    }
 
     sqlx::query(
         r#"
         INSERT INTO pool_oauth_login_sessions (
-            login_id, account_id, display_name, group_name, group_bound_proxy_keys_json, group_node_shunt_enabled,
+            login_id, account_id, display_name, email, group_name, group_bound_proxy_keys_json, group_node_shunt_enabled,
             group_node_shunt_enabled_requested, is_mother, note, tag_ids_json, group_note, group_concurrency_limit,
             mailbox_session_id, generated_mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
             error_message, expires_at, consumed_at, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, NULL, ?20, NULL, ?21, ?21)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, NULL, ?21, NULL, ?22, ?22)
         "#,
     )
     .bind(&login_id)
     .bind(payload.account_id)
     .bind(display_name)
+    .bind(email.clone())
     .bind(&resolved_group_binding.group_name)
     .bind(
         encode_group_bound_proxy_keys_json(&resolved_group_binding.bound_proxy_keys)
@@ -592,6 +600,7 @@ pub(crate) async fn create_oauth_login_session(
         expires_at: expires_at_iso,
         updated_at: now_iso,
         account_id: payload.account_id,
+        email,
         error: None,
         sync_applied: None,
     }))
@@ -734,6 +743,7 @@ pub(crate) async fn update_oauth_login_session(
 
     let UpdateOauthLoginSessionRequest {
         display_name: requested_display_name,
+        email: requested_email,
         group_name: requested_group_name,
         group_bound_proxy_keys: requested_group_bound_proxy_keys,
         group_node_shunt_enabled: requested_group_node_shunt_enabled,
@@ -758,6 +768,11 @@ pub(crate) async fn update_oauth_login_session(
         OptionalField::Missing => session.display_name.clone(),
         OptionalField::Null => None,
         OptionalField::Value(value) => normalize_optional_text(Some(value)),
+    };
+    let email = match requested_email {
+        OptionalField::Missing => session.email.clone(),
+        OptionalField::Null => None,
+        OptionalField::Value(value) => normalize_optional_email(Some(value), "email")?,
     };
     let group_name = match requested_group_name {
         OptionalField::Missing => session.group_name.clone(),
@@ -869,11 +884,12 @@ pub(crate) async fn update_oauth_login_session(
         requested_group_node_shunt_enabled_was_updated,
     );
 
-    if display_name.as_deref() != session.display_name.as_deref() {
-        if let Some(display_name) = display_name.as_deref() {
-            ensure_display_name_available(&mut *tx, display_name, session.account_id).await?;
-        }
-    }
+    let next_display_name = resolve_display_name_after_email_change(
+        session.display_name.as_deref(),
+        display_name.as_deref(),
+        session.email.as_deref(),
+        email.as_deref(),
+    );
 
     let stored_group_note = if let Some(group_name) = group_name.as_deref() {
         if normalized_group_note.is_some()
@@ -898,7 +914,8 @@ pub(crate) async fn update_oauth_login_session(
         apply_oauth_login_session_metadata_to_account_with_executor(
             &mut tx,
             account_id,
-            display_name.clone(),
+            next_display_name.clone(),
+            email.clone(),
             Some(resolved_group_binding.group_name.clone()),
             note.clone(),
             &requested_group_metadata_changes,
@@ -919,23 +936,25 @@ pub(crate) async fn update_oauth_login_session(
             r#"
             UPDATE pool_oauth_login_sessions
             SET display_name = ?2,
-                group_name = ?3,
-                group_bound_proxy_keys_json = ?4,
-                group_node_shunt_enabled = ?5,
-                group_node_shunt_enabled_requested = ?6,
-                is_mother = ?7,
-                note = ?8,
-                tag_ids_json = ?9,
-                group_note = ?10,
-                group_concurrency_limit = ?11,
-                mailbox_session_id = ?12,
-                generated_mailbox_address = ?13,
-                updated_at = ?14
+                email = ?3,
+                group_name = ?4,
+                group_bound_proxy_keys_json = ?5,
+                group_node_shunt_enabled = ?6,
+                group_node_shunt_enabled_requested = ?7,
+                is_mother = ?8,
+                note = ?9,
+                tag_ids_json = ?10,
+                group_note = ?11,
+                group_concurrency_limit = ?12,
+                mailbox_session_id = ?13,
+                generated_mailbox_address = ?14,
+                updated_at = ?15
             WHERE login_id = ?1
             "#,
         )
         .bind(&login_id)
-        .bind(display_name)
+        .bind(next_display_name)
+        .bind(email)
         .bind(Some(resolved_group_binding.group_name.clone()))
         .bind(
             encode_group_bound_proxy_keys_json(&resolved_group_binding.bound_proxy_keys)
@@ -976,24 +995,26 @@ pub(crate) async fn update_oauth_login_session(
         r#"
         UPDATE pool_oauth_login_sessions
         SET display_name = ?2,
-            group_name = ?3,
-            group_bound_proxy_keys_json = ?4,
-            group_node_shunt_enabled = ?5,
-            group_node_shunt_enabled_requested = ?6,
-            is_mother = ?7,
-            note = ?8,
-            tag_ids_json = ?9,
-            group_note = ?10,
-            group_concurrency_limit = ?11,
-            mailbox_session_id = ?12,
-            generated_mailbox_address = ?13,
-            updated_at = ?14
+            email = ?3,
+            group_name = ?4,
+            group_bound_proxy_keys_json = ?5,
+            group_node_shunt_enabled = ?6,
+            group_node_shunt_enabled_requested = ?7,
+            is_mother = ?8,
+            note = ?9,
+            tag_ids_json = ?10,
+            group_note = ?11,
+            group_concurrency_limit = ?12,
+            mailbox_session_id = ?13,
+            generated_mailbox_address = ?14,
+            updated_at = ?15
         WHERE login_id = ?1
-          AND (?15 IS NULL OR updated_at = ?15)
+          AND (?16 IS NULL OR updated_at = ?16)
         "#,
     )
     .bind(&login_id)
-    .bind(display_name)
+    .bind(next_display_name)
+    .bind(email)
     .bind(Some(resolved_group_binding.group_name.clone()))
     .bind(
         encode_group_bound_proxy_keys_json(&resolved_group_binding.bound_proxy_keys)
@@ -1119,6 +1140,7 @@ pub(crate) async fn relogin_upstream_account(
         .collect();
     let payload = CreateOauthLoginSessionRequest {
         display_name: None,
+        email: None,
         group_name: None,
         group_bound_proxy_keys: None,
         group_node_shunt_enabled: None,
@@ -1194,6 +1216,7 @@ pub(crate) async fn create_api_key_account_inner(
     let display_name = normalize_required_display_name(&payload.display_name)?;
     validate_local_limits(payload.local_primary_limit, payload.local_secondary_limit)?;
     let api_key = normalize_required_secret(&payload.api_key, "apiKey")?;
+    let email = normalize_optional_email(payload.email, "email")?;
     let tag_ids = validate_tag_ids(&state.pool, &payload.tag_ids).await?;
     let group_name = normalize_optional_text(payload.group_name);
     let note = normalize_optional_text(payload.note);
@@ -1240,15 +1263,15 @@ pub(crate) async fn create_api_key_account_inner(
         let inserted_id = sqlx::query_scalar::<_, i64>(
         r#"
         INSERT INTO pool_upstream_accounts (
-            kind, provider, display_name, group_name, is_mother, note, status, enabled, email, chatgpt_account_id,
-            chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key, encrypted_credentials, token_expires_at,
+            kind, provider, display_name, group_name, is_mother, note, status, enabled, email, verified_email,
+            chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key, encrypted_credentials, token_expires_at,
             last_refreshed_at, last_synced_at, last_successful_sync_at, last_error, last_error_at,
             local_primary_limit, local_secondary_limit, local_limit_unit, upstream_base_url, created_at, updated_at
         ) VALUES (
-            ?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, NULL, NULL,
-            NULL, NULL, NULL, ?8, ?9, NULL,
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, NULL,
+            NULL, NULL, NULL, NULL, ?9, ?10, NULL,
             NULL, NULL, NULL, NULL, NULL,
-            ?10, ?11, ?12, ?13, ?14, ?14
+            ?11, ?12, ?13, ?14, ?15, ?15
         ) RETURNING id
         "#,
     )
@@ -1259,6 +1282,7 @@ pub(crate) async fn create_api_key_account_inner(
     .bind(if is_mother { 1 } else { 0 })
     .bind(note)
     .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+    .bind(email)
     .bind(masked_api_key)
     .bind(encrypted_credentials)
     .bind(payload.local_primary_limit)
@@ -1337,6 +1361,8 @@ pub(crate) async fn update_upstream_account_inner(
         Some(values) => Some(validate_tag_ids(&state.pool, values).await?),
         None => None,
     };
+    let previous_display_name = row.display_name.clone();
+    let previous_email = row.email.clone();
     let previous_group_name = row.group_name.clone();
     let requested_group_note = payload
         .group_note
@@ -1355,9 +1381,26 @@ pub(crate) async fn update_upstream_account_inner(
         payload.group_node_shunt_enabled.is_some(),
     );
 
-    if let Some(display_name) = payload.display_name {
-        row.display_name = normalize_required_display_name(&display_name)?;
+    let requested_display_name = match payload.display_name.clone() {
+        Some(display_name) => Some(normalize_required_display_name(&display_name)?),
+        None => None,
+    };
+    match payload.email.clone() {
+        OptionalField::Missing => {}
+        OptionalField::Null => {
+            row.email = None;
+        }
+        OptionalField::Value(value) => {
+            row.email = normalize_optional_email(Some(value), "email")?;
+        }
     }
+    row.display_name = resolve_display_name_after_email_change(
+        Some(previous_display_name.as_str()),
+        requested_display_name.as_deref(),
+        previous_email.as_deref(),
+        row.email.as_deref(),
+    )
+    .unwrap_or(previous_display_name);
     if let Some(group_name) = payload.group_name.clone() {
         row.group_name = normalize_optional_text(Some(group_name));
     }
@@ -1431,27 +1474,42 @@ pub(crate) async fn update_upstream_account_inner(
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(internal_error_tuple)?;
-    ensure_display_name_available(&mut *tx, &row.display_name, Some(id)).await?;
+    if row.kind == UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX {
+        ensure_display_name_available_for_oauth_identity(
+            &mut *tx,
+            &row.display_name,
+            Some(id),
+            row.chatgpt_account_id.as_deref(),
+            row.chatgpt_user_id.as_deref(),
+            row.group_name.as_deref(),
+            row.plan_type.as_deref(),
+        )
+        .await?;
+    } else {
+        ensure_display_name_available(&mut *tx, &row.display_name, Some(id)).await?;
+    }
     sqlx::query(
         r#"
         UPDATE pool_upstream_accounts
         SET display_name = ?2,
-            group_name = ?3,
-            is_mother = ?4,
-            note = ?5,
-            enabled = ?6,
-            masked_api_key = ?7,
-            encrypted_credentials = ?8,
-            local_primary_limit = ?9,
-            local_secondary_limit = ?10,
-            local_limit_unit = ?11,
-            upstream_base_url = ?12,
-            updated_at = ?13
+            email = ?3,
+            group_name = ?4,
+            is_mother = ?5,
+            note = ?6,
+            enabled = ?7,
+            masked_api_key = ?8,
+            encrypted_credentials = ?9,
+            local_primary_limit = ?10,
+            local_secondary_limit = ?11,
+            local_limit_unit = ?12,
+            upstream_base_url = ?13,
+            updated_at = ?14
         WHERE id = ?1
         "#,
     )
     .bind(id)
     .bind(&row.display_name)
+    .bind(&row.email)
     .bind(&row.group_name)
     .bind(row.is_mother)
     .bind(&row.note)
@@ -1509,6 +1567,7 @@ pub(crate) async fn apply_oauth_login_session_metadata_to_account_with_executor(
     tx: &mut Transaction<'_, Sqlite>,
     account_id: i64,
     display_name: Option<String>,
+    email: Option<String>,
     group_name: Option<String>,
     note: Option<String>,
     requested_group_metadata_changes: &RequestedGroupMetadataChanges,
@@ -1520,23 +1579,40 @@ pub(crate) async fn apply_oauth_login_session_metadata_to_account_with_executor(
         .map_err(internal_error_tuple)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
     let previous_group_name = row.group_name.clone();
-    let next_display_name = display_name.unwrap_or(row.display_name);
-    ensure_display_name_available(tx.as_mut(), &next_display_name, Some(account_id)).await?;
+    let next_display_name = resolve_display_name_after_email_change(
+        Some(row.display_name.as_str()),
+        display_name.as_deref(),
+        row.email.as_deref(),
+        email.as_deref().or(row.email.as_deref()),
+    )
+    .unwrap_or(row.display_name.clone());
+    ensure_display_name_available_for_oauth_identity(
+        tx.as_mut(),
+        &next_display_name,
+        Some(account_id),
+        row.chatgpt_account_id.as_deref(),
+        row.chatgpt_user_id.as_deref(),
+        group_name.as_deref().or(row.group_name.as_deref()),
+        row.plan_type.as_deref(),
+    )
+    .await?;
 
     let now_iso = format_utc_iso(Utc::now());
     sqlx::query(
         r#"
         UPDATE pool_upstream_accounts
         SET display_name = ?2,
-            group_name = ?3,
-            is_mother = ?4,
-            note = ?5,
-            updated_at = ?6
+            email = ?3,
+            group_name = ?4,
+            is_mother = ?5,
+            note = ?6,
+            updated_at = ?7
         WHERE id = ?1
         "#,
     )
     .bind(account_id)
     .bind(&next_display_name)
+    .bind(email.or(row.email))
     .bind(&group_name)
     .bind(if is_mother { 1 } else { 0 })
     .bind(&note)
@@ -1827,19 +1903,28 @@ pub(crate) async fn complete_oauth_login_session_with_query(
     )
     .map_err(internal_error_tuple)?;
 
-    let default_display_name = claims
-        .email
+    let normalized_claim_email = normalize_email_value(claims.email.clone());
+    let default_display_name = session
+        .display_name
         .clone()
-        .or_else(|| session.display_name.clone())
+        .and_then(|value| normalize_optional_text(Some(value)))
+        .or_else(|| generated_display_name_from_email(session.email.as_deref()))
+        .or_else(|| generated_display_name_from_email(normalized_claim_email.as_deref()))
         .unwrap_or_else(|| "Codex OAuth".to_string());
     let display_name = session
         .display_name
         .clone()
         .and_then(|value| normalize_optional_text(Some(value)))
         .unwrap_or(default_display_name);
+    let chosen_email = session
+        .email
+        .clone()
+        .or_else(|| normalized_claim_email.clone());
     let input = PersistOauthCallbackInput {
         session,
         display_name,
+        chosen_email,
+        verified_email: normalized_claim_email,
         claims,
         encrypted_credentials: credentials,
         token_expires_at,
@@ -1903,8 +1988,16 @@ pub(crate) async fn persist_oauth_callback_inner(
             "This login session has already been consumed.".to_string(),
         ));
     }
-    if let Err((status, message)) =
-        ensure_display_name_available(&mut *tx, &input.display_name, session.account_id).await
+    if let Err((status, message)) = ensure_display_name_available_for_oauth_identity(
+        &mut *tx,
+        &input.display_name,
+        session.account_id,
+        input.claims.chatgpt_account_id.as_deref(),
+        input.claims.chatgpt_user_id.as_deref(),
+        session.group_name.as_deref(),
+        input.claims.chatgpt_plan_type.as_deref(),
+    )
+    .await
     {
         if status == StatusCode::CONFLICT {
             fail_login_session_with_executor(&mut *tx, &session.login_id, &message)
@@ -1919,6 +2012,8 @@ pub(crate) async fn persist_oauth_callback_inner(
         OauthAccountUpsert {
             account_id: session.account_id,
             display_name: &input.display_name,
+            chosen_email: input.chosen_email.clone(),
+            verified_email: input.verified_email.clone(),
             group_name: session.group_name.clone(),
             is_mother: session.is_mother != 0,
             note: session.note.clone(),

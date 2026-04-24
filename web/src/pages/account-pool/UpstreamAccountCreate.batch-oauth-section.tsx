@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { AppIcon } from "../../components/AppIcon";
+import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { FloatingFieldError } from "../../components/ui/floating-field-error";
@@ -10,6 +11,7 @@ import { BatchOauthActionButton } from "../../components/account-pool/BatchOauth
 import { OauthMailboxChip } from "../../components/account-pool/OauthMailboxChip";
 import { UpstreamAccountGroupCombobox } from "../../components/UpstreamAccountGroupCombobox";
 import { MotherAccountToggle } from "../../components/MotherAccountToggle";
+import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
 import {
   DuplicateWarningPopover,
 } from "./UpstreamAccountCreate.shared";
@@ -50,6 +52,7 @@ export function UpstreamAccountCreateBatchOauthSection() {
     handleBatchMailboxFetch,
     handleBatchMetadataChange,
     handleBatchMotherToggle,
+    handleResolveBatchOauthEmailChoice,
     handleBatchStartMailboxEdit,
     hasGroupSettings,
     isActivePendingOauthSession,
@@ -174,6 +177,9 @@ export function UpstreamAccountCreateBatchOauthSection() {
               row.mailboxSession?.emailAddress ??
               row.mailboxInput;
             const rowInvited = row.mailboxStatus?.invited;
+            const rowPlanBadge = upstreamPlanBadgeRecipe(
+              row.planType ?? row.emailResolution?.planType ?? null,
+            );
             return (
               <tr
                 key={row.id}
@@ -412,6 +418,31 @@ export function UpstreamAccountCreateBatchOauthSection() {
                         ) : null}
                       </div>
                     </div>
+                    <label className="field min-w-0 gap-2 whitespace-nowrap">
+                      <span className="field-label">
+                        {t("accountPool.upstreamAccounts.fields.email")}
+                      </span>
+                      <Input
+                        id={`batch-oauth-email-${row.id}`}
+                        name={`batchOauthEmail-${row.id}`}
+                        value={row.email}
+                        autoCapitalize="none"
+                        spellCheck={false}
+                        disabled={
+                          metadataLocked ||
+                          isCompleted ||
+                          isRecoveredNeedsRefresh
+                        }
+                        className="min-w-0"
+                        onChange={(event) =>
+                          handleBatchMetadataChange(
+                            row.id,
+                            "email",
+                            event.target.value,
+                          )
+                        }
+                      />
+                    </label>
                     <label className="field min-w-0 gap-2 whitespace-nowrap">
                       <span className="field-label">
                         {t(
@@ -811,8 +842,7 @@ export function UpstreamAccountCreateBatchOauthSection() {
                               oauthLocked ||
                               isCompleted ||
                               !isPending ||
-                              !row.callbackUrl.trim() ||
-                              duplicateNameError != null
+                              !row.callbackUrl.trim()
                             }
                           >
                             {row.busyAction === "complete" ? (
@@ -881,6 +911,11 @@ export function UpstreamAccountCreateBatchOauthSection() {
                         ) : null}
                       </div>
                       <div className="ml-auto flex shrink-0 items-center gap-2">
+                        {rowPlanBadge && (row.planType ?? row.emailResolution?.planType) ? (
+                          <Badge variant={rowPlanBadge.variant}>
+                            {row.planType ?? row.emailResolution?.planType}
+                          </Badge>
+                        ) : null}
                         <Badge
                           variant={batchStatusVariant(status)}
                         >
@@ -922,6 +957,60 @@ export function UpstreamAccountCreateBatchOauthSection() {
                         </Tooltip>
                       </div>
                     </div>
+                    {row.emailResolution ? (
+                      <Alert variant="warning">
+                        <AppIcon
+                          name="alert-circle-outline"
+                          className="mt-0.5 h-4 w-4 shrink-0"
+                          aria-hidden
+                        />
+                        <div className="space-y-3">
+                          <p className="text-sm text-warning/90">
+                            {t(
+                              "accountPool.upstreamAccounts.oauth.emailChoiceBody",
+                              {
+                                verifiedEmail: row.emailResolution.verifiedEmail,
+                                chosenEmail: row.emailResolution.chosenEmail,
+                              },
+                            )}
+                          </p>
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="secondary"
+                              disabled={row.metadataBusy}
+                              onClick={() =>
+                                void handleResolveBatchOauthEmailChoice(
+                                  row.id,
+                                  "verified",
+                                )
+                              }
+                            >
+                              {t(
+                                "accountPool.upstreamAccounts.oauth.keepVerifiedEmail",
+                              )}
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              disabled={row.metadataBusy}
+                              onClick={() =>
+                                void handleResolveBatchOauthEmailChoice(
+                                  row.id,
+                                  "entered",
+                                )
+                              }
+                            >
+                              {t(
+                                "accountPool.upstreamAccounts.oauth.keepEnteredEmail",
+                              )}
+                            </Button>
+                          </div>
+                        </div>
+                      </Alert>
+                    ) : null}
                     <p
                       className={cn(
                         "text-xs leading-5",

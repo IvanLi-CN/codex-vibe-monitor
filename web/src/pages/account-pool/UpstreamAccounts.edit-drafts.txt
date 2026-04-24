@@ -64,6 +64,42 @@ describe("SharedUpstreamAccountDetailDrawer edit drafts", () => {
     }
   }
 
+  function createOauthItem(id: number, displayName: string) {
+    return {
+      id,
+      kind: "oauth_codex" as const,
+      provider: "codex" as const,
+      displayName,
+      groupName: "prod",
+      status: "active",
+      displayStatus: "active",
+      enabled: true,
+      isMother: false,
+      email: displayName,
+      planType: "team",
+      primaryWindow: null,
+      secondaryWindow: null,
+      credits: null,
+      localLimits: null,
+      tags: [],
+      effectiveRoutingRule: defaultEffectiveRoutingRule,
+    }
+  }
+
+  function createOauthDetail(
+    item: ReturnType<typeof createOauthItem>,
+    overrides: Record<string, unknown> = {},
+  ) {
+    return {
+      ...item,
+      history: [],
+      note: "Original oauth note",
+      verifiedEmail: "verified@example.com",
+      recentActions: [],
+      ...overrides,
+    }
+  }
+
   function createApiKeyHookState(options?: {
     items?: ReturnType<typeof createApiKeyItem>[]
     selectedId?: number
@@ -224,6 +260,114 @@ describe("SharedUpstreamAccountDetailDrawer edit drafts", () => {
 
     const input = document.body.querySelector('textarea[name="detailNote"]')
     expect((input as HTMLTextAreaElement).value).toBe("Unsaved drawer note")
+  })
+
+  it("updates the editable oauth email, keeps verified email visible, and only auto-follows email while the display name still matches it", async () => {
+    const item = createOauthItem(18, "old@example.com")
+    const saveAccount = vi.fn().mockImplementation(async (accountId, payload) =>
+      createOauthDetail(item, {
+        id: accountId,
+        displayName:
+          typeof payload.displayName === "string"
+            ? payload.displayName
+            : item.displayName,
+        email: typeof payload.email === "string" ? payload.email : item.email,
+        verifiedEmail: "verified@example.com",
+      }),
+    )
+    hookMocks.useUpstreamAccounts.mockReturnValue(
+      createApiKeyHookState({
+        items: [item],
+        selectedId: 18,
+        detail: createOauthDetail(item, {
+          email: "old@example.com",
+          verifiedEmail: "verified@example.com",
+        }),
+        saveAccount,
+      }),
+    )
+
+    renderDetailDrawer(18)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+
+    expect(document.body.textContent).toContain("verified@example.com")
+
+    setInputValue('input[name="detailEmail"]', "new@example.com")
+    await flushAsync()
+    expect(
+      (document.body.querySelector('input[name="detailDisplayName"]') as HTMLInputElement)
+        .value,
+    ).toBe("new@example.com")
+
+    setInputValue('input[name="detailDisplayName"]', "Manual Alias")
+    setInputValue('input[name="detailEmail"]', "third@example.com")
+    await flushAsync()
+    expect(
+      (document.body.querySelector('input[name="detailDisplayName"]') as HTMLInputElement)
+        .value,
+    ).toBe("Manual Alias")
+
+    clickButton(/Save changes/i)
+    await flushAsync()
+
+    expect(saveAccount).toHaveBeenCalledWith(
+      18,
+      expect.objectContaining({
+        displayName: "Manual Alias",
+        email: "third@example.com",
+      }),
+    )
+  })
+
+  it("sends a null oauth email when the detail drawer clears it", async () => {
+    const item = createOauthItem(18, "Manual Alias")
+    const saveAccount = vi.fn().mockImplementation(async (accountId, payload) =>
+      createOauthDetail(item, {
+        id: accountId,
+        displayName:
+          typeof payload.displayName === "string"
+            ? payload.displayName
+            : item.displayName,
+        email:
+          payload.email === null
+            ? null
+            : typeof payload.email === "string"
+              ? payload.email
+              : "old@example.com",
+        verifiedEmail: "verified@example.com",
+      }),
+    )
+    hookMocks.useUpstreamAccounts.mockReturnValue(
+      createApiKeyHookState({
+        items: [item],
+        selectedId: 18,
+        detail: createOauthDetail(item, {
+          email: "old@example.com",
+          verifiedEmail: "verified@example.com",
+        }),
+        saveAccount,
+      }),
+    )
+
+    renderDetailDrawer(18)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+
+    setInputValue('input[name="detailEmail"]', "")
+    await flushAsync()
+    clickButton(/Save changes/i)
+    await flushAsync()
+
+    expect(saveAccount).toHaveBeenCalledWith(
+      18,
+      expect.objectContaining({
+        displayName: "Manual Alias",
+        email: null,
+      }),
+    )
   })
 
   it("resumes same-account refresh syncing after the user reverts their edits", async () => {
