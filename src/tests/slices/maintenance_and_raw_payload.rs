@@ -321,7 +321,7 @@ fn isolate_default_test_runtime_path(path: &Path, default_root: &str, db_id: u64
     if path != Path::new(default_root) {
         return path.to_path_buf();
     }
-    let isolated = Path::new(default_root).join(format!("{db_id}"));
+    let isolated = Path::new(default_root).join(format!("{}-{db_id}", std::process::id()));
     fs::create_dir_all(&isolated).expect("create isolated test runtime dir");
     isolated
 }

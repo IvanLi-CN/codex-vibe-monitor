@@ -23,6 +23,356 @@ pub(crate) async fn mark_retention_archived_hourly_rollup_targets_tx(
     Ok(())
 }
 
+pub(crate) const POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET: &str =
+    "pool_upstream_node_health_archive";
+pub(crate) const POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET: &str =
+    "pool_upstream_node_health_hourly_archive";
+
+#[derive(Debug, Clone, FromRow)]
+pub(crate) struct PoolUpstreamNodeHealthArchiveRecord {
+    pub(crate) archived_row_id: i64,
+    pub(crate) occurred_at: String,
+    pub(crate) proxy_binding_key_snapshot: String,
+    pub(crate) is_success: i64,
+    pub(crate) latency_ms: Option<f64>,
+}
+
+#[derive(Debug, Clone, FromRow)]
+pub(crate) struct PoolUpstreamNodeHealthHourlyArchiveRollupRow {
+    pub(crate) proxy_binding_key_snapshot: String,
+    pub(crate) bucket_start_epoch: i64,
+    pub(crate) success_count: i64,
+    pub(crate) failure_count: i64,
+}
+
+pub(crate) async fn cache_pool_upstream_node_health_archive_rows_from_live_ids_tx(
+    tx: &mut SqliteConnection,
+    archive_file_path: &str,
+    ids: &[i64],
+) -> Result<u64> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+
+    let mut rows_affected = 0_u64;
+    for chunk in ids.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            r#"
+            INSERT INTO pool_upstream_node_health_archive (
+                archive_file_path,
+                archived_row_id,
+                occurred_at,
+                proxy_binding_key_snapshot,
+                is_success,
+                latency_ms,
+                updated_at
+            )
+            SELECT
+                "#,
+        );
+        query
+            .push_bind(archive_file_path)
+            .push(
+                r#",
+                id,
+                occurred_at,
+                proxy_binding_key_snapshot,
+                CASE WHEN status = "#,
+            )
+            .push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
+            .push(
+                r#" THEN 1 ELSE 0 END,
+                CASE
+                    WHEN status = "#,
+            )
+            .push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
+            .push(
+                r#" THEN COALESCE(first_byte_latency_ms, connect_latency_ms, stream_latency_ms)
+                    ELSE NULL
+                END,
+                datetime('now')
+            FROM pool_upstream_request_attempts
+            WHERE id IN ("#,
+            );
+        {
+            let mut separated = query.separated(", ");
+            for id in chunk {
+                separated.push_bind(id);
+            }
+        }
+        query.push(
+            r#")
+              AND proxy_binding_key_snapshot IS NOT NULL
+              AND finished_at IS NOT NULL
+              AND status != "#,
+        );
+        query.push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL);
+        query.push(
+            r#"
+            ON CONFLICT(archive_file_path, archived_row_id) DO UPDATE SET
+                occurred_at = excluded.occurred_at,
+                proxy_binding_key_snapshot = excluded.proxy_binding_key_snapshot,
+                is_success = excluded.is_success,
+                latency_ms = excluded.latency_ms,
+                updated_at = datetime('now')
+            "#,
+        );
+        rows_affected += query.build().execute(&mut *tx).await?.rows_affected();
+    }
+
+    Ok(rows_affected)
+}
+
+pub(crate) async fn load_pool_upstream_node_health_archive_rows_chunk(
+    archive_pool: &Pool<Sqlite>,
+    start_after_id: i64,
+) -> Result<(Vec<PoolUpstreamNodeHealthArchiveRecord>, bool)> {
+    let mut rows = sqlx::query_as::<_, PoolUpstreamNodeHealthArchiveRecord>(
+        r#"
+        SELECT
+            id AS archived_row_id,
+            occurred_at,
+            proxy_binding_key_snapshot,
+            CASE WHEN status = ?1 THEN 1 ELSE 0 END AS is_success,
+            CASE
+                WHEN status = ?1 THEN COALESCE(first_byte_latency_ms, connect_latency_ms, stream_latency_ms)
+                ELSE NULL
+            END AS latency_ms
+        FROM pool_upstream_request_attempts
+        WHERE id > ?2
+          AND proxy_binding_key_snapshot IS NOT NULL
+          AND finished_at IS NOT NULL
+          AND status != ?3
+        ORDER BY id ASC
+        LIMIT ?4
+        "#,
+    )
+    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
+    .bind(start_after_id)
+    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL)
+    .bind(BACKFILL_BATCH_SIZE + 1)
+    .fetch_all(archive_pool)
+    .await?;
+
+    let has_more = rows.len() as i64 > BACKFILL_BATCH_SIZE;
+    if has_more {
+        rows.truncate(BACKFILL_BATCH_SIZE as usize);
+    }
+    Ok((rows, has_more))
+}
+
+pub(crate) async fn upsert_pool_upstream_node_health_archive_rows_tx(
+    tx: &mut SqliteConnection,
+    archive_file_path: &str,
+    rows: &[PoolUpstreamNodeHealthArchiveRecord],
+) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    for chunk in rows.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "INSERT INTO pool_upstream_node_health_archive (archive_file_path, archived_row_id, occurred_at, proxy_binding_key_snapshot, is_success, latency_ms, updated_at) ",
+        );
+        query.push_values(chunk, |mut row, value| {
+            row.push_bind(archive_file_path)
+                .push_bind(value.archived_row_id)
+                .push_bind(&value.occurred_at)
+                .push_bind(&value.proxy_binding_key_snapshot)
+                .push_bind(value.is_success)
+                .push_bind(value.latency_ms)
+                .push("datetime('now')");
+        });
+        query.push(
+            " ON CONFLICT(archive_file_path, archived_row_id) DO UPDATE SET \
+              occurred_at = excluded.occurred_at, \
+              proxy_binding_key_snapshot = excluded.proxy_binding_key_snapshot, \
+              is_success = excluded.is_success, \
+              latency_ms = excluded.latency_ms, \
+              updated_at = datetime('now')",
+        );
+        query.build().execute(&mut *tx).await?;
+    }
+
+    Ok(())
+}
+
+pub(crate) async fn delete_pool_upstream_node_health_archive_rows_for_file_tx(
+    tx: &mut SqliteConnection,
+    archive_file_path: &str,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        DELETE FROM pool_upstream_node_health_archive
+        WHERE archive_file_path = ?1
+        "#,
+    )
+    .bind(archive_file_path)
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn delete_pool_upstream_node_health_hourly_archive_rows_for_file_tx(
+    tx: &mut SqliteConnection,
+    archive_file_path: &str,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        DELETE FROM pool_upstream_node_health_hourly_archive
+        WHERE archive_file_path = ?1
+        "#,
+    )
+    .bind(archive_file_path)
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn cache_pool_upstream_node_health_hourly_archive_rows_from_live_ids_tx(
+    tx: &mut SqliteConnection,
+    archive_file_path: &str,
+    ids: &[i64],
+) -> Result<u64> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+
+    let mut rows_affected = 0_u64;
+    for chunk in ids.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            r#"
+            INSERT INTO pool_upstream_node_health_hourly_archive (
+                archive_file_path,
+                proxy_binding_key_snapshot,
+                bucket_start_epoch,
+                success_count,
+                failure_count,
+                updated_at
+            )
+            SELECT
+                "#,
+        );
+        query
+            .push_bind(archive_file_path)
+            .push(
+                r#",
+                proxy_binding_key_snapshot,
+                ((CASE
+                    WHEN instr(occurred_at, 'T') > 0
+                        THEN CAST(strftime('%s', occurred_at) AS INTEGER)
+                    ELSE CAST(strftime('%s', occurred_at || '+08:00') AS INTEGER)
+                END) / 3600) * 3600 AS bucket_start_epoch,
+                SUM(CASE WHEN status = "#,
+            )
+            .push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
+            .push(
+                r#" THEN 1 ELSE 0 END) AS success_count,
+                SUM(CASE WHEN status != "#,
+            )
+            .push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
+            .push(
+                r#" THEN 1 ELSE 0 END) AS failure_count,
+                datetime('now')
+            FROM pool_upstream_request_attempts
+            WHERE id IN ("#,
+            );
+        {
+            let mut separated = query.separated(", ");
+            for id in chunk {
+                separated.push_bind(id);
+            }
+        }
+        query.push(
+            r#")
+              AND proxy_binding_key_snapshot IS NOT NULL
+              AND finished_at IS NOT NULL
+              AND status != "#,
+        );
+        query.push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL);
+        query.push(
+            r#"
+            GROUP BY proxy_binding_key_snapshot, bucket_start_epoch
+            ON CONFLICT(archive_file_path, proxy_binding_key_snapshot, bucket_start_epoch) DO UPDATE SET
+                success_count = pool_upstream_node_health_hourly_archive.success_count + excluded.success_count,
+                failure_count = pool_upstream_node_health_hourly_archive.failure_count + excluded.failure_count,
+                updated_at = datetime('now')
+            "#,
+        );
+        rows_affected += query.build().execute(&mut *tx).await?.rows_affected();
+    }
+
+    Ok(rows_affected)
+}
+
+pub(crate) async fn load_pool_upstream_node_health_hourly_archive_rollup_rows(
+    archive_pool: &Pool<Sqlite>,
+) -> Result<Vec<PoolUpstreamNodeHealthHourlyArchiveRollupRow>> {
+    sqlx::query_as::<_, PoolUpstreamNodeHealthHourlyArchiveRollupRow>(
+        r#"
+        SELECT
+            proxy_binding_key_snapshot,
+            bucket_start_epoch,
+            SUM(CASE WHEN status = ?1 THEN 1 ELSE 0 END) AS success_count,
+            SUM(CASE WHEN status != ?1 THEN 1 ELSE 0 END) AS failure_count
+        FROM (
+            SELECT
+                proxy_binding_key_snapshot,
+                status,
+                ((CASE
+                    WHEN instr(occurred_at, 'T') > 0
+                        THEN CAST(strftime('%s', occurred_at) AS INTEGER)
+                    ELSE CAST(strftime('%s', occurred_at || '+08:00') AS INTEGER)
+                END) / 3600) * 3600 AS bucket_start_epoch
+            FROM pool_upstream_request_attempts
+            WHERE proxy_binding_key_snapshot IS NOT NULL
+              AND finished_at IS NOT NULL
+              AND status != ?2
+        )
+        GROUP BY proxy_binding_key_snapshot, bucket_start_epoch
+        "#,
+    )
+    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
+    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL)
+    .fetch_all(archive_pool)
+    .await
+    .context("failed to load pool upstream node health hourly archive rollup rows")
+}
+
+pub(crate) async fn replace_pool_upstream_node_health_hourly_archive_rows_tx(
+    tx: &mut SqliteConnection,
+    archive_file_path: &str,
+    rows: &[PoolUpstreamNodeHealthHourlyArchiveRollupRow],
+) -> Result<()> {
+    delete_pool_upstream_node_health_hourly_archive_rows_for_file_tx(tx, archive_file_path).await?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    for chunk in rows.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "INSERT INTO pool_upstream_node_health_hourly_archive (archive_file_path, proxy_binding_key_snapshot, bucket_start_epoch, success_count, failure_count, updated_at) ",
+        );
+        query.push_values(chunk, |mut row, value| {
+            row.push_bind(archive_file_path)
+                .push_bind(&value.proxy_binding_key_snapshot)
+                .push_bind(value.bucket_start_epoch)
+                .push_bind(value.success_count)
+                .push_bind(value.failure_count)
+                .push("datetime('now')");
+        });
+        query.push(
+            " ON CONFLICT(archive_file_path, proxy_binding_key_snapshot, bucket_start_epoch) DO UPDATE SET \
+              success_count = excluded.success_count, \
+              failure_count = excluded.failure_count, \
+              updated_at = datetime('now')",
+        );
+        query.build().execute(&mut *tx).await?;
+    }
+
+    Ok(())
+}
+
 async fn load_archive_table_columns(
     pool: &Pool<Sqlite>,
     table_name: &str,

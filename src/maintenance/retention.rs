@@ -101,7 +101,7 @@ struct InvocationRawCompressionFieldCandidate {
     raw_path: String,
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug, Clone, FromRow)]
 struct ArchiveBatchFileRow {
     id: i64,
     file_path: String,
@@ -299,9 +299,18 @@ struct ForwardProxyAttemptHourlySourceRecord {
 #[derive(Debug)]
 struct TempSqliteCleanup(PathBuf);
 
+fn temp_sqlite_source_meta_path(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.source-meta", path.display()))
+}
+
+fn remove_temp_sqlite_artifacts(path: &Path) {
+    let _ = fs::remove_file(path);
+    let _ = fs::remove_file(temp_sqlite_source_meta_path(path));
+}
+
 impl Drop for TempSqliteCleanup {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
+        remove_temp_sqlite_artifacts(&self.0);
     }
 }
 
@@ -1780,12 +1789,106 @@ async fn archive_timestamped_dataset(
             }
             let mut tx = pool.begin().await?;
             upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
-            mark_archive_batch_historical_rollups_materialized_tx(
-                tx.as_mut(),
-                spec.dataset,
-                &archive_outcome.file_path,
-            )
-            .await?;
+            if spec.dataset == "pool_upstream_request_attempts" {
+                let archive_file_contains_only_new_rows = archive_outcome.row_count == ids.len() as i64;
+                let node_health_archive_already_replayed = hourly_rollup_archive_replayed_tx(
+                    tx.as_mut(),
+                    POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET,
+                    spec.dataset,
+                    &archive_outcome.file_path,
+                )
+                .await?;
+                let node_health_hourly_archive_already_replayed = hourly_rollup_archive_replayed_tx(
+                    tx.as_mut(),
+                    POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET,
+                    spec.dataset,
+                    &archive_outcome.file_path,
+                )
+                .await?;
+                cache_pool_upstream_node_health_archive_rows_from_live_ids_tx(
+                    tx.as_mut(),
+                    &archive_outcome.file_path,
+                    &ids,
+                )
+                .await?;
+                cache_pool_upstream_node_health_hourly_archive_rows_from_live_ids_tx(
+                    tx.as_mut(),
+                    &archive_outcome.file_path,
+                    &ids,
+                )
+                .await?;
+                if archive_file_contains_only_new_rows || node_health_hourly_archive_already_replayed {
+                    mark_hourly_rollup_archive_replayed_tx(
+                        tx.as_mut(),
+                        POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET,
+                        spec.dataset,
+                        &archive_outcome.file_path,
+                    )
+                    .await?;
+                } else {
+                    sqlx::query(
+                        r#"
+                        DELETE FROM hourly_rollup_archive_replay
+                        WHERE target = ?1
+                          AND dataset = ?2
+                          AND file_path = ?3
+                        "#,
+                    )
+                    .bind(POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET)
+                    .bind(spec.dataset)
+                    .bind(&archive_outcome.file_path)
+                    .execute(tx.as_mut())
+                    .await?;
+                }
+                if archive_file_contains_only_new_rows || node_health_archive_already_replayed {
+                    mark_hourly_rollup_archive_replayed_tx(
+                        tx.as_mut(),
+                        POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET,
+                        spec.dataset,
+                        &archive_outcome.file_path,
+                    )
+                    .await?;
+                    mark_archive_batch_historical_rollups_materialized_tx(
+                        tx.as_mut(),
+                        spec.dataset,
+                        &archive_outcome.file_path,
+                    )
+                    .await?;
+                } else {
+                    sqlx::query(
+                        r#"
+                        DELETE FROM hourly_rollup_archive_replay
+                        WHERE target = ?1
+                          AND dataset = ?2
+                          AND file_path = ?3
+                        "#,
+                    )
+                    .bind(POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET)
+                    .bind(spec.dataset)
+                    .bind(&archive_outcome.file_path)
+                    .execute(tx.as_mut())
+                    .await?;
+                    sqlx::query(
+                        r#"
+                        UPDATE archive_batches
+                        SET historical_rollups_materialized_at = NULL
+                        WHERE dataset = ?1
+                          AND file_path = ?2
+                        "#,
+                    )
+                    .bind(spec.dataset)
+                    .bind(&archive_outcome.file_path)
+                    .execute(tx.as_mut())
+                    .await?;
+                }
+            } else {
+                mark_archive_batch_historical_rollups_materialized_tx(
+                    tx.as_mut(),
+                    spec.dataset,
+                    &archive_outcome.file_path,
+                )
+                .await?;
+            }
             delete_rows_by_ids(tx.as_mut(), spec.dataset, &ids).await?;
             mark_retention_archived_hourly_rollup_targets_tx(
                 tx.as_mut(),

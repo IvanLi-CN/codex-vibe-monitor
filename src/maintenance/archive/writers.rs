@@ -1,16 +1,205 @@
 use super::*;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
+use std::str::FromStr;
 
-pub(crate) async fn ensure_sqlite_file_initialized(path: &Path) -> Result<()> {
+#[derive(Debug, Clone, FromRow)]
+struct PoolUpstreamRequestAttemptArchiveRow {
+    id: i64,
+    invoke_id: String,
+    occurred_at: String,
+    endpoint: String,
+    route_mode: String,
+    sticky_key: Option<String>,
+    group_name_snapshot: Option<String>,
+    proxy_binding_key_snapshot: Option<String>,
+    upstream_account_id: Option<i64>,
+    upstream_route_key: Option<String>,
+    attempt_index: i64,
+    distinct_account_index: i64,
+    same_account_retry_index: i64,
+    requester_ip: Option<String>,
+    started_at: Option<String>,
+    finished_at: Option<String>,
+    status: String,
+    phase: Option<String>,
+    http_status: Option<i64>,
+    downstream_http_status: Option<i64>,
+    failure_kind: Option<String>,
+    error_message: Option<String>,
+    downstream_error_message: Option<String>,
+    connect_latency_ms: Option<f64>,
+    first_byte_latency_ms: Option<f64>,
+    stream_latency_ms: Option<f64>,
+    upstream_request_id: Option<String>,
+    compact_support_status: Option<String>,
+    compact_support_reason: Option<String>,
+    created_at: String,
+}
+
+async fn open_archive_sqlite_connection(path: &Path) -> Result<SqliteConnection> {
+    ensure_attachable_archive_sqlite_path(path)?;
     let database_url = format!("sqlite://{}", path.to_string_lossy());
-    let connect_opts = build_sqlite_connect_options(
-        &database_url,
-        Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
-    )?;
-    let connection = SqliteConnection::connect_with(&connect_opts)
+    let connect_opts = SqliteConnectOptions::from_str(&database_url)
+        .context("invalid sqlite database url")?
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Delete)
+        .busy_timeout(Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS));
+    SqliteConnection::connect_with(&connect_opts)
         .await
-        .with_context(|| format!("failed to initialize sqlite file {}", path.display()))?;
+        .with_context(|| format!("failed to open archive sqlite file {}", path.display()))
+}
+
+fn ensure_attachable_archive_sqlite_path(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create archive directory: {}", parent.display()))?;
+    }
+    if !path.exists() {
+        fs::File::create(path)
+            .with_context(|| format!("failed to create archive sqlite file {}", path.display()))?;
+    }
+    Ok(())
+}
+
+async fn finalize_archive_sqlite_file(path: &Path) -> Result<()> {
+    let mut connection = open_archive_sqlite_connection(path).await?;
+    sqlx::query("VACUUM")
+        .execute(&mut connection)
+        .await
+        .with_context(|| format!("failed to finalize archive sqlite file {}", path.display()))?;
     connection.close().await?;
     Ok(())
+}
+
+async fn ensure_pool_upstream_request_attempts_archive_schema_direct(
+    conn: &mut SqliteConnection,
+) -> Result<()> {
+    let archive_columns = sqlx::query("PRAGMA table_info('pool_upstream_request_attempts')")
+        .fetch_all(&mut *conn)
+        .await
+        .context("failed to inspect pool_upstream_request_attempts archive schema")?
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect::<HashSet<_>>();
+    for (column, ty) in [
+        ("upstream_route_key", "TEXT"),
+        ("phase", "TEXT"),
+        ("downstream_http_status", "INTEGER"),
+        ("downstream_error_message", "TEXT"),
+        ("compact_support_status", "TEXT"),
+        ("compact_support_reason", "TEXT"),
+        ("group_name_snapshot", "TEXT"),
+        ("proxy_binding_key_snapshot", "TEXT"),
+    ] {
+        if !archive_columns.contains(column) {
+            let statement =
+                format!("ALTER TABLE pool_upstream_request_attempts ADD COLUMN {column} {ty}");
+            sqlx::query(&statement)
+                .execute(&mut *conn)
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to add pool_upstream_request_attempts archive column {column}"
+                    )
+                })?;
+        }
+    }
+    Ok(())
+}
+
+async fn archive_pool_upstream_request_attempt_rows_into_month_batch(
+    pool: &Pool<Sqlite>,
+    spec: ArchiveTableSpec,
+    ids: &[i64],
+    work_path: &Path,
+) -> Result<(i64, Vec<(i64, String)>)> {
+    let create_sql = spec.create_sql.replace("archive_db.", "");
+    let mut rows = Vec::new();
+    for chunk in ids.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
+        let mut query = QueryBuilder::<Sqlite>::new(format!(
+            "SELECT {} FROM {} WHERE id IN (",
+            spec.columns, spec.dataset
+        ));
+        {
+            let mut separated = query.separated(", ");
+            for id in chunk {
+                separated.push_bind(id);
+            }
+        }
+        query.push(")");
+        rows.extend(
+            query
+                .build_query_as::<PoolUpstreamRequestAttemptArchiveRow>()
+                .fetch_all(pool)
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to load source rows for direct archive batch {}",
+                        spec.dataset
+                    )
+                })?,
+        );
+    }
+    let mut conn = open_archive_sqlite_connection(work_path).await?;
+    sqlx::query(&create_sql)
+        .execute(&mut conn)
+        .await
+        .context("failed to ensure direct pool_upstream_request_attempts archive schema")?;
+    ensure_pool_upstream_request_attempts_archive_schema_direct(&mut conn).await?;
+
+    for chunk in rows.chunks(16) {
+        let mut insert = QueryBuilder::<Sqlite>::new(format!(
+            "INSERT OR IGNORE INTO {} ({}) ",
+            spec.dataset, spec.columns
+        ));
+        insert.push_values(chunk, |mut builder, row| {
+            builder
+                .push_bind(row.id)
+                .push_bind(&row.invoke_id)
+                .push_bind(&row.occurred_at)
+                .push_bind(&row.endpoint)
+                .push_bind(&row.route_mode)
+                .push_bind(&row.sticky_key)
+                .push_bind(&row.group_name_snapshot)
+                .push_bind(&row.proxy_binding_key_snapshot)
+                .push_bind(row.upstream_account_id)
+                .push_bind(&row.upstream_route_key)
+                .push_bind(row.attempt_index)
+                .push_bind(row.distinct_account_index)
+                .push_bind(row.same_account_retry_index)
+                .push_bind(&row.requester_ip)
+                .push_bind(&row.started_at)
+                .push_bind(&row.finished_at)
+                .push_bind(&row.status)
+                .push_bind(&row.phase)
+                .push_bind(row.http_status)
+                .push_bind(row.downstream_http_status)
+                .push_bind(&row.failure_kind)
+                .push_bind(&row.error_message)
+                .push_bind(&row.downstream_error_message)
+                .push_bind(row.connect_latency_ms)
+                .push_bind(row.first_byte_latency_ms)
+                .push_bind(row.stream_latency_ms)
+                .push_bind(&row.upstream_request_id)
+                .push_bind(&row.compact_support_status)
+                .push_bind(&row.compact_support_reason)
+                .push_bind(&row.created_at);
+        });
+        insert.build().execute(&mut conn).await.with_context(|| {
+            format!(
+                "failed to copy rows into direct archive batch for {}",
+                spec.dataset
+            )
+        })?;
+    }
+
+    let count_query = format!("SELECT COUNT(*) FROM {}", spec.dataset);
+    let row_count = sqlx::query_scalar::<_, i64>(&count_query)
+        .fetch_one(&mut conn)
+        .await
+        .with_context(|| format!("failed to count direct archive rows for {}", spec.dataset))?;
+    conn.close().await?;
+    Ok((row_count, Vec::new()))
 }
 
 pub(crate) async fn archive_rows_into_month_batch(
@@ -43,12 +232,16 @@ pub(crate) async fn archive_rows_into_month_batch(
 
     if final_path.exists() {
         inflate_gzip_sqlite_file(&final_path, &work_path)?;
+    } else {
+        ensure_attachable_archive_sqlite_path(&work_path)?;
     }
-    if !work_path.exists() {
-        ensure_sqlite_file_initialized(&work_path).await?;
-    }
-
-    let row_count = async {
+    let row_count = if spec.dataset == "pool_upstream_request_attempts" {
+        archive_pool_upstream_request_attempt_rows_into_month_batch(
+            pool, spec, ids, &work_path,
+        )
+        .await
+    } else {
+        async {
         let mut conn = pool.acquire().await?;
         sqlx::query("ATTACH DATABASE ?1 AS archive_db")
             .bind(work_path.to_string_lossy().to_string())
@@ -56,6 +249,15 @@ pub(crate) async fn archive_rows_into_month_batch(
             .await
             .with_context(|| {
                 format!("failed to attach archive database {}", work_path.display())
+            })?;
+        sqlx::query("PRAGMA archive_db.journal_mode=DELETE")
+            .execute(&mut *conn)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to switch archive database {} to DELETE journal mode",
+                    work_path.display()
+                )
             })?;
         sqlx::query(spec.create_sql)
             .execute(&mut *conn)
@@ -124,7 +326,8 @@ pub(crate) async fn archive_rows_into_month_batch(
             .context("failed to detach archive database")?;
         Ok::<(i64, Vec<(i64, String)>), anyhow::Error>((row_count, upstream_last_activity))
     }
-    .await;
+        .await
+    };
 
     let (result, upstream_last_activity) = match row_count {
         Ok(values) => values,
@@ -134,6 +337,11 @@ pub(crate) async fn archive_rows_into_month_batch(
             return Err(err);
         }
     };
+    if let Err(err) = finalize_archive_sqlite_file(&work_path).await {
+        let _ = fs::remove_file(&work_path);
+        let _ = fs::remove_file(&temp_gzip_path);
+        return Err(err);
+    }
 
     if let Err(err) = deflate_sqlite_file_to_gzip(&work_path, &temp_gzip_path) {
         let _ = fs::remove_file(&work_path);
@@ -210,8 +418,7 @@ pub(crate) async fn archive_rows_into_segment_batch(
     let temp_gzip_path = PathBuf::from(format!("{}.{}.tmp", final_path.display(), suffix));
     let _temp_cleanup = TempSqliteCleanup(work_path.clone());
     let _gzip_cleanup = TempSqliteCleanup(temp_gzip_path.clone());
-    ensure_sqlite_file_initialized(&work_path).await?;
-
+    ensure_attachable_archive_sqlite_path(&work_path)?;
     let row_count = async {
         let mut conn = pool.acquire().await?;
         sqlx::query("ATTACH DATABASE ?1 AS archive_db")
@@ -220,6 +427,15 @@ pub(crate) async fn archive_rows_into_segment_batch(
             .await
             .with_context(|| {
                 format!("failed to attach archive database {}", work_path.display())
+            })?;
+        sqlx::query("PRAGMA archive_db.journal_mode=DELETE")
+            .execute(&mut *conn)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to switch archive database {} to DELETE journal mode",
+                    work_path.display()
+                )
             })?;
         sqlx::query(spec.create_sql)
             .execute(&mut *conn)
@@ -282,6 +498,8 @@ pub(crate) async fn archive_rows_into_segment_batch(
         Ok::<(i64, Vec<(i64, String)>), anyhow::Error>((row_count, upstream_last_activity))
     }
     .await?;
+
+    finalize_archive_sqlite_file(&work_path).await?;
 
     deflate_sqlite_file_to_gzip(&work_path, &temp_gzip_path)?;
     fs::rename(&temp_gzip_path, &final_path).with_context(|| {

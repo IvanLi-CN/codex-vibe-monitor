@@ -927,6 +927,85 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS pool_upstream_node_health_archive (
+            archive_file_path TEXT NOT NULL,
+            archived_row_id INTEGER NOT NULL,
+            occurred_at TEXT NOT NULL,
+            proxy_binding_key_snapshot TEXT NOT NULL,
+            is_success INTEGER NOT NULL,
+            latency_ms REAL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (archive_file_path, archived_row_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure pool_upstream_node_health_archive table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_node_health_archive_occurred_at_binding
+        ON pool_upstream_node_health_archive (occurred_at, proxy_binding_key_snapshot)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context(
+        "failed to ensure index idx_pool_upstream_node_health_archive_occurred_at_binding",
+    )?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_node_health_archive_file
+        ON pool_upstream_node_health_archive (archive_file_path)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_pool_upstream_node_health_archive_file")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS pool_upstream_node_health_hourly_archive (
+            archive_file_path TEXT NOT NULL,
+            proxy_binding_key_snapshot TEXT NOT NULL,
+            bucket_start_epoch INTEGER NOT NULL,
+            success_count INTEGER NOT NULL,
+            failure_count INTEGER NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (archive_file_path, proxy_binding_key_snapshot, bucket_start_epoch)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure pool_upstream_node_health_hourly_archive table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_node_health_hourly_archive_bucket_binding
+        ON pool_upstream_node_health_hourly_archive (bucket_start_epoch, proxy_binding_key_snapshot)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context(
+        "failed to ensure index idx_pool_upstream_node_health_hourly_archive_bucket_binding",
+    )?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_node_health_hourly_archive_file
+        ON pool_upstream_node_health_hourly_archive (archive_file_path)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_pool_upstream_node_health_hourly_archive_file")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS hourly_rollup_archive_replay (
             target TEXT NOT NULL,
             dataset TEXT NOT NULL,
@@ -1340,6 +1419,18 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_pool_upstream_request_attempts_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_request_attempts_occurred_at_proxy_binding
+        ON pool_upstream_request_attempts (occurred_at, proxy_binding_key_snapshot)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context(
+        "failed to ensure index idx_pool_upstream_request_attempts_occurred_at_proxy_binding",
+    )?;
 
     sqlx::query(
         r#"

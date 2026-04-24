@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { I18nProvider } from '../i18n'
 import type { ForwardProxyHourlyBucket, ForwardProxyLiveStatsResponse, ForwardProxyWeightBucket } from '../lib/api'
 import { ForwardProxyLiveTable } from './ForwardProxyLiveTable'
+import { parityLiveStats } from './storybookForwardProxyNodeHealth'
 
 function buildRequestBuckets(seed: number): ForwardProxyHourlyBucket[] {
   const start = Date.parse('2026-03-01T00:00:00.000Z')
@@ -226,6 +227,22 @@ export const SharedScaleComparison: Story = {
     stats: sharedScaleStats,
     isLoading: false,
     error: null,
+  },
+}
+
+export const RealNodeHealthParity: Story = {
+  args: {
+    stats: parityLiveStats,
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Uses the same real pool node-attempt counts as the Settings and binding-node dialog stories: Direct shows 2/0, JP Edge 01 shows 4/2, and the penalized standby node stays at 0/0 because health-check noise is excluded.',
+      },
+    },
   },
 }
 

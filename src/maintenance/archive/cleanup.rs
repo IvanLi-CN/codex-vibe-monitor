@@ -298,11 +298,29 @@ pub(crate) async fn cleanup_expired_archive_batches(
     .bind(&cutoff)
     .fetch_all(pool)
     .await?;
+    let materialized_pool_upstream_hourly_files = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT file_path
+        FROM hourly_rollup_archive_replay
+        WHERE target = ?1
+          AND dataset = 'pool_upstream_request_attempts'
+        "#,
+    )
+    .bind(POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .collect::<HashSet<_>>();
 
     let mut eligible_candidates = Vec::new();
     for candidate in candidates {
         if HISTORICAL_ROLLUP_ARCHIVE_DATASETS.contains(&candidate.dataset.as_str())
             && candidate.historical_rollups_materialized_at.is_none()
+        {
+            continue;
+        }
+        if candidate.dataset == "pool_upstream_request_attempts"
+            && !materialized_pool_upstream_hourly_files.contains(&candidate.file_path)
         {
             continue;
         }
@@ -351,6 +369,11 @@ pub(crate) async fn cleanup_expired_archive_batches(
             .bind(candidate.id)
             .execute(tx.as_mut())
             .await?;
+        delete_pool_upstream_node_health_archive_rows_for_file_tx(
+            tx.as_mut(),
+            &candidate.file_path,
+        )
+        .await?;
         sqlx::query("DELETE FROM archive_batches WHERE id = ?1")
             .bind(candidate.id)
             .execute(tx.as_mut())
@@ -358,6 +381,14 @@ pub(crate) async fn cleanup_expired_archive_batches(
         sqlx::query(
             "DELETE FROM hourly_rollup_archive_replay WHERE dataset = ?1 AND file_path = ?2",
         )
+        .bind(&candidate.dataset)
+        .bind(&candidate.file_path)
+        .execute(tx.as_mut())
+        .await?;
+        sqlx::query(
+            "DELETE FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = ?2 AND file_path = ?3",
+        )
+        .bind(POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET)
         .bind(&candidate.dataset)
         .bind(&candidate.file_path)
         .execute(tx.as_mut())
@@ -769,6 +800,11 @@ pub(crate) async fn prune_legacy_archive_batches(
             .bind(candidate.id)
             .execute(tx.as_mut())
             .await?;
+        delete_pool_upstream_node_health_archive_rows_for_file_tx(
+            tx.as_mut(),
+            &candidate.file_path,
+        )
+        .await?;
         sqlx::query(
             "DELETE FROM hourly_rollup_archive_replay WHERE dataset = ?1 AND file_path = ?2",
         )

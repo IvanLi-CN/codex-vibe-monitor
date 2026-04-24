@@ -13,8 +13,9 @@ import type {
 import LivePage from '../pages/Live'
 import { FullPageStorySurface, StorybookPageEnvironment } from './storybookPageHelpers'
 import { jsonResponse } from './storybookResponse'
+import { parityLiveStats } from './storybookForwardProxyNodeHealth'
 
-type LiveScenario = 'default' | 'proxy-error'
+type LiveScenario = 'default' | 'proxy-error' | 'real-node-health'
 
 type LiveStoryParameters = {
   scenario?: LiveScenario
@@ -240,6 +241,9 @@ function createLiveRequestHandler(scenario: LiveScenario = 'default') {
       if (scenario === 'proxy-error') {
         return new Response('forward proxy live stats unavailable', { status: 500 })
       }
+      if (scenario === 'real-node-health') {
+        return jsonResponse(parityLiveStats)
+      }
       return jsonResponse(createForwardProxyLiveStats())
     }
 
@@ -314,5 +318,20 @@ export const ProxyError: Story = {
     const canvas = within(canvasElement)
     await expect(canvas.getByText('实时概览')).toBeVisible()
     await expect(canvas.getAllByRole('alert').at(0)).toBeVisible()
+  },
+}
+
+export const RealNodeHealthParity: Story = {
+  parameters: {
+    scenario: 'real-node-health',
+  },
+  render: () => <LivePage />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText('代理运行态')).toBeVisible()
+    await expect(canvas.getByText('JP Edge 01')).toBeVisible()
+    await expect(canvas.getByText('Direct')).toBeVisible()
+    await expect(canvas.getByText('成功 4 / 失败 2')).toBeVisible()
+    await expect(canvas.getByText('成功 2 / 失败 0')).toBeVisible()
   },
 }
