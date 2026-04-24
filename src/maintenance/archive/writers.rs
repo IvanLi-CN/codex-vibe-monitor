@@ -647,6 +647,34 @@ pub(crate) async fn upsert_archive_batch_manifest(
     Ok(())
 }
 
+pub(crate) async fn load_archive_batch_id_for_file_tx(
+    tx: &mut sqlx::SqliteConnection,
+    dataset: &str,
+    month_key: &str,
+    file_path: &str,
+) -> Result<i64> {
+    sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT id
+        FROM archive_batches
+        WHERE dataset = ?1
+          AND month_key = ?2
+          AND file_path = ?3
+        LIMIT 1
+        "#,
+    )
+    .bind(dataset)
+    .bind(month_key)
+    .bind(file_path)
+    .fetch_one(&mut *tx)
+    .await
+    .with_context(|| {
+        format!(
+            "failed to load archive batch id for dataset={dataset} month_key={month_key} file_path={file_path}"
+        )
+    })
+}
+
 pub(crate) async fn write_archive_batch_upstream_activity(
     tx: &mut sqlx::SqliteConnection,
     archive_batch_id: i64,

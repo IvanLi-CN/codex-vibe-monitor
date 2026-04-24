@@ -1156,9 +1156,9 @@ async fn backfill_pool_upstream_node_health_hourly_archives_for_files(
                 file_path = archive_file.file_path,
                 "pool upstream node health hourly archive backfill marking missing archive batch as replayed"
             );
-            delete_pool_upstream_node_health_hourly_archive_rows_for_file_tx(
+            delete_pool_upstream_node_health_hourly_archive_rows_for_batch_tx(
                 tx.as_mut(),
-                &archive_file.file_path,
+                archive_file.id,
             )
             .await?;
             mark_hourly_rollup_archive_replayed_tx(
@@ -1186,6 +1186,7 @@ async fn backfill_pool_upstream_node_health_hourly_archives_for_files(
 
         replace_pool_upstream_node_health_hourly_archive_rows_tx(
             tx.as_mut(),
+            archive_file.id,
             &archive_file.file_path,
             &rows,
         )

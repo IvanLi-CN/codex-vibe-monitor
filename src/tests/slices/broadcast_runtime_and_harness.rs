@@ -2012,6 +2012,152 @@ async fn forward_proxy_timeseries_keeps_hourly_attempt_history_after_retention()
 }
 
 #[tokio::test]
+async fn forward_proxy_timeseries_preserves_materialized_history_when_same_month_archive_reappears() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.example.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let Json(settings_response) = put_forward_proxy_settings(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(ForwardProxySettingsUpdateRequest {
+            proxy_urls: vec!["socks5://127.0.0.1:1086".to_string()],
+            subscription_urls: vec![],
+            subscription_update_interval_secs: 3600,
+            insert_direct: true,
+        }),
+    )
+    .await
+    .expect("put forward proxy settings should succeed");
+    let manual_runtime_key = settings_response
+        .nodes
+        .iter()
+        .find(|node| node.source == FORWARD_PROXY_SOURCE_MANUAL)
+        .map(|node| node.key.clone())
+        .expect("manual node should exist");
+    let manual_binding_key = {
+        let manager = state.forward_proxy.lock().await;
+        manager
+            .binding_nodes()
+            .into_iter()
+            .find(|node| node.key != FORWARD_PROXY_DIRECT_KEY)
+            .map(|node| node.key)
+            .expect("manual binding node should exist")
+    };
+
+    let archive_month_prefix = (Utc::now().with_timezone(&Shanghai).naive_local()
+        - ChronoDuration::days(45))
+    .format("%Y-%m")
+    .to_string();
+    let first_attempt_at = parse_to_utc_datetime(&format!("{archive_month_prefix}-12 09:30:00"))
+        .expect("first attempt timestamp should parse");
+    let second_attempt_at = parse_to_utc_datetime(&format!("{archive_month_prefix}-16 10:30:00"))
+        .expect("second attempt timestamp should parse");
+    let first_bucket_start = align_bucket_epoch(first_attempt_at.timestamp(), 3600, 0);
+    let second_bucket_start = align_bucket_epoch(second_attempt_at.timestamp(), 3600, 0);
+
+    seed_pool_upstream_attempt_at(
+        &state.pool,
+        "forward-proxy-timeseries-recreated-month-success",
+        first_attempt_at,
+        Some(&manual_binding_key),
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+    )
+    .await;
+    seed_pool_upstream_attempt_at(
+        &state.pool,
+        "forward-proxy-timeseries-recreated-month-failure",
+        first_attempt_at + ChronoDuration::minutes(5),
+        Some(&manual_binding_key),
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+    )
+    .await;
+
+    let mut retention_config = state.config.clone();
+    retention_config.pool_upstream_request_attempts_archive_ttl_days = 30;
+    let first_summary =
+        run_data_retention_maintenance(&state.pool, &retention_config, Some(false), None)
+            .await
+            .expect("run first retention pass");
+    assert_eq!(first_summary.pool_upstream_request_attempt_rows_archived, 2);
+
+    let remaining_after_first: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM archive_batches WHERE dataset = 'pool_upstream_request_attempts'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count remaining archived pool upstream request attempt batches after first pass");
+    assert_eq!(remaining_after_first, 0);
+
+    seed_pool_upstream_attempt_at(
+        &state.pool,
+        "forward-proxy-timeseries-recreated-month-late-success",
+        second_attempt_at,
+        Some(&manual_binding_key),
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+    )
+    .await;
+
+    let second_summary =
+        run_data_retention_maintenance(&state.pool, &retention_config, Some(false), None)
+            .await
+            .expect("run second retention pass");
+    assert_eq!(second_summary.pool_upstream_request_attempt_rows_archived, 1);
+
+    let remaining_after_second: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM archive_batches WHERE dataset = 'pool_upstream_request_attempts'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count remaining archived pool upstream request attempt batches after second pass");
+    assert_eq!(remaining_after_second, 0);
+
+    let Json(response) = fetch_forward_proxy_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "90d".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("UTC".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch forward proxy timeseries should succeed");
+
+    let manual = response
+        .nodes
+        .iter()
+        .find(|node| node.key == manual_runtime_key)
+        .expect("manual node should remain queryable");
+    let first_bucket_start = format_utc_iso(
+        Utc.timestamp_opt(first_bucket_start, 0)
+            .single()
+            .expect("first bucket start should be valid"),
+    );
+    let first_bucket = manual
+        .buckets
+        .iter()
+        .find(|bucket| bucket.bucket_start == first_bucket_start)
+        .expect("first preserved request bucket should be present");
+    assert_eq!(first_bucket.success_count, 1);
+    assert_eq!(first_bucket.failure_count, 1);
+
+    let second_bucket_start = format_utc_iso(
+        Utc.timestamp_opt(second_bucket_start, 0)
+            .single()
+            .expect("second bucket start should be valid"),
+    );
+    let second_bucket = manual
+        .buckets
+        .iter()
+        .find(|bucket| bucket.bucket_start == second_bucket_start)
+        .expect("late re-archived request bucket should be present");
+    assert_eq!(second_bucket.success_count, 1);
+    assert_eq!(second_bucket.failure_count, 0);
+}
+
+#[tokio::test]
 async fn forward_proxy_timeseries_reads_pending_archived_node_health_without_materializing_cache() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.example.com/").expect("valid upstream base url"),
@@ -2752,6 +2898,7 @@ async fn forward_proxy_live_stats_use_real_pool_attempts_and_ignore_forward_prox
     assert_eq!(bucket.failure_count, 1);
 }
 
+#[tokio::test]
 async fn forward_proxy_owner_facing_surfaces_include_direct_real_attempts() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.example.com/").expect("valid upstream base url"),

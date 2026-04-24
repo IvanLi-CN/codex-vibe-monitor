@@ -28,6 +28,12 @@ pub(crate) const POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET: &str =
 pub(crate) const POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET: &str =
     "pool_upstream_node_health_hourly_archive";
 
+pub(crate) fn pool_upstream_node_health_archive_identity_for_batch_id(
+    archive_batch_id: i64,
+) -> String {
+    format!("batch:{archive_batch_id}")
+}
+
 #[derive(Debug, Clone, FromRow)]
 pub(crate) struct PoolUpstreamNodeHealthArchiveRecord {
     pub(crate) archived_row_id: i64,
@@ -213,17 +219,17 @@ pub(crate) async fn delete_pool_upstream_node_health_archive_rows_for_file_tx(
     Ok(())
 }
 
-pub(crate) async fn delete_pool_upstream_node_health_hourly_archive_rows_for_file_tx(
+pub(crate) async fn delete_pool_upstream_node_health_hourly_archive_rows_for_batch_tx(
     tx: &mut SqliteConnection,
-    archive_file_path: &str,
+    archive_batch_id: i64,
 ) -> Result<()> {
     sqlx::query(
         r#"
         DELETE FROM pool_upstream_node_health_hourly_archive
-        WHERE archive_file_path = ?1
+        WHERE archive_batch_id = ?1
         "#,
     )
-    .bind(archive_file_path)
+    .bind(archive_batch_id)
     .execute(&mut *tx)
     .await?;
     Ok(())
@@ -231,6 +237,7 @@ pub(crate) async fn delete_pool_upstream_node_health_hourly_archive_rows_for_fil
 
 pub(crate) async fn refresh_pool_upstream_node_health_hourly_archive_rows_from_cache_tx(
     tx: &mut SqliteConnection,
+    archive_batch_id: i64,
     archive_file_path: &str,
 ) -> Result<u64> {
     let rows = sqlx::query_as::<_, PoolUpstreamNodeHealthHourlyArchiveRollupRow>(
@@ -259,7 +266,13 @@ pub(crate) async fn refresh_pool_upstream_node_health_hourly_archive_rows_from_c
         )
     })?;
 
-    replace_pool_upstream_node_health_hourly_archive_rows_tx(tx, archive_file_path, &rows).await?;
+    replace_pool_upstream_node_health_hourly_archive_rows_tx(
+        tx,
+        archive_batch_id,
+        archive_file_path,
+        &rows,
+    )
+    .await?;
     Ok(rows.len() as u64)
 }
 
@@ -299,20 +312,26 @@ pub(crate) async fn load_pool_upstream_node_health_hourly_archive_rollup_rows(
 
 pub(crate) async fn replace_pool_upstream_node_health_hourly_archive_rows_tx(
     tx: &mut SqliteConnection,
+    archive_batch_id: i64,
     archive_file_path: &str,
     rows: &[PoolUpstreamNodeHealthHourlyArchiveRollupRow],
 ) -> Result<()> {
-    delete_pool_upstream_node_health_hourly_archive_rows_for_file_tx(tx, archive_file_path).await?;
+    delete_pool_upstream_node_health_hourly_archive_rows_for_batch_tx(tx, archive_batch_id)
+        .await?;
     if rows.is_empty() {
         return Ok(());
     }
 
+    let archive_identity = pool_upstream_node_health_archive_identity_for_batch_id(archive_batch_id);
+
     for chunk in rows.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
         let mut query = QueryBuilder::<Sqlite>::new(
-            "INSERT INTO pool_upstream_node_health_hourly_archive (archive_file_path, proxy_binding_key_snapshot, bucket_start_epoch, success_count, failure_count, updated_at) ",
+            "INSERT INTO pool_upstream_node_health_hourly_archive (archive_identity, archive_batch_id, archive_file_path, proxy_binding_key_snapshot, bucket_start_epoch, success_count, failure_count, updated_at) ",
         );
         query.push_values(chunk, |mut row, value| {
-            row.push_bind(archive_file_path)
+            row.push_bind(&archive_identity)
+                .push_bind(archive_batch_id)
+                .push_bind(archive_file_path)
                 .push_bind(&value.proxy_binding_key_snapshot)
                 .push_bind(value.bucket_start_epoch)
                 .push_bind(value.success_count)
@@ -320,7 +339,9 @@ pub(crate) async fn replace_pool_upstream_node_health_hourly_archive_rows_tx(
                 .push("datetime('now')");
         });
         query.push(
-            " ON CONFLICT(archive_file_path, proxy_binding_key_snapshot, bucket_start_epoch) DO UPDATE SET \
+            " ON CONFLICT(archive_identity, proxy_binding_key_snapshot, bucket_start_epoch) DO UPDATE SET \
+              archive_batch_id = excluded.archive_batch_id, \
+              archive_file_path = excluded.archive_file_path, \
               success_count = excluded.success_count, \
               failure_count = excluded.failure_count, \
               updated_at = datetime('now')",

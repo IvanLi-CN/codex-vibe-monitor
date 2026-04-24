@@ -1790,6 +1790,13 @@ async fn archive_timestamped_dataset(
             let mut tx = pool.begin().await?;
             upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
             if spec.dataset == "pool_upstream_request_attempts" {
+                let archive_batch_id = load_archive_batch_id_for_file_tx(
+                    tx.as_mut(),
+                    spec.dataset,
+                    &archive_outcome.month_key,
+                    &archive_outcome.file_path,
+                )
+                .await?;
                 let archive_file_contains_only_new_rows = archive_outcome.row_count == ids.len() as i64;
                 let node_health_archive_already_replayed = hourly_rollup_archive_replayed_tx(
                     tx.as_mut(),
@@ -1813,6 +1820,7 @@ async fn archive_timestamped_dataset(
                 .await?;
                 refresh_pool_upstream_node_health_hourly_archive_rows_from_cache_tx(
                     tx.as_mut(),
+                    archive_batch_id,
                     &archive_outcome.file_path,
                 )
                 .await?;

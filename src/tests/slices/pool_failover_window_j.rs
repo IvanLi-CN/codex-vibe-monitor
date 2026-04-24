@@ -2597,6 +2597,7 @@ async fn retention_keeps_preexisting_pool_node_health_month_archives_pending_aft
 async fn refreshing_pool_node_health_hourly_cache_from_row_cache_is_idempotent() {
     let (pool, _config, temp_dir) =
         retention_test_pool_and_config("pool-node-health-hourly-cache-idempotent").await;
+    let archive_batch_id = 42_i64;
     let archive_file_path = temp_dir
         .join("hourly-cache-idempotent.sqlite.gz")
         .to_string_lossy()
@@ -2650,15 +2651,21 @@ async fn refreshing_pool_node_health_hourly_cache_from_row_cache_is_idempotent()
     sqlx::query(
         r#"
         INSERT INTO pool_upstream_node_health_hourly_archive (
+            archive_identity,
+            archive_batch_id,
             archive_file_path,
             proxy_binding_key_snapshot,
             bucket_start_epoch,
             success_count,
             failure_count
         )
-        VALUES (?1, ?2, ?3, ?4, ?5)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
         "#,
     )
+    .bind(pool_upstream_node_health_archive_identity_for_batch_id(
+        archive_batch_id,
+    ))
+    .bind(archive_batch_id)
     .bind(&archive_file_path)
     .bind(binding_key)
     .bind(bucket_start_epoch)
@@ -2672,6 +2679,7 @@ async fn refreshing_pool_node_health_hourly_cache_from_row_cache_is_idempotent()
         let mut tx = pool.begin().await.expect("begin hourly refresh tx");
         refresh_pool_upstream_node_health_hourly_archive_rows_from_cache_tx(
             tx.as_mut(),
+            archive_batch_id,
             &archive_file_path,
         )
         .await
@@ -2685,12 +2693,12 @@ async fn refreshing_pool_node_health_hourly_cache_from_row_cache_is_idempotent()
             COALESCE(SUM(success_count), 0) AS success_count,
             COALESCE(SUM(failure_count), 0) AS failure_count
         FROM pool_upstream_node_health_hourly_archive
-        WHERE archive_file_path = ?1
+        WHERE archive_batch_id = ?1
           AND proxy_binding_key_snapshot = ?2
           AND bucket_start_epoch = ?3
         "#,
     )
-    .bind(&archive_file_path)
+    .bind(archive_batch_id)
     .bind(binding_key)
     .bind(bucket_start_epoch)
     .fetch_one(&pool)

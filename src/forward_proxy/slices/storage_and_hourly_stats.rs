@@ -838,12 +838,15 @@ async fn query_materialized_pool_upstream_binding_hourly_stats(
         FROM pool_upstream_node_health_hourly_archive AS hourly
         WHERE hourly.bucket_start_epoch >= ?1
           AND hourly.bucket_start_epoch < ?2
-          AND NOT EXISTS (
-                SELECT 1
-                FROM archive_batches AS batches
-                WHERE batches.dataset = 'pool_upstream_request_attempts'
-                  AND batches.status = ?3
-                  AND batches.file_path = hourly.archive_file_path
+          AND (
+                hourly.archive_batch_id IS NULL
+                OR NOT EXISTS (
+                    SELECT 1
+                    FROM archive_batches AS batches
+                    WHERE batches.dataset = 'pool_upstream_request_attempts'
+                      AND batches.status = ?3
+                      AND batches.id = hourly.archive_batch_id
+                )
           )
         GROUP BY hourly.proxy_binding_key_snapshot, hourly.bucket_start_epoch
         "#,
