@@ -15,6 +15,7 @@ async fn sync_hourly_rollups_from_live_tables(pool: &Pool<Sqlite>) -> Result<()>
 }
 
 const HISTORICAL_ROLLUP_ARCHIVE_REPLAY_BATCH_SIZE: i64 = BACKFILL_BATCH_SIZE;
+#[cfg(test)]
 const HISTORICAL_ROLLUP_ARCHIVE_INFLATE_BUFFER_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1149,46 +1150,22 @@ async fn backfill_pool_upstream_node_health_hourly_archives_for_files(
             continue;
         }
 
-        let archive_path = PathBuf::from(&archive_file.file_path);
-        if !archive_path.exists() {
-            warn!(
-                dataset = "pool_upstream_request_attempts",
-                file_path = archive_file.file_path,
-                "pool upstream node health hourly archive backfill marking missing archive batch as replayed"
-            );
-            delete_pool_upstream_node_health_hourly_archive_rows_for_batch_tx(
-                tx.as_mut(),
-                archive_file.id,
-            )
-            .await?;
-            mark_hourly_rollup_archive_replayed_tx(
-                tx.as_mut(),
-                POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET,
-                "pool_upstream_request_attempts",
-                &archive_file.file_path,
-            )
-            .await?;
+        if !hourly_rollup_archive_replayed_tx(
+            tx.as_mut(),
+            POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET,
+            "pool_upstream_request_attempts",
+            &archive_file.file_path,
+        )
+        .await?
+        {
             tx.commit().await?;
             continue;
         }
 
-        let temp_path = pool_upstream_node_health_archive_temp_path(&archive_path);
-        let temp_cleanup = TempSqliteCleanup(temp_path.clone());
-        let archive_pool = open_historical_rollup_archive_pool(&archive_path, &temp_path).await?;
-        {
-            let mut archive_conn = archive_pool.acquire().await?;
-            ensure_pool_upstream_request_attempts_archive_schema_in_place(&mut archive_conn)
-                .await?;
-        }
-        let rows = load_pool_upstream_node_health_hourly_archive_rollup_rows(&archive_pool).await?;
-        archive_pool.close().await;
-        drop(temp_cleanup);
-
-        replace_pool_upstream_node_health_hourly_archive_rows_tx(
+        let materialized_rows = refresh_pool_upstream_node_health_hourly_archive_rows_from_cache_tx(
             tx.as_mut(),
             archive_file.id,
             &archive_file.file_path,
-            &rows,
         )
         .await?;
         mark_hourly_rollup_archive_replayed_tx(
@@ -1200,7 +1177,7 @@ async fn backfill_pool_upstream_node_health_hourly_archives_for_files(
         .await?;
         tx.commit().await?;
         summary.materialized_batches += 1;
-        summary.materialized_rows += rows.len() as u64;
+        summary.materialized_rows += materialized_rows;
     }
 
     summary.pending_batches = pending_pool_upstream_node_health_hourly_archive_batches(pool).await?;

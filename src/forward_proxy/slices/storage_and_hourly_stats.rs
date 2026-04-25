@@ -18,6 +18,15 @@ struct PoolUpstreamBindingHourlyStatsRow {
     failure_count: i64,
 }
 
+#[derive(Debug, Clone, FromRow)]
+struct PendingPoolUpstreamBindingAttemptRow {
+    proxy_binding_key_snapshot: String,
+    occurred_at: String,
+    bucket_start_epoch: i64,
+    is_success: i64,
+    latency_ms: Option<f64>,
+}
+
 #[derive(Debug, FromRow)]
 pub(crate) struct ForwardProxyWeightHourlyStatsRow {
     pub(crate) proxy_key: String,
@@ -615,11 +624,11 @@ async fn inflate_pending_pool_upstream_node_health_archive_to_temp(
     Ok(())
 }
 
-async fn query_pending_pool_upstream_binding_window_stats_from_archive_file(
+async fn load_pending_pool_upstream_binding_attempt_rows_from_archive_file(
     archive_file_path: &str,
     start_at: &str,
     end_at: &str,
-) -> Result<Option<Vec<PoolUpstreamBindingWindowStatsRow>>> {
+) -> Result<Option<Vec<PendingPoolUpstreamBindingAttemptRow>>> {
     let archive_path = PathBuf::from(archive_file_path);
     if !archive_path.exists() {
         warn!(
@@ -638,37 +647,34 @@ async fn query_pending_pool_upstream_binding_window_stats_from_archive_file(
             .await
             .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
         ensure_pool_upstream_request_attempts_archive_schema_in_place(&mut conn).await?;
-        let window_sql = format!(
+        let attempts_sql = format!(
             r#"
             SELECT
                 proxy_binding_key_snapshot,
-                COUNT(*) AS attempts,
-                SUM(CASE WHEN status = '{success}' THEN 1 ELSE 0 END) AS success_count,
-                SUM(CASE WHEN status = '{success}' THEN {latency_sql} END) AS latency_sum_ms,
-                SUM(CASE
-                        WHEN status = '{success}' AND {latency_sql} IS NOT NULL THEN 1
-                        ELSE 0
-                    END) AS latency_sample_count
+                occurred_at,
+                {bucket_start_epoch_sql} AS bucket_start_epoch,
+                CASE WHEN status = '{success}' THEN 1 ELSE 0 END AS is_success,
+                CASE WHEN status = '{success}' THEN {latency_sql} ELSE NULL END AS latency_ms
             FROM pool_upstream_request_attempts
             WHERE proxy_binding_key_snapshot IS NOT NULL
               AND finished_at IS NOT NULL
               AND status != '{budget_exhausted}'
               AND occurred_at >= ?1
               AND occurred_at < ?2
-            GROUP BY proxy_binding_key_snapshot
             "#,
+            bucket_start_epoch_sql = POOL_UPSTREAM_BINDING_BUCKET_START_EPOCH_SQL,
             success = POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
             budget_exhausted = POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
             latency_sql = POOL_UPSTREAM_BINDING_SUCCESS_LATENCY_SQL,
         );
-        let rows = sqlx::query_as::<_, PoolUpstreamBindingWindowStatsRow>(&window_sql)
+        let rows = sqlx::query_as::<_, PendingPoolUpstreamBindingAttemptRow>(&attempts_sql)
             .bind(start_at)
             .bind(end_at)
             .fetch_all(&mut conn)
             .await
             .with_context(|| {
                 format!(
-                    "failed to query pending archive window stats from {} within [{start_at}, {end_at})",
+                    "failed to load pending archive node health attempts from {} within [{start_at}, {end_at})",
                     archive_path.display()
                 )
             })?;
@@ -691,15 +697,15 @@ async fn query_pending_pool_upstream_binding_window_stats_from_archive_file(
     }
 }
 
-async fn query_pending_pool_upstream_binding_window_stats(
+async fn load_pending_pool_upstream_binding_attempt_rows(
     pending_archive_file_paths: &[String],
     start_at: &str,
     end_at: &str,
-) -> Result<Vec<PoolUpstreamBindingWindowStatsRow>> {
+) -> Result<Vec<PendingPoolUpstreamBindingAttemptRow>> {
     let mut rows = Vec::new();
     for archive_file_path in pending_archive_file_paths {
         let Some(mut archive_rows) =
-            query_pending_pool_upstream_binding_window_stats_from_archive_file(
+            load_pending_pool_upstream_binding_attempt_rows_from_archive_file(
                 archive_file_path,
                 start_at,
                 end_at,
@@ -713,88 +719,73 @@ async fn query_pending_pool_upstream_binding_window_stats(
     Ok(rows)
 }
 
-async fn query_pending_pool_upstream_binding_hourly_stats_from_archive_file(
-    archive_file_path: &str,
-    range_start_at: &str,
-    range_end_at: &str,
-    range_start_epoch: i64,
-    range_end_epoch: i64,
-) -> Result<Option<Vec<PoolUpstreamBindingHourlyStatsRow>>> {
-    let archive_path = PathBuf::from(archive_file_path);
-    if !archive_path.exists() {
-        warn!(
-            file_path = archive_file_path,
-            "skipping missing pending pool upstream node health archive while serving owner-facing node health"
-        );
-        return Ok(None);
-    }
-
-    let temp_path = owner_facing_pool_upstream_pending_archive_temp_path(&archive_path);
-    let temp_cleanup = TempSqliteCleanup(temp_path.clone());
-    let query_result = async {
-        inflate_pending_pool_upstream_node_health_archive_to_temp(&archive_path, &temp_path)
-            .await?;
-        let mut conn = SqliteConnection::connect(&sqlite_url_for_path(&temp_path))
-            .await
-            .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
-        ensure_pool_upstream_request_attempts_archive_schema_in_place(&mut conn).await?;
-        let hourly_sql = format!(
-            r#"
-            SELECT
-                proxy_binding_key_snapshot,
-                bucket_start_epoch,
-                SUM(CASE WHEN status = '{success}' THEN 1 ELSE 0 END) AS success_count,
-                SUM(CASE WHEN status != '{success}' THEN 1 ELSE 0 END) AS failure_count
-            FROM (
-                SELECT
-                    proxy_binding_key_snapshot,
-                    status,
-                    {bucket_start_epoch_sql} AS bucket_start_epoch
-                FROM pool_upstream_request_attempts
-                WHERE proxy_binding_key_snapshot IS NOT NULL
-                  AND finished_at IS NOT NULL
-                  AND status != '{budget_exhausted}'
-                  AND occurred_at >= ?1
-                  AND occurred_at < ?2
-            )
-            WHERE bucket_start_epoch >= ?3
-              AND bucket_start_epoch < ?4
-            GROUP BY proxy_binding_key_snapshot, bucket_start_epoch
-            "#,
-            bucket_start_epoch_sql = POOL_UPSTREAM_BINDING_BUCKET_START_EPOCH_SQL,
-            success = POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
-            budget_exhausted = POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
-        );
-        let rows = sqlx::query_as::<_, PoolUpstreamBindingHourlyStatsRow>(&hourly_sql)
-            .bind(range_start_at)
-            .bind(range_end_at)
-            .bind(range_start_epoch)
-            .bind(range_end_epoch)
-            .fetch_all(&mut conn)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to query pending archive hourly stats from {} within [{range_start_epoch}, {range_end_epoch})",
-                    archive_path.display()
-                )
-            })?;
-        let _ = conn.close().await;
-        Ok::<_, anyhow::Error>(rows)
-    }
-    .await;
-    drop(temp_cleanup);
-
-    match query_result {
-        Ok(rows) => Ok(Some(rows)),
-        Err(err) => {
-            warn!(
-                file_path = archive_file_path,
-                error = %err,
-                "skipping unreadable pending pool upstream node health archive while serving owner-facing node health"
-            );
-            Ok(None)
+fn aggregate_pending_pool_upstream_binding_window_stats(
+    pending_archive_rows: &[PendingPoolUpstreamBindingAttemptRow],
+    start_at: &str,
+    end_at: &str,
+) -> Vec<PoolUpstreamBindingWindowStatsRow> {
+    let mut grouped = HashMap::<String, PoolUpstreamBindingWindowStatsRow>::new();
+    for row in pending_archive_rows {
+        if row.occurred_at.as_str() < start_at || row.occurred_at.as_str() >= end_at {
+            continue;
+        }
+        let entry = grouped
+            .entry(row.proxy_binding_key_snapshot.clone())
+            .or_insert_with(|| PoolUpstreamBindingWindowStatsRow {
+                proxy_binding_key_snapshot: row.proxy_binding_key_snapshot.clone(),
+                attempts: 0,
+                success_count: 0,
+                latency_sum_ms: None,
+                latency_sample_count: 0,
+            });
+        entry.attempts += 1;
+        entry.success_count += row.is_success;
+        if let Some(latency_ms) = row.latency_ms {
+            entry.latency_sum_ms = Some(entry.latency_sum_ms.unwrap_or_default() + latency_ms);
+            entry.latency_sample_count += 1;
         }
     }
+    grouped.into_values().collect()
+}
+
+async fn query_pending_pool_upstream_binding_window_stats(
+    pending_archive_file_paths: &[String],
+    start_at: &str,
+    end_at: &str,
+) -> Result<Vec<PoolUpstreamBindingWindowStatsRow>> {
+    let rows =
+        load_pending_pool_upstream_binding_attempt_rows(pending_archive_file_paths, start_at, end_at)
+            .await?;
+    Ok(aggregate_pending_pool_upstream_binding_window_stats(
+        &rows, start_at, end_at,
+    ))
+}
+
+fn aggregate_pending_pool_upstream_binding_hourly_stats(
+    pending_archive_rows: &[PendingPoolUpstreamBindingAttemptRow],
+    range_start_epoch: i64,
+    range_end_epoch: i64,
+) -> Vec<PoolUpstreamBindingHourlyStatsRow> {
+    let mut grouped = HashMap::<(String, i64), PoolUpstreamBindingHourlyStatsRow>::new();
+    for row in pending_archive_rows {
+        if !(range_start_epoch..range_end_epoch).contains(&row.bucket_start_epoch) {
+            continue;
+        }
+        let entry = grouped
+            .entry((
+                row.proxy_binding_key_snapshot.clone(),
+                row.bucket_start_epoch,
+            ))
+            .or_insert_with(|| PoolUpstreamBindingHourlyStatsRow {
+                proxy_binding_key_snapshot: row.proxy_binding_key_snapshot.clone(),
+                bucket_start_epoch: row.bucket_start_epoch,
+                success_count: 0,
+                failure_count: 0,
+            });
+        entry.success_count += row.is_success;
+        entry.failure_count += if row.is_success == 0 { 1 } else { 0 };
+    }
+    grouped.into_values().collect()
 }
 
 async fn query_pending_pool_upstream_binding_hourly_stats(
@@ -804,23 +795,17 @@ async fn query_pending_pool_upstream_binding_hourly_stats(
     range_start_epoch: i64,
     range_end_epoch: i64,
 ) -> Result<Vec<PoolUpstreamBindingHourlyStatsRow>> {
-    let mut rows = Vec::new();
-    for archive_file_path in pending_archive_file_paths {
-        let Some(mut archive_rows) =
-            query_pending_pool_upstream_binding_hourly_stats_from_archive_file(
-                archive_file_path,
-                range_start_at,
-                range_end_at,
-                range_start_epoch,
-                range_end_epoch,
-            )
-            .await?
-        else {
-            continue;
-        };
-        rows.append(&mut archive_rows);
-    }
-    Ok(rows)
+    let rows = load_pending_pool_upstream_binding_attempt_rows(
+        pending_archive_file_paths,
+        range_start_at,
+        range_end_at,
+    )
+    .await?;
+    Ok(aggregate_pending_pool_upstream_binding_hourly_stats(
+        &rows,
+        range_start_epoch,
+        range_end_epoch,
+    ))
 }
 
 async fn query_materialized_pool_upstream_binding_hourly_stats(
@@ -869,6 +854,7 @@ async fn query_pool_upstream_binding_window_stats(
     end_at: &str,
     target_keys: Option<&HashSet<String>>,
     pending_archive_file_paths: &[String],
+    pending_archive_rows: Option<&[PendingPoolUpstreamBindingAttemptRow]>,
 ) -> Result<HashMap<String, ForwardProxyAttemptWindowStats>> {
     let window_sql = format!(
         r#"
@@ -942,14 +928,22 @@ async fn query_pool_upstream_binding_window_stats(
                 )
             })?,
     );
-    rows.extend(
-        query_pending_pool_upstream_binding_window_stats(
-            pending_archive_file_paths,
+    if let Some(pending_archive_rows) = pending_archive_rows {
+        rows.extend(aggregate_pending_pool_upstream_binding_window_stats(
+            pending_archive_rows,
             start_at,
             end_at,
-        )
-        .await?,
-    );
+        ));
+    } else {
+        rows.extend(
+            query_pending_pool_upstream_binding_window_stats(
+                pending_archive_file_paths,
+                start_at,
+                end_at,
+            )
+            .await?,
+        );
+    }
 
     let raw_keys = rows
         .iter()
@@ -998,6 +992,7 @@ async fn query_pool_upstream_binding_hourly_stats(
     range_end_epoch: i64,
     target_keys: Option<&HashSet<String>>,
     pending_archive_file_paths: &[String],
+    pending_archive_rows: Option<&[PendingPoolUpstreamBindingAttemptRow]>,
 ) -> Result<HashMap<String, HashMap<i64, ForwardProxyHourlyStatsPoint>>> {
     let range_start = Utc
         .timestamp_opt(range_start_epoch, 0)
@@ -1100,16 +1095,24 @@ async fn query_pool_upstream_binding_hourly_stats(
                 )
             })?,
     );
-    rows.extend(
-        query_pending_pool_upstream_binding_hourly_stats(
-            pending_archive_file_paths,
-            &range_start_at,
-            &range_end_at,
+    if let Some(pending_archive_rows) = pending_archive_rows {
+        rows.extend(aggregate_pending_pool_upstream_binding_hourly_stats(
+            pending_archive_rows,
             range_start_epoch,
             range_end_epoch,
-        )
-        .await?,
-    );
+        ));
+    } else {
+        rows.extend(
+            query_pending_pool_upstream_binding_hourly_stats(
+                pending_archive_file_paths,
+                &range_start_at,
+                &range_end_at,
+                range_start_epoch,
+                range_end_epoch,
+            )
+            .await?,
+        );
+    }
     rows.extend(
         query_materialized_pool_upstream_binding_hourly_stats(
             &state.pool,
@@ -1329,6 +1332,12 @@ pub(crate) async fn build_forward_proxy_settings_response(
         .values()
         .cloned()
         .collect::<HashSet<_>>();
+    let pending_archive_rows = load_pending_pool_upstream_binding_attempt_rows(
+        &pending_archive_file_paths,
+        &widest_window_start_at,
+        &window_end_at,
+    )
+    .await?;
 
     let windows = [
         (ChronoDuration::minutes(1), 0usize),
@@ -1347,6 +1356,7 @@ pub(crate) async fn build_forward_proxy_settings_response(
                 &window_end_at,
                 Some(&runtime_health_keys),
                 &pending_archive_file_paths,
+                Some(&pending_archive_rows),
             )
             .await?,
         );
@@ -1538,6 +1548,7 @@ pub(crate) async fn build_forward_proxy_binding_nodes_response_with_options(
         range_end_epoch,
         Some(&final_node_keys),
         &pending_archive_file_paths,
+        None,
     )
     .await?;
 
@@ -1632,6 +1643,12 @@ pub(crate) async fn build_forward_proxy_live_stats_response(
         .values()
         .cloned()
         .collect::<HashSet<_>>();
+    let pending_archive_rows = load_pending_pool_upstream_binding_attempt_rows(
+        &pending_archive_file_paths,
+        &widest_window_start_at,
+        &window_end_at,
+    )
+    .await?;
 
     let windows = [
         (ChronoDuration::minutes(1), 0usize),
@@ -1652,6 +1669,7 @@ pub(crate) async fn build_forward_proxy_live_stats_response(
                 &window_end_at,
                 Some(&runtime_health_keys),
                 &pending_archive_file_paths,
+                Some(&pending_archive_rows),
             )
             .await?,
         );
@@ -1666,6 +1684,7 @@ pub(crate) async fn build_forward_proxy_live_stats_response(
         range_end_epoch,
         Some(&runtime_health_keys),
         &pending_archive_file_paths,
+        Some(&pending_archive_rows),
     )
     .await?;
     let weight_hourly_map =
@@ -1849,6 +1868,7 @@ pub(crate) async fn build_forward_proxy_timeseries_response(
         query_end_epoch,
         None,
         &pending_archive_file_paths,
+        None,
     )
     .await?;
     let weight_hourly_map =

@@ -2711,6 +2711,178 @@ async fn refreshing_pool_node_health_hourly_cache_from_row_cache_is_idempotent()
 }
 
 #[tokio::test]
+async fn pool_node_health_hourly_backfill_waits_for_cache_replay_and_refreshes_from_cache() {
+    let (pool, _config, temp_dir) =
+        retention_test_pool_and_config("pool-node-health-hourly-cache-replay-gate").await;
+    let archive_file_path = temp_dir
+        .join("hourly-cache-replay-gate.sqlite.gz")
+        .to_string_lossy()
+        .to_string();
+    let binding_key = "fpn-hourly-cache-replay-gate";
+    let occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::days(45))
+            .with_timezone(&Shanghai)
+            .naive_local()
+            .with_minute(10)
+            .expect("set minute")
+            .with_second(0)
+            .expect("set second"),
+    );
+    let month_key = archive_month_key_from_day_key(&occurred_at[..10])
+        .expect("derive archive month key from occurred_at");
+    let bucket_start_epoch = align_bucket_epoch(
+        parse_shanghai_local_naive(&occurred_at)
+            .expect("parse shanghai occurred_at")
+            .and_local_timezone(Shanghai)
+            .single()
+            .expect("localize shanghai occurred_at")
+            .with_timezone(&Utc)
+            .timestamp(),
+        3600,
+        0,
+    );
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, datetime('now'))
+        "#,
+    )
+    .bind("pool_upstream_request_attempts")
+    .bind(&month_key)
+    .bind(&archive_file_path)
+    .bind("hourly-cache-replay-gate")
+    .bind(2_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&occurred_at)
+    .execute(&pool)
+    .await
+    .expect("insert pool upstream archive batch");
+    let archive_batch_id: i64 = sqlx::query_scalar(
+        r#"
+        SELECT id
+        FROM archive_batches
+        WHERE dataset = 'pool_upstream_request_attempts'
+          AND file_path = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(&archive_file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load pool upstream archive batch id");
+
+    for (archived_row_id, is_success) in [(1_i64, 1_i64), (2_i64, 0_i64)] {
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_node_health_archive (
+                archive_file_path,
+                archived_row_id,
+                occurred_at,
+                proxy_binding_key_snapshot,
+                is_success,
+                latency_ms
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, NULL)
+            "#,
+        )
+        .bind(&archive_file_path)
+        .bind(archived_row_id)
+        .bind(&occurred_at)
+        .bind(binding_key)
+        .bind(is_success)
+        .execute(&pool)
+        .await
+        .expect("insert cached pool node health row");
+    }
+
+    let first = backfill_pool_upstream_node_health_hourly_archives(&pool, None, None)
+        .await
+        .expect("hourly backfill should wait for cache replay");
+    assert_eq!(first.materialized_batches, 0);
+    assert_eq!(first.pending_batches, 1);
+    let hourly_rows_before: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM pool_upstream_node_health_hourly_archive
+        WHERE archive_batch_id = ?1
+        "#,
+    )
+    .bind(archive_batch_id)
+    .fetch_one(&pool)
+    .await
+    .expect("count hourly rows before cache replay completes");
+    assert_eq!(hourly_rows_before, 0);
+
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
+        VALUES (?1, ?2, ?3, datetime('now'))
+        "#,
+    )
+    .bind(POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET)
+    .bind("pool_upstream_request_attempts")
+    .bind(&archive_file_path)
+    .execute(&pool)
+    .await
+    .expect("mark cached pool node health replay complete");
+
+    let second = backfill_pool_upstream_node_health_hourly_archives(&pool, None, None)
+        .await
+        .expect("hourly backfill should refresh from cached pool node health rows");
+    assert_eq!(second.materialized_batches, 1);
+    assert_eq!(second.pending_batches, 0);
+
+    let refreshed = sqlx::query_as::<_, (i64, i64)>(
+        r#"
+        SELECT
+            COALESCE(SUM(success_count), 0) AS success_count,
+            COALESCE(SUM(failure_count), 0) AS failure_count
+        FROM pool_upstream_node_health_hourly_archive
+        WHERE archive_batch_id = ?1
+          AND proxy_binding_key_snapshot = ?2
+          AND bucket_start_epoch = ?3
+        "#,
+    )
+    .bind(archive_batch_id)
+    .bind(binding_key)
+    .bind(bucket_start_epoch)
+    .fetch_one(&pool)
+    .await
+    .expect("load refreshed hourly cache row");
+    assert_eq!(refreshed.0, 1);
+    assert_eq!(refreshed.1, 1);
+
+    let hourly_replayed: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM hourly_rollup_archive_replay
+        WHERE target = ?1
+          AND dataset = 'pool_upstream_request_attempts'
+          AND file_path = ?2
+        "#,
+    )
+    .bind(POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET)
+    .bind(&archive_file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("count hourly replay markers after cache refresh");
+    assert_eq!(hourly_replayed, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn missing_pool_node_health_archives_clear_stale_cached_rows_before_marking_replayed() {
     let (pool, _config, temp_dir) =
         retention_test_pool_and_config("pool-node-health-missing-archive-clears-cache").await;

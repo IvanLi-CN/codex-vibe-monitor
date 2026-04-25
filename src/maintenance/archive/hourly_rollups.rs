@@ -276,40 +276,6 @@ pub(crate) async fn refresh_pool_upstream_node_health_hourly_archive_rows_from_c
     Ok(rows.len() as u64)
 }
 
-pub(crate) async fn load_pool_upstream_node_health_hourly_archive_rollup_rows(
-    archive_pool: &Pool<Sqlite>,
-) -> Result<Vec<PoolUpstreamNodeHealthHourlyArchiveRollupRow>> {
-    sqlx::query_as::<_, PoolUpstreamNodeHealthHourlyArchiveRollupRow>(
-        r#"
-        SELECT
-            proxy_binding_key_snapshot,
-            bucket_start_epoch,
-            SUM(CASE WHEN status = ?1 THEN 1 ELSE 0 END) AS success_count,
-            SUM(CASE WHEN status != ?1 THEN 1 ELSE 0 END) AS failure_count
-        FROM (
-            SELECT
-                proxy_binding_key_snapshot,
-                status,
-                ((CASE
-                    WHEN instr(occurred_at, 'T') > 0
-                        THEN CAST(strftime('%s', occurred_at) AS INTEGER)
-                    ELSE CAST(strftime('%s', occurred_at || '+08:00') AS INTEGER)
-                END) / 3600) * 3600 AS bucket_start_epoch
-            FROM pool_upstream_request_attempts
-            WHERE proxy_binding_key_snapshot IS NOT NULL
-              AND finished_at IS NOT NULL
-              AND status != ?2
-        )
-        GROUP BY proxy_binding_key_snapshot, bucket_start_epoch
-        "#,
-    )
-    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
-    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL)
-    .fetch_all(archive_pool)
-    .await
-    .context("failed to load pool upstream node health hourly archive rollup rows")
-}
-
 pub(crate) async fn replace_pool_upstream_node_health_hourly_archive_rows_tx(
     tx: &mut SqliteConnection,
     archive_batch_id: i64,
