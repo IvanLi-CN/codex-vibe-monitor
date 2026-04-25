@@ -17,7 +17,7 @@
 - 分组卡片左侧固定展示：组名、账号数、非零 Free/Plus/Team 计数 badge、并发数、`独占节点` badge（仅 `nodeShuntEnabled=true` 时显示）。
 - 每个分组摘要区都提供复用现有 `Group settings` 弹窗的设置按钮；点击后直接打开当前分组设置，不新增独立页面或第二套弹层。
 - 平铺行与分组成员行统一新增当前正向代理 badge：已分配显示代理名，分组有可用节点但该账号未排到节点显示 `候补中`，没有可用代理显示 `未配置代理`。
-- 网格成员卡片只展示高价值信息：账号名称、账号类型/套餐 badge、actionable-only 状态 badge、额度使用情况；误导性低价值信息（如 `planType=local` badge、`启用/空闲/正常/同步空闲` 等 neutral 状态）不展示。
+- 网格成员卡片只展示高价值信息：账号名称、账号类型/套餐 badge、actionable-only 状态 badge、账号标签 badge、额度使用情况；误导性低价值信息（如 `planType=local` badge、`启用/空闲/正常/同步空闲` 等 neutral 状态）不展示。
 - 为 grouped roster 提供稳定性能边界：分组/网格视图改为页面级 `window` 滚动驱动的组卡片虚拟化；大数据量下 DOM 挂载的组卡片数必须显著低于总组数，且不再依赖组内纵向滚动容器。
 - 扩展 `GET /api/pool/upstream-accounts`：支持 `includeAll=1` 跳过分页切片，并把当前代理状态与真实 `forwardProxyNodes` catalog 一并返回。
 
@@ -124,6 +124,7 @@
 - 单个账号卡片展示：
   - 账号名称
   - 同一条 badge 行内展示账号类型 badge（如 `OAuth` / `API Key`）、套餐 badge（如 `Free` / `Plus` / `Team` / `Enterprise`；`local` 不展示）与 actionable-only 状态 badge
+  - 账号标签 badge：展示该账号当前全部 tags，不再在 grid 卡片里折叠为 `+n`
   - actionable-only 状态 badge 仅显示 `禁用`、`同步中`、`工作中/工作中 N`、`工作降级`、`限流`、`需要重新授权`、`上游不可用`、`上游拒绝`、`其它异常`
   - 5h / 7d 额度使用情况
 - 网格成员卡片的状态 badge 优先级固定为：
@@ -167,6 +168,7 @@
 - Given 某个网格成员卡片处于 `enabled + idle + normal + sync idle`，When 渲染卡片，Then 不显示 `启用`、`空闲`、`正常`、`同步空闲` 等 neutral badge。
 - Given 某个账号同时带有更高优先级异常（如 `disabled`、`syncing` 或 `healthStatus!=normal`）与低优先级工作态，When 渲染网格卡片，Then 仅显示更高优先级 badge，不继续叠加 `degraded/rate_limited/working`。
 - Given 处于默认桌面网格视图，When 查看成员卡片头部，Then `账号类型 / 套餐 / actionable 状态` 应优先收敛到同一条 badge 行，而不是固定拆成两行。
+- Given 某个网格成员卡片带有 4 个或更多账号 tags，When 渲染卡片，Then 当前全部 tag badge 都应直接显示，且不退化成 `+n` 折叠。
 - Given 处于分组或网格模式，When 浏览长列表，Then 纵向滚动应由整页滚动条承载，而不是 roster 主容器或组成员区内部滚动。
 - Given 分组模式加载大数据 Storybook 场景，When 检查 DOM，Then 已挂载的组卡片数显著少于总数据量，且滚动、切 tab、筛选变化、窗口 resize 后内容继续正确测量与交互，不出现重叠。
 - Given 用户在任一视图勾选账号、点击整行或 chevron 打开详情，When 来回切换视图，Then 现有 bulk selection 与 detail drawer route 行为保持一致。
@@ -199,7 +201,7 @@
   submission_gate: pending-owner-approval
   story_id_or_title: Account Pool/Components/UpstreamAccountsGroupedRoster — Actionable Status Grid Cards (3 columns)
   state: grouped grid card actionable badge matrix on the default desktop surface
-  evidence_note: 验证 grouped/grid 成员卡片在 3 列场景下会把 `账号类型 / 套餐 / actionable 状态` 收敛到同一条 badge 行，同时显示 `工作中 3 / 工作降级 / 限流 / 同步中 / 需要重新授权 / 上游不可用 / 上游拒绝 / 禁用 / 其它异常` 等 actionable badge，并继续隐藏 `启用 / 空闲 / 正常 / 同步空闲` 等 neutral 状态。
+  evidence_note: 验证 grouped/grid 成员卡片在 3 列场景下会把 `账号类型 / 套餐 / actionable 状态` 收敛到同一条 badge 行，同时直接显示该账号的全部 tag badge，并继续展示 `工作中 3 / 工作降级 / 限流 / 同步中 / 需要重新授权 / 上游不可用 / 上游拒绝 / 禁用 / 其它异常` 等 actionable badge，且隐藏 `启用 / 空闲 / 正常 / 同步空闲` 与 `+n` 折叠。
 
 ![网格卡片状态 badge（3 列）](./assets/grid-view-actionable-status-badges-3col.png)
 

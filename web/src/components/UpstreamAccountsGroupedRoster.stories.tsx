@@ -83,6 +83,7 @@ const rosterTags: AccountTagSummary[] = [
   { id: 1, name: 'vip', routingRule: defaultEffectiveRoutingRule },
   { id: 2, name: 'burst-safe', routingRule: defaultEffectiveRoutingRule },
   { id: 3, name: 'prod-apac', routingRule: defaultEffectiveRoutingRule },
+  { id: 4, name: 'priority-lane', routingRule: defaultEffectiveRoutingRule },
 ]
 
 function usage(requestCount: number, totalTokens: number, totalCost: number) {
@@ -241,6 +242,7 @@ const actionableStatusGroup = buildGroup(
       workStatus: 'working',
       activeConversationCount: 3,
       planType: 'team',
+      tags: rosterTags,
     }),
     makeItem(32, {
       displayName: 'Temporary degraded lane',
@@ -386,11 +388,16 @@ function expectActionableStatusBadges(canvasElement: HTMLElement) {
     expect(canvas.getByText('Upstream rejected')).toBeInTheDocument(),
     expect(canvas.getByText('Other error')).toBeInTheDocument(),
     expect(canvas.getByText('Disabled')).toBeInTheDocument(),
+    expect(canvas.getByText('vip')).toBeInTheDocument(),
+    expect(canvas.getByText('burst-safe')).toBeInTheDocument(),
+    expect(canvas.getByText('prod-apac')).toBeInTheDocument(),
+    expect(canvas.getByText('priority-lane')).toBeInTheDocument(),
   ]).then(() => {
     expect(canvas.queryByText('Enabled')).toBeNull()
     expect(canvas.queryByText('Idle')).toBeNull()
     expect(canvas.queryByText('Normal')).toBeNull()
     expect(canvas.queryByText('Sync idle')).toBeNull()
+    expect(canvas.queryByText('+1')).toBeNull()
   })
 }
 

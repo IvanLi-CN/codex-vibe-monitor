@@ -23,6 +23,7 @@ import {
   formatWindowShortLabel,
   handleRowKeyDown,
   kindLabel,
+  renderAllTagBadges,
   renderTagBadges,
   renderTagOverflowBadge,
   resolveRosterActionableStatusBadges,
@@ -38,7 +39,7 @@ const GROUP_CARD_VERTICAL_GAP_PX = 16
 const GROUP_SUMMARY_ESTIMATE_PX = 176
 const GROUP_MEMBER_ROW_ESTIMATE_PX = 104
 const GROUP_MEMBER_ROW_GAP_PX = 8
-const GROUP_MEMBER_GRID_CARD_ESTIMATE_PX = 176
+const GROUP_MEMBER_GRID_CARD_ESTIMATE_PX = 208
 const GROUP_MEMBER_GRID_GAP_PX = 12
 const GROUP_MEMBER_GRID_TWO_COLUMN_BREAKPOINT_PX = 960
 const GROUP_MEMBER_GRID_THREE_COLUMN_BREAKPOINT_PX = 1040
@@ -619,6 +620,11 @@ function GroupMemberGridCard({
             </Badge>
           ))}
         </div>
+        {item.tags && item.tags.length > 0 ? (
+          <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1">
+            {renderAllTagBadges(item.tags)}
+          </div>
+        ) : null}
       </div>
       <div className="mt-3 space-y-1.5">
         <CompactWindowLine

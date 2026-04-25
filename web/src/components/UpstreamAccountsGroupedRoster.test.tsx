@@ -108,6 +108,12 @@ const tags: AccountTagSummary[] = [
   { id: 2, name: 'reporting', routingRule: defaultEffectiveRoutingRule },
 ]
 
+const extendedTags: AccountTagSummary[] = [
+  ...tags,
+  { id: 3, name: 'priority-lane', routingRule: defaultEffectiveRoutingRule },
+  { id: 4, name: 'prod-apac', routingRule: defaultEffectiveRoutingRule },
+]
+
 const labels = {
   selectPage: 'Select current page',
   selectRow: (name: string) => `Select ${name}`,
@@ -430,6 +436,7 @@ describe('UpstreamAccountsGroupedRoster', () => {
             displayName: 'Working burst lane',
             workStatus: 'working',
             activeConversationCount: 3,
+            tags: extendedTags,
           }),
           makeItem(12, {
             displayName: 'Temporary degraded lane',
@@ -492,6 +499,10 @@ describe('UpstreamAccountsGroupedRoster', () => {
 
     const content = host?.textContent ?? ''
     expect(content).toContain('Working 3')
+    expect(content).toContain('analytics')
+    expect(content).toContain('reporting')
+    expect(content).toContain('priority-lane')
+    expect(content).toContain('prod-apac')
     expect(content).toContain('degraded')
     expect(content).toContain('rate_limited')
     expect(content).toContain('syncing')
@@ -504,6 +515,7 @@ describe('UpstreamAccountsGroupedRoster', () => {
     expect(content).not.toContain('Idle')
     expect(content).not.toContain('Normal')
     expect(content).not.toContain('Sync idle')
+    expect(content).not.toContain('+1')
   })
 
   it('prioritizes disabled, syncing, and health badges ahead of work-state badges in grid cards', async () => {
