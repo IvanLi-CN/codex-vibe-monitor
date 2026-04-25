@@ -13,6 +13,7 @@ import type {
   ProxySettings,
   SettingsPayload,
 } from '../lib/api'
+import { paritySettingsNodes } from './storybookForwardProxyNodeHealth'
 
 const STORYBOOK_SETTINGS_STORAGE_PREFIX = 'storybook.settings-page.mock'
 
@@ -218,6 +219,25 @@ function createStorySettings(overrides?: StorySettingsOverrides): SettingsPayloa
     forwardProxy,
     pricing,
   }
+}
+
+function createParitySettings(): SettingsPayload {
+  const settings = createStorySettings({
+    forwardProxy: {
+      proxyUrls: [
+        'http://jp-edge-01.internal:8080',
+        'vless://example@us-edge-03.example.com:443',
+      ],
+      subscriptionUrls: [],
+      subscriptionUpdateIntervalSecs: 3600,
+    },
+    pricing: {
+      catalogVersion: 'storybook-node-health-parity',
+      entries: DEFAULT_PRICING_ENTRIES,
+    },
+  })
+  settings.forwardProxy.nodes = paritySettingsNodes
+  return settings
 }
 
 function loadPersistedSettings(storageKey: string, fallback: SettingsPayload): SettingsPayload {
@@ -620,6 +640,13 @@ export const PenalizedPool: Story = {
         ],
       },
     }),
+  },
+  render: () => <SettingsPage />,
+}
+
+export const RealNodeHealthParity: Story = {
+  parameters: {
+    mockSettings: createParitySettings(),
   },
   render: () => <SettingsPage />,
 }

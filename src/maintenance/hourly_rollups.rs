@@ -15,6 +15,7 @@ async fn sync_hourly_rollups_from_live_tables(pool: &Pool<Sqlite>) -> Result<()>
 }
 
 const HISTORICAL_ROLLUP_ARCHIVE_REPLAY_BATCH_SIZE: i64 = BACKFILL_BATCH_SIZE;
+#[cfg(test)]
 const HISTORICAL_ROLLUP_ARCHIVE_INFLATE_BUFFER_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +38,24 @@ struct HistoricalRollupArchiveReplaySummary {
     budget_consumed_batches: u64,
     blocked_batches: u64,
     materialized_batches: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct PoolUpstreamNodeHealthArchiveBackfillSummary {
+    pub(crate) scanned_batches: u64,
+    pub(crate) materialized_batches: u64,
+    pub(crate) cached_rows: u64,
+    pub(crate) pending_batches: u64,
+    pub(crate) hit_budget: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct PoolUpstreamNodeHealthHourlyArchiveBackfillSummary {
+    pub(crate) scanned_batches: u64,
+    pub(crate) materialized_batches: u64,
+    pub(crate) materialized_rows: u64,
+    pub(crate) pending_batches: u64,
+    pub(crate) hit_budget: bool,
 }
 
 #[derive(Debug, FromRow)]
@@ -109,8 +128,14 @@ async fn open_historical_rollup_archive_pool(
     archive_path: &Path,
     temp_path: &Path,
 ) -> Result<Pool<Sqlite>> {
-    if !temp_path.exists() {
+    let current_signature = historical_rollup_archive_source_signature(archive_path)?;
+    let stale_temp = !temp_path.exists()
+        || load_historical_rollup_temp_source_signature(temp_path).as_deref()
+            != Some(current_signature.as_str());
+    if stale_temp {
+        remove_temp_sqlite_artifacts(temp_path);
         inflate_gzip_sqlite_file(archive_path, temp_path)?;
+        persist_historical_rollup_temp_source_signature(temp_path, &current_signature)?;
     }
 
     let connect = || async {
@@ -123,8 +148,9 @@ async fn open_historical_rollup_archive_pool(
     match connect().await {
         Ok(pool) => Ok(pool),
         Err(first_err) => {
-            let _ = fs::remove_file(temp_path);
+            remove_temp_sqlite_artifacts(temp_path);
             inflate_gzip_sqlite_file(archive_path, temp_path)?;
+            persist_historical_rollup_temp_source_signature(temp_path, &current_signature)?;
             connect().await.with_context(|| {
                 format!(
                     "failed to reopen archive batch {} after resetting temp db (initial error: {first_err})",
@@ -133,6 +159,138 @@ async fn open_historical_rollup_archive_pool(
             })
         }
     }
+}
+
+fn pool_upstream_node_health_archive_temp_path(archive_path: &Path) -> PathBuf {
+    PathBuf::from(format!(
+        "{}.pool-upstream-node-health.sqlite",
+        archive_path.display()
+    ))
+}
+
+fn historical_rollup_archive_source_signature(path: &Path) -> Result<String> {
+    let metadata = fs::metadata(path)
+        .with_context(|| format!("failed to inspect archive batch {}", path.display()))?;
+    let modified_ns = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|value| value.as_nanos())
+        .unwrap_or_default();
+    Ok(format!("{}:{modified_ns}", metadata.len()))
+}
+
+fn load_historical_rollup_temp_source_signature(temp_path: &Path) -> Option<String> {
+    fs::read_to_string(temp_sqlite_source_meta_path(temp_path))
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn persist_historical_rollup_temp_source_signature(temp_path: &Path, signature: &str) -> Result<()> {
+    fs::write(temp_sqlite_source_meta_path(temp_path), signature).with_context(|| {
+        format!(
+            "failed to persist archive temp source signature for {}",
+            temp_path.display()
+        )
+    })
+}
+
+pub(crate) async fn load_pending_pool_upstream_node_health_archive_files(
+    pool: &Pool<Sqlite>,
+    range_start_at: Option<&str>,
+    range_end_at: Option<&str>,
+) -> Result<Vec<ArchiveBatchFileRow>> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT id, file_path, coverage_start_at, coverage_end_at
+        FROM archive_batches AS batches
+        WHERE batches.dataset = 'pool_upstream_request_attempts'
+          AND batches.status = "#,
+    );
+    query.push_bind(ARCHIVE_STATUS_COMPLETED);
+    query.push(
+        r#"
+          AND NOT EXISTS (
+                SELECT 1
+                FROM hourly_rollup_archive_replay AS replay
+                WHERE replay.target = "#,
+    );
+    query.push_bind(POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET);
+    query.push(
+        r#"
+                  AND replay.dataset = batches.dataset
+                  AND replay.file_path = batches.file_path
+          )
+        "#,
+    );
+    if let (Some(range_start_at), Some(range_end_at)) = (range_start_at, range_end_at) {
+        query.push(
+            r#"
+          AND (
+                batches.coverage_start_at IS NULL
+                OR batches.coverage_end_at IS NULL
+                OR (batches.coverage_end_at >= "#,
+        );
+        query.push_bind(range_start_at);
+        query.push(" AND batches.coverage_start_at < ");
+        query.push_bind(range_end_at);
+        query.push(")\n          )");
+    }
+    query.push("\nORDER BY month_key ASC, created_at ASC, id ASC");
+    query.build_query_as::<ArchiveBatchFileRow>()
+        .fetch_all(pool)
+        .await
+        .context("failed to list pending pool upstream node health archive batches")
+}
+
+pub(crate) async fn pending_pool_upstream_node_health_archive_batches(
+    pool: &Pool<Sqlite>,
+) -> Result<u64> {
+    Ok(load_pending_pool_upstream_node_health_archive_files(pool, None, None)
+        .await?
+        .len() as u64)
+}
+
+pub(crate) async fn load_pending_pool_upstream_node_health_hourly_archive_files(
+    pool: &Pool<Sqlite>,
+) -> Result<Vec<ArchiveBatchFileRow>> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT id, file_path, coverage_start_at, coverage_end_at
+        FROM archive_batches AS batches
+        WHERE batches.dataset = 'pool_upstream_request_attempts'
+          AND batches.status = "#,
+    );
+    query.push_bind(ARCHIVE_STATUS_COMPLETED);
+    query.push(
+        r#"
+          AND NOT EXISTS (
+                SELECT 1
+                FROM hourly_rollup_archive_replay AS replay
+                WHERE replay.target = "#,
+    );
+    query.push_bind(POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET);
+    query.push(
+        r#"
+                  AND replay.dataset = batches.dataset
+                  AND replay.file_path = batches.file_path
+          )
+        ORDER BY month_key ASC, created_at ASC, id ASC
+        "#,
+    );
+    query.build_query_as::<ArchiveBatchFileRow>()
+        .fetch_all(pool)
+        .await
+        .context("failed to list pending pool upstream node health hourly archive batches")
+}
+
+pub(crate) async fn pending_pool_upstream_node_health_hourly_archive_batches(
+    pool: &Pool<Sqlite>,
+) -> Result<u64> {
+    Ok(load_pending_pool_upstream_node_health_hourly_archive_files(pool)
+        .await?
+        .len() as u64)
 }
 
 fn legacy_compatible_archive_select_expr(
@@ -364,6 +522,68 @@ async fn replay_forward_proxy_archive_rows_into_hourly_rollups_tx_with_budget(
                 outcome: HistoricalRollupArchiveReplayOutcome::HitBudget,
                 cursor_id: start_after_id,
             });
+        }
+    }
+}
+
+async fn replay_pool_upstream_node_health_archive_rows_tx_with_budget(
+    tx: &mut SqliteConnection,
+    archive_pool: &Pool<Sqlite>,
+    archive_file_path: &str,
+    initial_cursor_id: i64,
+    started_at: Instant,
+    max_elapsed: Option<Duration>,
+) -> Result<(HistoricalRollupArchiveReplayResult, u64)> {
+    let mut start_after_id = initial_cursor_id.max(0);
+    let mut cached_rows = 0_u64;
+    loop {
+        if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
+            return Ok((
+                HistoricalRollupArchiveReplayResult {
+                    outcome: HistoricalRollupArchiveReplayOutcome::HitBudget,
+                    cursor_id: start_after_id,
+                },
+                cached_rows,
+            ));
+        }
+
+        let (rows, has_more) =
+            load_pool_upstream_node_health_archive_rows_chunk(archive_pool, start_after_id).await?;
+        if rows.is_empty() {
+            return Ok((
+                HistoricalRollupArchiveReplayResult {
+                    outcome: HistoricalRollupArchiveReplayOutcome::Completed,
+                    cursor_id: start_after_id,
+                },
+                cached_rows,
+            ));
+        }
+
+        upsert_pool_upstream_node_health_archive_rows_tx(tx, archive_file_path, &rows).await?;
+        cached_rows += rows.len() as u64;
+        start_after_id = rows
+            .last()
+            .map(|row| row.archived_row_id)
+            .ok_or_else(|| anyhow!("missing pool upstream node health archive row id"))?;
+
+        if !has_more {
+            return Ok((
+                HistoricalRollupArchiveReplayResult {
+                    outcome: HistoricalRollupArchiveReplayOutcome::Completed,
+                    cursor_id: start_after_id,
+                },
+                cached_rows,
+            ));
+        }
+
+        if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
+            return Ok((
+                HistoricalRollupArchiveReplayResult {
+                    outcome: HistoricalRollupArchiveReplayOutcome::HitBudget,
+                    cursor_id: start_after_id,
+                },
+                cached_rows,
+            ));
         }
     }
 }
@@ -753,6 +973,230 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
 
     summary.remaining_skip_batches = skip_remaining;
     Ok(summary)
+}
+
+async fn backfill_pool_upstream_node_health_archives_for_files(
+    pool: &Pool<Sqlite>,
+    archive_files: Vec<ArchiveBatchFileRow>,
+    max_archive_batches: Option<u64>,
+    max_elapsed: Option<Duration>,
+) -> Result<PoolUpstreamNodeHealthArchiveBackfillSummary> {
+    let started_at = Instant::now();
+    let mut replay_started_any_pending_batch = false;
+
+    let mut summary = PoolUpstreamNodeHealthArchiveBackfillSummary::default();
+    for archive_file in archive_files {
+        let mut tx = pool.begin().await?;
+        if hourly_rollup_archive_replayed_tx(
+            tx.as_mut(),
+            POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET,
+            "pool_upstream_request_attempts",
+            &archive_file.file_path,
+        )
+        .await?
+        {
+            tx.commit().await?;
+            continue;
+        }
+
+        if max_archive_batches.is_some_and(|limit| summary.materialized_batches >= limit)
+            || (replay_started_any_pending_batch
+                && historical_rollup_elapsed_budget_reached(started_at, max_elapsed))
+        {
+            summary.hit_budget = true;
+            tx.commit().await?;
+            break;
+        }
+
+        summary.scanned_batches += 1;
+        let replay_cursor = load_hourly_rollup_archive_progress_tx(
+            tx.as_mut(),
+            "pool_upstream_request_attempts",
+            &archive_file.file_path,
+        )
+        .await?;
+
+        let archive_path = PathBuf::from(&archive_file.file_path);
+        if !archive_path.exists() {
+            warn!(
+                dataset = "pool_upstream_request_attempts",
+                file_path = archive_file.file_path,
+                "pool upstream node health cache backfill marking missing archive batch as replayed"
+            );
+            delete_pool_upstream_node_health_archive_rows_for_file_tx(
+                tx.as_mut(),
+                &archive_file.file_path,
+            )
+            .await?;
+            delete_hourly_rollup_archive_progress_tx(
+                tx.as_mut(),
+                "pool_upstream_request_attempts",
+                &archive_file.file_path,
+            )
+            .await?;
+            mark_hourly_rollup_archive_replayed_tx(
+                tx.as_mut(),
+                POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET,
+                "pool_upstream_request_attempts",
+                &archive_file.file_path,
+            )
+            .await?;
+            tx.commit().await?;
+            continue;
+        }
+
+        replay_started_any_pending_batch = true;
+        let temp_path = pool_upstream_node_health_archive_temp_path(&archive_path);
+        let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+        let archive_pool = open_historical_rollup_archive_pool(&archive_path, &temp_path).await?;
+        {
+            let mut archive_conn = archive_pool.acquire().await?;
+            ensure_pool_upstream_request_attempts_archive_schema_in_place(&mut archive_conn)
+                .await?;
+        }
+        let (replay_outcome, cached_rows) =
+            replay_pool_upstream_node_health_archive_rows_tx_with_budget(
+                tx.as_mut(),
+                &archive_pool,
+                &archive_file.file_path,
+                replay_cursor,
+                started_at,
+                max_elapsed,
+            )
+            .await?;
+        archive_pool.close().await;
+        summary.cached_rows += cached_rows;
+        if replay_outcome.outcome == HistoricalRollupArchiveReplayOutcome::HitBudget {
+            if replay_outcome.cursor_id > replay_cursor {
+                save_hourly_rollup_archive_progress_tx(
+                    tx.as_mut(),
+                    "pool_upstream_request_attempts",
+                    &archive_file.file_path,
+                    replay_outcome.cursor_id,
+                )
+                .await?;
+            }
+            tx.commit().await?;
+            std::mem::forget(temp_cleanup);
+            summary.hit_budget = true;
+            break;
+        }
+        drop(temp_cleanup);
+        delete_hourly_rollup_archive_progress_tx(
+            tx.as_mut(),
+            "pool_upstream_request_attempts",
+            &archive_file.file_path,
+        )
+        .await?;
+        mark_hourly_rollup_archive_replayed_tx(
+            tx.as_mut(),
+            POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET,
+            "pool_upstream_request_attempts",
+            &archive_file.file_path,
+        )
+        .await?;
+        tx.commit().await?;
+        summary.materialized_batches += 1;
+    }
+
+    summary.pending_batches = pending_pool_upstream_node_health_archive_batches(pool).await?;
+
+    Ok(summary)
+}
+
+pub(crate) async fn backfill_pool_upstream_node_health_archives(
+    pool: &Pool<Sqlite>,
+    max_archive_batches: Option<u64>,
+    max_elapsed: Option<Duration>,
+) -> Result<PoolUpstreamNodeHealthArchiveBackfillSummary> {
+    let archive_files = load_pending_pool_upstream_node_health_archive_files(pool, None, None).await?;
+    backfill_pool_upstream_node_health_archives_for_files(
+        pool,
+        archive_files,
+        max_archive_batches,
+        max_elapsed,
+    )
+    .await
+}
+
+async fn backfill_pool_upstream_node_health_hourly_archives_for_files(
+    pool: &Pool<Sqlite>,
+    archive_files: Vec<ArchiveBatchFileRow>,
+    max_archive_batches: Option<u64>,
+    max_elapsed: Option<Duration>,
+) -> Result<PoolUpstreamNodeHealthHourlyArchiveBackfillSummary> {
+    let started_at = Instant::now();
+    let mut summary = PoolUpstreamNodeHealthHourlyArchiveBackfillSummary::default();
+
+    for archive_file in archive_files {
+        if max_archive_batches.is_some_and(|limit| summary.materialized_batches >= limit)
+            || historical_rollup_elapsed_budget_reached(started_at, max_elapsed)
+        {
+            summary.hit_budget = true;
+            break;
+        }
+
+        summary.scanned_batches += 1;
+        let mut tx = pool.begin().await?;
+        if hourly_rollup_archive_replayed_tx(
+            tx.as_mut(),
+            POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET,
+            "pool_upstream_request_attempts",
+            &archive_file.file_path,
+        )
+        .await?
+        {
+            tx.commit().await?;
+            continue;
+        }
+
+        if !hourly_rollup_archive_replayed_tx(
+            tx.as_mut(),
+            POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET,
+            "pool_upstream_request_attempts",
+            &archive_file.file_path,
+        )
+        .await?
+        {
+            tx.commit().await?;
+            continue;
+        }
+
+        let materialized_rows = refresh_pool_upstream_node_health_hourly_archive_rows_from_cache_tx(
+            tx.as_mut(),
+            archive_file.id,
+            &archive_file.file_path,
+        )
+        .await?;
+        mark_hourly_rollup_archive_replayed_tx(
+            tx.as_mut(),
+            POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET,
+            "pool_upstream_request_attempts",
+            &archive_file.file_path,
+        )
+        .await?;
+        tx.commit().await?;
+        summary.materialized_batches += 1;
+        summary.materialized_rows += materialized_rows;
+    }
+
+    summary.pending_batches = pending_pool_upstream_node_health_hourly_archive_batches(pool).await?;
+    Ok(summary)
+}
+
+pub(crate) async fn backfill_pool_upstream_node_health_hourly_archives(
+    pool: &Pool<Sqlite>,
+    max_archive_batches: Option<u64>,
+    max_elapsed: Option<Duration>,
+) -> Result<PoolUpstreamNodeHealthHourlyArchiveBackfillSummary> {
+    let archive_files = load_pending_pool_upstream_node_health_hourly_archive_files(pool).await?;
+    backfill_pool_upstream_node_health_hourly_archives_for_files(
+        pool,
+        archive_files,
+        max_archive_batches,
+        max_elapsed,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -1930,6 +2374,38 @@ async fn ensure_pool_upstream_request_attempts_archive_schema(
                 .with_context(|| {
                     format!(
                         "failed to add archive_db.pool_upstream_request_attempts column {column}"
+                    )
+                })?;
+        }
+    }
+    Ok(())
+}
+
+async fn ensure_pool_upstream_request_attempts_archive_schema_in_place(
+    conn: &mut SqliteConnection,
+) -> Result<()> {
+    let archive_columns =
+        load_sqlite_table_columns_from_connection(conn, None, "pool_upstream_request_attempts")
+            .await?;
+    for (column, ty) in [
+        ("upstream_route_key", "TEXT"),
+        ("phase", "TEXT"),
+        ("downstream_http_status", "INTEGER"),
+        ("downstream_error_message", "TEXT"),
+        ("compact_support_status", "TEXT"),
+        ("compact_support_reason", "TEXT"),
+        ("group_name_snapshot", "TEXT"),
+        ("proxy_binding_key_snapshot", "TEXT"),
+    ] {
+        if !archive_columns.contains(column) {
+            let statement =
+                format!("ALTER TABLE pool_upstream_request_attempts ADD COLUMN {column} {ty}");
+            sqlx::query(&statement)
+                .execute(&mut *conn)
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to add in-place pool_upstream_request_attempts archive column {column}"
                     )
                 })?;
         }

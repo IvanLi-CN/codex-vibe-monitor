@@ -859,7 +859,7 @@ async fn load_forward_proxy_runtime_states_maps_legacy_vless_hash_keys_from_curr
 }
 
 #[tokio::test]
-async fn forward_proxy_binding_nodes_reuse_legacy_hourly_stats_for_stable_keys() {
+async fn forward_proxy_binding_nodes_reuse_legacy_pool_attempt_stats_for_stable_keys() {
     let state = test_state_with_openai_base(
         Url::parse("http://probe-target.example/").expect("valid probe target"),
     )
@@ -885,27 +885,27 @@ async fn forward_proxy_binding_nodes_reuse_legacy_hourly_stats_for_stable_keys()
 
     let now_epoch = Utc::now().timestamp();
     let bucket_start_epoch = align_bucket_epoch(now_epoch, 3600, 0);
-    sqlx::query(
-        r#"
-        INSERT INTO forward_proxy_attempt_hourly (
-            proxy_key,
-            bucket_start_epoch,
-            attempts,
-            success_count,
-            failure_count,
-            latency_sample_count,
-            latency_sum_ms,
-            latency_max_ms,
-            updated_at
+    for (invoke_id, status) in [
+        (
+            "binding-stable-legacy-success",
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+        ),
+        (
+            "binding-stable-legacy-failure",
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+        ),
+    ] {
+        seed_pool_upstream_attempt_at(
+            &state.pool,
+            invoke_id,
+            Utc.timestamp_opt(bucket_start_epoch + 300, 0)
+                .single()
+                .expect("stable pool attempt timestamp should be valid"),
+            Some(&stable_proxy_key),
+            status,
         )
-        VALUES (?1, ?2, 5, 4, 1, 4, 480.0, 180.0, datetime('now'))
-        "#,
-    )
-    .bind(&stable_proxy_key)
-    .bind(bucket_start_epoch)
-    .execute(&state.pool)
-    .await
-    .expect("insert legacy hourly stats");
+        .await;
+    }
 
     let nodes =
         build_forward_proxy_binding_nodes_response(state.as_ref(), &[stable_proxy_key.clone()])
@@ -918,9 +918,9 @@ async fn forward_proxy_binding_nodes_reuse_legacy_hourly_stats_for_stable_keys()
     let bucket = node
         .last24h
         .into_iter()
-        .find(|item| item.success_count == 4 || item.failure_count == 1)
+        .find(|item| item.success_count == 1 || item.failure_count == 1)
         .expect("matching bucket should exist");
-    assert_eq!(bucket.success_count, 4);
+    assert_eq!(bucket.success_count, 1);
     assert_eq!(bucket.failure_count, 1);
 }
 
@@ -968,7 +968,7 @@ fn forward_proxy_manager_reuses_legacy_vless_hash_runtime_state() {
 }
 
 #[tokio::test]
-async fn forward_proxy_binding_nodes_reuse_legacy_hashed_hourly_stats_from_current_settings() {
+async fn forward_proxy_binding_nodes_reuse_legacy_pool_attempt_stats_from_current_settings() {
     let state = test_state_with_openai_base(
         Url::parse("http://probe-target.example/").expect("valid probe target"),
     )
@@ -1008,27 +1008,27 @@ async fn forward_proxy_binding_nodes_reuse_legacy_hashed_hourly_stats_from_curre
 
     let now_epoch = Utc::now().timestamp();
     let bucket_start_epoch = align_bucket_epoch(now_epoch, 3600, 0);
-    sqlx::query(
-        r#"
-        INSERT INTO forward_proxy_attempt_hourly (
-            proxy_key,
-            bucket_start_epoch,
-            attempts,
-            success_count,
-            failure_count,
-            latency_sample_count,
-            latency_sum_ms,
-            latency_max_ms,
-            updated_at
+    for (invoke_id, status) in [
+        (
+            "binding-current-settings-legacy-success",
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+        ),
+        (
+            "binding-current-settings-legacy-failure",
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+        ),
+    ] {
+        seed_pool_upstream_attempt_at(
+            &state.pool,
+            invoke_id,
+            Utc.timestamp_opt(bucket_start_epoch + 300, 0)
+                .single()
+                .expect("legacy hashed pool attempt timestamp should be valid"),
+            Some(&legacy_proxy_key),
+            status,
         )
-        VALUES (?1, ?2, 5, 4, 1, 4, 480.0, 180.0, datetime('now'))
-        "#,
-    )
-    .bind(&legacy_proxy_key)
-    .bind(bucket_start_epoch)
-    .execute(&state.pool)
-    .await
-    .expect("insert legacy hashed hourly stats");
+        .await;
+    }
 
     let nodes = build_forward_proxy_binding_nodes_response(state.as_ref(), &[])
         .await
@@ -1041,9 +1041,9 @@ async fn forward_proxy_binding_nodes_reuse_legacy_hashed_hourly_stats_from_curre
     let bucket = node
         .last24h
         .into_iter()
-        .find(|item| item.success_count == 4 || item.failure_count == 1)
+        .find(|item| item.success_count == 1 || item.failure_count == 1)
         .expect("matching bucket should exist");
-    assert_eq!(bucket.success_count, 4);
+    assert_eq!(bucket.success_count, 1);
     assert_eq!(bucket.failure_count, 1);
 }
 

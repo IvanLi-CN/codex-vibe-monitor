@@ -4,6 +4,13 @@ import { expect, userEvent, within } from "storybook/test";
 import type { ForwardProxyBindingNode } from "../lib/api";
 import { apiConcurrencyLimitToSliderValue } from "../lib/concurrencyLimit";
 import { UpstreamAccountGroupNoteDialog } from "./UpstreamAccountGroupNoteDialog";
+import {
+  PARITY_DIRECT_KEY,
+  PARITY_JP_EDGE_KEY,
+  PARITY_US_EDGE_KEY,
+  parityBindingNodes,
+  parityGroupDialogNote,
+} from "./storybookForwardProxyNodeHealth";
 
 type DialogHarnessProps = {
   groupName: string;
@@ -47,24 +54,7 @@ function buildRequestBuckets(
   });
 }
 
-function buildFocusedRequestBuckets(
-  points: Record<number, { successCount?: number; failureCount?: number }>,
-): ForwardProxyBindingNode["last24h"] {
-  const start = Date.parse("2026-03-01T00:00:00.000Z");
-  return Array.from({ length: 24 }, (_, index) => {
-    const bucketStart = new Date(start + index * 3600_000).toISOString();
-    const bucketEnd = new Date(start + (index + 1) * 3600_000).toISOString();
-    const point = points[index] ?? {};
-    return {
-      bucketStart,
-      bucketEnd,
-      successCount: point.successCount ?? 0,
-      failureCount: point.failureCount ?? 0,
-    };
-  });
-}
-
-const directBindingKey = "__direct__";
+const directBindingKey = PARITY_DIRECT_KEY;
 
 const defaultForwardProxyNodes: ForwardProxyBindingNode[] = [
   {
@@ -212,44 +202,6 @@ const legacyAliasBindingNodes: ForwardProxyBindingNode[] = [
     penalized: false,
     selectable: true,
     last24h: buildRequestBuckets(6, 12, 5),
-  },
-];
-
-const groupScopedRealTrafficNodes: ForwardProxyBindingNode[] = [
-  {
-    key: directBindingKey,
-    source: "direct",
-    displayName: "Direct",
-    protocolLabel: "DIRECT",
-    penalized: false,
-    selectable: true,
-    last24h: buildFocusedRequestBuckets({
-      18: { successCount: 1 },
-      21: { successCount: 1 },
-    }),
-  },
-  {
-    key: "fpn_5a7b0c1d2e3f4a10",
-    source: "manual",
-    displayName: "JP Edge 01",
-    protocolLabel: "HTTP",
-    penalized: false,
-    selectable: true,
-    last24h: buildFocusedRequestBuckets({
-      17: { successCount: 2 },
-      18: { failureCount: 1 },
-      20: { successCount: 2 },
-      22: { failureCount: 1 },
-    }),
-  },
-  {
-    key: "fpn_0c1d2e3f4a5b6c40",
-    source: "subscription",
-    displayName: "US Edge 03",
-    protocolLabel: "VLESS",
-    penalized: true,
-    selectable: true,
-    last24h: buildFocusedRequestBuckets({}),
   },
 ];
 
@@ -482,16 +434,16 @@ export const HardBoundMultipleNodes: Story = {
   },
 };
 
-export const GroupScopedRealTraffic: Story = {
+export const GlobalNodeHealthParity: Story = {
   args: {
     groupName: "prod",
-    note: "Only this group's real pool attempts are shown here; global probe noise stays out of the 24H totals.",
+    note: parityGroupDialogNote,
     boundProxyKeys: [
       directBindingKey,
-      "fpn_5a7b0c1d2e3f4a10",
-      "fpn_0c1d2e3f4a5b6c40",
+      PARITY_JP_EDGE_KEY,
+      PARITY_US_EDGE_KEY,
     ],
-    availableProxyNodes: groupScopedRealTrafficNodes,
+    availableProxyNodes: parityBindingNodes,
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);

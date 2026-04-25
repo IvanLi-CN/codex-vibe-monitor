@@ -2,9 +2,11 @@
 
 ## 状态
 
-- Status: 已完成（5/5）
+- Status: superseded(#ngwdu)
 - Created: 2026-04-13
-- Last: 2026-04-13
+- Last: 2026-04-24
+
+> Superseded note: `#ngwdu` replaced this spec's owner-facing semantics. Binding-node dialogs no longer use group-scoped node health counts; they now show the same global real node-attempt health counts as Live / Settings while preserving this spec's snapshot fields.
 
 ## 背景 / 问题陈述
 

@@ -15,6 +15,7 @@ enum StartupBackfillTask {
     FailureClassification,
     UpstreamActivityLive,
     UpstreamActivityArchives,
+    PoolUpstreamNodeHealthArchives,
     HistoricalRollups,
 }
 
@@ -30,6 +31,7 @@ impl StartupBackfillTask {
             Self::FailureClassification,
             Self::UpstreamActivityLive,
             Self::UpstreamActivityArchives,
+            Self::PoolUpstreamNodeHealthArchives,
             Self::HistoricalRollups,
         ]
     }
@@ -45,6 +47,9 @@ impl StartupBackfillTask {
             Self::FailureClassification => STARTUP_BACKFILL_TASK_FAILURE_CLASSIFICATION,
             Self::UpstreamActivityLive => STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_LIVE,
             Self::UpstreamActivityArchives => STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES,
+            Self::PoolUpstreamNodeHealthArchives => {
+                STARTUP_BACKFILL_TASK_POOL_UPSTREAM_NODE_HEALTH_ARCHIVES
+            }
             Self::HistoricalRollups => STARTUP_BACKFILL_TASK_HISTORICAL_ROLLUPS,
         }
     }
@@ -60,6 +65,7 @@ impl StartupBackfillTask {
             Self::FailureClassification => "invocation failure classification",
             Self::UpstreamActivityLive => "upstream activity live rows",
             Self::UpstreamActivityArchives => "upstream activity archives",
+            Self::PoolUpstreamNodeHealthArchives => "pool upstream node health archives",
             Self::HistoricalRollups => "historical rollup materialization",
         }
     }
@@ -752,6 +758,39 @@ async fn run_startup_backfill_task(
                 format!(
                     "pending_accounts={pending_accounts} waiting_for_manifest_backfill={}",
                     summary.waiting_for_manifest_backfill
+                ),
+            ))
+        }
+        StartupBackfillTask::PoolUpstreamNodeHealthArchives => {
+            let _guard = state.hourly_rollup_sync_lock.lock().await;
+            let cache_summary = backfill_pool_upstream_node_health_archives(
+                &state.pool,
+                Some(1),
+                Some(Duration::from_secs(STARTUP_BACKFILL_RUN_BUDGET_SECS)),
+            )
+            .await?;
+            let hourly_summary = backfill_pool_upstream_node_health_hourly_archives(
+                &state.pool,
+                Some(1),
+                Some(Duration::from_secs(STARTUP_BACKFILL_RUN_BUDGET_SECS)),
+            )
+            .await?;
+            Ok((
+                StartupBackfillRunState {
+                    next_cursor_id: cursor_id,
+                    scanned: cache_summary.scanned_batches + hourly_summary.scanned_batches,
+                    updated: cache_summary.cached_rows + hourly_summary.materialized_rows,
+                    hit_scan_limit: cache_summary.hit_budget || hourly_summary.hit_budget,
+                    force_idle: cache_summary.pending_batches == 0
+                        && hourly_summary.pending_batches == 0,
+                    samples: Vec::new(),
+                },
+                format!(
+                    "pending_cache_batches={} materialized_cache_batches={} pending_hourly_batches={} materialized_hourly_batches={}",
+                    cache_summary.pending_batches,
+                    cache_summary.materialized_batches,
+                    hourly_summary.pending_batches,
+                    hourly_summary.materialized_batches,
                 ),
             ))
         }
