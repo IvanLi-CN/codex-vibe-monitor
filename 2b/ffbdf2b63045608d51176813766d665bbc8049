@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.50.2",
+  "base_stable_version": "1.50.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-25T16:35:27Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.50.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "e99d25733877c74d2c168af319f15a0d7fe748e4",
+  "pr_number": 366,
+  "pr_title": "fix(web): add grouped grid account status and tag badges",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.50.2",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.50.2",
+  "target_sha": "2bffbdf2b63045608d51176813766d665bbc8049",
+  "type_label": "type:patch"
+}
