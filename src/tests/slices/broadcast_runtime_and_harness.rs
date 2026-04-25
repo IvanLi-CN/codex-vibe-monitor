@@ -2863,10 +2863,16 @@ async fn forward_proxy_live_stats_use_real_pool_attempts_and_ignore_forward_prox
     )
     .await
     .expect("insert failed forward proxy attempt");
+    let recent_bucket_start =
+        align_bucket_epoch((Utc::now() - ChronoDuration::hours(1)).timestamp(), 3600, 0);
+    let recent_attempt_at = Utc
+        .timestamp_opt(recent_bucket_start + 20 * 60, 0)
+        .single()
+        .expect("recent attempt timestamp should be valid");
     seed_pool_upstream_attempt_at(
         &state.pool,
         "forward-proxy-live-real-success",
-        Utc::now() - ChronoDuration::minutes(2),
+        recent_attempt_at,
         Some(&manual_binding_key),
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
     )
@@ -2874,7 +2880,7 @@ async fn forward_proxy_live_stats_use_real_pool_attempts_and_ignore_forward_prox
     seed_pool_upstream_attempt_at(
         &state.pool,
         "forward-proxy-live-real-failure",
-        Utc::now() - ChronoDuration::minutes(1),
+        recent_attempt_at + ChronoDuration::minutes(10),
         Some(&manual_binding_key),
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
     )
@@ -3112,10 +3118,16 @@ async fn forward_proxy_binding_nodes_use_real_pool_attempts_and_ignore_forward_p
     )
     .await
     .expect("insert failed forward proxy attempt");
+    let recent_bucket_start =
+        align_bucket_epoch((Utc::now() - ChronoDuration::hours(1)).timestamp(), 3600, 0);
+    let recent_attempt_at = Utc
+        .timestamp_opt(recent_bucket_start + 25 * 60, 0)
+        .single()
+        .expect("recent binding attempt timestamp should be valid");
     seed_pool_upstream_attempt_at(
         &state.pool,
         "forward-proxy-binding-real-success",
-        Utc::now() - ChronoDuration::minutes(2),
+        recent_attempt_at,
         Some(&binding_key),
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
     )
@@ -3123,7 +3135,7 @@ async fn forward_proxy_binding_nodes_use_real_pool_attempts_and_ignore_forward_p
     seed_pool_upstream_attempt_at(
         &state.pool,
         "forward-proxy-binding-real-failure",
-        Utc::now() - ChronoDuration::minutes(1),
+        recent_attempt_at + ChronoDuration::minutes(10),
         Some(&binding_key),
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
     )
