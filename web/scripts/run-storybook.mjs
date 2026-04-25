@@ -1,13 +1,14 @@
 const defaultPort = '60082'
 const host = process.env.STORYBOOK_HOST || '127.0.0.1'
 const port = process.env.STORYBOOK_PORT || defaultPort
+const args = process.argv.slice(2)
 
 if (port === '6006') {
   console.error('Port 6006 is reserved for other worktrees; choose a different STORYBOOK_PORT.')
   process.exit(1)
 }
 
-const child = Bun.spawn(['storybook', 'dev', '--host', host, '--port', port, '--no-open'], {
+const child = Bun.spawn(['storybook', 'dev', '--host', host, '--port', port, '--no-open', ...args], {
   stdin: 'inherit',
   stdout: 'inherit',
   stderr: 'inherit',

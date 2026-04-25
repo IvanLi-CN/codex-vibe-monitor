@@ -172,17 +172,17 @@ export function InlineChartTooltipSurface({
       )}
     >
       <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/60">{activeTooltip.title}</div>
-      <dl className="mt-2 space-y-1.5">
+      <div className="mt-2 space-y-1.5">
         {activeTooltip.rows.map((row) => (
           <div key={`${row.label}-${row.value}`} className="flex items-start gap-2">
             <span className={cn('mt-[5px] h-1.5 w-1.5 shrink-0 rounded-full', toneClasses(row.tone))} aria-hidden="true" />
             <div className="min-w-0 flex-1">
-              <dt className="text-base-content/62">{row.label}</dt>
-              <dd className="mt-0.5 font-mono text-[12px] font-semibold tracking-tight text-base-content">{row.value}</dd>
+              <div className="text-base-content/62">{row.label}</div>
+              <div className="mt-0.5 font-mono text-[12px] font-semibold tracking-tight text-base-content">{row.value}</div>
             </div>
           </div>
         ))}
-      </dl>
+      </div>
     </div>
   ) : null
 

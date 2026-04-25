@@ -59,6 +59,7 @@ function buildMailboxManualTooltip(
       <div
         ref={valueRef}
         role="textbox"
+        aria-label={manualCopyLabel}
         aria-readonly="true"
         tabIndex={0}
         translate="no"
