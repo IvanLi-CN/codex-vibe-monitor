@@ -63,6 +63,7 @@ export function useUpstreamAccountCreateGroupDrafts(
     invalidateSingleOauthSessionForMetadataEdit,
     locale,
     oauthGroupName,
+    persistedGroupNoteSyncDrafts,
     deleteGroupNote,
     saveGroupNote,
     setGroupDraftBoundProxyKeys,
@@ -74,6 +75,7 @@ export function useUpstreamAccountCreateGroupDrafts(
     setGroupNoteBusy,
     setGroupNoteEditor,
     setGroupNoteError,
+    setPersistedGroupNoteSyncDrafts,
     setApiKeyGroupName,
     setBatchDefaultGroupName,
     setBatchRows,
@@ -143,8 +145,19 @@ export function useUpstreamAccountCreateGroupDrafts(
   }
   function resolvePendingGroupNoteForName(groupName: string) {
     const normalized = normalizeGroupName(groupName);
-    if (!normalized || isExistingGroup(groups, normalized)) return "";
+    if (!normalized) return "";
+    if (isExistingGroup(groups, normalized)) {
+      return persistedGroupNoteSyncDrafts[normalized]?.trim() ?? "";
+    }
     return groupDraftNotes[normalized]?.trim() ?? "";
+  }
+  function shouldIncludePendingGroupNoteForName(groupName: string) {
+    const normalized = normalizeGroupName(groupName);
+    if (!normalized) return false;
+    if (isExistingGroup(groups, normalized)) {
+      return normalized in persistedGroupNoteSyncDrafts;
+    }
+    return normalized in groupDraftNotes;
   }
   function resolvePendingGroupConcurrencyLimitForName(groupName: string) {
     const normalized = normalizeGroupName(groupName);
@@ -528,6 +541,12 @@ export function useUpstreamAccountCreateGroupDrafts(
         upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
         upstream429MaxRetries: normalizedUpstream429MaxRetries,
       });
+      if (groupNoteEditor.existing) {
+        setPersistedGroupNoteSyncDrafts((current: Record<string, string>) => ({
+          ...current,
+          [normalizedGroupName]: normalizedNote,
+        }));
+      }
       groupNoteEditor.onSaved?.(normalizedGroupName);
       if (shouldInvalidateSingleOauthSessionForGroupMetadataChange) {
         invalidateSingleOauthSessionForMetadataEdit();
@@ -550,6 +569,14 @@ export function useUpstreamAccountCreateGroupDrafts(
     try {
       await deleteGroupNote(normalizedGroupName);
       clearDraftGroupSettings(normalizedGroupName);
+      setPersistedGroupNoteSyncDrafts((current: Record<string, string>) => {
+        if (!(normalizedGroupName in current)) {
+          return current;
+        }
+        const next = { ...current };
+        delete next[normalizedGroupName];
+        return next;
+      });
       clearSelectedGroupReferences(normalizedGroupName);
       groupNoteEditor.onDeleted?.(normalizedGroupName);
       setGroupNoteEditor((current: GroupNoteEditorState) => ({
@@ -576,6 +603,7 @@ export function useUpstreamAccountCreateGroupDrafts(
     resolveGroupUpstream429RetryEnabledForName,
     resolveGroupUpstream429MaxRetriesForName,
     resolvePendingGroupNoteForName,
+    shouldIncludePendingGroupNoteForName,
     resolvePendingGroupConcurrencyLimitForName,
     resolvePendingGroupBoundProxyKeysForName,
     hasGroupSettings,

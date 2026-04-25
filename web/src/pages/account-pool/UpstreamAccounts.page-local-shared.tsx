@@ -1988,38 +1988,6 @@ function SharedUpstreamAccountDetailDrawerInner({
           pendingSaveSession.fallbackDraft,
           response,
         );
-        if (
-          selectedIdRef.current === source.id &&
-          activeDraftSessionKeyRef.current != null
-        ) {
-          const recentSaveResponseGuard = {
-            accountId: source.id,
-            sessionKey: saveDraftSessionKey,
-            startedDraft,
-            draft: responseDraft,
-            fallbackDraft: responseFallbackDraft,
-            retainedDraft: retainedServerDraft,
-          };
-          recentSaveResponseGuardsRef.current.set(
-            source.id,
-            recentSaveResponseGuard,
-          );
-        }
-        if (
-          selectedIdRef.current === source.id &&
-          saveDraftSessionKey != null &&
-          activeDraftSessionKeyRef.current === saveDraftSessionKey
-        ) {
-          draftBaselineRef.current = responseDraft;
-          latestServerDraftRef.current = responseDraft;
-          setDraft((current) =>
-            mergeDraftAfterAccountSave(
-              current,
-              saveStartedDraft,
-              responseDraft,
-            ),
-          );
-        }
       } catch (err) {
         if (handleNotFoundClose(source.id, err)) return;
         setActionError((current) => ({
