@@ -378,10 +378,7 @@ export function resolveRosterSummaryStatusBadges(
   if (enableBadge) badges.push(enableBadge)
 
   const syncBadge = createSyncStatusBadge(context.syncState, labels, false)
-  if (syncBadge) {
-    badges.push(syncBadge)
-    return badges
-  }
+  if (syncBadge) badges.push(syncBadge)
 
   const healthBadge = createHealthStatusBadge(
     context.healthStatus,
@@ -393,6 +390,8 @@ export function resolveRosterSummaryStatusBadges(
     badges.push(healthBadge)
     return badges
   }
+
+  if (syncBadge) return badges
 
   const workBadge = createWorkStatusBadge(
     context.availabilityBadge,

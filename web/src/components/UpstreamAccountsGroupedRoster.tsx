@@ -11,6 +11,7 @@ import {
   AccountPoolGroupSummary,
   type AccountPoolGroupSummaryLabels,
 } from './AccountPoolGroupSummary'
+import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Spinner } from './ui/spinner'
 import { cn } from '../lib/utils'

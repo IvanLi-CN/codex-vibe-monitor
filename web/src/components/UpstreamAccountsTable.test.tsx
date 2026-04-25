@@ -235,10 +235,23 @@ describe('UpstreamAccountsTable', () => {
       syncState: 'idle',
     }
 
+    const syncingHealthItem: UpstreamAccountSummary = {
+      ...syncingItem,
+      id: 93,
+      displayName: 'Sync health lane',
+      displayStatus: 'needs_reauth',
+      workStatus: 'degraded',
+      healthStatus: 'needs_reauth',
+      syncState: 'syncing',
+    }
+
     expect(resolveRosterSummaryStatusBadges(syncingItem, labels).map((badge) => badge.label)).toEqual([
       'Enabled',
       'Syncing',
     ])
+    expect(
+      resolveRosterSummaryStatusBadges(syncingHealthItem, labels).map((badge) => badge.label),
+    ).toEqual(['Enabled', 'Syncing', 'Needs reauth'])
     expect(
       resolveRosterSummaryStatusBadges(degradedHealthItem, labels).map((badge) => badge.label),
     ).toEqual(['Enabled', 'Upstream unavailable'])
