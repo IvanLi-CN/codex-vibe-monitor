@@ -1,4 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { expect, within } from 'storybook/test'
+import type { ComponentProps } from 'react'
 import type { AccountTagSummary, EffectiveRoutingRule, UpstreamAccountSummary } from '../lib/api'
 import { UpstreamAccountsGroupedRoster, type UpstreamAccountsGroupedRosterGroup } from './UpstreamAccountsGroupedRoster'
 
@@ -81,6 +83,7 @@ const rosterTags: AccountTagSummary[] = [
   { id: 1, name: 'vip', routingRule: defaultEffectiveRoutingRule },
   { id: 2, name: 'burst-safe', routingRule: defaultEffectiveRoutingRule },
   { id: 3, name: 'prod-apac', routingRule: defaultEffectiveRoutingRule },
+  { id: 4, name: 'priority-lane', routingRule: defaultEffectiveRoutingRule },
 ]
 
 function usage(requestCount: number, totalTokens: number, totalCost: number) {
@@ -230,11 +233,105 @@ const baseGroups = [
   ),
 ]
 
+const actionableStatusGroup = buildGroup(
+  'status-states',
+  'status-states',
+  [
+    makeItem(31, {
+      displayName: 'Working burst lane',
+      workStatus: 'working',
+      activeConversationCount: 3,
+      planType: 'team',
+      tags: rosterTags,
+    }),
+    makeItem(32, {
+      displayName: 'Temporary degraded lane',
+      workStatus: 'degraded',
+      planType: 'pro',
+      lastActionReasonMessage: 'Temporary route failures are reducing fresh assignment priority.',
+      lastActionReasonCode: 'upstream_http_502_temporary',
+      lastActionHttpStatus: 502,
+    }),
+    makeItem(33, {
+      displayName: 'Quota limited lane',
+      workStatus: 'rate_limited',
+      planType: 'free',
+      lastActionReasonMessage: '7d usage window is exhausted.',
+      lastActionReasonCode: 'upstream_http_429_quota_exhausted',
+      lastActionHttpStatus: 429,
+    }),
+    makeItem(34, {
+      displayName: 'Manual sync in progress',
+      displayStatus: 'syncing',
+      syncState: 'syncing',
+      workStatus: 'idle',
+      planType: 'team',
+      lastActionReasonMessage: 'Primary usage snapshot refresh is still running.',
+      lastActionReasonCode: 'manual_sync_started',
+      lastActionHttpStatus: null,
+    }),
+    makeItem(35, {
+      displayName: 'OAuth needs reauth',
+      displayStatus: 'needs_reauth',
+      healthStatus: 'needs_reauth',
+      workStatus: 'unavailable',
+      lastActionReasonMessage: 'Upstream session expired and requires a fresh login.',
+      lastActionReasonCode: 'reauth_required',
+      lastActionHttpStatus: 401,
+    }),
+    makeItem(36, {
+      displayName: 'Data plane unavailable',
+      displayStatus: 'upstream_unavailable',
+      healthStatus: 'upstream_unavailable',
+      workStatus: 'unavailable',
+      lastActionReasonMessage: 'Regional data plane is overloaded right now.',
+      lastActionReasonCode: 'upstream_server_overloaded',
+      lastActionHttpStatus: 503,
+    }),
+    makeItem(37, {
+      displayName: 'Upstream rejected',
+      displayStatus: 'upstream_rejected',
+      healthStatus: 'upstream_rejected',
+      workStatus: 'unavailable',
+      lastActionReasonMessage: 'The current token scope was rejected by the upstream gateway.',
+      lastActionReasonCode: 'upstream_http_403_scope_rejected',
+      lastActionHttpStatus: 403,
+    }),
+    makeItem(38, {
+      displayName: 'Disabled fallback key',
+      enabled: false,
+      enableStatus: 'disabled',
+      displayStatus: 'disabled',
+      workStatus: 'idle',
+      healthStatus: 'normal',
+      syncState: 'idle',
+      planType: 'pro',
+      kind: 'api_key_codex',
+    }),
+    makeItem(39, {
+      displayName: 'Other error account',
+      displayStatus: 'error_other',
+      healthStatus: 'error_other',
+      workStatus: 'unavailable',
+      lastActionReasonMessage: 'Unknown bridge exception surfaced during the latest call.',
+      lastActionReasonCode: 'bridge_exception',
+      lastActionHttpStatus: 500,
+    }),
+  ],
+  {
+    concurrencyLimit: 4,
+    nodeShuntEnabled: false,
+    boundProxyLabels: ['JP Edge 01'],
+  },
+)
+
 const meta = {
   title: 'Account Pool/Components/UpstreamAccountsGroupedRoster',
   component: UpstreamAccountsGroupedRoster,
+  tags: ['autodocs'],
   parameters: {
     layout: 'fullscreen',
+    viewport: { defaultViewport: 'desktop1660' },
   },
   args: {
     selectedId: 1,
@@ -268,6 +365,54 @@ const meta = {
 export default meta
 
 type Story = StoryObj<typeof meta>
+type GroupedRosterStoryArgs = NonNullable<Story['args']>
+type GroupedRosterProps = ComponentProps<typeof UpstreamAccountsGroupedRoster>
+
+function renderWithinWidth(args: GroupedRosterStoryArgs, widthPx: number) {
+  const resolvedArgs = { ...meta.args, ...args } as GroupedRosterProps
+  return (
+    <div className="mx-auto w-full py-6" style={{ maxWidth: `${widthPx}px` }}>
+      <UpstreamAccountsGroupedRoster {...resolvedArgs} />
+    </div>
+  )
+}
+
+function expectActionableStatusBadges(canvasElement: HTMLElement) {
+  const canvas = within(canvasElement)
+
+  return Promise.all([
+    expect(canvas.getByText('Working 3')).toBeInTheDocument(),
+    expect(canvas.getByText('Degraded')).toBeInTheDocument(),
+    expect(canvas.getByText('Rate limited')).toBeInTheDocument(),
+    expect(canvas.getByText('Syncing')).toBeInTheDocument(),
+    expect(canvas.getByText('Needs reauth')).toBeInTheDocument(),
+    expect(canvas.getByText('Upstream unavailable')).toBeInTheDocument(),
+    expect(canvas.getByText('Upstream rejected')).toBeInTheDocument(),
+    expect(canvas.getByText('Other error')).toBeInTheDocument(),
+    expect(canvas.getByText('Disabled')).toBeInTheDocument(),
+    expect(canvas.getByText('vip')).toBeInTheDocument(),
+    expect(canvas.getByText('burst-safe')).toBeInTheDocument(),
+    expect(canvas.getByText('prod-apac')).toBeInTheDocument(),
+    expect(canvas.getByText('priority-lane')).toBeInTheDocument(),
+  ]).then(() => {
+    expect(canvas.queryByText('Enabled')).toBeNull()
+    expect(canvas.queryByText('Idle')).toBeNull()
+    expect(canvas.queryByText('Normal')).toBeNull()
+    expect(canvas.queryByText('Sync idle')).toBeNull()
+    expect(canvas.queryByText('+1')).toBeNull()
+  })
+}
+
+async function expectGridColumnCount(canvasElement: HTMLElement, expectedCount: number) {
+  const grid = canvasElement.querySelector<HTMLElement>('[data-testid="upstream-accounts-group-grid-row"]')
+  expect(grid).not.toBeNull()
+  const cards = Array.from(
+    canvasElement.querySelectorAll<HTMLElement>('[data-testid="upstream-accounts-group-grid-card"]'),
+  )
+  expect(cards.length).toBeGreaterThan(0)
+  const distinctColumns = new Set(cards.map((card) => Math.round(card.getBoundingClientRect().left)))
+  expect(distinctColumns.size).toBe(expectedCount)
+}
 
 export const Overview: Story = {
   args: {
@@ -288,6 +433,46 @@ export const GridCards: Story = {
     selectionMode: 'none',
     onToggleSelected: undefined,
     onToggleSelectAllVisible: undefined,
+  },
+}
+
+export const ActionableStatusGridCards: Story = {
+  args: {
+    groups: [actionableStatusGroup],
+    memberLayout: 'grid',
+    selectionMode: 'none',
+    onToggleSelected: undefined,
+    onToggleSelectAllVisible: undefined,
+  },
+  play: async ({ canvasElement }) => {
+    await expectActionableStatusBadges(canvasElement)
+  },
+}
+
+export const ActionableStatusGridCardsThreeColumns: Story = {
+  args: ActionableStatusGridCards.args,
+  render: (args) => renderWithinWidth(args, 1440),
+  play: async ({ canvasElement }) => {
+    await expectActionableStatusBadges(canvasElement)
+    await expectGridColumnCount(canvasElement, 3)
+  },
+}
+
+export const ActionableStatusGridCardsTwoColumns: Story = {
+  args: ActionableStatusGridCards.args,
+  render: (args) => renderWithinWidth(args, 1220),
+  play: async ({ canvasElement }) => {
+    await expectActionableStatusBadges(canvasElement)
+    await expectGridColumnCount(canvasElement, 2)
+  },
+}
+
+export const ActionableStatusGridCardsOneColumn: Story = {
+  args: ActionableStatusGridCards.args,
+  render: (args) => renderWithinWidth(args, 980),
+  play: async ({ canvasElement }) => {
+    await expectActionableStatusBadges(canvasElement)
+    await expectGridColumnCount(canvasElement, 1)
   },
 }
 
@@ -350,4 +535,15 @@ export const VirtualizedLargeRoster: Story = {
       )
     }),
   },
+}
+
+export const VirtualizedLargeGridRoster: Story = {
+  args: {
+    ...VirtualizedLargeRoster.args,
+    memberLayout: 'grid',
+    selectionMode: 'none',
+    onToggleSelected: undefined,
+    onToggleSelectAllVisible: undefined,
+  },
+  render: (args) => renderWithinWidth(args, 1440),
 }
