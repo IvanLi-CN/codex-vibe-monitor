@@ -363,6 +363,10 @@ struct AccountActiveConversationCountRow {
 #[derive(Debug, Clone, FromRow)]
 struct TagRow {
     name: String,
+    #[sqlx(default)]
+    system_key: Option<String>,
+    #[sqlx(default)]
+    protected: i64,
     guard_enabled: i64,
     lookback_hours: Option<i64>,
     max_conversations: Option<i64>,
@@ -378,6 +382,10 @@ struct AccountTagRow {
     account_id: i64,
     tag_id: i64,
     name: String,
+    #[sqlx(default)]
+    system_key: Option<String>,
+    #[sqlx(default)]
+    protected: i64,
     guard_enabled: i64,
     lookback_hours: Option<i64>,
     max_conversations: Option<i64>,
@@ -392,6 +400,10 @@ struct AccountTagRow {
 struct TagListRow {
     id: i64,
     name: String,
+    #[sqlx(default)]
+    system_key: Option<String>,
+    #[sqlx(default)]
+    protected: i64,
     guard_enabled: i64,
     lookback_hours: Option<i64>,
     max_conversations: Option<i64>,

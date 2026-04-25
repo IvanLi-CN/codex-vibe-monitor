@@ -101,6 +101,8 @@ export interface AccountTagSummary {
   id: number;
   name: string;
   routingRule: TagRoutingRule;
+  systemKey?: string | null;
+  protected?: boolean;
 }
 
 export interface TagSummary {
@@ -110,6 +112,8 @@ export interface TagSummary {
   accountCount: number;
   groupCount: number;
   updatedAt: string;
+  systemKey?: string | null;
+  protected?: boolean;
 }
 
 export type TagDetail = TagSummary;
@@ -810,6 +814,8 @@ function normalizeAccountTagSummary(raw: unknown): AccountTagSummary | null {
     id,
     name,
     routingRule: normalizeTagRoutingRule(payload.routingRule),
+    systemKey: typeof payload.systemKey === "string" ? payload.systemKey : null,
+    protected: payload.protected === true,
   };
 }
 
@@ -861,6 +867,8 @@ function normalizeTagSummary(raw: unknown): TagSummary | null {
     accountCount,
     groupCount,
     updatedAt,
+    systemKey: typeof payload.systemKey === "string" ? payload.systemKey : null,
+    protected: payload.protected === true,
   };
 }
 

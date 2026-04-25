@@ -1,3 +1,102 @@
+const GPT55_UNSUPPORTED_SYSTEM_TAG_KEY: &str = "unsupported_model:gpt-5.5";
+const GPT55_UNSUPPORTED_SYSTEM_TAG_NAME: &str = "不支持 gpt-5.5";
+
+async fn ensure_gpt55_unsupported_system_tag(pool: &Pool<Sqlite>) -> Result<()> {
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        UPDATE pool_tags
+        SET system_key = ?2,
+            protected = 1,
+            updated_at = ?3
+        WHERE name = ?1
+          AND system_key IS NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM pool_tags existing WHERE existing.system_key = ?2
+          )
+        "#,
+    )
+    .bind(GPT55_UNSUPPORTED_SYSTEM_TAG_NAME)
+    .bind(GPT55_UNSUPPORTED_SYSTEM_TAG_KEY)
+    .bind(&now_iso)
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO pool_tags (
+            name, system_key, protected, guard_enabled, lookback_hours, max_conversations,
+            allow_cut_out, allow_cut_in, priority_tier, fast_mode_rewrite_mode, concurrency_limit,
+            created_at, updated_at
+        )
+        VALUES (?1, ?2, 1, 0, NULL, NULL, 1, 1, 'normal', 'keep_original', 0, ?3, ?3)
+        "#,
+    )
+    .bind(GPT55_UNSUPPORTED_SYSTEM_TAG_NAME)
+    .bind(GPT55_UNSUPPORTED_SYSTEM_TAG_KEY)
+    .bind(&now_iso)
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        UPDATE pool_tags
+        SET name = ?1,
+            protected = 1,
+            updated_at = ?3
+        WHERE system_key = ?2
+        "#,
+    )
+    .bind(GPT55_UNSUPPORTED_SYSTEM_TAG_NAME)
+    .bind(GPT55_UNSUPPORTED_SYSTEM_TAG_KEY)
+    .bind(&now_iso)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn ensure_account_has_gpt55_unsupported_tag(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+) -> Result<()> {
+    ensure_gpt55_unsupported_system_tag(pool).await?;
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO pool_upstream_account_tags (account_id, tag_id, created_at, updated_at)
+        SELECT ?1, tag.id, ?3, ?3
+        FROM pool_tags tag
+        WHERE tag.system_key = ?2
+        "#,
+    )
+    .bind(account_id)
+    .bind(GPT55_UNSUPPORTED_SYSTEM_TAG_KEY)
+    .bind(&now_iso)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn account_has_gpt55_unsupported_tag(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+) -> Result<bool> {
+    let count = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM pool_upstream_account_tags link
+        INNER JOIN pool_tags tag ON tag.id = link.tag_id
+        WHERE link.account_id = ?1
+          AND tag.system_key = ?2
+        "#,
+    )
+    .bind(account_id)
+    .bind(GPT55_UNSUPPORTED_SYSTEM_TAG_KEY)
+    .fetch_one(pool)
+    .await?;
+    Ok(count > 0)
+}
+
 async fn sync_upstream_account_by_id(
     state: &AppState,
     id: i64,
@@ -1435,6 +1534,8 @@ async fn load_account_tag_map(
             link.account_id,
             tag.id AS tag_id,
             tag.name,
+            tag.system_key,
+            tag.protected,
             tag.guard_enabled,
             tag.lookback_hours,
             tag.max_conversations,
@@ -1477,6 +1578,8 @@ async fn load_tags_by_ids(pool: &Pool<Sqlite>, tag_ids: &[i64]) -> Result<Vec<Ta
         r#"
         SELECT
             name,
+            system_key,
+            protected,
             guard_enabled,
             lookback_hours,
             max_conversations,
@@ -1508,6 +1611,8 @@ async fn load_tag_row(pool: &Pool<Sqlite>, tag_id: i64) -> Result<Option<TagRow>
         r#"
         SELECT
             name,
+            system_key,
+            protected,
             guard_enabled,
             lookback_hours,
             max_conversations,
@@ -1554,6 +1659,8 @@ async fn load_tag_summaries(
         SELECT
             tag.id,
             tag.name,
+            tag.system_key,
+            tag.protected,
             tag.guard_enabled,
             tag.lookback_hours,
             tag.max_conversations,
@@ -1596,7 +1703,7 @@ async fn load_tag_summaries(
             .push_bind(if allow_cut_out { 1 } else { 0 });
     }
     query.push(
-        " GROUP BY tag.id, tag.name, tag.guard_enabled, tag.lookback_hours, tag.max_conversations, tag.allow_cut_out, tag.allow_cut_in, tag.priority_tier, tag.fast_mode_rewrite_mode, tag.concurrency_limit, tag.updated_at",
+        " GROUP BY tag.id, tag.name, tag.system_key, tag.protected, tag.guard_enabled, tag.lookback_hours, tag.max_conversations, tag.allow_cut_out, tag.allow_cut_in, tag.priority_tier, tag.fast_mode_rewrite_mode, tag.concurrency_limit, tag.updated_at",
     );
     if let Some(has_accounts) = params.has_accounts {
         query.push(if has_accounts {
@@ -1685,6 +1792,18 @@ async fn persist_tag_update(
 }
 
 async fn delete_tag_by_id(pool: &Pool<Sqlite>, tag_id: i64) -> Result<(), (StatusCode, String)> {
+    let is_protected = sqlx::query_scalar::<_, i64>(
+        "SELECT protected FROM pool_tags WHERE id = ?1",
+    )
+    .bind(tag_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(internal_error_tuple)?
+    .ok_or_else(|| (StatusCode::NOT_FOUND, "tag not found".to_string()))?;
+    if is_protected != 0 {
+        return Err((StatusCode::CONFLICT, "system tag cannot be deleted".to_string()));
+    }
+
     let linked_account_count = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM pool_upstream_account_tags WHERE tag_id = ?1",
     )

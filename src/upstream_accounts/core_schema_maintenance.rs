@@ -464,6 +464,27 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_integer_column_with_default(pool, "pool_tags", "concurrency_limit", "0")
         .await
         .context("failed to ensure pool_tags.concurrency_limit")?;
+    ensure_nullable_text_column(pool, "pool_tags", "system_key")
+        .await
+        .context("failed to ensure pool_tags.system_key")?;
+    ensure_integer_column_with_default(pool, "pool_tags", "protected", "0")
+        .await
+        .context("failed to ensure pool_tags.protected")?;
+
+    sqlx::query(
+        r#"
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_pool_tags_system_key
+        ON pool_tags (system_key)
+        WHERE system_key IS NOT NULL
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure idx_pool_tags_system_key")?;
+
+    ensure_gpt55_unsupported_system_tag(pool)
+        .await
+        .context("failed to ensure gpt-5.5 unsupported system tag")?;
 
     sqlx::query(
         r#"
