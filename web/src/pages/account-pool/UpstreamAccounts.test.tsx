@@ -1095,6 +1095,11 @@ function mockRosterFreshnessPage(options?: {
         status: "active",
         displayStatus: "active",
         enabled: true,
+        enableStatus: "enabled",
+        workStatus: "working",
+        healthStatus: "normal",
+        syncState: "idle",
+        activeConversationCount: 2,
         isMother: false,
         tags: [],
         effectiveRoutingRule: defaultEffectiveRoutingRule,
@@ -1108,6 +1113,11 @@ function mockRosterFreshnessPage(options?: {
         status: "active",
         displayStatus: "active",
         enabled: true,
+        enableStatus: "enabled",
+        workStatus: "idle",
+        healthStatus: "normal",
+        syncState: "idle",
+        activeConversationCount: 0,
         isMother: false,
         tags: [],
         effectiveRoutingRule: defaultEffectiveRoutingRule,
@@ -1323,6 +1333,7 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
           ),
       ),
     ).toBeFalsy()
+    expect(groupedRoster?.textContent ?? '').toMatch(/Working 2|工作中 2|工作 2/i)
     expect(
       host?.querySelector('[data-testid="upstream-accounts-pagination-footer"]'),
     ).toBeNull()

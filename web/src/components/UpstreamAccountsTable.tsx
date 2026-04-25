@@ -258,6 +258,189 @@ export function resolveAvailabilityBadge(
   return null
 }
 
+type RosterStatusBadgeVariant =
+  | 'success'
+  | 'secondary'
+  | 'warning'
+  | 'error'
+  | 'info'
+
+export type RosterStatusBadge = {
+  key: 'enable' | 'sync' | 'health' | 'work'
+  label: string
+  variant: RosterStatusBadgeVariant
+  title?: string
+}
+
+type RosterStatusBadgeContext = {
+  enableStatus: string
+  syncState: string
+  healthStatus: string
+  availabilityBadge: ReturnType<typeof resolveAvailabilityBadge>
+  healthBadgeTitle?: string
+}
+
+function resolveRosterStatusBadgeContext(
+  item: UpstreamAccountSummary,
+  labels: UpstreamAccountsTableProps['labels'],
+): RosterStatusBadgeContext {
+  const enableStatus = accountEnableStatus(item)
+  const syncState = accountSyncState(item)
+  const healthStatus = accountHealthStatus(item)
+  const latestActionTitle = buildLatestActionTitle(item, labels)
+
+  return {
+    enableStatus,
+    syncState,
+    healthStatus,
+    availabilityBadge: resolveAvailabilityBadge(item, labels),
+    healthBadgeTitle:
+      healthStatus !== 'normal'
+        ? item.lastActionReasonMessage ?? item.lastError ?? latestActionTitle ?? undefined
+        : undefined,
+  }
+}
+
+function createEnableStatusBadge(
+  status: string,
+  labels: UpstreamAccountsTableProps['labels'],
+  includeEnabled: boolean,
+): RosterStatusBadge | null {
+  if (status === 'enabled' && !includeEnabled) return null
+  return {
+    key: 'enable',
+    label: labels.enableStatus(status),
+    variant: enableBadgeVariant(status),
+  }
+}
+
+function createSyncStatusBadge(
+  status: string,
+  labels: UpstreamAccountsTableProps['labels'],
+  includeIdle: boolean,
+): RosterStatusBadge | null {
+  if (status === 'idle' && !includeIdle) return null
+  return {
+    key: 'sync',
+    label: labels.syncState(status),
+    variant: syncBadgeVariant(status),
+  }
+}
+
+function createHealthStatusBadge(
+  status: string,
+  title: string | undefined,
+  labels: UpstreamAccountsTableProps['labels'],
+  includeNormal: boolean,
+): RosterStatusBadge | null {
+  if (status === 'normal' && !includeNormal) return null
+  return {
+    key: 'health',
+    label: labels.healthStatus(status),
+    variant: healthBadgeVariant(status),
+    title,
+  }
+}
+
+function createWorkStatusBadge(
+  availabilityBadge: ReturnType<typeof resolveAvailabilityBadge>,
+  labels: UpstreamAccountsTableProps['labels'],
+  options: {
+    includeIdle: boolean
+    includeUnavailable: boolean
+  },
+): RosterStatusBadge | null {
+  if (!availabilityBadge) return null
+  if (availabilityBadge.label === labels.workStatus('idle') && !options.includeIdle) {
+    return null
+  }
+  if (
+    availabilityBadge.label === labels.workStatus('unavailable') &&
+    !options.includeUnavailable
+  ) {
+    return null
+  }
+  return {
+    key: 'work',
+    label: availabilityBadge.label,
+    variant: availabilityBadge.variant,
+  }
+}
+
+export function resolveRosterSummaryStatusBadges(
+  item: UpstreamAccountSummary,
+  labels: UpstreamAccountsTableProps['labels'],
+): RosterStatusBadge[] {
+  const context = resolveRosterStatusBadgeContext(item, labels)
+  const badges: RosterStatusBadge[] = []
+
+  const enableBadge = createEnableStatusBadge(context.enableStatus, labels, true)
+  if (enableBadge) badges.push(enableBadge)
+
+  const syncBadge = createSyncStatusBadge(context.syncState, labels, false)
+  if (syncBadge) badges.push(syncBadge)
+
+  const healthBadge = createHealthStatusBadge(
+    context.healthStatus,
+    context.healthBadgeTitle,
+    labels,
+    false,
+  )
+  if (healthBadge) {
+    badges.push(healthBadge)
+    return badges
+  }
+
+  if (syncBadge) return badges
+
+  const workBadge = createWorkStatusBadge(
+    context.availabilityBadge,
+    labels,
+    {
+      includeIdle: true,
+      includeUnavailable: true,
+    },
+  )
+  if (workBadge) badges.push(workBadge)
+
+  return badges
+}
+
+export function resolveRosterActionableStatusBadges(
+  item: UpstreamAccountSummary,
+  labels: UpstreamAccountsTableProps['labels'],
+): RosterStatusBadge[] {
+  const context = resolveRosterStatusBadgeContext(item, labels)
+
+  const disabledBadge = createEnableStatusBadge(
+    context.enableStatus,
+    labels,
+    false,
+  )
+  if (disabledBadge) return [disabledBadge]
+
+  const syncBadge = createSyncStatusBadge(context.syncState, labels, false)
+  if (syncBadge) return [syncBadge]
+
+  const healthBadge = createHealthStatusBadge(
+    context.healthStatus,
+    context.healthBadgeTitle,
+    labels,
+    false,
+  )
+  if (healthBadge) return [healthBadge]
+
+  const workBadge = createWorkStatusBadge(
+    context.availabilityBadge,
+    labels,
+    {
+      includeIdle: false,
+      includeUnavailable: false,
+    },
+  )
+  return workBadge ? [workBadge] : []
+}
+
 export function healthBadgeVariant(status: string): 'warning' | 'error' | 'secondary' {
   if (status === 'upstream_unavailable') return 'warning'
   if (
@@ -311,6 +494,24 @@ export function renderTagBadges(tags?: AccountTagSummary[] | null) {
   return (
     <>
       {visible.map((tag) => (
+        <Badge
+          key={tag.id}
+          variant="secondary"
+          className="min-w-0 max-w-[7.5rem] truncate border-base-300/90 bg-base-200/90 px-2 py-px text-[11px] font-medium leading-4 text-base-content/92"
+          title={tag.name}
+        >
+          {tag.name}
+        </Badge>
+      ))}
+    </>
+  )
+}
+
+export function renderAllTagBadges(tags?: AccountTagSummary[] | null) {
+  const safeTags = tags ?? []
+  return (
+    <>
+      {safeTags.map((tag) => (
         <Badge
           key={tag.id}
           variant="secondary"
@@ -842,16 +1043,9 @@ export function UpstreamAccountsTable({
               Number.isFinite(item.secondaryWindow.windowDurationMins) &&
               Math.round(item.secondaryWindow.windowDurationMins) !== 10_080
             const selected = item.id === selectedId
-            const enableStatus = accountEnableStatus(item)
-            const healthStatus = accountHealthStatus(item)
-            const syncState = accountSyncState(item)
-            const availabilityBadge = resolveAvailabilityBadge(item, labels)
             const routingBlockMessage = item.routingBlockReasonMessage?.trim() || null
             const latestActionTitle = buildLatestActionTitle(item, labels)
-            const healthBadgeTitle =
-              healthStatus !== 'normal'
-                ? item.lastActionReasonMessage ?? item.lastError ?? latestActionTitle
-                : undefined
+            const statusBadges = resolveRosterSummaryStatusBadges(item, labels)
             const primaryWindowTitle = [item.primaryWindow?.limitText, primaryResetText].filter(Boolean).join(' · ') || undefined
             const secondaryWindowTitle =
               [item.secondaryWindow?.limitText, secondaryResetText].filter(Boolean).join(' · ') || undefined
@@ -900,18 +1094,16 @@ export function UpstreamAccountsTable({
                         {item.duplicateInfo
                           ? compactBadge(labels.duplicate, 'warning')
                           : null}
-                        {compactBadge(labels.enableStatus(enableStatus), enableBadgeVariant(enableStatus))}
-                        {availabilityBadge
-                          ? compactBadge(availabilityBadge.label, availabilityBadge.variant)
-                          : null}
-                        {syncState === 'syncing'
-                          ? compactBadge(labels.syncState(syncState), syncBadgeVariant(syncState))
-                          : null}
-                        {healthStatus !== 'normal'
-                          ? compactBadge(labels.healthStatus(healthStatus), healthBadgeVariant(healthStatus), {
-                            title: healthBadgeTitle ?? undefined,
-                          })
-                          : null}
+                        {statusBadges.map((badge) => (
+                          <Badge
+                            key={`${badge.key}:${badge.label}`}
+                            variant={badge.variant}
+                            className="shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4"
+                            title={badge.title}
+                          >
+                            {badge.label}
+                          </Badge>
+                        ))}
                         {compactBadge(kindLabel(item, labels), 'secondary')}
                         {item.compactSupport?.status === 'unsupported' && labels.compactSupport?.(item)
                           ? compactBadge(

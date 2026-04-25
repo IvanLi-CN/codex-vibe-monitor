@@ -8,7 +8,11 @@ import type {
   EffectiveRoutingRule,
   UpstreamAccountSummary,
 } from '../lib/api'
-import { UpstreamAccountsTable } from './UpstreamAccountsTable'
+import {
+  UpstreamAccountsTable,
+  resolveRosterActionableStatusBadges,
+  resolveRosterSummaryStatusBadges,
+} from './UpstreamAccountsTable'
 
 const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
   guardEnabled: false,
@@ -201,6 +205,81 @@ function renderInteractiveTable(
 }
 
 describe('UpstreamAccountsTable', () => {
+  it('keeps summary row badges aligned with the pre-existing sync/health precedence', () => {
+    const syncingItem: UpstreamAccountSummary = {
+      id: 91,
+      kind: 'oauth_codex',
+      provider: 'codex',
+      displayName: 'Syncing lane',
+      groupName: 'prod',
+      isMother: false,
+      status: 'active',
+      displayStatus: 'syncing',
+      enabled: true,
+      enableStatus: 'enabled',
+      workStatus: 'working',
+      healthStatus: 'normal',
+      syncState: 'syncing',
+      activeConversationCount: 0,
+      tags: [],
+      effectiveRoutingRule: defaultEffectiveRoutingRule,
+    }
+
+    const degradedHealthItem: UpstreamAccountSummary = {
+      ...syncingItem,
+      id: 92,
+      displayName: 'Health lane',
+      displayStatus: 'upstream_unavailable',
+      workStatus: 'degraded',
+      healthStatus: 'upstream_unavailable',
+      syncState: 'idle',
+    }
+
+    const syncingHealthItem: UpstreamAccountSummary = {
+      ...syncingItem,
+      id: 93,
+      displayName: 'Sync health lane',
+      displayStatus: 'needs_reauth',
+      workStatus: 'degraded',
+      healthStatus: 'needs_reauth',
+      syncState: 'syncing',
+    }
+
+    expect(resolveRosterSummaryStatusBadges(syncingItem, labels).map((badge) => badge.label)).toEqual([
+      'Enabled',
+      'Syncing',
+    ])
+    expect(
+      resolveRosterSummaryStatusBadges(syncingHealthItem, labels).map((badge) => badge.label),
+    ).toEqual(['Enabled', 'Syncing', 'Needs reauth'])
+    expect(
+      resolveRosterSummaryStatusBadges(degradedHealthItem, labels).map((badge) => badge.label),
+    ).toEqual(['Enabled', 'Upstream unavailable'])
+  })
+
+  it('suppresses generic unavailable badges in actionable grid resolution', () => {
+    const unavailableItem: UpstreamAccountSummary = {
+      id: 93,
+      kind: 'oauth_codex',
+      provider: 'codex',
+      displayName: 'Unavailable lane',
+      groupName: 'prod',
+      isMother: false,
+      status: 'active',
+      displayStatus: 'active',
+      enabled: true,
+      enableStatus: 'enabled',
+      workStatus: 'unavailable',
+      healthStatus: 'normal',
+      syncState: 'idle',
+      activeConversationCount: 0,
+      tags: [],
+      effectiveRoutingRule: defaultEffectiveRoutingRule,
+    }
+
+    expect(resolveRosterActionableStatusBadges(unavailableItem, labels)).toEqual([])
+  })
+
   it('renders a blocking loading shell when the current query is still pending', () => {
     const html = renderToStaticMarkup(
       <UpstreamAccountsTable

@@ -11,6 +11,7 @@ import {
   AccountPoolGroupSummary,
   type AccountPoolGroupSummaryLabels,
 } from './AccountPoolGroupSummary'
+import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Spinner } from './ui/spinner'
 import { cn } from '../lib/utils'
@@ -20,24 +21,20 @@ import type { AccountPoolGroupSummaryData } from '../lib/accountPoolGroups'
 import {
   CompactTimestampLine,
   CompactWindowLine,
-  accountEnableStatus,
-  accountHealthStatus,
-  accountSyncState,
   buildLatestActionSummary,
   buildLatestActionTitle,
   compactBadge,
-  enableBadgeVariant,
   formatDateTime,
   formatWindowShortLabel,
   handleRowKeyDown,
-  healthBadgeVariant,
   kindLabel,
+  renderAllTagBadges,
   renderTagBadges,
   renderTagOverflowBadge,
-  resolveAvailabilityBadge,
+  resolveRosterActionableStatusBadges,
+  resolveRosterSummaryStatusBadges,
   resolveCurrentForwardProxyBadgeLabel,
   resolveCurrentForwardProxyBadgeVariant,
-  syncBadgeVariant,
   type UpstreamAccountsTableLabels,
   windowPercent,
 } from './UpstreamAccountsTable'
@@ -47,7 +44,7 @@ const GROUP_CARD_VERTICAL_GAP_PX = 16
 const GROUP_SUMMARY_ESTIMATE_PX = 176
 const GROUP_MEMBER_ROW_ESTIMATE_PX = 104
 const GROUP_MEMBER_ROW_GAP_PX = 8
-const GROUP_MEMBER_GRID_CARD_ESTIMATE_PX = 144
+const GROUP_MEMBER_GRID_CARD_ESTIMATE_PX = 208
 const GROUP_MEMBER_GRID_GAP_PX = 12
 const GROUP_MEMBER_GRID_TWO_COLUMN_BREAKPOINT_PX = 960
 const GROUP_MEMBER_GRID_THREE_COLUMN_BREAKPOINT_PX = 1040
@@ -236,16 +233,9 @@ function GroupMemberRow({
     item.secondaryWindow != null &&
     Number.isFinite(item.secondaryWindow.windowDurationMins) &&
     Math.round(item.secondaryWindow.windowDurationMins) !== 10_080
-  const enableStatus = accountEnableStatus(item)
-  const healthStatus = accountHealthStatus(item)
-  const syncState = accountSyncState(item)
-  const availabilityBadge = resolveAvailabilityBadge(item, labels)
   const routingBlockMessage = item.routingBlockReasonMessage?.trim() || null
   const latestActionTitle = buildLatestActionTitle(item, labels)
-  const healthBadgeTitle =
-    healthStatus !== 'normal'
-      ? item.lastActionReasonMessage ?? item.lastError ?? latestActionTitle
-      : undefined
+  const statusBadges = resolveRosterSummaryStatusBadges(item, labels)
   const primaryWindowTitle = [item.primaryWindow?.limitText, primaryResetText].filter(Boolean).join(' · ') || undefined
   const secondaryWindowTitle =
     [item.secondaryWindow?.limitText, secondaryResetText].filter(Boolean).join(' · ') || undefined
@@ -298,18 +288,16 @@ function GroupMemberRow({
                   </div>
                 ) : null}
                 {item.duplicateInfo ? compactBadge(labels.duplicate, 'warning') : null}
-                {compactBadge(labels.enableStatus(enableStatus), enableBadgeVariant(enableStatus))}
-                {availabilityBadge
-                  ? compactBadge(availabilityBadge.label, availabilityBadge.variant)
-                  : null}
-                {syncState === 'syncing'
-                  ? compactBadge(labels.syncState(syncState), syncBadgeVariant(syncState))
-                  : null}
-                {healthStatus !== 'normal'
-                  ? compactBadge(labels.healthStatus(healthStatus), healthBadgeVariant(healthStatus), {
-                      title: healthBadgeTitle ?? undefined,
-                    })
-                  : null}
+                {statusBadges.map((badge) => (
+                  <Badge
+                    key={`${badge.key}:${badge.label}`}
+                    variant={badge.variant}
+                    className="shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4"
+                    title={badge.title}
+                  >
+                    {badge.label}
+                  </Badge>
+                ))}
                 {compactBadge(kindLabel(item, labels), 'secondary')}
                 {showPlanBadge && item.planType && planBadge
                   ? compactBadge(item.planType, planBadge.variant, {
@@ -436,6 +424,7 @@ function GroupMemberGridCard({
     formatWindowShortLabel(item.secondaryWindow?.windowDurationMins) ?? labels.secondaryShort.toUpperCase()
   const showPlanBadge = shouldShowPlanBadge(item.planType)
   const planBadge = showPlanBadge ? upstreamPlanBadgeRecipe(item.planType) : null
+  const actionableStatusBadges = resolveRosterActionableStatusBadges(item, labels)
 
   return (
     <div
@@ -475,7 +464,22 @@ function GroupMemberGridCard({
             : showPlanBadge && item.planType
               ? compactBadge(item.planType, 'accent', { title: item.planType })
               : null}
+          {actionableStatusBadges.map((badge) => (
+            <Badge
+              key={`${badge.key}:${badge.label}`}
+              variant={badge.variant}
+              className="shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4"
+              title={badge.title}
+            >
+              {badge.label}
+            </Badge>
+          ))}
         </div>
+        {item.tags && item.tags.length > 0 ? (
+          <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1">
+            {renderAllTagBadges(item.tags)}
+          </div>
+        ) : null}
       </div>
       <div className="mt-3 space-y-1.5">
         <CompactWindowLine
