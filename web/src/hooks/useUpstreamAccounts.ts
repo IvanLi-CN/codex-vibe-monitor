@@ -12,6 +12,7 @@ import {
   fetchBulkUpstreamAccountSyncJob,
   deleteOauthMailboxSession,
   deleteUpstreamAccount,
+  deleteUpstreamAccountGroup,
   fetchOauthMailboxStatuses,
   fetchOauthLoginSession,
   fetchUpstreamAccountDetail,
@@ -912,6 +913,22 @@ export function useUpstreamAccounts(
     [invalidateListRequest, loadList],
   )
 
+  const deleteGroupNote = useCallback(
+    async (groupName: string) => {
+      await deleteUpstreamAccountGroup(groupName)
+      setGroups((current) =>
+        current.filter((group) => group.groupName.trim() !== groupName.trim()),
+      )
+      invalidateListRequest()
+      await loadList(selectedIdRef.current, {
+        respectCurrentSelection: true,
+        selectionAnchorId: selectedIdRef.current,
+      })
+      emitUpstreamAccountsChanged()
+    },
+    [invalidateListRequest, loadList],
+  )
+
   const runBulkAction = useCallback(
     async (payload: BulkUpstreamAccountActionPayload): Promise<BulkUpstreamAccountActionResponse> => {
       const response = await bulkUpdateUpstreamAccounts(payload)
@@ -1132,6 +1149,7 @@ export function useUpstreamAccounts(
     saveAccount,
     saveRouting,
     saveGroupNote,
+    deleteGroupNote,
     runBulkAction,
     startBulkSyncJob,
     getBulkSyncJob,

@@ -66,11 +66,14 @@ export type GroupNoteEditorState = {
   groupName: string;
   note: string;
   existing: boolean;
+  accountCount: number;
   concurrencyLimit: number;
   boundProxyKeys: string[];
   nodeShuntEnabled: boolean;
   upstream429RetryEnabled: boolean;
   upstream429MaxRetries: number;
+  onSaved?: ((groupName: string) => void) | null;
+  onDeleted?: ((groupName: string) => void) | null;
 };
 export type MailboxCopyTone = "idle" | "copied" | "manual";
 export const MAILBOX_REFRESH_INTERVAL_MS = 5_000;

@@ -1946,6 +1946,7 @@ async fn load_upstream_account_groups(
         _,
         (
             String,
+            i64,
             Option<String>,
             Option<String>,
             Option<i64>,
@@ -1955,22 +1956,36 @@ async fn load_upstream_account_groups(
         ),
     >(
         r#"
+        WITH account_groups AS (
+            SELECT
+                TRIM(group_name) AS group_name,
+                COUNT(*) AS account_count
+            FROM pool_upstream_accounts
+            WHERE group_name IS NOT NULL AND TRIM(group_name) <> ''
+            GROUP BY TRIM(group_name)
+        ),
+        catalog_groups AS (
+            SELECT group_name FROM account_groups
+            UNION
+            SELECT DISTINCT TRIM(group_name) AS group_name
+            FROM pool_upstream_account_group_notes
+            WHERE TRIM(group_name) <> ''
+        )
         SELECT
-            groups.group_name,
+            catalog_groups.group_name,
+            COALESCE(account_groups.account_count, 0) AS account_count,
             notes.note,
             notes.bound_proxy_keys_json,
             notes.node_shunt_enabled,
             notes.upstream_429_retry_enabled,
             notes.upstream_429_max_retries,
             notes.concurrency_limit
-        FROM (
-            SELECT DISTINCT TRIM(group_name) AS group_name
-            FROM pool_upstream_accounts
-            WHERE group_name IS NOT NULL AND TRIM(group_name) <> ''
-        ) groups
+        FROM catalog_groups
+        LEFT JOIN account_groups
+            ON account_groups.group_name = catalog_groups.group_name
         LEFT JOIN pool_upstream_account_group_notes notes
-            ON notes.group_name = groups.group_name
-        ORDER BY groups.group_name COLLATE NOCASE ASC
+            ON notes.group_name = catalog_groups.group_name
+        ORDER BY catalog_groups.group_name COLLATE NOCASE ASC
         "#,
     )
     .fetch_all(pool)
@@ -1981,6 +1996,7 @@ async fn load_upstream_account_groups(
         .map(
             |(
                 group_name,
+                account_count,
                 note,
                 bound_proxy_keys_json,
                 node_shunt_enabled,
@@ -2001,6 +2017,7 @@ async fn load_upstream_account_groups(
                 );
                 UpstreamAccountGroupSummary {
                     group_name,
+                    account_count,
                     note: normalize_optional_text(note),
                     bound_proxy_keys: decode_group_bound_proxy_keys_json(
                         bound_proxy_keys_json.as_deref(),

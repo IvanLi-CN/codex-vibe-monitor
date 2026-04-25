@@ -30,7 +30,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     });
   });
 
-  it("passes a draft shared group note when generating oauth for a new grouped row", async () => {
+  it("configures and persists a new shared group before generating oauth for a new grouped row", async () => {
     const beginOauthLogin = vi.fn().mockResolvedValue({
       loginId: "login-1",
       status: "pending",
@@ -46,8 +46,13 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     setComboboxValue('input[name="batchOauthDefaultGroupName"]', "new-team");
     await flushAsync();
 
-    clickButton(/Edit group settings|Edit group note/i);
-    await flushAsync();
+    const dialogStack = Array.from(
+      document.body.querySelectorAll('[role="dialog"]'),
+    );
+    const draftGroupDialog = dialogStack[dialogStack.length - 1];
+    if (!(draftGroupDialog instanceof HTMLElement)) {
+      throw new Error("missing group settings dialog");
+    }
     const draftGroupNoteField =
       document.body.querySelector("textarea") ??
       (() => {
@@ -57,12 +62,6 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       throw new Error("missing group note textarea");
     }
     setFieldValue(draftGroupNoteField, "Draft shared group note");
-    const draftGroupDialog = Array.from(
-      document.body.querySelectorAll('[role="dialog"]'),
-    ).at(-1);
-    if (!(draftGroupDialog instanceof HTMLElement)) {
-      throw new Error("missing group settings dialog");
-    }
     const directProxyButton = Array.from(
       draftGroupDialog.querySelectorAll("button"),
     ).find((candidate) => /Direct/i.test(candidate.textContent || ""));
@@ -77,14 +76,17 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     clickBodyButton(/Save changes/i);
     await flushAsync();
 
+    expect(host?.textContent ?? "").toContain("new-team");
+
     clickButton(/Generate OAuth URL/i);
     await flushAsync();
 
+    expect(beginOauthLogin).toHaveBeenCalledTimes(1);
     expect(beginOauthLogin).toHaveBeenCalledWith({
       displayName: undefined,
       ...expectedGroupSelection("new-team"),
       tagIds: [],
-      groupNote: "Draft shared group note",
+      groupNote: undefined,
       note: undefined,
       isMother: false,
       mailboxSessionId: undefined,

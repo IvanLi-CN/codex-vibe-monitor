@@ -68,7 +68,6 @@ export function useUpstreamAccountCreateImportedOauth(
     importValidationEventSourceRef,
     importValidationJobIdRef,
     importValidationState,
-    persistDraftGroupSettings,
     importOauthAccounts,
     setActionError,
     setImportFiles,
@@ -952,13 +951,6 @@ export function useUpstreamAccountCreateImportedOauth(
       }
     }
     if (importedAny) {
-      try {
-        await persistDraftGroupSettings(importGroupName);
-      } catch (err) {
-        batchErrors.push(err instanceof Error ? err.message : String(err));
-      }
-    }
-    if (importedAny) {
       setImportInputKey((current: number) => current + 1);
     }
     setImportValidationState(() => {
@@ -987,7 +979,6 @@ export function useUpstreamAccountCreateImportedOauth(
     importOauthAccounts,
     importTagIds,
     importValidationState?.rows,
-    persistDraftGroupSettings,
     t,
   ]);
 

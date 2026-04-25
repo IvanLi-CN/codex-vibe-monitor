@@ -58,6 +58,7 @@ import {
 } from "../../lib/api";
 import {
   buildGroupNameSuggestions,
+  buildGroupOptions,
 } from "../../lib/upstreamAccountGroups";
 import { generatePoolRoutingKey } from "../../lib/poolRouting";
 import {
@@ -353,6 +354,7 @@ export default function UpstreamAccountsPage() {
     routing,
     saveRouting,
     saveGroupNote,
+    deleteGroupNote,
     runBulkAction,
     startBulkSyncJob,
     getBulkSyncJob,
@@ -833,9 +835,19 @@ export default function UpstreamAccountsPage() {
         groups,
         {},
       ),
+      options: buildGroupOptions(
+        visibleRosterItems.map((item) => item.groupName),
+        groups,
+        {},
+      ),
       hasUngrouped: hasUngroupedAccounts,
     };
   }, [groups, hasUngroupedAccounts, visibleRosterItems]);
+  const formatGroupAccountCountLabel = useCallback(
+    (count: number) =>
+      t("accountPool.upstreamAccounts.groupOptionCount", { count }),
+    [t],
+  );
 
   const groupFilterSuggestions = useMemo(() => {
     const suggestions = [
@@ -1122,24 +1134,23 @@ export default function UpstreamAccountsPage() {
       (groupName) => {
         const normalizedGroupName = normalizeRosterGroupName(groupName);
         if (!normalizedGroupName) return null;
-        const rosterGroup =
-          groupedRosterGroups.find(
-            (group) => group.groupName === normalizedGroupName,
-          ) ??
+        const groupSummary =
+          groups.find((group) => group.groupName === normalizedGroupName) ??
           null;
         return {
           groupName: normalizedGroupName,
-          note: rosterGroup?.note ?? "",
-          existing: rosterGroup != null,
-          concurrencyLimit: rosterGroup?.concurrencyLimit ?? 0,
-          boundProxyKeys: rosterGroup?.boundProxyKeys ?? [],
-          nodeShuntEnabled: rosterGroup?.nodeShuntEnabled ?? false,
+          note: groupSummary?.note ?? "",
+          existing: groupSummary != null,
+          accountCount: groupSummary?.accountCount ?? 0,
+          concurrencyLimit: groupSummary?.concurrencyLimit ?? 0,
+          boundProxyKeys: groupSummary?.boundProxyKeys ?? [],
+          nodeShuntEnabled: groupSummary?.nodeShuntEnabled ?? false,
           upstream429RetryEnabled:
-            rosterGroup?.upstream429RetryEnabled ?? false,
-          upstream429MaxRetries: rosterGroup?.upstream429MaxRetries ?? 0,
+            groupSummary?.upstream429RetryEnabled ?? false,
+          upstream429MaxRetries: groupSummary?.upstream429MaxRetries ?? 0,
         };
       },
-      [groupedRosterGroups],
+      [groups],
     ),
     saveGroupSettings: useCallback(
       async (groupName, payload) => {
@@ -1147,7 +1158,30 @@ export default function UpstreamAccountsPage() {
       },
       [saveGroupNote],
     ),
+    deleteGroupSettings: useCallback(
+      async (groupName: string) => {
+        await deleteGroupNote(groupName);
+        if (normalizeRosterGroupName(bulkGroupName) === groupName) {
+          setBulkGroupName("");
+        }
+      },
+      [bulkGroupName, deleteGroupNote],
+    ),
   });
+  const handleBulkGroupCreateRequest = useCallback(
+    (groupName: string) => {
+      openGroupSettingsEditor(groupName, {
+        onSaved: (savedGroupName) => setBulkGroupName(savedGroupName),
+        onDeleted: (deletedGroupName) => {
+          if (normalizeRosterGroupName(bulkGroupName) !== deletedGroupName) {
+            return;
+          }
+          setBulkGroupName("");
+        },
+      });
+    },
+    [bulkGroupName, openGroupSettingsEditor],
+  );
   const bulkRemovableTagIds = useMemo(() => {
     const removableIds = new Set<number>();
     for (const summary of Object.values(selectedAccountSummaries)) {
@@ -2459,7 +2493,7 @@ export default function UpstreamAccountsPage() {
               </span>
               <UpstreamAccountGroupCombobox
                 value={bulkGroupName}
-                suggestions={groupFilterSuggestions}
+                options={availableGroups.options}
                 placeholder={t(
                   "accountPool.upstreamAccounts.bulk.groupPlaceholder",
                 )}
@@ -2468,10 +2502,12 @@ export default function UpstreamAccountsPage() {
                 )}
                 emptyLabel={t("accountPool.upstreamAccounts.groupFilterEmpty")}
                 createLabel={(value) =>
-                  t("accountPool.upstreamAccounts.groupFilterUseValue", {
+                  t("accountPool.upstreamAccounts.fields.groupNameConfigureValue", {
                     value,
                   })
                 }
+                onCreateRequested={handleBulkGroupCreateRequest}
+                formatAccountCountLabel={formatGroupAccountCountLabel}
                 ariaLabel={t("accountPool.upstreamAccounts.bulk.groupField")}
                 onValueChange={setBulkGroupName}
               />

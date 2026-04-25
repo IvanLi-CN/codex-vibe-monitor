@@ -105,7 +105,7 @@ describe("UpstreamAccountCreatePage api key", () => {
     expect(createApiKeyAccount).not.toHaveBeenCalled();
   });
 
-  it("navigates with a warning when account creation succeeds but draft group settings fail to persist", async () => {
+  it("keeps the api key form on the page when configuring a new group fails", async () => {
     const createApiKeyAccount = vi.fn().mockResolvedValue({
       id: 42,
       kind: "api_key_codex",
@@ -162,9 +162,6 @@ describe("UpstreamAccountCreatePage api key", () => {
     setComboboxValue('input[name="apiKeyGroupName"]', "latam-draft");
     await flushAsync();
 
-    clickButton(/Edit group settings|Edit group note/i);
-    await flushAsync();
-
     const dialogStack = Array.from(
       document.body.querySelectorAll('[role="dialog"]'),
     );
@@ -211,19 +208,6 @@ describe("UpstreamAccountCreatePage api key", () => {
       );
     });
     await flushAsync();
-
-    clickButton(/Create API Key account/i);
-    await flushAsync();
-
-    expect(createApiKeyAccount).toHaveBeenCalledWith(
-      expect.objectContaining({
-        displayName: "Gateway Key",
-        apiKey: "sk-gateway",
-        groupName: "latam-draft",
-        groupBoundProxyKeys: ["jp-edge-01"],
-        groupNote: "LATAM draft note",
-      }),
-    );
     expect(saveGroupNote).toHaveBeenCalledWith("latam-draft", {
       note: "LATAM draft note",
       boundProxyKeys: ["jp-edge-01"],
@@ -232,17 +216,10 @@ describe("UpstreamAccountCreatePage api key", () => {
       upstream429RetryEnabled: false,
       upstream429MaxRetries: 0,
     });
-    expect(navigateMock).toHaveBeenCalledWith(
-      "/account-pool/upstream-accounts",
-      {
-        state: expect.objectContaining({
-          selectedAccountId: 42,
-          openDetail: true,
-          postCreateWarning: expect.stringContaining(
-            "The account was created, but saving the draft group settings failed",
-          ),
-        }),
-      },
+    expect(groupSettingsDialog.textContent || "").toContain(
+      "Request failed: 500 group metadata locked",
     );
+    expect(createApiKeyAccount).not.toHaveBeenCalled();
+    expect(navigateMock).not.toHaveBeenCalled();
   });
 });

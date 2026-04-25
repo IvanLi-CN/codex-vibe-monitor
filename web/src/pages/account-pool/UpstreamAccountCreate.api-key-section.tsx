@@ -28,7 +28,9 @@ export function UpstreamAccountCreateApiKeySection() {
     apiKeyValue,
     busyAction,
     cn,
-    groupSuggestions,
+    formatGroupAccountCountLabel,
+    groupOptions,
+    handleApiKeyGroupCreateRequest,
     handleCreateApiKey,
     handleCreateTag,
     handleDeleteTag,
@@ -108,7 +110,7 @@ export function UpstreamAccountCreateApiKeySection() {
       <UpstreamAccountGroupCombobox
         name="apiKeyGroupName"
         value={apiKeyGroupName}
-        suggestions={groupSuggestions}
+        options={groupOptions}
         placeholder={t(
           "accountPool.upstreamAccounts.fields.groupNamePlaceholder",
         )}
@@ -120,10 +122,12 @@ export function UpstreamAccountCreateApiKeySection() {
         )}
         createLabel={(value) =>
           t(
-            "accountPool.upstreamAccounts.fields.groupNameUseValue",
+            "accountPool.upstreamAccounts.fields.groupNameConfigureValue",
             { value },
           )
         }
+        onCreateRequested={handleApiKeyGroupCreateRequest}
+        formatAccountCountLabel={formatGroupAccountCountLabel}
         onValueChange={setApiKeyGroupName}
         className="min-w-0 flex-1"
       />

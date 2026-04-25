@@ -19,7 +19,7 @@ import { copyText, selectAllReadonlyText } from "../../lib/clipboard";
 import { emitUpstreamAccountsChanged } from "../../lib/upstreamAccountsEvents";
 import { apiConcurrencyLimitToSliderValue } from "../../lib/concurrencyLimit";
 import {
-  buildGroupNameSuggestions,
+  buildGroupOptions,
   isExistingGroup,
   normalizeGroupName,
 } from "../../lib/upstreamAccountGroups";
@@ -128,6 +128,7 @@ export default function UpstreamAccountCreatePage() {
     refresh,
     saveAccount,
     saveGroupNote,
+    deleteGroupNote,
   } = useUpstreamAccounts();
   const { items: tagItems, createTag, updateTag, deleteTag } = usePoolTags();
   const notifyMotherSwitches = useMotherSwitchNotifications();
@@ -339,16 +340,23 @@ export default function UpstreamAccountCreatePage() {
   ] = useState<Record<string, boolean>>({});
   const [groupDraftUpstream429MaxRetries, setGroupDraftUpstream429MaxRetries] =
     useState<Record<string, number>>({});
+  const [
+    persistedGroupNoteSyncDrafts,
+    setPersistedGroupNoteSyncDrafts,
+  ] = useState<Record<string, string>>({});
   const [groupNoteEditor, setGroupNoteEditor] = useState<GroupNoteEditorState>({
     open: false,
     groupName: "",
     note: "",
     existing: false,
+    accountCount: 0,
     concurrencyLimit: apiConcurrencyLimitToSliderValue(0),
     boundProxyKeys: [],
     nodeShuntEnabled: false,
     upstream429RetryEnabled: false,
     upstream429MaxRetries: 0,
+    onSaved: null,
+    onDeleted: null,
   });
   const {
     nodes: forwardProxyNodes,
@@ -498,9 +506,9 @@ export default function UpstreamAccountCreatePage() {
   const batchRowIdRef = useRef(getNextBatchRowIndex(initialBatchRows));
   const manualCopyFieldRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const groupSuggestions = useMemo(
+  const groupOptions = useMemo(
     () =>
-      buildGroupNameSuggestions(
+      buildGroupOptions(
         items.map((item) => item.groupName),
         groups,
         {
@@ -547,6 +555,11 @@ export default function UpstreamAccountCreatePage() {
       groups,
       items,
     ],
+  );
+  const formatGroupAccountCountLabel = useCallback(
+    (count: number) =>
+      t("accountPool.upstreamAccounts.groupOptionCount", { count }),
+    [t],
   );
   const oauthConflictExcludeId =
     relinkAccountId ??
@@ -637,6 +650,7 @@ export default function UpstreamAccountCreatePage() {
   const {
     resolveGroupNodeShuntEnabledForName,
     resolvePendingGroupNoteForName,
+    shouldIncludePendingGroupNoteForName,
     resolvePendingGroupConcurrencyLimitForName,
     resolvePendingGroupBoundProxyKeysForName,
     hasGroupSettings,
@@ -649,8 +663,11 @@ export default function UpstreamAccountCreatePage() {
     openGroupNoteEditor,
     closeGroupNoteEditor,
     handleSaveGroupNote,
+    handleDeleteGroupNote,
   } = useUpstreamAccountCreateGroupDrafts({
     apiKeyGroupName,
+    batchDefaultGroupName,
+    batchRows,
     forwardProxyNodes,
     forwardProxyCatalogState,
     groupDraftBoundProxyKeys,
@@ -667,6 +684,8 @@ export default function UpstreamAccountCreatePage() {
     invalidateSingleOauthSessionForMetadataEdit,
     locale,
     oauthGroupName,
+    persistedGroupNoteSyncDrafts,
+    deleteGroupNote,
     saveGroupNote,
     setGroupDraftBoundProxyKeys,
     setGroupDraftConcurrencyLimits,
@@ -677,13 +696,18 @@ export default function UpstreamAccountCreatePage() {
     setGroupNoteBusy,
     setGroupNoteEditor,
     setGroupNoteError,
+    setPersistedGroupNoteSyncDrafts,
+    setApiKeyGroupName,
+    setBatchDefaultGroupName,
+    setBatchRows,
+    setImportGroupName,
+    setOauthGroupName,
     t,
     writesEnabled,
   });
 
   const singleOauthSessionSnapshot = useMemo(() => {
     if (isRelinking || session?.status !== "pending") return null;
-    const normalizedGroupName = normalizeGroupName(oauthGroupName);
     return buildPendingOauthSessionSnapshot(
       session.loginId,
       buildOauthLoginSessionUpdatePayload({
@@ -698,9 +722,7 @@ export default function UpstreamAccountCreatePage() {
         groupNote: resolvePendingGroupNoteForName(oauthGroupName),
         groupConcurrencyLimit:
           resolvePendingGroupConcurrencyLimitForName(oauthGroupName),
-        includeGroupNote: Boolean(
-          normalizedGroupName && !isExistingGroup(groups, normalizedGroupName),
-        ),
+        includeGroupNote: shouldIncludePendingGroupNoteForName(oauthGroupName),
         tagIds: oauthTagIds,
         isMother: oauthIsMother,
         mailboxSession: activeOauthMailboxSession,
@@ -716,11 +738,11 @@ export default function UpstreamAccountCreatePage() {
     oauthNote,
     oauthTagIds,
     isRelinking,
-    groups,
     resolveGroupNodeShuntEnabledForName,
     resolvePendingGroupBoundProxyKeysForName,
     resolvePendingGroupConcurrencyLimitForName,
     resolvePendingGroupNoteForName,
+    shouldIncludePendingGroupNoteForName,
     session?.loginId,
     session?.status,
     session?.updatedAt,
@@ -729,7 +751,6 @@ export default function UpstreamAccountCreatePage() {
     const snapshots: Record<string, PendingOauthSessionSnapshot> = {};
     for (const row of batchRows) {
       if (row.session?.status !== "pending") continue;
-      const normalizedGroupName = normalizeGroupName(row.groupName);
       snapshots[row.session.loginId] = buildPendingOauthSessionSnapshot(
         row.session.loginId,
         buildOauthLoginSessionUpdatePayload({
@@ -747,9 +768,8 @@ export default function UpstreamAccountCreatePage() {
           groupConcurrencyLimit: resolvePendingGroupConcurrencyLimitForName(
             row.groupName,
           ),
-          includeGroupNote: Boolean(
-            normalizedGroupName &&
-            !isExistingGroup(groups, normalizedGroupName),
+          includeGroupNote: shouldIncludePendingGroupNoteForName(
+            row.groupName,
           ),
           tagIds: batchTagIds,
           isMother: row.isMother,
@@ -762,11 +782,11 @@ export default function UpstreamAccountCreatePage() {
   }, [
     batchRows,
     batchTagIds,
-    groups,
     resolveGroupNodeShuntEnabledForName,
     resolvePendingGroupBoundProxyKeysForName,
     resolvePendingGroupConcurrencyLimitForName,
     resolvePendingGroupNoteForName,
+    shouldIncludePendingGroupNoteForName,
   ]);
   singleOauthSessionSnapshotRef.current = singleOauthSessionSnapshot;
   batchOauthSessionSnapshotsRef.current = batchOauthSessionSnapshots;
@@ -1713,6 +1733,52 @@ export default function UpstreamAccountCreatePage() {
     t,
   });
 
+  const handleOauthGroupCreateRequest = useCallback(
+    (groupName: string) => {
+      openGroupNoteEditor(groupName, {
+        onSaved: (savedGroupName) => setOauthGroupName(savedGroupName),
+      });
+    },
+    [openGroupNoteEditor],
+  );
+
+  const handleImportGroupCreateRequest = useCallback(
+    (groupName: string) => {
+      openGroupNoteEditor(groupName, {
+        onSaved: (savedGroupName) => setImportGroupName(savedGroupName),
+      });
+    },
+    [openGroupNoteEditor],
+  );
+
+  const handleApiKeyGroupCreateRequest = useCallback(
+    (groupName: string) => {
+      openGroupNoteEditor(groupName, {
+        onSaved: (savedGroupName) => setApiKeyGroupName(savedGroupName),
+      });
+    },
+    [openGroupNoteEditor],
+  );
+
+  const handleBatchDefaultGroupCreateRequest = useCallback(
+    (groupName: string) => {
+      openGroupNoteEditor(groupName, {
+        onSaved: (savedGroupName) => handleBatchDefaultGroupChange(savedGroupName),
+      });
+    },
+    [handleBatchDefaultGroupChange, openGroupNoteEditor],
+  );
+
+  const handleBatchRowGroupCreateRequest = useCallback(
+    (rowId: string, groupName: string) => {
+      openGroupNoteEditor(groupName, {
+        onSaved: (savedGroupName) =>
+          handleBatchGroupValueChange(rowId, savedGroupName),
+      });
+    },
+    [handleBatchGroupValueChange, openGroupNoteEditor],
+  );
+
 
   const {
     handleImportedOauthPasteDraftChange,
@@ -1997,7 +2063,8 @@ export default function UpstreamAccountCreatePage() {
     groupNoteBusy,
     groupNoteEditor,
     groupNoteError,
-    groupSuggestions,
+    groupOptions,
+    formatGroupAccountCountLabel,
     handleAttachOauthMailbox,
     handleBatchAttachMailbox,
     handleBatchCancelMailboxEdit,
@@ -2007,9 +2074,11 @@ export default function UpstreamAccountCreatePage() {
     handleBatchCopyMailbox,
     handleBatchCopyMailboxCode,
     handleBatchCopyOauthUrl,
+    handleBatchDefaultGroupCreateRequest,
     handleBatchDefaultGroupChange,
     handleBatchGenerateMailbox,
     handleBatchGenerateOauthUrl,
+    handleBatchRowGroupCreateRequest,
     handleBatchGroupValueChange,
     handleBatchMailboxEditorValueChange,
     handleBatchMailboxFetch,
@@ -2025,19 +2094,23 @@ export default function UpstreamAccountCreatePage() {
     handleCopySingleMailbox,
     handleCopySingleMailboxCode,
     handleCreateApiKey,
+    handleApiKeyGroupCreateRequest,
     handleCreateTag,
     handleDeleteTag,
     handleGenerateOauthMailbox,
     handleGenerateOauthUrl,
     handleResolveOauthEmailChoice,
     handleImportFilesChange,
+    handleImportGroupCreateRequest,
     handleImportValidatedOauth,
     handleImportedOauthPaste,
     handleImportedOauthPasteDraftChange,
     handleRetryImportedOauthFailed,
     handleRetryImportedOauthOne,
     handleSaveGroupNote,
+    handleDeleteGroupNote,
     handleTabChange,
+    handleOauthGroupCreateRequest,
     handleValidateImportedOauth,
     handleValidateImportedOauthPasteDraft,
     hasBatchMetadataBusy,

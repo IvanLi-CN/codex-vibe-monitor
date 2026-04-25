@@ -1624,7 +1624,7 @@ fn build_pool_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         )
         .route(
             "/api/pool/upstream-account-groups/*groupName",
-            put(update_upstream_account_group),
+            put(update_upstream_account_group).delete(delete_upstream_account_group),
         )
         .route(
             "/api/pool/upstream-accounts/:id/sticky-keys",

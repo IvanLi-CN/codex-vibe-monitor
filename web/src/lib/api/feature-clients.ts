@@ -55,6 +55,7 @@ export {
   createApiKeyUpstreamAccount,
   updateUpstreamAccount,
   updateUpstreamAccountGroup,
+  deleteUpstreamAccountGroup,
   bulkUpdateUpstreamAccounts,
   deleteUpstreamAccount,
   syncUpstreamAccount,
