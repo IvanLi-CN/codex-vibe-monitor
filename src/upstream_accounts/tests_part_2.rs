@@ -231,6 +231,8 @@
             id,
             name: name.to_string(),
             routing_rule,
+            system_key: None,
+            protected: false,
         }
     }
 

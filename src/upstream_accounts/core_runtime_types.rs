@@ -991,6 +991,8 @@ pub(crate) struct AccountTagSummary {
     id: i64,
     name: String,
     routing_rule: TagRoutingRule,
+    system_key: Option<String>,
+    protected: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1040,6 +1042,8 @@ pub(crate) struct TagSummary {
     account_count: i64,
     group_count: i64,
     updated_at: String,
+    system_key: Option<String>,
+    protected: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

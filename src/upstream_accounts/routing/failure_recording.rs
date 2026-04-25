@@ -78,6 +78,10 @@ pub(crate) async fn record_pool_route_http_failure(
         .await;
     }
 
+    if route_error_is_gpt55_unsupported(status, error_message) {
+        ensure_account_has_gpt55_unsupported_tag(pool, account_id).await?;
+    }
+
     let classification = classify_pool_account_http_failure(account_kind, status, error_message);
     match classification.disposition {
         UpstreamAccountFailureDisposition::HardUnavailable => {

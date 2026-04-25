@@ -1497,6 +1497,8 @@ fn account_tag_summary_from_row(row: &AccountTagRow) -> AccountTagSummary {
             fast_mode_rewrite_mode: decode_tag_fast_mode_rewrite_mode(&row.fast_mode_rewrite_mode),
             concurrency_limit: row.concurrency_limit,
         },
+        system_key: row.system_key.clone(),
+        protected: row.protected != 0,
     }
 }
 
@@ -1517,5 +1519,7 @@ fn tag_summary_from_row(row: &TagListRow) -> TagSummary {
         account_count: row.account_count,
         group_count: row.group_count,
         updated_at: row.updated_at.clone(),
+        system_key: row.system_key.clone(),
+        protected: row.protected != 0,
     }
 }
