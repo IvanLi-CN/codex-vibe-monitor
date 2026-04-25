@@ -246,7 +246,6 @@ pub(crate) fn parse_list_upstream_accounts_query(
         status: base.status,
         page: base.page,
         page_size: base.page_size,
-        tag_ids: base.tag_ids,
         ..ListUpstreamAccountsQuery::default()
     };
 
@@ -255,6 +254,12 @@ pub(crate) fn parse_list_upstream_accounts_query(
             "workStatus" => params.work_status.push(value.into_owned()),
             "enableStatus" => params.enable_status.push(value.into_owned()),
             "healthStatus" => params.health_status.push(value.into_owned()),
+            "tagIds" => {
+                let tag_id = value
+                    .parse::<i64>()
+                    .map_err(|_| format!("invalid tagIds value `{value}`; expected integer"))?;
+                params.tag_ids.push(tag_id);
+            }
             "includeAll" => {
                 params.include_all = match value.as_ref() {
                     "" | "0" | "false" | "False" | "FALSE" | "no" | "off" => Some(false),

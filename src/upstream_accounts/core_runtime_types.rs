@@ -905,8 +905,6 @@ struct ListUpstreamAccountsBaseQuery {
     status: Option<String>,
     page: Option<usize>,
     page_size: Option<usize>,
-    #[serde(default)]
-    tag_ids: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
