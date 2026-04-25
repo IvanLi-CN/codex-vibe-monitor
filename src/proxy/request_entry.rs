@@ -1338,6 +1338,17 @@ pub(crate) fn response_info_is_retryable_server_overloaded(
         && upstream_error_code_is_server_overloaded(response_info.upstream_error_code.as_deref())
 }
 
+pub(crate) fn route_error_is_gpt55_unsupported(status: StatusCode, error_message: &str) -> bool {
+    if status != StatusCode::BAD_REQUEST {
+        return false;
+    }
+    let normalized = error_message.to_ascii_lowercase();
+    normalized.contains("gpt-5.5")
+        && (normalized.contains("model is not supported")
+            || normalized.contains("is not supported")
+            || normalized.contains("unsupported model"))
+}
+
 pub(crate) fn classify_pool_account_http_failure(
     account_kind: &str,
     status: StatusCode,

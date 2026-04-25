@@ -35,6 +35,13 @@ const rosterTags: AccountTagSummary[] = [
     name: 'sticky-pool',
     routingRule: defaultEffectiveRoutingRule,
   },
+  {
+    id: 55,
+    name: '不支持 gpt-5.5',
+    routingRule: defaultEffectiveRoutingRule,
+    systemKey: 'unsupported_model:gpt-5.5',
+    protected: true,
+  },
 ]
 
 function usage(
@@ -431,6 +438,27 @@ export const CompactLongLabels: Story = {
       },
     ],
     selectedId: 12,
+  },
+}
+
+export const UnsupportedGpt55Badge: Story = {
+  args: {
+    items: [
+      {
+        ...items[0],
+        displayName: 'OAuth account marked unsupported for gpt-5.5',
+        tags: [rosterTags[4], rosterTags[0]],
+      },
+    ],
+    selectedId: 11,
+    labels: chineseLabels,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story: '展示系统标签「不支持 gpt-5.5」在账号列表中的 warning badge，用于筛选和批量移除恢复探测。',
+      },
+    },
   },
 }
 
