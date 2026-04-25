@@ -281,6 +281,22 @@ export const ManualMailboxUnsupported: Story = {
   },
 }
 
+
+export const ReauthDetailOutsideRoster: Story = {
+  render: () => (
+    <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=oauth&accountId=2660" />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(await canvas.findByDisplayValue('Codex Pro - Reauth Hidden Lane')).toBeInTheDocument()
+    await expect(canvas.getByDisplayValue('reauth-hidden-lane@example.com')).toBeInTheDocument()
+    await expect(canvas.getByDisplayValue('production')).toBeInTheDocument()
+    await expect(canvas.getByText(/intentionally absent from the current roster page/i)).toBeInTheDocument()
+    await userEvent.click(canvas.getByRole('button', { name: /generate oauth url/i }))
+    await expect(canvas.getByRole('button', { name: /copy oauth url/i })).toBeEnabled()
+  },
+}
+
 export const ReauthManualMailboxAttached: Story = {
   render: () => (
     <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=oauth&accountId=101" />
