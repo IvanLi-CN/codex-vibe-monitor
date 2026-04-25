@@ -32,7 +32,8 @@ export function UpstreamAccountCreateOauthSection() {
     displayedOauthMailboxStatus,
     formatDateTime,
     formatDuplicateReasons,
-    groupSuggestions,
+    formatGroupAccountCountLabel,
+    groupOptions,
     handleAttachOauthMailbox,
     handleCompleteOauth,
     handleResolveOauthEmailChoice,
@@ -44,6 +45,7 @@ export function UpstreamAccountCreateOauthSection() {
     handleDeleteTag,
     handleGenerateOauthMailbox,
     handleGenerateOauthUrl,
+    handleOauthGroupCreateRequest,
     hasGroupSettings,
     invalidateRelinkPendingOauthSessionForMailboxChange,
     invalidateSingleOauthSessionForMetadataEdit,
@@ -324,7 +326,7 @@ export function UpstreamAccountCreateOauthSection() {
       <UpstreamAccountGroupCombobox
         name="oauthGroupName"
         value={oauthGroupName}
-        suggestions={groupSuggestions}
+        options={groupOptions}
         placeholder={t(
           "accountPool.upstreamAccounts.fields.groupNamePlaceholder",
         )}
@@ -336,10 +338,12 @@ export function UpstreamAccountCreateOauthSection() {
         )}
         createLabel={(value) =>
           t(
-            "accountPool.upstreamAccounts.fields.groupNameUseValue",
+            "accountPool.upstreamAccounts.fields.groupNameConfigureValue",
             { value },
           )
         }
+        onCreateRequested={handleOauthGroupCreateRequest}
+        formatAccountCountLabel={formatGroupAccountCountLabel}
         onValueChange={(value) => {
           setOauthGroupName(value);
           setActionError(null);

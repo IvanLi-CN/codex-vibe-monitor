@@ -37,7 +37,8 @@ export function UpstreamAccountCreateBatchOauthSection() {
     buildActionTooltip,
     cn,
     formatDuplicateReasons,
-    groupSuggestions,
+    formatGroupAccountCountLabel,
+    groupOptions,
     handleBatchAttachMailbox,
     handleBatchCancelMailboxEdit,
     handleBatchCompleteOauth,
@@ -49,6 +50,7 @@ export function UpstreamAccountCreateBatchOauthSection() {
     handleBatchGenerateMailbox,
     handleBatchGenerateOauthUrl,
     handleBatchGroupValueChange,
+    handleBatchRowGroupCreateRequest,
     handleBatchMailboxEditorValueChange,
     handleBatchMailboxFetch,
     handleBatchMetadataChange,
@@ -427,7 +429,7 @@ export function UpstreamAccountCreateBatchOauthSection() {
                         <UpstreamAccountGroupCombobox
                           name={`batchOauthGroupName-${row.id}`}
                           value={row.groupName}
-                          suggestions={groupSuggestions}
+                          options={groupOptions}
                           placeholder={t(
                             "accountPool.upstreamAccounts.fields.groupNamePlaceholder",
                           )}
@@ -439,10 +441,14 @@ export function UpstreamAccountCreateBatchOauthSection() {
                           )}
                           createLabel={(value) =>
                             t(
-                              "accountPool.upstreamAccounts.fields.groupNameUseValue",
+                              "accountPool.upstreamAccounts.fields.groupNameConfigureValue",
                               { value },
                             )
                           }
+                          onCreateRequested={(groupName) =>
+                            handleBatchRowGroupCreateRequest(row.id, groupName)
+                          }
+                          formatAccountCountLabel={formatGroupAccountCountLabel}
                           onValueChange={(value) =>
                             handleBatchGroupValueChange(
                               row.id,

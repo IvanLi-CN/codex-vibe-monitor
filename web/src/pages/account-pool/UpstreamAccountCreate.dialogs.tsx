@@ -21,6 +21,7 @@ export function UpstreamAccountCreateDialogs() {
     groupNoteEditor,
     groupNoteError,
     handleCloseImportedOauthValidationDialog,
+    handleDeleteGroupNote,
     handleImportValidatedOauth,
     handleRetryImportedOauthFailed,
     handleRetryImportedOauthOne,
@@ -60,6 +61,7 @@ export function UpstreamAccountCreateDialogs() {
         open={groupNoteEditor.open}
         groupName={groupNoteEditor.groupName}
         note={groupNoteEditor.note}
+        accountCount={groupNoteEditor.accountCount}
         concurrencyLimit={groupNoteEditor.concurrencyLimit}
         boundProxyKeys={groupNoteEditor.boundProxyKeys}
         nodeShuntEnabled={groupNoteEditor.nodeShuntEnabled}
@@ -121,6 +123,9 @@ export function UpstreamAccountCreateDialogs() {
         }}
         onClose={closeGroupNoteEditor}
         onSave={() => void handleSaveGroupNote()}
+        onDelete={
+          groupNoteEditor.existing ? () => void handleDeleteGroupNote() : undefined
+        }
         title={t("accountPool.upstreamAccounts.groupNotes.dialogTitle")}
         existingDescription={t(
           "accountPool.upstreamAccounts.groupNotes.existingDescription",
@@ -146,7 +151,16 @@ export function UpstreamAccountCreateDialogs() {
         )}
         cancelLabel={t("accountPool.upstreamAccounts.actions.cancel")}
         saveLabel={t("accountPool.upstreamAccounts.actions.save")}
-        closeLabel={t("accountPool.upstreamAccounts.actions.closeDetails")}
+        deleteLabel={t("accountPool.upstreamAccounts.actions.delete")}
+        deleteDisabledHint={
+          groupNoteEditor.accountCount > 0
+            ? t(
+                "accountPool.upstreamAccounts.groupNotes.deleteBlockedWithCount",
+                { count: groupNoteEditor.accountCount },
+              )
+            : undefined
+        }
+        closeLabel={t("accountPool.upstreamAccounts.actions.cancel")}
         existingBadgeLabel={t(
           "accountPool.upstreamAccounts.groupNotes.badges.existing",
         )}

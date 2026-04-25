@@ -572,4 +572,35 @@ describe("UpstreamAccountGroupNoteDialog", () => {
     expect(saveButton).toBeDefined();
     expect(saveButton?.disabled).toBe(false);
   });
+
+  it("shows a blocked-delete popover on click instead of rendering helper text below the footer buttons", () => {
+    const onDelete = vi.fn();
+    renderDialog({
+      accountCount: 4,
+      onDelete,
+      deleteLabel: "Delete group",
+      deleteDisabledHint:
+        "Move the remaining 4 account(s) out before deleting this group.",
+    });
+
+    expect(bodyText()).not.toContain(
+      "Move the remaining 4 account(s) out before deleting this group.",
+    );
+
+    const deleteButton = Array.from(document.querySelectorAll("button")).find(
+      (candidate) => /delete group/i.test(candidate.textContent ?? ""),
+    ) as HTMLButtonElement | undefined;
+    expect(deleteButton).toBeDefined();
+    expect(deleteButton?.disabled).toBe(false);
+    expect(deleteButton?.getAttribute("aria-disabled")).toBe("true");
+
+    act(() => {
+      deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onDelete).not.toHaveBeenCalled();
+    expect(bodyText()).toContain(
+      "Move the remaining 4 account(s) out before deleting this group.",
+    );
+  });
 });

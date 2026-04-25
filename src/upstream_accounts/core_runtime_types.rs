@@ -1062,6 +1062,7 @@ pub(crate) struct TagListResponse {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpstreamAccountGroupSummary {
     group_name: String,
+    account_count: i64,
     note: Option<String>,
     bound_proxy_keys: Vec<String>,
     node_shunt_enabled: bool,

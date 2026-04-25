@@ -1970,7 +1970,7 @@ async fn update_upstream_account_can_clear_upstream_base_url_with_null_payload()
 }
 
 #[tokio::test]
-async fn delete_upstream_account_removes_related_rows_in_one_transaction() {
+async fn delete_upstream_account_keeps_persisted_group_catalog_rows_after_last_member_is_removed() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -2129,7 +2129,7 @@ async fn delete_upstream_account_removes_related_rows_in_one_transaction() {
     .fetch_one(&state.pool)
     .await
     .expect("count remaining group notes");
-    assert_eq!(remaining_group_notes, 0);
+    assert_eq!(remaining_group_notes, 1);
 }
 
 #[tokio::test]
@@ -2292,7 +2292,7 @@ async fn update_upstream_account_group_canonicalizes_historical_runtime_keys_to_
 }
 
 #[tokio::test]
-async fn update_upstream_account_group_returns_not_found_before_binding_validation() {
+async fn update_upstream_account_group_upserts_missing_group_and_still_validates_bindings() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -2309,10 +2309,10 @@ async fn update_upstream_account_group_returns_not_found_before_binding_validati
         Json(payload),
     )
     .await
-    .expect_err("missing group should still return not found");
+    .expect_err("missing group should still validate bindings");
 
-    assert_eq!(err.0, StatusCode::NOT_FOUND);
-    assert_eq!(err.1, "group not found");
+    assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    assert!(!err.1.trim().is_empty());
 }
 
 #[tokio::test]
