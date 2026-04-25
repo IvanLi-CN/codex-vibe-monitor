@@ -17,6 +17,7 @@ import {
   fetchUpstreamStickyConversations,
   updateOauthLoginSession,
   updatePoolRoutingSettings,
+  updateProxySettings,
   validateForwardProxyCandidate,
 } from "./api";
 
@@ -794,6 +795,15 @@ describe("settings normalization", () => {
       vi.fn(async () => {
         return new Response(
           JSON.stringify({
+            proxy: {
+              hijackEnabled: true,
+              mergeUpstreamEnabled: true,
+              fastModeRewriteMode: "disabled",
+              upstream429MaxRetries: 5,
+              defaultHijackEnabled: false,
+              models: ["gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
+              enabledModels: ["gpt-5.5", "gpt-5.5-pro", "missing-model"],
+            },
             forwardProxy: {
               proxyUrls: ["socks5://127.0.0.1:1080"],
               subscriptionUrls: ["https://example.com/subscription.txt"],
@@ -827,9 +837,45 @@ describe("settings normalization", () => {
     );
 
     const settings = await fetchSettings();
+    expect(settings.proxy.hijackEnabled).toBe(true);
+    expect(settings.proxy.upstream429MaxRetries).toBe(5);
+    expect(settings.proxy.enabledModels).toEqual(["gpt-5.5", "gpt-5.5-pro"]);
     expect(settings.forwardProxy.subscriptionUpdateIntervalSecs).toBe(900);
     expect(settings.forwardProxy.nodes).toHaveLength(1);
     expect(settings.forwardProxy.nodes[0].displayName).toBe("JP Edge 01");
+  });
+
+  it("normalizes proxy settings updates", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            hijackEnabled: true,
+            mergeUpstreamEnabled: false,
+            fastModeRewriteMode: "disabled",
+            upstream429MaxRetries: 9,
+            defaultHijackEnabled: false,
+            models: ["gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
+            enabledModels: ["gpt-5.5", "gpt-5.5-pro", "missing-model"],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch,
+    );
+
+    const response = await updateProxySettings({
+      hijackEnabled: true,
+      mergeUpstreamEnabled: false,
+      fastModeRewriteMode: "disabled",
+      upstream429MaxRetries: 5,
+      enabledModels: ["gpt-5.5", "gpt-5.5-pro"],
+    });
+
+    expect(response.hijackEnabled).toBe(true);
+    expect(response.mergeUpstreamEnabled).toBe(false);
+    expect(response.upstream429MaxRetries).toBe(5);
+    expect(response.enabledModels).toEqual(["gpt-5.5", "gpt-5.5-pro"]);
   });
 
   it("normalizes bound proxy keys and binding nodes in upstream account list", async () => {
@@ -1589,6 +1635,34 @@ describe("account pool frontend API helpers", () => {
     });
 
     expect(response.hasUngroupedAccounts).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("serializes exact upstream account group filters into the query string", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL) => {
+      expect(String(_input)).toContain(
+        "/api/pool/upstream-accounts?groupExact=production",
+      );
+      return new Response(
+        JSON.stringify({
+          writesEnabled: true,
+          groups: [],
+          hasUngroupedAccounts: false,
+          items: [],
+          routing: {
+            apiKeyConfigured: false,
+            maskedApiKey: null,
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    await fetchUpstreamAccounts({
+      groupExact: "production",
+    });
+
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 

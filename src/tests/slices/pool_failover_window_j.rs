@@ -2364,6 +2364,1125 @@ async fn retention_archives_and_cleans_up_pool_upstream_request_attempts() {
     cleanup_temp_test_dir(&temp_dir);
 }
 
+#[tokio::test]
+async fn retention_accumulates_pool_upstream_hourly_history_when_reusing_monthly_batch_file() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("retention-pool-hourly-accumulates").await;
+    config.pool_upstream_request_attempts_retention_days = 7;
+    config.pool_upstream_request_attempts_archive_ttl_days = 365;
+    config.retention_batch_rows = 1;
+
+    let binding_key = "fpn-retention-hourly-accumulates";
+    let archive_month_prefix = (Utc::now().with_timezone(&Shanghai).naive_local()
+        - ChronoDuration::days(31))
+    .format("%Y-%m")
+    .to_string();
+    let first_attempt_at =
+        parse_to_utc_datetime(&format!("{archive_month_prefix}-10 09:30:00"))
+            .expect("first attempt timestamp should parse");
+    let second_attempt_at =
+        parse_to_utc_datetime(&format!("{archive_month_prefix}-11 09:30:00"))
+            .expect("second attempt timestamp should parse");
+    seed_pool_upstream_attempt_at(
+        &pool,
+        "retention-pool-hourly-accumulates-success",
+        first_attempt_at,
+        Some(binding_key),
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+    )
+    .await;
+
+    let first_summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run first pool upstream retention pass");
+    assert_eq!(first_summary.pool_upstream_request_attempt_rows_archived, 1);
+
+    seed_pool_upstream_attempt_at(
+        &pool,
+        "retention-pool-hourly-accumulates-failure",
+        second_attempt_at,
+        Some(binding_key),
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+    )
+    .await;
+
+    let second_summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run second pool upstream retention pass");
+    assert_eq!(second_summary.pool_upstream_request_attempt_rows_archived, 1);
+
+    let archive_batches = sqlx::query_as::<_, (i64, String, String, Option<String>, Option<String>, i64)>(
+        r#"
+        SELECT id, month_key, file_path, day_key, part_key, row_count
+        FROM archive_batches
+        WHERE dataset = 'pool_upstream_request_attempts'
+        ORDER BY id
+        "#,
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("load retained pool upstream archive batches");
+    let archive_batch_count = archive_batches.len() as i64;
+    assert_eq!(
+        archive_batch_count, 1,
+        "both retention passes should append into the same monthly archive batch: {:?}",
+        archive_batches
+    );
+
+    let materialized = sqlx::query_as::<_, (i64, i64)>(
+        r#"
+        SELECT
+            COALESCE(SUM(success_count), 0) AS success_count,
+            COALESCE(SUM(failure_count), 0) AS failure_count
+        FROM pool_upstream_node_health_hourly_archive
+        WHERE proxy_binding_key_snapshot = ?1
+        "#,
+    )
+    .bind(binding_key)
+    .fetch_one(&pool)
+    .await
+    .expect("load materialized pool upstream hourly history");
+    assert_eq!(materialized.0, 1);
+    assert_eq!(materialized.1, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_keeps_preexisting_pool_node_health_month_archives_pending_after_append() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("retention-pool-hourly-preexisting-pending").await;
+    config.pool_upstream_request_attempts_retention_days = 7;
+    config.pool_upstream_request_attempts_archive_ttl_days = 365;
+    config.retention_batch_rows = 1;
+
+    let binding_key = "fpn-retention-hourly-preexisting-pending";
+    let archive_month_prefix = (Utc::now().with_timezone(&Shanghai).naive_local()
+        - ChronoDuration::days(31))
+    .format("%Y-%m")
+    .to_string();
+    let first_attempt_at =
+        parse_to_utc_datetime(&format!("{archive_month_prefix}-12 09:30:00"))
+            .expect("first attempt timestamp should parse");
+    let second_attempt_at =
+        parse_to_utc_datetime(&format!("{archive_month_prefix}-13 09:30:00"))
+            .expect("second attempt timestamp should parse");
+
+    seed_pool_upstream_attempt_at(
+        &pool,
+        "retention-pool-hourly-preexisting-pending-success",
+        first_attempt_at,
+        Some(binding_key),
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+    )
+    .await;
+
+    let first_summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run first pool upstream retention pass");
+    assert_eq!(first_summary.pool_upstream_request_attempt_rows_archived, 1);
+
+    let archive_path = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT file_path
+        FROM archive_batches
+        WHERE dataset = 'pool_upstream_request_attempts'
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load existing pool upstream month archive path");
+
+    sqlx::query("DELETE FROM pool_upstream_node_health_archive")
+        .execute(&pool)
+        .await
+        .expect("clear cached pool node health archive rows");
+    sqlx::query("DELETE FROM pool_upstream_node_health_hourly_archive")
+        .execute(&pool)
+        .await
+        .expect("clear cached pool node health hourly archive rows");
+    sqlx::query(
+        r#"
+        DELETE FROM hourly_rollup_archive_replay
+        WHERE dataset = 'pool_upstream_request_attempts'
+          AND target IN (?1, ?2)
+          AND file_path = ?3
+        "#,
+    )
+    .bind(POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET)
+    .bind(POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET)
+    .bind(&archive_path)
+    .execute(&pool)
+    .await
+    .expect("clear pool node health replay markers for existing archive");
+    sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET historical_rollups_materialized_at = NULL
+        WHERE dataset = 'pool_upstream_request_attempts'
+          AND file_path = ?1
+        "#,
+    )
+    .bind(&archive_path)
+    .execute(&pool)
+    .await
+    .expect("clear historical rollup materialized timestamp");
+
+    seed_pool_upstream_attempt_at(
+        &pool,
+        "retention-pool-hourly-preexisting-pending-failure",
+        second_attempt_at,
+        Some(binding_key),
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+    )
+    .await;
+
+    let second_summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run second pool upstream retention pass");
+    assert_eq!(second_summary.pool_upstream_request_attempt_rows_archived, 1);
+
+    let pending_cache_batches = pending_pool_upstream_node_health_archive_batches(&pool)
+        .await
+        .expect("count pending cached pool node health archives");
+    let pending_hourly_batches = pending_pool_upstream_node_health_hourly_archive_batches(&pool)
+        .await
+        .expect("count pending hourly pool node health archives");
+    assert_eq!(pending_cache_batches, 1);
+    assert_eq!(pending_hourly_batches, 1);
+
+    let replay_markers = sqlx::query_as::<_, (String, i64)>(
+        r#"
+        SELECT target, COUNT(*) AS replay_count
+        FROM hourly_rollup_archive_replay
+        WHERE dataset = 'pool_upstream_request_attempts'
+          AND file_path = ?1
+          AND target IN (?2, ?3)
+        GROUP BY target
+        ORDER BY target
+        "#,
+    )
+    .bind(&archive_path)
+    .bind(POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET)
+    .bind(POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET)
+    .fetch_all(&pool)
+    .await
+    .expect("load replay markers for existing pool node health archive");
+    assert!(
+        replay_markers.is_empty(),
+        "preexisting month archives should stay pending after append until full backfill runs: {:?}",
+        replay_markers
+    );
+
+    let materialized_at: Option<String> = sqlx::query_scalar(
+        r#"
+        SELECT historical_rollups_materialized_at
+        FROM archive_batches
+        WHERE dataset = 'pool_upstream_request_attempts'
+          AND file_path = ?1
+        "#,
+    )
+    .bind(&archive_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load historical rollup materialized timestamp after append");
+    assert!(materialized_at.is_none());
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn refreshing_pool_node_health_hourly_cache_from_row_cache_is_idempotent() {
+    let (pool, _config, temp_dir) =
+        retention_test_pool_and_config("pool-node-health-hourly-cache-idempotent").await;
+    let archive_batch_id = 42_i64;
+    let archive_file_path = temp_dir
+        .join("hourly-cache-idempotent.sqlite.gz")
+        .to_string_lossy()
+        .to_string();
+    let binding_key = "fpn-hourly-cache-idempotent";
+    let occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::days(40))
+            .with_timezone(&Shanghai)
+            .naive_local()
+            .with_minute(15)
+            .expect("set minute")
+            .with_second(0)
+            .expect("set second"),
+    );
+    let bucket_start_epoch = align_bucket_epoch(
+        parse_shanghai_local_naive(&occurred_at)
+            .expect("parse shanghai occurred_at")
+            .and_local_timezone(Shanghai)
+            .single()
+            .expect("localize shanghai occurred_at")
+            .with_timezone(&Utc)
+            .timestamp(),
+        3600,
+        0,
+    );
+
+    for (archived_row_id, is_success) in [(1_i64, 1_i64), (2_i64, 0_i64)] {
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_node_health_archive (
+                archive_file_path,
+                archived_row_id,
+                occurred_at,
+                proxy_binding_key_snapshot,
+                is_success,
+                latency_ms
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, NULL)
+            "#,
+        )
+        .bind(&archive_file_path)
+        .bind(archived_row_id)
+        .bind(&occurred_at)
+        .bind(binding_key)
+        .bind(is_success)
+        .execute(&pool)
+        .await
+        .expect("insert cached pool node health row");
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_node_health_hourly_archive (
+            archive_identity,
+            archive_batch_id,
+            archive_file_path,
+            proxy_binding_key_snapshot,
+            bucket_start_epoch,
+            success_count,
+            failure_count
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+    )
+    .bind(pool_upstream_node_health_archive_identity_for_batch_id(
+        archive_batch_id,
+    ))
+    .bind(archive_batch_id)
+    .bind(&archive_file_path)
+    .bind(binding_key)
+    .bind(bucket_start_epoch)
+    .bind(9_i64)
+    .bind(4_i64)
+    .execute(&pool)
+    .await
+    .expect("insert stale cached hourly row");
+
+    for _ in 0..2 {
+        let mut tx = pool.begin().await.expect("begin hourly refresh tx");
+        refresh_pool_upstream_node_health_hourly_archive_rows_from_cache_tx(
+            tx.as_mut(),
+            archive_batch_id,
+            &archive_file_path,
+        )
+        .await
+        .expect("refresh hourly rows from cached rows");
+        tx.commit().await.expect("commit hourly refresh tx");
+    }
+
+    let refreshed = sqlx::query_as::<_, (i64, i64)>(
+        r#"
+        SELECT
+            COALESCE(SUM(success_count), 0) AS success_count,
+            COALESCE(SUM(failure_count), 0) AS failure_count
+        FROM pool_upstream_node_health_hourly_archive
+        WHERE archive_batch_id = ?1
+          AND proxy_binding_key_snapshot = ?2
+          AND bucket_start_epoch = ?3
+        "#,
+    )
+    .bind(archive_batch_id)
+    .bind(binding_key)
+    .bind(bucket_start_epoch)
+    .fetch_one(&pool)
+    .await
+    .expect("load refreshed hourly cache row");
+    assert_eq!(refreshed.0, 1);
+    assert_eq!(refreshed.1, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn pool_node_health_hourly_backfill_waits_for_cache_replay_and_refreshes_from_cache() {
+    let (pool, _config, temp_dir) =
+        retention_test_pool_and_config("pool-node-health-hourly-cache-replay-gate").await;
+    let archive_file_path = temp_dir
+        .join("hourly-cache-replay-gate.sqlite.gz")
+        .to_string_lossy()
+        .to_string();
+    let binding_key = "fpn-hourly-cache-replay-gate";
+    let occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::days(45))
+            .with_timezone(&Shanghai)
+            .naive_local()
+            .with_minute(10)
+            .expect("set minute")
+            .with_second(0)
+            .expect("set second"),
+    );
+    let month_key = archive_month_key_from_day_key(&occurred_at[..10])
+        .expect("derive archive month key from occurred_at");
+    let bucket_start_epoch = align_bucket_epoch(
+        parse_shanghai_local_naive(&occurred_at)
+            .expect("parse shanghai occurred_at")
+            .and_local_timezone(Shanghai)
+            .single()
+            .expect("localize shanghai occurred_at")
+            .with_timezone(&Utc)
+            .timestamp(),
+        3600,
+        0,
+    );
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, datetime('now'))
+        "#,
+    )
+    .bind("pool_upstream_request_attempts")
+    .bind(&month_key)
+    .bind(&archive_file_path)
+    .bind("hourly-cache-replay-gate")
+    .bind(2_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&occurred_at)
+    .execute(&pool)
+    .await
+    .expect("insert pool upstream archive batch");
+    let archive_batch_id: i64 = sqlx::query_scalar(
+        r#"
+        SELECT id
+        FROM archive_batches
+        WHERE dataset = 'pool_upstream_request_attempts'
+          AND file_path = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(&archive_file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load pool upstream archive batch id");
+
+    for (archived_row_id, is_success) in [(1_i64, 1_i64), (2_i64, 0_i64)] {
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_node_health_archive (
+                archive_file_path,
+                archived_row_id,
+                occurred_at,
+                proxy_binding_key_snapshot,
+                is_success,
+                latency_ms
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, NULL)
+            "#,
+        )
+        .bind(&archive_file_path)
+        .bind(archived_row_id)
+        .bind(&occurred_at)
+        .bind(binding_key)
+        .bind(is_success)
+        .execute(&pool)
+        .await
+        .expect("insert cached pool node health row");
+    }
+
+    let first = backfill_pool_upstream_node_health_hourly_archives(&pool, None, None)
+        .await
+        .expect("hourly backfill should wait for cache replay");
+    assert_eq!(first.materialized_batches, 0);
+    assert_eq!(first.pending_batches, 1);
+    let hourly_rows_before: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM pool_upstream_node_health_hourly_archive
+        WHERE archive_batch_id = ?1
+        "#,
+    )
+    .bind(archive_batch_id)
+    .fetch_one(&pool)
+    .await
+    .expect("count hourly rows before cache replay completes");
+    assert_eq!(hourly_rows_before, 0);
+
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
+        VALUES (?1, ?2, ?3, datetime('now'))
+        "#,
+    )
+    .bind(POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET)
+    .bind("pool_upstream_request_attempts")
+    .bind(&archive_file_path)
+    .execute(&pool)
+    .await
+    .expect("mark cached pool node health replay complete");
+
+    let second = backfill_pool_upstream_node_health_hourly_archives(&pool, None, None)
+        .await
+        .expect("hourly backfill should refresh from cached pool node health rows");
+    assert_eq!(second.materialized_batches, 1);
+    assert_eq!(second.pending_batches, 0);
+
+    let refreshed = sqlx::query_as::<_, (i64, i64)>(
+        r#"
+        SELECT
+            COALESCE(SUM(success_count), 0) AS success_count,
+            COALESCE(SUM(failure_count), 0) AS failure_count
+        FROM pool_upstream_node_health_hourly_archive
+        WHERE archive_batch_id = ?1
+          AND proxy_binding_key_snapshot = ?2
+          AND bucket_start_epoch = ?3
+        "#,
+    )
+    .bind(archive_batch_id)
+    .bind(binding_key)
+    .bind(bucket_start_epoch)
+    .fetch_one(&pool)
+    .await
+    .expect("load refreshed hourly cache row");
+    assert_eq!(refreshed.0, 1);
+    assert_eq!(refreshed.1, 1);
+
+    let hourly_replayed: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM hourly_rollup_archive_replay
+        WHERE target = ?1
+          AND dataset = 'pool_upstream_request_attempts'
+          AND file_path = ?2
+        "#,
+    )
+    .bind(POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET)
+    .bind(&archive_file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("count hourly replay markers after cache refresh");
+    assert_eq!(hourly_replayed, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn missing_pool_node_health_archives_clear_stale_cached_rows_before_marking_replayed() {
+    let (pool, _config, temp_dir) =
+        retention_test_pool_and_config("pool-node-health-missing-archive-clears-cache").await;
+    let archive_file_path = temp_dir
+        .join("missing-node-health-archive.sqlite.gz")
+        .to_string_lossy()
+        .to_string();
+    let binding_key = "fpn-missing-archive-clears-cache";
+    let occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::days(45))
+            .with_timezone(&Shanghai)
+            .naive_local()
+            .with_minute(0)
+            .expect("set minute")
+            .with_second(0)
+            .expect("set second"),
+    );
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, datetime('now'))
+        "#,
+    )
+    .bind("pool_upstream_request_attempts")
+    .bind(&occurred_at[..7])
+    .bind(&archive_file_path)
+    .bind("missing-node-health-archive")
+    .bind(2_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&occurred_at)
+    .execute(&pool)
+    .await
+    .expect("insert missing pool upstream archive manifest");
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_node_health_archive (
+            archive_file_path,
+            archived_row_id,
+            occurred_at,
+            proxy_binding_key_snapshot,
+            is_success,
+            latency_ms
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind(&archive_file_path)
+    .bind(1_i64)
+    .bind(&occurred_at)
+    .bind(binding_key)
+    .bind(1_i64)
+    .bind(120.0_f64)
+    .execute(&pool)
+    .await
+    .expect("seed stale cached node health row");
+
+    let summary = backfill_pool_upstream_node_health_archives(&pool, None, None)
+        .await
+        .expect("backfill should clear stale cached rows for missing archives");
+    assert_eq!(summary.pending_batches, 0);
+
+    let cached_rows: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM pool_upstream_node_health_archive
+        WHERE archive_file_path = ?1
+        "#,
+    )
+    .bind(&archive_file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("count cached rows after missing archive replay");
+    assert_eq!(cached_rows, 0);
+
+    let replayed: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM hourly_rollup_archive_replay
+        WHERE target = ?1
+          AND dataset = 'pool_upstream_request_attempts'
+          AND file_path = ?2
+        "#,
+    )
+    .bind(POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET)
+    .bind(&archive_file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("count replay marker for missing archive");
+    assert_eq!(replayed, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn cleanup_expired_pool_upstream_archives_waits_for_cache_replay_completion() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("pool-node-health-cleanup-cache-replay-gate").await;
+    let coverage_end_at = shanghai_local_days_ago(14, 9, 0, 0);
+    let archive_file_path = archive_batch_file_path(&config, "pool_upstream_request_attempts", &coverage_end_at[..7])
+        .expect("resolve expired pool upstream archive path");
+    fs::create_dir_all(archive_file_path.parent().expect("archive parent"))
+        .expect("create archive parent for cleanup gate");
+    fs::write(&archive_file_path, b"placeholder-archive")
+        .expect("seed raw archive file for cleanup gate");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            historical_rollups_materialized_at,
+            archive_expires_at,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, datetime('now'))
+        "#,
+    )
+    .bind("pool_upstream_request_attempts")
+    .bind(&coverage_end_at[..7])
+    .bind(archive_file_path.to_string_lossy().to_string())
+    .bind("cache-replay-gate")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(shanghai_local_days_ago(1, 0, 0, 0))
+    .bind(&coverage_end_at)
+    .bind(&coverage_end_at)
+    .execute(&pool)
+    .await
+    .expect("insert expired pool upstream archive batch");
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
+        VALUES (?1, ?2, ?3, datetime('now'))
+        "#,
+    )
+    .bind(POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET)
+    .bind("pool_upstream_request_attempts")
+    .bind(archive_file_path.to_string_lossy().to_string())
+    .execute(&pool)
+    .await
+    .expect("mark hourly replay complete while cache replay stays pending");
+
+    let deleted = cleanup_expired_archive_batches(&pool, &config, false)
+        .await
+        .expect("cleanup should respect pending cache replay");
+    assert_eq!(deleted, 0);
+    assert!(
+        archive_file_path.exists(),
+        "raw archive must remain until cache replay completes"
+    );
+
+    let remaining_batches: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM archive_batches WHERE dataset = 'pool_upstream_request_attempts'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count remaining pool upstream archive batches");
+    assert_eq!(remaining_batches, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn cleanup_expired_pool_upstream_archives_preserves_recent_exact_window_history() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("pool-node-health-cleanup-window-gate").await;
+    let coverage_end_at = shanghai_local_days_ago(2, 9, 0, 0);
+    let archive_file_path = archive_batch_file_path(&config, "pool_upstream_request_attempts", &coverage_end_at[..7])
+        .expect("resolve recent pool upstream archive path");
+    fs::create_dir_all(archive_file_path.parent().expect("archive parent"))
+        .expect("create archive parent for window gate");
+    fs::write(&archive_file_path, b"placeholder-archive")
+        .expect("seed raw archive file for window gate");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            historical_rollups_materialized_at,
+            archive_expires_at,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), ?7, ?8, ?9, datetime('now'))
+        "#,
+    )
+    .bind("pool_upstream_request_attempts")
+    .bind(&coverage_end_at[..7])
+    .bind(archive_file_path.to_string_lossy().to_string())
+    .bind("recent-window-gate")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(shanghai_local_days_ago(1, 0, 0, 0))
+    .bind(&coverage_end_at)
+    .bind(&coverage_end_at)
+    .execute(&pool)
+    .await
+    .expect("insert recent expired pool upstream archive batch");
+    for target in [
+        POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET,
+        POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET,
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
+            VALUES (?1, ?2, ?3, datetime('now'))
+            "#,
+        )
+        .bind(target)
+        .bind("pool_upstream_request_attempts")
+        .bind(archive_file_path.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .expect("mark node health replay complete");
+    }
+
+    let deleted = cleanup_expired_archive_batches(&pool, &config, false)
+        .await
+        .expect("cleanup should keep recent exact node health history");
+    assert_eq!(deleted, 0);
+    assert!(
+        archive_file_path.exists(),
+        "raw archive should remain while Live/Settings windows can still overlap it"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn pool_upstream_node_health_archive_backfill_reuses_stable_temp_db_when_budget_is_hit() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("pool-node-health-archive-temp-reuse").await;
+    config.pool_upstream_request_attempts_retention_days = 7;
+    config.pool_upstream_request_attempts_archive_ttl_days = 30;
+    let row_count = (BACKFILL_BATCH_SIZE as usize * 6) + 17;
+    config.retention_batch_rows = row_count;
+
+    let old_occurred_at = shanghai_local_days_ago(10, 9, 30, 0);
+    let old_base = parse_shanghai_local_naive(&old_occurred_at).expect("valid shanghai local");
+    for idx in 0..row_count {
+        let occurred_at = format_naive(old_base + ChronoDuration::seconds(idx as i64));
+        insert_retention_pool_upstream_request_attempt(
+            &pool,
+            &format!("pool-node-health-archive-temp-reuse-old-{idx}"),
+            &occurred_at,
+            Some(7),
+            1,
+            1,
+            1,
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+            Some(200),
+            None,
+            Some(&occurred_at),
+            Some(&occurred_at),
+        )
+        .await;
+    }
+
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run pool attempt retention");
+    assert_eq!(summary.pool_upstream_request_attempt_rows_archived, row_count);
+
+    let archive_path = PathBuf::from(
+        sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT file_path
+            FROM archive_batches
+            WHERE dataset = 'pool_upstream_request_attempts'
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load pool attempt archive batch path"),
+    );
+    let temp_path = pool_upstream_node_health_archive_temp_path(&archive_path);
+
+    sqlx::query("DELETE FROM pool_upstream_node_health_archive")
+        .execute(&pool)
+        .await
+        .expect("clear cached node health archive rows");
+    sqlx::query(
+        r#"
+        DELETE FROM hourly_rollup_archive_replay
+        WHERE target = ?1
+          AND dataset = 'pool_upstream_request_attempts'
+        "#,
+    )
+    .bind(POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET)
+    .execute(&pool)
+    .await
+    .expect("clear node health archive replay markers");
+    sqlx::query(
+        "DELETE FROM hourly_rollup_archive_progress WHERE dataset = 'pool_upstream_request_attempts'",
+    )
+    .execute(&pool)
+    .await
+    .expect("clear node health archive replay progress");
+
+    let first = backfill_pool_upstream_node_health_archives(
+        &pool,
+        Some(1),
+        Some(std::time::Duration::from_millis(1)),
+    )
+    .await
+    .expect("run budget-limited node health archive backfill");
+    assert!(first.hit_budget);
+    assert!(
+        temp_path.exists(),
+        "budget-limited backfill should keep a stable temp sqlite for reuse"
+    );
+
+    let second = backfill_pool_upstream_node_health_archives(
+        &pool,
+        Some(1),
+        Some(std::time::Duration::from_millis(1)),
+    )
+    .await
+    .expect("rerun budget-limited node health archive backfill");
+    let matching_temp_files = fs::read_dir(
+        temp_path
+            .parent()
+            .expect("stable temp sqlite should have a parent directory"),
+    )
+    .expect("list archive temp directory")
+    .filter_map(|entry| entry.ok())
+    .filter(|entry| {
+        entry.file_name().to_string_lossy().ends_with(
+            ".pool-upstream-node-health.sqlite",
+        )
+    })
+    .count();
+    assert!(
+        matching_temp_files <= 1,
+        "budget-limited retries must not leak multiple temp sqlite files"
+    );
+    if second.hit_budget {
+        assert!(temp_path.exists(), "stable temp sqlite should be reused across passes");
+        let final_summary = backfill_pool_upstream_node_health_archives(&pool, None, None)
+            .await
+            .expect("finish node health archive backfill");
+        assert!(!final_summary.hit_budget);
+        assert_eq!(final_summary.pending_batches, 0);
+        assert!(
+            !temp_path.exists(),
+            "completed node health archive replay should clean up the stable temp sqlite"
+        );
+    } else {
+        assert_eq!(second.pending_batches, 0);
+        assert!(
+            !temp_path.exists(),
+            "a completed retry should clean up the stable temp sqlite instead of leaking it"
+        );
+    }
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn pool_upstream_node_health_archive_backfill_marks_missing_archives_replayed() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("pool-node-health-missing-archive").await;
+    let missing_occurred_at = shanghai_local_days_ago(45, 9, 0, 0);
+    let month_key = missing_occurred_at[..7].to_string();
+    let missing_archive_path = archive_batch_file_path(
+        &config,
+        "pool_upstream_request_attempts",
+        &month_key,
+    )
+    .expect("resolve missing pool node health archive path");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))
+        "#,
+    )
+    .bind("pool_upstream_request_attempts")
+    .bind(&month_key)
+    .bind(missing_archive_path.to_string_lossy().to_string())
+    .bind("deadbeef")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&missing_occurred_at)
+    .bind(&missing_occurred_at)
+    .execute(&pool)
+    .await
+    .expect("insert missing pool node health archive manifest");
+
+    let pending_before = pending_pool_upstream_node_health_archive_batches(&pool)
+        .await
+        .expect("count pending pool node health archive batches before replay");
+    assert_eq!(pending_before, 1);
+
+    let summary = backfill_pool_upstream_node_health_archives(&pool, None, None)
+        .await
+        .expect("missing pool node health archive should be marked replayed");
+    assert!(!summary.hit_budget);
+    assert_eq!(summary.pending_batches, 0);
+
+    let replay_marked: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM hourly_rollup_archive_replay
+        WHERE target = ?1
+          AND dataset = 'pool_upstream_request_attempts'
+          AND file_path = ?2
+        "#,
+    )
+    .bind(POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET)
+    .bind(missing_archive_path.to_string_lossy().to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("count replay markers for missing pool node health archive");
+    assert_eq!(replay_marked, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn pool_upstream_node_health_archive_backfill_refreshes_stale_temp_after_archive_rewrite() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("pool-node-health-archive-refresh-temp").await;
+    config.pool_upstream_request_attempts_retention_days = 7;
+    config.pool_upstream_request_attempts_archive_ttl_days = 30;
+    let row_count = (BACKFILL_BATCH_SIZE as usize * 6) + 17;
+    config.retention_batch_rows = row_count;
+    let binding_key = "stale-temp-rewrite-binding";
+
+    let old_occurred_at = shanghai_local_days_ago(10, 11, 0, 0);
+    let old_base = parse_shanghai_local_naive(&old_occurred_at).expect("valid shanghai local");
+    for idx in 0..row_count {
+        let occurred_at = Shanghai
+            .from_local_datetime(&(old_base + ChronoDuration::seconds(idx as i64)))
+            .single()
+            .expect("valid shanghai local old pool attempt")
+            .with_timezone(&Utc);
+        seed_pool_upstream_attempt_at(
+            &pool,
+            &format!("pool-node-health-archive-refresh-temp-old-{idx}"),
+            occurred_at,
+            Some(binding_key),
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+        )
+        .await;
+    }
+
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run initial pool attempt retention");
+    assert_eq!(summary.pool_upstream_request_attempt_rows_archived, row_count);
+
+    let archive_path = PathBuf::from(
+        sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT file_path
+            FROM archive_batches
+            WHERE dataset = 'pool_upstream_request_attempts'
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load rewritten pool attempt archive batch path"),
+    );
+    let temp_path = pool_upstream_node_health_archive_temp_path(&archive_path);
+
+    sqlx::query("DELETE FROM pool_upstream_node_health_archive")
+        .execute(&pool)
+        .await
+        .expect("clear cached node health archive rows");
+    sqlx::query(
+        r#"
+        DELETE FROM hourly_rollup_archive_replay
+        WHERE target = ?1
+          AND dataset = 'pool_upstream_request_attempts'
+        "#,
+    )
+    .bind(POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET)
+    .execute(&pool)
+    .await
+    .expect("clear node health archive replay markers");
+    sqlx::query(
+        "DELETE FROM hourly_rollup_archive_progress WHERE dataset = 'pool_upstream_request_attempts'",
+    )
+    .execute(&pool)
+    .await
+    .expect("clear node health archive replay progress");
+
+    let mut first = None;
+    let mut partial_cursor = 0_i64;
+    for budget_ms in [1_u64, 5, 10, 20, 40] {
+        let summary = backfill_pool_upstream_node_health_archives(
+            &pool,
+            Some(1),
+            Some(std::time::Duration::from_millis(budget_ms)),
+        )
+        .await
+        .expect("run budget-limited node health archive backfill before archive rewrite");
+        partial_cursor = sqlx::query_scalar(
+            "SELECT cursor_id FROM hourly_rollup_archive_progress WHERE dataset = 'pool_upstream_request_attempts' AND file_path = ?1",
+        )
+        .bind(archive_path.to_string_lossy().to_string())
+        .fetch_optional(&pool)
+        .await
+        .expect("load partial node health archive replay cursor")
+        .unwrap_or(0);
+        first = Some(summary);
+        if partial_cursor > 0 {
+            break;
+        }
+    }
+    let first = first.expect("expected at least one budget-limited replay attempt");
+    assert!(first.hit_budget);
+    assert!(
+        partial_cursor > 0,
+        "stale-temp rewrite coverage requires a partial replay cursor before the month archive is rewritten"
+    );
+    assert!(temp_path.exists(), "budget-limited replay should keep a temp sqlite");
+
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    let appended_occurred_at = Shanghai
+        .from_local_datetime(&(old_base + ChronoDuration::seconds(row_count as i64 + 60)))
+        .single()
+        .expect("valid shanghai local appended pool attempt")
+        .with_timezone(&Utc);
+    seed_pool_upstream_attempt_at(
+        &pool,
+        "pool-node-health-archive-refresh-temp-appended",
+        appended_occurred_at,
+        Some(binding_key),
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+    )
+    .await;
+
+    let second_retention = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("rerun retention so the month archive gets rewritten with a new appended row");
+    assert_eq!(second_retention.pool_upstream_request_attempt_rows_archived, 1);
+
+    let final_summary = backfill_pool_upstream_node_health_archives(&pool, None, None)
+        .await
+        .expect("finish node health archive replay after archive rewrite");
+    assert!(!final_summary.hit_budget);
+    assert_eq!(final_summary.pending_batches, 0);
+
+    let cached_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pool_upstream_node_health_archive")
+        .fetch_one(&pool)
+        .await
+        .expect("count cached node health archive rows after archive rewrite");
+    assert_eq!(
+        cached_rows,
+        (row_count + 1) as i64,
+        "rewritten month archives must invalidate stale temp sqlite copies so appended rows are replayed"
+    );
+    assert!(
+        !temp_path.exists(),
+        "completed replay after archive rewrite should clean up the temp sqlite"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
 #[test]
 fn cleanup_stale_archive_temp_files_removes_only_old_archive_residue() {
     let temp_dir = make_temp_test_dir("archive-temp-janitor");

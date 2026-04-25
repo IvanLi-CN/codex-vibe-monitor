@@ -11,6 +11,8 @@ pub(crate) struct UpstreamAccountRow {
     status: String,
     enabled: i64,
     email: Option<String>,
+    #[sqlx(default)]
+    verified_email: Option<String>,
     chatgpt_account_id: Option<String>,
     chatgpt_user_id: Option<String>,
     plan_type: Option<String>,
@@ -634,6 +636,8 @@ pub(crate) struct OauthLoginSessionRow {
     login_id: String,
     account_id: Option<i64>,
     display_name: Option<String>,
+    #[sqlx(default)]
+    email: Option<String>,
     group_name: Option<String>,
     group_bound_proxy_keys_json: Option<String>,
     group_node_shunt_enabled: i64,

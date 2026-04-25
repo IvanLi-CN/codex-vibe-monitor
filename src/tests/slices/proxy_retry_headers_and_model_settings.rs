@@ -154,7 +154,7 @@ async fn seed_default_pricing_catalog_falls_back_when_legacy_file_empty() {
 }
 
 #[tokio::test]
-async fn seed_default_pricing_catalog_auto_inserts_new_models_for_legacy_default_version() {
+async fn seed_default_pricing_catalog_auto_inserts_new_models_for_previous_default_version() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
         .expect("in-memory sqlite");
@@ -174,8 +174,20 @@ async fn seed_default_pricing_catalog_auto_inserts_new_models_for_legacy_default
     .expect("downgrade pricing catalog version for test");
     sqlx::query(
         r#"
+        UPDATE pricing_settings_meta
+        SET catalog_version = ?1
+        WHERE id = ?2
+        "#,
+    )
+    .bind(PREVIOUS_DEFAULT_PRICING_CATALOG_VERSION)
+    .bind(PRICING_SETTINGS_SINGLETON_ID)
+    .execute(&pool)
+    .await
+    .expect("set previous default pricing catalog version for test");
+    sqlx::query(
+        r#"
         DELETE FROM pricing_settings_models
-        WHERE model IN ('gpt-5.4', 'gpt-5.4-pro')
+        WHERE model IN ('gpt-5.4-mini', 'gpt-5.5', 'gpt-5.5-pro')
         "#,
     )
     .execute(&pool)
@@ -185,8 +197,9 @@ async fn seed_default_pricing_catalog_auto_inserts_new_models_for_legacy_default
     let catalog = load_pricing_catalog(&pool)
         .await
         .expect("load pricing catalog should succeed");
-    assert!(catalog.models.contains_key("gpt-5.4"));
-    assert!(catalog.models.contains_key("gpt-5.4-pro"));
+    assert!(catalog.models.contains_key("gpt-5.4-mini"));
+    assert!(catalog.models.contains_key("gpt-5.5"));
+    assert!(catalog.models.contains_key("gpt-5.5-pro"));
 }
 
 #[tokio::test]
@@ -256,7 +269,7 @@ async fn seed_default_pricing_catalog_does_not_auto_insert_new_models_for_custom
     sqlx::query(
         r#"
         DELETE FROM pricing_settings_models
-        WHERE model IN ('gpt-5.4', 'gpt-5.4-pro')
+        WHERE model IN ('gpt-5.4', 'gpt-5.4-pro', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.5-pro')
         "#,
     )
     .execute(&pool)
@@ -268,6 +281,9 @@ async fn seed_default_pricing_catalog_does_not_auto_insert_new_models_for_custom
         .expect("load pricing catalog should succeed");
     assert!(!catalog.models.contains_key("gpt-5.4"));
     assert!(!catalog.models.contains_key("gpt-5.4-pro"));
+    assert!(!catalog.models.contains_key("gpt-5.4-mini"));
+    assert!(!catalog.models.contains_key("gpt-5.5"));
+    assert!(!catalog.models.contains_key("gpt-5.5-pro"));
 }
 
 #[tokio::test]
@@ -277,7 +293,7 @@ async fn seed_default_pricing_catalog_does_not_override_existing_pricing_for_new
         .expect("in-memory sqlite");
     ensure_schema(&pool).await.expect("ensure schema");
 
-    // Simulate a legacy default catalog version so startup seeding will call
+    // Simulate a repo-managed default catalog version so startup seeding will call
     // ensure_pricing_models_present, which must not overwrite existing rows.
     sqlx::query(
         r#"
@@ -291,6 +307,18 @@ async fn seed_default_pricing_catalog_does_not_override_existing_pricing_for_new
     .execute(&pool)
     .await
     .expect("set legacy pricing catalog version for test");
+    sqlx::query(
+        r#"
+        UPDATE pricing_settings_meta
+        SET catalog_version = ?1
+        WHERE id = ?2
+        "#,
+    )
+    .bind(PREVIOUS_DEFAULT_PRICING_CATALOG_VERSION)
+    .bind(PRICING_SETTINGS_SINGLETON_ID)
+    .execute(&pool)
+    .await
+    .expect("set previous default pricing catalog version for test");
 
     sqlx::query(
         r#"
@@ -323,6 +351,28 @@ async fn seed_default_pricing_catalog_does_not_override_existing_pricing_for_new
     .execute(&pool)
     .await
     .expect("override gpt-5.4-pro pricing for test");
+    sqlx::query(
+        r#"
+        INSERT OR REPLACE INTO pricing_settings_models (
+            model,
+            input_per_1m,
+            output_per_1m,
+            cache_input_per_1m,
+            reasoning_per_1m,
+            source
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind("gpt-5.5")
+    .bind(55.0)
+    .bind(155.0)
+    .bind(Some(5.5))
+    .bind(Some(1.5))
+    .bind("custom")
+    .execute(&pool)
+    .await
+    .expect("override gpt-5.5 pricing for test");
 
     let catalog = load_pricing_catalog(&pool)
         .await
@@ -341,22 +391,38 @@ async fn seed_default_pricing_catalog_does_not_override_existing_pricing_for_new
     assert_eq!(gpt_5_4_pro.output_per_1m, 188.0);
     assert_eq!(gpt_5_4_pro.cache_input_per_1m, None);
     assert_eq!(gpt_5_4_pro.source, "custom");
+
+    let gpt_5_5 = catalog.models.get("gpt-5.5").expect("gpt-5.5 should exist");
+    assert_eq!(gpt_5_5.input_per_1m, 55.0);
+    assert_eq!(gpt_5_5.output_per_1m, 155.0);
+    assert_eq!(gpt_5_5.cache_input_per_1m, Some(5.5));
+    assert_eq!(gpt_5_5.reasoning_per_1m, Some(1.5));
+    assert_eq!(gpt_5_5.source, "custom");
+}
+
+async fn seed_pool_models_route(state: &Arc<AppState>) -> HeaderMap {
+    seed_pool_routing_api_key(state, "pool-live-key").await;
+    insert_test_pool_api_key_account(state, "Primary", "upstream-primary").await;
+    HeaderMap::from_iter([(
+        http_header::AUTHORIZATION,
+        HeaderValue::from_static("Bearer pool-live-key"),
+    )])
 }
 
 #[tokio::test]
-#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_models_passthrough_when_hijack_disabled() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
             .await;
     reset_proxy_capture_hot_path_raw_fallbacks();
+    let headers = seed_pool_models_route(&state).await;
 
     let response = proxy_openai_v1(
         State(state),
         OriginalUri("/v1/models".parse().expect("valid uri")),
         Method::GET,
-        HeaderMap::new(),
+        headers,
         Body::empty(),
     )
     .await;
@@ -376,12 +442,12 @@ async fn proxy_openai_v1_models_passthrough_when_hijack_disabled() {
 }
 
 #[tokio::test]
-#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_models_returns_preset_when_hijack_enabled_without_merge() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
             .await;
+    let headers = seed_pool_models_route(&state).await;
     {
         let mut settings = state.proxy_model_settings.write().await;
         *settings = ProxyModelSettings {
@@ -396,7 +462,7 @@ async fn proxy_openai_v1_models_returns_preset_when_hijack_enabled_without_merge
         State(state),
         OriginalUri("/v1/models".parse().expect("valid uri")),
         Method::GET,
-        HeaderMap::new(),
+        headers,
         Body::empty(),
     )
     .await;
@@ -422,12 +488,12 @@ async fn proxy_openai_v1_models_returns_preset_when_hijack_enabled_without_merge
 }
 
 #[tokio::test]
-#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_models_returns_gpt_5_4_models_when_enabled() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
             .await;
+    let headers = seed_pool_models_route(&state).await;
     {
         let mut settings = state.proxy_model_settings.write().await;
         *settings = ProxyModelSettings {
@@ -442,7 +508,7 @@ async fn proxy_openai_v1_models_returns_gpt_5_4_models_when_enabled() {
         State(state),
         OriginalUri("/v1/models".parse().expect("valid uri")),
         Method::GET,
-        HeaderMap::new(),
+        headers,
         Body::empty(),
     )
     .await;
@@ -459,12 +525,12 @@ async fn proxy_openai_v1_models_returns_gpt_5_4_models_when_enabled() {
 }
 
 #[tokio::test]
-#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_models_merges_upstream_when_enabled() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
             .await;
+    let headers = seed_pool_models_route(&state).await;
     {
         let mut settings = state.proxy_model_settings.write().await;
         *settings = ProxyModelSettings {
@@ -482,7 +548,7 @@ async fn proxy_openai_v1_models_merges_upstream_when_enabled() {
         State(state),
         OriginalUri("/v1/models".parse().expect("valid uri")),
         Method::GET,
-        HeaderMap::new(),
+        headers,
         Body::empty(),
     )
     .await;
@@ -513,13 +579,12 @@ async fn proxy_openai_v1_models_merges_upstream_when_enabled() {
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_models_bypass_hijack_for_pool_route_requests() {
+async fn proxy_openai_v1_models_applies_hijack_for_pool_route_requests() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
             .await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let headers = seed_pool_models_route(&state).await;
     {
         let mut settings = state.proxy_model_settings.write().await;
         *settings = ProxyModelSettings {
@@ -534,29 +599,24 @@ async fn proxy_openai_v1_models_bypass_hijack_for_pool_route_requests() {
         State(state),
         OriginalUri("/v1/models".parse().expect("valid uri")),
         Method::GET,
-        HeaderMap::from_iter([(
-            http_header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer pool-live-key"),
-        )]),
+        headers,
         Body::empty(),
     )
     .await;
 
     assert_eq!(response.status(), StatusCode::OK);
-    assert!(
-        response
-            .headers()
-            .get(PROXY_MODEL_MERGE_STATUS_HEADER)
-            .is_none()
+    assert_eq!(
+        response.headers().get(PROXY_MODEL_MERGE_STATUS_HEADER),
+        Some(&HeaderValue::from_static(PROXY_MODEL_MERGE_STATUS_SUCCESS))
     );
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read models body");
     let payload: Value = serde_json::from_slice(&body).expect("decode models payload");
-    assert_eq!(
-        extract_model_ids(&payload),
-        vec!["upstream-model-a".to_string(), "gpt-5.2-codex".to_string()]
-    );
+    let ids = extract_model_ids(&payload);
+    assert_eq!(ids[0], "gpt-5.1-codex-mini".to_string());
+    assert!(ids.contains(&"upstream-model-a".to_string()));
+    assert!(ids.contains(&"gpt-5.2-codex".to_string()));
 
     upstream_handle.abort();
 }
@@ -600,13 +660,13 @@ async fn proxy_openai_v1_models_pool_failures_do_not_return_untracked_cvm_id() {
 }
 
 #[tokio::test]
-#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_models_merges_upstream_after_429_retry() {
     let (upstream_base, attempts, upstream_handle) =
         spawn_retrying_models_upstream(1, Some("0")).await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
             .await;
+    let headers = seed_pool_models_route(&state).await;
     {
         let mut settings = state.proxy_model_settings.write().await;
         *settings = ProxyModelSettings {
@@ -621,7 +681,7 @@ async fn proxy_openai_v1_models_merges_upstream_after_429_retry() {
         State(state.clone()),
         OriginalUri("/v1/models".parse().expect("valid uri")),
         Method::GET,
-        HeaderMap::new(),
+        headers,
         Body::empty(),
     )
     .await;
@@ -653,12 +713,12 @@ async fn proxy_openai_v1_models_merges_upstream_after_429_retry() {
 }
 
 #[tokio::test]
-#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_models_falls_back_to_preset_when_merge_upstream_fails() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
             .await;
+    let headers = seed_pool_models_route(&state).await;
     {
         let mut settings = state.proxy_model_settings.write().await;
         *settings = ProxyModelSettings {
@@ -673,7 +733,7 @@ async fn proxy_openai_v1_models_falls_back_to_preset_when_merge_upstream_fails()
         State(state),
         OriginalUri("/v1/models?mode=error".parse().expect("valid uri")),
         Method::GET,
-        HeaderMap::new(),
+        headers,
         Body::empty(),
     )
     .await;
@@ -694,13 +754,13 @@ async fn proxy_openai_v1_models_falls_back_to_preset_when_merge_upstream_fails()
 }
 
 #[tokio::test]
-#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_models_retries_429_then_falls_back_once_exhausted() {
     let (upstream_base, attempts, upstream_handle) =
         spawn_retrying_models_upstream(99, Some("0")).await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
             .await;
+    let headers = seed_pool_models_route(&state).await;
     {
         let mut settings = state.proxy_model_settings.write().await;
         *settings = ProxyModelSettings {
@@ -715,7 +775,7 @@ async fn proxy_openai_v1_models_retries_429_then_falls_back_once_exhausted() {
         State(state.clone()),
         OriginalUri("/v1/models".parse().expect("valid uri")),
         Method::GET,
-        HeaderMap::new(),
+        headers,
         Body::empty(),
     )
     .await;
@@ -748,7 +808,6 @@ async fn proxy_openai_v1_models_retries_429_then_falls_back_once_exhausted() {
 }
 
 #[tokio::test]
-#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
@@ -810,13 +869,14 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
         pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
+    let headers = seed_pool_models_route(&state).await;
 
     let started = Instant::now();
     let response = proxy_openai_v1(
         State(state),
         OriginalUri("/v1/models?mode=slow-body".parse().expect("valid uri")),
         Method::GET,
-        HeaderMap::new(),
+        headers,
         Body::empty(),
     )
     .await;

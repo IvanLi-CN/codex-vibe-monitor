@@ -7,12 +7,14 @@ import { Input } from "../../components/ui/input";
 import { AccountTagField } from "../../components/AccountTagField";
 import { UpstreamAccountGroupCombobox } from "../../components/UpstreamAccountGroupCombobox";
 import { MotherAccountToggle } from "../../components/MotherAccountToggle";
+import { resolveDisplayNameAfterEmailChange } from "./UpstreamAccountCreate.shared";
 import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.controller-context";
 
 export function UpstreamAccountCreateApiKeySection() {
   const {
     apiKeyDisplayName,
     apiKeyDisplayNameConflict,
+    apiKeyEmail,
     apiKeyGroupName,
     apiKeyGroupProxyState,
     apiKeyIsMother,
@@ -35,6 +37,7 @@ export function UpstreamAccountCreateApiKeySection() {
     openGroupNoteEditor,
     pageCreatedTagIds,
     setApiKeyDisplayName,
+    setApiKeyEmail,
     setApiKeyGroupName,
     setApiKeyIsMother,
     setApiKeyLimitUnit,
@@ -74,6 +77,28 @@ export function UpstreamAccountCreateApiKeySection() {
         />
       ) : null}
     </div>
+  </label>
+  <label className="field md:col-span-2">
+    <span className="field-label">
+      {t("accountPool.upstreamAccounts.fields.email")}
+    </span>
+    <Input
+      name="apiKeyEmail"
+      value={apiKeyEmail}
+      autoCapitalize="none"
+      spellCheck={false}
+      onChange={(event) => {
+        const nextValue = event.target.value;
+        setApiKeyEmail(nextValue);
+        setApiKeyDisplayName((current: string) =>
+          resolveDisplayNameAfterEmailChange(
+            current,
+            apiKeyEmail,
+            nextValue,
+          ),
+        );
+      }}
+    />
   </label>
   <label className="field md:col-span-2">
     <span className="field-label">

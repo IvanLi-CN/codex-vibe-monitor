@@ -15,6 +15,7 @@ export {
   rotateExternalApiKey,
   disableExternalApiKey,
   updatePricingSettings,
+  updateProxySettings,
   updateForwardProxySettings,
   validateForwardProxyCandidate,
   fetchSummary,

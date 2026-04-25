@@ -1,3 +1,89 @@
+fn pool_upstream_node_health_hourly_archive_create_sql(table_name: &str) -> String {
+    format!(
+        r#"
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            archive_identity TEXT NOT NULL,
+            archive_batch_id INTEGER,
+            archive_file_path TEXT NOT NULL,
+            proxy_binding_key_snapshot TEXT NOT NULL,
+            bucket_start_epoch INTEGER NOT NULL,
+            success_count INTEGER NOT NULL,
+            failure_count INTEGER NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (archive_identity, proxy_binding_key_snapshot, bucket_start_epoch)
+        )
+        "#
+    )
+}
+
+async fn migrate_pool_upstream_node_health_hourly_archive_identity(
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    const TEMP_TABLE: &str = "pool_upstream_node_health_hourly_archive_v2";
+
+    let mut tx = pool.begin().await?;
+    let drop_temp_sql = format!("DROP TABLE IF EXISTS {TEMP_TABLE}");
+    sqlx::query(&drop_temp_sql)
+        .execute(tx.as_mut())
+        .await
+        .context("failed to clear stale pool_upstream_node_health_hourly_archive migration temp table")?;
+
+    let create_temp_sql = pool_upstream_node_health_hourly_archive_create_sql(TEMP_TABLE);
+    sqlx::query(&create_temp_sql)
+        .execute(tx.as_mut())
+        .await
+        .context("failed to create pool_upstream_node_health_hourly_archive migration temp table")?;
+
+    let copy_sql = format!(
+        r#"
+        INSERT INTO {TEMP_TABLE} (
+            archive_identity,
+            archive_batch_id,
+            archive_file_path,
+            proxy_binding_key_snapshot,
+            bucket_start_epoch,
+            success_count,
+            failure_count,
+            updated_at
+        )
+        SELECT
+            CASE
+                WHEN batches.id IS NOT NULL THEN 'batch:' || CAST(batches.id AS TEXT)
+                ELSE 'legacy-file:' || legacy.archive_file_path
+            END AS archive_identity,
+            batches.id AS archive_batch_id,
+            legacy.archive_file_path,
+            legacy.proxy_binding_key_snapshot,
+            legacy.bucket_start_epoch,
+            legacy.success_count,
+            legacy.failure_count,
+            legacy.updated_at
+        FROM pool_upstream_node_health_hourly_archive AS legacy
+        LEFT JOIN archive_batches AS batches
+          ON batches.dataset = 'pool_upstream_request_attempts'
+         AND batches.file_path = legacy.archive_file_path
+        "#
+    );
+    sqlx::query(&copy_sql)
+        .execute(tx.as_mut())
+        .await
+        .context("failed to copy pool_upstream_node_health_hourly_archive rows into migration temp table")?;
+
+    sqlx::query("DROP TABLE pool_upstream_node_health_hourly_archive")
+        .execute(tx.as_mut())
+        .await
+        .context("failed to drop legacy pool_upstream_node_health_hourly_archive table during migration")?;
+
+    let rename_sql = format!("ALTER TABLE {TEMP_TABLE} RENAME TO pool_upstream_node_health_hourly_archive");
+    sqlx::query(&rename_sql)
+        .execute(tx.as_mut())
+        .await
+        .context("failed to swap migrated pool_upstream_node_health_hourly_archive table into place")?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
 async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     let create_sql = codex_invocations_create_sql("codex_invocations");
     sqlx::query(&create_sql)
@@ -927,6 +1013,93 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS pool_upstream_node_health_archive (
+            archive_file_path TEXT NOT NULL,
+            archived_row_id INTEGER NOT NULL,
+            occurred_at TEXT NOT NULL,
+            proxy_binding_key_snapshot TEXT NOT NULL,
+            is_success INTEGER NOT NULL,
+            latency_ms REAL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (archive_file_path, archived_row_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure pool_upstream_node_health_archive table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_node_health_archive_occurred_at_binding
+        ON pool_upstream_node_health_archive (occurred_at, proxy_binding_key_snapshot)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context(
+        "failed to ensure index idx_pool_upstream_node_health_archive_occurred_at_binding",
+    )?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_node_health_archive_file
+        ON pool_upstream_node_health_archive (archive_file_path)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_pool_upstream_node_health_archive_file")?;
+
+    let hourly_archive_sql =
+        pool_upstream_node_health_hourly_archive_create_sql("pool_upstream_node_health_hourly_archive");
+    sqlx::query(&hourly_archive_sql)
+    .execute(pool)
+    .await
+    .context("failed to ensure pool_upstream_node_health_hourly_archive table existence")?;
+
+    let hourly_archive_columns =
+        load_sqlite_table_columns(pool, "pool_upstream_node_health_hourly_archive").await?;
+    if !hourly_archive_columns.contains("archive_identity")
+        || !hourly_archive_columns.contains("archive_batch_id")
+    {
+        migrate_pool_upstream_node_health_hourly_archive_identity(pool).await?;
+    }
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_node_health_hourly_archive_bucket_binding
+        ON pool_upstream_node_health_hourly_archive (bucket_start_epoch, proxy_binding_key_snapshot)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context(
+        "failed to ensure index idx_pool_upstream_node_health_hourly_archive_bucket_binding",
+    )?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_node_health_hourly_archive_file
+        ON pool_upstream_node_health_hourly_archive (archive_file_path)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_pool_upstream_node_health_hourly_archive_file")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_node_health_hourly_archive_batch
+        ON pool_upstream_node_health_hourly_archive (archive_batch_id)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_pool_upstream_node_health_hourly_archive_batch")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS hourly_rollup_archive_replay (
             target TEXT NOT NULL,
             dataset TEXT NOT NULL,
@@ -1340,6 +1513,18 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_pool_upstream_request_attempts_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_request_attempts_occurred_at_proxy_binding
+        ON pool_upstream_request_attempts (occurred_at, proxy_binding_key_snapshot)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context(
+        "failed to ensure index idx_pool_upstream_request_attempts_occurred_at_proxy_binding",
+    )?;
 
     sqlx::query(
         r#"

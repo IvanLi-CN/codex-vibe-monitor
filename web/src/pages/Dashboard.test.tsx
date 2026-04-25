@@ -141,6 +141,11 @@ vi.mock("../components/DashboardWorkingConversationsSection", () => ({
   }) => (
     <div data-testid="dashboard-working-conversations-section">
       {cards.map((card) => card.conversationSequenceId).join(",")}
+      <span data-testid="dashboard-working-conversations-endpoints">
+        {cards
+          .map((card) => card.currentInvocation.preview.endpoint ?? "")
+          .join(",")}
+      </span>
       {cards[0] ? (
         <>
           <button
@@ -349,7 +354,10 @@ function installSummaryMocks() {
   });
 }
 
-function createWorkingConversationCard(): DashboardWorkingConversationCardModel {
+function createWorkingConversationCard(options?: {
+  endpoint?: string;
+  upstreamAccountName?: string;
+}): DashboardWorkingConversationCardModel {
   return {
     promptCacheKey: "pck-drawer-switch",
     normalizedPromptCacheKey: "pck-drawer-switch",
@@ -367,8 +375,9 @@ function createWorkingConversationCard(): DashboardWorkingConversationCardModel 
         cost: 0.01,
         proxyDisplayName: "tokyo-edge-01",
         upstreamAccountId: 77,
-        upstreamAccountName: "section-account@example.com",
-        endpoint: "/v1/responses",
+        upstreamAccountName:
+          options?.upstreamAccountName ?? "section-account@example.com",
+        endpoint: options?.endpoint ?? "/v1/responses",
       },
       record: {
         id: 101,
@@ -440,6 +449,11 @@ describe("DashboardPage", () => {
         '[data-testid="dashboard-working-conversations-section"]',
       )?.textContent,
     ).toContain("WC-ABCD12");
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-working-conversations-endpoints"]',
+      )?.textContent,
+    ).toContain("/v1/responses");
 
     const historyButton = Array.from(
       host?.querySelectorAll('button[role="tab"]') ?? [],
@@ -783,5 +797,33 @@ describe("DashboardPage", () => {
     });
 
     expect(setRefreshTargetCount).toHaveBeenCalledWith(24);
+  });
+
+  it("passes compact endpoint previews into the working conversations section", () => {
+    installSummaryMocks();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [
+        createWorkingConversationCard({
+          endpoint: "/v1/responses/compact",
+          upstreamAccountName:
+            "paisleeeinar5710 Team sandbox workflow monitor",
+        }),
+      ],
+      totalMatched: 1,
+      hasMore: false,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore: vi.fn(),
+      setRefreshTargetCount: vi.fn(),
+    });
+
+    render(<DashboardPage />);
+
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-working-conversations-endpoints"]',
+      )?.textContent,
+    ).toContain("/v1/responses/compact");
   });
 });

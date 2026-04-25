@@ -119,6 +119,7 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     expect(host?.textContent).not.toContain("Generate a fresh OAuth URL");
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "Row One",
+      email: null,
       ...expectedGroupSelection(),
       note: "Needs a new login",
       tagIds: [],

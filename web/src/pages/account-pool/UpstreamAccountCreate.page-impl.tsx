@@ -95,6 +95,12 @@ type PendingOauthSessionSyncRecord = {
   lastSnapshot: PendingOauthSessionSnapshot | null;
 };
 
+type OauthEmailResolutionState = {
+  detail: UpstreamAccountDetail;
+  verifiedEmail: string;
+  chosenEmail: string;
+};
+
 export default function UpstreamAccountCreatePage() {
   const { t, locale } = useTranslation();
   const navigate = useNavigate();
@@ -156,6 +162,9 @@ export default function UpstreamAccountCreatePage() {
   const [oauthDisplayName, setOauthDisplayName] = useState(
     () => draft?.oauth?.displayName ?? "",
   );
+  const [oauthEmail, setOauthEmail] = useState(
+    () => draft?.oauth?.email ?? draft?.oauth?.session?.email ?? "",
+  );
   const [oauthGroupName, setOauthGroupName] = useState(
     () => draft?.oauth?.groupName ?? "",
   );
@@ -207,6 +216,9 @@ export default function UpstreamAccountCreatePage() {
   const [apiKeyDisplayName, setApiKeyDisplayName] = useState(
     () => draft?.apiKey?.displayName ?? "",
   );
+  const [apiKeyEmail, setApiKeyEmail] = useState(
+    () => draft?.apiKey?.email ?? "",
+  );
   const [apiKeyGroupName, setApiKeyGroupName] = useState(
     () => draft?.apiKey?.groupName ?? "",
   );
@@ -238,6 +250,10 @@ export default function UpstreamAccountCreatePage() {
   const [sessionHint, setSessionHint] = useState<string | null>(
     () => draft?.oauth?.sessionHint ?? null,
   );
+  const [oauthEmailResolution, setOauthEmailResolution] =
+    useState<OauthEmailResolutionState | null>(null);
+  const [oauthCompletedDetail, setOauthCompletedDetail] =
+    useState<UpstreamAccountDetail | null>(null);
   const [oauthDuplicateWarning, setOauthDuplicateWarning] =
     useState<DuplicateWarningState | null>(
       () => draft?.oauth?.duplicateWarning ?? null,
@@ -672,6 +688,7 @@ export default function UpstreamAccountCreatePage() {
       session.loginId,
       buildOauthLoginSessionUpdatePayload({
         displayName: oauthDisplayName,
+        email: oauthEmail,
         groupName: oauthGroupName,
         groupBoundProxyKeys:
           resolvePendingGroupBoundProxyKeysForName(oauthGroupName),
@@ -693,6 +710,7 @@ export default function UpstreamAccountCreatePage() {
   }, [
     activeOauthMailboxSession,
     oauthDisplayName,
+    oauthEmail,
     oauthGroupName,
     oauthIsMother,
     oauthNote,
@@ -716,6 +734,7 @@ export default function UpstreamAccountCreatePage() {
         row.session.loginId,
         buildOauthLoginSessionUpdatePayload({
           displayName: row.displayName,
+          email: row.email,
           groupName: row.groupName,
           groupBoundProxyKeys: resolvePendingGroupBoundProxyKeysForName(
             row.groupName,
@@ -812,10 +831,24 @@ export default function UpstreamAccountCreatePage() {
   }, []);
   const applyPendingOauthSessionStatus = useCallback(
     (loginId: string, nextSession: LoginSessionStatusResponse) => {
+      const currentSnapshot = getPendingOauthSessionSnapshot(loginId);
+      const currentRecord = pendingOauthSessionSyncRef.current[loginId];
+      const shouldPreserveLocalEmailDraft =
+        nextSession.status === "pending" &&
+        currentSnapshot != null &&
+        currentRecord != null &&
+        currentRecord.syncedSignature !== currentSnapshot.signature;
+      const nextDraftEmail = shouldPreserveLocalEmailDraft
+        ? typeof currentSnapshot.payload.email === "string"
+          ? currentSnapshot.payload.email
+          : ""
+        : nextSession.email ?? "";
       if (singleOauthSessionSnapshotRef.current?.loginId === loginId) {
         setSession((current) =>
           current?.loginId === loginId ? nextSession : current,
         );
+        setOauthEmail(nextDraftEmail);
+        setOauthMailboxInput(nextDraftEmail);
         if (nextSession.status !== "pending") {
           setSessionHint(null);
           setActionError(null);
@@ -828,6 +861,9 @@ export default function UpstreamAccountCreatePage() {
             ? {
                 ...row,
                 session: nextSession,
+                email: shouldPreserveLocalEmailDraft
+                  ? nextDraftEmail
+                  : nextSession.email ?? row.email,
                 sessionHint:
                   nextSession.status === "pending" ? row.sessionHint : null,
                 actionError:
@@ -837,7 +873,7 @@ export default function UpstreamAccountCreatePage() {
         ),
       );
     },
-    [],
+    [getPendingOauthSessionSnapshot],
   );
   const runPendingOauthSessionSync = useCallback(
     async (loginId: string, options?: { force?: boolean }) => {
@@ -1297,6 +1333,7 @@ export default function UpstreamAccountCreatePage() {
     if (!isRelinking || !relinkSummary) return;
     setActiveTab("oauth");
     setOauthDisplayName((current) => current || relinkSummary.displayName);
+    setOauthEmail((current) => current || relinkSummary.email || "");
     setOauthGroupName((current) => current || relinkSummary.groupName || "");
     setOauthTagIds((current) =>
       current.length > 0
@@ -1737,6 +1774,7 @@ export default function UpstreamAccountCreatePage() {
     handleGenerateOauthUrl,
     handleCopyOauthUrl,
     handleCompleteOauth,
+    handleResolveOauthEmailChoice,
     handleBatchGenerateMailbox,
     handleBatchStartMailboxEdit,
     handleBatchMailboxEditorValueChange,
@@ -1747,10 +1785,12 @@ export default function UpstreamAccountCreatePage() {
     handleBatchGenerateOauthUrl,
     handleBatchCopyOauthUrl,
     handleBatchCompleteOauth,
+    handleResolveBatchOauthEmailChoice,
     handleCreateApiKey,
   } = useUpstreamAccountCreateActions({
     activeOauthMailboxSession,
     apiKeyDisplayName,
+    apiKeyEmail,
     apiKeyGroupName,
     apiKeyGroupProxyState,
     apiKeyIsMother,
@@ -1796,8 +1836,10 @@ export default function UpstreamAccountCreatePage() {
     normalizeNumberInput,
     notifyMotherChange,
     oauthCallbackUrl,
+    oauthCompletedDetail,
     oauthDisplayName,
-    oauthDisplayNameConflict,
+    oauthEmail,
+    oauthEmailResolution,
     oauthGroupName,
     oauthGroupProxyState,
     oauthIsMother,
@@ -1815,13 +1857,18 @@ export default function UpstreamAccountCreatePage() {
     resolveRequiredGroupProxyState,
     scheduleBatchMailboxToneReset,
     scheduleSingleMailboxToneReset,
+    saveAccount,
     session,
     setActionError,
+    setApiKeyEmail,
     setBatchManualCopyRowId,
     setBusyAction,
     setManualCopyOpen,
     setOauthCallbackUrl,
+    setOauthCompletedDetail,
     setOauthDisplayName,
+    setOauthEmail,
+    setOauthEmailResolution,
     setOauthDuplicateWarning,
     setOauthMailboxBusyAction,
     setOauthMailboxCodeTone,
@@ -1903,6 +1950,7 @@ export default function UpstreamAccountCreatePage() {
     activeTab,
     apiKeyDisplayName,
     apiKeyDisplayNameConflict,
+    apiKeyEmail,
     apiKeyGroupName,
     apiKeyGroupProxyState,
     apiKeyIsMother,
@@ -1967,6 +2015,7 @@ export default function UpstreamAccountCreatePage() {
     handleBatchMailboxFetch,
     handleBatchMetadataChange,
     handleBatchMotherToggle,
+    handleResolveBatchOauthEmailChoice,
     handleBatchStartMailboxEdit,
     handleClearImportSelection,
     handleCloseImportedOauthValidationDialog,
@@ -1980,6 +2029,7 @@ export default function UpstreamAccountCreatePage() {
     handleDeleteTag,
     handleGenerateOauthMailbox,
     handleGenerateOauthUrl,
+    handleResolveOauthEmailChoice,
     handleImportFilesChange,
     handleImportValidatedOauth,
     handleImportedOauthPaste,
@@ -2021,8 +2071,11 @@ export default function UpstreamAccountCreatePage() {
     normalizeGroupName,
     normalizeGroupUpstream429MaxRetries,
     oauthCallbackUrl,
+    oauthCompletedDetail,
     oauthDisplayName,
     oauthDisplayNameConflict,
+    oauthEmail,
+    oauthEmailResolution,
     oauthDuplicateWarning,
     oauthGroupName,
     oauthGroupProxyState,
@@ -2051,6 +2104,7 @@ export default function UpstreamAccountCreatePage() {
     sessionHint,
     setActionError,
     setApiKeyDisplayName,
+    setApiKeyEmail,
     setApiKeyGroupName,
     setApiKeyIsMother,
     setApiKeyLimitUnit,
@@ -2075,7 +2129,10 @@ export default function UpstreamAccountCreatePage() {
     setImportTagIds,
     setManualCopyOpen,
     setOauthCallbackUrl,
+    setOauthCompletedDetail,
     setOauthDisplayName,
+    setOauthEmail,
+    setOauthEmailResolution,
     setOauthGroupName,
     setOauthIsMother,
     setOauthMailboxInput,

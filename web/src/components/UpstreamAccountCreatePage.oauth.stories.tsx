@@ -138,11 +138,36 @@ export const MailboxGenerated: Story = {
     const displayName = canvas.getByLabelText(/display name/i) as HTMLInputElement
     const copyMailboxButton = canvas.getByRole('button', { name: /copy mailbox/i })
 
-    await expect(displayName.value).toMatch(/storybook-oauth-\d+@mail-tw\.707079\.xyz/i)
+    await expect(displayName.value).toBe('')
     await expect(copyMailboxButton).toBeInTheDocument()
     await expect(canvas.getByText(/storybook-oauth-\d+@mail-tw\.707079\.xyz/i)).toBeInTheDocument()
     await userEvent.hover(copyMailboxButton)
     await expect(within(document.body).getByText(/click to copy/i)).toBeInTheDocument()
+  },
+}
+
+export const CompletedEmailChoice: Story = {
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.type(canvas.getByLabelText(/^email$/i), 'entered@storybook.example.com')
+    await userEvent.click(canvas.getByRole('button', { name: /generate oauth url/i }))
+    const authUrlInput = await canvas.findByDisplayValue(/https:\/\/auth\.openai\.com\/authorize/i)
+    const authUrl = (authUrlInput as HTMLInputElement).value
+    const state = new URL(authUrl).searchParams.get('state')
+    if (!state) {
+      throw new Error('missing oauth state in story auth url')
+    }
+    await userEvent.type(
+      canvas.getByLabelText(/callback url/i),
+      `http://localhost:1455/oauth/callback?code=storybook&state=${state}`,
+    )
+    await userEvent.click(canvas.getByRole('button', { name: /complete oauth login/i }))
+
+    await expect(canvas.getByText(/choose which email to keep/i)).toBeInTheDocument()
+    await expect(canvas.getByText(/verified@storybook\.example\.com/i)).toBeInTheDocument()
+    await expect(canvas.getByText(/entered@storybook\.example\.com/i)).toBeInTheDocument()
+    await expect(canvas.getByText(/^plus$/i)).toBeInTheDocument()
   },
 }
 

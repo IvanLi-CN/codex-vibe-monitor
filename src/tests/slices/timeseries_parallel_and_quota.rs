@@ -754,6 +754,80 @@ async fn pool_metadata_prefixed_response_failed_retry_upstream(
         .into_response()
 }
 
+async fn pool_large_metadata_prefixed_response_failed_retry_upstream(
+    State(state): State<PoolResponseFailedRetryUpstreamState>,
+    headers: HeaderMap,
+) -> Response {
+    let authorization = headers
+        .get(http_header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+
+    let attempt = {
+        let mut attempts = state
+            .attempts
+            .lock()
+            .expect("lock large metadata-prefixed response.failed retry attempts");
+        let entry = attempts.entry(authorization.clone()).or_insert(0);
+        *entry += 1;
+        *entry
+    };
+
+    if attempt
+        <= state
+            .fail_before_success
+            .get(&authorization)
+            .copied()
+            .unwrap_or(0)
+    {
+        let oversized_metadata = less_compressible_test_string(RAW_RESPONSE_PREVIEW_LIMIT + 8 * 1024);
+        let created = format!(
+            "event: response.created\n\
+             data: {}\n\n",
+            serde_json::to_string(&json!({
+                "type": "response.created",
+                "response": {
+                    "id": "resp_overloaded_retry",
+                    "model": "gpt-5.4",
+                    "status": "in_progress",
+                    "metadata": oversized_metadata,
+                },
+            }))
+            .expect("serialize oversized metadata-prefixed response.created payload")
+        );
+        let failed = [
+            "event: response.failed\n",
+            r#"data: {"type":"response.failed","response":{"id":"resp_overloaded_retry","model":"gpt-5.4","status":"failed","error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}}"#,
+            "\n\n",
+        ]
+        .concat();
+        let chunks = stream::iter(vec![
+            Ok::<_, Infallible>(Bytes::from(created)),
+            Ok::<_, Infallible>(Bytes::from(failed)),
+        ]);
+        return (
+            StatusCode::OK,
+            [(
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("text/event-stream"),
+            )],
+            Body::from_stream(chunks),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "ok": true,
+            "authorization": authorization,
+            "attempt": attempt,
+        })),
+    )
+        .into_response()
+}
+
 async fn pool_compact_overloaded_retry_upstream(
     State(state): State<PoolResponseFailedRetryUpstreamState>,
     headers: HeaderMap,
@@ -1679,6 +1753,43 @@ async fn spawn_pool_metadata_prefixed_response_failed_retry_upstream(
         axum::serve(listener, app)
             .await
             .expect("metadata-prefixed response.failed retry upstream should run");
+    });
+    (format!("http://{addr}"), attempts, handle)
+}
+
+async fn spawn_pool_large_metadata_prefixed_response_failed_retry_upstream(
+    fail_before_success: &[(&str, usize)],
+) -> (
+    String,
+    Arc<StdMutex<HashMap<String, usize>>>,
+    JoinHandle<()>,
+) {
+    let attempts = Arc::new(StdMutex::new(HashMap::new()));
+    let fail_before_success = Arc::new(
+        fail_before_success
+            .iter()
+            .map(|(authorization, failures)| ((*authorization).to_string(), *failures))
+            .collect::<HashMap<_, _>>(),
+    );
+    let app = Router::new()
+        .route(
+            "/v1/responses",
+            post(pool_large_metadata_prefixed_response_failed_retry_upstream),
+        )
+        .with_state(PoolResponseFailedRetryUpstreamState {
+            attempts: attempts.clone(),
+            fail_before_success,
+        });
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind large metadata-prefixed response.failed retry upstream");
+    let addr = listener
+        .local_addr()
+        .expect("large metadata-prefixed response.failed retry upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("large metadata-prefixed response.failed retry upstream should run");
     });
     (format!("http://{addr}"), attempts, handle)
 }

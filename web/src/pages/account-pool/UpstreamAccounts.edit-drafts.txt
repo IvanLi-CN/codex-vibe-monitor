@@ -64,6 +64,42 @@ describe("SharedUpstreamAccountDetailDrawer edit drafts", () => {
     }
   }
 
+  function createOauthItem(id: number, displayName: string) {
+    return {
+      id,
+      kind: "oauth_codex" as const,
+      provider: "codex" as const,
+      displayName,
+      groupName: "prod",
+      status: "active",
+      displayStatus: "active",
+      enabled: true,
+      isMother: false,
+      email: displayName,
+      planType: "team",
+      primaryWindow: null,
+      secondaryWindow: null,
+      credits: null,
+      localLimits: null,
+      tags: [],
+      effectiveRoutingRule: defaultEffectiveRoutingRule,
+    }
+  }
+
+  function createOauthDetail(
+    item: ReturnType<typeof createOauthItem>,
+    overrides: Record<string, unknown> = {},
+  ) {
+    return {
+      ...item,
+      history: [],
+      note: "Original oauth note",
+      verifiedEmail: "verified@example.com",
+      recentActions: [],
+      ...overrides,
+    }
+  }
+
   function createApiKeyHookState(options?: {
     items?: ReturnType<typeof createApiKeyItem>[]
     selectedId?: number
@@ -135,6 +171,82 @@ describe("SharedUpstreamAccountDetailDrawer edit drafts", () => {
         total: items.length,
         oauth: 0,
         apiKey: items.length,
+        attention: 0,
+      },
+    }
+  }
+
+  function createOauthHookState(options?: {
+    items?: ReturnType<typeof createOauthItem>[]
+    selectedId?: number
+    detail?: Record<string, unknown> | null
+    saveAccount?: ReturnType<typeof vi.fn>
+    saveRouting?: ReturnType<typeof vi.fn>
+    runSync?: ReturnType<typeof vi.fn>
+    removeAccount?: ReturnType<typeof vi.fn>
+  }) {
+    const items = options?.items ?? [createOauthItem(8, "old@example.com")]
+    const selectedId = options?.selectedId ?? items[0]?.id ?? null
+    const selectedSummary =
+      items.find((item) => item.id === selectedId) ?? items[0] ?? null
+    return {
+      items,
+      groups: [],
+      forwardProxyNodes: [],
+      hasUngroupedAccounts: false,
+      writesEnabled: true,
+      routing: {
+        writesEnabled: true,
+        apiKeyConfigured: true,
+        maskedApiKey: "pool-live••••",
+      },
+      selectedId,
+      selectedSummary,
+      detail:
+        options?.detail === undefined
+          ? selectedSummary
+            ? createOauthDetail(selectedSummary)
+            : null
+          : options.detail,
+      isLoading: false,
+      isDetailLoading: false,
+      listError: null,
+      detailError: null,
+      error: null,
+      missingDetailAccountId: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      beginOauthMailboxSession: vi.fn(),
+      beginOauthMailboxSessionForAddress: vi.fn(),
+      getOauthMailboxStatuses: vi.fn(),
+      removeOauthMailboxSession: vi.fn(),
+      getLoginSession: vi.fn(),
+      updateOauthLogin: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      runImportedOauthValidation: vi.fn(),
+      startImportedOauthValidationJob: vi.fn(),
+      stopImportedOauthValidationJob: vi.fn(),
+      importOauthAccounts: vi.fn(),
+      saveAccount: options?.saveAccount ?? vi.fn(),
+      saveRouting: options?.saveRouting ?? vi.fn(),
+      saveGroupNote: vi.fn(),
+      runBulkAction: vi.fn(),
+      startBulkSyncJob: vi.fn(),
+      getBulkSyncJob: vi.fn(),
+      stopBulkSyncJob: vi.fn(),
+      runSync: options?.runSync ?? vi.fn(),
+      removeAccount: options?.removeAccount ?? vi.fn(),
+      total: items.length,
+      page: 1,
+      pageSize: 20,
+      metrics: {
+        total: items.length,
+        oauth: items.length,
+        apiKey: 0,
         attention: 0,
       },
     }
@@ -1524,5 +1636,80 @@ describe("SharedUpstreamAccountDetailDrawer edit drafts", () => {
     expect(
       document.body.querySelector('button[aria-label="burst-safe more actions"]'),
     ).not.toBeNull()
+  })
+
+  it("edits oauth email in the existing edit tab field", async () => {
+    const item = createOauthItem(8, "old@example.com")
+    const saveAccount = vi.fn().mockResolvedValue(
+      createOauthDetail(item, {
+        displayName: "new@example.com",
+        email: "new@example.com",
+        verifiedEmail: "verified@example.com",
+      }),
+    )
+    const state = createOauthHookState({
+      items: [item],
+      selectedId: 8,
+      detail: createOauthDetail(item, {
+        displayName: "old@example.com",
+        email: "old@example.com",
+        verifiedEmail: "verified@example.com",
+      }),
+      saveAccount,
+    })
+    hookMocks.useUpstreamAccounts.mockImplementation(() => state)
+
+    renderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+    setInputValue('input[name="detailEmail"]', "new@example.com")
+    clickButton(/Save changes/i)
+    await flushAsync()
+
+    expect(saveAccount).toHaveBeenCalledWith(
+      8,
+      expect.objectContaining({
+        email: "new@example.com",
+        displayName: "new@example.com",
+      }),
+    )
+
+    expect(
+      (
+        document.body.querySelector(
+          'input[name="detailDisplayName"]',
+        ) as HTMLInputElement
+      ).value,
+    ).toBe("new@example.com")
+  })
+
+  it("shows the oauth verified-email hint next to the edit-tab email field", async () => {
+    const item = createOauthItem(8, "old@example.com")
+    const state = createOauthHookState({
+      items: [item],
+      selectedId: 8,
+      detail: createOauthDetail(item, {
+        displayName: "old@example.com",
+        email: "old@example.com",
+        verifiedEmail: "verified@example.com",
+      }),
+    })
+    hookMocks.useUpstreamAccounts.mockImplementation(() => state)
+
+    renderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+
+    expect(document.body.querySelector('input[name="detailEmail"]')).not.toBeNull()
+    expect(
+      document.body.textContent?.includes("verified@example.com"),
+    ).toBe(true)
+    expect(
+      document.body.textContent?.includes(
+        "Saving only updates the editable email field",
+      ),
+    ).toBe(true)
   })
 })

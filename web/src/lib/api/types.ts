@@ -37,6 +37,8 @@ export type {
   VersionResponse,
   PricingEntry,
   PricingSettings,
+  ProxyFastModeRewriteMode,
+  ProxySettings,
   ForwardProxyWindowStats,
   ForwardProxyNodeStats,
   ForwardProxyNode,

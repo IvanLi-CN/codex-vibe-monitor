@@ -1815,7 +1815,7 @@ async fn load_login_session_by_login_id_with_executor(
     sqlx::query_as::<_, OauthLoginSessionRow>(
         r#"
         SELECT
-            login_id, account_id, display_name, group_name, group_bound_proxy_keys_json, group_node_shunt_enabled,
+            login_id, account_id, display_name, email, group_name, group_bound_proxy_keys_json, group_node_shunt_enabled,
             group_node_shunt_enabled_requested, is_mother, note, tag_ids_json, group_note,
             group_concurrency_limit,
             mailbox_session_id, generated_mailbox_address AS mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
@@ -1845,7 +1845,7 @@ async fn load_login_session_by_state(
     sqlx::query_as::<_, OauthLoginSessionRow>(
         r#"
         SELECT
-            login_id, account_id, display_name, group_name, group_bound_proxy_keys_json, group_node_shunt_enabled,
+            login_id, account_id, display_name, email, group_name, group_bound_proxy_keys_json, group_node_shunt_enabled,
             group_node_shunt_enabled_requested, is_mother, note, tag_ids_json, group_note,
             group_concurrency_limit,
             mailbox_session_id, generated_mailbox_address AS mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
@@ -2147,6 +2147,7 @@ fn login_session_to_response(row: &OauthLoginSessionRow) -> LoginSessionStatusRe
         expires_at: row.expires_at.clone(),
         updated_at: row.updated_at.clone(),
         account_id: row.account_id,
+        email: row.email.clone(),
         error: row.error_message.clone(),
         sync_applied: None,
     }

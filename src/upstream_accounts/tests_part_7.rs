@@ -591,6 +591,103 @@
     }
 
     #[tokio::test]
+    async fn external_oauth_upsert_preserves_manual_email_while_refreshing_verified_email() {
+        let (usage_base_url, server) = spawn_usage_snapshot_server(
+            StatusCode::OK,
+            json!({
+                "planType": "team",
+                "rateLimit": {
+                    "primaryWindow": {
+                        "usedPercent": 11,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1771322400
+                    }
+                }
+            }),
+        )
+        .await;
+        let state = test_app_state_with_usage_base(&usage_base_url).await;
+        let (_key_id, secret, key_row) =
+            create_external_api_key_for_test(&state, "Partner Email Preserve").await;
+
+        let _ = external_upsert_oauth_upstream_account_route(
+            State(state.clone()),
+            external_api_auth_headers(&secret),
+            AxumPath("email-preserve-source-001".to_string()),
+            Json(test_external_upsert_request(
+                "external-original@example.com",
+                "org_email_preserve",
+                "user_email_preserve",
+                "preserve-access-1",
+                "preserve-refresh-1",
+                "External Email Preserve",
+                None,
+                None,
+            )),
+        )
+        .await
+        .expect("create external email preserve account");
+
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET email = ?2,
+                verified_email = ?3,
+                updated_at = ?4
+            WHERE external_client_id = ?1
+              AND external_source_account_id = 'email-preserve-source-001'
+            "#,
+        )
+        .bind(&key_row.client_id)
+        .bind("operator-picked@example.com")
+        .bind("external-original@example.com")
+        .bind(format_utc_iso(Utc::now()))
+        .execute(&state.pool)
+        .await
+        .expect("seed manual external email");
+
+        let Json(detail) = external_upsert_oauth_upstream_account_route(
+            State(state.clone()),
+            external_api_auth_headers(&secret),
+            AxumPath("email-preserve-source-001".to_string()),
+            Json(test_external_upsert_request(
+                "external-refreshed@example.com",
+                "org_email_preserve",
+                "user_email_preserve",
+                "preserve-access-2",
+                "preserve-refresh-2",
+                "External Email Preserve",
+                None,
+                None,
+            )),
+        )
+        .await
+        .expect("refresh external email preserve account");
+
+        assert_eq!(detail.summary.email.as_deref(), Some("operator-picked@example.com"));
+        assert_eq!(
+            detail.verified_email.as_deref(),
+            Some("external-refreshed@example.com")
+        );
+
+        let persisted = load_upstream_account_row_by_external_identity(
+            &state.pool,
+            &key_row.client_id,
+            "email-preserve-source-001",
+        )
+        .await
+        .expect("load preserved external account")
+        .expect("preserved external account should exist");
+        assert_eq!(persisted.email.as_deref(), Some("operator-picked@example.com"));
+        assert_eq!(
+            persisted.verified_email.as_deref(),
+            Some("external-refreshed@example.com")
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn external_oauth_patch_updates_metadata_without_overwriting_credentials() {
         let (usage_base_url, server) = spawn_usage_snapshot_server(
             StatusCode::OK,

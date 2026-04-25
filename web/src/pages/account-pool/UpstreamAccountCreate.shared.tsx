@@ -39,6 +39,7 @@ import type {
   UpstreamAccountDuplicateInfo,
   UpstreamAccountSummary,
 } from "../../lib/api";
+import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
 import {
   normalizeMotherGroupKey,
 } from "../../lib/upstreamMother";
@@ -91,6 +92,9 @@ export type PendingOauthSessionSnapshot = {
 export type BatchOauthRow = {
   id: string;
   displayName: string;
+  email: string;
+  verifiedEmail?: string | null;
+  planType?: string | null;
   groupName: string;
   inheritsDefaultGroup: boolean;
   isMother: boolean;
@@ -118,6 +122,13 @@ export type BatchOauthRow = {
   metadataBusy: boolean;
   metadataError: string | null;
   metadataPersisted: BatchOauthPersistedMetadata | null;
+  emailResolution?: {
+    accountId: number;
+    verifiedEmail: string;
+    chosenEmail: string;
+    displayName: string;
+    planType?: string | null;
+  } | null;
   pendingSharedTagIds: number[] | null;
   sharedTagSyncAttempts: number;
 };
@@ -125,6 +136,7 @@ export type BatchOauthRow = {
 export type CreatePageDraft = {
   oauth?: {
     displayName?: string;
+    email?: string;
     groupName?: string;
     isMother?: boolean;
     note?: string;
@@ -155,6 +167,7 @@ export type CreatePageDraft = {
   };
   apiKey?: {
     displayName?: string;
+    email?: string;
     groupName?: string;
     isMother?: boolean;
     note?: string;
@@ -290,6 +303,9 @@ export function createBatchOauthRow(id: string, groupName = ""): BatchOauthRow {
   return {
     id,
     displayName: "",
+    email: "",
+    verifiedEmail: null,
+    planType: null,
     groupName,
     inheritsDefaultGroup: true,
     isMother: false,
@@ -317,6 +333,7 @@ export function createBatchOauthRow(id: string, groupName = ""): BatchOauthRow {
     metadataBusy: false,
     metadataError: null,
     metadataPersisted: null,
+    emailResolution: null,
     pendingSharedTagIds: null,
     sharedTagSyncAttempts: 0,
   };
@@ -528,6 +545,19 @@ export function hydrateBatchOauthRow(
     metadataPersisted: normalizeBatchOauthPersistedMetadata(
       seed.metadataPersisted,
     ),
+    email: typeof seed.email === "string" ? seed.email : "",
+    verifiedEmail:
+      typeof seed.verifiedEmail === "string" ? seed.verifiedEmail : null,
+    planType: typeof seed.planType === "string" ? seed.planType : null,
+    emailResolution: seed.emailResolution
+      ? {
+          accountId: seed.emailResolution.accountId,
+          verifiedEmail: seed.emailResolution.verifiedEmail,
+          chosenEmail: seed.emailResolution.chosenEmail,
+          displayName: seed.emailResolution.displayName,
+          planType: seed.emailResolution.planType ?? null,
+        }
+      : null,
     pendingSharedTagIds: Array.isArray(seed.pendingSharedTagIds)
       ? normalizeBatchTagIds(seed.pendingSharedTagIds)
       : null,
@@ -1064,6 +1094,44 @@ export function normalizeDisplayNameKey(value: string) {
   return value.trim().toLocaleLowerCase();
 }
 
+export function normalizeEmailKey(value?: string | null) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed.toLocaleLowerCase() : "";
+}
+
+export function generatedDisplayNameFromEmail(email?: string | null) {
+  return normalizeEmailKey(email);
+}
+
+export function displayNameFollowsEmail(
+  displayName: string,
+  email?: string | null,
+) {
+  const normalizedDisplayName = normalizeDisplayNameKey(displayName);
+  if (!normalizedDisplayName) return true;
+  const generated = generatedDisplayNameFromEmail(email);
+  return generated.length > 0 && normalizedDisplayName === generated;
+}
+
+export function resolveDisplayNameAfterEmailChange(
+  displayName: string,
+  previousEmail?: string | null,
+  nextEmail?: string | null,
+) {
+  return displayNameFollowsEmail(displayName, previousEmail)
+    ? (generatedDisplayNameFromEmail(nextEmail) || displayName)
+    : displayName;
+}
+
+export function shouldPromptOauthEmailChoice(
+  verifiedEmail?: string | null,
+  chosenEmail?: string | null,
+) {
+  const normalizedVerified = normalizeEmailKey(verifiedEmail);
+  const normalizedChosen = normalizeEmailKey(chosenEmail);
+  return normalizedVerified.length > 0 && normalizedVerified !== normalizedChosen;
+}
+
 export function normalizeMailboxAddressKey(value: string) {
   return value.trim().toLocaleLowerCase();
 }
@@ -1126,6 +1194,7 @@ export function invalidatePendingSingleOauthSession(
 
 export function buildOauthLoginSessionUpdatePayload({
   displayName,
+  email,
   groupName,
   groupBoundProxyKeys,
   groupNodeShuntEnabled,
@@ -1138,6 +1207,7 @@ export function buildOauthLoginSessionUpdatePayload({
   mailboxSession,
 }: {
   displayName: string;
+  email?: string | null;
   groupName: string;
   groupBoundProxyKeys: string[];
   groupNodeShuntEnabled: boolean;
@@ -1149,9 +1219,11 @@ export function buildOauthLoginSessionUpdatePayload({
   isMother: boolean;
   mailboxSession: OauthMailboxSessionSupported | null;
 }): UpdateOauthLoginSessionPayload {
+  const normalizedEmail = typeof email === "string" ? email.trim() : "";
   const normalizedGroupName = groupName.trim();
   return {
     displayName: displayName.trim(),
+    email: normalizedEmail || null,
     groupName: normalizedGroupName,
     groupBoundProxyKeys,
     groupNodeShuntEnabled,
@@ -1260,6 +1332,14 @@ export function batchStatusVariant(
 export function batchRowStatus(row: BatchOauthRow) {
   if (row.needsRefresh) return "completedNeedsRefresh";
   return row.session?.status ?? "draft";
+}
+
+export function resolveBatchOauthMailboxAddress(row: BatchOauthRow) {
+  const status = batchRowStatus(row);
+  if (status === "completed" || status === "completedNeedsRefresh") {
+    return row.email || row.mailboxSession?.emailAddress || row.mailboxInput;
+  }
+  return row.mailboxSession?.emailAddress ?? row.mailboxInput;
 }
 
 export function canEditCompletedBatchOauthRowMetadata(row: BatchOauthRow) {
@@ -1539,6 +1619,7 @@ export function DuplicateAccountDetailDialog({
     lastSuccessSync: string;
   };
 }) {
+  const planBadge = upstreamPlanBadgeRecipe(detail?.planType ?? null);
   return (
     <Dialog
       open={open}
@@ -1568,6 +1649,9 @@ export function DuplicateAccountDetailDialog({
                 <Badge variant={accountKindVariant(detail.kind)}>
                   {kindLabel(detail.kind)}
                 </Badge>
+                {planBadge && detail.planType ? (
+                  <Badge variant={planBadge.variant}>{detail.planType}</Badge>
+                ) : null}
                 {detail.duplicateInfo ? (
                   <Badge variant="warning">{duplicateLabel}</Badge>
                 ) : null}

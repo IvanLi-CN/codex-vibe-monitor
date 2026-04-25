@@ -2,27 +2,29 @@ use crate::stats::*;
 use crate::*;
 
 #[derive(Debug, FromRow)]
-pub(crate) struct ForwardProxyAttemptStatsRow {
-    pub(crate) proxy_key: String,
-    pub(crate) attempts: i64,
-    pub(crate) success_count: i64,
-    pub(crate) latency_sum_ms: Option<f64>,
+struct PoolUpstreamBindingWindowStatsRow {
+    proxy_binding_key_snapshot: String,
+    attempts: i64,
+    success_count: i64,
+    latency_sum_ms: Option<f64>,
+    latency_sample_count: i64,
 }
 
 #[derive(Debug, FromRow)]
-pub(crate) struct ForwardProxyHourlyStatsRow {
-    pub(crate) proxy_key: String,
-    pub(crate) bucket_start_epoch: i64,
-    pub(crate) success_count: i64,
-    pub(crate) failure_count: i64,
+struct PoolUpstreamBindingHourlyStatsRow {
+    proxy_binding_key_snapshot: String,
+    bucket_start_epoch: i64,
+    success_count: i64,
+    failure_count: i64,
 }
 
-#[derive(Debug, FromRow)]
-struct PoolUpstreamBindingSnapshotRow {
-    id: i64,
+#[derive(Debug, Clone, FromRow)]
+struct PendingPoolUpstreamBindingAttemptRow {
     proxy_binding_key_snapshot: String,
     occurred_at: String,
-    status: String,
+    bucket_start_epoch: i64,
+    is_success: i64,
+    latency_ms: Option<f64>,
 }
 
 #[derive(Debug, FromRow)]
@@ -50,9 +52,24 @@ pub(crate) struct ForwardProxyKeyAliasRow {
     pub(crate) endpoint_url: Option<String>,
 }
 
+const POOL_UPSTREAM_BINDING_BUCKET_START_EPOCH_SQL: &str = r#"
+    ((CASE
+        WHEN instr(occurred_at, 'T') > 0
+            THEN CAST(strftime('%s', occurred_at) AS INTEGER)
+        ELSE CAST(strftime('%s', occurred_at || '+08:00') AS INTEGER)
+    END) / 3600) * 3600
+"#;
+
+const POOL_UPSTREAM_BINDING_SUCCESS_LATENCY_SQL: &str =
+    "COALESCE(first_byte_latency_ms, connect_latency_ms, stream_latency_ms)";
+const POOL_UPSTREAM_BINDING_HOURLY_BUCKET_SECONDS: i64 = 3600;
 fn ceil_hour_epoch(epoch: i64) -> i64 {
-    let floor = align_bucket_epoch(epoch, 3_600, 0);
-    if floor < epoch { floor + 3_600 } else { floor }
+    let floor = align_bucket_epoch(epoch, POOL_UPSTREAM_BINDING_HOURLY_BUCKET_SECONDS, 0);
+    if floor < epoch {
+        floor + POOL_UPSTREAM_BINDING_HOURLY_BUCKET_SECONDS
+    } else {
+        floor
+    }
 }
 
 pub(crate) async fn load_forward_proxy_settings(
@@ -475,97 +492,660 @@ pub(crate) async fn upsert_forward_proxy_weight_hourly_bucket(
     Ok(())
 }
 
-pub(crate) async fn query_forward_proxy_window_stats(
+async fn load_pool_upstream_binding_key_canonical_map(
+    state: &AppState,
+    raw_keys: &[String],
+) -> Result<HashMap<String, String>> {
+    if raw_keys.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let metadata_map = load_forward_proxy_metadata_history(&state.pool, raw_keys).await?;
+    let manager = state.forward_proxy.lock().await;
+    Ok(raw_keys
+        .iter()
+        .map(|raw_key| {
+            let canonical = manager
+                .canonicalize_bound_proxy_key(raw_key, metadata_map.get(raw_key))
+                .unwrap_or_else(|| raw_key.clone());
+            (raw_key.clone(), canonical)
+        })
+        .collect())
+}
+
+fn resolve_pool_upstream_binding_target_key(
+    raw_key: &str,
+    canonical_map: &HashMap<String, String>,
+    target_keys: Option<&HashSet<String>>,
+) -> Option<String> {
+    let canonical = canonical_map
+        .get(raw_key)
+        .cloned()
+        .unwrap_or_else(|| raw_key.to_string());
+    match target_keys {
+        Some(keys) if keys.contains(&canonical) => Some(canonical),
+        Some(keys) if keys.contains(raw_key) => Some(raw_key.to_string()),
+        Some(_) => None,
+        None => Some(canonical),
+    }
+}
+
+fn record_pool_upstream_binding_window_stats(
+    grouped: &mut HashMap<String, ForwardProxyAttemptWindowStats>,
+    latency_totals: &mut HashMap<String, f64>,
+    latency_samples: &mut HashMap<String, i64>,
+    proxy_key: String,
+    attempts: i64,
+    success_count: i64,
+    latency_sum_ms: Option<f64>,
+    latency_sample_count: i64,
+) {
+    let stats = grouped
+        .entry(proxy_key.clone())
+        .or_insert_with(ForwardProxyAttemptWindowStats::default);
+    stats.attempts += attempts;
+    stats.success_count += success_count;
+    *latency_totals.entry(proxy_key.clone()).or_insert(0.0) += latency_sum_ms.unwrap_or(0.0);
+    *latency_samples.entry(proxy_key).or_insert(0) += latency_sample_count;
+}
+
+fn record_pool_upstream_binding_hourly_stats(
+    grouped: &mut HashMap<String, HashMap<i64, ForwardProxyHourlyStatsPoint>>,
+    proxy_key: String,
+    bucket_start_epoch: i64,
+    success_count: i64,
+    failure_count: i64,
+) {
+    let point = grouped
+        .entry(proxy_key)
+        .or_default()
+        .entry(bucket_start_epoch)
+        .or_default();
+    point.success_count += success_count;
+    point.failure_count += failure_count;
+}
+
+fn ensure_owner_facing_direct_runtime_row(
+    runtime_rows: &mut Vec<ForwardProxyRuntimeState>,
+    algo: ForwardProxyAlgo,
+    insert_direct: bool,
+) {
+    if !insert_direct
+        || runtime_rows
+            .iter()
+            .any(|runtime| runtime.proxy_key == FORWARD_PROXY_DIRECT_KEY)
+    {
+        return;
+    }
+
+    runtime_rows.push(ForwardProxyRuntimeState {
+        proxy_key: FORWARD_PROXY_DIRECT_KEY.to_string(),
+        display_name: FORWARD_PROXY_DIRECT_LABEL.to_string(),
+        source: FORWARD_PROXY_SOURCE_DIRECT.to_string(),
+        endpoint_url: None,
+        weight: match algo {
+            ForwardProxyAlgo::V1 => 1.0,
+            ForwardProxyAlgo::V2 => FORWARD_PROXY_V2_DIRECT_INITIAL_WEIGHT,
+        },
+        success_ema: 0.65,
+        latency_ema_ms: None,
+        consecutive_failures: 0,
+    });
+}
+
+fn owner_facing_pool_upstream_pending_archive_temp_path(archive_path: &Path) -> PathBuf {
+    PathBuf::from(format!(
+        "{}.owner-facing-node-health.{}.sqlite",
+        archive_path.display(),
+        retention_temp_suffix()
+    ))
+}
+
+async fn load_pending_pool_upstream_node_health_archive_file_paths(
     pool: &Pool<Sqlite>,
-    window: &str,
-) -> Result<HashMap<String, ForwardProxyAttemptWindowStats>> {
-    let rows = sqlx::query_as::<_, ForwardProxyAttemptStatsRow>(
+    start_at: &str,
+    end_at: &str,
+) -> Result<Vec<String>> {
+    Ok(load_pending_pool_upstream_node_health_archive_files(pool, Some(start_at), Some(end_at))
+        .await?
+        .into_iter()
+        .map(|row| row.file_path)
+        .collect())
+}
+
+async fn inflate_pending_pool_upstream_node_health_archive_to_temp(
+    archive_path: &Path,
+    temp_path: &Path,
+) -> Result<()> {
+    let archive_path = archive_path.to_path_buf();
+    let temp_path = temp_path.to_path_buf();
+    tokio::task::spawn_blocking(move || inflate_gzip_sqlite_file(&archive_path, &temp_path))
+        .await
+        .context("pending pool upstream node health archive inflate task panicked")??;
+    Ok(())
+}
+
+async fn load_pending_pool_upstream_binding_attempt_rows_from_archive_file(
+    archive_file_path: &str,
+    start_at: &str,
+    end_at: &str,
+) -> Result<Option<Vec<PendingPoolUpstreamBindingAttemptRow>>> {
+    let archive_path = PathBuf::from(archive_file_path);
+    if !archive_path.exists() {
+        warn!(
+            file_path = archive_file_path,
+            "skipping missing pending pool upstream node health archive while serving owner-facing node health"
+        );
+        return Ok(None);
+    }
+
+    let temp_path = owner_facing_pool_upstream_pending_archive_temp_path(&archive_path);
+    let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+    let query_result = async {
+        inflate_pending_pool_upstream_node_health_archive_to_temp(&archive_path, &temp_path)
+            .await?;
+        let mut conn = SqliteConnection::connect(&sqlite_url_for_path(&temp_path))
+            .await
+            .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
+        ensure_pool_upstream_request_attempts_archive_schema_in_place(&mut conn).await?;
+        let attempts_sql = format!(
+            r#"
+            SELECT
+                proxy_binding_key_snapshot,
+                occurred_at,
+                {bucket_start_epoch_sql} AS bucket_start_epoch,
+                CASE WHEN status = '{success}' THEN 1 ELSE 0 END AS is_success,
+                CASE WHEN status = '{success}' THEN {latency_sql} ELSE NULL END AS latency_ms
+            FROM pool_upstream_request_attempts
+            WHERE proxy_binding_key_snapshot IS NOT NULL
+              AND finished_at IS NOT NULL
+              AND status != '{budget_exhausted}'
+              AND occurred_at >= ?1
+              AND occurred_at < ?2
+            "#,
+            bucket_start_epoch_sql = POOL_UPSTREAM_BINDING_BUCKET_START_EPOCH_SQL,
+            success = POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+            budget_exhausted = POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
+            latency_sql = POOL_UPSTREAM_BINDING_SUCCESS_LATENCY_SQL,
+        );
+        let rows = sqlx::query_as::<_, PendingPoolUpstreamBindingAttemptRow>(&attempts_sql)
+            .bind(start_at)
+            .bind(end_at)
+            .fetch_all(&mut conn)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to load pending archive node health attempts from {} within [{start_at}, {end_at})",
+                    archive_path.display()
+                )
+            })?;
+        let _ = conn.close().await;
+        Ok::<_, anyhow::Error>(rows)
+    }
+    .await;
+    drop(temp_cleanup);
+
+    match query_result {
+        Ok(rows) => Ok(Some(rows)),
+        Err(err) => {
+            warn!(
+                file_path = archive_file_path,
+                error = %err,
+                "skipping unreadable pending pool upstream node health archive while serving owner-facing node health"
+            );
+            Ok(None)
+        }
+    }
+}
+
+async fn load_pending_pool_upstream_binding_attempt_rows(
+    pending_archive_file_paths: &[String],
+    start_at: &str,
+    end_at: &str,
+) -> Result<Vec<PendingPoolUpstreamBindingAttemptRow>> {
+    let mut rows = Vec::new();
+    for archive_file_path in pending_archive_file_paths {
+        let Some(mut archive_rows) =
+            load_pending_pool_upstream_binding_attempt_rows_from_archive_file(
+                archive_file_path,
+                start_at,
+                end_at,
+            )
+            .await?
+        else {
+            continue;
+        };
+        rows.append(&mut archive_rows);
+    }
+    Ok(rows)
+}
+
+fn aggregate_pending_pool_upstream_binding_window_stats(
+    pending_archive_rows: &[PendingPoolUpstreamBindingAttemptRow],
+    start_at: &str,
+    end_at: &str,
+) -> Vec<PoolUpstreamBindingWindowStatsRow> {
+    let mut grouped = HashMap::<String, PoolUpstreamBindingWindowStatsRow>::new();
+    for row in pending_archive_rows {
+        if row.occurred_at.as_str() < start_at || row.occurred_at.as_str() >= end_at {
+            continue;
+        }
+        let entry = grouped
+            .entry(row.proxy_binding_key_snapshot.clone())
+            .or_insert_with(|| PoolUpstreamBindingWindowStatsRow {
+                proxy_binding_key_snapshot: row.proxy_binding_key_snapshot.clone(),
+                attempts: 0,
+                success_count: 0,
+                latency_sum_ms: None,
+                latency_sample_count: 0,
+            });
+        entry.attempts += 1;
+        entry.success_count += row.is_success;
+        if let Some(latency_ms) = row.latency_ms {
+            entry.latency_sum_ms = Some(entry.latency_sum_ms.unwrap_or_default() + latency_ms);
+            entry.latency_sample_count += 1;
+        }
+    }
+    grouped.into_values().collect()
+}
+
+async fn query_pending_pool_upstream_binding_window_stats(
+    pending_archive_file_paths: &[String],
+    start_at: &str,
+    end_at: &str,
+) -> Result<Vec<PoolUpstreamBindingWindowStatsRow>> {
+    let rows =
+        load_pending_pool_upstream_binding_attempt_rows(pending_archive_file_paths, start_at, end_at)
+            .await?;
+    Ok(aggregate_pending_pool_upstream_binding_window_stats(
+        &rows, start_at, end_at,
+    ))
+}
+
+fn aggregate_pending_pool_upstream_binding_hourly_stats(
+    pending_archive_rows: &[PendingPoolUpstreamBindingAttemptRow],
+    range_start_epoch: i64,
+    range_end_epoch: i64,
+) -> Vec<PoolUpstreamBindingHourlyStatsRow> {
+    let mut grouped = HashMap::<(String, i64), PoolUpstreamBindingHourlyStatsRow>::new();
+    for row in pending_archive_rows {
+        if !(range_start_epoch..range_end_epoch).contains(&row.bucket_start_epoch) {
+            continue;
+        }
+        let entry = grouped
+            .entry((
+                row.proxy_binding_key_snapshot.clone(),
+                row.bucket_start_epoch,
+            ))
+            .or_insert_with(|| PoolUpstreamBindingHourlyStatsRow {
+                proxy_binding_key_snapshot: row.proxy_binding_key_snapshot.clone(),
+                bucket_start_epoch: row.bucket_start_epoch,
+                success_count: 0,
+                failure_count: 0,
+            });
+        entry.success_count += row.is_success;
+        entry.failure_count += if row.is_success == 0 { 1 } else { 0 };
+    }
+    grouped.into_values().collect()
+}
+
+async fn query_pending_pool_upstream_binding_hourly_stats(
+    pending_archive_file_paths: &[String],
+    range_start_at: &str,
+    range_end_at: &str,
+    range_start_epoch: i64,
+    range_end_epoch: i64,
+) -> Result<Vec<PoolUpstreamBindingHourlyStatsRow>> {
+    let rows = load_pending_pool_upstream_binding_attempt_rows(
+        pending_archive_file_paths,
+        range_start_at,
+        range_end_at,
+    )
+    .await?;
+    Ok(aggregate_pending_pool_upstream_binding_hourly_stats(
+        &rows,
+        range_start_epoch,
+        range_end_epoch,
+    ))
+}
+
+async fn query_materialized_pool_upstream_binding_hourly_stats(
+    pool: &Pool<Sqlite>,
+    range_start_epoch: i64,
+    range_end_epoch: i64,
+) -> Result<Vec<PoolUpstreamBindingHourlyStatsRow>> {
+    sqlx::query_as::<_, PoolUpstreamBindingHourlyStatsRow>(
         r#"
         SELECT
-            proxy_key,
-            COUNT(*) AS attempts,
-            SUM(CASE WHEN is_success != 0 THEN 1 ELSE 0 END) AS success_count,
-            SUM(CASE WHEN is_success != 0 THEN latency_ms END) AS latency_sum_ms
-        FROM forward_proxy_attempts
-        WHERE occurred_at >= datetime('now', ?1)
-        GROUP BY proxy_key
+            hourly.proxy_binding_key_snapshot,
+            hourly.bucket_start_epoch,
+            SUM(hourly.success_count) AS success_count,
+            SUM(hourly.failure_count) AS failure_count
+        FROM pool_upstream_node_health_hourly_archive AS hourly
+        WHERE hourly.bucket_start_epoch >= ?1
+          AND hourly.bucket_start_epoch < ?2
+          AND (
+                hourly.archive_batch_id IS NULL
+                OR NOT EXISTS (
+                    SELECT 1
+                    FROM archive_batches AS batches
+                    WHERE batches.dataset = 'pool_upstream_request_attempts'
+                      AND batches.status = ?3
+                      AND batches.id = hourly.archive_batch_id
+                )
+          )
+        GROUP BY hourly.proxy_binding_key_snapshot, hourly.bucket_start_epoch
         "#,
     )
-    .bind(window)
+    .bind(range_start_epoch)
+    .bind(range_end_epoch)
+    .bind(ARCHIVE_STATUS_COMPLETED)
     .fetch_all(pool)
     .await
-    .with_context(|| format!("failed to query forward proxy attempt stats for {window}"))?;
+    .with_context(|| {
+        format!(
+            "failed to query materialized pool upstream hourly stats within [{range_start_epoch}, {range_end_epoch})"
+        )
+    })
+}
 
-    let alias_map = load_forward_proxy_key_aliases(pool).await?;
+async fn query_pool_upstream_binding_window_stats(
+    state: &AppState,
+    start_at: &str,
+    end_at: &str,
+    target_keys: Option<&HashSet<String>>,
+    pending_archive_file_paths: &[String],
+    pending_archive_rows: Option<&[PendingPoolUpstreamBindingAttemptRow]>,
+) -> Result<HashMap<String, ForwardProxyAttemptWindowStats>> {
+    let window_sql = format!(
+        r#"
+            SELECT
+                proxy_binding_key_snapshot,
+                COUNT(*) AS attempts,
+                SUM(CASE WHEN status = '{success}' THEN 1 ELSE 0 END) AS success_count,
+                SUM(CASE WHEN status = '{success}' THEN {latency_sql} END) AS latency_sum_ms,
+                SUM(CASE
+                        WHEN status = '{success}' AND {latency_sql} IS NOT NULL THEN 1
+                        ELSE 0
+                    END) AS latency_sample_count
+            FROM pool_upstream_request_attempts
+            WHERE proxy_binding_key_snapshot IS NOT NULL
+              AND finished_at IS NOT NULL
+          AND status != '{budget_exhausted}'
+          AND occurred_at >= ?1
+          AND occurred_at < ?2
+        GROUP BY proxy_binding_key_snapshot
+        "#,
+        success = POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+        budget_exhausted = POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
+        latency_sql = POOL_UPSTREAM_BINDING_SUCCESS_LATENCY_SQL,
+    );
+    let mut rows = sqlx::query_as::<_, PoolUpstreamBindingWindowStatsRow>(&window_sql)
+        .bind(start_at)
+        .bind(end_at)
+        .fetch_all(&state.pool)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to query pool upstream binding window stats within [{start_at}, {end_at})"
+            )
+        })?;
+    let mut archive_query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            proxy_binding_key_snapshot,
+            COUNT(*) AS attempts,
+            SUM(is_success) AS success_count,
+            SUM(CASE WHEN is_success != 0 THEN latency_ms END) AS latency_sum_ms,
+            SUM(CASE
+                    WHEN is_success != 0 AND latency_ms IS NOT NULL THEN 1
+                    ELSE 0
+                END) AS latency_sample_count
+        FROM pool_upstream_node_health_archive
+        WHERE occurred_at >= "#,
+    );
+    archive_query.push_bind(start_at);
+    archive_query.push(" AND occurred_at < ");
+    archive_query.push_bind(end_at);
+    if !pending_archive_file_paths.is_empty() {
+        archive_query.push(" AND archive_file_path NOT IN (");
+        {
+            let mut separated = archive_query.separated(", ");
+            for file_path in pending_archive_file_paths {
+                separated.push_bind(file_path);
+            }
+        }
+        archive_query.push(")");
+    }
+    archive_query.push(" GROUP BY proxy_binding_key_snapshot");
+    rows.extend(
+        archive_query
+            .build_query_as::<PoolUpstreamBindingWindowStatsRow>()
+            .fetch_all(&state.pool)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to query cached pool upstream archive window stats within [{start_at}, {end_at})"
+                )
+            })?,
+    );
+    if let Some(pending_archive_rows) = pending_archive_rows {
+        rows.extend(aggregate_pending_pool_upstream_binding_window_stats(
+            pending_archive_rows,
+            start_at,
+            end_at,
+        ));
+    } else {
+        rows.extend(
+            query_pending_pool_upstream_binding_window_stats(
+                pending_archive_file_paths,
+                start_at,
+                end_at,
+            )
+            .await?,
+        );
+    }
+
+    let raw_keys = rows
+        .iter()
+        .map(|row| row.proxy_binding_key_snapshot.clone())
+        .collect::<Vec<_>>();
+    let canonical_map = load_pool_upstream_binding_key_canonical_map(state, &raw_keys).await?;
     let mut grouped = HashMap::new();
     let mut latency_totals = HashMap::new();
-
+    let mut latency_samples = HashMap::new();
     for row in rows {
-        let proxy_key = alias_map
-            .get(&row.proxy_key)
-            .cloned()
-            .unwrap_or(row.proxy_key.clone());
-        let stats = grouped
-            .entry(proxy_key.clone())
-            .or_insert_with(ForwardProxyAttemptWindowStats::default);
-        stats.attempts += row.attempts;
-        stats.success_count += row.success_count;
-        *latency_totals.entry(proxy_key).or_insert(0.0) += row.latency_sum_ms.unwrap_or(0.0);
+        let Some(proxy_key) = resolve_pool_upstream_binding_target_key(
+            &row.proxy_binding_key_snapshot,
+            &canonical_map,
+            target_keys,
+        ) else {
+            continue;
+        };
+        record_pool_upstream_binding_window_stats(
+            &mut grouped,
+            &mut latency_totals,
+            &mut latency_samples,
+            proxy_key,
+            row.attempts,
+            row.success_count,
+            row.latency_sum_ms,
+            row.latency_sample_count,
+        );
     }
 
     for (proxy_key, stats) in &mut grouped {
-        if stats.success_count > 0 {
+        let latency_sample_count = latency_samples.get(proxy_key).copied().unwrap_or_default();
+        if stats.success_count > 0 && latency_sample_count == stats.success_count {
             stats.avg_latency_ms = latency_totals
                 .get(proxy_key)
                 .copied()
-                .map(|value| value / stats.success_count as f64);
+                .map(|value| value / latency_sample_count as f64);
         }
     }
 
     Ok(grouped)
 }
 
-pub(crate) async fn query_forward_proxy_hourly_stats(
-    pool: &Pool<Sqlite>,
+async fn query_pool_upstream_binding_hourly_stats(
+    state: &AppState,
     range_start_epoch: i64,
     range_end_epoch: i64,
+    target_keys: Option<&HashSet<String>>,
+    pending_archive_file_paths: &[String],
+    pending_archive_rows: Option<&[PendingPoolUpstreamBindingAttemptRow]>,
 ) -> Result<HashMap<String, HashMap<i64, ForwardProxyHourlyStatsPoint>>> {
-    let rows = sqlx::query_as::<_, ForwardProxyHourlyStatsRow>(
+    let range_start = Utc
+        .timestamp_opt(range_start_epoch, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid pool upstream binding bucket range start epoch"))?;
+    let range_end = Utc
+        .timestamp_opt(range_end_epoch, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid pool upstream binding bucket range end epoch"))?;
+    let range_start_at = db_occurred_at_lower_bound(range_start);
+    let range_end_at = db_occurred_at_lower_bound(range_end);
+    let hourly_sql = format!(
         r#"
         SELECT
-            proxy_key,
+            proxy_binding_key_snapshot,
             bucket_start_epoch,
-            success_count,
-            failure_count
-        FROM forward_proxy_attempt_hourly
-        WHERE bucket_start_epoch >= ?1
-          AND bucket_start_epoch < ?2
-        "#,
-    )
-    .bind(range_start_epoch)
-    .bind(range_end_epoch)
-    .fetch_all(pool)
-    .await
-    .with_context(|| {
-        format!(
-            "failed to query forward proxy hourly stats within [{range_start_epoch}, {range_end_epoch})"
+            SUM(CASE WHEN status = '{success}' THEN 1 ELSE 0 END) AS success_count,
+            SUM(CASE WHEN status != '{success}' THEN 1 ELSE 0 END) AS failure_count
+        FROM (
+            SELECT
+                proxy_binding_key_snapshot,
+                status,
+                {bucket_start_epoch_sql} AS bucket_start_epoch
+            FROM pool_upstream_request_attempts
+            WHERE proxy_binding_key_snapshot IS NOT NULL
+              AND finished_at IS NOT NULL
+              AND status != '{budget_exhausted}'
+              AND occurred_at >= ?1
+              AND occurred_at < ?2
         )
-    })?;
+        WHERE bucket_start_epoch >= ?3
+          AND bucket_start_epoch < ?4
+        GROUP BY proxy_binding_key_snapshot, bucket_start_epoch
+        "#,
+        bucket_start_epoch_sql = POOL_UPSTREAM_BINDING_BUCKET_START_EPOCH_SQL,
+        success = POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+        budget_exhausted = POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
+    );
+    let mut rows = sqlx::query_as::<_, PoolUpstreamBindingHourlyStatsRow>(&hourly_sql)
+        .bind(&range_start_at)
+        .bind(&range_end_at)
+        .bind(range_start_epoch)
+        .bind(range_end_epoch)
+        .fetch_all(&state.pool)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to query pool upstream binding hourly stats within [{range_start_epoch}, {range_end_epoch})"
+            )
+        })?;
+    let mut archive_query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            proxy_binding_key_snapshot,
+            bucket_start_epoch,
+            SUM(is_success) AS success_count,
+            SUM(CASE WHEN is_success = 0 THEN 1 ELSE 0 END) AS failure_count
+        FROM (
+            SELECT
+                proxy_binding_key_snapshot,
+                is_success,
+                "#,
+    );
+    archive_query.push(POOL_UPSTREAM_BINDING_BUCKET_START_EPOCH_SQL);
+    archive_query.push(
+        r#" AS bucket_start_epoch
+            FROM pool_upstream_node_health_archive
+            WHERE occurred_at >= "#,
+    );
+    archive_query.push_bind(&range_start_at);
+    archive_query.push(" AND occurred_at < ");
+    archive_query.push_bind(&range_end_at);
+    if !pending_archive_file_paths.is_empty() {
+        archive_query.push(" AND archive_file_path NOT IN (");
+        {
+            let mut separated = archive_query.separated(", ");
+            for file_path in pending_archive_file_paths {
+                separated.push_bind(file_path);
+            }
+        }
+        archive_query.push(")");
+    }
+    archive_query.push(
+        r#"
+        )
+        WHERE bucket_start_epoch >= "#,
+    );
+    archive_query.push_bind(range_start_epoch);
+    archive_query.push(" AND bucket_start_epoch < ");
+    archive_query.push_bind(range_end_epoch);
+    archive_query.push(" GROUP BY proxy_binding_key_snapshot, bucket_start_epoch");
+    rows.extend(
+        archive_query
+            .build_query_as::<PoolUpstreamBindingHourlyStatsRow>()
+            .fetch_all(&state.pool)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to query cached pool upstream archive hourly stats within [{range_start_epoch}, {range_end_epoch})"
+                )
+            })?,
+    );
+    if let Some(pending_archive_rows) = pending_archive_rows {
+        rows.extend(aggregate_pending_pool_upstream_binding_hourly_stats(
+            pending_archive_rows,
+            range_start_epoch,
+            range_end_epoch,
+        ));
+    } else {
+        rows.extend(
+            query_pending_pool_upstream_binding_hourly_stats(
+                pending_archive_file_paths,
+                &range_start_at,
+                &range_end_at,
+                range_start_epoch,
+                range_end_epoch,
+            )
+            .await?,
+        );
+    }
+    rows.extend(
+        query_materialized_pool_upstream_binding_hourly_stats(
+            &state.pool,
+            range_start_epoch,
+            range_end_epoch,
+        )
+        .await?,
+    );
 
-    let alias_map = load_forward_proxy_key_aliases(pool).await?;
-    let mut grouped: HashMap<String, HashMap<i64, ForwardProxyHourlyStatsPoint>> = HashMap::new();
+    let raw_keys = rows
+        .iter()
+        .map(|row| row.proxy_binding_key_snapshot.clone())
+        .collect::<Vec<_>>();
+    let canonical_map = load_pool_upstream_binding_key_canonical_map(state, &raw_keys).await?;
+    let mut grouped = HashMap::new();
     for row in rows {
-        let proxy_key = alias_map
-            .get(&row.proxy_key)
-            .cloned()
-            .unwrap_or(row.proxy_key.clone());
-        let point = grouped
-            .entry(proxy_key)
-            .or_default()
-            .entry(row.bucket_start_epoch)
-            .or_default();
-        point.success_count += row.success_count;
-        point.failure_count += row.failure_count;
+        let Some(proxy_key) = resolve_pool_upstream_binding_target_key(
+            &row.proxy_binding_key_snapshot,
+            &canonical_map,
+            target_keys,
+        ) else {
+            continue;
+        };
+        if !(range_start_epoch..range_end_epoch).contains(&row.bucket_start_epoch) {
+            continue;
+        }
+        record_pool_upstream_binding_hourly_stats(
+            &mut grouped,
+            proxy_key,
+            row.bucket_start_epoch,
+            row.success_count,
+            row.failure_count,
+        );
     }
 
     Ok(grouped)
@@ -712,36 +1292,85 @@ pub(crate) async fn query_forward_proxy_weight_last_before(
 pub(crate) async fn build_forward_proxy_settings_response(
     state: &AppState,
 ) -> Result<ForwardProxySettingsResponse> {
-    let (settings, runtime_rows) = {
+    let now_utc = Utc::now();
+    let window_end_at = db_occurred_at_lower_bound(now_utc + ChronoDuration::seconds(1));
+    let widest_window_start_at = db_occurred_at_lower_bound(now_utc - ChronoDuration::days(7));
+    let pending_archive_file_paths = load_pending_pool_upstream_node_health_archive_file_paths(
+        &state.pool,
+        &widest_window_start_at,
+        &window_end_at,
+    )
+    .await?;
+
+    let (settings, runtime_rows, runtime_health_key_by_proxy_key) = {
         let manager = state.forward_proxy.lock().await;
+        let mut runtime_rows = manager
+            .snapshot_runtime()
+            .into_iter()
+            .collect::<Vec<_>>();
+        ensure_owner_facing_direct_runtime_row(
+            &mut runtime_rows,
+            manager.algo,
+            manager.settings.insert_direct,
+        );
+        let runtime_health_key_by_proxy_key = runtime_rows
+            .iter()
+            .map(|runtime| {
+                let health_key = manager
+                    .canonicalize_bound_proxy_key(&runtime.proxy_key, None)
+                    .unwrap_or_else(|| runtime.proxy_key.clone());
+                (runtime.proxy_key.clone(), health_key)
+            })
+            .collect::<HashMap<_, _>>();
         (
             manager.settings.clone(),
-            manager
-                .snapshot_runtime()
-                .into_iter()
-                .filter(|runtime| runtime.proxy_key != FORWARD_PROXY_DIRECT_KEY)
-                .collect::<Vec<_>>(),
+            runtime_rows,
+            runtime_health_key_by_proxy_key,
         )
     };
+    let runtime_health_keys = runtime_health_key_by_proxy_key
+        .values()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let pending_archive_rows = load_pending_pool_upstream_binding_attempt_rows(
+        &pending_archive_file_paths,
+        &widest_window_start_at,
+        &window_end_at,
+    )
+    .await?;
 
     let windows = [
-        ("-1 minute", 0usize),
-        ("-15 minutes", 1usize),
-        ("-1 hour", 2usize),
-        ("-1 day", 3usize),
-        ("-7 days", 4usize),
+        (ChronoDuration::minutes(1), 0usize),
+        (ChronoDuration::minutes(15), 1usize),
+        (ChronoDuration::hours(1), 2usize),
+        (ChronoDuration::days(1), 3usize),
+        (ChronoDuration::days(7), 4usize),
     ];
     let mut window_maps: Vec<HashMap<String, ForwardProxyAttemptWindowStats>> = Vec::new();
-    for (window, _) in &windows {
-        window_maps.push(query_forward_proxy_window_stats(&state.pool, window).await?);
+    for (window_duration, _) in &windows {
+        let window_start_at = db_occurred_at_lower_bound(now_utc - *window_duration);
+        window_maps.push(
+            query_pool_upstream_binding_window_stats(
+                state,
+                &window_start_at,
+                &window_end_at,
+                Some(&runtime_health_keys),
+                &pending_archive_file_paths,
+                Some(&pending_archive_rows),
+            )
+            .await?,
+        );
     }
 
     let mut nodes = runtime_rows
         .into_iter()
         .map(|runtime| {
+            let health_key = runtime_health_key_by_proxy_key
+                .get(&runtime.proxy_key)
+                .unwrap_or(&runtime.proxy_key);
             let stats_for = |index: usize| {
                 window_maps[index]
-                    .get(&runtime.proxy_key)
+                    .get(health_key)
                     .cloned()
                     .map(ForwardProxyWindowStatsResponse::from)
                     .unwrap_or_default()
@@ -871,43 +1500,9 @@ pub(crate) async fn build_forward_proxy_binding_nodes_response(
 pub(crate) async fn build_group_forward_proxy_binding_nodes_response(
     state: &AppState,
     extra_proxy_keys: &[String],
-    group_name: &str,
+    _group_name: &str,
 ) -> Result<Vec<ForwardProxyBindingNodeResponse>> {
-    const BUCKET_SECONDS: i64 = 3600;
-    const BUCKET_COUNT: i64 = 24;
-
-    let (mut nodes, current_node_keys) =
-        build_forward_proxy_binding_node_catalog(state, extra_proxy_keys).await?;
-    if nodes.is_empty() {
-        return Ok(nodes);
-    }
-
-    let now_epoch = Utc::now().timestamp();
-    let range_end_epoch = align_bucket_epoch(now_epoch, BUCKET_SECONDS, 0) + BUCKET_SECONDS;
-    let range_start_epoch = range_end_epoch - BUCKET_COUNT * BUCKET_SECONDS;
-    let final_node_keys = nodes
-        .iter()
-        .map(|node| node.key.clone())
-        .collect::<HashSet<_>>();
-    let hourly_map = query_group_forward_proxy_binding_hourly_stats(
-        state,
-        group_name,
-        &final_node_keys,
-        range_start_epoch,
-        range_end_epoch,
-    )
-    .await?;
-
-    apply_forward_proxy_binding_hourly_buckets(
-        &mut nodes,
-        &current_node_keys,
-        &hourly_map,
-        range_start_epoch,
-        BUCKET_SECONDS,
-        BUCKET_COUNT,
-    )?;
-    nodes.sort_by(|lhs, rhs| lhs.display_name.cmp(&rhs.display_name));
-    Ok(nodes)
+    build_forward_proxy_binding_nodes_response_with_options(state, extra_proxy_keys, false).await
 }
 
 pub(crate) async fn build_forward_proxy_binding_nodes_response_with_options(
@@ -918,9 +1513,24 @@ pub(crate) async fn build_forward_proxy_binding_nodes_response_with_options(
     const BUCKET_SECONDS: i64 = 3600;
     const BUCKET_COUNT: i64 = 24;
 
-    if catch_up_hourly_rollups {
-        crate::ensure_hourly_rollups_caught_up(state).await?;
-    }
+    let _ = catch_up_hourly_rollups;
+    let now_epoch = Utc::now().timestamp();
+    let range_end_epoch = align_bucket_epoch(now_epoch, BUCKET_SECONDS, 0) + BUCKET_SECONDS;
+    let range_start_epoch = range_end_epoch - BUCKET_COUNT * BUCKET_SECONDS;
+    let range_start = Utc
+        .timestamp_opt(range_start_epoch, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid owner-facing node health archive range start epoch"))?;
+    let range_end = Utc
+        .timestamp_opt(range_end_epoch, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid owner-facing node health archive range end epoch"))?;
+    let pending_archive_file_paths = load_pending_pool_upstream_node_health_archive_file_paths(
+        &state.pool,
+        &db_occurred_at_lower_bound(range_start),
+        &db_occurred_at_lower_bound(range_end),
+    )
+    .await?;
 
     let (mut nodes, current_node_keys) =
         build_forward_proxy_binding_node_catalog(state, extra_proxy_keys).await?;
@@ -928,21 +1538,17 @@ pub(crate) async fn build_forward_proxy_binding_nodes_response_with_options(
         return Ok(nodes);
     }
 
-    let now_epoch = Utc::now().timestamp();
-    let range_end_epoch = align_bucket_epoch(now_epoch, BUCKET_SECONDS, 0) + BUCKET_SECONDS;
-    let range_start_epoch = range_end_epoch - BUCKET_COUNT * BUCKET_SECONDS;
     let final_node_keys = nodes
         .iter()
         .map(|node| node.key.clone())
         .collect::<HashSet<_>>();
-    // Keep this surface strictly read-only. `insert_forward_proxy_attempt()` updates
-    // `forward_proxy_attempt_hourly` inline on the write path, so fresh attempt counts
-    // are available here without request-time rollup catch-up.
-    let hourly_map = query_forward_proxy_binding_hourly_stats(
+    let hourly_map = query_pool_upstream_binding_hourly_stats(
         state,
-        &final_node_keys,
         range_start_epoch,
         range_end_epoch,
+        Some(&final_node_keys),
+        &pending_archive_file_paths,
+        None,
     )
     .await?;
 
@@ -957,376 +1563,6 @@ pub(crate) async fn build_forward_proxy_binding_nodes_response_with_options(
     nodes.sort_by(|lhs, rhs| lhs.display_name.cmp(&rhs.display_name));
 
     Ok(nodes)
-}
-
-fn dedupe_forward_proxy_metadata_keys<I>(keys: I) -> Vec<String>
-where
-    I: IntoIterator<Item = String>,
-{
-    keys.into_iter().collect::<HashSet<_>>().into_iter().collect()
-}
-
-async fn query_forward_proxy_binding_hourly_stats(
-    state: &AppState,
-    node_keys: &HashSet<String>,
-    range_start_epoch: i64,
-    range_end_epoch: i64,
-) -> Result<HashMap<String, HashMap<i64, ForwardProxyHourlyStatsPoint>>> {
-    if node_keys.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    let rows = sqlx::query_as::<_, ForwardProxyHourlyStatsRow>(
-        r#"
-        SELECT
-            proxy_key,
-            bucket_start_epoch,
-            success_count,
-            failure_count
-        FROM forward_proxy_attempt_hourly
-        WHERE bucket_start_epoch >= ?1
-          AND bucket_start_epoch < ?2
-        "#,
-    )
-    .bind(range_start_epoch)
-    .bind(range_end_epoch)
-    .fetch_all(&state.pool)
-    .await
-    .with_context(|| {
-        format!(
-            "failed to query forward proxy binding hourly stats within [{range_start_epoch}, {range_end_epoch})"
-        )
-    })?;
-
-    let metadata_keys =
-        dedupe_forward_proxy_metadata_keys(rows.iter().map(|row| row.proxy_key.clone()));
-    let metadata_map = load_forward_proxy_metadata_history(&state.pool, &metadata_keys).await?;
-    let manager = state.forward_proxy.lock().await;
-    let mut grouped: HashMap<String, HashMap<i64, ForwardProxyHourlyStatsPoint>> = HashMap::new();
-
-    for row in rows {
-        let target_key = manager
-            .resolve_current_or_historical_bound_proxy_key(
-                &row.proxy_key,
-                metadata_map.get(&row.proxy_key),
-            )
-            .filter(|candidate| node_keys.contains(candidate))
-            .or_else(|| {
-                node_keys
-                    .contains(&row.proxy_key)
-                    .then(|| row.proxy_key.clone())
-            });
-        let Some(target_key) = target_key else {
-            continue;
-        };
-        let point = grouped
-            .entry(target_key)
-            .or_default()
-            .entry(row.bucket_start_epoch)
-            .or_default();
-        point.success_count += row.success_count;
-        point.failure_count += row.failure_count;
-    }
-
-    Ok(grouped)
-}
-
-async fn query_group_forward_proxy_binding_hourly_stats(
-    state: &AppState,
-    group_name: &str,
-    node_keys: &HashSet<String>,
-    range_start_epoch: i64,
-    range_end_epoch: i64,
-) -> Result<HashMap<String, HashMap<i64, ForwardProxyHourlyStatsPoint>>> {
-    if node_keys.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    let range_start = Utc
-        .timestamp_opt(range_start_epoch, 0)
-        .single()
-        .ok_or_else(|| anyhow!("invalid group forward proxy bucket range start epoch"))?;
-    let range_end = Utc
-        .timestamp_opt(range_end_epoch, 0)
-        .single()
-        .ok_or_else(|| anyhow!("invalid group forward proxy bucket range end epoch"))?;
-    let range_start_at = db_occurred_at_lower_bound(range_start);
-    let range_end_at = db_occurred_at_lower_bound(range_end);
-    let mut rows = sqlx::query_as::<_, PoolUpstreamBindingSnapshotRow>(
-        r#"
-        SELECT
-            id,
-            proxy_binding_key_snapshot,
-            occurred_at,
-            status
-        FROM pool_upstream_request_attempts
-        WHERE group_name_snapshot = ?1
-          AND proxy_binding_key_snapshot IS NOT NULL
-          AND finished_at IS NOT NULL
-          AND occurred_at >= ?2
-          AND occurred_at < ?3
-        ORDER BY occurred_at ASC, id ASC
-        "#,
-    )
-    .bind(group_name)
-    .bind(&range_start_at)
-    .bind(&range_end_at)
-    .fetch_all(&state.pool)
-    .await
-    .with_context(|| {
-        format!(
-            "failed to query group forward proxy binding stats for `{group_name}` within [{range_start_epoch}, {range_end_epoch})"
-        )
-    })?;
-    rows.extend(
-        load_group_forward_proxy_binding_snapshot_rows_from_archives(
-            state,
-            group_name,
-            &range_start_at,
-            &range_end_at,
-        )
-        .await?,
-    );
-
-    let metadata_keys = dedupe_forward_proxy_metadata_keys(
-        rows.iter()
-            .map(|row| row.proxy_binding_key_snapshot.clone()),
-    );
-    let metadata_map = load_forward_proxy_metadata_history(&state.pool, &metadata_keys).await?;
-    let resolved_binding_keys = {
-        let manager = state.forward_proxy.lock().await;
-        metadata_keys
-            .iter()
-            .cloned()
-            .into_iter()
-            .map(|proxy_key| {
-                let resolved = manager.resolve_current_or_historical_bound_proxy_key(
-                    &proxy_key,
-                    metadata_map.get(&proxy_key),
-                );
-                (proxy_key, resolved)
-            })
-            .collect::<HashMap<_, _>>()
-    };
-    let mut grouped: HashMap<String, HashMap<i64, ForwardProxyHourlyStatsPoint>> = HashMap::new();
-    let mut seen_row_ids = HashSet::new();
-    for row in rows {
-        if !seen_row_ids.insert(row.id) {
-            continue;
-        }
-        if row.status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL {
-            continue;
-        }
-        let target_key = resolved_binding_keys
-            .get(&row.proxy_binding_key_snapshot)
-            .cloned()
-            .flatten()
-            .filter(|candidate| node_keys.contains(candidate))
-            .or_else(|| {
-                node_keys
-                    .contains(&row.proxy_binding_key_snapshot)
-                    .then(|| row.proxy_binding_key_snapshot.clone())
-            });
-        let Some(target_key) = target_key else {
-            continue;
-        };
-        let Some(occurred_at_utc) = parse_to_utc_datetime(&row.occurred_at) else {
-            continue;
-        };
-        let bucket_start_epoch = align_bucket_epoch(occurred_at_utc.timestamp(), 3600, 0);
-        if !(range_start_epoch..range_end_epoch).contains(&bucket_start_epoch) {
-            continue;
-        }
-        let point = grouped
-            .entry(target_key)
-            .or_default()
-            .entry(bucket_start_epoch)
-            .or_default();
-        if row.status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS {
-            point.success_count += 1;
-        } else {
-            point.failure_count += 1;
-        }
-    }
-
-    Ok(grouped)
-}
-
-async fn load_group_forward_proxy_binding_snapshot_rows_from_archives(
-    state: &AppState,
-    group_name: &str,
-    start_at: &str,
-    end_at: &str,
-) -> Result<Vec<PoolUpstreamBindingSnapshotRow>> {
-    let archive_files = match sqlx::query_as::<_, ArchiveBatchFileRow>(
-        r#"
-        SELECT
-            id,
-            file_path,
-            coverage_start_at,
-            coverage_end_at
-        FROM archive_batches
-        WHERE dataset = 'pool_upstream_request_attempts'
-          AND status = ?1
-          AND (coverage_end_at IS NULL OR coverage_end_at >= ?2)
-          AND (coverage_start_at IS NULL OR coverage_start_at <= ?3)
-        ORDER BY month_key DESC, day_key DESC, part_key DESC, created_at DESC, id DESC
-        "#,
-    )
-    .bind(ARCHIVE_STATUS_COMPLETED)
-    .bind(start_at)
-    .bind(end_at)
-    .fetch_all(&state.pool)
-    .await
-    {
-        Ok(rows) => rows,
-        Err(err) if is_missing_archive_batches_table(&err) => return Ok(Vec::new()),
-        Err(err) => {
-            return Err(err).with_context(|| {
-                format!(
-                    "failed to list pool_upstream_request_attempts archive batches overlapping [{start_at}, {end_at})"
-                )
-            });
-        }
-    };
-
-    let mut rows = Vec::new();
-    for archive_file in archive_files {
-        let archive_path =
-            resolve_group_forward_proxy_binding_archive_path(&state.config.archive_dir, &archive_file.file_path);
-        if !archive_path.exists() {
-            warn!(
-                archive_batch_id = archive_file.id,
-                file_path = %archive_path.display(),
-                "skipping missing pool_upstream_request_attempts archive batch while building grouped forward proxy stats"
-            );
-            continue;
-        }
-
-        let temp_path = PathBuf::from(format!(
-            "{}.{}.sqlite",
-            archive_path.display(),
-            retention_temp_suffix()
-        ));
-        let temp_cleanup = TempSqliteCleanup(temp_path.clone());
-        inflate_group_forward_proxy_binding_archive_to_temp(&archive_path, &temp_path).await?;
-        let archive_pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect(&sqlite_url_for_path(&temp_path))
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to open grouped forward proxy stats archive batch {}",
-                    archive_path.display()
-                )
-            })?;
-        ensure_group_forward_proxy_binding_archive_schema(&archive_pool, &archive_path).await?;
-        let archive_rows = sqlx::query_as::<_, PoolUpstreamBindingSnapshotRow>(
-            r#"
-            SELECT
-                id,
-                proxy_binding_key_snapshot,
-                occurred_at,
-                status
-            FROM pool_upstream_request_attempts
-            WHERE group_name_snapshot = ?1
-              AND proxy_binding_key_snapshot IS NOT NULL
-              AND finished_at IS NOT NULL
-              AND occurred_at >= ?2
-              AND occurred_at < ?3
-            ORDER BY occurred_at ASC, id ASC
-            "#,
-        )
-        .bind(group_name)
-        .bind(start_at)
-        .bind(end_at)
-        .fetch_all(&archive_pool)
-        .await
-        .with_context(|| {
-            format!(
-                "failed to query grouped forward proxy stats archive batch {}",
-                archive_path.display()
-            )
-        })?;
-        rows.extend(archive_rows);
-        archive_pool.close().await;
-        drop(temp_cleanup);
-    }
-
-    Ok(rows)
-}
-
-async fn inflate_group_forward_proxy_binding_archive_to_temp(
-    archive_path: &Path,
-    temp_path: &Path,
-) -> Result<()> {
-    let archive_path = archive_path.to_path_buf();
-    let temp_path = temp_path.to_path_buf();
-    tokio::task::spawn_blocking(move || -> Result<()> {
-        if temp_path.exists() {
-            let _ = std::fs::remove_file(&temp_path);
-        }
-        inflate_gzip_sqlite_file(&archive_path, &temp_path)
-    })
-    .await
-    .context("grouped forward proxy archive inflation task failed to join")??;
-    Ok(())
-}
-
-async fn ensure_group_forward_proxy_binding_archive_schema(
-    archive_pool: &Pool<Sqlite>,
-    archive_path: &Path,
-) -> Result<()> {
-    let archive_columns = sqlx::query("PRAGMA table_info('pool_upstream_request_attempts')")
-        .fetch_all(archive_pool)
-        .await
-        .with_context(|| {
-            format!(
-                "failed to inspect grouped forward proxy stats archive schema {}",
-                archive_path.display()
-            )
-        })?
-        .into_iter()
-        .filter_map(|row| row.try_get::<String, _>("name").ok())
-        .collect::<HashSet<_>>();
-
-    for (column, ty) in [
-        ("group_name_snapshot", "TEXT"),
-        ("proxy_binding_key_snapshot", "TEXT"),
-    ] {
-        if archive_columns.contains(column) {
-            continue;
-        }
-        let statement =
-            format!("ALTER TABLE pool_upstream_request_attempts ADD COLUMN {column} {ty}");
-        sqlx::query(&statement)
-            .execute(archive_pool)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to add grouped forward proxy stats archive column {column} in {}",
-                    archive_path.display()
-                )
-            })?;
-    }
-
-    Ok(())
-}
-
-fn resolve_group_forward_proxy_binding_archive_path(archive_dir: &Path, file_path: &str) -> PathBuf {
-    let path = PathBuf::from(file_path);
-    if path.is_absolute() {
-        path
-    } else if path.starts_with(archive_dir) {
-        path
-    } else {
-        archive_dir.join(path)
-    }
-}
-
-fn is_missing_archive_batches_table(err: &sqlx::Error) -> bool {
-    let message = err.to_string().to_ascii_lowercase();
-    message.contains("no such table") && message.contains("archive_batches")
 }
 
 fn build_forward_proxy_hourly_buckets(
@@ -1367,39 +1603,90 @@ pub(crate) async fn build_forward_proxy_live_stats_response(
     const BUCKET_SECONDS: i64 = 3600;
     const BUCKET_COUNT: i64 = 24;
 
-    let runtime_rows = {
+    let now_utc = Utc::now();
+    let window_end_at = db_occurred_at_lower_bound(now_utc + ChronoDuration::seconds(1));
+    let widest_window_start_at = db_occurred_at_lower_bound(now_utc - ChronoDuration::days(7));
+    let pending_archive_file_paths = load_pending_pool_upstream_node_health_archive_file_paths(
+        &state.pool,
+        &widest_window_start_at,
+        &window_end_at,
+    )
+    .await?;
+
+    let (runtime_rows, runtime_health_key_by_proxy_key) = {
         let manager = state.forward_proxy.lock().await;
-        manager
+        let mut runtime_rows = manager
             .snapshot_runtime()
             .into_iter()
-            .filter(|runtime| runtime.proxy_key != FORWARD_PROXY_DIRECT_KEY)
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        ensure_owner_facing_direct_runtime_row(
+            &mut runtime_rows,
+            manager.algo,
+            manager.settings.insert_direct,
+        );
+        let runtime_health_key_by_proxy_key = runtime_rows
+            .iter()
+            .map(|runtime| {
+                let health_key = manager
+                    .canonicalize_bound_proxy_key(&runtime.proxy_key, None)
+                    .unwrap_or_else(|| runtime.proxy_key.clone());
+                (runtime.proxy_key.clone(), health_key)
+            })
+            .collect::<HashMap<_, _>>();
+        (runtime_rows, runtime_health_key_by_proxy_key)
     };
     let runtime_proxy_keys = runtime_rows
         .iter()
         .map(|runtime| runtime.proxy_key.clone())
         .collect::<Vec<_>>();
+    let runtime_health_keys = runtime_health_key_by_proxy_key
+        .values()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let pending_archive_rows = load_pending_pool_upstream_binding_attempt_rows(
+        &pending_archive_file_paths,
+        &widest_window_start_at,
+        &window_end_at,
+    )
+    .await?;
 
     let windows = [
-        ("-1 minute", 0usize),
-        ("-15 minutes", 1usize),
-        ("-1 hour", 2usize),
-        ("-1 day", 3usize),
-        ("-7 days", 4usize),
+        (ChronoDuration::minutes(1), 0usize),
+        (ChronoDuration::minutes(15), 1usize),
+        (ChronoDuration::hours(1), 2usize),
+        (ChronoDuration::days(1), 3usize),
+        (ChronoDuration::days(7), 4usize),
     ];
+    let now_utc = Utc::now();
+    let window_end_at = db_occurred_at_lower_bound(now_utc + ChronoDuration::seconds(1));
     let mut window_maps: Vec<HashMap<String, ForwardProxyAttemptWindowStats>> = Vec::new();
-    for (window, _) in &windows {
-        window_maps.push(query_forward_proxy_window_stats(&state.pool, window).await?);
+    for (window_duration, _) in &windows {
+        let window_start_at = db_occurred_at_lower_bound(now_utc - *window_duration);
+        window_maps.push(
+            query_pool_upstream_binding_window_stats(
+                state,
+                &window_start_at,
+                &window_end_at,
+                Some(&runtime_health_keys),
+                &pending_archive_file_paths,
+                Some(&pending_archive_rows),
+            )
+            .await?,
+        );
     }
 
-    let now_epoch = Utc::now().timestamp();
+    let now_epoch = now_utc.timestamp();
     let range_end_epoch = align_bucket_epoch(now_epoch, BUCKET_SECONDS, 0) + BUCKET_SECONDS;
     let range_start_epoch = range_end_epoch - BUCKET_COUNT * BUCKET_SECONDS;
-    // Keep this surface strictly read-only. `insert_forward_proxy_attempt()` updates
-    // `forward_proxy_attempt_hourly` inline on the write path, so fresh attempt counts
-    // are available here without request-time rollup catch-up.
-    let hourly_map =
-        query_forward_proxy_hourly_stats(&state.pool, range_start_epoch, range_end_epoch).await?;
+    let hourly_map = query_pool_upstream_binding_hourly_stats(
+        state,
+        range_start_epoch,
+        range_end_epoch,
+        Some(&runtime_health_keys),
+        &pending_archive_file_paths,
+        Some(&pending_archive_rows),
+    )
+    .await?;
     let weight_hourly_map =
         query_forward_proxy_weight_hourly_stats(&state.pool, range_start_epoch, range_end_epoch)
             .await?;
@@ -1411,6 +1698,9 @@ pub(crate) async fn build_forward_proxy_live_stats_response(
         .into_iter()
         .map(|runtime| {
             let proxy_key = runtime.proxy_key.clone();
+            let health_key = runtime_health_key_by_proxy_key
+                .get(&proxy_key)
+                .unwrap_or(&proxy_key);
             let penalized = runtime.is_penalized();
             let runtime_weight = runtime.weight;
             let stats_for = |index: usize, key: &str| {
@@ -1420,17 +1710,17 @@ pub(crate) async fn build_forward_proxy_live_stats_response(
                     .map(ForwardProxyWindowStatsResponse::from)
                     .unwrap_or_default()
             };
-            let hourly = hourly_map.get(&proxy_key);
+            let hourly = hourly_map.get(health_key);
             let weight_hourly = weight_hourly_map.get(&proxy_key);
             let mut carry_weight = weight_carry_map
                 .get(&proxy_key)
                 .copied()
                 .unwrap_or(runtime_weight);
-            let one_minute = stats_for(0, &proxy_key);
-            let fifteen_minutes = stats_for(1, &proxy_key);
-            let one_hour = stats_for(2, &proxy_key);
-            let one_day = stats_for(3, &proxy_key);
-            let seven_days = stats_for(4, &proxy_key);
+            let one_minute = stats_for(0, health_key);
+            let fifteen_minutes = stats_for(1, health_key);
+            let one_hour = stats_for(2, health_key);
+            let one_day = stats_for(3, health_key);
+            let seven_days = stats_for(4, health_key);
             let last24h = build_forward_proxy_hourly_buckets(
                 hourly,
                 range_start_epoch,
@@ -1520,28 +1810,67 @@ pub(crate) async fn build_forward_proxy_timeseries_response(
 ) -> Result<ForwardProxyTimeseriesResponse> {
     const BUCKET_SECONDS: i64 = 3600;
 
-    let runtime_rows = {
+    let (runtime_rows, runtime_health_key_by_proxy_key) = {
         let manager = state.forward_proxy.lock().await;
-        manager
+        let mut runtime_rows = manager
             .snapshot_runtime()
             .into_iter()
-            .filter(|runtime| runtime.proxy_key != FORWARD_PROXY_DIRECT_KEY)
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        ensure_owner_facing_direct_runtime_row(
+            &mut runtime_rows,
+            manager.algo,
+            manager.settings.insert_direct,
+        );
+        let runtime_health_key_by_proxy_key = runtime_rows
+            .iter()
+            .map(|runtime| {
+                let health_key = manager
+                    .canonicalize_bound_proxy_key(&runtime.proxy_key, None)
+                    .unwrap_or_else(|| runtime.proxy_key.clone());
+                (runtime.proxy_key.clone(), health_key)
+            })
+            .collect::<HashMap<_, _>>();
+        (runtime_rows, runtime_health_key_by_proxy_key)
     };
     let runtime_map = runtime_rows
         .into_iter()
         .map(|runtime| (runtime.proxy_key.clone(), runtime))
         .collect::<HashMap<_, _>>();
+    let covered_health_keys = runtime_health_key_by_proxy_key
+        .values()
+        .cloned()
+        .collect::<HashSet<_>>();
 
     let start_epoch = range_window.start.timestamp();
     let end_epoch = range_window.end.timestamp();
     let query_start_epoch = align_bucket_epoch(start_epoch, BUCKET_SECONDS, 0);
     let query_end_epoch = ceil_hour_epoch(end_epoch);
+    let query_start = Utc
+        .timestamp_opt(query_start_epoch, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid owner-facing node health archive timeseries start"))?;
+    let query_end = Utc
+        .timestamp_opt(query_end_epoch, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid owner-facing node health archive timeseries end"))?;
+    let pending_archive_file_paths = load_pending_pool_upstream_node_health_archive_file_paths(
+        &state.pool,
+        &db_occurred_at_lower_bound(query_start),
+        &db_occurred_at_lower_bound(query_end),
+    )
+    .await?;
     let fill_start_epoch = query_start_epoch;
     let fill_end_epoch = query_end_epoch;
 
-    let hourly_map =
-        query_forward_proxy_hourly_stats(&state.pool, query_start_epoch, query_end_epoch).await?;
+    let hourly_map = query_pool_upstream_binding_hourly_stats(
+        state,
+        query_start_epoch,
+        query_end_epoch,
+        None,
+        &pending_archive_file_paths,
+        None,
+    )
+    .await?;
     let weight_hourly_map =
         query_forward_proxy_weight_hourly_stats(&state.pool, query_start_epoch, query_end_epoch)
             .await?;
@@ -1554,12 +1883,12 @@ pub(crate) async fn build_forward_proxy_timeseries_response(
         }
     }
     for key in hourly_map.keys() {
-        if key != FORWARD_PROXY_DIRECT_KEY && seen.insert(key.clone()) {
+        if !covered_health_keys.contains(key) && seen.insert(key.clone()) {
             proxy_keys.push(key.clone());
         }
     }
     for key in weight_hourly_map.keys() {
-        if key != FORWARD_PROXY_DIRECT_KEY && seen.insert(key.clone()) {
+        if seen.insert(key.clone()) {
             proxy_keys.push(key.clone());
         }
     }
@@ -1574,7 +1903,11 @@ pub(crate) async fn build_forward_proxy_timeseries_response(
         .map(|proxy_key| {
             let runtime = runtime_map.get(&proxy_key);
             let metadata = metadata_map.get(&proxy_key);
-            let request_points = hourly_map.get(&proxy_key);
+            let request_lookup_key = runtime_health_key_by_proxy_key
+                .get(&proxy_key)
+                .map(String::as_str)
+                .unwrap_or(proxy_key.as_str());
+            let request_points = hourly_map.get(request_lookup_key);
             let weight_points = weight_hourly_map.get(&proxy_key);
             let fallback_weight = weight_carry_map
                 .get(&proxy_key)
@@ -1657,11 +1990,23 @@ pub(crate) async fn build_forward_proxy_timeseries_response(
                 source: runtime
                     .map(|item| item.source.clone())
                     .or_else(|| metadata.map(|item| item.source.clone()))
-                    .unwrap_or_else(|| "archived".to_string()),
+                    .unwrap_or_else(|| {
+                        if proxy_key == FORWARD_PROXY_DIRECT_KEY {
+                            FORWARD_PROXY_SOURCE_DIRECT.to_string()
+                        } else {
+                            "archived".to_string()
+                        }
+                    }),
                 display_name: runtime
                     .map(|item| item.display_name.clone())
                     .or_else(|| metadata.map(|item| item.display_name.clone()))
-                    .unwrap_or_else(|| proxy_key.clone()),
+                    .unwrap_or_else(|| {
+                        if proxy_key == FORWARD_PROXY_DIRECT_KEY {
+                            FORWARD_PROXY_DIRECT_LABEL.to_string()
+                        } else {
+                            proxy_key.clone()
+                        }
+                    }),
                 endpoint_url: runtime
                     .and_then(|item| item.endpoint_url.clone())
                     .or_else(|| metadata.and_then(|item| item.endpoint_url.clone())),

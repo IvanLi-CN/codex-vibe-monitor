@@ -5,6 +5,7 @@ import { segmentedControlItemVariants } from '../../components/ui/segmented-cont
 
 const items = [
   { to: '/account-pool/upstream-accounts', key: 'accountPool.nav.upstreamAccounts' },
+  { to: '/account-pool/groups', key: 'accountPool.nav.groups' },
   { to: '/account-pool/tags', key: 'accountPool.nav.tags' },
 ] as const
 

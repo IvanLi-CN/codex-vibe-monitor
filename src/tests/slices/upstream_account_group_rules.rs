@@ -647,56 +647,65 @@ async fn seed_forward_proxy_attempt_at(
     .expect("seed forward proxy attempt");
 }
 
-async fn seed_forward_proxy_hourly_bucket_at(
+pub(crate) async fn seed_pool_upstream_attempt_at(
     pool: &SqlitePool,
-    proxy_key: &str,
-    bucket_start_epoch: i64,
-    success_count: i64,
-    failure_count: i64,
+    invoke_id: &str,
+    occurred_at: DateTime<Utc>,
+    proxy_binding_key_snapshot: Option<&str>,
+    status: &str,
 ) {
-    let attempts = success_count + failure_count;
-    let latency_sample_count = success_count.max(0);
-    let latency_sum_ms = if latency_sample_count > 0 {
-        latency_sample_count as f64 * 120.0
-    } else {
-        0.0
-    };
-    let latency_max_ms = if latency_sample_count > 0 { 120.0 } else { 0.0 };
+    let occurred_at = format_naive(occurred_at.with_timezone(&Shanghai).naive_local());
+    let phase = terminal_pool_upstream_request_attempt_phase(status);
     sqlx::query(
         r#"
-        INSERT INTO forward_proxy_attempt_hourly (
-            proxy_key,
-            bucket_start_epoch,
-            attempts,
-            success_count,
-            failure_count,
-            latency_sample_count,
-            latency_sum_ms,
-            latency_max_ms,
-            updated_at
+        INSERT INTO pool_upstream_request_attempts (
+            invoke_id,
+            occurred_at,
+            endpoint,
+            route_mode,
+            sticky_key,
+            group_name_snapshot,
+            proxy_binding_key_snapshot,
+            upstream_account_id,
+            upstream_route_key,
+            attempt_index,
+            distinct_account_index,
+            same_account_retry_index,
+            requester_ip,
+            started_at,
+            finished_at,
+            status,
+            phase,
+            http_status,
+            error_message,
+            connect_latency_ms,
+            first_byte_latency_ms,
+            stream_latency_ms,
+            created_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))
-        ON CONFLICT(proxy_key, bucket_start_epoch) DO UPDATE SET
-            attempts = excluded.attempts,
-            success_count = excluded.success_count,
-            failure_count = excluded.failure_count,
-            latency_sample_count = excluded.latency_sample_count,
-            latency_sum_ms = excluded.latency_sum_ms,
-            latency_max_ms = excluded.latency_max_ms,
-            updated_at = datetime('now')
+        VALUES (
+            ?1, ?2, '/v1/responses', ?3, 'sticky-node-health', NULL, ?4, 41, 'route-node-health',
+            1, 1, 0, '203.0.113.10', ?2, ?2, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now')
+        )
         "#,
     )
-    .bind(proxy_key)
-    .bind(bucket_start_epoch)
-    .bind(attempts)
-    .bind(success_count)
-    .bind(failure_count)
-    .bind(latency_sample_count)
-    .bind(latency_sum_ms)
-    .bind(latency_max_ms)
+    .bind(invoke_id)
+    .bind(&occurred_at)
+    .bind(INVOCATION_ROUTE_MODE_POOL)
+    .bind(proxy_binding_key_snapshot)
+    .bind(status)
+    .bind(phase)
+    .bind((status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS).then_some(200_i64))
+    .bind(
+        (status != POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
+            .then_some("seeded pool upstream failure"),
+    )
+    .bind((status != POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS).then_some(180.0))
+    .bind((status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS).then_some(120.0))
+    .bind((status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS).then_some(320.0))
     .execute(pool)
     .await
-    .expect("seed forward proxy hourly bucket");
+    .expect("seed pool upstream attempt");
 }
 
 #[allow(clippy::too_many_arguments)]

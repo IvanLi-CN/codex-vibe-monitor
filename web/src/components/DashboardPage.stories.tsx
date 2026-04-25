@@ -21,11 +21,35 @@ import {
 import { getStorybookPageSseController } from './storybookPageSse'
 import { jsonResponse } from './storybookResponse'
 
-type DashboardScenario = 'default' | 'degraded'
+type DashboardScenario = 'default' | 'degraded' | 'readmeDense'
 
 type DashboardStoryParameters = {
   scenario?: DashboardScenario
   enableDiagnostics?: boolean
+}
+
+type ReadmeWorkingConversationSeed = {
+  promptCacheKey: string
+  current: Partial<PromptCacheConversationInvocationPreview> & {
+    id: number
+    invokeId: string
+    occurredAt: string
+    status: string
+  }
+  previous: Partial<PromptCacheConversationInvocationPreview> & {
+    id: number
+    invokeId: string
+    occurredAt: string
+    status: string
+  }
+  extraHistory?: Array<
+    Partial<PromptCacheConversationInvocationPreview> & {
+      id: number
+      invokeId: string
+      occurredAt: string
+      status: string
+    }
+  >
 }
 
 function DashboardRangeStorageReset({ children }: { children: ReactNode }) {
@@ -308,6 +332,514 @@ function createConversation(
   }
 }
 
+function createReadmeDenseWorkingConversationSeeds(): ReadmeWorkingConversationSeed[] {
+  return [
+    {
+      promptCacheKey: 'wc-readme-batch-refactor',
+      current: {
+        id: 101,
+        invokeId: 'wc-r1-a',
+        occurredAt: '2026-04-06T12:00:00.000Z',
+        status: 'running',
+        model: 'gpt-5.4',
+        totalTokens: 1840,
+        inputTokens: 962,
+        outputTokens: 734,
+        cacheInputTokens: 144,
+        cost: 0.0941,
+        upstreamAccountName: 'paisleeeinar5710 Team sandbox workflow monitor',
+        proxyDisplayName: 'tokyo-edge-01',
+        endpoint: '/v1/responses/compact',
+        tTotalMs: null,
+      },
+      previous: {
+        id: 102,
+        invokeId: 'wc-r1-b',
+        occurredAt: '2026-04-06T11:58:42.000Z',
+        status: 'success',
+        model: 'gpt-5.4-mini',
+        totalTokens: 1428,
+        inputTokens: 812,
+        outputTokens: 488,
+        cacheInputTokens: 128,
+        cost: 0.0624,
+        upstreamAccountName: 'paisleeeinar5710 Team sandbox workflow monitor',
+        proxyDisplayName: 'tokyo-edge-01',
+        endpoint: '/v1/responses/compact',
+      },
+      extraHistory: [
+        {
+          id: 103,
+          invokeId: 'wc-r1-c',
+          occurredAt: '2026-04-06T11:56:38.000Z',
+          status: 'success',
+          model: 'gpt-5.4-mini',
+          totalTokens: 1194,
+          cost: 0.0486,
+          upstreamAccountName: 'paisleeeinar5710 Team sandbox workflow monitor',
+          proxyDisplayName: 'tokyo-edge-01',
+          endpoint: '/v1/responses/compact',
+        },
+      ],
+    },
+    {
+      promptCacheKey: 'wc-readme-rate-limit-recovery',
+      current: {
+        id: 104,
+        invokeId: 'wc-r2-a',
+        occurredAt: '2026-04-06T11:59:46.000Z',
+        status: 'pending',
+        model: 'gpt-5.4',
+        totalTokens: 1268,
+        inputTokens: 780,
+        outputTokens: 382,
+        cacheInputTokens: 106,
+        cost: 0.0518,
+        upstreamAccountName: 'pool-beta@ops.example.com',
+        proxyDisplayName: 'singapore-edge-02',
+        requestedServiceTier: 'auto',
+        serviceTier: 'auto',
+        tTotalMs: null,
+      },
+      previous: {
+        id: 105,
+        invokeId: 'wc-r2-b',
+        occurredAt: '2026-04-06T11:57:58.000Z',
+        status: 'http_429',
+        failureClass: 'service_failure',
+        failureKind: 'upstream_rate_limit',
+        errorMessage: 'retry-after: 15s',
+        model: 'gpt-5.4',
+        totalTokens: 908,
+        inputTokens: 620,
+        outputTokens: 188,
+        cacheInputTokens: 100,
+        cost: 0.0381,
+        upstreamAccountName: 'pool-beta@ops.example.com',
+        proxyDisplayName: 'singapore-edge-02',
+        requestedServiceTier: 'auto',
+        serviceTier: 'auto',
+      },
+      extraHistory: [
+        {
+          id: 106,
+          invokeId: 'wc-r2-c',
+          occurredAt: '2026-04-06T11:56:26.000Z',
+          status: 'success',
+          model: 'gpt-5.4-mini',
+          totalTokens: 1414,
+          cost: 0.0542,
+          upstreamAccountName: 'pool-beta@ops.example.com',
+          proxyDisplayName: 'singapore-edge-02',
+        },
+      ],
+    },
+    {
+      promptCacheKey: 'wc-readme-enterprise-review',
+      current: {
+        id: 107,
+        invokeId: 'wc-r3-a',
+        occurredAt: '2026-04-06T11:59:24.000Z',
+        status: 'running',
+        model: 'gpt-5.4',
+        totalTokens: 2252,
+        inputTokens: 1188,
+        outputTokens: 896,
+        cacheInputTokens: 168,
+        cost: 0.1029,
+        upstreamAccountName: 'enterprise-review@team.example.com',
+        proxyDisplayName: 'osaka-edge-04',
+        tTotalMs: null,
+      },
+      previous: {
+        id: 108,
+        invokeId: 'wc-r3-b',
+        occurredAt: '2026-04-06T11:57:11.000Z',
+        status: 'success',
+        model: 'gpt-5.4',
+        totalTokens: 1712,
+        inputTokens: 924,
+        outputTokens: 664,
+        cacheInputTokens: 124,
+        cost: 0.0837,
+        upstreamAccountName: 'enterprise-review@team.example.com',
+        proxyDisplayName: 'osaka-edge-04',
+      },
+    },
+    {
+      promptCacheKey: 'wc-readme-prompt-cache-drift',
+      current: {
+        id: 109,
+        invokeId: 'wc-r4-a',
+        occurredAt: '2026-04-06T11:58:53.000Z',
+        status: 'http_502',
+        failureClass: 'service_failure',
+        failureKind: 'upstream_timeout',
+        errorMessage: 'upstream gateway closed before first byte',
+        model: 'gpt-5.4',
+        totalTokens: 1136,
+        inputTokens: 680,
+        outputTokens: 352,
+        cacheInputTokens: 104,
+        cost: 0.0473,
+        upstreamAccountName: 'cache-hotfix@infra.example.com',
+        proxyDisplayName: 'sfo-edge-08',
+      },
+      previous: {
+        id: 110,
+        invokeId: 'wc-r4-b',
+        occurredAt: '2026-04-06T11:56:44.000Z',
+        status: 'success',
+        model: 'gpt-5.4-mini',
+        totalTokens: 1322,
+        inputTokens: 772,
+        outputTokens: 448,
+        cacheInputTokens: 102,
+        cost: 0.0568,
+        upstreamAccountName: 'cache-hotfix@infra.example.com',
+        proxyDisplayName: 'sfo-edge-08',
+      },
+      extraHistory: [
+        {
+          id: 111,
+          invokeId: 'wc-r4-c',
+          occurredAt: '2026-04-06T11:55:30.000Z',
+          status: 'success',
+          model: 'gpt-5.4-mini',
+          totalTokens: 984,
+          cost: 0.0419,
+          upstreamAccountName: 'cache-hotfix@infra.example.com',
+          proxyDisplayName: 'sfo-edge-08',
+        },
+      ],
+    },
+    {
+      promptCacheKey: 'wc-readme-bulk-import-audit',
+      current: {
+        id: 112,
+        invokeId: 'wc-r5-a',
+        occurredAt: '2026-04-06T11:58:21.000Z',
+        status: 'success',
+        model: 'gpt-5.4',
+        totalTokens: 2088,
+        inputTokens: 1048,
+        outputTokens: 918,
+        cacheInputTokens: 122,
+        cost: 0.0974,
+        upstreamAccountName: 'audit-ops@example.com',
+        proxyDisplayName: 'seoul-edge-03',
+      },
+      previous: {
+        id: 113,
+        invokeId: 'wc-r5-b',
+        occurredAt: '2026-04-06T11:56:59.000Z',
+        status: 'running',
+        model: 'gpt-5.4-mini',
+        totalTokens: 1472,
+        inputTokens: 810,
+        outputTokens: 558,
+        cacheInputTokens: 104,
+        cost: 0.0613,
+        upstreamAccountName: 'audit-ops@example.com',
+        proxyDisplayName: 'seoul-edge-03',
+        tTotalMs: null,
+      },
+    },
+    {
+      promptCacheKey: 'wc-readme-team-shared-replay',
+      current: {
+        id: 114,
+        invokeId: 'wc-r6-a',
+        occurredAt: '2026-04-06T11:58:02.000Z',
+        status: 'pending',
+        model: 'gpt-5.4-mini',
+        totalTokens: 1098,
+        inputTokens: 662,
+        outputTokens: 356,
+        cacheInputTokens: 80,
+        cost: 0.0437,
+        upstreamAccountName: 'team-shared@example.com',
+        proxyDisplayName: 'tokyo-edge-02',
+        tTotalMs: null,
+      },
+      previous: {
+        id: 115,
+        invokeId: 'wc-r6-b',
+        occurredAt: '2026-04-06T11:56:34.000Z',
+        status: 'success',
+        model: 'gpt-5.4-mini',
+        totalTokens: 1246,
+        inputTokens: 742,
+        outputTokens: 424,
+        cacheInputTokens: 80,
+        cost: 0.0496,
+        upstreamAccountName: 'team-shared@example.com',
+        proxyDisplayName: 'tokyo-edge-02',
+      },
+      extraHistory: [
+        {
+          id: 116,
+          invokeId: 'wc-r6-c',
+          occurredAt: '2026-04-06T11:55:12.000Z',
+          status: 'success',
+          model: 'gpt-5.4-mini',
+          totalTokens: 904,
+          cost: 0.0361,
+          upstreamAccountName: 'team-shared@example.com',
+          proxyDisplayName: 'tokyo-edge-02',
+        },
+      ],
+    },
+    {
+      promptCacheKey: 'wc-readme-nightly-migration',
+      current: {
+        id: 117,
+        invokeId: 'wc-r7-a',
+        occurredAt: '2026-04-06T11:57:46.000Z',
+        status: 'running',
+        model: 'gpt-5.4',
+        totalTokens: 1964,
+        inputTokens: 1010,
+        outputTokens: 802,
+        cacheInputTokens: 152,
+        cost: 0.0886,
+        upstreamAccountName: 'nightly-migration@example.com',
+        proxyDisplayName: 'frankfurt-edge-01',
+        tTotalMs: null,
+      },
+      previous: {
+        id: 118,
+        invokeId: 'wc-r7-b',
+        occurredAt: '2026-04-06T11:56:02.000Z',
+        status: 'success',
+        model: 'gpt-5.4-mini',
+        totalTokens: 1388,
+        inputTokens: 814,
+        outputTokens: 462,
+        cacheInputTokens: 112,
+        cost: 0.0589,
+        upstreamAccountName: 'nightly-migration@example.com',
+        proxyDisplayName: 'frankfurt-edge-01',
+      },
+    },
+    {
+      promptCacheKey: 'wc-readme-sandbox-evals',
+      current: {
+        id: 119,
+        invokeId: 'wc-r8-a',
+        occurredAt: '2026-04-06T11:57:18.000Z',
+        status: 'success',
+        model: 'gpt-5.4-mini',
+        totalTokens: 1182,
+        inputTokens: 706,
+        outputTokens: 384,
+        cacheInputTokens: 92,
+        cost: 0.0468,
+        upstreamAccountName: 'sandbox-evals@example.com',
+        proxyDisplayName: 'singapore-edge-03',
+      },
+      previous: {
+        id: 120,
+        invokeId: 'wc-r8-b',
+        occurredAt: '2026-04-06T11:55:51.000Z',
+        status: 'http_429',
+        failureClass: 'service_failure',
+        failureKind: 'burst_quota_exhausted',
+        errorMessage: 'window quota exhausted',
+        model: 'gpt-5.4-mini',
+        totalTokens: 812,
+        inputTokens: 540,
+        outputTokens: 184,
+        cacheInputTokens: 88,
+        cost: 0.0322,
+        upstreamAccountName: 'sandbox-evals@example.com',
+        proxyDisplayName: 'singapore-edge-03',
+      },
+    },
+    {
+      promptCacheKey: 'wc-readme-rag-rebuild',
+      current: {
+        id: 121,
+        invokeId: 'wc-r9-a',
+        occurredAt: '2026-04-06T11:56:58.000Z',
+        status: 'pending',
+        model: 'gpt-5.4',
+        totalTokens: 1626,
+        inputTokens: 902,
+        outputTokens: 596,
+        cacheInputTokens: 128,
+        cost: 0.0695,
+        upstreamAccountName: 'rag-rebuild@example.com',
+        proxyDisplayName: 'sydney-edge-02',
+        tTotalMs: null,
+      },
+      previous: {
+        id: 122,
+        invokeId: 'wc-r9-b',
+        occurredAt: '2026-04-06T11:55:36.000Z',
+        status: 'success',
+        model: 'gpt-5.4',
+        totalTokens: 1744,
+        inputTokens: 988,
+        outputTokens: 620,
+        cacheInputTokens: 136,
+        cost: 0.0742,
+        upstreamAccountName: 'rag-rebuild@example.com',
+        proxyDisplayName: 'sydney-edge-02',
+      },
+      extraHistory: [
+        {
+          id: 123,
+          invokeId: 'wc-r9-c',
+          occurredAt: '2026-04-06T11:55:04.000Z',
+          status: 'success',
+          model: 'gpt-5.4-mini',
+          totalTokens: 1012,
+          cost: 0.0391,
+          upstreamAccountName: 'rag-rebuild@example.com',
+          proxyDisplayName: 'sydney-edge-02',
+        },
+      ],
+    },
+    {
+      promptCacheKey: 'wc-readme-proxy-regression',
+      current: {
+        id: 124,
+        invokeId: 'wc-r10-a',
+        occurredAt: '2026-04-06T11:56:30.000Z',
+        status: 'http_502',
+        failureClass: 'service_failure',
+        failureKind: 'compact_first_chunk_timeout',
+        errorMessage: 'upstream closed during compact handshake',
+        model: 'gpt-5.4',
+        totalTokens: 944,
+        inputTokens: 584,
+        outputTokens: 254,
+        cacheInputTokens: 106,
+        cost: 0.0394,
+        upstreamAccountName: 'proxy-ops@example.com',
+        proxyDisplayName: 'dallas-edge-01',
+      },
+      previous: {
+        id: 125,
+        invokeId: 'wc-r10-b',
+        occurredAt: '2026-04-06T11:55:18.000Z',
+        status: 'success',
+        model: 'gpt-5.4-mini',
+        totalTokens: 1268,
+        inputTokens: 768,
+        outputTokens: 398,
+        cacheInputTokens: 102,
+        cost: 0.0516,
+        upstreamAccountName: 'proxy-ops@example.com',
+        proxyDisplayName: 'dallas-edge-01',
+      },
+    },
+    {
+      promptCacheKey: 'wc-readme-oauth-refresh-batch',
+      current: {
+        id: 126,
+        invokeId: 'wc-r11-a',
+        occurredAt: '2026-04-06T11:56:12.000Z',
+        status: 'running',
+        model: 'gpt-5.4-mini',
+        totalTokens: 1364,
+        inputTokens: 784,
+        outputTokens: 478,
+        cacheInputTokens: 102,
+        cost: 0.0558,
+        upstreamAccountName: 'oauth-refresh@example.com',
+        proxyDisplayName: 'mumbai-edge-02',
+        tTotalMs: null,
+      },
+      previous: {
+        id: 127,
+        invokeId: 'wc-r11-b',
+        occurredAt: '2026-04-06T11:55:00.000Z',
+        status: 'success',
+        model: 'gpt-5.4-mini',
+        totalTokens: 1188,
+        inputTokens: 692,
+        outputTokens: 394,
+        cacheInputTokens: 102,
+        cost: 0.0472,
+        upstreamAccountName: 'oauth-refresh@example.com',
+        proxyDisplayName: 'mumbai-edge-02',
+      },
+      extraHistory: [
+        {
+          id: 128,
+          invokeId: 'wc-r11-c',
+          occurredAt: '2026-04-06T11:54:18.000Z',
+          status: 'success',
+          model: 'gpt-5.4-mini',
+          totalTokens: 964,
+          cost: 0.0385,
+          upstreamAccountName: 'oauth-refresh@example.com',
+          proxyDisplayName: 'mumbai-edge-02',
+        },
+      ],
+    },
+    {
+      promptCacheKey: 'wc-readme-design-review-late',
+      current: {
+        id: 129,
+        invokeId: 'wc-r12-a',
+        occurredAt: '2026-04-06T11:55:44.000Z',
+        status: 'success',
+        model: 'gpt-5.4',
+        totalTokens: 1862,
+        inputTokens: 980,
+        outputTokens: 752,
+        cacheInputTokens: 130,
+        cost: 0.0846,
+        upstreamAccountName: 'design-review@example.com',
+        proxyDisplayName: 'london-edge-03',
+      },
+      previous: {
+        id: 130,
+        invokeId: 'wc-r12-b',
+        occurredAt: '2026-04-06T11:54:36.000Z',
+        status: 'pending',
+        model: 'gpt-5.4-mini',
+        totalTokens: 1094,
+        inputTokens: 642,
+        outputTokens: 364,
+        cacheInputTokens: 88,
+        cost: 0.0433,
+        upstreamAccountName: 'design-review@example.com',
+        proxyDisplayName: 'london-edge-03',
+        tTotalMs: null,
+      },
+    },
+  ]
+}
+
+function buildReadmeDenseWorkingConversationsResponse(): PromptCacheConversationsResponse {
+  const conversations = createReadmeDenseWorkingConversationSeeds().map((seed) =>
+    createConversation(seed.promptCacheKey, [
+      createPreview(seed.current),
+      createPreview(seed.previous),
+      ...(seed.extraHistory ?? []).map((invocation) => createPreview(invocation)),
+    ]),
+  )
+
+  return {
+    rangeStart: '2026-04-06T11:55:00.000Z',
+    rangeEnd: '2026-04-06T12:00:00.000Z',
+    snapshotAt: '2026-04-06T12:00:00.000Z',
+    selectionMode: 'activityWindow',
+    selectedLimit: null,
+    selectedActivityHours: null,
+    selectedActivityMinutes: 5,
+    implicitFilter: { kind: null, filteredCount: 0 },
+    totalMatched: conversations.length,
+    hasMore: false,
+    nextCursor: null,
+    conversations,
+  }
+}
+
 function buildWorkingConversationsResponse(empty = false): PromptCacheConversationsResponse {
   return {
     rangeStart: '2026-04-06T11:55:00.000Z',
@@ -476,6 +1008,9 @@ function createDashboardRequestHandler(scenario: DashboardScenario = 'default') 
     }
 
     if (url.pathname === '/api/stats/prompt-cache-conversations') {
+      if (scenario === 'readmeDense') {
+        return jsonResponse(buildReadmeDenseWorkingConversationsResponse())
+      }
       return jsonResponse(buildWorkingConversationsResponse(scenario === 'degraded'))
     }
 
@@ -642,5 +1177,37 @@ export const LiveRefreshDiagnostics: Story = {
         ).textContent ?? '0',
       ),
     ).toBe(initialChartRenderCount)
+  },
+}
+
+export const ReadmeDense: Story = {
+  parameters: {
+    scenario: 'readmeDense',
+  },
+  render: () => <DashboardPage />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByTestId('dashboard-activity-overview')).toBeVisible()
+    await expect(canvas.getByTestId('dashboard-working-conversations')).toBeVisible()
+    await waitFor(
+      async () => {
+        expect(
+          await canvas.findAllByTestId('dashboard-working-conversation-card'),
+        ).toHaveLength(12)
+      },
+      { timeout: 4000 },
+    )
+    await expect(canvas.getByText(/当前 12 条/i)).toBeVisible()
+    await expect(
+      canvas.getByText(/paisleeeinar5710 Team sandbox workflow monitor/i),
+    ).toBeVisible()
+    await expect(canvas.getByText(/enterprise-review@team.example.com/i)).toBeVisible()
+    await waitFor(() => {
+      expect(
+        canvasElement.querySelector(
+          '[data-testid="invocation-endpoint-badge"][data-endpoint-kind="compact"]',
+        ),
+      ).not.toBeNull()
+    })
   },
 }

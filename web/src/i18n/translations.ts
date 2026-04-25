@@ -72,7 +72,34 @@ const baseTranslations = {
     "accountPool.description":
       "Manage Codex upstream accounts, persistent login sessions, and normalized 5h / 7d quota snapshots.",
     "accountPool.nav.upstreamAccounts": "Upstream Accounts",
+    "accountPool.nav.groups": "Groups",
     "accountPool.nav.tags": "Tags",
+    "accountPool.groups.title": "Group overview",
+    "accountPool.groups.description":
+      "Review every active account group in one place, inspect shared settings, and jump straight back to the roster when needed.",
+    "accountPool.groups.namedGroupsCount": "{{count}} named groups",
+    "accountPool.groups.ungroupedAccountsCount":
+      "{{count}} ungrouped accounts",
+    "accountPool.groups.retry": "Retry",
+    "accountPool.groups.loadingTitle": "Loading group overview",
+    "accountPool.groups.loadingDescription":
+      "Collecting the latest account roster, shared group settings, and proxy bindings.",
+    "accountPool.groups.emptyTitle": "No account groups yet",
+    "accountPool.groups.emptyDescription":
+      "Create or import upstream accounts first. Once accounts carry a group name, the shared group overview will appear here automatically.",
+    "accountPool.groups.emptyCta": "Create upstream account",
+    "accountPool.groups.cardTitle": "Shared group settings",
+    "accountPool.groups.cardDescription":
+      "Review the group-level routing context before opening the full roster.",
+    "accountPool.groups.editGroup": "Edit group settings",
+    "accountPool.groups.viewAccounts": "View upstream accounts",
+    "accountPool.groups.ungroupedTitle": "Ungrouped accounts",
+    "accountPool.groups.ungroupedDescription":
+      "Accounts without a group stay visible here so you can jump back and organize them from the roster.",
+    "accountPool.groups.noteLabel": "Group note",
+    "accountPool.groups.noteEmpty": "No shared note yet.",
+    "accountPool.groups.upstream429Enabled": "429 retry ×{{count}}",
+    "accountPool.groups.upstream429Disabled": "429 retry off",
     "accountPool.upstreamAccounts.title": "Upstream accounts",
     "accountPool.upstreamAccounts.description":
       "Add single OAuth, batch OAuth, and API key accounts, then keep their login state and quota snapshots healthy.",
@@ -293,6 +320,14 @@ const baseTranslations = {
       "OAuth callback completed",
     "accountPool.upstreamAccounts.oauth.status.failed": "OAuth login failed",
     "accountPool.upstreamAccounts.oauth.status.expired": "OAuth login expired",
+    "accountPool.upstreamAccounts.oauth.emailChoiceTitle":
+      "Choose which email to keep",
+    "accountPool.upstreamAccounts.oauth.emailChoiceBody":
+      "OAuth verified {{verifiedEmail}}, but this draft currently uses {{chosenEmail}}. Pick the email you want to keep on the account.",
+    "accountPool.upstreamAccounts.oauth.keepVerifiedEmail":
+      "Keep verified email",
+    "accountPool.upstreamAccounts.oauth.keepEnteredEmail":
+      "Keep entered email",
     "accountPool.upstreamAccounts.createPage.title": "Add upstream account",
     "accountPool.upstreamAccounts.createPage.description":
       "Use one dedicated screen to create single OAuth, batch OAuth, or API key accounts without squeezing the roster view.",
@@ -603,6 +638,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.editTitle": "Editable profile",
     "accountPool.upstreamAccounts.editDescription":
       "Update display metadata, the per-account upstream base URL, local placeholder limits, or rotate the API key without deleting the account.",
+    "accountPool.upstreamAccounts.edit.verifiedEmailHint":
+      "Latest OAuth verification reported {{verifiedEmail}}. Saving only updates the editable email field unless it is still following the verified address.",
     "accountPool.upstreamAccounts.healthTitle": "Login health",
     "accountPool.upstreamAccounts.healthDescription":
       "Keep the last successful sync, refresh, expiry, and error context visible so re-auth is never silent.",
@@ -963,6 +1000,7 @@ const baseTranslations = {
       "Generate a temp mailbox for this OAuth flow",
     "accountPool.upstreamAccounts.fields.mailboxAddress": "Mailbox address",
     "accountPool.upstreamAccounts.fields.email": "Email",
+    "accountPool.upstreamAccounts.fields.verifiedEmail": "Verified email",
     "accountPool.upstreamAccounts.fields.accountId": "Account ID",
     "accountPool.upstreamAccounts.fields.userId": "User ID",
     "accountPool.upstreamAccounts.fields.primaryLimit": "5h local limit",
@@ -1109,7 +1147,7 @@ const baseTranslations = {
       "{{previous}} is no longer the mother account for {{group}}.",
     "settings.title": "Settings",
     "settings.description":
-      "Configure forward proxy routing and the pricing catalog used for cost estimation.",
+      "Configure the current pool /v1/models override, forward proxy routing, and the pricing catalog used for cost estimation.",
     "settings.loading": "Loading settings…",
     "settings.loadError": "Settings request failed: {{error}}",
     "settings.saving": "Saving…",
@@ -1159,7 +1197,7 @@ const baseTranslations = {
     "settings.externalApiKeys.disableDialog.confirm": "Disable key",
     "settings.proxy.title": "Proxy configuration",
     "settings.proxy.description":
-      "Control /v1/models hijack and upstream merge behavior.",
+      "Control how the current pool /v1/models path is overridden and merged.",
     "settings.proxy.hijackLabel": "Hijack /v1/models",
     "settings.proxy.hijackHint":
       "Return preset models from this proxy instead of pure upstream passthrough.",
@@ -1290,9 +1328,9 @@ const baseTranslations = {
     "settings.forwardProxy.table.empty": "No proxy entry available.",
     "settings.pricing.title": "Pricing configuration",
     "settings.pricing.description":
-      "Edit model pricing used by new request cost estimation.",
+      "Edit model pricing used by new request cost estimation. The default catalog now hardcodes GPT-5.5, GPT-5.5 Pro, and GPT-5.4 mini from the official release/pricing pages.",
     "settings.pricing.compactNote":
-      "Compact requests reuse the matched model pricing for cost estimation.",
+      "OpenAI's public API model docs still lean toward GPT-5.4, so this project keeps GPT-5.5 series entries based on the release post and pricing page.",
     "settings.pricing.add": "Add model",
     "settings.pricing.remove": "Remove",
     "settings.pricing.catalogVersion": "Catalog version",
@@ -1915,7 +1953,33 @@ const baseTranslations = {
     "accountPool.description":
       "集中管理 Codex 上游账号、持久登录状态，以及归一化后的 5 小时 / 7 天额度快照。",
     "accountPool.nav.upstreamAccounts": "上游账号",
+    "accountPool.nav.groups": "分组",
     "accountPool.nav.tags": "标签",
+    "accountPool.groups.title": "分组总览",
+    "accountPool.groups.description":
+      "集中查看当前账号分组、共享设置与绑定代理，需要时再跳回账号列表继续处理。",
+    "accountPool.groups.namedGroupsCount": "{{count}} 个命名分组",
+    "accountPool.groups.ungroupedAccountsCount": "{{count}} 个未分组账号",
+    "accountPool.groups.retry": "重试",
+    "accountPool.groups.loadingTitle": "正在加载分组总览",
+    "accountPool.groups.loadingDescription":
+      "正在汇总最新账号列表、共享分组设置与绑定代理信息。",
+    "accountPool.groups.emptyTitle": "还没有可展示的分组",
+    "accountPool.groups.emptyDescription":
+      "先创建或导入上游账号吧；当账号带上分组后，这里会自动汇总共享分组信息。",
+    "accountPool.groups.emptyCta": "创建上游账号",
+    "accountPool.groups.cardTitle": "共享分组设置",
+    "accountPool.groups.cardDescription":
+      "先确认分组级路由与共享设置，再进入完整账号列表继续处理。",
+    "accountPool.groups.editGroup": "编辑分组设置",
+    "accountPool.groups.viewAccounts": "查看上游账号",
+    "accountPool.groups.ungroupedTitle": "未分组账号",
+    "accountPool.groups.ungroupedDescription":
+      "还没归到任何分组的账号会保留在这里，方便你回到账号列表继续整理。",
+    "accountPool.groups.noteLabel": "分组备注",
+    "accountPool.groups.noteEmpty": "还没有共享备注。",
+    "accountPool.groups.upstream429Enabled": "429 重试 ×{{count}}",
+    "accountPool.groups.upstream429Disabled": "429 重试关闭",
     "accountPool.upstreamAccounts.title": "上游账号",
     "accountPool.upstreamAccounts.description":
       "新增单个 OAuth、批量 OAuth 与 API Key 账号，并持续维护登录状态和额度快照。",
@@ -2116,6 +2180,13 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.oauth.status.completed": "OAuth 回调已完成",
     "accountPool.upstreamAccounts.oauth.status.failed": "OAuth 登录失败",
     "accountPool.upstreamAccounts.oauth.status.expired": "OAuth 登录已过期",
+    "accountPool.upstreamAccounts.oauth.emailChoiceTitle": "选择要保留的邮箱",
+    "accountPool.upstreamAccounts.oauth.emailChoiceBody":
+      "OAuth 认证得到的可信邮箱是 {{verifiedEmail}}，当前草稿使用的是 {{chosenEmail}}。请选择最终要保留到账号上的邮箱。",
+    "accountPool.upstreamAccounts.oauth.keepVerifiedEmail":
+      "保留可信邮箱",
+    "accountPool.upstreamAccounts.oauth.keepEnteredEmail":
+      "保留手填邮箱",
     "accountPool.upstreamAccounts.createPage.title": "新增账号",
     "accountPool.upstreamAccounts.createPage.description":
       "把单个 OAuth、批量 OAuth 和 API Key 账号创建拆到独立页面，避免挤占账号列表的浏览空间。",
@@ -2401,6 +2472,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.editTitle": "账号编辑",
     "accountPool.upstreamAccounts.editDescription":
       "更新显示名称、备注、账号级上游地址、本地限额，或者轮换 API Key，不必删除后重建。",
+    "accountPool.upstreamAccounts.edit.verifiedEmailHint":
+      "最近一次 OAuth 可信邮箱是 {{verifiedEmail}}。保存时只会更新可编辑邮箱字段；只有它仍然跟随可信邮箱时才会自动联动。",
     "accountPool.upstreamAccounts.healthTitle": "登录健康度",
     "accountPool.upstreamAccounts.healthDescription":
       "持续保留最近成功同步、刷新、过期和错误上下文，避免账号静默掉线。",
@@ -2740,6 +2813,7 @@ const baseTranslations = {
       "为这次 OAuth 流程生成一个临时邮箱",
     "accountPool.upstreamAccounts.fields.mailboxAddress": "邮箱地址",
     "accountPool.upstreamAccounts.fields.email": "邮箱",
+    "accountPool.upstreamAccounts.fields.verifiedEmail": "可信邮箱",
     "accountPool.upstreamAccounts.fields.accountId": "账号 ID",
     "accountPool.upstreamAccounts.fields.userId": "用户 ID",
     "accountPool.upstreamAccounts.fields.primaryLimit": "5 小时本地限额",
@@ -2873,7 +2947,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.mother.notifications.cleared":
       "{{previous}} 已不再是 {{group}} 的母号。",
     "settings.title": "设置",
-    "settings.description": "集中配置正向代理路由与价格目录，用于成本估算。",
+    "settings.description": "集中配置当前 pool `/v1/models` 覆盖、正向代理路由与成本估算价格目录。",
     "settings.loading": "正在加载设置…",
     "settings.loadError": "设置请求失败：{{error}}",
     "settings.saving": "保存中…",
@@ -2920,7 +2994,7 @@ const baseTranslations = {
       "确定现在停用 {{name}} 吗？该 secret 会立即被拒绝。",
     "settings.externalApiKeys.disableDialog.confirm": "立即停用",
     "settings.proxy.title": "代理配置",
-    "settings.proxy.description": "配置 /v1/models 劫持与上游合并行为。",
+    "settings.proxy.description": "配置当前 pool `/v1/models` 路径的覆盖与上游合并行为。",
     "settings.proxy.hijackLabel": "劫持 /v1/models",
     "settings.proxy.hijackHint":
       "开启后由当前代理返回预置模型列表，而不是纯透传上游。",
@@ -3045,9 +3119,10 @@ const baseTranslations = {
     "settings.forwardProxy.table.avgLatency": "平均延迟：{{value}}",
     "settings.forwardProxy.table.empty": "暂无可用代理条目。",
     "settings.pricing.title": "价格配置",
-    "settings.pricing.description": "编辑用于新请求成本估算的模型价格。",
+    "settings.pricing.description":
+      "编辑用于新请求成本估算的模型价格；默认目录已按官方发布稿与 pricing 页面硬编码补齐 GPT-5.5、GPT-5.5 Pro 与 GPT-5.4 mini。",
     "settings.pricing.compactNote":
-      "compact / 远程压缩请求按命中的模型单价估算成本。",
+      "OpenAI 公开 API 模型文档目前仍以 GPT-5.4 为主；本项目按发布稿与 pricing 页继续保留 GPT-5.5 系列条目。",
     "settings.pricing.add": "新增模型",
     "settings.pricing.remove": "删除",
     "settings.pricing.catalogVersion": "价格版本",

@@ -12,6 +12,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             status TEXT NOT NULL,
             enabled INTEGER NOT NULL DEFAULT 1,
             email TEXT,
+            verified_email TEXT,
             chatgpt_account_id TEXT,
             chatgpt_user_id TEXT,
             plan_type TEXT,
@@ -57,6 +58,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "group_name")
         .await
         .context("failed to ensure pool_upstream_accounts.group_name")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "verified_email")
+        .await
+        .context("failed to ensure pool_upstream_accounts.verified_email")?;
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "last_selected_at")
         .await
         .context("failed to ensure pool_upstream_accounts.last_selected_at")?;
@@ -209,6 +213,19 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
 
     sqlx::query(
         r#"
+        UPDATE pool_upstream_accounts
+        SET verified_email = email
+        WHERE kind = 'oauth_codex'
+          AND verified_email IS NULL
+          AND NULLIF(TRIM(email), '') IS NOT NULL
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to backfill pool_upstream_accounts.verified_email from email")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS external_api_keys (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             client_id TEXT NOT NULL,
@@ -317,6 +334,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             login_id TEXT PRIMARY KEY,
             account_id INTEGER,
             display_name TEXT,
+            email TEXT,
             group_name TEXT,
             group_bound_proxy_keys_json TEXT NOT NULL DEFAULT '[]',
             group_node_shunt_enabled INTEGER NOT NULL DEFAULT 0,
@@ -348,6 +366,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "group_name")
         .await
         .context("failed to ensure pool_oauth_login_sessions.group_name")?;
+    ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "email")
+        .await
+        .context("failed to ensure pool_oauth_login_sessions.email")?;
     let existing_oauth_login_session_columns =
         load_sqlite_table_columns(pool, "pool_oauth_login_sessions").await?;
     if !existing_oauth_login_session_columns.contains("group_bound_proxy_keys_json") {

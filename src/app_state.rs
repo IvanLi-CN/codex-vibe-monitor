@@ -260,6 +260,8 @@ struct ProxyModelSettingsUpdateRequest {
     hijack_enabled: bool,
     merge_upstream_enabled: bool,
     #[serde(default)]
+    fast_mode_rewrite_mode: Option<String>,
+    #[serde(default)]
     upstream_429_max_retries: Option<u8>,
     #[serde(default = "default_enabled_preset_models")]
     enabled_models: Vec<String>,
@@ -270,6 +272,7 @@ struct ProxyModelSettingsUpdateRequest {
 struct ProxyModelSettingsResponse {
     hijack_enabled: bool,
     merge_upstream_enabled: bool,
+    fast_mode_rewrite_mode: String,
     upstream_429_max_retries: u8,
     default_hijack_enabled: bool,
     models: Vec<String>,
@@ -281,6 +284,7 @@ impl From<ProxyModelSettings> for ProxyModelSettingsResponse {
         Self {
             hijack_enabled: value.hijack_enabled,
             merge_upstream_enabled: value.merge_upstream_enabled,
+            fast_mode_rewrite_mode: "disabled".to_string(),
             upstream_429_max_retries: value.upstream_429_max_retries,
             default_hijack_enabled: DEFAULT_PROXY_MODELS_HIJACK_ENABLED,
             models: PROXY_PRESET_MODEL_IDS
@@ -295,6 +299,7 @@ impl From<ProxyModelSettings> for ProxyModelSettingsResponse {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SettingsResponse {
+    proxy: ProxyModelSettingsResponse,
     forward_proxy: ForwardProxySettingsResponse,
     pricing: PricingSettingsResponse,
 }

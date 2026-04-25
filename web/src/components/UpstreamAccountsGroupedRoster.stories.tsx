@@ -356,6 +356,8 @@ const meta = {
       proxiesLabel: 'Forward proxies',
       proxiesEmpty: 'No bound proxy',
       settingsLabel: 'Edit group settings',
+      upstream429Enabled: (count: number) => `429 retry × ${count}`,
+      upstream429Disabled: '429 retry off',
     },
   },
 } satisfies Meta<typeof UpstreamAccountsGroupedRoster>

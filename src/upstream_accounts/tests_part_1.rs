@@ -151,53 +151,69 @@
         .expect("seed group-scoped pool attempt");
     }
 
-    async fn seed_forward_proxy_hourly_bucket_at(
+    async fn seed_pool_upstream_attempt_at(
         pool: &SqlitePool,
-        proxy_key: &str,
-        bucket_start_epoch: i64,
-        success_count: i64,
-        failure_count: i64,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        proxy_binding_key_snapshot: Option<&str>,
+        status: &str,
     ) {
-        let attempts = success_count + failure_count;
+        let occurred_at = format_naive(occurred_at.with_timezone(&Shanghai).naive_local());
+        let phase = if status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS {
+            POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED
+        } else {
+            POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED
+        };
         sqlx::query(
             r#"
-            INSERT INTO forward_proxy_attempt_hourly (
-                proxy_key,
-                bucket_start_epoch,
-                attempts,
-                success_count,
-                failure_count,
-                latency_sample_count,
-                latency_sum_ms,
-                latency_max_ms,
-                updated_at
+            INSERT INTO pool_upstream_request_attempts (
+                invoke_id,
+                occurred_at,
+                endpoint,
+                route_mode,
+                sticky_key,
+                group_name_snapshot,
+                proxy_binding_key_snapshot,
+                upstream_account_id,
+                upstream_route_key,
+                attempt_index,
+                distinct_account_index,
+                same_account_retry_index,
+                requester_ip,
+                started_at,
+                finished_at,
+                status,
+                phase,
+                http_status,
+                error_message,
+                connect_latency_ms,
+                first_byte_latency_ms,
+                stream_latency_ms,
+                created_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))
-            ON CONFLICT(proxy_key, bucket_start_epoch) DO UPDATE SET
-                attempts = excluded.attempts,
-                success_count = excluded.success_count,
-                failure_count = excluded.failure_count,
-                latency_sample_count = excluded.latency_sample_count,
-                latency_sum_ms = excluded.latency_sum_ms,
-                latency_max_ms = excluded.latency_max_ms,
-                updated_at = datetime('now')
+            VALUES (
+                ?1, ?2, '/v1/responses', ?3, 'sticky-binding-nodes', NULL, ?4, 41, 'route-binding-nodes',
+                1, 1, 0, '203.0.113.9', ?2, ?2, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now')
+            )
             "#,
         )
-        .bind(proxy_key)
-        .bind(bucket_start_epoch)
-        .bind(attempts)
-        .bind(success_count)
-        .bind(failure_count)
-        .bind(success_count.max(0))
-        .bind(if success_count > 0 {
-            success_count as f64 * 120.0
-        } else {
-            0.0
-        })
-        .bind(if success_count > 0 { 120.0 } else { 0.0 })
+        .bind(invoke_id)
+        .bind(&occurred_at)
+        .bind(INVOCATION_ROUTE_MODE_POOL)
+        .bind(proxy_binding_key_snapshot)
+        .bind(status)
+        .bind(phase)
+        .bind((status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS).then_some(200_i64))
+        .bind(
+            (status != POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
+                .then_some("binding node failure"),
+        )
+        .bind((status != POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS).then_some(180.0))
+        .bind((status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS).then_some(120.0))
+        .bind((status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS).then_some(320.0))
         .execute(pool)
         .await
-        .expect("seed forward proxy hourly bucket");
+        .expect("seed pool upstream attempt");
     }
 
     async fn seed_forward_proxy_metadata_history(
@@ -635,6 +651,19 @@
     }
 
     #[test]
+    fn list_query_parses_exact_group_filter() {
+        let query = parse_list_upstream_accounts_query(
+            &"/api/pool/upstream-accounts?groupExact=production"
+                .parse()
+                .expect("parse uri"),
+        )
+        .expect("deserialize exact group filter");
+
+        assert_eq!(query.group_exact.as_deref(), Some("production"));
+        assert_eq!(query.group_search, None);
+    }
+
+    #[test]
     fn list_query_rejects_invalid_include_all_flag() {
         let err = parse_list_upstream_accounts_query(
             &"/api/pool/upstream-accounts?includeAll=maybe"
@@ -731,8 +760,8 @@
     }
 
     #[tokio::test]
-    async fn list_forward_proxy_binding_nodes_uses_group_scoped_real_pool_attempts_when_group_name_is_present()
-     {
+    async fn list_forward_proxy_binding_nodes_keeps_global_real_pool_attempts_when_group_name_is_present()
+    {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
         crate::ensure_schema(&state.pool)
             .await
@@ -765,8 +794,6 @@
         let range_start_epoch = range_end_epoch - 24 * 3600;
         let manual_bucket_epoch = range_start_epoch + 6 * 3600;
         let direct_bucket_epoch = range_start_epoch + 7 * 3600;
-        seed_forward_proxy_hourly_bucket_at(&state.pool, &manual_key, manual_bucket_epoch, 9, 7)
-            .await;
 
         let manual_bucket_local = format_naive(
             Utc.timestamp_opt(manual_bucket_epoch + 300, 0)
@@ -932,8 +959,8 @@
                 .iter()
                 .map(|bucket| bucket.success_count)
                 .sum::<i64>(),
-            2,
-            "groupName-only requests should still expose grouped manual successes",
+            global_baseline_manual_success,
+            "groupName-only requests should preserve global real pool manual successes",
         );
         assert_eq!(
             grouped_only_manual
@@ -941,8 +968,8 @@
                 .iter()
                 .map(|bucket| bucket.failure_count)
                 .sum::<i64>(),
-            1,
-            "groupName-only requests should still expose grouped manual failures",
+            global_baseline_manual_failure,
+            "groupName-only requests should preserve global real pool manual failures",
         );
         assert_eq!(
             grouped_manual
@@ -950,8 +977,8 @@
                 .iter()
                 .map(|bucket| bucket.success_count)
                 .sum::<i64>(),
-            2,
-            "grouped stats should include this group's live and archived manual successes after alias remapping",
+            global_baseline_manual_success,
+            "groupName requests should preserve global real pool manual successes after alias remapping",
         );
         assert_eq!(
             grouped_manual
@@ -959,21 +986,29 @@
                 .iter()
                 .map(|bucket| bucket.failure_count)
                 .sum::<i64>(),
-            1,
-            "grouped stats should include only this group's real manual failures",
+            global_baseline_manual_failure,
+            "groupName requests should preserve global real pool manual failures",
         );
         let grouped_direct = group_nodes
             .iter()
             .find(|node| node.key == FORWARD_PROXY_DIRECT_KEY)
             .expect("grouped direct node");
+        let global_direct = global_baseline_nodes
+            .iter()
+            .find(|node| node.key == FORWARD_PROXY_DIRECT_KEY)
+            .expect("global direct node");
         assert_eq!(
             grouped_direct
                 .last24h
                 .iter()
                 .map(|bucket| bucket.success_count)
                 .sum::<i64>(),
-            1,
-            "direct real traffic should remain visible in grouped stats",
+            global_direct
+                .last24h
+                .iter()
+                .map(|bucket| bucket.success_count)
+                .sum::<i64>(),
+            "direct real traffic should remain consistent when groupName is present",
         );
         assert_eq!(
             grouped_direct
@@ -981,36 +1016,16 @@
                 .iter()
                 .map(|bucket| bucket.failure_count)
                 .sum::<i64>(),
-            0,
+            global_direct
+                .last24h
+                .iter()
+                .map(|bucket| bucket.failure_count)
+                .sum::<i64>(),
         );
-
-        let global_nodes =
-            build_forward_proxy_binding_nodes_response_with_options(state.as_ref(), &[], false)
-                .await
-                .expect("build global binding nodes");
-        let global_manual = global_nodes
-            .iter()
-            .find(|node| node.key == manual_key)
-            .expect("global manual node");
-        let global_manual_success = global_manual
-            .last24h
-            .iter()
-            .map(|bucket| bucket.success_count)
-            .sum::<i64>();
-        let global_manual_failure = global_manual
-            .last24h
-            .iter()
-            .map(|bucket| bucket.failure_count)
-            .sum::<i64>();
-        assert!(
-            global_manual_success >= global_baseline_manual_success,
-            "omitting groupName must preserve the existing global hourly baseline instead of collapsing to grouped-only stats",
-        );
-        assert!(global_manual_failure >= global_baseline_manual_failure);
     }
 
     #[tokio::test]
-    async fn list_forward_proxy_binding_nodes_without_group_name_preserves_write_path_hourly_stats()
+    async fn list_forward_proxy_binding_nodes_without_group_name_ignores_forward_proxy_health_checks()
     {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
         crate::ensure_schema(&state.pool)
@@ -1030,23 +1045,45 @@
         .await
         .expect("persist forward proxy settings");
 
-        let manual_key = {
+        let (manual_runtime_key, manual_binding_key) = {
             let manager = state.forward_proxy.lock().await;
-            manager
+            let binding_key = manager
                 .binding_nodes()
                 .into_iter()
                 .find(|node| node.key != FORWARD_PROXY_DIRECT_KEY)
                 .map(|node| node.key)
-                .expect("manual binding key")
+                .expect("manual binding key");
+            let runtime_key = manager
+                .snapshot_runtime()
+                .into_iter()
+                .find(|runtime| runtime.proxy_key != FORWARD_PROXY_DIRECT_KEY)
+                .map(|runtime| runtime.proxy_key)
+                .expect("manual runtime key");
+            (runtime_key, binding_key)
         };
-        insert_forward_proxy_attempt(&state.pool, &manual_key, true, Some(12.5), None, false)
+        insert_forward_proxy_attempt(
+            &state.pool,
+            &manual_runtime_key,
+            true,
+            Some(12.5),
+            None,
+            false,
+        )
             .await
             .expect("insert live forward proxy attempt");
+        seed_pool_upstream_attempt_at(
+            &state.pool,
+            "binding-nodes-real-success",
+            Utc::now() - ChronoDuration::minutes(2),
+            Some(&manual_binding_key),
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+        )
+        .await;
 
         let hourly_before: i64 = sqlx::query_scalar(
             "SELECT COALESCE(SUM(success_count), 0) FROM forward_proxy_attempt_hourly WHERE proxy_key = ?1",
         )
-        .bind(&manual_key)
+        .bind(&manual_runtime_key)
         .fetch_one(&state.pool)
         .await
         .expect("load hourly baseline");
@@ -1066,7 +1103,7 @@
 
         let manual = nodes
             .iter()
-            .find(|node| node.key == manual_key)
+            .find(|node| node.key == manual_binding_key)
             .expect("manual node");
         assert_eq!(
             manual
@@ -1075,13 +1112,13 @@
                 .map(|bucket| bucket.success_count)
                 .sum::<i64>(),
             1,
-            "ungrouped binding nodes should preserve fresh hourly stats emitted by the write path",
+            "ungrouped binding nodes should only count real pool attempts, not forward-proxy health checks",
         );
 
         let hourly_after: i64 = sqlx::query_scalar(
             "SELECT COALESCE(SUM(success_count), 0) FROM forward_proxy_attempt_hourly WHERE proxy_key = ?1",
         )
-        .bind(&manual_key)
+        .bind(&manual_runtime_key)
         .fetch_one(&state.pool)
         .await
         .expect("load hourly after route catch-up");
@@ -1978,6 +2015,7 @@
             AxumPath(account_id),
             Json(UpdateUpstreamAccountRequest {
                 display_name: None,
+                email: OptionalField::Missing,
                 group_name: None,
                 group_bound_proxy_keys: None,
                 group_node_shunt_enabled: Some(true),
@@ -2307,6 +2345,7 @@
                 external_client_id: None,
                 external_source_account_id: None,
                 email: None,
+                verified_email: None,
                 chatgpt_account_id: None,
                 chatgpt_user_id: None,
                 plan_type: None,

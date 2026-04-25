@@ -30,6 +30,7 @@ export type StoryStore = {
     string,
     LoginSessionStatusResponse & {
       displayName?: string
+      email?: string
       groupName?: string
       isMother?: boolean
       note?: string
@@ -1335,6 +1336,7 @@ export function listTagSummaries(store: StoryStore): TagSummary[] {
 }
 
 export function filterAccountsForQuery(store: StoryStore, url: URL) {
+  const groupExact = (url.searchParams.get('groupExact') || '').trim()
   const groupSearch = (url.searchParams.get('groupSearch') || '')
     .trim()
     .toLowerCase()
@@ -1357,8 +1359,8 @@ export function filterAccountsForQuery(store: StoryStore, url: URL) {
     .filter((value) => value.length > 0)
 
   return store.accounts.filter((account) => {
-    const normalizedGroup =
-      normalizeGroupName(account.groupName)?.toLowerCase() ?? ''
+    const normalizedGroup = normalizeGroupName(account.groupName) ?? ''
+    const normalizedGroupLower = normalizedGroup.toLowerCase()
     const derivedHealthStatus = storyHealthStatus(account)
     const derivedSyncState = storySyncState(account)
     const derivedWorkStatus = storyWorkStatus(
@@ -1367,9 +1369,11 @@ export function filterAccountsForQuery(store: StoryStore, url: URL) {
       derivedSyncState,
     )
     const matchesGroup = groupUngrouped
-      ? !normalizeGroupName(account.groupName)
+      ? !normalizedGroup
+      : groupExact
+        ? normalizedGroup === groupExact
       : groupSearch
-        ? normalizedGroup.includes(groupSearch)
+        ? normalizedGroupLower.includes(groupSearch)
         : true
     if (!matchesGroup) return false
     if (workStatuses.length > 0 && !workStatuses.includes(derivedWorkStatus)) return false
@@ -1603,6 +1607,9 @@ export function createStore(): StoryStore {
     storyId?.endsWith('--mixed-plan-coexistence') === true
   const teamSharedOrgCoexistenceStory =
     storyId?.endsWith('--team-shared-org-coexistence') === true
+  const oauthEditEmailHintStory =
+    storyId?.endsWith('--oauth-edit-email-hint') === true ||
+    storyId?.endsWith('--oauth-email-overview') === true
   const compactStory = storyId?.endsWith('--compact-long-labels') === true
   const tagFilterStory = storyId?.endsWith('--tag-filter-all-match') === true
   const availabilityBadgeStory =
@@ -1675,6 +1682,15 @@ export function createStore(): StoryStore {
             planType: 'team',
             duplicateInfo: null,
             note: 'Synthetic team member fixture sharing the same upstream org intentionally.',
+          }
+      : oauthEditEmailHintStory
+        ? {
+            displayName: 'old@storybook.example.com',
+            email: 'old@storybook.example.com',
+            verifiedEmail: 'verified@storybook.example.com',
+            planType: 'team',
+            duplicateInfo: null,
+            note: 'OAuth fixture showing the editable email alongside the latest verified email.',
           }
       : compactStory
         ? {

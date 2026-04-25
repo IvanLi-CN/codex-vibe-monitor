@@ -1,4 +1,49 @@
 describe("UpstreamAccountCreatePage api key", () => {
+  it("derives the api key display name from email until the operator overrides it", async () => {
+    const createApiKeyAccount = vi.fn().mockResolvedValue({
+      id: 42,
+      kind: "api_key_codex",
+      provider: "codex",
+      displayName: "manual alias",
+      groupName: null,
+      isMother: false,
+      status: "active",
+      enabled: true,
+      history: [],
+    });
+    mockUpstreamAccounts({ createApiKeyAccount });
+    render("/account-pool/upstream-accounts/new?mode=apiKey");
+
+    const displayNameInput = document.body.querySelector(
+      'input[name="apiKeyDisplayName"]',
+    ) as HTMLInputElement;
+
+    setInputValue('input[name="apiKeyEmail"]', "first@example.com");
+    await flushAsync();
+    expect(displayNameInput.value).toBe("first@example.com");
+
+    setInputValue('input[name="apiKeyEmail"]', "second@example.com");
+    await flushAsync();
+    expect(displayNameInput.value).toBe("second@example.com");
+
+    setInputValue('input[name="apiKeyDisplayName"]', "Manual Alias");
+    setInputValue('input[name="apiKeyEmail"]', "third@example.com");
+    await flushAsync();
+    expect(displayNameInput.value).toBe("Manual Alias");
+
+    setInputValue('input[name="apiKeyValue"]', "sk-gateway");
+    clickButton(/Create API Key account/i);
+    await flushAsync();
+
+    expect(createApiKeyAccount).toHaveBeenCalledWith(
+      expect.objectContaining({
+        displayName: "Manual Alias",
+        email: "third@example.com",
+        apiKey: "sk-gateway",
+      }),
+    );
+  });
+
   it("submits upstreamBaseUrl for API key accounts", async () => {
     const createApiKeyAccount = vi.fn().mockResolvedValue({
       id: 42,

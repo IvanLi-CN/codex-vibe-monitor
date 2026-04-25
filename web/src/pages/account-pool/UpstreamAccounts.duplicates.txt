@@ -1337,7 +1337,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(options[3]?.getAttribute("aria-disabled")).toBe("true");
   });
 
-  it("blocks saving when the edited display name conflicts with another account", () => {
+  it("does not locally block saving oauth details when the display name conflicts with another account", () => {
     mockAccountsPage();
     render("/account-pool/upstream-accounts");
 
@@ -1345,12 +1345,12 @@ describe("UpstreamAccountsPage duplicates", () => {
     clickTab(/Edit/i);
     setInputValue('input[name="detailDisplayName"]', " another oauth ");
 
-    expect(document.body.textContent).toContain("Display name must be unique.");
+    expect(document.body.textContent).not.toContain("Display name must be unique.");
     const saveButton = Array.from(
       document.body.querySelectorAll("button"),
     ).find((candidate) => /Save changes/i.test(candidate.textContent || ""));
     expect(saveButton).toBeInstanceOf(HTMLButtonElement);
-    expect((saveButton as HTMLButtonElement).disabled).toBe(true);
+    expect((saveButton as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("keeps routing errors visible after an account action succeeds", async () => {

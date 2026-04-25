@@ -130,6 +130,35 @@ export const EditDraftSurvivesBackgroundRefresh: Story = {
   },
 }
 
+export const OauthEmailOverview: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts',
+        search: '?upstreamAccountId=101',
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const dialog = await findTokyoDetailDialog(documentScope)
+    await userEvent.click(
+      within(dialog).getByRole('tab', { name: /编辑|edit/i }),
+    )
+    await expect(
+      within(dialog).getByDisplayValue('old@storybook.example.com'),
+    ).toBeInTheDocument()
+    await expect(
+      within(dialog).getByText(/verified@storybook\.example\.com/i),
+    ).toBeInTheDocument()
+    await expect(
+      within(dialog).getByText(
+        /latest oauth verification reported|最近一次 oauth 可信邮箱是/i,
+      ),
+    ).toBeInTheDocument()
+  },
+}
+
 export const EditTagPickerSurvivesBackgroundRefresh: Story = {
   render: () => (
     <AccountPoolStoryRouter
