@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.50.1",
+  "base_stable_version": "1.50.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-25T02:00:32Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.50.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "2e6d17b4aa78764ed2a7f256806cfd56fb2ab5c7",
+  "pr_number": 364,
+  "pr_title": "fix: unify owner-facing node health stats",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.50.1",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.50.1",
+  "target_sha": "d6d661c1ce0d5f8e48e5687dc96d88e612ee7b6c",
+  "type_label": "type:patch"
+}
