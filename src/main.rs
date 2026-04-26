@@ -72,6 +72,7 @@ use tower_http::{
 };
 use tracing::{debug, error, info, warn};
 mod api;
+mod db_pressure;
 mod external_api;
 mod forward_proxy;
 mod maintenance;

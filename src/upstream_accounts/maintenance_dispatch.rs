@@ -3,6 +3,26 @@ use super::*;
 const LEGACY_UPSTREAM_REJECTED_COOLDOWN_RECONCILIATION_BATCH_SIZE: i64 = 64;
 
 pub(crate) async fn run_upstream_account_maintenance_once(state: Arc<AppState>) -> Result<()> {
+    let gate = crate::db_pressure::global_db_pressure_gate();
+    let _permit = match gate.try_begin_background("upstream_account_maintenance") {
+        Ok(permit) => permit,
+        Err(reason) => {
+            warn!(
+                reason = %reason,
+                "upstream account maintenance skipped because database pressure gate is closed"
+            );
+            return Ok(());
+        }
+    };
+
+    let result = run_upstream_account_maintenance_once_inner(state).await;
+    if let Err(err) = &result {
+        gate.record_error("upstream_account_maintenance", err);
+    }
+    result
+}
+
+async fn run_upstream_account_maintenance_once_inner(state: Arc<AppState>) -> Result<()> {
     expire_pending_login_sessions(&state.pool).await?;
     cleanup_expired_oauth_mailbox_sessions(state.as_ref()).await?;
     let Some(_) = state.upstream_accounts.crypto_key else {
@@ -548,7 +568,6 @@ pub(crate) fn maintenance_last_sync_attempt_at(
             )
         })
         .and(candidate.last_action_at.as_deref())
-        .as_deref()
         .and_then(parse_rfc3339_utc);
 
     [last_synced_at, last_sync_action_at]

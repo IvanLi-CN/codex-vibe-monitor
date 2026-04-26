@@ -1,4 +1,34 @@
 #[tokio::test]
+async fn ensure_schema_adds_upstream_account_pressure_hot_path_indexes() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    ensure_schema(&pool)
+        .await
+        .expect("schema should initialize");
+
+    for index_name in [
+        "idx_pool_upstream_accounts_maintenance_due",
+        "idx_pool_upstream_account_events_time",
+        "idx_pool_oauth_login_sessions_status_expires",
+        "idx_pool_limit_samples_account_captured_desc",
+    ] {
+        let exists: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM sqlite_master
+            WHERE type = 'index' AND name = ?1
+            "#,
+        )
+        .bind(index_name)
+        .fetch_one(&pool)
+        .await
+        .expect("query sqlite indexes");
+        assert_eq!(exists, 1, "missing index {index_name}");
+    }
+}
+
+#[tokio::test]
 async fn backfill_invocation_service_tiers_revisits_inline_proxy_auto_tiers_without_raw_files() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await

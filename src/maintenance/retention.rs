@@ -629,18 +629,13 @@ fn spawn_data_retention_maintenance(
             info!("data retention maintenance skipped because shutdown is already in progress");
             return;
         }
-        if let Err(err) =
-            run_data_retention_maintenance(&state.pool, &state.config, None, Some(&cancel)).await
-        {
-            warn!(error = %err, "failed to run retention maintenance at startup");
-        } else if !cancel.is_cancelled() {
-            refresh_hourly_rollups_for_read_surfaces_best_effort(
-                &state.pool,
-                &state.hourly_rollup_sync_lock,
-                "retention-maintenance-startup-follow-up",
-            )
-            .await;
-        }
+        run_data_retention_maintenance_best_effort(
+            &state,
+            &cancel,
+            "retention-maintenance-startup-follow-up",
+            "startup",
+        )
+        .await;
 
         let mut ticker = interval(state.config.retention_interval);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -652,25 +647,56 @@ fn spawn_data_retention_maintenance(
                     break;
                 }
                 _ = ticker.tick() => {
-                    if let Err(err) = run_data_retention_maintenance(
-                        &state.pool,
-                        &state.config,
-                        None,
-                        Some(&cancel),
-                    ).await {
-                        warn!(error = %err, "failed to run retention maintenance");
-                    } else if !cancel.is_cancelled() {
-                        refresh_hourly_rollups_for_read_surfaces_best_effort(
-                            &state.pool,
-                            &state.hourly_rollup_sync_lock,
-                            "retention-maintenance-interval-follow-up",
-                        )
-                        .await;
-                    }
+                    run_data_retention_maintenance_best_effort(
+                        &state,
+                        &cancel,
+                        "retention-maintenance-interval-follow-up",
+                        "interval",
+                    ).await;
                 }
             }
         }
     })
+}
+
+async fn run_data_retention_maintenance_best_effort(
+    state: &Arc<AppState>,
+    cancel: &CancellationToken,
+    rollup_refresh_reason: &'static str,
+    trigger: &'static str,
+) {
+    let gate = crate::db_pressure::global_db_pressure_gate();
+    let maintenance_succeeded = {
+        let _permit = match gate.try_begin_background("data_retention_maintenance") {
+            Ok(permit) => permit,
+            Err(reason) => {
+                warn!(
+                    trigger,
+                    reason = %reason,
+                    "data retention maintenance skipped because database pressure gate is closed"
+                );
+                return;
+            }
+        };
+
+        match run_data_retention_maintenance(&state.pool, &state.config, None, Some(cancel)).await {
+            Ok(_) => true,
+            Err(err) => {
+                gate.record_error("data_retention_maintenance", &err);
+                warn!(trigger, error = %err, "failed to run retention maintenance");
+                false
+            }
+        }
+    };
+
+    if maintenance_succeeded && !cancel.is_cancelled() {
+        refresh_hourly_rollups_for_read_surfaces_best_effort(
+            &state.pool,
+            &state.hourly_rollup_sync_lock,
+            rollup_refresh_reason,
+        )
+        .await;
+    }
 }
 
 fn should_stop_data_retention_maintenance(shutdown: Option<&CancellationToken>) -> bool {

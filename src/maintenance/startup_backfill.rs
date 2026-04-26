@@ -388,6 +388,7 @@ async fn run_startup_backfill_maintenance_pass(state: Arc<AppState>, cancel: &Ca
             continue;
         }
         if let Err(err) = run_startup_backfill_task_if_due(&state, *task).await {
+            crate::db_pressure::global_db_pressure_gate().record_error("startup_backfill", &err);
             warn!(task = task.log_label(), error = %err, "startup backfill supervisor pass failed");
         }
     }
@@ -411,6 +412,19 @@ async fn run_startup_backfill_task_if_due(
     state: &Arc<AppState>,
     task: StartupBackfillTask,
 ) -> Result<()> {
+    let gate = crate::db_pressure::global_db_pressure_gate();
+    let _permit = match gate.try_begin_background("startup_backfill") {
+        Ok(permit) => permit,
+        Err(reason) => {
+            warn!(
+                task = task.log_label(),
+                reason = %reason,
+                "startup backfill task skipped because database pressure gate is closed"
+            );
+            return Ok(());
+        }
+    };
+
     if !startup_backfill_task_enabled(state.as_ref(), task) {
         debug!(
             task = task.log_label(),
