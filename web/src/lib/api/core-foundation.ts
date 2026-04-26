@@ -634,6 +634,22 @@ export interface ParallelWorkPoint {
   parallelCount: number;
 }
 
+export interface ParallelWorkConversationSegment {
+  bucketStart: string;
+  bucketEnd: string;
+  requestCount: number;
+}
+
+export interface ParallelWorkConversation {
+  conversationKey: string;
+  label: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  activeBucketCount: number;
+  requestCount: number;
+  segments: ParallelWorkConversationSegment[];
+}
+
 export interface ParallelWorkWindowResponse {
   rangeStart: string;
   rangeEnd: string;
@@ -646,9 +662,11 @@ export interface ParallelWorkWindowResponse {
   effectiveTimeZone?: string;
   timeZoneFallback?: boolean;
   points: ParallelWorkPoint[];
+  conversations: ParallelWorkConversation[];
 }
 
 export interface ParallelWorkStatsResponse {
+  current: ParallelWorkWindowResponse;
   minute7d: ParallelWorkWindowResponse;
   hour30d: ParallelWorkWindowResponse;
   dayAll: ParallelWorkWindowResponse;
@@ -1272,11 +1290,56 @@ function normalizeParallelWorkPoint(raw: unknown): ParallelWorkPoint | null {
   };
 }
 
+function normalizeParallelWorkConversationSegment(
+  raw: unknown,
+): ParallelWorkConversationSegment | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const bucketStart =
+    typeof payload.bucketStart === "string" ? payload.bucketStart : "";
+  const bucketEnd =
+    typeof payload.bucketEnd === "string" ? payload.bucketEnd : "";
+  if (!bucketStart || !bucketEnd) return null;
+  return {
+    bucketStart,
+    bucketEnd,
+    requestCount: normalizeFiniteNumber(payload.requestCount) ?? 0,
+  };
+}
+
+function normalizeParallelWorkConversation(
+  raw: unknown,
+): ParallelWorkConversation | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const conversationKey =
+    typeof payload.conversationKey === "string" ? payload.conversationKey : "";
+  if (!conversationKey) return null;
+  const segmentsRaw = Array.isArray(payload.segments) ? payload.segments : [];
+  return {
+    conversationKey,
+    label: typeof payload.label === "string" ? payload.label : conversationKey,
+    firstSeenAt:
+      typeof payload.firstSeenAt === "string" ? payload.firstSeenAt : "",
+    lastSeenAt:
+      typeof payload.lastSeenAt === "string" ? payload.lastSeenAt : "",
+    activeBucketCount: normalizeFiniteNumber(payload.activeBucketCount) ?? 0,
+    requestCount: normalizeFiniteNumber(payload.requestCount) ?? 0,
+    segments: segmentsRaw
+      .map(normalizeParallelWorkConversationSegment)
+      .filter(
+        (segment): segment is ParallelWorkConversationSegment =>
+          segment != null,
+      ),
+  };
+}
+
 function normalizeParallelWorkWindowResponse(
   raw: unknown,
 ): ParallelWorkWindowResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const pointsRaw = Array.isArray(payload.points) ? payload.points : [];
+  const conversationsRaw = Array.isArray(payload.conversations)
+    ? payload.conversations
+    : [];
   const effectiveTimeZone =
     typeof payload.effectiveTimeZone === "string" &&
     payload.effectiveTimeZone.trim()
@@ -1307,6 +1370,12 @@ function normalizeParallelWorkWindowResponse(
     points: pointsRaw
       .map(normalizeParallelWorkPoint)
       .filter((point): point is ParallelWorkPoint => point != null),
+    conversations: conversationsRaw
+      .map(normalizeParallelWorkConversation)
+      .filter(
+        (conversation): conversation is ParallelWorkConversation =>
+          conversation != null,
+      ),
   };
 }
 
@@ -1314,8 +1383,14 @@ function normalizeParallelWorkStatsResponse(
   raw: unknown,
 ): ParallelWorkStatsResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
+  const current = normalizeParallelWorkWindowResponse(
+    payload.current ?? payload.minute7d,
+  );
   return {
-    minute7d: normalizeParallelWorkWindowResponse(payload.minute7d),
+    current,
+    minute7d: normalizeParallelWorkWindowResponse(
+      payload.minute7d ?? payload.current,
+    ),
     hour30d: normalizeParallelWorkWindowResponse(payload.hour30d),
     dayAll: normalizeParallelWorkWindowResponse(payload.dayAll),
   };
@@ -1363,9 +1438,7 @@ function normalizePricingSettings(raw: unknown): PricingSettings {
 function normalizeProxyFastModeRewriteMode(
   raw: unknown,
 ): ProxyFastModeRewriteMode {
-  return raw === "fill_missing" || raw === "force_priority"
-    ? raw
-    : "disabled";
+  return raw === "fill_missing" || raw === "force_priority" ? raw : "disabled";
 }
 
 function normalizeProxySettings(raw: unknown): ProxySettings {
@@ -1380,7 +1453,10 @@ function normalizeProxySettings(raw: unknown): ProxySettings {
     ),
     upstream429MaxRetries: Math.max(
       0,
-      Math.min(5, Math.trunc(normalizeFiniteNumber(payload.upstream429MaxRetries) ?? 3)),
+      Math.min(
+        5,
+        Math.trunc(normalizeFiniteNumber(payload.upstream429MaxRetries) ?? 3),
+      ),
     ),
     defaultHijackEnabled: payload.defaultHijackEnabled === true,
     models,
@@ -2098,14 +2174,7 @@ function normalizeExternalApiKeySummary(
     typeof payload.createdAt === "string" ? payload.createdAt : "";
   const updatedAt =
     typeof payload.updatedAt === "string" ? payload.updatedAt : "";
-  if (
-    id == null ||
-    !name ||
-    !status ||
-    !prefix ||
-    !createdAt ||
-    !updatedAt
-  ) {
+  if (id == null || !name || !status || !prefix || !createdAt || !updatedAt) {
     return null;
   }
   return {
@@ -2377,10 +2446,14 @@ export async function fetchTimeseries(
 }
 
 export async function fetchParallelWorkStats(params?: {
+  range?: string;
+  bucket?: string;
   timeZone?: string;
   signal?: AbortSignal;
 }) {
   const search = new URLSearchParams();
+  search.set("range", params?.range ?? "today");
+  if (params?.bucket) search.set("bucket", params.bucket);
   search.set("timeZone", params?.timeZone ?? getBrowserTimeZone());
   const response = await fetchJson<unknown>(
     `/api/stats/parallel-work?${search.toString()}`,

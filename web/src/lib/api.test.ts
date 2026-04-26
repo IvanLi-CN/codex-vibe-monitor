@@ -439,7 +439,7 @@ describe("fetchParallelWorkStats", () => {
       | undefined;
     expect(firstArg).toBeDefined();
     expect(String(firstArg)).toBe(
-      "/api/stats/parallel-work?timeZone=Asia%2FKolkata",
+      "/api/stats/parallel-work?range=today&timeZone=Asia%2FKolkata",
     );
   });
 
@@ -495,7 +495,7 @@ describe("fetchParallelWorkStats", () => {
       | undefined;
     expect(firstArg).toBeDefined();
     expect(String(firstArg)).toBe(
-      "/api/stats/parallel-work?timeZone=Australia%2FLord_Howe",
+      "/api/stats/parallel-work?range=today&timeZone=Australia%2FLord_Howe",
     );
   });
 });
@@ -980,14 +980,12 @@ describe("settings normalization", () => {
     });
     vi.stubGlobal("fetch", fetchMock as typeof fetch);
 
-    const response = await fetchForwardProxyBindingNodes([
-      "fpb_jp_edge_01",
-      " ",
-      "fpb_sg_edge_02",
-      "fpb_jp_edge_01",
-    ], {
-      includeCurrent: true,
-    });
+    const response = await fetchForwardProxyBindingNodes(
+      ["fpb_jp_edge_01", " ", "fpb_sg_edge_02", "fpb_jp_edge_01"],
+      {
+        includeCurrent: true,
+      },
+    );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(response).toHaveLength(1);
@@ -1489,42 +1487,46 @@ describe("account pool frontend API helpers", () => {
   });
 
   it("serializes window-usage batch requests and normalizes the response", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      expect(String(input)).toContain("/api/pool/upstream-accounts/window-usage");
-      expect(init?.method).toBe("POST");
-      expect(init?.body).toBe(JSON.stringify({ accountIds: [3, 7] }));
-      return new Response(
-        JSON.stringify({
-          items: [
-            {
-              accountId: 3,
-              primaryActualUsage: {
-                requestCount: 11,
-                totalTokens: 64120,
-                totalCost: 0.6123,
-                inputTokens: 38200,
-                outputTokens: 21120,
-                cacheInputTokens: 4800,
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        expect(String(input)).toContain(
+          "/api/pool/upstream-accounts/window-usage",
+        );
+        expect(init?.method).toBe("POST");
+        expect(init?.body).toBe(JSON.stringify({ accountIds: [3, 7] }));
+        return new Response(
+          JSON.stringify({
+            items: [
+              {
+                accountId: 3,
+                primaryActualUsage: {
+                  requestCount: 11,
+                  totalTokens: 64120,
+                  totalCost: 0.6123,
+                  inputTokens: 38200,
+                  outputTokens: 21120,
+                  cacheInputTokens: 4800,
+                },
+                secondaryActualUsage: null,
               },
-              secondaryActualUsage: null,
-            },
-            {
-              accountId: 7,
-              primaryActualUsage: null,
-              secondaryActualUsage: {
-                requestCount: 52,
-                totalTokens: 201440,
-                totalCost: 1.8821,
-                inputTokens: 110200,
-                outputTokens: 78240,
-                cacheInputTokens: 13000,
+              {
+                accountId: 7,
+                primaryActualUsage: null,
+                secondaryActualUsage: {
+                  requestCount: 52,
+                  totalTokens: 201440,
+                  totalCost: 1.8821,
+                  inputTokens: 110200,
+                  outputTokens: 78240,
+                  cacheInputTokens: 13000,
+                },
               },
-            },
-          ],
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
-    });
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      },
+    );
     vi.stubGlobal("fetch", fetchMock as typeof fetch);
 
     const response = await fetchUpstreamAccountWindowUsage([3, 7]);

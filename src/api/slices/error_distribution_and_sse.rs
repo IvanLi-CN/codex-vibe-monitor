@@ -76,15 +76,30 @@ fn resolve_parallel_work_rollup_reporting_tz(
     (Shanghai, true)
 }
 
+pub(crate) struct ParallelWorkWindowBuildInput<'a> {
+    pub(crate) range_start: DateTime<Utc>,
+    pub(crate) range_end: DateTime<Utc>,
+    pub(crate) bucket_seconds: i64,
+    pub(crate) reporting_tz: Tz,
+    pub(crate) counts_by_bucket: &'a BTreeMap<i64, i64>,
+    pub(crate) conversations_by_key: &'a BTreeMap<String, BTreeMap<i64, i64>>,
+    pub(crate) effective_time_zone: Tz,
+    pub(crate) time_zone_fallback: bool,
+}
+
 fn build_parallel_work_window_response(
-    range_start: DateTime<Utc>,
-    range_end: DateTime<Utc>,
-    bucket_seconds: i64,
-    reporting_tz: Tz,
-    counts_by_bucket: &BTreeMap<i64, i64>,
-    effective_time_zone: Tz,
-    time_zone_fallback: bool,
+    input: ParallelWorkWindowBuildInput<'_>,
 ) -> Result<ParallelWorkWindowResponse> {
+    let ParallelWorkWindowBuildInput {
+        range_start,
+        range_end,
+        bucket_seconds,
+        reporting_tz,
+        counts_by_bucket,
+        conversations_by_key,
+        effective_time_zone,
+        time_zone_fallback,
+    } = input;
     if range_start >= range_end {
         return Ok(empty_parallel_work_window_response(
             range_end,
@@ -153,7 +168,97 @@ fn build_parallel_work_window_response(
         effective_time_zone: effective_time_zone.to_string(),
         time_zone_fallback,
         points,
+        conversations: build_parallel_work_conversation_responses(
+            conversations_by_key,
+            bucket_seconds,
+            reporting_tz,
+            range_end,
+        )?,
     })
+}
+
+fn build_parallel_work_conversation_responses(
+    conversations_by_key: &BTreeMap<String, BTreeMap<i64, i64>>,
+    bucket_seconds: i64,
+    reporting_tz: Tz,
+    range_end: DateTime<Utc>,
+) -> Result<Vec<ParallelWorkConversation>> {
+    const MAX_PARALLEL_WORK_CONVERSATIONS: usize = 64;
+    let mut conversations = Vec::new();
+    let range_end_epoch = range_end.timestamp();
+
+    for (conversation_key, buckets) in conversations_by_key {
+        let mut segments = Vec::new();
+        let mut request_count = 0_i64;
+        let mut first_seen_epoch = None;
+        let mut last_seen_epoch = None;
+        for (bucket_start_epoch, bucket_request_count) in buckets {
+            let bucket_end_epoch = next_reporting_bucket_epoch(
+                *bucket_start_epoch,
+                bucket_seconds,
+                reporting_tz,
+            )?;
+            if bucket_end_epoch > range_end_epoch {
+                continue;
+            }
+            if first_seen_epoch.is_none() {
+                first_seen_epoch = Some(*bucket_start_epoch);
+            }
+            last_seen_epoch = Some(bucket_end_epoch);
+            request_count += (*bucket_request_count).max(0);
+            segments.push(ParallelWorkConversationSegment {
+                bucket_start: format_utc_iso(
+                    Utc.timestamp_opt(*bucket_start_epoch, 0)
+                        .single()
+                        .ok_or_else(|| anyhow!("invalid parallel-work conversation bucket start"))?,
+                ),
+                bucket_end: format_utc_iso(
+                    Utc.timestamp_opt(bucket_end_epoch, 0)
+                        .single()
+                        .ok_or_else(|| anyhow!("invalid parallel-work conversation bucket end"))?,
+                ),
+                request_count: *bucket_request_count,
+            });
+        }
+        let Some(first_seen_epoch) = first_seen_epoch else {
+            continue;
+        };
+        let Some(last_seen_epoch) = last_seen_epoch else {
+            continue;
+        };
+        let active_bucket_count = segments.len() as i64;
+        conversations.push(ParallelWorkConversation {
+            conversation_key: conversation_key.clone(),
+            label: format!("C{}", conversations.len() + 1),
+            first_seen_at: format_utc_iso(
+                Utc.timestamp_opt(first_seen_epoch, 0)
+                    .single()
+                    .ok_or_else(|| anyhow!("invalid parallel-work conversation first bucket"))?,
+            ),
+            last_seen_at: format_utc_iso(
+                Utc.timestamp_opt(last_seen_epoch, 0)
+                    .single()
+                    .ok_or_else(|| anyhow!("invalid parallel-work conversation last bucket"))?,
+            ),
+            active_bucket_count,
+            request_count,
+            segments,
+        });
+    }
+
+    conversations.sort_by(|left, right| {
+        right
+            .active_bucket_count
+            .cmp(&left.active_bucket_count)
+            .then_with(|| right.request_count.cmp(&left.request_count))
+            .then_with(|| right.last_seen_at.cmp(&left.last_seen_at))
+            .then_with(|| left.conversation_key.cmp(&right.conversation_key))
+    });
+    conversations.truncate(MAX_PARALLEL_WORK_CONVERSATIONS);
+    for (index, conversation) in conversations.iter_mut().enumerate() {
+        conversation.label = format!("C{}", index + 1);
+    }
+    Ok(conversations)
 }
 
 fn empty_parallel_work_window_response(
@@ -174,14 +279,16 @@ fn empty_parallel_work_window_response(
         effective_time_zone: effective_time_zone.to_string(),
         time_zone_fallback,
         points: Vec::new(),
+        conversations: Vec::new(),
     }
 }
 
-async fn query_parallel_work_minute_counts(
+async fn query_parallel_work_exact_counts(
     pool: &Pool<Sqlite>,
     range_start: DateTime<Utc>,
     range_end: DateTime<Utc>,
     reporting_tz: Tz,
+    bucket_seconds: i64,
     source_scope: InvocationSourceScope,
 ) -> Result<BTreeMap<i64, i64>> {
     let mut query = QueryBuilder::new("SELECT occurred_at, ");
@@ -211,7 +318,7 @@ async fn query_parallel_work_minute_counts(
             continue;
         };
         let bucket_start_epoch =
-            align_reporting_bucket_epoch(occurred_at.timestamp(), 60, reporting_tz)?;
+            align_reporting_bucket_epoch(occurred_at.timestamp(), bucket_seconds, reporting_tz)?;
         bucket_keys
             .entry(bucket_start_epoch)
             .or_default()
@@ -224,6 +331,185 @@ async fn query_parallel_work_minute_counts(
         })
         .collect())
 }
+
+async fn query_parallel_work_exact_conversations(
+    pool: &Pool<Sqlite>,
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    reporting_tz: Tz,
+    bucket_seconds: i64,
+    source_scope: InvocationSourceScope,
+) -> Result<BTreeMap<String, BTreeMap<i64, i64>>> {
+    let mut query = QueryBuilder::new("SELECT occurred_at, ");
+    query
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(" AS prompt_cache_key FROM codex_invocations WHERE occurred_at >= ")
+        .push_bind(db_occurred_at_lower_bound(range_start))
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_lower_bound(range_end))
+        .push(" AND ")
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(" IS NOT NULL AND ")
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(" != ''");
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" ORDER BY occurred_at ASC, prompt_cache_key ASC");
+
+    let rows = query
+        .build_query_as::<ParallelWorkExactInvocationRow>()
+        .fetch_all(pool)
+        .await?;
+    let mut conversations: BTreeMap<String, BTreeMap<i64, i64>> = BTreeMap::new();
+    for row in rows {
+        let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
+            continue;
+        };
+        let bucket_start_epoch =
+            align_reporting_bucket_epoch(occurred_at.timestamp(), bucket_seconds, reporting_tz)?;
+        *conversations
+            .entry(row.prompt_cache_key)
+            .or_default()
+            .entry(bucket_start_epoch)
+            .or_default() += 1;
+    }
+    Ok(conversations)
+}
+
+async fn query_parallel_work_rollup_counts(
+    pool: &Pool<Sqlite>,
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    bucket_seconds: i64,
+    reporting_tz: Tz,
+    source_scope: InvocationSourceScope,
+) -> Result<BTreeMap<i64, i64>> {
+    let hourly = query_parallel_work_hourly_conversations(pool, range_start, range_end, source_scope).await?;
+    let mut bucket_keys: BTreeMap<i64, HashSet<String>> = BTreeMap::new();
+    for (prompt_cache_key, buckets) in hourly {
+        for (bucket_start_epoch, request_count) in buckets {
+            if request_count <= 0 {
+                continue;
+            }
+            let bucket_epoch = align_reporting_bucket_epoch(bucket_start_epoch, bucket_seconds, reporting_tz)?;
+            bucket_keys.entry(bucket_epoch).or_default().insert(prompt_cache_key.clone());
+        }
+    }
+    Ok(bucket_keys
+        .into_iter()
+        .map(|(bucket_start_epoch, prompt_cache_keys)| {
+            (bucket_start_epoch, prompt_cache_keys.len() as i64)
+        })
+        .collect())
+}
+
+async fn query_parallel_work_rollup_conversations(
+    pool: &Pool<Sqlite>,
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    bucket_seconds: i64,
+    reporting_tz: Tz,
+    source_scope: InvocationSourceScope,
+) -> Result<BTreeMap<String, BTreeMap<i64, i64>>> {
+    let hourly = query_parallel_work_hourly_conversations(pool, range_start, range_end, source_scope).await?;
+    let mut conversations: BTreeMap<String, BTreeMap<i64, i64>> = BTreeMap::new();
+    for (prompt_cache_key, buckets) in hourly {
+        for (bucket_start_epoch, request_count) in buckets {
+            if request_count <= 0 {
+                continue;
+            }
+            let bucket_epoch = align_reporting_bucket_epoch(bucket_start_epoch, bucket_seconds, reporting_tz)?;
+            *conversations
+                .entry(prompt_cache_key.clone())
+                .or_default()
+                .entry(bucket_epoch)
+                .or_default() += request_count;
+        }
+    }
+    Ok(conversations)
+}
+
+async fn query_parallel_work_hourly_conversations(
+    pool: &Pool<Sqlite>,
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    source_scope: InvocationSourceScope,
+) -> Result<BTreeMap<String, BTreeMap<i64, i64>>> {
+    let mut query = QueryBuilder::new(
+        "SELECT bucket_start_epoch, prompt_cache_key, SUM(request_count) AS request_count \
+         FROM prompt_cache_rollup_hourly \
+         WHERE bucket_start_epoch >= ",
+    );
+    query
+        .push_bind(range_start.timestamp())
+        .push(" AND bucket_start_epoch < ")
+        .push_bind(range_end.timestamp())
+        .push(" AND prompt_cache_key != ''");
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" GROUP BY bucket_start_epoch, prompt_cache_key ORDER BY bucket_start_epoch ASC, prompt_cache_key ASC");
+
+    let rows = query
+        .build_query_as::<ParallelWorkConversationBucketRow>()
+        .fetch_all(pool)
+        .await?;
+    Ok(build_parallel_work_conversation_bucket_map(rows))
+}
+
+async fn query_parallel_work_day_conversations_from_hourly_rollups(
+    pool: &Pool<Sqlite>,
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    reporting_tz: Tz,
+    source_scope: InvocationSourceScope,
+) -> Result<BTreeMap<String, BTreeMap<i64, i64>>> {
+    let mut query = QueryBuilder::new(
+        "SELECT bucket_start_epoch, prompt_cache_key, SUM(request_count) AS request_count \
+         FROM prompt_cache_rollup_hourly \
+         WHERE bucket_start_epoch >= ",
+    );
+    query
+        .push_bind(range_start.timestamp())
+        .push(" AND bucket_start_epoch < ")
+        .push_bind(range_end.timestamp())
+        .push(" AND prompt_cache_key != ''");
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" GROUP BY bucket_start_epoch, prompt_cache_key ORDER BY bucket_start_epoch ASC, prompt_cache_key ASC");
+
+    let rows = query
+        .build_query_as::<ParallelWorkConversationBucketRow>()
+        .fetch_all(pool)
+        .await?;
+    let mut conversations: BTreeMap<String, BTreeMap<i64, i64>> = BTreeMap::new();
+    for row in rows {
+        let day_epoch = align_reporting_bucket_epoch(row.bucket_start_epoch, 86_400, reporting_tz)?;
+        *conversations
+            .entry(row.prompt_cache_key)
+            .or_default()
+            .entry(day_epoch)
+            .or_default() += row.request_count.max(0);
+    }
+    Ok(conversations)
+}
+
+fn build_parallel_work_conversation_bucket_map(
+    rows: Vec<ParallelWorkConversationBucketRow>,
+) -> BTreeMap<String, BTreeMap<i64, i64>> {
+    let mut conversations: BTreeMap<String, BTreeMap<i64, i64>> = BTreeMap::new();
+    for row in rows {
+        *conversations
+            .entry(row.prompt_cache_key)
+            .or_default()
+            .entry(row.bucket_start_epoch)
+            .or_default() += row.request_count.max(0);
+    }
+    conversations
+}
+
 
 async fn query_parallel_work_hourly_counts(
     pool: &Pool<Sqlite>,

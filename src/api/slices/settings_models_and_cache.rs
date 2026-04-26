@@ -179,6 +179,7 @@ pub(crate) struct TimeseriesResponse {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ParallelWorkStatsResponse {
+    pub(crate) current: ParallelWorkWindowResponse,
     pub(crate) minute7d: ParallelWorkWindowResponse,
     pub(crate) hour30d: ParallelWorkWindowResponse,
     pub(crate) day_all: ParallelWorkWindowResponse,
@@ -198,6 +199,7 @@ pub(crate) struct ParallelWorkWindowResponse {
     pub(crate) effective_time_zone: String,
     pub(crate) time_zone_fallback: bool,
     pub(crate) points: Vec<ParallelWorkPoint>,
+    pub(crate) conversations: Vec<ParallelWorkConversation>,
 }
 
 #[derive(Debug, Serialize)]
@@ -206,6 +208,26 @@ pub(crate) struct ParallelWorkPoint {
     pub(crate) bucket_start: String,
     pub(crate) bucket_end: String,
     pub(crate) parallel_count: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ParallelWorkConversation {
+    pub(crate) conversation_key: String,
+    pub(crate) label: String,
+    pub(crate) first_seen_at: String,
+    pub(crate) last_seen_at: String,
+    pub(crate) active_bucket_count: i64,
+    pub(crate) request_count: i64,
+    pub(crate) segments: Vec<ParallelWorkConversationSegment>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ParallelWorkConversationSegment {
+    pub(crate) bucket_start: String,
+    pub(crate) bucket_end: String,
+    pub(crate) request_count: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -1113,6 +1135,13 @@ pub(crate) struct ParallelWorkDayRollupRow {
     pub(crate) prompt_cache_key: String,
 }
 
+#[derive(Debug, FromRow)]
+pub(crate) struct ParallelWorkConversationBucketRow {
+    pub(crate) bucket_start_epoch: i64,
+    pub(crate) prompt_cache_key: String,
+    pub(crate) request_count: i64,
+}
+
 #[derive(Debug, Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ListQuery {
@@ -1184,6 +1213,9 @@ pub(crate) struct TimeseriesQuery {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ParallelWorkStatsQuery {
+    #[serde(default = "default_range")]
+    pub(crate) range: String,
+    pub(crate) bucket: Option<String>,
     pub(crate) time_zone: Option<String>,
 }
 
