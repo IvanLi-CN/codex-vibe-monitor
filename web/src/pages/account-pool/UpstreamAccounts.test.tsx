@@ -367,6 +367,20 @@ function render(
   rerender(initialEntry);
 }
 
+function renderFlatForLegacySuites(
+  initialEntry: InitialEntry = "/account-pool/upstream-accounts",
+) {
+  render(initialEntry);
+  const flatToggle = Array.from(
+    host?.querySelectorAll('button[role="tab"]') ?? [],
+  ).find((candidate) => /flat|平铺/i.test(candidate.textContent ?? ""));
+  if (flatToggle instanceof HTMLButtonElement) {
+    act(() => {
+      flatToggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+  }
+}
+
 function rerender(
   initialEntry: InitialEntry = "/account-pool/upstream-accounts",
 ) {
@@ -1311,7 +1325,7 @@ Object.assign(scope, {
   apiMocks,
   storage,
   MockBulkSyncEventSource,
-  render,
+  render: renderFlatForLegacySuites,
   rerender,
   remount,
   flushAsync,
@@ -1370,6 +1384,27 @@ evalChunk(suite6);
 evalChunk(suite7);
 
 describe('UpstreamAccountsPage grouped roster toggle', () => {
+  it('defaults to grid view with grid, grouped, flat selector order', async () => {
+    mockRosterFreshnessPage()
+    render()
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    const tabs = Array.from(host?.querySelectorAll('button[role="tab"]') ?? [])
+    expect(tabs[0]?.textContent ?? '').toMatch(/grid|网格/i)
+    expect(tabs[1]?.textContent ?? '').toMatch(/grouped|分组/i)
+    expect(tabs[2]?.textContent ?? '').toMatch(/flat|平铺/i)
+    expect(tabs[0]?.getAttribute('aria-selected')).toBe('true')
+    expectRosterHookQuery({ includeAll: true })
+    expect(
+      host?.querySelector('[data-testid="upstream-accounts-grouped-roster"]'),
+    ).toBeTruthy()
+    expect(
+      host?.querySelector('[data-testid="upstream-accounts-pagination-footer"]'),
+    ).toBeNull()
+  })
+
   it('switches to grouped view and hides the pagination footer', async () => {
     mockRosterFreshnessPage()
     render()
@@ -1497,6 +1532,14 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
     render()
     await act(async () => {
       await Promise.resolve()
+    })
+
+    const flatToggle = Array.from(
+      host?.querySelectorAll('button[role="tab"]') ?? [],
+    ).find((candidate) => /flat|平铺/i.test(candidate.textContent ?? ''))
+    expect(flatToggle).toBeTruthy()
+    act(() => {
+      flatToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
     expect(
@@ -1664,6 +1707,14 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
     render()
     await act(async () => {
       await Promise.resolve()
+    })
+
+    const initialFlatToggle = Array.from(
+      host?.querySelectorAll('button[role="tab"]') ?? [],
+    ).find((candidate) => /flat|平铺/i.test(candidate.textContent ?? ''))
+    expect(initialFlatToggle).toBeTruthy()
+    act(() => {
+      initialFlatToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
     const nextButton = findButton(/next|下一页/i)
@@ -1851,13 +1902,11 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
     await flushAsync()
 
     expect(hookMocks.useUpstreamAccounts.mock.calls[0]?.[0]).toEqual({
-      page: 1,
-      pageSize: 20,
+      includeAll: true,
       groupExact: 'prod',
     })
     expectRosterHookQuery({
-      page: 1,
-      pageSize: 20,
+      includeAll: true,
       groupExact: 'prod',
     })
     expect(hookMocks.useUpstreamAccounts.mock.calls).not.toContainEqual([
@@ -1909,8 +1958,7 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
     await flushAsync()
 
     expectRosterHookQuery({
-      page: 1,
-      pageSize: 20,
+      includeAll: true,
       groupUngrouped: true,
     })
     expect(readStoredUpstreamFilters()?.groupFilter).toEqual({

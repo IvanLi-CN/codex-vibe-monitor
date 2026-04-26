@@ -144,6 +144,8 @@ const labels = {
   duplicate: 'Duplicate',
   mother: 'Mother',
   hiddenTagsA11y: (count: number, names: string) => `Show ${count} hidden tags: ${names}`,
+  compactSupport: () => 'Compact unsupported',
+  compactSupportHint: (item: UpstreamAccountSummary) => item.compactSupport?.reason ?? null,
   workStatus: (status: string) => status,
   workStatusCount: (count: number) => `Working ${count}`,
   enableStatus: (status: string) => status,
@@ -503,8 +505,7 @@ describe('UpstreamAccountsGroupedRoster', () => {
     expect(content).toContain('Working 3')
     expect(content).toContain('analytics')
     expect(content).toContain('reporting')
-    expect(content).toContain('priority-lane')
-    expect(content).toContain('prod-apac')
+    expect(content).toContain('+1')
     expect(content).toContain('degraded')
     expect(content).toContain('rate_limited')
     expect(content).toContain('syncing')
@@ -517,7 +518,61 @@ describe('UpstreamAccountsGroupedRoster', () => {
     expect(content).not.toContain('Idle')
     expect(content).not.toContain('Normal')
     expect(content).not.toContain('Sync idle')
-    expect(content).not.toContain('+1')
+    expect(content).not.toContain('prod-apac')
+  })
+
+  it('renders list-parity identity, support, proxy, and overflow badges in one-line grid rows', async () => {
+    renderRoster(
+      [
+        makeGroup('badge-parity', [
+          makeItem(31, {
+            displayName: 'Mother compact duplicate lane',
+            kind: 'oauth_codex',
+            isMother: true,
+            duplicateInfo: {
+              peerAccountIds: [41],
+              reasons: ['sharedChatgptAccountId'],
+            },
+            compactSupport: {
+              status: 'unsupported',
+              reason: 'No available channel for model gpt-5.5',
+            },
+            currentForwardProxyState: 'assigned',
+            currentForwardProxyDisplayName:
+              'Very long proxy display name for Tokyo subscription edge',
+            tags: extendedTags,
+          }),
+        ]),
+      ],
+      {
+        memberLayout: 'grid',
+        selectionMode: 'none',
+        onToggleSelected: undefined,
+        onToggleSelectAllVisible: undefined,
+      },
+    )
+    await flushAsync()
+
+    const card = host?.querySelector(
+      '[data-testid="upstream-accounts-group-grid-card"]',
+    ) as HTMLElement | null
+    const badgeRow = card?.querySelector(
+      '[data-testid="upstream-accounts-group-grid-card-badges"]',
+    ) as HTMLElement | null
+
+    expect(card?.textContent).toContain('Mother')
+    expect(card?.textContent).toContain('Duplicate')
+    expect(card?.textContent).toContain('Compact unsupported')
+    expect(card?.textContent).toContain('Very long proxy display name')
+    expect(card?.textContent).toContain('OAuth')
+    expect(card?.textContent).toContain('pro')
+    expect(card?.textContent).toContain('analytics')
+    expect(card?.textContent).toContain('reporting')
+    expect(card?.textContent).toContain('priority-lane')
+    expect(card?.textContent).toContain('+1')
+    expect(badgeRow).toBeTruthy()
+    expect(badgeRow?.className).toContain('flex-wrap')
+    expect(card?.querySelectorAll('[data-testid="upstream-accounts-group-grid-card-badges"]')).toHaveLength(1)
   })
 
   it('prioritizes disabled, syncing, and health badges ahead of work-state badges in grid cards', async () => {

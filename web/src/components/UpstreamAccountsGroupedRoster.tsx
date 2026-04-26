@@ -28,7 +28,6 @@ import {
   formatWindowShortLabel,
   handleRowKeyDown,
   kindLabel,
-  renderAllTagBadges,
   renderTagBadges,
   renderTagOverflowBadge,
   resolveRosterActionableStatusBadges,
@@ -425,6 +424,11 @@ function GroupMemberGridCard({
   const showPlanBadge = shouldShowPlanBadge(item.planType)
   const planBadge = showPlanBadge ? upstreamPlanBadgeRecipe(item.planType) : null
   const actionableStatusBadges = resolveRosterActionableStatusBadges(item, labels)
+  const currentForwardProxyLabel = resolveCurrentForwardProxyBadgeLabel(item, labels)
+  const compactSupportLabel =
+    item.compactSupport?.status === 'unsupported' && labels.compactSupport?.(item)
+      ? labels.compactSupport(item)
+      : null
 
   return (
     <div
@@ -453,17 +457,16 @@ function GroupMemberGridCard({
         <p className="truncate text-[14px] font-semibold leading-5 text-base-content" title={item.displayName}>
           {item.displayName}
         </p>
-        <div className="mt-2 flex flex-wrap items-center gap-1">
-          {compactBadge(kindLabel(item, labels), 'secondary')}
-          {showPlanBadge && item.planType && planBadge
-            ? compactBadge(item.planType, planBadge.variant, {
-                className: planBadge.className,
-                dataPlan: planBadge.dataPlan,
-                title: item.planType,
-              })
-            : showPlanBadge && item.planType
-              ? compactBadge(item.planType, 'accent', { title: item.planType })
-              : null}
+        <div
+          className="mt-2 flex min-w-0 flex-wrap items-center gap-1 overflow-hidden"
+          data-testid="upstream-accounts-group-grid-card-badges"
+        >
+          {item.isMother ? (
+            <div className="shrink-0">
+              <MotherAccountBadge label={labels.mother} />
+            </div>
+          ) : null}
+          {item.duplicateInfo ? compactBadge(labels.duplicate, 'warning') : null}
           {actionableStatusBadges.map((badge) => (
             <Badge
               key={`${badge.key}:${badge.label}`}
@@ -474,12 +477,32 @@ function GroupMemberGridCard({
               {badge.label}
             </Badge>
           ))}
+          {compactBadge(kindLabel(item, labels), 'secondary')}
+          {compactSupportLabel
+            ? compactBadge(compactSupportLabel, 'warning', {
+                title: labels.compactSupportHint?.(item) ?? undefined,
+              })
+            : null}
+          {showPlanBadge && item.planType && planBadge
+            ? compactBadge(item.planType, planBadge.variant, {
+                className: planBadge.className,
+                dataPlan: planBadge.dataPlan,
+                title: item.planType,
+              })
+            : showPlanBadge && item.planType
+              ? compactBadge(item.planType, 'accent', { title: item.planType })
+              : null}
+          {compactBadge(
+            currentForwardProxyLabel,
+            resolveCurrentForwardProxyBadgeVariant(item),
+            {
+              className: 'max-w-[8.5rem] truncate',
+              title: currentForwardProxyLabel,
+            },
+          )}
+          {renderTagBadges(item.tags)}
+          {renderTagOverflowBadge(labels, item.tags)}
         </div>
-        {item.tags && item.tags.length > 0 ? (
-          <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1">
-            {renderAllTagBadges(item.tags)}
-          </div>
-        ) : null}
       </div>
       <div className="mt-3 space-y-1.5">
         <CompactWindowLine

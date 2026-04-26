@@ -1076,27 +1076,64 @@ export function useInvocationPoolAttempts(
     return unsubscribe;
   }, []);
 
+  const expandedPoolAttemptRouteMode = expandedRecord?.routeMode ?? null;
+  const expandedPoolAttemptInvokeId = expandedRecord?.invokeId ?? null;
+  const expandedPoolAttemptStatus = expandedRecord?.status ?? null;
+  const expandedPoolAttemptCount = expandedRecord?.poolAttemptCount ?? null;
+  const expandedPoolDistinctAccountCount =
+    expandedRecord?.poolDistinctAccountCount ?? null;
+  const expandedPoolAttemptTerminalReason =
+    expandedRecord?.poolAttemptTerminalReason ?? null;
+  const expandedPoolFailureKind = expandedRecord?.failureKind ?? null;
+  const expandedPoolErrorMessage = expandedRecord?.errorMessage ?? null;
+  const expandedPoolDownstreamStatusCode =
+    expandedRecord?.downstreamStatusCode ?? null;
+  const expandedPoolDownstreamErrorMessage =
+    expandedRecord?.downstreamErrorMessage ?? null;
+  const expandedPoolUpstreamErrorCode =
+    expandedRecord?.upstreamErrorCode ?? null;
+  const expandedPoolUpstreamErrorMessage =
+    expandedRecord?.upstreamErrorMessage ?? null;
+  const expandedPoolUpstreamRequestId =
+    expandedRecord?.upstreamRequestId ?? null;
+  const expandedPoolUpstreamAccountId =
+    expandedRecord?.upstreamAccountId ?? null;
+  const expandedPoolUpstreamAccountName =
+    expandedRecord?.upstreamAccountName ?? null;
+  const expandedPoolTUpstreamConnectMs =
+    expandedRecord?.tUpstreamConnectMs ?? null;
+  const expandedPoolTUpstreamTtfbMs =
+    expandedRecord?.tUpstreamTtfbMs ?? null;
+  const expandedPoolTUpstreamStreamMs =
+    expandedRecord?.tUpstreamStreamMs ?? null;
+
   useEffect(() => {
-    if (!expandedRecord || !isPoolRouteMode(expandedRecord.routeMode)) return;
-    const invokeId = expandedRecord.invokeId;
-    const normalizedStatus = expandedRecord.status?.trim().toLowerCase() ?? "";
+    if (
+      !expandedPoolAttemptInvokeId ||
+      !isPoolRouteMode(expandedPoolAttemptRouteMode)
+    ) {
+      return;
+    }
+    const invokeId = expandedPoolAttemptInvokeId;
+    const normalizedStatus =
+      expandedPoolAttemptStatus?.trim().toLowerCase() ?? "";
     const requestKey = [
       normalizedStatus,
-      expandedRecord.poolAttemptCount ?? "",
-      expandedRecord.poolDistinctAccountCount ?? "",
-      expandedRecord.poolAttemptTerminalReason ?? "",
-      expandedRecord.failureKind ?? "",
-      expandedRecord.errorMessage ?? "",
-      expandedRecord.downstreamStatusCode ?? "",
-      expandedRecord.downstreamErrorMessage ?? "",
-      expandedRecord.upstreamErrorCode ?? "",
-      expandedRecord.upstreamErrorMessage ?? "",
-      expandedRecord.upstreamRequestId ?? "",
-      expandedRecord.upstreamAccountId ?? "",
-      expandedRecord.upstreamAccountName ?? "",
-      expandedRecord.tUpstreamConnectMs ?? "",
-      expandedRecord.tUpstreamTtfbMs ?? "",
-      expandedRecord.tUpstreamStreamMs ?? "",
+      expandedPoolAttemptCount ?? "",
+      expandedPoolDistinctAccountCount ?? "",
+      expandedPoolAttemptTerminalReason ?? "",
+      expandedPoolFailureKind ?? "",
+      expandedPoolErrorMessage ?? "",
+      expandedPoolDownstreamStatusCode ?? "",
+      expandedPoolDownstreamErrorMessage ?? "",
+      expandedPoolUpstreamErrorCode ?? "",
+      expandedPoolUpstreamErrorMessage ?? "",
+      expandedPoolUpstreamRequestId ?? "",
+      expandedPoolUpstreamAccountId ?? "",
+      expandedPoolUpstreamAccountName ?? "",
+      expandedPoolTUpstreamConnectMs ?? "",
+      expandedPoolTUpstreamTtfbMs ?? "",
+      expandedPoolTUpstreamStreamMs ?? "",
     ].join("|");
     const isInFlight =
       normalizedStatus === "running" || normalizedStatus === "pending";
@@ -1121,15 +1158,15 @@ export function useInvocationPoolAttempts(
     }
     const hasCachedAttempts = cachedAttempts !== undefined;
     const expectedAttemptCount =
-      typeof expandedRecord.poolAttemptCount === "number" &&
-      Number.isFinite(expandedRecord.poolAttemptCount)
-        ? Math.max(Math.trunc(expandedRecord.poolAttemptCount), 0)
+      typeof expandedPoolAttemptCount === "number" &&
+      Number.isFinite(expandedPoolAttemptCount)
+        ? Math.max(Math.trunc(expandedPoolAttemptCount), 0)
         : null;
     const cachedAttemptCount = cachedAttempts?.length ?? 0;
     const loadedKey = loadedKeyRef.current[invokeId];
     const loadingKey = loadingKeyRef.current[invokeId];
     const shouldRefreshPendingTerminalAttempt =
-      isInvocationDisplayTerminal(expandedRecord.status) &&
+      isInvocationDisplayTerminal(expandedPoolAttemptStatus) &&
       (cachedAttempts?.some((attempt) => !isPoolAttemptTerminal(attempt)) ??
         false);
     const shouldRefreshInFlightKeyMismatch =
@@ -1153,6 +1190,8 @@ export function useInvocationPoolAttempts(
     let cancelled = false;
     const requestId = ++nextRequestIdRef.current;
     const fetchVersion = versionRef.current[invokeId] ?? 0;
+    const activeRequestIds = activeRequestIdRef.current;
+    const loadingKeys = loadingKeyRef.current;
     loadingKeyRef.current[invokeId] = requestKey;
     activeRequestIdRef.current[invokeId] = requestId;
     setPoolAttemptLoadingByInvokeId((current) => ({
@@ -1214,9 +1253,9 @@ export function useInvocationPoolAttempts(
 
     return () => {
       cancelled = true;
-      if (activeRequestIdRef.current[invokeId] === requestId) {
-        delete activeRequestIdRef.current[invokeId];
-        delete loadingKeyRef.current[invokeId];
+      if (activeRequestIds[invokeId] === requestId) {
+        delete activeRequestIds[invokeId];
+        delete loadingKeys[invokeId];
         setPoolAttemptLoadingByInvokeId((current) => ({
           ...current,
           [invokeId]: false,
@@ -1224,24 +1263,24 @@ export function useInvocationPoolAttempts(
       }
     };
   }, [
-    expandedRecord?.invokeId,
-    expandedRecord?.routeMode,
-    expandedRecord?.status,
-    expandedRecord?.poolAttemptCount,
-    expandedRecord?.poolDistinctAccountCount,
-    expandedRecord?.poolAttemptTerminalReason,
-    expandedRecord?.failureKind,
-    expandedRecord?.errorMessage,
-    expandedRecord?.downstreamStatusCode,
-    expandedRecord?.downstreamErrorMessage,
-    expandedRecord?.upstreamErrorCode,
-    expandedRecord?.upstreamErrorMessage,
-    expandedRecord?.upstreamRequestId,
-    expandedRecord?.upstreamAccountId,
-    expandedRecord?.upstreamAccountName,
-    expandedRecord?.tUpstreamConnectMs,
-    expandedRecord?.tUpstreamTtfbMs,
-    expandedRecord?.tUpstreamStreamMs,
+    expandedPoolAttemptCount,
+    expandedPoolAttemptInvokeId,
+    expandedPoolAttemptRouteMode,
+    expandedPoolAttemptStatus,
+    expandedPoolAttemptTerminalReason,
+    expandedPoolDistinctAccountCount,
+    expandedPoolDownstreamErrorMessage,
+    expandedPoolDownstreamStatusCode,
+    expandedPoolErrorMessage,
+    expandedPoolFailureKind,
+    expandedPoolTUpstreamConnectMs,
+    expandedPoolTUpstreamStreamMs,
+    expandedPoolTUpstreamTtfbMs,
+    expandedPoolUpstreamAccountId,
+    expandedPoolUpstreamAccountName,
+    expandedPoolUpstreamErrorCode,
+    expandedPoolUpstreamErrorMessage,
+    expandedPoolUpstreamRequestId,
   ]);
 
   return {

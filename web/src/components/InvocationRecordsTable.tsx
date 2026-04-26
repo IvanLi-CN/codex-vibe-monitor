@@ -443,42 +443,45 @@ export function InvocationRecordsTable({
     [localeTag],
   );
 
-  const renderAccountValue = (
-    accountLabel: string,
-    accountId: number | null,
-    accountClickable: boolean,
-    className?: string,
-  ) => {
-    if (!accountClickable || accountId == null) {
+  const renderAccountValue = useCallback(
+    (
+      accountLabel: string,
+      accountId: number | null,
+      accountClickable: boolean,
+      className?: string,
+    ) => {
+      if (!accountClickable || accountId == null) {
+        return (
+          <span
+            className={cn(
+              "inline-flex max-w-full min-w-0 items-center justify-center truncate whitespace-nowrap leading-none",
+              className,
+            )}
+            title={accountLabel}
+          >
+            {accountLabel}
+          </span>
+        );
+      }
+
       return (
-        <span
+        <button
+          type="button"
           className={cn(
-            "inline-flex max-w-full min-w-0 items-center justify-center truncate whitespace-nowrap leading-none",
+            "inline-flex max-w-full min-w-0 items-center justify-center truncate whitespace-nowrap appearance-none border-0 bg-transparent p-0 align-middle font-inherit leading-none text-center text-current no-underline shadow-none transition hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
             className,
           )}
+          onClick={() => {
+            onOpenUpstreamAccount?.(accountId, accountLabel);
+          }}
           title={accountLabel}
         >
           {accountLabel}
-        </span>
+        </button>
       );
-    }
-
-    return (
-      <button
-        type="button"
-        className={cn(
-          "inline-flex max-w-full min-w-0 items-center justify-center truncate whitespace-nowrap appearance-none border-0 bg-transparent p-0 align-middle font-inherit leading-none text-center text-current no-underline shadow-none transition hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-          className,
-        )}
-        onClick={() => {
-          onOpenUpstreamAccount?.(accountId, accountLabel);
-        }}
-        title={accountLabel}
-      >
-        {accountLabel}
-      </button>
-    );
-  };
+    },
+    [onOpenUpstreamAccount],
+  );
 
   const rows = useMemo<InvocationRecordsRowViewModel[]>(
     () =>
@@ -525,6 +528,7 @@ export function InvocationRecordsTable({
       numberFormatter,
       costFormatter,
       dateTimeFormatter,
+      renderAccountValue,
     ],
   );
 

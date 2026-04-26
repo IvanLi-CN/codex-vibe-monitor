@@ -45,6 +45,8 @@ const labels = {
   duplicate: 'Duplicate',
   mother: 'Mother',
   hiddenTagsA11y: (count: number, names: string) => `Show ${count} hidden tags: ${names}`,
+  compactSupport: () => 'Compact unsupported',
+  compactSupportHint: (item: UpstreamAccountSummary) => item.compactSupport?.reason ?? null,
   workStatus: (status: string) =>
     ({
       working: 'Working',
@@ -393,13 +395,37 @@ function expectActionableStatusBadges(canvasElement: HTMLElement) {
     expect(canvas.getByText('vip')).toBeInTheDocument(),
     expect(canvas.getByText('burst-safe')).toBeInTheDocument(),
     expect(canvas.getByText('prod-apac')).toBeInTheDocument(),
-    expect(canvas.getByText('priority-lane')).toBeInTheDocument(),
+    expect(canvas.getByText('+1')).toBeInTheDocument(),
   ]).then(() => {
     expect(canvas.queryByText('Enabled')).toBeNull()
     expect(canvas.queryByText('Idle')).toBeNull()
     expect(canvas.queryByText('Normal')).toBeNull()
     expect(canvas.queryByText('Sync idle')).toBeNull()
-    expect(canvas.queryByText('+1')).toBeNull()
+    expect(canvas.queryByText('priority-lane')).toBeNull()
+  })
+}
+
+function expectGridBadgeParity(canvasElement: HTMLElement) {
+  const canvas = within(canvasElement)
+
+  return Promise.all([
+    expect(canvas.getByText('Mother')).toBeInTheDocument(),
+    expect(canvas.getByText('Duplicate')).toBeInTheDocument(),
+    expect(canvas.getByText('Compact unsupported')).toBeInTheDocument(),
+    expect(canvas.getByText('Tokyo subscription edge with a deliberately long display name')).toBeInTheDocument(),
+    expect(canvas.getByText('OAuth')).toBeInTheDocument(),
+    expect(canvas.getByText('team')).toBeInTheDocument(),
+    expect(canvas.getByText('vip')).toBeInTheDocument(),
+    expect(canvas.getByText('burst-safe')).toBeInTheDocument(),
+    expect(canvas.getByText('prod-apac')).toBeInTheDocument(),
+    expect(canvas.getByText('+1')).toBeInTheDocument(),
+  ]).then(() => {
+    const badgeRow = canvasElement.querySelector<HTMLElement>(
+      '[data-testid="upstream-accounts-group-grid-card-badges"]',
+    )
+    expect(badgeRow).not.toBeNull()
+    expect(badgeRow?.className).toContain('flex-wrap')
+    expect(canvasElement.querySelectorAll('[data-testid="upstream-accounts-group-grid-card-badges"]')).toHaveLength(4)
   })
 }
 
@@ -428,11 +454,42 @@ export const ProxyBadgeStates: Story = {
 
 export const GridCards: Story = {
   args: {
-    groups: baseGroups,
+    groups: [
+      buildGroup(
+        'grid-badge-parity',
+        'grid-badge-parity',
+        [
+          makeItem(81, {
+            displayName: 'Mother compact duplicate lane',
+            isMother: true,
+            duplicateInfo: {
+              peerAccountIds: [181],
+              reasons: ['sharedChatgptAccountId'],
+            },
+            compactSupport: {
+              status: 'unsupported',
+              reason: 'No available channel for model gpt-5.5',
+            },
+            currentForwardProxyDisplayName:
+              'Tokyo subscription edge with a deliberately long display name',
+            planType: 'team',
+            tags: rosterTags,
+          }),
+          ...baseGroups[0].items,
+        ],
+        {
+          concurrencyLimit: 6,
+          boundProxyLabels: ['Tokyo subscription edge with a deliberately long display name'],
+        },
+      ),
+    ],
     memberLayout: 'grid',
     selectionMode: 'none',
     onToggleSelected: undefined,
     onToggleSelectAllVisible: undefined,
+  },
+  play: async ({ canvasElement }) => {
+    await expectGridBadgeParity(canvasElement)
   },
 }
 
