@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.51.2",
+  "base_stable_version": "1.51.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-26T03:38:23Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.51.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "f70d7e590d5a1d187979b55f2afd1ba1b966ba8a",
+  "pr_number": 368,
+  "pr_title": "fix(web): hydrate reauth account details",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.51.2",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.51.2",
+  "target_sha": "71eb3a4692c220d6cdd88e54b502e4b19e6a1100",
+  "type_label": "type:patch"
+}
