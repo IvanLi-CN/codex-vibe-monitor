@@ -34,7 +34,7 @@ init_repo() {
 assert_file_contains() {
   file="$1"
   needle="$2"
-  if ! grep -Fq "$needle" "$file"; then
+  if ! grep -Fq -- "$needle" "$file"; then
     printf 'expected %s to contain %s\n' "$file" "$needle" >&2
     exit 1
   fi
@@ -92,6 +92,7 @@ rm -rf "$worktree_dir/node_modules"
   "$hooks_dir/pre-commit" >/dev/null
 )
 assert_file_contains "$worktree_dir/.lefthook-run.log" 'run pre-commit'
+assert_file_contains "$worktree_dir/.lefthook-run.log" '--no-auto-install'
 
 bash "$worktree_dir/scripts/worktree-bootstrap.sh" >/dev/null
 assert_file_contains "$worktree_dir/.env.local" 'TARGET_SECRET=keep-me'

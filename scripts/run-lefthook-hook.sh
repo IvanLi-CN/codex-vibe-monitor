@@ -56,11 +56,11 @@ resolve_lefthook_binary() {
 }
 
 if lefthook_bin="$(resolve_lefthook_binary)"; then
-  exec "$lefthook_bin" run "$hook_name" "$@"
+  exec "$lefthook_bin" run "$hook_name" --no-auto-install "$@"
 fi
 
 if command -v lefthook >/dev/null 2>&1; then
-  exec lefthook run "$hook_name" "$@"
+  exec lefthook run "$hook_name" --no-auto-install "$@"
 fi
 
 printf '[worktree-bootstrap] lefthook unavailable for %s; skipping.\n' "$hook_name" >&2
