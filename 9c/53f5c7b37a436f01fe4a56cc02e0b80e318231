@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.51.3",
+  "base_stable_version": "1.51.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-26T22:16:58Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.51.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "01a3fefec39fdcdd32266c89d5bbbfc5450d3d63",
+  "pr_number": 372,
+  "pr_title": "fix(web): align upstream account grid badges",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.51.3",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.51.3",
+  "target_sha": "9c53f5c7b37a436f01fe4a56cc02e0b80e318231",
+  "type_label": "type:patch"
+}
