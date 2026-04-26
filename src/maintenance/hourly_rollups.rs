@@ -1298,6 +1298,7 @@ pub(crate) async fn refresh_hourly_rollups_for_read_surfaces_best_effort(
     reason: &'static str,
 ) {
     let gate = crate::db_pressure::global_db_pressure_gate();
+    let _guard = hourly_rollup_sync_lock.lock().await;
     let _permit = match gate.try_begin_background("hourly_rollup_refresh") {
         Ok(permit) => permit,
         Err(deny_reason) => {
@@ -1310,7 +1311,6 @@ pub(crate) async fn refresh_hourly_rollups_for_read_surfaces_best_effort(
         }
     };
 
-    let _guard = hourly_rollup_sync_lock.lock().await;
     if let Err(err) = refresh_hourly_rollups_for_read_surfaces(pool).await {
         gate.record_error("hourly_rollup_refresh", &err);
         warn!(
