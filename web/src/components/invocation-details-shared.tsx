@@ -1212,17 +1212,23 @@ export function useInvocationPoolAttempts(
         }
       });
 
+    const activeRequestIds = activeRequestIdRef.current;
+    const loadingKeys = loadingKeyRef.current;
+
     return () => {
       cancelled = true;
-      if (activeRequestIdRef.current[invokeId] === requestId) {
-        delete activeRequestIdRef.current[invokeId];
-        delete loadingKeyRef.current[invokeId];
+      if (activeRequestIds[invokeId] === requestId) {
+        delete activeRequestIds[invokeId];
+        delete loadingKeys[invokeId];
         setPoolAttemptLoadingByInvokeId((current) => ({
           ...current,
           [invokeId]: false,
         }));
       }
     };
+  // Keep this keyed to scalar request fields. Depending on the whole record
+  // object cancels in-flight pool-attempt loads during polling refreshes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     expandedRecord?.invokeId,
     expandedRecord?.routeMode,

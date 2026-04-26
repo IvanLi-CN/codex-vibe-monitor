@@ -443,7 +443,7 @@ export function InvocationRecordsTable({
     [localeTag],
   );
 
-  const renderAccountValue = (
+  const renderAccountValue = useCallback((
     accountLabel: string,
     accountId: number | null,
     accountClickable: boolean,
@@ -478,7 +478,7 @@ export function InvocationRecordsTable({
         {accountLabel}
       </button>
     );
-  };
+  }, [onOpenUpstreamAccount]);
 
   const rows = useMemo<InvocationRecordsRowViewModel[]>(
     () =>
@@ -525,6 +525,7 @@ export function InvocationRecordsTable({
       numberFormatter,
       costFormatter,
       dateTimeFormatter,
+      renderAccountValue,
     ],
   );
 

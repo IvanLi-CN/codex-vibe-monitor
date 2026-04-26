@@ -177,7 +177,9 @@ export default function UpstreamAccountsPage() {
   );
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-  const [rosterViewMode, setRosterViewMode] = useState<AccountRosterViewMode>("flat");
+  const [rosterViewMode, setRosterViewMode] = useState<AccountRosterViewMode>(
+    () => locationState?.initialRosterViewMode ?? "grid",
+  );
   const [visibleGroupedAccountIds, setVisibleGroupedAccountIds] = useState<number[]>([]);
   const [selectedAccountIds, setSelectedAccountIds] = useState<number[]>([]);
   const [selectedAccountSummaries, setSelectedAccountSummaries] = useState<
@@ -1896,12 +1898,12 @@ export default function UpstreamAccountsPage() {
                     <SegmentedControlItem
                       type="button"
                       role="tab"
-                      aria-selected={rosterViewMode === "flat"}
-                      aria-pressed={rosterViewMode === "flat"}
-                      active={rosterViewMode === "flat"}
-                      onClick={() => setRosterViewMode("flat")}
+                      aria-selected={rosterViewMode === "grid"}
+                      aria-pressed={rosterViewMode === "grid"}
+                      active={rosterViewMode === "grid"}
+                      onClick={() => setRosterViewMode("grid")}
                     >
-                      {t("accountPool.upstreamAccounts.viewMode.flat")}
+                      {t("accountPool.upstreamAccounts.viewMode.grid")}
                     </SegmentedControlItem>
                     <SegmentedControlItem
                       type="button"
@@ -1916,12 +1918,12 @@ export default function UpstreamAccountsPage() {
                     <SegmentedControlItem
                       type="button"
                       role="tab"
-                      aria-selected={rosterViewMode === "grid"}
-                      aria-pressed={rosterViewMode === "grid"}
-                      active={rosterViewMode === "grid"}
-                      onClick={() => setRosterViewMode("grid")}
+                      aria-selected={rosterViewMode === "flat"}
+                      aria-pressed={rosterViewMode === "flat"}
+                      active={rosterViewMode === "flat"}
+                      onClick={() => setRosterViewMode("flat")}
                     >
-                      {t("accountPool.upstreamAccounts.viewMode.grid")}
+                      {t("accountPool.upstreamAccounts.viewMode.flat")}
                     </SegmentedControlItem>
                   </SegmentedControl>
                   {isLoading ? (

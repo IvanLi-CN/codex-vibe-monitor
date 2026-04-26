@@ -432,7 +432,7 @@ export function UpstreamAccountGroupNoteDialog({
           : undefined,
       };
     });
-  }, [availableProxyNodes, canonicalBoundProxyKeys, proxyBindingsMissingLabel]);
+  }, [availableProxyNodes, canonicalBoundProxyKeys]);
   const proxyChartScaleMax = useMemo(
     () =>
       Math.max(

@@ -450,6 +450,7 @@ export function useUpstreamAccounts(
       listRequestQueryKeyRef.current = requestQueryKey
       return requestPromise
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadList replays queued refreshes through its stable in-flight refs.
     [effectiveQuery, resolvedOptions.allowSelectionOutsideList, resolvedOptions.fallbackToFirstItem, setSelectedAccount],
   )
 

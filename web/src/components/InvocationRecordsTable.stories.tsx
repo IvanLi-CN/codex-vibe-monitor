@@ -143,7 +143,8 @@ function StorybookPoolAttemptsMock({ children, records }: { children: ReactNode;
     const registry = ensureStorybookPoolAttemptsRegistry()
     if (!registry) return
 
-    registry.providers.set(providerIdRef.current, () => ({
+    const providerId = providerIdRef.current
+    registry.providers.set(providerId, () => ({
       poolAttemptsByInvokeId: poolAttemptsByInvokeIdRef.current,
       detailsById: detailsByIdRef.current,
       responseBodiesById: responseBodiesByIdRef.current,
@@ -153,7 +154,7 @@ function StorybookPoolAttemptsMock({ children, records }: { children: ReactNode;
       const activeRegistry = window.__storybookPoolAttemptsRegistry__
       if (!activeRegistry) return
 
-      activeRegistry.providers.delete(providerIdRef.current)
+      activeRegistry.providers.delete(providerId)
       if (activeRegistry.providers.size === 0) {
         window.fetch = activeRegistry.originalFetch
         delete window.__storybookPoolAttemptsRegistry__

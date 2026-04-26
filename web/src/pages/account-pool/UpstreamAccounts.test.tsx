@@ -358,23 +358,69 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+function withDefaultFlatRosterMode(initialEntry: InitialEntry): InitialEntry {
+  if (typeof initialEntry === "string") {
+    const [pathname, search = ""] = initialEntry.split("?");
+    return {
+      pathname,
+      search: search ? `?${search}` : "",
+      state: { initialRosterViewMode: "flat" },
+    };
+  }
+  return {
+    ...initialEntry,
+    state: {
+      initialRosterViewMode: "flat",
+      ...((initialEntry.state as Record<string, unknown> | null) ?? {}),
+    },
+  };
+}
+
 function render(
-  initialEntry: InitialEntry = "/account-pool/upstream-accounts",
+  initialEntry: InitialEntry = {
+    pathname: "/account-pool/upstream-accounts",
+    state: { initialRosterViewMode: "flat" },
+  },
 ) {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
-  rerender(initialEntry);
+  rerender(withDefaultFlatRosterMode(initialEntry));
+}
+
+function renderProductionDefaultRoster() {
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  root = createRoot(host);
+  act(() => {
+    root?.render(
+      <I18nProvider>
+        <SystemNotificationProvider>
+          <MemoryRouter initialEntries={["/account-pool/upstream-accounts"]}>
+            <Routes>
+              <Route
+                path="/account-pool/upstream-accounts"
+                element={<UpstreamAccountsPage />}
+              />
+            </Routes>
+          </MemoryRouter>
+        </SystemNotificationProvider>
+      </I18nProvider>,
+    );
+  });
 }
 
 function rerender(
-  initialEntry: InitialEntry = "/account-pool/upstream-accounts",
+  initialEntry: InitialEntry = {
+    pathname: "/account-pool/upstream-accounts",
+    state: { initialRosterViewMode: "flat" },
+  },
 ) {
   act(() => {
     root?.render(
       <I18nProvider>
         <SystemNotificationProvider>
-          <MemoryRouter initialEntries={[initialEntry]}>
+          <MemoryRouter initialEntries={[withDefaultFlatRosterMode(initialEntry)]}>
             <Routes>
               <Route
                 path="/account-pool/upstream-accounts"
@@ -1370,6 +1416,60 @@ evalChunk(suite6);
 evalChunk(suite7);
 
 describe('UpstreamAccountsPage grouped roster toggle', () => {
+  it('defaults to grid view and orders view modes as grid grouped flat', async () => {
+    mockRosterFreshnessPage()
+    renderProductionDefaultRoster()
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    const viewModeTabs = Array.from(
+      host?.querySelectorAll('button[role="tab"]') ?? [],
+    ).filter((candidate) =>
+      /grid|网格|grouped|分组|flat|平铺/i.test(candidate.textContent ?? ''),
+    )
+    expect(viewModeTabs.map((tab) => tab.textContent?.trim())).toEqual([
+      'Grid',
+      'Grouped',
+      'Flat',
+    ])
+    expect(viewModeTabs[0]?.getAttribute('aria-selected')).toBe('true')
+    expect(
+      host?.querySelector('[data-testid="upstream-accounts-grouped-roster"]'),
+    ).toBeTruthy()
+    expect(
+      host?.querySelector('[data-testid="upstream-accounts-group-members-grid"]'),
+    ).toBeTruthy()
+  })
+
+  it('renders grid badges with the same account markers on one line', async () => {
+    mockAccountsPage()
+    renderProductionDefaultRoster()
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    const gridCards = Array.from(
+      host?.querySelectorAll('[data-testid="upstream-accounts-group-grid-card"]') ?? [],
+    )
+    const primaryCard = gridCards.find((candidate) =>
+      /Existing OAuth/i.test(candidate.textContent ?? ''),
+    ) as HTMLElement | undefined
+    expect(primaryCard).toBeTruthy()
+    const primaryText = primaryCard?.textContent ?? ''
+    expect(primaryText).toMatch(/Mother|母号/i)
+    expect(primaryText).toMatch(/Duplicate|重复/i)
+    expect(primaryText).toMatch(/OAuth/i)
+    expect(primaryText).toMatch(/Compact unsupported|不支持/i)
+    expect(primaryText).toMatch(/team/i)
+    expect(primaryText).toMatch(/Unconfigured proxy|未配置代理/i)
+    expect(primaryText).toMatch(/vip/i)
+
+    const badgeRow = primaryCard?.querySelector('.flex-nowrap.overflow-hidden')
+    expect(badgeRow?.className ?? '').toContain('flex-nowrap')
+    expect(badgeRow?.className ?? '').toContain('overflow-hidden')
+  })
+
   it('switches to grouped view and hides the pagination footer', async () => {
     mockRosterFreshnessPage()
     render()
