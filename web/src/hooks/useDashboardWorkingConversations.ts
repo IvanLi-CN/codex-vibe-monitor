@@ -569,6 +569,10 @@ export function useDashboardWorkingConversations() {
   const requestSeqRef = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const runHeadLoadRef = useRef<((silent?: boolean) => Promise<void>) | null>(
+    null,
+  );
+  const runLoadMoreRef = useRef<(() => Promise<void>) | null>(null);
   const patchedPostSnapshotInvocationsRef = useRef<
     Map<string, Map<string, { totalTokens: number; cost: number }>>
   >(new Map());
@@ -682,9 +686,9 @@ export function useDashboardWorkingConversations() {
         }
         const nextAction = runNextPendingAction();
         if (nextAction === "head") {
-          void runHeadLoad(true);
+          void runHeadLoadRef.current?.(true);
         } else if (nextAction === "loadMore") {
-          void runLoadMore();
+          void runLoadMoreRef.current?.();
         }
       }
     },
@@ -774,12 +778,15 @@ export function useDashboardWorkingConversations() {
       }
       const nextAction = runNextPendingAction();
       if (nextAction === "head") {
-        void runHeadLoad(true);
+        void runHeadLoadRef.current?.(true);
       } else if (nextAction === "loadMore") {
-        void runLoadMore();
+        void runLoadMoreRef.current?.();
       }
     }
   }, [runNextPendingAction]);
+
+  runHeadLoadRef.current = runHeadLoad;
+  runLoadMoreRef.current = runLoadMore;
 
   const refreshHead = useCallback(
     (silent = true) => {

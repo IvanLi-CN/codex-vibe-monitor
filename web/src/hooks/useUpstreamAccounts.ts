@@ -450,7 +450,13 @@ export function useUpstreamAccounts(
       listRequestQueryKeyRef.current = requestQueryKey
       return requestPromise
     },
-    [effectiveQuery, resolvedOptions.allowSelectionOutsideList, resolvedOptions.fallbackToFirstItem, setSelectedAccount],
+    [
+      effectiveQuery,
+      resetWindowUsageHydration,
+      resolvedOptions.allowSelectionOutsideList,
+      resolvedOptions.fallbackToFirstItem,
+      setSelectedAccount,
+    ],
   )
 
   const loadDetail = useCallback(async (accountId: number | null, options: LoadOptions = {}) => {
