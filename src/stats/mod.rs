@@ -16,7 +16,7 @@ pub(crate) enum SummaryWindow {
     Calendar(String),
 }
 
-fn stats_success_failure_select_sql() -> String {
+pub(crate) fn stats_success_failure_select_sql() -> String {
     format!(
         "COUNT(*) AS total_count, \
          COALESCE(SUM(CASE WHEN {success_like} AND {resolved_failure} = 'none' THEN 1 ELSE 0 END), 0) AS success_count, \
@@ -791,6 +791,76 @@ pub(crate) async fn query_stats_row(
                 .map_err(Into::into)
         }
     }
+}
+
+pub(crate) async fn query_upstream_account_stats_row(
+    pool: &Pool<Sqlite>,
+    filter: StatsFilter,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: i64,
+) -> Result<StatsRow> {
+    let account_filter = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT ");
+    query.push(stats_success_failure_select_sql());
+    match filter {
+        StatsFilter::All => {
+            query.push(" FROM codex_invocations WHERE ");
+            query
+                .push(account_filter)
+                .push(" = ")
+                .push_bind(upstream_account_id);
+            if source_scope == InvocationSourceScope::ProxyOnly {
+                query.push(" AND source = ").push_bind(SOURCE_PROXY);
+            }
+        }
+        StatsFilter::Since(start) => {
+            query.push(" FROM codex_invocations WHERE ");
+            query
+                .push(account_filter)
+                .push(" = ")
+                .push_bind(upstream_account_id);
+            query
+                .push(" AND occurred_at >= ")
+                .push_bind(db_occurred_at_lower_bound(start));
+            if source_scope == InvocationSourceScope::ProxyOnly {
+                query.push(" AND source = ").push_bind(SOURCE_PROXY);
+            }
+        }
+        StatsFilter::Range(start, end) => {
+            query.push(" FROM codex_invocations WHERE ");
+            query
+                .push(account_filter)
+                .push(" = ")
+                .push_bind(upstream_account_id);
+            query
+                .push(" AND occurred_at >= ")
+                .push_bind(db_occurred_at_lower_bound(start))
+                .push(" AND occurred_at < ")
+                .push_bind(db_occurred_at_upper_bound(end));
+            if source_scope == InvocationSourceScope::ProxyOnly {
+                query.push(" AND source = ").push_bind(SOURCE_PROXY);
+            }
+        }
+        StatsFilter::RecentLimit(limit) => {
+            query.push(" FROM (SELECT * FROM codex_invocations WHERE ");
+            query
+                .push(account_filter)
+                .push(" = ")
+                .push_bind(upstream_account_id);
+            if source_scope == InvocationSourceScope::ProxyOnly {
+                query.push(" AND source = ").push_bind(SOURCE_PROXY);
+            }
+            query
+                .push(" ORDER BY occurred_at DESC, id DESC LIMIT ")
+                .push_bind(limit)
+                .push(") AS recent");
+        }
+    }
+    query
+        .build_query_as::<StatsRow>()
+        .fetch_one(pool)
+        .await
+        .map_err(Into::into)
 }
 
 #[derive(Debug, FromRow)]
@@ -2409,6 +2479,134 @@ pub(crate) async fn query_unmaterialized_invocation_archive_totals(
     .await?
     {
         totals.total_count += row.total_count;
+        totals.success_count += row.success_count;
+        totals.failure_count += row.failure_count;
+        totals.total_tokens += row.total_tokens;
+        totals.total_cost += row.total_cost;
+    }
+
+    Ok(totals)
+}
+
+fn add_account_invocation_row_to_usage_delta(
+    entry: &mut UpstreamAccountUsageHourlyDelta,
+    row: &InvocationHourlySourceRecord,
+) {
+    entry.request_count += 1;
+    let classification = resolve_failure_classification(
+        row.status.as_deref(),
+        row.error_message.as_deref(),
+        row.failure_kind.as_deref(),
+        row.failure_class.as_deref(),
+        row.is_actionable,
+    );
+    if invocation_status_is_success_like(row.status.as_deref(), row.error_message.as_deref())
+        && classification.failure_class == FailureClass::None
+    {
+        entry.success_count += 1;
+    } else if invocation_status_counts_toward_terminal_totals(row.status.as_deref())
+        && classification.failure_class != FailureClass::None
+    {
+        entry.failure_count += 1;
+    }
+    entry.total_tokens += row.total_tokens.unwrap_or_default();
+    entry.total_cost += row.cost.unwrap_or_default();
+    entry.input_tokens += row.input_tokens.unwrap_or_default();
+    entry.output_tokens += row.output_tokens.unwrap_or_default();
+    entry.cache_input_tokens += row.cache_input_tokens.unwrap_or_default();
+}
+
+pub(crate) async fn query_unmaterialized_upstream_account_archive_hourly_rollup_deltas(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    exclude_invocation_ids: Option<&HashSet<i64>>,
+    upstream_account_id: i64,
+) -> Result<Vec<UpstreamAccountUsageHourlyRollupRecord>> {
+    let archive_rows = load_invocation_archives_missing_rollup_target(
+        pool,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
+    )
+    .await?;
+    let mut archive_deltas = BTreeMap::<i64, UpstreamAccountUsageHourlyDelta>::new();
+
+    for archive_row in archive_rows {
+        let Some((archive_pool, temp_cleanup)) =
+            open_invocation_archive_batch_pool(&archive_row, "account-stats").await?
+        else {
+            continue;
+        };
+        let mut cursor_id = 0_i64;
+        loop {
+            let rows = load_invocation_hourly_source_rows_after_id(
+                &archive_pool,
+                cursor_id,
+                source_scope,
+                BACKFILL_BATCH_SIZE,
+            )
+            .await?;
+            if rows.is_empty() {
+                break;
+            }
+            cursor_id = rows.last().map(|row| row.id).unwrap_or(cursor_id);
+            for row in rows {
+                if exclude_invocation_ids.is_some_and(|excluded_ids| excluded_ids.contains(&row.id))
+                {
+                    continue;
+                }
+                if !invocation_hourly_source_record_matches_range(&row, range) {
+                    continue;
+                }
+                if upstream_account_id_from_payload(row.payload.as_deref())
+                    != Some(upstream_account_id)
+                {
+                    continue;
+                }
+                let bucket_start_epoch = summary_rollup_bucket_start_epoch(&row.occurred_at)?;
+                let entry = archive_deltas
+                    .entry(bucket_start_epoch)
+                    .or_insert_with(UpstreamAccountUsageHourlyDelta::default);
+                add_account_invocation_row_to_usage_delta(entry, &row);
+            }
+        }
+
+        archive_pool.close().await;
+        drop(temp_cleanup);
+    }
+
+    Ok(archive_deltas
+        .into_iter()
+        .filter_map(|(bucket_start_epoch, delta)| {
+            (delta.request_count > 0).then_some(UpstreamAccountUsageHourlyRollupRecord {
+                bucket_start_epoch,
+                request_count: delta.request_count,
+                success_count: delta.success_count,
+                failure_count: delta.failure_count,
+                total_tokens: delta.total_tokens,
+                total_cost: delta.total_cost,
+            })
+        })
+        .collect())
+}
+
+pub(crate) async fn query_unmaterialized_upstream_account_archive_totals(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    exclude_invocation_ids: Option<&HashSet<i64>>,
+    upstream_account_id: i64,
+) -> Result<StatsTotals> {
+    let mut totals = StatsTotals::default();
+    for row in query_unmaterialized_upstream_account_archive_hourly_rollup_deltas(
+        pool,
+        source_scope,
+        range,
+        exclude_invocation_ids,
+        upstream_account_id,
+    )
+    .await?
+    {
+        totals.total_count += row.request_count;
         totals.success_count += row.success_count;
         totals.failure_count += row.failure_count;
         totals.total_tokens += row.total_tokens;

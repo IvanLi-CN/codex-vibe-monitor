@@ -14,6 +14,7 @@ export interface UseTimeseriesOptions {
   bucket?: string;
   settlementHour?: number;
   preferServerAggregation?: boolean;
+  upstreamAccountId?: number;
 }
 
 export type TimeseriesSyncMode = "local" | "current-day-local" | "server";
@@ -217,6 +218,7 @@ export function getTimeseriesRemountCacheKey(
     options?.bucket ?? null,
     options?.settlementHour ?? null,
     options?.preferServerAggregation ?? false,
+    options?.upstreamAccountId ?? null,
   ]);
 }
 
@@ -618,6 +620,7 @@ export async function fetchTimeseriesInFlightRecords(
     query: InvocationRecordsQuery,
   ) => Promise<InvocationRecordsResponse> = fetchInvocationRecords,
   rangeOverride?: { from: string; to: string } | null,
+  upstreamAccountId?: number,
 ) {
   const [firstStatus, ...remainingStatuses] = TIMESERIES_IN_FLIGHT_STATUSES;
   const rangeFrom = rangeOverride?.from ?? current.rangeStart;
@@ -632,6 +635,7 @@ export async function fetchTimeseriesInFlightRecords(
       status: firstStatus,
       sortBy: "occurredAt",
       sortOrder: "desc",
+      ...(upstreamAccountId != null ? { upstreamAccountId } : {}),
       signal,
     },
     fetchPage,
@@ -649,6 +653,7 @@ export async function fetchTimeseriesInFlightRecords(
         status,
         sortBy: "occurredAt",
         sortOrder: "desc",
+        ...(upstreamAccountId != null ? { upstreamAccountId } : {}),
         signal,
       },
       fetchPage,
@@ -1203,6 +1208,7 @@ async function loadSeededLiveRecordDeltas(
   syncMode: TimeseriesSyncMode,
   context: UpdateContext,
   signal?: AbortSignal,
+  upstreamAccountId?: number,
 ) {
   if (syncMode === "server") {
     return new Map<string, LiveRecordDelta>();
@@ -1219,11 +1225,18 @@ async function loadSeededLiveRecordDeltas(
       signal,
       fetchInvocationRecords,
       seedRange,
+      upstreamAccountId,
     );
     return seedCurrentDayLiveRecordDeltas(current, inFlightRecords, seedEpoch);
   }
 
-  const inFlightRecords = await fetchTimeseriesInFlightRecords(current, signal);
+  const inFlightRecords = await fetchTimeseriesInFlightRecords(
+    current,
+    signal,
+    fetchInvocationRecords,
+    null,
+    upstreamAccountId,
+  );
   return seedTimeseriesLiveRecordDeltas(current, inFlightRecords, context);
 }
 
@@ -1348,6 +1361,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
   const bucket = options?.bucket;
   const settlementHour = options?.settlementHour;
   const preferServerAggregation = options?.preferServerAggregation ?? false;
+  const upstreamAccountId = options?.upstreamAccountId;
   const hasHydratedRef = useRef(initialCachedTimeseries != null);
   const activeLoadCountRef = useRef(0);
   const pendingLoadRef = useRef<PendingLoad | null>(null);
@@ -1382,8 +1396,9 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
       bucket,
       settlementHour,
       preferServerAggregation,
+      upstreamAccountId,
     }),
-    [bucket, settlementHour, preferServerAggregation],
+    [bucket, settlementHour, preferServerAggregation, upstreamAccountId],
   );
 
   const syncPolicy = useMemo(
@@ -1438,6 +1453,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
                 settlementHour: normalizedOptions.settlementHour,
               },
               controller.signal,
+              normalizedOptions.upstreamAccountId,
             );
           } catch (seedErr) {
             if (seedErr instanceof Error && seedErr.name === "AbortError") {
@@ -1699,6 +1715,13 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
   useEffect(() => {
     const unsubscribe = subscribeToSse((payload) => {
       if (payload.type !== "records") return;
+      const scopedRecords =
+        normalizedOptions.upstreamAccountId == null
+          ? payload.records
+          : payload.records.filter(
+              (record) => record.upstreamAccountId === normalizedOptions.upstreamAccountId,
+            );
+      if (scopedRecords.length === 0) return;
 
       if (syncPolicy.mode === "server") {
         triggerRecordsResync();
@@ -1716,7 +1739,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
         }
         setData((current) => {
           let next = current;
-          for (const record of payload.records) {
+          for (const record of scopedRecords) {
             const key = invocationStableKey(record);
             const trackedDelta = liveRecordDeltaRef.current.get(key) ?? null;
             const currentBucket =
@@ -1772,7 +1795,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
       setData((current) => {
         let next =
           current ?? createSeededTimeseries(range, normalizedOptions.bucket);
-        for (const record of payload.records) {
+        for (const record of scopedRecords) {
           const key = invocationStableKey(record);
           const trackedDelta = liveRecordDeltaRef.current.get(key) ?? null;
           const previousDelta =
@@ -1830,6 +1853,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
     normalizedOptions,
     normalizedOptions.bucket,
     normalizedOptions.settlementHour,
+    normalizedOptions.upstreamAccountId,
     range,
     syncPolicy.mode,
     triggerOpenResync,

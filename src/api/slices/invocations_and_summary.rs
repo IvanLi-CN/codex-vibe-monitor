@@ -1675,29 +1675,68 @@ pub(crate) async fn fetch_summary(
     let window = parse_summary_window(&params, default_limit)?;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
+    let upstream_account_id = params.upstream_account_id;
 
     let totals = match window {
         SummaryWindow::All => {
-            query_combined_totals(
-                &state.pool,
-                state.config.crs_stats.as_ref(),
-                StatsFilter::All,
-                source_scope,
-            )
-            .await?
+            if let Some(upstream_account_id) = upstream_account_id {
+                let start = Utc
+                    .timestamp_opt(0, 0)
+                    .single()
+                    .ok_or_else(|| ApiError::from(anyhow!("invalid account all-time summary start")))?;
+                query_hourly_backed_summary_range_for_account(
+                    state.as_ref(),
+                    start,
+                    Utc::now(),
+                    source_scope,
+                    upstream_account_id,
+                )
+                .await?
+            } else {
+                query_combined_totals(
+                    &state.pool,
+                    state.config.crs_stats.as_ref(),
+                    StatsFilter::All,
+                    source_scope,
+                )
+                .await?
+            }
         }
         SummaryWindow::Current(limit) => {
-            query_combined_totals(
-                &state.pool,
-                state.config.crs_stats.as_ref(),
-                StatsFilter::RecentLimit(limit),
-                source_scope,
-            )
-            .await?
+            if let Some(upstream_account_id) = upstream_account_id {
+                StatsTotals::from(
+                    crate::stats::query_upstream_account_stats_row(
+                        &state.pool,
+                        StatsFilter::RecentLimit(limit),
+                        source_scope,
+                        upstream_account_id,
+                    )
+                    .await?,
+                )
+            } else {
+                query_combined_totals(
+                    &state.pool,
+                    state.config.crs_stats.as_ref(),
+                    StatsFilter::RecentLimit(limit),
+                    source_scope,
+                )
+                .await?
+            }
         }
         SummaryWindow::Duration(duration) => {
             let start = Utc::now() - duration;
-            query_hourly_backed_summary_since(state.as_ref(), start, source_scope).await?
+            if let Some(upstream_account_id) = upstream_account_id {
+                query_hourly_backed_summary_range_for_account(
+                    state.as_ref(),
+                    start,
+                    Utc::now(),
+                    source_scope,
+                    upstream_account_id,
+                )
+                .await?
+            } else {
+                query_hourly_backed_summary_since(state.as_ref(), start, source_scope).await?
+            }
         }
         SummaryWindow::Calendar(spec) => {
             let range_window = resolve_range_window(spec.as_str(), reporting_tz).map_err(ApiError::from)?;
@@ -1711,13 +1750,24 @@ pub(crate) async fn fetch_summary(
                     maintenance: Some(load_stats_maintenance_response(state.as_ref()).await?),
                 }));
             }
-            query_hourly_backed_summary_range(
-                state.as_ref(),
-                range_window.start,
-                range_window.end,
-                source_scope,
-            )
-            .await?
+            if let Some(upstream_account_id) = upstream_account_id {
+                query_hourly_backed_summary_range_for_account(
+                    state.as_ref(),
+                    range_window.start,
+                    range_window.end,
+                    source_scope,
+                    upstream_account_id,
+                )
+                .await?
+            } else {
+                query_hourly_backed_summary_range(
+                    state.as_ref(),
+                    range_window.start,
+                    range_window.end,
+                    source_scope,
+                )
+                .await?
+            }
         }
     };
 

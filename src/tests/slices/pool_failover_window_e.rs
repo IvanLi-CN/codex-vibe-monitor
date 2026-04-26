@@ -2259,6 +2259,7 @@ async fn stats_endpoints_preserve_historical_xy_records() {
             window: Some("1d".to_string()),
             limit: None,
             time_zone: None,
+            upstream_account_id: None,
         }),
     )
     .await
@@ -2276,6 +2277,7 @@ async fn stats_endpoints_preserve_historical_xy_records() {
             bucket: Some("1h".to_string()),
             settlement_hour: None,
             time_zone: None,
+            upstream_account_id: None,
         }),
     )
     .await
@@ -2383,6 +2385,7 @@ async fn yesterday_summary_and_timeseries_only_include_previous_local_day() {
             window: Some("yesterday".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -2400,6 +2403,7 @@ async fn yesterday_summary_and_timeseries_only_include_previous_local_day() {
             bucket: Some("1h".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await

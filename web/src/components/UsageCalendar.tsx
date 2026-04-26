@@ -59,6 +59,7 @@ export interface UsageCalendarProps {
   showSurface?: boolean
   showMetricToggle?: boolean
   showMeta?: boolean
+  upstreamAccountId?: number
 }
 
 export const HISTORY_CALENDAR_RANGE = '6mo'
@@ -71,13 +72,19 @@ export function UsageCalendar({
   showSurface = true,
   showMetricToggle = true,
   showMeta = true,
+  upstreamAccountId,
 }: UsageCalendarProps = {}) {
   const { t, locale } = useTranslation()
   const { themeMode } = useTheme()
   const timeZone = getBrowserTimeZone()
   const [uncontrolledMetric, setUncontrolledMetric] = useState<MetricKey>('totalCount')
   const metric = controlledMetric ?? uncontrolledMetric
-  const { data, isLoading, error } = useTimeseries(HISTORY_CALENDAR_RANGE, { bucket: HISTORY_CALENDAR_BUCKET })
+  const { data, isLoading, error } = useTimeseries(
+    HISTORY_CALENDAR_RANGE,
+    upstreamAccountId == null
+      ? { bucket: HISTORY_CALENDAR_BUCKET }
+      : { bucket: HISTORY_CALENDAR_BUCKET, upstreamAccountId },
+  )
   const skeletonMode = isLoading && !data
   const [blockSize, setBlockSize] = useState(DEFAULT_BLOCK_SIZE)
   const containerRef = useRef<HTMLDivElement>(null)

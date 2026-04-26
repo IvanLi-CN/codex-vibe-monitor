@@ -3,6 +3,7 @@ import { act, useSyncExternalStore } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import {
+  ACCOUNT_ACTIVITY_RANGE_STORAGE_KEY_PREFIX,
   DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY,
   DashboardActivityOverview,
 } from './DashboardActivityOverview'
@@ -97,14 +98,30 @@ vi.mock('./StatsCards', () => ({
 }))
 
 vi.mock('./Last24hTenMinuteHeatmap', () => ({
-  Last24hTenMinuteHeatmap: ({ metric }: { metric?: string }) => (
-    <div data-testid="heatmap-24h">{`metric:${metric ?? 'unset'}`}</div>
+  Last24hTenMinuteHeatmap: ({
+    metric,
+    upstreamAccountId,
+  }: {
+    metric?: string
+    upstreamAccountId?: number
+  }) => (
+    <div data-testid="heatmap-24h">
+      {`metric:${metric ?? 'unset'};account:${upstreamAccountId ?? 'global'}`}
+    </div>
   ),
 }))
 
 vi.mock('./WeeklyHourlyHeatmap', () => ({
-  WeeklyHourlyHeatmap: ({ metric }: { metric?: string }) => (
-    <div data-testid="heatmap-7d">{`metric:${metric ?? 'unset'}`}</div>
+  WeeklyHourlyHeatmap: ({
+    metric,
+    upstreamAccountId,
+  }: {
+    metric?: string
+    upstreamAccountId?: number
+  }) => (
+    <div data-testid="heatmap-7d">
+      {`metric:${metric ?? 'unset'};account:${upstreamAccountId ?? 'global'}`}
+    </div>
   ),
 }))
 
@@ -114,14 +131,16 @@ vi.mock('./UsageCalendar', () => ({
     showSurface,
     showMetricToggle,
     showMeta,
+    upstreamAccountId,
   }: {
     metric?: string
     showSurface?: boolean
     showMetricToggle?: boolean
     showMeta?: boolean
+    upstreamAccountId?: number
   }) => (
     <div data-testid="usage-calendar">
-      {`metric:${metric ?? 'unset'};surface:${String(showSurface)};toggle:${String(showMetricToggle)};meta:${String(showMeta)}`}
+      {`metric:${metric ?? 'unset'};surface:${String(showSurface)};toggle:${String(showMetricToggle)};meta:${String(showMeta)};account:${upstreamAccountId ?? 'global'}`}
     </div>
   ),
 }))
@@ -362,24 +381,24 @@ describe('DashboardActivityOverview', () => {
     expect(hookMocks.useSummary.mock.calls.every(([window]) => window === 'today' || window === 'yesterday')).toBe(true)
     expect(hookMocks.useTimeseries.mock.calls.every(([window]) => window === 'today' || window === 'yesterday')).toBe(true)
     expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
-      'metric:totalCount;surface:false;toggle:false;meta:false',
+      'metric:totalCount;surface:false;toggle:false;meta:false;account:global',
     )
     clickTab('Tokens')
     expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
-      'metric:totalTokens;surface:false;toggle:false;meta:false',
+      'metric:totalTokens;surface:false;toggle:false;meta:false;account:global',
     )
 
     clickTab('7 Days')
     expect(host?.querySelector('[data-testid="stats-cards"]')?.textContent).toBe('total:700')
-    expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe('metric:totalCount')
+    expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe('metric:totalCount;account:global')
     clickTab('Cost')
-    expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe('metric:totalCost')
+    expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe('metric:totalCost;account:global')
 
     clickTab('24 Hours')
     expect(host?.querySelector('[data-testid="stats-cards"]')?.textContent).toBe('total:100')
-    expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toBe('metric:totalCount')
+    expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toBe('metric:totalCount;account:global')
     clickTab('Tokens')
-    expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toBe('metric:totalTokens')
+    expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toBe('metric:totalTokens;account:global')
 
     clickTab('Today')
     expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent).toBe(
@@ -387,16 +406,16 @@ describe('DashboardActivityOverview', () => {
     )
     clickTab('History')
     expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
-      'metric:totalTokens;surface:false;toggle:false;meta:false',
+      'metric:totalTokens;surface:false;toggle:false;meta:false;account:global',
     )
     clickTab('Yesterday')
     expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent).toBe(
       'metric:totalTokens',
     )
     clickTab('7 Days')
-    expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe('metric:totalCost')
+    expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe('metric:totalCost;account:global')
     clickTab('24 Hours')
-    expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toBe('metric:totalTokens')
+    expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toBe('metric:totalTokens;account:global')
   })
 
   it('restores the last active range from localStorage and falls back to today on invalid values', () => {
@@ -420,7 +439,46 @@ describe('DashboardActivityOverview', () => {
     window.localStorage.setItem(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY, 'bogus')
     render(<DashboardActivityOverview />)
     expect(document.body.querySelector('[data-testid="dashboard-activity-range-today"]')?.getAttribute('data-active')).toBe('true')
-    expect(hookMocks.useSummary).toHaveBeenCalledWith('today')
+    expect(hookMocks.useSummary).toHaveBeenCalledWith('today', undefined)
+  })
+
+  it('uses account-scoped fetch options and storage without changing dashboard storage', () => {
+    installSummaryMocks()
+    const storageKey = `${ACCOUNT_ACTIVITY_RANGE_STORAGE_KEY_PREFIX}.42`
+    window.localStorage.setItem(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY, 'usage')
+
+    render(
+      <DashboardActivityOverview
+        title="Account activity"
+        storageKey={storageKey}
+        testId="account-activity-overview"
+        upstreamAccountId={42}
+      />,
+    )
+
+    expect(host?.querySelector('[data-testid="account-activity-overview"]')?.textContent).toContain(
+      'Account activity',
+    )
+    expect(host?.querySelector('[data-testid="dashboard-activity-range-today"]')?.getAttribute('data-active')).toBe('true')
+    expect(window.localStorage.getItem(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY)).toBe('usage')
+    expect(window.localStorage.getItem(storageKey)).toBe('today')
+    expect(hookMocks.useSummary).toHaveBeenCalledWith('today', {
+      upstreamAccountId: 42,
+    })
+    expect(hookMocks.useTimeseries).toHaveBeenCalledWith('today', {
+      bucket: '1m',
+      upstreamAccountId: 42,
+    })
+
+    clickTab('7 Days')
+
+    expect(window.localStorage.getItem(storageKey)).toBe('7d')
+    expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe(
+      'metric:totalCount;account:42',
+    )
+    expect(hookMocks.useSummary).toHaveBeenCalledWith('7d', {
+      upstreamAccountId: 42,
+    })
   })
 
   it('loads each summary only after its range is selected', () => {

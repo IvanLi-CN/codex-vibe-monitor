@@ -1307,7 +1307,15 @@ describe("useTimeseries refresh coordination helpers", () => {
     );
 
     expect(getTimeseriesRemountCacheKey("1d", { bucket: "1m" })).toBe(
-      JSON.stringify(["1d", "1m", null, false]),
+      JSON.stringify(["1d", "1m", null, false, null]),
+    );
+    expect(
+      getTimeseriesRemountCacheKey("1d", {
+        bucket: "1m",
+        upstreamAccountId: 42,
+      }),
+    ).toBe(
+      JSON.stringify(["1d", "1m", null, false, 42]),
     );
     const cached = readTimeseriesRemountCache("1d", { bucket: "1m" }, 12_346);
     expect(cached).toEqual({

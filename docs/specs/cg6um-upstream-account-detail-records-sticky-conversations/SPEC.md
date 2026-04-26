@@ -4,7 +4,7 @@
 
 - Status: 已实现，待 PR 收敛
 - Created: 2026-03-30
-- Last: 2026-03-31
+- Last: 2026-04-27
 
 ## 背景 / 问题陈述
 
@@ -17,6 +17,7 @@
 ### Goals
 
 - 在共享上游账号详情抽屉中新增 `调用记录` tab，并直接复用现有 `InvocationTable` 展示该账号的最新调用记录。
+- 在 `调用记录` tab 的最近调用表格上方新增账号级活动总览，默认范围为 `今日`，并支持 `今日 / 昨日 / 24 小时 / 7 日 / 历史` 与 `次数 / 金额 / Tokens` 指标切换。
 - 将 `路由` tab 里的 Sticky 对话区升级为与 Live Prompt Cache 对话一致的选择模型：
   - `20 / 50 / 100 个对话`
   - `近 1 / 3 / 6 / 12 / 24 小时活动`
@@ -33,6 +34,7 @@
 - 不扩展未使用旧链路 `InvocationAccountDetailDrawer.tsx`。
 - 不新增数据库 schema、rollup 表或独立的“账号调用记录”后端路由。
 - 不改 Sticky 路由算法、账号同步状态机或 quota 展示逻辑。
+- 不从最近调用表格推导账号活动总览统计；账号级总览必须消费服务端 stats 聚合接口。
 
 ## 范围（Scope）
 
@@ -82,10 +84,24 @@
 - `upstreamAccountId` 过滤继续基于 invocation payload 中的账号归因字段。
 - 账号详情 `调用记录` tab 直接复用该接口，不新增专用账号记录路由。
 
+### `GET /api/stats/summary`
+
+- 新增可选查询参数 `upstreamAccountId`。
+- 账号级过滤口径固定为 invocation payload 的 `$.upstreamAccountId`，缺少该字段的旧记录不计入账号级统计。
+- Dashboard 不传 `upstreamAccountId` 时继续使用全局统计、原 storage key 与原默认范围。
+
+### `GET /api/stats/timeseries`
+
+- 新增可选查询参数 `upstreamAccountId`。
+- 账号级过滤口径固定为 invocation payload 的 `$.upstreamAccountId`，缺少该字段的旧记录不计入账号级统计。
+- 账号级历史统计优先使用账号维度整点 rollup 桶，并通过 exact live/archive 边界记录补齐非整点范围。
+
 ## 验收标准（Acceptance Criteria）
 
 - Given 打开任一上游账号详情抽屉，When 初次渲染或切换账号，Then 默认激活 tab 仍为 `概览`。
 - Given 用户切换到 `调用记录` tab，When 该账号存在调用记录，Then 抽屉内显示与实况主记录表同款 `InvocationTable`，并只展示该账号过滤后的记录。
+- Given 用户切换到 `调用记录` tab，When tab 内容挂载，Then 表格上方显示账号级活动总览，并请求 `/api/stats/summary` 与 `/api/stats/timeseries` 的 `upstreamAccountId=<当前账号ID>` 统计。
+- Given Dashboard 活动总览与账号详情活动总览先后使用，When 切换范围或指标，Then 两者的 storage key 与统计口径互不串联。
 - Given `调用记录` tab 为空、加载中或请求失败，When 对应状态渲染，Then 必须分别显示明确的 empty/loading/error 状态，不渲染假表格。
 - Given Sticky 对话区处于 `近 3 小时活动` 模式，When 列表渲染完成，Then 只显示该时间窗口内活跃的 Sticky Key。
 - Given Sticky 对话区从 `近 3 小时活动` 切回 `50 个对话`，When 数据刷新完成，Then 恢复按数量模式展示结果。
@@ -102,6 +118,7 @@
 - Rust: `cargo test invocation_records -- --nocapture`
 - Web: `cd web && bun run test -- src/components/StickyKeyConversationTable.test.tsx src/hooks/useUpstreamStickyConversations.test.tsx src/hooks/useUpstreamStickyConversations.test.ts src/pages/account-pool/UpstreamAccounts.test.tsx src/lib/api.test.ts`
 - Storybook: `cd web && bun run build-storybook`
+- Visual evidence: Storybook canvas 截图覆盖账号详情 `调用记录 + 活动总览` 的 populated 与 empty 状态，并写入本 spec。
 
 ### UI / Storybook
 
@@ -110,6 +127,7 @@
   - `web/src/components/UpstreamAccountsPage.overlays.stories.tsx`
 - `play` coverage:
   - 账号详情抽屉切换到 `调用记录`
+  - 账号详情抽屉 `调用记录` tab 的账号级活动总览 populated / empty 状态
   - Sticky 对话切换到活动窗口模式
   - Sticky 单行展开
   - Sticky 历史抽屉打开
@@ -146,6 +164,30 @@
   evidence_note: 验证详情抽屉里的 Sticky 对话行展开后，内嵌预览直接复用 `InvocationTable` 展示最近调用记录。
   ![详情抽屉里的 Sticky 列表展开态](./assets/detail-routing-sticky-list-expanded.png)
 
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 1440x1100
+  viewport_strategy: devtools-emulate
+  sensitive_exclusion: N/A
+  submission_gate: owner-approved
+  story_id_or_title: Account Pool/Pages/Upstream Accounts/Overlays / Detail Drawer Records Populated
+  state: account records tab with populated account activity overview
+  evidence_note: 验证账号详情 `调用记录` tab 在最近调用表格上方渲染账号级活动总览，并保留 populated 调用记录状态。
+  ![账号调用记录活动总览 populated](./assets/detail-records-activity-populated.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 1440x1100
+  viewport_strategy: devtools-emulate
+  sensitive_exclusion: N/A
+  submission_gate: owner-approved
+  story_id_or_title: Account Pool/Pages/Upstream Accounts/Overlays / Detail Drawer Records Empty
+  state: account records tab with empty account activity overview
+  evidence_note: 验证账号详情 `调用记录` tab 的账号级活动总览可在空记录状态下稳定渲染，表格 empty 状态不被破坏。
+  ![账号调用记录活动总览 empty](./assets/detail-records-activity-empty.png)
+
 ## 实现里程碑（Milestones / Delivery checklist）
 
 - [x] M1: 新建 spec、索引与视觉证据落点。
@@ -173,3 +215,4 @@
 - 2026-03-30: 创建 spec，冻结共享账号详情 `调用记录` tab、Sticky 选择模型、历史抽屉与 visual evidence gate。
 - 2026-03-30: 完成后端查询扩展、共享抽屉 `调用记录` tab、Sticky 富交互组件、Storybook/Vitest/Rust 验证，并生成待主人审批的 mock-only 视觉证据。
 - 2026-03-31: 主人批准后，将详情抽屉 `路由` tab 的最终 mock-only 截图写入 spec assets，并在 `## Visual Evidence` 中落盘引用。
+- 2026-04-27: 账号详情 `调用记录` tab 新增账号级活动总览，扩展 stats summary/timeseries `upstreamAccountId` 契约，并补充 populated / empty Storybook 视觉证据。

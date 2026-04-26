@@ -2273,13 +2273,16 @@ export async function validateForwardProxyCandidate(payload: {
 
 export async function fetchSummary(
   window: string,
-  options?: { limit?: number; timeZone?: string; signal?: AbortSignal },
+  options?: { limit?: number; timeZone?: string; upstreamAccountId?: number; signal?: AbortSignal },
 ) {
   const search = new URLSearchParams();
   search.set("window", window);
   search.set("timeZone", options?.timeZone ?? getBrowserTimeZone());
   if (options?.limit !== undefined) {
     search.set("limit", String(options.limit));
+  }
+  if (options?.upstreamAccountId !== undefined) {
+    search.set("upstreamAccountId", String(options.upstreamAccountId));
   }
   return fetchJson<StatsResponse>(`/api/stats/summary?${search.toString()}`, {
     signal: options?.signal,
@@ -2360,6 +2363,7 @@ export async function fetchTimeseries(
     bucket?: string;
     settlementHour?: number;
     timeZone?: string;
+    upstreamAccountId?: number;
     signal?: AbortSignal;
   },
 ) {
@@ -2369,6 +2373,8 @@ export async function fetchTimeseries(
   if (params?.bucket) search.set("bucket", params.bucket);
   if (params?.settlementHour !== undefined)
     search.set("settlementHour", String(params.settlementHour));
+  if (params?.upstreamAccountId !== undefined)
+    search.set("upstreamAccountId", String(params.upstreamAccountId));
   const response = await fetchJson<unknown>(
     `/api/stats/timeseries?${search.toString()}`,
     { signal: params?.signal },

@@ -1853,6 +1853,7 @@ async fn dashboard_read_endpoints_stay_queryable_under_sqlite_write_lock() {
             window: Some("today".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -1869,6 +1870,7 @@ async fn dashboard_read_endpoints_stay_queryable_under_sqlite_write_lock() {
             bucket: Some("1m".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await

@@ -922,6 +922,24 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                 entry.last_seen_at = row.occurred_at.clone();
             }
             entry.request_count += 1;
+            let classification = resolve_failure_classification(
+                row.status.as_deref(),
+                row.error_message.as_deref(),
+                row.failure_kind.as_deref(),
+                row.failure_class.as_deref(),
+                row.is_actionable,
+            );
+            if invocation_status_is_success_like(
+                row.status.as_deref(),
+                row.error_message.as_deref(),
+            ) && classification.failure_class == FailureClass::None
+            {
+                entry.success_count += 1;
+            } else if invocation_status_counts_toward_terminal_totals(row.status.as_deref())
+                && classification.failure_class != FailureClass::None
+            {
+                entry.failure_count += 1;
+            }
             entry.total_tokens += row.total_tokens.unwrap_or_default();
             entry.total_cost += row.cost.unwrap_or_default();
             entry.input_tokens += row.input_tokens.unwrap_or_default();
@@ -1252,6 +1270,8 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     bucket_start_epoch,
                     upstream_account_id,
                     request_count,
+                    success_count,
+                    failure_count,
                     total_tokens,
                     total_cost,
                     input_tokens,
@@ -1261,9 +1281,11 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     last_seen_at,
                     updated_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now'))
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, datetime('now'))
                 ON CONFLICT(bucket_start_epoch, upstream_account_id) DO UPDATE SET
                     request_count = upstream_account_usage_hourly.request_count + excluded.request_count,
+                    success_count = upstream_account_usage_hourly.success_count + excluded.success_count,
+                    failure_count = upstream_account_usage_hourly.failure_count + excluded.failure_count,
                     total_tokens = upstream_account_usage_hourly.total_tokens + excluded.total_tokens,
                     total_cost = upstream_account_usage_hourly.total_cost + excluded.total_cost,
                     input_tokens = upstream_account_usage_hourly.input_tokens + excluded.input_tokens,
@@ -1277,6 +1299,8 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
             .bind(bucket_start_epoch)
             .bind(upstream_account_id)
             .bind(delta.request_count)
+            .bind(delta.success_count)
+            .bind(delta.failure_count)
             .bind(delta.total_tokens)
             .bind(delta.total_cost)
             .bind(delta.input_tokens)

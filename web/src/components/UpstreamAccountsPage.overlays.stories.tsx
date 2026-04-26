@@ -99,6 +99,37 @@ export const DetailDrawer: Story = {
   },
 }
 
+export const DetailDrawerRecordsPopulated: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={detailRouteEntry(101)}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const dialog = await findTokyoDetailDialog(documentScope)
+    await userEvent.click(within(dialog).getByRole('tab', { name: /调用记录|records/i }))
+    await expect(within(dialog).getByText(/账号活动总览|account activity overview/i)).toBeInTheDocument()
+    await expect(within(dialog).getByTestId('upstream-account-records-activity-overview')).toBeInTheDocument()
+    await expect(within(dialog).getByText(/gpt-5\.4/i)).toBeInTheDocument()
+  },
+}
+
+export const DetailDrawerRecordsEmpty: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={detailRouteEntry(101)}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const dialog = await findTokyoDetailDialog(documentScope)
+    await userEvent.click(within(dialog).getByRole('tab', { name: /调用记录|records/i }))
+    await expect(within(dialog).getByText(/账号活动总览|account activity overview/i)).toBeInTheDocument()
+    await expect(within(dialog).getByText(/这个上游账号暂时还没有保留的调用记录|No retained call records/i)).toBeInTheDocument()
+  },
+}
+
 export const EditDraftSurvivesBackgroundRefresh: Story = {
   render: () => (
     <AccountPoolStoryRouter

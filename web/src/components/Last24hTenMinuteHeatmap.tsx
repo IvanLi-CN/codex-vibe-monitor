@@ -96,15 +96,19 @@ export interface Last24hTenMinuteHeatmapProps {
   metric?: MetricKey
   onChangeMetric?: (m: MetricKey) => void
   showHeader?: boolean
+  upstreamAccountId?: number
 }
 
-export function Last24hTenMinuteHeatmap({ metric: controlledMetric, onChangeMetric, showHeader = true }: Last24hTenMinuteHeatmapProps) {
+export function Last24hTenMinuteHeatmap({ metric: controlledMetric, onChangeMetric, showHeader = true, upstreamAccountId }: Last24hTenMinuteHeatmapProps) {
   const { t, locale } = useTranslation()
   const { themeMode } = useTheme()
   const [uncontrolledMetric, setUncontrolledMetric] = useState<MetricKey>('totalCount')
   const metric = controlledMetric ?? uncontrolledMetric
   // Force 1-day range with 1-minute buckets, aggregate to 10-minute cells
-  const { data, isLoading, error } = useTimeseries('1d', { bucket: '1m' })
+  const { data, isLoading, error } = useTimeseries(
+    '1d',
+    upstreamAccountId == null ? { bucket: '1m' } : { bucket: '1m', upstreamAccountId },
+  )
 
   const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
   const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag])

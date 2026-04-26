@@ -278,6 +278,16 @@ pub(crate) struct TimeseriesPoint {
     pub(crate) first_response_byte_total_p95_ms: Option<f64>,
 }
 
+#[derive(Debug, FromRow)]
+pub(crate) struct UpstreamAccountUsageHourlyRollupRecord {
+    pub(crate) bucket_start_epoch: i64,
+    pub(crate) request_count: i64,
+    pub(crate) success_count: i64,
+    pub(crate) failure_count: i64,
+    pub(crate) total_tokens: i64,
+    pub(crate) total_cost: f64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct QuotaSnapshotResponse {
@@ -1168,6 +1178,7 @@ pub(crate) struct SummaryQuery {
     pub(crate) window: Option<String>,
     pub(crate) limit: Option<i64>,
     pub(crate) time_zone: Option<String>,
+    pub(crate) upstream_account_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1179,6 +1190,7 @@ pub(crate) struct TimeseriesQuery {
     #[allow(dead_code)]
     pub(crate) settlement_hour: Option<u8>,
     pub(crate) time_zone: Option<String>,
+    pub(crate) upstream_account_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]

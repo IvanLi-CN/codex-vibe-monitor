@@ -2029,6 +2029,7 @@ async fn proxy_capture_target_compact_estimates_cost_and_flows_into_stats_withou
             window: Some("1d".to_string()),
             limit: None,
             time_zone: None,
+            upstream_account_id: None,
         }),
     )
     .await
@@ -2044,6 +2045,7 @@ async fn proxy_capture_target_compact_estimates_cost_and_flows_into_stats_withou
             bucket: Some("1h".to_string()),
             settlement_hour: None,
             time_zone: None,
+            upstream_account_id: None,
         }),
     )
     .await
