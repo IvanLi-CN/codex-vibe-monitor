@@ -369,6 +369,127 @@ async fn parallel_work_stats_current_duration_ranges_align_to_bucket_starts() {
 }
 
 #[tokio::test]
+async fn parallel_work_stats_current_rollup_range_expands_first_display_bucket() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let reporting_tz = "Asia/Shanghai".parse::<Tz>().expect("valid tz");
+    let range_window = resolve_range_window("7d", reporting_tz).expect("resolve range");
+    let first_bucket_epoch =
+        align_reporting_bucket_epoch(range_window.start.timestamp(), 21_600, reporting_tz)
+            .expect("align first six-hour bucket");
+    let first_hour = Utc
+        .timestamp_opt(first_bucket_epoch, 0)
+        .single()
+        .expect("first display hour");
+
+    insert_parallel_work_prompt_cache_rollup_hourly_row(
+        &state.pool,
+        first_hour,
+        "pck-first-display-bucket",
+        1,
+    )
+    .await;
+
+    let Json(response) = fetch_parallel_work_stats(
+        State(state),
+        Query(ParallelWorkStatsQuery {
+            range: "7d".to_string(),
+            bucket: Some("6h".to_string()),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch parallel-work stats");
+
+    let first_point = response
+        .current
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(first_hour))
+        .expect("first displayed bucket should be present");
+
+    assert_eq!(first_point.parallel_count, 1);
+}
+
+#[tokio::test]
+async fn parallel_work_stats_current_rollup_range_includes_live_tail() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let reporting_tz = "Asia/Shanghai".parse::<Tz>().expect("valid tz");
+    let current_hour_epoch =
+        align_reporting_bucket_epoch(Utc::now().timestamp(), 3_600, reporting_tz)
+            .expect("align current hour");
+    let target_hour = Utc
+        .timestamp_opt(current_hour_epoch - 2 * 3_600, 0)
+        .single()
+        .expect("target complete hour");
+
+    insert_parallel_work_invocation(
+        &state.pool,
+        "parallel-live-tail-rollup-seed",
+        target_hour + ChronoDuration::minutes(5),
+        "pck-rollup-seed",
+    )
+    .await;
+    let rollup_cursor: i64 = sqlx::query_scalar("SELECT MAX(id) FROM codex_invocations")
+        .fetch_one(&state.pool)
+        .await
+        .expect("load rollup cursor");
+    insert_parallel_work_prompt_cache_rollup_hourly_row(
+        &state.pool,
+        target_hour,
+        "pck-rollup-seed",
+        1,
+    )
+    .await;
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)
+        VALUES (?1, ?2, datetime('now'))
+        ON CONFLICT(dataset) DO UPDATE SET
+            cursor_id = excluded.cursor_id,
+            updated_at = datetime('now')
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(rollup_cursor)
+    .execute(&state.pool)
+    .await
+    .expect("mark rollup cursor before live tail");
+    insert_parallel_work_invocation(
+        &state.pool,
+        "parallel-live-tail-unmaterialized",
+        target_hour + ChronoDuration::minutes(10),
+        "pck-live-tail",
+    )
+    .await;
+
+    let Json(response) = fetch_parallel_work_stats(
+        State(state),
+        Query(ParallelWorkStatsQuery {
+            range: "7d".to_string(),
+            bucket: Some("1h".to_string()),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch parallel-work stats");
+
+    let point = response
+        .current
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(target_hour))
+        .expect("target hour point");
+
+    assert_eq!(point.parallel_count, 2);
+}
+
+#[tokio::test]
 async fn parallel_work_stats_minute7d_supports_non_shanghai_reporting_timezones() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

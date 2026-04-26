@@ -378,31 +378,90 @@ async fn query_parallel_work_exact_conversations(
     Ok(conversations)
 }
 
-async fn query_parallel_work_rollup_counts(
-    pool: &Pool<Sqlite>,
-    range_start: DateTime<Utc>,
-    range_end: DateTime<Utc>,
-    bucket_seconds: i64,
+async fn query_parallel_work_exact_conversations_from_live_range_tx(
+    tx: &mut SqliteConnection,
+    range: ExactUtcRange,
     reporting_tz: Tz,
+    bucket_seconds: i64,
     source_scope: InvocationSourceScope,
-) -> Result<BTreeMap<i64, i64>> {
-    let hourly = query_parallel_work_hourly_conversations(pool, range_start, range_end, source_scope).await?;
-    let mut bucket_keys: BTreeMap<i64, HashSet<String>> = BTreeMap::new();
-    for (prompt_cache_key, buckets) in hourly {
+    start_after_id: Option<i64>,
+    snapshot_id: Option<i64>,
+) -> Result<BTreeMap<String, BTreeMap<i64, i64>>> {
+    let mut query = QueryBuilder::new("SELECT occurred_at, ");
+    query
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(" AS prompt_cache_key FROM codex_invocations WHERE occurred_at >= ")
+        .push_bind(db_occurred_at_lower_bound(range.start))
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_lower_bound(range.end))
+        .push(" AND ")
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(" IS NOT NULL AND ")
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(" != ''");
+    if let Some(start_after_id) = start_after_id {
+        query.push(" AND id > ").push_bind(start_after_id);
+    }
+    if let Some(snapshot_id) = snapshot_id {
+        query.push(" AND id <= ").push_bind(snapshot_id);
+    }
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" ORDER BY occurred_at ASC, prompt_cache_key ASC");
+
+    let rows = query
+        .build_query_as::<ParallelWorkExactInvocationRow>()
+        .fetch_all(&mut *tx)
+        .await?;
+    let mut conversations: BTreeMap<String, BTreeMap<i64, i64>> = BTreeMap::new();
+    for row in rows {
+        let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
+            continue;
+        };
+        let bucket_start_epoch =
+            align_reporting_bucket_epoch(occurred_at.timestamp(), bucket_seconds, reporting_tz)?;
+        *conversations
+            .entry(row.prompt_cache_key)
+            .or_default()
+            .entry(bucket_start_epoch)
+            .or_default() += 1;
+    }
+    Ok(conversations)
+}
+
+pub(crate) fn merge_parallel_work_conversation_maps(
+    target: &mut BTreeMap<String, BTreeMap<i64, i64>>,
+    source: BTreeMap<String, BTreeMap<i64, i64>>,
+) {
+    for (conversation_key, buckets) in source {
+        let target_buckets = target.entry(conversation_key).or_default();
         for (bucket_start_epoch, request_count) in buckets {
-            if request_count <= 0 {
-                continue;
-            }
-            let bucket_epoch = align_reporting_bucket_epoch(bucket_start_epoch, bucket_seconds, reporting_tz)?;
-            bucket_keys.entry(bucket_epoch).or_default().insert(prompt_cache_key.clone());
+            *target_buckets.entry(bucket_start_epoch).or_default() += request_count.max(0);
         }
     }
-    Ok(bucket_keys
+}
+
+pub(crate) fn parallel_work_counts_from_conversations(
+    conversations: &BTreeMap<String, BTreeMap<i64, i64>>,
+) -> BTreeMap<i64, i64> {
+    let mut bucket_keys: BTreeMap<i64, HashSet<&str>> = BTreeMap::new();
+    for (conversation_key, buckets) in conversations {
+        for (bucket_start_epoch, request_count) in buckets {
+            if *request_count > 0 {
+                bucket_keys
+                    .entry(*bucket_start_epoch)
+                    .or_default()
+                    .insert(conversation_key.as_str());
+            }
+        }
+    }
+    bucket_keys
         .into_iter()
         .map(|(bucket_start_epoch, prompt_cache_keys)| {
             (bucket_start_epoch, prompt_cache_keys.len() as i64)
         })
-        .collect())
+        .collect()
 }
 
 async fn query_parallel_work_rollup_conversations(

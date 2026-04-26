@@ -227,6 +227,16 @@ pub(crate) async fn fetch_parallel_work_stats(
     } else {
         current_range_window
     };
+    let current_display_start_epoch = align_reporting_bucket_epoch(
+        current_window.start.timestamp(),
+        current_bucket_seconds,
+        current_reporting_tz,
+    )?;
+    let current_display_start = Utc
+        .timestamp_opt(current_display_start_epoch, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid current parallel-work display start epoch"))?;
+
     let (current_counts, current_conversations) = if current_uses_exact {
         (
             query_parallel_work_exact_counts(
@@ -249,26 +259,84 @@ pub(crate) async fn fetch_parallel_work_stats(
             .await?,
         )
     } else {
-        (
-            query_parallel_work_rollup_counts(
-                &state.pool,
-                current_window.start,
-                current_window.end,
-                current_bucket_seconds,
-                current_reporting_tz,
-                source_scope,
-            )
-            .await?,
-            query_parallel_work_rollup_conversations(
-                &state.pool,
-                current_window.start,
-                current_window.end,
-                current_bucket_seconds,
-                current_reporting_tz,
-                source_scope,
-            )
-            .await?,
-        )
+        let range_plan = build_hourly_rollup_exact_range_plan(
+            current_display_start,
+            current_window.end,
+            shanghai_retention_cutoff(state.config.invocation_max_days),
+        )?;
+        let mut conversations = BTreeMap::new();
+        if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
+            let range_start = Utc
+                .timestamp_opt(range_start_epoch, 0)
+                .single()
+                .ok_or_else(|| anyhow!("invalid current parallel-work rollup start epoch"))?;
+            let range_end = Utc
+                .timestamp_opt(range_end_epoch, 0)
+                .single()
+                .ok_or_else(|| anyhow!("invalid current parallel-work rollup end epoch"))?;
+            merge_parallel_work_conversation_maps(
+                &mut conversations,
+                query_parallel_work_rollup_conversations(
+                    &state.pool,
+                    range_start,
+                    range_end,
+                    current_bucket_seconds,
+                    current_reporting_tz,
+                    source_scope,
+                )
+                .await?,
+            );
+        }
+        let mut tx = state.pool.begin().await?;
+        let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
+        let rollup_live_cursor = load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
+        for exact_range in &range_plan.live_exact_ranges {
+            merge_parallel_work_conversation_maps(
+                &mut conversations,
+                query_parallel_work_exact_conversations_from_live_range_tx(
+                    tx.as_mut(),
+                    *exact_range,
+                    current_reporting_tz,
+                    current_bucket_seconds,
+                    source_scope,
+                    None,
+                    Some(snapshot_id),
+                )
+                .await?,
+            );
+        }
+        if snapshot_id > rollup_live_cursor {
+            if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
+                let range_start = Utc
+                    .timestamp_opt(range_start_epoch, 0)
+                    .single()
+                    .ok_or_else(|| {
+                        anyhow!("invalid current parallel-work live-tail start epoch")
+                    })?;
+                let range_end = Utc
+                    .timestamp_opt(range_end_epoch, 0)
+                    .single()
+                    .ok_or_else(|| anyhow!("invalid current parallel-work live-tail end epoch"))?;
+                merge_parallel_work_conversation_maps(
+                    &mut conversations,
+                    query_parallel_work_exact_conversations_from_live_range_tx(
+                        tx.as_mut(),
+                        ExactUtcRange {
+                            start: range_start,
+                            end: range_end,
+                        },
+                        current_reporting_tz,
+                        current_bucket_seconds,
+                        source_scope,
+                        Some(rollup_live_cursor),
+                        Some(snapshot_id),
+                    )
+                    .await?,
+                );
+            }
+        }
+        let counts = parallel_work_counts_from_conversations(&conversations);
+        (counts, conversations)
     };
 
     let minute7d_window = resolve_complete_parallel_work_window(
