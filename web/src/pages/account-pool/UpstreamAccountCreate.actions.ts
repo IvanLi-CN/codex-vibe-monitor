@@ -75,6 +75,9 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
     oauthNote,
     oauthTagIds,
     relinkAccountId,
+    relinkDetailError,
+    relinkDetailLoading,
+    relinkReady,
     removeOauthMailboxSession,
     resolveMailboxIssue,
     resolvePendingGroupConcurrencyLimitForName,
@@ -346,6 +349,15 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
   };
 
   const handleGenerateOauthUrl = async () => {
+    if (!relinkReady) {
+      setActionError(
+        relinkDetailLoading
+          ? t("accountPool.upstreamAccounts.createPage.relinkLoading")
+          : relinkDetailError ??
+              t("accountPool.upstreamAccounts.createPage.relinkLoadFailed"),
+      );
+      return;
+    }
     if (oauthGroupProxyState.error) {
       setActionError(oauthGroupProxyState.error);
       return;

@@ -1,0 +1,139 @@
+describe("UpstreamAccountCreatePage relink detail hydration", () => {
+  it("loads relink metadata by account id when the account is outside the current roster", async () => {
+    const hookState = mockUpstreamAccounts({ items: [] });
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValueOnce({
+      id: 2660,
+      kind: "oauth_codex",
+      provider: "codex",
+      displayName: "Reauth Account 2660",
+      email: "reauth-2660@example.com",
+      groupName: "prod",
+      isMother: true,
+      status: "needs_reauth",
+      enabled: true,
+      duplicateInfo: null,
+      history: [],
+      note: "Keep this saved note during reauth.",
+      tags: [
+        {
+          id: 1,
+          name: "vip",
+          routingRule: {
+            guardEnabled: false,
+            allowCutOut: true,
+            allowCutIn: true,
+          },
+        },
+      ],
+      effectiveRoutingRule: {
+        guardEnabled: false,
+        allowCutOut: true,
+        allowCutIn: true,
+        sourceTagIds: [],
+        sourceTagNames: [],
+        guardRules: [],
+      },
+    });
+
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?accountId=2660",
+      state: { draft: { oauth: { groupName: "" } } },
+    });
+    await flushAsync();
+
+    expect(apiMocks.fetchUpstreamAccountDetail).toHaveBeenCalledWith(2660);
+    expect((host?.querySelector('input[name="oauthDisplayName"]') as HTMLInputElement).value).toBe("Reauth Account 2660");
+    expect((host?.querySelector('input[name="oauthMailboxInput"]') as HTMLInputElement).value).toBe("reauth-2660@example.com");
+    expect((host?.querySelector('input[name="oauthGroupName"]') as HTMLInputElement).value).toBe("prod");
+    expect((host?.querySelector('textarea[name="oauthNote"]') as HTMLTextAreaElement).value).toBe("Keep this saved note during reauth.");
+    expect(host?.textContent).toContain("vip");
+
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+
+    expect(hookState.beginOauthLogin).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accountId: 2660,
+        displayName: "Reauth Account 2660",
+        email: "reauth-2660@example.com",
+        groupName: "prod",
+        note: "Keep this saved note during reauth.",
+        tagIds: [1],
+        isMother: true,
+      }),
+    );
+  });
+
+  it("does not overwrite a relink draft edited before the detail response returns", async () => {
+    mockUpstreamAccounts({ items: [] });
+    let resolveDetail: (value: Record<string, unknown>) => void = () => undefined;
+    apiMocks.fetchUpstreamAccountDetail.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveDetail = resolve;
+      }),
+    );
+
+    render("/account-pool/upstream-accounts/new?accountId=2660");
+    setInputValue('input[name="oauthDisplayName"]', "Owner Edited Name");
+    resolveDetail({
+      id: 2660,
+      kind: "oauth_codex",
+      provider: "codex",
+      displayName: "Server Name",
+      email: "server@example.com",
+      groupName: "prod",
+      isMother: false,
+      status: "active",
+      enabled: true,
+      duplicateInfo: null,
+      history: [],
+      note: "Server note",
+      tags: [],
+    });
+    await flushAsync();
+
+    expect((host?.querySelector('input[name="oauthDisplayName"]') as HTMLInputElement).value).toBe("Owner Edited Name");
+    expect((host?.querySelector('input[name="oauthMailboxInput"]') as HTMLInputElement).value).toBe("");
+  });
+
+  it("blocks OAuth generation when the relink detail cannot be loaded", async () => {
+    const hookState = mockUpstreamAccounts({ items: [] });
+    apiMocks.fetchUpstreamAccountDetail.mockRejectedValueOnce(new Error("missing account 2660"));
+
+    render("/account-pool/upstream-accounts/new?accountId=2660");
+    await flushAsync();
+
+    expect(host?.textContent).toContain("missing account 2660");
+    const generateButton = findButton(/Generate OAuth URL/i);
+    expect(generateButton.disabled).toBe(true);
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+    expect(hookState.beginOauthLogin).not.toHaveBeenCalled();
+  });
+
+  it("blocks OAuth generation when the target account is not OAuth", async () => {
+    const hookState = mockUpstreamAccounts({ items: [] });
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValueOnce({
+      id: 2660,
+      kind: "api_key_codex",
+      provider: "codex",
+      displayName: "API key target",
+      groupName: "staging",
+      isMother: false,
+      status: "active",
+      enabled: true,
+      duplicateInfo: null,
+      history: [],
+      note: null,
+      tags: [],
+    });
+
+    render("/account-pool/upstream-accounts/new?accountId=2660");
+    await flushAsync();
+
+    expect(host?.textContent).toContain("Only OAuth upstream accounts can be re-authorized from this page.");
+    expect(findButton(/Generate OAuth URL/i).disabled).toBe(true);
+    expect(hookState.beginOauthLogin).not.toHaveBeenCalled();
+  });
+});

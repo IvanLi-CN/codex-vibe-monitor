@@ -336,6 +336,12 @@ const baseTranslations = {
       "Re-authorize upstream account",
     "accountPool.upstreamAccounts.createPage.relinkDescription":
       "Generate a fresh OAuth link for {{name}}, then paste the localhost callback URL here to keep the stored credentials valid.",
+    "accountPool.upstreamAccounts.createPage.relinkLoading":
+      "Loading the saved account metadata before re-authorization…",
+    "accountPool.upstreamAccounts.createPage.relinkLoadFailed":
+      "Unable to load the account for re-authorization.",
+    "accountPool.upstreamAccounts.createPage.relinkNonOauth":
+      "Only OAuth upstream accounts can be re-authorized from this page.",
     "accountPool.upstreamAccounts.createPage.helpTitle": "Creation notes",
     "accountPool.upstreamAccounts.createPage.helpDescription":
       "Pick the account type first, then provide the metadata or local quota placeholders required for onboarding.",
@@ -2199,6 +2205,12 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.createPage.relinkTitle": "重新授权账号",
     "accountPool.upstreamAccounts.createPage.relinkDescription":
       "为 {{name}} 重新生成 OAuth 地址，再把 localhost 回调链接贴回这里，保持已保存凭据可续期。",
+    "accountPool.upstreamAccounts.createPage.relinkLoading":
+      "正在加载已保存账号信息，用于重新授权…",
+    "accountPool.upstreamAccounts.createPage.relinkLoadFailed":
+      "无法加载要重新授权的账号。",
+    "accountPool.upstreamAccounts.createPage.relinkNonOauth":
+      "只有 OAuth 上游账号可以在这个页面重新授权。",
     "accountPool.upstreamAccounts.createPage.helpTitle": "创建说明",
     "accountPool.upstreamAccounts.createPage.helpDescription":
       "先选账号类型，再填写必要的元数据或本地额度占位信息，完成后会回到账号列表。",

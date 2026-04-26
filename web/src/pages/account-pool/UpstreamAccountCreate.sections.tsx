@@ -25,6 +25,8 @@ export function UpstreamAccountCreatePageSections() {
     isRelinking,
     listError,
     oauthCompletedDetail,
+    relinkDetailError,
+    relinkDetailLoading,
     relinkSummary,
     session,
     sessionHint,
@@ -74,7 +76,9 @@ export function UpstreamAccountCreatePageSections() {
                   : t("accountPool.upstreamAccounts.createPage.description")}
               </p>
             </div>
-            {isLoading ? <Spinner className="text-primary" /> : null}
+            {isLoading || relinkDetailLoading ? (
+              <Spinner className="text-primary" />
+            ) : null}
           </div>
 
           {!writesEnabled ? (
@@ -92,6 +96,28 @@ export function UpstreamAccountCreatePageSections() {
                   {t("accountPool.upstreamAccounts.writesDisabledBody")}
                 </p>
               </div>
+            </Alert>
+          ) : null}
+
+          {relinkDetailLoading ? (
+            <Alert variant="info">
+              <AppIcon
+                name="loading"
+                className="mt-0.5 h-4 w-4 shrink-0 animate-spin"
+                aria-hidden
+              />
+              <div>{t("accountPool.upstreamAccounts.createPage.relinkLoading")}</div>
+            </Alert>
+          ) : null}
+
+          {relinkDetailError ? (
+            <Alert variant="error">
+              <AppIcon
+                name="alert-circle-outline"
+                className="mt-0.5 h-4 w-4 shrink-0"
+                aria-hidden
+              />
+              <div>{relinkDetailError}</div>
             </Alert>
           ) : null}
 

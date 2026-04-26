@@ -1637,6 +1637,8 @@ export function createStore(): StoryStore {
     storyId?.endsWith('--bulk-selection') === true ||
     storyId?.endsWith('--slow-page-switch') === true
   const dynamicRosterStory = isDynamicRosterStoryId(storyId)
+  const reauthDetailOutsideRosterStory =
+    storyId?.endsWith('--reauth-detail-outside-roster') === true
 
   const baseOauthStoryOverrides: Partial<UpstreamAccountDetail> = {
     tags: pickStoryTags('vip', 'stickyPool', 'priority'),
@@ -2364,6 +2366,23 @@ export function createStore(): StoryStore {
   const details = Object.fromEntries(
     storyAccounts.map((account) => [account.id, account]),
   )
+  if (reauthDetailOutsideRosterStory) {
+    details[2660] = createOauthAccount(2660, {
+      displayName: 'Codex Pro - Reauth Hidden Lane',
+      email: 'reauth-hidden-lane@example.com',
+      groupName: 'production',
+      isMother: false,
+      status: 'needs_reauth',
+      displayStatus: 'needs_reauth',
+      healthStatus: 'needs_reauth',
+      workStatus: 'idle',
+      syncState: 'idle',
+      tags: pickStoryTags('vip', 'rescue'),
+      note: 'This account is intentionally absent from the current roster page but available through the detail endpoint.',
+      lastError: 'refresh token expired',
+      lastErrorAt: '2026-03-17T12:05:00.000Z',
+    })
+  }
   return {
     writesEnabled: true,
     routing: {
