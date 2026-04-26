@@ -8,6 +8,7 @@ import suite4 from "./UpstreamAccountCreate.display-name-b.txt?raw";
 import suite5 from "./UpstreamAccountCreate.oauth-mailbox.txt?raw";
 import suite6 from "./UpstreamAccountCreate.api-key.txt?raw";
 import suite7 from "./UpstreamAccountCreate.imported-oauth.txt?raw";
+import suite8 from "./UpstreamAccountCreate.relink-detail.txt?raw";
 
 /** @vitest-environment jsdom */
 import { act } from "react";
@@ -1074,6 +1075,7 @@ evalChunk(suite4);
 evalChunk(suite5);
 evalChunk(suite6);
 evalChunk(suite7);
+evalChunk(suite8);
 
 function clickCreateTab(matcher: RegExp) {
   const tab = Array.from(document.body.querySelectorAll('[role="tab"]')).find(
