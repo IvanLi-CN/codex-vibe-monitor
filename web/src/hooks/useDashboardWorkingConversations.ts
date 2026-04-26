@@ -688,6 +688,7 @@ export function useDashboardWorkingConversations() {
         }
       }
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runHeadLoad/runLoadMore intentionally drain the queued action cycle without re-creating each other.
     [runNextPendingAction],
   );
 
@@ -779,6 +780,7 @@ export function useDashboardWorkingConversations() {
         void runLoadMore();
       }
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- runHeadLoad/runLoadMore intentionally drain the queued action cycle without re-creating each other.
   }, [runNextPendingAction]);
 
   const refreshHead = useCallback(

@@ -977,6 +977,12 @@ export const GridView: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
   play: async ({ canvasElement, step }) => {
     const documentScope = within(canvasElement.ownerDocument.body)
+    await step('defaults the roster switcher to grid grouped flat order', async () => {
+      const tabs = await documentScope.findAllByRole('tab')
+      const viewTabs = tabs.filter((tab) => /grid|网格|grouped|分组|flat|平铺/i.test(tab.textContent ?? ''))
+      expect(viewTabs.map((tab) => tab.textContent?.trim())).toEqual(['Grid', 'Grouped', 'Flat'])
+      await expect(viewTabs[0]!).toHaveAttribute('aria-selected', 'true')
+    })
     await step('switches to grouped grid and hides pagination footer plus bulk actions', async () => {
       const gridTab = await documentScope.findByRole('tab', {
         name: /grid|网格/i,
@@ -1005,7 +1011,13 @@ export const GridView: Story = {
       const card = await documentScope.findByRole('button', {
         name: /Codex Pro - Tokyo/i,
       })
+      await expect(card).toHaveTextContent(/Mother|母号/i)
+      await expect(card).toHaveTextContent(/Compact unsupported|不支持/i)
+      await expect(card).toHaveTextContent(/OAuth/i)
+      await expect(card).toHaveTextContent(/pro/i)
       await expect(card).toHaveTextContent(/working|工作/i)
+      const badgeRow = card.querySelector('.flex-nowrap.overflow-hidden')
+      expect(badgeRow).not.toBeNull()
       expectWindowUsagePlaceholders(card)
       await waitForWindowUsageHydration(card)
     })

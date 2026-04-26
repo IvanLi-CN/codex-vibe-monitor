@@ -350,7 +350,7 @@ function DashboardOverviewMockApi({
       })
       delete windowWithFetchLog.__dashboardOverviewFetchLog__
     }
-  }, [])
+  }, [failTodayTimeseries])
 
   return <>{children}</>
 }

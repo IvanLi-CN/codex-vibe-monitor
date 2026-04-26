@@ -28,7 +28,6 @@ import {
   formatWindowShortLabel,
   handleRowKeyDown,
   kindLabel,
-  renderAllTagBadges,
   renderTagBadges,
   renderTagOverflowBadge,
   resolveRosterActionableStatusBadges,
@@ -425,6 +424,8 @@ function GroupMemberGridCard({
   const showPlanBadge = shouldShowPlanBadge(item.planType)
   const planBadge = showPlanBadge ? upstreamPlanBadgeRecipe(item.planType) : null
   const actionableStatusBadges = resolveRosterActionableStatusBadges(item, labels)
+  const forwardProxyLabel = resolveCurrentForwardProxyBadgeLabel(item, labels)
+  const forwardProxyVariant = resolveCurrentForwardProxyBadgeVariant(item)
 
   return (
     <div
@@ -453,8 +454,19 @@ function GroupMemberGridCard({
         <p className="truncate text-[14px] font-semibold leading-5 text-base-content" title={item.displayName}>
           {item.displayName}
         </p>
-        <div className="mt-2 flex flex-wrap items-center gap-1">
+        <div className="mt-2 flex min-w-0 flex-nowrap items-center gap-1 overflow-hidden">
+          {item.isMother ? (
+            <div className="shrink-0">
+              <MotherAccountBadge label={labels.mother} />
+            </div>
+          ) : null}
+          {item.duplicateInfo ? compactBadge(labels.duplicate, 'warning') : null}
           {compactBadge(kindLabel(item, labels), 'secondary')}
+          {item.compactSupport?.status === 'unsupported' && labels.compactSupport?.(item)
+            ? compactBadge(labels.compactSupport(item) ?? '', 'warning', {
+                title: labels.compactSupportHint?.(item) ?? undefined,
+              })
+            : null}
           {showPlanBadge && item.planType && planBadge
             ? compactBadge(item.planType, planBadge.variant, {
                 className: planBadge.className,
@@ -474,12 +486,18 @@ function GroupMemberGridCard({
               {badge.label}
             </Badge>
           ))}
-        </div>
-        {item.tags && item.tags.length > 0 ? (
-          <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1">
-            {renderAllTagBadges(item.tags)}
+          <Badge
+            variant={forwardProxyVariant}
+            className="min-w-[3.25rem] max-w-[7.5rem] shrink truncate whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4"
+            title={forwardProxyLabel}
+          >
+            {forwardProxyLabel}
+          </Badge>
+          <div className="flex min-w-0 shrink items-center gap-1 overflow-hidden">
+            {renderTagBadges(item.tags)}
+            {renderTagOverflowBadge(labels, item.tags)}
           </div>
-        ) : null}
+        </div>
       </div>
       <div className="mt-3 space-y-1.5">
         <CompactWindowLine

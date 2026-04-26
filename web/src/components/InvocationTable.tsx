@@ -161,13 +161,13 @@ export function InvocationTable({
     };
   }, [locale]);
 
-  const openAccountDrawer = (
+  const openAccountDrawer = useCallback((
     accountId: number | null,
     accountLabel: string,
   ) => {
     if (accountId == null) return;
     onOpenUpstreamAccount?.(accountId, accountLabel);
-  };
+  }, [onOpenUpstreamAccount]);
 
   const renderAccountValue = useCallback(
     (
@@ -204,7 +204,7 @@ export function InvocationTable({
         </button>
       );
     },
-    [onOpenUpstreamAccount],
+    [openAccountDrawer],
   );
 
   useEffect(() => {

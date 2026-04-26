@@ -11,13 +11,13 @@
 
 ### Goals
 
-- 在 `/account-pool/upstream-accounts` 列表标题区新增 `平铺 / 分组 / 网格` 切换，默认保持平铺。
+- 在 `/account-pool/upstream-accounts` 列表标题区提供 `网格 / 分组 / 平铺` 切换，默认进入网格。
 - 分组模式下按当前筛选结果聚合为“每组一张卡片”，卡片纵向排布且不分页；组内成员继续复用现有账号列表行信息密度与交互。
 - 网格模式下继续按分组聚合为“每组一张卡片”，左侧固定显示分组信息，右侧改为账号卡片网格；网格模式不提供批量选择。
 - 分组卡片左侧固定展示：组名、账号数、非零 Free/Plus/Team 计数 badge、并发数、`独占节点` badge（仅 `nodeShuntEnabled=true` 时显示）。
 - 每个分组摘要区都提供复用现有 `Group settings` 弹窗的设置按钮；点击后直接打开当前分组设置，不新增独立页面或第二套弹层。
 - 平铺行与分组成员行统一新增当前正向代理 badge：已分配显示代理名，分组有可用节点但该账号未排到节点显示 `候补中`，没有可用代理显示 `未配置代理`。
-- 网格成员卡片只展示高价值信息：账号名称、账号类型/套餐 badge、actionable-only 状态 badge、账号标签 badge、额度使用情况；误导性低价值信息（如 `planType=local` badge、`启用/空闲/正常/同步空闲` 等 neutral 状态）不展示。
+- 网格成员卡片只展示高价值信息：账号名称、母号/重复/Compact 不支持/账号类型/套餐/代理/actionable-only 状态 badge、账号标签 badge、额度使用情况；误导性低价值信息（如 `planType=local` badge、`启用/空闲/正常/同步空闲` 等 neutral 状态）不展示。
 - 为 grouped roster 提供稳定性能边界：分组/网格视图改为页面级 `window` 滚动驱动的组卡片虚拟化；大数据量下 DOM 挂载的组卡片数必须显著低于总组数，且不再依赖组内纵向滚动容器。
 - 扩展 `GET /api/pool/upstream-accounts`：支持 `includeAll=1` 跳过分页切片，并把当前代理状态与真实 `forwardProxyNodes` catalog 一并返回。
 
@@ -71,8 +71,8 @@
 
 ### 视图切换
 
-- 列表标题区右上角新增 `SegmentedControl`，提供 `平铺`、`分组` 与 `网格` 三个选项。
-- 默认进入 `平铺`。
+- 列表标题区右上角使用 `SegmentedControl`，按 `网格`、`分组`、`平铺` 顺序提供三个选项。
+- 默认进入 `网格`。
 - 切到 `分组` 或 `网格` 后：
   - 使用 `includeAll=1` 拉取当前筛选结果的全量账号。
   - 隐藏分页 footer。
@@ -123,8 +123,8 @@
 - 网格视图为了把整卡高度压到“右侧 1~5 行”的范围内，左侧分组信息采用紧凑版，不显示分组备注。
 - 单个账号卡片展示：
   - 账号名称
-  - 同一条 badge 行内展示账号类型 badge（如 `OAuth` / `API Key`）、套餐 badge（如 `Free` / `Plus` / `Team` / `Enterprise`；`local` 不展示）与 actionable-only 状态 badge
-  - 账号标签 badge：展示该账号当前全部 tags，不再在 grid 卡片里折叠为 `+n`
+  - 同一条 badge 行内展示母号、重复账号、账号类型 badge（如 `OAuth` / `API Key`）、Compact 不支持 badge、套餐 badge（如 `Free` / `Plus` / `Team` / `Enterprise`；`local` 不展示）、actionable-only 状态 badge、当前代理 badge 与账号标签 badge
+  - 账号标签 badge：与平铺/分组列表使用同一套可见 tag + overflow badge 规则，避免网格卡片头部换成多行
   - actionable-only 状态 badge 仅显示 `禁用`、`同步中`、`工作中/工作中 N`、`工作降级`、`限流`、`需要重新授权`、`上游不可用`、`上游拒绝`、`其它异常`
   - 5h / 7d 额度使用情况
 - 网格成员卡片的状态 badge 优先级固定为：
@@ -146,7 +146,7 @@
 
 ## 验收标准（Acceptance Criteria）
 
-- Given 账号页打开，When 查看列表标题区，Then 可见 `平铺 / 分组 / 网格` 切换，且默认激活 `平铺`。
+- Given 账号页打开，When 查看列表标题区，Then 可见 `网格 / 分组 / 平铺` 切换，且默认激活 `网格`。
 - Given 切到分组模式，When 当前筛选结果包含多个分组，Then 页面展示为一列组卡片且不再显示分页 footer。
 - Given 切到网格模式，When 当前筛选结果包含多个分组，Then 页面展示为一列组卡片、右侧为账号卡片网格、且不再显示分页 footer。
 - Given 处于分组或网格模式，When 查看分组摘要栏，Then 每个现有分组都可见 `编辑分组设置` 按钮，点击后直接打开复用的 `Group settings` 弹窗并带入当前分组设置。
@@ -167,8 +167,8 @@
 - Given 某个网格成员卡片处于 `disabled`、`syncing`、`needs_reauth`、`upstream_unavailable`、`upstream_rejected`、`error_other`、`working`、`degraded` 或 `rate_limited`，When 渲染卡片，Then 卡片头部必须显示对应 actionable 状态 badge。
 - Given 某个网格成员卡片处于 `enabled + idle + normal + sync idle`，When 渲染卡片，Then 不显示 `启用`、`空闲`、`正常`、`同步空闲` 等 neutral badge。
 - Given 某个账号同时带有更高优先级异常（如 `disabled`、`syncing` 或 `healthStatus!=normal`）与低优先级工作态，When 渲染网格卡片，Then 仅显示更高优先级 badge，不继续叠加 `degraded/rate_limited/working`。
-- Given 处于默认桌面网格视图，When 查看成员卡片头部，Then `账号类型 / 套餐 / actionable 状态` 应优先收敛到同一条 badge 行，而不是固定拆成两行。
-- Given 某个网格成员卡片带有 4 个或更多账号 tags，When 渲染卡片，Then 当前全部 tag badge 都应直接显示，且不退化成 `+n` 折叠。
+- Given 处于默认桌面网格视图，When 查看成员卡片头部，Then `母号 / 重复 / 账号类型 / Compact 不支持 / 套餐 / actionable 状态 / 当前代理 / tags` 应优先收敛到同一条 badge 行，而不是固定拆成两行。
+- Given 某个网格成员卡片带有 4 个或更多账号 tags，When 渲染卡片，Then tag badge 使用与平铺/分组列表一致的可见 tag + overflow 规则，且 badge 区保持单行稳定。
 - Given 处于分组或网格模式，When 浏览长列表，Then 纵向滚动应由整页滚动条承载，而不是 roster 主容器或组成员区内部滚动。
 - Given 分组模式加载大数据 Storybook 场景，When 检查 DOM，Then 已挂载的组卡片数显著少于总数据量，且滚动、切 tab、筛选变化、窗口 resize 后内容继续正确测量与交互，不出现重叠。
 - Given 用户在任一视图勾选账号、点击整行或 chevron 打开详情，When 来回切换视图，Then 现有 bulk selection 与 detail drawer route 行为保持一致。
@@ -321,6 +321,19 @@
   evidence_note: 验证动态网格 Story 在 46 条账号数据持续刷新时，左侧分组摘要与右侧成员网格会一起重排，组卡之间保持文档流顺序且不出现重叠。
 
 ![账号页网格视图（动态刷新无重叠）](./assets/dynamic-layout-grid-live-refresh.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: 1920x1200
+  viewport_strategy: playwright-viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Account Pool/Pages/Upstream Accounts/List — Grid View
+  state: default grid roster with single-line account badges
+  evidence_note: 验证账号列表默认激活 `网格`，选择器顺序为 `网格 / 分组 / 平铺`；网格卡片在同一条 badge 行内展示母号、Compact 不支持、套餐、actionable 状态、当前代理与 tags，且 badge 区保持单行稳定。
+
+![账号页默认网格与单行 badge](./assets/account-roster-grid-default-badges.png)
 
 ## 风险 / 假设
 

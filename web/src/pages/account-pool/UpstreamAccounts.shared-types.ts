@@ -40,6 +40,7 @@ export type UpstreamAccountsLocationState = {
   selectedAccountId?: number;
   openDetail?: boolean;
   openDeleteConfirm?: boolean;
+  initialRosterViewMode?: "flat" | "grouped" | "grid";
   presetGroupFilter?: GroupFilterState | null;
   postCreateWarning?: string | null;
   duplicateWarning?: {

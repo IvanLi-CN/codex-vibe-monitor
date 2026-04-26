@@ -1212,11 +1212,14 @@ export function useInvocationPoolAttempts(
         }
       });
 
+    const activeRequestIds = activeRequestIdRef.current;
+    const loadingKeys = loadingKeyRef.current;
+
     return () => {
       cancelled = true;
-      if (activeRequestIdRef.current[invokeId] === requestId) {
-        delete activeRequestIdRef.current[invokeId];
-        delete loadingKeyRef.current[invokeId];
+      if (activeRequestIds[invokeId] === requestId) {
+        delete activeRequestIds[invokeId];
+        delete loadingKeys[invokeId];
         setPoolAttemptLoadingByInvokeId((current) => ({
           ...current,
           [invokeId]: false,
@@ -1242,6 +1245,7 @@ export function useInvocationPoolAttempts(
     expandedRecord?.tUpstreamConnectMs,
     expandedRecord?.tUpstreamTtfbMs,
     expandedRecord?.tUpstreamStreamMs,
+    expandedRecord,
   ]);
 
   return {
