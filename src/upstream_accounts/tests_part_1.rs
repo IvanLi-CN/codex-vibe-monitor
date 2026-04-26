@@ -651,6 +651,42 @@
     }
 
     #[test]
+    fn list_query_parses_single_tag_filter() {
+        let query = parse_list_upstream_accounts_query(
+            &"/api/pool/upstream-accounts?tagIds=5"
+                .parse()
+                .expect("parse uri"),
+        )
+        .expect("deserialize single tag filter");
+
+        assert_eq!(query.tag_ids, vec![5]);
+    }
+
+    #[test]
+    fn list_query_parses_repeated_tag_filters() {
+        let query = parse_list_upstream_accounts_query(
+            &"/api/pool/upstream-accounts?tagIds=1&tagIds=2"
+                .parse()
+                .expect("parse uri"),
+        )
+        .expect("deserialize repeated tag filters");
+
+        assert_eq!(query.tag_ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn list_query_rejects_invalid_tag_filter() {
+        let err = parse_list_upstream_accounts_query(
+            &"/api/pool/upstream-accounts?tagIds=abc"
+                .parse()
+                .expect("parse uri"),
+        )
+        .expect_err("invalid tagIds should fail");
+
+        assert!(err.contains("invalid tagIds value `abc`; expected integer"));
+    }
+
+    #[test]
     fn list_query_parses_exact_group_filter() {
         let query = parse_list_upstream_accounts_query(
             &"/api/pool/upstream-accounts?groupExact=production"

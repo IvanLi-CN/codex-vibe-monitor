@@ -267,6 +267,7 @@ const baseTranslations = {
       "Search groups...",
     "accountPool.upstreamAccounts.groupFilterEmpty": "No matching groups.",
     "accountPool.upstreamAccounts.groupFilterUseValue": 'Filter by "{{value}}"',
+    "accountPool.upstreamAccounts.groupOptionCount": "{{count}} accounts",
     "accountPool.upstreamAccounts.statusFilterLabel": "Account status",
     "accountPool.upstreamAccounts.statusFilter.all": "All statuses",
     "accountPool.upstreamAccounts.workStatusFilterLabel": "Work status",
@@ -335,6 +336,12 @@ const baseTranslations = {
       "Re-authorize upstream account",
     "accountPool.upstreamAccounts.createPage.relinkDescription":
       "Generate a fresh OAuth link for {{name}}, then paste the localhost callback URL here to keep the stored credentials valid.",
+    "accountPool.upstreamAccounts.createPage.relinkLoading":
+      "Loading the saved account metadata before re-authorization…",
+    "accountPool.upstreamAccounts.createPage.relinkLoadFailed":
+      "Unable to load the account for re-authorization.",
+    "accountPool.upstreamAccounts.createPage.relinkNonOauth":
+      "Only OAuth upstream accounts can be re-authorized from this page.",
     "accountPool.upstreamAccounts.createPage.helpTitle": "Creation notes",
     "accountPool.upstreamAccounts.createPage.helpDescription":
       "Pick the account type first, then provide the metadata or local quota placeholders required for onboarding.",
@@ -546,6 +553,8 @@ const baseTranslations = {
       "Unlimited",
     "accountPool.upstreamAccounts.groupNotes.badges.existing": "Saved group",
     "accountPool.upstreamAccounts.groupNotes.badges.draft": "Draft group",
+    "accountPool.upstreamAccounts.groupNotes.deleteBlockedWithCount":
+      "Move the remaining {{count}} account(s) out before deleting this group.",
     "accountPool.upstreamAccounts.groupNotes.nodeShunt.label":
       "Node shunt strategy",
     "accountPool.upstreamAccounts.groupNotes.nodeShunt.hint":
@@ -849,6 +858,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.fields.groupNameEmpty":
       "No existing group yet.",
     "accountPool.upstreamAccounts.fields.groupNameUseValue": 'Use "{{value}}"',
+    "accountPool.upstreamAccounts.fields.groupNameConfigureValue":
+      'Configure "{{value}}"',
     "accountPool.tags.title": "Tag policies",
     "accountPool.tags.description":
       "Create reusable tags for upstream accounts and manage routing rules, account coverage, and group coverage in one place.",
@@ -2137,6 +2148,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupFilterSearchPlaceholder": "搜索分组...",
     "accountPool.upstreamAccounts.groupFilterEmpty": "没有匹配的分组。",
     "accountPool.upstreamAccounts.groupFilterUseValue": "按“{{value}}”筛选",
+    "accountPool.upstreamAccounts.groupOptionCount": "{{count}} 个账号",
     "accountPool.upstreamAccounts.statusFilterLabel": "账号状态",
     "accountPool.upstreamAccounts.statusFilter.all": "全部状态",
     "accountPool.upstreamAccounts.workStatusFilterLabel": "工作状态",
@@ -2195,6 +2207,12 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.createPage.relinkTitle": "重新授权账号",
     "accountPool.upstreamAccounts.createPage.relinkDescription":
       "为 {{name}} 重新生成 OAuth 地址，再把 localhost 回调链接贴回这里，保持已保存凭据可续期。",
+    "accountPool.upstreamAccounts.createPage.relinkLoading":
+      "正在加载已保存账号信息，用于重新授权…",
+    "accountPool.upstreamAccounts.createPage.relinkLoadFailed":
+      "无法加载要重新授权的账号。",
+    "accountPool.upstreamAccounts.createPage.relinkNonOauth":
+      "只有 OAuth 上游账号可以在这个页面重新授权。",
     "accountPool.upstreamAccounts.createPage.helpTitle": "创建说明",
     "accountPool.upstreamAccounts.createPage.helpDescription":
       "先选账号类型，再填写必要的元数据或本地额度占位信息，完成后会回到账号列表。",
@@ -2384,6 +2402,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupNotes.concurrency.unlimited": "无限",
     "accountPool.upstreamAccounts.groupNotes.badges.existing": "已存在分组",
     "accountPool.upstreamAccounts.groupNotes.badges.draft": "草稿分组",
+    "accountPool.upstreamAccounts.groupNotes.deleteBlockedWithCount":
+      "请先移走这 {{count}} 个账号，再删除该分组。",
     "accountPool.upstreamAccounts.groupNotes.nodeShunt.label": "节点分流策略",
     "accountPool.upstreamAccounts.groupNotes.nodeShunt.hint":
       "每个选中的节点都会成为独占槽位；勾选 N 个节点，就代表这个分组同时能提供 N 个上游账号。",
@@ -2672,6 +2692,8 @@ const baseTranslations = {
       "搜索或新建分组...",
     "accountPool.upstreamAccounts.fields.groupNameEmpty": "当前还没有分组。",
     "accountPool.upstreamAccounts.fields.groupNameUseValue": "使用“{{value}}”",
+    "accountPool.upstreamAccounts.fields.groupNameConfigureValue":
+      "先配置“{{value}}”",
     "accountPool.tags.title": "Tag 路由策略",
     "accountPool.tags.description":
       "集中管理上游账号标签、路由规则摘要，以及它们覆盖的账号和账号分组范围。",

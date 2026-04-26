@@ -8,6 +8,7 @@ import suite4 from "./UpstreamAccountCreate.display-name-b.txt?raw";
 import suite5 from "./UpstreamAccountCreate.oauth-mailbox.txt?raw";
 import suite6 from "./UpstreamAccountCreate.api-key.txt?raw";
 import suite7 from "./UpstreamAccountCreate.imported-oauth.txt?raw";
+import suite8 from "./UpstreamAccountCreate.relink-detail.txt?raw";
 
 /** @vitest-environment jsdom */
 import { act } from "react";
@@ -218,6 +219,7 @@ const TEST_GROUP_SUMMARIES = [
   "staging",
 ].map((groupName) => ({
   groupName,
+  accountCount: groupName === TEST_REQUIRED_GROUP_NAME ? 1 : 0,
   note: `${groupName} note`,
   boundProxyKeys: [...TEST_REQUIRED_BOUND_PROXY_KEYS],
   nodeShuntEnabled: false,
@@ -745,14 +747,69 @@ function mockUpstreamAccounts(
     duplicateInfo: null,
     history: [],
   });
-  const groups = Array.isArray(overrides.groups)
-    ? overrides.groups.map((group) => ({
-        ...group,
-        boundProxyKeys: Array.isArray(group.boundProxyKeys)
-          ? group.boundProxyKeys
-          : [...TEST_REQUIRED_BOUND_PROXY_KEYS],
-      }))
-    : TEST_GROUP_SUMMARIES;
+  const groups = (
+    Array.isArray(overrides.groups) ? overrides.groups : TEST_GROUP_SUMMARIES
+  ).map((group) => ({
+    ...group,
+    accountCount:
+      typeof group.accountCount === "number" ? group.accountCount : 0,
+    boundProxyKeys: Array.isArray(group.boundProxyKeys)
+      ? [...group.boundProxyKeys]
+      : [...TEST_REQUIRED_BOUND_PROXY_KEYS],
+  }));
+  const saveGroupNote: ReturnType<typeof vi.fn> =
+    overrides.saveGroupNote ??
+    vi.fn().mockImplementation(
+      async (groupName: string, payload: Record<string, unknown>) => {
+        const normalizedGroupName = groupName.trim();
+        const nextSummary = {
+          groupName: normalizedGroupName,
+          accountCount:
+            groups.find((group) => group.groupName === normalizedGroupName)
+              ?.accountCount ?? 0,
+          note:
+            typeof payload.note === "string" && payload.note.trim().length > 0
+              ? payload.note
+              : null,
+          boundProxyKeys: Array.isArray(payload.boundProxyKeys)
+            ? payload.boundProxyKeys.map((value) => String(value))
+            : [],
+          nodeShuntEnabled: payload.nodeShuntEnabled === true,
+          upstream429RetryEnabled: payload.upstream429RetryEnabled === true,
+          upstream429MaxRetries:
+            typeof payload.upstream429MaxRetries === "number"
+              ? payload.upstream429MaxRetries
+              : 0,
+          concurrencyLimit:
+            typeof payload.concurrencyLimit === "number"
+              ? payload.concurrencyLimit
+              : 0,
+        };
+        const existingIndex = groups.findIndex(
+          (group) => group.groupName === normalizedGroupName,
+        );
+        if (existingIndex >= 0) {
+          groups.splice(existingIndex, 1, nextSummary);
+        } else {
+          groups.push(nextSummary);
+        }
+        return nextSummary;
+      },
+    );
+  const deleteGroupNote: ReturnType<typeof vi.fn> =
+    overrides.deleteGroupNote ??
+    vi.fn().mockImplementation(async (groupName: string) => {
+      const normalizedGroupName = groupName.trim();
+      const existingIndex = groups.findIndex(
+        (group) => group.groupName === normalizedGroupName,
+      );
+      if (existingIndex >= 0) {
+        groups.splice(existingIndex, 1);
+      }
+    });
+  const resolvedGroups = Array.isArray(overrides.groups)
+    ? overrides.groups
+    : groups;
   const hookState = {
     items: [
       {
@@ -765,7 +822,6 @@ function mockUpstreamAccounts(
         enabled: true,
       },
     ],
-    groups,
     forwardProxyNodes: TEST_FORWARD_PROXY_NODES,
     writesEnabled: true,
     isLoading: false,
@@ -845,9 +901,6 @@ function mockUpstreamAccounts(
       },
       results: [],
     }),
-    saveGroupNote: vi
-      .fn()
-      .mockResolvedValue({ groupName: "prod", note: "Saved note" }),
     saveAccount: vi
       .fn()
       .mockImplementation(
@@ -870,6 +923,9 @@ function mockUpstreamAccounts(
           }),
       ),
     ...overrides,
+    groups: resolvedGroups,
+    saveGroupNote,
+    deleteGroupNote,
   };
   hookMocks.useUpstreamAccounts.mockReturnValue(hookState);
   hookMocks.useForwardProxyBindingNodes.mockReturnValue({
@@ -1019,3 +1075,110 @@ evalChunk(suite4);
 evalChunk(suite5);
 evalChunk(suite6);
 evalChunk(suite7);
+evalChunk(suite8);
+
+function clickCreateTab(matcher: RegExp) {
+  const tab = Array.from(document.body.querySelectorAll('[role="tab"]')).find(
+    (candidate) =>
+      candidate instanceof HTMLButtonElement &&
+      matcher.test(
+        candidate.textContent || candidate.getAttribute("aria-label") || "",
+      ),
+  );
+  if (!(tab instanceof HTMLButtonElement)) {
+    throw new Error(`missing create tab: ${matcher}`);
+  }
+  act(() => {
+    tab.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  return tab;
+}
+
+function readHiddenInputValue(selector: string) {
+  const input = document.body.querySelector(selector);
+  if (!(input instanceof HTMLInputElement)) {
+    throw new Error(`missing hidden input: ${selector}`);
+  }
+  return input.value;
+}
+
+function clickGroupSettingsButtonForInput(selector: string) {
+  const input = document.body.querySelector(selector);
+  if (!(input instanceof HTMLInputElement)) {
+    throw new Error(`missing group input: ${selector}`);
+  }
+  const field =
+    input.closest(".field") ??
+    input.parentElement?.parentElement?.parentElement ??
+    input.parentElement;
+  const button = Array.from(field?.querySelectorAll("button") ?? []).find(
+    (candidate) =>
+      candidate instanceof HTMLButtonElement &&
+      /edit group settings|编辑分组设置/i.test(
+        candidate.getAttribute("aria-label") ??
+          candidate.textContent ??
+          candidate.title ??
+          "",
+      ),
+  );
+  if (!(button instanceof HTMLButtonElement)) {
+    throw new Error(`missing group settings button: ${selector}`);
+  }
+  act(() => {
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  return button;
+}
+
+describe("UpstreamAccountCreatePage group deletion", () => {
+  it("clears selected group fields after deleting the active saved group", async () => {
+    const groups = TEST_GROUP_SUMMARIES.map((group) =>
+      group.groupName === "prod" ? { ...group, accountCount: 0 } : group,
+    );
+    const hookState = mockUpstreamAccounts({ groups });
+
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      state: {
+        draft: {
+          oauth: { groupName: "prod" },
+          import: { defaultGroupName: "prod" },
+          apiKey: { groupName: "prod" },
+          batchOauth: {
+            defaultGroupName: "prod",
+            rows: [
+              {
+                id: "row-1",
+                groupName: "prod",
+                inheritsDefaultGroup: true,
+              },
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    expect(readHiddenInputValue('[name="oauthGroupName"]')).toBe("prod");
+    clickGroupSettingsButtonForInput('[name="oauthGroupName"]');
+
+    await flushAsync();
+
+    clickBodyButton(/delete|删除/i);
+
+    await flushAsync();
+
+    expect(hookState.deleteGroupNote).toHaveBeenCalledWith("prod");
+    expect(readHiddenInputValue('[name="oauthGroupName"]')).toBe("");
+
+    clickCreateTab(/import json|导入 json/i);
+    expect(readHiddenInputValue('[name="importGroupName"]')).toBe("");
+
+    clickCreateTab(/api key/i);
+    expect(readHiddenInputValue('[name="apiKeyGroupName"]')).toBe("");
+
+    clickCreateTab(/batch oauth|批量 oauth/i);
+    expect(readHiddenInputValue('[name="batchOauthDefaultGroupName"]')).toBe("");
+    expect(readHiddenInputValue('[name^="batchOauthGroupName-"]')).toBe("");
+  });
+});

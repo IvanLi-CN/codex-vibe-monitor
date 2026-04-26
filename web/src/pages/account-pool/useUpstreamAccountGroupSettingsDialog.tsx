@@ -15,17 +15,21 @@ type GroupSettingsEditorState = {
   groupName: string;
   note: string;
   existing: boolean;
+  accountCount: number;
   concurrencyLimit: number;
   boundProxyKeys: string[];
   nodeShuntEnabled: boolean;
   upstream429RetryEnabled: boolean;
   upstream429MaxRetries: number;
+  onSaved?: ((groupName: string) => void) | null;
+  onDeleted?: ((groupName: string) => void) | null;
 };
 
 export type UpstreamAccountGroupSettingsSnapshot = {
   groupName: string;
   note?: string | null;
   existing?: boolean;
+  accountCount?: number | null;
   concurrencyLimit?: number | null;
   boundProxyKeys?: string[];
   nodeShuntEnabled?: boolean;
@@ -39,11 +43,14 @@ function createInitialEditorState(): GroupSettingsEditorState {
     groupName: "",
     note: "",
     existing: false,
+    accountCount: 0,
     concurrencyLimit: apiConcurrencyLimitToSliderValue(0),
     boundProxyKeys: [],
     nodeShuntEnabled: false,
     upstream429RetryEnabled: false,
     upstream429MaxRetries: 0,
+    onSaved: null,
+    onDeleted: null,
   };
 }
 
@@ -76,22 +83,37 @@ interface UseUpstreamAccountGroupSettingsDialogOptions {
     payload: UpdateUpstreamAccountGroupPayload,
     options: { existing: boolean },
   ) => Promise<unknown>;
+  deleteGroupSettings?: (groupName: string) => Promise<void>;
+}
+
+type OpenGroupSettingsEditorOptions = {
+  onSaved?: (groupName: string) => void;
+  onDeleted?: (groupName: string) => void;
 }
 
 export function useUpstreamAccountGroupSettingsDialog(
   options: UseUpstreamAccountGroupSettingsDialogOptions,
 ): {
-  openEditor: (groupName: string) => void;
+  openEditor: (
+    groupName: string,
+    openOptions?: OpenGroupSettingsEditorOptions,
+  ) => void;
   closeEditor: () => void;
   dialog: ReactNode;
 } {
   const { t, locale } = useTranslation();
-  const { container, resolveGroupState, saveGroupSettings, writesEnabled } =
+  const {
+    container,
+    resolveGroupState,
+    saveGroupSettings,
+    deleteGroupSettings,
+    writesEnabled,
+  } =
     options;
   const [editor, setEditor] = useState<GroupSettingsEditorState>(
     createInitialEditorState,
   );
-  const [busy, setBusy] = useState(false);
+  const [busyAction, setBusyAction] = useState<"save" | "delete" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const {
     nodes: forwardProxyNodes,
@@ -109,7 +131,7 @@ export function useUpstreamAccountGroupSettingsDialog(
   });
 
   const openEditor = useCallback(
-    (groupName: string) => {
+    (groupName: string, openOptions?: OpenGroupSettingsEditorOptions) => {
       if (!writesEnabled) return;
       const normalizedGroupName = normalizeGroupName(groupName);
       if (!normalizedGroupName) return;
@@ -120,6 +142,7 @@ export function useUpstreamAccountGroupSettingsDialog(
         groupName: normalizedGroupName,
         note: snapshot?.note ?? "",
         existing: snapshot?.existing === true,
+        accountCount: Math.max(0, Math.trunc(snapshot?.accountCount ?? 0)),
         concurrencyLimit: apiConcurrencyLimitToSliderValue(
           snapshot?.concurrencyLimit ?? 0,
         ),
@@ -127,16 +150,18 @@ export function useUpstreamAccountGroupSettingsDialog(
         nodeShuntEnabled: snapshot?.nodeShuntEnabled === true,
         upstream429RetryEnabled: snapshot?.upstream429RetryEnabled === true,
         upstream429MaxRetries: snapshot?.upstream429MaxRetries ?? 0,
+        onSaved: openOptions?.onSaved ?? null,
+        onDeleted: openOptions?.onDeleted ?? null,
       });
     },
     [resolveGroupState, writesEnabled],
   );
 
   const closeEditor = useCallback(() => {
-    if (busy) return;
+    if (busyAction != null) return;
     setEditor((current) => ({ ...current, open: false }));
     setError(null);
-  }, [busy]);
+  }, [busyAction]);
 
   const handleSave = useCallback(async () => {
     if (!writesEnabled) return;
@@ -157,7 +182,7 @@ export function useUpstreamAccountGroupSettingsDialog(
       ? normalizeEnabledUpstream429MaxRetries(editor.upstream429MaxRetries)
       : normalizeUpstream429MaxRetries(editor.upstream429MaxRetries);
 
-    setBusy(true);
+    setBusyAction("save");
     setError(null);
     try {
       await saveGroupSettings(normalizedGroupName, {
@@ -168,13 +193,32 @@ export function useUpstreamAccountGroupSettingsDialog(
         upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
         upstream429MaxRetries: normalizedUpstream429MaxRetries,
       }, { existing: editor.existing });
+      editor.onSaved?.(normalizedGroupName);
       setEditor((current) => ({ ...current, open: false }));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   }, [editor, saveGroupSettings, writesEnabled]);
+
+  const handleDelete = useCallback(async () => {
+    if (!writesEnabled || !deleteGroupSettings) return;
+    const normalizedGroupName = normalizeGroupName(editor.groupName);
+    if (!normalizedGroupName || editor.accountCount > 0) return;
+
+    setBusyAction("delete");
+    setError(null);
+    try {
+      await deleteGroupSettings(normalizedGroupName);
+      editor.onDeleted?.(normalizedGroupName);
+      setEditor((current) => ({ ...current, open: false }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyAction(null);
+    }
+  }, [deleteGroupSettings, editor, writesEnabled]);
 
   const dialog = useMemo(
     () => (
@@ -184,6 +228,7 @@ export function useUpstreamAccountGroupSettingsDialog(
         groupName={editor.groupName}
         note={editor.note}
         concurrencyLimit={editor.concurrencyLimit}
+        accountCount={editor.accountCount}
         boundProxyKeys={editor.boundProxyKeys}
         nodeShuntEnabled={editor.nodeShuntEnabled}
         upstream429RetryEnabled={editor.upstream429RetryEnabled}
@@ -191,7 +236,8 @@ export function useUpstreamAccountGroupSettingsDialog(
         availableProxyNodes={forwardProxyNodes}
         proxyBindingsCatalogKind={forwardProxyCatalogState.kind}
         proxyBindingsCatalogFreshness={forwardProxyCatalogState.freshness}
-        busy={busy}
+        busy={busyAction != null}
+        deleting={busyAction === "delete"}
         error={error}
         existing={editor.existing}
         onNoteChange={(value) => {
@@ -240,6 +286,11 @@ export function useUpstreamAccountGroupSettingsDialog(
         }}
         onClose={closeEditor}
         onSave={() => void handleSave()}
+        onDelete={
+          editor.existing && deleteGroupSettings
+            ? () => void handleDelete()
+            : undefined
+        }
         title={t("accountPool.upstreamAccounts.groupNotes.dialogTitle")}
         existingDescription={t(
           "accountPool.upstreamAccounts.groupNotes.existingDescription",
@@ -265,6 +316,15 @@ export function useUpstreamAccountGroupSettingsDialog(
         )}
         cancelLabel={t("accountPool.upstreamAccounts.actions.cancel")}
         saveLabel={t("accountPool.upstreamAccounts.actions.save")}
+        deleteLabel={t("accountPool.upstreamAccounts.actions.delete")}
+        deleteDisabledHint={
+          editor.accountCount > 0
+            ? t(
+                "accountPool.upstreamAccounts.groupNotes.deleteBlockedWithCount",
+                { count: editor.accountCount },
+              )
+            : undefined
+        }
         closeLabel={t("accountPool.upstreamAccounts.actions.cancel")}
         existingBadgeLabel={t(
           "accountPool.upstreamAccounts.groupNotes.badges.existing",
@@ -348,10 +408,12 @@ export function useUpstreamAccountGroupSettingsDialog(
       />
     ),
     [
-      busy,
+      busyAction,
       closeEditor,
       container,
+      deleteGroupSettings,
       editor.boundProxyKeys,
+      editor.accountCount,
       editor.concurrencyLimit,
       editor.existing,
       editor.groupName,
@@ -364,6 +426,7 @@ export function useUpstreamAccountGroupSettingsDialog(
       forwardProxyCatalogState.freshness,
       forwardProxyCatalogState.kind,
       forwardProxyNodes,
+      handleDelete,
       handleSave,
       locale,
       t,

@@ -32,7 +32,8 @@ export function UpstreamAccountCreateOauthSection() {
     displayedOauthMailboxStatus,
     formatDateTime,
     formatDuplicateReasons,
-    groupSuggestions,
+    formatGroupAccountCountLabel,
+    groupOptions,
     handleAttachOauthMailbox,
     handleCompleteOauth,
     handleResolveOauthEmailChoice,
@@ -44,6 +45,7 @@ export function UpstreamAccountCreateOauthSection() {
     handleDeleteTag,
     handleGenerateOauthMailbox,
     handleGenerateOauthUrl,
+    handleOauthGroupCreateRequest,
     hasGroupSettings,
     invalidateRelinkPendingOauthSessionForMailboxChange,
     invalidateSingleOauthSessionForMetadataEdit,
@@ -51,6 +53,7 @@ export function UpstreamAccountCreateOauthSection() {
     isSupportedMailboxSession,
     mailboxInputMatchesSession,
     manualCopyFieldRef,
+    markRelinkMetadataDirty,
     manualCopyOpen,
     normalizeGroupName,
     oauthCallbackUrl,
@@ -73,6 +76,7 @@ export function UpstreamAccountCreateOauthSection() {
     oauthNote,
     oauthSessionActive,
     oauthTagIds,
+    relinkReady,
     openDuplicateDetailDialog,
     openGroupNoteEditor,
     pageCreatedTagIds,
@@ -114,6 +118,7 @@ export function UpstreamAccountCreateOauthSection() {
         value={oauthDisplayName}
         aria-invalid={oauthDisplayNameConflict != null}
         onChange={(event) => {
+          markRelinkMetadataDirty();
           setOauthDisplayName(event.target.value);
           setActionError(null);
           invalidateSingleOauthSessionForMetadataEdit();
@@ -141,6 +146,7 @@ export function UpstreamAccountCreateOauthSection() {
           )}
           value={oauthMailboxInput}
           onChange={(event) => {
+            markRelinkMetadataDirty();
             const nextValue = event.target.value;
             setOauthMailboxInput(nextValue);
             setOauthEmail(nextValue);
@@ -324,7 +330,7 @@ export function UpstreamAccountCreateOauthSection() {
       <UpstreamAccountGroupCombobox
         name="oauthGroupName"
         value={oauthGroupName}
-        suggestions={groupSuggestions}
+        options={groupOptions}
         placeholder={t(
           "accountPool.upstreamAccounts.fields.groupNamePlaceholder",
         )}
@@ -336,11 +342,14 @@ export function UpstreamAccountCreateOauthSection() {
         )}
         createLabel={(value) =>
           t(
-            "accountPool.upstreamAccounts.fields.groupNameUseValue",
+            "accountPool.upstreamAccounts.fields.groupNameConfigureValue",
             { value },
           )
         }
+        onCreateRequested={handleOauthGroupCreateRequest}
+        formatAccountCountLabel={formatGroupAccountCountLabel}
         onValueChange={(value) => {
+          markRelinkMetadataDirty();
           setOauthGroupName(value);
           setActionError(null);
           invalidateSingleOauthSessionForMetadataEdit();
@@ -388,6 +397,7 @@ export function UpstreamAccountCreateOauthSection() {
       "accountPool.upstreamAccounts.mother.toggleDescription",
     )}
     onToggle={() => {
+      markRelinkMetadataDirty();
       setOauthIsMother((current: boolean) => !current);
       setActionError(null);
       invalidateSingleOauthSessionForMetadataEdit();
@@ -402,6 +412,7 @@ export function UpstreamAccountCreateOauthSection() {
       name="oauthNote"
       value={oauthNote}
       onChange={(event) => {
+        markRelinkMetadataDirty();
         setOauthNote(event.target.value);
         setActionError(null);
         invalidateSingleOauthSessionForMetadataEdit();
@@ -415,6 +426,7 @@ export function UpstreamAccountCreateOauthSection() {
     pageCreatedTagIds={pageCreatedTagIds}
     labels={tagFieldLabels}
     onChange={(nextTagIds) => {
+      markRelinkMetadataDirty();
       setOauthTagIds(nextTagIds);
       setActionError(null);
       invalidateSingleOauthSessionForMetadataEdit();
@@ -607,6 +619,7 @@ export function UpstreamAccountCreateOauthSection() {
           disabled={
             busyAction === "oauth-generate" ||
             !writesEnabled ||
+            !relinkReady ||
             Boolean(oauthGroupProxyState.error) ||
             session?.status === "completed"
           }

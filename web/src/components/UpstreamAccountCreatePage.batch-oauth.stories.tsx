@@ -272,6 +272,7 @@ export const PendingDefaultGroupSync: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     const doc = canvasElement.ownerDocument
+    const documentScope = within(doc.body)
     const defaultGroupTrigger = canvas.getAllByRole('combobox')[0]
 
     await userEvent.click(canvas.getByRole('button', { name: /generate oauth url/i }))
@@ -292,6 +293,19 @@ export const PendingDefaultGroupSync: Story = {
     }
     await userEvent.click(createOption)
 
+    const dialog = await documentScope.findByRole('dialog', {
+      name: /分组设置|group settings|分组备注|group note/i,
+    })
+    await expect(dialog).toHaveTextContent(/launch-team/i)
+    await expect(
+      within(dialog).getByText(/creates its shared settings in advance/i),
+    ).toBeInTheDocument()
+    await userEvent.click(within(dialog).getByRole('button', { name: /^Direct$/i }))
+    await userEvent.click(
+      within(dialog).getByRole('button', { name: /save changes|save group settings/i }),
+    )
+
+    await expect(canvas.getByRole('combobox')).toHaveTextContent(/launch-team/i)
     await expect(canvas.getByRole('button', { name: /copy oauth url/i })).toBeEnabled()
     await expect(canvas.queryByText(/generate a fresh oauth url for this row/i)).not.toBeInTheDocument()
   },

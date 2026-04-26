@@ -233,6 +233,7 @@
 
 ## Change log
 
+- 2026-04-23：把上游账号分组升级为可持久化 catalog，保存分组设置后立即落库并保留 `0` 账号分组；所有新分组创建入口改为先弹分组设置对话框、保存成功后才回填 `groupName`，分组下拉同步展示全量 `accountCount`，且分组设置对话框统一为“左下角删除空分组 / 右侧取消与保存”的图标+文字 CTA。
 - 2026-03-16：补充账号详情抽屉的异步一致性约束，明确账号级 busy state 与 action error 都要按账号隔离、同一账号任一写操作进行中时其它写入口必须锁住、账号切换要在同一交互拍内使旧 detail 请求失效、保存/同步成功要先失效旧 detail reload、refresh 必须用列表数据纯计算最终选中账号后再刷新 detail 且列表失败时不得清空当前 detail、hook 级 list/detail 错误必须按来源隔离、同类动作跨账号并发时不得互相覆盖 busy/error 态、晚到 detail 成功/失败响应与 sync 响应都要按当前选中账号过滤，以及同步按钮 idle 态改用 outline 图标。
 - 2026-03-20：补充账号级 actor 串行与后台维护去重约束，明确维护只允许阻塞同一账号、无关账号启停在维护竞争下需以 `1 秒内完成服务端提交` 为目标，并新增对应的 Rust 并发回归测试要求。
 - 2026-04-01：将号池活跃 sticky 共享窗口从 30 分钟统一收敛为 5 分钟，`workStatus=working` 与 `activeConversationCount` 继续共用同一时间口径，且不引入新的 API、schema 或配置项。
@@ -241,7 +242,26 @@
 
 ## Visual Evidence
 
-- 本次任务按主人要求不保留截图交付；对应完成态场景已通过稳定 Storybook stories 与前端测试覆盖验证。
+- source_type: storybook_canvas
+  story_id_or_title: Account Pool/Pages/Upstream Account Create/Batch OAuth/Group Note Draft
+  state: create-before-save dialog
+  evidence_note: 验证输入一个不存在的新分组后，会先弹出分组设置对话框，保存前不会把新值直接写回表单。
+  image:
+  ![新分组先配置后创建](./assets/group-create-config-before-save.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Account Pool/Components/Upstream Account Group Combobox/Default
+  state: dropdown account counts
+  evidence_note: 验证分组下拉统一展示 `groupName + accountCount`，并保留 `0 accounts` 的已保存空分组。
+  image:
+  ![分组下拉显示账号数](./assets/group-dropdown-account-counts.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Account Pool/Components/Upstream Account Group Settings Dialog/Delete Blocked With Members
+  state: persisted non-empty group delete blocked
+  evidence_note: 验证已保存但仍有成员的分组会在左下角展示禁用删除按钮，并提示先移走剩余账号。
+  image:
+  ![非空分组删除受阻](./assets/group-settings-delete-blocked.png)
 
 ## 风险 / 假设
 
@@ -251,6 +271,7 @@
 
 ## 变更记录（Change log）
 
+- 2026-04-23: 把上游账号分组升级为可持久化 catalog，保存分组设置后立即落库并保留 `0` 账号分组；所有新分组创建入口改为先弹分组设置对话框、保存成功后才回填 `groupName`，分组下拉同步展示全量 `accountCount`，且分组设置对话框统一为“左下角删除空分组 / 右侧取消与保存”的图标+文字 CTA。
 - 2026-03-11: 创建 spec，冻结账号管理第一阶段的范围、接口、状态机与验收口径。
 - 2026-03-11: 完成后端账号管理 / OAuth 会话 / 前端号池页面实现，并通过 Rust + Web 自动化验证与本地浏览器 smoke。
 - 2026-03-13: 扩展上游账号创建页为单账号 OAuth / 批量 OAuth / API Key 同页模式，并将批量 OAuth 表格纳入现有手动 OAuth 流程。

@@ -74,8 +74,10 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
     oauthMailboxSession,
     oauthNote,
     oauthTagIds,
-    persistDraftGroupSettings,
     relinkAccountId,
+    relinkDetailError,
+    relinkDetailLoading,
+    relinkReady,
     removeOauthMailboxSession,
     resolveMailboxIssue,
     resolvePendingGroupConcurrencyLimitForName,
@@ -347,6 +349,15 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
   };
 
   const handleGenerateOauthUrl = async () => {
+    if (!relinkReady) {
+      setActionError(
+        relinkDetailLoading
+          ? t("accountPool.upstreamAccounts.createPage.relinkLoading")
+          : relinkDetailError ??
+              t("accountPool.upstreamAccounts.createPage.relinkLoadFailed"),
+      );
+      return;
+    }
     if (oauthGroupProxyState.error) {
       setActionError(oauthGroupProxyState.error);
       return;
@@ -463,7 +474,6 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         mailboxSessionId: activeOauthMailboxSession?.sessionId,
         mailboxAddress: activeOauthMailboxSession?.emailAddress,
       });
-      await persistDraftGroupSettings(oauthGroupName);
       notifyMotherChange(detail);
       setSession({
         ...session,
@@ -490,7 +500,6 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
           const detail = await fetchUpstreamAccountDetail(
             latestSession.accountId,
           );
-          await persistDraftGroupSettings(oauthGroupName);
           notifyMotherChange(detail);
           maybePromptSingleOauthEmailResolution(detail);
         } catch {
@@ -955,7 +964,6 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         mailboxSessionId: row.mailboxSession?.sessionId,
         mailboxAddress: row.mailboxSession?.emailAddress,
       });
-      await persistDraftGroupSettings(row.groupName);
       notifyMotherChange(detail);
       updateBatchRow(rowId, (current: BatchOauthRow) => {
         const baseSession = (current.session ??
@@ -1030,7 +1038,6 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
           const detail = await fetchUpstreamAccountDetail(
             latestSession.accountId,
           );
-          await persistDraftGroupSettings(row.groupName);
           notifyMotherChange(detail);
           updateBatchRow(rowId, (current: BatchOauthRow) => {
             const baseSession = (current.session ??
@@ -1250,23 +1257,12 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         localLimitUnit: apiKeyLimitUnit.trim() || "requests",
         tagIds: apiKeyTagIds,
       });
-      let postCreateWarning: string | null = null;
-      try {
-        await persistDraftGroupSettings(apiKeyGroupName);
-      } catch (error) {
-        postCreateWarning = t(
-          "accountPool.upstreamAccounts.partialSuccess.createdButGroupSettingsFailed",
-          {
-            error: error instanceof Error ? error.message : String(error),
-          },
-        );
-      }
       notifyMotherChange(response);
       navigate("/account-pool/upstream-accounts", {
         state: {
           selectedAccountId: response.id,
           openDetail: true,
-          postCreateWarning,
+          postCreateWarning: null,
         },
       });
     } catch (err) {

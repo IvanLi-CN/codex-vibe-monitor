@@ -246,7 +246,6 @@ pub(crate) fn parse_list_upstream_accounts_query(
         status: base.status,
         page: base.page,
         page_size: base.page_size,
-        tag_ids: base.tag_ids,
         ..ListUpstreamAccountsQuery::default()
     };
 
@@ -255,6 +254,12 @@ pub(crate) fn parse_list_upstream_accounts_query(
             "workStatus" => params.work_status.push(value.into_owned()),
             "enableStatus" => params.enable_status.push(value.into_owned()),
             "healthStatus" => params.health_status.push(value.into_owned()),
+            "tagIds" => {
+                let tag_id = value
+                    .parse::<i64>()
+                    .map_err(|_| format!("invalid tagIds value `{value}`; expected integer"))?;
+                params.tag_ids.push(tag_id);
+            }
             "includeAll" => {
                 params.include_all = match value.as_ref() {
                     "" | "0" | "false" | "False" | "FALSE" | "no" | "off" => Some(false),
@@ -434,12 +439,6 @@ pub(crate) async fn update_upstream_account_group(
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(internal_error_tuple)?;
-    if !group_has_accounts_conn(tx.as_mut(), &group_name)
-        .await
-        .map_err(internal_error_tuple)?
-    {
-        return Err((StatusCode::NOT_FOUND, "group not found".to_string()));
-    }
     let existing_metadata = load_group_metadata_conn(tx.as_mut(), &group_name)
         .await
         .map_err(internal_error_tuple)?
@@ -514,8 +513,13 @@ pub(crate) async fn update_upstream_account_group(
     let saved = load_group_metadata(&state.pool, Some(&group_name))
         .await
         .map_err(internal_error_tuple)?;
+    let mut conn = state.pool.acquire().await.map_err(internal_error_tuple)?;
+    let account_count = group_account_count_conn(&mut conn, &group_name)
+        .await
+        .map_err(internal_error_tuple)?;
     Ok(Json(UpstreamAccountGroupSummary {
         group_name,
+        account_count,
         note: saved.note,
         bound_proxy_keys: saved.bound_proxy_keys,
         node_shunt_enabled: saved.node_shunt_enabled,
@@ -523,6 +527,61 @@ pub(crate) async fn update_upstream_account_group(
         upstream_429_max_retries: saved.upstream_429_max_retries,
         concurrency_limit: saved.concurrency_limit,
     }))
+}
+
+pub(crate) async fn delete_upstream_account_group(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(group_name): AxumPath<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    state.upstream_accounts.require_crypto_key()?;
+
+    let group_name = normalize_optional_text(Some(group_name)).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            "group name is required".to_string(),
+        )
+    })?;
+
+    let mut tx = state
+        .pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(internal_error_tuple)?;
+    let account_count = group_account_count_conn(tx.as_mut(), &group_name)
+        .await
+        .map_err(internal_error_tuple)?;
+    if account_count > 0 {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "group still has {account_count} account{}; move them out before deleting",
+                if account_count == 1 { "" } else { "s" }
+            ),
+        ));
+    }
+    let deleted = sqlx::query(
+        r#"
+        DELETE FROM pool_upstream_account_group_notes
+        WHERE group_name = ?1
+        "#,
+    )
+    .bind(&group_name)
+    .execute(tx.as_mut())
+    .await
+    .map_err(internal_error_tuple)?
+    .rows_affected();
+    if deleted == 0 {
+        return Err((StatusCode::NOT_FOUND, "group not found".to_string()));
+    }
+    tx.commit().await.map_err(internal_error_tuple)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn get_upstream_account(

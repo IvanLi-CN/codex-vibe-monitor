@@ -288,6 +288,8 @@ async fn parallel_work_stats_counts_distinct_prompt_cache_keys_per_bucket() {
     let Json(response) = fetch_parallel_work_stats(
         State(state),
         Query(ParallelWorkStatsQuery {
+            range: "today".to_string(),
+            bucket: None,
             time_zone: Some("Asia/Shanghai".to_string()),
         }),
     )
@@ -354,6 +356,8 @@ async fn parallel_work_stats_minute7d_supports_non_shanghai_reporting_timezones(
     let Json(response) = fetch_parallel_work_stats(
         State(state),
         Query(ParallelWorkStatsQuery {
+            range: "today".to_string(),
+            bucket: None,
             time_zone: Some("UTC".to_string()),
         }),
     )
@@ -433,6 +437,8 @@ async fn parallel_work_stats_falls_back_historical_windows_for_sub_hour_timezone
     let Json(response) = fetch_parallel_work_stats(
         State(state),
         Query(ParallelWorkStatsQuery {
+            range: "today".to_string(),
+            bucket: None,
             time_zone: Some("Asia/Kolkata".to_string()),
         }),
     )
@@ -526,6 +532,8 @@ async fn parallel_work_stats_zero_fill_and_exclude_current_minute_and_hour() {
     let Json(response) = fetch_parallel_work_stats(
         State(state),
         Query(ParallelWorkStatsQuery {
+            range: "today".to_string(),
+            bucket: None,
             time_zone: Some("Asia/Shanghai".to_string()),
         }),
     )
@@ -629,6 +637,8 @@ async fn parallel_work_stats_day_all_aggregates_distinct_keys_per_day() {
     let Json(response) = fetch_parallel_work_stats(
         State(state),
         Query(ParallelWorkStatsQuery {
+            range: "today".to_string(),
+            bucket: None,
             time_zone: Some("Asia/Shanghai".to_string()),
         }),
     )
@@ -667,6 +677,8 @@ async fn parallel_work_stats_day_all_returns_null_summary_without_complete_days(
     let Json(response) = fetch_parallel_work_stats(
         State(state),
         Query(ParallelWorkStatsQuery {
+            range: "today".to_string(),
+            bucket: None,
             time_zone: Some("Asia/Shanghai".to_string()),
         }),
     )

@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AppIcon } from "./AppIcon";
 import { ConcurrencyLimitSlider } from "./ConcurrencyLimitSlider";
 import type { ForwardProxyBindingNode } from "../lib/api";
@@ -16,6 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "./ui/dialog";
+import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { Switch } from "./ui/switch";
 
 type GroupProxyOption = ForwardProxyBindingNode & {
@@ -28,8 +29,10 @@ interface UpstreamAccountGroupNoteDialogProps {
   container?: HTMLElement | null;
   groupName: string;
   note: string;
+  accountCount?: number;
   concurrencyLimit?: number;
   busy?: boolean;
+  deleting?: boolean;
   error?: string | null;
   existing: boolean;
   boundProxyKeys?: string[];
@@ -45,6 +48,7 @@ interface UpstreamAccountGroupNoteDialogProps {
   onUpstream429MaxRetriesChange?: (value: number) => void;
   onClose: () => void;
   onSave: () => void;
+  onDelete?: () => void;
   title: string;
   existingDescription: string;
   draftDescription: string;
@@ -56,6 +60,8 @@ interface UpstreamAccountGroupNoteDialogProps {
   concurrencyLimitUnlimitedLabel?: string;
   cancelLabel: string;
   saveLabel: string;
+  deleteLabel?: string;
+  deleteDisabledHint?: string;
   closeLabel: string;
   existingBadgeLabel: string;
   draftBadgeLabel: string;
@@ -274,8 +280,10 @@ export function UpstreamAccountGroupNoteDialog({
   container,
   groupName,
   note,
+  accountCount = 0,
   concurrencyLimit = apiConcurrencyLimitToSliderValue(0),
   busy = false,
+  deleting = false,
   error,
   existing,
   boundProxyKeys,
@@ -291,6 +299,7 @@ export function UpstreamAccountGroupNoteDialog({
   onUpstream429MaxRetriesChange,
   onClose,
   onSave,
+  onDelete,
   title,
   existingDescription,
   draftDescription,
@@ -302,6 +311,8 @@ export function UpstreamAccountGroupNoteDialog({
   concurrencyLimitUnlimitedLabel,
   cancelLabel,
   saveLabel,
+  deleteLabel,
+  deleteDisabledHint,
   closeLabel,
   existingBadgeLabel,
   draftBadgeLabel,
@@ -458,6 +469,16 @@ export function UpstreamAccountGroupNoteDialog({
     !hasSelectableBoundProxySelection;
   const blockingNodeShuntSelection =
     normalizedNodeShuntEnabled && canonicalBoundProxyKeys.length === 0;
+  const showDelete = existing && onDelete != null;
+  const deleteBlockedByMembers = accountCount > 0;
+  const deleteBusyDisabled = busy;
+  const deleteBlockedPopoverEnabled =
+    showDelete &&
+    deleteBlockedByMembers &&
+    !deleteBusyDisabled &&
+    Boolean(deleteDisabledHint);
+  const [deleteBlockedPopoverOpen, setDeleteBlockedPopoverOpen] =
+    useState(false);
   const showNodeShuntSection =
     Boolean(onNodeShuntEnabledChange) ||
     Boolean(nodeShuntLabel) ||
@@ -467,6 +488,20 @@ export function UpstreamAccountGroupNoteDialog({
     Boolean(onUpstream429MaxRetriesChange) ||
     Boolean(upstream429RetryLabel) ||
     Boolean(upstream429RetryHint);
+
+  useEffect(() => {
+    if (!open || !deleteBlockedPopoverEnabled) {
+      setDeleteBlockedPopoverOpen(false);
+    }
+  }, [deleteBlockedPopoverEnabled, open]);
+
+  const handleDeleteClick = () => {
+    if (deleteBlockedPopoverEnabled) {
+      setDeleteBlockedPopoverOpen((current) => !current);
+      return;
+    }
+    onDelete?.();
+  };
 
   return (
     <Dialog
@@ -798,31 +833,107 @@ export function UpstreamAccountGroupNoteDialog({
           </div>
         </div>
 
-        <DialogFooter className="border-t border-base-300/80 px-6 py-5">
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={onClose}
-            disabled={busy}
-          >
-            {cancelLabel}
-          </Button>
-          <Button
-            type="button"
-            onClick={onSave}
-            disabled={
-              busy || blockingBindingSelection || blockingNodeShuntSelection
-            }
-          >
-            {busy ? (
-              <AppIcon
-                name="loading"
-                className="mr-2 h-4 w-4 animate-spin"
-                aria-hidden
-              />
+        <DialogFooter className="flex flex-col gap-3 border-t border-base-300/80 px-6 py-5 sm:flex-row sm:items-end sm:justify-between">
+          <div className="flex min-w-0 items-end">
+            {showDelete ? (
+              <Popover
+                open={deleteBlockedPopoverEnabled ? deleteBlockedPopoverOpen : false}
+                onOpenChange={
+                  deleteBlockedPopoverEnabled
+                    ? setDeleteBlockedPopoverOpen
+                    : undefined
+                }
+              >
+                <PopoverTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    onClick={handleDeleteClick}
+                    disabled={deleteBusyDisabled}
+                    aria-disabled={deleteBlockedPopoverEnabled}
+                    className={cn(
+                      deleteBlockedPopoverEnabled
+                        ? "opacity-50 focus-visible:ring-error/25"
+                        : undefined,
+                    )}
+                  >
+                    {deleting ? (
+                      <AppIcon
+                        name="loading"
+                        className="mr-2 h-4 w-4 animate-spin"
+                        aria-hidden
+                      />
+                    ) : (
+                      <AppIcon
+                        name="trash-can-outline"
+                        className="mr-2 h-4 w-4"
+                        aria-hidden
+                      />
+                    )}
+                    {deleteLabel ?? "Delete group"}
+                  </Button>
+                </PopoverTrigger>
+                {deleteBlockedPopoverEnabled ? (
+                  <PopoverContent
+                    side="top"
+                    align="start"
+                    sideOffset={12}
+                    className="w-[min(22rem,calc(100vw-2rem))] rounded-2xl border-error/20 bg-base-100 px-4 py-3 shadow-xl"
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="mt-0.5 rounded-full bg-error/10 p-1 text-error">
+                        <AppIcon
+                          name="information-outline"
+                          className="h-4 w-4"
+                          aria-hidden
+                        />
+                      </div>
+                      <p className="text-sm leading-6 text-base-content/78">
+                        {deleteDisabledHint}
+                      </p>
+                    </div>
+                  </PopoverContent>
+                ) : null}
+              </Popover>
             ) : null}
-            {saveLabel}
-          </Button>
+          </div>
+          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={onClose}
+              disabled={busy}
+            >
+              <AppIcon name="close" className="mr-2 h-4 w-4" aria-hidden />
+              {cancelLabel}
+            </Button>
+            <Button
+              type="button"
+              onClick={onSave}
+              disabled={
+                busy || blockingBindingSelection || blockingNodeShuntSelection
+              }
+            >
+              {busy && !deleting ? (
+                <AppIcon
+                  name="loading"
+                  className="mr-2 h-4 w-4 animate-spin"
+                  aria-hidden
+                />
+              ) : (
+                <AppIcon
+                  name={
+                    existing
+                      ? "content-save-outline"
+                      : "content-save-plus-outline"
+                  }
+                  className="mr-2 h-4 w-4"
+                  aria-hidden
+                />
+              )}
+              {saveLabel}
+            </Button>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>

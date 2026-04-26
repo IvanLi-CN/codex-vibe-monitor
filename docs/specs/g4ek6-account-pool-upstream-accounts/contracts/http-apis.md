@@ -16,6 +16,12 @@
 
 列表与详情共享 `activeConversationCount` 字段：表示最近 `30` 分钟内仍活跃的 sticky route 数量；缺省返回 `0`。
 
+列表响应还会返回 `groups[]` catalog，供所有分组下拉与分组设置入口共用。它的口径是：
+
+- `账号实际引用的分组 ∪ 已保存分组元数据`
+- `accountCount` 永远表示后端全量成员数，不受当前列表分页、搜索或筛选影响
+- 已保存但当前 `0` 账号的空分组也必须继续返回，避免下拉列表在刷新后丢失它们
+
 当账号因分组节点分流策略暂时未排到有效节点时，列表与详情额外返回：
 
 - `routingBlockReasonCode = group_node_shunt_unassigned`
@@ -76,7 +82,29 @@
       }
     }
   ],
-  "hasUngroupedAccounts": true
+  "hasUngroupedAccounts": true,
+  "groups": [
+    {
+      "groupName": "production",
+      "accountCount": 3,
+      "note": "Primary production group",
+      "boundProxyKeys": ["jp-edge-01"],
+      "nodeShuntEnabled": false,
+      "upstream429RetryEnabled": false,
+      "upstream429MaxRetries": 0,
+      "concurrencyLimit": 0
+    },
+    {
+      "groupName": "launch-team",
+      "accountCount": 0,
+      "note": "Saved ahead of the first account",
+      "boundProxyKeys": ["__direct__"],
+      "nodeShuntEnabled": false,
+      "upstream429RetryEnabled": false,
+      "upstream429MaxRetries": 0,
+      "concurrencyLimit": 0
+    }
+  ]
 }
 ```
 
@@ -219,8 +247,35 @@ Query:
 - `nodeShuntEnabled`
 - `upstream429RetryEnabled`
 - `upstream429MaxRetries`
+- `concurrencyLimit`
 
-响应中的 group summary 同样返回 `nodeShuntEnabled`。
+语义：
+
+- 这是分组 catalog 的 upsert 接口，不再要求该分组已经有账号引用
+- 新分组在这里保存成功后就会立即出现在 `GET /api/pool/upstream-accounts` 的 `groups[]` 里，即使 `accountCount=0`
+- 这条契约显式替换 `#thyxm` 里“新分组只能先保留前端草稿、直到首个账号落库后再持久化”的旧假设
+
+响应返回完整 group summary：
+
+```json
+{
+  "groupName": "launch-team",
+  "accountCount": 0,
+  "note": "Saved ahead of the first account",
+  "boundProxyKeys": ["__direct__"],
+  "nodeShuntEnabled": false,
+  "upstream429RetryEnabled": false,
+  "upstream429MaxRetries": 0,
+  "concurrencyLimit": 0
+}
+```
+
+## `DELETE /api/pool/upstream-account-groups/:groupName`
+
+- 只允许删除 `accountCount=0` 的空分组
+- 删除成功返回 `204 No Content`
+- 若分组当前仍有成员，返回 `409 Conflict`，消息会明确剩余成员数
+- 若分组不存在，返回 `404 Not Found`
 
 ## 后台维护并发保证
 

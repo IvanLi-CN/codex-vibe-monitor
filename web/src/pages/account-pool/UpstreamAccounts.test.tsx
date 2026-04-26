@@ -883,6 +883,9 @@ function mockBulkSyncPage(options?: {
 
 function mockAccountsPage(options?: {
   saveRouting?: ReturnType<typeof vi.fn>;
+  saveGroupNote?: ReturnType<typeof vi.fn>;
+  deleteGroupNote?: ReturnType<typeof vi.fn>;
+  groups?: Array<Record<string, unknown>>;
   routing?: {
     writesEnabled: boolean;
     apiKeyConfigured: boolean;
@@ -899,6 +902,84 @@ function mockAccountsPage(options?: {
   detail?: Record<string, unknown>;
 }) {
   const saveRouting = options?.saveRouting ?? vi.fn();
+  const groups = (
+    options?.groups ?? [
+      {
+        groupName: "prod",
+        accountCount: 2,
+        note: "prod note",
+        boundProxyKeys: ["jp-edge-01"],
+        nodeShuntEnabled: false,
+        upstream429RetryEnabled: false,
+        upstream429MaxRetries: 0,
+      },
+    ]
+  ).map((group) => ({
+    ...group,
+    accountCount:
+      typeof group.accountCount === "number" ? group.accountCount : 0,
+    boundProxyKeys: Array.isArray(group.boundProxyKeys)
+      ? group.boundProxyKeys.map((value) => String(value))
+      : [],
+    nodeShuntEnabled: group.nodeShuntEnabled === true,
+    upstream429RetryEnabled: group.upstream429RetryEnabled === true,
+    upstream429MaxRetries:
+      typeof group.upstream429MaxRetries === "number"
+        ? group.upstream429MaxRetries
+        : 0,
+    concurrencyLimit:
+      typeof group.concurrencyLimit === "number" ? group.concurrencyLimit : 0,
+  }));
+  const saveGroupNote: ReturnType<typeof vi.fn> =
+    options?.saveGroupNote ??
+    vi.fn().mockImplementation(
+      async (groupName: string, payload: Record<string, unknown>) => {
+        const normalizedGroupName = groupName.trim();
+        const nextSummary = {
+          groupName: normalizedGroupName,
+          accountCount:
+            groups.find((group) => group.groupName === normalizedGroupName)
+              ?.accountCount ?? 0,
+          note:
+            typeof payload.note === "string" && payload.note.trim().length > 0
+              ? payload.note
+              : null,
+          boundProxyKeys: Array.isArray(payload.boundProxyKeys)
+            ? payload.boundProxyKeys.map((value) => String(value))
+            : [],
+          nodeShuntEnabled: payload.nodeShuntEnabled === true,
+          upstream429RetryEnabled: payload.upstream429RetryEnabled === true,
+          upstream429MaxRetries:
+            typeof payload.upstream429MaxRetries === "number"
+              ? payload.upstream429MaxRetries
+              : 0,
+          concurrencyLimit:
+            typeof payload.concurrencyLimit === "number"
+              ? payload.concurrencyLimit
+              : 0,
+        };
+        const existingIndex = groups.findIndex(
+          (group) => group.groupName === normalizedGroupName,
+        );
+        if (existingIndex >= 0) {
+          groups.splice(existingIndex, 1, nextSummary);
+        } else {
+          groups.push(nextSummary);
+        }
+        return nextSummary;
+      },
+    );
+  const deleteGroupNote: ReturnType<typeof vi.fn> =
+    options?.deleteGroupNote ??
+    vi.fn().mockImplementation(async (groupName: string) => {
+      const normalizedGroupName = groupName.trim();
+      const existingIndex = groups.findIndex(
+        (group) => group.groupName === normalizedGroupName,
+      );
+      if (existingIndex >= 0) {
+        groups.splice(existingIndex, 1);
+      }
+    });
   const compactSupport = {
     status: "unsupported" as const,
     observedAt: "2026-03-16T02:08:00.000Z",
@@ -1046,14 +1127,15 @@ function mockAccountsPage(options?: {
     createApiKeyAccount: vi.fn(),
     saveAccount: vi.fn(),
     saveRouting,
-    saveGroupNote: vi.fn(),
+    saveGroupNote,
+    deleteGroupNote,
     runBulkAction: vi.fn(),
     startBulkSyncJob: vi.fn(),
     getBulkSyncJob: vi.fn(),
     stopBulkSyncJob: vi.fn(),
     runSync: vi.fn(),
     removeAccount: vi.fn(),
-    groups: [],
+    groups,
     routing:
       options && "routing" in options
         ? options.routing
@@ -1064,7 +1146,13 @@ function mockAccountsPage(options?: {
             timeouts: routingTimeouts,
           },
   });
-  return { saveRouting, compactSupport, routingTimeouts };
+  return {
+    saveRouting,
+    compactSupport,
+    routingTimeouts,
+    saveGroupNote,
+    deleteGroupNote,
+  };
 }
 
 function mockRosterFreshnessPage(options?: {
@@ -1166,13 +1254,26 @@ function mockRosterFreshnessPage(options?: {
     saveAccount: vi.fn(),
     saveRouting: vi.fn(),
     saveGroupNote,
+    deleteGroupNote: vi.fn(),
     runBulkAction: vi.fn(),
     startBulkSyncJob: vi.fn(),
     getBulkSyncJob: vi.fn(),
     stopBulkSyncJob: vi.fn(),
     runSync: vi.fn(),
     removeAccount: vi.fn(),
-    groups: options?.groups ?? [],
+    groups:
+      options?.groups ??
+      [
+        {
+          groupName: "prod",
+          accountCount: 2,
+          note: "prod note",
+          boundProxyKeys: ["jp-edge-01"],
+          nodeShuntEnabled: false,
+          upstream429RetryEnabled: false,
+          upstream429MaxRetries: 0,
+        },
+      ],
     routing: {
       writesEnabled: true,
       apiKeyConfigured: false,
@@ -1424,7 +1525,31 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
         effectiveRoutingRule: defaultEffectiveRoutingRule,
       },
     ]
-    const sharedCallbacks = {
+    const sharedCallbacks: Pick<
+      UpstreamAccountsHookValue,
+      | 'selectAccount'
+      | 'refresh'
+      | 'loadDetail'
+      | 'beginOauthLogin'
+      | 'beginRelogin'
+      | 'beginOauthMailboxSession'
+      | 'beginOauthMailboxSessionForAddress'
+      | 'getOauthMailboxStatuses'
+      | 'removeOauthMailboxSession'
+      | 'getLoginSession'
+      | 'completeOauthLogin'
+      | 'createApiKeyAccount'
+      | 'saveAccount'
+      | 'saveRouting'
+      | 'saveGroupNote'
+      | 'deleteGroupNote'
+      | 'runBulkAction'
+      | 'startBulkSyncJob'
+      | 'getBulkSyncJob'
+      | 'stopBulkSyncJob'
+      | 'runSync'
+      | 'removeAccount'
+    > = {
       selectAccount: vi.fn(),
       refresh: vi.fn(),
       loadDetail: vi.fn(),
@@ -1440,6 +1565,7 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
       saveAccount: vi.fn(),
       saveRouting: vi.fn(),
       saveGroupNote: vi.fn(),
+      deleteGroupNote: vi.fn(),
       runBulkAction: vi.fn(),
       startBulkSyncJob: vi.fn(),
       getBulkSyncJob: vi.fn(),
@@ -1447,12 +1573,15 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
       runSync: vi.fn(),
       removeAccount: vi.fn(),
     }
-    const sharedRouting = {
+    const sharedRouting: UpstreamAccountsHookValue['routing'] = {
       writesEnabled: true,
       apiKeyConfigured: false,
       maskedApiKey: null,
     }
-    const sharedBase = {
+    const sharedBase: Omit<
+      UpstreamAccountsHookValue,
+      'page' | 'pageSize' | 'listState'
+    > = {
       items,
       hasUngroupedAccounts: true,
       writesEnabled: true,
@@ -1473,9 +1602,18 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
       error: null,
       groups: [],
       routing: sharedRouting,
+      forwardProxyNodes: [],
+      forwardProxyCatalogState: {
+        kind: 'ready-empty',
+        freshness: 'fresh',
+        isPending: false,
+        hasNodes: false,
+      },
+      missingDetailAccountId: null,
+      isWindowUsagePending: false,
       ...sharedCallbacks,
     }
-    const flatPage1 = {
+    const flatPage1: UpstreamAccountsHookValue = {
       ...sharedBase,
       page: 1,
       pageSize: 20,
@@ -1489,7 +1627,7 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
         isPending: false,
       },
     }
-    const flatPage2 = {
+    const flatPage2: UpstreamAccountsHookValue = {
       ...sharedBase,
       page: 2,
       pageSize: 20,
@@ -1503,7 +1641,7 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
         isPending: false,
       },
     }
-    const groupedAll = {
+    const groupedAll: UpstreamAccountsHookValue = {
       ...sharedBase,
       page: 1,
       pageSize: 45,
@@ -1613,11 +1751,21 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
     expect(saveGroupNote).not.toHaveBeenCalled()
   })
 
-  it('treats grouped summary actions as existing groups even before metadata is persisted', async () => {
+  it('treats grouped summary actions as existing groups when the catalog returns them', async () => {
     const saveGroupNote = vi.fn()
     mockRosterFreshnessPage({
       saveGroupNote,
-      groups: [],
+      groups: [
+        {
+          groupName: 'prod',
+          accountCount: 2,
+          note: 'Production routing group',
+          boundProxyKeys: ['jp-edge-01'],
+          nodeShuntEnabled: false,
+          upstream429RetryEnabled: false,
+          upstream429MaxRetries: 0,
+        },
+      ],
     })
     render()
     await act(async () => {
