@@ -23,6 +23,7 @@ const PopoverContent = React.forwardRef<
   const resolvedContainer = useResolvedOverlayContainer(container)
   const { hostElement, ref: contentRef } = useOverlayHostElement(ref)
   const hostValue = hostElement ?? (container === undefined ? resolvedContainer : container)
+  const hasAccessibleName = props['aria-label'] || props['aria-labelledby'] || props.title
 
   return (
     <PopoverPrimitive.Portal container={resolvedContainer ?? undefined}>
@@ -31,6 +32,7 @@ const PopoverContent = React.forwardRef<
           ref={contentRef}
           align={align}
           sideOffset={sideOffset}
+          aria-label={hasAccessibleName ? undefined : 'Popover content'}
           className={cn(
             'z-50 w-72 rounded-md border border-base-300 bg-base-100 p-1 text-base-content shadow-md outline-none',
             'data-[state=open]:animate-in data-[state=closed]:animate-out',

@@ -194,6 +194,14 @@ jobs:
         working-directory: web
         run: bun run test
 
+      - name: Install Playwright Chromium for Storybook
+        working-directory: web
+        run: bunx playwright install --with-deps chromium
+
+      - name: Run Storybook accessibility suite
+        working-directory: web
+        run: bun run test-storybook
+
   records-overlay-e2e:
     name: Records Overlay E2E
     runs-on: ubuntu-latest
