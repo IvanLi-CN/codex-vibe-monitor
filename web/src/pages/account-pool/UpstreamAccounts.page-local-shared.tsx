@@ -52,6 +52,10 @@ import { Switch } from "../../components/ui/switch";
 import { AccountTagField } from "../../components/AccountTagField";
 import { EffectiveRoutingRuleCard } from "../../components/EffectiveRoutingRuleCard";
 import { InvocationTable } from "../../components/InvocationTable";
+import {
+  ACCOUNT_ACTIVITY_RANGE_STORAGE_KEY_PREFIX,
+  DashboardActivityOverview,
+} from "../../components/DashboardActivityOverview";
 import { UpstreamAccountGroupCombobox } from "../../components/UpstreamAccountGroupCombobox";
 import { UpstreamAccountUsageCard } from "../../components/UpstreamAccountUsageCard";
 import { StickyKeyConversationTable } from "../../components/StickyKeyConversationTable";
@@ -2656,7 +2660,17 @@ function SharedUpstreamAccountDetailDrawerInner({
                   id={detailTabIds.records.panel}
                   role="tabpanel"
                   aria-labelledby={detailTabIds.records.tab}
+                  className="flex flex-col gap-4"
                 >
+                  <DashboardActivityOverview
+                    key={`account-activity-${accountId}`}
+                    title={t(
+                      "accountPool.upstreamAccounts.records.activityOverviewTitle",
+                    )}
+                    storageKey={`${ACCOUNT_ACTIVITY_RANGE_STORAGE_KEY_PREFIX}.${accountId}`}
+                    testId="upstream-account-records-activity-overview"
+                    upstreamAccountId={accountId}
+                  />
                   <Card className="border-base-300/80 bg-base-100/72">
                     <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                       <div>

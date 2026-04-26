@@ -740,6 +740,7 @@ async fn timeseries_includes_first_byte_avg_and_p95_for_success_samples() {
             bucket: Some("15m".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -788,6 +789,7 @@ async fn timeseries_includes_legacy_http_200_success_like_ttfb_samples() {
             bucket: Some("15m".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -845,6 +847,7 @@ async fn timeseries_and_summary_count_completed_rows_as_success() {
             window: Some("1d".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -860,6 +863,7 @@ async fn timeseries_and_summary_count_completed_rows_as_success() {
             bucket: Some("15m".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -974,6 +978,7 @@ async fn timeseries_reports_snapshot_id_for_live_exact_queries() {
             bucket: Some("15m".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -1059,6 +1064,7 @@ async fn timeseries_and_summary_do_not_treat_running_rows_with_failure_metadata_
             window: Some("1d".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -1074,6 +1080,7 @@ async fn timeseries_and_summary_do_not_treat_running_rows_with_failure_metadata_
             bucket: Some("15m".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -1136,6 +1143,7 @@ async fn timeseries_and_summary_count_http_200_rows_with_downstream_only_failure
             window: Some("1d".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -1151,6 +1159,7 @@ async fn timeseries_and_summary_count_http_200_rows_with_downstream_only_failure
             bucket: Some("15m".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -1263,6 +1272,7 @@ async fn all_time_summary_ignores_stale_rollup_failure_counts_for_running_rows()
             window: Some("all".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -1423,6 +1433,7 @@ async fn all_time_summary_preserves_archived_history_when_rollup_failures_are_st
             window: Some("all".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -1476,6 +1487,7 @@ async fn all_time_summary_preserves_archived_history_when_rollup_failures_are_st
             window: Some("all".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -1525,6 +1537,7 @@ async fn all_time_summary_preserves_archived_history_when_rollup_failures_are_st
             window: Some("all".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -1595,6 +1608,7 @@ async fn all_time_summary_includes_unmaterialized_archived_history_without_inlin
             window: Some("all".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -1742,6 +1756,7 @@ async fn all_time_summary_skips_archive_fallback_rows_already_counted_in_live_ta
             window: Some("all".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -1825,6 +1840,7 @@ async fn archived_range_reads_include_unmaterialized_batches_without_inline_repa
             window: Some(historical_range.clone()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -2049,6 +2065,7 @@ async fn archived_range_reads_skip_archive_fallback_rows_already_counted_in_live
             window: Some(historical_range.clone()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -2184,6 +2201,7 @@ async fn all_time_summary_fallback_skips_already_materialized_archive_buckets() 
             window: Some("all".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -2289,6 +2307,7 @@ async fn all_time_summary_fallback_includes_missing_rows_from_partially_material
             window: Some("all".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -2414,6 +2433,7 @@ async fn all_time_summary_fallback_aggregates_missing_rows_across_archive_parts(
             window: Some("all".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -2547,6 +2567,7 @@ async fn all_time_summary_fallback_keeps_unmaterialized_rows_when_sibling_archiv
             window: Some("all".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -2683,6 +2704,7 @@ async fn all_time_summary_fallback_keeps_unmaterialized_rows_when_materialized_s
             window: Some("all".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -2844,6 +2866,7 @@ async fn all_time_summary_skips_double_count_for_readable_materialized_archive_w
             window: Some("all".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -2869,6 +2892,7 @@ async fn all_time_summary_skips_double_count_for_readable_materialized_archive_w
             bucket: Some("1h".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         },
         Shanghai,
         InvocationSourceScope::ProxyOnly,
@@ -3047,6 +3071,7 @@ async fn all_time_summary_skips_double_count_for_readable_materialized_archive_w
             window: Some("all".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -3072,6 +3097,7 @@ async fn all_time_summary_skips_double_count_for_readable_materialized_archive_w
             bucket: Some("1h".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         },
         Shanghai,
         InvocationSourceScope::ProxyOnly,
@@ -5410,6 +5436,7 @@ async fn historical_timeseries_includes_unmaterialized_archived_hours_without_in
             bucket: Some("1h".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         },
         Shanghai,
         InvocationSourceScope::ProxyOnly,
@@ -5614,6 +5641,7 @@ async fn historical_timeseries_skips_archive_fallback_rows_already_counted_in_li
             bucket: Some("1h".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         },
         Shanghai,
         InvocationSourceScope::ProxyOnly,
@@ -5742,6 +5770,7 @@ async fn historical_timeseries_skip_unreadable_materialized_archives() {
             bucket: Some("1h".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         },
         Shanghai,
         InvocationSourceScope::ProxyOnly,
@@ -5870,6 +5899,7 @@ async fn historical_timeseries_skips_unreadable_replayed_legacy_archives() {
             bucket: Some("1h".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         },
         Shanghai,
         InvocationSourceScope::ProxyOnly,
@@ -5992,6 +6022,7 @@ async fn historical_timeseries_read_path_skips_unreadable_pending_archives() {
             bucket: Some("1h".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         },
         Shanghai,
         InvocationSourceScope::ProxyOnly,
@@ -6138,6 +6169,7 @@ async fn timeseries_hourly_backed_repairs_stale_archived_rollup_counts_before_qu
             bucket: Some("1h".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         },
         Shanghai,
         InvocationSourceScope::ProxyOnly,
@@ -6275,6 +6307,7 @@ async fn all_time_summary_missing_archive_does_not_mark_repair_complete() {
             window: Some("all".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -6459,6 +6492,7 @@ async fn all_time_summary_missing_summary_markers_do_not_replay_materialized_arc
             window: Some("all".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -6702,6 +6736,7 @@ async fn all_time_summary_backfill_preserves_overall_rollups_when_only_failure_m
             window: Some("all".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -6865,6 +6900,7 @@ async fn all_time_summary_repair_preserves_pruned_materialized_archives() {
             window: Some("all".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -7090,6 +7126,7 @@ async fn all_time_summary_repair_replays_existing_materialized_archives_when_oth
             window: Some("all".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -7212,6 +7249,7 @@ async fn all_time_summary_read_path_skips_unreadable_materialized_archives() {
             window: Some("all".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -7315,6 +7353,7 @@ async fn all_time_summary_read_path_skips_unreadable_replayed_legacy_archives() 
             window: Some("all".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -7420,6 +7459,7 @@ async fn all_time_stats_and_summary_read_path_skip_unreadable_pending_archives()
             window: Some("all".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -7689,6 +7729,7 @@ async fn all_time_summary_repair_restores_live_rows_in_boundary_hours_when_prese
             window: Some("all".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -7883,6 +7924,7 @@ async fn all_time_summary_repair_rebuilds_non_materialized_archives_when_others_
             window: Some("all".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -8072,6 +8114,7 @@ async fn all_time_summary_rollup_repair_counts_mixed_case_success_status() {
             window: Some("all".to_string()),
             limit: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -8141,6 +8184,7 @@ async fn timeseries_ignores_non_positive_or_missing_ttfb_samples() {
             bucket: Some("15m".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -8202,6 +8246,7 @@ async fn timeseries_daily_bucket_includes_first_byte_stats() {
             bucket: Some("1d".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -8243,6 +8288,7 @@ async fn open_live_timeseries_range_end_stays_at_query_cutoff() {
             bucket: Some("1m".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -8313,6 +8359,7 @@ async fn timeseries_includes_first_response_byte_total_avg_and_p95_for_complete_
             bucket: Some("15m".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -8401,6 +8448,7 @@ async fn timeseries_ignores_incomplete_first_response_byte_total_samples() {
             bucket: Some("15m".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -8456,6 +8504,7 @@ async fn timeseries_includes_failed_first_response_byte_total_samples() {
             bucket: Some("15m".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -8512,6 +8561,7 @@ async fn timeseries_excludes_zero_ttfb_sentinel_from_first_response_byte_total_s
             bucket: Some("15m".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -8567,6 +8617,7 @@ async fn timeseries_daily_includes_archived_rollup_days_without_ttfb() {
             bucket: Some("1d".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -8630,6 +8681,7 @@ async fn timeseries_daily_stays_continuous_after_rollup_archive() {
             bucket: Some("1d".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -8714,6 +8766,7 @@ async fn timeseries_daily_combines_rollup_and_live_within_same_day() {
             bucket: Some("1d".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -8757,6 +8810,7 @@ async fn timeseries_hourly_rollups_rebucket_for_different_timezones() {
             bucket: Some("1d".to_string()),
             settlement_hour: None,
             time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -8810,6 +8864,7 @@ async fn timeseries_hourly_recent_non_hour_aligned_timezones_fall_back_to_raw_ro
             bucket: Some("1h".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Kathmandu".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -8881,6 +8936,7 @@ async fn timeseries_hourly_backed_includes_crs_deltas() {
             bucket: Some("1h".to_string()),
             settlement_hour: None,
             time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -8965,6 +9021,7 @@ async fn timeseries_hourly_backed_ignores_missing_exact_archive_batch() {
             bucket: Some("1h".to_string()),
             settlement_hour: None,
             time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -9026,6 +9083,7 @@ async fn timeseries_daily_backed_ignores_pruned_legacy_archive_batch_files() {
             bucket: Some("1d".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -9066,10 +9124,43 @@ async fn timeseries_hourly_historical_non_hour_aligned_timezones_are_rejected() 
             bucket: Some("1h".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Kathmandu".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
     .expect_err("historical non-hour-aligned timezone should be rejected");
+
+    match err {
+        ApiError::BadRequest(err) => {
+            assert!(
+                err.to_string().contains("whole-hour UTC offsets"),
+                "unexpected error message: {err}"
+            );
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn account_timeseries_hourly_historical_non_hour_aligned_timezones_are_rejected() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 0;
+    let state = test_state_from_config(config, true).await;
+
+    let err = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "48h".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Kathmandu".to_string()),
+            upstream_account_id: Some(42),
+        }),
+    )
+    .await
+    .expect_err("account historical non-hour-aligned timezone should be rejected");
 
     match err {
         ApiError::BadRequest(err) => {
@@ -9098,6 +9189,7 @@ async fn timeseries_daily_includes_rollups_for_equivalent_day_boundaries() {
             bucket: Some("1d".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Singapore".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -9144,6 +9236,7 @@ async fn timeseries_hourly_backed_bucket_stays_available_across_archive_boundary
             bucket: Some("12h".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -9403,6 +9496,7 @@ async fn timeseries_hourly_backed_omits_pre_cutoff_partial_archived_hours() {
             bucket: Some("1h".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         },
         Shanghai,
         InvocationSourceScope::ProxyOnly,
@@ -9713,6 +9807,7 @@ async fn hourly_timeseries_trims_crs_deltas_to_effective_proxy_range() {
             bucket: Some("1h".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         },
         Shanghai,
         InvocationSourceScope::All,
@@ -10140,6 +10235,318 @@ async fn combined_totals_ignore_null_status_for_success_failure_counts() {
     assert_eq!(totals.failure_count, 0);
     assert_eq!(totals.total_tokens, 18);
     assert_f64_close(totals.total_cost, 0.18);
+}
+
+#[tokio::test]
+async fn account_scoped_summary_and_timeseries_filter_by_payload_upstream_account_id() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    let recent_complete_hour = format_naive(
+        (Utc::now() - ChronoDuration::days(2))
+            .with_timezone(&Shanghai)
+            .date_naive()
+            .and_hms_opt(1, 0, 0)
+            .expect("valid recent complete hour"),
+    );
+
+    for (id, invoke_id, row_occurred_at, status, payload, total_tokens, cost) in [
+        (
+            301_i64,
+            "account-stats-target",
+            occurred_at.as_str(),
+            "success",
+            Some(json!({ "upstreamAccountId": 42 }).to_string()),
+            120_i64,
+            0.42_f64,
+        ),
+        (
+            304_i64,
+            "account-stats-target-recent-complete-hour",
+            recent_complete_hour.as_str(),
+            "success",
+            Some(json!({ "upstreamAccountId": 42 }).to_string()),
+            60_i64,
+            0.24_f64,
+        ),
+        (
+            302_i64,
+            "account-stats-other",
+            occurred_at.as_str(),
+            "failed",
+            Some(json!({ "upstreamAccountId": 17 }).to_string()),
+            900_i64,
+            9.0_f64,
+        ),
+        (
+            303_i64,
+            "account-stats-legacy-missing-payload-id",
+            occurred_at.as_str(),
+            "success",
+            Some(json!({ "upstreamAccountName": "legacy" }).to_string()),
+            700_i64,
+            7.0_f64,
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id,
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                total_tokens,
+                cost,
+                payload,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(id)
+        .bind(invoke_id)
+        .bind(row_occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(payload)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert account-scoped stats invocation row");
+    }
+
+    let Json(summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("today".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: Some(42),
+        }),
+    )
+    .await
+    .expect("fetch account-scoped summary");
+
+    assert_eq!(summary.total_count, 1);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 0);
+    assert_eq!(summary.total_tokens, 120);
+    assert_f64_close(summary.total_cost, 0.42);
+
+    let Json(timeseries) = fetch_timeseries(
+        State(state.clone()),
+        Query(TimeseriesQuery {
+            range: "today".to_string(),
+            bucket: Some("1m".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: Some(42),
+        }),
+    )
+    .await
+    .expect("fetch account-scoped timeseries");
+
+    let populated_points: Vec<_> = timeseries
+        .points
+        .iter()
+        .filter(|point| point.total_count > 0)
+        .collect();
+    assert_eq!(populated_points.len(), 1);
+    let point = populated_points[0];
+    assert_eq!(point.total_count, 1);
+    assert_eq!(point.success_count, 1);
+    assert_eq!(point.failure_count, 0);
+    assert_eq!(point.total_tokens, 120);
+    assert_f64_close(point.total_cost, 0.42);
+
+    let Json(hourly_timeseries) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "7d".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: Some(42),
+        }),
+    )
+    .await
+    .expect("fetch recent account-scoped hourly timeseries");
+
+    let total_hourly_count: i64 = hourly_timeseries
+        .points
+        .iter()
+        .map(|point| point.total_count)
+        .sum();
+    let total_hourly_tokens: i64 = hourly_timeseries
+        .points
+        .iter()
+        .map(|point| point.total_tokens)
+        .sum();
+    assert_eq!(total_hourly_count, 2);
+    assert_eq!(total_hourly_tokens, 180);
+}
+
+#[tokio::test]
+async fn account_scoped_historical_stats_include_unmaterialized_archived_hours() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let account_id = 42_i64;
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(11, 0, 0)
+    .expect("valid account archived hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("archived account success time"),
+    );
+    let archived_failed_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(35))
+            .expect("archived account failure time"),
+    );
+    let archived_other_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(45))
+            .expect("archived other account time"),
+    );
+
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "account-stats-unmaterialized-archive",
+        &[
+            SeedInvocationArchiveBatchRow {
+                id: 1_i64,
+                invoke_id: "account-stats-unmaterialized-success",
+                occurred_at: archived_success_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 10_i64,
+                cost: 0.10_f64,
+                ttfb_ms: Some(100.0),
+                payload: Some(r#"{"upstreamAccountId":42}"#),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0_i64),
+            },
+            SeedInvocationArchiveBatchRow {
+                id: 2_i64,
+                invoke_id: "account-stats-unmaterialized-failed",
+                occurred_at: archived_failed_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "failed",
+                total_tokens: 20_i64,
+                cost: 0.20_f64,
+                ttfb_ms: Some(120.0),
+                payload: Some(r#"{"upstreamAccountId":42}"#),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: Some("HTTP 429 too many requests"),
+                failure_kind: Some("upstream_response_failed"),
+                failure_class: Some("service_failure"),
+                is_actionable: Some(1_i64),
+            },
+            SeedInvocationArchiveBatchRow {
+                id: 3_i64,
+                invoke_id: "account-stats-unmaterialized-other-account",
+                occurred_at: archived_other_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 90_i64,
+                cost: 0.90_f64,
+                ttfb_ms: Some(90.0),
+                payload: Some(r#"{"upstreamAccountId":17}"#),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0_i64),
+            },
+        ],
+    )
+    .await;
+
+    let Json(all_summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: Some(account_id),
+        }),
+    )
+    .await
+    .expect("fetch account all-time summary with unmaterialized archive");
+
+    assert_eq!(all_summary.total_count, 2);
+    assert_eq!(all_summary.success_count, 1);
+    assert_eq!(all_summary.failure_count, 1);
+    assert_eq!(all_summary.total_tokens, 30);
+    assert_f64_close(all_summary.total_cost, 0.30);
+
+    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let Json(summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some(historical_range.clone()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: Some(account_id),
+        }),
+    )
+    .await
+    .expect("fetch account historical summary with unmaterialized archive");
+
+    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 1);
+    assert_eq!(summary.total_tokens, 30);
+    assert_f64_close(summary.total_cost, 0.30);
+
+    let Json(timeseries) = fetch_timeseries(
+        State(state.clone()),
+        Query(TimeseriesQuery {
+            range: historical_range,
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: Some(account_id),
+        }),
+    )
+    .await
+    .expect("fetch account historical timeseries with unmaterialized archive");
+
+    let start = local_naive_to_utc(archived_hour_local, Shanghai);
+    let archived_point = timeseries
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(start))
+        .expect("account historical timeseries bucket should exist");
+    assert_eq!(archived_point.total_count, 2);
+    assert_eq!(archived_point.success_count, 1);
+    assert_eq!(archived_point.failure_count, 1);
+    assert_eq!(archived_point.total_tokens, 30);
+    assert_f64_close(archived_point.total_cost, 0.30);
+
+    let account_usage_replay_markers: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE target = ?1",
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load account usage replay marker count");
+    assert_eq!(account_usage_replay_markers, 0);
 }
 
 #[tokio::test]

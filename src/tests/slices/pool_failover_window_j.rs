@@ -3994,6 +3994,208 @@ async fn ensure_schema_backfills_first_response_byte_totals_for_legacy_invocatio
 }
 
 #[tokio::test]
+async fn ensure_schema_backfills_account_usage_status_counts_and_reopens_archive_rollups() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("open schema migration pool");
+    ensure_schema(&pool).await.expect("seed current schema");
+
+    sqlx::query("DROP TABLE upstream_account_usage_hourly")
+        .execute(&pool)
+        .await
+        .expect("drop current account usage hourly table");
+    sqlx::query(
+        r#"
+        CREATE TABLE upstream_account_usage_hourly (
+            bucket_start_epoch INTEGER NOT NULL,
+            upstream_account_id INTEGER NOT NULL,
+            request_count INTEGER NOT NULL,
+            total_tokens INTEGER NOT NULL,
+            total_cost REAL NOT NULL,
+            input_tokens INTEGER NOT NULL,
+            output_tokens INTEGER NOT NULL,
+            cache_input_tokens INTEGER NOT NULL,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (bucket_start_epoch, upstream_account_id)
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy account usage hourly table");
+
+    let account_id = 42_i64;
+    let live_bucket = Utc::now().timestamp() / 3600 * 3600;
+    let live_occurred_at = Utc
+        .timestamp_opt(live_bucket + 60, 0)
+        .single()
+        .expect("valid live timestamp")
+        .with_timezone(&Shanghai)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+    for (idx, status, failure_kind) in [
+        (1_i64, "success", None),
+        (2_i64, "http_500", Some("upstream_response_failed")),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, model, input_tokens, output_tokens,
+                total_tokens, cost, status, error_message, failure_kind, payload, raw_response, created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            "#,
+        )
+        .bind(idx)
+        .bind(format!("legacy-account-status-backfill-{idx}"))
+        .bind(&live_occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind("gpt-5")
+        .bind(10_i64)
+        .bind(20_i64)
+        .bind(30_i64)
+        .bind(0.01_f64)
+        .bind(status)
+        .bind("")
+        .bind(failure_kind)
+        .bind(json!({ "upstreamAccountId": account_id }).to_string())
+        .bind("{}")
+        .bind(&live_occurred_at)
+        .execute(&pool)
+        .await
+        .expect("insert live invocation for legacy account backfill");
+    }
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_account_usage_hourly (
+            bucket_start_epoch, upstream_account_id, request_count, total_tokens, total_cost,
+            input_tokens, output_tokens, cache_input_tokens, first_seen_at, last_seen_at
+        )
+        VALUES (?1, ?2, 2, 60, 0.02, 20, 40, 0, ?3, ?3)
+        "#,
+    )
+    .bind(live_bucket)
+    .bind(account_id)
+    .bind(&live_occurred_at)
+    .execute(&pool)
+    .await
+    .expect("insert legacy live account usage rollup");
+
+    let archive_bucket = live_bucket - 7 * 24 * 3600;
+    let archive_start = Utc
+        .timestamp_opt(archive_bucket + 30, 0)
+        .single()
+        .expect("valid archive start")
+        .with_timezone(&Shanghai)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+    let archive_end = Utc
+        .timestamp_opt(archive_bucket + 90, 0)
+        .single()
+        .expect("valid archive end")
+        .with_timezone(&Shanghai)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+    sqlx::query(
+        r#"
+        INSERT INTO upstream_account_usage_hourly (
+            bucket_start_epoch, upstream_account_id, request_count, total_tokens, total_cost,
+            input_tokens, output_tokens, cache_input_tokens, first_seen_at, last_seen_at
+        )
+        VALUES (?1, ?2, 1, 10, 0.01, 4, 6, 0, ?3, ?4)
+        "#,
+    )
+    .bind(archive_bucket)
+    .bind(account_id)
+    .bind(&archive_start)
+    .bind(&archive_end)
+    .execute(&pool)
+    .await
+    .expect("insert stale archived account usage rollup");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset, month_key, file_path, sha256, status, row_count,
+            coverage_start_at, coverage_end_at, historical_rollups_materialized_at
+        )
+        VALUES ('codex_invocations', '2026-01', '/tmp/account-usage-backfill.sqlite.gz',
+                'account-usage-backfill-sha', 'completed', 1, ?1, ?2, datetime('now'))
+        "#,
+    )
+    .bind(&archive_start)
+    .bind(&archive_end)
+    .execute(&pool)
+    .await
+    .expect("insert completed archive batch");
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
+        VALUES ('upstream_account_usage_hourly', 'codex_invocations',
+                '/tmp/account-usage-backfill.sqlite.gz', datetime('now'))
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("insert stale replay marker");
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_archive_progress (dataset, file_path, cursor_id)
+        VALUES ('codex_invocations', '/tmp/account-usage-backfill.sqlite.gz', 10)
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("insert stale replay progress");
+
+    ensure_schema(&pool)
+        .await
+        .expect("migrate account usage status counts");
+
+    let live_counts = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT success_count, failure_count FROM upstream_account_usage_hourly WHERE bucket_start_epoch = ?1 AND upstream_account_id = ?2",
+    )
+    .bind(live_bucket)
+    .bind(account_id)
+    .fetch_one(&pool)
+    .await
+    .expect("load live account status counts");
+    let archived_row_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM upstream_account_usage_hourly WHERE bucket_start_epoch = ?1 AND upstream_account_id = ?2",
+    )
+    .bind(archive_bucket)
+    .bind(account_id)
+    .fetch_one(&pool)
+    .await
+    .expect("load archived stale row count");
+    let archive_materialized_at: Option<String> = sqlx::query_scalar(
+        "SELECT historical_rollups_materialized_at FROM archive_batches WHERE file_path = '/tmp/account-usage-backfill.sqlite.gz'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load archive materialized marker");
+    let stale_markers: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE target = 'upstream_account_usage_hourly'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load stale replay marker count");
+    let stale_progress: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM hourly_rollup_archive_progress WHERE dataset = 'codex_invocations' AND file_path = '/tmp/account-usage-backfill.sqlite.gz'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load stale replay progress count");
+
+    assert_eq!(live_counts, (1, 1));
+    assert_eq!(archived_row_count, 0);
+    assert!(archive_materialized_at.is_none());
+    assert_eq!(stale_markers, 0);
+    assert_eq!(stale_progress, 0);
+}
+
+#[tokio::test]
 async fn ensure_schema_backfill_deduplicates_detail_prune_archives() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("legacy-rollup-detail-prune-dedup").await;

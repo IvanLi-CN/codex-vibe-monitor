@@ -283,6 +283,7 @@ async fn query_invocation_aggregate_records_from_live_range_executor<'e, E>(
     source_scope: InvocationSourceScope,
     start_after_id: Option<i64>,
     snapshot_id: Option<i64>,
+    upstream_account_id: Option<i64>,
 ) -> Result<Vec<InvocationAggregateRecord>, ApiError>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
@@ -321,6 +322,13 @@ where
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND ")
+            .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+            .push(" = ")
+            .push_bind(upstream_account_id);
+    }
     query.push(" ORDER BY occurred_at ASC, id ASC");
     query
         .build_query_as::<InvocationAggregateRecord>()
@@ -342,6 +350,26 @@ pub(super) async fn query_invocation_aggregate_records_from_live_range(
         source_scope,
         start_after_id,
         snapshot_id,
+        None,
+    )
+    .await
+}
+
+pub(super) async fn query_invocation_aggregate_records_from_live_range_for_account(
+    pool: &Pool<Sqlite>,
+    range: ExactUtcRange,
+    source_scope: InvocationSourceScope,
+    start_after_id: Option<i64>,
+    snapshot_id: Option<i64>,
+    upstream_account_id: i64,
+) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
+    query_invocation_aggregate_records_from_live_range_executor(
+        pool,
+        range,
+        source_scope,
+        start_after_id,
+        snapshot_id,
+        Some(upstream_account_id),
     )
     .await
 }
@@ -359,6 +387,26 @@ async fn query_invocation_aggregate_records_from_live_range_tx(
         source_scope,
         start_after_id,
         snapshot_id,
+        None,
+    )
+    .await
+}
+
+async fn query_invocation_aggregate_records_from_live_range_tx_for_account(
+    tx: &mut SqliteConnection,
+    range: ExactUtcRange,
+    source_scope: InvocationSourceScope,
+    start_after_id: Option<i64>,
+    snapshot_id: Option<i64>,
+    upstream_account_id: i64,
+) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
+    query_invocation_aggregate_records_from_live_range_executor(
+        &mut *tx,
+        range,
+        source_scope,
+        start_after_id,
+        snapshot_id,
+        Some(upstream_account_id),
     )
     .await
 }
@@ -439,6 +487,74 @@ pub(crate) async fn query_invocation_exact_records_tx(
     Ok(records)
 }
 
+pub(crate) async fn query_invocation_exact_records_for_account(
+    pool: &Pool<Sqlite>,
+    range_plan: &HourlyRollupExactRangePlan,
+    source_scope: InvocationSourceScope,
+    snapshot_id: i64,
+    upstream_account_id: i64,
+) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
+    let mut records = Vec::new();
+    let mut seen_ids = HashSet::new();
+
+    for range in &range_plan.live_exact_ranges {
+        extend_unique_invocation_records(
+            &mut records,
+            &mut seen_ids,
+            query_invocation_aggregate_records_from_live_range_for_account(
+                pool,
+                *range,
+                source_scope,
+                None,
+                Some(snapshot_id),
+                upstream_account_id,
+            )
+            .await?,
+        );
+    }
+
+    records.sort_by(|left, right| {
+        left.occurred_at
+            .cmp(&right.occurred_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(records)
+}
+
+pub(crate) async fn query_invocation_exact_records_tx_for_account(
+    tx: &mut SqliteConnection,
+    range_plan: &HourlyRollupExactRangePlan,
+    source_scope: InvocationSourceScope,
+    snapshot_id: i64,
+    upstream_account_id: i64,
+) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
+    let mut records = Vec::new();
+    let mut seen_ids = HashSet::new();
+
+    for range in &range_plan.live_exact_ranges {
+        extend_unique_invocation_records(
+            &mut records,
+            &mut seen_ids,
+            query_invocation_aggregate_records_from_live_range_tx_for_account(
+                &mut *tx,
+                *range,
+                source_scope,
+                None,
+                Some(snapshot_id),
+                upstream_account_id,
+            )
+            .await?,
+        );
+    }
+
+    records.sort_by(|left, right| {
+        left.occurred_at
+            .cmp(&right.occurred_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(records)
+}
+
 pub(crate) async fn query_invocation_full_hour_tail_records_tx(
     tx: &mut SqliteConnection,
     range_plan: &HourlyRollupExactRangePlan,
@@ -468,6 +584,41 @@ pub(crate) async fn query_invocation_full_hour_tail_records_tx(
         source_scope,
         Some(rollup_live_cursor),
         Some(snapshot_id),
+    )
+    .await
+}
+
+pub(crate) async fn query_invocation_full_hour_tail_records_tx_for_account(
+    tx: &mut SqliteConnection,
+    range_plan: &HourlyRollupExactRangePlan,
+    source_scope: InvocationSourceScope,
+    rollup_live_cursor: i64,
+    snapshot_id: i64,
+    upstream_account_id: i64,
+) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
+    if snapshot_id <= rollup_live_cursor {
+        return Ok(Vec::new());
+    }
+    let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range else {
+        return Ok(Vec::new());
+    };
+    let range = ExactUtcRange {
+        start: Utc
+            .timestamp_opt(range_start_epoch, 0)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid full-hour tail start epoch")))?,
+        end: Utc
+            .timestamp_opt(range_end_epoch, 0)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid full-hour tail end epoch")))?,
+    };
+    query_invocation_aggregate_records_from_live_range_tx_for_account(
+        &mut *tx,
+        range,
+        source_scope,
+        Some(rollup_live_cursor),
+        Some(snapshot_id),
+        upstream_account_id,
     )
     .await
 }
@@ -551,6 +702,36 @@ pub(super) async fn query_invocation_hourly_rollup_range_tx(
         .fetch_all(&mut *tx)
         .await
         .map_err(Into::into)
+}
+
+pub(crate) async fn query_upstream_account_usage_hourly_rollup_range_tx(
+    tx: &mut SqliteConnection,
+    range_start_epoch: i64,
+    range_end_epoch: i64,
+    upstream_account_id: i64,
+) -> Result<Vec<UpstreamAccountUsageHourlyRollupRecord>, ApiError> {
+    sqlx::query_as::<_, UpstreamAccountUsageHourlyRollupRecord>(
+        r#"
+        SELECT
+            bucket_start_epoch,
+            request_count,
+            COALESCE(success_count, 0) AS success_count,
+            COALESCE(failure_count, 0) AS failure_count,
+            total_tokens,
+            total_cost
+        FROM upstream_account_usage_hourly
+        WHERE bucket_start_epoch >= ?1
+          AND bucket_start_epoch < ?2
+          AND upstream_account_id = ?3
+        ORDER BY bucket_start_epoch ASC
+        "#,
+    )
+    .bind(range_start_epoch)
+    .bind(range_end_epoch)
+    .bind(upstream_account_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(Into::into)
 }
 
 pub(super) fn add_invocation_record_to_summary_totals(

@@ -668,6 +668,8 @@ const baseTranslations = {
       "Sticky Key",
     "accountPool.upstreamAccounts.stickyConversations.table.actions": "Actions",
     "accountPool.upstreamAccounts.records.title": "Call records",
+    "accountPool.upstreamAccounts.records.activityOverviewTitle":
+      "Account activity overview",
     "accountPool.upstreamAccounts.records.description":
       "Review the latest retained invocations routed to this upstream account.",
     "accountPool.upstreamAccounts.records.limitLabel": "Rows",
@@ -2511,6 +2513,8 @@ const baseTranslations = {
       "Sticky Key",
     "accountPool.upstreamAccounts.stickyConversations.table.actions": "操作",
     "accountPool.upstreamAccounts.records.title": "调用记录",
+    "accountPool.upstreamAccounts.records.activityOverviewTitle":
+      "账号活动总览",
     "accountPool.upstreamAccounts.records.description":
       "查看这个上游账号最近保留的调用记录。",
     "accountPool.upstreamAccounts.records.limitLabel": "记录数量",

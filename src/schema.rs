@@ -84,6 +84,132 @@ async fn migrate_pool_upstream_node_health_hourly_archive_identity(
     Ok(())
 }
 
+async fn backfill_upstream_account_usage_hourly_status_counts(pool: &Pool<Sqlite>) -> Result<()> {
+    let success_like_sql = invocation_status_is_success_like_sql("status", "error_message");
+    let resolved_failure_sql = crate::api::INVOCATION_RESOLVED_FAILURE_CLASS_SQL;
+    let upstream_account_id_sql =
+        "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
+    let bucket_epoch_sql = "((CASE
+                WHEN instr(occurred_at, 'T') > 0
+                    THEN CAST(strftime('%s', occurred_at) AS INTEGER)
+                ELSE CAST(strftime('%s', occurred_at || '+08:00') AS INTEGER)
+            END) / 3600) * 3600";
+    let terminal_status_sql = "(LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending'))";
+    let live_backfill_sql = format!(
+        r#"
+        UPDATE upstream_account_usage_hourly
+        SET
+            success_count = (
+                SELECT COUNT(*)
+                FROM codex_invocations
+                WHERE {bucket_epoch_sql} = upstream_account_usage_hourly.bucket_start_epoch
+                  AND {upstream_account_id_sql} = upstream_account_usage_hourly.upstream_account_id
+                  AND {success_like_sql}
+                  AND {resolved_failure_sql} = 'none'
+            ),
+            failure_count = (
+                SELECT COUNT(*)
+                FROM codex_invocations
+                WHERE {bucket_epoch_sql} = upstream_account_usage_hourly.bucket_start_epoch
+                  AND {upstream_account_id_sql} = upstream_account_usage_hourly.upstream_account_id
+                  AND {terminal_status_sql}
+                  AND {resolved_failure_sql} IN ('service_failure', 'client_failure', 'client_abort')
+            )
+        WHERE EXISTS (
+            SELECT 1
+            FROM codex_invocations
+            WHERE {bucket_epoch_sql} = upstream_account_usage_hourly.bucket_start_epoch
+              AND {upstream_account_id_sql} = upstream_account_usage_hourly.upstream_account_id
+        )
+        "#,
+    );
+    sqlx::query(&live_backfill_sql)
+        .execute(pool)
+        .await
+        .context("failed to backfill live upstream account hourly status counts")?;
+
+    sqlx::query(
+        r#"
+        DELETE FROM upstream_account_usage_hourly
+        WHERE EXISTS (
+            SELECT 1
+            FROM archive_batches AS batches
+            JOIN hourly_rollup_archive_replay AS replay
+              ON replay.dataset = batches.dataset
+             AND replay.file_path = batches.file_path
+             AND replay.target = 'upstream_account_usage_hourly'
+            WHERE batches.dataset = 'codex_invocations'
+              AND batches.status = 'completed'
+              AND batches.coverage_start_at IS NOT NULL
+              AND batches.coverage_end_at IS NOT NULL
+              AND upstream_account_usage_hourly.bucket_start_epoch BETWEEN
+                    (((CASE
+                        WHEN instr(batches.coverage_start_at, 'T') > 0
+                            THEN CAST(strftime('%s', batches.coverage_start_at) AS INTEGER)
+                        ELSE CAST(strftime('%s', batches.coverage_start_at || '+08:00') AS INTEGER)
+                    END) / 3600) * 3600)
+                AND (((CASE
+                        WHEN instr(batches.coverage_end_at, 'T') > 0
+                            THEN CAST(strftime('%s', batches.coverage_end_at) AS INTEGER)
+                        ELSE CAST(strftime('%s', batches.coverage_end_at || '+08:00') AS INTEGER)
+                    END) / 3600) * 3600)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to clear stale archived upstream account hourly rollups")?;
+
+    sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET historical_rollups_materialized_at = NULL
+        WHERE dataset = 'codex_invocations'
+          AND status = 'completed'
+          AND EXISTS (
+              SELECT 1
+              FROM hourly_rollup_archive_replay AS replay
+              WHERE replay.dataset = archive_batches.dataset
+                AND replay.file_path = archive_batches.file_path
+                AND replay.target = 'upstream_account_usage_hourly'
+          )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to reopen upstream account hourly archive materialization")?;
+
+    sqlx::query(
+        r#"
+        DELETE FROM hourly_rollup_archive_progress
+        WHERE dataset = 'codex_invocations'
+          AND EXISTS (
+              SELECT 1
+              FROM hourly_rollup_archive_replay AS replay
+              WHERE replay.dataset = hourly_rollup_archive_progress.dataset
+                AND replay.file_path = hourly_rollup_archive_progress.file_path
+                AND replay.target = 'upstream_account_usage_hourly'
+          )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to clear stale upstream account hourly archive progress")?;
+
+    sqlx::query(
+        r#"
+        DELETE FROM hourly_rollup_archive_replay
+        WHERE dataset = 'codex_invocations'
+          AND target = 'upstream_account_usage_hourly'
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to clear stale upstream account hourly archive replay markers")?;
+
+    Ok(())
+}
+
 async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     let create_sql = codex_invocations_create_sql("codex_invocations");
     sqlx::query(&create_sql)
@@ -923,6 +1049,8 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             bucket_start_epoch INTEGER NOT NULL,
             upstream_account_id INTEGER NOT NULL,
             request_count INTEGER NOT NULL,
+            success_count INTEGER NOT NULL DEFAULT 0,
+            failure_count INTEGER NOT NULL DEFAULT 0,
             total_tokens INTEGER NOT NULL,
             total_cost REAL NOT NULL,
             input_tokens INTEGER NOT NULL,
@@ -938,6 +1066,25 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure upstream_account_usage_hourly table existence")?;
+
+    let upstream_account_usage_hourly_columns =
+        load_sqlite_table_columns(pool, "upstream_account_usage_hourly").await?;
+    let mut upstream_account_usage_hourly_needs_status_backfill = false;
+    for (column, ty) in [
+        ("success_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("failure_count", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        if !upstream_account_usage_hourly_columns.contains(column) {
+            upstream_account_usage_hourly_needs_status_backfill = true;
+            let sql = format!("ALTER TABLE upstream_account_usage_hourly ADD COLUMN {column} {ty}");
+            sqlx::query(&sql)
+                .execute(pool)
+                .await
+                .with_context(|| {
+                    format!("failed to add upstream_account_usage_hourly column {column}")
+                })?;
+        }
+    }
 
     sqlx::query(
         r#"
@@ -1127,6 +1274,10 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure hourly_rollup_archive_progress table existence")?;
+
+    if upstream_account_usage_hourly_needs_status_backfill {
+        backfill_upstream_account_usage_hourly_status_counts(pool).await?;
+    }
 
     sqlx::query(
         r#"

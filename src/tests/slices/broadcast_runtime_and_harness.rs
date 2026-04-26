@@ -1973,6 +1973,7 @@ async fn forward_proxy_timeseries_keeps_hourly_attempt_history_after_retention()
             bucket: Some("1h".to_string()),
             settlement_hour: None,
             time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -2120,6 +2121,7 @@ async fn forward_proxy_timeseries_preserves_materialized_history_when_same_month
             bucket: Some("1h".to_string()),
             settlement_hour: None,
             time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -2268,6 +2270,7 @@ async fn forward_proxy_timeseries_reads_pending_archived_node_health_without_mat
             bucket: Some("1h".to_string()),
             settlement_hour: None,
             time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -2520,6 +2523,7 @@ async fn forward_proxy_timeseries_ignores_cached_rows_for_pending_node_health_ar
             bucket: Some("1h".to_string()),
             settlement_hour: None,
             time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await

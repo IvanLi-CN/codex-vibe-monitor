@@ -18,6 +18,7 @@ import {
   shouldEnableSummaryRemountCache,
   shouldRefreshCalendarSummaryOnRecords,
   shouldForceCalendarSummaryOpenResync,
+  shouldRefreshScopedSummaryOnRecords,
   shouldRefreshYesterdaySummaryOnRecords,
   shouldReuseSummaryRemountCache,
   shouldTriggerCurrentSummaryOpenResync,
@@ -183,6 +184,19 @@ describe('useSummary unsupported window fallback', () => {
     ).toBe(false)
   })
 
+  it('refreshes account-scoped rolling summaries from matching records', () => {
+    const nowEpoch = Math.floor(new Date(2026, 3, 9, 12, 0, 0).getTime() / 1000)
+    const todayRecord = [{ occurredAt: new Date(2026, 3, 9, 11, 59, 0).toISOString() }]
+    const yesterdayRecord = [{ occurredAt: new Date(2026, 3, 8, 23, 59, 0).toISOString() }]
+
+    expect(shouldRefreshScopedSummaryOnRecords('1d', todayRecord, nowEpoch)).toBe(true)
+    expect(shouldRefreshScopedSummaryOnRecords('7d', todayRecord, nowEpoch)).toBe(true)
+    expect(shouldRefreshScopedSummaryOnRecords('today', todayRecord, nowEpoch)).toBe(true)
+    expect(shouldRefreshScopedSummaryOnRecords('yesterday', yesterdayRecord, nowEpoch)).toBe(true)
+    expect(shouldRefreshScopedSummaryOnRecords('yesterday', todayRecord, nowEpoch)).toBe(false)
+    expect(shouldRefreshScopedSummaryOnRecords('current', todayRecord, nowEpoch)).toBe(false)
+  })
+
   it('retries current summary only for transient network-like errors', () => {
     expect(shouldRetryCurrentSummaryError('summary request timed out after 10s')).toBe(true)
     expect(shouldRetryCurrentSummaryError('Failed to fetch')).toBe(true)
@@ -206,10 +220,50 @@ describe('useSummary unsupported window fallback', () => {
 
     writeSummaryRemountCache('7d', undefined, summary, 1_000)
 
-    expect(getSummaryRemountCacheKey('7d')).toBe('7d::default')
+    expect(getSummaryRemountCacheKey('7d')).toBe('7d::default::global')
     expect(readSummaryRemountCache('7d', undefined, 1_001)).toEqual({
       stats: summary,
       cachedAt: 1_000,
+    })
+  })
+
+  it('stores global and account-scoped remount cache entries separately', () => {
+    const globalSummary = {
+      totalCount: 12,
+      successCount: 10,
+      failureCount: 2,
+      totalCost: 0.5,
+      totalTokens: 120,
+    }
+    const accountSummary = {
+      totalCount: 3,
+      successCount: 2,
+      failureCount: 1,
+      totalCost: 0.2,
+      totalTokens: 48,
+    }
+
+    writeSummaryRemountCache('7d', undefined, globalSummary, 1_000)
+    writeSummaryRemountCache('7d', undefined, accountSummary, 2_000, 42)
+
+    expect(getSummaryRemountCacheKey('7d', undefined, 42)).toBe(
+      '7d::default::account:42',
+    )
+    expect(readSummaryRemountCache('7d', undefined, 2_001)).toEqual({
+      stats: globalSummary,
+      cachedAt: 1_000,
+    })
+    expect(
+      readSummaryRemountCache(
+        '7d',
+        undefined,
+        2_001,
+        SUMMARY_REMOUNT_CACHE_TTL_MS,
+        42,
+      ),
+    ).toEqual({
+      stats: accountSummary,
+      cachedAt: 2_000,
     })
   })
 

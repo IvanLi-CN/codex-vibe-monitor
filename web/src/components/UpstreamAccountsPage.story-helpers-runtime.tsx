@@ -6,6 +6,8 @@ import type {
   CompleteOauthLoginSessionPayload,
   ImportOauthCredentialFilePayload,
   OauthMailboxStatus,
+  StatsResponse,
+  TimeseriesResponse,
   UpdateOauthLoginSessionPayload,
   UpdatePoolRoutingSettingsPayload,
   UpdateUpstreamAccountGroupPayload,
@@ -97,6 +99,72 @@ function buildStoryWindowActualUsage(accountId: number, multiplier: number) {
   }
 }
 
+function storyAccountActivityIsEmpty(storyId: string | null) {
+  return storyId?.endsWith('--detail-drawer-records-empty') === true
+}
+
+function buildStoryAccountActivitySummary(
+  accountId: number,
+  storyId: string | null,
+): StatsResponse {
+  if (storyAccountActivityIsEmpty(storyId)) {
+    return {
+      totalCount: 0,
+      successCount: 0,
+      failureCount: 0,
+      totalCost: 0,
+      totalTokens: 0,
+    }
+  }
+  const scale = accountId === 101 ? 1 : 0.35
+  const totalCount = Math.max(1, Math.round(37 * scale))
+  const failureCount = accountId === 101 ? 3 : 1
+  return {
+    totalCount,
+    successCount: Math.max(0, totalCount - failureCount),
+    failureCount,
+    totalCost: Number((1.846 * scale).toFixed(4)),
+    totalTokens: Math.round(1_284_600 * scale),
+  }
+}
+
+function buildStoryAccountActivityTimeseries(
+  accountId: number,
+  parsedUrl: URL,
+  storyId: string | null,
+): TimeseriesResponse {
+  const range = parsedUrl.searchParams.get('range') || 'today'
+  const bucket = parsedUrl.searchParams.get('bucket') || '1m'
+  const bucketSeconds = bucket === '1h' ? 3_600 : bucket === '1d' ? 86_400 : 60
+  const rangeStart = '2026-03-13T00:00:00.000Z'
+  const points = storyAccountActivityIsEmpty(storyId)
+    ? []
+    : Array.from({ length: range === '7d' ? 14 : 12 }, (_, index) => {
+        const bucketStart = new Date(Date.parse(rangeStart) + index * bucketSeconds * 1_000)
+        const count = accountId === 101 ? (index % 5) + 1 : index % 3
+        return {
+          bucketStart: bucketStart.toISOString(),
+          bucketEnd: new Date(bucketStart.getTime() + bucketSeconds * 1_000).toISOString(),
+          totalCount: count,
+          successCount: Math.max(0, count - (index % 7 === 0 ? 1 : 0)),
+          failureCount: index % 7 === 0 ? 1 : 0,
+          inFlightCount: index % 9 === 0 ? 1 : 0,
+          totalTokens: count * 12_800,
+          totalCost: Number((count * 0.034).toFixed(4)),
+        }
+      })
+  return {
+    rangeStart,
+    rangeEnd: new Date(Date.parse(rangeStart) + Math.max(1, points.length) * bucketSeconds * 1_000).toISOString(),
+    bucketSeconds,
+    snapshotId: 1,
+    effectiveBucket: bucket,
+    availableBuckets: ['1m', '10m', '1h', '1d'],
+    bucketLimitedToDaily: false,
+    points,
+  }
+}
+
 export function StorybookUpstreamAccountsMock({
   children,
 }: {
@@ -126,6 +194,16 @@ export function StorybookUpstreamAccountsMock({
       const path = parsedUrl.pathname
       const storyId = currentStoryId()
       const store = storeRef.current
+
+      if (path === '/api/stats/summary' && method === 'GET') {
+        const accountId = Number(parsedUrl.searchParams.get('upstreamAccountId') || 0)
+        return jsonResponse(buildStoryAccountActivitySummary(accountId, storyId))
+      }
+
+      if (path === '/api/stats/timeseries' && method === 'GET') {
+        const accountId = Number(parsedUrl.searchParams.get('upstreamAccountId') || 0)
+        return jsonResponse(buildStoryAccountActivityTimeseries(accountId, parsedUrl, storyId))
+      }
 
       if (path === '/api/pool/upstream-accounts' && method === 'GET') {
         if (isDynamicRosterStoryId(storyId)) {
@@ -705,9 +783,9 @@ export function StorybookUpstreamAccountsMock({
         const stickyKey = parsedUrl.searchParams.get('stickyKey')?.trim() || ''
         const pageSize = Math.max(1, Number(parsedUrl.searchParams.get('pageSize') || 20))
         const page = Math.max(1, Number(parsedUrl.searchParams.get('page') || 1))
-        const allRecords = buildStickyInvocationRecords(
-          requestedAccountId > 0 ? requestedAccountId : 101,
-        )
+        const allRecords = storyAccountActivityIsEmpty(storyId)
+          ? []
+          : buildStickyInvocationRecords(requestedAccountId > 0 ? requestedAccountId : 101)
         const filteredRecords = allRecords.filter((record) => (
           (requestedAccountId > 0 ? record.upstreamAccountId === requestedAccountId : true)
           && (stickyKey ? record.promptCacheKey === stickyKey : true)

@@ -297,6 +297,31 @@ describe("fetchTimeseries", () => {
     expect(response.points[1].firstResponseByteTotalP95Ms).toBeNull();
     expect(response.points[1].inFlightCount).toBe(0);
   });
+
+  it("adds upstreamAccountId to timeseries query parameters", async () => {
+    const fetchMock = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          rangeStart: "2026-03-26T12:00:00Z",
+          rangeEnd: "2026-03-26T13:00:00Z",
+          bucketSeconds: 60,
+          points: [],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    await fetchTimeseries("today", {
+      bucket: "1m",
+      upstreamAccountId: 42,
+    });
+
+    const url = String(fetchMock.mock.calls[0]?.[0] ?? "");
+    expect(url).toContain("range=today");
+    expect(url).toContain("bucket=1m");
+    expect(url).toContain("upstreamAccountId=42");
+  });
 });
 
 describe("fetchParallelWorkStats", () => {
@@ -692,6 +717,30 @@ describe("fetchSummary", () => {
     expect(firstCall).toBeDefined();
     const init = firstCall?.[1] as RequestInit | undefined;
     expect(init?.signal).toBe(controller.signal);
+  });
+
+  it("adds upstreamAccountId to summary query parameters", async () => {
+    const fetchMock = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          totalCount: 0,
+          successCount: 0,
+          failureCount: 0,
+          totalCost: 0,
+          totalTokens: 0,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    await fetchSummary("today", {
+      upstreamAccountId: 42,
+    });
+
+    const url = String(fetchMock.mock.calls[0]?.[0] ?? "");
+    expect(url).toContain("window=today");
+    expect(url).toContain("upstreamAccountId=42");
   });
 
   it("preserves optional maintenance stats fields", async () => {

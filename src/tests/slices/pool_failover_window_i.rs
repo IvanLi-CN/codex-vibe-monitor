@@ -65,6 +65,7 @@ async fn hourly_timeseries_omits_pre_cutoff_partial_hour_rollups() {
             bucket: Some("1h".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         },
         Shanghai,
         InvocationSourceScope::ProxyOnly,
@@ -111,6 +112,7 @@ async fn forward_proxy_timeseries_rejects_non_hour_aligned_timezones() {
             bucket: Some("1h".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Kolkata".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -152,6 +154,7 @@ async fn timeseries_subday_bucket_stays_available_inside_live_window() {
             bucket: Some("12h".to_string()),
             settlement_hour: None,
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await

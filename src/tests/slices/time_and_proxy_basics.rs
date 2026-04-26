@@ -428,6 +428,7 @@ fn parse_summary_window_accepts_yesterday_calendar_window() {
             window: Some("yesterday".to_string()),
             limit: None,
             time_zone: None,
+            upstream_account_id: None,
         },
         50,
     )

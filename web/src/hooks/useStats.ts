@@ -6,6 +6,7 @@ import { recordTodaySummaryRefresh } from '../lib/dashboardPerformanceDiagnostic
 
 interface UseSummaryOptions {
   limit?: number
+  upstreamAccountId?: number
 }
 
 const SUPPORTED_SSE_WINDOWS = new Set(['all', '30m', '1h', '1d', '1mo'])
@@ -47,8 +48,8 @@ export function createUnsupportedRefreshGate(): UnsupportedRefreshGate {
   return { inFlight: false, lastTriggerAt: 0 }
 }
 
-export function getSummaryRemountCacheKey(window: string, limit?: number) {
-  return `${window}::${limit ?? 'default'}`
+export function getSummaryRemountCacheKey(window: string, limit?: number, upstreamAccountId?: number) {
+  return `${window}::${limit ?? 'default'}::${upstreamAccountId == null ? 'global' : `account:${upstreamAccountId}`}`
 }
 
 export function shouldEnableSummaryRemountCache(window: string) {
@@ -60,9 +61,10 @@ export function readSummaryRemountCache(
   limit?: number,
   now = Date.now(),
   ttlMs = SUMMARY_REMOUNT_CACHE_TTL_MS,
+  upstreamAccountId?: number,
 ) {
   if (!shouldEnableSummaryRemountCache(window)) return null
-  const cached = summaryRemountCache.get(getSummaryRemountCacheKey(window, limit))
+  const cached = summaryRemountCache.get(getSummaryRemountCacheKey(window, limit, upstreamAccountId))
   if (!cached) return null
   return shouldReuseSummaryRemountCache(cached.cachedAt, now, ttlMs) ? cached : null
 }
@@ -72,9 +74,10 @@ export function writeSummaryRemountCache(
   limit: number | undefined,
   stats: StatsResponse,
   cachedAt = Date.now(),
+  upstreamAccountId?: number,
 ) {
   if (!shouldEnableSummaryRemountCache(window)) return
-  summaryRemountCache.set(getSummaryRemountCacheKey(window, limit), {
+  summaryRemountCache.set(getSummaryRemountCacheKey(window, limit, upstreamAccountId), {
     stats,
     cachedAt,
   })
@@ -130,6 +133,18 @@ export function shouldRefreshYesterdaySummaryOnRecords(
     const occurredEpoch = Math.floor(occurredEpochMs / 1000)
     return occurredEpoch >= rangeStartEpoch && occurredEpoch < rangeEndEpoch
   })
+}
+
+export function shouldRefreshScopedSummaryOnRecords(
+  window: string,
+  records: Array<Pick<ApiInvocation, 'occurredAt'>>,
+  nowEpochSeconds = Math.floor(Date.now() / 1000),
+) {
+  if (window === 'current') return false
+  if (window === 'yesterday') {
+    return shouldRefreshYesterdaySummaryOnRecords(records, nowEpochSeconds)
+  }
+  return shouldRefreshCalendarSummaryOnRecords(window) || SUPPORTED_SSE_WINDOWS.has(window) || window === '7d'
 }
 
 export function shouldForceCalendarSummaryOpenResync(
@@ -223,7 +238,13 @@ export async function runCalendarSummaryRefresh(
 }
 
 export function useSummary(window: string, options?: UseSummaryOptions) {
-  const initialCachedSummary = readSummaryRemountCache(window, options?.limit)
+  const initialCachedSummary = readSummaryRemountCache(
+    window,
+    options?.limit,
+    Date.now(),
+    SUMMARY_REMOUNT_CACHE_TTL_MS,
+    options?.upstreamAccountId,
+  )
   const [stats, setStats] = useState<StatsResponse | null>(
     () => initialCachedSummary?.stats ?? null,
   )
@@ -231,9 +252,10 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
   const [error, setError] = useState<string | null>(null)
   const unsupportedRefreshRef = useRef<UnsupportedRefreshGate>(createUnsupportedRefreshGate())
   const calendarRefreshRef = useRef<UnsupportedRefreshGate>(createUnsupportedRefreshGate())
-  const summaryContextRef = useRef<{ window: string; limit?: number }>({
+  const summaryContextRef = useRef<{ window: string; limit?: number; upstreamAccountId?: number }>({
     window,
     limit: options?.limit,
+    upstreamAccountId: options?.upstreamAccountId,
   })
   const hasHydratedRef = useRef(initialCachedSummary != null)
   const activeLoadCountRef = useRef(0)
@@ -253,6 +275,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
   )
   summaryContextRef.current.window = window
   summaryContextRef.current.limit = options?.limit
+  summaryContextRef.current.upstreamAccountId = options?.upstreamAccountId
 
   const clearPendingRefreshTimer = useCallback(() => {
     if (!refreshTimerRef.current) return
@@ -288,6 +311,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     try {
       const response = await fetchSummary(summaryContextRef.current.window, {
         limit: summaryContextRef.current.limit,
+        upstreamAccountId: summaryContextRef.current.upstreamAccountId,
         signal: controller.signal,
       })
       if (requestSeq !== requestSeqRef.current) return
@@ -296,6 +320,8 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
         summaryContextRef.current.window,
         summaryContextRef.current.limit,
         response,
+        Date.now(),
+        summaryContextRef.current.upstreamAccountId,
       )
       recordTodaySummaryRefresh(summaryContextRef.current.window)
       lastNaturalDayLoadStartEpochRef.current =
@@ -412,7 +438,13 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
 
   useEffect(() => {
     // Invalidate prior async loads when summary query context changes.
-    const cachedSummary = readSummaryRemountCache(window, options?.limit)
+    const cachedSummary = readSummaryRemountCache(
+      window,
+      options?.limit,
+      Date.now(),
+      SUMMARY_REMOUNT_CACHE_TTL_MS,
+      options?.upstreamAccountId,
+    )
     requestSeqRef.current += 1
     setStats(cachedSummary?.stats ?? null)
     setError(null)
@@ -436,7 +468,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
       return
     }
     void load({ silent: true, force: true })
-  }, [clearDayRolloverTimer, clearPendingLoad, clearPendingRefreshTimer, load, options?.limit, window])
+  }, [clearDayRolloverTimer, clearPendingLoad, clearPendingRefreshTimer, load, options?.limit, options?.upstreamAccountId, window])
 
   useEffect(() => {
     if (!error || window !== 'current' || !shouldRetryCurrentSummaryError(error)) {
@@ -467,11 +499,15 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     [clearDayRolloverTimer, clearPendingLoad, clearPendingRefreshTimer],
   )
 
-  const supportsSse = useMemo(() => SUPPORTED_SSE_WINDOWS.has(window), [window])
+  const supportsSse = useMemo(
+    () => options?.upstreamAccountId == null && SUPPORTED_SSE_WINDOWS.has(window),
+    [options?.upstreamAccountId, window],
+  )
 
   useEffect(() => {
     const unsubscribe = subscribeToSse((payload) => {
       if (payload.type === 'summary') {
+        if (options?.upstreamAccountId != null) return
         if (payload.window === window) {
           setStats(payload.summary)
           writeSummaryRemountCache(window, options?.limit, payload.summary)
@@ -486,13 +522,20 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
           void runUnsupportedSummaryRefresh(unsupportedRefreshRef.current, Date.now(), () => load({ silent: true }))
         }
       } else if (payload.type === 'records') {
+        const scopedRecords =
+          options?.upstreamAccountId == null
+            ? payload.records
+            : payload.records.filter((record) => record.upstreamAccountId === options.upstreamAccountId)
+        if (scopedRecords.length === 0) return
         if (window === 'current') {
           // current 窗口通过节流静默刷新，避免高频事件导致闪烁。
           triggerCurrentWindowRefresh()
         } else if (
-          shouldRefreshCalendarSummaryOnRecords(window) ||
-          (window === 'yesterday' &&
-            shouldRefreshYesterdaySummaryOnRecords(payload.records))
+          options?.upstreamAccountId != null
+            ? shouldRefreshScopedSummaryOnRecords(window, scopedRecords)
+            : shouldRefreshCalendarSummaryOnRecords(window) ||
+              (window === 'yesterday' &&
+                shouldRefreshYesterdaySummaryOnRecords(scopedRecords))
         ) {
           // calendar windows 依旧通过 HTTP 计算，但 records 到达时以 1s 节流静默补拉。
           void runCalendarSummaryRefresh(calendarRefreshRef.current, Date.now(), () => load({ silent: true }))
@@ -500,7 +543,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
       }
     })
     return unsubscribe
-  }, [load, options?.limit, supportsSse, triggerCurrentWindowRefresh, window])
+  }, [load, options?.limit, options?.upstreamAccountId, supportsSse, triggerCurrentWindowRefresh, window])
 
   useEffect(() => {
     if (typeof document === 'undefined') return

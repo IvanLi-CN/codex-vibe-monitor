@@ -16,6 +16,7 @@ import { WeeklyHourlyHeatmap } from './WeeklyHourlyHeatmap'
 type RangeKey = 'today' | 'yesterday' | '1d' | '7d' | 'usage'
 
 export const DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY = 'dashboard.activityOverview.activeRange.v1'
+export const ACCOUNT_ACTIVITY_RANGE_STORAGE_KEY_PREFIX = 'account.activityOverview.activeRange.v1'
 
 const DEFAULT_RANGE: RangeKey = 'today'
 const RANGE_OPTIONS: Array<{ key: RangeKey; labelKey: string }> = [
@@ -36,23 +37,30 @@ function isRangeKey(value: string | null): value is RangeKey {
   return value === 'today' || value === 'yesterday' || value === '1d' || value === '7d' || value === 'usage'
 }
 
-function readPersistedRange(): RangeKey {
+function readPersistedRange(storageKey: string): RangeKey {
   if (typeof window === 'undefined') return DEFAULT_RANGE
   try {
-    const cached = window.localStorage.getItem(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY)
+    const cached = window.localStorage.getItem(storageKey)
     return isRangeKey(cached) ? cached : DEFAULT_RANGE
   } catch {
     return DEFAULT_RANGE
   }
 }
 
-function persistRange(range: RangeKey) {
+function persistRange(storageKey: string, range: RangeKey) {
   if (typeof window === 'undefined') return
   try {
-    window.localStorage.setItem(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY, range)
+    window.localStorage.setItem(storageKey, range)
   } catch {
     // Ignore storage write failures and keep the UI responsive.
   }
+}
+
+function useScopedSummary(window: string, upstreamAccountId?: number) {
+  return useSummary(
+    window,
+    upstreamAccountId == null ? undefined : { upstreamAccountId },
+  )
 }
 
 function DashboardNaturalDayRangePanel({
@@ -60,13 +68,18 @@ function DashboardNaturalDayRangePanel({
   summaryWindow,
   timeseriesRange,
   testId,
+  upstreamAccountId,
 }: {
   metric: MetricKey
   summaryWindow: 'today' | 'yesterday'
   timeseriesRange: 'today' | 'yesterday'
   testId: string
+  upstreamAccountId?: number
 }) {
-  const { data, isLoading, error } = useTimeseries(timeseriesRange, { bucket: '1m' })
+  const { data, isLoading, error } = useTimeseries(
+    timeseriesRange,
+    upstreamAccountId == null ? { bucket: '1m' } : { bucket: '1m', upstreamAccountId },
+  )
 
   return (
     <div
@@ -80,6 +93,7 @@ function DashboardNaturalDayRangePanel({
         loading={isLoading}
         error={error}
         closedNaturalDay={timeseriesRange === 'yesterday'}
+        upstreamAccountId={upstreamAccountId}
       />
       <DashboardNaturalDayChartSection
         response={data}
@@ -98,18 +112,20 @@ function DashboardNaturalDaySummaryOverview({
   loading,
   error,
   closedNaturalDay,
+  upstreamAccountId,
 }: {
   summaryWindow: 'today' | 'yesterday'
   response: ReturnType<typeof useTimeseries>['data']
   loading: boolean
   error: ReturnType<typeof useTimeseries>['error']
   closedNaturalDay: boolean
+  upstreamAccountId?: number
 }) {
   const {
     summary,
     isLoading: summaryLoading,
     error: summaryError,
-  } = useSummary(summaryWindow)
+  } = useScopedSummary(summaryWindow, upstreamAccountId)
   const rate = useMemo(
     () => buildDashboardTodayRateSnapshot(response, { closedNaturalDay }),
     [closedNaturalDay, response],
@@ -154,30 +170,32 @@ const DashboardNaturalDayChartSection = memo(function DashboardNaturalDayChartSe
   )
 })
 
-function DashboardTodayRangePanel({ metric }: { metric: MetricKey }) {
+function DashboardTodayRangePanel({ metric, upstreamAccountId }: { metric: MetricKey; upstreamAccountId?: number }) {
   return (
     <DashboardNaturalDayRangePanel
       metric={metric}
       summaryWindow="today"
       timeseriesRange="today"
       testId="dashboard-activity-range-today"
+      upstreamAccountId={upstreamAccountId}
     />
   )
 }
 
-function DashboardYesterdayRangePanel({ metric }: { metric: MetricKey }) {
+function DashboardYesterdayRangePanel({ metric, upstreamAccountId }: { metric: MetricKey; upstreamAccountId?: number }) {
   return (
     <DashboardNaturalDayRangePanel
       metric={metric}
       summaryWindow="yesterday"
       timeseriesRange="yesterday"
       testId="dashboard-activity-range-yesterday"
+      upstreamAccountId={upstreamAccountId}
     />
   )
 }
 
-function Dashboard24HourRangePanel({ metric }: { metric: MetricKey }) {
-  const { summary, isLoading, error } = useSummary('1d')
+function Dashboard24HourRangePanel({ metric, upstreamAccountId }: { metric: MetricKey; upstreamAccountId?: number }) {
+  const { summary, isLoading, error } = useScopedSummary('1d', upstreamAccountId)
 
   return (
     <div
@@ -189,13 +207,14 @@ function Dashboard24HourRangePanel({ metric }: { metric: MetricKey }) {
       <Last24hTenMinuteHeatmap
         metric={metric}
         showHeader={false}
+        upstreamAccountId={upstreamAccountId}
       />
     </div>
   )
 }
 
-function Dashboard7DayRangePanel({ metric }: { metric: MetricKey }) {
-  const { summary, isLoading, error } = useSummary('7d')
+function Dashboard7DayRangePanel({ metric, upstreamAccountId }: { metric: MetricKey; upstreamAccountId?: number }) {
+  const { summary, isLoading, error } = useScopedSummary('7d', upstreamAccountId)
 
   return (
     <div
@@ -208,12 +227,13 @@ function Dashboard7DayRangePanel({ metric }: { metric: MetricKey }) {
         metric={metric}
         showHeader={false}
         showSurface={false}
+        upstreamAccountId={upstreamAccountId}
       />
     </div>
   )
 }
 
-function DashboardUsageRangePanel({ metric }: { metric: MetricKey }) {
+function DashboardUsageRangePanel({ metric, upstreamAccountId }: { metric: MetricKey; upstreamAccountId?: number }) {
   return (
     <div
       data-testid="dashboard-activity-range-usage"
@@ -224,15 +244,30 @@ function DashboardUsageRangePanel({ metric }: { metric: MetricKey }) {
         showSurface={false}
         showMetricToggle={false}
         showMeta={false}
+        upstreamAccountId={upstreamAccountId}
       />
     </div>
   )
 }
 
-export function DashboardActivityOverview() {
+export interface DashboardActivityOverviewProps {
+  title?: string
+  storageKey?: string
+  testId?: string
+  upstreamAccountId?: number
+  className?: string
+}
+
+export function DashboardActivityOverview({
+  title,
+  storageKey = DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY,
+  testId = 'dashboard-activity-overview',
+  upstreamAccountId,
+  className = 'surface-panel overflow-visible',
+}: DashboardActivityOverviewProps) {
   const { t } = useTranslation()
   const { themeMode } = useTheme()
-  const [activeRange, setActiveRange] = useState<RangeKey>(() => readPersistedRange())
+  const [activeRange, setActiveRange] = useState<RangeKey>(() => readPersistedRange(storageKey))
   const [metricToday, setMetricToday] = useState<MetricKey>('totalCount')
   const [metricYesterday, setMetricYesterday] = useState<MetricKey>('totalCount')
   const [metric24h, setMetric24h] = useState<MetricKey>('totalCount')
@@ -260,8 +295,8 @@ export function DashboardActivityOverview() {
           : metricUsage
 
   useEffect(() => {
-    persistRange(activeRange)
-  }, [activeRange])
+    persistRange(storageKey, activeRange)
+  }, [activeRange, storageKey])
 
   const setActiveMetric = (metric: MetricKey) => {
     if (activeRange === 'today') {
@@ -284,12 +319,12 @@ export function DashboardActivityOverview() {
   }
 
   return (
-    <section className="surface-panel overflow-visible" data-testid="dashboard-activity-overview">
+    <section className={className} data-testid={testId}>
       <div className="surface-panel-body gap-6">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex flex-wrap items-center gap-3">
             <div className="section-heading">
-              <h2 className="section-title">{t('dashboard.activityOverview.title')}</h2>
+              <h2 className="section-title">{title ?? t('dashboard.activityOverview.title')}</h2>
             </div>
             <SegmentedControl role="tablist" aria-label={t('dashboard.activityOverview.rangeToggleAria')}>
               {rangeOptions.map((option) => {
@@ -326,11 +361,11 @@ export function DashboardActivityOverview() {
             })}
           </SegmentedControl>
         </div>
-        {activeRange === 'today' ? <DashboardTodayRangePanel metric={metricToday} /> : null}
-        {activeRange === 'yesterday' ? <DashboardYesterdayRangePanel metric={metricYesterday} /> : null}
-        {activeRange === '1d' ? <Dashboard24HourRangePanel metric={metric24h} /> : null}
-        {activeRange === '7d' ? <Dashboard7DayRangePanel metric={metric7d} /> : null}
-        {activeRange === 'usage' ? <DashboardUsageRangePanel metric={metricUsage} /> : null}
+        {activeRange === 'today' ? <DashboardTodayRangePanel metric={metricToday} upstreamAccountId={upstreamAccountId} /> : null}
+        {activeRange === 'yesterday' ? <DashboardYesterdayRangePanel metric={metricYesterday} upstreamAccountId={upstreamAccountId} /> : null}
+        {activeRange === '1d' ? <Dashboard24HourRangePanel metric={metric24h} upstreamAccountId={upstreamAccountId} /> : null}
+        {activeRange === '7d' ? <Dashboard7DayRangePanel metric={metric7d} upstreamAccountId={upstreamAccountId} /> : null}
+        {activeRange === 'usage' ? <DashboardUsageRangePanel metric={metricUsage} upstreamAccountId={upstreamAccountId} /> : null}
       </div>
     </section>
   )

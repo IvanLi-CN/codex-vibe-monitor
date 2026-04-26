@@ -28,6 +28,7 @@ export interface WeeklyHourlyHeatmapProps {
   onChangeMetric?: (metric: MetricKey) => void
   showHeader?: boolean
   showSurface?: boolean
+  upstreamAccountId?: number
 }
 
 function parseDateTimeParts(value: string) {
@@ -98,12 +99,16 @@ export function WeeklyHourlyHeatmap({
   onChangeMetric,
   showHeader = true,
   showSurface = true,
+  upstreamAccountId,
 }: WeeklyHourlyHeatmapProps) {
   const { t, locale } = useTranslation()
   const { themeMode } = useTheme()
   const [uncontrolledMetric, setUncontrolledMetric] = useState<MetricKey>('totalCount')
   const metric = controlledMetric ?? uncontrolledMetric
-  const { data, isLoading, error } = useTimeseries('7d', { bucket: '1h' })
+  const { data, isLoading, error } = useTimeseries(
+    '7d',
+    upstreamAccountId == null ? { bucket: '1h' } : { bucket: '1h', upstreamAccountId },
+  )
   const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
   const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag])
   const currencyFormatter = useMemo(
