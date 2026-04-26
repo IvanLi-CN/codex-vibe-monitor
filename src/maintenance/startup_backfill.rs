@@ -1004,20 +1004,39 @@ fn spawn_startup_backfill_maintenance(
         }
         let prep_cli = CliArgs::default();
         if should_run_startup_persistent_prep(&prep_cli) {
-            match run_startup_persistent_prep_inner(&state.pool, &state.config, &prep_cli, false)
-                .await
-            {
-                Ok(summary) => {
-                    info!(
-                        refreshed_manifest_batches = summary.refreshed_manifest_batches,
-                        refreshed_manifest_account_rows = summary.refreshed_manifest_account_rows,
-                        missing_manifest_files = summary.missing_manifest_files,
-                        backfilled_archive_expiries = summary.backfilled_archive_expiries,
-                        bootstrapped_hourly_rollups = summary.bootstrapped_hourly_rollups,
-                        "startup background prep finished"
+            let gate = crate::db_pressure::global_db_pressure_gate();
+            match gate.try_begin_background("startup_persistent_prep") {
+                Ok(_permit) => {
+                    match run_startup_persistent_prep_inner(
+                        &state.pool,
+                        &state.config,
+                        &prep_cli,
+                        false,
+                    )
+                    .await
+                    {
+                        Ok(summary) => {
+                            info!(
+                                refreshed_manifest_batches = summary.refreshed_manifest_batches,
+                                refreshed_manifest_account_rows = summary.refreshed_manifest_account_rows,
+                                missing_manifest_files = summary.missing_manifest_files,
+                                backfilled_archive_expiries = summary.backfilled_archive_expiries,
+                                bootstrapped_hourly_rollups = summary.bootstrapped_hourly_rollups,
+                                "startup background prep finished"
+                            );
+                        }
+                        Err(err) => {
+                            gate.record_error("startup_persistent_prep", &err);
+                            warn!(error = %err, "startup background prep failed");
+                        }
+                    }
+                }
+                Err(reason) => {
+                    warn!(
+                        reason = %reason,
+                        "startup background prep skipped because database pressure gate is closed"
                     );
                 }
-                Err(err) => warn!(error = %err, "startup background prep failed"),
             }
         }
         run_startup_backfill_maintenance_pass(state.clone(), &cancel).await;
