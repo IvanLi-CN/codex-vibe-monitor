@@ -1438,6 +1438,8 @@ const baseTranslations = {
     "stats.parallelWork.title": "Parallel work",
     "stats.parallelWork.description":
       "Track how many distinct Prompt Cache conversations were active per bucket across short-, mid-, and long-term windows.",
+    "stats.parallelWork.currentDescription":
+      "Uses the page-level range and bucket selection. Windows up to 24 hours render as a time-by-conversation chart; longer windows render as a trend chart.",
     "stats.parallelWork.loading": "Loading parallel-work buckets…",
     "stats.parallelWork.empty": "No complete buckets yet.",
     "stats.parallelWork.windowToggleAria": "Select parallel-work window",
@@ -3235,6 +3237,8 @@ const baseTranslations = {
     "stats.parallelWork.title": "并行工作",
     "stats.parallelWork.description":
       "按 bucket 观察实际活跃的 Prompt Cache 对话数，覆盖近端分钟、中期小时与全历史天级窗口。",
+    "stats.parallelWork.currentDescription":
+      "继承页面当前时间范围与 bucket 粒度；不超过 24 小时显示时间-对话图，超过 24 小时显示趋势图。",
     "stats.parallelWork.loading": "正在加载并行工作 bucket…",
     "stats.parallelWork.empty": "还没有可统计的完整 bucket。",
     "stats.parallelWork.windowToggleAria": "切换并行工作统计窗口",

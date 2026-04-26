@@ -110,7 +110,8 @@ fn build_parallel_work_window_response(
     }
 
     let mut points = Vec::new();
-    let mut cursor = range_start.timestamp();
+    let mut cursor =
+        align_reporting_bucket_epoch(range_start.timestamp(), bucket_seconds, reporting_tz)?;
     let end_epoch = range_end.timestamp();
     let mut min_count: Option<i64> = None;
     let mut max_count: Option<i64> = None;

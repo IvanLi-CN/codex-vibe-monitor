@@ -19,6 +19,8 @@ vi.mock("../i18n", () => ({
         "stats.parallelWork.title": "Parallel work",
         "stats.parallelWork.description":
           "Track active prompt-cache conversations.",
+        "stats.parallelWork.currentDescription":
+          "Uses the page-level range and bucket selection.",
         "stats.parallelWork.loading": "Loading parallel-work buckets…",
         "stats.parallelWork.empty": "No complete buckets yet.",
         "stats.parallelWork.windowToggleAria": "Select parallel-work window",
@@ -311,6 +313,43 @@ describe("ParallelWorkStatsSection", () => {
     expect(chart?.getAttribute("aria-label")).toBe(
       "Last 7 days · by minute time-conversation chart",
     );
+  });
+
+  it("uses page range and bucket labels for current chart metadata", () => {
+    render(
+      <ParallelWorkStatsSection
+        stats={populatedStats}
+        isLoading={false}
+        error={null}
+        rangeLabel="Today"
+        bucketLabel="Every 5 minutes"
+      />,
+    );
+
+    const chart = host?.querySelector(
+      '[data-chart-library="recharts"]',
+    ) as HTMLElement | null;
+    const trigger = document.querySelector(
+      'button[aria-label="Explain Today · Every 5 minutes details"]',
+    ) as HTMLButtonElement | null;
+
+    expect(chart?.getAttribute("aria-label")).toBe(
+      "Today · Every 5 minutes time-conversation chart",
+    );
+    expect(trigger).not.toBeNull();
+
+    act(() => {
+      trigger?.click();
+    });
+
+    const tooltip = document.body.querySelector(
+      '[role="tooltip"][aria-hidden="false"]',
+    ) as HTMLElement;
+    expect(tooltip.textContent).toContain("Today · Every 5 minutes");
+    expect(tooltip.textContent).toContain(
+      "Uses the page-level range and bucket selection.",
+    );
+    expect(tooltip.textContent).not.toContain("Minute buckets");
   });
 
   it("uses the Gantt-style chart for current windows up to one day", () => {

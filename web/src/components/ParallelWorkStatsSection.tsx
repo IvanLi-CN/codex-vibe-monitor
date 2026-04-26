@@ -622,12 +622,13 @@ function ParallelWorkChart({
 function ParallelWorkWindowCard({
   windowKey,
   window,
+  chartTitle,
 }: {
   windowKey: ParallelWorkWindowKey;
   window: ParallelWorkWindowResponse;
+  chartTitle: string;
 }) {
   const { t, locale } = useTranslation();
-  const meta = resolveWindowMeta(windowKey);
   const empty = window.completeBucketCount === 0;
   const effectiveTimeZone = window.effectiveTimeZone ?? "Asia/Shanghai";
   const timeZoneFallbackNote = window.timeZoneFallback
@@ -672,7 +673,7 @@ function ParallelWorkWindowCard({
         window={window}
         emptyLabel={t("stats.parallelWork.empty")}
         ariaLabel={t("stats.parallelWork.chartAria", {
-          title: t(meta.titleKey),
+          title: chartTitle,
         })}
         tooltipCountLabel={t("stats.parallelWork.tooltip.requestCount")}
         tooltipConversationLabel={t("stats.parallelWork.tooltip.conversation")}
@@ -770,6 +771,10 @@ export function ParallelWorkStatsSection({
     rangeLabel && bucketLabel
       ? `${rangeLabel} · ${bucketLabel}`
       : t(activeMeta.titleKey);
+  const activeDescription =
+    rangeLabel && bucketLabel
+      ? t("stats.parallelWork.currentDescription")
+      : t(activeMeta.descriptionKey);
   const activeSamples =
     activeWindow == null
       ? null
@@ -785,7 +790,7 @@ export function ParallelWorkStatsSection({
       : null;
   const activeTooltipContent = buildWindowDetailsTooltipContent(
     activeTitle,
-    t(activeMeta.descriptionKey),
+    activeDescription,
     activeSamples,
     activeTimeZoneFallbackNote,
   );
@@ -820,6 +825,7 @@ export function ParallelWorkStatsSection({
           <ParallelWorkWindowCard
             windowKey={activeWindowKey}
             window={activeWindow}
+            chartTitle={activeTitle}
           />
         )}
       </div>

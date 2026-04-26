@@ -317,6 +317,58 @@ async fn parallel_work_stats_counts_distinct_prompt_cache_keys_per_bucket() {
 }
 
 #[tokio::test]
+async fn parallel_work_stats_current_duration_ranges_align_to_bucket_starts() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let current_bucket_epoch =
+        align_reporting_bucket_epoch(Utc::now().timestamp(), 300, Shanghai)
+            .expect("align current five-minute bucket");
+    let bucket = Utc
+        .timestamp_opt(current_bucket_epoch - 2 * 300, 0)
+        .single()
+        .expect("complete five-minute bucket");
+
+    insert_parallel_work_invocation(
+        &state.pool,
+        "parallel-current-duration-alpha",
+        bucket + ChronoDuration::seconds(30),
+        "pck-current-alpha",
+    )
+    .await;
+    insert_parallel_work_invocation(
+        &state.pool,
+        "parallel-current-duration-beta",
+        bucket + ChronoDuration::seconds(90),
+        "pck-current-beta",
+    )
+    .await;
+
+    let Json(response) = fetch_parallel_work_stats(
+        State(state),
+        Query(ParallelWorkStatsQuery {
+            range: "1h".to_string(),
+            bucket: Some("5m".to_string()),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch parallel-work stats");
+
+    let point = response
+        .current
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(bucket))
+        .expect("duration-range current point should use aligned bucket start");
+
+    assert_eq!(point.parallel_count, 2);
+    assert_eq!(response.current.bucket_seconds, 300);
+    assert!(response.current.active_bucket_count >= 1);
+}
+
+#[tokio::test]
 async fn parallel_work_stats_minute7d_supports_non_shanghai_reporting_timezones() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
