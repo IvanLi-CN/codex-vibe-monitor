@@ -398,12 +398,14 @@ function ParallelWorkChart({
   emptyLabel,
   ariaLabel,
   tooltipCountLabel,
+  tooltipParallelCountLabel,
   tooltipConversationLabel,
 }: {
   window: ParallelWorkWindowResponse;
   emptyLabel: string;
   ariaLabel: string;
   tooltipCountLabel: string;
+  tooltipParallelCountLabel: string;
   tooltipConversationLabel: string;
 }) {
   const { locale } = useTranslation();
@@ -511,7 +513,7 @@ function ParallelWorkChart({
                 <ParallelWorkTrendTooltipContent
                   {...props}
                   bucketSeconds={window.bucketSeconds}
-                  countLabel={tooltipCountLabel}
+                  countLabel={tooltipParallelCountLabel}
                   localeTag={localeTag}
                   numberFormatter={numberFormatter}
                   theme={chartColors}
@@ -525,7 +527,7 @@ function ParallelWorkChart({
               fillOpacity={0.82}
               radius={[4, 4, 0, 0]}
               isAnimationActive={trendData.length <= 1_200}
-              name={tooltipCountLabel}
+              name={tooltipParallelCountLabel}
             />
           </BarChart>
         ) : (
@@ -676,6 +678,9 @@ function ParallelWorkWindowCard({
           title: chartTitle,
         })}
         tooltipCountLabel={t("stats.parallelWork.tooltip.requestCount")}
+        tooltipParallelCountLabel={t(
+          "stats.parallelWork.tooltip.parallelCount",
+        )}
         tooltipConversationLabel={t("stats.parallelWork.tooltip.conversation")}
       />
 
