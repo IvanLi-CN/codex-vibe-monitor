@@ -504,7 +504,7 @@ describe('UpstreamAccountsGroupedRoster', () => {
     expect(content).toContain('analytics')
     expect(content).toContain('reporting')
     expect(content).toContain('priority-lane')
-    expect(content).toContain('prod-apac')
+    expect(content).toContain('+15')
     expect(content).toContain('degraded')
     expect(content).toContain('rate_limited')
     expect(content).toContain('syncing')
@@ -517,7 +517,7 @@ describe('UpstreamAccountsGroupedRoster', () => {
     expect(content).not.toContain('Idle')
     expect(content).not.toContain('Normal')
     expect(content).not.toContain('Sync idle')
-    expect(content).not.toContain('+1')
+    expect(content).not.toContain('prod-apac')
   })
 
   it('prioritizes disabled, syncing, and health badges ahead of work-state badges in grid cards', async () => {
