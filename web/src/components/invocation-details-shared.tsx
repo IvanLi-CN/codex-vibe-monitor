@@ -1226,6 +1226,9 @@ export function useInvocationPoolAttempts(
         }));
       }
     };
+  // Keep this keyed to scalar request fields. Depending on the whole record
+  // object cancels in-flight pool-attempt loads during polling refreshes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     expandedRecord?.invokeId,
     expandedRecord?.routeMode,
@@ -1245,7 +1248,6 @@ export function useInvocationPoolAttempts(
     expandedRecord?.tUpstreamConnectMs,
     expandedRecord?.tUpstreamTtfbMs,
     expandedRecord?.tUpstreamStreamMs,
-    expandedRecord,
   ]);
 
   return {
