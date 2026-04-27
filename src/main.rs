@@ -72,6 +72,7 @@ use tower_http::{
 };
 use tracing::{debug, error, info, warn};
 mod api;
+mod db_pressure;
 mod external_api;
 mod forward_proxy;
 mod maintenance;
@@ -161,6 +162,7 @@ const STARTUP_BACKFILL_SCAN_LIMIT: u64 = 2_000;
 const STARTUP_BACKFILL_RUN_BUDGET_SECS: u64 = 3;
 const STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS: u64 = 15;
 const STARTUP_BACKFILL_IDLE_INTERVAL_SECS: u64 = 6 * 60 * 60;
+const BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS: u64 = 15;
 const STARTUP_BACKFILL_LOG_SAMPLE_LIMIT: usize = 5;
 const STATS_MAINTENANCE_CACHE_TTL_SECS: u64 = 15;
 #[cfg(test)]

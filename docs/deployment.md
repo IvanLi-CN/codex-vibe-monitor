@@ -142,6 +142,17 @@ services:
 - `GET /api/stats` 与 `GET /api/stats/summary?window=all` 会合并在线明细与 `invocation_rollup_daily`，确保 archive/purge 后 totals 保持一致。
 - 现有排障接口只查询在线 retention window，不回读离线 archive 文件。
 
+## SQLite Write Pressure And Background Backpressure
+
+服务继续使用 SQLite 作为单机主库。运行期会把后台数据库工作降级为低优先级：
+
+- hourly rollup refresh、startup backfill、retention 与 upstream account maintenance 进入统一 DB pressure gate。
+- 任一后台任务遇到 SQLite busy/locked 或连接池 acquire timeout，会触发短 cooldown；cooldown 内同类后台任务记录 skip/backoff 后退出。
+- `/v1/*` 转发、OAuth callback、设置保存等前台路径不通过该后台 gate，避免 maintenance 抢占连接池时把用户请求放大成 502。
+- skip 不代表任务丢失；原有 ticker、coalesced follow-up 与 progress 表会在压力解除后继续收敛。
+
+运维排查时优先搜索日志中的 `database pressure detected`、`database pressure gate is closed`、`pool timed out while waiting for an open connection` 与 `database is locked`。如果这些日志持续出现，先降低后台维护频率、缩小 retention batch 或排查慢查询；不要通过继续扩大 SQLite 连接池来掩盖单写者瓶颈。
+
 ## Header Relay Policy
 
 应用在转发 `/v1/*` 到上游时，不会透传以下代理身份相关头：
