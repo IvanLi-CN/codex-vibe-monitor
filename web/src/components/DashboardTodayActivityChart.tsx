@@ -236,6 +236,7 @@ function DashboardTodayActivityChartImpl({
       accent,
       accentFill: withOpacity(accent, 0.22),
       spend,
+      spendFill: withOpacity(spend, 0.18),
       firstByte: themeMode === "dark" ? "#cbd5e1" : "#475569",
     };
   }, [metric, themeMode]);
@@ -296,12 +297,19 @@ function DashboardTodayActivityChartImpl({
     data.length > 0
       ? data
       : buildTodayMinuteChartData(response, { localeTag, closedNaturalDay });
+  const tenMinuteTrendData = chartData.filter(
+    (point) =>
+      point.chartTokensPerMinute != null || point.chartSpendRate != null,
+  );
+  const firstByteTenMinuteData = chartData.filter(
+    (point) => point.chartFirstResponseByteTotalAvgMs != null,
+  );
   const animate = chartData.length <= 800;
   const chartMode =
     metric === "totalCount"
       ? "count-bars"
       : metric === "trend"
-        ? "trend-lines"
+        ? "trend-area"
         : "cumulative-area";
   const renderCountTooltip = (point: DashboardTodayMinuteDatum) =>
     point.chartSuccessCount == null || point.chartFailureCountNegative == null
@@ -493,6 +501,7 @@ function DashboardTodayActivityChartImpl({
                 name={countSeriesNames.success}
                 stackId="positive"
                 fill={chartColors.success}
+                barSize={1}
                 radius={[0, 0, 0, 0]}
                 isAnimationActive={animate}
               />
@@ -502,6 +511,7 @@ function DashboardTodayActivityChartImpl({
                 name={countSeriesNames.inFlight}
                 stackId="positive"
                 fill={chartColors.accent}
+                barSize={1}
                 radius={[3, 3, 0, 0]}
                 isAnimationActive={animate}
               />
@@ -510,16 +520,19 @@ function DashboardTodayActivityChartImpl({
                 dataKey="chartFailureCountNegative"
                 name={countSeriesNames.failures}
                 fill={chartColors.failure}
+                barSize={1}
                 radius={[0, 0, 3, 3]}
                 isAnimationActive={animate}
               />
               <Line
                 yAxisId="latency"
+                data={firstByteTenMinuteData}
                 type="monotone"
                 dataKey="chartFirstResponseByteTotalAvgMs"
                 name={countSeriesNames.firstByteTotal}
                 stroke={chartColors.firstByte}
-                strokeWidth={2}
+                strokeOpacity={0.72}
+                strokeWidth={1.25}
                 dot={false}
                 connectNulls={false}
                 isAnimationActive={animate}
@@ -527,7 +540,7 @@ function DashboardTodayActivityChartImpl({
             </ComposedChart>
           ) : metric === "trend" ? (
             <ComposedChart
-              data={chartData}
+              data={tenMinuteTrendData}
               margin={{ top: 12, right: 24, left: 0, bottom: 8 }}
             >
               <CartesianGrid
@@ -599,23 +612,27 @@ function DashboardTodayActivityChartImpl({
                 )}
               />
               <Legend wrapperStyle={{ color: chartColors.axisText }} />
-              <Line
+              <Area
                 yAxisId="tokens"
                 type="monotone"
                 dataKey="chartTokensPerMinute"
                 name={trendSeriesNames.tokensPerMinute}
                 stroke={chartColors.accent}
+                fill={chartColors.accentFill}
+                fillOpacity={1}
                 strokeWidth={2}
                 dot={false}
                 connectNulls={false}
                 isAnimationActive={animate}
               />
-              <Line
+              <Area
                 yAxisId="spend"
                 type="monotone"
                 dataKey="chartSpendRate"
                 name={trendSeriesNames.spendRate}
                 stroke={chartColors.spend}
+                fill={chartColors.spendFill}
+                fillOpacity={1}
                 strokeWidth={2}
                 dot={false}
                 connectNulls={false}
