@@ -409,6 +409,7 @@ const PROXY_FAILURE_UPSTREAM_USAGE_SNAPSHOT_QUOTA_EXHAUSTED: &str =
     "upstream_usage_snapshot_quota_exhausted";
 const FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX: &str = "upstream_http_5xx";
 const PROXY_FAILURE_UPSTREAM_HTTP_402: &str = "upstream_http_402";
+const PROXY_FAILURE_UPSTREAM_HTTP_413: &str = "upstream_http_413";
 const PROXY_FAILURE_UPSTREAM_HTTP_AUTH: &str = "upstream_http_auth";
 const DEFAULT_XRAY_BINARY: &str = "xray";
 const DEFAULT_XRAY_RUNTIME_DIR: &str = ".codex/xray-forward";

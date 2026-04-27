@@ -7,6 +7,7 @@
 ## Index
 
 | ID | Title | Status | Spec | Last | Notes |
+| ben7x | 号池上游 413 原账号补试与切号 | 已实现，待 PR / CI / review-proof 收敛 | `ben7x-pool-upstream-413-retry/SPEC.md` | 2026-04-27 | fast-track / 上游 `413` 原账号补试 1 次 / 仍失败后沿用 pool failover 切号 / 最终上游 413 保持 HTTP 413 |
 | a6pm6 | Dashboard 活动总览趋势图增强 | 进行中 | `a6pm6-dashboard-activity-trend-chart/SPEC.md` | 2026-04-27 | fast-track / 今日与昨日新增趋势图 / 消费速率命名统一 / 次数图叠加首字总耗时 |
 | g3amk | Codex 远程压缩请求记录、展示与计费接入 | 已完成（5/5） | `g3amk-codex-remote-compact-observability/SPEC.md` | 2026-04-27 | follow-up / future compact 缺 key 时可通过同一客户端稳定指纹继承近期 responses 的 prompt-cache 归因 / 旧 compact 不 backfill |
 | qz42n | SQLite 写入可靠性与后台背压 | 已实现，待 PR / CI / review-proof 收敛 | `qz42n-sqlite-write-backpressure/SPEC.md` | 2026-04-26 | fast-track / follow-up of `#ay33j` + `#uhn89` + `#jpvwj` / 101 生产 2026-04-26 15:30-16:30 CST SQLite lock + pool acquire timeout 事故 / 后台 DB pressure gate + 账号热点索引 |
