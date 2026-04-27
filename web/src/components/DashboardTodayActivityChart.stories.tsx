@@ -6,9 +6,9 @@ const sampleResponse = {
   rangeStart: "2026-04-08T00:00:00+08:00",
   rangeEnd: "2026-04-08T12:24:00+08:00",
   bucketSeconds: 60,
-  points: Array.from({ length: 149 }, (_, index) => {
+  points: Array.from({ length: 745 }, (_, index) => {
     const bucketStart = new Date("2026-04-08T00:00:00+08:00");
-    bucketStart.setMinutes(bucketStart.getMinutes() + index * 5);
+    bucketStart.setMinutes(bucketStart.getMinutes() + index);
     const bucketEnd = new Date(bucketStart.getTime() + 60_000);
     const totalCount = index % 7 === 0 ? 0 : (index % 5) + 1;
     const failureCount = totalCount > 0 && index % 6 === 0 ? 1 : 0;
@@ -94,9 +94,9 @@ export const CountBarsDensePairing: Story = {
   args: {
     response: {
       ...sampleResponse,
-      points: Array.from({ length: 180 }, (_, index) => {
+      points: Array.from({ length: 745 }, (_, index) => {
         const bucketStart = new Date("2026-04-08T00:00:00+08:00");
-        bucketStart.setMinutes(bucketStart.getMinutes() + index * 4);
+        bucketStart.setMinutes(bucketStart.getMinutes() + index);
         const bucketEnd = new Date(bucketStart.getTime() + 60_000);
         const inFlightOnlyBucket = index % 11 === 0;
         const failureCount = inFlightOnlyBucket

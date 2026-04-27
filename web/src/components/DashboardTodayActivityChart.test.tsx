@@ -87,7 +87,7 @@ vi.mock("recharts", () => ({
     <div
       data-testid="line-series"
       data-connect-nulls={String(connectNulls ?? false)}
-      data-point-count={String(data?.length ?? "")}
+      data-line-point-count={String(data?.length ?? "")}
       data-data-key={dataKey ?? ""}
       data-stroke-opacity={String(strokeOpacity ?? "")}
       data-stroke-width={String(strokeWidth ?? "")}
@@ -498,7 +498,7 @@ describe("DashboardTodayActivityChart", () => {
     const data = buildTodayMinuteChartData(
       {
         rangeStart: "2026-04-08 00:00:00",
-        rangeEnd: "2026-04-08 00:12:10",
+        rangeEnd: "2026-04-08 00:32:10",
         bucketSeconds: 60,
         points: [
           {
@@ -524,8 +524,8 @@ describe("DashboardTodayActivityChart", () => {
             firstResponseByteTotalAvgMs: 700,
           },
           {
-            bucketStart: "2026-04-08 00:11:00",
-            bucketEnd: "2026-04-08 00:11:59",
+            bucketStart: "2026-04-08 00:21:00",
+            bucketEnd: "2026-04-08 00:21:59",
             totalCount: 2,
             successCount: 2,
             failureCount: 0,
@@ -537,7 +537,7 @@ describe("DashboardTodayActivityChart", () => {
         ],
       },
       {
-        now: new Date(2026, 3, 8, 0, 12, 10),
+        now: new Date(2026, 3, 8, 0, 32, 10),
         localeTag: "en-US",
       },
     );
@@ -550,11 +550,26 @@ describe("DashboardTodayActivityChart", () => {
     expect(data[1]).toMatchObject({
       chartTokensPerTenMinute: null,
       chartCostRateTenMinute: null,
-      chartFirstResponseByteTotalTenMinuteAvgMs: null,
+      chartFirstResponseByteTotalTenMinuteAvgMs: 550,
+    });
+    expect(data[9]).toMatchObject({
+      chartTokensPerTenMinute: null,
+      chartCostRateTenMinute: null,
+      chartFirstResponseByteTotalTenMinuteAvgMs: 550,
     });
     expect(data[10]).toMatchObject({
+      chartTokensPerTenMinute: 0,
+      chartCostRateTenMinute: 0,
+      chartFirstResponseByteTotalTenMinuteAvgMs: null,
+    });
+    expect(data[20]).toMatchObject({
       chartTokensPerTenMinute: 50,
       chartCostRateTenMinute: 0.05,
+      chartFirstResponseByteTotalTenMinuteAvgMs: 500,
+    });
+    expect(data[21]).toMatchObject({
+      chartTokensPerTenMinute: null,
+      chartCostRateTenMinute: null,
       chartFirstResponseByteTotalTenMinuteAvgMs: 500,
     });
   });
@@ -606,6 +621,7 @@ describe("DashboardTodayActivityChart", () => {
     expect(html).toContain('data-chart-mode="count-bars"');
     expect(html).toContain('data-testid="composed-chart"');
     expect(html).toContain('data-bar-gap="-100%"');
+    expect(html).toContain('data-point-count="1440"');
     expect(html).not.toContain('data-testid="area-chart"');
     expect(html).toContain('data-data-key="chartSuccessCount"');
     expect(html).toContain('data-data-key="chartInFlightCount"');
@@ -614,7 +630,7 @@ describe("DashboardTodayActivityChart", () => {
       'data-data-key="chartFirstResponseByteTotalTenMinuteAvgMs"',
     );
     expect(html).toContain('data-connect-nulls="false"');
-    expect(html).toContain('data-point-count="144"');
+    expect(html).toContain('data-line-point-count=""');
     expect(html).toContain('data-stroke-width="1.2"');
     expect(html).toContain('data-stroke-opacity="0.82"');
     expect(html).toContain('data-stack-id="positive"');

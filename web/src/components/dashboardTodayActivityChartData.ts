@@ -232,13 +232,18 @@ export function buildTodayMinuteChartData(
       0,
     );
 
-    target.chartTokensPerTenMinute = tokens;
-    target.chartCostRateTenMinute = cost;
-    target.chartFirstResponseByteTotalTenMinuteAvgMs =
+    const firstResponseByteTotalTenMinuteAvgMs =
       firstResponseByteTotalSampleCount > 0
         ? firstResponseByteTotalWeightedSumMs /
           firstResponseByteTotalSampleCount
         : null;
+
+    target.chartTokensPerTenMinute = tokens;
+    target.chartCostRateTenMinute = cost;
+    for (const point of visiblePoints) {
+      point.chartFirstResponseByteTotalTenMinuteAvgMs =
+        firstResponseByteTotalTenMinuteAvgMs;
+    }
   }
 
   return data;

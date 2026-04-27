@@ -5,7 +5,7 @@ import {
 } from './dashboardNaturalDayWindow'
 
 const MINUTE_MS = 60_000
-const DEFAULT_WINDOW_MINUTES = 5
+const DEFAULT_WINDOW_MINUTES = 1
 
 export interface DashboardTodayRateSnapshot {
   tokensPerMinute: number

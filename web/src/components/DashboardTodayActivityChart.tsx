@@ -526,7 +526,6 @@ function DashboardTodayActivityChartImpl({
               <Line
                 yAxisId="latency"
                 type="monotone"
-                data={tenMinuteChartData}
                 dataKey="chartFirstResponseByteTotalTenMinuteAvgMs"
                 name={countSeriesNames.firstResponseByteTotal}
                 stroke={chartColors.firstResponseByteTotal}
