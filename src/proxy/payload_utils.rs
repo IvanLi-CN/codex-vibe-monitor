@@ -1947,12 +1947,7 @@ pub(crate) fn client_prompt_cache_attribution_context_from_headers(
     headers: &HeaderMap,
 ) -> ClientPromptCacheAttributionContext {
     const STRONG_STABLE_HEADER_NAMES: &[&str] = &["session_id", "x-codex-window-id"];
-    const STABLE_HEADER_NAMES: &[&str] = &[
-        "session_id",
-        "originator",
-        "x-codex-window-id",
-        "x-codex-installation-id",
-    ];
+    const STABLE_HEADER_NAMES: &[&str] = &["session_id", "originator", "x-codex-window-id"];
     const DIAGNOSTIC_HEADER_NAMES: &[&str] = &[
         "session_id",
         "originator",
