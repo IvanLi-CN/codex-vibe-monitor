@@ -7,6 +7,13 @@ import {
 const MINUTE_MS = 60_000
 const DEFAULT_WINDOW_MINUTES = 5
 
+interface RateBucket {
+  bucketStartMs: number
+  bucketEndMs: number
+  totalTokens: number
+  totalCost: number
+}
+
 export interface DashboardTodayRateSnapshot {
   tokensPerMinute: number
   spendRate: number
@@ -78,34 +85,23 @@ export function buildDashboardTodayRateSnapshot(
   const buckets = [...pointMap.entries()]
     .map(([bucketStartMs, bucket]) => ({ bucketStartMs, ...bucket }))
     .sort((a, b) => a.bucketStartMs - b.bucketStartMs)
-  const firstActiveBucket = buckets.find((bucket) => (
-    bucket.totalTokens > 0 ||
-    bucket.totalCost > 0
-  ))
-
-  if (!firstActiveBucket) {
-    return {
-      tokensPerMinute: 0,
-      spendRate: 0,
-      windowMinutes: Math.max(0, (anchorMs - windowStartMs) / MINUTE_MS),
-      available: true,
-    }
-  }
-
-  const activeStartMs = Math.max(windowStartMs, firstActiveBucket.bucketStartMs)
-  const windowMinutes = Math.max((anchorMs - activeStartMs) / MINUTE_MS, 0)
-  let totalTokens = 0
-  let totalCost = 0
-  for (const bucket of buckets) {
-    if (bucket.bucketEndMs <= activeStartMs || bucket.bucketStartMs >= anchorMs) continue
-    totalTokens += bucket.totalTokens
-    totalCost += bucket.totalCost
-  }
+  const tokensRate = computeActiveTailRate({
+    buckets,
+    anchorMs,
+    windowStartMs,
+    value: (bucket) => bucket.totalTokens,
+  })
+  const costRate = computeActiveTailRate({
+    buckets,
+    anchorMs,
+    windowStartMs,
+    value: (bucket) => bucket.totalCost,
+  })
 
   return {
-    tokensPerMinute: windowMinutes > 0 ? totalTokens / windowMinutes : 0,
-    spendRate: windowMinutes > 0 ? totalCost / windowMinutes : 0,
-    windowMinutes,
+    tokensPerMinute: tokensRate.rate,
+    spendRate: costRate.rate,
+    windowMinutes: Math.max(tokensRate.windowMinutes, costRate.windowMinutes),
     available: true,
   }
 }
@@ -130,6 +126,39 @@ function isSameLocalDay(left: Date, right: Date) {
     left.getMonth() === right.getMonth() &&
     left.getDate() === right.getDate()
   )
+}
+
+function computeActiveTailRate({
+  buckets,
+  anchorMs,
+  windowStartMs,
+  value,
+}: {
+  buckets: RateBucket[]
+  anchorMs: number
+  windowStartMs: number
+  value: (bucket: RateBucket) => number
+}) {
+  const firstActiveBucket = buckets.find((bucket) => value(bucket) > 0)
+  if (!firstActiveBucket) {
+    return {
+      rate: 0,
+      windowMinutes: Math.max(0, (anchorMs - windowStartMs) / MINUTE_MS),
+    }
+  }
+
+  const activeStartMs = Math.max(windowStartMs, firstActiveBucket.bucketStartMs)
+  const windowMinutes = Math.max((anchorMs - activeStartMs) / MINUTE_MS, 0)
+  let total = 0
+  for (const bucket of buckets) {
+    if (bucket.bucketEndMs <= activeStartMs || bucket.bucketStartMs >= anchorMs) continue
+    total += value(bucket)
+  }
+
+  return {
+    rate: windowMinutes > 0 ? total / windowMinutes : 0,
+    windowMinutes,
+  }
 }
 
 function floorToMinute(date: Date) {

@@ -62,6 +62,27 @@ describe('buildDashboardTodayRateSnapshot', () => {
     expect(snapshot?.windowMinutes).toBe(1.5)
   })
 
+  it('uses separate active tails when tokens and cost start in different buckets', () => {
+    const snapshot = buildDashboardTodayRateSnapshot(
+      {
+        rangeStart: '2026-04-10 00:00:00',
+        rangeEnd: '2026-04-10 00:05:00',
+        bucketSeconds: 60,
+        points: [
+          minutePoint(1, 600, 0),
+          minutePoint(2, 0, 0),
+          minutePoint(3, 0, 0.12),
+          minutePoint(4, 0, 0.08),
+        ],
+      },
+      { now: new Date(2026, 3, 10, 0, 5, 0, 0) },
+    )
+
+    expect(snapshot?.tokensPerMinute).toBe(150)
+    expect(snapshot?.spendRate).toBeCloseTo(0.1, 6)
+    expect(snapshot?.windowMinutes).toBe(4)
+  })
+
   it('counts the active bucket that overlaps the rolling window start', () => {
     const snapshot = buildDashboardTodayRateSnapshot(
       {
