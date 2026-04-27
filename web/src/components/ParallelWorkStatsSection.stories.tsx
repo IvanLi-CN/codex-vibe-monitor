@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, fireEvent, within } from "storybook/test";
 import { I18nProvider } from "../i18n";
 import type {
   ParallelWorkStatsResponse,
@@ -40,11 +40,18 @@ const populatedStats: ParallelWorkStatsResponse = {
     minCount: 0,
     maxCount: 18,
     avgCount: 4.67,
-    points: Array.from({ length: 16 }, (_, index) => ({
+    points: Array.from({ length: 96 }, (_, index) => ({
       bucketStart: new Date(Date.UTC(2026, 2, 7, 10, index)).toISOString(),
       bucketEnd: new Date(Date.UTC(2026, 2, 7, 10, index + 1)).toISOString(),
-      parallelCount:
-        [1, 3, 2, 5, 7, 10, 8, 9, 12, 11, 15, 14, 13, 9, 6, 4][index] ?? 0,
+      parallelCount: Math.max(
+        0,
+        Math.round(
+          6 +
+            Math.sin(index / 5) * 4 +
+            Math.cos(index / 11) * 3 +
+            (index > 44 && index < 60 ? 5 : 0),
+        ),
+      ),
     })),
   }),
   hour30d: buildWindow({
@@ -56,10 +63,13 @@ const populatedStats: ParallelWorkStatsResponse = {
     minCount: 0,
     maxCount: 9,
     avgCount: 2.13,
-    points: Array.from({ length: 12 }, (_, index) => ({
+    points: Array.from({ length: 48 }, (_, index) => ({
       bucketStart: new Date(Date.UTC(2026, 2, 7, index)).toISOString(),
       bucketEnd: new Date(Date.UTC(2026, 2, 7, index + 1)).toISOString(),
-      parallelCount: [0, 1, 2, 2, 3, 4, 6, 5, 4, 3, 2, 1][index] ?? 0,
+      parallelCount: Math.max(
+        0,
+        Math.round(2 + Math.sin(index / 4) * 2 + Math.cos(index / 7) * 2),
+      ),
     })),
   }),
   dayAll: buildWindow({
@@ -124,6 +134,9 @@ export const Populated: Story = {
     isLoading: false,
     error: null,
   },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(
@@ -132,13 +145,17 @@ export const Populated: Story = {
     await expect(canvas.queryByTestId("parallel-work-card-hour30d")).toBeNull();
     await expect(canvas.queryByTestId("parallel-work-card-dayAll")).toBeNull();
     const chart = await canvas.findByLabelText(/last 7 days/i);
-    const firstPoint = chart.querySelector('[data-inline-chart-index="0"]');
-    if (
-      !(firstPoint instanceof HTMLElement || firstPoint instanceof SVGElement)
-    ) {
-      throw new Error("missing first parallel-work chart point");
+    const overlay = chart.querySelector(
+      '[data-testid="parallel-work-interaction-overlay"]',
+    );
+    if (!(overlay instanceof HTMLElement)) {
+      throw new Error("missing parallel-work chart interaction overlay");
     }
-    await userEvent.hover(firstPoint);
+    const rect = overlay.getBoundingClientRect();
+    fireEvent.mouseMove(overlay, {
+      clientX: rect.left + rect.width / 2,
+      clientY: rect.top + rect.height / 2,
+    });
     await expect(
       within(document.body).getByRole("tooltip"),
     ).toBeInTheDocument();
@@ -148,12 +165,26 @@ export const Populated: Story = {
   },
 };
 
+export const WideMinute7d: Story = {
+  args: {
+    stats: populatedStats,
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+  },
+};
+
 export const Hour30dSelected: Story = {
   args: {
     stats: populatedStats,
     isLoading: false,
     error: null,
     defaultWindowKey: "hour30d",
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
   },
 };
 

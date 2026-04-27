@@ -1,9 +1,54 @@
 /** @vitest-environment jsdom */
+import type { ReactNode } from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ParallelWorkStatsResponse } from "../lib/api";
 import { ParallelWorkStatsSection } from "./ParallelWorkStatsSection";
+
+vi.mock("recharts", () => ({
+  ResponsiveContainer: ({ children }: { children: ReactNode }) => (
+    <div data-testid="parallel-work-responsive-container">{children}</div>
+  ),
+  AreaChart: ({
+    children,
+    data,
+  }: {
+    children: ReactNode;
+    data?: Array<Record<string, unknown>>;
+  }) => (
+    <div data-testid="parallel-work-area-chart" data-point-count={data?.length ?? 0}>
+      {children}
+    </div>
+  ),
+  CartesianGrid: () => <div data-testid="parallel-work-grid" />,
+  XAxis: ({
+    ticks,
+  }: {
+    ticks?: number[];
+  }) => (
+    <div
+      data-testid="parallel-work-x-axis"
+      data-tick-count={ticks?.length ?? 0}
+    />
+  ),
+  YAxis: ({ tickCount }: { tickCount?: number }) => (
+    <div
+      data-testid="parallel-work-y-axis"
+      data-tick-count={tickCount ?? 0}
+    />
+  ),
+  Area: ({ dot }: { dot?: false | ((props: Record<string, unknown>) => ReactNode) }) => (
+    <div data-testid="parallel-work-area-series">
+      {typeof dot === "function" ? dot({ cx: 12, cy: 16, index: 1 }) : null}
+    </div>
+  ),
+  Line: ({ dot }: { dot?: false | ((props: Record<string, unknown>) => ReactNode) }) => (
+    <div data-testid="parallel-work-line-series">
+      {typeof dot === "function" ? dot({ cx: 12, cy: 16, index: 1 }) : null}
+    </div>
+  ),
+}));
 
 class MockPointerEvent extends MouseEvent {
   pointerType: string;
@@ -56,6 +101,12 @@ vi.mock("../i18n", () => ({
       };
       return map[key] ?? key;
     },
+  }),
+}));
+
+vi.mock("../theme", () => ({
+  useTheme: () => ({
+    themeMode: "light",
   }),
 }));
 
@@ -240,7 +291,7 @@ describe("ParallelWorkStatsSection", () => {
     );
     const chart = host?.querySelector(
       '[data-chart-kind="parallel-work-sparkline"]',
-    ) as SVGElement | null;
+    ) as HTMLElement | null;
     const section = host?.querySelector(
       '[data-testid="parallel-work-section"]',
     ) as HTMLElement | null;
@@ -257,9 +308,23 @@ describe("ParallelWorkStatsSection", () => {
       'button[aria-label="Explain Last 7 days · by minute details"]',
     ) as HTMLButtonElement | null;
     expect(chart).not.toBeNull();
-    expect(chart?.className.baseVal).toContain("w-full");
-    expect(chart?.querySelectorAll('[data-axis="y-tick"]')).toHaveLength(3);
-    expect(chart?.querySelectorAll('[data-axis="x-tick"]')).toHaveLength(3);
+    expect(chart?.className).toContain("w-full");
+    expect(
+      chart?.querySelector('[data-testid="parallel-work-responsive-container"]'),
+    ).not.toBeNull();
+    expect(
+      chart?.querySelector('[data-testid="parallel-work-area-chart"]'),
+    ).not.toBeNull();
+    expect(
+      chart
+        ?.querySelector('[data-testid="parallel-work-x-axis"]')
+        ?.getAttribute("data-tick-count"),
+    ).toBe("3");
+    expect(
+      chart
+        ?.querySelector('[data-testid="parallel-work-y-axis"]')
+        ?.getAttribute("data-tick-count"),
+    ).toBe("3");
     expect(section?.contains(toggle)).toBe(true);
     expect(heading).not.toBeNull();
     expect(controls).not.toBeNull();
@@ -309,21 +374,21 @@ describe("ParallelWorkStatsSection", () => {
     const container = document.querySelector(
       '[aria-label="Last 7 days · by minute trend"]',
     ) as HTMLElement | null;
-    const secondPoint = container?.querySelector(
-      '[data-inline-chart-index="1"]',
-    ) as SVGRectElement | null;
+    const overlay = container?.querySelector(
+      '[data-testid="parallel-work-interaction-overlay"]',
+    ) as HTMLButtonElement | null;
 
     expect(container).not.toBeNull();
-    expect(secondPoint).not.toBeNull();
+    expect(overlay).not.toBeNull();
 
     mockRect(container!, { left: 0, top: 0, width: 420, height: 160 });
-    mockRect(secondPoint!, { left: 120, top: 20, width: 100, height: 120 });
+    mockRect(overlay!, { left: 38, top: 20, width: 366, height: 120 });
 
     act(() => {
-      secondPoint?.dispatchEvent(
+      overlay?.dispatchEvent(
         new MouseEvent("click", {
           bubbles: true,
-          clientX: 144,
+          clientX: 221,
           clientY: 62,
         }),
       );

@@ -121,27 +121,31 @@
 
 ## Visual Evidence
 
-- source_type: storybook_docs
+- source_type: storybook_canvas
   target_program: mock-only
   capture_scope: element
+  requested_viewport: desktop1660
+  viewport_strategy: storybook-viewport
   sensitive_exclusion: N/A
   submission_gate: pending-owner-approval
-  docs_entry_or_title: Stats/ParallelWorkStatsSection
-  state: populated
-  evidence_note: 验证 Stats 页并行工作 section 已按项目既有 segmented toggle 习惯切换显示 `minute7d / hour30d / dayAll` 三个窗口，问号图标贴在 section 标题右侧并与标题垂直居中对齐，选择器单独留在标题区右上角，卡片内容不再为 controls 预留额外高度；当前激活窗口把整段窗口元信息都收进问号气泡，并保留带 Y 轴刻度、X 轴时间刻度与辅助网格线的全宽趋势图；populated 卡片已去掉人工最小高度，底部不再留出无意义空白。
+  story_id_or_title: Stats/ParallelWorkStatsSection/Wide Minute 7 D
+  state: wide minute7d populated
+  evidence_note: 验证并行工作趋势图已由 Recharts 响应式图表渲染，宽屏下折线、面积、圆点和 X/Y 轴文本保持正常比例，不再出现手写 SVG 非等比拉伸导致的椭圆圆点或横向变形。
   image:
-  ![并行工作统计 segmented populated docs](./assets/parallel-work-segmented-populated-docs.png)
+  ![并行工作统计 Recharts 宽屏分钟趋势](./assets/parallel-work-recharts-wide-minute.png)
 
-- source_type: storybook_docs
+- source_type: storybook_canvas
   target_program: mock-only
   capture_scope: element
+  requested_viewport: desktop1660
+  viewport_strategy: storybook-viewport
   sensitive_exclusion: N/A
   submission_gate: pending-owner-approval
-  docs_entry_or_title: Stats/ParallelWorkStatsSection
+  story_id_or_title: Stats/ParallelWorkStatsSection/Gallery
   scenario: gallery
-  evidence_note: 验证同一 docs 入口已覆盖分钟窗口默认态、切换到小时窗口、`dayAll` 空历史、loading 与 error 五类关键状态，且问号图标贴在标题右侧、选择器留在标题区右上角、窗口元信息统一收敛到问号气泡、每次只显示一个激活窗口，并且趋势图补上 X/Y 轴刻度与辅助网格线，populated 卡片也不再保留多余底部留白。
+  evidence_note: 验证 Storybook gallery 已覆盖分钟窗口默认态、30 天小时窗口、`dayAll` 空历史、loading 与 error 五类关键状态；有数据窗口使用 Recharts 图表，空态和错误态保持原有语义。
   image:
-  ![并行工作统计 segmented docs gallery](./assets/parallel-work-segmented-gallery-docs.png)
+  ![并行工作统计 Recharts 状态集](./assets/parallel-work-recharts-gallery.png)
 
 ## 实现里程碑（Milestones / Delivery checklist）
 
