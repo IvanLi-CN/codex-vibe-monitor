@@ -20,6 +20,7 @@ export const DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY = 'dashboard.activityOverview.
 export const ACCOUNT_ACTIVITY_RANGE_STORAGE_KEY_PREFIX = 'account.activityOverview.activeRange.v1'
 
 const DEFAULT_RANGE: RangeKey = 'today'
+const LIVE_RATE_REFRESH_MS = 15_000
 const RANGE_OPTIONS: Array<{ key: RangeKey; labelKey: string }> = [
   { key: 'today', labelKey: 'dashboard.activityOverview.rangeToday' },
   { key: 'yesterday', labelKey: 'dashboard.activityOverview.rangeYesterday' },
@@ -131,9 +132,23 @@ function DashboardNaturalDaySummaryOverview({
     isLoading: summaryLoading,
     error: summaryError,
   } = useScopedSummary(summaryWindow, upstreamAccountId)
+  const [rateNow, setRateNow] = useState(() => new Date())
+
+  useEffect(() => {
+    if (closedNaturalDay) return
+    setRateNow(new Date())
+    const timer = window.setInterval(() => {
+      setRateNow(new Date())
+    }, LIVE_RATE_REFRESH_MS)
+    return () => window.clearInterval(timer)
+  }, [closedNaturalDay])
+
   const rate = useMemo(
-    () => buildDashboardTodayRateSnapshot(response, { closedNaturalDay }),
-    [closedNaturalDay, response],
+    () => buildDashboardTodayRateSnapshot(response, {
+      closedNaturalDay,
+      now: rateNow,
+    }),
+    [closedNaturalDay, rateNow, response],
   )
 
   return (

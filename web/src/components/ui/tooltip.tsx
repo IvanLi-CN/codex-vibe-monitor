@@ -91,6 +91,7 @@ export function Tooltip({
 }: TooltipProps) {
   const longPressTimerRef = React.useRef<number | null>(null)
   const [hoverOpen, setHoverOpen] = React.useState(false)
+  const [clickOpen, setClickOpen] = React.useState(false)
   const [longPressOpen, setLongPressOpen] = React.useState(false)
   const [rootElement, setRootElement] = React.useState<HTMLSpanElement | null>(null)
   const resolvedContainer = useResolvedOverlayContainer(container)
@@ -130,7 +131,7 @@ export function Tooltip({
     setLongPressOpen(false)
   }, [clearLongPressTimer, open])
 
-  const resolvedOpen = open ?? (hoverOpen || longPressOpen)
+  const resolvedOpen = open ?? (hoverOpen || clickOpen || longPressOpen)
 
   return (
     <TooltipPrimitive.Provider delayDuration={120}>
@@ -140,10 +141,29 @@ export function Tooltip({
             ref={setRootElement}
             className={cn('inline-flex', className)}
             {...triggerProps}
-            onBlur={open === undefined ? () => setHoverOpen(false) : undefined}
-            onFocus={open === undefined ? () => setHoverOpen(true) : undefined}
-            onMouseEnter={open === undefined ? () => setHoverOpen(true) : undefined}
-            onMouseLeave={open === undefined ? () => setHoverOpen(false) : undefined}
+            onBlur={(event) => {
+              triggerProps?.onBlur?.(event)
+              if (open !== undefined) return
+              setHoverOpen(false)
+              setClickOpen(false)
+            }}
+            onClick={(event) => {
+              triggerProps?.onClick?.(event)
+              if (open !== undefined || event.defaultPrevented) return
+              setClickOpen((current) => !current)
+            }}
+            onFocus={(event) => {
+              triggerProps?.onFocus?.(event)
+              if (open === undefined) setHoverOpen(true)
+            }}
+            onMouseEnter={(event) => {
+              triggerProps?.onMouseEnter?.(event)
+              if (open === undefined) setHoverOpen(true)
+            }}
+            onMouseLeave={(event) => {
+              triggerProps?.onMouseLeave?.(event)
+              if (open === undefined) setHoverOpen(false)
+            }}
             onPointerDownCapture={handlePointerDown}
             onPointerDown={handlePointerDown}
             onPointerUpCapture={handlePointerRelease}

@@ -5,7 +5,7 @@ import {
 } from './dashboardNaturalDayWindow'
 
 const MINUTE_MS = 60_000
-const DEFAULT_WINDOW_MINUTES = 1
+const DEFAULT_WINDOW_MINUTES = 5
 
 export interface DashboardTodayRateSnapshot {
   tokensPerMinute: number
@@ -28,9 +28,8 @@ export function buildDashboardTodayRateSnapshot(
     response,
     options?.closedNaturalDay ?? false,
   )
-  const anchor = floorToMinute(
-    closedNaturalDayEnd ?? parseDateInput(response.rangeEnd) ?? fallbackNow,
-  )
+  const responseEnd = parseDateInput(response.rangeEnd)
+  const anchor = closedNaturalDayEnd ?? resolveLiveNaturalDayAnchor(responseEnd, fallbackNow)
   const start = closedNaturalDayEnd
     ? floorToMinute(
         parseDateInput(response.rangeStart) ??
@@ -39,6 +38,7 @@ export function buildDashboardTodayRateSnapshot(
     : startOfLocalDay(anchor)
   const startMs = start.getTime()
   const anchorMs = anchor.getTime()
+  const windowStartMs = Math.max(startMs, anchorMs - targetWindowMinutes * MINUTE_MS)
 
   if (anchorMs <= startMs) {
     return {
@@ -49,19 +49,11 @@ export function buildDashboardTodayRateSnapshot(
     }
   }
 
-  const completedMinuteCount = Math.max(0, Math.floor((anchorMs - startMs) / MINUTE_MS))
-  const windowMinutes = Math.min(targetWindowMinutes, completedMinuteCount)
-
-  if (windowMinutes <= 0) {
-    return {
-      tokensPerMinute: 0,
-      spendRate: 0,
-      windowMinutes: 0,
-      available: true,
-    }
-  }
-
-  const pointMap = new Map<number, { totalTokens: number; totalCost: number }>()
+  const pointMap = new Map<number, {
+    bucketEndMs: number
+    totalTokens: number
+    totalCost: number
+  }>()
 
   for (const point of response.points ?? []) {
     const bucketStart = parseDateInput(point.bucketStart)
@@ -69,27 +61,50 @@ export function buildDashboardTodayRateSnapshot(
     if (!bucketStart || !bucketEnd) continue
 
     const bucketStartMs = floorToMinute(bucketStart).getTime()
-    const bucketEndMs = floorToMinute(bucketEnd).getTime()
-    if (bucketStartMs < startMs || bucketEndMs > anchorMs) continue
+    const bucketEndMs = bucketEnd.getTime()
+    if (bucketStartMs >= anchorMs || bucketEndMs <= windowStartMs) continue
 
-    const current = pointMap.get(bucketStartMs) ?? { totalTokens: 0, totalCost: 0 }
+    const current = pointMap.get(bucketStartMs) ?? {
+      bucketEndMs,
+      totalTokens: 0,
+      totalCost: 0,
+    }
+    current.bucketEndMs = Math.max(current.bucketEndMs, bucketEndMs)
     current.totalTokens += point.totalTokens ?? 0
     current.totalCost += point.totalCost ?? 0
     pointMap.set(bucketStartMs, current)
   }
 
+  const buckets = [...pointMap.entries()]
+    .map(([bucketStartMs, bucket]) => ({ bucketStartMs, ...bucket }))
+    .sort((a, b) => a.bucketStartMs - b.bucketStartMs)
+  const firstActiveBucket = buckets.find((bucket) => (
+    bucket.totalTokens > 0 ||
+    bucket.totalCost > 0
+  ))
+
+  if (!firstActiveBucket) {
+    return {
+      tokensPerMinute: 0,
+      spendRate: 0,
+      windowMinutes: Math.max(0, (anchorMs - windowStartMs) / MINUTE_MS),
+      available: true,
+    }
+  }
+
+  const activeStartMs = Math.max(windowStartMs, firstActiveBucket.bucketStartMs)
+  const windowMinutes = Math.max((anchorMs - activeStartMs) / MINUTE_MS, 0)
   let totalTokens = 0
   let totalCost = 0
-  for (let offset = windowMinutes; offset >= 1; offset -= 1) {
-    const bucketStartMs = anchorMs - offset * MINUTE_MS
-    const bucket = pointMap.get(bucketStartMs)
-    totalTokens += bucket?.totalTokens ?? 0
-    totalCost += bucket?.totalCost ?? 0
+  for (const bucket of buckets) {
+    if (bucket.bucketEndMs <= activeStartMs || bucket.bucketStartMs >= anchorMs) continue
+    totalTokens += bucket.totalTokens
+    totalCost += bucket.totalCost
   }
 
   return {
-    tokensPerMinute: totalTokens / windowMinutes,
-    spendRate: totalCost / windowMinutes,
+    tokensPerMinute: windowMinutes > 0 ? totalTokens / windowMinutes : 0,
+    spendRate: windowMinutes > 0 ? totalCost / windowMinutes : 0,
     windowMinutes,
     available: true,
   }
@@ -99,6 +114,22 @@ function startOfLocalDay(date: Date) {
   const next = new Date(date)
   next.setHours(0, 0, 0, 0)
   return next
+}
+
+function resolveLiveNaturalDayAnchor(responseEnd: Date | null, now: Date) {
+  if (!responseEnd) return now
+  if (isSameLocalDay(responseEnd, now) && now.getTime() > responseEnd.getTime()) {
+    return now
+  }
+  return responseEnd
+}
+
+function isSameLocalDay(left: Date, right: Date) {
+  return (
+    left.getFullYear() === right.getFullYear() &&
+    left.getMonth() === right.getMonth() &&
+    left.getDate() === right.getDate()
+  )
 }
 
 function floorToMinute(date: Date) {
