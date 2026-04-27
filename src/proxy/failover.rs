@@ -338,7 +338,10 @@ pub(crate) async fn send_pool_request_with_failover(
                 final_error.upstream_error_code = None;
                 final_error.upstream_error_message = None;
                 final_error.upstream_request_id = None;
-            } else if final_error.status != StatusCode::TOO_MANY_REQUESTS {
+            } else if !matches!(
+                final_error.status,
+                StatusCode::TOO_MANY_REQUESTS | StatusCode::PAYLOAD_TOO_LARGE
+            ) {
                 final_error.status = StatusCode::BAD_GATEWAY;
                 final_error.message = terminal_message;
                 final_error.failure_kind = terminal_failure_kind;
@@ -898,8 +901,15 @@ pub(crate) async fn send_pool_request_with_failover(
         );
         let group_upstream_429_max_retries = account.effective_group_upstream_429_max_retries();
         let same_account_attempt_loop_budget = overload_same_account_attempt_budget
+            .saturating_add(1)
             .saturating_add(group_upstream_429_max_retries);
         let mut group_upstream_429_retry_count = 0_u8;
+        let mut retried_upstream_413_for_account = last_error.as_ref().is_some_and(|err| {
+            err.status == StatusCode::PAYLOAD_TOO_LARGE
+                && err.account.as_ref().is_some_and(|err_account| {
+                    err_account.account_id == account.account_id
+                })
+        });
         let mut first_response_attempt_started_at = None;
 
         for same_account_attempt in 0..same_account_attempt_loop_budget {
@@ -1800,6 +1810,7 @@ pub(crate) async fn send_pool_request_with_failover(
             let connect_latency_ms = elapsed_ms(connect_started);
             let status = response.status();
             if status == StatusCode::TOO_MANY_REQUESTS
+                || status == StatusCode::PAYLOAD_TOO_LARGE
                 || status.is_server_error()
                 || matches!(
                     status,
@@ -1808,6 +1819,8 @@ pub(crate) async fn send_pool_request_with_failover(
                 || (request_targets_gpt55 && status == StatusCode::BAD_REQUEST)
             {
                 let has_retry_budget = same_account_attempt + 1 < same_account_attempt_budget;
+                let has_upstream_413_retry_budget =
+                    status == StatusCode::PAYLOAD_TOO_LARGE && !retried_upstream_413_for_account;
                 let has_group_upstream_429_retry_budget = status == StatusCode::TOO_MANY_REQUESTS
                     && group_upstream_429_retry_count < group_upstream_429_max_retries;
                 let upstream_request_id_header = response
@@ -2081,10 +2094,10 @@ pub(crate) async fn send_pool_request_with_failover(
                         "failed to broadcast pool http failure snapshot"
                     );
                 }
-                    if has_group_upstream_429_retry_budget {
-                        let retry_delay = pool_group_upstream_429_retry_delay(state.as_ref());
-                        let group_retry_index = group_upstream_429_retry_count + 1;
-                        info!(
+                if has_group_upstream_429_retry_budget {
+                    let retry_delay = pool_group_upstream_429_retry_delay(state.as_ref());
+                    let group_retry_index = group_upstream_429_retry_count + 1;
+                    info!(
                         account_id = account.account_id,
                         status = status.as_u16(),
                         retry_index = same_account_attempt + 1,
@@ -2092,26 +2105,42 @@ pub(crate) async fn send_pool_request_with_failover(
                         max_same_account_attempts = same_account_attempt_loop_budget,
                         group_upstream_429_max_retries,
                         retry_after_ms = retry_delay.as_millis(),
-                            "pool upstream responded with group retryable 429; retrying same account"
-                        );
-                        group_upstream_429_retry_count += 1;
-                        disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
-                        sleep(retry_delay).await;
-                        continue;
-                    }
-                    if let Some(retry_delay) = retry_delay {
+                        "pool upstream responded with group retryable 429; retrying same account"
+                    );
+                    group_upstream_429_retry_count += 1;
+                    disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
+                    sleep(retry_delay).await;
+                    continue;
+                }
+                if has_upstream_413_retry_budget {
+                    let retry_delay =
+                        fallback_proxy_429_retry_delay(u32::from(same_account_attempt) + 1);
+                    info!(
+                        account_id = account.account_id,
+                        status = status.as_u16(),
+                        retry_index = same_account_attempt + 1,
+                        max_same_account_attempts = 2,
+                        retry_after_ms = retry_delay.as_millis(),
+                        "pool upstream responded with 413; retrying same account once"
+                    );
+                    retried_upstream_413_for_account = true;
+                    disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
+                    sleep(retry_delay).await;
+                    continue;
+                }
+                if let Some(retry_delay) = retry_delay {
                     info!(
                         account_id = account.account_id,
                         status = status.as_u16(),
                         retry_index = same_account_attempt + 1,
                         max_same_account_attempts = same_account_attempt_budget,
-                            retry_after_ms = retry_delay.as_millis(),
-                            "pool upstream responded with retryable status; retrying same account"
-                        );
-                        disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
-                        sleep(retry_delay).await;
-                        continue;
-                    }
+                        retry_after_ms = retry_delay.as_millis(),
+                        "pool upstream responded with retryable status; retrying same account"
+                    );
+                    disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
+                    sleep(retry_delay).await;
+                    continue;
+                }
                 let route_failure_result = if oauth_transport_failure_kind.is_some() {
                     record_pool_route_transport_failure(
                         &state.pool,
