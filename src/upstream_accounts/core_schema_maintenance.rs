@@ -191,6 +191,23 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
 
     sqlx::query(
         r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_accounts_maintenance_due
+        ON pool_upstream_accounts (
+            kind,
+            enabled,
+            status,
+            cooldown_until,
+            last_synced_at,
+            last_successful_sync_at
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure idx_pool_upstream_accounts_maintenance_due")?;
+
+    sqlx::query(
+        r#"
         CREATE INDEX IF NOT EXISTS idx_pool_upstream_accounts_chatgpt_account_id
         ON pool_upstream_accounts (chatgpt_account_id)
         "#,
@@ -330,6 +347,16 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
 
     sqlx::query(
         r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_account_events_time
+        ON pool_upstream_account_events (occurred_at DESC, id DESC)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure idx_pool_upstream_account_events_time")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS pool_oauth_login_sessions (
             login_id TEXT PRIMARY KEY,
             account_id INTEGER,
@@ -428,6 +455,16 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure pool_oauth_login_sessions.group_concurrency_limit")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_oauth_login_sessions_status_expires
+        ON pool_oauth_login_sessions (status, expires_at)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure idx_pool_oauth_login_sessions_status_expires")?;
 
     sqlx::query(
         r#"
@@ -658,6 +695,16 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure idx_pool_limit_samples_account_captured_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_limit_samples_account_captured_desc
+        ON pool_upstream_account_limit_samples (account_id, captured_at DESC, id DESC)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure idx_pool_limit_samples_account_captured_desc")?;
 
     sqlx::query(
         r#"

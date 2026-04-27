@@ -1297,8 +1297,22 @@ pub(crate) async fn refresh_hourly_rollups_for_read_surfaces_best_effort(
     hourly_rollup_sync_lock: &Mutex<()>,
     reason: &'static str,
 ) {
+    let gate = crate::db_pressure::global_db_pressure_gate();
+    let _permit = match gate.try_begin_background("hourly_rollup_refresh") {
+        Ok(permit) => permit,
+        Err(deny_reason) => {
+            warn!(
+                reason,
+                deny_reason = %deny_reason,
+                "background hourly rollup refresh skipped because database pressure gate is closed"
+            );
+            return;
+        }
+    };
     let _guard = hourly_rollup_sync_lock.lock().await;
+
     if let Err(err) = refresh_hourly_rollups_for_read_surfaces(pool).await {
+        gate.record_error("hourly_rollup_refresh", &err);
         warn!(
             error = %err,
             reason,

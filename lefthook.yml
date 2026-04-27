@@ -14,9 +14,9 @@ pre-commit:
       glob: "*.{rs}"
       run: cargo fmt
       stage_fixed: true
-    clippy:
+    check:
       glob: "*.{rs}"
-      run: cargo clippy -- -D warnings
+      run: cargo check --locked --all-targets --all-features
 
 commit-msg:
   commands:

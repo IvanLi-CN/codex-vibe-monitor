@@ -7,6 +7,7 @@
 ## Index
 
 | ID | Title | Status | Spec | Last | Notes |
+| qz42n | SQLite 写入可靠性与后台背压 | 已实现，待 PR / CI / review-proof 收敛 | `qz42n-sqlite-write-backpressure/SPEC.md` | 2026-04-26 | fast-track / follow-up of `#ay33j` + `#uhn89` + `#jpvwj` / 101 生产 2026-04-26 15:30-16:30 CST SQLite lock + pool acquire timeout 事故 / 后台 DB pressure gate + 账号热点索引 |
 | v7se4 | Worktree bootstrap 同步开发环境配置 | 已完成 | `v7se4-worktree-bootstrap/SPEC.md` | 2026-03-14 | fast-track / PR #129 / checks green / review fixes landed |
 | sbacc | Storybook 可访问性门禁 | 已实现，待 PR CI 收敛 | `sbacc-storybook-accessibility/SPEC.md` | 2026-04-26 | PR #123 基于最新 main 复活；Storybook a11y gate 接入现有 Front-end Tests 状态上下文 |
 | wjowd | `main` 主干保护禁止直推与 PR 全检查必过 | 已实现，待 PR / CI / review-proof 收敛 | `wjowd-main-branch-protection/SPEC.md` | 2026-04-22 | fast-track / main direct pushes blocked via GitHub ruleset / PR required checks expanded to 7 gate jobs / live quality-gates now reports bypass actor verification as verified vs unverified instead of assuming empty bypass actors |

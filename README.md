@@ -101,6 +101,7 @@ Codex Vibe Monitor 是一套面向自部署的 **OpenAI 兼容代理观测工作
 - SQLite 作为主存储
 - 支持 retention、archive、raw payload 冷压缩
 - `codex_invocations` 已支持不可变日分片归档
+- 后台 rollup、backfill、retention 与账号维护具备 SQLite pressure 背压，锁竞争时优先保护 `/v1/*` 与 OAuth 等前台关键路径
 - 适合单机自部署、低运维复杂度的长期运行场景
 
 ### 7. 完整的开发与验收面
@@ -113,17 +114,17 @@ Codex Vibe Monitor 是一套面向自部署的 **OpenAI 兼容代理观测工作
 
 ## 页面地图
 
-| 页面 | 作用 |
-| --- | --- |
-| `/dashboard` | 活动总览、今日/昨日/7日/历史趋势、工作中对话 |
-| `/stats` | 时间窗统计、趋势图、成功/失败、错误分布、并行工作统计 |
-| `/live` | 实时 summary、forward proxy 节点状态、实时记录流、Prompt Cache 对话 |
-| `/records` | 稳定快照搜索、筛选、分页、详情、response body、pool attempts |
-| `/account-pool/upstream-accounts` | 上游账号列表、配额窗口、分组与标签视图 |
-| `/account-pool/upstream-accounts/new` | 新建 OAuth / API Key / 批量 OAuth / imported OAuth |
-| `/account-pool/groups` | 分组总览、分组设置入口、未分组汇总与回跳账号页筛选 |
-| `/account-pool/tags` | 标签管理与路由语义维护 |
-| `/settings` | 价格目录、forward proxy、external API keys、运行配置入口 |
+| 页面                                  | 作用                                                                |
+| ------------------------------------- | ------------------------------------------------------------------- |
+| `/dashboard`                          | 活动总览、今日/昨日/7日/历史趋势、工作中对话                        |
+| `/stats`                              | 时间窗统计、趋势图、成功/失败、错误分布、并行工作统计               |
+| `/live`                               | 实时 summary、forward proxy 节点状态、实时记录流、Prompt Cache 对话 |
+| `/records`                            | 稳定快照搜索、筛选、分页、详情、response body、pool attempts        |
+| `/account-pool/upstream-accounts`     | 上游账号列表、配额窗口、分组与标签视图                              |
+| `/account-pool/upstream-accounts/new` | 新建 OAuth / API Key / 批量 OAuth / imported OAuth                  |
+| `/account-pool/groups`                | 分组总览、分组设置入口、未分组汇总与回跳账号页筛选                  |
+| `/account-pool/tags`                  | 标签管理与路由语义维护                                              |
+| `/settings`                           | 价格目录、forward proxy、external API keys、运行配置入口            |
 
 ## 快速开始
 
@@ -206,15 +207,15 @@ bun run worktree:bootstrap
 
 ## 第一次部署最该先确认的配置
 
-| 变量 | 作用 |
-| --- | --- |
-| `HTTP_BIND` | 服务监听地址 |
-| `DATABASE_PATH` | SQLite 主库路径 |
-| `OPENAI_UPSTREAM_BASE_URL` | OpenAI 兼容上游地址 |
+| 变量                                  | 作用                                   |
+| ------------------------------------- | -------------------------------------- |
+| `HTTP_BIND`                           | 服务监听地址                           |
+| `DATABASE_PATH`                       | SQLite 主库路径                        |
+| `OPENAI_UPSTREAM_BASE_URL`            | OpenAI 兼容上游地址                    |
 | `UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET` | Account Pool 写入与 OAuth 绑定所需密钥 |
-| `RETENTION_ENABLED` | 是否启用后台保留任务 |
-| `ARCHIVE_DIR` | 归档目录 |
-| `PROXY_RAW_DIR` | 原始 payload 落盘目录 |
+| `RETENTION_ENABLED`                   | 是否启用后台保留任务                   |
+| `ARCHIVE_DIR`                         | 归档目录                               |
+| `PROXY_RAW_DIR`                       | 原始 payload 落盘目录                  |
 
 更完整的部署与配置说明请直接看：
 

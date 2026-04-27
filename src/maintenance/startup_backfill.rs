@@ -388,6 +388,7 @@ async fn run_startup_backfill_maintenance_pass(state: Arc<AppState>, cancel: &Ca
             continue;
         }
         if let Err(err) = run_startup_backfill_task_if_due(&state, *task).await {
+            crate::db_pressure::global_db_pressure_gate().record_error("startup_backfill", &err);
             warn!(task = task.log_label(), error = %err, "startup backfill supervisor pass failed");
         }
     }
@@ -411,6 +412,19 @@ async fn run_startup_backfill_task_if_due(
     state: &Arc<AppState>,
     task: StartupBackfillTask,
 ) -> Result<()> {
+    let gate = crate::db_pressure::global_db_pressure_gate();
+    let _permit = match gate.try_begin_background("startup_backfill") {
+        Ok(permit) => permit,
+        Err(reason) => {
+            warn!(
+                task = task.log_label(),
+                reason = %reason,
+                "startup backfill task skipped because database pressure gate is closed"
+            );
+            return Ok(());
+        }
+    };
+
     if !startup_backfill_task_enabled(state.as_ref(), task) {
         debug!(
             task = task.log_label(),
@@ -979,18 +993,18 @@ mod startup_backfill_tests {
     }
 }
 
-fn spawn_startup_backfill_maintenance(
-    state: Arc<AppState>,
-    cancel: CancellationToken,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        if cancel.is_cancelled() {
-            info!("startup backfill maintenance skipped because shutdown is already in progress");
-            return;
-        }
-        let prep_cli = CliArgs::default();
-        if should_run_startup_persistent_prep(&prep_cli) {
-            match run_startup_persistent_prep_inner(&state.pool, &state.config, &prep_cli, false)
+async fn run_startup_persistent_prep_best_effort(
+    state: &Arc<AppState>,
+    prep_cli: &CliArgs,
+) -> bool {
+    if !should_run_startup_persistent_prep(prep_cli) {
+        return true;
+    }
+
+    let gate = crate::db_pressure::global_db_pressure_gate();
+    match gate.try_begin_background("startup_persistent_prep") {
+        Ok(_permit) => {
+            match run_startup_persistent_prep_inner(&state.pool, &state.config, prep_cli, false)
                 .await
             {
                 Ok(summary) => {
@@ -1002,10 +1016,37 @@ fn spawn_startup_backfill_maintenance(
                         bootstrapped_hourly_rollups = summary.bootstrapped_hourly_rollups,
                         "startup background prep finished"
                     );
+                    true
                 }
-                Err(err) => warn!(error = %err, "startup background prep failed"),
+                Err(err) => {
+                    let pressure_error = gate.record_error("startup_persistent_prep", &err);
+                    warn!(error = %err, retry_soon = pressure_error, "startup background prep failed");
+                    !pressure_error
+                }
             }
         }
+        Err(reason) => {
+            warn!(
+                reason = %reason,
+                "startup background prep deferred because database pressure gate is closed"
+            );
+            false
+        }
+    }
+}
+
+fn spawn_startup_backfill_maintenance(
+    state: Arc<AppState>,
+    cancel: CancellationToken,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        if cancel.is_cancelled() {
+            info!("startup backfill maintenance skipped because shutdown is already in progress");
+            return;
+        }
+        let prep_cli = CliArgs::default();
+        let mut startup_prep_pending =
+            !run_startup_persistent_prep_best_effort(&state, &prep_cli).await;
         run_startup_backfill_maintenance_pass(state.clone(), &cancel).await;
 
         let mut ticker = interval(Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS));
@@ -1019,6 +1060,10 @@ fn spawn_startup_backfill_maintenance(
                     break;
                 }
                 _ = ticker.tick() => {
+                    if startup_prep_pending {
+                        startup_prep_pending =
+                            !run_startup_persistent_prep_best_effort(&state, &prep_cli).await;
+                    }
                     run_startup_backfill_maintenance_pass(state.clone(), &cancel).await;
                 }
             }
