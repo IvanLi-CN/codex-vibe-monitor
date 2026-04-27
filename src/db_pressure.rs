@@ -15,8 +15,9 @@ use tracing::warn;
 const DEFAULT_BACKGROUND_DB_SLOTS: usize = 1;
 const DEFAULT_PRESSURE_COOLDOWN: Duration = Duration::from_secs(30);
 
-static GLOBAL_DB_PRESSURE_GATE: Lazy<DbPressureGate> =
-    Lazy::new(|| DbPressureGate::new(DEFAULT_BACKGROUND_DB_SLOTS, DEFAULT_PRESSURE_COOLDOWN));
+static GLOBAL_DB_PRESSURE_GATE: Lazy<DbPressureGate> = Lazy::new(|| {
+    DbPressureGate::new_global(DEFAULT_BACKGROUND_DB_SLOTS, DEFAULT_PRESSURE_COOLDOWN)
+});
 
 pub(crate) fn global_db_pressure_gate() -> &'static DbPressureGate {
     &GLOBAL_DB_PRESSURE_GATE
@@ -29,6 +30,8 @@ pub(crate) struct DbPressureGate {
     pressure_until_epoch_ms: AtomicU64,
     pressure_events: AtomicU64,
     background_skips: AtomicU64,
+    #[cfg(test)]
+    bypass_for_test_global: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +53,7 @@ impl fmt::Display for DbPressureDenyReason {
 
 #[derive(Debug)]
 pub(crate) struct DbBackgroundPermit {
-    _permit: OwnedSemaphorePermit,
+    _permit: Option<OwnedSemaphorePermit>,
     started_at: Instant,
 }
 
@@ -77,6 +80,23 @@ impl DbPressureGate {
             pressure_until_epoch_ms: AtomicU64::new(0),
             pressure_events: AtomicU64::new(0),
             background_skips: AtomicU64::new(0),
+            #[cfg(test)]
+            bypass_for_test_global: false,
+        }
+    }
+
+    fn new_global(background_slots: usize, pressure_cooldown: Duration) -> Self {
+        let gate = Self::new(background_slots, pressure_cooldown);
+        #[cfg(test)]
+        {
+            return Self {
+                bypass_for_test_global: true,
+                ..gate
+            };
+        }
+        #[cfg(not(test))]
+        {
+            gate
         }
     }
 
@@ -84,6 +104,14 @@ impl DbPressureGate {
         &self,
         _task: &'static str,
     ) -> Result<DbBackgroundPermit, DbPressureDenyReason> {
+        #[cfg(test)]
+        if self.bypass_for_test_global {
+            return Ok(DbBackgroundPermit {
+                _permit: None,
+                started_at: Instant::now(),
+            });
+        }
+
         let now_ms = current_epoch_ms();
         let pressure_until_ms = self.pressure_until_epoch_ms.load(Ordering::Acquire);
         if pressure_until_ms > now_ms {
@@ -103,7 +131,7 @@ impl DbPressureGate {
             })?;
 
         Ok(DbBackgroundPermit {
-            _permit: permit,
+            _permit: Some(permit),
             started_at: Instant::now(),
         })
     }
@@ -212,6 +240,18 @@ mod tests {
 
         drop(permit);
         assert!(gate.try_begin_background("second").is_ok());
+    }
+
+    #[test]
+    fn global_gate_bypasses_background_limits_in_tests() {
+        let gate = global_db_pressure_gate();
+        let first = gate
+            .try_begin_background("first")
+            .expect("first background permit");
+
+        assert!(gate.try_begin_background("second").is_ok());
+
+        drop(first);
     }
 
     #[test]
