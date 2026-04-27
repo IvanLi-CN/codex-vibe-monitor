@@ -21,6 +21,12 @@ export interface DashboardTodayMinuteDatum {
   totalCount: number;
   totalCost: number;
   totalTokens: number;
+  tokensPerMinute: number | null;
+  spendRate: number | null;
+  firstResponseByteTotalAvgMs: number | null;
+  chartTokensPerMinute: number | null;
+  chartSpendRate: number | null;
+  chartFirstResponseByteTotalAvgMs: number | null;
   cumulativeCost: number | null;
   cumulativeTokens: number | null;
   chartCumulativeCost: number | null;
@@ -69,6 +75,8 @@ export function buildTodayMinuteChartData(
       totalCount: number;
       totalCost: number;
       totalTokens: number;
+      firstResponseByteTotalWeightedMs: number;
+      firstResponseByteTotalSampleCount: number;
     }
   >();
 
@@ -84,6 +92,8 @@ export function buildTodayMinuteChartData(
       totalCount: 0,
       totalCost: 0,
       totalTokens: 0,
+      firstResponseByteTotalWeightedMs: 0,
+      firstResponseByteTotalSampleCount: 0,
     };
     current.successCount += point.successCount ?? 0;
     current.failureCount += point.failureCount ?? 0;
@@ -91,6 +101,23 @@ export function buildTodayMinuteChartData(
     current.totalCount += point.totalCount ?? 0;
     current.totalCost += point.totalCost ?? 0;
     current.totalTokens += point.totalTokens ?? 0;
+    const firstResponseByteTotalAvgMs = point.firstResponseByteTotalAvgMs ?? null;
+    const firstResponseByteTotalSampleCount =
+      point.firstResponseByteTotalSampleCount ?? 0;
+    if (
+      firstResponseByteTotalAvgMs != null &&
+      firstResponseByteTotalSampleCount > 0
+    ) {
+      current.firstResponseByteTotalWeightedMs +=
+        firstResponseByteTotalAvgMs * firstResponseByteTotalSampleCount;
+      current.firstResponseByteTotalSampleCount += firstResponseByteTotalSampleCount;
+    } else if (
+      firstResponseByteTotalAvgMs != null &&
+      current.firstResponseByteTotalSampleCount === 0
+    ) {
+      current.firstResponseByteTotalWeightedMs += firstResponseByteTotalAvgMs;
+      current.firstResponseByteTotalSampleCount += 1;
+    }
     pointMap.set(bucketEpoch, current);
   }
 
@@ -114,6 +141,11 @@ export function buildTodayMinuteChartData(
     );
     const totalCost = point?.totalCost ?? 0;
     const totalTokens = point?.totalTokens ?? 0;
+    const firstResponseByteTotalAvgMs =
+      point == null || point.firstResponseByteTotalSampleCount <= 0
+        ? null
+        : point.firstResponseByteTotalWeightedMs /
+          point.firstResponseByteTotalSampleCount;
     cumulativeCost += totalCost;
     cumulativeTokens += totalTokens;
 
@@ -139,6 +171,14 @@ export function buildTodayMinuteChartData(
       totalCount,
       totalCost,
       totalTokens,
+      tokensPerMinute: isFuture ? null : totalTokens,
+      spendRate: isFuture ? null : totalCost,
+      firstResponseByteTotalAvgMs: isFuture ? null : firstResponseByteTotalAvgMs,
+      chartTokensPerMinute: isFuture ? null : totalTokens,
+      chartSpendRate: isFuture ? null : totalCost,
+      chartFirstResponseByteTotalAvgMs: isFuture
+        ? null
+        : firstResponseByteTotalAvgMs,
       cumulativeCost: isFuture ? null : cumulativeCost,
       cumulativeTokens: isFuture ? null : cumulativeTokens,
       chartCumulativeCost: isFuture ? null : cumulativeCost,

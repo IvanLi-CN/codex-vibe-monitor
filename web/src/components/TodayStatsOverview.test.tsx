@@ -12,8 +12,8 @@ vi.mock('../i18n', () => ({
         'dashboard.today.title': 'Today summary',
         'dashboard.today.subtitle': `Accumulated in natural day (${values?.timezone ?? 'UTC'})`,
         'dashboard.today.dayBadge': 'Today',
-        'dashboard.today.tokensPerMinute5m': 'TPM (5m avg)',
-        'dashboard.today.costPerMinute5m': 'Cost/min (5m avg)',
+        'dashboard.today.tokensPerMinute': 'TPM',
+        'dashboard.today.spendRate': 'Spend rate',
         'stats.cards.loadError': 'Load error',
         'stats.cards.success': 'Success',
         'stats.cards.failures': 'Failures',
@@ -77,7 +77,7 @@ function render(ui: React.ReactNode) {
 }
 
 describe('TodayStatsOverview', () => {
-  it('uses a six-tile desktop grid with TPM and cost-per-minute leading metrics', () => {
+  it('uses a six-tile desktop grid with TPM and spend-rate leading metrics', () => {
     render(
       <TodayStatsOverview
         stats={{
@@ -89,7 +89,7 @@ describe('TodayStatsOverview', () => {
         }}
         rate={{
           tokensPerMinute: 1000,
-          costPerMinute: 0.1,
+          spendRate: 0.1,
           windowMinutes: 5,
           available: true,
         }}
@@ -102,8 +102,8 @@ describe('TodayStatsOverview', () => {
     expect(grid?.className).toContain('lg:grid-cols-6')
     expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(6)
     expect(host?.textContent).toContain('Today summary')
-    expect(host?.textContent).toContain('TPM (5m avg)')
-    expect(host?.textContent).toContain('Cost/min (5m avg)')
+    expect(host?.textContent).toContain('TPM')
+    expect(host?.textContent).toContain('Spend rate')
   })
 
   it('supports embedded mode without rendering the outer surface panel', () => {
@@ -118,7 +118,7 @@ describe('TodayStatsOverview', () => {
         }}
         rate={{
           tokensPerMinute: 320,
-          costPerMinute: 0.13,
+          spendRate: 0.13,
           windowMinutes: 5,
           available: true,
         }}
@@ -145,7 +145,7 @@ describe('TodayStatsOverview', () => {
         }}
         rate={{
           tokensPerMinute: 416,
-          costPerMinute: 0.1,
+          spendRate: 0.1,
           windowMinutes: 5,
           available: true,
         }}
@@ -181,7 +181,7 @@ describe('TodayStatsOverview', () => {
     )
 
     expect(host?.querySelector('[data-testid="today-stats-value-tpm"]')).toBeNull()
-    expect(host?.querySelector('[data-testid="today-stats-value-cost-per-minute"]')).toBeNull()
+    expect(host?.querySelector('[data-testid="today-stats-value-spend-rate"]')).toBeNull()
     expect(host?.querySelector('[data-testid="today-stats-value-success"]')?.textContent).toContain('80')
     expect(host?.querySelector('[data-testid="today-stats-value-failures"]')?.textContent).toContain('8')
   })
@@ -198,7 +198,7 @@ describe('TodayStatsOverview', () => {
         }}
         rate={{
           tokensPerMinute: 1000.6,
-          costPerMinute: 0.104,
+          spendRate: 0.104,
           windowMinutes: 5,
           available: true,
         }}
@@ -208,11 +208,11 @@ describe('TodayStatsOverview', () => {
     )
 
     const tpmText = host?.querySelector('[data-testid="today-stats-value-tpm"]')?.textContent ?? ''
-    const costPerMinuteText = host?.querySelector('[data-testid="today-stats-value-cost-per-minute"]')?.textContent ?? ''
+    const spendRateText = host?.querySelector('[data-testid="today-stats-value-spend-rate"]')?.textContent ?? ''
 
     expect(tpmText).toContain('1,001')
     expect(tpmText).not.toContain('.')
-    expect(costPerMinuteText).toContain('$0.10')
+    expect(spendRateText).toContain('$0.10')
   })
 
   it('shows unavailable placeholders for rate tiles when timeseries loading fails', () => {
@@ -234,7 +234,7 @@ describe('TodayStatsOverview', () => {
     )
 
     expect(host?.querySelector('[data-testid="today-stats-value-tpm"]')?.textContent).toBe('—')
-    expect(host?.querySelector('[data-testid="today-stats-value-cost-per-minute"]')?.textContent).toBe('—')
+    expect(host?.querySelector('[data-testid="today-stats-value-spend-rate"]')?.textContent).toBe('—')
     expect(host?.querySelector('[data-testid="today-stats-value-success"]')?.textContent).toContain('80')
   })
 
@@ -252,7 +252,7 @@ describe('TodayStatsOverview', () => {
         }}
         rate={{
           tokensPerMinute: 1000,
-          costPerMinute: 0.1,
+          spendRate: 0.1,
           windowMinutes: 5,
           available: true,
         }}
