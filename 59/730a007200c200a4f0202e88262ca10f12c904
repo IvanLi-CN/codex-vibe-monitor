@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.52.1",
+  "base_stable_version": "1.52.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-27T01:47:42Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.52.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "4dd60e59108e07f95f206771bb1e90be189d925c",
+  "pr_number": 370,
+  "pr_title": "fix(db): add sqlite backpressure for background writes",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.52.1",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.52.1",
+  "target_sha": "59730a007200c200a4f0202e88262ca10f12c904",
+  "type_label": "type:patch"
+}
