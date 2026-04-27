@@ -88,6 +88,7 @@ pub(crate) fn prepare_target_request_body(
         model: None,
         sticky_key: None,
         prompt_cache_key: None,
+        prompt_cache_key_attribution_source: None,
         requested_service_tier: None,
         reasoning_effort: None,
         is_stream: false,
@@ -112,6 +113,9 @@ pub(crate) fn prepare_target_request_body(
         .map(|s| s.to_string());
     info.sticky_key = extract_sticky_key_from_request_body(&value);
     info.prompt_cache_key = extract_prompt_cache_key_from_request_body(&value);
+    if info.prompt_cache_key.is_some() {
+        info.prompt_cache_key_attribution_source = Some("request".to_string());
+    }
     info.reasoning_effort = extract_reasoning_effort_from_request_body(target, &value);
     info.is_stream = value
         .get("stream")

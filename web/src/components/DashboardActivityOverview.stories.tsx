@@ -37,8 +37,8 @@ function createSummary(totalCount: number, successCount: number, failureCount: n
   return { totalCount, successCount, failureCount, totalCost, totalTokens }
 }
 
-const TODAY_SUMMARY_FIXTURE = createSummary(12474, 9949, 2525, 539.42, 1314275579)
-const YESTERDAY_SUMMARY_FIXTURE = createSummary(10864, 9532, 1332, 418.76, 1092456123)
+const TODAY_SUMMARY_FIXTURE = createSummary(3428, 3296, 132, 42.86, 18764200)
+const YESTERDAY_SUMMARY_FIXTURE = createSummary(4876, 4718, 158, 61.72, 26918400)
 
 function buildTodayMinutePoints(summary = TODAY_SUMMARY_FIXTURE) {
   const rangeStart = new Date('2026-04-09T00:00:00+08:00')
@@ -78,7 +78,7 @@ function buildTodayMinutePoints(summary = TODAY_SUMMARY_FIXTURE) {
       totalTokens: totalTokens[minute] ?? 0,
       totalCost: Number(((totalCostCents[minute] ?? 0) / 100).toFixed(2)),
       firstResponseByteTotalSampleCount: totalCount,
-      firstResponseByteTotalAvgMs: totalCount > 0 ? buildFirstResponseByteTotalAvgMs(minute) : null,
+      firstResponseByteTotalAvgMs: totalCount > 0 ? buildLatencyMs(minute, totalCount, 0) : null,
     })
   }
 
@@ -129,7 +129,7 @@ function buildYesterdayMinutePoints(summary = YESTERDAY_SUMMARY_FIXTURE) {
       totalTokens: totalTokens[minute] ?? 0,
       totalCost: Number(((totalCostCents[minute] ?? 0) / 100).toFixed(2)),
       firstResponseByteTotalSampleCount: totalCount,
-      firstResponseByteTotalAvgMs: totalCount > 0 ? buildFirstResponseByteTotalAvgMs(minute + 13) : null,
+      firstResponseByteTotalAvgMs: totalCount > 0 ? buildLatencyMs(minute, totalCount, 36) : null,
     })
   }
 
@@ -160,7 +160,7 @@ function build24HourPoints() {
       totalTokens: totalCount * 390,
       totalCost: Number((totalCount * 0.017).toFixed(4)),
       firstResponseByteTotalSampleCount: totalCount,
-      firstResponseByteTotalAvgMs: totalCount > 0 ? buildFirstResponseByteTotalAvgMs(index) : null,
+      firstResponseByteTotalAvgMs: totalCount > 0 ? 620 + ((index * 13) % 280) : null,
     })
   }
   return {
@@ -174,7 +174,7 @@ function build24HourPoints() {
 function buildHourlyPoints() {
   const end = new Date('2026-04-09T00:00:00+08:00')
   const start = new Date(end.getTime() - 7 * 24 * 60 * 60_000)
-  const points: Array<Record<string, number | string>> = []
+  const points: Array<Record<string, number | string | null>> = []
   for (let index = 0; index < 7 * 24; index += 1) {
     const bucketStart = new Date(start.getTime() + index * 60 * 60_000)
     const bucketEnd = new Date(bucketStart.getTime() + 60 * 60_000)
@@ -189,6 +189,8 @@ function buildHourlyPoints() {
       failureCount: density > 6 ? 1 : 0,
       totalTokens: density * 620,
       totalCost: Number((density * 0.23).toFixed(2)),
+      firstResponseByteTotalSampleCount: density,
+      firstResponseByteTotalAvgMs: density > 0 ? 700 + ((index * 23) % 300) : null,
     })
   }
   return {
@@ -203,7 +205,7 @@ function buildDailyPoints() {
   const endExclusive = new Date('2026-04-09T00:00:00+08:00')
   const start = new Date(endExclusive)
   start.setDate(start.getDate() - 180)
-  const points: Array<Record<string, number | string>> = []
+  const points: Array<Record<string, number | string | null>> = []
   for (let index = 0; index < 180; index += 1) {
     const bucketStart = new Date(start)
     bucketStart.setDate(start.getDate() + index)
@@ -257,14 +259,17 @@ function buildActivityWeight(index: number, mode: 'success' | 'failure') {
 function buildUsageWeight(totalCount: number, index: number, mode: 'tokens' | 'cost') {
   const base = Math.max(totalCount, 1)
   if (mode === 'tokens') {
-    return base * (14 + (index % 17)) + ((index % 7) + 1) * 19
+    return base * (32 + (index % 13)) + ((index % 7) + 1) * 11
   }
-  return base * (6 + (index % 9)) + ((index % 5) + 1) * 7
+  return base * (24 + (index % 7)) + ((index % 5) + 1) * 5
 }
 
-function buildFirstResponseByteTotalAvgMs(index: number) {
+function buildLatencyMs(index: number, totalCount: number, offset: number) {
   const hour = Math.floor(index / 60)
-  return 520 + ((index * 37 + hour * 91) % 2200)
+  const rushPenalty = hour >= 9 && hour <= 11 ? 120 : hour >= 14 && hour <= 17 ? 85 : 30
+  const loadPenalty = Math.min(180, totalCount * 11)
+  const wave = ((index + offset) % 23) * 4
+  return 380 + rushPenalty + loadPenalty + wave
 }
 
 function distributeInteger(total: number, weights: number[]) {
@@ -467,37 +472,29 @@ export const YesterdayView: Story = {
   },
 }
 
-export const TodayTrend: Story = {
+export const TodayTrendView: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await userEvent.click(canvas.getByRole('tab', { name: /趋势|trend/i }))
     await waitFor(() => {
-      expect(canvas.getByTestId('dashboard-today-activity-chart')).toHaveAttribute('data-chart-mode', 'trend-area')
       expect(canvas.getByRole('tab', { name: /趋势|trend/i })).toHaveAttribute('aria-selected', 'true')
+      expect(canvas.getByTestId('dashboard-today-activity-chart')).toHaveAttribute('data-chart-mode', 'trend-area')
     })
   },
 }
 
-export const YesterdayTrend: Story = {
+export const YesterdayTrendView: Story = {
   parameters: {
     persistedRange: 'yesterday',
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
+    await waitFor(() => {
+      expect(canvas.getByRole('tab', { name: /昨日|yesterday/i })).toHaveAttribute('aria-selected', 'true')
+    })
     await userEvent.click(canvas.getByRole('tab', { name: /趋势|trend/i }))
     await waitFor(() => {
       expect(canvas.getByTestId('dashboard-today-activity-chart')).toHaveAttribute('data-chart-mode', 'trend-area')
-      expect(canvas.getByRole('tab', { name: /趋势|trend/i })).toHaveAttribute('aria-selected', 'true')
-    })
-  },
-}
-
-export const CountWithFirstResponseByteTotal: Story = {
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await waitFor(() => {
-      expect(canvas.getByTestId('dashboard-today-activity-chart')).toHaveAttribute('data-chart-mode', 'count-bars')
-      expect(canvas.getByTestId('dashboard-today-activity-chart')).toHaveAttribute('data-chart-metric', 'totalCount')
     })
   },
 }
@@ -531,7 +528,6 @@ export const HistoryView: Story = {
     await userEvent.click(canvas.getByRole('tab', { name: /历史|history/i }))
     await waitFor(() => {
       expect(canvas.getByRole('tab', { name: /历史|history/i })).toHaveAttribute('aria-selected', 'true')
-      expect(canvas.queryByRole('tab', { name: /趋势|trend/i })).toBeNull()
     })
     await expect(canvas.getByTestId('usage-calendar-card')).toBeVisible()
     await expect(canvas.queryByText(/总 TOKENS|total tokens/i)).toBeNull()

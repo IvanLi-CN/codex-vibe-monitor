@@ -45,7 +45,7 @@ vi.mock('../i18n', () => ({
         'metric.totalCount': 'Calls',
         'metric.totalCost': 'Cost',
         'metric.totalTokens': 'Tokens',
-        'metric.trend': 'Trend',
+        'chart.trend': 'Trend',
       }
       return map[key] ?? key
     },
@@ -66,12 +66,12 @@ vi.mock('./TodayStatsOverview', () => ({
     showSurface?: boolean
     showHeader?: boolean
     showDayBadge?: boolean
-    rate?: { tokensPerMinute?: number; costPerMinute?: number } | null
+    rate?: { tokensPerMinute?: number; spendRate?: number } | null
     rateLoading?: boolean
     rateError?: string | null
   }) => (
     <div data-testid="today-stats-overview-mock">
-      {`total:${stats?.totalCount ?? 'null'};surface:${String(showSurface)};header:${String(showHeader)};badge:${String(showDayBadge)};tpm:${rate?.tokensPerMinute ?? 'null'};spendRate:${rate?.costPerMinute ?? 'null'};rateLoading:${String(rateLoading)};rateError:${rateError ?? 'null'}`}
+      {`total:${stats?.totalCount ?? 'null'};surface:${String(showSurface)};header:${String(showHeader)};badge:${String(showDayBadge)};tpm:${rate?.tokensPerMinute ?? 'null'};spendRate:${rate?.spendRate ?? 'null'};rateLoading:${String(rateLoading)};rateError:${rateError ?? 'null'}`}
     </div>
   ),
 }))
@@ -367,10 +367,6 @@ describe('DashboardActivityOverview', () => {
     expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent).toBe(
       'metric:totalCost',
     )
-    clickTab('Trend')
-    expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent).toBe(
-      'metric:trend',
-    )
 
     clickTab('Yesterday')
     expect(host?.querySelector('[data-testid="dashboard-activity-range-yesterday"]')?.getAttribute('data-active')).toBe('true')
@@ -405,7 +401,6 @@ describe('DashboardActivityOverview', () => {
     expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe('metric:totalCost;account:global')
 
     clickTab('24 Hours')
-    expect(Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).some((button) => button.textContent === 'Trend')).toBe(false)
     expect(host?.querySelector('[data-testid="stats-cards"]')?.textContent).toBe('total:100')
     expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toBe('metric:totalCount;account:global')
     clickTab('Tokens')
@@ -413,7 +408,7 @@ describe('DashboardActivityOverview', () => {
 
     clickTab('Today')
     expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent).toBe(
-      'metric:trend',
+      'metric:totalCost',
     )
     clickTab('History')
     expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(

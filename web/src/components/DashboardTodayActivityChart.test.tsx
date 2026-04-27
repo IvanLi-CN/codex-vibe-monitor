@@ -68,29 +68,42 @@ vi.mock("recharts", () => ({
   },
   Legend: () => <div data-testid="legend" />,
   ReferenceLine: () => <div data-testid="reference-line" />,
-  Area: ({ dataKey }: { dataKey?: string }) => (
-    <div data-testid="area-series" data-data-key={dataKey ?? ""} />
+  Area: ({
+    dataKey,
+    yAxisId,
+    name,
+  }: {
+    dataKey?: string;
+    yAxisId?: string;
+    name?: string;
+  }) => (
+    <div
+      data-testid="area-series"
+      data-data-key={dataKey ?? ""}
+      data-y-axis-id={yAxisId ?? ""}
+      data-name={name ?? ""}
+    />
   ),
   Line: ({
-    connectNulls,
-    data,
     dataKey,
-    strokeOpacity,
+    yAxisId,
+    name,
     strokeWidth,
+    strokeOpacity,
   }: {
-    connectNulls?: boolean;
-    data?: Array<Record<string, unknown>>;
     dataKey?: string;
-    strokeOpacity?: number;
+    yAxisId?: string;
+    name?: string;
     strokeWidth?: number;
+    strokeOpacity?: number;
   }) => (
     <div
       data-testid="line-series"
-      data-connect-nulls={String(connectNulls ?? false)}
-      data-line-point-count={String(data?.length ?? "")}
       data-data-key={dataKey ?? ""}
-      data-stroke-opacity={String(strokeOpacity ?? "")}
+      data-y-axis-id={yAxisId ?? ""}
+      data-name={name ?? ""}
       data-stroke-width={String(strokeWidth ?? "")}
+      data-stroke-opacity={String(strokeOpacity ?? "")}
     />
   ),
   Bar: ({ stackId, dataKey }: { stackId?: string; dataKey?: string }) => (
@@ -114,11 +127,7 @@ vi.mock("recharts", () => ({
   }) => {
     latestChartData = data ?? [];
     return (
-      <div
-        data-testid="composed-chart"
-        data-bar-gap={String(barGap ?? "")}
-        data-point-count={String(latestChartData.length)}
-      >
+      <div data-testid="composed-chart" data-bar-gap={String(barGap ?? "")}>
         {children}
       </div>
     );
@@ -151,8 +160,6 @@ const response = {
       failureCount: 1,
       totalTokens: 120,
       totalCost: 0.5,
-      firstResponseByteTotalSampleCount: 2,
-      firstResponseByteTotalAvgMs: 350,
     },
     {
       bucketStart: "2026-04-08 00:02:00",
@@ -162,8 +169,6 @@ const response = {
       failureCount: 0,
       totalTokens: 200,
       totalCost: 0.75,
-      firstResponseByteTotalSampleCount: 1,
-      firstResponseByteTotalAvgMs: 700,
     },
   ],
 };
@@ -218,13 +223,6 @@ describe("DashboardTodayActivityChart", () => {
       chartInFlightCount: 0,
       chartFailureCountNegative: -1,
       totalCount: 3,
-      tokensPerMinute: 120,
-      costRate: 0.5,
-      firstResponseByteTotalSampleCount: 2,
-      firstResponseByteTotalAvgMs: 350,
-      chartTokensPerMinute: 120,
-      chartCostRate: 0.5,
-      chartFirstResponseByteTotalAvgMs: 350,
       cumulativeCost: 0.5,
       cumulativeTokens: 120,
       chartCumulativeCost: 0.5,
@@ -235,13 +233,6 @@ describe("DashboardTodayActivityChart", () => {
       failureCount: 0,
       inFlightCount: 0,
       totalCount: 0,
-      tokensPerMinute: 0,
-      costRate: 0,
-      firstResponseByteTotalSampleCount: 0,
-      firstResponseByteTotalAvgMs: null,
-      chartTokensPerMinute: 0,
-      chartCostRate: 0,
-      chartFirstResponseByteTotalAvgMs: null,
       cumulativeCost: 0.5,
       cumulativeTokens: 120,
       chartSuccessCount: 0,
@@ -255,13 +246,6 @@ describe("DashboardTodayActivityChart", () => {
       failureCount: 0,
       inFlightCount: 0,
       totalCount: 4,
-      tokensPerMinute: 200,
-      costRate: 0.75,
-      firstResponseByteTotalSampleCount: 1,
-      firstResponseByteTotalAvgMs: 700,
-      chartTokensPerMinute: 200,
-      chartCostRate: 0.75,
-      chartFirstResponseByteTotalAvgMs: 700,
       cumulativeCost: 1.25,
       cumulativeTokens: 320,
       chartSuccessCount: 4,
@@ -288,9 +272,6 @@ describe("DashboardTodayActivityChart", () => {
       chartSuccessCount: null,
       chartInFlightCount: null,
       chartFailureCountNegative: null,
-      chartTokensPerMinute: null,
-      chartCostRate: null,
-      chartFirstResponseByteTotalAvgMs: null,
       cumulativeCost: null,
       cumulativeTokens: null,
       chartCumulativeCost: null,
@@ -454,123 +435,90 @@ describe("DashboardTodayActivityChart", () => {
     });
   });
 
-  it("ignores first-byte-total samples that do not include an average", () => {
+  it("adds raw and 10-minute chart values without changing minute count data", () => {
     const data = buildTodayMinuteChartData(
       {
         rangeStart: "2026-04-08 00:00:00",
-        rangeEnd: "2026-04-08 00:00:10",
+        rangeEnd: "2026-04-08 00:11:30",
         bucketSeconds: 60,
         points: [
           {
-            bucketStart: "2026-04-08 00:00:00",
-            bucketEnd: "2026-04-08 00:00:59",
+            bucketStart: "2026-04-08 00:01:00",
+            bucketEnd: "2026-04-08 00:01:59",
             totalCount: 2,
             successCount: 2,
             failureCount: 0,
+            totalTokens: 1200,
+            totalCost: 0.24,
             firstResponseByteTotalSampleCount: 2,
-            firstResponseByteTotalAvgMs: null,
-          },
-          {
-            bucketStart: "2026-04-08 00:00:00",
-            bucketEnd: "2026-04-08 00:00:59",
-            totalCount: 1,
-            successCount: 1,
-            failureCount: 0,
-            firstResponseByteTotalSampleCount: 1,
-            firstResponseByteTotalAvgMs: 900,
-          },
-        ],
-      },
-      {
-        now: new Date(2026, 3, 8, 0, 0, 10),
-        localeTag: "en-US",
-      },
-    );
-
-    expect(data[0]).toMatchObject({
-      firstResponseByteTotalSampleCount: 1,
-      firstResponseByteTotalAvgMs: 900,
-      chartFirstResponseByteTotalAvgMs: 900,
-    });
-  });
-
-  it("builds ten-minute trend and first-byte-total chart aggregates", () => {
-    const data = buildTodayMinuteChartData(
-      {
-        rangeStart: "2026-04-08 00:00:00",
-        rangeEnd: "2026-04-08 00:32:10",
-        bucketSeconds: 60,
-        points: [
-          {
-            bucketStart: "2026-04-08 00:00:00",
-            bucketEnd: "2026-04-08 00:00:59",
-            totalCount: 1,
-            successCount: 1,
-            failureCount: 0,
-            totalTokens: 100,
-            totalCost: 0.1,
-            firstResponseByteTotalSampleCount: 1,
-            firstResponseByteTotalAvgMs: 100,
+            firstResponseByteTotalAvgMs: 450,
           },
           {
             bucketStart: "2026-04-08 00:02:00",
             bucketEnd: "2026-04-08 00:02:59",
+            totalCount: 1,
+            successCount: 1,
+            failureCount: 0,
+            totalTokens: 800,
+            totalCost: 0.16,
+            firstResponseByteTotalSampleCount: 1,
+            firstResponseByteTotalAvgMs: 900,
+          },
+          {
+            bucketStart: "2026-04-08 00:10:00",
+            bucketEnd: "2026-04-08 00:10:59",
             totalCount: 3,
             successCount: 3,
             failureCount: 0,
             totalTokens: 300,
-            totalCost: 0.3,
+            totalCost: 0.06,
             firstResponseByteTotalSampleCount: 3,
-            firstResponseByteTotalAvgMs: 700,
-          },
-          {
-            bucketStart: "2026-04-08 00:21:00",
-            bucketEnd: "2026-04-08 00:21:59",
-            totalCount: 2,
-            successCount: 2,
-            failureCount: 0,
-            totalTokens: 50,
-            totalCost: 0.05,
-            firstResponseByteTotalSampleCount: 2,
-            firstResponseByteTotalAvgMs: 500,
+            firstResponseByteTotalAvgMs: 600,
           },
         ],
       },
       {
-        now: new Date(2026, 3, 8, 0, 32, 10),
+        now: new Date(2026, 3, 8, 0, 11, 30),
         localeTag: "en-US",
       },
     );
 
     expect(data[0]).toMatchObject({
-      chartTokensPerTenMinute: 400,
-      chartCostRateTenMinute: 0.4,
-      chartFirstResponseByteTotalTenMinuteAvgMs: 550,
+      chartSuccessCount: 0,
+      chartInFlightCount: 0,
+      chartFailureCountNegative: 0,
+      chartTokensPerTenMinute: 2000,
+      chartSpendRateTenMinute: 0.4,
+      chartFirstResponseByteTotalTenMinuteAvgMs: 600,
     });
     expect(data[1]).toMatchObject({
+      tokensPerMinute: 1200,
+      spendRate: 0.24,
+      firstResponseByteTotalAvgMs: 450,
+      firstResponseByteTotalSampleCount: 2,
+      chartTokensPerMinute: 1200,
+      chartSpendRate: 0.24,
+      chartFirstResponseByteTotalAvgMs: 450,
       chartTokensPerTenMinute: null,
-      chartCostRateTenMinute: null,
-      chartFirstResponseByteTotalTenMinuteAvgMs: 550,
-    });
-    expect(data[9]).toMatchObject({
-      chartTokensPerTenMinute: null,
-      chartCostRateTenMinute: null,
-      chartFirstResponseByteTotalTenMinuteAvgMs: 550,
+      chartSpendRateTenMinute: null,
+      chartFirstResponseByteTotalTenMinuteAvgMs: 600,
     });
     expect(data[10]).toMatchObject({
-      chartTokensPerTenMinute: 0,
-      chartCostRateTenMinute: 0,
-      chartFirstResponseByteTotalTenMinuteAvgMs: null,
+      chartSuccessCount: 3,
+      chartTokensPerTenMinute: 300,
+      chartSpendRateTenMinute: 0.06,
+      chartFirstResponseByteTotalTenMinuteAvgMs: 600,
     });
-    expect(data[20]).toMatchObject({
-      chartTokensPerTenMinute: 50,
-      chartCostRateTenMinute: 0.05,
-      chartFirstResponseByteTotalTenMinuteAvgMs: 500,
-    });
-    expect(data[21]).toMatchObject({
+    expect(data.at(-1)).toMatchObject({
+      tokensPerMinute: null,
+      spendRate: null,
+      firstResponseByteTotalAvgMs: null,
+      chartTokensPerMinute: null,
+      chartSpendRate: null,
+      chartFirstResponseByteTotalAvgMs: null,
       chartTokensPerTenMinute: null,
-      chartCostRateTenMinute: null,
-      chartFirstResponseByteTotalTenMinuteAvgMs: 500,
+      chartSpendRateTenMinute: null,
+      chartFirstResponseByteTotalTenMinuteAvgMs: null,
     });
   });
 
@@ -589,8 +537,6 @@ describe("DashboardTodayActivityChart", () => {
               inFlightCount: 1,
               totalTokens: 120,
               totalCost: 0.5,
-              firstResponseByteTotalSampleCount: 1,
-              firstResponseByteTotalAvgMs: 1250,
             },
           ],
         }}
@@ -603,8 +549,33 @@ describe("DashboardTodayActivityChart", () => {
     expect(html).toContain("chart.inFlight");
     expect(html).toContain("1 unit.calls");
     expect(html).toContain("5 unit.calls");
-    expect(html).toContain("chart.firstResponseByteTotal");
-    expect(html).toContain("1.25s");
+  });
+
+  it("overlays first-byte-total latency on the count chart", () => {
+    const html = renderToStaticMarkup(
+      <DashboardTodayActivityChart
+        response={{
+          ...response,
+          points: [
+            {
+              ...response.points[0],
+              firstResponseByteTotalSampleCount: 1,
+              firstResponseByteTotalAvgMs: 43890,
+            },
+          ],
+        }}
+        loading={false}
+        error={null}
+        metric="totalCount"
+      />,
+    );
+
+    expect(html).toContain(
+      'data-data-key="chartFirstResponseByteTotalTenMinuteAvgMs"',
+    );
+    expect(html).toContain('data-name="chart.firstResponseByteTotal"');
+    expect(html).toContain('data-stroke-width="1.2"');
+    expect(html).toContain('data-stroke-opacity="0.82"');
   });
 
   it("renders count mode as a composed chart with split success and failure bars", () => {
@@ -621,43 +592,14 @@ describe("DashboardTodayActivityChart", () => {
     expect(html).toContain('data-chart-mode="count-bars"');
     expect(html).toContain('data-testid="composed-chart"');
     expect(html).toContain('data-bar-gap="-100%"');
-    expect(html).toContain('data-point-count="1440"');
     expect(html).not.toContain('data-testid="area-chart"');
     expect(html).toContain('data-data-key="chartSuccessCount"');
     expect(html).toContain('data-data-key="chartInFlightCount"');
     expect(html).toContain('data-data-key="chartFailureCountNegative"');
-    expect(html).toContain(
-      'data-data-key="chartFirstResponseByteTotalTenMinuteAvgMs"',
-    );
-    expect(html).toContain('data-connect-nulls="false"');
-    expect(html).toContain('data-line-point-count=""');
-    expect(html).toContain('data-stroke-width="1.2"');
-    expect(html).toContain('data-stroke-opacity="0.82"');
     expect(html).toContain('data-stack-id="positive"');
     expect(html).not.toContain(
       'data-data-key="chartFailureCountNegative" data-stack-id="positive"',
     );
-  });
-
-  it("renders trend mode as ten-minute TPM and spend-rate areas", () => {
-    const html = renderToStaticMarkup(
-      <DashboardTodayActivityChart
-        response={response}
-        loading={false}
-        error={null}
-        metric="trend"
-      />,
-    );
-
-    expect(html).toContain('data-chart-mode="trend-area"');
-    expect(html).toContain('data-testid="composed-chart"');
-    expect(html).toContain('data-point-count="144"');
-    expect(html).not.toContain('data-testid="line-series"');
-    expect(html).toContain('data-testid="area-series"');
-    expect(html).toContain('data-data-key="chartTokensPerTenMinute"');
-    expect(html).toContain('data-data-key="chartCostRateTenMinute"');
-    expect(html).toContain("chart.totalTokens");
-    expect(html).toContain("chart.spendRate");
   });
 
   it("renders cost and token modes as cumulative area charts", () => {
@@ -683,6 +625,25 @@ describe("DashboardTodayActivityChart", () => {
     expect(costHtml).not.toContain('data-testid="composed-chart"');
     expect(tokenHtml).toContain('data-chart-mode="cumulative-area"');
     expect(tokenHtml).toContain('data-testid="area-chart"');
+  });
+
+  it("renders trend mode as 10-minute TPM and spend-rate area charts", () => {
+    const html = renderToStaticMarkup(
+      <DashboardTodayActivityChart
+        response={response}
+        loading={false}
+        error={null}
+        metric="trend"
+      />,
+    );
+
+    expect(html).toContain('data-chart-mode="trend-area"');
+    expect(html).toContain('data-testid="composed-chart"');
+    expect(html).toContain('data-data-key="chartTokensPerTenMinute"');
+    expect(html).toContain('data-data-key="chartSpendRateTenMinute"');
+    expect(html).toContain('data-name="chart.tokensPerMinute"');
+    expect(html).toContain('data-name="chart.spendRate"');
+    expect(html).not.toContain('data-testid="line-series"');
   });
 
   it("starts chart diagnostics immediately after toggling debug on in an open tab", () => {

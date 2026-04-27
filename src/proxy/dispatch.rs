@@ -187,6 +187,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let requester_ip = extract_requester_ip(&headers, peer_ip);
     let header_sticky_key = extract_sticky_key_from_headers(&headers);
     let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
+    let client_attribution_context = client_prompt_cache_attribution_context_from_headers(&headers);
 
     let req_read_started = Instant::now();
     let request_body_bytes = match read_request_body_with_limit(
@@ -270,6 +271,14 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     },
                     sticky_key: header_sticky_key.as_deref(),
                     prompt_cache_key: header_prompt_cache_key.as_deref(),
+                    prompt_cache_key_attribution_source: header_prompt_cache_key
+                        .as_ref()
+                        .map(|_| "request"),
+                    client_fingerprint: client_attribution_context.fingerprint.as_deref(),
+                    client_header_fingerprints: Some(
+                        &client_attribution_context.header_fingerprints,
+                    )
+                    .filter(|fingerprints| !fingerprints.is_empty()),
                     upstream_account_id: None,
                     upstream_account_name: None,
                     upstream_account_kind: None,
@@ -331,14 +340,41 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         request_body_bytes,
         state.config.proxy_enforce_stream_include_usage,
     );
-    let prompt_cache_key = request_info
+    let mut prompt_cache_key = request_info
         .prompt_cache_key
         .clone()
         .or_else(|| header_prompt_cache_key.clone());
-    let sticky_key = request_info
+    let mut sticky_key = request_info
         .sticky_key
         .clone()
         .or_else(|| header_sticky_key.clone());
+    if prompt_cache_key.is_some() && request_info.prompt_cache_key_attribution_source.is_none() {
+        request_info.prompt_cache_key_attribution_source = Some("request".to_string());
+    }
+    if capture_target == ProxyCaptureTarget::ResponsesCompact
+        && prompt_cache_key.is_none()
+        && let Some(attribution) =
+            lookup_recent_prompt_cache_attribution(&client_attribution_context, Instant::now())
+    {
+        prompt_cache_key = Some(attribution.prompt_cache_key.clone());
+        if sticky_key.is_none() {
+            sticky_key = attribution.sticky_key.clone();
+        }
+        request_info.prompt_cache_key = prompt_cache_key.clone();
+        request_info.sticky_key = sticky_key.clone();
+        request_info.prompt_cache_key_attribution_source =
+            Some("client_fingerprint_recent".to_string());
+    }
+    if capture_target == ProxyCaptureTarget::Responses
+        && let Some(prompt_cache_key) = prompt_cache_key.as_deref()
+    {
+        remember_prompt_cache_attribution(
+            &client_attribution_context,
+            prompt_cache_key,
+            sticky_key.as_deref(),
+            Instant::now(),
+        );
+    }
     let pool_attempt_trace_context = pool_route_active.then(|| PoolUpstreamAttemptTraceContext {
         invoke_id: invoke_id.clone(),
         occurred_at: occurred_at.clone(),
@@ -534,6 +570,14 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         route_mode: INVOCATION_ROUTE_MODE_POOL,
                         sticky_key: sticky_key.as_deref(),
                         prompt_cache_key: prompt_cache_key.as_deref(),
+                        prompt_cache_key_attribution_source: request_info
+                            .prompt_cache_key_attribution_source
+                            .as_deref(),
+                        client_fingerprint: client_attribution_context.fingerprint.as_deref(),
+                        client_header_fingerprints: Some(
+                            &client_attribution_context.header_fingerprints,
+                        )
+                        .filter(|fingerprints| !fingerprints.is_empty()),
                         upstream_account_id: err.account.as_ref().map(|account| account.account_id),
                         upstream_account_name: err
                             .account
@@ -740,6 +784,14 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         route_mode: INVOCATION_ROUTE_MODE_FORWARD_PROXY,
                         sticky_key: sticky_key.as_deref(),
                         prompt_cache_key: prompt_cache_key.as_deref(),
+                        prompt_cache_key_attribution_source: request_info
+                            .prompt_cache_key_attribution_source
+                            .as_deref(),
+                        client_fingerprint: client_attribution_context.fingerprint.as_deref(),
+                        client_header_fingerprints: Some(
+                            &client_attribution_context.header_fingerprints,
+                        )
+                        .filter(|fingerprints| !fingerprints.is_empty()),
                         upstream_account_id: None,
                         upstream_account_name: None,
                         upstream_account_kind: None,
@@ -891,6 +943,12 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     },
                     sticky_key: sticky_key.as_deref(),
                     prompt_cache_key: prompt_cache_key.as_deref(),
+                    prompt_cache_key_attribution_source: request_info
+                        .prompt_cache_key_attribution_source
+                        .as_deref(),
+                    client_fingerprint: client_attribution_context.fingerprint.as_deref(),
+                    client_header_fingerprints: Some(&client_attribution_context.header_fingerprints)
+                        .filter(|fingerprints| !fingerprints.is_empty()),
                     upstream_account_id: pool_account.as_ref().map(|account| account.account_id),
                     upstream_account_name: pool_account
                         .as_ref()
@@ -1037,6 +1095,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
 
     let state_for_task = state.clone();
     let request_info_for_task = request_info.clone();
+    let client_attribution_context_for_task = client_attribution_context.clone();
     let req_raw_pending_for_task = req_raw_pending
         .take()
         .expect("request raw capture should still be pending when response stream starts");
@@ -1607,6 +1666,14 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             },
             sticky_key: sticky_key_for_task.as_deref(),
             prompt_cache_key: prompt_cache_key_for_task.as_deref(),
+            prompt_cache_key_attribution_source: request_info_for_task
+                .prompt_cache_key_attribution_source
+                .as_deref(),
+            client_fingerprint: client_attribution_context_for_task.fingerprint.as_deref(),
+            client_header_fingerprints: Some(
+                &client_attribution_context_for_task.header_fingerprints,
+            )
+            .filter(|fingerprints| !fingerprints.is_empty()),
             upstream_account_id: pool_account_for_task
                 .as_ref()
                 .map(|account| account.account_id),

@@ -14,7 +14,7 @@ import { UsageCalendar } from './UsageCalendar'
 import { WeeklyHourlyHeatmap } from './WeeklyHourlyHeatmap'
 
 type RangeKey = 'today' | 'yesterday' | '1d' | '7d' | 'usage'
-type NaturalDayMetricKey = MetricKey | 'trend'
+type NaturalDayChartMetric = MetricKey | 'trend'
 
 export const DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY = 'dashboard.activityOverview.activeRange.v1'
 export const ACCOUNT_ACTIVITY_RANGE_STORAGE_KEY_PREFIX = 'account.activityOverview.activeRange.v1'
@@ -33,9 +33,9 @@ const METRIC_OPTIONS: Array<{ key: MetricKey; labelKey: string }> = [
   { key: 'totalCost', labelKey: 'metric.totalCost' },
   { key: 'totalTokens', labelKey: 'metric.totalTokens' },
 ]
-const NATURAL_DAY_METRIC_OPTIONS: Array<{ key: NaturalDayMetricKey; labelKey: string }> = [
+const NATURAL_DAY_METRIC_OPTIONS: Array<{ key: NaturalDayChartMetric; labelKey: string }> = [
   ...METRIC_OPTIONS,
-  { key: 'trend', labelKey: 'metric.trend' },
+  { key: 'trend', labelKey: 'chart.trend' },
 ]
 
 function isRangeKey(value: string | null): value is RangeKey {
@@ -75,7 +75,7 @@ function DashboardNaturalDayRangePanel({
   testId,
   upstreamAccountId,
 }: {
-  metric: NaturalDayMetricKey
+  metric: NaturalDayChartMetric
   summaryWindow: 'today' | 'yesterday'
   timeseriesRange: 'today' | 'yesterday'
   testId: string
@@ -161,7 +161,7 @@ const DashboardNaturalDayChartSection = memo(function DashboardNaturalDayChartSe
   response: ReturnType<typeof useTimeseries>['data']
   loading: boolean
   error: ReturnType<typeof useTimeseries>['error']
-  metric: NaturalDayMetricKey
+  metric: NaturalDayChartMetric
   closedNaturalDay: boolean
 }) {
   return (
@@ -175,7 +175,7 @@ const DashboardNaturalDayChartSection = memo(function DashboardNaturalDayChartSe
   )
 })
 
-function DashboardTodayRangePanel({ metric, upstreamAccountId }: { metric: NaturalDayMetricKey; upstreamAccountId?: number }) {
+function DashboardTodayRangePanel({ metric, upstreamAccountId }: { metric: NaturalDayChartMetric; upstreamAccountId?: number }) {
   return (
     <DashboardNaturalDayRangePanel
       metric={metric}
@@ -187,7 +187,7 @@ function DashboardTodayRangePanel({ metric, upstreamAccountId }: { metric: Natur
   )
 }
 
-function DashboardYesterdayRangePanel({ metric, upstreamAccountId }: { metric: NaturalDayMetricKey; upstreamAccountId?: number }) {
+function DashboardYesterdayRangePanel({ metric, upstreamAccountId }: { metric: NaturalDayChartMetric; upstreamAccountId?: number }) {
   return (
     <DashboardNaturalDayRangePanel
       metric={metric}
@@ -273,8 +273,8 @@ export function DashboardActivityOverview({
   const { t } = useTranslation()
   const { themeMode } = useTheme()
   const [activeRange, setActiveRange] = useState<RangeKey>(() => readPersistedRange(storageKey))
-  const [metricToday, setMetricToday] = useState<NaturalDayMetricKey>('totalCount')
-  const [metricYesterday, setMetricYesterday] = useState<NaturalDayMetricKey>('totalCount')
+  const [metricToday, setMetricToday] = useState<NaturalDayChartMetric>('totalCount')
+  const [metricYesterday, setMetricYesterday] = useState<NaturalDayChartMetric>('totalCount')
   const [metric24h, setMetric24h] = useState<MetricKey>('totalCount')
   const [metric7d, setMetric7d] = useState<MetricKey>('totalCount')
   const [metricUsage, setMetricUsage] = useState<MetricKey>('totalCount')
@@ -283,13 +283,13 @@ export function DashboardActivityOverview({
     () => RANGE_OPTIONS.map((option) => ({ ...option, label: t(option.labelKey) })),
     [t],
   )
-  const metricOptions = useMemo(
-    () => ({
-      naturalDay: NATURAL_DAY_METRIC_OPTIONS.map((option) => ({ ...option, label: t(option.labelKey) })),
-      default: METRIC_OPTIONS.map((option) => ({ ...option, label: t(option.labelKey) })),
-    }),
-    [t],
-  )
+  const metricOptions = useMemo(() => {
+    const source =
+      activeRange === 'today' || activeRange === 'yesterday'
+        ? NATURAL_DAY_METRIC_OPTIONS
+        : METRIC_OPTIONS
+    return source.map((option) => ({ ...option, label: t(option.labelKey) }))
+  }, [activeRange, t])
 
   const activeMetric =
     activeRange === 'today'
@@ -301,14 +301,12 @@ export function DashboardActivityOverview({
         : activeRange === '7d'
           ? metric7d
           : metricUsage
-  const activeMetricOptions =
-    activeRange === 'today' || activeRange === 'yesterday' ? metricOptions.naturalDay : metricOptions.default
 
   useEffect(() => {
     persistRange(storageKey, activeRange)
   }, [activeRange, storageKey])
 
-  const setActiveMetric = (metric: NaturalDayMetricKey) => {
+  const setActiveMetric = (metric: NaturalDayChartMetric) => {
     if (activeRange === 'today') {
       setMetricToday(metric)
       return
@@ -317,9 +315,7 @@ export function DashboardActivityOverview({
       setMetricYesterday(metric)
       return
     }
-    if (metric === 'trend') {
-      return
-    }
+    if (metric === 'trend') return
     if (activeRange === '1d') {
       setMetric24h(metric)
       return
@@ -357,7 +353,7 @@ export function DashboardActivityOverview({
             </SegmentedControl>
           </div>
           <SegmentedControl size="compact" role="tablist" aria-label={t('heatmap.metricsToggleAria')}>
-            {activeMetricOptions.map((option) => {
+            {metricOptions.map((option) => {
               const active = option.key === activeMetric
               return (
                 <SegmentedControlItem

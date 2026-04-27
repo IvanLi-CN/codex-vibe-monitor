@@ -98,13 +98,6 @@ function formatCountValue(
   return `${formatter.format(value)} ${unitLabel}`;
 }
 
-function formatDurationMs(value: number, formatter: Intl.NumberFormat) {
-  if (value >= 1000) {
-    return `${formatter.format(value / 1000)}s`;
-  }
-  return `${formatter.format(value)}ms`;
-}
-
 interface TooltipPayloadEntry {
   payload?: DashboardTodayMinuteDatum;
 }
@@ -120,9 +113,8 @@ interface ChartTooltipContentProps {
     success: string;
     failure: string;
     accent: string;
-    tokens: string;
-    costRate: string;
-    firstResponseByteTotal: string;
+    spend: string;
+    firstByte: string;
   };
   renderValue: (
     point: DashboardTodayMinuteDatum,
@@ -231,7 +223,10 @@ function DashboardTodayActivityChartImpl({
   const chartColors = useMemo(() => {
     const base = chartBaseTokens(themeMode);
     const status = chartStatusTokens(themeMode);
-    const accent = metricAccent(metric === "trend" ? "totalTokens" : metric, themeMode);
+    const accent = metric === "trend"
+      ? metricAccent("totalTokens", themeMode)
+      : metricAccent(metric, themeMode);
+    const spend = metricAccent("totalCost", themeMode);
     return {
       ...base,
       success: status.success,
@@ -240,11 +235,9 @@ function DashboardTodayActivityChartImpl({
       failureFill: withOpacity(status.failure, 0.24),
       accent,
       accentFill: withOpacity(accent, 0.22),
-      tokens: metricAccent("totalTokens", themeMode),
-      tokensFill: withOpacity(metricAccent("totalTokens", themeMode), 0.22),
-      costRate: metricAccent("totalCost", themeMode),
-      costRateFill: withOpacity(metricAccent("totalCost", themeMode), 0.18),
-      firstResponseByteTotal: metricAccent("totalCount", themeMode),
+      spend,
+      spendFill: withOpacity(spend, 0.18),
+      firstByte: themeMode === "dark" ? "#cbd5e1" : "#475569",
     };
   }, [metric, themeMode]);
 
@@ -260,7 +253,7 @@ function DashboardTodayActivityChartImpl({
       failures: t("stats.cards.failures"),
       inFlight: t("chart.inFlight"),
       total: t("chart.totalCount"),
-      firstResponseByteTotal: t("chart.firstResponseByteTotal"),
+      firstByteTotal: t("chart.firstResponseByteTotal"),
     }),
     [t],
   );
@@ -268,8 +261,8 @@ function DashboardTodayActivityChartImpl({
     metric === "totalCost" ? t("chart.totalCost") : t("chart.totalTokens");
   const trendSeriesNames = useMemo(
     () => ({
-      tokensPerMinute: t("chart.totalTokens"),
-      costRate: t("chart.spendRate"),
+      tokensPerMinute: t("chart.tokensPerMinute"),
+      spendRate: t("chart.spendRate"),
     }),
     [t],
   );
@@ -305,8 +298,7 @@ function DashboardTodayActivityChartImpl({
       ? data
       : buildTodayMinuteChartData(response, { localeTag, closedNaturalDay });
   const tenMinuteChartData = chartData.filter((point) => point.index % 10 === 0);
-  const activeChartData = metric === "trend" ? tenMinuteChartData : chartData;
-  const animate = activeChartData.length <= 800;
+  const animate = chartData.length <= 800;
   const chartMode =
     metric === "totalCount"
       ? "count-bars"
@@ -361,12 +353,9 @@ function DashboardTodayActivityChartImpl({
             ? []
             : [
                 {
-                  label: countSeriesNames.firstResponseByteTotal,
-                  value: formatDurationMs(
-                    point.chartFirstResponseByteTotalTenMinuteAvgMs,
-                    numberFormatter,
-                  ),
-                  color: chartColors.firstResponseByteTotal,
+                  label: countSeriesNames.firstByteTotal,
+                  value: `${numberFormatter.format(point.chartFirstResponseByteTotalTenMinuteAvgMs)} ms`,
+                  color: chartColors.firstByte,
                 },
               ]),
         ];
@@ -391,21 +380,26 @@ function DashboardTodayActivityChartImpl({
             },
           ]),
   ];
-  const renderTrendTooltip = (point: DashboardTodayMinuteDatum) =>
-    point.chartTokensPerTenMinute == null || point.chartCostRateTenMinute == null
+  const renderTrendTooltip = (point: DashboardTodayMinuteDatum) => [
+    ...(point.chartTokensPerTenMinute == null
       ? []
       : [
           {
             label: trendSeriesNames.tokensPerMinute,
             value: formatTokensShort(point.chartTokensPerTenMinute, localeTag),
-            color: chartColors.tokens,
+            color: chartColors.accent,
           },
+        ]),
+    ...(point.chartSpendRateTenMinute == null
+      ? []
+      : [
           {
-            label: trendSeriesNames.costRate,
-            value: currencyFormatter.format(point.chartCostRateTenMinute),
-            color: chartColors.costRate,
+            label: trendSeriesNames.spendRate,
+            value: currencyFormatter.format(point.chartSpendRateTenMinute),
+            color: chartColors.spend,
           },
-        ];
+        ]),
+  ];
 
   return (
     <section
@@ -459,9 +453,7 @@ function DashboardTodayActivityChartImpl({
               <YAxis
                 yAxisId="latency"
                 orientation="right"
-                tickFormatter={(value) =>
-                  formatDurationMs(Number(value), numberFormatter)
-                }
+                tickFormatter={(value) => `${numberFormatter.format(Number(value))}ms`}
                 width={72}
                 axisLine={{ stroke: chartColors.gridLine }}
                 tickLine={{ stroke: chartColors.gridLine }}
@@ -527,8 +519,8 @@ function DashboardTodayActivityChartImpl({
                 yAxisId="latency"
                 type="monotone"
                 dataKey="chartFirstResponseByteTotalTenMinuteAvgMs"
-                name={countSeriesNames.firstResponseByteTotal}
-                stroke={chartColors.firstResponseByteTotal}
+                name={countSeriesNames.firstByteTotal}
+                stroke={chartColors.firstByte}
                 strokeOpacity={0.82}
                 strokeWidth={1.2}
                 dot={false}
@@ -566,20 +558,16 @@ function DashboardTodayActivityChartImpl({
               />
               <YAxis
                 yAxisId="tokens"
-                tickFormatter={(value) =>
-                  formatTokensShort(Number(value), localeTag)
-                }
+                tickFormatter={(value) => formatTokensShort(Number(value), localeTag)}
                 width={80}
                 axisLine={{ stroke: chartColors.gridLine }}
                 tickLine={{ stroke: chartColors.gridLine }}
                 tick={{ fill: chartColors.axisText, fontSize: 12 }}
               />
               <YAxis
-                yAxisId="cost"
+                yAxisId="spend"
                 orientation="right"
-                tickFormatter={(value) =>
-                  currencyFormatter.format(Number(value))
-                }
+                tickFormatter={(value) => currencyFormatter.format(Number(value))}
                 width={90}
                 axisLine={{ stroke: chartColors.gridLine }}
                 tickLine={{ stroke: chartColors.gridLine }}
@@ -619,8 +607,8 @@ function DashboardTodayActivityChartImpl({
                 type="monotone"
                 dataKey="chartTokensPerTenMinute"
                 name={trendSeriesNames.tokensPerMinute}
-                stroke={chartColors.tokens}
-                fill={chartColors.tokensFill}
+                stroke={chartColors.accent}
+                fill={chartColors.accentFill}
                 fillOpacity={1}
                 strokeWidth={1.8}
                 dot={false}
@@ -628,12 +616,12 @@ function DashboardTodayActivityChartImpl({
                 isAnimationActive={animate}
               />
               <Area
-                yAxisId="cost"
+                yAxisId="spend"
                 type="monotone"
-                dataKey="chartCostRateTenMinute"
-                name={trendSeriesNames.costRate}
-                stroke={chartColors.costRate}
-                fill={chartColors.costRateFill}
+                dataKey="chartSpendRateTenMinute"
+                name={trendSeriesNames.spendRate}
+                stroke={chartColors.spend}
+                fill={chartColors.spendFill}
                 fillOpacity={1}
                 strokeWidth={1.8}
                 dot={false}

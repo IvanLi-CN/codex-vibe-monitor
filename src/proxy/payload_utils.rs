@@ -1902,6 +1902,176 @@ pub(crate) fn header_value_as_str<'a>(headers: &'a HeaderMap, name: &'static str
         .and_then(|value| value.to_str().ok())
 }
 
+const PROMPT_CACHE_ATTRIBUTION_TTL: Duration = Duration::from_secs(15 * 60);
+const CLIENT_ATTRIBUTION_FINGERPRINT_VERSION: &str = "v1";
+
+static CLIENT_PROMPT_CACHE_ATTRIBUTION: Lazy<std::sync::Mutex<HashMap<String, ClientPromptCacheAttributionBucket>>> =
+    Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ClientPromptCacheAttributionContext {
+    pub(crate) cache_key: Option<String>,
+    pub(crate) fingerprint: Option<String>,
+    pub(crate) header_fingerprints: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ClientPromptCacheAttributionEntry {
+    pub(crate) prompt_cache_key: String,
+    pub(crate) sticky_key: Option<String>,
+    seen_at: Instant,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ClientPromptCacheAttributionBucket {
+    entries: HashMap<String, ClientPromptCacheAttributionEntry>,
+}
+
+fn short_sha256_fingerprint(raw: &str) -> String {
+    let digest = Sha256::digest(raw.as_bytes());
+    digest
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+}
+
+fn normalized_header_component(headers: &HeaderMap, name: &'static str) -> Option<String> {
+    header_value_as_str(headers, name)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+pub(crate) fn client_prompt_cache_attribution_context_from_headers(
+    headers: &HeaderMap,
+) -> ClientPromptCacheAttributionContext {
+    const STRONG_STABLE_HEADER_NAMES: &[&str] = &["session_id", "x-codex-window-id"];
+    const STABLE_HEADER_NAMES: &[&str] = &[
+        "session_id",
+        "originator",
+        "x-codex-window-id",
+        "x-codex-installation-id",
+    ];
+    const DIAGNOSTIC_HEADER_NAMES: &[&str] = &[
+        "session_id",
+        "originator",
+        "x-codex-window-id",
+        "x-codex-installation-id",
+        "traceparent",
+    ];
+
+    let mut raw_components = BTreeMap::new();
+    let mut header_fingerprints = BTreeMap::new();
+    for name in DIAGNOSTIC_HEADER_NAMES {
+        let Some(value) = normalized_header_component(headers, name) else {
+            continue;
+        };
+        header_fingerprints.insert((*name).to_string(), short_sha256_fingerprint(&value));
+    }
+    for name in STABLE_HEADER_NAMES {
+        let Some(value) = normalized_header_component(headers, name) else {
+            continue;
+        };
+        raw_components.insert((*name).to_string(), value);
+    }
+
+    let has_strong_stable_component = STRONG_STABLE_HEADER_NAMES
+        .iter()
+        .any(|name| raw_components.contains_key(*name));
+    if raw_components.is_empty() || !has_strong_stable_component {
+        return ClientPromptCacheAttributionContext {
+            cache_key: None,
+            fingerprint: None,
+            header_fingerprints,
+        };
+    }
+
+    let canonical = raw_components
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let fingerprint = format!(
+        "{}:{}",
+        CLIENT_ATTRIBUTION_FINGERPRINT_VERSION,
+        short_sha256_fingerprint(&canonical)
+    );
+
+    ClientPromptCacheAttributionContext {
+        cache_key: Some(fingerprint.clone()),
+        fingerprint: Some(fingerprint),
+        header_fingerprints,
+    }
+}
+
+pub(crate) fn remember_prompt_cache_attribution(
+    context: &ClientPromptCacheAttributionContext,
+    prompt_cache_key: &str,
+    sticky_key: Option<&str>,
+    now: Instant,
+) {
+    let Some(cache_key) = context.cache_key.as_deref() else {
+        return;
+    };
+    let prompt_cache_key = prompt_cache_key.trim();
+    if prompt_cache_key.is_empty() {
+        return;
+    }
+    let sticky_key = sticky_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+
+    let mut cache = CLIENT_PROMPT_CACHE_ATTRIBUTION
+        .lock()
+        .expect("client prompt-cache attribution mutex poisoned");
+    cache.retain(|_, bucket| {
+        bucket
+            .entries
+            .retain(|_, entry| now.duration_since(entry.seen_at) <= PROMPT_CACHE_ATTRIBUTION_TTL);
+        !bucket.entries.is_empty()
+    });
+    let bucket = cache.entry(cache_key.to_string()).or_default();
+    bucket.entries.insert(
+        prompt_cache_key.to_string(),
+        ClientPromptCacheAttributionEntry {
+            prompt_cache_key: prompt_cache_key.to_string(),
+            sticky_key,
+            seen_at: now,
+        },
+    );
+}
+
+pub(crate) fn lookup_recent_prompt_cache_attribution(
+    context: &ClientPromptCacheAttributionContext,
+    now: Instant,
+) -> Option<ClientPromptCacheAttributionEntry> {
+    let cache_key = context.cache_key.as_deref()?;
+    let mut cache = CLIENT_PROMPT_CACHE_ATTRIBUTION
+        .lock()
+        .expect("client prompt-cache attribution mutex poisoned");
+    cache.retain(|_, bucket| {
+        bucket
+            .entries
+            .retain(|_, entry| now.duration_since(entry.seen_at) <= PROMPT_CACHE_ATTRIBUTION_TTL);
+        !bucket.entries.is_empty()
+    });
+    let bucket = cache.get(cache_key)?;
+    if bucket.entries.len() != 1 {
+        return None;
+    }
+    bucket.entries.values().next().cloned()
+}
+
+#[cfg(test)]
+pub(crate) fn clear_prompt_cache_attribution_for_tests() {
+    CLIENT_PROMPT_CACHE_ATTRIBUTION
+        .lock()
+        .expect("client prompt-cache attribution mutex poisoned")
+        .clear();
+}
+
 pub(crate) fn extract_requester_ip(headers: &HeaderMap, peer_ip: Option<IpAddr>) -> Option<String> {
     if let Some(x_forwarded_for) = header_value_as_str(headers, "x-forwarded-for")
         && let Some(ip) = extract_first_ip_from_x_forwarded_for(x_forwarded_for)

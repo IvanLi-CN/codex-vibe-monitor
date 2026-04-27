@@ -12,8 +12,8 @@ vi.mock('../i18n', () => ({
         'dashboard.today.title': 'Today summary',
         'dashboard.today.subtitle': `Accumulated in natural day (${values?.timezone ?? 'UTC'})`,
         'dashboard.today.dayBadge': 'Today',
-        'dashboard.today.tokensPerMinute5m': 'TPM',
-        'dashboard.today.costPerMinute5m': 'Spend rate',
+        'dashboard.today.tokensPerMinute': 'TPM',
+        'dashboard.today.spendRate': 'Spend rate',
         'stats.cards.loadError': 'Load error',
         'stats.cards.success': 'Success',
         'stats.cards.failures': 'Failures',
@@ -89,7 +89,7 @@ describe('TodayStatsOverview', () => {
         }}
         rate={{
           tokensPerMinute: 1000,
-          costPerMinute: 0.1,
+          spendRate: 0.1,
           windowMinutes: 5,
           available: true,
         }}
@@ -118,7 +118,7 @@ describe('TodayStatsOverview', () => {
         }}
         rate={{
           tokensPerMinute: 320,
-          costPerMinute: 0.13,
+          spendRate: 0.13,
           windowMinutes: 5,
           available: true,
         }}
@@ -145,7 +145,7 @@ describe('TodayStatsOverview', () => {
         }}
         rate={{
           tokensPerMinute: 416,
-          costPerMinute: 0.1,
+          spendRate: 0.1,
           windowMinutes: 5,
           available: true,
         }}
@@ -198,7 +198,7 @@ describe('TodayStatsOverview', () => {
         }}
         rate={{
           tokensPerMinute: 1000.6,
-          costPerMinute: 0.104,
+          spendRate: 0.104,
           windowMinutes: 5,
           available: true,
         }}
@@ -208,11 +208,11 @@ describe('TodayStatsOverview', () => {
     )
 
     const tpmText = host?.querySelector('[data-testid="today-stats-value-tpm"]')?.textContent ?? ''
-    const costPerMinuteText = host?.querySelector('[data-testid="today-stats-value-spend-rate"]')?.textContent ?? ''
+    const spendRateText = host?.querySelector('[data-testid="today-stats-value-spend-rate"]')?.textContent ?? ''
 
     expect(tpmText).toContain('1,001')
     expect(tpmText).not.toContain('.')
-    expect(costPerMinuteText).toContain('$0.10')
+    expect(spendRateText).toContain('$0.10')
   })
 
   it('shows unavailable placeholders for rate tiles when timeseries loading fails', () => {
@@ -252,7 +252,7 @@ describe('TodayStatsOverview', () => {
         }}
         rate={{
           tokensPerMinute: 1000,
-          costPerMinute: 0.1,
+          spendRate: 0.1,
           windowMinutes: 5,
           available: true,
         }}

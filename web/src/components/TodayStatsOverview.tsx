@@ -104,7 +104,7 @@ export function TodayStatsOverview({
 
   const rateUnavailable = !loading && !rateLoading && rateError != null
   const tokensPerMinute = rate?.tokensPerMinute ?? 0
-  const costPerMinute = rate?.costPerMinute ?? 0
+  const spendRate = rate?.spendRate ?? 0
 
   const content = (
     <>
@@ -130,7 +130,7 @@ export function TodayStatsOverview({
           className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-6"
         >
           <MetricTile
-            label={t('dashboard.today.tokensPerMinute5m')}
+            label={t('dashboard.today.tokensPerMinute')}
             value={tokensPerMinute}
             localeTag={localeTag}
             loading={loading || rateLoading}
@@ -141,8 +141,8 @@ export function TodayStatsOverview({
             subdued={rateUnavailable}
           />
           <MetricTile
-            label={t('dashboard.today.costPerMinute5m')}
-            value={costPerMinute}
+            label={t('dashboard.today.spendRate')}
+            value={spendRate}
             localeTag={localeTag}
             loading={loading || rateLoading}
             kind="currency"
