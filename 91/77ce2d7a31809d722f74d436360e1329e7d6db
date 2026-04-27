@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.53.0",
+  "base_stable_version": "1.52.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-27T08:14:43Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.53.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "eef61ab0db3a790ac5d4346687c2231b612d3f2a",
+  "pr_number": 375,
+  "pr_title": "feat(dashboard): add activity trend chart",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.53.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.53.0",
+  "target_sha": "9177ce2d7a31809d722f74d436360e1329e7d6db",
+  "type_label": "type:minor"
+}
