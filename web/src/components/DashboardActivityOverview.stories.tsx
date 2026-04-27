@@ -43,7 +43,7 @@ const YESTERDAY_SUMMARY_FIXTURE = createSummary(10864, 9532, 1332, 418.76, 10924
 function buildTodayMinutePoints(summary = TODAY_SUMMARY_FIXTURE) {
   const rangeStart = new Date('2026-04-09T00:00:00+08:00')
   const rangeEnd = new Date('2026-04-09T12:24:00+08:00')
-  const points: Array<Record<string, number | string>> = []
+  const points: Array<Record<string, number | string | null>> = []
   const minuteCount = Math.floor((rangeEnd.getTime() - rangeStart.getTime()) / 60_000) + 1
   const minuteIndexes = Array.from({ length: minuteCount }, (_, index) => index)
   const successCounts = distributeInteger(
@@ -77,6 +77,8 @@ function buildTodayMinutePoints(summary = TODAY_SUMMARY_FIXTURE) {
       failureCount,
       totalTokens: totalTokens[minute] ?? 0,
       totalCost: Number(((totalCostCents[minute] ?? 0) / 100).toFixed(2)),
+      firstResponseByteTotalSampleCount: totalCount,
+      firstResponseByteTotalAvgMs: totalCount > 0 ? buildFirstResponseByteTotalAvgMs(minute) : null,
     })
   }
 
@@ -92,7 +94,7 @@ function buildYesterdayMinutePoints(summary = YESTERDAY_SUMMARY_FIXTURE) {
   const rangeStart = new Date('2026-04-08T00:00:00+08:00')
   const activityEnd = new Date('2026-04-08T18:36:00+08:00')
   const rangeEnd = new Date('2026-04-09T00:00:00+08:00')
-  const points: Array<Record<string, number | string>> = []
+  const points: Array<Record<string, number | string | null>> = []
   const minuteCount = Math.floor((activityEnd.getTime() - rangeStart.getTime()) / 60_000) + 1
   const minuteIndexes = Array.from({ length: minuteCount }, (_, index) => index)
   const successCounts = distributeInteger(
@@ -126,6 +128,8 @@ function buildYesterdayMinutePoints(summary = YESTERDAY_SUMMARY_FIXTURE) {
       failureCount,
       totalTokens: totalTokens[minute] ?? 0,
       totalCost: Number(((totalCostCents[minute] ?? 0) / 100).toFixed(2)),
+      firstResponseByteTotalSampleCount: totalCount,
+      firstResponseByteTotalAvgMs: totalCount > 0 ? buildFirstResponseByteTotalAvgMs(minute + 13) : null,
     })
   }
 
@@ -140,7 +144,7 @@ function buildYesterdayMinutePoints(summary = YESTERDAY_SUMMARY_FIXTURE) {
 function build24HourPoints() {
   const end = new Date('2026-04-09T12:20:00+08:00')
   const start = new Date(end.getTime() - 24 * 60 * 60_000)
-  const points: Array<Record<string, number | string>> = []
+  const points: Array<Record<string, number | string | null>> = []
   for (let index = 0; index < 24 * 60; index += 1) {
     const bucketStart = new Date(start.getTime() + index * 60_000)
     const bucketEnd = new Date(bucketStart.getTime() + 60_000)
@@ -155,6 +159,8 @@ function build24HourPoints() {
       failureCount,
       totalTokens: totalCount * 390,
       totalCost: Number((totalCount * 0.017).toFixed(4)),
+      firstResponseByteTotalSampleCount: totalCount,
+      firstResponseByteTotalAvgMs: totalCount > 0 ? buildFirstResponseByteTotalAvgMs(index) : null,
     })
   }
   return {
@@ -254,6 +260,11 @@ function buildUsageWeight(totalCount: number, index: number, mode: 'tokens' | 'c
     return base * (14 + (index % 17)) + ((index % 7) + 1) * 19
   }
   return base * (6 + (index % 9)) + ((index % 5) + 1) * 7
+}
+
+function buildFirstResponseByteTotalAvgMs(index: number) {
+  const hour = Math.floor(index / 60)
+  return 520 + ((index * 37 + hour * 91) % 2200)
 }
 
 function distributeInteger(total: number, weights: number[]) {
@@ -421,7 +432,7 @@ export const TodayView: Story = {
     await waitFor(() => {
       expect(canvas.getByRole('tab', { name: /今日|today/i })).toHaveAttribute('aria-selected', 'true')
       expect(canvas.getByTestId('today-stats-value-tpm')).toBeVisible()
-      expect(canvas.getByTestId('today-stats-value-cost-per-minute')).toBeVisible()
+      expect(canvas.getByTestId('today-stats-value-spend-rate')).toBeVisible()
       expect(canvas.getByTestId('today-stats-value-total-tokens')).toHaveAttribute('data-compact', 'true')
     })
   },
@@ -436,7 +447,7 @@ export const TodayRateUnavailable: Story = {
     await waitFor(() => {
       expect(canvas.getByRole('tab', { name: /今日|today/i })).toHaveAttribute('aria-selected', 'true')
       expect(canvas.getByTestId('today-stats-value-tpm')).toHaveTextContent('—')
-      expect(canvas.getByTestId('today-stats-value-cost-per-minute')).toHaveTextContent('—')
+      expect(canvas.getByTestId('today-stats-value-spend-rate')).toHaveTextContent('—')
       expect(canvas.getByTestId('today-stats-value-success')).toBeVisible()
     })
   },
@@ -456,6 +467,41 @@ export const YesterdayView: Story = {
   },
 }
 
+export const TodayTrend: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getByRole('tab', { name: /趋势|trend/i }))
+    await waitFor(() => {
+      expect(canvas.getByTestId('dashboard-today-activity-chart')).toHaveAttribute('data-chart-mode', 'trend-lines')
+      expect(canvas.getByRole('tab', { name: /趋势|trend/i })).toHaveAttribute('aria-selected', 'true')
+    })
+  },
+}
+
+export const YesterdayTrend: Story = {
+  parameters: {
+    persistedRange: 'yesterday',
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getByRole('tab', { name: /趋势|trend/i }))
+    await waitFor(() => {
+      expect(canvas.getByTestId('dashboard-today-activity-chart')).toHaveAttribute('data-chart-mode', 'trend-lines')
+      expect(canvas.getByRole('tab', { name: /趋势|trend/i })).toHaveAttribute('aria-selected', 'true')
+    })
+  },
+}
+
+export const CountWithFirstResponseByteTotal: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await waitFor(() => {
+      expect(canvas.getByTestId('dashboard-today-activity-chart')).toHaveAttribute('data-chart-mode', 'count-bars')
+      expect(canvas.getByTestId('dashboard-today-activity-chart')).toHaveAttribute('data-chart-metric', 'totalCount')
+    })
+  },
+}
+
 export const SevenDayView: Story = {
   parameters: {
     persistedRange: '7d',
@@ -464,6 +510,7 @@ export const SevenDayView: Story = {
     const canvas = within(canvasElement)
     await waitFor(() => {
       expect(canvas.getByRole('tab', { name: /7 日|7 days/i })).toHaveAttribute('aria-selected', 'true')
+      expect(canvas.queryByRole('tab', { name: /趋势|trend/i })).toBeNull()
     })
   },
 }
@@ -484,6 +531,7 @@ export const HistoryView: Story = {
     await userEvent.click(canvas.getByRole('tab', { name: /历史|history/i }))
     await waitFor(() => {
       expect(canvas.getByRole('tab', { name: /历史|history/i })).toHaveAttribute('aria-selected', 'true')
+      expect(canvas.queryByRole('tab', { name: /趋势|trend/i })).toBeNull()
     })
     await expect(canvas.getByTestId('usage-calendar-card')).toBeVisible()
     await expect(canvas.queryByText(/总 TOKENS|total tokens/i)).toBeNull()

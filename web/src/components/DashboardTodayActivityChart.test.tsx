@@ -69,6 +69,9 @@ vi.mock("recharts", () => ({
   Legend: () => <div data-testid="legend" />,
   ReferenceLine: () => <div data-testid="reference-line" />,
   Area: () => <div data-testid="area-series" />,
+  Line: ({ dataKey }: { dataKey?: string }) => (
+    <div data-testid="line-series" data-data-key={dataKey ?? ""} />
+  ),
   Bar: ({ stackId, dataKey }: { stackId?: string; dataKey?: string }) => (
     <div
       data-testid="bar-series"
@@ -123,6 +126,8 @@ const response = {
       failureCount: 1,
       totalTokens: 120,
       totalCost: 0.5,
+      firstResponseByteTotalSampleCount: 2,
+      firstResponseByteTotalAvgMs: 350,
     },
     {
       bucketStart: "2026-04-08 00:02:00",
@@ -132,6 +137,8 @@ const response = {
       failureCount: 0,
       totalTokens: 200,
       totalCost: 0.75,
+      firstResponseByteTotalSampleCount: 1,
+      firstResponseByteTotalAvgMs: 700,
     },
   ],
 };
@@ -186,6 +193,13 @@ describe("DashboardTodayActivityChart", () => {
       chartInFlightCount: 0,
       chartFailureCountNegative: -1,
       totalCount: 3,
+      tokensPerMinute: 120,
+      costRate: 0.5,
+      firstResponseByteTotalSampleCount: 2,
+      firstResponseByteTotalAvgMs: 350,
+      chartTokensPerMinute: 120,
+      chartCostRate: 0.5,
+      chartFirstResponseByteTotalAvgMs: 350,
       cumulativeCost: 0.5,
       cumulativeTokens: 120,
       chartCumulativeCost: 0.5,
@@ -196,6 +210,13 @@ describe("DashboardTodayActivityChart", () => {
       failureCount: 0,
       inFlightCount: 0,
       totalCount: 0,
+      tokensPerMinute: 0,
+      costRate: 0,
+      firstResponseByteTotalSampleCount: 0,
+      firstResponseByteTotalAvgMs: null,
+      chartTokensPerMinute: 0,
+      chartCostRate: 0,
+      chartFirstResponseByteTotalAvgMs: null,
       cumulativeCost: 0.5,
       cumulativeTokens: 120,
       chartSuccessCount: 0,
@@ -209,6 +230,13 @@ describe("DashboardTodayActivityChart", () => {
       failureCount: 0,
       inFlightCount: 0,
       totalCount: 4,
+      tokensPerMinute: 200,
+      costRate: 0.75,
+      firstResponseByteTotalSampleCount: 1,
+      firstResponseByteTotalAvgMs: 700,
+      chartTokensPerMinute: 200,
+      chartCostRate: 0.75,
+      chartFirstResponseByteTotalAvgMs: 700,
       cumulativeCost: 1.25,
       cumulativeTokens: 320,
       chartSuccessCount: 4,
@@ -235,6 +263,9 @@ describe("DashboardTodayActivityChart", () => {
       chartSuccessCount: null,
       chartInFlightCount: null,
       chartFailureCountNegative: null,
+      chartTokensPerMinute: null,
+      chartCostRate: null,
+      chartFirstResponseByteTotalAvgMs: null,
       cumulativeCost: null,
       cumulativeTokens: null,
       chartCumulativeCost: null,
@@ -398,6 +429,46 @@ describe("DashboardTodayActivityChart", () => {
     });
   });
 
+  it("ignores first-byte-total samples that do not include an average", () => {
+    const data = buildTodayMinuteChartData(
+      {
+        rangeStart: "2026-04-08 00:00:00",
+        rangeEnd: "2026-04-08 00:00:10",
+        bucketSeconds: 60,
+        points: [
+          {
+            bucketStart: "2026-04-08 00:00:00",
+            bucketEnd: "2026-04-08 00:00:59",
+            totalCount: 2,
+            successCount: 2,
+            failureCount: 0,
+            firstResponseByteTotalSampleCount: 2,
+            firstResponseByteTotalAvgMs: null,
+          },
+          {
+            bucketStart: "2026-04-08 00:00:00",
+            bucketEnd: "2026-04-08 00:00:59",
+            totalCount: 1,
+            successCount: 1,
+            failureCount: 0,
+            firstResponseByteTotalSampleCount: 1,
+            firstResponseByteTotalAvgMs: 900,
+          },
+        ],
+      },
+      {
+        now: new Date(2026, 3, 8, 0, 0, 10),
+        localeTag: "en-US",
+      },
+    );
+
+    expect(data[0]).toMatchObject({
+      firstResponseByteTotalSampleCount: 1,
+      firstResponseByteTotalAvgMs: 900,
+      chartFirstResponseByteTotalAvgMs: 900,
+    });
+  });
+
   it("shows in-flight calls in the count tooltip without inferring neutral residuals as running", () => {
     const html = renderToStaticMarkup(
       <DashboardTodayActivityChart
@@ -413,6 +484,8 @@ describe("DashboardTodayActivityChart", () => {
               inFlightCount: 1,
               totalTokens: 120,
               totalCost: 0.5,
+              firstResponseByteTotalSampleCount: 1,
+              firstResponseByteTotalAvgMs: 1250,
             },
           ],
         }}
@@ -425,6 +498,8 @@ describe("DashboardTodayActivityChart", () => {
     expect(html).toContain("chart.inFlight");
     expect(html).toContain("1 unit.calls");
     expect(html).toContain("5 unit.calls");
+    expect(html).toContain("chart.firstResponseByteTotal");
+    expect(html).toContain("1.25s");
   });
 
   it("renders count mode as a composed chart with split success and failure bars", () => {
@@ -445,10 +520,29 @@ describe("DashboardTodayActivityChart", () => {
     expect(html).toContain('data-data-key="chartSuccessCount"');
     expect(html).toContain('data-data-key="chartInFlightCount"');
     expect(html).toContain('data-data-key="chartFailureCountNegative"');
+    expect(html).toContain('data-data-key="chartFirstResponseByteTotalAvgMs"');
     expect(html).toContain('data-stack-id="positive"');
     expect(html).not.toContain(
       'data-data-key="chartFailureCountNegative" data-stack-id="positive"',
     );
+  });
+
+  it("renders trend mode as raw one-minute TPM and spend-rate lines", () => {
+    const html = renderToStaticMarkup(
+      <DashboardTodayActivityChart
+        response={response}
+        loading={false}
+        error={null}
+        metric="trend"
+      />,
+    );
+
+    expect(html).toContain('data-chart-mode="trend-lines"');
+    expect(html).toContain('data-testid="composed-chart"');
+    expect(html).toContain('data-data-key="chartTokensPerMinute"');
+    expect(html).toContain('data-data-key="chartCostRate"');
+    expect(html).toContain("chart.tokensPerMinute");
+    expect(html).toContain("chart.spendRate");
   });
 
   it("renders cost and token modes as cumulative area charts", () => {

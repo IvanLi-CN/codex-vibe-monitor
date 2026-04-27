@@ -146,7 +146,7 @@ export function TodayStatsOverview({
             localeTag={localeTag}
             loading={loading || rateLoading}
             kind="currency"
-            valueTestId="today-stats-value-cost-per-minute"
+            valueTestId="today-stats-value-spend-rate"
             displayText={rateUnavailable ? RATE_UNAVAILABLE_PLACEHOLDER : undefined}
             subdued={rateUnavailable}
           />

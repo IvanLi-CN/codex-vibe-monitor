@@ -45,6 +45,7 @@ vi.mock('../i18n', () => ({
         'metric.totalCount': 'Calls',
         'metric.totalCost': 'Cost',
         'metric.totalTokens': 'Tokens',
+        'metric.trend': 'Trend',
       }
       return map[key] ?? key
     },
@@ -70,7 +71,7 @@ vi.mock('./TodayStatsOverview', () => ({
     rateError?: string | null
   }) => (
     <div data-testid="today-stats-overview-mock">
-      {`total:${stats?.totalCount ?? 'null'};surface:${String(showSurface)};header:${String(showHeader)};badge:${String(showDayBadge)};tpm:${rate?.tokensPerMinute ?? 'null'};cpm:${rate?.costPerMinute ?? 'null'};rateLoading:${String(rateLoading)};rateError:${rateError ?? 'null'}`}
+      {`total:${stats?.totalCount ?? 'null'};surface:${String(showSurface)};header:${String(showHeader)};badge:${String(showDayBadge)};tpm:${rate?.tokensPerMinute ?? 'null'};spendRate:${rate?.costPerMinute ?? 'null'};rateLoading:${String(rateLoading)};rateError:${rateError ?? 'null'}`}
     </div>
   ),
 }))
@@ -355,7 +356,7 @@ describe('DashboardActivityOverview', () => {
     expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')).toBeNull()
     expect(host?.querySelector('[data-testid="dashboard-activity-range-usage"]')).toBeNull()
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toBe(
-      'total:12;surface:false;header:false;badge:false;tpm:1000;cpm:0.1;rateLoading:false;rateError:null',
+      'total:12;surface:false;header:false;badge:false;tpm:1000;spendRate:0.1;rateLoading:false;rateError:null',
     )
     expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent).toBe(
       'metric:totalCount',
@@ -366,6 +367,10 @@ describe('DashboardActivityOverview', () => {
     expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent).toBe(
       'metric:totalCost',
     )
+    clickTab('Trend')
+    expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent).toBe(
+      'metric:trend',
+    )
 
     clickTab('Yesterday')
     expect(host?.querySelector('[data-testid="dashboard-activity-range-yesterday"]')?.getAttribute('data-active')).toBe('true')
@@ -375,6 +380,10 @@ describe('DashboardActivityOverview', () => {
     clickTab('Tokens')
     expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent).toBe(
       'metric:totalTokens',
+    )
+    clickTab('Trend')
+    expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent).toBe(
+      'metric:trend',
     )
 
     clickTab('History')
@@ -389,12 +398,14 @@ describe('DashboardActivityOverview', () => {
     )
 
     clickTab('7 Days')
+    expect(Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).some((button) => button.textContent === 'Trend')).toBe(false)
     expect(host?.querySelector('[data-testid="stats-cards"]')?.textContent).toBe('total:700')
     expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe('metric:totalCount;account:global')
     clickTab('Cost')
     expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe('metric:totalCost;account:global')
 
     clickTab('24 Hours')
+    expect(Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).some((button) => button.textContent === 'Trend')).toBe(false)
     expect(host?.querySelector('[data-testid="stats-cards"]')?.textContent).toBe('total:100')
     expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toBe('metric:totalCount;account:global')
     clickTab('Tokens')
@@ -402,7 +413,7 @@ describe('DashboardActivityOverview', () => {
 
     clickTab('Today')
     expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent).toBe(
-      'metric:totalCost',
+      'metric:trend',
     )
     clickTab('History')
     expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
@@ -410,7 +421,7 @@ describe('DashboardActivityOverview', () => {
     )
     clickTab('Yesterday')
     expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent).toBe(
-      'metric:totalTokens',
+      'metric:trend',
     )
     clickTab('7 Days')
     expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe('metric:totalCost;account:global')

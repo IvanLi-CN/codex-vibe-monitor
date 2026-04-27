@@ -6,6 +6,7 @@ import {
   CartesianGrid,
   ComposedChart,
   Legend,
+  Line,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -37,7 +38,7 @@ export interface DashboardTodayActivityChartProps {
   response: TimeseriesResponse | null;
   loading: boolean;
   error?: string | null;
-  metric: MetricKey;
+  metric: MetricKey | "trend";
   closedNaturalDay?: boolean;
 }
 
@@ -97,6 +98,13 @@ function formatCountValue(
   return `${formatter.format(value)} ${unitLabel}`;
 }
 
+function formatDurationMs(value: number, formatter: Intl.NumberFormat) {
+  if (value >= 1000) {
+    return `${formatter.format(value / 1000)}s`;
+  }
+  return `${formatter.format(value)}ms`;
+}
+
 interface TooltipPayloadEntry {
   payload?: DashboardTodayMinuteDatum;
 }
@@ -112,6 +120,9 @@ interface ChartTooltipContentProps {
     success: string;
     failure: string;
     accent: string;
+    tokens: string;
+    costRate: string;
+    firstResponseByteTotal: string;
   };
   renderValue: (
     point: DashboardTodayMinuteDatum,
@@ -220,7 +231,7 @@ function DashboardTodayActivityChartImpl({
   const chartColors = useMemo(() => {
     const base = chartBaseTokens(themeMode);
     const status = chartStatusTokens(themeMode);
-    const accent = metricAccent(metric, themeMode);
+    const accent = metricAccent(metric === "trend" ? "totalTokens" : metric, themeMode);
     return {
       ...base,
       success: status.success,
@@ -229,6 +240,9 @@ function DashboardTodayActivityChartImpl({
       failureFill: withOpacity(status.failure, 0.24),
       accent,
       accentFill: withOpacity(accent, 0.22),
+      tokens: metricAccent("totalTokens", themeMode),
+      costRate: metricAccent("totalCost", themeMode),
+      firstResponseByteTotal: metricAccent("totalCount", themeMode),
     };
   }, [metric, themeMode]);
 
@@ -244,11 +258,19 @@ function DashboardTodayActivityChartImpl({
       failures: t("stats.cards.failures"),
       inFlight: t("chart.inFlight"),
       total: t("chart.totalCount"),
+      firstResponseByteTotal: t("chart.firstResponseByteTotal"),
     }),
     [t],
   );
   const areaSeriesName =
     metric === "totalCost" ? t("chart.totalCost") : t("chart.totalTokens");
+  const trendSeriesNames = useMemo(
+    () => ({
+      tokensPerMinute: t("chart.tokensPerMinute"),
+      costRate: t("chart.spendRate"),
+    }),
+    [t],
+  );
   const countAxisBound = useMemo(() => {
     const maxValue = data.reduce(
       (current, item) =>
@@ -281,7 +303,12 @@ function DashboardTodayActivityChartImpl({
       ? data
       : buildTodayMinuteChartData(response, { localeTag, closedNaturalDay });
   const animate = chartData.length <= 800;
-  const chartMode = metric === "totalCount" ? "count-bars" : "cumulative-area";
+  const chartMode =
+    metric === "totalCount"
+      ? "count-bars"
+      : metric === "trend"
+        ? "trend-lines"
+        : "cumulative-area";
   const renderCountTooltip = (point: DashboardTodayMinuteDatum) =>
     point.chartSuccessCount == null || point.chartFailureCountNegative == null
       ? []
@@ -326,6 +353,18 @@ function DashboardTodayActivityChartImpl({
             ),
             color: chartColors.accent,
           },
+          ...(point.chartFirstResponseByteTotalAvgMs == null
+            ? []
+            : [
+                {
+                  label: countSeriesNames.firstResponseByteTotal,
+                  value: formatDurationMs(
+                    point.chartFirstResponseByteTotalAvgMs,
+                    numberFormatter,
+                  ),
+                  color: chartColors.firstResponseByteTotal,
+                },
+              ]),
         ];
   const renderAreaTooltip = (point: DashboardTodayMinuteDatum) => [
     ...(metric === "totalCost"
@@ -348,6 +387,21 @@ function DashboardTodayActivityChartImpl({
             },
           ]),
   ];
+  const renderTrendTooltip = (point: DashboardTodayMinuteDatum) =>
+    point.chartTokensPerMinute == null || point.chartCostRate == null
+      ? []
+      : [
+          {
+            label: trendSeriesNames.tokensPerMinute,
+            value: formatTokensShort(point.chartTokensPerMinute, localeTag),
+            color: chartColors.tokens,
+          },
+          {
+            label: trendSeriesNames.costRate,
+            value: currencyFormatter.format(point.chartCostRate),
+            color: chartColors.costRate,
+          },
+        ];
 
   return (
     <section
@@ -388,11 +442,23 @@ function DashboardTodayActivityChartImpl({
                 }}
               />
               <YAxis
+                yAxisId="count"
                 domain={[-countAxisBound, countAxisBound]}
                 allowDecimals={false}
                 tickFormatter={(value) =>
                   numberFormatter.format(Math.abs(Number(value)))
                 }
+                axisLine={{ stroke: chartColors.gridLine }}
+                tickLine={{ stroke: chartColors.gridLine }}
+                tick={{ fill: chartColors.axisText, fontSize: 12 }}
+              />
+              <YAxis
+                yAxisId="latency"
+                orientation="right"
+                tickFormatter={(value) =>
+                  formatDurationMs(Number(value), numberFormatter)
+                }
+                width={72}
                 axisLine={{ stroke: chartColors.gridLine }}
                 tickLine={{ stroke: chartColors.gridLine }}
                 tick={{ fill: chartColors.axisText, fontSize: 12 }}
@@ -426,8 +492,9 @@ function DashboardTodayActivityChartImpl({
                 )}
               />
               <Legend wrapperStyle={{ color: chartColors.axisText }} />
-              <ReferenceLine y={0} stroke={chartColors.gridLine} />
+              <ReferenceLine yAxisId="count" y={0} stroke={chartColors.gridLine} />
               <Bar
+                yAxisId="count"
                 dataKey="chartSuccessCount"
                 name={countSeriesNames.success}
                 stackId="positive"
@@ -436,6 +503,7 @@ function DashboardTodayActivityChartImpl({
                 isAnimationActive={animate}
               />
               <Bar
+                yAxisId="count"
                 dataKey="chartInFlightCount"
                 name={countSeriesNames.inFlight}
                 stackId="positive"
@@ -444,10 +512,123 @@ function DashboardTodayActivityChartImpl({
                 isAnimationActive={animate}
               />
               <Bar
+                yAxisId="count"
                 dataKey="chartFailureCountNegative"
                 name={countSeriesNames.failures}
                 fill={chartColors.failure}
                 radius={[0, 0, 3, 3]}
+                isAnimationActive={animate}
+              />
+              <Line
+                yAxisId="latency"
+                type="monotone"
+                dataKey="chartFirstResponseByteTotalAvgMs"
+                name={countSeriesNames.firstResponseByteTotal}
+                stroke={chartColors.firstResponseByteTotal}
+                strokeWidth={2}
+                dot={false}
+                connectNulls={false}
+                isAnimationActive={animate}
+              />
+            </ComposedChart>
+          ) : metric === "trend" ? (
+            <ComposedChart
+              data={chartData}
+              margin={{ top: 12, right: 24, left: 0, bottom: 8 }}
+            >
+              <CartesianGrid
+                stroke={chartColors.gridLine}
+                strokeDasharray="3 3"
+              />
+              <XAxis
+                dataKey="index"
+                type="number"
+                domain={[0, Math.max(0, chartData.length - 1)]}
+                minTickGap={28}
+                axisLine={{ stroke: chartColors.gridLine }}
+                tickLine={{ stroke: chartColors.gridLine }}
+                tick={{ fill: chartColors.axisText, fontSize: 12 }}
+                tickFormatter={(value: number) => {
+                  const item =
+                    chartData[
+                      Math.max(
+                        0,
+                        Math.min(chartData.length - 1, Math.round(value)),
+                      )
+                    ];
+                  return item?.label ?? String(value);
+                }}
+              />
+              <YAxis
+                yAxisId="tokens"
+                tickFormatter={(value) =>
+                  formatTokensShort(Number(value), localeTag)
+                }
+                width={80}
+                axisLine={{ stroke: chartColors.gridLine }}
+                tickLine={{ stroke: chartColors.gridLine }}
+                tick={{ fill: chartColors.axisText, fontSize: 12 }}
+              />
+              <YAxis
+                yAxisId="cost"
+                orientation="right"
+                tickFormatter={(value) =>
+                  currencyFormatter.format(Number(value))
+                }
+                width={90}
+                axisLine={{ stroke: chartColors.gridLine }}
+                tickLine={{ stroke: chartColors.gridLine }}
+                tick={{ fill: chartColors.axisText, fontSize: 12 }}
+              />
+              <Tooltip
+                labelFormatter={(value) => {
+                  const item =
+                    chartData[
+                      Math.max(
+                        0,
+                        Math.min(
+                          chartData.length - 1,
+                          Math.round(Number(value)),
+                        ),
+                      )
+                    ];
+                  return item?.tooltipLabel ?? String(value);
+                }}
+                content={(props) => (
+                  <ChartTooltipContent
+                    active={props.active}
+                    label={props.label}
+                    payload={
+                      props.payload as unknown as
+                        | TooltipPayloadEntry[]
+                        | undefined
+                    }
+                    theme={chartColors}
+                    renderValue={renderTrendTooltip}
+                  />
+                )}
+              />
+              <Legend wrapperStyle={{ color: chartColors.axisText }} />
+              <Line
+                yAxisId="tokens"
+                type="monotone"
+                dataKey="chartTokensPerMinute"
+                name={trendSeriesNames.tokensPerMinute}
+                stroke={chartColors.tokens}
+                strokeWidth={2}
+                dot={false}
+                connectNulls={false}
+                isAnimationActive={animate}
+              />
+              <Line
+                yAxisId="cost"
+                type="monotone"
+                dataKey="chartCostRate"
+                name={trendSeriesNames.costRate}
+                stroke={chartColors.costRate}
+                strokeWidth={2}
+                dot={false}
+                connectNulls={false}
                 isAnimationActive={animate}
               />
             </ComposedChart>
