@@ -179,12 +179,13 @@ pub(crate) struct TimeseriesResponse {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ParallelWorkStatsResponse {
+    pub(crate) current: ParallelWorkWindowResponse,
     pub(crate) minute7d: ParallelWorkWindowResponse,
     pub(crate) hour30d: ParallelWorkWindowResponse,
     pub(crate) day_all: ParallelWorkWindowResponse,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ParallelWorkWindowResponse {
     pub(crate) range_start: String,
@@ -200,7 +201,7 @@ pub(crate) struct ParallelWorkWindowResponse {
     pub(crate) points: Vec<ParallelWorkPoint>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ParallelWorkPoint {
     pub(crate) bucket_start: String,
@@ -1113,12 +1114,6 @@ pub(crate) struct ParallelWorkExactInvocationRow {
 }
 
 #[derive(Debug, FromRow)]
-pub(crate) struct ParallelWorkBucketCountRow {
-    pub(crate) bucket_start_epoch: i64,
-    pub(crate) parallel_count: i64,
-}
-
-#[derive(Debug, FromRow)]
 pub(crate) struct ParallelWorkDayRollupRow {
     pub(crate) bucket_start_epoch: i64,
     pub(crate) prompt_cache_key: String,
@@ -1197,6 +1192,9 @@ pub(crate) struct TimeseriesQuery {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ParallelWorkStatsQuery {
+    #[serde(default = "default_range")]
+    pub(crate) range: String,
+    pub(crate) bucket: Option<String>,
     pub(crate) time_zone: Option<String>,
 }
 

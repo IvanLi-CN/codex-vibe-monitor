@@ -3,7 +3,6 @@ import {
   type PointerEvent as ReactPointerEvent,
   useId,
   useMemo,
-  useState,
 } from "react";
 import {
   Area,
@@ -27,40 +26,11 @@ import {
   type InlineChartTooltipData,
 } from "./ui/inline-chart-tooltip";
 import { InfoTooltip } from "./ui/info-tooltip";
-import { SegmentedControl, SegmentedControlItem } from "./ui/segmented-control";
 
 interface ParallelWorkStatsSectionProps {
   stats: ParallelWorkStatsResponse | null;
   isLoading: boolean;
   error: string | null;
-  defaultWindowKey?: ParallelWorkWindowKey;
-}
-
-export type ParallelWorkWindowKey = "minute7d" | "hour30d" | "dayAll";
-
-const WINDOW_KEYS: ParallelWorkWindowKey[] = ["minute7d", "hour30d", "dayAll"];
-
-function resolveWindowMeta(key: ParallelWorkWindowKey) {
-  switch (key) {
-    case "minute7d":
-      return {
-        titleKey: "stats.parallelWork.windows.minute7d.title",
-        descriptionKey: "stats.parallelWork.windows.minute7d.description",
-        toggleLabelKey: "stats.parallelWork.windows.minute7d.toggleLabel",
-      };
-    case "hour30d":
-      return {
-        titleKey: "stats.parallelWork.windows.hour30d.title",
-        descriptionKey: "stats.parallelWork.windows.hour30d.description",
-        toggleLabelKey: "stats.parallelWork.windows.hour30d.toggleLabel",
-      };
-    case "dayAll":
-      return {
-        titleKey: "stats.parallelWork.windows.dayAll.title",
-        descriptionKey: "stats.parallelWork.windows.dayAll.description",
-        toggleLabelKey: "stats.parallelWork.windows.dayAll.toggleLabel",
-      };
-  }
 }
 
 function formatParallelWorkAxisBucketLabel(
@@ -311,45 +281,6 @@ function ParallelWorkWindowInfoTrigger({
         label={tooltipLabel}
         className="shrink-0 text-base-content/46 transition-colors hover:text-base-content/70"
       />
-    </div>
-  );
-}
-
-function ParallelWorkWindowToggle({
-  activeWindowKey,
-  onWindowSelect,
-}: {
-  activeWindowKey: ParallelWorkWindowKey;
-  onWindowSelect: (windowKey: ParallelWorkWindowKey) => void;
-}) {
-  const { t } = useTranslation();
-
-  return (
-    <div className="flex justify-end">
-      <SegmentedControl
-        size="compact"
-        className="min-w-max"
-        role="tablist"
-        aria-label={t("stats.parallelWork.windowToggleAria")}
-        data-testid="parallel-work-window-toggle"
-      >
-        {WINDOW_KEYS.map((windowKey) => {
-          const meta = resolveWindowMeta(windowKey);
-          const active = windowKey === activeWindowKey;
-          return (
-            <SegmentedControlItem
-              key={windowKey}
-              active={active}
-              role="tab"
-              aria-selected={active}
-              onClick={() => onWindowSelect(windowKey)}
-              data-testid={"parallel-work-window-trigger-" + windowKey}
-            >
-              {t(meta.toggleLabelKey)}
-            </SegmentedControlItem>
-          );
-        })}
-      </SegmentedControl>
     </div>
   );
 }
@@ -621,15 +552,8 @@ function ParallelWorkSparkline({
   );
 }
 
-function ParallelWorkWindowCard({
-  windowKey,
-  window,
-}: {
-  windowKey: ParallelWorkWindowKey;
-  window: ParallelWorkWindowResponse;
-}) {
+function ParallelWorkWindowCard({ window }: { window: ParallelWorkWindowResponse }) {
   const { t, locale } = useTranslation();
-  const meta = resolveWindowMeta(windowKey);
   const empty = window.completeBucketCount === 0;
   const effectiveTimeZone = window.effectiveTimeZone ?? "Asia/Shanghai";
   const timeZoneFallbackNote = window.timeZoneFallback
@@ -641,7 +565,7 @@ function ParallelWorkWindowCard({
   return (
     <article
       className="flex flex-col gap-4 rounded-[1.35rem] border border-base-300/75 bg-base-100/82 p-4 shadow-sm"
-      data-testid={"parallel-work-card-" + windowKey}
+      data-testid="parallel-work-card-current"
     >
       <div className="grid grid-cols-3 gap-2.5">
         <div className="rounded-2xl border border-base-300/70 bg-base-200/35 px-3 py-2.5">
@@ -674,7 +598,7 @@ function ParallelWorkWindowCard({
         window={window}
         emptyLabel={t("stats.parallelWork.empty")}
         ariaLabel={t("stats.parallelWork.chartAria", {
-          title: t(meta.titleKey),
+          title: t("stats.parallelWork.title"),
         })}
         interactionHint={t("live.chart.tooltip.instructions")}
         tooltipCountLabel={t("stats.parallelWork.tooltip.parallelCount")}
@@ -706,17 +630,13 @@ function ParallelWorkWindowCard({
   );
 }
 
-function ParallelWorkLoadingCard({
-  windowKey,
-}: {
-  windowKey: ParallelWorkWindowKey;
-}) {
+function ParallelWorkLoadingCard() {
   const { t } = useTranslation();
 
   return (
     <article
       className="flex min-h-[18rem] flex-col gap-4 rounded-[1.35rem] border border-base-300/75 bg-base-100/82 p-4 shadow-sm"
-      data-testid={"parallel-work-card-" + windowKey}
+      data-testid="parallel-work-card-current"
     >
       <div className="grid grid-cols-3 gap-2.5">
         {Array.from({ length: 3 }).map((_, index) => (
@@ -737,17 +657,11 @@ function ParallelWorkLoadingCard({
   );
 }
 
-function ParallelWorkErrorCard({
-  windowKey,
-  error,
-}: {
-  windowKey: ParallelWorkWindowKey;
-  error: string;
-}) {
+function ParallelWorkErrorCard({ error }: { error: string }) {
   return (
     <article
       className="flex min-h-[14rem] flex-col gap-4 rounded-[1.35rem] border border-base-300/75 bg-base-100/82 p-4 shadow-sm"
-      data-testid={"parallel-work-card-" + windowKey}
+      data-testid="parallel-work-card-current"
     >
       <Alert variant="error">{error}</Alert>
     </article>
@@ -758,14 +672,10 @@ export function ParallelWorkStatsSection({
   stats,
   isLoading,
   error,
-  defaultWindowKey = "minute7d",
 }: ParallelWorkStatsSectionProps) {
   const { t } = useTranslation();
-  const [activeWindowKey, setActiveWindowKey] =
-    useState<ParallelWorkWindowKey>(defaultWindowKey);
-  const activeWindow = stats?.[activeWindowKey] ?? null;
-  const activeMeta = resolveWindowMeta(activeWindowKey);
-  const activeTitle = t(activeMeta.titleKey);
+  const activeWindow = stats?.current ?? null;
+  const activeTitle = t("stats.parallelWork.title");
   const activeSamples =
     activeWindow == null
       ? null
@@ -781,7 +691,7 @@ export function ParallelWorkStatsSection({
       : null;
   const activeTooltipContent = buildWindowDetailsTooltipContent(
     activeTitle,
-    t(activeMeta.descriptionKey),
+    t("stats.parallelWork.description"),
     activeSamples,
     activeTimeZoneFallbackNote,
   );
@@ -789,40 +699,29 @@ export function ParallelWorkStatsSection({
   return (
     <section className="surface-panel" data-testid="parallel-work-section">
       <div className="surface-panel-body gap-4">
-        <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
-          <div className="section-heading min-w-0">
-            <div
-              className="flex items-center gap-2"
-              data-testid={"parallel-work-heading-" + activeWindowKey}
-            >
-              <h3 className="section-title">{t("stats.parallelWork.title")}</h3>
-              <ParallelWorkWindowInfoTrigger
-                tooltipContent={activeTooltipContent}
-                tooltipLabel={t("stats.parallelWork.detailsTooltipLabel", {
-                  title: activeTitle,
-                })}
-              />
-            </div>
-            <p className="section-description">
-              {t("stats.parallelWork.description")}
-            </p>
-          </div>
+        <div className="section-heading min-w-0">
           <div
-            className="flex justify-start sm:justify-end"
-            data-testid={"parallel-work-controls-" + activeWindowKey}
+            className="flex items-center gap-2"
+            data-testid="parallel-work-heading-current"
           >
-            <ParallelWorkWindowToggle
-              activeWindowKey={activeWindowKey}
-              onWindowSelect={setActiveWindowKey}
+            <h3 className="section-title">{t("stats.parallelWork.title")}</h3>
+            <ParallelWorkWindowInfoTrigger
+              tooltipContent={activeTooltipContent}
+              tooltipLabel={t("stats.parallelWork.detailsTooltipLabel", {
+                title: activeTitle,
+              })}
             />
           </div>
+          <p className="section-description">
+            {t("stats.parallelWork.description")}
+          </p>
         </div>
         {error ? (
-          <ParallelWorkErrorCard windowKey={activeWindowKey} error={error} />
+          <ParallelWorkErrorCard error={error} />
         ) : isLoading || !activeWindow ? (
-          <ParallelWorkLoadingCard windowKey={activeWindowKey} />
+          <ParallelWorkLoadingCard />
         ) : (
-          <ParallelWorkWindowCard windowKey={activeWindowKey} window={activeWindow} />
+          <ParallelWorkWindowCard window={activeWindow} />
         )}
       </div>
     </section>

@@ -649,6 +649,7 @@ export interface ParallelWorkWindowResponse {
 }
 
 export interface ParallelWorkStatsResponse {
+  current: ParallelWorkWindowResponse;
   minute7d: ParallelWorkWindowResponse;
   hour30d: ParallelWorkWindowResponse;
   dayAll: ParallelWorkWindowResponse;
@@ -1314,10 +1315,14 @@ function normalizeParallelWorkStatsResponse(
   raw: unknown,
 ): ParallelWorkStatsResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
+  const current = normalizeParallelWorkWindowResponse(
+    payload.current ?? payload.minute7d,
+  );
   return {
-    minute7d: normalizeParallelWorkWindowResponse(payload.minute7d),
-    hour30d: normalizeParallelWorkWindowResponse(payload.hour30d),
-    dayAll: normalizeParallelWorkWindowResponse(payload.dayAll),
+    current,
+    minute7d: normalizeParallelWorkWindowResponse(payload.minute7d ?? current),
+    hour30d: normalizeParallelWorkWindowResponse(payload.hour30d ?? current),
+    dayAll: normalizeParallelWorkWindowResponse(payload.dayAll ?? current),
   };
 }
 
@@ -2383,10 +2388,14 @@ export async function fetchTimeseries(
 }
 
 export async function fetchParallelWorkStats(params?: {
+  range?: string;
+  bucket?: string;
   timeZone?: string;
   signal?: AbortSignal;
 }) {
   const search = new URLSearchParams();
+  if (params?.range) search.set("range", params.range);
+  if (params?.bucket) search.set("bucket", params.bucket);
   search.set("timeZone", params?.timeZone ?? getBrowserTimeZone());
   const response = await fetchJson<unknown>(
     `/api/stats/parallel-work?${search.toString()}`,

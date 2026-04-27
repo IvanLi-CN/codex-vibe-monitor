@@ -30,78 +30,93 @@ function buildWindow(
   };
 }
 
+const minuteWindow = buildWindow({
+  rangeStart: "2026-03-01T00:00:00Z",
+  rangeEnd: "2026-03-08T00:00:00Z",
+  bucketSeconds: 60,
+  completeBucketCount: 10_080,
+  activeBucketCount: 4_132,
+  minCount: 0,
+  maxCount: 18,
+  avgCount: 4.67,
+  points: Array.from({ length: 96 }, (_, index) => ({
+    bucketStart: new Date(Date.UTC(2026, 2, 7, 10, index)).toISOString(),
+    bucketEnd: new Date(Date.UTC(2026, 2, 7, 10, index + 1)).toISOString(),
+    parallelCount: Math.max(
+      0,
+      Math.round(
+        6 +
+          Math.sin(index / 5) * 4 +
+          Math.cos(index / 11) * 3 +
+          (index > 44 && index < 60 ? 5 : 0),
+      ),
+    ),
+  })),
+});
+
+const hourWindow = buildWindow({
+  rangeStart: "2026-02-06T00:00:00Z",
+  rangeEnd: "2026-03-08T00:00:00Z",
+  bucketSeconds: 3600,
+  completeBucketCount: 720,
+  activeBucketCount: 321,
+  minCount: 0,
+  maxCount: 9,
+  avgCount: 2.13,
+  points: Array.from({ length: 48 }, (_, index) => ({
+    bucketStart: new Date(Date.UTC(2026, 2, 7, index)).toISOString(),
+    bucketEnd: new Date(Date.UTC(2026, 2, 7, index + 1)).toISOString(),
+    parallelCount: Math.max(
+      0,
+      Math.round(2 + Math.sin(index / 4) * 2 + Math.cos(index / 7) * 2),
+    ),
+  })),
+});
+
+const dayWindow = buildWindow({
+  rangeStart: "2026-01-01T00:00:00Z",
+  rangeEnd: "2026-03-08T00:00:00Z",
+  bucketSeconds: 86_400,
+  completeBucketCount: 67,
+  activeBucketCount: 54,
+  minCount: 0,
+  maxCount: 6,
+  avgCount: 2.04,
+  points: Array.from({ length: 10 }, (_, index) => ({
+    bucketStart: new Date(Date.UTC(2026, 1, 27 + index)).toISOString(),
+    bucketEnd: new Date(Date.UTC(2026, 1, 28 + index)).toISOString(),
+    parallelCount: [1, 2, 3, 5, 4, 4, 6, 5, 3, 2][index] ?? 0,
+  })),
+});
+
 const populatedStats: ParallelWorkStatsResponse = {
-  minute7d: buildWindow({
-    rangeStart: "2026-03-01T00:00:00Z",
-    rangeEnd: "2026-03-08T00:00:00Z",
-    bucketSeconds: 60,
-    completeBucketCount: 10_080,
-    activeBucketCount: 4_132,
-    minCount: 0,
-    maxCount: 18,
-    avgCount: 4.67,
-    points: Array.from({ length: 96 }, (_, index) => ({
-      bucketStart: new Date(Date.UTC(2026, 2, 7, 10, index)).toISOString(),
-      bucketEnd: new Date(Date.UTC(2026, 2, 7, 10, index + 1)).toISOString(),
-      parallelCount: Math.max(
-        0,
-        Math.round(
-          6 +
-            Math.sin(index / 5) * 4 +
-            Math.cos(index / 11) * 3 +
-            (index > 44 && index < 60 ? 5 : 0),
-        ),
-      ),
-    })),
-  }),
-  hour30d: buildWindow({
-    rangeStart: "2026-02-06T00:00:00Z",
-    rangeEnd: "2026-03-08T00:00:00Z",
-    bucketSeconds: 3600,
-    completeBucketCount: 720,
-    activeBucketCount: 321,
-    minCount: 0,
-    maxCount: 9,
-    avgCount: 2.13,
-    points: Array.from({ length: 48 }, (_, index) => ({
-      bucketStart: new Date(Date.UTC(2026, 2, 7, index)).toISOString(),
-      bucketEnd: new Date(Date.UTC(2026, 2, 7, index + 1)).toISOString(),
-      parallelCount: Math.max(
-        0,
-        Math.round(2 + Math.sin(index / 4) * 2 + Math.cos(index / 7) * 2),
-      ),
-    })),
-  }),
-  dayAll: buildWindow({
-    rangeStart: "2026-01-01T00:00:00Z",
-    rangeEnd: "2026-03-08T00:00:00Z",
-    bucketSeconds: 86_400,
-    completeBucketCount: 67,
-    activeBucketCount: 54,
-    minCount: 0,
-    maxCount: 6,
-    avgCount: 2.04,
-    points: Array.from({ length: 10 }, (_, index) => ({
-      bucketStart: new Date(Date.UTC(2026, 1, 27 + index)).toISOString(),
-      bucketEnd: new Date(Date.UTC(2026, 1, 28 + index)).toISOString(),
-      parallelCount: [1, 2, 3, 5, 4, 4, 6, 5, 3, 2][index] ?? 0,
-    })),
-  }),
+  current: minuteWindow,
+  minute7d: minuteWindow,
+  hour30d: hourWindow,
+  dayAll: dayWindow,
 };
 
-const emptyDayAllStats: ParallelWorkStatsResponse = {
+const emptyDayWindow = buildWindow({
+  rangeStart: "2026-03-08T00:00:00Z",
+  rangeEnd: "2026-03-08T00:00:00Z",
+  bucketSeconds: 86_400,
+  completeBucketCount: 0,
+  activeBucketCount: 0,
+  minCount: null,
+  maxCount: null,
+  avgCount: null,
+  points: [],
+});
+
+const hourCurrentStats: ParallelWorkStatsResponse = {
   ...populatedStats,
-  dayAll: buildWindow({
-    rangeStart: "2026-03-08T00:00:00Z",
-    rangeEnd: "2026-03-08T00:00:00Z",
-    bucketSeconds: 86_400,
-    completeBucketCount: 0,
-    activeBucketCount: 0,
-    minCount: null,
-    maxCount: null,
-    avgCount: null,
-    points: [],
-  }),
+  current: hourWindow,
+};
+
+const emptyCurrentStats: ParallelWorkStatsResponse = {
+  ...populatedStats,
+  current: emptyDayWindow,
+  dayAll: emptyDayWindow,
 };
 
 const meta = {
@@ -140,11 +155,10 @@ export const Populated: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(
-      canvas.getByTestId("parallel-work-card-minute7d"),
+      canvas.getByTestId("parallel-work-card-current"),
     ).toBeInTheDocument();
-    await expect(canvas.queryByTestId("parallel-work-card-hour30d")).toBeNull();
-    await expect(canvas.queryByTestId("parallel-work-card-dayAll")).toBeNull();
-    const chart = await canvas.findByLabelText(/last 7 days/i);
+    await expect(canvas.queryByTestId("parallel-work-window-toggle")).toBeNull();
+    const chart = await canvas.findByLabelText(/parallel work trend/i);
     const overlay = chart.querySelector(
       '[data-testid="parallel-work-interaction-overlay"]',
     );
@@ -165,7 +179,7 @@ export const Populated: Story = {
   },
 };
 
-export const WideMinute7d: Story = {
+export const WideMinuteCurrent: Story = {
   args: {
     stats: populatedStats,
     isLoading: false,
@@ -176,24 +190,22 @@ export const WideMinute7d: Story = {
   },
 };
 
-export const Hour30dSelected: Story = {
+export const CurrentHourRange: Story = {
   args: {
-    stats: populatedStats,
+    stats: hourCurrentStats,
     isLoading: false,
     error: null,
-    defaultWindowKey: "hour30d",
   },
   parameters: {
     viewport: { defaultViewport: "desktop1660" },
   },
 };
 
-export const DayAllEmpty: Story = {
+export const CurrentDayEmpty: Story = {
   args: {
-    stats: emptyDayAllStats,
+    stats: emptyCurrentStats,
     isLoading: false,
     error: null,
-    defaultWindowKey: "dayAll",
   },
 };
 
@@ -202,7 +214,6 @@ export const Loading: Story = {
     stats: null,
     isLoading: true,
     error: null,
-    defaultWindowKey: "hour30d",
   },
 };
 
@@ -229,16 +240,14 @@ export const Gallery: Story = {
         error={null}
       />
       <ParallelWorkStatsSection
-        stats={populatedStats}
+        stats={hourCurrentStats}
         isLoading={false}
         error={null}
-        defaultWindowKey="hour30d"
       />
       <ParallelWorkStatsSection
-        stats={emptyDayAllStats}
+        stats={emptyCurrentStats}
         isLoading={false}
         error={null}
-        defaultWindowKey="dayAll"
       />
       <ParallelWorkStatsSection stats={null} isLoading={true} error={null} />
       <ParallelWorkStatsSection

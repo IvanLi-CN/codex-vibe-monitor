@@ -170,6 +170,10 @@ describe('StatsPage', () => {
     expect(host?.querySelector('[data-testid="stats-range-select-trigger"]')?.textContent).toContain('今日')
     expect(host?.querySelector('[data-testid="stats-bucket-select-trigger"]')?.textContent).toContain('每 15 分钟')
     expect(host?.querySelector('[data-testid="parallel-work-section"]')).toBeTruthy()
+    expect(hookMocks.useParallelWorkStats).toHaveBeenCalledWith({
+      range: 'today',
+      bucket: '15m',
+    })
   })
 
   it('offers a 24-hour bucket for the past 7 days range', () => {

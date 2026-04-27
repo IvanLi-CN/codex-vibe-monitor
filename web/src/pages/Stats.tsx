@@ -92,7 +92,7 @@ export default function StatsPage() {
     data: parallelWorkStats,
     isLoading: parallelWorkLoading,
     error: parallelWorkError,
-  } = useParallelWorkStats()
+  } = useParallelWorkStats({ range, bucket: effectiveBucket })
 
   const scopeOptions = useMemo(
     () =>

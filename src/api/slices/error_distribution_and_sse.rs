@@ -177,13 +177,27 @@ fn empty_parallel_work_window_response(
     }
 }
 
-async fn query_parallel_work_minute_counts(
+fn parallel_work_counts_from_key_sets(
+    bucket_keys: BTreeMap<i64, HashSet<String>>,
+) -> BTreeMap<i64, i64> {
+    bucket_keys
+        .into_iter()
+        .map(|(bucket_start_epoch, prompt_cache_keys)| {
+            (bucket_start_epoch, prompt_cache_keys.len() as i64)
+        })
+        .collect()
+}
+
+async fn query_parallel_work_exact_key_sets(
     pool: &Pool<Sqlite>,
     range_start: DateTime<Utc>,
     range_end: DateTime<Utc>,
+    bucket_seconds: i64,
     reporting_tz: Tz,
     source_scope: InvocationSourceScope,
-) -> Result<BTreeMap<i64, i64>> {
+    start_after_id: Option<i64>,
+    snapshot_id: Option<i64>,
+) -> Result<BTreeMap<i64, HashSet<String>>> {
     let mut query = QueryBuilder::new("SELECT occurred_at, ");
     query
         .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
@@ -196,10 +210,16 @@ async fn query_parallel_work_minute_counts(
         .push(" IS NOT NULL AND ")
         .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
         .push(" != ''");
+    if let Some(start_after_id) = start_after_id {
+        query.push(" AND id > ").push_bind(start_after_id);
+    }
+    if let Some(snapshot_id) = snapshot_id {
+        query.push(" AND id <= ").push_bind(snapshot_id);
+    }
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
-    query.push(" ORDER BY occurred_at ASC, prompt_cache_key ASC");
+    query.push(" ORDER BY occurred_at ASC, id ASC, prompt_cache_key ASC");
 
     let rows = query
         .build_query_as::<ParallelWorkExactInvocationRow>()
@@ -211,29 +231,25 @@ async fn query_parallel_work_minute_counts(
             continue;
         };
         let bucket_start_epoch =
-            align_reporting_bucket_epoch(occurred_at.timestamp(), 60, reporting_tz)?;
+            align_reporting_bucket_epoch(occurred_at.timestamp(), bucket_seconds, reporting_tz)?;
         bucket_keys
             .entry(bucket_start_epoch)
             .or_default()
             .insert(row.prompt_cache_key);
     }
-    Ok(bucket_keys
-        .into_iter()
-        .map(|(bucket_start_epoch, prompt_cache_keys)| {
-            (bucket_start_epoch, prompt_cache_keys.len() as i64)
-        })
-        .collect())
+    Ok(bucket_keys)
 }
 
-async fn query_parallel_work_hourly_counts(
+async fn query_parallel_work_bucket_key_sets_from_hourly_rollups(
     pool: &Pool<Sqlite>,
     range_start: DateTime<Utc>,
     range_end: DateTime<Utc>,
+    bucket_seconds: i64,
+    reporting_tz: Tz,
     source_scope: InvocationSourceScope,
-) -> Result<BTreeMap<i64, i64>> {
+) -> Result<BTreeMap<i64, HashSet<String>>> {
     let mut query = QueryBuilder::new(
-        "SELECT bucket_start_epoch, COUNT(DISTINCT prompt_cache_key) AS parallel_count \
-         FROM prompt_cache_rollup_hourly \
+        "SELECT bucket_start_epoch, prompt_cache_key FROM prompt_cache_rollup_hourly \
          WHERE bucket_start_epoch >= ",
     );
     query
@@ -244,91 +260,23 @@ async fn query_parallel_work_hourly_counts(
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
-    query.push(" GROUP BY bucket_start_epoch ORDER BY bucket_start_epoch ASC");
+    query.push(" ORDER BY bucket_start_epoch ASC, prompt_cache_key ASC");
 
-    let rows = query
-        .build_query_as::<ParallelWorkBucketCountRow>()
-        .fetch_all(pool)
-        .await?;
-    Ok(rows
-        .into_iter()
-        .map(|row| (row.bucket_start_epoch, row.parallel_count.max(0)))
-        .collect())
-}
+    let mut rows = query
+        .build_query_as::<ParallelWorkDayRollupRow>()
+        .fetch(pool);
+    let mut bucket_keys: BTreeMap<i64, HashSet<String>> = BTreeMap::new();
 
-async fn resolve_parallel_work_day_all_window(
-    pool: &Pool<Sqlite>,
-    reporting_tz: Tz,
-    source_scope: InvocationSourceScope,
-) -> Result<Option<RangeWindow>> {
-    let now = Utc::now();
-    let latest_complete_day_end =
-        local_midnight_utc(now.with_timezone(&reporting_tz).date_naive(), reporting_tz);
-
-    let earliest_bucket_epoch = if source_scope == InvocationSourceScope::ProxyOnly {
-        sqlx::query_scalar::<_, Option<i64>>(
-            "SELECT MIN(bucket_start_epoch) FROM prompt_cache_rollup_hourly WHERE source = ?1 AND prompt_cache_key != ''",
-        )
-        .bind(SOURCE_PROXY)
-        .fetch_one(pool)
-        .await?
-    } else {
-        sqlx::query_scalar::<_, Option<i64>>(
-            "SELECT MIN(bucket_start_epoch) FROM prompt_cache_rollup_hourly WHERE prompt_cache_key != ''",
-        )
-        .fetch_one(pool)
-        .await?
-    };
-
-    let Some(earliest_bucket_epoch) = earliest_bucket_epoch else {
-        return Ok(None);
-    };
-    let earliest_bucket = Utc
-        .timestamp_opt(earliest_bucket_epoch, 0)
-        .single()
-        .ok_or_else(|| anyhow!("invalid earliest prompt-cache rollup bucket"))?;
-    let earliest_local_date = earliest_bucket.with_timezone(&reporting_tz).date_naive();
-    let first_day_start = local_midnight_utc(earliest_local_date, reporting_tz);
-    let start = if first_day_start == earliest_bucket {
-        first_day_start
-    } else {
-        let next_date = earliest_local_date
-            .succ_opt()
-            .unwrap_or(earliest_local_date + ChronoDuration::days(1));
-        local_midnight_utc(next_date, reporting_tz)
-    };
-
-    if start >= latest_complete_day_end {
-        return Ok(None);
+    while let Some(row) = rows.try_next().await? {
+        let bucket_epoch =
+            align_reporting_bucket_epoch(row.bucket_start_epoch, bucket_seconds, reporting_tz)?;
+        bucket_keys
+            .entry(bucket_epoch)
+            .or_default()
+            .insert(row.prompt_cache_key);
     }
 
-    Ok(Some(RangeWindow {
-        start,
-        end: latest_complete_day_end,
-        display_end: latest_complete_day_end,
-        duration: latest_complete_day_end.signed_duration_since(start),
-    }))
-}
-
-async fn resolve_parallel_work_day_all_window_with_fallback(
-    pool: &Pool<Sqlite>,
-    requested_reporting_tz: Tz,
-    source_scope: InvocationSourceScope,
-) -> Result<(Option<RangeWindow>, Tz, bool)> {
-    let requested_window =
-        resolve_parallel_work_day_all_window(pool, requested_reporting_tz, source_scope).await?;
-    if !should_fallback_parallel_work_day_all_window(
-        requested_reporting_tz,
-        requested_window.as_ref(),
-        Utc::now(),
-    ) {
-        return Ok((requested_window, requested_reporting_tz, false));
-    }
-    Ok((
-        resolve_parallel_work_day_all_window(pool, Shanghai, source_scope).await?,
-        Shanghai,
-        true,
-    ))
+    Ok(bucket_keys)
 }
 
 pub(crate) fn should_fallback_parallel_work_day_all_window(
@@ -352,60 +300,6 @@ pub(crate) fn should_fallback_parallel_work_day_all_window(
         duration: ChronoDuration::days(1),
     };
     !reporting_tz_has_whole_hour_offsets(requested_reporting_tz, &probe_window)
-}
-
-async fn query_parallel_work_day_counts_from_hourly_rollups(
-    pool: &Pool<Sqlite>,
-    range_start: DateTime<Utc>,
-    range_end: DateTime<Utc>,
-    reporting_tz: Tz,
-    source_scope: InvocationSourceScope,
-) -> Result<BTreeMap<i64, i64>> {
-    let mut query = QueryBuilder::new(
-        "SELECT bucket_start_epoch, prompt_cache_key FROM prompt_cache_rollup_hourly \
-         WHERE bucket_start_epoch >= ",
-    );
-    query
-        .push_bind(range_start.timestamp())
-        .push(" AND bucket_start_epoch < ")
-        .push_bind(range_end.timestamp())
-        .push(" AND prompt_cache_key != ''");
-    if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND source = ").push_bind(SOURCE_PROXY);
-    }
-    query.push(" ORDER BY bucket_start_epoch ASC, prompt_cache_key ASC");
-
-    let mut rows = query
-        .build_query_as::<ParallelWorkDayRollupRow>()
-        .fetch(pool);
-    let mut counts = BTreeMap::new();
-    let mut current_day_epoch = None;
-    let mut current_keys = HashSet::new();
-
-    while let Some(row) = rows.try_next().await? {
-        let day_epoch = align_reporting_bucket_epoch(row.bucket_start_epoch, 86_400, reporting_tz)?;
-        match current_day_epoch {
-            Some(epoch) if epoch == day_epoch => {
-                current_keys.insert(row.prompt_cache_key);
-            }
-            Some(epoch) => {
-                counts.insert(epoch, current_keys.len() as i64);
-                current_keys.clear();
-                current_keys.insert(row.prompt_cache_key);
-                current_day_epoch = Some(day_epoch);
-            }
-            None => {
-                current_keys.insert(row.prompt_cache_key);
-                current_day_epoch = Some(day_epoch);
-            }
-        }
-    }
-
-    if let Some(epoch) = current_day_epoch {
-        counts.insert(epoch, current_keys.len() as i64);
-    }
-
-    Ok(counts)
 }
 
 fn local_naive_to_utc_not_after_reference(

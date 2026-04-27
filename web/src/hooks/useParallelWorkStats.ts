@@ -15,6 +15,11 @@ interface PendingLoad {
   silent: boolean
 }
 
+interface UseParallelWorkStatsOptions {
+  range: string
+  bucket?: string
+}
+
 export const PARALLEL_WORK_REFRESH_THROTTLE_MS = 60_000
 export const PARALLEL_WORK_OPEN_RESYNC_COOLDOWN_MS = 60_000
 
@@ -46,7 +51,7 @@ export function shouldTriggerParallelWorkOpenResync(
   return now - lastResyncAt >= PARALLEL_WORK_OPEN_RESYNC_COOLDOWN_MS
 }
 
-export function useParallelWorkStats() {
+export function useParallelWorkStats({ range, bucket }: UseParallelWorkStatsOptions) {
   const [data, setData] = useState<ParallelWorkStatsResponse | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -80,7 +85,7 @@ export function useParallelWorkStats() {
     }
 
     try {
-      const response = await fetchParallelWorkStats({ signal: controller.signal })
+      const response = await fetchParallelWorkStats({ range, bucket, signal: controller.signal })
       if (requestSeq !== requestSeqRef.current) {
         return
       }
@@ -119,7 +124,7 @@ export function useParallelWorkStats() {
         void runLoad({ silent: pending.silent })
       }
     }
-  }, [])
+  }, [bucket, range])
 
   const load = useCallback(async ({ silent = false, force = false }: LoadOptions = {}) => {
     if (force) {
