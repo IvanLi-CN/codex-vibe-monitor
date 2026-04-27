@@ -5,6 +5,7 @@ import {
 } from "./dashboardNaturalDayWindow";
 
 const MINUTE_MS = 60_000;
+const TEN_MINUTE_BUCKET_SIZE = 10;
 
 export interface DashboardTodayMinuteDatum {
   index: number;
@@ -32,6 +33,9 @@ export interface DashboardTodayMinuteDatum {
   chartTokensPerMinute: number | null;
   chartCostRate: number | null;
   chartFirstResponseByteTotalAvgMs: number | null;
+  chartTokensPerTenMinute: number | null;
+  chartCostRateTenMinute: number | null;
+  chartFirstResponseByteTotalTenMinuteAvgMs: number | null;
 }
 
 export function buildTodayMinuteChartData(
@@ -183,7 +187,58 @@ export function buildTodayMinuteChartData(
       chartFirstResponseByteTotalAvgMs: isFuture
         ? null
         : firstResponseByteTotalAvgMs,
+      chartTokensPerTenMinute: null,
+      chartCostRateTenMinute: null,
+      chartFirstResponseByteTotalTenMinuteAvgMs: null,
     });
+  }
+
+  for (
+    let bucketStartIndex = 0;
+    bucketStartIndex < data.length;
+    bucketStartIndex += TEN_MINUTE_BUCKET_SIZE
+  ) {
+    const bucket = data.slice(
+      bucketStartIndex,
+      bucketStartIndex + TEN_MINUTE_BUCKET_SIZE,
+    );
+    const visiblePoints = bucket.filter(
+      (point) => point.chartTokensPerMinute != null,
+    );
+    if (visiblePoints.length === 0) continue;
+
+    const target = data[bucketStartIndex];
+    if (!target) continue;
+
+    const tokens = visiblePoints.reduce(
+      (current, point) => current + (point.chartTokensPerMinute ?? 0),
+      0,
+    );
+    const cost = visiblePoints.reduce(
+      (current, point) => current + (point.chartCostRate ?? 0),
+      0,
+    );
+    const firstResponseByteTotalSampleCount = visiblePoints.reduce(
+      (current, point) => current + point.firstResponseByteTotalSampleCount,
+      0,
+    );
+    const firstResponseByteTotalWeightedSumMs = visiblePoints.reduce(
+      (current, point) =>
+        current +
+        (point.firstResponseByteTotalAvgMs == null
+          ? 0
+          : point.firstResponseByteTotalAvgMs *
+            point.firstResponseByteTotalSampleCount),
+      0,
+    );
+
+    target.chartTokensPerTenMinute = tokens;
+    target.chartCostRateTenMinute = cost;
+    target.chartFirstResponseByteTotalTenMinuteAvgMs =
+      firstResponseByteTotalSampleCount > 0
+        ? firstResponseByteTotalWeightedSumMs /
+          firstResponseByteTotalSampleCount
+        : null;
   }
 
   return data;

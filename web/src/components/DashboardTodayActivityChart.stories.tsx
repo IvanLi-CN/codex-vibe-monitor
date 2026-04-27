@@ -23,6 +23,9 @@ const sampleResponse = {
       inFlightCount,
       totalTokens: totalCount * 380,
       totalCost: Number((totalCount * 0.018).toFixed(4)),
+      firstResponseByteTotalSampleCount: totalCount,
+      firstResponseByteTotalAvgMs:
+        totalCount > 0 ? 420 + (index % 9) * 85 : null,
     };
   }),
 };
@@ -78,6 +81,15 @@ export const TokensCumulative: Story = {
   },
 };
 
+export const TrendArea: Story = {
+  args: {
+    response: sampleResponse,
+    loading: false,
+    error: null,
+    metric: "trend",
+  },
+};
+
 export const CountBarsDensePairing: Story = {
   args: {
     response: {
@@ -112,6 +124,9 @@ export const CountBarsDensePairing: Story = {
           inFlightCount,
           totalTokens: totalCount * 420,
           totalCost: Number((totalCount * 0.021).toFixed(4)),
+          firstResponseByteTotalSampleCount: totalCount,
+          firstResponseByteTotalAvgMs:
+            totalCount > 0 ? 520 + (index % 13) * 70 : null,
         };
       }),
     },

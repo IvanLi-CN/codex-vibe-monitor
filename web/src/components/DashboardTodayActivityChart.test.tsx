@@ -68,9 +68,30 @@ vi.mock("recharts", () => ({
   },
   Legend: () => <div data-testid="legend" />,
   ReferenceLine: () => <div data-testid="reference-line" />,
-  Area: () => <div data-testid="area-series" />,
-  Line: ({ dataKey }: { dataKey?: string }) => (
-    <div data-testid="line-series" data-data-key={dataKey ?? ""} />
+  Area: ({ dataKey }: { dataKey?: string }) => (
+    <div data-testid="area-series" data-data-key={dataKey ?? ""} />
+  ),
+  Line: ({
+    connectNulls,
+    data,
+    dataKey,
+    strokeOpacity,
+    strokeWidth,
+  }: {
+    connectNulls?: boolean;
+    data?: Array<Record<string, unknown>>;
+    dataKey?: string;
+    strokeOpacity?: number;
+    strokeWidth?: number;
+  }) => (
+    <div
+      data-testid="line-series"
+      data-connect-nulls={String(connectNulls ?? false)}
+      data-point-count={String(data?.length ?? "")}
+      data-data-key={dataKey ?? ""}
+      data-stroke-opacity={String(strokeOpacity ?? "")}
+      data-stroke-width={String(strokeWidth ?? "")}
+    />
   ),
   Bar: ({ stackId, dataKey }: { stackId?: string; dataKey?: string }) => (
     <div
@@ -93,7 +114,11 @@ vi.mock("recharts", () => ({
   }) => {
     latestChartData = data ?? [];
     return (
-      <div data-testid="composed-chart" data-bar-gap={String(barGap ?? "")}>
+      <div
+        data-testid="composed-chart"
+        data-bar-gap={String(barGap ?? "")}
+        data-point-count={String(latestChartData.length)}
+      >
         {children}
       </div>
     );
@@ -469,6 +494,71 @@ describe("DashboardTodayActivityChart", () => {
     });
   });
 
+  it("builds ten-minute trend and first-byte-total chart aggregates", () => {
+    const data = buildTodayMinuteChartData(
+      {
+        rangeStart: "2026-04-08 00:00:00",
+        rangeEnd: "2026-04-08 00:12:10",
+        bucketSeconds: 60,
+        points: [
+          {
+            bucketStart: "2026-04-08 00:00:00",
+            bucketEnd: "2026-04-08 00:00:59",
+            totalCount: 1,
+            successCount: 1,
+            failureCount: 0,
+            totalTokens: 100,
+            totalCost: 0.1,
+            firstResponseByteTotalSampleCount: 1,
+            firstResponseByteTotalAvgMs: 100,
+          },
+          {
+            bucketStart: "2026-04-08 00:02:00",
+            bucketEnd: "2026-04-08 00:02:59",
+            totalCount: 3,
+            successCount: 3,
+            failureCount: 0,
+            totalTokens: 300,
+            totalCost: 0.3,
+            firstResponseByteTotalSampleCount: 3,
+            firstResponseByteTotalAvgMs: 700,
+          },
+          {
+            bucketStart: "2026-04-08 00:11:00",
+            bucketEnd: "2026-04-08 00:11:59",
+            totalCount: 2,
+            successCount: 2,
+            failureCount: 0,
+            totalTokens: 50,
+            totalCost: 0.05,
+            firstResponseByteTotalSampleCount: 2,
+            firstResponseByteTotalAvgMs: 500,
+          },
+        ],
+      },
+      {
+        now: new Date(2026, 3, 8, 0, 12, 10),
+        localeTag: "en-US",
+      },
+    );
+
+    expect(data[0]).toMatchObject({
+      chartTokensPerTenMinute: 400,
+      chartCostRateTenMinute: 0.4,
+      chartFirstResponseByteTotalTenMinuteAvgMs: 550,
+    });
+    expect(data[1]).toMatchObject({
+      chartTokensPerTenMinute: null,
+      chartCostRateTenMinute: null,
+      chartFirstResponseByteTotalTenMinuteAvgMs: null,
+    });
+    expect(data[10]).toMatchObject({
+      chartTokensPerTenMinute: 50,
+      chartCostRateTenMinute: 0.05,
+      chartFirstResponseByteTotalTenMinuteAvgMs: 500,
+    });
+  });
+
   it("shows in-flight calls in the count tooltip without inferring neutral residuals as running", () => {
     const html = renderToStaticMarkup(
       <DashboardTodayActivityChart
@@ -520,14 +610,20 @@ describe("DashboardTodayActivityChart", () => {
     expect(html).toContain('data-data-key="chartSuccessCount"');
     expect(html).toContain('data-data-key="chartInFlightCount"');
     expect(html).toContain('data-data-key="chartFailureCountNegative"');
-    expect(html).toContain('data-data-key="chartFirstResponseByteTotalAvgMs"');
+    expect(html).toContain(
+      'data-data-key="chartFirstResponseByteTotalTenMinuteAvgMs"',
+    );
+    expect(html).toContain('data-connect-nulls="false"');
+    expect(html).toContain('data-point-count="144"');
+    expect(html).toContain('data-stroke-width="1.2"');
+    expect(html).toContain('data-stroke-opacity="0.82"');
     expect(html).toContain('data-stack-id="positive"');
     expect(html).not.toContain(
       'data-data-key="chartFailureCountNegative" data-stack-id="positive"',
     );
   });
 
-  it("renders trend mode as raw one-minute TPM and spend-rate lines", () => {
+  it("renders trend mode as ten-minute TPM and spend-rate areas", () => {
     const html = renderToStaticMarkup(
       <DashboardTodayActivityChart
         response={response}
@@ -537,11 +633,14 @@ describe("DashboardTodayActivityChart", () => {
       />,
     );
 
-    expect(html).toContain('data-chart-mode="trend-lines"');
+    expect(html).toContain('data-chart-mode="trend-area"');
     expect(html).toContain('data-testid="composed-chart"');
-    expect(html).toContain('data-data-key="chartTokensPerMinute"');
-    expect(html).toContain('data-data-key="chartCostRate"');
-    expect(html).toContain("chart.tokensPerMinute");
+    expect(html).toContain('data-point-count="144"');
+    expect(html).not.toContain('data-testid="line-series"');
+    expect(html).toContain('data-testid="area-series"');
+    expect(html).toContain('data-data-key="chartTokensPerTenMinute"');
+    expect(html).toContain('data-data-key="chartCostRateTenMinute"');
+    expect(html).toContain("chart.totalTokens");
     expect(html).toContain("chart.spendRate");
   });
 

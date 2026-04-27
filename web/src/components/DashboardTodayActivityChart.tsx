@@ -241,7 +241,9 @@ function DashboardTodayActivityChartImpl({
       accent,
       accentFill: withOpacity(accent, 0.22),
       tokens: metricAccent("totalTokens", themeMode),
+      tokensFill: withOpacity(metricAccent("totalTokens", themeMode), 0.22),
       costRate: metricAccent("totalCost", themeMode),
+      costRateFill: withOpacity(metricAccent("totalCost", themeMode), 0.18),
       firstResponseByteTotal: metricAccent("totalCount", themeMode),
     };
   }, [metric, themeMode]);
@@ -266,7 +268,7 @@ function DashboardTodayActivityChartImpl({
     metric === "totalCost" ? t("chart.totalCost") : t("chart.totalTokens");
   const trendSeriesNames = useMemo(
     () => ({
-      tokensPerMinute: t("chart.tokensPerMinute"),
+      tokensPerMinute: t("chart.totalTokens"),
       costRate: t("chart.spendRate"),
     }),
     [t],
@@ -302,12 +304,14 @@ function DashboardTodayActivityChartImpl({
     data.length > 0
       ? data
       : buildTodayMinuteChartData(response, { localeTag, closedNaturalDay });
-  const animate = chartData.length <= 800;
+  const tenMinuteChartData = chartData.filter((point) => point.index % 10 === 0);
+  const activeChartData = metric === "trend" ? tenMinuteChartData : chartData;
+  const animate = activeChartData.length <= 800;
   const chartMode =
     metric === "totalCount"
       ? "count-bars"
       : metric === "trend"
-        ? "trend-lines"
+        ? "trend-area"
         : "cumulative-area";
   const renderCountTooltip = (point: DashboardTodayMinuteDatum) =>
     point.chartSuccessCount == null || point.chartFailureCountNegative == null
@@ -353,13 +357,13 @@ function DashboardTodayActivityChartImpl({
             ),
             color: chartColors.accent,
           },
-          ...(point.chartFirstResponseByteTotalAvgMs == null
+          ...(point.chartFirstResponseByteTotalTenMinuteAvgMs == null
             ? []
             : [
                 {
                   label: countSeriesNames.firstResponseByteTotal,
                   value: formatDurationMs(
-                    point.chartFirstResponseByteTotalAvgMs,
+                    point.chartFirstResponseByteTotalTenMinuteAvgMs,
                     numberFormatter,
                   ),
                   color: chartColors.firstResponseByteTotal,
@@ -388,17 +392,17 @@ function DashboardTodayActivityChartImpl({
           ]),
   ];
   const renderTrendTooltip = (point: DashboardTodayMinuteDatum) =>
-    point.chartTokensPerMinute == null || point.chartCostRate == null
+    point.chartTokensPerTenMinute == null || point.chartCostRateTenMinute == null
       ? []
       : [
           {
             label: trendSeriesNames.tokensPerMinute,
-            value: formatTokensShort(point.chartTokensPerMinute, localeTag),
+            value: formatTokensShort(point.chartTokensPerTenMinute, localeTag),
             color: chartColors.tokens,
           },
           {
             label: trendSeriesNames.costRate,
-            value: currencyFormatter.format(point.chartCostRate),
+            value: currencyFormatter.format(point.chartCostRateTenMinute),
             color: chartColors.costRate,
           },
         ];
@@ -522,10 +526,12 @@ function DashboardTodayActivityChartImpl({
               <Line
                 yAxisId="latency"
                 type="monotone"
-                dataKey="chartFirstResponseByteTotalAvgMs"
+                data={tenMinuteChartData}
+                dataKey="chartFirstResponseByteTotalTenMinuteAvgMs"
                 name={countSeriesNames.firstResponseByteTotal}
                 stroke={chartColors.firstResponseByteTotal}
-                strokeWidth={2}
+                strokeOpacity={0.82}
+                strokeWidth={1.2}
                 dot={false}
                 connectNulls={false}
                 isAnimationActive={animate}
@@ -533,7 +539,7 @@ function DashboardTodayActivityChartImpl({
             </ComposedChart>
           ) : metric === "trend" ? (
             <ComposedChart
-              data={chartData}
+              data={tenMinuteChartData}
               margin={{ top: 12, right: 24, left: 0, bottom: 8 }}
             >
               <CartesianGrid
@@ -609,24 +615,28 @@ function DashboardTodayActivityChartImpl({
                 )}
               />
               <Legend wrapperStyle={{ color: chartColors.axisText }} />
-              <Line
+              <Area
                 yAxisId="tokens"
                 type="monotone"
-                dataKey="chartTokensPerMinute"
+                dataKey="chartTokensPerTenMinute"
                 name={trendSeriesNames.tokensPerMinute}
                 stroke={chartColors.tokens}
-                strokeWidth={2}
+                fill={chartColors.tokensFill}
+                fillOpacity={1}
+                strokeWidth={1.8}
                 dot={false}
                 connectNulls={false}
                 isAnimationActive={animate}
               />
-              <Line
+              <Area
                 yAxisId="cost"
                 type="monotone"
-                dataKey="chartCostRate"
+                dataKey="chartCostRateTenMinute"
                 name={trendSeriesNames.costRate}
                 stroke={chartColors.costRate}
-                strokeWidth={2}
+                fill={chartColors.costRateFill}
+                fillOpacity={1}
+                strokeWidth={1.8}
                 dot={false}
                 connectNulls={false}
                 isAnimationActive={animate}

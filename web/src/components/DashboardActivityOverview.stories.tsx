@@ -472,7 +472,7 @@ export const TodayTrend: Story = {
     const canvas = within(canvasElement)
     await userEvent.click(canvas.getByRole('tab', { name: /趋势|trend/i }))
     await waitFor(() => {
-      expect(canvas.getByTestId('dashboard-today-activity-chart')).toHaveAttribute('data-chart-mode', 'trend-lines')
+      expect(canvas.getByTestId('dashboard-today-activity-chart')).toHaveAttribute('data-chart-mode', 'trend-area')
       expect(canvas.getByRole('tab', { name: /趋势|trend/i })).toHaveAttribute('aria-selected', 'true')
     })
   },
@@ -486,7 +486,7 @@ export const YesterdayTrend: Story = {
     const canvas = within(canvasElement)
     await userEvent.click(canvas.getByRole('tab', { name: /趋势|trend/i }))
     await waitFor(() => {
-      expect(canvas.getByTestId('dashboard-today-activity-chart')).toHaveAttribute('data-chart-mode', 'trend-lines')
+      expect(canvas.getByTestId('dashboard-today-activity-chart')).toHaveAttribute('data-chart-mode', 'trend-area')
       expect(canvas.getByRole('tab', { name: /趋势|trend/i })).toHaveAttribute('aria-selected', 'true')
     })
   },
