@@ -1380,6 +1380,14 @@ pub(crate) fn classify_pool_account_http_failure(
             next_account_status: Some("error"),
         };
     }
+    if status == StatusCode::PAYLOAD_TOO_LARGE {
+        return UpstreamAccountHttpFailureClassification {
+            disposition: UpstreamAccountFailureDisposition::Retryable,
+            failure_kind: PROXY_FAILURE_UPSTREAM_HTTP_413,
+            reason_code: "upstream_http_413",
+            next_account_status: None,
+        };
+    }
     if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
         let next_account_status = if account_kind == "oauth_codex"
             && is_explicit_reauth_error_message(error_message)

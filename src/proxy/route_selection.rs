@@ -734,6 +734,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     let connect_latency_ms = elapsed_ms(connect_started);
     let status = response.status();
     if status == StatusCode::TOO_MANY_REQUESTS
+        || status == StatusCode::PAYLOAD_TOO_LARGE
         || status.is_server_error()
         || matches!(
             status,
@@ -1317,6 +1318,18 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                             ..PoolFailoverProgress::default()
                         },
                         POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
+                    )
+                } else if first_error.status == StatusCode::PAYLOAD_TOO_LARGE {
+                    (
+                        Some(initial_account.clone()),
+                        PoolFailoverProgress {
+                            attempt_count: 1,
+                            last_error: Some(first_error),
+                            responses_total_timeout_started_at,
+                            no_available_wait_deadline,
+                            ..PoolFailoverProgress::default()
+                        },
+                        POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS.saturating_sub(1),
                     )
                 } else {
                     (
