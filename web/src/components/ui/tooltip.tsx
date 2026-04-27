@@ -74,6 +74,7 @@ interface TooltipProps {
   side?: 'top' | 'right' | 'bottom' | 'left'
   sideOffset?: number
   open?: boolean
+  clickToOpen?: boolean
   triggerProps?: React.HTMLAttributes<HTMLSpanElement>
 }
 
@@ -87,6 +88,7 @@ export function Tooltip({
   side = 'top',
   sideOffset = 10,
   open,
+  clickToOpen = false,
   triggerProps,
 }: TooltipProps) {
   const longPressTimerRef = React.useRef<number | null>(null)
@@ -149,7 +151,7 @@ export function Tooltip({
             }}
             onClick={(event) => {
               triggerProps?.onClick?.(event)
-              if (open !== undefined || event.defaultPrevented) return
+              if (!clickToOpen || open !== undefined || event.defaultPrevented) return
               setClickOpen((current) => !current)
             }}
             onFocus={(event) => {

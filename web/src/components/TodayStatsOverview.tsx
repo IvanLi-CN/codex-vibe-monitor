@@ -61,6 +61,7 @@ function MetricTile({
     >
       <Tooltip
         content={description}
+        clickToOpen
         side="bottom"
         sideOffset={8}
         triggerProps={{
