@@ -2,9 +2,9 @@
 
 ## 状态
 
-- Status: 部分完成（3/4）
+- Status: 已实现，待 PR / CI / review-proof 收敛
 - Created: 2026-04-10
-- Last: 2026-04-10
+- Last: 2026-04-28
 
 ## 背景 / 问题陈述
 
@@ -16,8 +16,9 @@
 
 ### Goals
 
-- 将今日 KPI 的首个 tile 改为 `TPM (5m avg)`，并新增 `Cost/min (5m avg)`。
-- 速率口径固定为最近 5 个已完成分钟桶的均值：忽略当前进行中的分钟，缺失分钟按 `0` 计入。
+- 将今日 KPI 的首个 tile 改为 `TPM`，并新增 `消费速率` / `Spend rate`。
+- 速率口径固定为最近 5 分钟内的活跃尾段均值：当前进行中分钟参与计算，首个非零 token/cost 桶之前的前置空闲时间不参与分母，首个活动桶之后的空闲时间继续参与分母。
+- 数据卡片标题可点击 / 聚焦 / 悬停打开 tooltip，解释字段含义与速率算法。
 - summary 成功但 timeseries 尚未可用时，只让两个速率 tile 进入 skeleton / `—` 降级，其余累计 tile 保持可读。
 - `TodayStatsOverview` 升级成 6 个等权 tile，并在 Storybook `desktop1440` 下保持单行。
 - 生成并归档 Storybook 视觉证据，供快车道 PR merge-ready 使用。
@@ -48,9 +49,10 @@
 
 ### MUST
 
-- 最近 5 分钟均值只统计已完成分钟桶。
-- trailing window 内缺失分钟必须按 `0` 补齐，而不是缩小分母。
-- 今日完整分钟数少于 5 时，按已有完整分钟数求均值；若为 `0`，显示数值 `0`。
+- 最近 5 分钟均值按活跃尾段时间加权计算。
+- trailing window 内首个非零 token/cost 桶之前的前置 0 时间不参与分母；首个活动桶之后的缺失或 0 时间继续参与分母，避免一有请求就产生尖峰。
+- 今日窗口内活动尾段少于 5 分钟时，按实际活动尾段 elapsed minutes 求均值；若无活动，显示数值 `0`。
+- 当前进行中分钟参与显示速率；由于 timeseries 为 1m 桶，首个活动秒级起点按该桶 `bucketStart` 近似。
 - summary error 时保持整个 today overview 现有 alert 语义。
 - timeseries error 时，仅两个速率 tile 显示 `—`。
 
@@ -67,13 +69,14 @@
 
 ### Core flows
 
-- Dashboard 今日视图加载成功后，KPI 行显示：`TPM (5m avg)`、`Cost/min (5m avg)`、`成功`、`失败`、`总成本`、`总 Tokens`。
-- `TPM` 与 `Cost/min` 来自 today 1 分钟时序：选取最新 `5` 个已完成分钟桶（或当日可用完整分钟数），总量除以窗口分钟数得到每分钟均值。
-- 当前自然分钟仍在进行中时，该分钟桶不参与显示速率。
+- Dashboard 今日视图加载成功后，KPI 行显示：`TPM`、`消费速率` / `Spend rate`、`成功`、`失败`、`总成本`、`总 Tokens`。
+- `TPM` 与 `消费速率` 来自 today 1 分钟时序：以同自然日内较新的 `now` / `rangeEnd` 为 anchor，取最近 5 分钟内的 points，找到最早的非零 token/cost bucket，并用 `anchor - activeStart` 作为分母。
+- 如果最近 5 分钟内前三分半都是 0、后 1.5 分钟有数据，则使用后 1.5 分钟总量除以 `1.5`。
+- 如果首个活动桶之后存在缺失分钟或 0 值分钟，这段时间继续计入分母。
 
 ### Edge cases / errors
 
-- 今日尚无完整分钟时：速率显示 `0`，不是 `—`。
+- 今日最近 5 分钟无 token/cost 活动时：速率显示 `0`，不是 `—`。
 - timeseries 正在加载且 summary 已成功：速率 tile skeleton，其余 4 个 tile 正常显示。
 - timeseries 加载失败且 summary 已成功：速率 tile 显示 `—`，其余 4 个 tile 正常显示。
 - summary 失败时：整体显示现有 alert，不做混合态拼接。
@@ -82,9 +85,9 @@
 
 ### 接口清单（Inventory）
 
-| 接口（Name） | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes） |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Dashboard today rate snapshot | ui-component-prop | internal | Modify | None | web/dashboard | `DashboardActivityOverview` -> `TodayStatsOverview` | 仅前端本地派生，不扩展 API |
+| 接口（Name）                  | 类型（Kind）      | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers）                                 | 备注（Notes）              |
+| ----------------------------- | ----------------- | ------------- | -------------- | ------------------------ | --------------- | --------------------------------------------------- | -------------------------- |
+| Dashboard today rate snapshot | ui-component-prop | internal      | Modify         | None                     | web/dashboard   | `DashboardActivityOverview` -> `TodayStatsOverview` | 仅前端本地派生，不扩展 API |
 
 ### 契约文档（按 Kind 拆分）
 
@@ -92,10 +95,11 @@
 
 ## 验收标准（Acceptance Criteria）
 
-- Given 最近 5 个已完成分钟桶累计 `5000 tokens / US$0.50`，When 打开 Dashboard 今日视图，Then `TPM = 1000` 且 `Cost/min = US$0.10`。
-- Given trailing 5 分钟内缺少某些分钟桶，When 计算速率，Then 缺失分钟按 `0` 计入窗口。
-- Given 当前自然分钟尚未完成，When 计算速率，Then 当前分钟不计入 displayed rate。
-- Given 今日还没有任何完整分钟桶，When timeseries 已返回，Then 两个速率 tile 显示 `0`。
+- Given 最近 5 分钟内前三分半都是 0、后 1.5 分钟累计 `1500 tokens / US$0.15`，When 打开 Dashboard 今日视图，Then `TPM = 1000` 且 `消费速率 = US$0.10`。
+- Given trailing 5 分钟内首个活动桶之后缺少某些分钟桶，When 计算速率，Then 缺失时间继续计入分母。
+- Given 当前自然分钟尚未完成但已有数据，When 计算速率，Then 当前分钟参与 displayed rate，分母使用实际 elapsed minutes。
+- Given 最近 5 分钟没有任何 token/cost 活动，When timeseries 已返回，Then 两个速率 tile 显示 `0`。
+- Given 点击或聚焦任一 KPI 标题，When tooltip 打开，Then 能看到该字段的本地化说明。
 - Given summary 成功但 timeseries 正在加载，When 渲染 today KPI，Then 只有两个速率 tile 显示 skeleton。
 - Given summary 成功但 timeseries 失败，When 渲染 today KPI，Then 只有两个速率 tile 显示 `—`。
 - Given summary 失败，When 渲染 today KPI，Then 保持现有整块 alert 语义。
@@ -111,7 +115,7 @@
 
 ### Testing
 
-- Unit tests: `dashboardTodayRateSnapshot` 速率计算覆盖完整分钟、缺桶补零、忽略当前分钟、零分钟窗口。
+- Unit tests: `dashboardTodayRateSnapshot` 速率计算覆盖活跃尾段、前置 0 不稀释、当前部分分钟参与、活动后静默计入分母、零活动窗口。
 - Integration tests: `TodayStatsOverview.test.tsx`、`DashboardActivityOverview.test.tsx`、`Dashboard.test.tsx` 覆盖 6 tile 与 partial fallback。
 - E2E tests (if applicable): None。
 
@@ -143,12 +147,22 @@
 
 - source_type: storybook_canvas
   target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: chat-reviewed
+  story_id_or_title: `dashboard-todaystatsoverview--populated`
+  state: populated with KPI title tooltip open
+  evidence_note: 证明 KPI 标题可点击打开字段说明 tooltip，TPM 文案明确说明最近 5 分钟活跃尾段均值；本次证据只回传聊天快照，不新增提交截图文件。
+  PR: no-image
+
+- source_type: storybook_canvas
+  target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
   submission_gate: approved
   story_id_or_title: `dashboard-todaystatsoverview--desktop-single-row`
   state: desktop single row
-  evidence_note: 证明 `desktop1440` 下 6 个 KPI tile 保持单行，且首两项已替换为 `TPM (5m avg)` 与 `Cost/min (5m avg)`。
+  evidence_note: 证明 `desktop1440` 下 6 个 KPI tile 保持单行，且首两项为 `TPM` 与 `消费速率`，标题 tooltip 可解释最近 5 分钟活跃尾段均值。
   PR: include
   image:
   ![Today KPI desktop single row](./assets/today-kpi-desktop-single-row.png)
@@ -184,7 +198,7 @@
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
-- 风险：如果 `useTimeseries(today)` 的 `rangeEnd` 与当前分钟对齐处理不一致，可能误把进行中分钟算进窗口；需要单测锁死。
+- 风险：`useTimeseries(today)` 只提供 1m 桶，无法恢复首个非零桶内的真实秒级活动起点；本轮按 `bucketStart` 近似并通过 tooltip 明确口径。
 - 风险：6 tile 在较窄桌面宽度下可能压缩数值，需要继续依赖 `AdaptiveMetricValue` 的 compact fallback。
 - 假设：`desktop1440` 是本次“单行 KPI”主要验收视口。
 
@@ -192,6 +206,7 @@
 
 - 2026-04-10: 新建 follow-up spec，冻结 Dashboard 今日 KPI 切换为 5m-avg TPM 与 Cost/min 的范围、验收与视觉证据要求。
 - 2026-04-10: 完成前端 5m-avg 速率派生、6-tile KPI 重排、Vitest/Storybook 覆盖与本地视觉证据归档，并获主人授权将截图随 PR 一起提交。
+- 2026-04-28: 根据主人反馈修正速率口径：从最近 5 个已完成分钟桶改为最近 5 分钟活跃尾段均值，当前部分分钟参与，前置空闲不稀释速率，活动后的安静期会随当前时间继续拉长分母；同时为 KPI 标题增加字段说明 tooltip。
 
 ## 参考（References）
 

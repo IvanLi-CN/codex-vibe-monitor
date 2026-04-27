@@ -14,6 +14,12 @@ vi.mock('../i18n', () => ({
         'dashboard.today.dayBadge': 'Today',
         'dashboard.today.tokensPerMinute': 'TPM',
         'dashboard.today.spendRate': 'Spend rate',
+        'dashboard.today.tokensPerMinuteDescription': 'TPM uses the active tail inside the latest 5-minute window.',
+        'dashboard.today.spendRateDescription': 'Spend rate uses the active tail inside the latest 5-minute window.',
+        'dashboard.today.successDescription': 'Successful calls in the selected day.',
+        'dashboard.today.failuresDescription': 'Failed calls in the selected day.',
+        'dashboard.today.totalCostDescription': 'Total cost in the selected day.',
+        'dashboard.today.totalTokensDescription': 'Total tokens in the selected day.',
         'stats.cards.loadError': 'Load error',
         'stats.cards.success': 'Success',
         'stats.cards.failures': 'Failures',
@@ -213,6 +219,40 @@ describe('TodayStatsOverview', () => {
     expect(tpmText).toContain('1,001')
     expect(tpmText).not.toContain('.')
     expect(spendRateText).toContain('$0.10')
+  })
+
+  it('opens field descriptions from metric titles', () => {
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 42,
+          successCount: 40,
+          failureCount: 2,
+          totalCost: 1.48,
+          totalTokens: 9000,
+        }}
+        rate={{
+          tokensPerMinute: 1000,
+          spendRate: 0.1,
+          windowMinutes: 5,
+          available: true,
+        }}
+        loading={false}
+        error={null}
+      />,
+    )
+
+    const tpmTitle = [...(host?.querySelectorAll('[role="button"]') ?? [])]
+      .find((element) => element.textContent === 'TPM')
+    expect(tpmTitle).toBeInstanceOf(HTMLElement)
+    expect(tpmTitle?.getAttribute('aria-label')).toBeNull()
+
+    act(() => {
+      tpmTitle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    const tooltip = document.body.querySelector('[role="tooltip"]')
+    expect(tooltip?.textContent).toContain('active tail inside the latest 5-minute window')
   })
 
   it('shows unavailable placeholders for rate tiles when timeseries loading fails', () => {
