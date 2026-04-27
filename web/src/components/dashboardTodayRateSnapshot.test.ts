@@ -16,7 +16,7 @@ function minutePoint(offsetMinutes: number, totalTokens: number, totalCost: numb
 }
 
 describe('buildDashboardTodayRateSnapshot', () => {
-  it('calculates 5-minute averages from the latest completed minute buckets', () => {
+  it('uses the latest completed minute bucket as the default rate source', () => {
     const snapshot = buildDashboardTodayRateSnapshot(
       {
         rangeStart: '2026-04-10 00:00:00',
@@ -34,13 +34,13 @@ describe('buildDashboardTodayRateSnapshot', () => {
       { now: new Date(2026, 3, 10, 0, 6, 30, 0) },
     )
 
-    expect(snapshot?.tokensPerMinute).toBe(1000)
-    expect(snapshot?.costPerMinute).toBeCloseTo(0.1, 6)
-    expect(snapshot?.windowMinutes).toBe(5)
+    expect(snapshot?.tokensPerMinute).toBe(1400)
+    expect(snapshot?.spendRate).toBeCloseTo(0.14, 6)
+    expect(snapshot?.windowMinutes).toBe(1)
     expect(snapshot?.available).toBe(true)
   })
 
-  it('fills missing minutes with zero instead of shrinking the denominator', () => {
+  it('fills missing minutes with zero instead of shrinking the denominator when a wider target window is requested', () => {
     const snapshot = buildDashboardTodayRateSnapshot(
       {
         rangeStart: '2026-04-10 00:00:00',
@@ -48,15 +48,15 @@ describe('buildDashboardTodayRateSnapshot', () => {
         bucketSeconds: 60,
         points: [minutePoint(1, 1000, 0.1), minutePoint(3, 2000, 0.2)],
       },
-      { now: new Date(2026, 3, 10, 0, 5, 20, 0) },
+      { now: new Date(2026, 3, 10, 0, 5, 20, 0), targetWindowMinutes: 5 },
     )
 
     expect(snapshot?.tokensPerMinute).toBe(600)
-    expect(snapshot?.costPerMinute).toBeCloseTo(0.06, 6)
+    expect(snapshot?.spendRate).toBeCloseTo(0.06, 6)
     expect(snapshot?.windowMinutes).toBe(5)
   })
 
-  it('uses the available completed minutes when today has fewer than five full minutes', () => {
+  it('uses one completed minute when today has fewer than five full minutes by default', () => {
     const snapshot = buildDashboardTodayRateSnapshot(
       {
         rangeStart: '2026-04-10 00:00:00',
@@ -67,9 +67,9 @@ describe('buildDashboardTodayRateSnapshot', () => {
       { now: new Date(2026, 3, 10, 0, 3, 10, 0) },
     )
 
-    expect(snapshot?.tokensPerMinute).toBe(1000)
-    expect(snapshot?.costPerMinute).toBeCloseTo(0.1, 6)
-    expect(snapshot?.windowMinutes).toBe(3)
+    expect(snapshot?.tokensPerMinute).toBe(1500)
+    expect(snapshot?.spendRate).toBeCloseTo(0.15, 6)
+    expect(snapshot?.windowMinutes).toBe(1)
   })
 
   it('ignores the current in-progress minute even when a partial bucket exists', () => {
@@ -91,8 +91,8 @@ describe('buildDashboardTodayRateSnapshot', () => {
     )
 
     expect(snapshot?.tokensPerMinute).toBe(500)
-    expect(snapshot?.costPerMinute).toBeCloseTo(0.05, 6)
-    expect(snapshot?.windowMinutes).toBe(5)
+    expect(snapshot?.spendRate).toBeCloseTo(0.05, 6)
+    expect(snapshot?.windowMinutes).toBe(1)
   })
 
   it('returns zero values when there are no completed minutes yet', () => {
@@ -107,7 +107,7 @@ describe('buildDashboardTodayRateSnapshot', () => {
     )
 
     expect(snapshot?.tokensPerMinute).toBe(0)
-    expect(snapshot?.costPerMinute).toBe(0)
+    expect(snapshot?.spendRate).toBe(0)
     expect(snapshot?.windowMinutes).toBe(0)
     expect(snapshot?.available).toBe(true)
   })
@@ -172,9 +172,9 @@ describe('buildDashboardTodayRateSnapshot', () => {
       },
     )
 
-    expect(snapshot?.tokensPerMinute).toBe(700)
-    expect(snapshot?.costPerMinute).toBeCloseTo(0.07, 6)
-    expect(snapshot?.windowMinutes).toBe(5)
+    expect(snapshot?.tokensPerMinute).toBe(900)
+    expect(snapshot?.spendRate).toBeCloseTo(0.09, 6)
+    expect(snapshot?.windowMinutes).toBe(1)
     expect(snapshot?.available).toBe(true)
   })
 })

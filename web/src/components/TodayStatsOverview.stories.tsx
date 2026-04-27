@@ -16,7 +16,7 @@ const sampleStats: StatsResponse = {
 
 const sampleRate: DashboardTodayRateSnapshot = {
   tokensPerMinute: 1000.6,
-  costPerMinute: 0.1,
+  spendRate: 0.1,
   windowMinutes: 5,
   available: true,
 }
@@ -127,7 +127,7 @@ export const ZeroRate: Story = {
     stats: sampleStats,
     rate: {
       tokensPerMinute: 0,
-      costPerMinute: 0,
+      spendRate: 0,
       windowMinutes: 0,
       available: true,
     },
@@ -189,7 +189,7 @@ export const Empty: Story = {
     stats: null,
     rate: {
       tokensPerMinute: 0,
-      costPerMinute: 0,
+      spendRate: 0,
       windowMinutes: 0,
       available: true,
     },
@@ -226,7 +226,7 @@ function buildAnimatedStats(step: number): StatsResponse {
 function buildAnimatedRate(step: number): DashboardTodayRateSnapshot {
   return {
     tokensPerMinute: 1000 + step * 27,
-    costPerMinute: Number((0.1 + step * 0.006).toFixed(3)),
+    spendRate: Number((0.1 + step * 0.006).toFixed(3)),
     windowMinutes: 5,
     available: true,
   }

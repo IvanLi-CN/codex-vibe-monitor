@@ -69,6 +69,22 @@ vi.mock("recharts", () => ({
   Legend: () => <div data-testid="legend" />,
   ReferenceLine: () => <div data-testid="reference-line" />,
   Area: () => <div data-testid="area-series" />,
+  Line: ({
+    dataKey,
+    yAxisId,
+    name,
+  }: {
+    dataKey?: string;
+    yAxisId?: string;
+    name?: string;
+  }) => (
+    <div
+      data-testid="line-series"
+      data-data-key={dataKey ?? ""}
+      data-y-axis-id={yAxisId ?? ""}
+      data-name={name ?? ""}
+    />
+  ),
   Bar: ({ stackId, dataKey }: { stackId?: string; dataKey?: string }) => (
     <div
       data-testid="bar-series"
@@ -398,6 +414,50 @@ describe("DashboardTodayActivityChart", () => {
     });
   });
 
+  it("adds raw TPM, spend rate, and first-byte-total values to non-future minute data", () => {
+    const data = buildTodayMinuteChartData(
+      {
+        rangeStart: "2026-04-08 00:00:00",
+        rangeEnd: "2026-04-08 00:02:30",
+        bucketSeconds: 60,
+        points: [
+          {
+            bucketStart: "2026-04-08 00:01:00",
+            bucketEnd: "2026-04-08 00:01:59",
+            totalCount: 2,
+            successCount: 2,
+            failureCount: 0,
+            totalTokens: 1200,
+            totalCost: 0.24,
+            firstResponseByteTotalSampleCount: 2,
+            firstResponseByteTotalAvgMs: 450,
+          },
+        ],
+      },
+      {
+        now: new Date(2026, 3, 8, 0, 2, 30),
+        localeTag: "en-US",
+      },
+    );
+
+    expect(data[1]).toMatchObject({
+      tokensPerMinute: 1200,
+      spendRate: 0.24,
+      firstResponseByteTotalAvgMs: 450,
+      chartTokensPerMinute: 1200,
+      chartSpendRate: 0.24,
+      chartFirstResponseByteTotalAvgMs: 450,
+    });
+    expect(data.at(-1)).toMatchObject({
+      tokensPerMinute: null,
+      spendRate: null,
+      firstResponseByteTotalAvgMs: null,
+      chartTokensPerMinute: null,
+      chartSpendRate: null,
+      chartFirstResponseByteTotalAvgMs: null,
+    });
+  });
+
   it("shows in-flight calls in the count tooltip without inferring neutral residuals as running", () => {
     const html = renderToStaticMarkup(
       <DashboardTodayActivityChart
@@ -425,6 +485,29 @@ describe("DashboardTodayActivityChart", () => {
     expect(html).toContain("chart.inFlight");
     expect(html).toContain("1 unit.calls");
     expect(html).toContain("5 unit.calls");
+  });
+
+  it("overlays first-byte-total latency on the count chart", () => {
+    const html = renderToStaticMarkup(
+      <DashboardTodayActivityChart
+        response={{
+          ...response,
+          points: [
+            {
+              ...response.points[0],
+              firstResponseByteTotalSampleCount: 1,
+              firstResponseByteTotalAvgMs: 43890,
+            },
+          ],
+        }}
+        loading={false}
+        error={null}
+        metric="totalCount"
+      />,
+    );
+
+    expect(html).toContain('data-data-key="chartFirstResponseByteTotalAvgMs"');
+    expect(html).toContain('data-name="chart.firstResponseByteTotal"');
   });
 
   it("renders count mode as a composed chart with split success and failure bars", () => {
@@ -474,6 +557,24 @@ describe("DashboardTodayActivityChart", () => {
     expect(costHtml).not.toContain('data-testid="composed-chart"');
     expect(tokenHtml).toContain('data-chart-mode="cumulative-area"');
     expect(tokenHtml).toContain('data-testid="area-chart"');
+  });
+
+  it("renders trend mode as raw TPM and spend-rate line charts", () => {
+    const html = renderToStaticMarkup(
+      <DashboardTodayActivityChart
+        response={response}
+        loading={false}
+        error={null}
+        metric="trend"
+      />,
+    );
+
+    expect(html).toContain('data-chart-mode="trend-lines"');
+    expect(html).toContain('data-testid="composed-chart"');
+    expect(html).toContain('data-data-key="chartTokensPerMinute"');
+    expect(html).toContain('data-data-key="chartSpendRate"');
+    expect(html).toContain('data-name="chart.tokensPerMinute"');
+    expect(html).toContain('data-name="chart.spendRate"');
   });
 
   it("starts chart diagnostics immediately after toggling debug on in an open tab", () => {

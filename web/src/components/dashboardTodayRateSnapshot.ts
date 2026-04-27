@@ -5,11 +5,11 @@ import {
 } from './dashboardNaturalDayWindow'
 
 const MINUTE_MS = 60_000
-const DEFAULT_WINDOW_MINUTES = 5
+const DEFAULT_WINDOW_MINUTES = 1
 
 export interface DashboardTodayRateSnapshot {
   tokensPerMinute: number
-  costPerMinute: number
+  spendRate: number
   windowMinutes: number
   available: boolean
 }
@@ -43,7 +43,7 @@ export function buildDashboardTodayRateSnapshot(
   if (anchorMs <= startMs) {
     return {
       tokensPerMinute: 0,
-      costPerMinute: 0,
+      spendRate: 0,
       windowMinutes: 0,
       available: true,
     }
@@ -55,7 +55,7 @@ export function buildDashboardTodayRateSnapshot(
   if (windowMinutes <= 0) {
     return {
       tokensPerMinute: 0,
-      costPerMinute: 0,
+      spendRate: 0,
       windowMinutes: 0,
       available: true,
     }
@@ -89,7 +89,7 @@ export function buildDashboardTodayRateSnapshot(
 
   return {
     tokensPerMinute: totalTokens / windowMinutes,
-    costPerMinute: totalCost / windowMinutes,
+    spendRate: totalCost / windowMinutes,
     windowMinutes,
     available: true,
   }
