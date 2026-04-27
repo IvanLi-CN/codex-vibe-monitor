@@ -176,6 +176,19 @@ describe('StatsPage', () => {
     })
   })
 
+  it('offers minute buckets for ranges up to 24 hours', () => {
+    for (const range of ['1h', 'today', '1d']) {
+      expect(BUCKET_OPTION_KEYS[range]).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            value: '1m',
+            labelKey: 'stats.bucket.eachMinute',
+          }),
+        ]),
+      )
+    }
+  })
+
   it('offers a 24-hour bucket for the past 7 days range', () => {
     expect(BUCKET_OPTION_KEYS['7d']).toEqual(
       expect.arrayContaining([

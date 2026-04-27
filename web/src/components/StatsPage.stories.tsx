@@ -4,6 +4,7 @@ import { I18nProvider } from '../i18n'
 import type {
   ErrorDistributionResponse,
   FailureSummaryResponse,
+  ParallelWorkStatsResponse,
   StatsResponse,
   TimeseriesPoint,
   TimeseriesResponse,
@@ -79,6 +80,47 @@ function buildTimeseriesResponse(options: {
   }
 }
 
+function buildParallelWorkResponse(options: {
+  rangeStart: string
+  rangeEnd: string
+  bucketSeconds: number
+  effectiveTimeZone?: string
+}): ParallelWorkStatsResponse {
+  const startMs = Date.parse(options.rangeStart)
+  const endMs = Date.parse(options.rangeEnd)
+  const bucketMs = options.bucketSeconds * 1000
+  const count = Math.max(0, Math.min(240, Math.floor((endMs - startMs) / bucketMs)))
+  const points = Array.from({ length: count }, (_, index) => {
+    const bucketStart = new Date(startMs + index * bucketMs).toISOString()
+    const bucketEnd = new Date(startMs + (index + 1) * bucketMs).toISOString()
+    return {
+      bucketStart,
+      bucketEnd,
+      parallelCount: index % 9 === 0 ? 3 : 5 + (index % 5),
+    }
+  })
+  const counts = points.map((point) => point.parallelCount)
+  const current = {
+    rangeStart: options.rangeStart,
+    rangeEnd: options.rangeEnd,
+    bucketSeconds: options.bucketSeconds,
+    completeBucketCount: points.length,
+    activeBucketCount: points.filter((point) => point.parallelCount > 0).length,
+    minCount: counts.length ? Math.min(...counts) : null,
+    maxCount: counts.length ? Math.max(...counts) : null,
+    avgCount: counts.length ? counts.reduce((sum, value) => sum + value, 0) / counts.length : null,
+    effectiveTimeZone: options.effectiveTimeZone ?? 'Asia/Shanghai',
+    timeZoneFallback: false,
+    points,
+  }
+  return {
+    current,
+    minute7d: current,
+    hour30d: current,
+    dayAll: current,
+  }
+}
+
 function buildStatsRequestHandler(scenario: StatsScenario = 'default') {
   const now = Date.parse('2026-04-06T12:00:00.000Z')
   const todayStart = now - 24 * 60 * 60 * 1000
@@ -145,12 +187,12 @@ function buildStatsRequestHandler(scenario: StatsScenario = 'default') {
         buildTimeseriesResponse({
           rangeStart: new Date(todayStart).toISOString(),
           rangeEnd: new Date(now).toISOString(),
-          bucketSeconds: bucket === '5m' ? 300 : bucket === '30m' ? 1800 : bucket === '1h' ? 3600 : 900,
+          bucketSeconds: bucket === '1m' ? 60 : bucket === '5m' ? 300 : bucket === '30m' ? 1800 : bucket === '1h' ? 3600 : 900,
           effectiveBucket: bucket,
-          availableBuckets: ['15m', '30m', '1h', '6h'],
+          availableBuckets: ['1m', '15m', '30m', '1h', '6h'],
           points: buildTimeseriesPoints({
-            count: bucket === '1h' ? 24 : bucket === '30m' ? 48 : bucket === '5m' ? 288 : 96,
-            bucketSeconds: bucket === '5m' ? 300 : bucket === '30m' ? 1800 : bucket === '1h' ? 3600 : 900,
+            count: bucket === '1m' ? 24 * 60 : bucket === '1h' ? 24 : bucket === '30m' ? 48 : bucket === '5m' ? 288 : 96,
+            bucketSeconds: bucket === '1m' ? 60 : bucket === '5m' ? 300 : bucket === '30m' ? 1800 : bucket === '1h' ? 3600 : 900,
             startMs: todayStart,
           }),
         }),
@@ -163,6 +205,20 @@ function buildStatsRequestHandler(scenario: StatsScenario = 'default') {
 
     if (url.pathname === '/api/stats/failures/summary') {
       return jsonResponse(failureSummary)
+    }
+
+    if (url.pathname === '/api/stats/parallel-work') {
+      const range = url.searchParams.get('range') ?? 'today'
+      const bucket = url.searchParams.get('bucket') ?? (range === '7d' ? '1h' : '15m')
+      const bucketSeconds = bucket === '1m' ? 60 : bucket === '30m' ? 1800 : bucket === '1h' ? 3600 : 900
+      const rangeStart = range === '7d' ? new Date(weekStart).toISOString() : new Date(todayStart).toISOString()
+      return jsonResponse(
+        buildParallelWorkResponse({
+          rangeStart,
+          rangeEnd: new Date(now).toISOString(),
+          bucketSeconds,
+        }),
+      )
     }
 
     return undefined
@@ -205,10 +261,22 @@ export const Default: Story = {
     await expect(canvas.getByText('统计')).toBeVisible()
     await expect(canvas.getByTestId('stats-range-select-trigger')).toBeVisible()
     await expect(canvas.getByTestId('stats-bucket-select-trigger')).toBeVisible()
+    await expect(canvas.getByTestId('stats-bucket-select-trigger')).toHaveTextContent('每 15 分钟')
 
     await userEvent.click(canvas.getByTestId('stats-range-select-trigger'))
     await userEvent.click(within(document.body).getByText('最近 7 天'))
     await expect(canvas.getByTestId('stats-range-select-trigger')).toHaveTextContent('最近 7 天')
+  },
+}
+
+export const MinuteBucketOptions: Story = {
+  render: () => <StatsPage />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const bucketTrigger = canvas.getByTestId('stats-bucket-select-trigger')
+    await expect(bucketTrigger).toHaveTextContent('每 15 分钟')
+    await userEvent.click(bucketTrigger)
+    await expect(within(document.body).getByText('每分钟')).toBeVisible()
   },
 }
 

@@ -63,6 +63,7 @@
 
 - 指标定义：bucket 内出现过请求的 `distinct promptCacheKey` 数量。
 - `range` 与 `bucket` 跟随统计页全局选择；缺省时沿用统计页默认 range。
+- 统计页全局 bucket 选择在不超过 24 小时的页面周期内提供 `1m` 分钟粒度选项，供并行工作与其他趋势图共同复用。
 - 主响应字段为 `current`；`minute7d / hour30d / dayAll` 仅保留为前端兼容别名，值与 `current` 一致，不再代表独立固定窗口。
 - 响应契约：
   - `rangeStart: string`
@@ -89,6 +90,7 @@
 - Given 同一个 `promptCacheKey` 跨 bucket 继续活跃，When 请求 `/api/stats/parallel-work`，Then 它会分别计入各自 bucket。
 - Given bucket 内没有任何请求，When 返回窗口数据，Then 该 bucket 仍会作为 `parallelCount = 0` 的点出现在结果中。
 - Given 打开 Stats 页并行工作 section，When 顶部 `range / bucket` 变化，Then 并行工作 section 请求相同 `range / bucket` 并渲染对应 `current` 窗口。
+- Given 统计页选择 `1h / today / 1d` 任一不超过 24 小时周期，When 打开 bucket 下拉，Then 可以选择 `1m` 分钟粒度。
 - Given 打开 Stats 页并行工作 section，When 数据正常返回，Then section 内不出现独立窗口 segmented toggle，且同一时刻只显示一个当前页面周期卡片。
 - Given 宽屏渲染并行工作趋势图，When 查看 Storybook 证据，Then 圆点、线宽、坐标轴文字与 tooltip 目标不被横向拉伸。
 - Given section 进入 loading / error / empty / populated 任一状态，When 渲染 Storybook，Then 布局稳定且状态文案清晰。
@@ -143,6 +145,19 @@
   evidence_note: 验证 Storybook gallery 已覆盖当前分钟周期、当前小时周期、当前天级空状态、loading 与 error 五类关键状态；有数据窗口使用 Recharts 图表，空态和错误态保持原有语义，且没有内部窗口切换控件。
   image:
   ![并行工作统计当前页面周期状态集](./assets/parallel-work-current-gallery.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: desktop1660
+  viewport_strategy: storybook-viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Pages/StatsPage/MinuteBucketOptions
+  state: stats page bucket menu open
+  evidence_note: 验证统计页在不超过 24 小时的默认 today 周期内，bucket 下拉保留原默认 `15m`，同时提供 `1m` 分钟粒度选项；并行工作 section 复用同一个页面 bucket。
+  image:
+  ![统计页分钟粒度 bucket 选项](./assets/stats-minute-bucket-options.png)
 
 ## 实现里程碑（Milestones / Delivery checklist）
 
