@@ -4,7 +4,7 @@
 
 - Status: 已完成（5/5）
 - Created: 2026-03-09
-- Last: 2026-03-09
+- Last: 2026-04-27
 
 ## 背景 / 问题陈述
 
@@ -21,6 +21,7 @@
 - compact 请求落库时保留原始 endpoint=`/v1/responses/compact`，并让主列表可见标记“远程压缩 / Compact”，同时详情区继续展示 endpoint 原文。
 - compact 响应复用现有 usage / model 解析与 `estimate_proxy_cost`，让 request count、tokens、cost 自动流入 `stats`、`summary`、`timeseries`。
 - 明确 compact 不走 Fast mode rewrite，不注入 `service_tier`，不注入 chat-only `stream_options.include_usage`。
+- 当未来 compact 请求体或转发头缺少 `promptCacheKey` / `stickyKey` 时，后端可基于同一客户端稳定指纹的近期普通 `/v1/responses` 记录补齐对话归因。
 - 在设置页 pricing 区说明 compact 按命中的模型单价估算成本，不新增公开配置结构。
 
 ### Non-goals
@@ -29,6 +30,7 @@
 - 不新增 compact 独立统计页、筛选页或独立成本面板。
 - 不对 compact 注入 `service_tier`、套用 Fast mode rewrite 或附带 chat-only `stream_options.include_usage`。
 - 不验证公开文档之外 compact 是否私下兼容 `service_tier`；当前状态为未检查。
+- 不对已落库旧 compact 做历史 backfill 或启发式补数；缺少 key 的旧记录继续保持原状。
 
 ## 范围（Scope）
 
@@ -54,6 +56,8 @@
 - compact 成本估算必须复用现有 `estimate_proxy_cost` 链路，保持 exact model、dated alias 与 unknown model 的既有语义不变。
 - 当 compact 响应缺少 response model 时，估价必须回退使用请求体 model。
 - compact 请求不得触发 Fast mode rewrite，不得自动注入 `service_tier`，不得自动注入 chat-only `stream_options.include_usage`。
+- future compact 记录在请求体或转发头缺少 `promptCacheKey` 时，若同一客户端稳定指纹在短 TTL 内存在最近普通 `/v1/responses` 的唯一映射，落库 payload 必须补齐 `promptCacheKey`，并在可用时补齐 `stickyKey`。
+- 客户端指纹诊断字段只能保存短 hash / fingerprint，不得保存 `session_id`、`originator`、`x-codex-window-id`、`x-codex-installation-id`、`traceparent` 的明文值。
 - compact 记录必须自动计入 `GET /api/stats`、`GET /api/stats/summary`、`GET /api/stats/timeseries` 的请求数、tokens 与 cost。
 - InvocationTable 主列表在桌面与移动布局都必须对 compact 记录显示可见标记，详情面板继续展示原始 endpoint 文本。
 
@@ -71,6 +75,8 @@
 - `prepare_target_request_body()` 在 compact 路径只做 JSON 解析与信息提取，不执行 Fast rewrite，也不执行 chat stream usage 注入。
 - 响应采集阶段沿用现有 usage / model 解析逻辑，compact 的 `response.compaction` 响应若携带 `usage` 即正常提取 tokens。
 - payload summary 通过 `target.endpoint()` 持久化 compact endpoint，后续 `/api/invocations`、SSE `records`、startup backfill 与详情展示均保持同一来源。
+- 普通 `/v1/responses` 成功提取 `promptCacheKey` 时，后端维护运行期“客户端稳定指纹 -> 最近 `promptCacheKey` / `stickyKey`”映射；stable key 只使用 `session_id`、`originator`、`x-codex-window-id`、`x-codex-installation-id`，且必须至少包含 `session_id` 或 `x-codex-window-id` 这类强稳定键，`traceparent` 仅作为诊断 fingerprint 保存。
+- compact 缺少 key 时，从同一 stable client fingerprint 的近期映射补齐对话归因，并写入 `promptCacheKeyAttributionSource="client_fingerprint_recent"`；无 stable fingerprint、TTL 过期或无法匹配时保持无 key。
 - 前端通过现有 `endpoint` 字段判断 compact，并在主列表 badge 位置显示“远程压缩 / Compact”。
 - 统计接口继续使用同一 `codex_invocations` 数据源，因此 compact 自动进入 totals、summary 与 timeseries。
 
@@ -80,6 +86,7 @@
 - 若 compact model 未命中 pricing catalog，成本行为保持现有 unknown-model 语义，不新增特殊 fallback。
 - 若 compact 响应缺少 `usage`，记录仍可落库，但 tokens / cost 继续遵循现有“无 usage 则无成本”的代理语义。
 - 若 payload 缺少 endpoint，旧记录仍按现有 fallback 逻辑解析为普通 responses；compact 专属识别不回写旧记录。
+- 若 compact 与最近普通 responses 来自不同客户端稳定指纹，不得跨客户端继承 prompt-cache key。
 
 ## 接口契约（Interfaces & Contracts）
 
@@ -101,6 +108,8 @@
 - Given compact row 已落库，When 查询 `GET /api/invocations` 或接收 SSE `records`，Then 前端能看到 compact 标记且详情仍显示 endpoint 原文。
 - Given compact row 已落库，When 查询 `GET /api/stats`、`GET /api/stats/summary`、`GET /api/stats/timeseries`，Then request count、tokens、cost 自动包含 compact。
 - Given Fast mode rewrite 开启，When 发送 compact 请求，Then 发往上游的请求体不新增 `service_tier`，也不附带 chat-only `stream_options.include_usage`。
+- Given 普通 `/v1/responses` 带 `promptCacheKey` 且包含客户端稳定指纹，When 同一稳定指纹在短 TTL 内发送缺 key 的 compact，Then 新 compact 落库 payload 含同一 `promptCacheKey` / `stickyKey`，并能出现在 prompt-cache conversation recent invocations。
+- Given compact 缺 key 且客户端稳定指纹不同、缺失、只有弱字段或 TTL 过期，When 落库，Then 不得继承其它对话的 `promptCacheKey`。
 - Given 新增 compact 标记后运行前端测试，When 检查桌面与移动布局，Then 不出现新增横向滚动、截断失控或详情按钮错位。
 
 ## 实现前置条件（Definition of Ready / Preconditions）
@@ -111,6 +120,7 @@
 - compact 当前公开参数里 `service_tier` 不存在，因此本次默认不注入：已确定。
 - compact 是否存在公开文档之外可工作的 `service_tier` 兼容行为：未检查。
 - 本地是否已有真实 compact 历史数据可供手工回放验证：未检查。
+- compact 对话归因历史策略：仅修未来，旧数据不补写。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 
@@ -150,8 +160,10 @@
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
 - 风险：旧历史 payload 若没有 endpoint 字段，无法自动从历史数据中追溯 compact 类型；当前只保证新采集请求稳定识别。
+- 风险：旧 compact payload 若缺少 prompt-cache key，不会出现在 prompt-cache conversation 归因视图；当前按“仅修未来”策略避免历史误归因。
 - 风险：compact 若未来公开 `service_tier` 参数，当前实现仍会保持“不注入”策略，需要后续根据官方文档再评估。
 - 假设：compact 响应中的 `usage` 结构继续与现有 usage 解析兼容。
+- 假设：`session_id`、`originator`、`x-codex-window-id`、`x-codex-installation-id` 在同一客户端窗口内足够稳定，可用于短 TTL 内归因；`traceparent` 可能逐请求变化，不参与 stable matching。
 - 开放问题：GitHub MCP 当前不可用，fast-track 的远端 push / PR 环节存在阻断。
 
 ## 变更记录（Change log）
@@ -159,6 +171,7 @@
 - 2026-03-09: 创建规格，冻结 compact 识别、统计口径、计费口径与“不注入 `service_tier`”边界。
 - 2026-03-09: 已完成后端 compact capture / pricing / stats 接入，以及 InvocationTable compact 标记与 settings 文案改动。
 - 2026-03-09: 已完成本地 Rust / web 验证与 review-loop 审查；远端 PR、checks 与 merge readiness 已收敛。
+- 2026-04-27: 补充 future-only compact prompt-cache 归因要求；缺 key 的新 compact 可通过同一客户端稳定指纹继承最近普通 responses 的 `promptCacheKey` / `stickyKey`，旧记录不 backfill。
 
 ## 参考（References）
 

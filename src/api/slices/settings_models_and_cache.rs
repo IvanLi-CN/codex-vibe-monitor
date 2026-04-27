@@ -775,6 +775,7 @@ pub(crate) struct RequestCaptureInfo {
     pub(crate) model: Option<String>,
     pub(crate) sticky_key: Option<String>,
     pub(crate) prompt_cache_key: Option<String>,
+    pub(crate) prompt_cache_key_attribution_source: Option<String>,
     pub(crate) requested_service_tier: Option<String>,
     pub(crate) reasoning_effort: Option<String>,
     pub(crate) is_stream: bool,

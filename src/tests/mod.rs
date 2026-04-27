@@ -20,3 +20,4 @@ include!("slices/pool_failover_window_h.rs");
 include!("slices/pool_failover_window_i.rs");
 include!("slices/pool_failover_window_j.rs");
 include!("slices/pool_failover_window_k.rs");
+include!("slices/compact_prompt_cache_attribution.rs");
