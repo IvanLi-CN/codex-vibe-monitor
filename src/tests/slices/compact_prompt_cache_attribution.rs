@@ -135,6 +135,39 @@ fn compact_prompt_cache_attribution_rejects_ambiguous_recent_keys() {
 }
 
 #[test]
+fn compact_prompt_cache_attribution_recovers_after_older_conflict_expires() {
+    let _guard = COMPACT_ATTRIBUTION_TEST_LOCK.lock().expect("test lock");
+    clear_prompt_cache_attribution_for_tests();
+    let now = Instant::now();
+    let context = client_prompt_cache_attribution_context_from_headers(&client_headers(
+        "session-a",
+        "window-a",
+        "00-00000000000000000000000000000001-0000000000000001-01",
+    ));
+
+    remember_prompt_cache_attribution(&context, "prompt-cache-a", None, now);
+    remember_prompt_cache_attribution(
+        &context,
+        "prompt-cache-b",
+        Some("sticky-b"),
+        now + Duration::from_secs(20),
+    );
+
+    assert!(
+        lookup_recent_prompt_cache_attribution(&context, now + Duration::from_secs(30)).is_none(),
+        "multiple recent keys for the same client fingerprint should stay unattributed"
+    );
+
+    let attribution = lookup_recent_prompt_cache_attribution(
+        &context,
+        now + Duration::from_secs(15 * 60 + 1),
+    )
+    .expect("newer key should become attributable after the older conflict expires");
+    assert_eq!(attribution.prompt_cache_key, "prompt-cache-b");
+    assert_eq!(attribution.sticky_key.as_deref(), Some("sticky-b"));
+}
+
+#[test]
 fn compact_prompt_cache_attribution_requires_unique_client_key() {
     let _guard = COMPACT_ATTRIBUTION_TEST_LOCK.lock().expect("test lock");
     clear_prompt_cache_attribution_for_tests();

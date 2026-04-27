@@ -1905,7 +1905,7 @@ pub(crate) fn header_value_as_str<'a>(headers: &'a HeaderMap, name: &'static str
 const PROMPT_CACHE_ATTRIBUTION_TTL: Duration = Duration::from_secs(15 * 60);
 const CLIENT_ATTRIBUTION_FINGERPRINT_VERSION: &str = "v1";
 
-static CLIENT_PROMPT_CACHE_ATTRIBUTION: Lazy<std::sync::Mutex<HashMap<String, ClientPromptCacheAttributionEntry>>> =
+static CLIENT_PROMPT_CACHE_ATTRIBUTION: Lazy<std::sync::Mutex<HashMap<String, ClientPromptCacheAttributionBucket>>> =
     Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
 
 #[derive(Debug, Clone, Default)]
@@ -1919,8 +1919,12 @@ pub(crate) struct ClientPromptCacheAttributionContext {
 pub(crate) struct ClientPromptCacheAttributionEntry {
     pub(crate) prompt_cache_key: String,
     pub(crate) sticky_key: Option<String>,
-    ambiguous: bool,
     seen_at: Instant,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ClientPromptCacheAttributionBucket {
+    entries: HashMap<String, ClientPromptCacheAttributionEntry>,
 }
 
 fn short_sha256_fingerprint(raw: &str) -> String {
@@ -2022,17 +2026,18 @@ pub(crate) fn remember_prompt_cache_attribution(
     let mut cache = CLIENT_PROMPT_CACHE_ATTRIBUTION
         .lock()
         .expect("client prompt-cache attribution mutex poisoned");
-    cache.retain(|_, entry| now.duration_since(entry.seen_at) <= PROMPT_CACHE_ATTRIBUTION_TTL);
-    let ambiguous = cache
-        .get(cache_key)
-        .map(|entry| entry.ambiguous || entry.prompt_cache_key != prompt_cache_key)
-        .unwrap_or(false);
-    cache.insert(
-        cache_key.to_string(),
+    cache.retain(|_, bucket| {
+        bucket
+            .entries
+            .retain(|_, entry| now.duration_since(entry.seen_at) <= PROMPT_CACHE_ATTRIBUTION_TTL);
+        !bucket.entries.is_empty()
+    });
+    let bucket = cache.entry(cache_key.to_string()).or_default();
+    bucket.entries.insert(
+        prompt_cache_key.to_string(),
         ClientPromptCacheAttributionEntry {
             prompt_cache_key: prompt_cache_key.to_string(),
             sticky_key,
-            ambiguous,
             seen_at: now,
         },
     );
@@ -2046,12 +2051,17 @@ pub(crate) fn lookup_recent_prompt_cache_attribution(
     let mut cache = CLIENT_PROMPT_CACHE_ATTRIBUTION
         .lock()
         .expect("client prompt-cache attribution mutex poisoned");
-    cache.retain(|_, entry| now.duration_since(entry.seen_at) <= PROMPT_CACHE_ATTRIBUTION_TTL);
-    let entry = cache.get(cache_key)?;
-    if entry.ambiguous {
+    cache.retain(|_, bucket| {
+        bucket
+            .entries
+            .retain(|_, entry| now.duration_since(entry.seen_at) <= PROMPT_CACHE_ATTRIBUTION_TTL);
+        !bucket.entries.is_empty()
+    });
+    let bucket = cache.get(cache_key)?;
+    if bucket.entries.len() != 1 {
         return None;
     }
-    Some(entry.clone())
+    bucket.entries.values().next().cloned()
 }
 
 #[cfg(test)]
