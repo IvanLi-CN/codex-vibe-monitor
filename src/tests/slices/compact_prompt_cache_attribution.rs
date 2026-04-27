@@ -1,3 +1,6 @@
+static COMPACT_ATTRIBUTION_TEST_LOCK: Lazy<std::sync::Mutex<()>> =
+    Lazy::new(|| std::sync::Mutex::new(()));
+
 fn client_headers(session_id: &str, window_id: &str, traceparent: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -25,6 +28,7 @@ fn client_headers(session_id: &str, window_id: &str, traceparent: &str) -> Heade
 
 #[test]
 fn compact_prompt_cache_attribution_reuses_recent_client_fingerprint() {
+    let _guard = COMPACT_ATTRIBUTION_TEST_LOCK.lock().expect("test lock");
     clear_prompt_cache_attribution_for_tests();
     let now = Instant::now();
     let response_context = client_prompt_cache_attribution_context_from_headers(&client_headers(
@@ -63,6 +67,7 @@ fn compact_prompt_cache_attribution_reuses_recent_client_fingerprint() {
 
 #[test]
 fn compact_prompt_cache_attribution_isolates_different_client_fingerprints() {
+    let _guard = COMPACT_ATTRIBUTION_TEST_LOCK.lock().expect("test lock");
     clear_prompt_cache_attribution_for_tests();
     let now = Instant::now();
     let response_context = client_prompt_cache_attribution_context_from_headers(&client_headers(
@@ -87,6 +92,7 @@ fn compact_prompt_cache_attribution_isolates_different_client_fingerprints() {
 
 #[test]
 fn compact_prompt_cache_attribution_expires_after_ttl() {
+    let _guard = COMPACT_ATTRIBUTION_TEST_LOCK.lock().expect("test lock");
     clear_prompt_cache_attribution_for_tests();
     let now = Instant::now();
     let context = client_prompt_cache_attribution_context_from_headers(&client_headers(
@@ -104,7 +110,33 @@ fn compact_prompt_cache_attribution_expires_after_ttl() {
 }
 
 #[test]
+fn compact_prompt_cache_attribution_rejects_ambiguous_recent_keys() {
+    let _guard = COMPACT_ATTRIBUTION_TEST_LOCK.lock().expect("test lock");
+    clear_prompt_cache_attribution_for_tests();
+    let now = Instant::now();
+    let context = client_prompt_cache_attribution_context_from_headers(&client_headers(
+        "session-a",
+        "window-a",
+        "00-00000000000000000000000000000001-0000000000000001-01",
+    ));
+
+    remember_prompt_cache_attribution(&context, "prompt-cache-a", None, now);
+    remember_prompt_cache_attribution(
+        &context,
+        "prompt-cache-b",
+        None,
+        now + Duration::from_secs(20),
+    );
+
+    assert!(
+        lookup_recent_prompt_cache_attribution(&context, now + Duration::from_secs(30)).is_none(),
+        "same client fingerprint with multiple recent keys must stay unattributed"
+    );
+}
+
+#[test]
 fn compact_prompt_cache_attribution_requires_unique_client_key() {
+    let _guard = COMPACT_ATTRIBUTION_TEST_LOCK.lock().expect("test lock");
     clear_prompt_cache_attribution_for_tests();
     let now = Instant::now();
     let mut headers = HeaderMap::new();

@@ -1919,6 +1919,7 @@ pub(crate) struct ClientPromptCacheAttributionContext {
 pub(crate) struct ClientPromptCacheAttributionEntry {
     pub(crate) prompt_cache_key: String,
     pub(crate) sticky_key: Option<String>,
+    ambiguous: bool,
     seen_at: Instant,
 }
 
@@ -2022,11 +2023,16 @@ pub(crate) fn remember_prompt_cache_attribution(
         .lock()
         .expect("client prompt-cache attribution mutex poisoned");
     cache.retain(|_, entry| now.duration_since(entry.seen_at) <= PROMPT_CACHE_ATTRIBUTION_TTL);
+    let ambiguous = cache
+        .get(cache_key)
+        .map(|entry| entry.ambiguous || entry.prompt_cache_key != prompt_cache_key)
+        .unwrap_or(false);
     cache.insert(
         cache_key.to_string(),
         ClientPromptCacheAttributionEntry {
             prompt_cache_key: prompt_cache_key.to_string(),
             sticky_key,
+            ambiguous,
             seen_at: now,
         },
     );
@@ -2041,7 +2047,11 @@ pub(crate) fn lookup_recent_prompt_cache_attribution(
         .lock()
         .expect("client prompt-cache attribution mutex poisoned");
     cache.retain(|_, entry| now.duration_since(entry.seen_at) <= PROMPT_CACHE_ATTRIBUTION_TTL);
-    cache.get(cache_key).cloned()
+    let entry = cache.get(cache_key)?;
+    if entry.ambiguous {
+        return None;
+    }
+    Some(entry.clone())
 }
 
 #[cfg(test)]

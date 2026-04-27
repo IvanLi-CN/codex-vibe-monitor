@@ -76,7 +76,7 @@
 - 响应采集阶段沿用现有 usage / model 解析逻辑，compact 的 `response.compaction` 响应若携带 `usage` 即正常提取 tokens。
 - payload summary 通过 `target.endpoint()` 持久化 compact endpoint，后续 `/api/invocations`、SSE `records`、startup backfill 与详情展示均保持同一来源。
 - 普通 `/v1/responses` 成功提取 `promptCacheKey` 时，后端维护运行期“客户端稳定指纹 -> 最近 `promptCacheKey` / `stickyKey`”映射；stable key 只使用 `session_id`、`originator`、`x-codex-window-id`、`x-codex-installation-id`，且必须至少包含 `session_id` 或 `x-codex-window-id` 这类强稳定键，`traceparent` 仅作为诊断 fingerprint 保存。
-- compact 缺少 key 时，从同一 stable client fingerprint 的近期映射补齐对话归因，并写入 `promptCacheKeyAttributionSource="client_fingerprint_recent"`；无 stable fingerprint、TTL 过期或无法匹配时保持无 key。
+- compact 缺少 key 时，从同一 stable client fingerprint 的近期唯一映射补齐对话归因，并写入 `promptCacheKeyAttributionSource="client_fingerprint_recent"`；无 stable fingerprint、TTL 过期、无法匹配或同一 fingerprint 在 TTL 内出现多个不同 key 时保持无 key。
 - 前端通过现有 `endpoint` 字段判断 compact，并在主列表 badge 位置显示“远程压缩 / Compact”。
 - 统计接口继续使用同一 `codex_invocations` 数据源，因此 compact 自动进入 totals、summary 与 timeseries。
 
