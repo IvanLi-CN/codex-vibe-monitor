@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.53.10",
+  "base_stable_version": "1.53.9",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-28T19:48:23Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.53.10",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "d87a2afc6b07776908428875cd89a3549eaa5ac7",
+  "pr_number": 385,
+  "pr_title": "test: stabilize parallel work current minute stats",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.53.10",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.53.10",
+  "target_sha": "2694401fd88cceb26084c2fa52d171235331a000",
+  "type_label": "type:patch"
+}
