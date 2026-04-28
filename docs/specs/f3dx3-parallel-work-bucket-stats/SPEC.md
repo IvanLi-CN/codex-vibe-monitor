@@ -106,11 +106,13 @@
 - `cd web && bun run test -- ParallelWorkStatsSection useParallelWorkStats api Stats`
 - `cd web && bun run test-storybook`
 - `cd web && bun run build`
+- `ParallelWorkStatsSection.test.tsx` 覆盖图表模式边界：页面周期不超过 24 小时且存在 `conversations` 时渲染 `data-chart-mode="conversation-gantt"`；页面周期超过 24 小时即使存在 `conversations` 也保持 Recharts `ResponsiveContainer` + `AreaChart` 趋势图。
+- `StatsPage.stories.tsx` 的 Storybook play 覆盖跨页面行为：默认 today 周期渲染对话甘特图；切换到 `最近 7 天` 后断言不再出现 `parallel-work-conversation-gantt`。
 
 ### UI / Storybook
 
 - 新增稳定故事：`web/src/components/ParallelWorkStatsSection.stories.tsx`
-- 视觉证据来源：`storybook_docs`
+- 证据来源：`storybook_canvas` 截图 + Storybook play 断言；截图用于人工确认密度与布局，play/Vitest 断言用于证明 24 小时边界与图表模式选择。
 
 ## 文档更新（Docs to Update）
 

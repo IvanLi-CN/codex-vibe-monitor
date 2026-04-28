@@ -283,6 +283,11 @@ export const WideMinuteCurrent: Story = {
   parameters: {
     viewport: { defaultViewport: "desktop1660" },
   },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const gantt = await canvas.findByTestId("parallel-work-conversation-gantt");
+    await expect(gantt).toHaveAttribute("data-chart-mode", "conversation-gantt");
+  },
 };
 
 export const CurrentHourRange: Story = {
@@ -293,6 +298,15 @@ export const CurrentHourRange: Story = {
   },
   parameters: {
     viewport: { defaultViewport: "desktop1660" },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      canvas.getByTestId("parallel-work-card-current"),
+    ).toBeInTheDocument();
+    await expect(
+      canvas.queryByTestId("parallel-work-conversation-gantt"),
+    ).toBeNull();
   },
 };
 

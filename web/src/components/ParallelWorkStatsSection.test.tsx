@@ -459,6 +459,46 @@ describe("ParallelWorkStatsSection", () => {
     expect(host?.textContent).toContain("#2");
   });
 
+  it("keeps periods beyond 24 hours on the Recharts trend even if conversations exist", () => {
+    const longCurrent: ParallelWorkStatsResponse = {
+      ...populatedStats,
+      current: {
+        ...populatedStats.current,
+        rangeStart: "2026-03-01T00:00:00Z",
+        rangeEnd: "2026-03-08T00:00:00Z",
+        conversations: [
+          {
+            conversationId: "conversation-a",
+            start: "2026-03-02T01:00:00Z",
+            end: "2026-03-02T04:00:00Z",
+            requestCount: 7,
+          },
+        ],
+      },
+    };
+
+    render(
+      <ParallelWorkStatsSection
+        stats={longCurrent}
+        isLoading={false}
+        error={null}
+      />,
+    );
+
+    const chart = host?.querySelector(
+      '[data-chart-kind="parallel-work-sparkline"]',
+    );
+    expect(
+      chart?.querySelector('[data-testid="parallel-work-conversation-gantt"]'),
+    ).toBeNull();
+    expect(
+      chart?.querySelector('[data-testid="parallel-work-responsive-container"]'),
+    ).not.toBeNull();
+    expect(
+      chart?.querySelector('[data-testid="parallel-work-area-chart"]'),
+    ).not.toBeNull();
+  });
+
   it("uses the current window data supplied by the page", () => {
     const hourCurrent: ParallelWorkStatsResponse = {
       ...populatedStats,

@@ -343,6 +343,7 @@ export const MinuteBucketOptions: Story = {
   render: () => <StatsPage />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
+    await expect(canvas.getByTestId('parallel-work-conversation-gantt')).toBeVisible()
     const bucketTrigger = canvas.getByTestId('stats-bucket-select-trigger')
     await expect(bucketTrigger).toHaveTextContent('每 15 分钟')
     await userEvent.click(bucketTrigger)
