@@ -98,6 +98,7 @@
     {
       "workflow": "Release",
       "jobs": [
+        "CI Main Gate",
         "Release Meta (snapshot + tags)",
         "Build + Smoke + Push Candidate (linux/amd64)",
         "Build + Smoke + Push Candidate (linux/arm64)",

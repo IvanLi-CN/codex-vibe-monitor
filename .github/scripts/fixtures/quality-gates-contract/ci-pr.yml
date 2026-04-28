@@ -77,6 +77,12 @@ jobs:
         working-directory: web
         run: bun install --frozen-lockfile
 
+      - name: Install docs-site dependencies
+        run: bun install --cwd docs-site --frozen-lockfile
+
+      - name: Worktree bootstrap smoke
+        run: bash scripts/test-worktree-bootstrap.sh
+
       - name: Bun-first guard
         run: bun run check:bun-first
 
@@ -153,6 +159,17 @@ jobs:
                 source_kind="merge-group-bootstrap-compatible-base-branch"
               fi
             fi
+
+            if [ "${{ github.event_name }}" = "pull_request" ] && [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
+              changed_quality_gate_paths="$(git diff --name-only "${source_ref}...HEAD" -- "${paths[@]}" "${final_topology_paths[@]}")"
+              if [ -n "${changed_quality_gate_paths}" ]; then
+                echo "::notice::Same-repository PR changes quality-gates contract sources; using current branch sources to validate the updated topology."
+                printf '%s\n' "${changed_quality_gate_paths}"
+                source_ref="HEAD"
+                source_kind="current-branch-quality-gates-change"
+                supports_final_topology="true"
+              fi
+            fi
           fi
 
           for path in "${paths[@]}"; do
@@ -203,6 +220,39 @@ jobs:
         working-directory: web
         run: bun run lint
 
+      - name: Build Storybook static site
+        working-directory: web
+        run: bun run storybook:build -- --quiet
+
+      - name: Compute DOCS_BASE
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY%%/*}"
+          repo="${GITHUB_REPOSITORY##*/}"
+          if [[ "${repo}" == "${owner}.github.io" ]]; then
+            echo "DOCS_BASE=/" >> "$GITHUB_ENV"
+          else
+            echo "DOCS_BASE=/${repo}/" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build docs site
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd docs-site
+          DOCS_BASE="${DOCS_BASE}" bun run build
+
+      - name: Assemble public docs site smoke check
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ./.github/scripts/assemble-pages-site.sh docs-site/doc_build web/storybook-static .tmp/pages-site
+          test -f .tmp/pages-site/index.html
+          test -f .tmp/pages-site/storybook/index.html
+          test -f .tmp/pages-site/storybook.html
+          grep -q "${DOCS_BASE}storybook.html" .tmp/pages-site/index.html
+
   frontend-tests:
     name: Front-end Tests
     runs-on: ubuntu-latest
@@ -223,6 +273,14 @@ jobs:
       - name: Run front-end Vitest suite
         working-directory: web
         run: bun run test
+
+      - name: Install Playwright Chromium for Storybook
+        working-directory: web
+        run: bunx playwright install --with-deps chromium
+
+      - name: Run Storybook accessibility suite
+        working-directory: web
+        run: bun run test-storybook
 
   records-overlay-e2e:
     name: Records Overlay E2E

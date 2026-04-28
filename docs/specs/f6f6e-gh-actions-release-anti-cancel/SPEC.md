@@ -4,7 +4,7 @@
 
 - Status: 部分完成（3/4）
 - Created: 2026-03-14
-- Last: 2026-03-15
+- Last: 2026-04-29
 
 ## 背景 / 问题陈述
 
@@ -51,6 +51,8 @@
 - `CI Main` 必须为 mainline 上尚未持久化的 merged commits 写入 immutable release snapshot，冻结当前 PR labels、版本分配与镜像/tag 元数据；后续成功的 `CI Main` run 必须能够 catch up 之前因 pending 替换而漏掉的 commits。
 - `CI Main` 写 snapshot 时，自动发布路径必须直接读取 merged commit 关联 PR 的当前 labels；不得依赖 artifact、timeline label 回放或历史 rollout 分支。
 - `Release` 必须同时支持 `workflow_run(CI Main success)` 与 `workflow_dispatch(commit_sha)` 两种入口，并复用同一套 publish 逻辑；自动入口每次只发布 mainline 上最早一个尚未发布的 snapshot，成功后继续串行排下一个；自动与手动入口都只能消费 immutable release snapshot，禁止重新读取 PR labels 或重算版本。
+- 当 `workflow_run` 入口收到非成功的 `CI Main` 结论时，`Release` 必须 fail closed 并显式失败，不能让整条发布 run 以 silent `skipped` 结束。
+- `CI PR` 必须允许同仓库 PR 修改 quality-gates contract 包时使用当前分支 contract 校验当前分支拓扑；fork PR 与普通 PR 继续使用 base trusted source。
 - `workflow_dispatch` 只接受 `commit_sha`，且对非法/不可解析输入、既未通过 `CI Main` 也不满足“仅 `Release Snapshot` 失败”的目标 SHA 一律 fail closed。
 - merge 后的 `type:*` / `channel:*` labels 视为发布输入的一部分；若合并后人为改动标签，后续 backfill 将按改动后的标签重建 snapshot，仓库规则必须禁止这种操作。
 - `quality-gates` contract、fixtures 与自测必须升级到 `final` profile，并校验新的 workflow 家族。
@@ -85,6 +87,9 @@
 - Given 本仓库执行 `python3 .github/scripts/check_quality_gates_contract.py --repo-root "$PWD" --profile final`
   When 校验 split topology
   Then contract、fixtures 与 trusted metadata gate 全部通过。
+- Given `CI Main` 以 `failure`、`cancelled` 或其他非 `success` 结论完成
+  When `Release` 被 `workflow_run` 触发
+  Then `CI Main Gate` 必须失败并让 `Release` run 进入 `failure`，从而触发现有 release failure 通知链路。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 
@@ -109,11 +114,14 @@
 - `CI Main` 通过 git notes 写入 immutable release snapshot，把 PR labels、版本分配与镜像/tag 元数据冻结到 merge commit。
 - `Label Gate` 在 trusted source 上校验标签；`CI Main` 再把当前 PR labels 提升为 immutable git-notes snapshot。
 - `Release` 通过统一的 target SHA 解析层兼容自动与手动入口，但只加载 snapshot 并复用现有 smoke / manifest / tag / GitHub Release 步骤。
+- `Release` 在发布元数据解析前先用 `CI Main Gate` 捕获非成功上游结论；成功上游或手动 backfill 不受该 gate 阻断。
+- `CI PR` 对同仓库 quality-gates contract 变更启用 current-branch self-validation，避免旧 base contract 永久挡住新增受控 workflow job。
 - `quality-gates` contract 扩展为显式声明 PR/main/release workflow 家族，contract checker 与 fixtures 一起升级，避免只改 workflow 不改自证体系。
 
 ## 风险 / 假设（Risks / Assumptions）
 
 - 风险：workflow 拆分后，contract checker、fixtures 与 live-quality-gates 之间容易出现声明不一致。
+- 风险：若上游失败只让 `release-meta` 条件跳过，GitHub 会把整条 `Release` 记成 `skipped`，现有失败通知不会触发。
 - 风险：`workflow_dispatch` backfill 若未验证 SHA 所属分支，可能误对非 main commit 执行发布。
 - 风险：若合并后有人手改 release labels，后续手动 backfill 会跟随漂移，因此必须把“merge 后不得改 release labels”写成仓库操作规约。
 - 假设：仓库权限允许 `workflow_run` 触发 release 并继续推 tag / 建 GitHub Release。
@@ -123,6 +131,7 @@
 - 2026-03-14: 创建 strict anti-cancel release topology spec，冻结三段式 workflow + final quality-gates 升级范围。
 - 2026-03-14: 完成 workflow split、final quality-gates contract、release backfill 入口与本地 contract/self-tests。
 - 2026-03-15: 将发布链路进一步收敛为“PR 标签校验 → 全局串行 `CI Main` 写/补 snapshot → 全局串行 `Release` 按最早未发布 snapshot 排队发布”，删除 artifact、rollout 与 legacy fallback 复杂度。
+- 2026-04-29: 增加 `CI Main Gate`，把上游 `CI Main` 非成功结论从 silent skipped 转为显式 failed release；同时允许同仓库 quality-gates contract PR 使用当前分支 contract 自证更新后的拓扑。
 
 ## 参考（References）
 

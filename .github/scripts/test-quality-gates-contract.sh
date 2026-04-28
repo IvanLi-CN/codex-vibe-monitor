@@ -170,6 +170,28 @@ fi
 
 grep -q "workflow_run.workflows drifted" "$tmp_dir/release-workflow.log"
 
+release_ci_gate_repo="$tmp_dir/release-ci-gate-repo"
+copy_repo_snapshot "$baseline_repo" "$release_ci_gate_repo"
+python3 - <<'PY' "$release_ci_gate_repo"
+from pathlib import Path
+import sys
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/release.yml"
+text = path.read_text()
+needle = "${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success' }}"
+replacement = "${{ github.event_name == 'workflow_run' }}"
+if needle not in text:
+    raise SystemExit("failed to rewrite release CI Main Gate condition")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$release_ci_gate_repo" --profile final >/dev/null 2>"$tmp_dir/release-ci-gate.log"; then
+  echo "expected release CI Main Gate fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "release.yml.jobs.ci-main-gate.if must stay" "$tmp_dir/release-ci-gate.log"
+
 ci_main_repo="$tmp_dir/ci-main-repo"
 copy_repo_snapshot "$baseline_repo" "$ci_main_repo"
 python3 - <<'PY' "$ci_main_repo"

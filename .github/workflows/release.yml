@@ -31,6 +31,18 @@ env:
   RELEASE_SNAPSHOT_NOTES_REF: refs/notes/release-snapshots
 
 jobs:
+  ci-main-gate:
+    name: CI Main Gate
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success' }}
+    steps:
+      - name: Fail on unsuccessful CI Main
+        shell: bash
+        run: |
+          echo "CI Main completed with conclusion '${{ github.event.workflow_run.conclusion }}' for ${{ github.event.workflow_run.head_sha }}." >&2
+          echo "Release is blocked until CI Main succeeds." >&2
+          exit 1
+
   release-meta:
     name: Release Meta (snapshot + tags)
     runs-on: ubuntu-latest

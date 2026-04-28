@@ -538,29 +538,24 @@ async fn parallel_work_stats_zero_fills_current_page_period() {
     .await
     .expect("fetch parallel-work stats");
 
-    let response_next_minute = DateTime::parse_from_rfc3339(&response.current.range_end)
-        .expect("parse minute range end")
-        .with_timezone(&Utc);
-    let response_current_minute = response_next_minute - ChronoDuration::minutes(1);
-    let response_previous_minute = response_next_minute - ChronoDuration::minutes(2);
-    let response_empty_minute = response_next_minute - ChronoDuration::minutes(4);
+    let inserted_empty_minute = inserted_current_minute - ChronoDuration::minutes(3);
     let current_minute_point = response
         .current
         .points
         .iter()
-        .find(|point| point.bucket_start == format_utc_iso(response_current_minute))
-        .expect("current minute point");
+        .find(|point| point.bucket_start == format_utc_iso(inserted_current_minute))
+        .expect("inserted current minute point");
     let previous_minute_point = response
         .current
         .points
         .iter()
-        .find(|point| point.bucket_start == format_utc_iso(response_previous_minute))
-        .expect("previous minute point");
+        .find(|point| point.bucket_start == format_utc_iso(inserted_previous_minute))
+        .expect("inserted previous minute point");
     let empty_minute_point = response
         .current
         .points
         .iter()
-        .find(|point| point.bucket_start == format_utc_iso(response_empty_minute))
+        .find(|point| point.bucket_start == format_utc_iso(inserted_empty_minute))
         .expect("empty minute point");
     assert_eq!(current_minute_point.parallel_count, 1);
     assert_eq!(previous_minute_point.parallel_count, 1);
