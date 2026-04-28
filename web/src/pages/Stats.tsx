@@ -23,9 +23,7 @@ export default function StatsPage() {
   const { t } = useTranslation()
   const [range, setRange] = useState<typeof RANGE_OPTIONS[number]['value']>('today')
   const [errorScope, setErrorScope] = useState<FailureScope>('service')
-  const [bucket, setBucket] = useState<string>(() =>
-    resolveStatsBucketValue('', resolveStatsBucketOptions('today')),
-  )
+  const [bucket, setBucket] = useState<string>('15m')
 
   const requestedBucketOptions = useMemo(
     () => resolveStatsBucketOptions(range),
