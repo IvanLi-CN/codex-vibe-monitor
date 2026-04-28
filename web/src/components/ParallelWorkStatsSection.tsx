@@ -643,8 +643,6 @@ function ParallelWorkConversationGantt({
   const rangeStartMs = Date.parse(window.rangeStart);
   const rangeEndMs = Date.parse(window.rangeEnd);
   const rangeMs = Math.max(1, rangeEndMs - rangeStartMs);
-  const rowHeight = 30;
-  const timelineHeight = Math.min(520, Math.max(168, conversations.length * rowHeight + 54));
   const axisLabels = [
     window.rangeStart,
     new Date(rangeStartMs + rangeMs / 2).toISOString(),
@@ -674,10 +672,9 @@ function ParallelWorkConversationGantt({
           data-chart-kind="parallel-work-sparkline"
           data-chart-mode="conversation-gantt"
           data-testid="parallel-work-conversation-gantt"
-          style={{ height: timelineHeight }}
         >
           <div className="min-w-[720px] px-4 pb-4 pt-3">
-            <div className="grid grid-cols-[5.5rem_minmax(0,1fr)] gap-3">
+            <div className="grid grid-cols-[5.5rem_minmax(0,1fr)] gap-x-3 gap-y-2">
               <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-base-content/45">
                 {locale === "zh" ? "对话" : "Conversation"}
               </div>
