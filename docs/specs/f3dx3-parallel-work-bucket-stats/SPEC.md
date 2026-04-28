@@ -134,12 +134,13 @@
   requested_viewport: desktop1660
   viewport_strategy: storybook-viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Stats/ParallelWorkStatsSection/Evidence / Short Period Conversation Gantt
   state: component short period with dense conversation spans
   executable_assertions: `parallel-work-conversation-gantt` exists, `data-chart-mode="conversation-gantt"`, at least 20 conversation bars render, Recharts overlay is absent.
   evidence_note: 验证不超过 24 小时的并行工作数据使用对话级甘特图；Y 轴每行代表一个对话，密集 20-50 条对话场景仍可滚动承载。
   image:
+  PR: include
   ![短周期并行工作对话甘特图](./assets/parallel-work-evidence-short-gantt.png)
 
 - source_type: storybook_canvas
@@ -148,12 +149,13 @@
   requested_viewport: desktop1660
   viewport_strategy: storybook-viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Stats/ParallelWorkStatsSection/Evidence / Long Period Recharts Trend
   state: component long period with hourly buckets
   executable_assertions: `parallel-work-conversation-gantt` is absent, `data-chart-mode="recharts-area"` exists, interaction overlay exists for bucket tooltip targeting.
   evidence_note: 验证超过 24 小时的并行工作数据不使用甘特图，保留 Recharts 面积/折线趋势图；宽屏下轴线、点、线和文字由 Recharts 正常布局。
   image:
+  PR: include
   ![长周期并行工作 Recharts 趋势图](./assets/parallel-work-evidence-long-recharts.png)
 
 - source_type: storybook_canvas
@@ -162,12 +164,13 @@
   requested_viewport: desktop1660
   viewport_strategy: storybook-viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Pages/StatsPage/Evidence / Today Minute Options + Gantt
   state: page today period with bucket menu open
   executable_assertions: default bucket trigger remains `每 15 分钟`, dropdown option order starts with `每分钟` then `每 15 分钟`, current page period renders `data-chart-mode="conversation-gantt"`.
   evidence_note: 截图验证统计页在不超过 24 小时的默认 today 周期内提供 `1m` 粒度且排序正确；Storybook play 断言同一页面周期下并行工作 section 渲染甘特图。
   image:
+  PR: include
   ![统计页 today 周期分钟粒度选项](./assets/stats-evidence-today-minute-options-gantt.png)
 
 - source_type: storybook_canvas
@@ -176,12 +179,13 @@
   requested_viewport: desktop1660
   viewport_strategy: storybook-viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Pages/StatsPage/Evidence / Seven Day Recharts Page
   state: page 7 day period
   executable_assertions: after switching to `最近 7 天`, `parallel-work-conversation-gantt` is absent and `data-chart-mode="recharts-area"` exists.
   evidence_note: 验证超过 24 小时的页面周期不会误用甘特图；并行工作图表跟随整个统计页 7 天周期回到 Recharts 趋势图。
   image:
+  PR: include
   ![统计页 7 天周期 Recharts 并行工作趋势图](./assets/stats-evidence-seven-day-recharts.png)
 
 ## 实现里程碑（Milestones / Delivery checklist）
