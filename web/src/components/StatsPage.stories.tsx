@@ -351,6 +351,45 @@ export const MinuteBucketOptions: Story = {
   },
 }
 
+export const EvidenceTodayMinuteOptionsGantt: Story = {
+  name: 'Evidence / Today Minute Options + Gantt',
+  tags: ['test'],
+  parameters: {
+    a11y: {
+      test: 'off',
+    },
+  },
+  render: () => <StatsPage />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const gantt = await canvas.findByTestId('parallel-work-conversation-gantt')
+    await expect(gantt).toHaveAttribute('data-chart-mode', 'conversation-gantt')
+
+    const bucketTrigger = canvas.getByTestId('stats-bucket-select-trigger')
+    await expect(bucketTrigger).toHaveTextContent('每 15 分钟')
+    await userEvent.click(bucketTrigger)
+
+    const options = within(document.body).getAllByRole('option')
+    await expect(options[0]).toHaveTextContent('每分钟')
+    await expect(options[1]).toHaveTextContent('每 15 分钟')
+  },
+}
+
+export const EvidenceSevenDayRechartsPage: Story = {
+  name: 'Evidence / Seven Day Recharts Page',
+  tags: ['test'],
+  render: () => <StatsPage />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getByTestId('stats-range-select-trigger'))
+    await userEvent.click(within(document.body).getByText('最近 7 天'))
+    await expect(canvas.getByTestId('stats-range-select-trigger')).toHaveTextContent('最近 7 天')
+    await expect(canvas.queryByTestId('parallel-work-conversation-gantt')).toBeNull()
+    const chart = canvasElement.querySelector('[data-chart-kind="parallel-work-sparkline"]')
+    await expect(chart).toHaveAttribute('data-chart-mode', 'recharts-area')
+  },
+}
+
 export const TimeseriesError: Story = {
   parameters: {
     scenario: 'timeseries-error',

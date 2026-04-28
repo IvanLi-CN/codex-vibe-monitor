@@ -321,6 +321,7 @@ describe("ParallelWorkStatsSection", () => {
     ) as HTMLButtonElement | null;
     expect(chart).not.toBeNull();
     expect(chart?.className).toContain("w-full");
+    expect(chart?.getAttribute("data-chart-mode")).toBe("recharts-area");
     expect(
       chart?.querySelector('[data-testid="parallel-work-responsive-container"]'),
     ).not.toBeNull();
@@ -491,6 +492,7 @@ describe("ParallelWorkStatsSection", () => {
     expect(
       chart?.querySelector('[data-testid="parallel-work-conversation-gantt"]'),
     ).toBeNull();
+    expect(chart?.getAttribute("data-chart-mode")).toBe("recharts-area");
     expect(
       chart?.querySelector('[data-testid="parallel-work-responsive-container"]'),
     ).not.toBeNull();

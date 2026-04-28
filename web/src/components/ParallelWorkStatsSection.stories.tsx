@@ -290,6 +290,29 @@ export const WideMinuteCurrent: Story = {
   },
 };
 
+export const EvidenceShortPeriodConversationGantt: Story = {
+  name: "Evidence / Short Period Conversation Gantt",
+  tags: ["test"],
+  args: {
+    stats: populatedStats,
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const gantt = await canvas.findByTestId("parallel-work-conversation-gantt");
+    await expect(gantt).toHaveAttribute("data-chart-mode", "conversation-gantt");
+    await expect(
+      canvas.queryByTestId("parallel-work-interaction-overlay"),
+    ).toBeNull();
+    const bars = canvas.getAllByTestId("parallel-work-conversation-bar");
+    await expect(bars.length).toBeGreaterThanOrEqual(20);
+  },
+};
+
 export const CurrentHourRange: Story = {
   args: {
     stats: hourCurrentStats,
@@ -307,6 +330,32 @@ export const CurrentHourRange: Story = {
     await expect(
       canvas.queryByTestId("parallel-work-conversation-gantt"),
     ).toBeNull();
+  },
+};
+
+export const EvidenceLongPeriodRechartsTrend: Story = {
+  name: "Evidence / Long Period Recharts Trend",
+  tags: ["test"],
+  args: {
+    stats: hourCurrentStats,
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      canvas.queryByTestId("parallel-work-conversation-gantt"),
+    ).toBeNull();
+    const chart = canvasElement.querySelector(
+      '[data-chart-kind="parallel-work-sparkline"]',
+    );
+    await expect(chart).toHaveAttribute("data-chart-mode", "recharts-area");
+    await expect(
+      canvas.getByTestId("parallel-work-interaction-overlay"),
+    ).toBeInTheDocument();
   },
 };
 

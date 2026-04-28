@@ -459,6 +459,7 @@ function ParallelWorkSparkline({
           <div
             className="relative h-44 w-full rounded-2xl border border-base-300/75 bg-base-100/75"
             data-chart-kind="parallel-work-sparkline"
+            data-chart-mode="recharts-area"
           >
             <ResponsiveContainer>
               <AreaChart

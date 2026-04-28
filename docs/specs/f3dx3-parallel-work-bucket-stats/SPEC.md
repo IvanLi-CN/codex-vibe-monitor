@@ -112,6 +112,10 @@
 ### UI / Storybook
 
 - 新增稳定故事：`web/src/components/ParallelWorkStatsSection.stories.tsx`
+- 新增证据故事：`Stats/ParallelWorkStatsSection/Evidence / Short Period Conversation Gantt`
+- 新增证据故事：`Stats/ParallelWorkStatsSection/Evidence / Long Period Recharts Trend`
+- 新增证据故事：`Pages/StatsPage/Evidence / Today Minute Options + Gantt`
+- 新增证据故事：`Pages/StatsPage/Evidence / Seven Day Recharts Page`
 - 证据来源：`storybook_canvas` 截图 + Storybook play 断言；截图用于人工确认密度与布局，play/Vitest 断言用于证明 24 小时边界与图表模式选择。
 
 ## 文档更新（Docs to Update）
@@ -131,11 +135,12 @@
   viewport_strategy: storybook-viewport
   sensitive_exclusion: N/A
   submission_gate: pending-owner-approval
-  story_id_or_title: Stats/ParallelWorkStatsSection/Wide Minute Current
-  state: wide current page-period populated
-  evidence_note: 验证不超过 24 小时的并行工作数据使用对话级时间轴渲染，Y 轴每行代表一个对话；Storybook 数据由真实感对话区间推导 bucket 并行数，覆盖短会话、长会话、重叠高峰与空窗。
+  story_id_or_title: Stats/ParallelWorkStatsSection/Evidence / Short Period Conversation Gantt
+  state: component short period with dense conversation spans
+  executable_assertions: `parallel-work-conversation-gantt` exists, `data-chart-mode="conversation-gantt"`, at least 20 conversation bars render, Recharts overlay is absent.
+  evidence_note: 验证不超过 24 小时的并行工作数据使用对话级甘特图；Y 轴每行代表一个对话，密集 20-50 条对话场景仍可滚动承载。
   image:
-  ![并行工作统计当前页面周期对话时间轴](./assets/parallel-work-current-wide.png)
+  ![短周期并行工作对话甘特图](./assets/parallel-work-evidence-short-gantt.png)
 
 - source_type: storybook_canvas
   target_program: mock-only
@@ -144,11 +149,12 @@
   viewport_strategy: storybook-viewport
   sensitive_exclusion: N/A
   submission_gate: pending-owner-approval
-  story_id_or_title: Stats/ParallelWorkStatsSection/Gallery
-  scenario: gallery
-  evidence_note: 验证 Storybook gallery 已覆盖当前短周期真实感对话时间轴、当前小时周期趋势图、当前天级空状态、loading 与 error 五类关键状态；空态和错误态保持原有语义，且没有内部窗口切换控件。
+  story_id_or_title: Stats/ParallelWorkStatsSection/Evidence / Long Period Recharts Trend
+  state: component long period with hourly buckets
+  executable_assertions: `parallel-work-conversation-gantt` is absent, `data-chart-mode="recharts-area"` exists, interaction overlay exists for bucket tooltip targeting.
+  evidence_note: 验证超过 24 小时的并行工作数据不使用甘特图，保留 Recharts 面积/折线趋势图；宽屏下轴线、点、线和文字由 Recharts 正常布局。
   image:
-  ![并行工作统计当前页面周期状态集](./assets/parallel-work-current-gallery.png)
+  ![长周期并行工作 Recharts 趋势图](./assets/parallel-work-evidence-long-recharts.png)
 
 - source_type: storybook_canvas
   target_program: mock-only
@@ -157,11 +163,26 @@
   viewport_strategy: storybook-viewport
   sensitive_exclusion: N/A
   submission_gate: pending-owner-approval
-  story_id_or_title: Pages/StatsPage/MinuteBucketOptions
-  state: stats page bucket menu open
-  evidence_note: 验证统计页在不超过 24 小时的默认 today 周期内，bucket 下拉保留原默认 `15m`，同时提供 `1m` 分钟粒度选项；并行工作 section 复用同一个页面 bucket。
+  story_id_or_title: Pages/StatsPage/Evidence / Today Minute Options + Gantt
+  state: page today period with bucket menu open
+  executable_assertions: default bucket trigger remains `每 15 分钟`, dropdown option order starts with `每分钟` then `每 15 分钟`, current page period renders `data-chart-mode="conversation-gantt"`.
+  evidence_note: 截图验证统计页在不超过 24 小时的默认 today 周期内提供 `1m` 粒度且排序正确；Storybook play 断言同一页面周期下并行工作 section 渲染甘特图。
   image:
-  ![统计页分钟粒度 bucket 选项](./assets/stats-minute-bucket-options.png)
+  ![统计页 today 周期分钟粒度选项](./assets/stats-evidence-today-minute-options-gantt.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: desktop1660
+  viewport_strategy: storybook-viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Pages/StatsPage/Evidence / Seven Day Recharts Page
+  state: page 7 day period
+  executable_assertions: after switching to `最近 7 天`, `parallel-work-conversation-gantt` is absent and `data-chart-mode="recharts-area"` exists.
+  evidence_note: 验证超过 24 小时的页面周期不会误用甘特图；并行工作图表跟随整个统计页 7 天周期回到 Recharts 趋势图。
+  image:
+  ![统计页 7 天周期 Recharts 并行工作趋势图](./assets/stats-evidence-seven-day-recharts.png)
 
 ## 实现里程碑（Milestones / Delivery checklist）
 
