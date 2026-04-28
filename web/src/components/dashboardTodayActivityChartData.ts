@@ -202,11 +202,13 @@ function applyTenMinuteChartBuckets(data: DashboardTodayMinuteDatum[]) {
 
     let totalTokens = 0;
     let totalCost = 0;
+    let rateSampleMinutes = 0;
     let firstByteWeightedMs = 0;
     let firstByteSampleCount = 0;
 
     for (const point of bucket) {
       if (point.tokensPerMinute == null || point.spendRate == null) continue;
+      rateSampleMinutes += 1;
       totalTokens += point.tokensPerMinute;
       totalCost += point.spendRate;
       if (point.firstResponseByteTotalAvgMs != null) {
@@ -216,8 +218,10 @@ function applyTenMinuteChartBuckets(data: DashboardTodayMinuteDatum[]) {
       }
     }
 
-    bucketAnchor.chartTokensPerMinute = totalTokens;
-    bucketAnchor.chartSpendRate = totalCost;
+    bucketAnchor.chartTokensPerMinute =
+      rateSampleMinutes > 0 ? totalTokens / rateSampleMinutes : null;
+    bucketAnchor.chartSpendRate =
+      rateSampleMinutes > 0 ? totalCost / rateSampleMinutes : null;
     bucketAnchor.chartFirstResponseByteTotalAvgMs =
       firstByteSampleCount > 0 ? firstByteWeightedMs / firstByteSampleCount : null;
   }
