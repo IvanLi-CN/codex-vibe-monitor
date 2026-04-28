@@ -29,7 +29,7 @@
 
 - 不调整 Live 页现有筛选器、分页、搜索或历史管理交互。
 - 不修改 SSE 事件协议、数据库表结构或其它页面的调用记录展示方式。
-- 不做全站字体、主题变量或导航层级重构；`ui-ux-pro-max` 只作为 Dashboard 卡片区的局部视觉规则来源。
+- 不做全站字体、主题变量或导航层级重构；全局 `ui-ux-pro-max` skill 只作为 Dashboard 卡片区的局部视觉规则来源。
 
 ## 范围（Scope）
 
@@ -63,7 +63,7 @@
 
 ### Visual / UX
 
-- 卡片区遵循 `ui-ux-pro-max` 的 `real-time monitoring + dark OLED` 局部规则，但保留仓库既有 navy/cyan 监控语言。
+- 卡片区遵循全局 `ui-ux-pro-max` skill 的 `real-time monitoring + dark OLED` 局部规则，但保留仓库既有 navy/cyan 监控语言。
 - `running/pending/success/failed/warning` 状态不可只靠颜色表达，必须带文字或图标提示。
 - Storybook Canvas 在 `light / dark` 两套主题下都必须维持可读对比，禁止固定深色卡面与主题前景 token 混用。
 - hover / focus 仅允许颜色、阴影、边框等非布局位移反馈，并尊重 `prefers-reduced-motion`。
