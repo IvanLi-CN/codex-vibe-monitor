@@ -454,7 +454,7 @@ describe("DashboardTodayActivityChart", () => {
     });
   });
 
-  it("adds 10-minute chart buckets for trend and first-byte-total data", () => {
+  it("adds 10-minute chart bucket averages for trend and first-byte-total data", () => {
     const data = buildTodayMinuteChartData(
       {
         rangeStart: "2026-04-08 00:00:00",
@@ -511,13 +511,13 @@ describe("DashboardTodayActivityChart", () => {
       chartFirstResponseByteTotalAvgMs: null,
     });
     expect(data[0]).toMatchObject({
-      chartTokensPerMinute: 3000,
-      chartSpendRate: 0.6,
+      chartTokensPerMinute: 300,
+      chartSpendRate: 0.06,
       chartFirstResponseByteTotalAvgMs: 675,
     });
     expect(data[10]).toMatchObject({
-      chartTokensPerMinute: 900,
-      chartSpendRate: 0.18,
+      chartTokensPerMinute: 300,
+      chartSpendRate: 0.06,
       chartFirstResponseByteTotalAvgMs: 300,
     });
     expect(data[11]).toMatchObject({
@@ -532,6 +532,35 @@ describe("DashboardTodayActivityChart", () => {
       chartTokensPerMinute: null,
       chartSpendRate: null,
       chartFirstResponseByteTotalAvgMs: null,
+    });
+  });
+
+  it("does not display a ten-minute cost total as a per-minute spend rate", () => {
+    const points = Array.from({ length: 10 }, (_, minute) => ({
+      bucketStart: `2026-04-08 03:${String(10 + minute).padStart(2, "0")}:00`,
+      bucketEnd: `2026-04-08 03:${String(10 + minute).padStart(2, "0")}:59`,
+      totalCount: 1,
+      successCount: 1,
+      failureCount: 0,
+      totalTokens: 1_600_000,
+      totalCost: 3.567,
+    }));
+    const data = buildTodayMinuteChartData(
+      {
+        rangeStart: "2026-04-08 00:00:00",
+        rangeEnd: "2026-04-08 03:20:00",
+        bucketSeconds: 60,
+        points,
+      },
+      {
+        now: new Date(2026, 3, 8, 3, 20, 0),
+        localeTag: "en-US",
+      },
+    );
+
+    expect(data[190]).toMatchObject({
+      chartTokensPerMinute: 1_600_000,
+      chartSpendRate: 3.567,
     });
   });
 

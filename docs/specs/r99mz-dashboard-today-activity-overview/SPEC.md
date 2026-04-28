@@ -21,6 +21,7 @@
 - `今日` 范围顶部嵌入 5 个 KPI；下方图表随统一 metric toggle 切换：`次数` 显示成功正柱 / 失败负柱，`金额 / Tokens` 显示“今日整天 24 小时横轴”的累计面积图。
 - `今日 / 次数` 的前后端统计口径必须一致：成功 / 失败柱共享同一时间槽位，`running/pending` 及其瞬时失败元数据不会在初载、live patch 或归档 rollup 中被临时算作失败。
 - `今日 / 次数` 的前端绘制必须只消费显式 `inFlightCount`：legacy 中性残差允许继续留在 `totalCount`，但不能再被 `total - success - failure` 反推成 `进行中` 柱。
+- `今日 / 趋势` 的 TPM 与消费速率必须展示采样窗口内的每分钟均值；10 分钟降采样点只能用于降低图表密度，不能把 10 分钟 token / cost 总量直接标成每分钟速率。
 - `24 小时 / 7 日 / 历史` 维持现有热力图 / 日历形态，仅共享头部 metric toggle，并保持按视图记忆 metric 行为不回退。
 - `活动总览` 的非激活范围改为按需挂载与按需请求：默认进入 Dashboard 只加载当前页签，未访问的 `24 小时 / 7 日 / 历史` 不再首屏预取，也不再常驻隐藏面板。
 - Dashboard 工作中对话的 prompt-cache 会话工作集必须有界：authoritative 刷新后只保留“当前响应中的 key + 仍有 live record 的 key”，selection 切换或卸载后释放旧工作集。
@@ -65,6 +66,7 @@
 - Given prompt-cache 会话图表或表格读到 blank/null `status` 且缺少失败元数据的历史行，When 前端按 authoritative 数据或 live patch 渲染该记录，Then 该记录会保持 `neutral` 语义与中性色，而不是被渲染成失败红色或进行中态；反之，只要 live 或 authoritative 行已带显式错误元数据，就必须立即按失败态显示，而不能先落到 success/neutral 或 in_flight 再等待下一次 authoritative refresh 纠正。
 - Given in-flight seed 需要跨多页抓取 `running/pending` 记录，When 前端顺序拉取后续页，Then 所有页都复用第一页返回的 `snapshotId`，不会因底层集合变化而重复或漏算 seeded live delta。
 - Given `今日` 视图切到 `金额` 或 `Tokens`，When 查看图表，Then 图表切换为“今日整天 24 小时横轴”的累计面积图；未来分钟不渲染，缺失分钟补 0 以保持曲线连续。
+- Given `今日` 视图切到 `趋势`，When 10 分钟图表采样桶包含 `US$35.67` 总消费，Then `消费速率` 曲线点显示该桶内每分钟平均消费，而不是把 `US$35.67` 总额当成每分钟速率。
 - Given 在四个范围间切换 `次数 / 金额 / Tokens`，When 来回切换范围，Then 每个范围仍保留各自上次选中的 metric。
 - Given 默认进入 `/dashboard`，When 页面首次完成 hydration，Then 仅当前 active range 对应的数据请求会首屏触发，未访问的隐藏范围不会提前发起 summary / timeseries 请求。
 - Given 已切到其他 prompt-cache selection 或离开页面，When 旧 selection 的 authoritative / live 数据不再属于当前工作集，Then 旧 key 会被释放，不再随着历史唯一 `promptCacheKey` 数量单调增长。
@@ -129,7 +131,7 @@
 
 - 复用现有 `useSummary('today')` 与 `useTimeseries('today', { bucket: '1m' })`，不动后端 API，仅在前端把“今日”作为总览的第四个内嵌视图；今日 KPI 与图表都保持“今日”语义，但图表横轴扩展为整天 24 小时。
 - `TodayStatsOverview` 通过 `showSurface / showHeader / showDayBadge` 拆成可复用内容层，使它既能作为独立卡，也能作为总览内嵌 KPI 区块。
-- `DashboardTodayActivityChart` 负责将分钟序列补齐到“本地自然日 00:00 -> 23:59”的完整横轴，`次数` 模式用重叠 category slot 的正负柱对齐成功 / 失败语义，`金额 / Tokens` 模式将每分钟增量累积为面积图；当前时刻之后的未来分钟只保留横轴空间，不渲染柱 / 面积。
+- `DashboardTodayActivityChart` 负责将分钟序列补齐到“本地自然日 00:00 -> 23:59”的完整横轴，`次数` 模式用重叠 category slot 的正负柱对齐成功 / 失败语义，`金额 / Tokens` 模式将每分钟增量累积为面积图，`趋势` 模式把 10 分钟采样桶归一化为每分钟均值；当前时刻之后的未来分钟只保留横轴空间，不渲染柱 / 面积。
 - `DashboardActivityOverview` 继续保留按范围记忆 metric 的行为，并新增最近访问范围的 localStorage 恢复；非法或不可用值统一回退到 `today`。
 - `DashboardActivityOverview` 的各范围面板改成只在 active range 时挂载，并把对应 summary / timeseries 请求下沉到面板内部，避免隐藏页签常驻 hook / timer / 请求。
 - `usePromptCacheConversations` 通过 bounded history + live-record pinning 维护当前工作集；authoritative 刷新、selection 切换与卸载都会主动裁剪旧 key，防止长时间停留时因历史 churn 导致内存累积。
@@ -178,6 +180,7 @@
 - 2026-04-10: 根据最新 fresh review 再统一 `completed` success-like 口径：`resolve_failure_classification`、`INVOCATION_RESOLVED_FAILURE_CLASS_SQL`、recent/exact summary helper、hourly rollup success-like 判定与 `query_combined_totals` 现在都会把无失败元数据的 `status='completed'` 视为成功，从而让 Dashboard summary、今日次数图、TTFB 样本与 invocation summary 不再把常见成功终态漏算成 failure 或 missing sample。
 - 2026-04-10: 为修复 PR 收敛阶段暴露的 historical range regression，hourly-backed `timeseries` / duration-summary / failure-summary 读取 archived 数据前改为 best-effort rollup refresh：若只遇到“archive manifest 已存在但文件被移除”的缺失批次，会复用当前已存在的 hourly rollup 返回范围结果而不是直接 500；但 `window=all` 的严格 summary repair 仍保留 missing archive fail-fast，不会把 repair marker 误标完成。
 - 2026-04-11: 为解除 `#321` 合并后的发布阻塞，测试基座现在会为使用默认 `target/archive-tests` / `target/proxy-raw-tests` / `target/xray-forward-tests` 的 stateful 后端用例自动分配按 `db_id` 隔离的运行目录，避免并行 `cargo test --all-features` 时因共享归档路径互相覆盖而触发 all-time summary / historical range 相关用例的偶发失败。
+- 2026-04-28: 修正 `今日 / 趋势` 图表的降采样速率口径：10 分钟趋势点现在展示有效分钟内的 TPM / 消费速率均值，不再把 10 分钟 token 或 cost 总量直接标成每分钟速率；新增 `DashboardTodayActivityChart` 回归测试并用 Storybook canvas 复核右轴量级。
 
 ## Visual Evidence
 
@@ -194,3 +197,4 @@
 - 聊天回图=已展示（本轮使用本地裁剪后的 Storybook canvas 截图完成 owner review）
 - 证据落盘=未落盘（本次未提交新的截图文件，避免在未获主人截图提交授权前把 refreshed capture 推上远端）
 - Stale evidence handling: 本节已移除旧的静态图片引用，避免在本轮 `今日 / 次数` 语义变更后继续保留过期截图引用。
+- Trend rate note: 最新收口额外验证了 `dashboard-dashboardtodayactivitychart--trend-area` Storybook canvas；右侧消费速率轴回到每分钟均值量级，避免 10 分钟总消费被误显示为速率。聊天已回传裁剪后的 mock-only 截图；本 PR 不提交新的截图文件，也不在 PR 正文新增图片链接。
