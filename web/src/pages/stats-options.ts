@@ -22,12 +22,14 @@ export const BUCKET_OPTION_KEYS: Record<string, readonly StatsOption[]> = {
     { value: '15m', labelKey: 'stats.bucket.each15Minutes' },
   ],
   '1d': [
+    { value: '1m', labelKey: 'stats.bucket.eachMinute' },
     { value: '15m', labelKey: 'stats.bucket.each15Minutes' },
     { value: '30m', labelKey: 'stats.bucket.each30Minutes' },
     { value: '1h', labelKey: 'stats.bucket.eachHour' },
     { value: '6h', labelKey: 'stats.bucket.each6Hours' },
   ],
   today: [
+    { value: '1m', labelKey: 'stats.bucket.eachMinute' },
     { value: '15m', labelKey: 'stats.bucket.each15Minutes' },
     { value: '30m', labelKey: 'stats.bucket.each30Minutes' },
     { value: '1h', labelKey: 'stats.bucket.eachHour' },

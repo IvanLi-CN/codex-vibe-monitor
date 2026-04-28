@@ -44,6 +44,23 @@ describe('resolveStatsBucketValue', () => {
 })
 
 describe('BUCKET_OPTION_KEYS', () => {
+  it('orders sub-day buckets from finer to coarser for 24-hour ranges', () => {
+    expect(BUCKET_OPTION_KEYS.today.map((option) => option.value)).toEqual([
+      '1m',
+      '15m',
+      '30m',
+      '1h',
+      '6h',
+    ])
+    expect(BUCKET_OPTION_KEYS['1d'].map((option) => option.value)).toEqual([
+      '1m',
+      '15m',
+      '30m',
+      '1h',
+      '6h',
+    ])
+  })
+
   it('keeps the 24-hour bucket option for the 7d range', () => {
     expect(BUCKET_OPTION_KEYS['7d']).toEqual(
       expect.arrayContaining([

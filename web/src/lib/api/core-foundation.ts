@@ -634,6 +634,13 @@ export interface ParallelWorkPoint {
   parallelCount: number;
 }
 
+export interface ParallelWorkConversation {
+  conversationId: string;
+  start: string;
+  end: string;
+  requestCount: number;
+}
+
 export interface ParallelWorkWindowResponse {
   rangeStart: string;
   rangeEnd: string;
@@ -646,9 +653,11 @@ export interface ParallelWorkWindowResponse {
   effectiveTimeZone?: string;
   timeZoneFallback?: boolean;
   points: ParallelWorkPoint[];
+  conversations?: ParallelWorkConversation[];
 }
 
 export interface ParallelWorkStatsResponse {
+  current: ParallelWorkWindowResponse;
   minute7d: ParallelWorkWindowResponse;
   hour30d: ParallelWorkWindowResponse;
   dayAll: ParallelWorkWindowResponse;
@@ -1272,11 +1281,31 @@ function normalizeParallelWorkPoint(raw: unknown): ParallelWorkPoint | null {
   };
 }
 
+function normalizeParallelWorkConversation(
+  raw: unknown,
+): ParallelWorkConversation | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const conversationId =
+    typeof payload.conversationId === "string" ? payload.conversationId : "";
+  const start = typeof payload.start === "string" ? payload.start : "";
+  const end = typeof payload.end === "string" ? payload.end : "";
+  if (!conversationId || !start || !end) return null;
+  return {
+    conversationId,
+    start,
+    end,
+    requestCount: normalizeFiniteNumber(payload.requestCount) ?? 0,
+  };
+}
+
 function normalizeParallelWorkWindowResponse(
   raw: unknown,
 ): ParallelWorkWindowResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const pointsRaw = Array.isArray(payload.points) ? payload.points : [];
+  const conversationsRaw = Array.isArray(payload.conversations)
+    ? payload.conversations
+    : [];
   const effectiveTimeZone =
     typeof payload.effectiveTimeZone === "string" &&
     payload.effectiveTimeZone.trim()
@@ -1307,6 +1336,12 @@ function normalizeParallelWorkWindowResponse(
     points: pointsRaw
       .map(normalizeParallelWorkPoint)
       .filter((point): point is ParallelWorkPoint => point != null),
+    conversations: conversationsRaw
+      .map(normalizeParallelWorkConversation)
+      .filter(
+        (conversation): conversation is ParallelWorkConversation =>
+          conversation != null,
+      ),
   };
 }
 
@@ -1314,10 +1349,14 @@ function normalizeParallelWorkStatsResponse(
   raw: unknown,
 ): ParallelWorkStatsResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
+  const current = normalizeParallelWorkWindowResponse(
+    payload.current ?? payload.minute7d,
+  );
   return {
-    minute7d: normalizeParallelWorkWindowResponse(payload.minute7d),
-    hour30d: normalizeParallelWorkWindowResponse(payload.hour30d),
-    dayAll: normalizeParallelWorkWindowResponse(payload.dayAll),
+    current,
+    minute7d: normalizeParallelWorkWindowResponse(payload.minute7d ?? current),
+    hour30d: normalizeParallelWorkWindowResponse(payload.hour30d ?? current),
+    dayAll: normalizeParallelWorkWindowResponse(payload.dayAll ?? current),
   };
 }
 
@@ -2383,10 +2422,14 @@ export async function fetchTimeseries(
 }
 
 export async function fetchParallelWorkStats(params?: {
+  range?: string;
+  bucket?: string;
   timeZone?: string;
   signal?: AbortSignal;
 }) {
   const search = new URLSearchParams();
+  if (params?.range) search.set("range", params.range);
+  if (params?.bucket) search.set("bucket", params.bucket);
   search.set("timeZone", params?.timeZone ?? getBrowserTimeZone());
   const response = await fetchJson<unknown>(
     `/api/stats/parallel-work?${search.toString()}`,

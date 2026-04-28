@@ -170,6 +170,23 @@ describe('StatsPage', () => {
     expect(host?.querySelector('[data-testid="stats-range-select-trigger"]')?.textContent).toContain('今日')
     expect(host?.querySelector('[data-testid="stats-bucket-select-trigger"]')?.textContent).toContain('每 15 分钟')
     expect(host?.querySelector('[data-testid="parallel-work-section"]')).toBeTruthy()
+    expect(hookMocks.useParallelWorkStats).toHaveBeenCalledWith({
+      range: 'today',
+      bucket: '15m',
+    })
+  })
+
+  it('offers minute buckets for ranges up to 24 hours', () => {
+    for (const range of ['1h', 'today', '1d']) {
+      expect(BUCKET_OPTION_KEYS[range]).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            value: '1m',
+            labelKey: 'stats.bucket.eachMinute',
+          }),
+        ]),
+      )
+    }
   })
 
   it('offers a 24-hour bucket for the past 7 days range', () => {

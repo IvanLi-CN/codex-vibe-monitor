@@ -1,4 +1,4 @@
-# 并行工作 bucket 统计（分钟 / 小时 / 天）（#f3dx3）
+# 并行工作 bucket 统计（#f3dx3）
 
 ## 状态
 
@@ -10,17 +10,18 @@
 
 - 统计页当前提供的是请求量、成功失败、错误原因等指标，但缺少“同一时间段内实际有多少个工作对话在推进”的视角。
 - Dashboard 已经存在“工作中的对话”语义，真相源来自 `promptCacheKey` 活跃对话；统计页仍缺少一个能跨分钟 / 小时 / 天观察并行工作强度的长期面板。
-- 项目已经有 `prompt_cache_rollup_hourly` 这层长期在线 rollup，适合承接最近一个月按小时与永久按天的聚合，但当前尚无对应 API 与前端展示。
+- 项目已经有 `prompt_cache_rollup_hourly` 这层长期在线 rollup，适合承接小时级与天级聚合；分钟级页面周期继续走 live invocation 精确查询。
 
 ## 目标 / 非目标
 
 ### Goals
 
 - 新增独立指标面：`并行工作数 = bucket 内发生过请求的 distinct promptCacheKey 数量`。
-- 新增 `GET /api/stats/parallel-work?timeZone=`，固定返回 `minute7d`、`hour30d`、`dayAll` 三组窗口。
-- `minute7d` 走 `codex_invocations` 精确查询；`hour30d` 与 `dayAll` 复用 `prompt_cache_rollup_hourly`。
-- 每组窗口都返回零填充后的完整 bucket 序列，以及 `minCount / maxCount / avgCount / completeBucketCount / activeBucketCount`。
-- Stats 页新增一个响应式 section，按项目既有 segmented toggle 习惯在 `minute7d / hour30d / dayAll` 三个窗口之间切换，每次只显示一个窗口卡片与趋势图。
+- 新增 `GET /api/stats/parallel-work?range=&bucket=&timeZone=`，返回与统计页当前 `range / bucket` 对齐的 `current` 窗口。
+- 分钟级 bucket 走 `codex_invocations` 精确查询；小时级及以上 bucket 复用 `prompt_cache_rollup_hourly` 并按所选 bucket 重新聚合 distinct `promptCacheKey`。
+- 当前窗口返回零填充后的 bucket 序列，以及 `minCount / maxCount / avgCount / completeBucketCount / activeBucketCount`。
+- Stats 页新增一个响应式 section，复用页面顶部时间周期与聚合粒度，不再提供 section 内部的窗口切换。
+- 并行工作趋势图使用 Recharts `ResponsiveContainer` + `AreaChart` 渲染，避免宽屏下手写 SVG 非等比缩放造成圆点、线条和文字变形。
 - 为新 section 补稳定 Storybook 入口，并将 Storybook docs 作为视觉证据真相源。
 
 ### Non-goals
@@ -30,6 +31,7 @@
 - 不新增永久分钟级 rollup 表、额外 retention 规则或 schema 迁移。
 - 不为该指标扩展账号 / 模型 / source 维度拆分。
 - 不修改现有 `/api/stats/timeseries`、总请求量、cost、token 的口径。
+- 不恢复并行工作 section 内部的独立时间窗口选择器。
 
 ## 范围（Scope）
 
@@ -55,16 +57,14 @@
 
 - Dashboard 或 Live 页新增同类 section。
 - CRS 外部汇总源并行工作统计（它没有 `promptCacheKey`）。
-- 新增自定义 range / bucket 选择器。
 - 非整点 UTC offset 时区下的历史 rollup 精确重分桶优化（首版仅做显式降级 / 回退，不做永久 exact query）。
 
 ## 接口与数据口径
 
 - 指标定义：bucket 内出现过请求的 `distinct promptCacheKey` 数量。
-- 固定窗口：
-  - `minute7d`：最近 7 天完整分钟 bucket。
-  - `hour30d`：最近 30 天完整小时 bucket。
-  - `dayAll`：从首个可完整覆盖的自然日开始，到最近一个完整自然日结束。
+- `range` 与 `bucket` 跟随统计页全局选择；缺省时沿用统计页默认 range。
+- 统计页全局 bucket 选择在不超过 24 小时的页面周期内提供 `1m` 分钟粒度选项，供并行工作与其他趋势图共同复用。
+- 主响应字段为 `current`；`minute7d / hour30d / dayAll` 仅保留为前端兼容别名，值与 `current` 一致，不再代表独立固定窗口。
 - 响应契约：
   - `rangeStart: string`
   - `rangeEnd: string`
@@ -75,41 +75,48 @@
   - `maxCount: number | null`
   - `avgCount: number | null`
   - `points[{ bucketStart, bucketEnd, parallelCount }]`
+  - `conversations[{ conversationId, start, end, requestCount }]`：仅用于不超过 24 小时页面周期的对话级时间轴渲染，长周期可为空。
 - summary 口径：
-  - 基于零填充后的完整 bucket 序列计算。
-  - `avgCount` 为完整 bucket 的算术平均值，窗口中的 0 必须计入。
-  - 当前未结束 bucket 一律不进入 points 与 summary。
-- `dayAll` 空历史契约：
-  - 若没有任何完整自然日样本，则返回空 `points`，且 `minCount / maxCount / avgCount = null`。
+  - 基于零填充后的页面周期 bucket 序列计算。
+  - `avgCount` 为 bucket 的算术平均值，窗口中的 0 必须计入。
+  - 与统计页趋势图一致，当前页面周期内正在进行的 bucket 可进入 points 与 summary。
 - 工程取舍：
-  - `hour30d` / `dayAll` 优先复用 `prompt_cache_rollup_hourly`，不新增分钟级持久化。
-  - 对非整点 UTC offset 的 reporting time zone，历史 rollup 无法无损重分桶；首版保持 `minute7d` 继续按请求时区精确计算，`hour30d` / `dayAll` 回退到 `Asia/Shanghai` 对齐并在前端给出显式提示，而不是直接让整个接口失败。
-  - 对整点 UTC offset 但存在 DST 的 reporting time zone，固定窗口以 reporting time zone 的本地墙钟对齐首尾边界，而不是简单用 UTC duration 回退，避免最近 30 天窗口在 DST 变更附近错掉首尾本地小时。
+  - 小时级及以上 bucket 优先复用 `prompt_cache_rollup_hourly`，不新增分钟级持久化。
+  - 对非整点 UTC offset 的 reporting time zone，历史 rollup 无法无损重分桶；首版对小时级及以上 bucket 回退到 `Asia/Shanghai` 对齐并在前端给出显式提示，而不是直接让整个接口失败。
+  - 对整点 UTC offset 但存在 DST 的 reporting time zone，页面周期以 reporting time zone 的本地墙钟对齐首尾边界，而不是简单用 UTC duration 回退。
 
 ## 验收标准（Acceptance Criteria）
 
 - Given 同一个 `promptCacheKey` 在同一 bucket 内出现多次，When 请求 `/api/stats/parallel-work`，Then 该 bucket 只计 1 次并行工作。
 - Given 同一个 `promptCacheKey` 跨 bucket 继续活跃，When 请求 `/api/stats/parallel-work`，Then 它会分别计入各自 bucket。
 - Given bucket 内没有任何请求，When 返回窗口数据，Then 该 bucket 仍会作为 `parallelCount = 0` 的点出现在结果中。
-- Given 当前分钟 / 小时 / 自然日尚未结束，When 请求统计，Then 当前未结束 bucket 不会进入 points 与 summary。
-- Given `dayAll` 还没有任何完整自然日样本，When 请求统计，Then `dayAll.points = []` 且 `minCount / maxCount / avgCount = null`。
-- Given 打开 Stats 页并行工作 section，When 数据正常返回，Then 页面通过 segmented toggle 在最近 7 天按分钟、最近 30 天按小时、全历史按天三个窗口之间切换，且同一时刻只显示一个窗口卡片。
+- Given 打开 Stats 页并行工作 section，When 顶部 `range / bucket` 变化，Then 并行工作 section 请求相同 `range / bucket` 并渲染对应 `current` 窗口。
+- Given 统计页选择 `1h / today / 1d` 任一不超过 24 小时周期，When 打开 bucket 下拉，Then 可以选择 `1m` 分钟粒度。
+- Given 统计页当前周期不超过 24 小时且并行工作接口返回 `conversations`，When 渲染并行工作 section，Then 图表使用类似甘特图的对话时间轴，Y 轴每行代表一个对话。
+- Given 打开 Stats 页并行工作 section，When 数据正常返回，Then section 内不出现独立窗口 segmented toggle，且同一时刻只显示一个当前页面周期卡片。
+- Given 宽屏渲染长周期并行工作趋势图，When 查看 Storybook 证据，Then 圆点、线宽、坐标轴文字与 tooltip 目标不被横向拉伸。
 - Given section 进入 loading / error / empty / populated 任一状态，When 渲染 Storybook，Then 布局稳定且状态文案清晰。
 
 ## 非功能性验收 / 质量门槛
 
 ### Testing
 
-- `cargo check --tests`
-- `cargo test parallel_work -- --nocapture`
-- `cd web && bun run test`
+- `cargo check`
+- `cargo test parallel_work_stats`
+- `cd web && bun run test -- ParallelWorkStatsSection useParallelWorkStats api Stats`
+- `cd web && bun run test-storybook`
 - `cd web && bun run build`
-- `cd web && bun run build-storybook`
+- `ParallelWorkStatsSection.test.tsx` 覆盖图表模式边界：页面周期不超过 24 小时且存在 `conversations` 时渲染 `data-chart-mode="conversation-gantt"`；页面周期超过 24 小时即使存在 `conversations` 也保持 Recharts `ResponsiveContainer` + `AreaChart` 趋势图。
+- `StatsPage.stories.tsx` 的 Storybook play 覆盖跨页面行为：默认 today 周期渲染对话甘特图；切换到 `最近 7 天` 后断言不再出现 `parallel-work-conversation-gantt`。
 
 ### UI / Storybook
 
 - 新增稳定故事：`web/src/components/ParallelWorkStatsSection.stories.tsx`
-- 视觉证据来源：`storybook_docs`
+- 新增证据故事：`Stats/ParallelWorkStatsSection/Evidence / Short Period Conversation Gantt`
+- 新增证据故事：`Stats/ParallelWorkStatsSection/Evidence / Long Period Recharts Trend`
+- 新增证据故事：`Pages/StatsPage/Evidence / Today Minute Options + Gantt`
+- 新增证据故事：`Pages/StatsPage/Evidence / Seven Day Recharts Page`
+- 证据来源：`storybook_canvas` 截图 + Storybook play 断言；截图用于人工确认密度与布局，play/Vitest 断言用于证明 24 小时边界与图表模式选择。
 
 ## 文档更新（Docs to Update）
 
@@ -121,27 +128,65 @@
 
 ## Visual Evidence
 
-- source_type: storybook_docs
+- source_type: storybook_canvas
   target_program: mock-only
   capture_scope: element
+  requested_viewport: desktop1660
+  viewport_strategy: storybook-viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
-  docs_entry_or_title: Stats/ParallelWorkStatsSection
-  state: populated
-  evidence_note: 验证 Stats 页并行工作 section 已按项目既有 segmented toggle 习惯切换显示 `minute7d / hour30d / dayAll` 三个窗口，问号图标贴在 section 标题右侧并与标题垂直居中对齐，选择器单独留在标题区右上角，卡片内容不再为 controls 预留额外高度；当前激活窗口把整段窗口元信息都收进问号气泡，并保留带 Y 轴刻度、X 轴时间刻度与辅助网格线的全宽趋势图；populated 卡片已去掉人工最小高度，底部不再留出无意义空白。
+  submission_gate: approved
+  story_id_or_title: Stats/ParallelWorkStatsSection/Evidence / Short Period Conversation Gantt
+  state: component short period with dense conversation spans
+  executable_assertions: `parallel-work-conversation-gantt` exists, `data-chart-mode="conversation-gantt"`, at least 20 conversation bars render, Recharts overlay is absent.
+  evidence_note: 验证不超过 24 小时的并行工作数据使用对话级甘特图；Y 轴每行代表一个对话，密集 20-50 条对话场景仍可滚动承载。
   image:
-  ![并行工作统计 segmented populated docs](./assets/parallel-work-segmented-populated-docs.png)
+  PR: include
+  ![短周期并行工作对话甘特图](./assets/parallel-work-evidence-short-gantt.png)
 
-- source_type: storybook_docs
+- source_type: storybook_canvas
   target_program: mock-only
   capture_scope: element
+  requested_viewport: desktop1660
+  viewport_strategy: storybook-viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
-  docs_entry_or_title: Stats/ParallelWorkStatsSection
-  scenario: gallery
-  evidence_note: 验证同一 docs 入口已覆盖分钟窗口默认态、切换到小时窗口、`dayAll` 空历史、loading 与 error 五类关键状态，且问号图标贴在标题右侧、选择器留在标题区右上角、窗口元信息统一收敛到问号气泡、每次只显示一个激活窗口，并且趋势图补上 X/Y 轴刻度与辅助网格线，populated 卡片也不再保留多余底部留白。
+  submission_gate: approved
+  story_id_or_title: Stats/ParallelWorkStatsSection/Evidence / Long Period Recharts Trend
+  state: component long period with hourly buckets
+  executable_assertions: `parallel-work-conversation-gantt` is absent, `data-chart-mode="recharts-area"` exists, interaction overlay exists for bucket tooltip targeting.
+  evidence_note: 验证超过 24 小时的并行工作数据不使用甘特图，保留 Recharts 面积/折线趋势图；宽屏下轴线、点、线和文字由 Recharts 正常布局。
   image:
-  ![并行工作统计 segmented docs gallery](./assets/parallel-work-segmented-gallery-docs.png)
+  PR: include
+  ![长周期并行工作 Recharts 趋势图](./assets/parallel-work-evidence-long-recharts.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: desktop1660
+  viewport_strategy: storybook-viewport
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Pages/StatsPage/Evidence / Today Minute Options + Gantt
+  state: page today period with bucket menu open
+  executable_assertions: default bucket trigger remains `每 15 分钟`, dropdown option order starts with `每分钟` then `每 15 分钟`, current page period renders `data-chart-mode="conversation-gantt"`.
+  evidence_note: 截图验证统计页在不超过 24 小时的默认 today 周期内提供 `1m` 粒度且排序正确；Storybook play 断言同一页面周期下并行工作 section 渲染甘特图。
+  image:
+  PR: include
+  ![统计页 today 周期分钟粒度选项](./assets/stats-evidence-today-minute-options-gantt.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: desktop1660
+  viewport_strategy: storybook-viewport
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Pages/StatsPage/Evidence / Seven Day Recharts Page
+  state: page 7 day period
+  executable_assertions: after switching to `最近 7 天`, `parallel-work-conversation-gantt` is absent and `data-chart-mode="recharts-area"` exists.
+  evidence_note: 验证超过 24 小时的页面周期不会误用甘特图；并行工作图表跟随整个统计页 7 天周期回到 Recharts 趋势图。
+  image:
+  PR: include
+  ![统计页 7 天周期 Recharts 并行工作趋势图](./assets/stats-evidence-seven-day-recharts.png)
 
 ## 实现里程碑（Milestones / Delivery checklist）
 

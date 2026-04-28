@@ -1,170 +1,37 @@
-import { useId, useMemo, useState } from "react";
+import {
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+  useId,
+  useMemo,
+} from "react";
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  Line,
+  ResponsiveContainer,
+  XAxis,
+  YAxis,
+} from "recharts";
 import type {
+  ParallelWorkConversation,
   ParallelWorkStatsResponse,
   ParallelWorkWindowResponse,
 } from "../lib/api";
 import { useTranslation } from "../i18n";
+import { chartBaseTokens, metricAccent, withOpacity } from "../lib/chartTheme";
+import { useTheme } from "../theme";
 import { Alert } from "./ui/alert";
 import {
   InlineChartTooltipSurface,
   type InlineChartTooltipData,
 } from "./ui/inline-chart-tooltip";
 import { InfoTooltip } from "./ui/info-tooltip";
-import { SegmentedControl, SegmentedControlItem } from "./ui/segmented-control";
 
 interface ParallelWorkStatsSectionProps {
   stats: ParallelWorkStatsResponse | null;
   isLoading: boolean;
   error: string | null;
-  defaultWindowKey?: ParallelWorkWindowKey;
-}
-
-export type ParallelWorkWindowKey = "minute7d" | "hour30d" | "dayAll";
-
-const WINDOW_KEYS: ParallelWorkWindowKey[] = ["minute7d", "hour30d", "dayAll"];
-
-const CHART_WIDTH = 640;
-const CHART_HEIGHT = 176;
-const CHART_MARGIN_LEFT = 42;
-const CHART_MARGIN_RIGHT = 16;
-const CHART_MARGIN_TOP = 14;
-const CHART_MARGIN_BOTTOM = 28;
-const CHART_PLOT_WIDTH = CHART_WIDTH - CHART_MARGIN_LEFT - CHART_MARGIN_RIGHT;
-const CHART_PLOT_HEIGHT = CHART_HEIGHT - CHART_MARGIN_TOP - CHART_MARGIN_BOTTOM;
-
-type ParallelWorkChartPoint = ParallelWorkWindowResponse["points"][number] & {
-  x: number;
-  y: number;
-  hitStartX: number;
-  hitWidth: number;
-};
-
-function resolveWindowMeta(key: ParallelWorkWindowKey) {
-  switch (key) {
-    case "minute7d":
-      return {
-        titleKey: "stats.parallelWork.windows.minute7d.title",
-        descriptionKey: "stats.parallelWork.windows.minute7d.description",
-        toggleLabelKey: "stats.parallelWork.windows.minute7d.toggleLabel",
-      };
-    case "hour30d":
-      return {
-        titleKey: "stats.parallelWork.windows.hour30d.title",
-        descriptionKey: "stats.parallelWork.windows.hour30d.description",
-        toggleLabelKey: "stats.parallelWork.windows.hour30d.toggleLabel",
-      };
-    case "dayAll":
-      return {
-        titleKey: "stats.parallelWork.windows.dayAll.title",
-        descriptionKey: "stats.parallelWork.windows.dayAll.description",
-        toggleLabelKey: "stats.parallelWork.windows.dayAll.toggleLabel",
-      };
-  }
-}
-
-function buildSparklineGeometry(
-  points: ParallelWorkWindowResponse["points"],
-  scaleMaxCount: number,
-) {
-  const baselineY = CHART_HEIGHT - CHART_MARGIN_BOTTOM;
-
-  if (points.length === 0) {
-    return {
-      linePath: "",
-      areaPath: "",
-      baselineY,
-      chartPoints: [] as ParallelWorkChartPoint[],
-    };
-  }
-
-  const projectedPoints = points.map((point, index) => {
-    const x =
-      points.length === 1
-        ? CHART_MARGIN_LEFT + CHART_PLOT_WIDTH / 2
-        : CHART_MARGIN_LEFT + (CHART_PLOT_WIDTH * index) / (points.length - 1);
-    const ratio = scaleMaxCount <= 0 ? 0 : point.parallelCount / scaleMaxCount;
-    const y = baselineY - ratio * CHART_PLOT_HEIGHT;
-    return { ...point, x, y };
-  });
-  const chartPoints = projectedPoints.map((point, index) => {
-    const previousX = projectedPoints[index - 1]?.x ?? CHART_MARGIN_LEFT;
-    const nextX =
-      projectedPoints[index + 1]?.x ?? CHART_WIDTH - CHART_MARGIN_RIGHT;
-    const hitStartX =
-      index === 0 ? CHART_MARGIN_LEFT : (previousX + point.x) / 2;
-    const hitEndX =
-      index === projectedPoints.length - 1
-        ? CHART_WIDTH - CHART_MARGIN_RIGHT
-        : (point.x + nextX) / 2;
-
-    return {
-      ...point,
-      hitStartX,
-      hitWidth: Math.max(hitEndX - hitStartX, 12),
-    };
-  });
-
-  const linePath = chartPoints
-    .map(
-      (coord, index) =>
-        (index === 0 ? "M " : "L ") +
-        coord.x.toFixed(2) +
-        " " +
-        coord.y.toFixed(2),
-    )
-    .join(" ");
-  const areaPath =
-    chartPoints.length === 1
-      ? linePath +
-        " L " +
-        chartPoints[0].x.toFixed(2) +
-        " " +
-        baselineY.toFixed(2) +
-        " Z"
-      : linePath +
-        " L " +
-        chartPoints[chartPoints.length - 1].x.toFixed(2) +
-        " " +
-        baselineY.toFixed(2) +
-        " L " +
-        chartPoints[0].x.toFixed(2) +
-        " " +
-        baselineY.toFixed(2) +
-        " Z";
-
-  return {
-    linePath,
-    areaPath,
-    baselineY,
-    chartPoints,
-  };
-}
-
-function buildParallelWorkYAxisTicks(
-  scaleMaxCount: number,
-  localeTag: string,
-): Array<{ value: number; y: number; label: string }> {
-  const formatter = new Intl.NumberFormat(localeTag, {
-    maximumFractionDigits: 0,
-  });
-  const values = Array.from(
-    new Set(
-      [0, Math.ceil(scaleMaxCount / 2), scaleMaxCount].filter(
-        (value) => value >= 0,
-      ),
-    ),
-  ).sort((left, right) => left - right);
-
-  return values.reverse().map((value) => ({
-    value,
-    y:
-      scaleMaxCount <= 0
-        ? CHART_HEIGHT - CHART_MARGIN_BOTTOM
-        : CHART_HEIGHT -
-          CHART_MARGIN_BOTTOM -
-          (value / scaleMaxCount) * CHART_PLOT_HEIGHT,
-    label: formatter.format(value),
-  }));
 }
 
 function formatParallelWorkAxisBucketLabel(
@@ -190,10 +57,9 @@ function formatParallelWorkAxisBucketLabel(
 
 function buildParallelWorkXAxisTicks(
   window: ParallelWorkWindowResponse,
-  chartPoints: ParallelWorkChartPoint[],
   localeTag: string,
-) {
-  if (window.points.length === 0 || chartPoints.length === 0) return [];
+): Array<{ index: number; label: string }> {
+  if (window.points.length === 0) return [];
   const effectiveTimeZone = window.effectiveTimeZone ?? "Asia/Shanghai";
   const candidateIndexes = Array.from(
     new Set([0, Math.floor((window.points.length - 1) / 2), window.points.length - 1]),
@@ -215,13 +81,7 @@ function buildParallelWorkXAxisTicks(
     new Set(baseLabels).size !== baseLabels.length && window.bucketSeconds < 86_400;
 
   return candidateIndexes.map((index) => ({
-    anchor:
-      index === 0
-        ? ("start" as const)
-        : index === window.points.length - 1
-          ? ("end" as const)
-          : ("middle" as const),
-    x: chartPoints[index]?.x ?? CHART_MARGIN_LEFT,
+    index,
     label: formatParallelWorkAxisBucketLabel(
       window.points[index]?.bucketStart ?? "",
       localeTag,
@@ -229,6 +89,22 @@ function buildParallelWorkXAxisTicks(
       useDetailedLabels,
       effectiveTimeZone,
     ),
+  }));
+}
+
+function buildParallelWorkChartData(
+  window: ParallelWorkWindowResponse,
+  localeTag: string,
+) {
+  const xAxisTicks = buildParallelWorkXAxisTicks(window, localeTag);
+  const labelsByIndex = new Map(
+    xAxisTicks.map((tick) => [tick.index, tick.label]),
+  );
+
+  return window.points.map((point, index) => ({
+    ...point,
+    index,
+    axisLabel: labelsByIndex.get(index) ?? "",
   }));
 }
 
@@ -274,6 +150,19 @@ function formatParallelWorkBucketRange(
   return formatter.format(start) + " → " + formatter.format(end);
 }
 
+function formatParallelWorkTimeLabel(raw: string, localeTag: string, timeZone: string) {
+  const value = new Date(raw);
+  if (Number.isNaN(value.getTime())) return raw;
+  return new Intl.DateTimeFormat(localeTag, {
+    timeZone,
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(value);
+}
+
 function buildParallelWorkTooltipData(
   window: ParallelWorkWindowResponse,
   localeTag: string,
@@ -299,6 +188,31 @@ function buildParallelWorkTooltipData(
   }));
 }
 
+function buildParallelWorkConversationTooltipData(
+  conversations: ParallelWorkConversation[],
+  localeTag: string,
+  timeZone: string,
+  requestCountLabel: string,
+  numberFormatter: Intl.NumberFormat,
+) {
+  return conversations.map<InlineChartTooltipData>((conversation, index) => ({
+    title:
+      "Conversation " +
+      (index + 1) +
+      " · " +
+      formatParallelWorkTimeLabel(conversation.start, localeTag, timeZone) +
+      " → " +
+      formatParallelWorkTimeLabel(conversation.end, localeTag, timeZone),
+    rows: [
+      {
+        label: requestCountLabel,
+        value: numberFormatter.format(conversation.requestCount),
+        tone: "accent",
+      },
+    ],
+  }));
+}
+
 function resolveParallelWorkDefaultIndex(
   points: ParallelWorkWindowResponse["points"],
 ) {
@@ -306,6 +220,79 @@ function resolveParallelWorkDefaultIndex(
     if ((points[index]?.parallelCount ?? 0) > 0) return index;
   }
   return Math.max(0, points.length - 1);
+}
+
+interface ParallelWorkChartDotProps {
+  cx?: number;
+  cy?: number;
+  index?: number;
+  highlightedIndex: number | null;
+  strokeColor: string;
+  fillColor: string;
+  surfaceColor: string;
+}
+
+interface ParallelWorkXAxisTickProps {
+  x?: number;
+  y?: number;
+  payload?: {
+    value?: number | string;
+  };
+  labelsByIndex: Map<number, string>;
+  maxIndex: number;
+  fill: string;
+}
+
+function ParallelWorkXAxisTick({
+  x,
+  y,
+  payload,
+  labelsByIndex,
+  maxIndex,
+  fill,
+}: ParallelWorkXAxisTickProps) {
+  if (typeof x !== "number" || typeof y !== "number") return null;
+  const index = Number(payload?.value ?? 0);
+  const label = labelsByIndex.get(index) ?? "";
+  const textAnchor =
+    index <= 0 ? "start" : index >= maxIndex ? "end" : "middle";
+
+  return (
+    <text
+      x={x}
+      y={y}
+      dy={13}
+      fill={fill}
+      fontSize={11}
+      textAnchor={textAnchor}
+    >
+      {label}
+    </text>
+  );
+}
+
+function ParallelWorkChartDot({
+  cx,
+  cy,
+  index,
+  highlightedIndex,
+  strokeColor,
+  fillColor,
+  surfaceColor,
+}: ParallelWorkChartDotProps) {
+  if (typeof cx !== "number" || typeof cy !== "number") return null;
+  const active = index === highlightedIndex;
+
+  return (
+    <circle
+      cx={cx}
+      cy={cy}
+      r={active ? 4.5 : 3}
+      fill={active ? strokeColor : fillColor}
+      stroke={surfaceColor}
+      strokeWidth={active ? 1.8 : 1.25}
+    />
+  );
 }
 
 function buildWindowDetailsTooltipContent(
@@ -337,45 +324,6 @@ function ParallelWorkWindowInfoTrigger({
   );
 }
 
-function ParallelWorkWindowToggle({
-  activeWindowKey,
-  onWindowSelect,
-}: {
-  activeWindowKey: ParallelWorkWindowKey;
-  onWindowSelect: (windowKey: ParallelWorkWindowKey) => void;
-}) {
-  const { t } = useTranslation();
-
-  return (
-    <div className="flex justify-end">
-      <SegmentedControl
-        size="compact"
-        className="min-w-max"
-        role="tablist"
-        aria-label={t("stats.parallelWork.windowToggleAria")}
-        data-testid="parallel-work-window-toggle"
-      >
-        {WINDOW_KEYS.map((windowKey) => {
-          const meta = resolveWindowMeta(windowKey);
-          const active = windowKey === activeWindowKey;
-          return (
-            <SegmentedControlItem
-              key={windowKey}
-              active={active}
-              role="tab"
-              aria-selected={active}
-              onClick={() => onWindowSelect(windowKey)}
-              data-testid={"parallel-work-window-trigger-" + windowKey}
-            >
-              {t(meta.toggleLabelKey)}
-            </SegmentedControlItem>
-          );
-        })}
-      </SegmentedControl>
-    </div>
-  );
-}
-
 function ParallelWorkSparkline({
   window,
   emptyLabel,
@@ -390,6 +338,7 @@ function ParallelWorkSparkline({
   tooltipCountLabel: string;
 }) {
   const { locale } = useTranslation();
+  const { themeMode } = useTheme();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
   const numberFormatter = useMemo(
     () => new Intl.NumberFormat(localeTag),
@@ -418,17 +367,31 @@ function ParallelWorkSparkline({
       ),
     [window.maxCount, window.points],
   );
-  const { linePath, areaPath, baselineY, chartPoints } = useMemo(
-    () => buildSparklineGeometry(window.points, scaleMaxCount),
-    [scaleMaxCount, window.points],
-  );
-  const yAxisTicks = useMemo(
-    () => buildParallelWorkYAxisTicks(scaleMaxCount, localeTag),
-    [localeTag, scaleMaxCount],
+  const chartData = useMemo(
+    () => buildParallelWorkChartData(window, localeTag),
+    [localeTag, window],
   );
   const xAxisTicks = useMemo(
-    () => buildParallelWorkXAxisTicks(window, chartPoints, localeTag),
-    [chartPoints, localeTag, window],
+    () => buildParallelWorkXAxisTicks(window, localeTag),
+    [localeTag, window],
+  );
+  const chartColors = useMemo(() => {
+    const base = chartBaseTokens(themeMode);
+    const accent = metricAccent("totalCount", themeMode);
+    return {
+      ...base,
+      accent,
+      accentFill: withOpacity(accent, 0.2),
+      accentDot: withOpacity(accent, 0.82),
+      surface: themeMode === "dark" ? "#111827" : "#ffffff",
+    };
+  }, [themeMode]);
+  const yAxisDomainMax = Math.max(1, scaleMaxCount);
+  const xAxisDomainMax = Math.max(0, chartData.length - 1);
+  const animate = chartData.length <= 800;
+  const overlayLabelByIndex = useMemo(
+    () => new Map(xAxisTicks.map((tick) => [tick.index, tick.label])),
+    [xAxisTicks],
   );
   const gradientId = useId().replace(/:/g, "");
 
@@ -450,154 +413,344 @@ function ParallelWorkSparkline({
       chartClassName="w-full"
     >
       {({ highlightedIndex, getItemProps }) => {
-        const activePoint =
-          highlightedIndex != null
-            ? (chartPoints[highlightedIndex] ?? null)
-            : null;
+        const resolveOverlayIndex = (
+          clientX: number,
+          currentTarget: HTMLElement,
+        ) => {
+          if (chartData.length <= 1) return 0;
+          const rect = currentTarget.getBoundingClientRect();
+          if (rect.width <= 0) return defaultIndex;
+          const ratio = Math.max(
+            0,
+            Math.min(1, (clientX - rect.left) / rect.width),
+          );
+          return Math.max(
+            0,
+            Math.min(chartData.length - 1, Math.round(ratio * xAxisDomainMax)),
+          );
+        };
+        const resolveMarkerLeft = (index: number) =>
+          chartData.length <= 1 ? 50 : (index / xAxisDomainMax) * 100;
+        const handleOverlayPointer = (
+          event: ReactPointerEvent<HTMLButtonElement>,
+          handler:
+            | "onPointerEnter"
+            | "onPointerMove"
+            | "onPointerDown",
+        ) => {
+          const index = resolveOverlayIndex(event.clientX, event.currentTarget);
+          getItemProps(index)[handler](event as never);
+        };
+        const handleOverlayMouse = (
+          event: ReactMouseEvent<HTMLButtonElement>,
+          handler: "onMouseEnter" | "onMouseMove" | "onClick",
+        ) => {
+          const index = resolveOverlayIndex(event.clientX, event.currentTarget);
+          const itemProps = getItemProps(index);
+          if (handler === "onClick") {
+            itemProps.onClick();
+            itemProps.onMouseEnter(event as never);
+            return;
+          }
+          itemProps[handler](event as never);
+        };
 
         return (
-          <svg
-            viewBox={"0 0 " + CHART_WIDTH + " " + CHART_HEIGHT}
-            className="h-44 w-full rounded-2xl border border-base-300/75 bg-base-100/75"
-            preserveAspectRatio="none"
-            aria-hidden="true"
+          <div
+            className="relative h-44 w-full rounded-2xl border border-base-300/75 bg-base-100/75"
             data-chart-kind="parallel-work-sparkline"
+            data-chart-mode="recharts-area"
           >
-            <defs>
-              <linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1">
-                <stop
-                  offset="0%"
-                  stopColor="oklch(var(--color-primary) / 0.22)"
+            <ResponsiveContainer>
+              <AreaChart
+                data={chartData}
+                margin={{ top: 14, right: 16, left: -8, bottom: 8 }}
+              >
+                <defs>
+                  <linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1">
+                    <stop offset="0%" stopColor={chartColors.accentFill} />
+                    <stop
+                      offset="100%"
+                      stopColor={withOpacity(chartColors.accent, 0.03)}
+                    />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid
+                  stroke={chartColors.gridLine}
+                  strokeDasharray="4 4"
+                  vertical={false}
                 />
-                <stop
-                  offset="100%"
-                  stopColor="oklch(var(--color-primary) / 0.03)"
+                <XAxis
+                  dataKey="index"
+                  type="number"
+                  domain={[0, xAxisDomainMax]}
+                  ticks={xAxisTicks.map((tick) => tick.index)}
+                  interval={0}
+                  axisLine={{ stroke: chartColors.gridLine }}
+                  tickLine={{ stroke: chartColors.gridLine }}
+                  tick={
+                    <ParallelWorkXAxisTick
+                      labelsByIndex={overlayLabelByIndex}
+                      maxIndex={xAxisDomainMax}
+                      fill={chartColors.axisText}
+                    />
+                  }
                 />
-              </linearGradient>
-            </defs>
-            {yAxisTicks.map((tick) => (
-              <g key={"y-" + tick.value}>
-                <line
-                  x1={CHART_MARGIN_LEFT}
-                  y1={tick.y}
-                  x2={CHART_WIDTH - CHART_MARGIN_RIGHT}
-                  y2={tick.y}
-                  stroke="oklch(var(--color-base-content) / 0.12)"
-                  strokeWidth="1"
-                  strokeDasharray={tick.value === 0 ? undefined : "4 4"}
+                <YAxis
+                  domain={[0, yAxisDomainMax]}
+                  allowDecimals={false}
+                  width={46}
+                  tickCount={3}
+                  tickFormatter={(value) =>
+                    numberFormatter.format(Number(value))
+                  }
+                  axisLine={{ stroke: chartColors.gridLine }}
+                  tickLine={{ stroke: chartColors.gridLine }}
+                  tick={{ fill: chartColors.axisText, fontSize: 11 }}
                 />
-                <text
-                  x={CHART_MARGIN_LEFT - 8}
-                  y={tick.y}
-                  dy="0.32em"
-                  textAnchor="end"
-                  fontSize="11"
-                  fill="oklch(var(--color-base-content) / 0.5)"
-                  data-axis="y-tick"
-                >
-                  {tick.label}
-                </text>
-              </g>
-            ))}
-            {activePoint ? (
-              <line
-                x1={activePoint.x}
-                y1={CHART_MARGIN_TOP}
-                x2={activePoint.x}
-                y2={baselineY}
-                stroke="oklch(var(--color-primary) / 0.4)"
-                strokeWidth="1.4"
-                strokeDasharray="5 4"
-              />
-            ) : null}
-            <path
-              d={areaPath}
-              fill={"url(#" + gradientId + ")"}
-              stroke="none"
-            />
-            <path
-              d={linePath}
-              fill="none"
-              stroke="oklch(var(--color-primary))"
-              strokeWidth="3"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-            {chartPoints.map((point, index) => {
-              const isActive = highlightedIndex === index;
-              const itemProps = getItemProps(index);
-              const { ref, onClick, onMouseEnter, ...restItemProps } =
-                itemProps;
-              return (
-                <g key={point.bucketStart + "-" + point.bucketEnd}>
-                  <circle
-                    cx={point.x}
-                    cy={point.y}
-                    r={isActive ? "4.5" : "3"}
-                    fill={
-                      isActive
-                        ? "oklch(var(--color-primary))"
-                        : "oklch(var(--color-primary) / 0.82)"
-                    }
-                    stroke="oklch(var(--color-base-100) / 0.96)"
-                    strokeWidth={isActive ? "1.8" : "1.25"}
-                  />
-                  <rect
+                <Area
+                  type="monotone"
+                  dataKey="parallelCount"
+                  stroke="none"
+                  fill={"url(#" + gradientId + ")"}
+                  fillOpacity={1}
+                  dot={false}
+                  activeDot={false}
+                  isAnimationActive={animate}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="parallelCount"
+                  stroke={chartColors.accent}
+                  strokeWidth={3}
+                  dot={(props) => (
+                    <ParallelWorkChartDot
+                      {...(props as unknown as ParallelWorkChartDotProps)}
+                      highlightedIndex={highlightedIndex}
+                      strokeColor={chartColors.accent}
+                      fillColor={chartColors.accentDot}
+                      surfaceColor={chartColors.surface}
+                    />
+                  )}
+                  activeDot={false}
+                  isAnimationActive={animate}
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+            <div className="absolute bottom-8 left-[38px] right-4 top-3">
+              {chartData.map((point, index) => {
+                const { ref } = getItemProps(index);
+                return (
+                  <span
+                    key={point.bucketStart + "-" + point.bucketEnd}
                     ref={ref}
-                    x={point.hitStartX}
-                    y={CHART_MARGIN_TOP}
-                    width={point.hitWidth}
-                    height={CHART_PLOT_HEIGHT}
-                    fill="transparent"
-                    className="cursor-pointer"
-                    {...restItemProps}
-                    onClick={(event) => {
-                      onClick();
-                      onMouseEnter(event as never);
+                    aria-hidden="true"
+                    className="pointer-events-none absolute top-1/2 h-px w-px -translate-x-1/2 -translate-y-1/2"
+                    style={{
+                      left: `${resolveMarkerLeft(index)}%`,
                     }}
                   />
-                </g>
-              );
-            })}
-            {xAxisTicks.map((tick) => (
-              <g key={"x-" + tick.x + "-" + tick.label}>
-                <line
-                  x1={tick.x}
-                  y1={baselineY}
-                  x2={tick.x}
-                  y2={baselineY + 5}
-                  stroke="oklch(var(--color-base-content) / 0.18)"
-                  strokeWidth="1"
-                />
-                <text
-                  x={tick.x}
-                  y={CHART_HEIGHT - 8}
-                  textAnchor={tick.anchor}
-                  fontSize="11"
-                  fill="oklch(var(--color-base-content) / 0.5)"
-                  data-axis="x-tick"
-                >
-                  {tick.label}
-                </text>
-              </g>
-            ))}
-          </svg>
+                );
+              })}
+              <button
+                type="button"
+                tabIndex={-1}
+                data-testid="parallel-work-interaction-overlay"
+                className="absolute inset-0 cursor-pointer rounded-sm bg-transparent p-0 text-transparent outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
+                aria-label={ariaLabel}
+                onPointerEnter={(event) =>
+                  handleOverlayPointer(event, "onPointerEnter")
+                }
+                onPointerMove={(event) =>
+                  handleOverlayPointer(event, "onPointerMove")
+                }
+                onPointerDown={(event) =>
+                  handleOverlayPointer(event, "onPointerDown")
+                }
+                onMouseEnter={(event) =>
+                  handleOverlayMouse(event, "onMouseEnter")
+                }
+                onMouseMove={(event) => handleOverlayMouse(event, "onMouseMove")}
+                onMouseDown={() => getItemProps(defaultIndex).onMouseDown()}
+                onTouchStart={(event) => {
+                  const firstTouch = event.touches[0];
+                  const index = firstTouch
+                    ? resolveOverlayIndex(
+                        firstTouch.clientX,
+                        event.currentTarget,
+                      )
+                    : defaultIndex;
+                  getItemProps(index).onTouchStart();
+                }}
+                onClick={(event) => handleOverlayMouse(event, "onClick")}
+              />
+            </div>
+          </div>
         );
       }}
     </InlineChartTooltipSurface>
   );
 }
 
-function ParallelWorkWindowCard({
-  windowKey,
+function ParallelWorkConversationGantt({
   window,
+  emptyLabel,
+  ariaLabel,
+  interactionHint,
+  requestCountLabel,
 }: {
-  windowKey: ParallelWorkWindowKey;
   window: ParallelWorkWindowResponse;
+  emptyLabel: string;
+  ariaLabel: string;
+  interactionHint: string;
+  requestCountLabel: string;
 }) {
+  const { locale } = useTranslation();
+  const { themeMode } = useTheme();
+  const localeTag = locale === "zh" ? "zh-CN" : "en-US";
+  const numberFormatter = useMemo(
+    () => new Intl.NumberFormat(localeTag),
+    [localeTag],
+  );
+  const conversations = useMemo(
+    () =>
+      [...(window.conversations ?? [])].sort(
+        (a, b) => Date.parse(a.start) - Date.parse(b.start),
+      ),
+    [window.conversations],
+  );
+  const effectiveTimeZone = window.effectiveTimeZone ?? "Asia/Shanghai";
+  const tooltipData = useMemo(
+    () =>
+      buildParallelWorkConversationTooltipData(
+        conversations,
+        localeTag,
+        effectiveTimeZone,
+        requestCountLabel,
+        numberFormatter,
+      ),
+    [conversations, effectiveTimeZone, localeTag, numberFormatter, requestCountLabel],
+  );
+  const chartColors = useMemo(() => {
+    const base = chartBaseTokens(themeMode);
+    const accent = metricAccent("totalCount", themeMode);
+    return {
+      ...base,
+      accent,
+      accentFill: withOpacity(accent, 0.2),
+      axis: themeMode === "dark" ? "rgba(229, 231, 235, 0.7)" : "rgba(55, 65, 81, 0.68)",
+    };
+  }, [themeMode]);
+  const rangeStartMs = Date.parse(window.rangeStart);
+  const rangeEndMs = Date.parse(window.rangeEnd);
+  const rangeMs = Math.max(1, rangeEndMs - rangeStartMs);
+  const axisLabels = [
+    window.rangeStart,
+    new Date(rangeStartMs + rangeMs / 2).toISOString(),
+    window.rangeEnd,
+  ];
+
+  if (conversations.length === 0 || Number.isNaN(rangeStartMs) || Number.isNaN(rangeEndMs)) {
+    return (
+      <div className="flex h-32 items-center justify-center rounded-2xl border border-dashed border-base-300/75 bg-base-200/30 text-sm text-base-content/55">
+        {emptyLabel}
+      </div>
+    );
+  }
+
+  return (
+    <InlineChartTooltipSurface
+      items={tooltipData}
+      defaultIndex={Math.max(0, conversations.length - 1)}
+      ariaLabel={ariaLabel}
+      interactionHint={interactionHint}
+      className="w-full py-0.5"
+      chartClassName="w-full"
+    >
+      {({ highlightedIndex, getItemProps }) => (
+        <div
+          className="relative max-h-[34rem] w-full overflow-auto rounded-2xl border border-base-300/75 bg-base-100/75"
+          data-chart-kind="parallel-work-sparkline"
+          data-chart-mode="conversation-gantt"
+          data-testid="parallel-work-conversation-gantt"
+        >
+          <div className="min-w-[720px] px-4 pb-3 pt-3">
+            <div className="grid grid-cols-[4.25rem_minmax(0,1fr)] gap-x-3 gap-y-0.5">
+              <div className="sticky top-0 z-10 bg-base-100/95 pb-1 text-[10px] font-medium uppercase tracking-[0.08em] text-base-content/45">
+                {locale === "zh" ? "对话" : "Conversation"}
+              </div>
+              <div className="sticky top-0 z-10 h-5 border-b border-base-300/70 bg-base-100/95">
+                {axisLabels.map((label, index) => (
+                  <span
+                    key={label + index}
+                    className="absolute top-0 -translate-x-1/2 text-[11px] text-base-content/50 first:translate-x-0 last:-translate-x-full"
+                    style={{ left: `${index * 50}%` }}
+                  >
+                    {formatParallelWorkTimeLabel(label, localeTag, effectiveTimeZone)}
+                  </span>
+                ))}
+              </div>
+              {conversations.map((conversation, index) => {
+                const startMs = Date.parse(conversation.start);
+                const endMs = Date.parse(conversation.end);
+                const left = Math.max(0, Math.min(100, ((startMs - rangeStartMs) / rangeMs) * 100));
+                const right = Math.max(0, Math.min(100, ((rangeEndMs - endMs) / rangeMs) * 100));
+                const width = Math.max(0.8, 100 - left - right);
+                const active = highlightedIndex === index;
+                const itemProps = getItemProps(index);
+                return (
+                  <div className="contents" key={conversation.conversationId}>
+                    <div className="flex h-4 items-center truncate pr-2 text-[11px] font-medium text-base-content/62">
+                      {"#" + (index + 1)}
+                    </div>
+                    <div className="relative h-4 border-l border-base-300/55">
+                      <div
+                        aria-hidden="true"
+                        className="absolute inset-y-0 border-r border-dashed border-base-300/55"
+                        style={{ left: "50%" }}
+                      />
+                      <button
+                        {...itemProps}
+                        type="button"
+                        data-testid="parallel-work-conversation-bar"
+                        className="absolute top-1/2 h-2.5 -translate-y-1/2 rounded-full outline-none transition-all focus-visible:ring-2 focus-visible:ring-primary/70"
+                        style={{
+                          left: `${left}%`,
+                          width: `${width}%`,
+                          minWidth: 8,
+                          backgroundColor: active ? chartColors.accent : chartColors.accentFill,
+                          boxShadow: active ? `0 0 0 2px ${withOpacity(chartColors.accent, 0.22)}` : "none",
+                        }}
+                        aria-label={
+                          "Conversation " +
+                          (index + 1) +
+                          " " +
+                          formatParallelWorkTimeLabel(conversation.start, localeTag, effectiveTimeZone) +
+                          " to " +
+                          formatParallelWorkTimeLabel(conversation.end, localeTag, effectiveTimeZone)
+                        }
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+    </InlineChartTooltipSurface>
+  );
+}
+
+function ParallelWorkWindowCard({ window }: { window: ParallelWorkWindowResponse }) {
   const { t, locale } = useTranslation();
-  const meta = resolveWindowMeta(windowKey);
   const empty = window.completeBucketCount === 0;
+  const rangeDurationMs = Date.parse(window.rangeEnd) - Date.parse(window.rangeStart);
+  const useConversationTimeline =
+    Number.isFinite(rangeDurationMs) &&
+    rangeDurationMs > 0 &&
+    rangeDurationMs <= 24 * 60 * 60 * 1000 &&
+    (window.conversations?.length ?? 0) > 0;
   const effectiveTimeZone = window.effectiveTimeZone ?? "Asia/Shanghai";
   const timeZoneFallbackNote = window.timeZoneFallback
     ? t("stats.parallelWork.timeZoneFallback", {
@@ -608,7 +761,7 @@ function ParallelWorkWindowCard({
   return (
     <article
       className="flex flex-col gap-4 rounded-[1.35rem] border border-base-300/75 bg-base-100/82 p-4 shadow-sm"
-      data-testid={"parallel-work-card-" + windowKey}
+      data-testid="parallel-work-card-current"
     >
       <div className="grid grid-cols-3 gap-2.5">
         <div className="rounded-2xl border border-base-300/70 bg-base-200/35 px-3 py-2.5">
@@ -637,15 +790,27 @@ function ParallelWorkWindowCard({
         </div>
       </div>
 
-      <ParallelWorkSparkline
-        window={window}
-        emptyLabel={t("stats.parallelWork.empty")}
-        ariaLabel={t("stats.parallelWork.chartAria", {
-          title: t(meta.titleKey),
-        })}
-        interactionHint={t("live.chart.tooltip.instructions")}
-        tooltipCountLabel={t("stats.parallelWork.tooltip.parallelCount")}
-      />
+      {useConversationTimeline ? (
+        <ParallelWorkConversationGantt
+          window={window}
+          emptyLabel={t("stats.parallelWork.empty")}
+          ariaLabel={t("stats.parallelWork.chartAria", {
+            title: t("stats.parallelWork.title"),
+          })}
+          interactionHint={t("live.chart.tooltip.instructions")}
+          requestCountLabel={t("stats.parallelWork.tooltip.requestCount")}
+        />
+      ) : (
+        <ParallelWorkSparkline
+          window={window}
+          emptyLabel={t("stats.parallelWork.empty")}
+          ariaLabel={t("stats.parallelWork.chartAria", {
+            title: t("stats.parallelWork.title"),
+          })}
+          interactionHint={t("live.chart.tooltip.instructions")}
+          tooltipCountLabel={t("stats.parallelWork.tooltip.parallelCount")}
+        />
+      )}
 
       {empty ? (
         <div className="space-y-2">
@@ -673,17 +838,13 @@ function ParallelWorkWindowCard({
   );
 }
 
-function ParallelWorkLoadingCard({
-  windowKey,
-}: {
-  windowKey: ParallelWorkWindowKey;
-}) {
+function ParallelWorkLoadingCard() {
   const { t } = useTranslation();
 
   return (
     <article
       className="flex min-h-[18rem] flex-col gap-4 rounded-[1.35rem] border border-base-300/75 bg-base-100/82 p-4 shadow-sm"
-      data-testid={"parallel-work-card-" + windowKey}
+      data-testid="parallel-work-card-current"
     >
       <div className="grid grid-cols-3 gap-2.5">
         {Array.from({ length: 3 }).map((_, index) => (
@@ -704,17 +865,11 @@ function ParallelWorkLoadingCard({
   );
 }
 
-function ParallelWorkErrorCard({
-  windowKey,
-  error,
-}: {
-  windowKey: ParallelWorkWindowKey;
-  error: string;
-}) {
+function ParallelWorkErrorCard({ error }: { error: string }) {
   return (
     <article
       className="flex min-h-[14rem] flex-col gap-4 rounded-[1.35rem] border border-base-300/75 bg-base-100/82 p-4 shadow-sm"
-      data-testid={"parallel-work-card-" + windowKey}
+      data-testid="parallel-work-card-current"
     >
       <Alert variant="error">{error}</Alert>
     </article>
@@ -725,14 +880,10 @@ export function ParallelWorkStatsSection({
   stats,
   isLoading,
   error,
-  defaultWindowKey = "minute7d",
 }: ParallelWorkStatsSectionProps) {
   const { t } = useTranslation();
-  const [activeWindowKey, setActiveWindowKey] =
-    useState<ParallelWorkWindowKey>(defaultWindowKey);
-  const activeWindow = stats?.[activeWindowKey] ?? null;
-  const activeMeta = resolveWindowMeta(activeWindowKey);
-  const activeTitle = t(activeMeta.titleKey);
+  const activeWindow = stats?.current ?? null;
+  const activeTitle = t("stats.parallelWork.title");
   const activeSamples =
     activeWindow == null
       ? null
@@ -748,7 +899,7 @@ export function ParallelWorkStatsSection({
       : null;
   const activeTooltipContent = buildWindowDetailsTooltipContent(
     activeTitle,
-    t(activeMeta.descriptionKey),
+    t("stats.parallelWork.description"),
     activeSamples,
     activeTimeZoneFallbackNote,
   );
@@ -756,40 +907,29 @@ export function ParallelWorkStatsSection({
   return (
     <section className="surface-panel" data-testid="parallel-work-section">
       <div className="surface-panel-body gap-4">
-        <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
-          <div className="section-heading min-w-0">
-            <div
-              className="flex items-center gap-2"
-              data-testid={"parallel-work-heading-" + activeWindowKey}
-            >
-              <h3 className="section-title">{t("stats.parallelWork.title")}</h3>
-              <ParallelWorkWindowInfoTrigger
-                tooltipContent={activeTooltipContent}
-                tooltipLabel={t("stats.parallelWork.detailsTooltipLabel", {
-                  title: activeTitle,
-                })}
-              />
-            </div>
-            <p className="section-description">
-              {t("stats.parallelWork.description")}
-            </p>
-          </div>
+        <div className="section-heading min-w-0">
           <div
-            className="flex justify-start sm:justify-end"
-            data-testid={"parallel-work-controls-" + activeWindowKey}
+            className="flex items-center gap-2"
+            data-testid="parallel-work-heading-current"
           >
-            <ParallelWorkWindowToggle
-              activeWindowKey={activeWindowKey}
-              onWindowSelect={setActiveWindowKey}
+            <h3 className="section-title">{t("stats.parallelWork.title")}</h3>
+            <ParallelWorkWindowInfoTrigger
+              tooltipContent={activeTooltipContent}
+              tooltipLabel={t("stats.parallelWork.detailsTooltipLabel", {
+                title: activeTitle,
+              })}
             />
           </div>
+          <p className="section-description">
+            {t("stats.parallelWork.description")}
+          </p>
         </div>
         {error ? (
-          <ParallelWorkErrorCard windowKey={activeWindowKey} error={error} />
+          <ParallelWorkErrorCard error={error} />
         ) : isLoading || !activeWindow ? (
-          <ParallelWorkLoadingCard windowKey={activeWindowKey} />
+          <ParallelWorkLoadingCard />
         ) : (
-          <ParallelWorkWindowCard windowKey={activeWindowKey} window={activeWindow} />
+          <ParallelWorkWindowCard window={activeWindow} />
         )}
       </div>
     </section>

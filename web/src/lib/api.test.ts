@@ -330,12 +330,29 @@ describe("fetchParallelWorkStats", () => {
     vi.unstubAllGlobals();
   });
 
-  it("normalizes the three fixed parallel-work windows", async () => {
+  it("normalizes the current page-period parallel-work window", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => {
         return new Response(
           JSON.stringify({
+            current: {
+              rangeStart: "2026-03-01T00:00:00Z",
+              rangeEnd: "2026-03-08T00:00:00Z",
+              bucketSeconds: 60,
+              completeBucketCount: 10080,
+              activeBucketCount: 4132,
+              minCount: 0,
+              maxCount: 18,
+              avgCount: 4.67,
+              points: [
+                {
+                  bucketStart: "2026-03-07T10:00:00Z",
+                  bucketEnd: "2026-03-07T10:01:00Z",
+                  parallelCount: 4,
+                },
+              ],
+            },
             minute7d: {
               rangeStart: "2026-03-01T00:00:00Z",
               rangeEnd: "2026-03-08T00:00:00Z",
@@ -388,6 +405,7 @@ describe("fetchParallelWorkStats", () => {
     );
 
     const response = await fetchParallelWorkStats();
+    expect(response.current.points[0]?.parallelCount).toBe(4);
     expect(response.minute7d.points[0]?.parallelCount).toBe(4);
     expect(response.hour30d.avgCount).toBe(2.13);
     expect(response.dayAll.completeBucketCount).toBe(0);
@@ -455,7 +473,11 @@ describe("fetchParallelWorkStats", () => {
     });
     vi.stubGlobal("fetch", fetchMock as typeof fetch);
 
-    await fetchParallelWorkStats({ timeZone: "Asia/Kolkata" });
+    await fetchParallelWorkStats({
+      range: "7d",
+      bucket: "1h",
+      timeZone: "Asia/Kolkata",
+    });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const firstArg = fetchMock.mock.calls.at(0)?.at(0) as
@@ -464,7 +486,7 @@ describe("fetchParallelWorkStats", () => {
       | undefined;
     expect(firstArg).toBeDefined();
     expect(String(firstArg)).toBe(
-      "/api/stats/parallel-work?timeZone=Asia%2FKolkata",
+      "/api/stats/parallel-work?range=7d&bucket=1h&timeZone=Asia%2FKolkata",
     );
   });
 

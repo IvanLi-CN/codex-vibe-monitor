@@ -18,7 +18,7 @@ import {
 
 const apiMocks = vi.hoisted(() => ({
   fetchParallelWorkStats: vi.fn<
-    (options?: { timeZone?: string; signal?: AbortSignal }) => Promise<ParallelWorkStatsResponse>
+    (options?: { range?: string; bucket?: string; timeZone?: string; signal?: AbortSignal }) => Promise<ParallelWorkStatsResponse>
   >(),
 }))
 
@@ -87,20 +87,22 @@ async function flushAsync() {
 }
 
 function createStats(): ParallelWorkStatsResponse {
+  const current = {
+    rangeStart: '2026-03-01T00:00:00Z',
+    rangeEnd: '2026-03-08T00:00:00Z',
+    bucketSeconds: 60,
+    completeBucketCount: 10080,
+    activeBucketCount: 3,
+    minCount: 0,
+    maxCount: 3,
+    avgCount: 1.2,
+    points: [
+      { bucketStart: '2026-03-07T10:00:00Z', bucketEnd: '2026-03-07T10:01:00Z', parallelCount: 1 },
+    ],
+  }
   return {
-    minute7d: {
-      rangeStart: '2026-03-01T00:00:00Z',
-      rangeEnd: '2026-03-08T00:00:00Z',
-      bucketSeconds: 60,
-      completeBucketCount: 10080,
-      activeBucketCount: 3,
-      minCount: 0,
-      maxCount: 3,
-      avgCount: 1.2,
-      points: [
-        { bucketStart: '2026-03-07T10:00:00Z', bucketEnd: '2026-03-07T10:01:00Z', parallelCount: 1 },
-      ],
-    },
+    current,
+    minute7d: current,
     hour30d: {
       rangeStart: '2026-02-06T00:00:00Z',
       rangeEnd: '2026-03-08T00:00:00Z',
@@ -131,12 +133,12 @@ function createStats(): ParallelWorkStatsResponse {
 }
 
 function Probe() {
-  const { data, isLoading, error } = useParallelWorkStats()
+  const { data, isLoading, error } = useParallelWorkStats({ range: '7d', bucket: '1m' })
   return (
     <div>
       <div data-testid="loading">{isLoading ? 'true' : 'false'}</div>
       <div data-testid="error">{error ?? ''}</div>
-      <div data-testid="minute-count">{String(data?.minute7d.points[0]?.parallelCount ?? 0)}</div>
+      <div data-testid="current-count">{String(data?.current.points[0]?.parallelCount ?? 0)}</div>
     </div>
   )
 }
@@ -179,7 +181,10 @@ describe('useParallelWorkStats', () => {
     render(<Probe />)
     await flushAsync()
     expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(1)
-    expect(host?.querySelector('[data-testid="minute-count"]')?.textContent).toBe('1')
+    expect(apiMocks.fetchParallelWorkStats).toHaveBeenLastCalledWith(
+      expect.objectContaining({ range: '7d', bucket: '1m' }),
+    )
+    expect(host?.querySelector('[data-testid="current-count"]')?.textContent).toBe('1')
 
     act(() => {
       sseMocks.listeners.forEach((listener) => listener({ type: 'records', records: [] }))
@@ -329,6 +334,6 @@ describe('useParallelWorkStats', () => {
     await flushAsync()
     expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(2)
     expect(host?.querySelector('[data-testid="error"]')?.textContent).toBe('')
-    expect(host?.querySelector('[data-testid="minute-count"]')?.textContent).toBe('1')
+    expect(host?.querySelector('[data-testid="current-count"]')?.textContent).toBe('1')
   })
 })

@@ -499,115 +499,211 @@ pub(crate) async fn fetch_parallel_work_stats(
 ) -> Result<Json<ParallelWorkStatsResponse>, ApiError> {
     let requested_reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
-    let now = Utc::now();
-
-    let minute7d_window = resolve_complete_parallel_work_window(
-        now,
-        ChronoDuration::days(7),
-        60,
-        requested_reporting_tz,
+    let requested_range_window = resolve_range_window(&params.range, requested_reporting_tz)?;
+    let bucket_params = TimeseriesQuery {
+        range: params.range.clone(),
+        bucket: params.bucket.clone(),
+        settlement_hour: None,
+        time_zone: params.time_zone.clone(),
+        upstream_account_id: None,
+    };
+    let bucket_selection = resolve_timeseries_bucket_selection(
+        &bucket_params,
+        &requested_range_window,
+        state.config.invocation_max_days,
     )?;
-    let requested_hour30d_window = resolve_complete_parallel_work_window(
-        now,
-        ChronoDuration::days(30),
-        3_600,
-        requested_reporting_tz,
-    )?;
-    let (hour30d_reporting_tz, hour30d_time_zone_fallback) =
+    let bucket_seconds = bucket_selection.bucket_seconds;
+    let (reporting_tz, time_zone_fallback) = if bucket_seconds >= 3_600 {
         resolve_parallel_work_rollup_reporting_tz(
             requested_reporting_tz,
-            &requested_hour30d_window,
-        );
-    let hour30d_window = if hour30d_time_zone_fallback {
-        resolve_complete_parallel_work_window(
-            now,
-            ChronoDuration::days(30),
-            3_600,
-            hour30d_reporting_tz,
-        )?
+            &requested_range_window,
+        )
     } else {
-        requested_hour30d_window
+        (requested_reporting_tz, false)
     };
+    let range_window = if time_zone_fallback {
+        resolve_range_window(&params.range, reporting_tz)?
+    } else {
+        requested_range_window
+    };
+    let fill_start_epoch =
+        align_reporting_bucket_epoch(range_window.start.timestamp(), bucket_seconds, reporting_tz)?;
+    let fill_end_epoch =
+        resolve_timeseries_fill_end_epoch(range_window.end, bucket_seconds, reporting_tz)?;
+    let fill_start = Utc
+        .timestamp_opt(fill_start_epoch, 0)
+        .single()
+        .ok_or_else(|| ApiError::from(anyhow!("invalid parallel-work fill start epoch")))?;
+    let fill_end = Utc
+        .timestamp_opt(fill_end_epoch, 0)
+        .single()
+        .ok_or_else(|| ApiError::from(anyhow!("invalid parallel-work fill end epoch")))?;
 
-    let minute7d_counts = query_parallel_work_minute_counts(
-        &state.pool,
-        minute7d_window.start,
-        minute7d_window.end,
-        requested_reporting_tz,
-        source_scope,
-    )
-    .await?;
-    let hour30d_counts = query_parallel_work_hourly_counts(
-        &state.pool,
-        hour30d_window.start,
-        hour30d_window.end,
-        source_scope,
-    )
-    .await?;
-
-    let (day_all_window, day_all_reporting_tz, day_all_time_zone_fallback) =
-        resolve_parallel_work_day_all_window_with_fallback(
+    let current_counts = if bucket_seconds >= 3_600 {
+        let leading_full_bucket_epoch = if fill_start < range_window.start {
+            next_reporting_bucket_epoch(fill_start_epoch, bucket_seconds, reporting_tz)?
+        } else {
+            fill_start_epoch
+        };
+        let leading_full_bucket_start = Utc
+            .timestamp_opt(leading_full_bucket_epoch, 0)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid parallel-work rollup start epoch")))?;
+        let mut bucket_keys = query_parallel_work_bucket_key_sets_from_hourly_rollups(
             &state.pool,
-            requested_reporting_tz,
+            leading_full_bucket_start,
+            range_window.end,
+            bucket_seconds,
+            reporting_tz,
             source_scope,
         )
         .await?;
-    let day_all_counts = if let Some(window) = day_all_window.as_ref() {
-        query_parallel_work_day_counts_from_hourly_rollups(
+        let mut tx = state.pool.begin().await?;
+        let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
+        let rollup_live_cursor = load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
+        drop(tx);
+        if fill_start < range_window.start && range_window.start < leading_full_bucket_start {
+            let leading_exact_end = leading_full_bucket_start.min(range_window.end);
+            let leading_bucket_keys = query_parallel_work_exact_key_sets(
+                &state.pool,
+                range_window.start,
+                leading_exact_end,
+                bucket_seconds,
+                reporting_tz,
+                source_scope,
+                None,
+                Some(snapshot_id),
+            )
+            .await?;
+            for (bucket_epoch, keys) in leading_bucket_keys {
+                bucket_keys.entry(bucket_epoch).or_default().extend(keys);
+            }
+        }
+        let tail_bucket_keys = query_parallel_work_exact_key_sets(
             &state.pool,
-            window.start,
-            window.end,
-            day_all_reporting_tz,
+            range_window.start,
+            range_window.end,
+            bucket_seconds,
+            reporting_tz,
+            source_scope,
+            Some(rollup_live_cursor),
+            Some(snapshot_id),
+        )
+        .await?;
+        for (bucket_epoch, keys) in tail_bucket_keys {
+            bucket_keys.entry(bucket_epoch).or_default().extend(keys);
+        }
+        parallel_work_counts_from_key_sets(bucket_keys)
+    } else {
+        parallel_work_counts_from_key_sets(
+            query_parallel_work_exact_key_sets(
+                &state.pool,
+                range_window.start,
+                range_window.end,
+                bucket_seconds,
+                reporting_tz,
+                source_scope,
+                None,
+                None,
+            )
+            .await?,
+        )
+    };
+    let conversations = if range_window.duration <= ChronoDuration::hours(24) {
+        query_parallel_work_conversation_spans(
+            &state.pool,
+            range_window.start,
+            range_window.end,
+            bucket_seconds,
+            reporting_tz,
             source_scope,
         )
         .await?
     } else {
-        BTreeMap::new()
+        Vec::new()
     };
 
-    let latest_complete_day_end = local_midnight_utc(
-        now.with_timezone(&day_all_reporting_tz).date_naive(),
-        day_all_reporting_tz,
-    );
+    let current = build_parallel_work_window_response(
+        fill_start,
+        fill_end,
+        bucket_seconds,
+        reporting_tz,
+        &current_counts,
+        reporting_tz,
+        time_zone_fallback,
+        conversations,
+    )?;
 
     Ok(Json(ParallelWorkStatsResponse {
-        minute7d: build_parallel_work_window_response(
-            minute7d_window.start,
-            minute7d_window.end,
-            60,
-            requested_reporting_tz,
-            &minute7d_counts,
-            requested_reporting_tz,
-            false,
-        )?,
-        hour30d: build_parallel_work_window_response(
-            hour30d_window.start,
-            hour30d_window.end,
-            3_600,
-            hour30d_reporting_tz,
-            &hour30d_counts,
-            hour30d_reporting_tz,
-            hour30d_time_zone_fallback,
-        )?,
-        day_all: if let Some(window) = day_all_window {
-            build_parallel_work_window_response(
-                window.start,
-                window.end,
-                86_400,
-                day_all_reporting_tz,
-                &day_all_counts,
-                day_all_reporting_tz,
-                day_all_time_zone_fallback,
-            )?
-        } else {
-            empty_parallel_work_window_response(
-                latest_complete_day_end,
-                86_400,
-                day_all_reporting_tz,
-                day_all_time_zone_fallback,
-            )
-        },
+        current: current.clone(),
+        minute7d: current.clone(),
+        hour30d: current.clone(),
+        day_all: current,
     }))
+}
+
+async fn query_parallel_work_conversation_spans(
+    pool: &Pool<Sqlite>,
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    bucket_seconds: i64,
+    reporting_tz: Tz,
+    source_scope: InvocationSourceScope,
+) -> Result<Vec<ParallelWorkConversation>> {
+    let mut query = QueryBuilder::new("SELECT ");
+    query
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(" AS conversation_id, MIN(occurred_at) AS first_occurred_at, MAX(occurred_at) AS last_occurred_at, COUNT(*) AS request_count FROM codex_invocations WHERE occurred_at >= ")
+        .push_bind(db_occurred_at_lower_bound(range_start))
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_lower_bound(range_end))
+        .push(" AND ")
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(" IS NOT NULL AND ")
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(" != ''");
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query
+        .push(" GROUP BY ")
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(" ORDER BY last_occurred_at DESC, request_count DESC LIMIT 80");
+
+    let rows = query
+        .build_query_as::<ParallelWorkConversationSpanRow>()
+        .fetch_all(pool)
+        .await?;
+    let mut conversations = Vec::with_capacity(rows.len());
+    for row in rows {
+        let Some(first_occurred_at) = parse_to_utc_datetime(&row.first_occurred_at) else {
+            continue;
+        };
+        let Some(last_occurred_at) = parse_to_utc_datetime(&row.last_occurred_at) else {
+            continue;
+        };
+        let start_epoch =
+            align_reporting_bucket_epoch(first_occurred_at.timestamp(), bucket_seconds, reporting_tz)?;
+        let end_bucket_epoch =
+            align_reporting_bucket_epoch(last_occurred_at.timestamp(), bucket_seconds, reporting_tz)?;
+        let end_epoch = next_reporting_bucket_epoch(end_bucket_epoch, bucket_seconds, reporting_tz)?;
+        let start = Utc
+            .timestamp_opt(start_epoch, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid parallel-work conversation start epoch"))?;
+        let end = Utc
+            .timestamp_opt(end_epoch, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid parallel-work conversation end epoch"))?;
+        conversations.push(ParallelWorkConversation {
+            conversation_id: row.conversation_id,
+            start: format_utc_iso(start),
+            end: format_utc_iso(end),
+            request_count: row.request_count,
+        });
+    }
+
+    Ok(conversations)
 }
 
 pub(crate) async fn fetch_timeseries_from_hourly_rollups(

@@ -288,6 +288,8 @@ async fn parallel_work_stats_counts_distinct_prompt_cache_keys_per_bucket() {
     let Json(response) = fetch_parallel_work_stats(
         State(state),
         Query(ParallelWorkStatsQuery {
+            range: "7d".to_string(),
+            bucket: Some("1m".to_string()),
             time_zone: Some("Asia/Shanghai".to_string()),
         }),
     )
@@ -354,6 +356,8 @@ async fn parallel_work_stats_minute7d_supports_non_shanghai_reporting_timezones(
     let Json(response) = fetch_parallel_work_stats(
         State(state),
         Query(ParallelWorkStatsQuery {
+            range: "7d".to_string(),
+            bucket: Some("1m".to_string()),
             time_zone: Some("UTC".to_string()),
         }),
     )
@@ -418,6 +422,20 @@ async fn parallel_work_stats_falls_back_historical_windows_for_sub_hour_timezone
         1,
     )
     .await;
+    insert_parallel_work_invocation(
+        &state.pool,
+        "parallel-hour-tail-duplicate",
+        fallback_hour + ChronoDuration::minutes(10),
+        fallback_prompt_cache_key,
+    )
+    .await;
+    insert_parallel_work_invocation(
+        &state.pool,
+        "parallel-hour-tail-new",
+        fallback_hour + ChronoDuration::minutes(20),
+        "pck-live-tail",
+    )
+    .await;
 
     let current_day_start =
         local_midnight_utc(Utc::now().with_timezone(&Shanghai).date_naive(), Shanghai);
@@ -433,45 +451,31 @@ async fn parallel_work_stats_falls_back_historical_windows_for_sub_hour_timezone
     let Json(response) = fetch_parallel_work_stats(
         State(state),
         Query(ParallelWorkStatsQuery {
+            range: "30d".to_string(),
+            bucket: Some("1h".to_string()),
             time_zone: Some("Asia/Kolkata".to_string()),
         }),
     )
     .await
     .expect("fetch parallel-work stats");
 
-    let minute_point = response
-        .minute7d
-        .points
-        .iter()
-        .find(|point| point.bucket_start == format_utc_iso(minute_bucket))
-        .expect("kolkata minute point");
     let hour_point = response
-        .hour30d
+        .current
         .points
         .iter()
         .find(|point| point.bucket_start == format_utc_iso(fallback_hour))
         .expect("fallback hour point");
 
-    assert_eq!(minute_point.parallel_count, 2);
-    assert_eq!(response.minute7d.effective_time_zone, "Asia/Kolkata");
-    assert!(!response.minute7d.time_zone_fallback);
-
-    assert_eq!(hour_point.parallel_count, 1);
+    assert_eq!(hour_point.parallel_count, 2);
+    assert_eq!(response.current.effective_time_zone, "Asia/Shanghai");
+    assert!(response.current.time_zone_fallback);
     assert_eq!(response.hour30d.effective_time_zone, "Asia/Shanghai");
     assert!(response.hour30d.time_zone_fallback);
-
-    assert_eq!(response.day_all.effective_time_zone, "Asia/Shanghai");
-    assert!(response.day_all.time_zone_fallback);
-    assert_eq!(response.day_all.points.len(), 1);
-    assert_eq!(
-        response.day_all.points[0].bucket_start,
-        format_utc_iso(previous_day_start)
-    );
-    assert_eq!(response.day_all.points[0].parallel_count, 1);
+    assert_eq!(response.day_all.bucket_seconds, 3_600);
 }
 
 #[tokio::test]
-async fn parallel_work_stats_zero_fill_and_exclude_current_minute_and_hour() {
+async fn parallel_work_stats_zero_fills_current_page_period() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -526,69 +530,52 @@ async fn parallel_work_stats_zero_fill_and_exclude_current_minute_and_hour() {
     let Json(response) = fetch_parallel_work_stats(
         State(state),
         Query(ParallelWorkStatsQuery {
+            range: "7d".to_string(),
+            bucket: Some("1m".to_string()),
             time_zone: Some("Asia/Shanghai".to_string()),
         }),
     )
     .await
     .expect("fetch parallel-work stats");
 
-    let response_current_minute = DateTime::parse_from_rfc3339(&response.minute7d.range_end)
+    let response_next_minute = DateTime::parse_from_rfc3339(&response.current.range_end)
         .expect("parse minute range end")
         .with_timezone(&Utc);
-    let response_previous_minute = response_current_minute - ChronoDuration::minutes(1);
-    let response_empty_minute = response_current_minute - ChronoDuration::minutes(3);
+    let response_current_minute = response_next_minute - ChronoDuration::minutes(1);
+    let response_previous_minute = response_next_minute - ChronoDuration::minutes(2);
+    let response_empty_minute = response_next_minute - ChronoDuration::minutes(4);
+    let current_minute_point = response
+        .current
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(response_current_minute))
+        .expect("current minute point");
     let previous_minute_point = response
-        .minute7d
+        .current
         .points
         .iter()
         .find(|point| point.bucket_start == format_utc_iso(response_previous_minute))
         .expect("previous minute point");
     let empty_minute_point = response
-        .minute7d
+        .current
         .points
         .iter()
         .find(|point| point.bucket_start == format_utc_iso(response_empty_minute))
         .expect("empty minute point");
+    assert_eq!(current_minute_point.parallel_count, 1);
     assert_eq!(previous_minute_point.parallel_count, 1);
     assert_eq!(empty_minute_point.parallel_count, 0);
     assert!(
         response
-            .minute7d
+            .current
             .points
             .iter()
-            .all(|point| point.bucket_start != response.minute7d.range_end)
-    );
-
-    let response_current_hour = DateTime::parse_from_rfc3339(&response.hour30d.range_end)
-        .expect("parse hour range end")
-        .with_timezone(&Utc);
-    let response_previous_hour = response_current_hour - ChronoDuration::hours(1);
-    let response_empty_hour = response_current_hour - ChronoDuration::hours(3);
-    let previous_hour_point = response
-        .hour30d
-        .points
-        .iter()
-        .find(|point| point.bucket_start == format_utc_iso(response_previous_hour))
-        .expect("previous hour point");
-    let empty_hour_point = response
-        .hour30d
-        .points
-        .iter()
-        .find(|point| point.bucket_start == format_utc_iso(response_empty_hour))
-        .expect("empty hour point");
-    assert_eq!(previous_hour_point.parallel_count, 1);
-    assert_eq!(empty_hour_point.parallel_count, 0);
-    assert!(
-        response
-            .hour30d
-            .points
-            .iter()
-            .all(|point| point.bucket_start != response.hour30d.range_end)
+            .all(|point| point.bucket_start != response.current.range_end)
     );
 }
 
 #[tokio::test]
-async fn parallel_work_stats_day_all_aggregates_distinct_keys_per_day() {
+async fn parallel_work_stats_current_day_bucket_aggregates_distinct_keys() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -629,27 +616,34 @@ async fn parallel_work_stats_day_all_aggregates_distinct_keys_per_day() {
     let Json(response) = fetch_parallel_work_stats(
         State(state),
         Query(ParallelWorkStatsQuery {
+            range: "1mo".to_string(),
+            bucket: Some("1d".to_string()),
             time_zone: Some("Asia/Shanghai".to_string()),
         }),
     )
     .await
     .expect("fetch parallel-work stats");
 
-    assert_eq!(response.day_all.complete_bucket_count, 1);
-    assert_eq!(response.day_all.active_bucket_count, 1);
-    assert_eq!(response.day_all.min_count, Some(2));
-    assert_eq!(response.day_all.max_count, Some(2));
-    assert_eq!(response.day_all.avg_count, Some(2.0));
-    assert_eq!(response.day_all.points.len(), 1);
-    assert_eq!(
-        response.day_all.points[0].bucket_start,
-        format_utc_iso(previous_day_start)
-    );
-    assert_eq!(response.day_all.points[0].parallel_count, 2);
+    let previous_day_point = response
+        .current
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(previous_day_start))
+        .expect("previous day point");
+    let current_day_point = response
+        .current
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(current_day_start))
+        .expect("current day point");
+    assert_eq!(previous_day_point.parallel_count, 2);
+    assert_eq!(current_day_point.parallel_count, 1);
+    assert_eq!(response.current.active_bucket_count, 2);
+    assert_eq!(response.current.max_count, Some(2));
 }
 
 #[tokio::test]
-async fn parallel_work_stats_day_all_returns_null_summary_without_complete_days() {
+async fn parallel_work_stats_current_day_bucket_includes_current_page_period() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -667,26 +661,74 @@ async fn parallel_work_stats_day_all_returns_null_summary_without_complete_days(
     let Json(response) = fetch_parallel_work_stats(
         State(state),
         Query(ParallelWorkStatsQuery {
+            range: "1mo".to_string(),
+            bucket: Some("1d".to_string()),
             time_zone: Some("Asia/Shanghai".to_string()),
         }),
     )
     .await
     .expect("fetch parallel-work stats");
 
-    assert!(response.day_all.points.is_empty());
-    assert_eq!(response.day_all.complete_bucket_count, 0);
-    assert_eq!(response.day_all.active_bucket_count, 0);
-    assert_eq!(response.day_all.min_count, None);
-    assert_eq!(response.day_all.max_count, None);
-    assert_eq!(response.day_all.avg_count, None);
-    assert_eq!(
-        response.day_all.range_start,
-        format_utc_iso(current_day_start)
-    );
-    assert_eq!(
-        response.day_all.range_end,
-        format_utc_iso(current_day_start)
-    );
+    let current_day_point = response
+        .current
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(current_day_start))
+        .expect("current day point");
+    assert_eq!(current_day_point.parallel_count, 1);
+    assert_eq!(response.current.active_bucket_count, 1);
+    assert_eq!(response.current.max_count, Some(1));
+}
+
+#[tokio::test]
+async fn parallel_work_stats_hourly_rollups_include_aligned_leading_bucket() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+    let range_start = now - ChronoDuration::days(7);
+    let leading_hour_epoch =
+        align_reporting_bucket_epoch(range_start.timestamp(), 3_600, Shanghai)
+            .expect("align leading hour");
+    let leading_hour = Utc
+        .timestamp_opt(leading_hour_epoch, 0)
+        .single()
+        .expect("valid leading hour");
+    insert_parallel_work_prompt_cache_rollup_hourly_row(
+        &state.pool,
+        leading_hour,
+        "pck-before-range",
+        1,
+    )
+    .await;
+    insert_parallel_work_invocation(
+        &state.pool,
+        "parallel-leading-after-range",
+        range_start + ChronoDuration::seconds(1),
+        "pck-after-range",
+    )
+    .await;
+
+    let Json(response) = fetch_parallel_work_stats(
+        State(state),
+        Query(ParallelWorkStatsQuery {
+            range: "7d".to_string(),
+            bucket: Some("1h".to_string()),
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch parallel-work stats");
+
+    let leading_point = response
+        .current
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(leading_hour))
+        .expect("leading hour point");
+    assert_eq!(leading_point.parallel_count, 1);
+    assert_eq!(response.current.active_bucket_count, 1);
 }
 
 #[tokio::test]

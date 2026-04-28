@@ -179,12 +179,13 @@ pub(crate) struct TimeseriesResponse {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ParallelWorkStatsResponse {
+    pub(crate) current: ParallelWorkWindowResponse,
     pub(crate) minute7d: ParallelWorkWindowResponse,
     pub(crate) hour30d: ParallelWorkWindowResponse,
     pub(crate) day_all: ParallelWorkWindowResponse,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ParallelWorkWindowResponse {
     pub(crate) range_start: String,
@@ -198,14 +199,24 @@ pub(crate) struct ParallelWorkWindowResponse {
     pub(crate) effective_time_zone: String,
     pub(crate) time_zone_fallback: bool,
     pub(crate) points: Vec<ParallelWorkPoint>,
+    pub(crate) conversations: Vec<ParallelWorkConversation>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ParallelWorkPoint {
     pub(crate) bucket_start: String,
     pub(crate) bucket_end: String,
     pub(crate) parallel_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ParallelWorkConversation {
+    pub(crate) conversation_id: String,
+    pub(crate) start: String,
+    pub(crate) end: String,
+    pub(crate) request_count: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -1113,9 +1124,11 @@ pub(crate) struct ParallelWorkExactInvocationRow {
 }
 
 #[derive(Debug, FromRow)]
-pub(crate) struct ParallelWorkBucketCountRow {
-    pub(crate) bucket_start_epoch: i64,
-    pub(crate) parallel_count: i64,
+pub(crate) struct ParallelWorkConversationSpanRow {
+    pub(crate) conversation_id: String,
+    pub(crate) first_occurred_at: String,
+    pub(crate) last_occurred_at: String,
+    pub(crate) request_count: i64,
 }
 
 #[derive(Debug, FromRow)]
@@ -1197,6 +1210,9 @@ pub(crate) struct TimeseriesQuery {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ParallelWorkStatsQuery {
+    #[serde(default = "default_range")]
+    pub(crate) range: String,
+    pub(crate) bucket: Option<String>,
     pub(crate) time_zone: Option<String>,
 }
 

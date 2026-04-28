@@ -1451,10 +1451,9 @@ const baseTranslations = {
     "stats.successFailure.tooltip.firstByteP95": "System to first byte P95",
     "stats.parallelWork.title": "Parallel work",
     "stats.parallelWork.description":
-      "Track how many distinct Prompt Cache conversations were active per bucket across short-, mid-, and long-term windows.",
+      "Track how many distinct Prompt Cache conversations were active per bucket for the selected page period.",
     "stats.parallelWork.loading": "Loading parallel-work buckets…",
     "stats.parallelWork.empty": "No complete buckets yet.",
-    "stats.parallelWork.windowToggleAria": "Select parallel-work window",
     "stats.parallelWork.detailsTooltipLabel": "Explain {{title}} details",
     "stats.parallelWork.chartAria": "{{title}} trend",
     "stats.parallelWork.samples":
@@ -1466,18 +1465,7 @@ const baseTranslations = {
     "stats.parallelWork.metrics.max": "Max",
     "stats.parallelWork.metrics.avg": "Avg",
     "stats.parallelWork.tooltip.parallelCount": "Parallel work",
-    "stats.parallelWork.windows.minute7d.title": "Last 7 days · by minute",
-    "stats.parallelWork.windows.minute7d.toggleLabel": "7d · minute",
-    "stats.parallelWork.windows.minute7d.description":
-      "Exact minute buckets from live invocations; zeros are included.",
-    "stats.parallelWork.windows.hour30d.title": "Last 30 days · by hour",
-    "stats.parallelWork.windows.hour30d.toggleLabel": "30d · hour",
-    "stats.parallelWork.windows.hour30d.description":
-      "Hourly rollups show sustained working-conversation pressure.",
-    "stats.parallelWork.windows.dayAll.title": "All history · by day",
-    "stats.parallelWork.windows.dayAll.toggleLabel": "All · day",
-    "stats.parallelWork.windows.dayAll.description":
-      "Natural-day rollups start from the first fully covered day.",
+    "stats.parallelWork.tooltip.requestCount": "Requests",
     "stats.errors.title": "Error reasons",
     "stats.errors.scope.label": "Failure scope",
     "stats.errors.scope.service": "Service failures",
@@ -3264,10 +3252,9 @@ const baseTranslations = {
     "stats.successFailure.tooltip.firstByteP95": "首字总耗时 P95",
     "stats.parallelWork.title": "并行工作",
     "stats.parallelWork.description":
-      "按 bucket 观察实际活跃的 Prompt Cache 对话数，覆盖近端分钟、中期小时与全历史天级窗口。",
+      "按当前页面时间周期的 bucket 观察实际活跃的 Prompt Cache 对话数。",
     "stats.parallelWork.loading": "正在加载并行工作 bucket…",
     "stats.parallelWork.empty": "还没有可统计的完整 bucket。",
-    "stats.parallelWork.windowToggleAria": "切换并行工作统计窗口",
     "stats.parallelWork.detailsTooltipLabel": "查看“{{title}}”说明",
     "stats.parallelWork.chartAria": "{{title}} 趋势",
     "stats.parallelWork.samples":
@@ -3279,18 +3266,7 @@ const baseTranslations = {
     "stats.parallelWork.metrics.max": "最高",
     "stats.parallelWork.metrics.avg": "均数",
     "stats.parallelWork.tooltip.parallelCount": "并行工作数",
-    "stats.parallelWork.windows.minute7d.title": "最近 7 天 · 按分钟",
-    "stats.parallelWork.windows.minute7d.toggleLabel": "7天 · 分钟",
-    "stats.parallelWork.windows.minute7d.description":
-      "直接基于 live invocation 精确聚合，并保留 0 bucket。",
-    "stats.parallelWork.windows.hour30d.title": "最近 30 天 · 按小时",
-    "stats.parallelWork.windows.hour30d.toggleLabel": "30天 · 小时",
-    "stats.parallelWork.windows.hour30d.description":
-      "复用 hourly rollup 观察持续的工作对话压力。",
-    "stats.parallelWork.windows.dayAll.title": "全历史 · 按天",
-    "stats.parallelWork.windows.dayAll.toggleLabel": "全历史 · 天",
-    "stats.parallelWork.windows.dayAll.description":
-      "按自然日聚合，从首个可完整覆盖的日期开始。",
+    "stats.parallelWork.tooltip.requestCount": "请求数",
     "stats.errors.title": "错误原因分布",
     "stats.errors.scope.label": "失败范围",
     "stats.errors.scope.service": "服务端故障",

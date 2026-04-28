@@ -156,7 +156,7 @@ function createTimeseriesResponse(
     rangeEnd: '2026-03-19T00:00:00Z',
     bucketSeconds: 900,
     effectiveBucket: '15m',
-    availableBuckets: ['15m', '30m', '1h', '6h'],
+    availableBuckets: ['1m', '15m', '30m', '1h', '6h'],
     bucketLimitedToDaily: false,
     points: [],
     ...overrides,
@@ -209,6 +209,7 @@ describe('StatsPage archived bucket fallback', () => {
 
         return {
           data: createTimeseriesResponse({
+            bucketSeconds: options?.bucket === '1m' ? 60 : 900,
             effectiveBucket: options?.bucket ?? '15m',
           }),
           isLoading: false,
@@ -282,6 +283,7 @@ describe('StatsPage archived bucket fallback', () => {
 
         return {
           data: createTimeseriesResponse({
+            bucketSeconds: options?.bucket === '1m' ? 60 : 900,
             effectiveBucket: options?.bucket ?? '15m',
           }),
           isLoading: false,
