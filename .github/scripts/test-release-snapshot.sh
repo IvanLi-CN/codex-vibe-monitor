@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -34,6 +35,50 @@ def make_pr(number: int, title: str, head_sha: str, labels: list[str]) -> dict[s
         "head": {"sha": head_sha},
         "labels": [{"name": label} for label in labels],
     }
+
+
+original_urlopen = module.request.urlopen
+original_sleep = module.time.sleep
+try:
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"ok": true}'
+
+    def flaky_urlopen(req):
+        nonlocal_attempts[0] += 1
+        if nonlocal_attempts[0] == 1:
+            raise module.error.HTTPError(req.full_url, 500, "server error", {}, io.BytesIO(b"temporary"))
+        return FakeResponse()
+
+    nonlocal_attempts = [0]
+    module.request.urlopen = flaky_urlopen
+    module.time.sleep = lambda seconds: None
+    assert module.github_request_json("https://api.github.test", "token", "/repos/demo", max_attempts=2) == {"ok": True}
+    assert nonlocal_attempts == [2]
+
+    nonlocal_attempts = [0]
+
+    def forbidden_urlopen(req):
+        nonlocal_attempts[0] += 1
+        raise module.error.HTTPError(req.full_url, 403, "forbidden", {}, io.BytesIO(b"denied"))
+
+    module.request.urlopen = forbidden_urlopen
+    try:
+        module.github_request_json("https://api.github.test", "token", "/repos/demo", max_attempts=2)
+    except module.SnapshotError as exc:
+        assert "403" in str(exc)
+    else:
+        raise AssertionError("expected non-retryable GitHub API failure")
+    assert nonlocal_attempts == [1]
+finally:
+    module.request.urlopen = original_urlopen
+    module.time.sleep = original_sleep
 
 
 with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:

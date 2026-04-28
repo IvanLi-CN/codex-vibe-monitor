@@ -165,6 +165,7 @@ jobs:
             --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
             --registry "${REGISTRY}" \
             --target-only \
+            --skip-publish \
             --output "$RUNNER_TEMP/release-snapshot.json"
 
       - name: Select pending release target
@@ -203,6 +204,7 @@ jobs:
             --target-sha "${TARGET_SHA}" \
             --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
             --main-ref "origin/main" \
+            --snapshot-file "$RUNNER_TEMP/release-snapshot.json" \
             --resolve-publication-tags \
             --github-output "$GITHUB_OUTPUT"
 
