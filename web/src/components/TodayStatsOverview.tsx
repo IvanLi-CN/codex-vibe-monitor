@@ -1,10 +1,12 @@
 import type { StatsResponse } from '../lib/api'
+import type { KeyboardEvent } from 'react'
 import { useTranslation } from '../i18n'
 import { cn } from '../lib/utils'
 import { getBrowserTimeZone } from '../lib/timeZone'
 import { AdaptiveMetricValue, type AdaptiveMetricValueKind } from './AdaptiveMetricValue'
 import { Alert } from './ui/alert'
 import { Badge } from './ui/badge'
+import { Tooltip } from './ui/tooltip'
 import type { DashboardTodayRateSnapshot } from './dashboardTodayRateSnapshot'
 
 const RATE_UNAVAILABLE_PLACEHOLDER = '—'
@@ -23,6 +25,7 @@ export interface TodayStatsOverviewProps {
 
 interface MetricTileProps {
   label: string
+  description: string
   value?: number
   localeTag: string
   loading: boolean
@@ -35,6 +38,7 @@ interface MetricTileProps {
 
 function MetricTile({
   label,
+  description,
   value,
   localeTag,
   loading,
@@ -44,12 +48,32 @@ function MetricTile({
   displayText,
   subdued = false,
 }: MetricTileProps) {
+  const handleLabelKeyDown = (event: KeyboardEvent<HTMLSpanElement>) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return
+    event.preventDefault()
+    event.currentTarget.click()
+  }
+
   return (
     <div
       data-testid="today-stats-metric-tile"
       className="min-w-0 rounded-xl border border-base-300/75 bg-base-200/60 p-4"
     >
-      <div className="text-xs font-semibold uppercase tracking-[0.14em] text-base-content/65">{label}</div>
+      <Tooltip
+        content={description}
+        clickToOpen
+        side="bottom"
+        sideOffset={8}
+        triggerProps={{
+          role: 'button',
+          tabIndex: 0,
+          onKeyDown: handleLabelKeyDown,
+        }}
+      >
+        <span className="inline-flex cursor-help text-left text-xs font-semibold uppercase tracking-[0.14em] text-base-content/65 underline decoration-dotted underline-offset-4 transition-colors hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+          {label}
+        </span>
+      </Tooltip>
       {loading ? (
         <div className="mt-2 h-8 w-28 animate-pulse rounded bg-base-300/65" />
       ) : displayText != null ? (
@@ -131,6 +155,7 @@ export function TodayStatsOverview({
         >
           <MetricTile
             label={t('dashboard.today.tokensPerMinute')}
+            description={t('dashboard.today.tokensPerMinuteDescription')}
             value={tokensPerMinute}
             localeTag={localeTag}
             loading={loading || rateLoading}
@@ -142,6 +167,7 @@ export function TodayStatsOverview({
           />
           <MetricTile
             label={t('dashboard.today.spendRate')}
+            description={t('dashboard.today.spendRateDescription')}
             value={spendRate}
             localeTag={localeTag}
             loading={loading || rateLoading}
@@ -152,6 +178,7 @@ export function TodayStatsOverview({
           />
           <MetricTile
             label={t('stats.cards.success')}
+            description={t('dashboard.today.successDescription')}
             value={successCount}
             localeTag={localeTag}
             loading={loading}
@@ -160,6 +187,7 @@ export function TodayStatsOverview({
           />
           <MetricTile
             label={t('stats.cards.failures')}
+            description={t('dashboard.today.failuresDescription')}
             value={failureCount}
             localeTag={localeTag}
             loading={loading}
@@ -168,6 +196,7 @@ export function TodayStatsOverview({
           />
           <MetricTile
             label={t('stats.cards.totalCost')}
+            description={t('dashboard.today.totalCostDescription')}
             value={totalCost}
             localeTag={localeTag}
             loading={loading}
@@ -176,6 +205,7 @@ export function TodayStatsOverview({
           />
           <MetricTile
             label={t('stats.cards.totalTokens')}
+            description={t('dashboard.today.totalTokensDescription')}
             value={totalTokens}
             localeTag={localeTag}
             loading={loading}

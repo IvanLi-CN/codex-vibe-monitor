@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { expect, waitFor, within } from 'storybook/test'
+import { expect, userEvent, waitFor, within } from 'storybook/test'
 import { I18nProvider } from '../i18n'
 import type { StatsResponse } from '../lib/api'
 import { TodayStatsOverview } from './TodayStatsOverview'
@@ -51,6 +51,11 @@ export const Populated: Story = {
     rate: sampleRate,
     loading: false,
     error: null,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getByRole('button', { name: /tokens per minute|每分钟 tokens/i }))
+    await expect(within(document.body).getByRole('tooltip')).toBeInTheDocument()
   },
 }
 

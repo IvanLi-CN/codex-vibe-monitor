@@ -2,6 +2,15 @@ static COMPACT_ATTRIBUTION_TEST_LOCK: Lazy<std::sync::Mutex<()>> =
     Lazy::new(|| std::sync::Mutex::new(()));
 
 fn client_headers(session_id: &str, window_id: &str, traceparent: &str) -> HeaderMap {
+    client_headers_with_installation(session_id, window_id, Some("installation-a"), traceparent)
+}
+
+fn client_headers_with_installation(
+    session_id: &str,
+    window_id: &str,
+    installation_id: Option<&str>,
+    traceparent: &str,
+) -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(
         HeaderName::from_static("session_id"),
@@ -15,15 +24,64 @@ fn client_headers(session_id: &str, window_id: &str, traceparent: &str) -> Heade
         HeaderName::from_static("x-codex-window-id"),
         HeaderValue::from_str(window_id).expect("valid window id header"),
     );
-    headers.insert(
-        HeaderName::from_static("x-codex-installation-id"),
-        HeaderValue::from_static("installation-a"),
-    );
+    if let Some(installation_id) = installation_id {
+        headers.insert(
+            HeaderName::from_static("x-codex-installation-id"),
+            HeaderValue::from_str(installation_id).expect("valid installation id header"),
+        );
+    }
     headers.insert(
         HeaderName::from_static("traceparent"),
         HeaderValue::from_str(traceparent).expect("valid traceparent header"),
     );
     headers
+}
+
+#[test]
+fn compact_prompt_cache_attribution_ignores_installation_id_mismatch() {
+    let _guard = COMPACT_ATTRIBUTION_TEST_LOCK.lock().expect("test lock");
+    clear_prompt_cache_attribution_for_tests();
+    let now = Instant::now();
+    let response_context = client_prompt_cache_attribution_context_from_headers(
+        &client_headers_with_installation(
+            "session-a",
+            "window-a",
+            None,
+            "00-00000000000000000000000000000001-0000000000000001-01",
+        ),
+    );
+    let compact_context = client_prompt_cache_attribution_context_from_headers(
+        &client_headers_with_installation(
+            "session-a",
+            "window-a",
+            Some("installation-a"),
+            "00-00000000000000000000000000000002-0000000000000002-01",
+        ),
+    );
+
+    assert!(response_context.fingerprint.is_some());
+    assert_eq!(response_context.cache_key, compact_context.cache_key);
+    assert!(!response_context
+        .header_fingerprints
+        .contains_key("x-codex-installation-id"));
+    assert!(compact_context
+        .header_fingerprints
+        .contains_key("x-codex-installation-id"));
+
+    remember_prompt_cache_attribution(
+        &response_context,
+        "prompt-cache-a",
+        Some("sticky-a"),
+        now,
+    );
+
+    let attribution = lookup_recent_prompt_cache_attribution(
+        &compact_context,
+        now + Duration::from_secs(30),
+    )
+    .expect("compact should reuse attribution when only installation id differs");
+    assert_eq!(attribution.prompt_cache_key, "prompt-cache-a");
+    assert_eq!(attribution.sticky_key.as_deref(), Some("sticky-a"));
 }
 
 #[test]

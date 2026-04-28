@@ -83,11 +83,21 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Only materialize the requested target commit instead of filling every missing first-parent snapshot on the path.",
     )
+    ensure.add_argument(
+        "--skip-publish",
+        action="store_true",
+        help="Leave the generated snapshot in the local checkout and output file without pushing the notes ref.",
+    )
 
     export_cmd = subparsers.add_parser("export", help="Export a stored release snapshot into GitHub outputs.")
     export_cmd.add_argument("--target-sha", required=True)
     export_cmd.add_argument("--notes-ref", default=DEFAULT_NOTES_REF)
     export_cmd.add_argument("--main-ref", default="")
+    export_cmd.add_argument(
+        "--snapshot-file",
+        default="",
+        help="Export this snapshot JSON when present; otherwise read the snapshot from git notes.",
+    )
     export_cmd.add_argument(
         "--resolve-publication-tags",
         action="store_true",
@@ -221,7 +231,14 @@ def normalize_sha(target_sha: str) -> str:
     return target_sha
 
 
-def github_request_json(api_root: str, token: str, path: str, query: dict[str, Any] | None = None) -> Any:
+def github_request_json(
+    api_root: str,
+    token: str,
+    path: str,
+    query: dict[str, Any] | None = None,
+    *,
+    max_attempts: int = 4,
+) -> Any:
     url = f"{api_root.rstrip('/')}{path}"
     if query:
         url += "?" + parse.urlencode(query)
@@ -232,14 +249,24 @@ def github_request_json(api_root: str, token: str, path: str, query: dict[str, A
         "User-Agent": "codex-vibe-monitor-release-snapshot",
     }
     req = request.Request(url, headers=headers)
-    try:
-        with request.urlopen(req) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise SnapshotError(f"GitHub API error on {path}: {exc.code} {body}") from exc
-    except error.URLError as exc:
-        raise SnapshotError(f"GitHub API request failed on {path}: {exc}") from exc
+    last_error: SnapshotError | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            with request.urlopen(req) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            last_error = SnapshotError(f"GitHub API error on {path}: {exc.code} {body}")
+            if exc.code < 500 or attempt >= max_attempts:
+                raise last_error from exc
+        except error.URLError as exc:
+            last_error = SnapshotError(f"GitHub API request failed on {path}: {exc}")
+            if attempt >= max_attempts:
+                raise last_error from exc
+        time.sleep(min(2 ** (attempt - 1), 8))
+    if last_error:
+        raise last_error
+    raise SnapshotError(f"GitHub API request failed on {path}")
 
 
 def load_pr_for_commit(
@@ -658,6 +685,9 @@ def ensure_snapshot(args: argparse.Namespace) -> int:
 
         write_json(output_path, target_snapshot)
 
+        if getattr(args, "skip_publish", False):
+            return 0
+
         push = git("push", "origin", args.notes_ref, check=False)
         if push.returncode == 0:
             return 0
@@ -671,13 +701,18 @@ def ensure_snapshot(args: argparse.Namespace) -> int:
 
 def export_existing_snapshot(args: argparse.Namespace) -> int:
     target_sha = normalize_sha(args.target_sha)
-    fetch_notes_ref(args.notes_ref)
-    snapshot = read_snapshot(args.notes_ref, target_sha)
+    snapshot_file = Path(args.snapshot_file) if getattr(args, "snapshot_file", "") else None
+    if snapshot_file and snapshot_file.exists():
+        snapshot = validate_snapshot(json.loads(snapshot_file.read_text()), expected_sha=target_sha)
+    else:
+        fetch_notes_ref(args.notes_ref)
+        snapshot = read_snapshot(args.notes_ref, target_sha)
     if snapshot is None:
         raise SnapshotError(f"Missing immutable release snapshot for {target_sha}")
     if args.resolve_publication_tags:
         if not args.main_ref:
             raise SnapshotError("--main-ref is required when --resolve-publication-tags is set")
+        fetch_notes_ref(args.notes_ref)
         snapshot = dict(snapshot)
         snapshot["tags_csv"] = publication_tags(snapshot, notes_ref=args.notes_ref, main_ref=args.main_ref)
     export_snapshot(snapshot, args.github_output)
