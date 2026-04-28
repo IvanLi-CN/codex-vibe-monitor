@@ -4,6 +4,7 @@ import { I18nProvider } from '../i18n'
 import type {
   ErrorDistributionResponse,
   FailureSummaryResponse,
+  ParallelWorkConversation,
   ParallelWorkStatsResponse,
   StatsResponse,
   TimeseriesPoint,
@@ -44,8 +45,17 @@ function buildTimeseriesPoints({
   return Array.from({ length: count }, (_, index) => {
     const bucketStartMs = startMs + index * bucketSeconds * 1000
     const bucketEndMs = bucketStartMs + bucketSeconds * 1000
-    const totalCount = 24 + ((index + offset) % 6) * 8
-    const failureCount = index % 5 === 0 ? 3 : index % 3 === 0 ? 1 : 0
+    const bucketStart = new Date(bucketStartMs)
+    const hour = bucketStart.getUTCHours()
+    const businessRamp = hour >= 1 && hour <= 10 ? 1.6 : hour >= 11 && hour <= 14 ? 1.15 : hour >= 15 && hour <= 19 ? 0.72 : 0.28
+    const incidentSpike = index >= Math.floor(count * 0.38) && index <= Math.floor(count * 0.45) ? 22 : 0
+    const releaseTail = index >= Math.floor(count * 0.68) && index <= Math.floor(count * 0.76) ? 14 : 0
+    const localVariation = ((index + offset) % 7) * 3 + ((index + offset) % 11 === 0 ? 9 : 0)
+    const totalCount = Math.max(1, Math.round(18 * businessRamp + localVariation + incidentSpike + releaseTail))
+    const failureCount = Math.min(
+      totalCount,
+      incidentSpike > 0 ? 4 + (index % 3) : releaseTail > 0 ? 2 : index % 13 === 0 ? 2 : index % 5 === 0 ? 1 : 0,
+    )
     return {
       bucketStart: new Date(bucketStartMs).toISOString(),
       bucketEnd: new Date(bucketEndMs).toISOString(),
@@ -80,6 +90,24 @@ function buildTimeseriesResponse(options: {
   }
 }
 
+function buildConversationFixture(rangeStart: string): ParallelWorkConversation[] {
+  const startMs = Date.parse(rangeStart)
+  const at = (minutes: number) => new Date(startMs + minutes * 60 * 1000).toISOString()
+  return [
+    { conversationId: 'pck-import-a13f', start: at(18), end: at(66), requestCount: 5 },
+    { conversationId: 'pck-debug-72be', start: at(102), end: at(298), requestCount: 23 },
+    { conversationId: 'pck-ci-24d0', start: at(135), end: at(182), requestCount: 8 },
+    { conversationId: 'pck-review-09ac', start: at(336), end: at(434), requestCount: 14 },
+    { conversationId: 'pck-rollup-c91b', start: at(470), end: at(746), requestCount: 38 },
+    { conversationId: 'pck-frontend-518e', start: at(548), end: at(640), requestCount: 12 },
+    { conversationId: 'pck-evidence-d0af', start: at(612), end: at(722), requestCount: 17 },
+    { conversationId: 'pck-followup-6b33', start: at(805), end: at(850), requestCount: 4 },
+    { conversationId: 'pck-build-44ef', start: at(885), end: at(1236), requestCount: 31 },
+    { conversationId: 'pck-contract-8f71', start: at(1040), end: at(1145), requestCount: 11 },
+    { conversationId: 'pck-hotfix-3c59', start: at(1302), end: at(1398), requestCount: 9 },
+  ]
+}
+
 function buildParallelWorkResponse(options: {
   rangeStart: string
   rangeEnd: string
@@ -90,13 +118,23 @@ function buildParallelWorkResponse(options: {
   const endMs = Date.parse(options.rangeEnd)
   const bucketMs = options.bucketSeconds * 1000
   const count = Math.max(0, Math.min(240, Math.floor((endMs - startMs) / bucketMs)))
+  const rangeMs = Math.max(0, endMs - startMs)
+  const conversations = rangeMs <= 24 * 60 * 60 * 1000 ? buildConversationFixture(options.rangeStart) : []
   const points = Array.from({ length: count }, (_, index) => {
-    const bucketStart = new Date(startMs + index * bucketMs).toISOString()
-    const bucketEnd = new Date(startMs + (index + 1) * bucketMs).toISOString()
+    const bucketStartMs = startMs + index * bucketMs
+    const bucketEndMs = bucketStartMs + bucketMs
+    const parallelCount =
+      conversations.length > 0
+        ? conversations.filter((conversation) => {
+            const conversationStartMs = Date.parse(conversation.start)
+            const conversationEndMs = Date.parse(conversation.end)
+            return conversationStartMs < bucketEndMs && conversationEndMs > bucketStartMs
+          }).length
+        : Math.max(0, index % 24 >= 9 && index % 24 <= 18 ? 3 + (index % 4) : index % 17 === 0 ? 1 : 0)
     return {
-      bucketStart,
-      bucketEnd,
-      parallelCount: index % 9 === 0 ? 3 : 5 + (index % 5),
+      bucketStart: new Date(bucketStartMs).toISOString(),
+      bucketEnd: new Date(bucketEndMs).toISOString(),
+      parallelCount,
     }
   })
   const counts = points.map((point) => point.parallelCount)
@@ -112,6 +150,7 @@ function buildParallelWorkResponse(options: {
     effectiveTimeZone: options.effectiveTimeZone ?? 'Asia/Shanghai',
     timeZoneFallback: false,
     points,
+    conversations,
   }
   return {
     current,
