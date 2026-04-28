@@ -609,6 +609,19 @@ pub(crate) async fn fetch_parallel_work_stats(
             .await?,
         )
     };
+    let conversations = if range_window.duration <= ChronoDuration::hours(24) {
+        query_parallel_work_conversation_spans(
+            &state.pool,
+            range_window.start,
+            range_window.end,
+            bucket_seconds,
+            reporting_tz,
+            source_scope,
+        )
+        .await?
+    } else {
+        Vec::new()
+    };
 
     let current = build_parallel_work_window_response(
         fill_start,
@@ -618,6 +631,7 @@ pub(crate) async fn fetch_parallel_work_stats(
         &current_counts,
         reporting_tz,
         time_zone_fallback,
+        conversations,
     )?;
 
     Ok(Json(ParallelWorkStatsResponse {
@@ -626,6 +640,70 @@ pub(crate) async fn fetch_parallel_work_stats(
         hour30d: current.clone(),
         day_all: current,
     }))
+}
+
+async fn query_parallel_work_conversation_spans(
+    pool: &Pool<Sqlite>,
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    bucket_seconds: i64,
+    reporting_tz: Tz,
+    source_scope: InvocationSourceScope,
+) -> Result<Vec<ParallelWorkConversation>> {
+    let mut query = QueryBuilder::new("SELECT ");
+    query
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(" AS conversation_id, MIN(occurred_at) AS first_occurred_at, MAX(occurred_at) AS last_occurred_at, COUNT(*) AS request_count FROM codex_invocations WHERE occurred_at >= ")
+        .push_bind(db_occurred_at_lower_bound(range_start))
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_lower_bound(range_end))
+        .push(" AND ")
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(" IS NOT NULL AND ")
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(" != ''");
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query
+        .push(" GROUP BY ")
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(" ORDER BY last_occurred_at DESC, request_count DESC LIMIT 80");
+
+    let rows = query
+        .build_query_as::<ParallelWorkConversationSpanRow>()
+        .fetch_all(pool)
+        .await?;
+    let mut conversations = Vec::with_capacity(rows.len());
+    for row in rows {
+        let Some(first_occurred_at) = parse_to_utc_datetime(&row.first_occurred_at) else {
+            continue;
+        };
+        let Some(last_occurred_at) = parse_to_utc_datetime(&row.last_occurred_at) else {
+            continue;
+        };
+        let start_epoch =
+            align_reporting_bucket_epoch(first_occurred_at.timestamp(), bucket_seconds, reporting_tz)?;
+        let end_bucket_epoch =
+            align_reporting_bucket_epoch(last_occurred_at.timestamp(), bucket_seconds, reporting_tz)?;
+        let end_epoch = next_reporting_bucket_epoch(end_bucket_epoch, bucket_seconds, reporting_tz)?;
+        let start = Utc
+            .timestamp_opt(start_epoch, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid parallel-work conversation start epoch"))?;
+        let end = Utc
+            .timestamp_opt(end_epoch, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid parallel-work conversation end epoch"))?;
+        conversations.push(ParallelWorkConversation {
+            conversation_id: row.conversation_id,
+            start: format_utc_iso(start),
+            end: format_utc_iso(end),
+            request_count: row.request_count,
+        });
+    }
+
+    Ok(conversations)
 }
 
 pub(crate) async fn fetch_timeseries_from_hourly_rollups(

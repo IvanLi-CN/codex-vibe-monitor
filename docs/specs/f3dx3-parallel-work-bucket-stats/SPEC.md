@@ -75,6 +75,7 @@
   - `maxCount: number | null`
   - `avgCount: number | null`
   - `points[{ bucketStart, bucketEnd, parallelCount }]`
+  - `conversations[{ conversationId, start, end, requestCount }]`：仅用于不超过 24 小时页面周期的对话级时间轴渲染，长周期可为空。
 - summary 口径：
   - 基于零填充后的页面周期 bucket 序列计算。
   - `avgCount` 为 bucket 的算术平均值，窗口中的 0 必须计入。
@@ -91,8 +92,9 @@
 - Given bucket 内没有任何请求，When 返回窗口数据，Then 该 bucket 仍会作为 `parallelCount = 0` 的点出现在结果中。
 - Given 打开 Stats 页并行工作 section，When 顶部 `range / bucket` 变化，Then 并行工作 section 请求相同 `range / bucket` 并渲染对应 `current` 窗口。
 - Given 统计页选择 `1h / today / 1d` 任一不超过 24 小时周期，When 打开 bucket 下拉，Then 可以选择 `1m` 分钟粒度。
+- Given 统计页当前周期不超过 24 小时且并行工作接口返回 `conversations`，When 渲染并行工作 section，Then 图表使用类似甘特图的对话时间轴，Y 轴每行代表一个对话。
 - Given 打开 Stats 页并行工作 section，When 数据正常返回，Then section 内不出现独立窗口 segmented toggle，且同一时刻只显示一个当前页面周期卡片。
-- Given 宽屏渲染并行工作趋势图，When 查看 Storybook 证据，Then 圆点、线宽、坐标轴文字与 tooltip 目标不被横向拉伸。
+- Given 宽屏渲染长周期并行工作趋势图，When 查看 Storybook 证据，Then 圆点、线宽、坐标轴文字与 tooltip 目标不被横向拉伸。
 - Given section 进入 loading / error / empty / populated 任一状态，When 渲染 Storybook，Then 布局稳定且状态文案清晰。
 
 ## 非功能性验收 / 质量门槛
@@ -129,9 +131,9 @@
   submission_gate: pending-owner-approval
   story_id_or_title: Stats/ParallelWorkStatsSection/Wide Minute Current
   state: wide current page-period populated
-  evidence_note: 验证并行工作趋势图已跟随统计页当前周期渲染，section 内不再出现独立窗口切换；Recharts 宽屏下折线、面积、圆点和 X/Y 轴文本保持正常比例。
+  evidence_note: 验证不超过 24 小时的并行工作数据使用对话级时间轴渲染，Y 轴每行代表一个对话，section 内不再出现独立窗口切换。
   image:
-  ![并行工作统计当前页面周期宽屏趋势](./assets/parallel-work-current-wide.png)
+  ![并行工作统计当前页面周期对话时间轴](./assets/parallel-work-current-wide.png)
 
 - source_type: storybook_canvas
   target_program: mock-only
@@ -142,7 +144,7 @@
   submission_gate: pending-owner-approval
   story_id_or_title: Stats/ParallelWorkStatsSection/Gallery
   scenario: gallery
-  evidence_note: 验证 Storybook gallery 已覆盖当前分钟周期、当前小时周期、当前天级空状态、loading 与 error 五类关键状态；有数据窗口使用 Recharts 图表，空态和错误态保持原有语义，且没有内部窗口切换控件。
+  evidence_note: 验证 Storybook gallery 已覆盖当前分钟周期对话时间轴、当前小时周期趋势图、当前天级空状态、loading 与 error 五类关键状态；空态和错误态保持原有语义，且没有内部窗口切换控件。
   image:
   ![并行工作统计当前页面周期状态集](./assets/parallel-work-current-gallery.png)
 

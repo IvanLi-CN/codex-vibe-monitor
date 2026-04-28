@@ -634,6 +634,13 @@ export interface ParallelWorkPoint {
   parallelCount: number;
 }
 
+export interface ParallelWorkConversation {
+  conversationId: string;
+  start: string;
+  end: string;
+  requestCount: number;
+}
+
 export interface ParallelWorkWindowResponse {
   rangeStart: string;
   rangeEnd: string;
@@ -646,6 +653,7 @@ export interface ParallelWorkWindowResponse {
   effectiveTimeZone?: string;
   timeZoneFallback?: boolean;
   points: ParallelWorkPoint[];
+  conversations?: ParallelWorkConversation[];
 }
 
 export interface ParallelWorkStatsResponse {
@@ -1273,11 +1281,31 @@ function normalizeParallelWorkPoint(raw: unknown): ParallelWorkPoint | null {
   };
 }
 
+function normalizeParallelWorkConversation(
+  raw: unknown,
+): ParallelWorkConversation | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const conversationId =
+    typeof payload.conversationId === "string" ? payload.conversationId : "";
+  const start = typeof payload.start === "string" ? payload.start : "";
+  const end = typeof payload.end === "string" ? payload.end : "";
+  if (!conversationId || !start || !end) return null;
+  return {
+    conversationId,
+    start,
+    end,
+    requestCount: normalizeFiniteNumber(payload.requestCount) ?? 0,
+  };
+}
+
 function normalizeParallelWorkWindowResponse(
   raw: unknown,
 ): ParallelWorkWindowResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const pointsRaw = Array.isArray(payload.points) ? payload.points : [];
+  const conversationsRaw = Array.isArray(payload.conversations)
+    ? payload.conversations
+    : [];
   const effectiveTimeZone =
     typeof payload.effectiveTimeZone === "string" &&
     payload.effectiveTimeZone.trim()
@@ -1308,6 +1336,12 @@ function normalizeParallelWorkWindowResponse(
     points: pointsRaw
       .map(normalizeParallelWorkPoint)
       .filter((point): point is ParallelWorkPoint => point != null),
+    conversations: conversationsRaw
+      .map(normalizeParallelWorkConversation)
+      .filter(
+        (conversation): conversation is ParallelWorkConversation =>
+          conversation != null,
+      ),
   };
 }
 

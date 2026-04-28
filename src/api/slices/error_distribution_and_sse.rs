@@ -84,6 +84,7 @@ fn build_parallel_work_window_response(
     counts_by_bucket: &BTreeMap<i64, i64>,
     effective_time_zone: Tz,
     time_zone_fallback: bool,
+    conversations: Vec<ParallelWorkConversation>,
 ) -> Result<ParallelWorkWindowResponse> {
     if range_start >= range_end {
         return Ok(empty_parallel_work_window_response(
@@ -153,6 +154,7 @@ fn build_parallel_work_window_response(
         effective_time_zone: effective_time_zone.to_string(),
         time_zone_fallback,
         points,
+        conversations,
     })
 }
 
@@ -174,6 +176,7 @@ fn empty_parallel_work_window_response(
         effective_time_zone: effective_time_zone.to_string(),
         time_zone_fallback,
         points: Vec::new(),
+        conversations: Vec::new(),
     }
 }
 

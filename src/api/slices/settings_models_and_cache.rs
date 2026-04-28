@@ -199,6 +199,7 @@ pub(crate) struct ParallelWorkWindowResponse {
     pub(crate) effective_time_zone: String,
     pub(crate) time_zone_fallback: bool,
     pub(crate) points: Vec<ParallelWorkPoint>,
+    pub(crate) conversations: Vec<ParallelWorkConversation>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -207,6 +208,15 @@ pub(crate) struct ParallelWorkPoint {
     pub(crate) bucket_start: String,
     pub(crate) bucket_end: String,
     pub(crate) parallel_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ParallelWorkConversation {
+    pub(crate) conversation_id: String,
+    pub(crate) start: String,
+    pub(crate) end: String,
+    pub(crate) request_count: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -1111,6 +1121,14 @@ pub(crate) struct PromptCacheConversationUpstreamAccountSummaryRow {
 pub(crate) struct ParallelWorkExactInvocationRow {
     pub(crate) occurred_at: String,
     pub(crate) prompt_cache_key: String,
+}
+
+#[derive(Debug, FromRow)]
+pub(crate) struct ParallelWorkConversationSpanRow {
+    pub(crate) conversation_id: String,
+    pub(crate) first_occurred_at: String,
+    pub(crate) last_occurred_at: String,
+    pub(crate) request_count: i64,
 }
 
 #[derive(Debug, FromRow)]

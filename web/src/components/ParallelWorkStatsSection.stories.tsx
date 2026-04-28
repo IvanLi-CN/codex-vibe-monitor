@@ -27,15 +27,16 @@ function buildWindow(
     maxCount: overrides.maxCount ?? 0,
     avgCount: overrides.avgCount ?? 0,
     points: overrides.points,
+    conversations: overrides.conversations ?? [],
   };
 }
 
 const minuteWindow = buildWindow({
-  rangeStart: "2026-03-01T00:00:00Z",
+  rangeStart: "2026-03-07T00:00:00Z",
   rangeEnd: "2026-03-08T00:00:00Z",
   bucketSeconds: 60,
-  completeBucketCount: 10_080,
-  activeBucketCount: 4_132,
+  completeBucketCount: 1_440,
+  activeBucketCount: 318,
   minCount: 0,
   maxCount: 18,
   avgCount: 4.67,
@@ -52,6 +53,44 @@ const minuteWindow = buildWindow({
       ),
     ),
   })),
+  conversations: [
+    {
+      conversationId: "conv-alpha",
+      start: "2026-03-07T00:35:00Z",
+      end: "2026-03-07T05:24:00Z",
+      requestCount: 28,
+    },
+    {
+      conversationId: "conv-bravo",
+      start: "2026-03-07T02:20:00Z",
+      end: "2026-03-07T09:12:00Z",
+      requestCount: 41,
+    },
+    {
+      conversationId: "conv-charlie",
+      start: "2026-03-07T06:00:00Z",
+      end: "2026-03-07T12:35:00Z",
+      requestCount: 36,
+    },
+    {
+      conversationId: "conv-delta",
+      start: "2026-03-07T10:15:00Z",
+      end: "2026-03-07T14:48:00Z",
+      requestCount: 19,
+    },
+    {
+      conversationId: "conv-echo",
+      start: "2026-03-07T13:40:00Z",
+      end: "2026-03-07T22:10:00Z",
+      requestCount: 52,
+    },
+    {
+      conversationId: "conv-foxtrot",
+      start: "2026-03-07T18:05:00Z",
+      end: "2026-03-07T23:20:00Z",
+      requestCount: 24,
+    },
+  ],
 });
 
 const hourWindow = buildWindow({
@@ -158,15 +197,13 @@ export const Populated: Story = {
       canvas.getByTestId("parallel-work-card-current"),
     ).toBeInTheDocument();
     await expect(canvas.queryByTestId("parallel-work-window-toggle")).toBeNull();
-    const chart = await canvas.findByLabelText(/parallel work trend/i);
-    const overlay = chart.querySelector(
-      '[data-testid="parallel-work-interaction-overlay"]',
-    );
-    if (!(overlay instanceof HTMLElement)) {
-      throw new Error("missing parallel-work chart interaction overlay");
+    const gantt = await canvas.findByTestId("parallel-work-conversation-gantt");
+    const bar = gantt.querySelector('[data-testid="parallel-work-conversation-bar"]');
+    if (!(bar instanceof HTMLElement)) {
+      throw new Error("missing parallel-work conversation bar");
     }
-    const rect = overlay.getBoundingClientRect();
-    fireEvent.mouseMove(overlay, {
+    const rect = bar.getBoundingClientRect();
+    fireEvent.mouseMove(bar, {
       clientX: rect.left + rect.width / 2,
       clientY: rect.top + rect.height / 2,
     });

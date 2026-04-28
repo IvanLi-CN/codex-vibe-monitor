@@ -25,6 +25,7 @@ export type {
   TimeseriesPoint,
   TimeseriesResponse,
   ParallelWorkPoint,
+  ParallelWorkConversation,
   ParallelWorkWindowResponse,
   ParallelWorkStatsResponse,
   ErrorDistributionItem,

@@ -86,6 +86,7 @@ vi.mock("../i18n", () => ({
         "stats.parallelWork.metrics.max": "Max",
         "stats.parallelWork.metrics.avg": "Avg",
         "stats.parallelWork.tooltip.parallelCount": "Parallel work",
+        "stats.parallelWork.tooltip.requestCount": "Requests",
         "live.chart.tooltip.instructions":
           "Hover or tap for details. Focus the chart and use arrow keys to switch points.",
       };
@@ -410,6 +411,52 @@ describe("ParallelWorkStatsSection", () => {
     expect(tooltip?.textContent).toContain("4");
     expect(tooltip?.textContent).toContain("03/07");
     expect(tooltip?.textContent).toContain("→");
+  });
+
+  it("renders a conversation gantt for page periods up to 24 hours", () => {
+    const dayCurrent: ParallelWorkStatsResponse = {
+      ...populatedStats,
+      current: {
+        ...populatedStats.current,
+        rangeStart: "2026-03-07T00:00:00Z",
+        rangeEnd: "2026-03-08T00:00:00Z",
+        completeBucketCount: 96,
+        conversations: [
+          {
+            conversationId: "conversation-a",
+            start: "2026-03-07T01:00:00Z",
+            end: "2026-03-07T04:15:00Z",
+            requestCount: 7,
+          },
+          {
+            conversationId: "conversation-b",
+            start: "2026-03-07T08:30:00Z",
+            end: "2026-03-07T10:00:00Z",
+            requestCount: 3,
+          },
+        ],
+      },
+    };
+
+    render(
+      <ParallelWorkStatsSection
+        stats={dayCurrent}
+        isLoading={false}
+        error={null}
+      />,
+    );
+
+    expect(
+      host?.querySelector('[data-testid="parallel-work-conversation-gantt"]'),
+    ).not.toBeNull();
+    expect(
+      host?.querySelectorAll('[data-testid="parallel-work-conversation-bar"]'),
+    ).toHaveLength(2);
+    expect(
+      host?.querySelector('[data-chart-mode="conversation-gantt"]'),
+    ).not.toBeNull();
+    expect(host?.textContent).toContain("#1");
+    expect(host?.textContent).toContain("#2");
   });
 
   it("uses the current window data supplied by the page", () => {

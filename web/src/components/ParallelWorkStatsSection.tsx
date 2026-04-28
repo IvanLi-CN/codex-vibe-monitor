@@ -14,6 +14,7 @@ import {
   YAxis,
 } from "recharts";
 import type {
+  ParallelWorkConversation,
   ParallelWorkStatsResponse,
   ParallelWorkWindowResponse,
 } from "../lib/api";
@@ -149,6 +150,19 @@ function formatParallelWorkBucketRange(
   return formatter.format(start) + " → " + formatter.format(end);
 }
 
+function formatParallelWorkTimeLabel(raw: string, localeTag: string, timeZone: string) {
+  const value = new Date(raw);
+  if (Number.isNaN(value.getTime())) return raw;
+  return new Intl.DateTimeFormat(localeTag, {
+    timeZone,
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(value);
+}
+
 function buildParallelWorkTooltipData(
   window: ParallelWorkWindowResponse,
   localeTag: string,
@@ -168,6 +182,31 @@ function buildParallelWorkTooltipData(
       {
         label: countLabel,
         value: numberFormatter.format(point.parallelCount),
+        tone: "accent",
+      },
+    ],
+  }));
+}
+
+function buildParallelWorkConversationTooltipData(
+  conversations: ParallelWorkConversation[],
+  localeTag: string,
+  timeZone: string,
+  requestCountLabel: string,
+  numberFormatter: Intl.NumberFormat,
+) {
+  return conversations.map<InlineChartTooltipData>((conversation, index) => ({
+    title:
+      "Conversation " +
+      (index + 1) +
+      " · " +
+      formatParallelWorkTimeLabel(conversation.start, localeTag, timeZone) +
+      " → " +
+      formatParallelWorkTimeLabel(conversation.end, localeTag, timeZone),
+    rows: [
+      {
+        label: requestCountLabel,
+        value: numberFormatter.format(conversation.requestCount),
         tone: "accent",
       },
     ],
@@ -552,9 +591,168 @@ function ParallelWorkSparkline({
   );
 }
 
+function ParallelWorkConversationGantt({
+  window,
+  emptyLabel,
+  ariaLabel,
+  interactionHint,
+  requestCountLabel,
+}: {
+  window: ParallelWorkWindowResponse;
+  emptyLabel: string;
+  ariaLabel: string;
+  interactionHint: string;
+  requestCountLabel: string;
+}) {
+  const { locale } = useTranslation();
+  const { themeMode } = useTheme();
+  const localeTag = locale === "zh" ? "zh-CN" : "en-US";
+  const numberFormatter = useMemo(
+    () => new Intl.NumberFormat(localeTag),
+    [localeTag],
+  );
+  const conversations = useMemo(
+    () =>
+      [...(window.conversations ?? [])].sort(
+        (a, b) => Date.parse(a.start) - Date.parse(b.start),
+      ),
+    [window.conversations],
+  );
+  const effectiveTimeZone = window.effectiveTimeZone ?? "Asia/Shanghai";
+  const tooltipData = useMemo(
+    () =>
+      buildParallelWorkConversationTooltipData(
+        conversations,
+        localeTag,
+        effectiveTimeZone,
+        requestCountLabel,
+        numberFormatter,
+      ),
+    [conversations, effectiveTimeZone, localeTag, numberFormatter, requestCountLabel],
+  );
+  const chartColors = useMemo(() => {
+    const base = chartBaseTokens(themeMode);
+    const accent = metricAccent("totalCount", themeMode);
+    return {
+      ...base,
+      accent,
+      accentFill: withOpacity(accent, 0.2),
+      axis: themeMode === "dark" ? "rgba(229, 231, 235, 0.7)" : "rgba(55, 65, 81, 0.68)",
+    };
+  }, [themeMode]);
+  const rangeStartMs = Date.parse(window.rangeStart);
+  const rangeEndMs = Date.parse(window.rangeEnd);
+  const rangeMs = Math.max(1, rangeEndMs - rangeStartMs);
+  const rowHeight = 30;
+  const timelineHeight = Math.min(520, Math.max(168, conversations.length * rowHeight + 54));
+  const axisLabels = [
+    window.rangeStart,
+    new Date(rangeStartMs + rangeMs / 2).toISOString(),
+    window.rangeEnd,
+  ];
+
+  if (conversations.length === 0 || Number.isNaN(rangeStartMs) || Number.isNaN(rangeEndMs)) {
+    return (
+      <div className="flex h-32 items-center justify-center rounded-2xl border border-dashed border-base-300/75 bg-base-200/30 text-sm text-base-content/55">
+        {emptyLabel}
+      </div>
+    );
+  }
+
+  return (
+    <InlineChartTooltipSurface
+      items={tooltipData}
+      defaultIndex={Math.max(0, conversations.length - 1)}
+      ariaLabel={ariaLabel}
+      interactionHint={interactionHint}
+      className="w-full py-0.5"
+      chartClassName="w-full"
+    >
+      {({ highlightedIndex, getItemProps }) => (
+        <div
+          className="relative w-full overflow-x-auto rounded-2xl border border-base-300/75 bg-base-100/75"
+          data-chart-kind="parallel-work-sparkline"
+          data-chart-mode="conversation-gantt"
+          data-testid="parallel-work-conversation-gantt"
+          style={{ height: timelineHeight }}
+        >
+          <div className="min-w-[720px] px-4 pb-4 pt-3">
+            <div className="grid grid-cols-[5.5rem_minmax(0,1fr)] gap-3">
+              <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-base-content/45">
+                {locale === "zh" ? "对话" : "Conversation"}
+              </div>
+              <div className="relative h-5 border-b border-base-300/70">
+                {axisLabels.map((label, index) => (
+                  <span
+                    key={label + index}
+                    className="absolute top-0 -translate-x-1/2 text-[11px] text-base-content/50 first:translate-x-0 last:-translate-x-full"
+                    style={{ left: `${index * 50}%` }}
+                  >
+                    {formatParallelWorkTimeLabel(label, localeTag, effectiveTimeZone)}
+                  </span>
+                ))}
+              </div>
+              {conversations.map((conversation, index) => {
+                const startMs = Date.parse(conversation.start);
+                const endMs = Date.parse(conversation.end);
+                const left = Math.max(0, Math.min(100, ((startMs - rangeStartMs) / rangeMs) * 100));
+                const right = Math.max(0, Math.min(100, ((rangeEndMs - endMs) / rangeMs) * 100));
+                const width = Math.max(0.8, 100 - left - right);
+                const active = highlightedIndex === index;
+                const itemProps = getItemProps(index);
+                return (
+                  <div className="contents" key={conversation.conversationId}>
+                    <div className="flex h-7 items-center truncate pr-2 text-xs font-medium text-base-content/62">
+                      {"#" + (index + 1)}
+                    </div>
+                    <div className="relative h-7 border-l border-base-300/55">
+                      <div
+                        aria-hidden="true"
+                        className="absolute inset-y-0 border-r border-dashed border-base-300/55"
+                        style={{ left: "50%" }}
+                      />
+                      <button
+                        {...itemProps}
+                        type="button"
+                        data-testid="parallel-work-conversation-bar"
+                        className="absolute top-1/2 h-3.5 -translate-y-1/2 rounded-full outline-none transition-all focus-visible:ring-2 focus-visible:ring-primary/70"
+                        style={{
+                          left: `${left}%`,
+                          width: `${width}%`,
+                          minWidth: 8,
+                          backgroundColor: active ? chartColors.accent : chartColors.accentFill,
+                          boxShadow: active ? `0 0 0 2px ${withOpacity(chartColors.accent, 0.22)}` : "none",
+                        }}
+                        aria-label={
+                          "Conversation " +
+                          (index + 1) +
+                          " " +
+                          formatParallelWorkTimeLabel(conversation.start, localeTag, effectiveTimeZone) +
+                          " to " +
+                          formatParallelWorkTimeLabel(conversation.end, localeTag, effectiveTimeZone)
+                        }
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+    </InlineChartTooltipSurface>
+  );
+}
+
 function ParallelWorkWindowCard({ window }: { window: ParallelWorkWindowResponse }) {
   const { t, locale } = useTranslation();
   const empty = window.completeBucketCount === 0;
+  const rangeDurationMs = Date.parse(window.rangeEnd) - Date.parse(window.rangeStart);
+  const useConversationTimeline =
+    Number.isFinite(rangeDurationMs) &&
+    rangeDurationMs > 0 &&
+    rangeDurationMs <= 24 * 60 * 60 * 1000 &&
+    (window.conversations?.length ?? 0) > 0;
   const effectiveTimeZone = window.effectiveTimeZone ?? "Asia/Shanghai";
   const timeZoneFallbackNote = window.timeZoneFallback
     ? t("stats.parallelWork.timeZoneFallback", {
@@ -594,15 +792,27 @@ function ParallelWorkWindowCard({ window }: { window: ParallelWorkWindowResponse
         </div>
       </div>
 
-      <ParallelWorkSparkline
-        window={window}
-        emptyLabel={t("stats.parallelWork.empty")}
-        ariaLabel={t("stats.parallelWork.chartAria", {
-          title: t("stats.parallelWork.title"),
-        })}
-        interactionHint={t("live.chart.tooltip.instructions")}
-        tooltipCountLabel={t("stats.parallelWork.tooltip.parallelCount")}
-      />
+      {useConversationTimeline ? (
+        <ParallelWorkConversationGantt
+          window={window}
+          emptyLabel={t("stats.parallelWork.empty")}
+          ariaLabel={t("stats.parallelWork.chartAria", {
+            title: t("stats.parallelWork.title"),
+          })}
+          interactionHint={t("live.chart.tooltip.instructions")}
+          requestCountLabel={t("stats.parallelWork.tooltip.requestCount")}
+        />
+      ) : (
+        <ParallelWorkSparkline
+          window={window}
+          emptyLabel={t("stats.parallelWork.empty")}
+          ariaLabel={t("stats.parallelWork.chartAria", {
+            title: t("stats.parallelWork.title"),
+          })}
+          interactionHint={t("live.chart.tooltip.instructions")}
+          tooltipCountLabel={t("stats.parallelWork.tooltip.parallelCount")}
+        />
+      )}
 
       {empty ? (
         <div className="space-y-2">
