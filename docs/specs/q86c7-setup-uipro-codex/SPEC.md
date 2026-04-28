@@ -2,21 +2,27 @@
 
 ## 状态
 
-- Status: 已完成
+- Status: 已取代（项目改用全局 `ui-ux-pro-max` skill）
 - Created: 2026-02-24
-- Last: 2026-02-24
+- Last: 2026-04-29
+
+## 当前结论
+
+- 本 spec 记录 2026-02-24 的项目级 `ui-ux-pro-max` 接入工作。
+- 当前仓库不再追踪项目级 `ui-ux-pro-max` skill 资产；后续统一使用全局 `ui-ux-pro-max` skill。
+- `.gitignore` 仍允许追踪 `.codex/skills/**`，因为仓库内仍保留其它项目级 skills。
 
 ## 背景 / 问题陈述
 
-- 当前仓库未接入 `ui-ux-pro-max` Codex skill，无法直接使用 styles/design-system 搜索能力。
-- 当前 `.gitignore` 直接忽略 `.codex/`，导致 skill 资产无法被仓库追踪与复现。
+- 2026-02-24 时，仓库未接入 `ui-ux-pro-max` Codex skill，无法直接使用 styles/design-system 搜索能力。
+- 2026-02-24 时，`.gitignore` 直接忽略 `.codex/`，导致 skill 资产无法被仓库追踪与复现。
 - 需要在不改业务功能的前提下完成技能接入与可提交追踪。
 
 ## 目标 / 非目标
 
 ### Goals
 
-- 在当前仓库安装 `ui-ux-pro-max`（Codex 模板）。
+- 在当时的仓库安装项目级 `ui-ux-pro-max`（Codex 模板）。
 - 调整 `.gitignore`，允许追踪 `.codex/skills/**`，继续忽略运行噪音（logs/evidence）。
 - 完成最小可用验证并走完 fast-track（push + PR + checks + review-loop）。
 
@@ -30,7 +36,7 @@
 ### In scope
 
 - `docs/specs/**` 新增与状态维护。
-- `.codex/skills/ui-ux-pro-max/**` 安装产物入仓。
+- 项目级 `ui-ux-pro-max` 安装产物入仓。
 - `.gitignore` 规则细化。
 - PR 创建、标签设置与收敛汇报。
 
@@ -61,8 +67,8 @@
 
 ### Core flows
 
-- 在仓库根目录执行安装命令后，生成 `.codex/skills/ui-ux-pro-max/`，包含 `SKILL.md`、`data/`、`scripts/`。
-- 执行 `python3 .codex/skills/ui-ux-pro-max/scripts/search.py ... --design-system` 返回成功并输出设计系统。
+- 在仓库根目录执行安装命令后，生成项目级 `ui-ux-pro-max` skill 目录，包含 `SKILL.md`、`data/`、`scripts/`。
+- 执行项目级 `ui-ux-pro-max` 的 `search.py ... --design-system` 返回成功并输出设计系统。
 - Git ignore 规则允许 skill 文件出现在 `git status`，但日志/证据文件仍被 ignore。
 
 ### Edge cases / errors
@@ -76,7 +82,7 @@ None
 
 ## 验收标准（Acceptance Criteria）
 
-- Given 仓库在目标分支，When 执行 skill 安装命令，Then `.codex/skills/ui-ux-pro-max/SKILL.md`、`data/*.csv`、`scripts/search.py` 存在。
+- Given 仓库在目标分支，When 执行 skill 安装命令，Then 项目级 `ui-ux-pro-max` 的 `SKILL.md`、`data/*.csv`、`scripts/search.py` 存在。
 - Given 安装完成，When 执行 `search.py --design-system`，Then 命令退出码为 0 且输出包含设计系统字段。
 - Given 更新后的 `.gitignore`，When 检查 ignore 语义，Then `.codex/skills/**` 不被 ignore 且 `.codex/logs/**`、`.codex/evidence/**` 被 ignore。
 - Given PR 创建，When 标签校验运行，Then 通过 `type:*` + `channel:*` 门禁。
@@ -126,3 +132,4 @@ None
 
 - 2026-02-24: 初始化规格并冻结实现口径。
 - 2026-02-24: 完成 skill 接入、PR #50、CI 通过与 review 轮次收敛记录。
+- 2026-04-29: 项目级 skill 资产被全局 `ui-ux-pro-max` skill 取代，仓库不再追踪该 skill 副本。
