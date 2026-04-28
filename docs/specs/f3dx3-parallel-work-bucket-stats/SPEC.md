@@ -131,7 +131,7 @@
   submission_gate: pending-owner-approval
   story_id_or_title: Stats/ParallelWorkStatsSection/Wide Minute Current
   state: wide current page-period populated
-  evidence_note: 验证不超过 24 小时的并行工作数据使用对话级时间轴渲染，Y 轴每行代表一个对话，section 内不再出现独立窗口切换。
+  evidence_note: 验证不超过 24 小时的并行工作数据使用对话级时间轴渲染，Y 轴每行代表一个对话；Storybook 数据由真实感对话区间推导 bucket 并行数，覆盖短会话、长会话、重叠高峰与空窗。
   image:
   ![并行工作统计当前页面周期对话时间轴](./assets/parallel-work-current-wide.png)
 
@@ -144,7 +144,7 @@
   submission_gate: pending-owner-approval
   story_id_or_title: Stats/ParallelWorkStatsSection/Gallery
   scenario: gallery
-  evidence_note: 验证 Storybook gallery 已覆盖当前分钟周期对话时间轴、当前小时周期趋势图、当前天级空状态、loading 与 error 五类关键状态；空态和错误态保持原有语义，且没有内部窗口切换控件。
+  evidence_note: 验证 Storybook gallery 已覆盖当前短周期真实感对话时间轴、当前小时周期趋势图、当前天级空状态、loading 与 error 五类关键状态；空态和错误态保持原有语义，且没有内部窗口切换控件。
   image:
   ![并行工作统计当前页面周期状态集](./assets/parallel-work-current-gallery.png)
 
