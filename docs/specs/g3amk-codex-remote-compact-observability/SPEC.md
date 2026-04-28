@@ -75,7 +75,7 @@
 - `prepare_target_request_body()` 在 compact 路径只做 JSON 解析与信息提取，不执行 Fast rewrite，也不执行 chat stream usage 注入。
 - 响应采集阶段沿用现有 usage / model 解析逻辑，compact 的 `response.compaction` 响应若携带 `usage` 即正常提取 tokens。
 - payload summary 通过 `target.endpoint()` 持久化 compact endpoint，后续 `/api/invocations`、SSE `records`、startup backfill 与详情展示均保持同一来源。
-- 普通 `/v1/responses` 成功提取 `promptCacheKey` 时，后端维护运行期“客户端稳定指纹 -> 最近 `promptCacheKey` / `stickyKey`”映射；stable key 只使用 `session_id`、`originator`、`x-codex-window-id`、`x-codex-installation-id`，且必须至少包含 `session_id` 或 `x-codex-window-id` 这类强稳定键，`traceparent` 仅作为诊断 fingerprint 保存。
+- 普通 `/v1/responses` 成功提取 `promptCacheKey` 时，后端维护运行期“客户端稳定指纹 -> 最近 `promptCacheKey` / `stickyKey`”映射；stable key 只使用 `session_id`、`originator`、`x-codex-window-id`，且必须至少包含 `session_id` 或 `x-codex-window-id` 这类强稳定键，`x-codex-installation-id` 与 `traceparent` 仅作为诊断 fingerprint 保存。
 - compact 缺少 key 时，从同一 stable client fingerprint 的近期唯一映射补齐对话归因，并写入 `promptCacheKeyAttributionSource="client_fingerprint_recent"`；无 stable fingerprint、TTL 过期、无法匹配或同一 fingerprint 在 TTL 内出现多个不同 key 时保持无 key。
 - 前端通过现有 `endpoint` 字段判断 compact，并在主列表 badge 位置显示“远程压缩 / Compact”。
 - 统计接口继续使用同一 `codex_invocations` 数据源，因此 compact 自动进入 totals、summary 与 timeseries。
@@ -163,8 +163,7 @@
 - 风险：旧 compact payload 若缺少 prompt-cache key，不会出现在 prompt-cache conversation 归因视图；当前按“仅修未来”策略避免历史误归因。
 - 风险：compact 若未来公开 `service_tier` 参数，当前实现仍会保持“不注入”策略，需要后续根据官方文档再评估。
 - 假设：compact 响应中的 `usage` 结构继续与现有 usage 解析兼容。
-- 假设：`session_id`、`originator`、`x-codex-window-id`、`x-codex-installation-id` 在同一客户端窗口内足够稳定，可用于短 TTL 内归因；`traceparent` 可能逐请求变化，不参与 stable matching。
-- 开放问题：GitHub MCP 当前不可用，fast-track 的远端 push / PR 环节存在阻断。
+- 假设：`session_id`、`originator`、`x-codex-window-id` 在同一客户端窗口内足够稳定，可用于短 TTL 内归因；`x-codex-installation-id` 与 `traceparent` 可能在普通 responses 与 compact 间不一致，不参与 stable matching。
 
 ## 变更记录（Change log）
 

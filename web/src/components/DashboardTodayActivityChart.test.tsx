@@ -68,28 +68,64 @@ vi.mock("recharts", () => ({
   },
   Legend: () => <div data-testid="legend" />,
   ReferenceLine: () => <div data-testid="reference-line" />,
-  Area: () => <div data-testid="area-series" />,
-  Line: ({
+  Area: ({
     dataKey,
     yAxisId,
     name,
+    strokeWidth,
   }: {
     dataKey?: string;
     yAxisId?: string;
     name?: string;
+    strokeWidth?: number;
+  }) => (
+    <div
+      data-testid="area-series"
+      data-data-key={dataKey ?? ""}
+      data-y-axis-id={yAxisId ?? ""}
+      data-name={name ?? ""}
+      data-stroke-width={String(strokeWidth ?? "")}
+    />
+  ),
+  Line: ({
+    data,
+    dataKey,
+    yAxisId,
+    name,
+    strokeWidth,
+    strokeOpacity,
+  }: {
+    data?: Array<Record<string, unknown>>;
+    dataKey?: string;
+    yAxisId?: string;
+    name?: string;
+    strokeWidth?: number;
+    strokeOpacity?: number;
   }) => (
     <div
       data-testid="line-series"
       data-data-key={dataKey ?? ""}
       data-y-axis-id={yAxisId ?? ""}
       data-name={name ?? ""}
+      data-stroke-width={String(strokeWidth ?? "")}
+      data-stroke-opacity={String(strokeOpacity ?? "")}
+      data-data-length={String(data?.length ?? "")}
     />
   ),
-  Bar: ({ stackId, dataKey }: { stackId?: string; dataKey?: string }) => (
+  Bar: ({
+    stackId,
+    dataKey,
+    barSize,
+  }: {
+    stackId?: string;
+    dataKey?: string;
+    barSize?: number;
+  }) => (
     <div
       data-testid="bar-series"
       data-stack-id={stackId ?? ""}
       data-data-key={dataKey ?? ""}
+      data-bar-size={String(barSize ?? "")}
     />
   ),
   AreaChart: ({ children }: { children: ReactNode }) => (
@@ -106,7 +142,11 @@ vi.mock("recharts", () => ({
   }) => {
     latestChartData = data ?? [];
     return (
-      <div data-testid="composed-chart" data-bar-gap={String(barGap ?? "")}>
+      <div
+        data-testid="composed-chart"
+        data-bar-gap={String(barGap ?? "")}
+        data-data-length={String(latestChartData.length)}
+      >
         {children}
       </div>
     );
@@ -414,11 +454,11 @@ describe("DashboardTodayActivityChart", () => {
     });
   });
 
-  it("adds raw TPM, spend rate, and first-byte-total values to non-future minute data", () => {
+  it("adds 10-minute chart buckets for trend and first-byte-total data", () => {
     const data = buildTodayMinuteChartData(
       {
         rangeStart: "2026-04-08 00:00:00",
-        rangeEnd: "2026-04-08 00:02:30",
+        rangeEnd: "2026-04-08 00:12:30",
         bucketSeconds: 60,
         points: [
           {
@@ -432,10 +472,32 @@ describe("DashboardTodayActivityChart", () => {
             firstResponseByteTotalSampleCount: 2,
             firstResponseByteTotalAvgMs: 450,
           },
+          {
+            bucketStart: "2026-04-08 00:09:00",
+            bucketEnd: "2026-04-08 00:09:59",
+            totalCount: 3,
+            successCount: 3,
+            failureCount: 0,
+            totalTokens: 1800,
+            totalCost: 0.36,
+            firstResponseByteTotalSampleCount: 6,
+            firstResponseByteTotalAvgMs: 750,
+          },
+          {
+            bucketStart: "2026-04-08 00:10:00",
+            bucketEnd: "2026-04-08 00:10:59",
+            totalCount: 1,
+            successCount: 1,
+            failureCount: 0,
+            totalTokens: 900,
+            totalCost: 0.18,
+            firstResponseByteTotalSampleCount: 1,
+            firstResponseByteTotalAvgMs: 300,
+          },
         ],
       },
       {
-        now: new Date(2026, 3, 8, 0, 2, 30),
+        now: new Date(2026, 3, 8, 0, 12, 30),
         localeTag: "en-US",
       },
     );
@@ -444,9 +506,24 @@ describe("DashboardTodayActivityChart", () => {
       tokensPerMinute: 1200,
       spendRate: 0.24,
       firstResponseByteTotalAvgMs: 450,
-      chartTokensPerMinute: 1200,
-      chartSpendRate: 0.24,
-      chartFirstResponseByteTotalAvgMs: 450,
+      chartTokensPerMinute: null,
+      chartSpendRate: null,
+      chartFirstResponseByteTotalAvgMs: null,
+    });
+    expect(data[0]).toMatchObject({
+      chartTokensPerMinute: 3000,
+      chartSpendRate: 0.6,
+      chartFirstResponseByteTotalAvgMs: 675,
+    });
+    expect(data[10]).toMatchObject({
+      chartTokensPerMinute: 900,
+      chartSpendRate: 0.18,
+      chartFirstResponseByteTotalAvgMs: 300,
+    });
+    expect(data[11]).toMatchObject({
+      chartTokensPerMinute: null,
+      chartSpendRate: null,
+      chartFirstResponseByteTotalAvgMs: null,
     });
     expect(data.at(-1)).toMatchObject({
       tokensPerMinute: null,
@@ -508,6 +585,9 @@ describe("DashboardTodayActivityChart", () => {
 
     expect(html).toContain('data-data-key="chartFirstResponseByteTotalAvgMs"');
     expect(html).toContain('data-name="chart.firstResponseByteTotal"');
+    expect(html).toContain('data-stroke-width="1.25"');
+    expect(html).toContain('data-stroke-opacity="0.72"');
+    expect(html).toContain('data-data-length="1"');
   });
 
   it("renders count mode as a composed chart with split success and failure bars", () => {
@@ -524,10 +604,12 @@ describe("DashboardTodayActivityChart", () => {
     expect(html).toContain('data-chart-mode="count-bars"');
     expect(html).toContain('data-testid="composed-chart"');
     expect(html).toContain('data-bar-gap="-100%"');
+    expect(html).toContain('data-data-length="1440"');
     expect(html).not.toContain('data-testid="area-chart"');
     expect(html).toContain('data-data-key="chartSuccessCount"');
     expect(html).toContain('data-data-key="chartInFlightCount"');
     expect(html).toContain('data-data-key="chartFailureCountNegative"');
+    expect(html).toContain('data-bar-size="1"');
     expect(html).toContain('data-stack-id="positive"');
     expect(html).not.toContain(
       'data-data-key="chartFailureCountNegative" data-stack-id="positive"',
@@ -559,7 +641,7 @@ describe("DashboardTodayActivityChart", () => {
     expect(tokenHtml).toContain('data-testid="area-chart"');
   });
 
-  it("renders trend mode as raw TPM and spend-rate line charts", () => {
+  it("renders trend mode as 10-minute TPM and spend-rate area charts", () => {
     const html = renderToStaticMarkup(
       <DashboardTodayActivityChart
         response={response}
@@ -569,12 +651,18 @@ describe("DashboardTodayActivityChart", () => {
       />,
     );
 
-    expect(html).toContain('data-chart-mode="trend-lines"');
+    expect(html).toContain('data-chart-mode="trend-area"');
     expect(html).toContain('data-testid="composed-chart"');
+    expect(html).toContain('data-testid="area-series"');
     expect(html).toContain('data-data-key="chartTokensPerMinute"');
     expect(html).toContain('data-data-key="chartSpendRate"');
+    expect(html).toContain('data-y-axis-id="tokens"');
+    expect(html).toContain('data-y-axis-id="spend"');
     expect(html).toContain('data-name="chart.tokensPerMinute"');
     expect(html).toContain('data-name="chart.spendRate"');
+    expect(html).not.toContain(
+      'data-testid="line-series" data-data-key="chartTokensPerMinute"',
+    );
   });
 
   it("starts chart diagnostics immediately after toggling debug on in an open tab", () => {

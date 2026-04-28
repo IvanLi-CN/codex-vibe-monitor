@@ -10,14 +10,14 @@
 
 ## Coverage / rollout summary
 
-- 自然日图表已支持 `趋势` 模式；`今日 / 昨日` 可显示 TPM 与消费速率 1 分钟原值曲线。
-- `次数` 图已保留成功 / 失败 / 进行中柱状结构，并叠加 `首字总耗时` 曲线。
+- 自然日图表已支持 `趋势` 模式；`今日 / 昨日` 可显示 TPM 与消费速率 10 分钟增量面积图。
+- `次数` 图已保留成功 / 失败 / 进行中分钟级柱状结构，并叠加 10 分钟降采样的低权重 `首字总耗时` 曲线。
 - `金额/分钟` / `Cost/min` UI 与测试语义已统一为 `消费速率` / `Spend rate`。
 - Storybook 与 mock-only 视觉证据已归档在 `./SPEC.md` 的 `## Visual Evidence`。
 
 ## Remaining Gaps
 
-- 待完成 commit、push、PR 与 review-loop 收敛。
+- 待完成 follow-up PR、CI、review-loop 与主干合入收敛。
 
 ## Related Changes
 

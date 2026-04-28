@@ -1412,6 +1412,18 @@ const baseTranslations = {
     "dashboard.today.dayBadge": "Today",
     "dashboard.today.tokensPerMinute": "TPM",
     "dashboard.today.spendRate": "Spend rate",
+    "dashboard.today.tokensPerMinuteDescription":
+      "Tokens per minute, calculated from the active tail inside the latest 5-minute window. Leading idle time is ignored.",
+    "dashboard.today.spendRateDescription":
+      "Cost per minute, calculated from the active tail inside the latest 5-minute window. Leading idle time is ignored.",
+    "dashboard.today.successDescription":
+      "Successful invocations accumulated in the selected natural-day window.",
+    "dashboard.today.failuresDescription":
+      "Failed invocations accumulated in the selected natural-day window.",
+    "dashboard.today.totalCostDescription":
+      "Total estimated spend accumulated in the selected natural-day window.",
+    "dashboard.today.totalTokensDescription":
+      "Total input, output, and cached tokens accumulated in the selected natural-day window.",
     "stats.range.lastHour": "Past hour",
     "stats.range.today": "Today",
     "stats.range.lastDay": "Past day",
@@ -3201,6 +3213,18 @@ const baseTranslations = {
     "dashboard.today.dayBadge": "今日",
     "dashboard.today.tokensPerMinute": "TPM",
     "dashboard.today.spendRate": "消费速率",
+    "dashboard.today.tokensPerMinuteDescription":
+      "每分钟 Tokens，按最近 5 分钟窗口内的活跃尾段计算均值；前置空闲时间不参与分母。",
+    "dashboard.today.spendRateDescription":
+      "每分钟消费金额，按最近 5 分钟窗口内的活跃尾段计算均值；前置空闲时间不参与分母。",
+    "dashboard.today.successDescription":
+      "所选自然日窗口内累计成功的调用数。",
+    "dashboard.today.failuresDescription":
+      "所选自然日窗口内累计失败的调用数。",
+    "dashboard.today.totalCostDescription":
+      "所选自然日窗口内累计的预估消费金额。",
+    "dashboard.today.totalTokensDescription":
+      "所选自然日窗口内累计的输入、输出和缓存 Tokens。",
     "stats.range.lastHour": "最近 1 小时",
     "stats.range.today": "今日",
     "stats.range.lastDay": "最近 1 天",

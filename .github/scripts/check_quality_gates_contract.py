@@ -740,6 +740,7 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     require(ensure_env.get("GITHUB_TOKEN") == "${{ secrets.GITHUB_TOKEN }}", "release.yml.jobs.release-meta: manual snapshot ensure must use GITHUB_TOKEN")
     ensure_run = str(ensure_step.get("run", ""))
     require("release_snapshot.py ensure" in ensure_run, "release.yml.jobs.release-meta: manual snapshot ensure must use release_snapshot.py ensure")
+    require("--skip-publish" in ensure_run, "release.yml.jobs.release-meta: manual snapshot ensure must avoid notes ref writes")
     pending_step = step_config(release_meta, "Select pending release target", "release.yml.jobs.release-meta")
     pending_env = require_mapping(pending_step.get("env"), "release.yml.jobs.release-meta.steps['Select pending release target'].env")
     require(pending_env.get("REQUESTED_SHA") == "${{ steps.requested-target.outputs.target_sha }}", "release.yml.jobs.release-meta: pending target selector must consume requested target")
@@ -756,6 +757,10 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     require(
         "release_snapshot.py export" in snapshot_run,
         "release.yml.jobs.release-meta: snapshot loader must use release_snapshot.py export",
+    )
+    require(
+        "--snapshot-file" in snapshot_run,
+        "release.yml.jobs.release-meta: manual snapshot loader must support job-local snapshots",
     )
     require(
         "RELEASE_SNAPSHOT_NOTES_REF" in snapshot_run,
