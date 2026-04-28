@@ -188,8 +188,11 @@ function buildParallelWorkResponse(options: {
 
 function buildStatsRequestHandler(scenario: StatsScenario = 'default') {
   const now = Date.parse('2026-04-06T12:00:00.000Z')
-  const todayStart = now - 24 * 60 * 60 * 1000
+  const todayStart = Date.parse('2026-04-06T00:00:00.000Z')
+  const dayStart = now - 24 * 60 * 60 * 1000
   const weekStart = now - 7 * 24 * 60 * 60 * 1000
+  const rangeStartByRange = (range: string) =>
+    range === '7d' ? weekStart : range === '1d' ? dayStart : todayStart
 
   const summaryByWindow: Record<string, StatsResponse> = {
     today: buildSummary({ totalCount: 18324, successCount: 16510, failureCount: 1814, totalCost: 812.41, totalTokens: 1732145566 }),
@@ -231,6 +234,7 @@ function buildStatsRequestHandler(scenario: StatsScenario = 'default') {
       }
       const range = url.searchParams.get('range') ?? 'today'
       const bucket = url.searchParams.get('bucket') ?? (range === '7d' ? '1h' : '15m')
+      const rangeStart = rangeStartByRange(range)
       if (range === '7d') {
         return jsonResponse(
           buildTimeseriesResponse({
@@ -250,7 +254,7 @@ function buildStatsRequestHandler(scenario: StatsScenario = 'default') {
       }
       return jsonResponse(
         buildTimeseriesResponse({
-          rangeStart: new Date(todayStart).toISOString(),
+          rangeStart: new Date(rangeStart).toISOString(),
           rangeEnd: new Date(now).toISOString(),
           bucketSeconds: bucket === '1m' ? 60 : bucket === '5m' ? 300 : bucket === '30m' ? 1800 : bucket === '1h' ? 3600 : 900,
           effectiveBucket: bucket,
@@ -258,7 +262,7 @@ function buildStatsRequestHandler(scenario: StatsScenario = 'default') {
           points: buildTimeseriesPoints({
             count: bucket === '1m' ? 24 * 60 : bucket === '1h' ? 24 : bucket === '30m' ? 48 : bucket === '5m' ? 288 : 96,
             bucketSeconds: bucket === '1m' ? 60 : bucket === '5m' ? 300 : bucket === '30m' ? 1800 : bucket === '1h' ? 3600 : 900,
-            startMs: todayStart,
+            startMs: rangeStart,
           }),
         }),
       )
@@ -276,7 +280,7 @@ function buildStatsRequestHandler(scenario: StatsScenario = 'default') {
       const range = url.searchParams.get('range') ?? 'today'
       const bucket = url.searchParams.get('bucket') ?? (range === '7d' ? '1h' : '15m')
       const bucketSeconds = bucket === '1m' ? 60 : bucket === '30m' ? 1800 : bucket === '1h' ? 3600 : 900
-      const rangeStart = range === '7d' ? new Date(weekStart).toISOString() : new Date(todayStart).toISOString()
+      const rangeStart = new Date(rangeStartByRange(range)).toISOString()
       return jsonResponse(
         buildParallelWorkResponse({
           rangeStart,
@@ -331,6 +335,7 @@ export const Default: Story = {
     await userEvent.click(canvas.getByTestId('stats-range-select-trigger'))
     await userEvent.click(within(document.body).getByText('最近 7 天'))
     await expect(canvas.getByTestId('stats-range-select-trigger')).toHaveTextContent('最近 7 天')
+    await expect(canvas.queryByTestId('parallel-work-conversation-gantt')).toBeNull()
   },
 }
 
