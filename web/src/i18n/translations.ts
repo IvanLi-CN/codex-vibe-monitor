@@ -1452,11 +1452,13 @@ const baseTranslations = {
     "stats.parallelWork.title": "Parallel work",
     "stats.parallelWork.description":
       "Track how many distinct Prompt Cache conversations were active per bucket across short-, mid-, and long-term windows.",
+    "stats.parallelWork.currentDescription":
+      "Uses the page-level range and bucket selection. Windows up to 24 hours render as a time-by-conversation chart; longer windows render as a trend chart.",
     "stats.parallelWork.loading": "Loading parallel-work buckets…",
     "stats.parallelWork.empty": "No complete buckets yet.",
     "stats.parallelWork.windowToggleAria": "Select parallel-work window",
     "stats.parallelWork.detailsTooltipLabel": "Explain {{title}} details",
-    "stats.parallelWork.chartAria": "{{title}} trend",
+    "stats.parallelWork.chartAria": "{{title}} time-conversation chart",
     "stats.parallelWork.samples":
       "{{complete}} complete buckets · {{active}} active buckets",
     "stats.parallelWork.rangeSummary": "Range: {{start}} → {{end}}",
@@ -1466,6 +1468,8 @@ const baseTranslations = {
     "stats.parallelWork.metrics.max": "Max",
     "stats.parallelWork.metrics.avg": "Avg",
     "stats.parallelWork.tooltip.parallelCount": "Parallel work",
+    "stats.parallelWork.tooltip.requestCount": "Requests",
+    "stats.parallelWork.tooltip.conversation": "X axis: time · Y axis: conversations",
     "stats.parallelWork.windows.minute7d.title": "Last 7 days · by minute",
     "stats.parallelWork.windows.minute7d.toggleLabel": "7d · minute",
     "stats.parallelWork.windows.minute7d.description":
@@ -3265,11 +3269,13 @@ const baseTranslations = {
     "stats.parallelWork.title": "并行工作",
     "stats.parallelWork.description":
       "按 bucket 观察实际活跃的 Prompt Cache 对话数，覆盖近端分钟、中期小时与全历史天级窗口。",
+    "stats.parallelWork.currentDescription":
+      "继承页面当前时间范围与 bucket 粒度；不超过 24 小时显示时间-对话图，超过 24 小时显示趋势图。",
     "stats.parallelWork.loading": "正在加载并行工作 bucket…",
     "stats.parallelWork.empty": "还没有可统计的完整 bucket。",
     "stats.parallelWork.windowToggleAria": "切换并行工作统计窗口",
     "stats.parallelWork.detailsTooltipLabel": "查看“{{title}}”说明",
-    "stats.parallelWork.chartAria": "{{title}} 趋势",
+    "stats.parallelWork.chartAria": "{{title}} 时间-对话图",
     "stats.parallelWork.samples":
       "{{complete}} 个完整 bucket · {{active}} 个活跃 bucket",
     "stats.parallelWork.rangeSummary": "范围：{{start}} → {{end}}",
@@ -3279,6 +3285,8 @@ const baseTranslations = {
     "stats.parallelWork.metrics.max": "最高",
     "stats.parallelWork.metrics.avg": "均数",
     "stats.parallelWork.tooltip.parallelCount": "并行工作数",
+    "stats.parallelWork.tooltip.requestCount": "请求数",
+    "stats.parallelWork.tooltip.conversation": "X 轴：时间 · Y 轴：对话",
     "stats.parallelWork.windows.minute7d.title": "最近 7 天 · 按分钟",
     "stats.parallelWork.windows.minute7d.toggleLabel": "7天 · 分钟",
     "stats.parallelWork.windows.minute7d.description":

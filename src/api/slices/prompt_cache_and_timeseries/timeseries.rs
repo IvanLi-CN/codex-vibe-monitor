@@ -500,6 +500,141 @@ pub(crate) async fn fetch_parallel_work_stats(
     let requested_reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let now = Utc::now();
+    let current_range_window = resolve_range_window(&params.range, requested_reporting_tz)?;
+    let current_bucket_selection = resolve_timeseries_bucket_selection(
+        &TimeseriesQuery {
+            range: params.range.clone(),
+            bucket: params.bucket.clone(),
+            settlement_hour: None,
+            time_zone: params.time_zone.clone(),
+        },
+        &current_range_window,
+        state.config.invocation_max_days,
+    )?;
+    let current_bucket_seconds = current_bucket_selection.bucket_seconds;
+    let current_uses_exact = current_range_window.duration <= ChronoDuration::hours(24);
+    let (current_reporting_tz, current_time_zone_fallback) =
+        if current_uses_exact || reporting_tz_has_whole_hour_offsets(requested_reporting_tz, &current_range_window) {
+            (requested_reporting_tz, false)
+        } else {
+            (Shanghai, true)
+        };
+    let current_window = if current_time_zone_fallback {
+        resolve_range_window(&params.range, current_reporting_tz)?
+    } else {
+        current_range_window
+    };
+    let current_display_start_epoch = align_reporting_bucket_epoch(
+        current_window.start.timestamp(),
+        current_bucket_seconds,
+        current_reporting_tz,
+    )?;
+    let current_display_start = Utc
+        .timestamp_opt(current_display_start_epoch, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid current parallel-work display start epoch"))?;
+
+    let (current_counts, current_conversations) = if current_uses_exact {
+        (
+            query_parallel_work_exact_counts(
+                &state.pool,
+                current_window.start,
+                current_window.end,
+                current_reporting_tz,
+                current_bucket_seconds,
+                source_scope,
+            )
+            .await?,
+            query_parallel_work_exact_conversations(
+                &state.pool,
+                current_window.start,
+                current_window.end,
+                current_reporting_tz,
+                current_bucket_seconds,
+                source_scope,
+            )
+            .await?,
+        )
+    } else {
+        let range_plan = build_hourly_rollup_exact_range_plan(
+            current_display_start,
+            current_window.end,
+            shanghai_retention_cutoff(state.config.invocation_max_days),
+        )?;
+        let mut conversations = BTreeMap::new();
+        if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
+            let range_start = Utc
+                .timestamp_opt(range_start_epoch, 0)
+                .single()
+                .ok_or_else(|| anyhow!("invalid current parallel-work rollup start epoch"))?;
+            let range_end = Utc
+                .timestamp_opt(range_end_epoch, 0)
+                .single()
+                .ok_or_else(|| anyhow!("invalid current parallel-work rollup end epoch"))?;
+            merge_parallel_work_conversation_maps(
+                &mut conversations,
+                query_parallel_work_rollup_conversations(
+                    &state.pool,
+                    range_start,
+                    range_end,
+                    current_bucket_seconds,
+                    current_reporting_tz,
+                    source_scope,
+                )
+                .await?,
+            );
+        }
+        let mut tx = state.pool.begin().await?;
+        let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
+        let rollup_live_cursor = load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
+        for exact_range in &range_plan.live_exact_ranges {
+            merge_parallel_work_conversation_maps(
+                &mut conversations,
+                query_parallel_work_exact_conversations_from_live_range_tx(
+                    tx.as_mut(),
+                    *exact_range,
+                    current_reporting_tz,
+                    current_bucket_seconds,
+                    source_scope,
+                    None,
+                    Some(snapshot_id),
+                )
+                .await?,
+            );
+        }
+        if snapshot_id > rollup_live_cursor {
+            if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
+                let range_start = Utc
+                    .timestamp_opt(range_start_epoch, 0)
+                    .single()
+                    .ok_or_else(|| {
+                        anyhow!("invalid current parallel-work live-tail start epoch")
+                    })?;
+                let range_end = Utc
+                    .timestamp_opt(range_end_epoch, 0)
+                    .single()
+                    .ok_or_else(|| anyhow!("invalid current parallel-work live-tail end epoch"))?;
+                merge_parallel_work_conversation_maps(
+                    &mut conversations,
+                    query_parallel_work_exact_conversations_from_live_range_tx(
+                        tx.as_mut(),
+                        ExactUtcRange {
+                            start: range_start,
+                            end: range_end,
+                        },
+                        current_reporting_tz,
+                        current_bucket_seconds,
+                        source_scope,
+                        Some(rollup_live_cursor),
+                        Some(snapshot_id),
+                    )
+                    .await?,
+                );
+            }
+        }
+        let counts = parallel_work_counts_from_conversations(&conversations);
+        (counts, conversations)
+    };
 
     let minute7d_window = resolve_complete_parallel_work_window(
         now,
@@ -529,15 +664,32 @@ pub(crate) async fn fetch_parallel_work_stats(
         requested_hour30d_window
     };
 
-    let minute7d_counts = query_parallel_work_minute_counts(
+    let minute7d_counts = query_parallel_work_exact_counts(
         &state.pool,
         minute7d_window.start,
         minute7d_window.end,
         requested_reporting_tz,
+        60,
+        source_scope,
+    )
+    .await?;
+    let minute7d_conversations = query_parallel_work_exact_conversations(
+        &state.pool,
+        minute7d_window.start,
+        minute7d_window.end,
+        requested_reporting_tz,
+        60,
         source_scope,
     )
     .await?;
     let hour30d_counts = query_parallel_work_hourly_counts(
+        &state.pool,
+        hour30d_window.start,
+        hour30d_window.end,
+        source_scope,
+    )
+    .await?;
+    let hour30d_conversations = query_parallel_work_hourly_conversations(
         &state.pool,
         hour30d_window.start,
         hour30d_window.end,
@@ -552,17 +704,27 @@ pub(crate) async fn fetch_parallel_work_stats(
             source_scope,
         )
         .await?;
-    let day_all_counts = if let Some(window) = day_all_window.as_ref() {
-        query_parallel_work_day_counts_from_hourly_rollups(
-            &state.pool,
-            window.start,
-            window.end,
-            day_all_reporting_tz,
-            source_scope,
+    let (day_all_counts, day_all_conversations) = if let Some(window) = day_all_window.as_ref() {
+        (
+            query_parallel_work_day_counts_from_hourly_rollups(
+                &state.pool,
+                window.start,
+                window.end,
+                day_all_reporting_tz,
+                source_scope,
+            )
+            .await?,
+            query_parallel_work_day_conversations_from_hourly_rollups(
+                &state.pool,
+                window.start,
+                window.end,
+                day_all_reporting_tz,
+                source_scope,
+            )
+            .await?,
         )
-        .await?
     } else {
-        BTreeMap::new()
+        (BTreeMap::new(), BTreeMap::new())
     };
 
     let latest_complete_day_end = local_midnight_utc(
@@ -571,34 +733,47 @@ pub(crate) async fn fetch_parallel_work_stats(
     );
 
     Ok(Json(ParallelWorkStatsResponse {
-        minute7d: build_parallel_work_window_response(
-            minute7d_window.start,
-            minute7d_window.end,
-            60,
-            requested_reporting_tz,
-            &minute7d_counts,
-            requested_reporting_tz,
-            false,
-        )?,
-        hour30d: build_parallel_work_window_response(
-            hour30d_window.start,
-            hour30d_window.end,
-            3_600,
-            hour30d_reporting_tz,
-            &hour30d_counts,
-            hour30d_reporting_tz,
-            hour30d_time_zone_fallback,
-        )?,
+        current: build_parallel_work_window_response(ParallelWorkWindowBuildInput {
+            range_start: current_window.start,
+            range_end: current_window.end,
+            bucket_seconds: current_bucket_seconds,
+            reporting_tz: current_reporting_tz,
+            counts_by_bucket: &current_counts,
+            conversations_by_key: &current_conversations,
+            effective_time_zone: current_reporting_tz,
+            time_zone_fallback: current_time_zone_fallback,
+        })?,
+        minute7d: build_parallel_work_window_response(ParallelWorkWindowBuildInput {
+            range_start: minute7d_window.start,
+            range_end: minute7d_window.end,
+            bucket_seconds: 60,
+            reporting_tz: requested_reporting_tz,
+            counts_by_bucket: &minute7d_counts,
+            conversations_by_key: &minute7d_conversations,
+            effective_time_zone: requested_reporting_tz,
+            time_zone_fallback: false,
+        })?,
+        hour30d: build_parallel_work_window_response(ParallelWorkWindowBuildInput {
+            range_start: hour30d_window.start,
+            range_end: hour30d_window.end,
+            bucket_seconds: 3_600,
+            reporting_tz: hour30d_reporting_tz,
+            counts_by_bucket: &hour30d_counts,
+            conversations_by_key: &hour30d_conversations,
+            effective_time_zone: hour30d_reporting_tz,
+            time_zone_fallback: hour30d_time_zone_fallback,
+        })?,
         day_all: if let Some(window) = day_all_window {
-            build_parallel_work_window_response(
-                window.start,
-                window.end,
-                86_400,
-                day_all_reporting_tz,
-                &day_all_counts,
-                day_all_reporting_tz,
-                day_all_time_zone_fallback,
-            )?
+            build_parallel_work_window_response(ParallelWorkWindowBuildInput {
+                range_start: window.start,
+                range_end: window.end,
+                bucket_seconds: 86_400,
+                reporting_tz: day_all_reporting_tz,
+                counts_by_bucket: &day_all_counts,
+                conversations_by_key: &day_all_conversations,
+                effective_time_zone: day_all_reporting_tz,
+                time_zone_fallback: day_all_time_zone_fallback,
+            })?
         } else {
             empty_parallel_work_window_response(
                 latest_complete_day_end,
