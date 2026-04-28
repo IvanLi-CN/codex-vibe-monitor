@@ -455,6 +455,18 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     require('supports_final_topology="true"' in trusted_run, "ci-pr.yml.jobs.lint: rollout support flag drifted")
     require('source_kind="merge-group-base-branch"' in trusted_run, "ci-pr.yml.jobs.lint: merge_group trusted source kind drifted")
     require(
+        'github.event.pull_request.head.repo.full_name' in trusted_run,
+        "ci-pr.yml.jobs.lint: same-repository quality-gates source detection drifted",
+    )
+    require(
+        'changed_quality_gate_paths="$(git diff --name-only "${source_ref}...HEAD" -- "${paths[@]}" "${final_topology_paths[@]}")"' in trusted_run,
+        "ci-pr.yml.jobs.lint: quality-gates change detection drifted",
+    )
+    require(
+        'source_kind="current-branch-quality-gates-change"' in trusted_run,
+        "ci-pr.yml.jobs.lint: quality-gates change source kind drifted",
+    )
+    require(
         "keeping trusted scripts pinned to base and skipping trusted final-topology checks during rollout" in trusted_run,
         "ci-pr.yml.jobs.lint: rollout warning drifted",
     )
@@ -702,6 +714,21 @@ def validate_release(path: Path, contract: ContractModel) -> None:
 
     permissions = require_mapping(workflow.get("permissions"), "release.yml.permissions")
     require(permissions.get("contents") == "read", "release.yml.permissions.contents must stay read")
+
+    ci_main_gate = named_job_config(workflow, "ci-main-gate", expected_jobs, "release.yml")
+    require(ci_main_gate.get("runs-on") == "ubuntu-latest", "release.yml.jobs.ci-main-gate.runs-on drifted")
+    require_exact_if(
+        ci_main_gate,
+        "${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success' }}",
+        "release.yml.jobs.ci-main-gate",
+    )
+    require_fail_closed(ci_main_gate, "release.yml.jobs.ci-main-gate")
+    gate_step = step_config(ci_main_gate, "Fail on unsuccessful CI Main", "release.yml.jobs.ci-main-gate")
+    gate_run = str(gate_step.get("run", ""))
+    require("github.event.workflow_run.conclusion" in gate_run, "release.yml.jobs.ci-main-gate: failure output must include upstream conclusion")
+    require("github.event.workflow_run.head_sha" in gate_run, "release.yml.jobs.ci-main-gate: failure output must include upstream head sha")
+    require("Release is blocked until CI Main succeeds." in gate_run, "release.yml.jobs.ci-main-gate: failure output drifted")
+    require("exit 1" in gate_run, "release.yml.jobs.ci-main-gate: unsuccessful CI Main must fail release")
 
     release_meta = named_job_config(workflow, "release-meta", expected_jobs, "release.yml")
     require_exact_if(

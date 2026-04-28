@@ -159,6 +159,17 @@ jobs:
                 source_kind="merge-group-bootstrap-compatible-base-branch"
               fi
             fi
+
+            if [ "${{ github.event_name }}" = "pull_request" ] && [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
+              changed_quality_gate_paths="$(git diff --name-only "${source_ref}...HEAD" -- "${paths[@]}" "${final_topology_paths[@]}")"
+              if [ -n "${changed_quality_gate_paths}" ]; then
+                echo "::notice::Same-repository PR changes quality-gates contract sources; using current branch sources to validate the updated topology."
+                printf '%s\n' "${changed_quality_gate_paths}"
+                source_ref="HEAD"
+                source_kind="current-branch-quality-gates-change"
+                supports_final_topology="true"
+              fi
+            fi
           fi
 
           for path in "${paths[@]}"; do
