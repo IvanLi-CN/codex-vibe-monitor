@@ -481,8 +481,9 @@ async fn parallel_work_stats_zero_fills_current_page_period() {
     )
     .await;
     let now = Utc::now();
+    let observed_now = now - ChronoDuration::seconds(20);
     let current_minute_epoch =
-        align_reporting_bucket_epoch(now.timestamp(), 60, Shanghai).expect("align minute");
+        align_reporting_bucket_epoch(observed_now.timestamp(), 60, Shanghai).expect("align minute");
     let inserted_current_minute = Utc
         .timestamp_opt(current_minute_epoch, 0)
         .single()
