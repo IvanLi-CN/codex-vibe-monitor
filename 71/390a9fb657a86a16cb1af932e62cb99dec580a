@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.53.4",
+  "base_stable_version": "1.53.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-28T04:07:19Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.53.4",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "5fd825aafc579be9e903fdba2b9b7c2726652854",
+  "pr_number": 379,
+  "pr_title": "fix(web): correct dashboard active-tail rate cards",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.53.4",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.53.4",
+  "target_sha": "71390a9fb657a86a16cb1af932e62cb99dec580a",
+  "type_label": "type:patch"
+}
