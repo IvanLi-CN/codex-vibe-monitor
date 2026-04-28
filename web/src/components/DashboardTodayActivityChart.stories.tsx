@@ -1,30 +1,103 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { I18nProvider } from "../i18n";
+import type { TimeseriesResponse } from "../lib/api";
 import { DashboardTodayActivityChart } from "./DashboardTodayActivityChart";
 
-const sampleResponse = {
+const STORY_DAY_START = "2026-04-08T00:00:00+08:00";
+const MINUTE_MS = 60_000;
+
+function deterministicNoise(index: number, salt = 0) {
+  const value = Math.sin((index + 1) * (12.9898 + salt)) * 43758.5453;
+  return value - Math.floor(value);
+}
+
+function gaussian(value: number, center: number, width: number) {
+  return Math.exp(-((value - center) ** 2) / (2 * width ** 2));
+}
+
+function buildRealisticPoint(index: number, intensity = 1) {
+  const bucketStart = new Date(STORY_DAY_START);
+  bucketStart.setMinutes(bucketStart.getMinutes() + index);
+  const bucketEnd = new Date(bucketStart.getTime() + MINUTE_MS);
+  const hour = index / 60;
+
+  const officeRamp = 1 / (1 + Math.exp(-(hour - 7.8) * 1.45));
+  const lunchDip = 1 - 0.34 * gaussian(hour, 12.15, 0.42);
+  const deployBurst =
+    8 * gaussian(hour, 9.25, 0.16) +
+    5 * gaussian(hour, 10.75, 0.2) +
+    4 * gaussian(hour, 11.55, 0.18);
+  const lowTrafficDrop =
+    hour < 6 && (index % 13 === 0 || index % 17 === 0) ? 1 : 0;
+  const expected =
+    (0.25 + officeRamp * 8.2 * lunchDip + deployBurst) * intensity;
+  const jitter =
+    (deterministicNoise(index, 0.4) - 0.5) * (hour < 7 ? 2 : 4.2);
+  const quietMinute =
+    lowTrafficDrop > 0 ||
+    (hour < 7.2 && index % 11 === 0) ||
+    (hour >= 7.2 && deterministicNoise(index, 1.6) < 0.018);
+  const totalCount = quietMinute
+    ? 0
+    : Math.max(0, Math.round(expected + jitter));
+  const failureCount =
+    totalCount <= 0
+      ? 0
+      : deterministicNoise(index, 2.8) > 0.965
+        ? Math.min(2, totalCount)
+        : deterministicNoise(index, 3.4) > 0.91
+          ? 1
+          : 0;
+  const inFlightCount =
+    totalCount > failureCount && index > 690 && index % 7 === 0 ? 1 : 0;
+  const successCount = Math.max(totalCount - failureCount - inFlightCount, 0);
+  const completedCount = successCount + failureCount;
+  const avgTokens =
+    520 +
+    Math.round(gaussian(hour, 9.3, 0.9) * 460) +
+    Math.round(deterministicNoise(index, 4.2) * 360);
+  const totalTokens = completedCount * avgTokens;
+  const latencyBase =
+    410 +
+    officeRamp * 90 +
+    gaussian(hour, 9.25, 0.18) * 210 +
+    gaussian(hour, 11.55, 0.18) * 140;
+
+  return {
+    bucketStart: bucketStart.toISOString(),
+    bucketEnd: bucketEnd.toISOString(),
+    totalCount,
+    successCount,
+    failureCount,
+    inFlightCount,
+    totalTokens,
+    totalCost: Number((totalTokens * 0.000018).toFixed(4)),
+    firstResponseByteTotalSampleCount: completedCount,
+    firstResponseByteTotalAvgMs:
+      completedCount > 0
+        ? Math.round(latencyBase + deterministicNoise(index, 5.1) * 115)
+        : null,
+  };
+}
+
+function buildFullNaturalDayResponse(intensity = 1): TimeseriesResponse {
+  return {
+    rangeStart: "2026-04-08T00:00:00+08:00",
+    rangeEnd: "2026-04-09T00:00:00+08:00",
+    bucketSeconds: 60,
+    points: Array.from({ length: 1440 }, (_, index) =>
+      buildRealisticPoint(index, intensity),
+    ),
+  };
+}
+
+const sampleResponse: TimeseriesResponse = {
   rangeStart: "2026-04-08T00:00:00+08:00",
   rangeEnd: "2026-04-08T12:24:00+08:00",
   bucketSeconds: 60,
-  points: Array.from({ length: 149 }, (_, index) => {
-    const bucketStart = new Date("2026-04-08T00:00:00+08:00");
-    bucketStart.setMinutes(bucketStart.getMinutes() + index * 5);
-    const bucketEnd = new Date(bucketStart.getTime() + 60_000);
-    const totalCount = index % 7 === 0 ? 0 : (index % 5) + 1;
-    const failureCount = totalCount > 0 && index % 6 === 0 ? 1 : 0;
-    const inFlightCount = totalCount > 1 && index % 10 === 0 ? 1 : 0;
-    const successCount = Math.max(totalCount - failureCount - inFlightCount, 0);
-    return {
-      bucketStart: bucketStart.toISOString(),
-      bucketEnd: bucketEnd.toISOString(),
-      totalCount,
-      successCount,
-      failureCount,
-      inFlightCount,
-      totalTokens: totalCount * 380,
-      totalCost: Number((totalCount * 0.018).toFixed(4)),
-    };
-  }),
+  points: Array.from({ length: 745 }, (_, index) =>
+    buildRealisticPoint(index, 0.85),
+  ),
 };
 
 const meta = {
@@ -78,47 +151,46 @@ export const TokensCumulative: Story = {
   },
 };
 
+export const TrendArea: Story = {
+  args: {
+    response: sampleResponse,
+    loading: false,
+    error: null,
+    metric: "trend",
+  },
+};
+
 export const CountBarsDensePairing: Story = {
   args: {
-    response: {
-      ...sampleResponse,
-      points: Array.from({ length: 180 }, (_, index) => {
-        const bucketStart = new Date("2026-04-08T00:00:00+08:00");
-        bucketStart.setMinutes(bucketStart.getMinutes() + index * 4);
-        const bucketEnd = new Date(bucketStart.getTime() + 60_000);
-        const inFlightOnlyBucket = index % 11 === 0;
-        const failureCount = inFlightOnlyBucket
-          ? 0
-          : index % 6 === 0
-            ? 3
-            : index % 3 === 0
-              ? 2
-              : 1;
-        const successCount = inFlightOnlyBucket ? 0 : 4 + (index % 5);
-        const inFlightCount = inFlightOnlyBucket
-          ? 3
-          : index % 8 === 0
-            ? 2
-            : index % 5 === 0
-              ? 1
-              : 0;
-        const totalCount = successCount + failureCount + inFlightCount;
-        return {
-          bucketStart: bucketStart.toISOString(),
-          bucketEnd: bucketEnd.toISOString(),
-          totalCount,
-          successCount,
-          failureCount,
-          inFlightCount,
-          totalTokens: totalCount * 420,
-          totalCost: Number((totalCount * 0.021).toFixed(4)),
-        };
-      }),
-    },
+    response: buildFullNaturalDayResponse(1.18),
     loading: false,
     error: null,
     metric: "totalCount",
+    closedNaturalDay: true,
   },
+};
+
+export const CountBarsMinuteGranularityZoom: Story = {
+  args: {
+    response: buildFullNaturalDayResponse(1.18),
+    loading: false,
+    error: null,
+    metric: "totalCount",
+    closedNaturalDay: true,
+  },
+  render: () => (
+    <div className="overflow-hidden" data-testid="minute-granularity-zoom">
+      <div className="w-[7200px] max-w-none">
+        <DashboardTodayActivityChart
+          response={buildFullNaturalDayResponse(1.18)}
+          loading={false}
+          error={null}
+          metric="totalCount"
+          closedNaturalDay
+        />
+      </div>
+    </div>
+  ),
 };
 
 export const EmptyState: Story = {
