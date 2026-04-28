@@ -673,8 +673,8 @@ function ParallelWorkConversationGantt({
           data-chart-mode="conversation-gantt"
           data-testid="parallel-work-conversation-gantt"
         >
-          <div className="min-w-[720px] px-4 pb-4 pt-3">
-            <div className="grid grid-cols-[5.5rem_minmax(0,1fr)] gap-x-3 gap-y-2">
+          <div className="min-w-[720px] px-4 pb-3 pt-3">
+            <div className="grid grid-cols-[4.75rem_minmax(0,1fr)] gap-x-3 gap-y-1">
               <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-base-content/45">
                 {locale === "zh" ? "对话" : "Conversation"}
               </div>
@@ -699,10 +699,10 @@ function ParallelWorkConversationGantt({
                 const itemProps = getItemProps(index);
                 return (
                   <div className="contents" key={conversation.conversationId}>
-                    <div className="flex h-7 items-center truncate pr-2 text-xs font-medium text-base-content/62">
+                    <div className="flex h-5 items-center truncate pr-2 text-xs font-medium text-base-content/62">
                       {"#" + (index + 1)}
                     </div>
-                    <div className="relative h-7 border-l border-base-300/55">
+                    <div className="relative h-5 border-l border-base-300/55">
                       <div
                         aria-hidden="true"
                         className="absolute inset-y-0 border-r border-dashed border-base-300/55"
@@ -712,7 +712,7 @@ function ParallelWorkConversationGantt({
                         {...itemProps}
                         type="button"
                         data-testid="parallel-work-conversation-bar"
-                        className="absolute top-1/2 h-3.5 -translate-y-1/2 rounded-full outline-none transition-all focus-visible:ring-2 focus-visible:ring-primary/70"
+                        className="absolute top-1/2 h-3 -translate-y-1/2 rounded-full outline-none transition-all focus-visible:ring-2 focus-visible:ring-primary/70"
                         style={{
                           left: `${left}%`,
                           width: `${width}%`,
