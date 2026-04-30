@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.54.0",
+  "base_stable_version": "1.53.10",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-30T09:28:52Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.54.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "daaca87c768660d34911f9f0bb92c7da46b02ce6",
+  "pr_number": 388,
+  "pr_title": "feat(web): add contextual today KPI cards",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.54.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.54.0",
+  "target_sha": "95f35be3e857e182537c08a09b3b7d8809f6069b",
+  "type_label": "type:minor"
+}
