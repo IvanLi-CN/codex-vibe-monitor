@@ -1,4 +1,4 @@
-import type { StatsResponse } from '../lib/api'
+import type { ParallelWorkStatsResponse, StatsResponse, TimeseriesResponse } from '../lib/api'
 import type { KeyboardEvent } from 'react'
 import { useTranslation } from '../i18n'
 import { cn } from '../lib/utils'
@@ -8,8 +8,17 @@ import { Alert } from './ui/alert'
 import { Badge } from './ui/badge'
 import { Tooltip } from './ui/tooltip'
 import type { DashboardTodayRateSnapshot } from './dashboardTodayRateSnapshot'
+import {
+  buildActiveMinuteAverages,
+  buildParallelWorkKpiSnapshot,
+  cacheHitRate,
+  failureRate,
+  percentDelta,
+  sumCacheInputTokens,
+} from './dashboardKpiComparisons'
 
 const RATE_UNAVAILABLE_PLACEHOLDER = '—'
+const PREVIOUS_FULL_DAY_COUNT = 7
 
 export interface TodayStatsOverviewProps {
   stats: StatsResponse | null
@@ -18,9 +27,26 @@ export interface TodayStatsOverviewProps {
   rate?: DashboardTodayRateSnapshot | null
   rateLoading?: boolean
   rateError?: string | null
+  timeseries?: TimeseriesResponse | null
+  comparisonStats?: StatsResponse | null
+  comparisonTimeseries?: TimeseriesResponse | null
+  previous7dStats?: StatsResponse | null
+  parallelWorkStats?: ParallelWorkStatsResponse | null
+  comparisonParallelWorkStats?: ParallelWorkStatsResponse | null
+  parallelWorkLoading?: boolean
+  parallelWorkError?: string | null
+  showParallelWork?: boolean
+  dayKind?: 'today' | 'yesterday'
   showSurface?: boolean
   showHeader?: boolean
   showDayBadge?: boolean
+}
+
+interface MetricTileSecondaryItem {
+  label: string
+  value: string
+  toneClass?: string
+  valueTestId?: string
 }
 
 interface MetricTileProps {
@@ -34,6 +60,7 @@ interface MetricTileProps {
   valueTestId?: string
   displayText?: string
   subdued?: boolean
+  secondaryItems?: MetricTileSecondaryItem[]
 }
 
 function MetricTile({
@@ -47,6 +74,7 @@ function MetricTile({
   valueTestId,
   displayText,
   subdued = false,
+  secondaryItems = [],
 }: MetricTileProps) {
   const handleLabelKeyDown = (event: KeyboardEvent<HTMLSpanElement>) => {
     if (event.key !== 'Enter' && event.key !== ' ') return
@@ -102,8 +130,64 @@ function MetricTile({
           />
         </div>
       )}
+      {secondaryItems.length > 0 ? (
+        <div className="mt-3 grid min-h-[2.75rem] grid-cols-2 gap-2 text-xs leading-5">
+          {secondaryItems.map((item, index) => (
+            <div key={`${item.label}-${index}`} className="min-w-0">
+              <div className="truncate text-base-content/52">{item.label}</div>
+              <div
+                data-testid={item.valueTestId}
+                className={cn(
+                  'truncate font-semibold tabular-nums text-base-content/82',
+                  item.toneClass,
+                )}
+              >
+                {item.value}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   )
+}
+
+function formatPercentValue(value: number | null, localeTag: string) {
+  if (value == null || !Number.isFinite(value)) return '—'
+  return new Intl.NumberFormat(localeTag, {
+    style: 'percent',
+    maximumFractionDigits: 1,
+    signDisplay: 'exceptZero',
+  }).format(value)
+}
+
+function formatRatioValue(value: number | null, localeTag: string) {
+  if (value == null || !Number.isFinite(value)) return '—'
+  return new Intl.NumberFormat(localeTag, {
+    style: 'percent',
+    maximumFractionDigits: 1,
+  }).format(value)
+}
+
+function comparisonTone(value: number | null) {
+  if (value == null || Math.abs(value) < 0.000_001) return 'text-base-content/70'
+  return value > 0 ? 'text-success' : 'text-error'
+}
+
+function formatNumberValue(value: number | null, localeTag: string, maximumFractionDigits = 2) {
+  if (value == null || !Number.isFinite(value)) return '—'
+  return new Intl.NumberFormat(localeTag, {
+    maximumFractionDigits,
+  }).format(value)
+}
+
+function formatCurrencyValue(value: number | null, localeTag: string) {
+  if (value == null || !Number.isFinite(value)) return '—'
+  return new Intl.NumberFormat(localeTag, {
+    style: 'currency',
+    currency: 'USD',
+    maximumFractionDigits: 2,
+  }).format(value)
 }
 
 export function TodayStatsOverview({
@@ -113,6 +197,16 @@ export function TodayStatsOverview({
   rate,
   rateLoading = false,
   rateError = null,
+  timeseries,
+  comparisonStats,
+  comparisonTimeseries,
+  previous7dStats,
+  parallelWorkStats,
+  comparisonParallelWorkStats,
+  parallelWorkLoading = false,
+  parallelWorkError = null,
+  showParallelWork = true,
+  dayKind = 'today',
   showSurface = true,
   showHeader = true,
   showDayBadge = true,
@@ -125,10 +219,27 @@ export function TodayStatsOverview({
   const failureCount = stats?.failureCount ?? 0
   const totalCost = stats?.totalCost ?? 0
   const totalTokens = stats?.totalTokens ?? 0
+  const previous7dDailyCost = previous7dStats ? previous7dStats.totalCost / PREVIOUS_FULL_DAY_COUNT : null
+  const activeAverages = buildActiveMinuteAverages(stats, timeseries)
+  const comparisonActiveAverages = buildActiveMinuteAverages(comparisonStats, comparisonTimeseries)
+  const tpmDailyDelta = percentDelta(activeAverages.tokensPerMinute, comparisonActiveAverages.tokensPerMinute)
+  const spendRateDailyDelta = percentDelta(activeAverages.spendRate, comparisonActiveAverages.spendRate)
+  const totalCostDelta = percentDelta(totalCost, comparisonStats?.totalCost)
+  const totalTokensDelta = percentDelta(totalTokens, comparisonStats?.totalTokens)
+  const terminalFailureRate = failureRate(successCount, failureCount)
+  const tokenCacheHitRate = cacheHitRate(sumCacheInputTokens(timeseries), totalTokens)
+  const parallelSnapshot = buildParallelWorkKpiSnapshot(parallelWorkStats, comparisonParallelWorkStats)
+  const parallelDelta = percentDelta(parallelSnapshot.currentCount, parallelSnapshot.yesterdayAverage)
 
   const rateUnavailable = !loading && !rateLoading && rateError != null
   const tokensPerMinute = rate?.tokensPerMinute ?? 0
   const spendRate = rate?.spendRate ?? 0
+  const isToday = dayKind === 'today'
+  const costLabel = isToday ? t('dashboard.today.todayCost') : t('dashboard.today.yesterdayCost')
+  const tokensLabel = isToday ? t('dashboard.today.todayTokens') : t('dashboard.today.yesterdayTokens')
+  const comparisonLabel = isToday
+    ? t('dashboard.today.secondary.vsYesterday')
+    : t('dashboard.today.secondary.comparison')
 
   const content = (
     <>
@@ -164,6 +275,19 @@ export function TodayStatsOverview({
             valueTestId="today-stats-value-tpm"
             displayText={rateUnavailable ? RATE_UNAVAILABLE_PLACEHOLDER : undefined}
             subdued={rateUnavailable}
+            secondaryItems={[
+              {
+                label: t('dashboard.today.secondary.dayAverage'),
+                value: formatNumberValue(activeAverages.tokensPerMinute, localeTag, 0),
+                valueTestId: 'today-stats-secondary-tpm-day-average',
+              },
+              {
+                label: comparisonLabel,
+                value: formatPercentValue(tpmDailyDelta, localeTag),
+                toneClass: comparisonTone(tpmDailyDelta),
+                valueTestId: 'today-stats-secondary-tpm-delta',
+              },
+            ]}
           />
           <MetricTile
             label={t('dashboard.today.spendRate')}
@@ -175,6 +299,19 @@ export function TodayStatsOverview({
             valueTestId="today-stats-value-spend-rate"
             displayText={rateUnavailable ? RATE_UNAVAILABLE_PLACEHOLDER : undefined}
             subdued={rateUnavailable}
+            secondaryItems={[
+              {
+                label: t('dashboard.today.secondary.dayAverage'),
+                value: formatCurrencyValue(activeAverages.spendRate, localeTag),
+                valueTestId: 'today-stats-secondary-spend-rate-day-average',
+              },
+              {
+                label: comparisonLabel,
+                value: formatPercentValue(spendRateDailyDelta, localeTag),
+                toneClass: comparisonTone(spendRateDailyDelta),
+                valueTestId: 'today-stats-secondary-spend-rate-delta',
+              },
+            ]}
           />
           <MetricTile
             label={t('stats.cards.success')}
@@ -184,32 +321,90 @@ export function TodayStatsOverview({
             loading={loading}
             toneClass="text-success"
             valueTestId="today-stats-value-success"
+            secondaryItems={[
+              {
+                label: t('stats.cards.failures'),
+                value: formatNumberValue(failureCount, localeTag, 0),
+                toneClass: failureCount > 0 ? 'text-error' : undefined,
+                valueTestId: 'today-stats-secondary-failures',
+              },
+              {
+                label: t('dashboard.today.secondary.failureRate'),
+                value: formatRatioValue(terminalFailureRate, localeTag),
+                toneClass: terminalFailureRate > 0 ? 'text-error' : undefined,
+                valueTestId: 'today-stats-secondary-failure-rate',
+              },
+            ]}
           />
+          {showParallelWork ? (
+            <MetricTile
+              label={t('dashboard.today.parallelConversations')}
+              description={t('dashboard.today.parallelConversationsDescription')}
+              value={parallelSnapshot.currentCount ?? 0}
+              localeTag={localeTag}
+              loading={parallelWorkLoading}
+              kind="integer"
+              toneClass="text-info"
+              valueTestId="today-stats-value-parallel-conversations"
+              displayText={parallelWorkError ? RATE_UNAVAILABLE_PLACEHOLDER : undefined}
+              subdued={parallelWorkError != null}
+              secondaryItems={[
+                {
+                  label: comparisonLabel,
+                  value: formatPercentValue(parallelDelta, localeTag),
+                  toneClass: comparisonTone(parallelDelta),
+                  valueTestId: 'today-stats-secondary-parallel-delta',
+                },
+                {
+                  label: t('dashboard.today.secondary.dayAverage'),
+                  value: formatNumberValue(parallelSnapshot.dayAverage, localeTag, 2),
+                  valueTestId: 'today-stats-secondary-parallel-day-average',
+                },
+              ]}
+            />
+          ) : null}
           <MetricTile
-            label={t('stats.cards.failures')}
-            description={t('dashboard.today.failuresDescription')}
-            value={failureCount}
-            localeTag={localeTag}
-            loading={loading}
-            toneClass="text-error"
-            valueTestId="today-stats-value-failures"
-          />
-          <MetricTile
-            label={t('stats.cards.totalCost')}
+            label={costLabel}
             description={t('dashboard.today.totalCostDescription')}
             value={totalCost}
             localeTag={localeTag}
             loading={loading}
             kind="currency"
             valueTestId="today-stats-value-total-cost"
+            secondaryItems={[
+              {
+                label: t('dashboard.today.secondary.previous7dAverage'),
+                value: formatCurrencyValue(previous7dDailyCost, localeTag),
+                valueTestId: 'today-stats-secondary-cost-previous7d-average',
+              },
+              {
+                label: comparisonLabel,
+                value: formatPercentValue(totalCostDelta, localeTag),
+                toneClass: comparisonTone(totalCostDelta),
+                valueTestId: 'today-stats-secondary-cost-delta',
+              },
+            ]}
           />
           <MetricTile
-            label={t('stats.cards.totalTokens')}
+            label={tokensLabel}
             description={t('dashboard.today.totalTokensDescription')}
             value={totalTokens}
             localeTag={localeTag}
             loading={loading}
             valueTestId="today-stats-value-total-tokens"
+            secondaryItems={[
+              {
+                label: t('dashboard.today.secondary.cacheHitRate'),
+                value: formatRatioValue(tokenCacheHitRate, localeTag),
+                valueTestId: 'today-stats-secondary-cache-hit-rate',
+              },
+              {
+                label: comparisonLabel,
+                value: formatPercentValue(totalTokensDelta, localeTag),
+                toneClass: comparisonTone(totalTokensDelta),
+                valueTestId: 'today-stats-secondary-tokens-delta',
+              },
+            ]}
           />
         </div>
       )}

@@ -280,6 +280,7 @@ pub(crate) struct TimeseriesPoint {
     pub(crate) failure_count: i64,
     pub(crate) in_flight_count: i64,
     pub(crate) total_tokens: i64,
+    pub(crate) cache_input_tokens: i64,
     pub(crate) total_cost: f64,
     pub(crate) first_byte_sample_count: i64,
     pub(crate) first_byte_avg_ms: Option<f64>,
@@ -296,6 +297,7 @@ pub(crate) struct UpstreamAccountUsageHourlyRollupRecord {
     pub(crate) success_count: i64,
     pub(crate) failure_count: i64,
     pub(crate) total_tokens: i64,
+    pub(crate) cache_input_tokens: i64,
     pub(crate) total_cost: f64,
 }
 

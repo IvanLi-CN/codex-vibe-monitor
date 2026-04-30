@@ -15,6 +15,7 @@ pub(crate) struct InvocationHourlyRollupDelta {
     pub(crate) success_count: i64,
     pub(crate) failure_count: i64,
     pub(crate) total_tokens: i64,
+    pub(crate) cache_input_tokens: i64,
     pub(crate) total_cost: f64,
     pub(crate) first_byte_sample_count: i64,
     pub(crate) first_byte_sum_ms: f64,
@@ -163,6 +164,7 @@ pub(crate) fn accumulate_invocation_hourly_overall_rollups(
             overall_entry.failure_count += 1;
         }
         overall_entry.total_tokens += row.total_tokens.unwrap_or_default();
+        overall_entry.cache_input_tokens += row.cache_input_tokens.unwrap_or_default();
         overall_entry.total_cost += row.cost.unwrap_or_default();
         if is_success_like
             && let Some(ttfb_ms) = row.t_upstream_ttfb_ms

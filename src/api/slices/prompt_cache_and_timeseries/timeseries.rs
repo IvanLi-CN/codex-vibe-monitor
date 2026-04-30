@@ -115,6 +115,7 @@ pub(crate) async fn fetch_timeseries(
             record.t_upstream_ttfb_ms,
         );
         entry.total_tokens += record.total_tokens.unwrap_or(0);
+        entry.cache_input_tokens += record.cache_input_tokens.unwrap_or(0);
         entry.total_cost += record.cost.unwrap_or(0.0);
     }
 
@@ -183,6 +184,7 @@ pub(crate) async fn fetch_timeseries(
             failure_count: agg.failure_count,
             in_flight_count: agg.in_flight_count,
             total_tokens: agg.total_tokens,
+            cache_input_tokens: agg.cache_input_tokens,
             total_cost: agg.total_cost,
             first_byte_sample_count: agg.first_byte_sample_count,
             first_byte_avg_ms,
@@ -265,6 +267,7 @@ async fn fetch_timeseries_for_account(
                     entry.success_count += row.success_count;
                     entry.failure_count += row.failure_count;
                     entry.total_tokens += row.total_tokens;
+                    entry.cache_input_tokens += row.cache_input_tokens;
                     entry.total_cost += row.total_cost;
                 }
             }
@@ -329,6 +332,7 @@ async fn fetch_timeseries_for_account(
                     entry.success_count += row.success_count;
                     entry.failure_count += row.failure_count;
                     entry.total_tokens += row.total_tokens;
+                    entry.cache_input_tokens += row.cache_input_tokens;
                     entry.total_cost += row.total_cost;
                 }
             }
@@ -431,6 +435,7 @@ fn add_exact_records_to_timeseries_aggregates(
                 record.t_upstream_ttfb_ms,
             );
             entry.total_tokens += record.total_tokens.unwrap_or_default();
+            entry.cache_input_tokens += record.cache_input_tokens.unwrap_or_default();
             entry.total_cost += record.cost.unwrap_or_default();
         }
     }
@@ -471,6 +476,7 @@ fn build_timeseries_response(
             failure_count: agg.failure_count,
             in_flight_count: agg.in_flight_count,
             total_tokens: agg.total_tokens,
+            cache_input_tokens: agg.cache_input_tokens,
             total_cost: agg.total_cost,
             first_byte_sample_count: agg.first_byte_sample_count,
             first_byte_avg_ms: agg.first_byte_avg_ms(),
@@ -801,6 +807,7 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
         entry.success_count += row.success_count;
         entry.failure_count += row.failure_count;
         entry.total_tokens += row.total_tokens;
+        entry.cache_input_tokens += row.cache_input_tokens;
         entry.total_cost += row.total_cost;
         entry.first_byte_sample_count += row.first_byte_sample_count;
         entry.first_byte_ttfb_sum_ms += row.first_byte_sum_ms;
@@ -869,6 +876,7 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
                 record.t_upstream_ttfb_ms,
             );
             entry.total_tokens += record.total_tokens.unwrap_or_default();
+            entry.cache_input_tokens += record.cache_input_tokens.unwrap_or_default();
             entry.total_cost += record.cost.unwrap_or_default();
         }
     }
@@ -922,6 +930,7 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
             failure_count: agg.failure_count,
             in_flight_count: agg.in_flight_count,
             total_tokens: agg.total_tokens,
+            cache_input_tokens: agg.cache_input_tokens,
             total_cost: agg.total_cost,
             first_byte_sample_count: agg.first_byte_sample_count,
             first_byte_avg_ms: agg.first_byte_avg_ms(),

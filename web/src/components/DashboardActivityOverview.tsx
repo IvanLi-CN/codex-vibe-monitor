@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useState } from 'react'
 import { useSummary } from '../hooks/useStats'
 import { useTimeseries } from '../hooks/useTimeseries'
+import { useParallelWorkStats } from '../hooks/useParallelWorkStats'
 import { useTranslation } from '../i18n'
 import { metricAccent } from '../lib/chartTheme'
 import { useTheme } from '../theme'
@@ -132,6 +133,35 @@ function DashboardNaturalDaySummaryOverview({
     isLoading: summaryLoading,
     error: summaryError,
   } = useScopedSummary(summaryWindow, upstreamAccountId)
+  const {
+    summary: comparisonSummary,
+  } = useScopedSummary('yesterday', upstreamAccountId)
+  const {
+    summary: previous7dSummary,
+  } = useScopedSummary('previous7d', upstreamAccountId)
+  const {
+    data: comparisonTimeseries,
+  } = useTimeseries(
+    'yesterday',
+    upstreamAccountId == null ? { bucket: '1m' } : { bucket: '1m', upstreamAccountId },
+  )
+  const parallelEnabled = upstreamAccountId == null
+  const {
+    data: parallelWorkStats,
+    isLoading: parallelWorkLoading,
+    error: parallelWorkError,
+  } = useParallelWorkStats({
+    range: summaryWindow,
+    bucket: '1m',
+    enabled: parallelEnabled,
+  })
+  const {
+    data: comparisonParallelWorkStats,
+  } = useParallelWorkStats({
+    range: 'yesterday',
+    bucket: '1m',
+    enabled: parallelEnabled,
+  })
   const [rateNow, setRateNow] = useState(() => new Date())
 
   useEffect(() => {
@@ -159,6 +189,20 @@ function DashboardNaturalDaySummaryOverview({
       rate={rate}
       rateLoading={loading}
       rateError={error}
+      timeseries={response}
+      comparisonStats={summaryWindow === 'today' ? comparisonSummary : null}
+      comparisonTimeseries={summaryWindow === 'today' ? comparisonTimeseries : null}
+      previous7dStats={previous7dSummary}
+      parallelWorkStats={parallelEnabled ? parallelWorkStats : null}
+      comparisonParallelWorkStats={
+        parallelEnabled && summaryWindow === 'today' ? comparisonParallelWorkStats : null
+      }
+      parallelWorkLoading={parallelEnabled && parallelWorkLoading}
+      parallelWorkError={
+        parallelEnabled ? parallelWorkError : null
+      }
+      showParallelWork={parallelEnabled}
+      dayKind={summaryWindow}
       showSurface={false}
       showHeader={false}
       showDayBadge={false}

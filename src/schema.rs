@@ -107,6 +107,12 @@ async fn backfill_upstream_account_usage_hourly_status_counts(pool: &Pool<Sqlite
                   AND {success_like_sql}
                   AND {resolved_failure_sql} = 'none'
             ),
+            cache_input_tokens = (
+                SELECT COALESCE(SUM(cache_input_tokens), 0)
+                FROM codex_invocations
+                WHERE {bucket_epoch_sql} = upstream_account_usage_hourly.bucket_start_epoch
+                  AND {upstream_account_id_sql} = upstream_account_usage_hourly.upstream_account_id
+            ),
             failure_count = (
                 SELECT COUNT(*)
                 FROM codex_invocations
@@ -851,6 +857,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             success_count INTEGER NOT NULL,
             failure_count INTEGER NOT NULL,
             total_tokens INTEGER NOT NULL,
+            cache_input_tokens INTEGER NOT NULL DEFAULT 0,
             total_cost REAL NOT NULL,
             first_byte_sample_count INTEGER NOT NULL DEFAULT 0,
             first_byte_sum_ms REAL NOT NULL DEFAULT 0,
@@ -871,8 +878,9 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     let invocation_rollup_hourly_columns =
         load_sqlite_table_columns(pool, "invocation_rollup_hourly").await?;
-    let mut added_first_response_byte_total_rollup_columns = false;
+    let mut added_invocation_rollup_rebuild_columns = false;
     for (column, ty) in [
+        ("cache_input_tokens", "INTEGER NOT NULL DEFAULT 0"),
         (
             "first_response_byte_total_sample_count",
             "INTEGER NOT NULL DEFAULT 0",
@@ -891,7 +899,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ),
     ] {
         if !invocation_rollup_hourly_columns.contains(column) {
-            added_first_response_byte_total_rollup_columns = true;
+            added_invocation_rollup_rebuild_columns = true;
             let statement =
                 format!("ALTER TABLE invocation_rollup_hourly ADD COLUMN {column} {ty}");
             sqlx::query(&statement)
@@ -912,11 +920,11 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_invocation_rollup_hourly_source_bucket")?;
-    if added_first_response_byte_total_rollup_columns {
+    if added_invocation_rollup_rebuild_columns {
         let rebuilt_rows = backfill_invocation_rollup_hourly_from_sources(pool).await?;
         info!(
             rebuilt_rows,
-            "backfilled invocation hourly rollups after adding first-response-byte-total columns"
+            "backfilled invocation hourly rollups after adding aggregate columns"
         );
     }
 
@@ -1073,6 +1081,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     for (column, ty) in [
         ("success_count", "INTEGER NOT NULL DEFAULT 0"),
         ("failure_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("cache_input_tokens", "INTEGER NOT NULL DEFAULT 0"),
     ] {
         if !upstream_account_usage_hourly_columns.contains(column) {
             upstream_account_usage_hourly_needs_status_backfill = true;

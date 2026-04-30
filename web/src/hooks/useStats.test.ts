@@ -95,6 +95,7 @@ describe('useSummary unsupported window fallback', () => {
     expect(isCalendarSummaryWindow('yesterday')).toBe(true)
     expect(isCalendarSummaryWindow('thisWeek')).toBe(true)
     expect(isCalendarSummaryWindow('thisMonth')).toBe(true)
+    expect(isCalendarSummaryWindow('previous7d')).toBe(true)
     expect(isCalendarSummaryWindow('1d')).toBe(false)
   })
 
@@ -142,21 +143,23 @@ describe('useSummary unsupported window fallback', () => {
     expect(allowed).toBe(true)
   })
 
-  it('forces natural-day summary reconnect resync for today and yesterday', () => {
+  it('forces natural-day summary reconnect resync for day-boundary windows', () => {
     const currentDayStartEpoch = Math.floor(new Date(2026, 3, 8, 0, 0, 0).getTime() / 1000)
     const nextDayNoonEpoch = Math.floor(new Date(2026, 3, 9, 12, 0, 0).getTime() / 1000)
 
     expect(shouldForceCalendarSummaryOpenResync('today', currentDayStartEpoch, nextDayNoonEpoch)).toBe(true)
     expect(shouldForceCalendarSummaryOpenResync('yesterday', currentDayStartEpoch, nextDayNoonEpoch)).toBe(true)
+    expect(shouldForceCalendarSummaryOpenResync('previous7d', currentDayStartEpoch, nextDayNoonEpoch)).toBe(true)
     expect(shouldForceCalendarSummaryOpenResync('today', currentDayStartEpoch, currentDayStartEpoch + 3_600)).toBe(false)
     expect(shouldForceCalendarSummaryOpenResync('thisWeek', currentDayStartEpoch, nextDayNoonEpoch)).toBe(false)
   })
 
-  it('schedules yesterday summary rollover refresh at the next local midnight', () => {
+  it('schedules closed natural-day summary rollover refresh at the next local midnight', () => {
     const noonEpoch = Math.floor(new Date(2026, 3, 8, 12, 34, 56).getTime() / 1000)
     const nextMidnightEpoch = Math.floor(new Date(2026, 3, 9, 0, 0, 0).getTime() / 1000)
 
     expect(getCalendarSummaryDayRolloverRefreshEpoch('yesterday', noonEpoch)).toBe(nextMidnightEpoch)
+    expect(getCalendarSummaryDayRolloverRefreshEpoch('previous7d', noonEpoch)).toBe(nextMidnightEpoch)
     expect(getCalendarSummaryDayRolloverRefreshEpoch('thisWeek', noonEpoch)).toBeNull()
   })
 
@@ -165,6 +168,7 @@ describe('useSummary unsupported window fallback', () => {
     expect(shouldRefreshCalendarSummaryOnRecords('thisWeek')).toBe(true)
     expect(shouldRefreshCalendarSummaryOnRecords('thisMonth')).toBe(true)
     expect(shouldRefreshCalendarSummaryOnRecords('yesterday')).toBe(false)
+    expect(shouldRefreshCalendarSummaryOnRecords('previous7d')).toBe(false)
   })
 
   it('refreshes yesterday summary only when records settle inside the previous local day', () => {
@@ -271,6 +275,7 @@ describe('useSummary unsupported window fallback', () => {
     expect(shouldEnableSummaryRemountCache('current')).toBe(false)
     expect(shouldEnableSummaryRemountCache('today')).toBe(false)
     expect(shouldEnableSummaryRemountCache('yesterday')).toBe(false)
+    expect(shouldEnableSummaryRemountCache('previous7d')).toBe(false)
     writeSummaryRemountCache(
       'current',
       undefined,
@@ -300,6 +305,14 @@ describe('useSummary unsupported window fallback', () => {
       totalTokens: 3,
     }, 1_000)
     expect(readSummaryRemountCache('yesterday', undefined, 1_001)).toBeNull()
+    writeSummaryRemountCache('previous7d', undefined, {
+      totalCount: 4,
+      successCount: 4,
+      failureCount: 0,
+      totalCost: 0,
+      totalTokens: 4,
+    }, 1_000)
+    expect(readSummaryRemountCache('previous7d', undefined, 1_001)).toBeNull()
   })
 
   it('treats remount cache as reusable only inside the ttl window', () => {

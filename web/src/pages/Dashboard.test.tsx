@@ -18,6 +18,7 @@ const hookMocks = vi.hoisted(() => ({
   useDashboardWorkingConversations: vi.fn(),
   useSummary: vi.fn(),
   useTimeseries: vi.fn(),
+  useParallelWorkStats: vi.fn(),
 }));
 
 vi.mock("../hooks/useDashboardWorkingConversations", () => ({
@@ -30,6 +31,10 @@ vi.mock("../hooks/useStats", () => ({
 
 vi.mock("../hooks/useTimeseries", () => ({
   useTimeseries: hookMocks.useTimeseries,
+}));
+
+vi.mock("../hooks/useParallelWorkStats", () => ({
+  useParallelWorkStats: hookMocks.useParallelWorkStats,
 }));
 
 vi.mock("../components/TodayStatsOverview", () => ({
@@ -339,6 +344,9 @@ function installSummaryMocks() {
     if (window === "7d") {
       return { summary: { totalCount: 700 }, isLoading: false, error: null };
     }
+    if (window === "previous7d") {
+      return { summary: { totalCount: 70 }, isLoading: false, error: null };
+    }
     return { summary: null, isLoading: false, error: null };
   });
 
@@ -348,6 +356,26 @@ function installSummaryMocks() {
       rangeEnd: "2026-04-08T00:03:00.000Z",
       bucketSeconds: 60,
       points: [],
+    },
+    isLoading: false,
+    error: null,
+  });
+  hookMocks.useParallelWorkStats.mockReturnValue({
+    data: {
+      current: {
+        rangeStart: "2026-04-08T00:00:00.000Z",
+        rangeEnd: "2026-04-08T00:03:00.000Z",
+        bucketSeconds: 60,
+        completeBucketCount: 0,
+        activeBucketCount: 0,
+        minCount: null,
+        maxCount: null,
+        avgCount: 0,
+        points: [],
+      },
+      minute7d: {},
+      hour30d: {},
+      dayAll: {},
     },
     isLoading: false,
     error: null,

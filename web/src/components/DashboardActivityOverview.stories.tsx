@@ -7,7 +7,7 @@ import {
   DashboardActivityOverview,
 } from './DashboardActivityOverview'
 
-type SummaryKey = 'today' | 'yesterday' | '1d' | '7d'
+type SummaryKey = 'today' | 'yesterday' | 'previous7d' | '1d' | '7d'
 type TimeseriesKey = 'today:1m' | 'yesterday:1m' | '1d:1m' | '7d:1h' | '6mo:1d'
 type PersistedRange = 'today' | 'yesterday' | '1d' | '7d' | 'usage' | null
 type WindowWithDashboardFetchLog = Window & {
@@ -76,6 +76,7 @@ function buildTodayMinutePoints(summary = TODAY_SUMMARY_FIXTURE) {
       successCount,
       failureCount,
       totalTokens: totalTokens[minute] ?? 0,
+      cacheInputTokens: Math.round((totalTokens[minute] ?? 0) * 0.24),
       totalCost: Number(((totalCostCents[minute] ?? 0) / 100).toFixed(2)),
       firstResponseByteTotalSampleCount: totalCount,
       firstResponseByteTotalAvgMs: totalCount > 0 ? buildLatencyMs(minute, totalCount, 0) : null,
@@ -127,6 +128,7 @@ function buildYesterdayMinutePoints(summary = YESTERDAY_SUMMARY_FIXTURE) {
       successCount,
       failureCount,
       totalTokens: totalTokens[minute] ?? 0,
+      cacheInputTokens: Math.round((totalTokens[minute] ?? 0) * 0.19),
       totalCost: Number(((totalCostCents[minute] ?? 0) / 100).toFixed(2)),
       firstResponseByteTotalSampleCount: totalCount,
       firstResponseByteTotalAvgMs: totalCount > 0 ? buildLatencyMs(minute, totalCount, 36) : null,
@@ -158,6 +160,7 @@ function build24HourPoints() {
       successCount,
       failureCount,
       totalTokens: totalCount * 390,
+      cacheInputTokens: totalCount * 64,
       totalCost: Number((totalCount * 0.017).toFixed(4)),
       firstResponseByteTotalSampleCount: totalCount,
       firstResponseByteTotalAvgMs: totalCount > 0 ? 620 + ((index * 13) % 280) : null,
@@ -188,6 +191,7 @@ function buildHourlyPoints() {
       successCount: Math.max(density - (density > 6 ? 1 : 0), 0),
       failureCount: density > 6 ? 1 : 0,
       totalTokens: density * 620,
+      cacheInputTokens: density * 110,
       totalCost: Number((density * 0.23).toFixed(2)),
       firstResponseByteTotalSampleCount: density,
       firstResponseByteTotalAvgMs: density > 0 ? 700 + ((index * 23) % 300) : null,
@@ -220,6 +224,7 @@ function buildDailyPoints() {
       successCount: amplitude,
       failureCount: 0,
       totalTokens: amplitude * 840,
+      cacheInputTokens: amplitude * 140,
       totalCost: Number((amplitude * 0.31).toFixed(2)),
     })
   }
@@ -234,6 +239,7 @@ function buildDailyPoints() {
 const SUMMARY_FIXTURES: Record<SummaryKey, ReturnType<typeof createSummary>> = {
   today: TODAY_SUMMARY_FIXTURE,
   yesterday: YESTERDAY_SUMMARY_FIXTURE,
+  previous7d: createSummary(32420, 31310, 1110, 421.76, 180246000),
   '1d': createSummary(76421, 70115, 6306, 3128.74, 8764311220),
   '7d': createSummary(182904, 171240, 11664, 8422.18, 21640351742),
 }
