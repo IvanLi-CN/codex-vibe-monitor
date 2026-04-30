@@ -172,27 +172,7 @@ pub(crate) async fn fetch_timeseries(
             .timestamp_opt(bucket_end_epoch, 0)
             .single()
             .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
-        let first_byte_avg_ms = agg.first_byte_avg_ms();
-        let first_byte_p95_ms = agg.first_byte_p95_ms();
-        let first_response_byte_total_avg_ms = agg.first_response_byte_total_avg_ms();
-        let first_response_byte_total_p95_ms = agg.first_response_byte_total_p95_ms();
-        points.push(TimeseriesPoint {
-            bucket_start: format_utc_iso(start),
-            bucket_end: format_utc_iso(end),
-            total_count: agg.total_count,
-            success_count: agg.success_count,
-            failure_count: agg.failure_count,
-            in_flight_count: agg.in_flight_count,
-            total_tokens: agg.total_tokens,
-            cache_input_tokens: agg.cache_input_tokens,
-            total_cost: agg.total_cost,
-            first_byte_sample_count: agg.first_byte_sample_count,
-            first_byte_avg_ms,
-            first_byte_p95_ms,
-            first_response_byte_total_sample_count: agg.first_response_byte_total_sample_count,
-            first_response_byte_total_avg_ms,
-            first_response_byte_total_p95_ms,
-        });
+        points.push(timeseries_point_from_aggregate(start, end, &agg));
     }
 
     let response = TimeseriesResponse {
@@ -442,6 +422,46 @@ fn add_exact_records_to_timeseries_aggregates(
     Ok(())
 }
 
+fn timeseries_point_from_aggregate(
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    agg: &BucketAggregate,
+) -> TimeseriesPoint {
+    let has_calls = agg
+        .total_count
+        .max(agg.success_count + agg.failure_count + agg.in_flight_count.max(0))
+        > 0;
+    TimeseriesPoint {
+        bucket_start: format_utc_iso(start),
+        bucket_end: format_utc_iso(end),
+        total_count: agg.total_count,
+        success_count: agg.success_count,
+        failure_count: agg.failure_count,
+        in_flight_count: agg.in_flight_count,
+        total_tokens: agg.total_tokens,
+        cache_input_tokens: agg.cache_input_tokens,
+        total_cost: agg.total_cost,
+        first_byte_sample_count: if has_calls {
+            agg.first_byte_sample_count
+        } else {
+            0
+        },
+        first_byte_avg_ms: has_calls.then(|| agg.first_byte_avg_ms()).flatten(),
+        first_byte_p95_ms: has_calls.then(|| agg.first_byte_p95_ms()).flatten(),
+        first_response_byte_total_sample_count: if has_calls {
+            agg.first_response_byte_total_sample_count
+        } else {
+            0
+        },
+        first_response_byte_total_avg_ms: has_calls
+            .then(|| agg.first_response_byte_total_avg_ms())
+            .flatten(),
+        first_response_byte_total_p95_ms: has_calls
+            .then(|| agg.first_response_byte_total_p95_ms())
+            .flatten(),
+    }
+}
+
 fn build_timeseries_response(
     start_dt: DateTime<Utc>,
     end_dt: DateTime<Utc>,
@@ -468,23 +488,7 @@ fn build_timeseries_response(
             .timestamp_opt(bucket_end_epoch, 0)
             .single()
             .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
-        points.push(TimeseriesPoint {
-            bucket_start: format_utc_iso(start),
-            bucket_end: format_utc_iso(end),
-            total_count: agg.total_count,
-            success_count: agg.success_count,
-            failure_count: agg.failure_count,
-            in_flight_count: agg.in_flight_count,
-            total_tokens: agg.total_tokens,
-            cache_input_tokens: agg.cache_input_tokens,
-            total_cost: agg.total_cost,
-            first_byte_sample_count: agg.first_byte_sample_count,
-            first_byte_avg_ms: agg.first_byte_avg_ms(),
-            first_byte_p95_ms: agg.first_byte_p95_ms(),
-            first_response_byte_total_sample_count: agg.first_response_byte_total_sample_count,
-            first_response_byte_total_avg_ms: agg.first_response_byte_total_avg_ms(),
-            first_response_byte_total_p95_ms: agg.first_response_byte_total_p95_ms(),
-        });
+        points.push(timeseries_point_from_aggregate(start, end, &agg));
     }
 
     Ok(Json(TimeseriesResponse {
@@ -922,23 +926,7 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
             .timestamp_opt(bucket_end_epoch, 0)
             .single()
             .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
-        points.push(TimeseriesPoint {
-            bucket_start: format_utc_iso(start),
-            bucket_end: format_utc_iso(end),
-            total_count: agg.total_count,
-            success_count: agg.success_count,
-            failure_count: agg.failure_count,
-            in_flight_count: agg.in_flight_count,
-            total_tokens: agg.total_tokens,
-            cache_input_tokens: agg.cache_input_tokens,
-            total_cost: agg.total_cost,
-            first_byte_sample_count: agg.first_byte_sample_count,
-            first_byte_avg_ms: agg.first_byte_avg_ms(),
-            first_byte_p95_ms: agg.first_byte_p95_ms(),
-            first_response_byte_total_sample_count: agg.first_response_byte_total_sample_count,
-            first_response_byte_total_avg_ms: agg.first_response_byte_total_avg_ms(),
-            first_response_byte_total_p95_ms: agg.first_response_byte_total_p95_ms(),
-        });
+        points.push(timeseries_point_from_aggregate(start, end, &agg));
     }
 
     Ok(Json(TimeseriesResponse {
@@ -951,4 +939,40 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
         bucket_limited_to_daily: bucket_selection.bucket_limited_to_daily,
         points,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timeseries_point_clears_latency_when_bucket_has_no_calls() {
+        let mut aggregate = BucketAggregate::default();
+        aggregate.first_byte_sample_count = 1;
+        aggregate.first_byte_ttfb_sum_ms = 750.0;
+        aggregate.first_byte_ttfb_values.push(750.0);
+        aggregate.first_response_byte_total_sample_count = 1;
+        aggregate.first_response_byte_total_sum_ms = 18_225.02;
+        aggregate
+            .first_response_byte_total_values
+            .push(18_225.02);
+
+        let point = timeseries_point_from_aggregate(
+            Utc.timestamp_opt(1_775_608_200, 0)
+                .single()
+                .expect("valid start timestamp"),
+            Utc.timestamp_opt(1_775_608_260, 0)
+                .single()
+                .expect("valid end timestamp"),
+            &aggregate,
+        );
+
+        assert_eq!(point.total_count, 0);
+        assert_eq!(point.first_byte_sample_count, 0);
+        assert!(point.first_byte_avg_ms.is_none());
+        assert!(point.first_byte_p95_ms.is_none());
+        assert_eq!(point.first_response_byte_total_sample_count, 0);
+        assert!(point.first_response_byte_total_avg_ms.is_none());
+        assert!(point.first_response_byte_total_p95_ms.is_none());
+    }
 }

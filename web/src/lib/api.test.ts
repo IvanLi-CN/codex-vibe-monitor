@@ -274,9 +274,12 @@ describe("fetchTimeseries", () => {
                 inFlightCount: Number.NaN,
                 totalTokens: 0,
                 totalCost: 0,
-                firstResponseByteTotalSampleCount: Number.NaN,
-                firstResponseByteTotalAvgMs: "bad",
-                firstResponseByteTotalP95Ms: null,
+                firstByteSampleCount: 1,
+                firstByteAvgMs: 81.7,
+                firstByteP95Ms: 95.2,
+                firstResponseByteTotalSampleCount: 1,
+                firstResponseByteTotalAvgMs: 18225.02,
+                firstResponseByteTotalP95Ms: 18225.02,
               },
             ],
           }),
@@ -292,6 +295,9 @@ describe("fetchTimeseries", () => {
     expect(response.points[0].firstResponseByteTotalSampleCount).toBe(10);
     expect(response.points[0].firstResponseByteTotalAvgMs).toBe(43890);
     expect(response.points[0].firstResponseByteTotalP95Ms).toBe(52340);
+    expect(response.points[1].firstByteSampleCount).toBe(0);
+    expect(response.points[1].firstByteAvgMs).toBeNull();
+    expect(response.points[1].firstByteP95Ms).toBeNull();
     expect(response.points[1].firstResponseByteTotalSampleCount).toBe(0);
     expect(response.points[1].firstResponseByteTotalAvgMs).toBeNull();
     expect(response.points[1].firstResponseByteTotalP95Ms).toBeNull();

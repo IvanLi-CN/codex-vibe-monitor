@@ -981,6 +981,73 @@ describe("useTimeseries natural-day range patching", () => {
     expect(result.next?.points[0]?.totalTokens).toBe(22);
     expect(result.next?.points[0]?.totalCost ?? 0).toBeCloseTo(0.18);
   });
+
+  it("clears latency fields when live patching reduces a bucket to zero calls", () => {
+    const current: TimeseriesResponse = {
+      rangeStart: "2026-03-08T00:00:00Z",
+      rangeEnd: "2026-03-08T00:03:00Z",
+      bucketSeconds: 60,
+      points: [
+        {
+          bucketStart: "2026-03-08T00:01:00Z",
+          bucketEnd: "2026-03-08T00:02:00Z",
+          totalCount: 1,
+          successCount: 1,
+          failureCount: 0,
+          inFlightCount: 0,
+          totalTokens: 50,
+          totalCost: 0.2,
+          firstByteSampleCount: 1,
+          firstByteAvgMs: 750,
+          firstByteP95Ms: 750,
+          firstResponseByteTotalSampleCount: 1,
+          firstResponseByteTotalAvgMs: 18225.02,
+          firstResponseByteTotalP95Ms: 18225.02,
+        },
+      ],
+    };
+
+    const result = upsertTimeseriesLiveRecord(
+      current,
+      {
+        id: 91,
+        invokeId: "moved-out-of-range",
+        occurredAt: "2026-03-08T00:04:15Z",
+        status: "success",
+        totalTokens: 0,
+        cost: 0,
+        createdAt: "2026-03-08T00:04:15Z",
+      },
+      {
+        bucketStart: "2026-03-08T00:01:00Z",
+        bucketEnd: "2026-03-08T00:02:00Z",
+        bucketStartEpoch: Date.parse("2026-03-08T00:01:00Z") / 1000,
+        bucketEndEpoch: Date.parse("2026-03-08T00:02:00Z") / 1000,
+        totalCount: 1,
+        successCount: 1,
+        failureCount: 0,
+        inFlightCount: 0,
+        totalTokens: 0,
+        totalCost: 0,
+      },
+      {
+        range: "today",
+        bucketSeconds: 60,
+      },
+    );
+
+    expect(result.next?.points[0]).toMatchObject({
+      totalCount: 0,
+      successCount: 0,
+      failureCount: 0,
+      firstByteSampleCount: 0,
+      firstByteAvgMs: null,
+      firstByteP95Ms: null,
+      firstResponseByteTotalSampleCount: 0,
+      firstResponseByteTotalAvgMs: null,
+      firstResponseByteTotalP95Ms: null,
+    });
+  });
 });
 
 describe("useTimeseries in-flight seeding pagination", () => {

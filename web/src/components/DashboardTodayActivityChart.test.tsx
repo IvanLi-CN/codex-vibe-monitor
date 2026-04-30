@@ -90,6 +90,7 @@ vi.mock("recharts", () => ({
   Line: ({
     data,
     dataKey,
+    dot,
     yAxisId,
     name,
     strokeWidth,
@@ -97,6 +98,7 @@ vi.mock("recharts", () => ({
   }: {
     data?: Array<Record<string, unknown>>;
     dataKey?: string;
+    dot?: false | Record<string, unknown>;
     yAxisId?: string;
     name?: string;
     strokeWidth?: number;
@@ -109,6 +111,7 @@ vi.mock("recharts", () => ({
       data-name={name ?? ""}
       data-stroke-width={String(strokeWidth ?? "")}
       data-stroke-opacity={String(strokeOpacity ?? "")}
+      data-dot={dot === false ? "false" : dot ? "visible" : ""}
       data-data-length={String(data?.length ?? "")}
     />
   ),
@@ -454,7 +457,7 @@ describe("DashboardTodayActivityChart", () => {
     });
   });
 
-  it("adds 10-minute chart bucket averages for trend and first-byte-total data", () => {
+  it("adds 10-minute chart bucket averages for trend while keeping first-byte-total minute-aligned", () => {
     const data = buildTodayMinuteChartData(
       {
         rangeStart: "2026-04-08 00:00:00",
@@ -508,12 +511,17 @@ describe("DashboardTodayActivityChart", () => {
       firstResponseByteTotalAvgMs: 450,
       chartTokensPerMinute: null,
       chartSpendRate: null,
-      chartFirstResponseByteTotalAvgMs: null,
+      chartFirstResponseByteTotalAvgMs: 450,
     });
     expect(data[0]).toMatchObject({
       chartTokensPerMinute: 300,
       chartSpendRate: 0.06,
-      chartFirstResponseByteTotalAvgMs: 675,
+      chartFirstResponseByteTotalAvgMs: null,
+    });
+    expect(data[9]).toMatchObject({
+      chartTokensPerMinute: null,
+      chartSpendRate: null,
+      chartFirstResponseByteTotalAvgMs: 750,
     });
     expect(data[10]).toMatchObject({
       chartTokensPerMinute: 300,
@@ -532,6 +540,42 @@ describe("DashboardTodayActivityChart", () => {
       chartTokensPerMinute: null,
       chartSpendRate: null,
       chartFirstResponseByteTotalAvgMs: null,
+    });
+  });
+
+  it("does not attach first-byte-total latency to an empty 10-minute anchor minute", () => {
+    const data = buildTodayMinuteChartData(
+      {
+        rangeStart: "2026-04-08 00:00:00",
+        rangeEnd: "2026-04-08 00:12:30",
+        bucketSeconds: 60,
+        points: [
+          {
+            bucketStart: "2026-04-08 00:01:00",
+            bucketEnd: "2026-04-08 00:01:59",
+            totalCount: 2,
+            successCount: 2,
+            failureCount: 0,
+            totalTokens: 1200,
+            totalCost: 0.24,
+            firstResponseByteTotalSampleCount: 2,
+            firstResponseByteTotalAvgMs: 450,
+          },
+        ],
+      },
+      {
+        now: new Date(2026, 3, 8, 0, 12, 30),
+        localeTag: "en-US",
+      },
+    );
+
+    expect(data[0]).toMatchObject({
+      totalCount: 0,
+      chartFirstResponseByteTotalAvgMs: null,
+    });
+    expect(data[1]).toMatchObject({
+      totalCount: 2,
+      chartFirstResponseByteTotalAvgMs: 450,
     });
   });
 
@@ -590,7 +634,72 @@ describe("DashboardTodayActivityChart", () => {
 
     expect(html).toContain("chart.inFlight");
     expect(html).toContain("1 unit.calls");
-    expect(html).toContain("5 unit.calls");
+    expect(html).not.toContain("5 unit.calls");
+  });
+
+  it("omits first-byte-total from a zero-call minute tooltip even when a neighboring minute has latency", () => {
+    const html = renderToStaticMarkup(
+      <DashboardTodayActivityChart
+        response={{
+          rangeStart: "2026-04-08 00:00:00",
+          rangeEnd: "2026-04-08 00:03:22",
+          bucketSeconds: 60,
+          points: [
+            {
+              bucketStart: "2026-04-08 00:01:00",
+              bucketEnd: "2026-04-08 00:01:59",
+              totalCount: 1,
+              successCount: 1,
+              failureCount: 0,
+              totalTokens: 120,
+              totalCost: 0.5,
+              firstResponseByteTotalSampleCount: 1,
+              firstResponseByteTotalAvgMs: 450,
+            },
+          ],
+        }}
+        loading={false}
+        error={null}
+        metric="totalCount"
+      />,
+    );
+
+    expect(html).toContain("0 unit.calls");
+    expect(html).toContain("chart.inFlight");
+    expect(html).toContain("chart.firstResponseByteTotal");
+    expect(html).not.toContain("450 ms");
+  });
+
+  it("drops inconsistent latency samples from zero-call minute data", () => {
+    const data = buildTodayMinuteChartData(
+      {
+        rangeStart: "2026-04-08 00:00:00",
+        rangeEnd: "2026-04-08 00:03:22",
+        bucketSeconds: 60,
+        points: [
+          {
+            bucketStart: "2026-04-08 00:01:00",
+            bucketEnd: "2026-04-08 00:01:59",
+            totalCount: 0,
+            successCount: 0,
+            failureCount: 0,
+            inFlightCount: 0,
+            totalTokens: 0,
+            totalCost: 0,
+            firstResponseByteTotalSampleCount: 1,
+            firstResponseByteTotalAvgMs: 18225.02,
+          },
+        ],
+      },
+      { now: new Date("2026-04-08T00:03:22") },
+    );
+
+    expect(data[1]).toMatchObject({
+      totalCount: 0,
+      firstResponseByteTotalSampleCount: 0,
+      firstResponseByteTotalAvgMs: null,
+      chartFirstResponseByteTotalAvgMs: null,
+    });
   });
 
   it("overlays first-byte-total latency on the count chart", () => {
@@ -616,7 +725,8 @@ describe("DashboardTodayActivityChart", () => {
     expect(html).toContain('data-name="chart.firstResponseByteTotal"');
     expect(html).toContain('data-stroke-width="1.25"');
     expect(html).toContain('data-stroke-opacity="0.72"');
-    expect(html).toContain('data-data-length="1"');
+    expect(html).toContain('data-dot="visible"');
+    expect(html).toContain('data-data-length=""');
   });
 
   it("renders count mode as a composed chart with split success and failure bars", () => {

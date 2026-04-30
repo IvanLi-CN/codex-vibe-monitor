@@ -100,6 +100,38 @@ const sampleResponse: TimeseriesResponse = {
   ),
 };
 
+const latencyMinuteAlignmentResponse: TimeseriesResponse = {
+  rangeStart: "2026-04-08T00:00:00+08:00",
+  rangeEnd: "2026-04-08T12:24:00+08:00",
+  bucketSeconds: 60,
+  points: Array.from({ length: 745 }, (_, index) => {
+    if (index >= 720 && index <= 739) {
+      const bucketStart = new Date(STORY_DAY_START);
+      bucketStart.setMinutes(bucketStart.getMinutes() + index);
+      const bucketEnd = new Date(bucketStart.getTime() + MINUTE_MS);
+      const hasCalls = index !== 723 && index !== 730;
+      const hasInconsistentLatency = index === 730;
+      return {
+        bucketStart: bucketStart.toISOString(),
+        bucketEnd: bucketEnd.toISOString(),
+        totalCount: hasCalls ? 1 : 0,
+        successCount: hasCalls ? 1 : 0,
+        failureCount: 0,
+        inFlightCount: 0,
+        totalTokens: hasCalls ? 900 : 0,
+        totalCost: hasCalls ? 0.0162 : 0,
+        firstResponseByteTotalSampleCount: hasCalls || hasInconsistentLatency ? 1 : 0,
+        firstResponseByteTotalAvgMs: hasCalls
+          ? 820 + (index - 731) * 42
+          : hasInconsistentLatency
+            ? 18_225.02
+            : null,
+      };
+    }
+    return buildRealisticPoint(index, 0.72);
+  }),
+};
+
 const meta = {
   title: "Dashboard/DashboardTodayActivityChart",
   component: DashboardTodayActivityChart,
@@ -167,6 +199,15 @@ export const CountBarsDensePairing: Story = {
     error: null,
     metric: "totalCount",
     closedNaturalDay: true,
+  },
+};
+
+export const CountBarsLatencyMinuteAlignment: Story = {
+  args: {
+    response: latencyMinuteAlignmentResponse,
+    loading: false,
+    error: null,
+    metric: "totalCount",
   },
 };
 

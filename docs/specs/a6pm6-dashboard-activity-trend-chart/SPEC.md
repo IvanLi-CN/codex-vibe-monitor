@@ -15,7 +15,8 @@
 - 在 `今日 / 昨日` 的活动总览图表切换中新增 `趋势`。
 - `趋势` 图以 10 分钟桶展示 `TPM` 与 `消费速率` 增量面积，降低分钟级噪声。
 - 将 UI、i18n 与测试语义中的 `金额/分钟` / `Cost/min` 统一改成 `消费速率` / `Spend rate`。
-- 在 `次数` 图中保留成功、失败、进行中分钟级柱状结构，并叠加 10 分钟降采样的低权重 `首字总耗时` 曲线。
+- 在 `次数` 图中保留成功、失败、进行中分钟级柱状结构，并叠加分钟级对齐的低权重 `首字总耗时` 曲线。
+- 维护 timeseries 数据不变量：调用数为 0 的 bucket 不得携带首字耗时样本、均值或 P95。
 - 补齐 Storybook、Vitest 与 mock-only 视觉证据，按 fast-track 收敛到 PR merge-ready。
 
 ### Non-goals
@@ -38,7 +39,6 @@
 
 ### Out of scope
 
-- `src/` 后端实现。
 - 新的 `/api/stats/*` endpoint。
 - 历史日历、24h heatmap、7d heatmap 的视觉结构重排。
 
@@ -50,10 +50,12 @@
 - `24 小时 / 7 日 / 历史` 的图表切换只能包含 `次数 / 金额 / Tokens`。
 - 每个范围继续保持独立图表类型记忆；`今日` 与 `昨日` 可以分别记住 `趋势`。
 - `趋势` 图必须同时渲染 `TPM` 与 `消费速率` 两条 10 分钟增量面积系列，桶从本地自然日 00:00 对齐。
-- `次数` 图必须叠加 10 分钟一个点的 `首字总耗时` 曲线，且不得破坏成功 / 失败 / 进行中柱状结构。
+- `次数` 图必须叠加分钟级对齐的 `首字总耗时` 曲线，且不得破坏成功 / 失败 / 进行中柱状结构。
 - 未来分钟的 TPM、消费速率与首字总耗时图表值必须保持 `null`，不渲染未来曲线。
 - tooltip 中不得出现 `金额/分钟`，中文固定使用 `消费速率`，英文使用 `Spend rate`。
-- `首字总耗时` 的 10 分钟值必须按 sample count 加权平均；无 sample count 但有 avg 值时按单样本处理。
+- `首字总耗时` 必须跟随原始分钟桶展示；同一分钟存在多个点时按 sample count 加权平均，无 sample count 但有 avg 值时按单样本处理。
+- `次数` 图 tooltip 选中 0 次调用的分钟时不得展示邻近分钟或 10 分钟窗口内的 `首字总耗时`。
+- `/api/stats/timeseries` 输出、前端 API 归一化与实时增量合并都必须保证：当 bucket 的总调用数、成功、失败、进行中均为 0 时，首字耗时字段清零或置空。
 
 ### SHOULD
 
@@ -67,13 +69,14 @@
 - 打开活动总览默认 `今日 / 次数`；点击 `趋势` 后，图表切换为 TPM 与消费速率双面积趋势。
 - 切到 `昨日` 后，`趋势` 使用上一自然日的 10 分钟 bucket 增量，闭合自然日尾部不受当前时间影响。
 - 切到 `24 小时`、`7 日` 或 `历史` 后，metric toggle 移除 `趋势`，并保留这些范围各自的 `次数 / 金额 / Tokens` 记忆。
-- 在 `次数` 图中，tooltip 同时展示成功、失败、进行中、总次数，以及存在时的 `首字总耗时`。
+- 在 `次数` 图中，tooltip 展示图表实际 series：成功、失败、进行中、首字总耗时；当前分钟没有首字耗时样本时显示 `-`。
 
 ### Edge cases / errors
 
 - timeseries 缺少 `firstResponseByteTotalAvgMs` 时，`首字总耗时` 曲线按 `null` 断开，不阻断柱状图。
 - 同一分钟存在多个点时，`首字总耗时` 以 sample count 加权聚合；无 sample count 但有 avg 值时按单样本处理。
-- 10 分钟 chart-only 聚合不改变普通 `金额` / `Tokens` metric 的累计面积图，也不改变 `次数` 图的成功 / 失败 / 进行中分钟级柱。
+- 若 timeseries 原始点出现 `totalCount=0` 但包含 `firstResponseByteTotalAvgMs` 或 `firstByteAvgMs`，该点应被视为不一致数据，latency 样本必须在数据边界被丢弃。
+- 10 分钟 chart-only 聚合只用于 `趋势` 模式的 TPM / 消费速率，不改变普通 `金额` / `Tokens` metric 的累计面积图，也不改变 `次数` 图的成功 / 失败 / 进行中分钟级柱或分钟级首字总耗时线。
 - timeseries loading / error / empty 继续沿用现有图表降级语义。
 
 ## 接口契约（Interfaces & Contracts）
@@ -85,7 +88,9 @@ None
 - Given 查看 `今日 / 昨日`，When 打开右侧图表切换，Then 可见 `趋势`。
 - Given 查看 `24 小时 / 7 日 / 历史`，When 打开右侧图表切换，Then 不存在 `趋势`。
 - Given 选择 `趋势`，When timeseries 返回每分钟 token 与 cost，Then 图表展示 10 分钟聚合后的 `TPM` 与 `消费速率` 面积系列。
-- Given 选择 `次数`，When timeseries 返回 `firstResponseByteTotalAvgMs`，Then 图表在柱状结构上叠加 10 分钟降采样且低权重的 `首字总耗时` 曲线。
+- Given 选择 `次数`，When timeseries 返回 `firstResponseByteTotalAvgMs`，Then 图表在柱状结构上叠加分钟级对齐且低权重的 `首字总耗时` 曲线。
+- Given 选择 `次数`，When 某个分钟 bucket 调用次数为 0 但同一个 10 分钟窗口内其他分钟存在 latency 样本，Then 该 0 次分钟 tooltip 的 `首字总耗时` 显示为 `-`，且不展示非图表 series 的总次数行。
+- Given timeseries 数据源返回 `totalCount=0` 且 latency 字段非空的 bucket，When 数据进入后端响应、前端归一化或实时合并边界，Then latency sample count 为 0，latency 均值与 P95 为 null。
 - Given 查看 KPI 与 tooltip，Then 不出现 `金额/分钟`，统一显示 `消费速率` / `Spend rate`。
 - Given 运行定向验证、前端 build 与 Storybook build，Then 全部通过。
 
@@ -135,9 +140,20 @@ None
   capture_scope: browser-viewport
   requested_viewport: desktop-default
   viewport_strategy: storybook-viewport
+  story_id_or_title: `dashboard-dashboardtodayactivitychart--count-bars-latency-minute-alignment`
+  scenario: `今日图表 / 次数 / 0 次分钟 tooltip`
+  evidence_note: 证明当前分钟 `成功 / 失败 / 进行中` 都为 0 时，即使 mock 数据带有不一致的 latency 字段，tooltip 也只用 `-` 展示无样本的 `首字总耗时`，且不出现非图表 series 的总次数行。
+  image:
+  ![Dashboard today count latency minute alignment](./assets/dashboard-today-count-latency-minute-alignment.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: desktop-default
+  viewport_strategy: storybook-viewport
   story_id_or_title: `dashboard-dashboardtodayactivitychart--count-bars-dense-pairing`
-  scenario: `今日图表 / 次数 / 首字总耗时降权`
-  evidence_note: 证明成功、失败、进行中柱状结构仍为主层级，并叠加低权重的 10 分钟首字总耗时曲线。
+  scenario: `今日图表 / 次数 / 首字总耗时分钟级对齐`
+  evidence_note: 证明成功、失败、进行中柱状结构仍为主层级，并叠加低权重且分钟级对齐的首字总耗时曲线。
   image:
   ![Dashboard today count latency 10m](./assets/dashboard-today-count-latency-10m.png)
 
@@ -170,7 +186,7 @@ None
   viewport_strategy: storybook-viewport
   story_id_or_title: `dashboard-dashboardactivityoverview--yesterday-view`
   scenario: `活动总览 / 昨日 / 次数`
-  evidence_note: 证明 `次数` 图仍保留成功、失败、进行中柱状结构，并叠加低权重的 10 分钟 `首字总耗时` 曲线。
+  evidence_note: 证明 `次数` 图仍保留成功、失败、进行中柱状结构，并叠加低权重且分钟级对齐的 `首字总耗时` 曲线。
   image:
   ![Dashboard activity count latency overlay](./assets/dashboard-activity-count-latency.png)
 

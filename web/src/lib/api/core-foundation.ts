@@ -1225,26 +1225,41 @@ function normalizeTimeseriesPoint(raw: unknown): TimeseriesPoint | null {
   const bucketEnd =
     typeof payload.bucketEnd === "string" ? payload.bucketEnd : "";
   if (!bucketStart || !bucketEnd) return null;
+  const totalCount = normalizeFiniteNumber(payload.totalCount) ?? 0;
+  const successCount = normalizeFiniteNumber(payload.successCount) ?? 0;
+  const failureCount = normalizeFiniteNumber(payload.failureCount) ?? 0;
+  const inFlightCount = normalizeFiniteNumber(payload.inFlightCount) ?? 0;
+  const hasCalls =
+    Math.max(totalCount, successCount + failureCount + Math.max(inFlightCount, 0)) >
+    0;
   return {
     bucketStart,
     bucketEnd,
-    totalCount: normalizeFiniteNumber(payload.totalCount) ?? 0,
-    successCount: normalizeFiniteNumber(payload.successCount) ?? 0,
-    failureCount: normalizeFiniteNumber(payload.failureCount) ?? 0,
-    inFlightCount: normalizeFiniteNumber(payload.inFlightCount) ?? 0,
+    totalCount,
+    successCount,
+    failureCount,
+    inFlightCount,
     totalTokens: normalizeFiniteNumber(payload.totalTokens) ?? 0,
     cacheInputTokens: normalizeFiniteNumber(payload.cacheInputTokens) ?? 0,
     totalCost: normalizeFiniteNumber(payload.totalCost) ?? 0,
-    firstByteSampleCount:
-      normalizeFiniteNumber(payload.firstByteSampleCount) ?? 0,
-    firstByteAvgMs: normalizeFiniteNumber(payload.firstByteAvgMs) ?? null,
-    firstByteP95Ms: normalizeFiniteNumber(payload.firstByteP95Ms) ?? null,
-    firstResponseByteTotalSampleCount:
-      normalizeFiniteNumber(payload.firstResponseByteTotalSampleCount) ?? 0,
-    firstResponseByteTotalAvgMs:
-      normalizeFiniteNumber(payload.firstResponseByteTotalAvgMs) ?? null,
-    firstResponseByteTotalP95Ms:
-      normalizeFiniteNumber(payload.firstResponseByteTotalP95Ms) ?? null,
+    firstByteSampleCount: hasCalls
+      ? (normalizeFiniteNumber(payload.firstByteSampleCount) ?? 0)
+      : 0,
+    firstByteAvgMs: hasCalls
+      ? (normalizeFiniteNumber(payload.firstByteAvgMs) ?? null)
+      : null,
+    firstByteP95Ms: hasCalls
+      ? (normalizeFiniteNumber(payload.firstByteP95Ms) ?? null)
+      : null,
+    firstResponseByteTotalSampleCount: hasCalls
+      ? (normalizeFiniteNumber(payload.firstResponseByteTotalSampleCount) ?? 0)
+      : 0,
+    firstResponseByteTotalAvgMs: hasCalls
+      ? (normalizeFiniteNumber(payload.firstResponseByteTotalAvgMs) ?? null)
+      : null,
+    firstResponseByteTotalP95Ms: hasCalls
+      ? (normalizeFiniteNumber(payload.firstResponseByteTotalP95Ms) ?? null)
+      : null,
   };
 }
 
