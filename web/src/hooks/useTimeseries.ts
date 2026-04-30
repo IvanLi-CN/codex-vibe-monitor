@@ -486,6 +486,31 @@ function getTimeseriesPointInFlightCount(
   );
 }
 
+function getTimeseriesPointCallCount(
+  point: Pick<
+    TimeseriesPoint,
+    "inFlightCount" | "totalCount" | "successCount" | "failureCount"
+  >,
+) {
+  return Math.max(
+    point.totalCount,
+    point.successCount + point.failureCount + getTimeseriesPointInFlightCount(point),
+    0,
+  );
+}
+
+function sanitizeTimeseriesPointLatency(point: TimeseriesPoint) {
+  if (getTimeseriesPointCallCount(point) > 0) {
+    return;
+  }
+  point.firstByteSampleCount = 0;
+  point.firstByteAvgMs = null;
+  point.firstByteP95Ms = null;
+  point.firstResponseByteTotalSampleCount = 0;
+  point.firstResponseByteTotalAvgMs = null;
+  point.firstResponseByteTotalP95Ms = null;
+}
+
 function buildUntrackedInFlightCounts(
   current: TimeseriesResponse,
   liveRecordDeltas: ReadonlyMap<string, LiveRecordDelta>,
@@ -1022,6 +1047,7 @@ function adjustTimeseriesPoint(
   );
   point.totalTokens += sign * delta.totalTokens;
   point.totalCost += sign * delta.totalCost;
+  sanitizeTimeseriesPointLatency(point);
 }
 
 function buildCurrentDayLiveRecordDelta(

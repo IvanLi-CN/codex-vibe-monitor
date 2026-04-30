@@ -104,11 +104,17 @@ export function buildTodayMinuteChartData(
     current.totalCost += point.totalCost ?? 0;
     current.totalTokens += point.totalTokens ?? 0;
     const firstResponseByteTotalAvgMs = point.firstResponseByteTotalAvgMs ?? null;
+    const pointInFlightCount = Math.max(point.inFlightCount ?? 0, 0);
+    const pointCallCount = Math.max(
+      point.totalCount ?? 0,
+      (point.successCount ?? 0) + (point.failureCount ?? 0) + pointInFlightCount,
+      0,
+    );
     const firstResponseByteTotalSampleCount =
-      firstResponseByteTotalAvgMs == null
+      pointCallCount <= 0 || firstResponseByteTotalAvgMs == null
         ? 0
         : Math.max(point.firstResponseByteTotalSampleCount ?? 1, 1);
-    if (firstResponseByteTotalAvgMs != null) {
+    if (firstResponseByteTotalAvgMs != null && firstResponseByteTotalSampleCount > 0) {
       current.firstResponseByteTotalWeightedMs +=
         firstResponseByteTotalAvgMs * firstResponseByteTotalSampleCount;
       current.firstResponseByteTotalSampleCount += firstResponseByteTotalSampleCount;
@@ -174,7 +180,9 @@ export function buildTodayMinuteChartData(
         : (point?.firstResponseByteTotalSampleCount ?? 0),
       chartTokensPerMinute: null,
       chartSpendRate: null,
-      chartFirstResponseByteTotalAvgMs: null,
+      chartFirstResponseByteTotalAvgMs: isFuture
+        ? null
+        : firstResponseByteTotalAvgMs,
       cumulativeCost: isFuture ? null : cumulativeCost,
       cumulativeTokens: isFuture ? null : cumulativeTokens,
       chartCumulativeCost: isFuture ? null : cumulativeCost,
@@ -203,27 +211,18 @@ function applyTenMinuteChartBuckets(data: DashboardTodayMinuteDatum[]) {
     let totalTokens = 0;
     let totalCost = 0;
     let rateSampleMinutes = 0;
-    let firstByteWeightedMs = 0;
-    let firstByteSampleCount = 0;
 
     for (const point of bucket) {
       if (point.tokensPerMinute == null || point.spendRate == null) continue;
       rateSampleMinutes += 1;
       totalTokens += point.tokensPerMinute;
       totalCost += point.spendRate;
-      if (point.firstResponseByteTotalAvgMs != null) {
-        const sampleCount = Math.max(point.firstResponseByteTotalSampleCount, 1);
-        firstByteWeightedMs += point.firstResponseByteTotalAvgMs * sampleCount;
-        firstByteSampleCount += sampleCount;
-      }
     }
 
     bucketAnchor.chartTokensPerMinute =
       rateSampleMinutes > 0 ? totalTokens / rateSampleMinutes : null;
     bucketAnchor.chartSpendRate =
       rateSampleMinutes > 0 ? totalCost / rateSampleMinutes : null;
-    bucketAnchor.chartFirstResponseByteTotalAvgMs =
-      firstByteSampleCount > 0 ? firstByteWeightedMs / firstByteSampleCount : null;
   }
 }
 

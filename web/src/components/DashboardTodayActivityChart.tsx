@@ -301,9 +301,6 @@ function DashboardTodayActivityChartImpl({
     (point) =>
       point.chartTokensPerMinute != null || point.chartSpendRate != null,
   );
-  const firstByteTenMinuteData = chartData.filter(
-    (point) => point.chartFirstResponseByteTotalAvgMs != null,
-  );
   const animate = chartData.length <= 800;
   const chartMode =
     metric === "totalCount"
@@ -333,37 +330,23 @@ function DashboardTodayActivityChartImpl({
             ),
             color: chartColors.failure,
           },
-          ...(point.inFlightCount > 0
-            ? [
-                {
-                  label: countSeriesNames.inFlight,
-                  value: formatCountValue(
-                    point.inFlightCount,
-                    countUnit,
-                    numberFormatter,
-                  ),
-                  color: chartColors.accent,
-                },
-              ]
-            : []),
           {
-            label: countSeriesNames.total,
+            label: countSeriesNames.inFlight,
             value: formatCountValue(
-              point.totalCount,
+              point.inFlightCount,
               countUnit,
               numberFormatter,
             ),
             color: chartColors.accent,
           },
-          ...(point.chartFirstResponseByteTotalAvgMs == null
-            ? []
-            : [
-                {
-                  label: countSeriesNames.firstByteTotal,
-                  value: `${numberFormatter.format(point.chartFirstResponseByteTotalAvgMs)} ms`,
-                  color: chartColors.firstByte,
-                },
-              ]),
+          {
+            label: countSeriesNames.firstByteTotal,
+            value:
+              point.chartFirstResponseByteTotalAvgMs == null
+                ? "-"
+                : `${numberFormatter.format(point.chartFirstResponseByteTotalAvgMs)} ms`,
+            color: chartColors.firstByte,
+          },
         ];
   const renderAreaTooltip = (point: DashboardTodayMinuteDatum) => [
     ...(metric === "totalCost"
@@ -526,14 +509,18 @@ function DashboardTodayActivityChartImpl({
               />
               <Line
                 yAxisId="latency"
-                data={firstByteTenMinuteData}
                 type="monotone"
                 dataKey="chartFirstResponseByteTotalAvgMs"
                 name={countSeriesNames.firstByteTotal}
                 stroke={chartColors.firstByte}
                 strokeOpacity={0.72}
                 strokeWidth={1.25}
-                dot={false}
+                dot={{
+                  r: 1.25,
+                  strokeWidth: 0,
+                  fill: chartColors.firstByte,
+                  fillOpacity: 0.72,
+                }}
                 connectNulls={false}
                 isAnimationActive={animate}
               />
