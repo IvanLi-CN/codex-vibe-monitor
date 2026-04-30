@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, userEvent, waitFor, within } from 'storybook/test'
 import { I18nProvider } from '../i18n'
-import type { StatsResponse } from '../lib/api'
+import type { ParallelWorkStatsResponse, StatsResponse, TimeseriesResponse } from '../lib/api'
 import { TodayStatsOverview } from './TodayStatsOverview'
 import type { DashboardTodayRateSnapshot } from './dashboardTodayRateSnapshot'
 
@@ -19,6 +19,92 @@ const sampleRate: DashboardTodayRateSnapshot = {
   spendRate: 0.1,
   windowMinutes: 5,
   available: true,
+}
+
+const comparisonStats: StatsResponse = {
+  totalCount: 1760,
+  successCount: 1704,
+  failureCount: 56,
+  totalCost: 10.12,
+  totalTokens: 640000,
+}
+
+const previous7dStats: StatsResponse = {
+  totalCount: 12880,
+  successCount: 12461,
+  failureCount: 419,
+  totalCost: 72.1,
+  totalTokens: 4380000,
+}
+
+const sampleTimeseries: TimeseriesResponse = {
+  rangeStart: '2026-04-10T00:00:00.000Z',
+  rangeEnd: '2026-04-10T00:08:00.000Z',
+  bucketSeconds: 60,
+  points: Array.from({ length: 8 }, (_, index) => ({
+    bucketStart: new Date(Date.parse('2026-04-10T00:00:00.000Z') + index * 60_000).toISOString(),
+    bucketEnd: new Date(Date.parse('2026-04-10T00:01:00.000Z') + index * 60_000).toISOString(),
+    totalCount: index % 3 === 0 ? 0 : 2 + index,
+    successCount: index % 3 === 0 ? 0 : 2 + index,
+    failureCount: index === 5 ? 1 : 0,
+    totalTokens: 78000 + index * 6100,
+    cacheInputTokens: 18000 + index * 1200,
+    totalCost: Number((1.1 + index * 0.08).toFixed(2)),
+  })),
+}
+
+const comparisonTimeseries: TimeseriesResponse = {
+  ...sampleTimeseries,
+  rangeStart: '2026-04-09T00:00:00.000Z',
+  rangeEnd: '2026-04-09T00:07:00.000Z',
+  points: sampleTimeseries.points.slice(0, 7).map((point, index) => ({
+    ...point,
+    bucketStart: new Date(Date.parse('2026-04-09T00:00:00.000Z') + index * 60_000).toISOString(),
+    bucketEnd: new Date(Date.parse('2026-04-09T00:01:00.000Z') + index * 60_000).toISOString(),
+  })),
+}
+
+const sampleParallelWorkStats: ParallelWorkStatsResponse = {
+  current: {
+    rangeStart: '2026-04-10T00:00:00.000Z',
+    rangeEnd: '2026-04-10T00:08:00.000Z',
+    bucketSeconds: 60,
+    completeBucketCount: 8,
+    activeBucketCount: 7,
+    minCount: 0,
+    maxCount: 6,
+    avgCount: 3.38,
+    points: [1, 2, 4, 3, 5, 6, 4, 5].map((parallelCount, index) => ({
+      bucketStart: new Date(Date.parse('2026-04-10T00:00:00.000Z') + index * 60_000).toISOString(),
+      bucketEnd: new Date(Date.parse('2026-04-10T00:01:00.000Z') + index * 60_000).toISOString(),
+      parallelCount,
+    })),
+  },
+  minute7d: {} as never,
+  hour30d: {} as never,
+  dayAll: {} as never,
+}
+
+const comparisonParallelWorkStats: ParallelWorkStatsResponse = {
+  ...sampleParallelWorkStats,
+  current: {
+    ...sampleParallelWorkStats.current,
+    avgCount: 2.62,
+    points: [1, 2, 2, 3, 3, 4, 3].map((parallelCount, index) => ({
+      bucketStart: new Date(Date.parse('2026-04-09T00:00:00.000Z') + index * 60_000).toISOString(),
+      bucketEnd: new Date(Date.parse('2026-04-09T00:01:00.000Z') + index * 60_000).toISOString(),
+      parallelCount,
+    })),
+  },
+}
+
+const comparisonArgs = {
+  timeseries: sampleTimeseries,
+  comparisonStats,
+  comparisonTimeseries,
+  previous7dStats,
+  parallelWorkStats: sampleParallelWorkStats,
+  comparisonParallelWorkStats,
 }
 
 const meta = {
@@ -49,6 +135,7 @@ export const Populated: Story = {
   args: {
     stats: sampleStats,
     rate: sampleRate,
+    ...comparisonArgs,
     loading: false,
     error: null,
   },
@@ -63,6 +150,7 @@ export const DesktopSingleRow: Story = {
   args: {
     stats: sampleStats,
     rate: sampleRate,
+    ...comparisonArgs,
     loading: false,
     error: null,
   },
@@ -77,6 +165,7 @@ export const EmbeddedTodayTab: Story = {
   args: {
     stats: sampleStats,
     rate: sampleRate,
+    ...comparisonArgs,
     loading: false,
     error: null,
     showSurface: false,
@@ -295,30 +384,44 @@ function StateGalleryPreview() {
           Desktop preview keeps all six KPI tiles on one row while preserving loading, partial fallback, and failure states.
         </p>
       </div>
-      <div className="grid gap-6">
-        <div className="space-y-3">
+      <div className="grid gap-10">
+        <div className="space-y-4">
           <div className="text-sm font-semibold text-base-content/70">Populated</div>
-          <TodayStatsOverview stats={sampleStats} rate={sampleRate} loading={false} error={null} />
+          <TodayStatsOverview
+            stats={sampleStats}
+            rate={sampleRate}
+            {...comparisonArgs}
+            loading={false}
+            error={null}
+          />
         </div>
-        <div className="space-y-3">
+        <div className="space-y-4">
           <div className="text-sm font-semibold text-base-content/70">Rate loading</div>
-          <TodayStatsOverview stats={sampleStats} rate={null} loading={false} rateLoading error={null} />
+          <TodayStatsOverview
+            stats={sampleStats}
+            rate={null}
+            {...comparisonArgs}
+            loading={false}
+            rateLoading
+            error={null}
+          />
         </div>
-        <div className="space-y-3">
+        <div className="space-y-4">
           <div className="text-sm font-semibold text-base-content/70">Rate unavailable</div>
           <TodayStatsOverview
             stats={sampleStats}
             rate={null}
+            {...comparisonArgs}
             loading={false}
             rateError="timeseries failed"
             error={null}
           />
         </div>
-        <div className="space-y-3">
+        <div className="space-y-4">
           <div className="text-sm font-semibold text-base-content/70">Loading</div>
           <TodayStatsOverview stats={null} rate={null} loading error={null} />
         </div>
-        <div className="space-y-3">
+        <div className="space-y-4">
           <div className="text-sm font-semibold text-base-content/70">Load error</div>
           <TodayStatsOverview
             stats={null}

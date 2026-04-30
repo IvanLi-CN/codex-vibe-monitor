@@ -290,7 +290,7 @@ where
 {
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT \
-            id, occurred_at, status, total_tokens, cost, error_message, ",
+            id, occurred_at, status, total_tokens, cache_input_tokens, cost, error_message, ",
     );
     query
         .push(INVOCATION_FAILURE_KIND_SQL)
@@ -667,7 +667,13 @@ pub(super) async fn query_invocation_hourly_rollup_range_tx(
     range_end_epoch: i64,
     source_scope: InvocationSourceScope,
 ) -> Result<Vec<InvocationHourlyRollupRecord>, ApiError> {
-    let mut query = QueryBuilder::<Sqlite>::new(
+    let cache_input_tokens_expr =
+        if sqlite_table_has_column_tx(tx, "invocation_rollup_hourly", "cache_input_tokens").await? {
+            "COALESCE(cache_input_tokens, 0) AS cache_input_tokens"
+        } else {
+            "0 AS cache_input_tokens"
+        };
+    let mut query = QueryBuilder::<Sqlite>::new(format!(
         r#"
         SELECT
             bucket_start_epoch,
@@ -675,6 +681,7 @@ pub(super) async fn query_invocation_hourly_rollup_range_tx(
             success_count,
             failure_count,
             total_tokens,
+            {cache_input_tokens_expr},
             total_cost,
             first_byte_sample_count,
             first_byte_sum_ms,
@@ -687,7 +694,7 @@ pub(super) async fn query_invocation_hourly_rollup_range_tx(
         FROM invocation_rollup_hourly
         WHERE bucket_start_epoch >=
         "#,
-    );
+    ));
     query.push_bind(range_start_epoch);
     query
         .push(" AND bucket_start_epoch < ")
@@ -710,7 +717,18 @@ pub(crate) async fn query_upstream_account_usage_hourly_rollup_range_tx(
     range_end_epoch: i64,
     upstream_account_id: i64,
 ) -> Result<Vec<UpstreamAccountUsageHourlyRollupRecord>, ApiError> {
-    sqlx::query_as::<_, UpstreamAccountUsageHourlyRollupRecord>(
+    let cache_input_tokens_expr = if sqlite_table_has_column_tx(
+        tx,
+        "upstream_account_usage_hourly",
+        "cache_input_tokens",
+    )
+    .await?
+    {
+        "cache_input_tokens"
+    } else {
+        "0 AS cache_input_tokens"
+    };
+    let query = format!(
         r#"
         SELECT
             bucket_start_epoch,
@@ -718,6 +736,7 @@ pub(crate) async fn query_upstream_account_usage_hourly_rollup_range_tx(
             COALESCE(success_count, 0) AS success_count,
             COALESCE(failure_count, 0) AS failure_count,
             total_tokens,
+            {cache_input_tokens_expr},
             total_cost
         FROM upstream_account_usage_hourly
         WHERE bucket_start_epoch >= ?1
@@ -725,13 +744,28 @@ pub(crate) async fn query_upstream_account_usage_hourly_rollup_range_tx(
           AND upstream_account_id = ?3
         ORDER BY bucket_start_epoch ASC
         "#,
-    )
+    );
+    sqlx::query_as::<_, UpstreamAccountUsageHourlyRollupRecord>(&query)
     .bind(range_start_epoch)
     .bind(range_end_epoch)
     .bind(upstream_account_id)
     .fetch_all(&mut *tx)
-    .await
-    .map_err(Into::into)
+        .await
+        .map_err(Into::into)
+}
+
+async fn sqlite_table_has_column_tx(
+    tx: &mut SqliteConnection,
+    table_name: &str,
+    column_name: &str,
+) -> Result<bool, ApiError> {
+    let escaped_table_name = table_name.replace('\'', "''");
+    let pragma = format!("PRAGMA table_info('{escaped_table_name}')");
+    let rows = sqlx::query(&pragma).fetch_all(&mut *tx).await?;
+    Ok(rows.into_iter().any(|row| {
+        row.try_get::<String, _>("name")
+            .is_ok_and(|name| name == column_name)
+    }))
 }
 
 pub(super) fn add_invocation_record_to_summary_totals(

@@ -14,12 +14,24 @@ vi.mock('../i18n', () => ({
         'dashboard.today.dayBadge': 'Today',
         'dashboard.today.tokensPerMinute': 'TPM',
         'dashboard.today.spendRate': 'Spend rate',
+        'dashboard.today.parallelConversations': 'Parallel conversations',
+        'dashboard.today.todayCost': 'Today cost',
+        'dashboard.today.yesterdayCost': 'Yesterday cost',
+        'dashboard.today.todayTokens': 'Today tokens',
+        'dashboard.today.yesterdayTokens': 'Yesterday tokens',
         'dashboard.today.tokensPerMinuteDescription': 'TPM uses the active tail inside the latest 5-minute window.',
         'dashboard.today.spendRateDescription': 'Spend rate uses the active tail inside the latest 5-minute window.',
+        'dashboard.today.parallelConversationsDescription': 'Current parallel conversations.',
         'dashboard.today.successDescription': 'Successful calls in the selected day.',
         'dashboard.today.failuresDescription': 'Failed calls in the selected day.',
         'dashboard.today.totalCostDescription': 'Total cost in the selected day.',
         'dashboard.today.totalTokensDescription': 'Total tokens in the selected day.',
+        'dashboard.today.secondary.dayAverage': 'Day avg',
+        'dashboard.today.secondary.previous7dAverage': '7d daily avg',
+        'dashboard.today.secondary.vsYesterday': 'vs yesterday',
+        'dashboard.today.secondary.comparison': 'Comparison',
+        'dashboard.today.secondary.failureRate': 'Failure rate',
+        'dashboard.today.secondary.cacheHitRate': 'Cache hit',
         'stats.cards.loadError': 'Load error',
         'stats.cards.success': 'Success',
         'stats.cards.failures': 'Failures',
@@ -83,7 +95,7 @@ function render(ui: React.ReactNode) {
 }
 
 describe('TodayStatsOverview', () => {
-  it('uses a six-tile desktop grid with TPM and spend-rate leading metrics', () => {
+  it('uses a six-tile desktop grid with richer KPI cards and parallel conversations after success', () => {
     render(
       <TodayStatsOverview
         stats={{
@@ -110,6 +122,9 @@ describe('TodayStatsOverview', () => {
     expect(host?.textContent).toContain('Today summary')
     expect(host?.textContent).toContain('TPM')
     expect(host?.textContent).toContain('Spend rate')
+    expect(host?.textContent).toContain('Parallel conversations')
+    expect(host?.textContent).toContain('Today cost')
+    expect(host?.textContent).toContain('Today tokens')
   })
 
   it('supports embedded mode without rendering the outer surface panel', () => {
@@ -165,7 +180,6 @@ describe('TodayStatsOverview', () => {
 
     expect(host?.textContent).not.toContain('Today summary')
     expect(host?.textContent).not.toContain('Accumulated in natural day')
-    expect(host?.textContent).not.toContain('Today')
     expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(6)
   })
 
@@ -189,7 +203,7 @@ describe('TodayStatsOverview', () => {
     expect(host?.querySelector('[data-testid="today-stats-value-tpm"]')).toBeNull()
     expect(host?.querySelector('[data-testid="today-stats-value-spend-rate"]')).toBeNull()
     expect(host?.querySelector('[data-testid="today-stats-value-success"]')?.textContent).toContain('80')
-    expect(host?.querySelector('[data-testid="today-stats-value-failures"]')?.textContent).toContain('8')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-failures"]')?.textContent).toContain('8')
   })
 
   it('renders TPM as a whole number even when the averaged rate is fractional', () => {

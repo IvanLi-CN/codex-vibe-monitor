@@ -1412,10 +1412,17 @@ const baseTranslations = {
     "dashboard.today.dayBadge": "Today",
     "dashboard.today.tokensPerMinute": "TPM",
     "dashboard.today.spendRate": "Spend rate",
+    "dashboard.today.parallelConversations": "Parallel conversations",
+    "dashboard.today.todayCost": "Today cost",
+    "dashboard.today.yesterdayCost": "Yesterday cost",
+    "dashboard.today.todayTokens": "Today tokens",
+    "dashboard.today.yesterdayTokens": "Yesterday tokens",
     "dashboard.today.tokensPerMinuteDescription":
       "Tokens per minute, calculated from the active tail inside the latest 5-minute window. Leading idle time is ignored.",
     "dashboard.today.spendRateDescription":
       "Cost per minute, calculated from the active tail inside the latest 5-minute window. Leading idle time is ignored.",
+    "dashboard.today.parallelConversationsDescription":
+      "Current number of prompt-cache conversations active in the latest minute bucket.",
     "dashboard.today.successDescription":
       "Successful invocations accumulated in the selected natural-day window.",
     "dashboard.today.failuresDescription":
@@ -1424,6 +1431,12 @@ const baseTranslations = {
       "Total estimated spend accumulated in the selected natural-day window.",
     "dashboard.today.totalTokensDescription":
       "Total input, output, and cached tokens accumulated in the selected natural-day window.",
+    "dashboard.today.secondary.dayAverage": "Day avg",
+    "dashboard.today.secondary.previous7dAverage": "7d daily avg",
+    "dashboard.today.secondary.vsYesterday": "vs yesterday",
+    "dashboard.today.secondary.comparison": "Comparison",
+    "dashboard.today.secondary.failureRate": "Failure rate",
+    "dashboard.today.secondary.cacheHitRate": "Cache hit",
     "stats.range.lastHour": "Past hour",
     "stats.range.today": "Today",
     "stats.range.lastDay": "Past day",
@@ -3213,10 +3226,17 @@ const baseTranslations = {
     "dashboard.today.dayBadge": "今日",
     "dashboard.today.tokensPerMinute": "TPM",
     "dashboard.today.spendRate": "消费速率",
+    "dashboard.today.parallelConversations": "并行对话",
+    "dashboard.today.todayCost": "今日成本",
+    "dashboard.today.yesterdayCost": "昨日成本",
+    "dashboard.today.todayTokens": "今日 Tokens",
+    "dashboard.today.yesterdayTokens": "昨日 Tokens",
     "dashboard.today.tokensPerMinuteDescription":
       "每分钟 Tokens，按最近 5 分钟窗口内的活跃尾段计算均值；前置空闲时间不参与分母。",
     "dashboard.today.spendRateDescription":
       "每分钟消费金额，按最近 5 分钟窗口内的活跃尾段计算均值；前置空闲时间不参与分母。",
+    "dashboard.today.parallelConversationsDescription":
+      "最近一分钟切片内仍在活动的 prompt-cache 对话数量。",
     "dashboard.today.successDescription":
       "所选自然日窗口内累计成功的调用数。",
     "dashboard.today.failuresDescription":
@@ -3225,6 +3245,12 @@ const baseTranslations = {
       "所选自然日窗口内累计的预估消费金额。",
     "dashboard.today.totalTokensDescription":
       "所选自然日窗口内累计的输入、输出和缓存 Tokens。",
+    "dashboard.today.secondary.dayAverage": "日均",
+    "dashboard.today.secondary.previous7dAverage": "7日均",
+    "dashboard.today.secondary.vsYesterday": "较昨日",
+    "dashboard.today.secondary.comparison": "对比",
+    "dashboard.today.secondary.failureRate": "失败率",
+    "dashboard.today.secondary.cacheHitRate": "缓存命中",
     "stats.range.lastHour": "最近 1 小时",
     "stats.range.today": "今日",
     "stats.range.lastDay": "最近 1 天",

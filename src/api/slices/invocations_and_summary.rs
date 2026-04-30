@@ -1769,6 +1769,28 @@ pub(crate) async fn fetch_summary(
                 .await?
             }
         }
+        SummaryWindow::PreviousFullDays(day_count) => {
+            let (start, end) = previous_full_days_range_bounds(day_count, Utc::now(), reporting_tz)
+                .ok_or_else(|| ApiError::bad_request(anyhow!("invalid previous full days window")))?;
+            if let Some(upstream_account_id) = upstream_account_id {
+                query_hourly_backed_summary_range_for_account(
+                    state.as_ref(),
+                    start,
+                    end,
+                    source_scope,
+                    upstream_account_id,
+                )
+                .await?
+            } else {
+                query_hourly_backed_summary_range(
+                    state.as_ref(),
+                    start,
+                    end,
+                    source_scope,
+                )
+                .await?
+            }
+        }
     };
 
     let mut response = totals.into_response();
@@ -1840,6 +1862,7 @@ pub(crate) struct InvocationAggregateRecord {
     pub(crate) occurred_at: String,
     pub(crate) status: Option<String>,
     pub(crate) total_tokens: Option<i64>,
+    pub(crate) cache_input_tokens: Option<i64>,
     pub(crate) cost: Option<f64>,
     pub(crate) error_message: Option<String>,
     pub(crate) failure_kind: Option<String>,

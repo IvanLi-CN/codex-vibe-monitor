@@ -11,6 +11,7 @@ import {
 const hookMocks = vi.hoisted(() => ({
   useSummary: vi.fn(),
   useTimeseries: vi.fn(),
+  useParallelWorkStats: vi.fn(),
 }))
 
 const componentState = vi.hoisted(() => ({
@@ -23,6 +24,10 @@ vi.mock('../hooks/useStats', () => ({
 
 vi.mock('../hooks/useTimeseries', () => ({
   useTimeseries: hookMocks.useTimeseries,
+}))
+
+vi.mock('../hooks/useParallelWorkStats', () => ({
+  useParallelWorkStats: hookMocks.useParallelWorkStats,
 }))
 
 vi.mock('../theme', () => ({
@@ -61,6 +66,9 @@ vi.mock('./TodayStatsOverview', () => ({
     rate,
     rateLoading,
     rateError,
+    parallelWorkStats,
+    parallelWorkError,
+    showParallelWork,
   }: {
     stats?: { totalCount?: number } | null
     showSurface?: boolean
@@ -69,9 +77,12 @@ vi.mock('./TodayStatsOverview', () => ({
     rate?: { tokensPerMinute?: number; spendRate?: number } | null
     rateLoading?: boolean
     rateError?: string | null
+    parallelWorkStats?: { current?: { avgCount?: number | null } } | null
+    parallelWorkError?: string | null
+    showParallelWork?: boolean
   }) => (
     <div data-testid="today-stats-overview-mock">
-      {`total:${stats?.totalCount ?? 'null'};surface:${String(showSurface)};header:${String(showHeader)};badge:${String(showDayBadge)};tpm:${rate?.tokensPerMinute ?? 'null'};spendRate:${rate?.spendRate ?? 'null'};rateLoading:${String(rateLoading)};rateError:${rateError ?? 'null'}`}
+      {`total:${stats?.totalCount ?? 'null'};surface:${String(showSurface)};header:${String(showHeader)};badge:${String(showDayBadge)};tpm:${rate?.tokensPerMinute ?? 'null'};spendRate:${rate?.spendRate ?? 'null'};rateLoading:${String(rateLoading)};rateError:${rateError ?? 'null'};parallelAvg:${parallelWorkStats?.current?.avgCount ?? 'null'};parallelError:${parallelWorkError ?? 'null'};showParallel:${String(showParallelWork)}`}
     </div>
   ),
 }))
@@ -245,6 +256,28 @@ function render(ui: React.ReactNode) {
   })
 }
 
+function buildParallelWorkStatsFixture(avgCount = 2) {
+  return {
+    current: {
+      rangeStart: '2026-04-08 00:00:00',
+      rangeEnd: '2026-04-08 00:06:00',
+      bucketSeconds: 60,
+      completeBucketCount: 2,
+      activeBucketCount: 2,
+      minCount: 1,
+      maxCount: 3,
+      avgCount,
+      points: [
+        { bucketStart: '2026-04-08 00:04:00', bucketEnd: '2026-04-08 00:05:00', parallelCount: 1 },
+        { bucketStart: '2026-04-08 00:05:00', bucketEnd: '2026-04-08 00:06:00', parallelCount: 3 },
+      ],
+    },
+    minute7d: {},
+    hour30d: {},
+    dayAll: {},
+  }
+}
+
 function installSummaryMocks() {
   summaryStore.set('today', {
     summary: { totalCount: 12, successCount: 10, failureCount: 2, totalCost: 0.52, totalTokens: 2048 },
@@ -258,6 +291,11 @@ function installSummaryMocks() {
   })
   summaryStore.set('1d', { summary: { totalCount: 100 }, isLoading: false, error: null })
   summaryStore.set('7d', { summary: { totalCount: 700 }, isLoading: false, error: null })
+  summaryStore.set('previous7d', {
+    summary: { totalCount: 70, successCount: 66, failureCount: 4, totalCost: 1.4, totalTokens: 7000 },
+    isLoading: false,
+    error: null,
+  })
 
   hookMocks.useSummary.mockImplementation((window: string) => summaryStore.use(window))
 
@@ -317,6 +355,11 @@ function installSummaryMocks() {
     isLoading: false,
     error: null,
   })
+  hookMocks.useParallelWorkStats.mockReturnValue({
+    data: buildParallelWorkStatsFixture(),
+    isLoading: false,
+    error: null,
+  })
 }
 
 function clickTab(label: string) {
@@ -349,14 +392,14 @@ describe('DashboardActivityOverview', () => {
     render(<DashboardActivityOverview />)
 
     expect(host?.textContent).toContain('Activity Overview')
-    expect(hookMocks.useSummary.mock.calls.every(([window]) => window === 'today')).toBe(true)
-    expect(hookMocks.useTimeseries.mock.calls.every(([window]) => window === 'today')).toBe(true)
+    expect(getFirstSeenSummaryWindows()).toEqual(['today', 'yesterday', 'previous7d'])
+    expect(hookMocks.useTimeseries.mock.calls.every(([window]) => window === 'today' || window === 'yesterday')).toBe(true)
     expect(host?.querySelector('[data-testid="dashboard-activity-range-today"]')?.getAttribute('data-active')).toBe('true')
     expect(host?.querySelector('[data-testid="dashboard-activity-range-1d"]')).toBeNull()
     expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')).toBeNull()
     expect(host?.querySelector('[data-testid="dashboard-activity-range-usage"]')).toBeNull()
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toBe(
-      'total:12;surface:false;header:false;badge:false;tpm:1000;spendRate:0.1;rateLoading:false;rateError:null',
+      'total:12;surface:false;header:false;badge:false;tpm:1000;spendRate:0.1;rateLoading:false;rateError:null;parallelAvg:2;parallelError:null;showParallel:true',
     )
     expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent).toBe(
       'metric:totalCount',
@@ -383,7 +426,7 @@ describe('DashboardActivityOverview', () => {
     )
 
     clickTab('History')
-    expect(hookMocks.useSummary.mock.calls.every(([window]) => window === 'today' || window === 'yesterday')).toBe(true)
+    expect(hookMocks.useSummary.mock.calls.every(([window]) => window === 'today' || window === 'yesterday' || window === 'previous7d')).toBe(true)
     expect(hookMocks.useTimeseries.mock.calls.every(([window]) => window === 'today' || window === 'yesterday')).toBe(true)
     expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
       'metric:totalCount;surface:false;toggle:false;meta:false;account:global',
@@ -422,6 +465,30 @@ describe('DashboardActivityOverview', () => {
     expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe('metric:totalCost;account:global')
     clickTab('24 Hours')
     expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toBe('metric:totalTokens;account:global')
+  })
+
+  it('keeps the current parallel KPI visible when only the comparison request fails', () => {
+    installSummaryMocks()
+    hookMocks.useParallelWorkStats.mockImplementation(({ range }: { range: string }) => {
+      if (range === 'yesterday') {
+        return {
+          data: null,
+          isLoading: false,
+          error: 'comparison unavailable',
+        }
+      }
+      return {
+        data: buildParallelWorkStatsFixture(2),
+        isLoading: false,
+        error: null,
+      }
+    })
+
+    render(<DashboardActivityOverview />)
+
+    expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain(
+      'parallelAvg:2;parallelError:null',
+    )
   })
 
   it('restores the last active range from localStorage and falls back to today on invalid values', () => {
@@ -475,6 +542,14 @@ describe('DashboardActivityOverview', () => {
       bucket: '1m',
       upstreamAccountId: 42,
     })
+    expect(hookMocks.useParallelWorkStats).toHaveBeenCalledWith({
+      range: 'today',
+      bucket: '1m',
+      enabled: false,
+    })
+    expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain(
+      'showParallel:false',
+    )
 
     clickTab('7 Days')
 
@@ -491,19 +566,19 @@ describe('DashboardActivityOverview', () => {
     installSummaryMocks()
 
     render(<DashboardActivityOverview />)
-    expect(getFirstSeenSummaryWindows()).toEqual(['today'])
+    expect(getFirstSeenSummaryWindows()).toEqual(['today', 'yesterday', 'previous7d'])
 
     clickTab('Yesterday')
-    expect(getFirstSeenSummaryWindows()).toEqual(['today', 'yesterday'])
+    expect(getFirstSeenSummaryWindows()).toEqual(['today', 'yesterday', 'previous7d'])
 
     clickTab('7 Days')
-    expect(getFirstSeenSummaryWindows()).toEqual(['today', 'yesterday', '7d'])
+    expect(getFirstSeenSummaryWindows()).toEqual(['today', 'yesterday', 'previous7d', '7d'])
 
     clickTab('24 Hours')
-    expect(getFirstSeenSummaryWindows()).toEqual(['today', 'yesterday', '7d', '1d'])
+    expect(getFirstSeenSummaryWindows()).toEqual(['today', 'yesterday', 'previous7d', '7d', '1d'])
 
     clickTab('History')
-    expect(getFirstSeenSummaryWindows()).toEqual(['today', 'yesterday', '7d', '1d'])
+    expect(getFirstSeenSummaryWindows()).toEqual(['today', 'yesterday', 'previous7d', '7d', '1d'])
   })
 
   it('does not rerender the today chart when only the summary hook updates', () => {

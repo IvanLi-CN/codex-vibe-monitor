@@ -10,7 +10,8 @@ interface UseSummaryOptions {
 }
 
 const SUPPORTED_SSE_WINDOWS = new Set(['all', '30m', '1h', '1d', '1mo'])
-const CALENDAR_SUMMARY_WINDOWS = new Set(['today', 'yesterday', 'thisWeek', 'thisMonth'])
+const CALENDAR_SUMMARY_WINDOWS = new Set(['today', 'yesterday', 'thisWeek', 'thisMonth', 'previous7d'])
+const DAY_BOUNDARY_SUMMARY_WINDOWS = new Set(['today', 'yesterday', 'previous7d'])
 export const UNSUPPORTED_SSE_REFRESH_INTERVAL_MS = 60_000
 export const CALENDAR_SUMMARY_RECORDS_REFRESH_THROTTLE_MS = 1_000
 export const CURRENT_SUMMARY_RECORDS_REFRESH_THROTTLE_MS = 600
@@ -99,6 +100,10 @@ export function isCalendarSummaryWindow(window: string) {
   return CALENDAR_SUMMARY_WINDOWS.has(window)
 }
 
+function isDayBoundarySummaryWindow(window: string) {
+  return DAY_BOUNDARY_SUMMARY_WINDOWS.has(window)
+}
+
 export function getCurrentSummarySseRefreshDelay(lastRefreshAt: number, now: number) {
   return Math.max(0, CURRENT_SUMMARY_RECORDS_REFRESH_THROTTLE_MS - (now - lastRefreshAt))
 }
@@ -152,7 +157,7 @@ export function shouldForceCalendarSummaryOpenResync(
   lastLoadedLocalDayStartEpoch: number | null,
   nowEpochSeconds = Math.floor(Date.now() / 1000),
 ) {
-  if (window !== 'today' && window !== 'yesterday') {
+  if (!isDayBoundarySummaryWindow(window)) {
     return false
   }
   return lastLoadedLocalDayStartEpoch !== getLocalDayStartEpoch(nowEpochSeconds)
@@ -162,7 +167,7 @@ export function getCalendarSummaryDayRolloverRefreshEpoch(
   window: string,
   nowEpochSeconds = Math.floor(Date.now() / 1000),
 ) {
-  if (window !== 'today' && window !== 'yesterday') {
+  if (!isDayBoundarySummaryWindow(window)) {
     return null
   }
   return getNextLocalDayStartEpoch(nowEpochSeconds)
@@ -269,7 +274,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
   const lastOpenResyncAtRef = useRef(0)
   const currentRetryAttemptRef = useRef(0)
   const lastNaturalDayLoadStartEpochRef = useRef<number | null>(
-    window === 'today' || window === 'yesterday'
+    isDayBoundarySummaryWindow(window)
       ? getLocalDayStartEpoch()
       : null,
   )
@@ -325,7 +330,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
       )
       recordTodaySummaryRefresh(summaryContextRef.current.window)
       lastNaturalDayLoadStartEpochRef.current =
-        summaryContextRef.current.window === 'today' || summaryContextRef.current.window === 'yesterday'
+        isDayBoundarySummaryWindow(summaryContextRef.current.window)
           ? getLocalDayStartEpoch()
           : null
       hasHydratedRef.current = true
@@ -457,7 +462,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     unsupportedRefreshRef.current = createUnsupportedRefreshGate()
     calendarRefreshRef.current = createUnsupportedRefreshGate()
     lastNaturalDayLoadStartEpochRef.current =
-      window === 'today' || window === 'yesterday'
+      isDayBoundarySummaryWindow(window)
         ? getLocalDayStartEpoch()
         : null
     clearPendingLoad()
@@ -512,7 +517,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
           setStats(payload.summary)
           writeSummaryRemountCache(window, options?.limit, payload.summary)
           lastNaturalDayLoadStartEpochRef.current =
-            window === 'today' || window === 'yesterday'
+            isDayBoundarySummaryWindow(window)
               ? getLocalDayStartEpoch()
               : null
           hasHydratedRef.current = true
@@ -549,7 +554,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     if (typeof document === 'undefined') return
     const onVisibilityChange = () => {
       if (document.visibilityState !== 'visible') return
-      if (window !== 'today' && window !== 'yesterday') {
+      if (!isDayBoundarySummaryWindow(window)) {
         return
       }
       triggerOpenResync(

@@ -18,6 +18,7 @@ interface PendingLoad {
 interface UseParallelWorkStatsOptions {
   range: string
   bucket?: string
+  enabled?: boolean
 }
 
 export const PARALLEL_WORK_REFRESH_THROTTLE_MS = 60_000
@@ -51,7 +52,7 @@ export function shouldTriggerParallelWorkOpenResync(
   return now - lastResyncAt >= PARALLEL_WORK_OPEN_RESYNC_COOLDOWN_MS
 }
 
-export function useParallelWorkStats({ range, bucket }: UseParallelWorkStatsOptions) {
+export function useParallelWorkStats({ range, bucket, enabled = true }: UseParallelWorkStatsOptions) {
   const [data, setData] = useState<ParallelWorkStatsResponse | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -127,6 +128,17 @@ export function useParallelWorkStats({ range, bucket }: UseParallelWorkStatsOpti
   }, [bucket, range])
 
   const load = useCallback(async ({ silent = false, force = false }: LoadOptions = {}) => {
+    if (!enabled) {
+      activeRequestControllerRef.current?.abort()
+      activeRequestControllerRef.current = null
+      pendingLoadRef.current = null
+      clearPendingRefreshTimer()
+      setData(null)
+      setError(null)
+      setIsLoading(false)
+      return
+    }
+
     if (force) {
       activeRequestControllerRef.current?.abort()
       activeRequestControllerRef.current = null
@@ -142,7 +154,7 @@ export function useParallelWorkStats({ range, bucket }: UseParallelWorkStatsOpti
     }
 
     await runLoad({ silent })
-  }, [clearPendingRefreshTimer, runLoad])
+  }, [clearPendingRefreshTimer, enabled, runLoad])
 
   const triggerRecordsResync = useCallback(() => {
     if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
@@ -179,6 +191,22 @@ export function useParallelWorkStats({ range, bucket }: UseParallelWorkStatsOpti
   }, [load])
 
   useEffect(() => {
+    if (!enabled) {
+      requestSeqRef.current += 1
+      activeRequestControllerRef.current?.abort()
+      activeRequestControllerRef.current = null
+      pendingLoadRef.current = null
+      pendingOpenResyncRef.current = false
+      hasHydratedRef.current = false
+      lastRecordsRefreshAtRef.current = 0
+      lastOpenResyncAtRef.current = 0
+      lastErrorRef.current = null
+      clearPendingRefreshTimer()
+      setData(null)
+      setError(null)
+      setIsLoading(false)
+      return
+    }
     requestSeqRef.current += 1
     activeRequestControllerRef.current?.abort()
     activeRequestControllerRef.current = null
@@ -190,7 +218,7 @@ export function useParallelWorkStats({ range, bucket }: UseParallelWorkStatsOpti
     lastErrorRef.current = null
     clearPendingRefreshTimer()
     void load({ force: true })
-  }, [clearPendingRefreshTimer, load])
+  }, [clearPendingRefreshTimer, enabled, load])
 
   useEffect(() => {
     if (!error || !shouldRetryParallelWorkError(lastErrorRef.current)) return
@@ -202,28 +230,31 @@ export function useParallelWorkStats({ range, bucket }: UseParallelWorkStatsOpti
 
   useEffect(() => {
     const unsubscribe = subscribeToSse((payload) => {
+      if (!enabled) return
       if (payload.type !== 'records') return
       triggerRecordsResync()
     })
     return unsubscribe
-  }, [triggerRecordsResync])
+  }, [enabled, triggerRecordsResync])
 
   useEffect(() => {
     const unsubscribe = subscribeToSseOpen(() => {
+      if (!enabled) return
       triggerOpenResync()
     })
     return unsubscribe
-  }, [triggerOpenResync])
+  }, [enabled, triggerOpenResync])
 
   useEffect(() => {
     if (typeof document === 'undefined') return
     const onVisibilityChange = () => {
       if (document.visibilityState !== 'visible') return
+      if (!enabled) return
       triggerOpenResync()
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
     return () => document.removeEventListener('visibilitychange', onVisibilityChange)
-  }, [triggerOpenResync])
+  }, [enabled, triggerOpenResync])
 
   useEffect(
     () => () => {

@@ -441,6 +441,47 @@ fn parse_summary_window_accepts_yesterday_calendar_window() {
 }
 
 #[test]
+fn parse_summary_window_accepts_previous_seven_full_days_window() {
+    let window = parse_summary_window(
+        &SummaryQuery {
+            window: Some("previous7d".to_string()),
+            limit: None,
+            time_zone: None,
+            upstream_account_id: None,
+        },
+        50,
+    )
+    .expect("parse previous seven full days summary window");
+
+    match window {
+        SummaryWindow::PreviousFullDays(day_count) => assert_eq!(day_count, 7),
+        other => panic!("expected previous full days window, got {other:?}"),
+    }
+}
+
+#[test]
+fn previous_full_days_range_ends_at_current_local_midnight() {
+    let tz = chrono_tz::America::Los_Angeles;
+    let now = Utc
+        .with_ymd_and_hms(2026, 4, 30, 19, 45, 0)
+        .single()
+        .expect("valid now");
+    let (start, end) =
+        previous_full_days_range_bounds(7, now, tz).expect("previous full days bounds");
+
+    assert_eq!(
+        start.with_timezone(&tz).date_naive(),
+        chrono::NaiveDate::from_ymd_opt(2026, 4, 23).expect("valid date")
+    );
+    assert_eq!(
+        end.with_timezone(&tz).date_naive(),
+        chrono::NaiveDate::from_ymd_opt(2026, 4, 30).expect("valid date")
+    );
+    assert_eq!(end.with_timezone(&tz).hour(), 0);
+    assert_eq!(end.with_timezone(&tz).minute(), 0);
+}
+
+#[test]
 fn exclusive_epoch_upper_bound_preserves_fractional_current_second() {
     let exact_second = Utc
         .with_ymd_and_hms(2026, 4, 11, 0, 0, 0)

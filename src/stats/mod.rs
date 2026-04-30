@@ -14,6 +14,7 @@ pub(crate) enum SummaryWindow {
     Current(i64),
     Duration(ChronoDuration),
     Calendar(String),
+    PreviousFullDays(i64),
 }
 
 pub(crate) fn stats_success_failure_select_sql() -> String {
@@ -83,6 +84,7 @@ pub(crate) struct InvocationHourlyRollupRecord {
     pub(crate) success_count: i64,
     pub(crate) failure_count: i64,
     pub(crate) total_tokens: i64,
+    pub(crate) cache_input_tokens: i64,
     pub(crate) total_cost: f64,
     pub(crate) first_byte_sample_count: i64,
     pub(crate) first_byte_sum_ms: f64,
@@ -249,6 +251,7 @@ pub(crate) struct BucketAggregate {
     pub(crate) failure_count: i64,
     pub(crate) in_flight_count: i64,
     pub(crate) total_tokens: i64,
+    pub(crate) cache_input_tokens: i64,
     pub(crate) total_cost: f64,
     pub(crate) first_byte_ttfb_sum_ms: f64,
     pub(crate) first_byte_ttfb_values: Vec<f64>,
@@ -523,6 +526,20 @@ pub(crate) fn named_range_bounds(
     }
 }
 
+pub(crate) fn previous_full_days_range_bounds(
+    day_count: i64,
+    now: DateTime<Utc>,
+    tz: Tz,
+) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+    if day_count <= 0 {
+        return None;
+    }
+    let local_date = now.with_timezone(&tz).date_naive();
+    let end = local_midnight_utc(local_date, tz);
+    let start = local_midnight_utc(local_date - ChronoDuration::days(day_count), tz);
+    Some((start, end))
+}
+
 pub(crate) fn named_range_start(spec: &str, now: DateTime<Utc>, tz: Tz) -> Option<DateTime<Utc>> {
     named_range_bounds(spec, now, tz).map(|(start, _)| start)
 }
@@ -671,6 +688,7 @@ pub(crate) fn parse_summary_window(
             Ok(SummaryWindow::Current(limit))
         }
         Some("all") => Ok(SummaryWindow::All),
+        Some("previous7d") => Ok(SummaryWindow::PreviousFullDays(7)),
         Some(raw @ ("today" | "yesterday" | "thisWeek" | "thisMonth")) => {
             Ok(SummaryWindow::Calendar(raw.to_string()))
         }
@@ -1631,7 +1649,13 @@ async fn load_materialized_invocation_rollup_record(
     bucket_start_epoch: i64,
     source: &str,
 ) -> Result<Option<InvocationHourlyRollupRecord>> {
-    sqlx::query_as::<_, InvocationHourlyRollupRecord>(
+    let cache_input_tokens_expr =
+        if sqlite_table_has_column(pool, "invocation_rollup_hourly", "cache_input_tokens").await? {
+            "COALESCE(cache_input_tokens, 0) AS cache_input_tokens"
+        } else {
+            "0 AS cache_input_tokens"
+        };
+    let query = format!(
         r#"
         SELECT
             bucket_start_epoch,
@@ -1639,6 +1663,7 @@ async fn load_materialized_invocation_rollup_record(
             success_count,
             failure_count,
             total_tokens,
+            {cache_input_tokens_expr},
             total_cost,
             first_byte_sample_count,
             first_byte_sum_ms,
@@ -1653,12 +1678,13 @@ async fn load_materialized_invocation_rollup_record(
           AND source = ?2
         LIMIT 1
         "#,
-    )
-    .bind(bucket_start_epoch)
-    .bind(source)
-    .fetch_optional(pool)
-    .await
-    .map_err(Into::into)
+    );
+    sqlx::query_as::<_, InvocationHourlyRollupRecord>(&query)
+        .bind(bucket_start_epoch)
+        .bind(source)
+        .fetch_optional(pool)
+        .await
+        .map_err(Into::into)
 }
 
 fn build_invocation_hourly_rollup_delta_record(
@@ -1688,6 +1714,12 @@ fn build_invocation_hourly_rollup_delta_record(
         archive_delta.total_tokens,
         materialized_row
             .map(|row| row.total_tokens.max(0))
+            .unwrap_or(0),
+    );
+    let cache_input_tokens = subtract_nonnegative_i64(
+        archive_delta.cache_input_tokens,
+        materialized_row
+            .map(|row| row.cache_input_tokens.max(0))
             .unwrap_or(0),
     );
     let total_cost = subtract_nonnegative_f64(
@@ -1728,6 +1760,7 @@ fn build_invocation_hourly_rollup_delta_record(
         && success_count <= 0
         && failure_count <= 0
         && total_tokens <= 0
+        && cache_input_tokens <= 0
         && total_cost <= 0.0
         && first_byte_sample_count <= 0
         && first_response_byte_total_sample_count <= 0
@@ -1741,6 +1774,7 @@ fn build_invocation_hourly_rollup_delta_record(
         success_count,
         failure_count,
         total_tokens,
+        cache_input_tokens,
         total_cost,
         first_byte_sample_count,
         first_byte_sum_ms,
@@ -1796,6 +1830,12 @@ fn build_materialized_pending_invocation_rollup_overlap_record(
             .map(|delta| delta.total_tokens.max(0))
             .unwrap_or(0),
     );
+    let cache_input_tokens = subtract_nonnegative_i64(
+        materialized_row.cache_input_tokens.max(0),
+        completed_archive_delta
+            .map(|delta| delta.cache_input_tokens.max(0))
+            .unwrap_or(0),
+    );
     let total_cost = subtract_nonnegative_f64(
         materialized_row.total_cost,
         completed_archive_delta
@@ -1844,6 +1884,7 @@ fn build_materialized_pending_invocation_rollup_overlap_record(
         && success_count <= 0
         && failure_count <= 0
         && total_tokens <= 0
+        && cache_input_tokens <= 0
         && total_cost <= 0.0
         && first_byte_sample_count <= 0
         && first_response_byte_total_sample_count <= 0
@@ -1857,6 +1898,7 @@ fn build_materialized_pending_invocation_rollup_overlap_record(
         success_count,
         failure_count,
         total_tokens,
+        cache_input_tokens,
         total_cost,
         first_byte_sample_count,
         first_byte_sum_ms,
@@ -2583,6 +2625,7 @@ pub(crate) async fn query_unmaterialized_upstream_account_archive_hourly_rollup_
                 success_count: delta.success_count,
                 failure_count: delta.failure_count,
                 total_tokens: delta.total_tokens,
+                cache_input_tokens: delta.cache_input_tokens,
                 total_cost: delta.total_cost,
             })
         })
@@ -3439,7 +3482,13 @@ pub(crate) async fn query_invocation_hourly_rollup_range(
     range_end_epoch: i64,
     source_scope: InvocationSourceScope,
 ) -> Result<Vec<InvocationHourlyRollupRecord>> {
-    let mut query = QueryBuilder::<Sqlite>::new(
+    let cache_input_tokens_expr =
+        if sqlite_table_has_column(pool, "invocation_rollup_hourly", "cache_input_tokens").await? {
+            "COALESCE(cache_input_tokens, 0) AS cache_input_tokens"
+        } else {
+            "0 AS cache_input_tokens"
+        };
+    let mut query = QueryBuilder::<Sqlite>::new(format!(
         r#"
         SELECT
             bucket_start_epoch,
@@ -3447,6 +3496,7 @@ pub(crate) async fn query_invocation_hourly_rollup_range(
             success_count,
             failure_count,
             total_tokens,
+            {cache_input_tokens_expr},
             total_cost,
             first_byte_sample_count,
             first_byte_sum_ms,
@@ -3459,7 +3509,7 @@ pub(crate) async fn query_invocation_hourly_rollup_range(
         FROM invocation_rollup_hourly
         WHERE bucket_start_epoch >=
         "#,
-    );
+    ));
     query.push_bind(range_start_epoch);
     query
         .push(" AND bucket_start_epoch < ")
@@ -3474,6 +3524,20 @@ pub(crate) async fn query_invocation_hourly_rollup_range(
         .fetch_all(pool)
         .await
         .map_err(Into::into)
+}
+
+async fn sqlite_table_has_column(
+    pool: &Pool<Sqlite>,
+    table_name: &str,
+    column_name: &str,
+) -> Result<bool> {
+    let escaped_table_name = table_name.replace('\'', "''");
+    let pragma = format!("PRAGMA table_info('{escaped_table_name}')");
+    let rows = sqlx::query(&pragma).fetch_all(pool).await?;
+    Ok(rows.into_iter().any(|row| {
+        row.try_get::<String, _>("name")
+            .is_ok_and(|name| name == column_name)
+    }))
 }
 
 pub(crate) async fn query_invocation_failure_hourly_rollup_range(
