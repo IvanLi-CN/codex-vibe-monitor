@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-04-30T00:00:00+08:00",
+  "title": "Design System: Codex Vibe Monitor",
+  "extensions": {
+    "colorMeta": {
+      "primary-light": {
+        "role": "primary",
+        "displayName": "Signal Blue",
+        "canonical": "oklch(57.5% 0.195 258)",
+        "notes": "light 主题主交互信号，用于主操作、当前选择、focus ring 和 request count。"
+      },
+      "primary-dark": {
+        "role": "primary",
+        "displayName": "Signal Blue Dark",
+        "canonical": "oklch(76.3% 0.133 232)",
+        "notes": "dark 主题主交互信号，降低 chroma 以保持可读和克制。"
+      },
+      "secondary-light": {
+        "role": "secondary",
+        "displayName": "Proxy Teal",
+        "canonical": "oklch(61.5% 0.118 188)",
+        "notes": "代理节点、token 体量和健康类次级信号。"
+      },
+      "accent-light": {
+        "role": "tertiary",
+        "displayName": "Cost Amber",
+        "canonical": "oklch(67.7% 0.154 68)",
+        "notes": "成本、价格、配额压力和 warning-adjacent 信号。"
+      },
+      "base-100-light": {
+        "role": "neutral",
+        "displayName": "Lab Paper",
+        "canonical": "oklch(98.7% 0.006 255)",
+        "notes": "light 主题内容 surface。"
+      },
+      "base-200-dark": {
+        "role": "neutral",
+        "displayName": "Night Bench",
+        "canonical": "oklch(18.4% 0.016 258)",
+        "notes": "dark 主题页面背景。"
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "应用品牌、页面主标题或抽屉高层标题，不用于营销式 hero。"
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "section heading、重要 panel 标题、dialog 标题。"
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "中文说明和工程上下文说明，长段落控制在 65 到 75ch。"
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "表头、字段标签、metric label，保持短促和可扫描。"
+      }
+    },
+    "elevation": {
+      "panel": {
+        "light": "0 18px 40px rgba(15, 23, 42, 0.09)",
+        "dark": "0 20px 54px rgba(2, 6, 23, 0.55)",
+        "purpose": "主内容 surface，避免在同一层级重复叠加。"
+      },
+      "dialog": {
+        "light": "0 32px 90px rgba(15, 23, 42, 0.16)",
+        "dark": "0 36px 110px rgba(2, 6, 23, 0.62)",
+        "purpose": "阻塞式或强上下文浮层。"
+      },
+      "drawer": {
+        "light": "-32px 0 84px rgba(15, 23, 42, 0.18)",
+        "purpose": "右侧详情面板。"
+      }
+    },
+    "motion": {
+      "durationFast": "150ms",
+      "durationDefault": "180ms",
+      "durationPanel": "220ms",
+      "easing": "ease-out",
+      "rules": [
+        "不要动画化布局属性。",
+        "状态反馈允许短 pulse、spin、fade、zoom。",
+        "产品页面不使用编排式入场动画。"
+      ]
+    },
+    "breakpoints": {
+      "desktop1660": "1660px",
+      "mobilePagePadding": "1rem",
+      "notes": "小屏先收缩外部留白，再调整区块间距；数据表必要时可横滚，但应优先提供可读移动结构。"
+    },
+    "componentMeta": {
+      "button": {
+        "variants": ["default", "secondary", "outline", "ghost", "destructive"],
+        "sizes": ["sm", "default", "lg", "icon"],
+        "notes": "默认 h-9 是桌面密度选择；移动触控场景需要评估 44px 目标。"
+      },
+      "segmented-control": {
+        "variants": ["compact", "default", "nav"],
+        "notes": "顶部导航和内容切换共用同一 visual family。"
+      },
+      "surface-panel": {
+        "notes": "应用级 panel 组合 border、半透明背景、shadow 和少量 backdrop blur；审计建议限制 blur 的默认化。"
+      },
+      "chart": {
+        "metricRoles": {
+          "totalCount": "blue",
+          "totalCost": "amber",
+          "totalTokens": "teal"
+        },
+        "notes": "图表 token 目前集中在 chartTheme.ts，与全局 OKLCH token 尚未完全统一。"
+      }
+    },
+    "rules": {
+      "northStar": "观测实验室",
+      "dos": [
+        "复用 OKLCH 语义 token。",
+        "让颜色承载明确状态或操作语义。",
+        "保留数字对齐、focus ring 和 Storybook 证据入口。"
+      ],
+      "donts": [
+        "不要使用 gradient text。",
+        "不要用厚侧边彩条做强调。",
+        "不要把 glassmorphism 当默认容器语言。",
+        "不要复刻通用 SaaS dashboard hero metric 模板。"
+      ]
+    }
+  }
+}

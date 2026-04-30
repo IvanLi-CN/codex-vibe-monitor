@@ -143,7 +143,7 @@
 ## 文档更新（Docs to Update）
 
 - `README.md`: 新增外部统计源配置项与合并口径说明。
-- `DESGIN.md`: 更新“数据来源定位/入库设计/统计口径”章节。
+- `docs/system-design.md`: 更新“数据来源定位/入库设计/统计口径”章节。
 
 ## 里程碑（Milestones）
 
