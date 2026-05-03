@@ -12,7 +12,7 @@
 
 Codex Vibe Monitor 是一套面向自部署的 **OpenAI 兼容代理观测工作台**。
 
-它把 **`/v1/*` 流量接入、调用留证、实时 SSE、历史统计、请求排障、上游账号池、forward proxy 配置、价格目录维护、SQLite 持久化与归档** 收在同一个项目里。目标不是只做一个总览 dashboard，而是提供一套能 **看得到、查得到、调得动** 的运营与排障入口。
+它把 **`/v1/*` HTTP / WebSocket 流量接入、调用留证、实时 SSE、历史统计、请求排障、上游账号池、forward proxy 配置、价格目录维护、SQLite 持久化与归档** 收在同一个项目里。目标不是只做一个总览 dashboard，而是提供一套能 **看得到、查得到、调得动** 的运营与排障入口。
 
 ## 界面预览
 
@@ -39,6 +39,7 @@ Codex Vibe Monitor 是一套面向自部署的 **OpenAI 兼容代理观测工作
 ### 1. OpenAI 兼容代理入口
 
 - 统一承接 `/v1/*` 请求并记录调用证据
+- 支持 `/v1/*` WebSocket upgrade，按账号池路由到上游 `ws/wss` endpoint 并透明转发帧
 - 支持把代理流量写入 SQLite，保留后续统计与排障所需字段
 - OAuth inline adapter 当前覆盖常用路由，包括：
   - `/v1/models`
@@ -207,15 +208,16 @@ bun run worktree:bootstrap
 
 ## 第一次部署最该先确认的配置
 
-| 变量                                  | 作用                                   |
-| ------------------------------------- | -------------------------------------- |
-| `HTTP_BIND`                           | 服务监听地址                           |
-| `DATABASE_PATH`                       | SQLite 主库路径                        |
-| `OPENAI_UPSTREAM_BASE_URL`            | OpenAI 兼容上游地址                    |
-| `UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET` | Account Pool 写入与 OAuth 绑定所需密钥 |
-| `RETENTION_ENABLED`                   | 是否启用后台保留任务                   |
-| `ARCHIVE_DIR`                         | 归档目录                               |
-| `PROXY_RAW_DIR`                       | 原始 payload 落盘目录                  |
+| 变量                                  | 作用                                      |
+| ------------------------------------- | ----------------------------------------- |
+| `HTTP_BIND`                           | 服务监听地址                              |
+| `DATABASE_PATH`                       | SQLite 主库路径                           |
+| `OPENAI_UPSTREAM_BASE_URL`            | OpenAI 兼容上游地址                       |
+| `OPENAI_PROXY_WEBSOCKET_ENABLED`      | 是否启用 `/v1/*` WebSocket 代理，默认关闭 |
+| `UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET` | Account Pool 写入与 OAuth 绑定所需密钥    |
+| `RETENTION_ENABLED`                   | 是否启用后台保留任务                      |
+| `ARCHIVE_DIR`                         | 归档目录                                  |
+| `PROXY_RAW_DIR`                       | 原始 payload 落盘目录                     |
 
 更完整的部署与配置说明请直接看：
 

@@ -25,6 +25,7 @@ use axum::response::sse::{Event, KeepAlive};
 use axum::{
     Router,
     body::{Body, Bytes, HttpBody},
+    extract::ws::{Message as AxumWsMessage, WebSocket, WebSocketUpgrade},
     extract::{ConnectInfo, DefaultBodyLimit, OriginalUri, Query, State},
     http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, uri::Authority},
     response::{IntoResponse, Json, Response, Sse},
@@ -41,7 +42,7 @@ use clap::{Args, Parser, Subcommand};
 use dotenvy::dotenv;
 use flate2::read::{DeflateDecoder, GzDecoder, ZlibDecoder};
 use flate2::{Compression, write::GzEncoder};
-use futures_util::{FutureExt, StreamExt, TryStreamExt, future::Shared, stream};
+use futures_util::{FutureExt, SinkExt, StreamExt, TryStreamExt, future::Shared, stream};
 use once_cell::sync::Lazy;
 use rand::Rng;
 use regex::Regex;
@@ -56,14 +57,16 @@ use sqlx::{
 use std::fs;
 use std::io::{self, BufRead, Read, Write};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     process::{Child, Command},
     sync::{Mutex, RwLock, Semaphore, broadcast, mpsc, oneshot, watch},
     task::JoinHandle,
     time::{MissedTickBehavior, interval, sleep, timeout},
 };
+use tokio_rustls::TlsConnector;
 use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, client_async_tls_with_config};
 use tokio_util::sync::CancellationToken;
 use tower_http::{
     cors::{AllowOrigin, Any, CorsLayer},
@@ -71,6 +74,9 @@ use tower_http::{
     trace::TraceLayer,
 };
 use tracing::{debug, error, info, warn};
+use tungstenite::{
+    Message as TungsteniteMessage, client::IntoClientRequest, http::Request as TungsteniteRequest,
+};
 mod api;
 mod db_pressure;
 mod external_api;
@@ -154,6 +160,7 @@ const IMPORTED_OAUTH_ROUTE_MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 const DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS: u64 = 60;
 const DEFAULT_OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS: u64 = 300;
 const DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS: u64 = 180;
+const DEFAULT_OPENAI_PROXY_WEBSOCKET_ENABLED: bool = false;
 const DEFAULT_SQLITE_BUSY_TIMEOUT_SECS: u64 = 30;
 const CVM_INVOKE_ID_HEADER: &str = "x-cvm-invoke-id";
 const BACKFILL_BATCH_SIZE: i64 = 200;
@@ -222,6 +229,7 @@ const LEGACY_ENV_SHARED_CONNECTION_PARALLELISM: &str = "XY_SHARED_CONNECTION_PAR
 const ENV_PROXY_REQUEST_CONCURRENCY_LIMIT: &str = "PROXY_REQUEST_CONCURRENCY_LIMIT";
 const ENV_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS: &str =
     "PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS";
+const ENV_OPENAI_PROXY_WEBSOCKET_ENABLED: &str = "OPENAI_PROXY_WEBSOCKET_ENABLED";
 const ENV_HTTP_BIND: &str = "HTTP_BIND";
 const LEGACY_ENV_HTTP_BIND: &str = "XY_HTTP_BIND";
 const ENV_CORS_ALLOWED_ORIGINS: &str = "CORS_ALLOWED_ORIGINS";

@@ -284,6 +284,7 @@ struct AppConfig {
     openai_proxy_compact_handshake_timeout: Duration,
     openai_proxy_request_read_timeout: Duration,
     openai_proxy_max_request_body_bytes: usize,
+    openai_proxy_websocket_enabled: bool,
     proxy_request_concurrency_limit: usize,
     proxy_request_concurrency_wait_timeout: Duration,
     proxy_enforce_stream_include_usage: bool,
@@ -413,6 +414,10 @@ impl AppConfig {
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|&v| v > 0)
             .unwrap_or(DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES);
+        let openai_proxy_websocket_enabled = parse_bool_env_var(
+            ENV_OPENAI_PROXY_WEBSOCKET_ENABLED,
+            DEFAULT_OPENAI_PROXY_WEBSOCKET_ENABLED,
+        )?;
         let proxy_request_concurrency_limit =
             match env::var(ENV_PROXY_REQUEST_CONCURRENCY_LIMIT) {
                 Ok(value) => {
@@ -759,6 +764,7 @@ impl AppConfig {
             openai_proxy_compact_handshake_timeout,
             openai_proxy_request_read_timeout,
             openai_proxy_max_request_body_bytes,
+            openai_proxy_websocket_enabled,
             proxy_request_concurrency_limit,
             proxy_request_concurrency_wait_timeout,
             proxy_enforce_stream_include_usage,

@@ -1,13 +1,13 @@
 # 系统设计概览
 
-本项目当前定位为：通过 OpenAI 兼容 `/v1/*` 代理捕获调用记录，可选轮询 CRS 日统计并写入 SQLite，再通过 REST API 与 SSE 为前端仪表盘提供实时与历史视图。历史 `xy` 调用记录与历史 quota snapshot 继续只读可查，但服务不再从 XYAI 上游抓取新数据。
+本项目当前定位为：通过 OpenAI 兼容 `/v1/*` HTTP 代理与可选 WebSocket 代理捕获调用记录，可选轮询 CRS 日统计并写入 SQLite，再通过 REST API 与 SSE 为前端仪表盘提供实时与历史视图。历史 `xy` 调用记录与历史 quota snapshot 继续只读可查，但服务不再从 XYAI 上游抓取新数据。
 
 ## 1. 数据来源
 
 ### 1.1 OpenAI 兼容代理链路（主写入来源）
 
-- 服务暴露 `ANY /v1/*`，透明转发到上游 OpenAI 兼容接口。
-- 在代理链路中解析请求、响应、usage 与耗时信息，并将调用明细写入本地 SQLite。
+- 服务暴露 `ANY /v1/*`，透明转发到上游 OpenAI 兼容接口；启用 `OPENAI_PROXY_WEBSOCKET_ENABLED` 后，WebSocket upgrade 请求会按同一路由认证与账号池选择逻辑转成上游 `ws/wss` 隧道。
+- 在代理链路中解析请求、响应、usage 与耗时信息，并将调用明细写入本地 SQLite；WebSocket 初版记录连接级 attempt 结果，不做通用逐帧 usage 解析。
 - 新产生的在线记录以 `source='proxy'` 标记，作为当前系统的主要实时数据来源。
 
 ### 1.2 CRS 日统计源（可选）
@@ -24,7 +24,7 @@
 
 ## 2. 配置与认证
 
-- 代理链路使用标准 OpenAI 兼容请求模型；上游地址通过 `OPENAI_UPSTREAM_BASE_URL` 控制。
+- 代理链路使用标准 OpenAI 兼容请求模型；上游地址通过 `OPENAI_UPSTREAM_BASE_URL` 控制，WebSocket 代理默认关闭，启用后上游会把 `https/http` base URL 映射为 `wss/ws`。
 - CRS 为可选能力，要求 `CRS_STATS_BASE_URL` 与 `CRS_STATS_API_ID` 成对配置。
 - 数据库、HTTP 监听、并发度、超时与 retention 均通过 `.env.local` 中的通用配置项管理。
 - 不再保留 XYAI 专属认证配置；部署时无需再提供历史的 XYAI cookie / quota 抓取参数。
@@ -33,7 +33,7 @@
 
 - 使用 `tokio::time::interval` 作为后台节拍器，但调度器只服务 CRS 统计轮询与相关汇总刷新。
 - 单次请求设置超时，并结合信号量限制并发，避免外部统计源抖动导致任务堆积。
-- OpenAI `/v1/*` 代理路径按请求驱动写入，不依赖后台轮询。
+- OpenAI `/v1/*` 代理路径按请求或 WebSocket 连接驱动写入，不依赖后台轮询。
 - 当前运行期不存在任何 XYAI legacy poll 分支、配额抓取或快照写入逻辑。
 
 ## 4. 数据持久化设计
