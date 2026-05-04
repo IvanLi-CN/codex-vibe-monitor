@@ -97,6 +97,28 @@ pub(crate) async fn ensure_account_has_gpt55_unsupported_tag(
     Ok(())
 }
 
+pub(crate) async fn ensure_account_has_websocket_unsupported_tag(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+) -> Result<()> {
+    ensure_websocket_unsupported_system_tag(pool).await?;
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO pool_upstream_account_tags (account_id, tag_id, created_at, updated_at)
+        SELECT ?1, tag.id, ?3, ?3
+        FROM pool_tags tag
+        WHERE tag.system_key = ?2
+        "#,
+    )
+    .bind(account_id)
+    .bind(WEBSOCKET_UNSUPPORTED_SYSTEM_TAG_KEY)
+    .bind(&now_iso)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub(crate) async fn account_has_gpt55_unsupported_tag(
     pool: &Pool<Sqlite>,
     account_id: i64,

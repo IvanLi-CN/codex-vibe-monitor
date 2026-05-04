@@ -552,6 +552,7 @@ async fn prepare_single_upstream_websocket_attempt(
         }
         Ok(Err(err)) => {
             let message = format!("failed to contact websocket upstream: {err}");
+            let should_mark_ws_unsupported = websocket_upstream_error_marks_account_ws_unsupported(&err);
             finalize_ws_attempt(
                 state.as_ref(),
                 pending_attempt_record.as_ref(),
@@ -586,6 +587,19 @@ async fn prepare_single_upstream_websocket_attempt(
                     error = %err,
                     "failed to record websocket pool route transport failure"
                 );
+            }
+            if should_mark_ws_unsupported {
+                if let Err(err) =
+                    ensure_account_has_websocket_unsupported_tag(&state.pool, account.account_id)
+                        .await
+                {
+                    warn!(
+                        invoke_id = %trace.invoke_id,
+                        account_id = account.account_id,
+                        error = %err,
+                        "failed to mark upstream account as websocket unsupported"
+                    );
+                }
             }
             reservation_guard.release();
             return Err(WsAttemptFailure {
@@ -717,6 +731,8 @@ async fn proxy_websocket_tunnel(
     let mut failure: Option<String> = None;
     let mut upstream_route_failure: Option<String> = None;
     let mut usage_tracker = WsUsageTracker::new(account, trace);
+    let mut saw_downstream_request = false;
+    let mut saw_terminal_upstream_event = false;
 
     loop {
         tokio::select! {
@@ -724,6 +740,9 @@ async fn proxy_websocket_tunnel(
                 match downstream_msg {
                     Some(Ok(message)) => {
                         let close_seen = matches!(message, AxumWsMessage::Close(_));
+                        if matches!(message, AxumWsMessage::Text(_) | AxumWsMessage::Binary(_)) {
+                            saw_downstream_request = true;
+                        }
                         match axum_to_tungstenite_message(message) {
                             Some(message) => {
                                 if let Err(err) = upstream_tx.send(message).await {
@@ -750,8 +769,15 @@ async fn proxy_websocket_tunnel(
                 match upstream_msg {
                     Some(Ok(message)) => {
                         let close_seen = matches!(message, TungsteniteMessage::Close(_));
-                        if let TungsteniteMessage::Text(text) = &message {
-                            usage_tracker.observe_upstream_text(state.as_ref(), text.as_str()).await;
+                        let upstream_text = match &message {
+                            TungsteniteMessage::Text(text) => Some(text.as_str().to_owned()),
+                            _ => None,
+                        };
+                        if upstream_text
+                            .as_deref()
+                            .is_some_and(ws_text_event_is_terminal)
+                        {
+                            saw_terminal_upstream_event = true;
                         }
                         if let Some(message) = tungstenite_to_axum_message(message)
                             && let Err(err) = downstream_tx.send(message).await
@@ -759,7 +785,15 @@ async fn proxy_websocket_tunnel(
                             failure = Some(format!("failed to forward upstream websocket frame downstream: {err}"));
                             break;
                         }
+                        if let Some(text) = upstream_text.as_deref() {
+                            usage_tracker.observe_upstream_text(state.as_ref(), text).await;
+                        }
                         if close_seen {
+                            if saw_downstream_request && !saw_terminal_upstream_event {
+                                failure = Some(
+                                    "upstream websocket closed before response.completed".to_string(),
+                                );
+                            }
                             break;
                         }
                     }
@@ -776,7 +810,11 @@ async fn proxy_websocket_tunnel(
                         break;
                     }
                     None => {
-                        let message = "upstream websocket closed without a close frame".to_string();
+                        let message = if saw_downstream_request && !saw_terminal_upstream_event {
+                            "upstream websocket closed before response.completed".to_string()
+                        } else {
+                            "upstream websocket closed without a close frame".to_string()
+                        };
                         upstream_route_failure = Some(message.clone());
                         failure = Some(message);
                         let _ = downstream_tx
@@ -915,6 +953,30 @@ fn ws_event_type_has_billable_usage(event_type: &str) -> bool {
         event_type,
         "response.completed" | "response.done" | "response.failed"
     )
+}
+
+fn websocket_upstream_error_marks_account_ws_unsupported(err: &tungstenite::Error) -> bool {
+    match err {
+        tungstenite::Error::Http(response) => matches!(
+            response.status(),
+            tungstenite::http::StatusCode::FORBIDDEN
+                | tungstenite::http::StatusCode::NOT_FOUND
+                | tungstenite::http::StatusCode::METHOD_NOT_ALLOWED
+                | tungstenite::http::StatusCode::UPGRADE_REQUIRED
+                | tungstenite::http::StatusCode::NOT_IMPLEMENTED
+        ),
+        _ => false,
+    }
+}
+
+fn ws_text_event_is_terminal(event_type: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(event_type) else {
+        return false;
+    };
+    value
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(ws_event_type_has_billable_usage)
 }
 
 async fn persist_ws_usage_event(
@@ -1862,6 +1924,39 @@ mod websocket_tests {
             Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
         );
         assert_eq!(ws_terminal_event_failure_kind("response.completed"), None);
+    }
+
+    #[test]
+    fn websocket_upstream_http_unsupported_errors_mark_account_no_ws() {
+        for status in [
+            tungstenite::http::StatusCode::FORBIDDEN,
+            tungstenite::http::StatusCode::NOT_FOUND,
+            tungstenite::http::StatusCode::METHOD_NOT_ALLOWED,
+            tungstenite::http::StatusCode::UPGRADE_REQUIRED,
+            tungstenite::http::StatusCode::NOT_IMPLEMENTED,
+        ] {
+            let response = tungstenite::http::Response::builder()
+                .status(status)
+                .body(None)
+                .expect("response");
+            assert!(
+                websocket_upstream_error_marks_account_ws_unsupported(&tungstenite::Error::Http(
+                    Box::new(response),
+                )),
+                "status {status} should mark no-ws"
+            );
+        }
+
+        let response = tungstenite::http::Response::builder()
+            .status(tungstenite::http::StatusCode::BAD_GATEWAY)
+            .body(None)
+            .expect("response");
+        assert!(!websocket_upstream_error_marks_account_ws_unsupported(
+            &tungstenite::Error::Http(Box::new(response))
+        ));
+        assert!(!websocket_upstream_error_marks_account_ws_unsupported(
+            &tungstenite::Error::ConnectionClosed
+        ));
     }
 
     #[tokio::test]
