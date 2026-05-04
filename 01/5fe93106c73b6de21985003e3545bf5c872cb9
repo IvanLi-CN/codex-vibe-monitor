@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.55.1",
+  "base_stable_version": "1.55.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-05-04T14:08:34Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.55.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "00e3e2b9280ce8ec83273c22ec38a6ebee1669e6",
+  "pr_number": 391,
+  "pr_title": "fix(proxy): persist websocket settings switches",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.55.1",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.55.1",
+  "target_sha": "015fe93106c73b6de21985003e3545bf5c872cb9",
+  "type_label": "type:patch"
+}
