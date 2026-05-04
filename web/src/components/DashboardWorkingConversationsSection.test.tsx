@@ -1278,6 +1278,92 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(onOpenInvocation).toHaveBeenCalledTimes(2);
   });
 
+  it("opens the current invocation from the sequence id button only", () => {
+    const onOpenInvocation = vi.fn();
+    const response = createResponse([
+      createConversation("pck-sequence-open", [
+        createPreview({
+          id: 2,
+          invokeId: "invoke-sequence-current",
+          occurredAt: "2026-04-04T10:04:00Z",
+          status: "running",
+        }),
+        createPreview({
+          id: 1,
+          invokeId: "invoke-sequence-previous",
+          occurredAt: "2026-04-04T10:02:00Z",
+          status: "completed",
+        }),
+      ]),
+    ]);
+    const cards = renderSection(response, { onOpenInvocation });
+
+    const sequenceButton = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-sequence-button"]',
+    );
+    if (!(sequenceButton instanceof HTMLButtonElement)) {
+      throw new Error("missing sequence button");
+    }
+
+    expect(sequenceButton.textContent).toContain(
+      cards[0]?.conversationSequenceId.replace(/^WC-/, "") ?? "",
+    );
+    expect(sequenceButton.getAttribute("aria-label")).toContain(
+      "invoke-sequence-current",
+    );
+    expect(sequenceButton.getAttribute("aria-label")).not.toContain(
+      "invoke-sequence-previous",
+    );
+    expect(sequenceButton.type).toBe("button");
+
+    act(() => {
+      sequenceButton.click();
+    });
+
+    expect(onOpenInvocation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        slotKind: "current",
+        conversationSequenceId: cards[0]?.conversationSequenceId,
+        promptCacheKey: "pck-sequence-open",
+      }),
+    );
+    expect(
+      onOpenInvocation.mock.calls[0]?.[0]?.invocation?.record?.invokeId,
+    ).toBe("invoke-sequence-current");
+    expect(onOpenInvocation).toHaveBeenCalledTimes(1);
+
+    onOpenInvocation.mockClear();
+
+    const card = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-card"]',
+    );
+    if (!(card instanceof HTMLElement)) {
+      throw new Error("missing dashboard card");
+    }
+
+    const statusLabel = Array.from(card.querySelectorAll("span")).find(
+      (node) => node.textContent === "运行中",
+    );
+    if (!(statusLabel instanceof HTMLElement)) {
+      throw new Error("missing status label");
+    }
+
+    const requestMetric = Array.from(card.querySelectorAll("span")).find(
+      (node) => node.textContent === "请求",
+    );
+    if (!(requestMetric instanceof HTMLElement)) {
+      throw new Error("missing request metric");
+    }
+
+    act(() => {
+      statusLabel.click();
+      requestMetric.click();
+      card.click();
+    });
+
+    expect(onOpenInvocation).not.toHaveBeenCalled();
+  });
+
   it("uses theme-aware surface classes instead of a hardcoded dark canvas surface", () => {
     renderSection(
       createResponse([

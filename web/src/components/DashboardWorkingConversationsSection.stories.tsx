@@ -1241,6 +1241,43 @@ export const FailedWithClickableAccount: Story = {
   },
 };
 
+export const SequenceButtonOpensCurrentInvocation: Story = {
+  args: {
+    cards: [],
+    isLoading: false,
+    error: null,
+  },
+  render: () => <DrawerPreviewStory response={failedClickableResponse} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const sequenceButton = await canvas.findByTestId(
+      "dashboard-working-conversation-sequence-button",
+    );
+
+    sequenceButton.focus();
+    await userEvent.keyboard("{Enter}");
+
+    await waitFor(() => {
+      expect(
+        document.body.querySelector(
+          '[data-testid="dashboard-invocation-detail-drawer"]',
+        ),
+      ).not.toBeNull();
+    });
+    await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
+      "invocation:invoke-failed-clickable-current",
+    );
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Only the compact conversation sequence id is a hot zone for opening the current invocation drawer; the rest of the card header remains passive.",
+      },
+    },
+  },
+};
+
 export const DrawerInteractionFlow: Story = {
   args: {
     cards: [],

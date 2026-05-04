@@ -1203,6 +1203,7 @@ export function DashboardWorkingConversationsSection({
                                 new Date(card.sortAnchorEpoch),
                               )
                             : FALLBACK_CELL;
+                        const sequenceInvocationActionLabel = `${t("dashboard.workingConversations.openInvocation")} · ${t("dashboard.workingConversations.currentInvocation")} · ${displaySequenceId} · ${card.currentInvocation.record.invokeId}`;
 
                         return (
                           <article
@@ -1223,9 +1224,32 @@ export function DashboardWorkingConversationsSection({
                           >
                             <div className="relative">
                               <div className="flex min-w-0 items-center justify-between gap-3">
-                                <div className="min-w-0 shrink truncate font-mono text-[0.95rem] font-semibold tracking-[0.08em] text-base-content">
-                                  {displaySequenceId}
-                                </div>
+                                {onOpenInvocation ? (
+                                  <button
+                                    type="button"
+                                    data-testid="dashboard-working-conversation-sequence-button"
+                                    className="inline-flex min-w-0 shrink cursor-pointer appearance-none items-center border-0 bg-transparent p-0 text-left font-mono text-[0.95rem] font-semibold tracking-[0.08em] text-base-content transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                                    aria-label={sequenceInvocationActionLabel}
+                                    title={sequenceInvocationActionLabel}
+                                    onClick={() => {
+                                      onOpenInvocation({
+                                        slotKind: "current",
+                                        conversationSequenceId:
+                                          card.conversationSequenceId,
+                                        promptCacheKey: card.promptCacheKey,
+                                        invocation: card.currentInvocation,
+                                      });
+                                    }}
+                                  >
+                                    <span className="min-w-0 truncate">
+                                      {displaySequenceId}
+                                    </span>
+                                  </button>
+                                ) : (
+                                  <div className="min-w-0 shrink truncate font-mono text-[0.95rem] font-semibold tracking-[0.08em] text-base-content">
+                                    {displaySequenceId}
+                                  </div>
+                                )}
                                 <div className="flex shrink-0 items-center justify-end gap-2 whitespace-nowrap text-[10px] text-base-content/62">
                                   <span className="font-mono">
                                     {sortAnchorLabel}

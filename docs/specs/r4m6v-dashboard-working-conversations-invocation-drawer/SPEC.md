@@ -4,7 +4,7 @@
 
 - Status: 已完成（4/4）
 - Created: 2026-04-06
-- Last: 2026-04-06
+- Last: 2026-05-04
 
 ## 背景 / 问题陈述
 
@@ -17,6 +17,7 @@
 ### Goals
 
 - 让 Dashboard 工作中对话卡片的“当前调用 / 上一条调用”真实槽位都可点击，并在当前页右侧打开调用详情抽屉。
+- 让卡片左上角短序列号成为“当前调用”的窄热区入口；头部时间、状态、状态圆点、汇总指标和卡片空白区域不触发抽屉。
 - 调用详情抽屉使用现有 `/api/invocations?requestId=<invokeId>` 精确查 full record，再复用既有 invocation detail、异常 response body 与 pool attempts 语义。
 - 保持账号点击的高优先级：如果槽位内账号有值，点击账号时不打开调用抽屉，而是直接切换到共享上游账号抽屉。
 - Dashboard 页同一时刻只允许存在一个右侧抽屉；账号抽屉与调用抽屉之间采用单抽屉交替语义。
@@ -34,7 +35,7 @@
 ### In scope
 
 - `web/src/pages/Dashboard.tsx`：持有页面级 `selectedInvocation` 状态，并与共享账号抽屉实现单右抽屉交替。
-- `web/src/components/DashboardWorkingConversationsSection.tsx`：为当前 / 上一条真实调用槽增加点击与键盘打开能力，同时保持账号按钮阻断冒泡。
+- `web/src/components/DashboardWorkingConversationsSection.tsx`：为当前 / 上一条真实调用槽增加点击与键盘打开能力；卡片短序列号额外打开当前调用；同时保持账号按钮阻断冒泡。
 - `web/src/components/DashboardInvocationDetailDrawer.tsx`：新增 Dashboard 专用调用详情抽屉，复用现有 invocation detail shared 语义。
 - `web/src/lib/dashboardWorkingConversations.ts`：补充 Dashboard 选择态数据结构，承接调用槽打开抽屉所需的完整 payload。
 - `web/src/i18n/translations.ts`、相关 Vitest、Storybook stories：补齐抽屉文案、回归与可截图入口。
@@ -51,6 +52,8 @@
 ### MUST
 
 - 真实调用槽位必须可点击，并支持键盘 `Enter / Space` 打开调用详情抽屉。
+- 卡片左上角短序列号必须可点击，并支持键盘 `Enter / Space` 打开当前调用详情抽屉。
+- 序列号是唯一新增的卡片头部热区；时间、状态、状态圆点、三项汇总指标与卡片空白区域不得打开调用抽屉。
 - 占位槽必须保持不可点击，也不得拥有伪按钮语义。
 - 点击槽位内账号文本时，必须阻断槽位打开逻辑，直接打开共享上游账号抽屉。
 - Dashboard 调用详情抽屉必须先按 `requestId=invokeId` 精确加载 full record；若查不到记录或请求失败，错误 / 空态只显示在抽屉内部。
@@ -73,6 +76,7 @@
 ### Core flows
 
 - 用户点击 Dashboard 卡片中的“当前调用”或“上一条调用”槽位时，当前页右侧打开调用详情抽屉，并显示该调用的完整详情。
+- 用户点击卡片左上角短序列号时，当前页右侧打开该卡片当前调用的详情抽屉；点击同一头部中的时间、状态、状态圆点或指标区不会打开抽屉。
 - 用户点击卡片槽位内的账号文本时，当前页直接打开共享上游账号抽屉；如果调用抽屉已打开，则先关闭调用抽屉再切换到账号抽屉。
 - 用户在调用详情抽屉内点击账号入口时，交互语义与卡片内账号点击一致：调用抽屉关闭，共享账号抽屉打开。
 - 用户关闭任一抽屉后，Dashboard 主体状态、排序和卡片布局保持不变。
@@ -88,13 +92,13 @@
 
 ### 接口清单（Inventory）
 
-| 接口（Name） | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes） |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `GET /api/invocations?requestId=<invokeId>` | HTTP API | internal | Reuse | None | backend | dashboard invocation drawer | 精确回查 full record |
-| `GET /api/invocations/:id/detail` | HTTP API | internal | Reuse | None | backend | dashboard invocation drawer | 仅异常记录按需读取 |
-| `GET /api/invocations/:id/response-body` | HTTP API | internal | Reuse | None | backend | dashboard invocation drawer | 仅异常记录按需读取 |
-| `GET /api/invocations/:invokeId/pool-attempts` | HTTP API | internal | Reuse | None | backend | dashboard invocation drawer | 复用 shared pool attempts |
-| `/api/pool/upstream-accounts/:id` | HTTP API | internal | Reuse | None | backend | shared account drawer | 账号点击继续走共享抽屉 |
+| 接口（Name）                                   | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers）         | 备注（Notes）             |
+| ---------------------------------------------- | ------------ | ------------- | -------------- | ------------------------ | --------------- | --------------------------- | ------------------------- |
+| `GET /api/invocations?requestId=<invokeId>`    | HTTP API     | internal      | Reuse          | None                     | backend         | dashboard invocation drawer | 精确回查 full record      |
+| `GET /api/invocations/:id/detail`              | HTTP API     | internal      | Reuse          | None                     | backend         | dashboard invocation drawer | 仅异常记录按需读取        |
+| `GET /api/invocations/:id/response-body`       | HTTP API     | internal      | Reuse          | None                     | backend         | dashboard invocation drawer | 仅异常记录按需读取        |
+| `GET /api/invocations/:invokeId/pool-attempts` | HTTP API     | internal      | Reuse          | None                     | backend         | dashboard invocation drawer | 复用 shared pool attempts |
+| `/api/pool/upstream-accounts/:id`              | HTTP API     | internal      | Reuse          | None                     | backend         | shared account drawer       | 账号点击继续走共享抽屉    |
 
 ### 契约文档（按 Kind 拆分）
 
@@ -103,6 +107,8 @@
 ## 验收标准（Acceptance Criteria）
 
 - Given Dashboard 工作中对话卡片存在真实调用槽位，When 用户点击“当前调用”或“上一条调用”，Then 当前页右侧打开调用详情抽屉，且 header 能稳定显示槽位来源、状态、对话序列号、时间、Prompt Cache Key 与 `invokeId`。
+- Given Dashboard 工作中对话卡片显示短序列号，When 用户点击该序列号或对其按 `Enter / Space`，Then 当前页右侧打开当前调用详情抽屉，且 `invokeId` 对应当前调用。
+- Given 用户点击卡片头部时间、状态、状态圆点、三项汇总指标或卡片空白区域，When 交互发生，Then 不会打开调用详情抽屉。
 - Given 某个槽位中账号有值，When 用户点击账号文本，Then 不会先闪开调用抽屉，而是直接切到共享账号抽屉，并保持页面同一时刻只有一个右侧抽屉。
 - Given 调用详情抽屉打开，When 当前调用是异常记录，Then 抽屉继续显示异常响应体与结构化诊断信息；When 当前调用不是异常记录，Then 不会额外请求异常正文。
 - Given `requestId` 查不到 full record 或请求失败，When 调用详情抽屉渲染，Then 错误 / 空态只留在抽屉内部，不污染 Dashboard 主体区。
@@ -154,6 +160,10 @@
 
   ![Dashboard account drawer switch](./assets/dashboard-account-drawer-switch.png)
 
+- Storybook Canvas `dashboard-workingconversationssection--sequence-button-opens-current-invocation`，视口 `1440x1100`，验证只有卡片左上角短序列号作为热区打开当前调用详情抽屉，抽屉状态绑定当前调用 `invokeId`。
+
+  ![Dashboard sequence invocation drawer open](./assets/dashboard-sequence-invocation-drawer-open.png)
+
 ## 实现里程碑（Milestones / Delivery checklist）
 
 - [x] M1: 新建增量 spec 并登记 `docs/specs/README.md`。
@@ -166,6 +176,7 @@
 - Dashboard 页层持有调用抽屉选择态，与现有 `upstreamAccountId` 共同组成单抽屉交替协调层。
 - 调用槽位使用 `role="button"` + 键盘事件而不是原生 `<button>`，从而允许槽位内部账号按钮保持合法、可聚焦且可阻断冒泡。
 - Dashboard 调用详情抽屉只负责“按 `invokeId` 回查 full record + 复用 shared detail renderer”，避免复制 records 页的完整实现或新增后端契约。
+- 卡片短序列号复用当前调用 selection，不引入卡片整面点击语义，降低误触风险。
 - Storybook 使用 mock-only fetch 拦截稳定复现调用抽屉和账号切换，不依赖真实后端或真实账号数据。
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
@@ -178,6 +189,7 @@
 ## 变更记录（Change log）
 
 - 2026-04-06: 创建增量 spec，冻结 Dashboard 工作中对话卡片的调用详情抽屉、账号点击优先级与单抽屉交替边界。
+- 2026-05-04: 补充短序列号作为当前调用详情抽屉入口，并明确卡片头部其它区域与汇总指标不新增热区。
 - 2026-04-06: 完成 Dashboard 页层抽屉协调、调用详情抽屉、Vitest、Storybook 入口与视觉证据落盘；截图提交已获授权，交付收敛到 PR ready。
 
 ## 参考（References）
