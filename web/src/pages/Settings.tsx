@@ -510,6 +510,22 @@ export default function SettingsPage() {
     })
   }, [currentProxy, persistProxy])
 
+  const handleToggleWebsocketDownstream = useCallback(() => {
+    if (!currentProxy) return
+    persistProxy({
+      ...currentProxy,
+      websocketEnabled: !currentProxy.websocketEnabled,
+    })
+  }, [currentProxy, persistProxy])
+
+  const handleToggleWebsocketUpstream = useCallback(() => {
+    if (!currentProxy) return
+    persistProxy({
+      ...currentProxy,
+      upstreamWebsocketDefaultEnabled: !currentProxy.upstreamWebsocketDefaultEnabled,
+    })
+  }, [currentProxy, persistProxy])
+
   const handleTogglePresetModel = useCallback(
     (modelId: string) => {
       if (!currentProxy) return
@@ -1134,7 +1150,7 @@ export default function SettingsPage() {
                     <div className="text-sm leading-snug text-base-content/70">{t('settings.proxy.websocketRuntimeHint')}</div>
                   </div>
                   <Badge variant="secondary" className="shrink-0">
-                    {t('settings.proxy.websocketEnvLabel')}
+                    {t('settings.autoSaved')}
                   </Badge>
                 </div>
 
@@ -1147,7 +1163,12 @@ export default function SettingsPage() {
                         <div className="break-all font-mono text-[11px] text-base-content/55">OPENAI_PROXY_WEBSOCKET_ENABLED</div>
                       </div>
                       <div className="flex shrink-0 flex-col items-end gap-2">
-                        <Switch checked={currentProxy.websocketEnabled} disabled aria-label={t('settings.proxy.websocketDownstreamLabel')} />
+                        <Switch
+                          checked={currentProxy.websocketEnabled}
+                          disabled={isProxySaving}
+                          aria-label={t('settings.proxy.websocketDownstreamLabel')}
+                          onCheckedChange={() => handleToggleWebsocketDownstream()}
+                        />
                         <Badge variant={currentProxy.websocketEnabled ? 'success' : 'secondary'}>
                           {currentProxy.websocketEnabled ? t('settings.proxy.websocketEnabled') : t('settings.proxy.websocketDisabled')}
                         </Badge>
@@ -1165,8 +1186,9 @@ export default function SettingsPage() {
                       <div className="flex shrink-0 flex-col items-end gap-2">
                         <Switch
                           checked={currentProxy.upstreamWebsocketDefaultEnabled}
-                          disabled
+                          disabled={isProxySaving}
                           aria-label={t('settings.proxy.websocketUpstreamLabel')}
+                          onCheckedChange={() => handleToggleWebsocketUpstream()}
                         />
                         <Badge variant={currentProxy.upstreamWebsocketDefaultEnabled ? 'success' : 'secondary'}>
                           {currentProxy.upstreamWebsocketDefaultEnabled

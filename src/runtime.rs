@@ -86,6 +86,7 @@ pub(crate) async fn run() -> Result<()> {
     }
 
     let pricing_catalog = load_pricing_catalog(&pool).await?;
+    ensure_proxy_websocket_settings_initialized(&pool, &config).await?;
     let proxy_model_settings = Arc::new(RwLock::new(load_proxy_model_settings(&pool).await?));
     let forward_proxy_settings = load_forward_proxy_settings(&pool).await?;
     let forward_proxy_runtime = load_forward_proxy_runtime_states(&pool).await?;

@@ -1309,6 +1309,9 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             merge_upstream_enabled INTEGER NOT NULL DEFAULT 0,
             fast_mode_rewrite_mode TEXT NOT NULL DEFAULT 'disabled',
             upstream_429_max_retries INTEGER NOT NULL DEFAULT 3,
+            openai_proxy_websocket_enabled INTEGER NOT NULL DEFAULT 0,
+            openai_proxy_upstream_websocket_default_enabled INTEGER NOT NULL DEFAULT 0,
+            websocket_settings_migrated INTEGER NOT NULL DEFAULT 0,
             enabled_preset_models_json TEXT,
             preset_models_migrated INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -1371,6 +1374,46 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         return Err(err).context("failed to ensure upstream_429_max_retries column");
     }
 
+    if let Err(err) = sqlx::query(
+        r#"
+        ALTER TABLE proxy_model_settings
+        ADD COLUMN openai_proxy_websocket_enabled INTEGER NOT NULL DEFAULT 0
+        "#,
+    )
+    .execute(pool)
+    .await
+        && !err.to_string().contains("duplicate column name")
+    {
+        return Err(err).context("failed to ensure openai_proxy_websocket_enabled column");
+    }
+
+    if let Err(err) = sqlx::query(
+        r#"
+        ALTER TABLE proxy_model_settings
+        ADD COLUMN openai_proxy_upstream_websocket_default_enabled INTEGER NOT NULL DEFAULT 0
+        "#,
+    )
+    .execute(pool)
+    .await
+        && !err.to_string().contains("duplicate column name")
+    {
+        return Err(err)
+            .context("failed to ensure openai_proxy_upstream_websocket_default_enabled column");
+    }
+
+    if let Err(err) = sqlx::query(
+        r#"
+        ALTER TABLE proxy_model_settings
+        ADD COLUMN websocket_settings_migrated INTEGER NOT NULL DEFAULT 0
+        "#,
+    )
+    .execute(pool)
+    .await
+        && !err.to_string().contains("duplicate column name")
+    {
+        return Err(err).context("failed to ensure websocket_settings_migrated column");
+    }
+
     let default_enabled_models_json = serde_json::to_string(&default_enabled_preset_models())
         .context("failed to serialize default enabled preset models")?;
 
@@ -1381,15 +1424,21 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             hijack_enabled,
             merge_upstream_enabled,
             upstream_429_max_retries,
+            openai_proxy_websocket_enabled,
+            openai_proxy_upstream_websocket_default_enabled,
+            websocket_settings_migrated,
             enabled_preset_models_json
         )
-        VALUES (?1, ?2, ?3, ?4, ?5)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
         "#,
     )
     .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
     .bind(DEFAULT_PROXY_MODELS_HIJACK_ENABLED as i64)
     .bind(DEFAULT_PROXY_MODELS_MERGE_UPSTREAM_ENABLED as i64)
     .bind(i64::from(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES))
+    .bind(DEFAULT_OPENAI_PROXY_WEBSOCKET_ENABLED as i64)
+    .bind(DEFAULT_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED as i64)
+    .bind(0_i64)
     .bind(default_enabled_models_json)
     .execute(pool)
     .await

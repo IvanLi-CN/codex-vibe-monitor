@@ -332,12 +332,16 @@ function StorybookSettingsMock({
           mergeUpstreamEnabled: boolean
           fastModeRewriteMode?: 'disabled' | 'fill_missing' | 'force_priority'
           upstream429MaxRetries: number
+          websocketEnabled: boolean
+          upstreamWebsocketDefaultEnabled: boolean
           enabledModels: string[]
         }>({
           hijackEnabled: settingsRef.current.proxy.hijackEnabled,
           mergeUpstreamEnabled: settingsRef.current.proxy.mergeUpstreamEnabled,
           fastModeRewriteMode: settingsRef.current.proxy.fastModeRewriteMode,
           upstream429MaxRetries: settingsRef.current.proxy.upstream429MaxRetries,
+          websocketEnabled: settingsRef.current.proxy.websocketEnabled,
+          upstreamWebsocketDefaultEnabled: settingsRef.current.proxy.upstreamWebsocketDefaultEnabled,
           enabledModels: settingsRef.current.proxy.enabledModels,
         })
 
@@ -348,6 +352,8 @@ function StorybookSettingsMock({
           mergeUpstreamEnabled: body.hijackEnabled === true && body.mergeUpstreamEnabled === true,
           fastModeRewriteMode: 'disabled',
           upstream429MaxRetries: Math.max(0, Math.min(5, Math.trunc(body.upstream429MaxRetries || 0))),
+          websocketEnabled: body.websocketEnabled === true,
+          upstreamWebsocketDefaultEnabled: body.upstreamWebsocketDefaultEnabled === true,
           enabledModels: settingsRef.current.proxy.models.filter((model) => enabledSet.has(model)),
         }
         settingsRef.current.proxy = nextProxy

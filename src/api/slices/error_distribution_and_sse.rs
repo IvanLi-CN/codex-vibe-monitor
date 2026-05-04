@@ -1745,7 +1745,7 @@ pub(crate) async fn get_settings(
     let proxy = state.proxy_model_settings.read().await.clone();
     let forward_proxy = build_forward_proxy_settings_response(state.as_ref()).await?;
     Ok(Json(SettingsResponse {
-        proxy: ProxyModelSettingsResponse::from_settings(proxy, &state.config),
+        proxy: ProxyModelSettingsResponse::from_settings(proxy),
         forward_proxy,
         pricing: PricingSettingsResponse::from_catalog(&pricing),
     }))
@@ -1775,6 +1775,8 @@ pub(crate) async fn put_proxy_settings(
         merge_upstream_enabled,
         fast_mode_rewrite_mode: _legacy_fast_mode_rewrite_mode,
         upstream_429_max_retries,
+        websocket_enabled,
+        upstream_websocket_default_enabled,
         enabled_models,
     } = payload;
 
@@ -1785,6 +1787,9 @@ pub(crate) async fn put_proxy_settings(
         merge_upstream_enabled,
         upstream_429_max_retries: upstream_429_max_retries
             .unwrap_or(current.upstream_429_max_retries),
+        websocket_enabled: websocket_enabled.unwrap_or(current.websocket_enabled),
+        upstream_websocket_default_enabled: upstream_websocket_default_enabled
+            .unwrap_or(current.upstream_websocket_default_enabled),
         enabled_preset_models: enabled_models,
     }
     .normalized();
@@ -1793,10 +1798,7 @@ pub(crate) async fn put_proxy_settings(
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     let mut guard = state.proxy_model_settings.write().await;
     *guard = next.clone();
-    Ok(Json(ProxyModelSettingsResponse::from_settings(
-        next,
-        &state.config,
-    )))
+    Ok(Json(ProxyModelSettingsResponse::from_settings(next)))
 }
 
 pub(crate) async fn put_pricing_settings(

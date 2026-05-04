@@ -208,17 +208,17 @@ bun run worktree:bootstrap
 
 ## 第一次部署最该先确认的配置
 
-| 变量                                              | 作用                                                                                   |
-| ------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `HTTP_BIND`                                       | 服务监听地址                                                                           |
-| `DATABASE_PATH`                                   | SQLite 主库路径                                                                        |
-| `OPENAI_UPSTREAM_BASE_URL`                        | OpenAI 兼容上游地址                                                                    |
-| `OPENAI_PROXY_WEBSOCKET_ENABLED`                  | 是否允许下游连接 `/v1/*` WebSocket，默认关闭                                           |
-| `OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED` | 是否默认允许本服务连接上游 WebSocket，默认关闭；带系统标签 `不支持 WS` 的账号仍走 HTTP |
-| `UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET`             | Account Pool 写入与 OAuth 绑定所需密钥                                                 |
-| `RETENTION_ENABLED`                               | 是否启用后台保留任务                                                                   |
-| `ARCHIVE_DIR`                                     | 归档目录                                                                               |
-| `PROXY_RAW_DIR`                                   | 原始 payload 落盘目录                                                                  |
+| 变量                                              | 作用                                                                                                                                |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `HTTP_BIND`                                       | 服务监听地址                                                                                                                        |
+| `DATABASE_PATH`                                   | SQLite 主库路径                                                                                                                     |
+| `OPENAI_UPSTREAM_BASE_URL`                        | OpenAI 兼容上游地址                                                                                                                 |
+| `OPENAI_PROXY_WEBSOCKET_ENABLED`                  | 是否允许下游连接 `/v1/*` WebSocket 的首次初始化默认值，默认关闭；之后以设置页全局开关为准                                           |
+| `OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED` | 是否默认允许本服务连接上游 WebSocket 的首次初始化默认值，默认关闭；之后以设置页全局开关为准，带系统标签 `不支持 WS` 的账号仍走 HTTP |
+| `UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET`             | Account Pool 写入与 OAuth 绑定所需密钥                                                                                              |
+| `RETENTION_ENABLED`                               | 是否启用后台保留任务                                                                                                                |
+| `ARCHIVE_DIR`                                     | 归档目录                                                                                                                            |
+| `PROXY_RAW_DIR`                                   | 原始 payload 落盘目录                                                                                                               |
 
 更完整的部署与配置说明请直接看：
 

@@ -3,14 +3,14 @@
 ## Coverage
 
 - 已实现：`/v1/*` WebSocket upgrade 检测与 pool 鉴权复用；非 upgrade HTTP 请求继续走原 HTTP proxy。
-- 已实现：`OPENAI_PROXY_WEBSOCKET_ENABLED` downstream 启用开关，默认关闭；关闭时 WS upgrade 返回 `503` 且不连接上游。
-- 已实现：`OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED` upstream 默认 WS 开关，默认关闭；关闭时 downstream WS 不会连接上游 WS。
+- 已实现：`websocketEnabled` downstream 全局设置，默认关闭；关闭时 WS upgrade 返回 `503` 且不连接上游。`OPENAI_PROXY_WEBSOCKET_ENABLED` 只作为首次初始化默认值。
+- 已实现：`upstreamWebsocketDefaultEnabled` upstream 默认 WS 全局设置，默认关闭；关闭时 downstream WS 不会连接上游 WS。`OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED` 只作为首次初始化默认值。
 - 已实现：受保护系统 tag `unsupported_transport:websocket` / `不支持 WS`；带 tag 账号退出 WS 上游候选，HTTP 路由不受影响。
 - 已实现：账号池选择、downstream upgrade 前的上游 WS 握手 failover、上游 `ws/wss` URL 构造与透明 text/binary/ping/pong/close 帧中继。
 - 已实现：API key 与 OAuth 账号的 upstream `Authorization` 覆盖、安全 header 转发、HTTP/HTTPS CONNECT 与 SOCKS5/SOCKS5H forward-proxy 隧道。
 - 已实现：连接级 pool attempt 记录、reservation 释放与广播。
 - 已实现：Responses WS terminal usage 事件的保守计费解析，完整 `input_tokens` + `output_tokens` 才生成 invocation/cost 记录。
-- 已实现：设置页只读展示 downstream WS 与 upstream WS 默认开关状态，状态来自启动环境变量；账号池 Storybook 展示 `不支持 WS` 系统标签。
+- 已实现：设置页可保存 downstream WS 与 upstream WS 默认开关，后续 WS 请求运行时读取持久化全局设置；账号池 Storybook 展示 `不支持 WS` 系统标签。
 
 ## Account Failover
 
@@ -25,8 +25,9 @@
 - `cargo check`
 - `cargo test websocket_ -- --nocapture`
 - `cargo test app_config_from_sources_reads_websocket_enabled_env -- --nocapture`
+- `cargo test proxy_websocket_settings_initialize_from_env_once_then_persist -- --nocapture`
 - `cd web && bun run test -- useSettings lib/api`
 - `cd web && bun run build`
 - Storybook visual evidence:
   - `docs/specs/w5s2x-openai-websocket-proxy/assets/upstream-account-ws-unsupported-badge.png`
-  - `docs/specs/w5s2x-openai-websocket-proxy/assets/settings-websocket-runtime-gates.png`
+  - `docs/specs/w5s2x-openai-websocket-proxy/assets/settings-websocket-global-switches.png`
