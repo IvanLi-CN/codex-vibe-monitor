@@ -1341,6 +1341,45 @@ fn app_config_from_sources_reads_proxy_timeout_envs() {
 }
 
 #[test]
+fn app_config_from_sources_reads_websocket_enabled_env() {
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
+    let previous = env::var_os(ENV_OPENAI_PROXY_WEBSOCKET_ENABLED);
+    let previous_upstream = env::var_os(ENV_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED);
+
+    unsafe { env::remove_var(ENV_OPENAI_PROXY_WEBSOCKET_ENABLED) };
+    unsafe { env::remove_var(ENV_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED) };
+    let default_config =
+        AppConfig::from_sources(&CliArgs::default()).expect("default websocket config parses");
+    assert_eq!(
+        default_config.openai_proxy_websocket_enabled,
+        DEFAULT_OPENAI_PROXY_WEBSOCKET_ENABLED
+    );
+    assert_eq!(
+        default_config.openai_proxy_upstream_websocket_default_enabled,
+        DEFAULT_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED
+    );
+
+    unsafe { env::set_var(ENV_OPENAI_PROXY_WEBSOCKET_ENABLED, "true") };
+    unsafe { env::set_var(ENV_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED, "true") };
+    let enabled_config =
+        AppConfig::from_sources(&CliArgs::default()).expect("enabled websocket config parses");
+
+    match previous {
+        Some(value) => unsafe { env::set_var(ENV_OPENAI_PROXY_WEBSOCKET_ENABLED, value) },
+        None => unsafe { env::remove_var(ENV_OPENAI_PROXY_WEBSOCKET_ENABLED) },
+    }
+    match previous_upstream {
+        Some(value) => unsafe {
+            env::set_var(ENV_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED, value)
+        },
+        None => unsafe { env::remove_var(ENV_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED) },
+    }
+
+    assert!(enabled_config.openai_proxy_websocket_enabled);
+    assert!(enabled_config.openai_proxy_upstream_websocket_default_enabled);
+}
+
+#[test]
 fn app_config_from_sources_rejects_zero_pool_upstream_responses_attempt_timeout() {
     let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
     let _env = EnvVarGuard::set(&[(ENV_POOL_UPSTREAM_RESPONSES_ATTEMPT_TIMEOUT_SECS, Some("0"))]);
@@ -1388,6 +1427,9 @@ fn test_config() -> AppConfig {
             DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS,
         ),
         openai_proxy_max_request_body_bytes: DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
+        openai_proxy_websocket_enabled: DEFAULT_OPENAI_PROXY_WEBSOCKET_ENABLED,
+        openai_proxy_upstream_websocket_default_enabled:
+            DEFAULT_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED,
         proxy_request_concurrency_limit: DEFAULT_PROXY_REQUEST_CONCURRENCY_LIMIT,
         proxy_request_concurrency_wait_timeout: Duration::from_millis(
             DEFAULT_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS,

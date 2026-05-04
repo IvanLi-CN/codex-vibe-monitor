@@ -897,6 +897,8 @@ export interface ProxySettings {
   mergeUpstreamEnabled: boolean;
   fastModeRewriteMode: ProxyFastModeRewriteMode;
   upstream429MaxRetries: number;
+  websocketEnabled: boolean;
+  upstreamWebsocketDefaultEnabled: boolean;
   defaultHijackEnabled: boolean;
   models: string[];
   enabledModels: string[];
@@ -1438,6 +1440,8 @@ function normalizeProxySettings(raw: unknown): ProxySettings {
       0,
       Math.min(5, Math.trunc(normalizeFiniteNumber(payload.upstream429MaxRetries) ?? 3)),
     ),
+    websocketEnabled: payload.websocketEnabled === true,
+    upstreamWebsocketDefaultEnabled: payload.upstreamWebsocketDefaultEnabled === true,
     defaultHijackEnabled: payload.defaultHijackEnabled === true,
     models,
     enabledModels: models.filter((model) => enabledModelSet.has(model)),

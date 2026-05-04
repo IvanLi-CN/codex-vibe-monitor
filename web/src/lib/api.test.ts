@@ -877,6 +877,8 @@ describe("settings normalization", () => {
               mergeUpstreamEnabled: true,
               fastModeRewriteMode: "disabled",
               upstream429MaxRetries: 5,
+              websocketEnabled: true,
+              upstreamWebsocketDefaultEnabled: false,
               defaultHijackEnabled: false,
               models: ["gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
               enabledModels: ["gpt-5.5", "gpt-5.5-pro", "missing-model"],
@@ -916,6 +918,8 @@ describe("settings normalization", () => {
     const settings = await fetchSettings();
     expect(settings.proxy.hijackEnabled).toBe(true);
     expect(settings.proxy.upstream429MaxRetries).toBe(5);
+    expect(settings.proxy.websocketEnabled).toBe(true);
+    expect(settings.proxy.upstreamWebsocketDefaultEnabled).toBe(false);
     expect(settings.proxy.enabledModels).toEqual(["gpt-5.5", "gpt-5.5-pro"]);
     expect(settings.forwardProxy.subscriptionUpdateIntervalSecs).toBe(900);
     expect(settings.forwardProxy.nodes).toHaveLength(1);
@@ -932,6 +936,8 @@ describe("settings normalization", () => {
             mergeUpstreamEnabled: false,
             fastModeRewriteMode: "disabled",
             upstream429MaxRetries: 9,
+            websocketEnabled: true,
+            upstreamWebsocketDefaultEnabled: true,
             defaultHijackEnabled: false,
             models: ["gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
             enabledModels: ["gpt-5.5", "gpt-5.5-pro", "missing-model"],
@@ -952,6 +958,8 @@ describe("settings normalization", () => {
     expect(response.hijackEnabled).toBe(true);
     expect(response.mergeUpstreamEnabled).toBe(false);
     expect(response.upstream429MaxRetries).toBe(5);
+    expect(response.websocketEnabled).toBe(true);
+    expect(response.upstreamWebsocketDefaultEnabled).toBe(true);
     expect(response.enabledModels).toEqual(["gpt-5.5", "gpt-5.5-pro"]);
   });
 

@@ -2547,6 +2547,9 @@
                 DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS,
             ),
             openai_proxy_max_request_body_bytes: DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
+            openai_proxy_websocket_enabled: DEFAULT_OPENAI_PROXY_WEBSOCKET_ENABLED,
+            openai_proxy_upstream_websocket_default_enabled:
+                DEFAULT_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED,
             proxy_request_concurrency_limit: DEFAULT_PROXY_REQUEST_CONCURRENCY_LIMIT,
             proxy_request_concurrency_wait_timeout: Duration::from_millis(
                 DEFAULT_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS,

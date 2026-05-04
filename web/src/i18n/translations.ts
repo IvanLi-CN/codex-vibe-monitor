@@ -1235,6 +1235,18 @@ const baseTranslations = {
     "settings.proxy.upstream429RetriesDisabled": "Disabled (0 retries)",
     "settings.proxy.upstream429RetriesOnce": "1 retry",
     "settings.proxy.upstream429RetriesMany": "{{count}} retries",
+    "settings.proxy.websocketRuntimeTitle": "WebSocket runtime gates",
+    "settings.proxy.websocketRuntimeHint":
+      "These switches are read from environment variables at startup and require a service restart to change.",
+    "settings.proxy.websocketDownstreamLabel": "Allow downstream WS",
+    "settings.proxy.websocketDownstreamHint":
+      "Controls whether clients may upgrade /v1/* requests to WebSocket.",
+    "settings.proxy.websocketUpstreamLabel": "Use upstream WS by default",
+    "settings.proxy.websocketUpstreamHint":
+      "Controls whether this proxy tries ws/wss upstream connections for WS requests.",
+    "settings.proxy.websocketEnabled": "Enabled",
+    "settings.proxy.websocketDisabled": "Disabled",
+    "settings.proxy.websocketEnvLabel": "Env",
     "settings.forwardProxy.title": "Forward proxy routing",
     "settings.forwardProxy.description":
       "Configure upstream forwarding proxies, automatic routing inventory, subscription refresh interval, and live health metrics.",
@@ -3061,6 +3073,15 @@ const baseTranslations = {
     "settings.proxy.upstream429RetriesDisabled": "关闭（0 次）",
     "settings.proxy.upstream429RetriesOnce": "重试 1 次",
     "settings.proxy.upstream429RetriesMany": "重试 {{count}} 次",
+    "settings.proxy.websocketRuntimeTitle": "WebSocket 运行期开关",
+    "settings.proxy.websocketRuntimeHint": "这些开关从启动环境变量读取，修改后需要重启服务生效。",
+    "settings.proxy.websocketDownstreamLabel": "允许下游 WS",
+    "settings.proxy.websocketDownstreamHint": "控制客户端是否可将 `/v1/*` 请求升级为 WebSocket。",
+    "settings.proxy.websocketUpstreamLabel": "默认使用上游 WS",
+    "settings.proxy.websocketUpstreamHint": "控制本服务是否为 WS 请求尝试连接上游 ws/wss。",
+    "settings.proxy.websocketEnabled": "已开启",
+    "settings.proxy.websocketDisabled": "已关闭",
+    "settings.proxy.websocketEnvLabel": "环境变量",
     "settings.forwardProxy.title": "正向代理路由",
     "settings.forwardProxy.description":
       "配置上游请求代理、自动路由节点池、订阅自动刷新周期与运行期健康指标。",

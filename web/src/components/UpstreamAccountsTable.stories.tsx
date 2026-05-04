@@ -42,6 +42,13 @@ const rosterTags: AccountTagSummary[] = [
     systemKey: 'unsupported_model:gpt-5.5',
     protected: true,
   },
+  {
+    id: 56,
+    name: '不支持 WS',
+    routingRule: defaultEffectiveRoutingRule,
+    systemKey: 'unsupported_transport:websocket',
+    protected: true,
+  },
 ]
 
 function usage(
@@ -457,6 +464,27 @@ export const UnsupportedGpt55Badge: Story = {
     docs: {
       description: {
         story: '展示系统标签「不支持 gpt-5.5」在账号列表中的 warning badge，用于筛选和批量移除恢复探测。',
+      },
+    },
+  },
+}
+
+export const UnsupportedWebSocketBadge: Story = {
+  args: {
+    items: [
+      {
+        ...items[0],
+        displayName: 'OAuth account marked unsupported for WS',
+        tags: [rosterTags[5], rosterTags[0]],
+      },
+    ],
+    selectedId: 11,
+    labels: chineseLabels,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story: '展示系统标签「不支持 WS」在账号列表中的 warning badge，用于标记不参与上游 WS 候选但仍可走 HTTP 的账号。',
       },
     },
   },

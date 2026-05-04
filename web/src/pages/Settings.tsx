@@ -1128,6 +1128,58 @@ export default function SettingsPage() {
               </div>
 
               <div className="space-y-3 rounded-xl border border-base-300/75 bg-base-200/28 p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="space-y-1">
+                    <div className="font-medium leading-snug">{t('settings.proxy.websocketRuntimeTitle')}</div>
+                    <div className="text-sm leading-snug text-base-content/70">{t('settings.proxy.websocketRuntimeHint')}</div>
+                  </div>
+                  <Badge variant="secondary" className="shrink-0">
+                    {t('settings.proxy.websocketEnvLabel')}
+                  </Badge>
+                </div>
+
+                <div className="grid gap-3 xl:grid-cols-2">
+                  <div className="rounded-lg border border-base-300/75 bg-base-100/68 p-3.5">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 space-y-1">
+                        <div className="font-medium leading-snug">{t('settings.proxy.websocketDownstreamLabel')}</div>
+                        <div className="text-sm leading-snug text-base-content/70">{t('settings.proxy.websocketDownstreamHint')}</div>
+                        <div className="break-all font-mono text-[11px] text-base-content/55">OPENAI_PROXY_WEBSOCKET_ENABLED</div>
+                      </div>
+                      <div className="flex shrink-0 flex-col items-end gap-2">
+                        <Switch checked={currentProxy.websocketEnabled} disabled aria-label={t('settings.proxy.websocketDownstreamLabel')} />
+                        <Badge variant={currentProxy.websocketEnabled ? 'success' : 'secondary'}>
+                          {currentProxy.websocketEnabled ? t('settings.proxy.websocketEnabled') : t('settings.proxy.websocketDisabled')}
+                        </Badge>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-base-300/75 bg-base-100/68 p-3.5">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 space-y-1">
+                        <div className="font-medium leading-snug">{t('settings.proxy.websocketUpstreamLabel')}</div>
+                        <div className="text-sm leading-snug text-base-content/70">{t('settings.proxy.websocketUpstreamHint')}</div>
+                        <div className="break-all font-mono text-[11px] text-base-content/55">OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED</div>
+                      </div>
+                      <div className="flex shrink-0 flex-col items-end gap-2">
+                        <Switch
+                          checked={currentProxy.upstreamWebsocketDefaultEnabled}
+                          disabled
+                          aria-label={t('settings.proxy.websocketUpstreamLabel')}
+                        />
+                        <Badge variant={currentProxy.upstreamWebsocketDefaultEnabled ? 'success' : 'secondary'}>
+                          {currentProxy.upstreamWebsocketDefaultEnabled
+                            ? t('settings.proxy.websocketEnabled')
+                            : t('settings.proxy.websocketDisabled')}
+                        </Badge>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-3 rounded-xl border border-base-300/75 bg-base-200/28 p-4">
                 <div className="flex items-center justify-between gap-3">
                   <div className="font-medium">{t('settings.proxy.presetModels')}</div>
                   <span className="text-xs text-base-content/70">

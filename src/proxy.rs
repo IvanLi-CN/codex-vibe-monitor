@@ -2,6 +2,7 @@ mod internal {
     use crate::*;
 
     include!("proxy/request_entry.rs");
+    include!("proxy/websocket.rs");
     include!("proxy/failover.rs");
     include!("proxy/route_selection.rs");
     include!("proxy/dispatch.rs");
