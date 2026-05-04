@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.55.0",
+  "base_stable_version": "1.54.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-05-04T13:05:13Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.55.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "86bd4814cc2e1072f6c2b14058e7039878f891a8",
+  "pr_number": 390,
+  "pr_title": "feat(proxy): add websocket tunneling support",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.55.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.55.0",
+  "target_sha": "2fcd936d63d68ae38c4b0e05bd136989fda5a311",
+  "type_label": "type:minor"
+}
