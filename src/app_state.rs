@@ -188,6 +188,8 @@ struct ProxyModelSettings {
     hijack_enabled: bool,
     merge_upstream_enabled: bool,
     upstream_429_max_retries: u8,
+    websocket_enabled: bool,
+    upstream_websocket_default_enabled: bool,
     enabled_preset_models: Vec<String>,
 }
 
@@ -207,6 +209,8 @@ impl Default for ProxyModelSettings {
             hijack_enabled: DEFAULT_PROXY_MODELS_HIJACK_ENABLED,
             merge_upstream_enabled: DEFAULT_PROXY_MODELS_MERGE_UPSTREAM_ENABLED,
             upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
+            websocket_enabled: DEFAULT_OPENAI_PROXY_WEBSOCKET_ENABLED,
+            upstream_websocket_default_enabled: DEFAULT_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED,
             enabled_preset_models: default_enabled_preset_models(),
         }
     }
@@ -225,6 +229,8 @@ impl ProxyModelSettings {
             upstream_429_max_retries: normalize_proxy_upstream_429_max_retries(
                 self.upstream_429_max_retries,
             ),
+            websocket_enabled: self.websocket_enabled,
+            upstream_websocket_default_enabled: self.upstream_websocket_default_enabled,
             enabled_preset_models: normalize_enabled_preset_models(self.enabled_preset_models),
         }
     }
@@ -235,6 +241,8 @@ struct ProxyModelSettingsRow {
     hijack_enabled: i64,
     merge_upstream_enabled: i64,
     upstream_429_max_retries: Option<i64>,
+    openai_proxy_websocket_enabled: Option<i64>,
+    openai_proxy_upstream_websocket_default_enabled: Option<i64>,
     enabled_preset_models_json: Option<String>,
 }
 
@@ -246,6 +254,11 @@ impl From<ProxyModelSettingsRow> for ProxyModelSettings {
             upstream_429_max_retries: decode_proxy_upstream_429_max_retries(
                 value.upstream_429_max_retries,
             ),
+            websocket_enabled: value.openai_proxy_websocket_enabled.unwrap_or(0) != 0,
+            upstream_websocket_default_enabled: value
+                .openai_proxy_upstream_websocket_default_enabled
+                .unwrap_or(0)
+                != 0,
             enabled_preset_models: decode_enabled_preset_models(
                 value.enabled_preset_models_json.as_deref(),
             ),
@@ -263,6 +276,10 @@ struct ProxyModelSettingsUpdateRequest {
     fast_mode_rewrite_mode: Option<String>,
     #[serde(default)]
     upstream_429_max_retries: Option<u8>,
+    #[serde(default)]
+    websocket_enabled: Option<bool>,
+    #[serde(default)]
+    upstream_websocket_default_enabled: Option<bool>,
     #[serde(default = "default_enabled_preset_models")]
     enabled_models: Vec<String>,
 }
@@ -282,14 +299,14 @@ struct ProxyModelSettingsResponse {
 }
 
 impl ProxyModelSettingsResponse {
-    fn from_settings(value: ProxyModelSettings, config: &AppConfig) -> Self {
+    fn from_settings(value: ProxyModelSettings) -> Self {
         Self {
             hijack_enabled: value.hijack_enabled,
             merge_upstream_enabled: value.merge_upstream_enabled,
             fast_mode_rewrite_mode: "disabled".to_string(),
             upstream_429_max_retries: value.upstream_429_max_retries,
-            websocket_enabled: config.openai_proxy_websocket_enabled,
-            upstream_websocket_default_enabled: config.openai_proxy_upstream_websocket_default_enabled,
+            websocket_enabled: value.websocket_enabled,
+            upstream_websocket_default_enabled: value.upstream_websocket_default_enabled,
             default_hijack_enabled: DEFAULT_PROXY_MODELS_HIJACK_ENABLED,
             models: PROXY_PRESET_MODEL_IDS
                 .iter()

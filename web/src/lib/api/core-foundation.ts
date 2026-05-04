@@ -2281,6 +2281,8 @@ export async function updateProxySettings(payload: {
   mergeUpstreamEnabled: boolean;
   fastModeRewriteMode?: ProxyFastModeRewriteMode;
   upstream429MaxRetries: number;
+  websocketEnabled: boolean;
+  upstreamWebsocketDefaultEnabled: boolean;
   enabledModels: string[];
 }): Promise<ProxySettings> {
   const response = await fetchJson<unknown>("/api/settings/proxy", {

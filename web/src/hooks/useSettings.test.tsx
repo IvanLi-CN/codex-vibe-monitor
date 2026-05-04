@@ -18,6 +18,8 @@ const apiMocks = vi.hoisted(() => ({
     mergeUpstreamEnabled: boolean;
     fastModeRewriteMode?: "disabled" | "fill_missing" | "force_priority";
     upstream429MaxRetries: number;
+    websocketEnabled: boolean;
+    upstreamWebsocketDefaultEnabled: boolean;
     enabledModels: string[];
   }) => Promise<ProxySettings>>(),
   updateForwardProxySettings: vi.fn<
@@ -173,8 +175,8 @@ beforeEach(() => {
       : false,
     fastModeRewriteMode: payload.fastModeRewriteMode ?? "disabled",
     upstream429MaxRetries: payload.upstream429MaxRetries,
-    websocketEnabled: false,
-    upstreamWebsocketDefaultEnabled: false,
+    websocketEnabled: payload.websocketEnabled,
+    upstreamWebsocketDefaultEnabled: payload.upstreamWebsocketDefaultEnabled,
     defaultHijackEnabled: false,
     models: ["gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
     enabledModels: payload.enabledModels,

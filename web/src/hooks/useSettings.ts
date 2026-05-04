@@ -105,6 +105,8 @@ export function useSettings() {
           mergeUpstreamEnabled: normalizedProxy.mergeUpstreamEnabled,
           fastModeRewriteMode: normalizedProxy.fastModeRewriteMode,
           upstream429MaxRetries: normalizedProxy.upstream429MaxRetries,
+          websocketEnabled: normalizedProxy.websocketEnabled,
+          upstreamWebsocketDefaultEnabled: normalizedProxy.upstreamWebsocketDefaultEnabled,
           enabledModels: normalizedProxy.enabledModels,
         })
         const confirmedSnapshot: SettingsPayload | null = serverSnapshotRef.current

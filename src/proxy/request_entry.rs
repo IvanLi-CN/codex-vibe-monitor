@@ -29,13 +29,14 @@ pub(crate) async fn proxy_openai_v1_with_connect_info(
     if let Some(ws) = ws
         && is_websocket_upgrade_request(&headers)
     {
-        if !state.config.openai_proxy_websocket_enabled {
+        let websocket_enabled = state.proxy_model_settings.read().await.websocket_enabled;
+        if !websocket_enabled {
             let invoke_id = format!("proxy-ws-disabled-{}", Utc::now().timestamp_millis());
             return build_proxy_error_response(
                 ProxyErrorResponse {
                     status: StatusCode::SERVICE_UNAVAILABLE,
                     message: format!(
-                        "OpenAI proxy WebSocket support is disabled; set {ENV_OPENAI_PROXY_WEBSOCKET_ENABLED}=true to enable it"
+                        "OpenAI proxy WebSocket support is disabled; enable it in Settings or set {ENV_OPENAI_PROXY_WEBSOCKET_ENABLED}=true before first startup"
                     ),
                     cvm_id: None,
                     retry_after_secs: None,

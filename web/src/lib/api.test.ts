@@ -952,6 +952,8 @@ describe("settings normalization", () => {
       mergeUpstreamEnabled: false,
       fastModeRewriteMode: "disabled",
       upstream429MaxRetries: 5,
+      websocketEnabled: true,
+      upstreamWebsocketDefaultEnabled: true,
       enabledModels: ["gpt-5.5", "gpt-5.5-pro"],
     });
 

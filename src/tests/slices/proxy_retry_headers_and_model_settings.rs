@@ -455,6 +455,7 @@ async fn proxy_openai_v1_models_returns_preset_when_hijack_enabled_without_merge
             merge_upstream_enabled: false,
             upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
             enabled_preset_models: vec!["gpt-5.3-codex".to_string(), "gpt-5.2".to_string()],
+            ..ProxyModelSettings::default()
         };
     }
 
@@ -501,6 +502,7 @@ async fn proxy_openai_v1_models_returns_gpt_5_4_models_when_enabled() {
             merge_upstream_enabled: false,
             upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
             enabled_preset_models: vec!["gpt-5.4".to_string(), "gpt-5.4-pro".to_string()],
+            ..ProxyModelSettings::default()
         };
     }
 
@@ -541,6 +543,7 @@ async fn proxy_openai_v1_models_merges_upstream_when_enabled() {
                 "gpt-5.2-codex".to_string(),
                 "gpt-5.1-codex-mini".to_string(),
             ],
+            ..ProxyModelSettings::default()
         };
     }
 
@@ -592,6 +595,7 @@ async fn proxy_openai_v1_models_applies_hijack_for_pool_route_requests() {
             merge_upstream_enabled: true,
             upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
             enabled_preset_models: vec!["gpt-5.1-codex-mini".to_string()],
+            ..ProxyModelSettings::default()
         };
     }
 
@@ -674,6 +678,7 @@ async fn proxy_openai_v1_models_merges_upstream_after_429_retry() {
             merge_upstream_enabled: true,
             upstream_429_max_retries: 1,
             enabled_preset_models: vec!["gpt-5.1-codex-mini".to_string()],
+            ..ProxyModelSettings::default()
         };
     }
 
@@ -726,6 +731,7 @@ async fn proxy_openai_v1_models_falls_back_to_preset_when_merge_upstream_fails()
             merge_upstream_enabled: true,
             upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
             enabled_preset_models: vec!["gpt-5.1-codex-mini".to_string()],
+            ..ProxyModelSettings::default()
         };
     }
 
@@ -768,6 +774,7 @@ async fn proxy_openai_v1_models_retries_429_then_falls_back_once_exhausted() {
             merge_upstream_enabled: true,
             upstream_429_max_retries: 2,
             enabled_preset_models: vec!["gpt-5.1-codex-mini".to_string()],
+            ..ProxyModelSettings::default()
         };
     }
 
@@ -843,6 +850,7 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
             merge_upstream_enabled: true,
             upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
             enabled_preset_models: vec!["gpt-5.1-codex-mini".to_string()],
+            ..ProxyModelSettings::default()
         })),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(

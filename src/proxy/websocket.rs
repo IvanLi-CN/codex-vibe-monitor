@@ -259,11 +259,16 @@ async fn prepare_upstream_websocket(
     let mut ws_retry_account_ids = HashSet::new();
     let mut last_failure: Option<WsAttemptFailure> = None;
 
-    if !state.config.openai_proxy_upstream_websocket_default_enabled {
+    let upstream_websocket_default_enabled = state
+        .proxy_model_settings
+        .read()
+        .await
+        .upstream_websocket_default_enabled;
+    if !upstream_websocket_default_enabled {
         return Err(WsPrepareError {
             status: StatusCode::SERVICE_UNAVAILABLE,
             message: format!(
-                "upstream websocket transport is disabled by {ENV_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED}"
+                "upstream websocket transport is disabled in Settings; enable it or set {ENV_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED}=true before first startup"
             ),
         });
     }
