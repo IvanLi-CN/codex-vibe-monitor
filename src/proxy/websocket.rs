@@ -779,6 +779,24 @@ async fn proxy_websocket_tunnel(
                         {
                             saw_terminal_upstream_event = true;
                         }
+                        if close_seen
+                            && ws_upstream_close_requires_retry(
+                                saw_downstream_request,
+                                saw_terminal_upstream_event,
+                            )
+                        {
+                            let message =
+                                "upstream websocket closed before response.completed".to_string();
+                            upstream_route_failure = Some(message.clone());
+                            failure = Some(message);
+                            let _ = downstream_tx
+                                .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                                    code: axum::extract::ws::close_code::AGAIN,
+                                    reason: "upstream_unavailable; retry".into(),
+                                })))
+                                .await;
+                            break;
+                        }
                         if let Some(message) = tungstenite_to_axum_message(message)
                             && let Err(err) = downstream_tx.send(message).await
                         {
@@ -789,11 +807,6 @@ async fn proxy_websocket_tunnel(
                             usage_tracker.observe_upstream_text(state.as_ref(), text).await;
                         }
                         if close_seen {
-                            if saw_downstream_request && !saw_terminal_upstream_event {
-                                failure = Some(
-                                    "upstream websocket closed before response.completed".to_string(),
-                                );
-                            }
                             break;
                         }
                     }
@@ -977,6 +990,13 @@ fn ws_text_event_is_terminal(event_type: &str) -> bool {
         .get("type")
         .and_then(Value::as_str)
         .is_some_and(ws_event_type_has_billable_usage)
+}
+
+fn ws_upstream_close_requires_retry(
+    saw_downstream_request: bool,
+    saw_terminal_upstream_event: bool,
+) -> bool {
+    saw_downstream_request && !saw_terminal_upstream_event
 }
 
 async fn persist_ws_usage_event(
@@ -1924,6 +1944,13 @@ mod websocket_tests {
             Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
         );
         assert_eq!(ws_terminal_event_failure_kind("response.completed"), None);
+    }
+
+    #[test]
+    fn websocket_upstream_close_requires_retry_until_terminal_event() {
+        assert!(ws_upstream_close_requires_retry(true, false));
+        assert!(!ws_upstream_close_requires_retry(false, false));
+        assert!(!ws_upstream_close_requires_retry(true, true));
     }
 
     #[test]

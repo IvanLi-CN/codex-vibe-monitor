@@ -75,7 +75,7 @@ OpenAI Responses API 已公开 WebSocket mode，Codex 也已开始使用 WebSock
   - 单个上游 WS 连接或握手失败：记录 transport failure attempt，释放该账号 reservation，标记路由 transport failure，排除失败账号与 route key，并在同一个 downstream 请求内继续选择下一个账号。
   - 单个上游 WS 握手返回 403/404/405/426/501：除记录失败与继续切号外，还必须自动标记该账号 `不支持 WS`，使后续 WS 调度跳过该账号。
   - 所有可用候选耗尽或达到 distinct-account retry budget：返回最后一次可重试失败对应的 HTTP error，或返回 pool 不可用错误。
-  - 已建立隧道后的上游异常或 EOF：发送 downstream close `1013` / `upstream_unavailable; retry` 并记录终态；客户端重连后由服务端重新走 pool selection，失败账号的现有路由失败记录和降权逻辑参与下一次选择。
+  - 已建立隧道后的上游异常、EOF 或在终态前主动 close：发送 downstream close `1013` / `upstream_unavailable; retry` 并记录终态；客户端重连后由服务端重新走 pool selection，失败账号的现有路由失败记录和降权逻辑参与下一次选择。
 
 ## 验收标准
 
@@ -83,7 +83,7 @@ OpenAI Responses API 已公开 WebSocket mode，Codex 也已开始使用 WebSock
 - Given 有效账号与 mock upstream WS，When downstream 发送 text/binary/ping/close，Then upstream 收到对应帧，且 upstream 响应帧被转发给 downstream。
 - Given 第一个上游账号 WS 连接失败且池内还有候选，When downstream 发起 upgrade，Then 代理在 downstream upgrade 前记录失败并切到下一个账号；若下一个账号成功，downstream 得到正常 WebSocket 隧道而不是先断开再依赖客户端重连。
 - Given 所有上游 WS 连接失败，When downstream 发起 upgrade，Then downstream 收到 HTTP error，所有失败账号的 pool reservation 被释放，attempt 记录为 transport failure。
-- Given 已建立隧道后上游异常断开，When downstream 等待下一帧，Then downstream 收到 close `1013` 且 reason 包含 `retry`，下一次连接重新进入号池调度。
+- Given 已建立隧道后上游异常断开或在 `response.completed` 前主动 close，When downstream 等待下一帧，Then downstream 收到 close `1013` 且 reason 包含 `retry`，下一次连接重新进入号池调度。
 - Given 账号带 `unsupported_transport:websocket` 系统 tag，When downstream 发起 WebSocket upgrade，Then 该账号不作为上游 WS 候选；When 普通 HTTP 请求路由，Then 该账号仍可作为 HTTP 候选。
 - Given 未带 `unsupported_transport:websocket` 的账号在上游 WS 握手阶段返回 403/404/405/426/501，When 代理记录该失败，Then 自动补写 `不支持 WS` tag，且下一次 WS 调度跳过该账号；When 后续普通 HTTP 请求路由，Then 该账号仍可作为 HTTP 候选。
 - Given 上游发出 `response.completed` 且包含完整 `response.usage`，When downstream 继续接收该 WS turn，Then 代理为该 turn 生成可计费 usage/cost 记录并进入既有 invocation 统计。
