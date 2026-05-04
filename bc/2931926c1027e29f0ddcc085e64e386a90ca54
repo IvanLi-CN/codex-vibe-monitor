@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.55.2",
+  "base_stable_version": "1.55.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-05-04T19:29:00Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.55.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "75ca537da79f98d60d6a457342878462da03d602",
+  "pr_number": 392,
+  "pr_title": "fix: auto-tag websocket unsupported upstreams",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.55.2",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.55.2",
+  "target_sha": "bc2931926c1027e29f0ddcc085e64e386a90ca54",
+  "type_label": "type:patch"
+}
