@@ -338,8 +338,11 @@ describe("DashboardWorkingConversationsSection", () => {
       '[data-testid="invocation-transport-badge"]',
     );
     expect(badges).toHaveLength(1);
-    expect(badges?.[0]?.textContent).toBe("WS");
-    expect(badges?.[0]?.getAttribute("aria-label")).toBe("WebSocket");
+    expect(
+      badges?.[0]?.querySelector('[aria-hidden="true"]')?.textContent,
+    ).toBe("WS");
+    expect(badges?.[0]?.textContent).toContain("WebSocket transport");
+    expect(badges?.[0]?.getAttribute("title")).toBe("WebSocket");
   });
 
   it("shows a bare hash in the card header while keeping the raw prompt cache key non-visible", () => {

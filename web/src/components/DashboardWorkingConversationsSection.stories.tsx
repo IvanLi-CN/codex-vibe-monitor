@@ -1203,9 +1203,12 @@ export const TransportBadgeMixed: Story = {
       '[data-testid="invocation-transport-badge"]',
     );
     expect(badges.length).toBeGreaterThanOrEqual(1);
-    expect(Array.from(badges).every((badge) => badge.textContent === "WS")).toBe(
-      true,
-    );
+    expect(
+      Array.from(badges).every(
+        (badge) =>
+          badge.querySelector('[aria-hidden="true"]')?.textContent === "WS",
+      ),
+    ).toBe(true);
   },
 };
 

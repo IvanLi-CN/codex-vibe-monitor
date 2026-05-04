@@ -337,8 +337,8 @@ describe("getReasoningEffortTone", () => {
 });
 
 describe("InvocationTable", () => {
-  it("renders the WS transport badge only for websocket records", () => {
-    const html = renderTable([
+  it("renders the WS transport badge for websocket records", () => {
+    const websocketHtml = renderTable([
       {
         id: 21,
         invokeId: "invocation-ws-transport",
@@ -350,6 +350,16 @@ describe("InvocationTable", () => {
         status: "success",
         transport: "websocket",
       },
+    ]);
+
+    expect(websocketHtml).toContain('data-testid="invocation-transport-badge"');
+    expect(websocketHtml).toContain('aria-hidden="true">WS</span>');
+    expect(websocketHtml).toContain("WebSocket transport");
+    expect(websocketHtml).toContain('title="WebSocket"');
+  });
+
+  it("does not render the WS transport badge for http or legacy records", () => {
+    const html = renderTable([
       {
         id: 22,
         invokeId: "invocation-http-transport",
@@ -373,11 +383,7 @@ describe("InvocationTable", () => {
       },
     ]);
 
-    expect(html.match(/data-testid="invocation-transport-badge"/g)).toHaveLength(
-      2,
-    );
-    expect(html).toContain('aria-label="WebSocket"');
-    expect(html).toContain(">WS</span>");
+    expect(html).not.toContain('data-testid="invocation-transport-badge"');
   });
 
   it("renders resolved failure rows as failed even when the raw status still says running", () => {

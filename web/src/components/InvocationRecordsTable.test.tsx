@@ -138,7 +138,7 @@ async function waitFor(check: () => boolean, timeoutMs = 500) {
 }
 
 describe("InvocationRecordsTable", () => {
-  it("renders the WS transport badge only for websocket records", () => {
+  it("renders the WS transport badge for websocket records", () => {
     render(
       <InvocationRecordsTable
         focus="token"
@@ -149,6 +149,30 @@ describe("InvocationRecordsTable", () => {
             invokeId: "invoke-ws-transport",
             transport: "websocket",
           }),
+        ]}
+      />,
+    );
+
+    const badges = host?.querySelectorAll(
+      '[data-testid="invocation-transport-badge"]',
+    );
+    expect((badges?.length ?? 0) > 0).toBe(true);
+    expect(
+      Array.from(badges ?? []).every(
+        (badge) =>
+          badge.querySelector('[aria-hidden="true"]')?.textContent === "WS" &&
+          badge.textContent?.includes("WebSocket transport") &&
+          badge.getAttribute("title") === "WebSocket",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not render the WS transport badge for http or legacy records", () => {
+    render(
+      <InvocationRecordsTable
+        focus="token"
+        isLoading={false}
+        records={[
           createRecord({
             id: 2,
             invokeId: "invoke-http-transport",
@@ -163,13 +187,11 @@ describe("InvocationRecordsTable", () => {
       />,
     );
 
-    const badges = host?.querySelectorAll(
-      '[data-testid="invocation-transport-badge"]',
-    );
-    expect(badges).toHaveLength(2);
-    expect(badges?.[0]?.textContent).toBe("WS");
-    expect(badges?.[1]?.textContent).toBe("WS");
-    expect(badges?.[0]?.getAttribute("aria-label")).toBe("WebSocket");
+    expect(
+      host?.querySelectorAll(
+        '[data-testid="invocation-transport-badge"]',
+      ),
+    ).toHaveLength(0);
   });
 
   it("treats completed rows as success in the shared records table", () => {
