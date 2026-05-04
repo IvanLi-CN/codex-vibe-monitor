@@ -54,6 +54,7 @@ OpenAI Responses API 已公开 WebSocket mode，Codex 也已开始使用 WebSock
 - Downstream feature flag: 全局设置 `websocketEnabled=false` 时，WebSocket upgrade 返回 HTTP `503` JSON error；设置为 `true` 后才允许 downstream WS。`OPENAI_PROXY_WEBSOCKET_ENABLED` 只作为首次初始化默认值，普通 HTTP proxy 不受该开关影响。
 - Upstream default flag: 全局设置 `upstreamWebsocketDefaultEnabled=false` 时，proxy 不主动连接上游 WS；设置为 `true` 后，downstream WS 请求才会尝试上游 WS。`OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED` 只作为首次初始化默认值，普通 HTTP 请求仍走 HTTP，除非后续版本实现并启用可验证 HTTP→WS 事件桥接。
 - Account capability tag: protected system tag `unsupported_transport:websocket` / `不支持 WS` 表示该账号不支持 upstream WS；WS 调度必须跳过该账号，HTTP 调度不跳过。
+- Account auto-tagging: 上游 WS 握手若返回明确不支持 WS 的 HTTP 状态，代理必须自动给该账号补写 `unsupported_transport:websocket` / `不支持 WS`；网络 reset、timeout、502 等非确定性故障不得自动打该 tag。
 - Upstream URL:
   - account/global upstream base `https://host/base` -> `wss://host/base/<original-path>?<query>`
   - account/global upstream base `http://host/base` -> `ws://host/base/<original-path>?<query>`
@@ -72,8 +73,9 @@ OpenAI Responses API 已公开 WebSocket mode，Codex 也已开始使用 WebSock
   - 上游 URL 构造失败：HTTP `502` JSON error，记录失败且不重试该请求。
   - `upstreamWebsocketDefaultEnabled=false` 或所有候选都带 no-ws tag：WebSocket upgrade 返回 `503`，不建立不可靠隧道。
   - 单个上游 WS 连接或握手失败：记录 transport failure attempt，释放该账号 reservation，标记路由 transport failure，排除失败账号与 route key，并在同一个 downstream 请求内继续选择下一个账号。
+  - 单个上游 WS 握手返回 403/404/405/426/501：除记录失败与继续切号外，还必须自动标记该账号 `不支持 WS`，使后续 WS 调度跳过该账号。
   - 所有可用候选耗尽或达到 distinct-account retry budget：返回最后一次可重试失败对应的 HTTP error，或返回 pool 不可用错误。
-  - 已建立隧道后的上游异常或 EOF：发送 downstream close `1013` / `upstream_unavailable; retry` 并记录终态；客户端重连后由服务端重新走 pool selection，失败账号的现有路由失败记录和降权逻辑参与下一次选择。
+  - 已建立隧道后的上游异常、EOF 或在终态前主动 close：发送 downstream close `1013` / `upstream_unavailable; retry` 并记录终态；客户端重连后由服务端重新走 pool selection，失败账号的现有路由失败记录和降权逻辑参与下一次选择。
 
 ## 验收标准
 
@@ -81,8 +83,9 @@ OpenAI Responses API 已公开 WebSocket mode，Codex 也已开始使用 WebSock
 - Given 有效账号与 mock upstream WS，When downstream 发送 text/binary/ping/close，Then upstream 收到对应帧，且 upstream 响应帧被转发给 downstream。
 - Given 第一个上游账号 WS 连接失败且池内还有候选，When downstream 发起 upgrade，Then 代理在 downstream upgrade 前记录失败并切到下一个账号；若下一个账号成功，downstream 得到正常 WebSocket 隧道而不是先断开再依赖客户端重连。
 - Given 所有上游 WS 连接失败，When downstream 发起 upgrade，Then downstream 收到 HTTP error，所有失败账号的 pool reservation 被释放，attempt 记录为 transport failure。
-- Given 已建立隧道后上游异常断开，When downstream 等待下一帧，Then downstream 收到 close `1013` 且 reason 包含 `retry`，下一次连接重新进入号池调度。
+- Given 已建立隧道后上游异常断开或在 `response.completed` 前主动 close，When downstream 等待下一帧，Then downstream 收到 close `1013` 且 reason 包含 `retry`，下一次连接重新进入号池调度。
 - Given 账号带 `unsupported_transport:websocket` 系统 tag，When downstream 发起 WebSocket upgrade，Then 该账号不作为上游 WS 候选；When 普通 HTTP 请求路由，Then 该账号仍可作为 HTTP 候选。
+- Given 未带 `unsupported_transport:websocket` 的账号在上游 WS 握手阶段返回 403/404/405/426/501，When 代理记录该失败，Then 自动补写 `不支持 WS` tag，且下一次 WS 调度跳过该账号；When 后续普通 HTTP 请求路由，Then 该账号仍可作为 HTTP 候选。
 - Given 上游发出 `response.completed` 且包含完整 `response.usage`，When downstream 继续接收该 WS turn，Then 代理为该 turn 生成可计费 usage/cost 记录并进入既有 invocation 统计。
 - Given 上游 usage JSON 缺字段或类型不对，When downstream 继续接收 WS，Then 代理保守地跳过该 event 的计费，不产生半字段成本。
 - Given account `upstreamBaseUrl=https://example.test/base`，When 下游连接 `/v1/responses?model=x`，Then 上游目标为 `wss://example.test/base/v1/responses?model=x`。
