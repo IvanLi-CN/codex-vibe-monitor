@@ -201,6 +201,28 @@ export const TokenFocus: Story = {
   },
 }
 
+export const TransportBadgeMixed: Story = {
+  args: {
+    focus: 'token',
+    records: STORYBOOK_INVOCATION_RECORDS,
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Mixed transport records for verifying that the WebSocket badge appears immediately after the model name in the records table while non-WS rows stay unchanged.',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const badges = canvasElement.querySelectorAll('[data-testid="invocation-transport-badge"]')
+    expect(badges.length).toBeGreaterThanOrEqual(1)
+    expect(Array.from(badges).every((badge) => badge.textContent === 'WS')).toBe(true)
+  },
+}
+
 export const NetworkFocus: Story = {
   args: {
     focus: 'network',

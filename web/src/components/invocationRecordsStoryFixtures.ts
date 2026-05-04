@@ -20,6 +20,7 @@ export const STORYBOOK_INVOCATION_RECORDS: ApiInvocation[] = [
     source: 'pool',
     proxyDisplayName: 'tokyo-edge-01',
     routeMode: 'pool',
+    transport: 'websocket',
     upstreamAccountId: 17,
     upstreamAccountName: 'Pool Alpha 17',
     poolAttemptCount: 2,

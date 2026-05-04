@@ -32,6 +32,7 @@ import { Alert } from "./ui/alert";
 import { Badge } from "./ui/badge";
 import { Spinner } from "./ui/spinner";
 import { cn } from "../lib/utils";
+import { renderInvocationTransportBadge } from "./invocation-transport-badge";
 
 interface InvocationRecordsTableProps {
   focus: InvocationFocus;
@@ -339,6 +340,7 @@ function renderDetailSummaryStrip(
           title={row.modelValue}
         >
           <span className="min-w-0 flex-1 truncate">{row.modelValue}</span>
+          {renderInvocationTransportBadge(row.record)}
           {renderFastIndicator(row.fastIndicatorState, t)}
         </div>
         <div className="mt-2 w-fit max-w-full">
@@ -953,6 +955,7 @@ export function InvocationRecordsTable({
                   <span className="min-w-0 flex-1 truncate">
                     {row.modelValue}
                   </span>
+                  {renderInvocationTransportBadge(row.record)}
                   {renderFastIndicator(row.fastIndicatorState, t)}
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-2 text-xs font-mono text-base-content/70">
@@ -1063,6 +1066,7 @@ export function InvocationRecordsTable({
                         <span className="min-w-0 flex-1 truncate">
                           {row.modelValue}
                         </span>
+                        {renderInvocationTransportBadge(row.record)}
                         {renderFastIndicator(row.fastIndicatorState, t)}
                       </div>
                     </td>

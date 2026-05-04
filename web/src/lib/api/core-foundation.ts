@@ -361,6 +361,7 @@ export interface ApiInvocation {
   poolDistinctAccountCount?: number | null;
   poolAttemptTerminalReason?: string | null;
   upstreamScope?: string;
+  transport?: "websocket" | "http" | string | null;
   requestedServiceTier?: string;
   serviceTier?: string;
   billingServiceTier?: string;
@@ -1056,6 +1057,7 @@ export interface PromptCacheConversationInvocationPreview {
   failureKind?: ApiInvocation["failureKind"];
   isActionable?: ApiInvocation["isActionable"];
   responseContentEncoding?: ApiInvocation["responseContentEncoding"];
+  transport?: ApiInvocation["transport"];
   requestedServiceTier?: ApiInvocation["requestedServiceTier"];
   serviceTier?: ApiInvocation["serviceTier"];
   billingServiceTier?: ApiInvocation["billingServiceTier"];

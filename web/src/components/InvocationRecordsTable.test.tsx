@@ -138,6 +138,40 @@ async function waitFor(check: () => boolean, timeoutMs = 500) {
 }
 
 describe("InvocationRecordsTable", () => {
+  it("renders the WS transport badge only for websocket records", () => {
+    render(
+      <InvocationRecordsTable
+        focus="token"
+        isLoading={false}
+        records={[
+          createRecord({
+            id: 1,
+            invokeId: "invoke-ws-transport",
+            transport: "websocket",
+          }),
+          createRecord({
+            id: 2,
+            invokeId: "invoke-http-transport",
+            transport: "http",
+          }),
+          createRecord({
+            id: 3,
+            invokeId: "invoke-legacy-transport",
+            transport: null,
+          }),
+        ]}
+      />,
+    );
+
+    const badges = host?.querySelectorAll(
+      '[data-testid="invocation-transport-badge"]',
+    );
+    expect(badges).toHaveLength(2);
+    expect(badges?.[0]?.textContent).toBe("WS");
+    expect(badges?.[1]?.textContent).toBe("WS");
+    expect(badges?.[0]?.getAttribute("aria-label")).toBe("WebSocket");
+  });
+
   it("treats completed rows as success in the shared records table", () => {
     render(
       <InvocationRecordsTable

@@ -28,6 +28,7 @@ const records: ApiInvocation[] = [
     createdAt: baseOccurredAt,
     source: 'proxy',
     routeMode: 'pool',
+    transport: 'websocket',
     upstreamAccountId: 21,
     upstreamAccountName: 'Codex Team Alpha',
     proxyDisplayName: 'Tokyo-Edge-1',
@@ -1534,6 +1535,25 @@ export const Default: Story = {
           'Reference state with pool-routed and reverse-proxy invocations. Verify the `账号 / 代理` split, the dedicated elapsed/compression column, and the reasoning-token breakdown in the output summary.',
       },
     },
+  },
+}
+
+export const TransportBadgeMixed: Story = {
+  args: defaultArgs,
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Mixed transport state: only the WebSocket invocation shows the compact `WS` badge beside the model name, while HTTP/legacy records remain unbadged.',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const badges = canvasElement.querySelectorAll(
+      '[data-testid="invocation-transport-badge"]',
+    )
+    expect(badges.length).toBeGreaterThanOrEqual(1)
+    expect(Array.from(badges).every((badge) => badge.textContent === 'WS')).toBe(true)
   },
 }
 

@@ -337,6 +337,49 @@ describe("getReasoningEffortTone", () => {
 });
 
 describe("InvocationTable", () => {
+  it("renders the WS transport badge only for websocket records", () => {
+    const html = renderTable([
+      {
+        id: 21,
+        invokeId: "invocation-ws-transport",
+        occurredAt: "2026-03-07T03:13:52Z",
+        createdAt: "2026-03-07T03:13:52Z",
+        source: "proxy",
+        endpoint: "/v1/responses",
+        model: "gpt-5.5",
+        status: "success",
+        transport: "websocket",
+      },
+      {
+        id: 22,
+        invokeId: "invocation-http-transport",
+        occurredAt: "2026-03-07T03:13:51Z",
+        createdAt: "2026-03-07T03:13:51Z",
+        source: "proxy",
+        endpoint: "/v1/responses",
+        model: "gpt-5.5",
+        status: "success",
+        transport: "http",
+      },
+      {
+        id: 23,
+        invokeId: "invocation-legacy-transport",
+        occurredAt: "2026-03-07T03:13:50Z",
+        createdAt: "2026-03-07T03:13:50Z",
+        source: "proxy",
+        endpoint: "/v1/responses",
+        model: "gpt-5.5",
+        status: "success",
+      },
+    ]);
+
+    expect(html.match(/data-testid="invocation-transport-badge"/g)).toHaveLength(
+      2,
+    );
+    expect(html).toContain('aria-label="WebSocket"');
+    expect(html).toContain(">WS</span>");
+  });
+
   it("renders resolved failure rows as failed even when the raw status still says running", () => {
     const html = renderTable([
       {

@@ -43,6 +43,7 @@ type PromptCacheConversationPreviewExtras = Partial<
     | "failureKind"
     | "isActionable"
     | "responseContentEncoding"
+    | "transport"
     | "requestedServiceTier"
     | "serviceTier"
     | "billingServiceTier"
@@ -278,6 +279,7 @@ export function buildInvocationFromPromptCachePreview(
     upstreamAccountName: preview.upstreamAccountName ?? undefined,
     proxyDisplayName: preview.proxyDisplayName ?? undefined,
     responseContentEncoding: extras.responseContentEncoding,
+    transport: extras.transport,
     requestedServiceTier: extras.requestedServiceTier,
     serviceTier: extras.serviceTier,
     billingServiceTier: extras.billingServiceTier,
@@ -332,6 +334,7 @@ export function buildPromptCachePreviewFromInvocation(
     failureKind: record.failureKind,
     isActionable: record.isActionable,
     responseContentEncoding: record.responseContentEncoding,
+    transport: record.transport,
     requestedServiceTier: record.requestedServiceTier,
     serviceTier: record.serviceTier,
     billingServiceTier: record.billingServiceTier,

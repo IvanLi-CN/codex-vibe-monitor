@@ -1914,6 +1914,8 @@ pub(crate) struct ApiInvocation {
     #[sqlx(default)]
     pub(crate) response_content_encoding: Option<String>,
     #[sqlx(default)]
+    pub(crate) transport: Option<String>,
+    #[sqlx(default)]
     pub(crate) pool_attempt_count: Option<i64>,
     #[sqlx(default)]
     pub(crate) pool_distinct_account_count: Option<i64>,

@@ -30,6 +30,7 @@ import {
   renderReasoningEffortBadge,
   useInvocationPoolAttempts,
 } from "./invocation-details-shared";
+import { renderInvocationTransportBadge } from "./invocation-transport-badge";
 
 interface InvocationTableProps {
   records: ApiInvocation[];
@@ -467,6 +468,7 @@ export function InvocationTable({
                     <span className="min-w-0 flex-1 truncate">
                       {row.modelValue}
                     </span>
+                    {renderInvocationTransportBadge(row.record)}
                     {renderFastIndicator(row.fastIndicatorState, t)}
                   </div>
                 </dd>
@@ -701,6 +703,7 @@ export function InvocationTable({
                             >
                               {row.modelValue}
                             </span>
+                            {renderInvocationTransportBadge(row.record)}
                             {renderFastIndicator(row.fastIndicatorState, t)}
                           </div>
                           <span className="w-full truncate whitespace-nowrap font-mono tabular-nums text-base-content/70">

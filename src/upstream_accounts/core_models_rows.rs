@@ -610,6 +610,7 @@ pub(crate) struct AccountStickyKeyInvocationPreviewRow {
     upstream_account_id: Option<i64>,
     upstream_account_name: Option<String>,
     response_content_encoding: Option<String>,
+    transport: Option<String>,
     requested_service_tier: Option<String>,
     service_tier: Option<String>,
     billing_service_tier: Option<String>,
