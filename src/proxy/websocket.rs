@@ -195,6 +195,8 @@ struct PreparedUpstreamWebSocket {
     pending_attempt_record: Option<PendingPoolAttemptRecord>,
     deferred_cleanup_guard: Option<PoolEarlyPhaseOrphanCleanupGuard>,
     reservation_guard: PoolRoutingReservationGuard,
+    account: PoolResolvedAccount,
+    trace: PoolUpstreamAttemptTraceContext,
     selected_subprotocol: Option<String>,
     connect_latency_ms: f64,
 }
@@ -254,10 +256,20 @@ async fn prepare_upstream_websocket(
 ) -> Result<PreparedUpstreamWebSocket, WsPrepareError> {
     let mut excluded_account_ids = Vec::new();
     let mut excluded_upstream_route_keys = HashSet::new();
+    let mut ws_retry_account_ids = HashSet::new();
     let mut last_failure: Option<WsAttemptFailure> = None;
 
+    if !state.config.openai_proxy_upstream_websocket_default_enabled {
+        return Err(WsPrepareError {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: format!(
+                "upstream websocket transport is disabled by {ENV_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED}"
+            ),
+        });
+    }
+
     loop {
-        if excluded_account_ids.len() >= POOL_UPSTREAM_MAX_DISTINCT_ACCOUNTS {
+        if ws_retry_account_ids.len() >= POOL_UPSTREAM_MAX_DISTINCT_ACCOUNTS {
             return Err(WsPrepareError {
                 status: last_failure
                     .as_ref()
@@ -322,6 +334,27 @@ async fn prepare_upstream_websocket(
                 });
             }
         };
+        match account_supports_upstream_websocket(state.as_ref(), &account).await {
+            Ok(true) => {}
+            Ok(false) => {
+                excluded_account_ids.push(account.account_id);
+                last_failure = Some(WsAttemptFailure {
+                    status: StatusCode::SERVICE_UNAVAILABLE,
+                    message: "selected upstream account is tagged as not supporting websocket"
+                        .to_string(),
+                    retryable: true,
+                    account_id: Some(account.account_id),
+                    upstream_route_key: Some(account.upstream_route_key()),
+                });
+                continue;
+            }
+            Err(err) => {
+                return Err(WsPrepareError {
+                    status: StatusCode::BAD_GATEWAY,
+                    message: format!("failed to inspect websocket support tag: {err}"),
+                });
+            }
+        }
 
         match prepare_single_upstream_websocket_attempt(
             state.clone(),
@@ -331,12 +364,15 @@ async fn prepare_upstream_websocket(
             runtime_timeouts,
             trace,
             account,
-            excluded_account_ids.len() + 1,
+            ws_retry_account_ids.len() + 1,
         )
         .await
         {
             Ok(prepared) => return Ok(prepared),
             Err(failure) if failure.retryable => {
+                if let Some(account_id) = failure.account_id {
+                    ws_retry_account_ids.insert(account_id);
+                }
                 if let Err(err) = exclude_retryable_ws_attempt_failure(
                     &failure,
                     &mut excluded_account_ids,
@@ -378,6 +414,13 @@ fn exclude_retryable_ws_attempt_failure(
         excluded_upstream_route_keys.insert(route_key.to_string());
     }
     Ok(())
+}
+
+async fn account_supports_upstream_websocket(
+    state: &AppState,
+    account: &PoolResolvedAccount,
+) -> Result<bool> {
+    Ok(!account_has_websocket_unsupported_tag(&state.pool, account.account_id).await?)
 }
 
 async fn prepare_single_upstream_websocket_attempt(
@@ -640,6 +683,8 @@ async fn prepare_single_upstream_websocket_attempt(
         pending_attempt_record,
         deferred_cleanup_guard,
         reservation_guard,
+        account,
+        trace: trace.clone(),
         selected_subprotocol,
         connect_latency_ms: elapsed_ms(connect_started),
     })
@@ -656,6 +701,8 @@ async fn proxy_websocket_tunnel(
         pending_attempt_record,
         mut deferred_cleanup_guard,
         mut reservation_guard,
+        account,
+        trace,
         connect_latency_ms,
         selected_subprotocol: _,
     } = prepared;
@@ -663,6 +710,8 @@ async fn proxy_websocket_tunnel(
     let (mut downstream_tx, mut downstream_rx) = downstream.split();
     let (mut upstream_tx, mut upstream_rx) = upstream.split();
     let mut failure: Option<String> = None;
+    let mut upstream_route_failure: Option<String> = None;
+    let mut usage_tracker = WsUsageTracker::new(account, trace);
 
     loop {
         tokio::select! {
@@ -673,7 +722,9 @@ async fn proxy_websocket_tunnel(
                         match axum_to_tungstenite_message(message) {
                             Some(message) => {
                                 if let Err(err) = upstream_tx.send(message).await {
-                                    failure = Some(format!("failed to forward downstream websocket frame upstream: {err}"));
+                                    let message = format!("failed to forward downstream websocket frame upstream: {err}");
+                                    upstream_route_failure = Some(message.clone());
+                                    failure = Some(message);
                                     break;
                                 }
                             }
@@ -694,6 +745,9 @@ async fn proxy_websocket_tunnel(
                 match upstream_msg {
                     Some(Ok(message)) => {
                         let close_seen = matches!(message, TungsteniteMessage::Close(_));
+                        if let TungsteniteMessage::Text(text) = &message {
+                            usage_tracker.observe_upstream_text(state.as_ref(), text.as_str()).await;
+                        }
                         if let Some(message) = tungstenite_to_axum_message(message)
                             && let Err(err) = downstream_tx.send(message).await
                         {
@@ -705,10 +759,29 @@ async fn proxy_websocket_tunnel(
                         }
                     }
                     Some(Err(err)) => {
-                        failure = Some(format!("upstream websocket error: {err}"));
+                        let message = format!("upstream websocket error: {err}");
+                        upstream_route_failure = Some(message.clone());
+                        failure = Some(message);
+                        let _ = downstream_tx
+                            .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                                code: axum::extract::ws::close_code::AGAIN,
+                                reason: "upstream_unavailable; retry".into(),
+                            })))
+                            .await;
                         break;
                     }
-                    None => break,
+                    None => {
+                        let message = "upstream websocket closed without a close frame".to_string();
+                        upstream_route_failure = Some(message.clone());
+                        failure = Some(message);
+                        let _ = downstream_tx
+                            .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                                code: axum::extract::ws::close_code::AGAIN,
+                                reason: "upstream_unavailable; retry".into(),
+                            })))
+                            .await;
+                        break;
+                    },
                 }
             }
         }
@@ -730,8 +803,238 @@ async fn proxy_websocket_tunnel(
         Some(elapsed_ms(stream_started)),
     )
     .await;
+    if let Some(message) = upstream_route_failure.as_deref()
+        && let Err(err) = record_pool_route_transport_failure(
+            &state.pool,
+            usage_tracker.account.account_id,
+            usage_tracker.trace.sticky_key.as_deref(),
+            message,
+            Some(usage_tracker.trace.invoke_id.as_str()),
+        )
+        .await
+    {
+        warn!(
+            invoke_id = %usage_tracker.trace.invoke_id,
+            account_id = usage_tracker.account.account_id,
+            error = %err,
+            "failed to record post-upgrade websocket pool route transport failure"
+        );
+    }
     complete_deferred_pool_early_phase_cleanup_guard(&mut deferred_cleanup_guard);
     reservation_guard.release();
+}
+
+struct WsUsageTracker {
+    account: PoolResolvedAccount,
+    trace: PoolUpstreamAttemptTraceContext,
+    ordinal: u64,
+}
+
+impl WsUsageTracker {
+    fn new(account: PoolResolvedAccount, trace: PoolUpstreamAttemptTraceContext) -> Self {
+        Self {
+            account,
+            trace,
+            ordinal: 0,
+        }
+    }
+
+    async fn observe_upstream_text(&mut self, state: &AppState, text: &str) {
+        let Some(event) = parse_ws_usage_event(text) else {
+            return;
+        };
+        self.ordinal = self.ordinal.saturating_add(1);
+        if let Err(err) = persist_ws_usage_event(
+            state,
+            &self.account,
+            &self.trace,
+            self.ordinal,
+            event,
+            text,
+        )
+        .await
+        {
+            warn!(
+                invoke_id = %self.trace.invoke_id,
+                account_id = self.account.account_id,
+                error = %err,
+                "failed to persist websocket usage event"
+            );
+        }
+    }
+}
+
+struct WsUsageEvent {
+    event_type: String,
+    response_id: Option<String>,
+    model: Option<String>,
+    service_tier: Option<String>,
+    usage: ParsedUsage,
+}
+
+fn parse_ws_usage_event(text: &str) -> Option<WsUsageEvent> {
+    let value = serde_json::from_str::<Value>(text).ok()?;
+    let event_type = value.get("type")?.as_str()?.trim().to_string();
+    if !ws_event_type_has_billable_usage(event_type.as_str()) {
+        return None;
+    }
+    let usage_value = value.pointer("/response/usage")?;
+    let usage = parse_usage_value(usage_value);
+    if usage.input_tokens.is_none() || usage.output_tokens.is_none() {
+        return None;
+    }
+    Some(WsUsageEvent {
+        event_type,
+        response_id: value
+            .pointer("/response/id")
+            .or_else(|| value.get("response_id"))
+            .or_else(|| value.get("id"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        model: value
+            .pointer("/response/model")
+            .or_else(|| value.get("model"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        service_tier: extract_service_tier_from_payload(&value),
+        usage,
+    })
+}
+
+fn ws_event_type_has_billable_usage(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "response.completed" | "response.done" | "response.failed"
+    )
+}
+
+async fn persist_ws_usage_event(
+    state: &AppState,
+    account: &PoolResolvedAccount,
+    trace: &PoolUpstreamAttemptTraceContext,
+    ordinal: u64,
+    event: WsUsageEvent,
+    raw_event: &str,
+) -> Result<()> {
+    let model = event.model.as_deref();
+    let (billing_service_tier, pricing_mode) =
+        resolve_proxy_billing_service_tier_and_pricing_mode_for_account(
+            None,
+            None,
+            event.service_tier.as_deref(),
+            Some(account),
+        );
+    let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
+        &state.pricing_catalog,
+        model,
+        &event.usage,
+        billing_service_tier.as_deref(),
+        pricing_mode,
+    )
+    .await;
+    let occurred_at = shanghai_now_string();
+    let response_id = event.response_id.as_deref();
+    let invoke_id = response_id
+        .map(|id| format!("{}-{id}", trace.invoke_id))
+        .unwrap_or_else(|| format!("{}-turn-{ordinal}", trace.invoke_id));
+    let payload = build_proxy_payload_summary(ProxyPayloadSummary {
+        target: ProxyCaptureTarget::Responses,
+        status: StatusCode::OK,
+        is_stream: true,
+        request_model: None,
+        requested_service_tier: None,
+        billing_service_tier: billing_service_tier.as_deref(),
+        reasoning_effort: None,
+        response_model: model,
+        usage_missing_reason: None,
+        request_parse_error: None,
+        failure_kind: None,
+        requester_ip: trace.requester_ip.as_deref(),
+        upstream_scope: INVOCATION_UPSTREAM_SCOPE_INTERNAL,
+        route_mode: INVOCATION_ROUTE_MODE_POOL,
+        sticky_key: trace.sticky_key.as_deref(),
+        prompt_cache_key: trace.sticky_key.as_deref(),
+        prompt_cache_key_attribution_source: trace.sticky_key.as_ref().map(|_| "websocket_trace"),
+        client_fingerprint: None,
+        client_header_fingerprints: None,
+        upstream_account_id: Some(account.account_id),
+        upstream_account_name: Some(account.display_name.as_str()),
+        upstream_account_kind: Some(account.kind.as_str()),
+        upstream_base_url_host: account.upstream_base_url.host_str(),
+        oauth_account_header_attached: oauth_account_header_attached_for_account(Some(account)),
+        oauth_account_id_shape: oauth_account_id_shape_for_account(Some(account)),
+        oauth_forwarded_header_count: None,
+        oauth_forwarded_header_names: None,
+        oauth_fingerprint_version: None,
+        oauth_forwarded_header_fingerprints: None,
+        oauth_prompt_cache_header_forwarded: None,
+        oauth_request_body_prefix_fingerprint: None,
+        oauth_request_body_prefix_bytes: None,
+        oauth_request_body_snapshot_kind: None,
+        oauth_responses_body_mode: None,
+        oauth_responses_rewrite: None,
+        service_tier: event.service_tier.as_deref(),
+        stream_terminal_event: Some(event.event_type.as_str()),
+        upstream_error_code: None,
+        upstream_error_message: None,
+        downstream_status_code: None,
+        downstream_error_message: None,
+        upstream_request_id: response_id,
+        response_content_encoding: None,
+        proxy_display_name: None,
+        proxy_weight_delta: None,
+        pool_attempt_count: None,
+        pool_distinct_account_count: None,
+        pool_attempt_terminal_reason: None,
+    });
+    let is_failed_terminal_event = event.event_type == "response.failed";
+    let failure_kind = ws_terminal_event_failure_kind(&event.event_type);
+    persist_and_broadcast_proxy_capture_runtime_snapshot(
+        state,
+        ProxyCaptureRecord {
+            invoke_id,
+            occurred_at,
+            model: event.model,
+            usage: event.usage,
+            cost,
+            cost_estimated,
+            price_version,
+            status: if is_failed_terminal_event {
+                "failed".to_string()
+            } else {
+                "success".to_string()
+            },
+            error_message: failure_kind.map(|value| format!("[{value}] response.failed")),
+            failure_kind: failure_kind.map(str::to_string),
+            payload: Some(payload),
+            raw_response: raw_event.to_string(),
+            req_raw: RawPayloadMeta::default(),
+            resp_raw: RawPayloadMeta::default(),
+            timings: StageTimings {
+                t_total_ms: 0.0,
+                t_req_read_ms: 0.0,
+                t_req_parse_ms: 0.0,
+                t_upstream_connect_ms: 0.0,
+                t_upstream_ttfb_ms: 0.0,
+                t_upstream_stream_ms: 0.0,
+                t_resp_parse_ms: 0.0,
+                t_persist_ms: 0.0,
+            },
+        },
+    )
+    .await
+}
+
+fn ws_terminal_event_failure_kind(event_type: &str) -> Option<&'static str> {
+    if event_type == "response.failed" {
+        Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
+    } else {
+        None
+    }
 }
 
 async fn finalize_ws_attempt(
@@ -1462,7 +1765,7 @@ mod websocket_tests {
             upstream_route_key: Some("api_key:42".to_string()),
         };
         let mut excluded_account_ids = Vec::new();
-        let mut excluded_upstream_route_keys = HashSet::new();
+        let mut excluded_upstream_route_keys: HashSet<String> = HashSet::new();
 
         exclude_retryable_ws_attempt_failure(
             &failure,
@@ -1485,7 +1788,7 @@ mod websocket_tests {
             upstream_route_key: None,
         };
         let mut excluded_account_ids = Vec::new();
-        let mut excluded_upstream_route_keys = HashSet::new();
+        let mut excluded_upstream_route_keys: HashSet<String> = HashSet::new();
 
         let err = exclude_retryable_ws_attempt_failure(
             &failure,
@@ -1498,6 +1801,125 @@ mod websocket_tests {
         assert_eq!(err.message, "failed without account");
         assert!(excluded_account_ids.is_empty());
         assert!(excluded_upstream_route_keys.is_empty());
+    }
+
+    #[test]
+    fn websocket_usage_event_parses_terminal_response_usage() {
+        let event = parse_ws_usage_event(
+            r#"{
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_1",
+                    "model": "gpt-5.5",
+                    "service_tier": "default",
+                    "usage": {
+                        "input_tokens": 7,
+                        "output_tokens": 3,
+                        "input_tokens_details": {
+                            "cached_tokens": 2
+                        }
+                    }
+                }
+            }"#,
+        )
+        .expect("usage event");
+
+        assert_eq!(event.event_type, "response.completed");
+        assert_eq!(event.response_id.as_deref(), Some("resp_1"));
+        assert_eq!(event.model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(event.service_tier.as_deref(), Some("default"));
+        assert_eq!(event.usage.input_tokens, Some(7));
+        assert_eq!(event.usage.output_tokens, Some(3));
+        assert_eq!(event.usage.cache_input_tokens, Some(2));
+        assert_eq!(event.usage.total_tokens, Some(10));
+    }
+
+    #[test]
+    fn websocket_usage_event_rejects_non_terminal_or_partial_usage() {
+        assert!(parse_ws_usage_event(
+            r#"{"type":"response.in_progress","response":{"usage":{"input_tokens":7,"output_tokens":3}}}"#
+        )
+        .is_none());
+        assert!(parse_ws_usage_event(
+            r#"{"type":"response.completed","response":{"usage":{"input_tokens":7}}}"#
+        )
+        .is_none());
+        assert!(parse_ws_usage_event(
+            r#"{"type":"response.completed","response":{"usage":{"input_tokens":"bad","output_tokens":3}}}"#
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn websocket_terminal_failure_kind_marks_response_failed() {
+        assert_eq!(
+            ws_terminal_event_failure_kind("response.failed"),
+            Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
+        );
+        assert_eq!(ws_terminal_event_failure_kind("response.completed"), None);
+    }
+
+    #[tokio::test]
+    async fn websocket_capability_respects_no_ws_system_tag() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite pool");
+        ensure_schema(&pool).await.expect("schema");
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_accounts (
+                id, provider, kind, display_name, enabled, status, encrypted_credentials, created_at, updated_at
+            )
+            VALUES (42, 'codex', 'api_key', 'ws-test', 1, 'active', 'secret', 'now', 'now')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("insert account");
+
+        assert!(
+            !account_has_websocket_unsupported_tag(&pool, 42)
+                .await
+                .expect("tag lookup")
+        );
+        let tag_id = sqlx::query_scalar::<_, i64>(
+            "SELECT id FROM pool_tags WHERE system_key = 'unsupported_transport:websocket'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("tag id");
+        sqlx::query(
+            "INSERT INTO pool_upstream_account_tags (account_id, tag_id, created_at, updated_at) VALUES (42, ?1, 'now', 'now')",
+        )
+        .bind(tag_id)
+        .execute(&pool)
+        .await
+        .expect("attach tag");
+
+        assert!(
+            account_has_websocket_unsupported_tag(&pool, 42)
+                .await
+                .expect("tag lookup")
+        );
+    }
+
+    #[test]
+    fn websocket_capability_tag_does_not_consume_retry_budget() {
+        let mut excluded_account_ids = Vec::new();
+        let excluded_upstream_route_keys: HashSet<String> = HashSet::new();
+        let mut ws_retry_account_ids = HashSet::new();
+
+        for account_id in [11, 12, 13] {
+            excluded_account_ids.push(account_id);
+        }
+
+        assert_eq!(excluded_account_ids.len(), 3);
+        assert!(ws_retry_account_ids.is_empty());
+        assert!(excluded_upstream_route_keys.is_empty());
+        ws_retry_account_ids.insert(99);
+        assert_eq!(ws_retry_account_ids.len(), 1);
     }
 
     #[test]

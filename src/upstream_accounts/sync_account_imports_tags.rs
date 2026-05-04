@@ -1,7 +1,9 @@
 const GPT55_UNSUPPORTED_SYSTEM_TAG_KEY: &str = "unsupported_model:gpt-5.5";
 const GPT55_UNSUPPORTED_SYSTEM_TAG_NAME: &str = "不支持 gpt-5.5";
+const WEBSOCKET_UNSUPPORTED_SYSTEM_TAG_KEY: &str = "unsupported_transport:websocket";
+const WEBSOCKET_UNSUPPORTED_SYSTEM_TAG_NAME: &str = "不支持 WS";
 
-async fn ensure_gpt55_unsupported_system_tag(pool: &Pool<Sqlite>) -> Result<()> {
+async fn ensure_protected_system_tag(pool: &Pool<Sqlite>, name: &str, system_key: &str) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
     sqlx::query(
         r#"
@@ -16,8 +18,8 @@ async fn ensure_gpt55_unsupported_system_tag(pool: &Pool<Sqlite>) -> Result<()> 
           )
         "#,
     )
-    .bind(GPT55_UNSUPPORTED_SYSTEM_TAG_NAME)
-    .bind(GPT55_UNSUPPORTED_SYSTEM_TAG_KEY)
+    .bind(name)
+    .bind(system_key)
     .bind(&now_iso)
     .execute(pool)
     .await?;
@@ -32,8 +34,8 @@ async fn ensure_gpt55_unsupported_system_tag(pool: &Pool<Sqlite>) -> Result<()> 
         VALUES (?1, ?2, 1, 0, NULL, NULL, 1, 1, 'normal', 'keep_original', 0, ?3, ?3)
         "#,
     )
-    .bind(GPT55_UNSUPPORTED_SYSTEM_TAG_NAME)
-    .bind(GPT55_UNSUPPORTED_SYSTEM_TAG_KEY)
+    .bind(name)
+    .bind(system_key)
     .bind(&now_iso)
     .execute(pool)
     .await?;
@@ -47,12 +49,30 @@ async fn ensure_gpt55_unsupported_system_tag(pool: &Pool<Sqlite>) -> Result<()> 
         WHERE system_key = ?2
         "#,
     )
-    .bind(GPT55_UNSUPPORTED_SYSTEM_TAG_NAME)
-    .bind(GPT55_UNSUPPORTED_SYSTEM_TAG_KEY)
+    .bind(name)
+    .bind(system_key)
     .bind(&now_iso)
     .execute(pool)
     .await?;
     Ok(())
+}
+
+async fn ensure_gpt55_unsupported_system_tag(pool: &Pool<Sqlite>) -> Result<()> {
+    ensure_protected_system_tag(
+        pool,
+        GPT55_UNSUPPORTED_SYSTEM_TAG_NAME,
+        GPT55_UNSUPPORTED_SYSTEM_TAG_KEY,
+    )
+    .await
+}
+
+async fn ensure_websocket_unsupported_system_tag(pool: &Pool<Sqlite>) -> Result<()> {
+    ensure_protected_system_tag(
+        pool,
+        WEBSOCKET_UNSUPPORTED_SYSTEM_TAG_NAME,
+        WEBSOCKET_UNSUPPORTED_SYSTEM_TAG_KEY,
+    )
+    .await
 }
 
 pub(crate) async fn ensure_account_has_gpt55_unsupported_tag(
@@ -81,6 +101,17 @@ pub(crate) async fn account_has_gpt55_unsupported_tag(
     pool: &Pool<Sqlite>,
     account_id: i64,
 ) -> Result<bool> {
+    account_has_system_tag(pool, account_id, GPT55_UNSUPPORTED_SYSTEM_TAG_KEY).await
+}
+
+pub(crate) async fn account_has_websocket_unsupported_tag(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+) -> Result<bool> {
+    account_has_system_tag(pool, account_id, WEBSOCKET_UNSUPPORTED_SYSTEM_TAG_KEY).await
+}
+
+async fn account_has_system_tag(pool: &Pool<Sqlite>, account_id: i64, system_key: &str) -> Result<bool> {
     let count = sqlx::query_scalar::<_, i64>(
         r#"
         SELECT COUNT(*)
@@ -91,7 +122,7 @@ pub(crate) async fn account_has_gpt55_unsupported_tag(
         "#,
     )
     .bind(account_id)
-    .bind(GPT55_UNSUPPORTED_SYSTEM_TAG_KEY)
+    .bind(system_key)
     .fetch_one(pool)
     .await?;
     Ok(count > 0)

@@ -49,6 +49,8 @@ const DEFAULT_PROXY_SETTINGS: ProxySettings = {
   mergeUpstreamEnabled: true,
   fastModeRewriteMode: 'disabled',
   upstream429MaxRetries: 3,
+  websocketEnabled: true,
+  upstreamWebsocketDefaultEnabled: true,
   defaultHijackEnabled: false,
   models: [
     'gpt-5.3-codex',

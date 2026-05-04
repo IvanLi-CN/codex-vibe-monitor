@@ -82,6 +82,8 @@ export function useSettings() {
           0,
           Math.min(5, Math.trunc(nextProxy.upstream429MaxRetries)),
         ),
+        websocketEnabled: nextProxy.websocketEnabled,
+        upstreamWebsocketDefaultEnabled: nextProxy.upstreamWebsocketDefaultEnabled,
         defaultHijackEnabled: nextProxy.defaultHijackEnabled,
         models: nextProxy.models,
         enabledModels: nextProxy.models.filter((candidate) =>

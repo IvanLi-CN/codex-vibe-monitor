@@ -522,6 +522,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_gpt55_unsupported_system_tag(pool)
         .await
         .context("failed to ensure gpt-5.5 unsupported system tag")?;
+    ensure_websocket_unsupported_system_tag(pool)
+        .await
+        .context("failed to ensure websocket unsupported system tag")?;
 
     sqlx::query(
         r#"

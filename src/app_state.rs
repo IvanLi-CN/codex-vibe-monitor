@@ -274,18 +274,22 @@ struct ProxyModelSettingsResponse {
     merge_upstream_enabled: bool,
     fast_mode_rewrite_mode: String,
     upstream_429_max_retries: u8,
+    websocket_enabled: bool,
+    upstream_websocket_default_enabled: bool,
     default_hijack_enabled: bool,
     models: Vec<String>,
     enabled_models: Vec<String>,
 }
 
-impl From<ProxyModelSettings> for ProxyModelSettingsResponse {
-    fn from(value: ProxyModelSettings) -> Self {
+impl ProxyModelSettingsResponse {
+    fn from_settings(value: ProxyModelSettings, config: &AppConfig) -> Self {
         Self {
             hijack_enabled: value.hijack_enabled,
             merge_upstream_enabled: value.merge_upstream_enabled,
             fast_mode_rewrite_mode: "disabled".to_string(),
             upstream_429_max_retries: value.upstream_429_max_retries,
+            websocket_enabled: config.openai_proxy_websocket_enabled,
+            upstream_websocket_default_enabled: config.openai_proxy_upstream_websocket_default_enabled,
             default_hijack_enabled: DEFAULT_PROXY_MODELS_HIJACK_ENABLED,
             models: PROXY_PRESET_MODEL_IDS
                 .iter()
