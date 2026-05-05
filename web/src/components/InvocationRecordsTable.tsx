@@ -336,7 +336,7 @@ function renderDetailSummaryStrip(
           {t("table.column.model")}
         </div>
         <div
-          className="flex items-start gap-1 text-sm font-medium"
+          className="flex items-center gap-1 text-sm font-medium"
           title={row.modelValue}
         >
           <span className="min-w-0 flex-1 truncate">{row.modelValue}</span>
@@ -949,7 +949,7 @@ export function InvocationRecordsTable({
               </div>
               <div className="mt-3">
                 <div
-                  className="flex items-start gap-1 text-sm font-medium"
+                  className="flex items-center gap-1 text-sm font-medium"
                   title={row.modelValue}
                 >
                   <span className="min-w-0 flex-1 truncate">
@@ -1060,7 +1060,7 @@ export function InvocationRecordsTable({
                     </td>
                     <td className="max-w-[14rem] px-3 py-3 align-middle text-left text-xs">
                       <div
-                        className="flex items-start gap-1"
+                        className="flex items-center gap-1"
                         title={row.modelValue}
                       >
                         <span className="min-w-0 flex-1 truncate">

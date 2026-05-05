@@ -462,7 +462,7 @@ export function InvocationTable({
                 </dt>
                 <dd className="min-w-0">
                   <div
-                    className="flex items-start justify-end gap-1 text-right"
+                    className="flex items-center justify-end gap-1 text-right"
                     title={row.modelValue}
                   >
                     <span className="min-w-0 flex-1 truncate">
@@ -696,7 +696,7 @@ export function InvocationTable({
                       </td>
                       <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle xl:px-3">
                         <div className="flex min-w-0 flex-col items-end justify-center gap-1 leading-tight text-right">
-                          <div className="flex w-full items-start justify-end gap-1">
+                          <div className="flex w-full items-center justify-end gap-1">
                             <span
                               className="min-w-0 flex-1 truncate whitespace-nowrap text-base-content/85"
                               title={row.modelValue}
