@@ -34,9 +34,3 @@
 - 自动保存频繁写入可能导致抖动：通过 debounce 与失败回滚控制。
 - 价格预置与实际账单存在偏差：通过 UI 可编辑与 temporary 标记缓解。
 - 移除旧接口可能影响外部脚本：在 README 明确 breaking change。
-
-## 变更记录 / Change log
-
-- 2026-02-23: 初始化计划并冻结范围与验收标准。
-- 2026-02-23: 完成旧方案替换（`/api/settings/proxy-models` 下线、`/settings` 上线、价目表改为 SQLite 持久化并可在线编辑）。
-- 2026-02-23: 创建 PR #47，完成本地验证（cargo test / web lint+build / settings e2e）并跟踪 CI Pipeline #142 通过。

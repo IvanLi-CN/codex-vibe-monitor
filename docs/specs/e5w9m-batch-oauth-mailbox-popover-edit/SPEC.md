@@ -58,7 +58,7 @@
 - `cd web && bun run build`
 - `cd web && bun run build-storybook`
 
-## Visual Evidence (PR)
+## Visual Evidence
 
 - source_type: `storybook_canvas`
   target_program: `mock-only`
@@ -98,7 +98,3 @@
 - 主要变更位于 `web/src/pages/account-pool/UpstreamAccountCreate.tsx`、`web/src/components/account-pool/OauthMailboxChip.tsx`、`web/src/i18n/translations.ts` 与相应的 Storybook / Vitest 文件。
 - 本增量显式覆盖 `m7a9k` 中“批量 OAuth 不扩展手动邮箱输入”的旧边界；单账号邮箱契约与服务端 `mailboxAddress` 语义保持不变。
 - `j86ms` 进一步显式替换本 spec 中“邮箱编辑导致 pending OAuth URL 失效”的旧边界，改为 pending login session metadata live sync。
-
-## 变更记录（Change log）
-
-- 2026-03-18: 补充 Storybook 画布截图到 spec 资产目录，覆盖单账号邮箱附着等待态、批量邮箱生成等待态与邮箱胶囊组件级编辑气泡。

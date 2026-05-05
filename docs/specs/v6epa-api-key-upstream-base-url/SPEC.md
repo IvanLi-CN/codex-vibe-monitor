@@ -60,7 +60,7 @@
 - `cd web && bun run build`
 - 浏览器 / 组件级 smoke：API Key 创建页与详情编辑页的上游地址输入、保存与回显
 
-## Visual Evidence (PR)
+## Visual Evidence
 
 - source_type: storybook_canvas
   target_program: mock-only
@@ -116,8 +116,3 @@
   evidence_note: 展示共享气泡组件在暗色主题下的状态矩阵，证明玻璃材质、主题透传与箭头连接关系在暗底上也保持一致。
   image:
   ![FloatingFieldBubble state gallery dark](./assets/floating-field-bubble-state-gallery-dark.png)
-
-## 变更记录
-
-- 2026-03-15: 创建增量 spec，冻结 API Key 账号级上游地址的数据模型、运行时生效规则与验收口径。
-- 2026-03-15: 完成 SQLite 补列、API Key 创建/详情编辑接线、池路由账号级上游地址生效，并通过本地 Rust/Web 验证。

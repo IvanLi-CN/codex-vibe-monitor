@@ -10,3 +10,9 @@
 ## Key Decisions
 
 - No separate historical decision record was present before this migration.
+
+## Migrated Change History
+
+## 变更记录（Change log）
+
+- 2026-02-20: 对齐开发环境长驻服务到 devctl+zellij（脚本、文档、忽略规则）。PR #37。

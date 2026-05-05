@@ -141,12 +141,6 @@ None
 - 需要决策的问题：None。
 - 假设（需主人确认）：本轮继续按 fast-flow 的 merge+cleanup 终点推进。
 
-## 变更记录（Change log）
-
-- 2026-04-12: 创建 prompt-cache conversations 结构收敛 follow-up spec，冻结 fast-flow / merge+cleanup / prompt-cache-only 范围。
-- 2026-04-12: 完成 `prompt_cache_conversations` 真模块拆分；本地 `cargo fmt/check/test` 通过，期间命中过一次既有代理热路径时间敏感单测 `proxy_openai_v1_chunked_json_without_header_sticky_uses_live_first_attempt`，单测复跑与整套复跑均通过；shared-testbox `api-read-smoke` 全绿。
-- 2026-04-12: PR #339 review proof clear，GitHub checks 全绿，merge + cleanup 完成，本地回到最新 `main`。
-
 ## 参考（References）
 
 - `docs/specs/9vau7-backend-structure-dual-pr-followup/SPEC.md`

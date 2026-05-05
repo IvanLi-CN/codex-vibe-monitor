@@ -130,11 +130,6 @@ None
 - 风险：`include!()` 迁移到真实模块时，可能触发更严格的可见性与循环依赖问题。
 - 假设：现有 `scripts/shared-testbox-proxy-parallel-smoke` 与 `scripts/shared-testbox-raw-smoke` 足以覆盖本轮后端回归核心面。
 
-## 变更记录（Change log）
-
-- 2026-04-11: 创建后端结构收敛 follow-up spec，冻结本轮范围与验收口径。
-- 2026-04-11: 把 `maintenance` 中 archive/hourly-rollup 支撑 helper 收敛为真实支持模块，并完成本地 + shared-testbox 验证。
-
 ## 参考（References）
 
 - `docs/specs/huzqt-frontend-structure-convergence-followup/SPEC.md`
@@ -157,9 +152,3 @@ None
 - `scripts/shared-testbox-raw-smoke --cleanup`
   - run: `/srv/codex/workspaces/ivan/codex-vibe-monitor__4dd0653c/runs/20260412_000548_shared_smoke_fec27426`
   - result: raw payload 从 `.bin` 压缩到 `.bin.gz`，SQLite `request_raw_path` 同步更新，`search-raw` 同时命中 plain + gzip 文件
-
-## 里程碑完成情况
-
-- [x] M1: 拆分 `proxy / api / upstream_accounts / maintenance` 的首批后端热点到真实模块边界
-- [x] M2: 完成本地 Rust 质量门槛与必要回归测试
-- [x] M3: 完成 shared-testbox 实际环境 smoke、PR 收敛、合并与 cleanup

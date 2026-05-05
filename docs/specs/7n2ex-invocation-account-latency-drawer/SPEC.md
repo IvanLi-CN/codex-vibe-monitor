@@ -126,9 +126,9 @@
 
 - Directory: `docs/specs/7n2ex-invocation-account-latency-drawer/assets/`
 - In-plan references: `![...](./assets/<file>.png)`
-- PR visual evidence source: maintain `## Visual Evidence (PR)` in this spec when PR screenshots are needed.
+- PR visual evidence source: maintain `## Visual Evidence` in this spec when PR screenshots are needed.
 
-## Visual Evidence (PR)
+## Visual Evidence
 
 - source_type: storybook_canvas
   target_program: mock-only
@@ -241,11 +241,6 @@
 - 风险：只读抽屉如果直接复用太多号池页组件，可能把编辑态依赖一并带入，需要做清晰裁剪。
 - 需要决策的问题：None
 - 假设（需主人确认）：HTTP 压缩算法以响应头 `Content-Encoding` 为准，不展示请求头 `Accept-Encoding`。
-
-## 变更记录（Change log）
-
-- 2026-03-16: 创建 spec，冻结 InvocationTable 账号归因、时延压缩展示与当前页只读账号抽屉的范围与验收口径。
-- 2026-03-17: 补充 Storybook 截图证据，确认 InvocationTable 与 Records 网络视图里首字耗时维持毫秒，其余总耗时与阶段耗时统一按秒展示。
 
 ## 参考（References）
 

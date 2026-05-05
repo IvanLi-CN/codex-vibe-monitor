@@ -8,3 +8,9 @@
 ## Key Decisions
 
 - No separate historical decision record was present before this migration.
+
+## Migrated Change History
+
+## 变更记录（Change log）
+
+- 2026-03-06: Create spec and record current implementation (PR #89).

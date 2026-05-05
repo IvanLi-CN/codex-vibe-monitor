@@ -146,14 +146,6 @@
 - 风险：小时桶边界理解偏差；统一使用 UTC 小时对齐并输出 ISO 时间避免歧义。
 - 假设：`forward_proxy_attempts.occurred_at` 使用 UTC，可与 SQLite `strftime('%s', occurred_at)`一致换算。
 
-## 变更记录（Change log）
-
-- 2026-03-01: 新建规格，冻结字段口径与验收标准。
-- 2026-03-01: 完成后端接口、前端页面接线与本地验证，状态更新为 `部分完成（4/5）`。
-- 2026-03-01: 完成 review-loop 修复与 fast-track 收敛（labels/checks 全绿），状态更新为 `已完成（5/5）`。
-- 2026-03-02: 根据反馈补齐代理表 SSE `open` 静默回源同步，并更新列名文案为“请求量（成功/失败）/成功/失败”以避免歧义。
-- 2026-03-02: 增加 Live 页面验收截图资产，供 PR 与规格联动核对。
-
 ## 参考（References）
 
 - `web/src/pages/Live.tsx`

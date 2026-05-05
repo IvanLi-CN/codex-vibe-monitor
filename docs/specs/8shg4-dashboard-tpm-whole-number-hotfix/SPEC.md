@@ -122,11 +122,6 @@
 - 风险：若 integer 模式误伤其它 number 场景，会让本应保留小数的数值被截断；因此只在 TPM tile 上启用。
 - 假设：TPM 使用标准四舍五入即可满足“不显示小数点”的要求。
 
-## 变更记录（Change log）
-
-- 2026-04-11: 新建 hotfix spec，冻结“TPM 不显示小数点，仅影响今日 KPI TPM tile”的范围。
-- 2026-04-11: 完成整数格式实现，local `vitest + build + build-storybook` 通过，Storybook 本地证据已在聊天回传。
-
 ## 参考（References）
 
 - `docs/specs/2qsev-dashboard-tpm-cost-per-minute-kpi/SPEC.md`

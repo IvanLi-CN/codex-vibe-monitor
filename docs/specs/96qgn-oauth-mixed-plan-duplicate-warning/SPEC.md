@@ -77,14 +77,6 @@
 - `cd web && bun run build-storybook`
 - Storybook mock-only 截图 + `chrome-devtools` smoke：确认 mixed-plan 场景只显示计划 badge，不显示“重复账号”。
 
-## 里程碑（Milestones）
-
-- [x] M1: 创建 follow-up spec 并冻结 mixed-plan duplicate 语义。
-- [x] M2: 后端按 effective `plan_type` 收敛 shared identity duplicate 判定，并补 Rust 回归。
-- [x] M3: 补齐 roster/detail/create 前端回归与 Storybook mixed-plan 场景。
-- [x] M4: 完成本地验证与视觉证据采集。
-- [ ] M5: 快车道推进到 merge-ready，回填 spec / README 状态。
-
 ## Visual Evidence
 
 - 证据来源：`storybook_canvas`
@@ -119,11 +111,3 @@
 - 假设：现有 effective `plan_type` 解析链路已经足够表达“团队号 vs 个人号”判定，不需要新增 taxonomy。
 - 风险：若未来同一上游身份允许更多可并存计划组合，而计划字符串语义不稳定，仍需单独扩展比较规则。
 - 风险：历史账号若长期缺少有效计划类型，会继续显示 duplicate warning；这是本次刻意保守的策略。
-
-## 变更记录（Change log）
-
-- 2026-04-04: 创建 follow-up spec，冻结“不同有效计划类型的 OAuth 账号不再视为重复”的范围与验收标准。
-- 2026-04-04: 后端 duplicate clustering 改为只在“同有效计划类型”或“任一侧计划未知”时保留 `sharedChatgptAccountId` / `sharedChatgptUserId` warning，mixed-plan 已知组合不再告警。
-- 2026-04-04: 补齐 Rust mixed-plan / unknown-plan 回归，新增 roster/detail/create 前端测试与 `Mixed Plan Coexistence` Storybook 场景。
-- 2026-04-04: 本地验证通过 `cargo fmt`、目标 Rust tests、`cd web && bun run test -- src/components/UpstreamAccountsTable.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx src/pages/account-pool/UpstreamAccountCreate.test.tsx` 与 `cd web && bun run build-storybook`；mock-only 视觉证据已落盘，截图提交仍待主人授权。
-- 2026-04-04: mixed-plan Storybook fixture 已移除来自主人截图的显示名、邮箱、共享身份字段与路由 key 掩码，统一替换为 `fixture` / `example.invalid` 合成值，并刷新本地视觉证据。

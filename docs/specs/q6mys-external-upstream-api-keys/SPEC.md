@@ -161,10 +161,6 @@ None
 - 风险：node-shunt 分组导入要复用现有 provisioning scope 逻辑，否则可能打破同组节点隔离。
 - 假设：当前 third-party source 只需要 OAuth 账号，不需要 API Key 账号与批量协议。
 
-## 变更记录（Change log）
-
-- 2026-04-17: 建立 external upstream accounts + API keys 的实现规格与 HTTP/DB contract。
-
 ## 参考（References）
 
 - `docs/specs/cgz7s-oauth-token-json-import/SPEC.md`

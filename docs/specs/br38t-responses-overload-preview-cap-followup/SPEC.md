@@ -52,8 +52,3 @@
 - solution_disposition: none
 - project_doc_disposition: defer
 - Project文档defer记录: reason=`内部代理热路径 bugfix，无新增人类使用说明`; target=`README.md`; follow_up=`若后续需要把 early gate / overload 透明重试边界公开为维护者当前真相，再并入 README 或专门的 proxy 维护文档`
-
-## 变更记录
-
-- 2026-04-22: 创建 `#bk2pt` follow-up spec，冻结“preview cap 不得提前关闭 metadata-only overload 透明重试窗，且永不对 downstream-visible output 做回放”的实现边界。
-- 2026-04-22: 完成 early gate buffer cap 解耦，新增超长 metadata-only overload gate / integration 回归；本地 `cargo fmt`、`cargo check` 与 5 条 targeted cargo tests 已通过。

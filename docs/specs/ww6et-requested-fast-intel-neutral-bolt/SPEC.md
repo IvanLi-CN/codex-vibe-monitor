@@ -110,15 +110,7 @@
 - 开放问题：None。
 - 假设：请求侧 `priority` 是唯一需要视觉高亮的“想要 Fast”意图，其它 tier 仅做字段保真展示。
 
-## 里程碑（Milestones）
-
-- [x] M1: docs/specs 新规格建档并在索引登记。
-- [x] M2: 后端新增 `requestedServiceTier` 采集、投影与历史回填。
-- [x] M3: InvocationTable 完成三态闪电与详情字段展示。
-- [x] M4: Rust、Vitest、前端构建与 Playwright 回归通过。
-- [x] M5: 快车道交付完成（commit / push / PR / checks / review-loop 收敛）。
-
-## Visual Evidence (PR)
+## Visual Evidence
 
 - source_type: `storybook_canvas`
   story_id_or_title: `Monitoring/InvocationTable / Fast Indicator States`
@@ -133,9 +125,3 @@
   evidence_note: 验证 `requested_only` 行展开后，详情区同时显示 `Requested service tier` 与 `Service tier`，并呈现 `priority -> auto` 的未命中场景。
 
 ![Fast indicator requested-only details](./assets/fast-indicator-requested-only-details.png)
-
-## 变更记录（Change log）
-
-- 2026-03-08: 创建规格，冻结请求侧 tier 口径、三态闪电语义与历史回填范围。
-- 2026-03-08: 完成后端请求侧 tier 采集/回填与前端三态闪电落地，验证通过（M1-M4）。
-- 2026-03-08: PR #95 checks 全绿，review-loop 收敛，无新增阻塞项，规格收口完成（M5）。

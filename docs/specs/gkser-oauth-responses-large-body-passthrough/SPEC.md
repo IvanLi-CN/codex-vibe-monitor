@@ -75,8 +75,3 @@
 - `docs/specs/q8h3n-proxy-hot-path-streaming-stability/SPEC.md`
 - `docs/specs/uwke5-proxy-upstream-429-retry/SPEC.md`
 - `docs/specs/pd77h-oauth-inline-adapter/SPEC.md`
-
-## 变更记录
-
-- 2026-04-09: 创建 spec，冻结 OAuth `/v1/responses` large-body passthrough、small-body rewrite 保留与 distinct-account 记账修复范围。
-- 2026-04-09: 完成 file-backed passthrough、gzip stream hint 线性解析、buffered success hop-by-hop header 过滤与 targeted regressions。

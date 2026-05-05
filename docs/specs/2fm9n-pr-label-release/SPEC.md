@@ -87,7 +87,3 @@
 ## 参考（References）
 
 - Style playbook: `PR label release`（`/Users/ivan/.codex/skills/style-playbook/references/tags/pr-label-release.md`）
-
-## 变更记录（Change log）
-
-- 2026-02-19: 落地 PR 标签驱动发版（label gate + CI release gate + 版本/tag/Release 规则）。PR #36。

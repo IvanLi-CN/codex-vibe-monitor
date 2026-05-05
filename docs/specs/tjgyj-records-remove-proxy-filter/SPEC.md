@@ -145,11 +145,6 @@
 - 假设：用户所说“去掉代理筛选”仅针对 `/records` 筛选区，不影响展示列与详情字段。
 - 假设：旧 URL 中的 `proxy` 参数只需要静默忽略，不需要前端迁移提示。
 
-## 变更记录（Change log）
-
-- 2026-04-06: 创建 follow-up spec，冻结 `/records` 代理筛选退场、展示保留与兼容忽略策略。
-- 2026-04-06: 完成前后端契约删减、定向回归与本地 Storybook 视觉证据采集，并经主人确认后进入 PR/merge 收尾。
-
 ## 参考（References）
 
 - `docs/specs/6whgx-records-stable-snapshot-analytics/SPEC.md`

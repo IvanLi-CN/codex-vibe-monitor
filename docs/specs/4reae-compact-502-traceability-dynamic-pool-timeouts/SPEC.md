@@ -120,7 +120,7 @@
 - 风险：compact 能力负信号判断过宽会把暂时性 `503` 误标为 `unsupported`；判定必须保守。
 - 假设：既有 invocation detail / pool attempts 查询路径已经足够满足 `cvmId` 排查，不需要额外新建查询接口。
 
-## Visual Evidence (PR)
+## Visual Evidence
 
 ![高级路由与同步设置中的四项请求链路超时](./assets/routing-dialog-timeout-settings.png)
 
@@ -130,8 +130,3 @@
 - `story_id_or_title=account-pool-pages-upstream-accounts-overlays--routing-dialog-timeout-settings`
 - `state=timeout-settings`
 - `evidence_note=验证号池路由设置弹窗已收口为 4 项超时：一般请求响应体首字超时、压缩请求响应体首字超时、一般请求流结束超时、压缩请求流结束超时，且弹窗在视口内完整展示。`
-
-## 变更记录（Change log）
-
-- 2026-03-24: 创建 spec，冻结 `cvmId` 错误契约、compact 被动观测与号池动态 timeout 的范围和验收。
-- 2026-03-24: 收口公开超时语义为 4 项请求链路超时，补齐 Storybook 视觉证据，并完成本地验证。

@@ -73,14 +73,6 @@
 - `cd web && bun run test -- src/components/UpstreamAccountsTable.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx`
 - Storybook mock-only 截图 + `chrome-devtools` smoke：确认“旧 quota 历史 + 当前 402”场景下，列表和详情头部显示“上游拒绝 / 不可用”，并保留 `deactivated_workspace` 文案。
 
-## 里程碑（Milestones）
-
-- [x] M1: 创建 follow-up spec 并冻结 `402 -> upstream_rejected` 的导出语义。
-- [x] M2: 后端状态派生改为优先消费结构化 `402` 信号，并补齐 route/sync 双回归。
-- [x] M3: 补齐 Storybook 402 场景与前端断言，固定列表/详情显示结果。
-- [x] M4: 完成本地验证、Storybook 视觉证据与浏览器 smoke。
-- [x] M5: 快车道收敛到 merge-ready PR，并回填 spec / README 状态。
-
 ## Visual Evidence
 
 - source_type: storybook_canvas
@@ -120,10 +112,3 @@
 
 - 假设所有已持久化的 `upstream_http_402` 都应视为“上游拒绝”，而不是进一步细分成新的健康态。
 - 风险：如果仍有其他路径只依赖 `lastError` 文本导出状态，可能出现列表与详情再次分叉，需要通过 summary/detail 双测试收口。
-
-## 变更记录（Change log）
-
-- 2026-03-26: 创建 follow-up spec，冻结 402 `deactivated_workspace` 账号应显示“上游拒绝”的修复范围与验收口径。
-- 2026-03-26: 完成后端结构化 `402` 状态派生修复、route/sync 双回归、Storybook 402 场景、前端断言与本地视觉证据采集。
-- 2026-03-26: 分支 `th/9t4zq-upstream-http-402-rejected` 已推送，PR #244 已创建并打上 `type:patch` / `channel:stable`，进入 merge-ready 状态。
-- 2026-04-08: 回填 sync-classified hard-unavailable follow-up，要求旧 quota / 429 marker 不得再盖掉新的 `upstream_http_402`；Storybook 402 场景同步加入历史 quota 事件，固定“上游拒绝 + 不可用”的最终展示。

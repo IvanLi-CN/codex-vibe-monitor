@@ -112,25 +112,6 @@
 - live DB 与新创建 archive DB 均不再包含 `raw_expires_at`；历史 archive 文件保持只读兼容，不在本轮做离线 schema 重写。
 - 常驻任务只执行 `PRAGMA wal_checkpoint(PASSIVE)` 与 `PRAGMA optimize`；`VACUUM` 不放进周期任务，由 101 首次 backlog cleanup 完成后的维护窗口人工执行一次。
 
-## Task Orchestration
-
-- wave: 1
-  - main-agent => 新建 `docs/specs/9aucy-db-retention-archive/SPEC.md` 与 `docs/specs/README.md` 索引项，锁定 retention tier、archive batch 命名、主库边界、101 rollout gate 与验证口径 (skill: $fast-flow + $docs-no-revision-markers)
-- wave: 2
-  - main-agent => 扩展后端 schema 与配置：为 `codex_invocations`、`archive_batches`、`invocation_rollup_daily` 增加迁移与默认值，并接入新的 env/CLI retention 开关 (skill: $fast-flow)
-  - main-agent => 新增 retention 维护入口与生命周期接线：常驻 maintenance loop、`--retention-run-once`、`--retention-dry-run`、batch-size 控制与 cancel/shutdown 行为 (skill: $fast-flow)
-- wave: 3
-  - main-agent => 实现调用明细的 30/90 天分层策略、月度 archive sqlite.gz 导出、manifest 校验、daily rollup 回填与主库 purge 流程 (skill: $fast-flow)
-  - main-agent => 实现 `forward_proxy_attempts`、`stats_source_snapshots`、`codex_quota_snapshots` 的归档/清理/压缩策略，以及 raw file 删除与 orphan sweep (skill: $fast-flow)
-- wave: 4
-  - main-agent => 改造查询层：`summary all` 与总量统计读取 live detail + `invocation_rollup_daily`，其他排障接口保持 live-window only，并补齐告警/日志 (skill: $fast-flow)
-  - main-agent => 扩展 `/api/invocations` 返回字段、`web/src/lib/api.ts` 类型与 `InvocationTable` 细节状态展示，同时更新 `README.md`、`docs/deployment.md`、101 部署说明 (skill: $fast-flow + $docs-no-revision-markers)
-- wave: 5
-  - main-agent => 补齐 Rust 单测/集成测试与前端组件测试，覆盖迁移、dry-run、archive manifest、purge 后 totals 不变、quota compaction、orphan sweep、UI badge 呈现 (skill: $fast-flow)
-  - main-agent => 在 101 上执行 dry-run、记录预计归档行数/文件/磁盘变化，真实执行首次 cleanup、跑 `VACUUM`、收集 before/after 体积与 API 响应证据 (skill: $fast-flow)
-- wave: 6
-  - main-agent => push 分支、创建 PR、附上 101 rollout 证据与回滚说明、收敛 checks 与 review 反馈直到状态清晰且可合并 (skill: $codex-review-loop + $fast-flow)
-
 ## 验收标准（Acceptance Criteria）
 
 - 成功调用超过 30 天后，主库在线记录仍可用于结构化排障，但 `detailLevel` 变为 `structured_only`，并明确标出精简时间与原因。

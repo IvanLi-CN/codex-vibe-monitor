@@ -141,7 +141,7 @@ None
 
 None
 
-## Visual Evidence (PR)
+## Visual Evidence
 
 None
 
@@ -169,11 +169,6 @@ None
 - 风险：部分开发机可能已有自定义 `core.hooksPath`；本计划选择保守退出，不尝试接管。
 - 开放问题：None。
 - 假设：主 worktree 可稳定由 `git-common-dir` 的父目录推导得到；当前仓库布局满足该假设。
-
-## 变更记录（Change log）
-
-- 2026-03-14: 创建 spec，冻结 shared hooks + `post-checkout` + `.env.local` copy-missing-only + fast-track 的实现口径。
-- 2026-03-14: 完成 shared hooks、copy-missing-only sync、linked worktree smoke、PR #129 与 review 修复收敛。
 
 ## 参考（References）
 

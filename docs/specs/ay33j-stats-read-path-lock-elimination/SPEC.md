@@ -127,11 +127,6 @@ None
 - 风险：历史 summary repair 从请求链路剥离后，既有依赖“首次读取自动修复”的测试需要同步调整到后台语义。
 - 假设：现有 summary/quota follow-up worker 与 startup maintenance 足以承载本轮 coalesced catch-up。
 
-## 变更记录（Change log）
-
-- 2026-04-12: 创建 stats read-path lock elimination spec，冻结根因、范围、验收与 merge-ready 终点。
-- 2026-04-12: 完成共享 stats 读链路去写化、后台 catch-up orchestration 与锁竞争回归；本地 `cargo fmt/check/test` 全绿，Dashboard smoke 未再出现 `database is locked`。
-
 ## 参考（References）
 
 - `docs/specs/xvdhm-dashboard-sse-refresh-optimization/SPEC.md`

@@ -119,9 +119,9 @@
 
 - Directory: `docs/specs/mj5nt-live-running-elapsed-sse/assets/`
 - In-plan references: `![...](./assets/<file>.png)`
-- PR visual evidence source: maintain `## Visual Evidence (PR)` in this spec when PR screenshots are needed.
+- PR visual evidence source: maintain `## Visual Evidence` in this spec when PR screenshots are needed.
 
-## Visual Evidence (PR)
+## Visual Evidence
 
 - E2E evidence is covered by `web/tests/e2e/invocation-table-layout.spec.ts` against both `/#/dashboard` and `/#/live`.
 - Storybook canvas evidence for the near-20-row live simulation is captured from `Monitoring / InvocationTable / Recent 20 Streaming Simulation`.
@@ -149,11 +149,6 @@ None
 - 风险：临时快照和终态快照乱序到达时，前端若没有终态优先级保护，可能出现终态被旧 running 覆盖。
 - 需要决策的问题：None。
 - 假设（需主人确认）：除 `Dashboard` / `Live` 的 `useInvocationStream` 外，没有其它前端消费方强依赖 `ApiInvocation.id > 0` 的 SSE 临时记录语义。
-
-## 变更记录（Change log）
-
-- 2026-03-17: 创建规格并冻结“即时实况 + 用时订正 + 图表排除 running 点位”的实现口径。
-- 2026-03-17: 完成 running 临时 SSE、稳定键合并、用时秒级自增、图表过滤与验证闭环，PR #170 已创建。
 
 ## 参考（References）
 

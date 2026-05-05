@@ -110,7 +110,7 @@
 - [x] M4: Rust + web 自动化验证补齐，`Retry-After`/exhaustion 语义确认。
 - [x] M5: fast-track 交付完成（spec sync、push、PR、checks、review-loop 收敛）。
 
-## Visual Evidence (PR)
+## Visual Evidence
 
 - source_type: storybook_canvas
 - target_program: mock-only
@@ -128,8 +128,3 @@
 - 风险：当 `upstream429MaxRetries>0` 时，generic pass-through 改为先读 body 再发 upstream 会失去当前“边读边发”的上行特性；当 `upstream429MaxRetries==0` 则保持旧的 stream-through 语义。
 - 风险：若多个 proxy 节点都返回 `429`，重试只会在 `0..5` 次范围内切换，不保证一定避开限流。
 - 假设：`forward_proxy_attempts` failure kind 只用于内部观测，本次新增 `upstream_http_429` 不需要前端单独新增展示字段。
-
-## 变更记录（Change log）
-
-- 2026-03-10: 创建 spec，冻结 429 自动重试的范围、设置接口与 exhaustion 语义。
-- 2026-03-10: 实现落地：新增 `upstream429MaxRetries` 设置、429 重试 helper、全链路接线与回归测试。

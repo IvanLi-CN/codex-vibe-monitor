@@ -144,11 +144,6 @@ None
 - 需要决策的问题：None
 - 假设（需主人确认）：现有 Storybook stories 足以作为本轮稳定视觉证据来源。
 
-## 变更记录（Change log）
-
-- 2026-04-12: 初始化本轮前端类型债清偿 spec。
-- 2026-04-12: 完成 account-pool 生产代码 `@ts-nocheck` 清理、`UpstreamAccounts` helper 模块拆分、Create 页面严格类型化与 Storybook 视觉证据归档。
-
 ## 参考（References）
 
 - `docs/specs/huzqt-frontend-structure-convergence-followup/SPEC.md`

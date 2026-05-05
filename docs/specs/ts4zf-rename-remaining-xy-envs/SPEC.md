@@ -127,11 +127,6 @@
 - 风险：若实现遗漏任一公开旧键，会出现“部分新命名、部分旧命名仍被接受”的灰区，必须用集中化矩阵和残留扫描兜底。
 - 假设：当前唯一需要保留的 legacy hard-error 键就是 `XY_DATABASE_PATH` 与 `XY_FORWARD_PROXY_ALGO`，其余旧 `XY_*` 键均应迁移到本 spec 的新 canonical 名称。
 
-## 变更记录（Change log）
-
-- 2026-03-10: 创建 spec，冻结剩余公开 `XY_*` env 的 rename matrix、immediate cutover 策略与 breaking migration 口径。
-- 2026-03-10: 完成实现、文档、回归测试、review-loop 与 fast-track 交付；PR [#110](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/110) 已创建，labels=`type:major` + `channel:stable`，checks green。
-
 ## 参考（References）
 
 - `docs/specs/2uaxk-remove-xyai-legacy-ingest/SPEC.md`

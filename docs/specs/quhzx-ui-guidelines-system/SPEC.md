@@ -93,9 +93,3 @@
 - 风险：Storybook build 若暴露现有无关问题，需明确区分是文档问题还是仓库既有问题。
 - 开放问题：无。
 - 假设：当前 bun 与 Storybook 依赖可直接用于 docs-only 验证。
-
-## 变更记录（Change log）
-
-- 2026-03-18: 创建 spec，冻结 docs-only UI 规范补档范围、验收标准与 fast-track 交付路径。
-- 2026-03-18: 完成 `docs/ui/` 六份文档、README 入口与本地验证；进入 PR 交付与 review 收敛阶段。
-- 2026-03-18: 修复 review 指出的 specs 索引表渲染问题与 foundations spacing 约束缺口，随后同步 `origin/main`、更新 PR #173 到 mergeable clean，并确认 checks green / review-loop clear。

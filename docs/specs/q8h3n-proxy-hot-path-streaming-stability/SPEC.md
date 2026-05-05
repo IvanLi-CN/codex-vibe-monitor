@@ -47,19 +47,6 @@
 - summary/quota follow-up 必须具备 burst coalesce，避免每条新记录都立即跑完整汇总。
 - `PROXY_REQUEST_CONCURRENCY_LIMIT` / `PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS` 只能作为弃用兼容项继续被读取与告警，不得再影响 `/v1/*` 准入。
 
-## Task Orchestration
-
-- wave: 1
-  - main-agent => 从 `/v1/*` 入口移除 whole-proxy admission gate，把 permit 改成纯观测型 in-flight tracking，并对 `PROXY_REQUEST_CONCURRENCY_*` 输出 deprecated/ignored 告警 (skill: $fast-flow)
-- wave: 2
-  - main-agent => 保留并复验 request/response raw 异步旁路与 summary/quota debounce，确保移除 gate 后业务流优先级不回退 (skill: $fast-flow)
-- wave: 3
-  - main-agent => 补齐本地回归：100 并行不再本地 503、长流期间 in-flight tracking 到 body 结束、raw 饱和只丢 capture、不影响业务流 (skill: $fast-flow)
-- wave: 4
-  - main-agent => 新增 `scripts/shared-testbox-proxy-parallel-smoke`，在 `codex-testbox` 上用隔离 run dir、唯一 Compose project、LXC caps 兼容 override 跑 100 并行压测 (skill: $shared-testbox-runner)
-- wave: 5
-  - main-agent => 完成本地验证、共享测试机压测、fast-track review/PR/merge/release，并在 101 与浏览器侧复验不再出现本地 admission reject (skill: $fast-flow)
-
 ## 验收标准（Acceptance Criteria）
 
 - `codex-testbox` 上 100 个同时发起的 `/v1/*` 代理请求不会出现任何本地 `503 proxy concurrency limit reached; retry later`。

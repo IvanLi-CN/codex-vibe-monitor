@@ -51,12 +51,6 @@
 - `python3 .github/scripts/check_quality_gates_contract.py --repo-root "$PWD" --profile final`
 - `bash .github/scripts/test-quality-gates-contract.sh`
 
-## 里程碑（Milestones）
-
-- [ ] M1: 为 release-publish 补齐 PR 评论权限
-- [ ] M2: 更新 contract / fixture 并完成本地验证
-- [ ] M3: fast-flow 推进到 PR checks 收敛
-
 ## 参考（References）
 
 - `.github/workflows/release.yml`

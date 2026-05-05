@@ -78,8 +78,3 @@
 - 2026-03-17: `cd /Users/ivan/.codex/worktrees/5aab/codex-vibe-monitor/web && bun run test`
 - 2026-03-17: `cd /Users/ivan/.codex/worktrees/5aab/codex-vibe-monitor/web && bun run build`
 - 2026-03-17: 浏览器 smoke 待补充（单账号 OAuth 新增 / reauth 的手动邮箱支持与不支持降级）
-
-## 变更记录
-
-- 2026-03-17: 创建增量 spec，显式覆盖 `3n287` 中“仅支持系统生成邮箱增强”的旧边界，并冻结单账号 OAuth / reauth 的手动邮箱附着语义。
-- 2026-03-17: 完成后端附着逻辑、邮箱来源清理策略、前端联合类型与手动邮箱交互，并通过本地 Rust / Web 自动化验证。

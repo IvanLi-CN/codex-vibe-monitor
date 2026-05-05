@@ -90,8 +90,3 @@
 - 风险：若误把 shared client 的超时保护全部移除，后台轮询可能失去既有超时收敛；本次必须严格限定变更范围。
 - 风险：若直接复用 forward proxy client，可能意外改变 redirect/connect 语义；实现应尽量保持 pool 既有行为，只去掉整请求总超时。
 - 假设：线上稳定落在约 `60s` 的 `upstream_stream_error` 峰值主要由 shared client 的 `.timeout(config.request_timeout)` 触发，修复后应显著消失。
-
-## 变更记录（Change log）
-
-- 2026-03-17: 创建 spec，冻结根因、边界与回归标准。
-- 2026-03-17: 完成 `HttpClients` 分工修复；号池 live upstream 改走无整请求总超时 client，并为“首 chunk 超时 / OAuth 非流式读体超时”补回显式预算，`cargo test` 全量 395 项通过。

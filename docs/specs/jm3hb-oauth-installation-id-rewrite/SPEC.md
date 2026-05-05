@@ -163,12 +163,6 @@ None
 - 需要决策的问题：None
 - 假设（需主人确认）：当前 OAuth 上游发送路径始终可提供内部 `account_id` 给 rewrite 逻辑。
 
-## 变更记录（Change log）
-
-- 2026-04-11: 初始化规格，冻结 deployment seed + `account_id` 派生方案。
-- 2026-04-11: 完成 OAuth `/v1/responses` installation id 稳定改写、SQLite seed 持久化与回归测试。
-- 2026-04-11: 收敛 review finding，恢复 file-backed `/v1/responses` 的压缩 / 超大 body passthrough 护栏，并补充对应回归测试。
-
 ## 参考（References）
 
 - `/Users/ivan/.codex/sessions/2026/04/11/rollout-2026-04-11T11-28-58-019d7a95-eadc-79e3-923d-97d0ad6132be.jsonl`

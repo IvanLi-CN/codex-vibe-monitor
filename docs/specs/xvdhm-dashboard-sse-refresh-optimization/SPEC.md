@@ -124,9 +124,9 @@ None
 ## 计划资产（Plan assets）
 
 - Directory: `docs/specs/xvdhm-dashboard-sse-refresh-optimization/assets/`
-- PR visual evidence source: maintain `## Visual Evidence (PR)` in this spec when PR screenshots are needed.
+- PR visual evidence source: maintain `## Visual Evidence` in this spec when PR screenshots are needed.
 
-## Visual Evidence (PR)
+## Visual Evidence
 
 ## 资产晋升（Asset promotion）
 
@@ -152,13 +152,6 @@ None
 - 风险：`90d / 1d` 本地修补策略若边界处理错误，可能出现跨日时一天偏差；需用 reconnect/visibility/day-rollover 测试兜住。
 - 风险：changed-only 比较若忽略浮点稳定性，可能因为序列化差异造成误判；应基于结构化值比较，而非 JSON 字符串文本。
 - 假设：Dashboard 近实时优先级高于严格历史 bucket 同帧一致性。
-
-## 变更记录（Change log）
-
-- 2026-03-07: 创建规格并冻结优化边界、验收标准与快车道交付目标。
-- 2026-03-07: 完成后端 changed-only 广播与前端 summary/timeseries 刷新策略收敛，`cargo test`、`cd web && npm test`、`cd web && npm run build` 通过。
-- 2026-03-07: 浏览器实测 `/dashboard`，确认 records 推送后 recent table / `today` / `24h` / `7d` / `90d` 当前桶可见更新，且 reconnect 仅触发一轮静默 backfill 请求。
-- 2026-03-07: 创建 PR #90，补齐 `type:patch` + `channel:stable` labels，并确认 Label Gate / CI Pipeline 全绿；review 复查未发现阻塞项。
 
 ## 参考（References）
 

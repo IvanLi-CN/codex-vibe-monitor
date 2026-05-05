@@ -116,9 +116,9 @@ None
 
 - Directory: `docs/specs/pd77h-oauth-inline-adapter/assets/`
 - In-plan references: `![...](./assets/<file>.png)`
-- PR visual evidence source: maintain `## Visual Evidence (PR)` in this spec when PR screenshots are needed.
+- PR visual evidence source: maintain `## Visual Evidence` in this spec when PR screenshots are needed.
 
-## Visual Evidence (PR)
+## Visual Evidence
 
 ## 资产晋升（Asset promotion）
 
@@ -142,10 +142,6 @@ None
 - 风险：pool live body replay 路径在 OAuth 内联后需要完整 snapshot 才能改写 `/responses` 请求。
 - 风险：统一响应抽象涉及 proxy capture / stream 转发链，若改动不完整容易造成首包或 header 透传回归。
 - 假设（需主人确认）：本次允许删除 `openai-oauth-bridge` 二进制与全部 sidecar 文档，不保留兼容入口。
-
-## 变更记录（Change log）
-
-- 2026-03-16: 创建替代 spec，定义用单进程 OAuth adapter 取代固定 sidecar。
 
 ## 参考（References）
 

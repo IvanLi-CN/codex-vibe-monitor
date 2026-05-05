@@ -86,8 +86,3 @@
 - 风险：若把对齐逻辑做得过宽，会意外扩大非 compact 路径的首 chunk 等待时间。
 - 风险：即便首 chunk 超时口径修复，`NSNGC` 仍可能存在独立的 mid-stream gzip 损坏；这属于后续单独问题，不在本次修复范围。
 - 假设：当前 compact“非常慢”的主体开销来自首 chunk 误判失败后的既有 failover 链路，而不是最终成功那一轮本身极慢。
-
-## 变更记录（Change log）
-
-- 2026-03-17: 创建 spec，冻结 compact 首 chunk 超时错配的根因、边界与验收标准。
-- 2026-03-17: 完成本地实现与 targeted regression；待 PR / release / deploy 收口。

@@ -129,7 +129,7 @@
 - `cd web && bun run test --run src/components/InvocationTable.test.tsx`
 - `cd web && bun run build`
 
-## Visual Evidence (PR)
+## Visual Evidence
 
 - source_type: `storybook_canvas`
 - target_program: `mock-only`
@@ -162,11 +162,6 @@
 - 风险：attempt 行数会快速增长，因此必须依赖 7+30 的 retention 策略，不能长期在线保留。
 - 风险：若某次 pool 请求在真正发出上游请求前就因为本地校验失败而中断，这类失败不会生成 attempt 行；它们仍只体现在主 invocation 失败结果里。
 - 假设：InvocationTable 详情层的按需拉取已足够支撑排障，不需要再把 attempts 暴露到主列表摘要。
-
-## 变更记录（Change log）
-
-- 2026-03-22: 创建 spec，冻结 pool attempts schema、3 账号预算、attempt API、详情懒加载与 7+30 retention 策略。
-- 2026-03-23: 更新契约，要求 attempt 在开始时插入 `pending` 行，并通过 `pool_attempts` SSE 实时推送后续状态变化。
 
 ## 参考（References）
 

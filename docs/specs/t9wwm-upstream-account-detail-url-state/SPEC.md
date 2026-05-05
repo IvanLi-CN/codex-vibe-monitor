@@ -147,8 +147,3 @@
 - 风险：若旧的 `location.state` 兼容入口与新的 query controller 处理顺序不当，可能导致首次进入时重复开关抽屉或遗留 warning state。
 - 风险：Live 页存在 Invocation 列表与 Prompt Cache 历史抽屉嵌套表格，若 callback 透传不彻底，容易出现双抽屉回归。
 - 假设：监控页复用号池同款详情时，允许展示同样的账号动作入口；“不跳转号池页”只约束详情查看链路，不限制用户主动触发其它账号动作。
-
-## 变更记录（Change log）
-
-- 2026-03-28: 创建 follow-up spec，冻结 URL / accountId 驱动、删除 / not-found 关闭语义、监控页共享详情抽屉与视觉证据口径。
-- 2026-03-28: 完成号池与监控页共享详情抽屉改造，补齐 Storybook / Vitest 与最终视觉证据。

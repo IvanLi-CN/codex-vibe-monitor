@@ -58,7 +58,3 @@
 ## 风险与开放问题（Risks / Open questions）
 
 - 本仓库脚本强依赖 `zellij` + `~/.codex/bin/devctl`；若不满足则启动失败（符合 No fallback 的预期）。
-
-## 变更记录（Change log）
-
-- 2026-02-20: 对齐开发环境长驻服务到 devctl+zellij（脚本、文档、忽略规则）。PR #37。

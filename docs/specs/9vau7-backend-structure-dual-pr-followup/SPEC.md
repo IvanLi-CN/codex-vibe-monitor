@@ -69,12 +69,6 @@
 - 风险：`hourly_rollups` router builder 抽离若遗漏 handler 绑定，容易引入启动时路由缺失；必须靠 shared-testbox API smoke 回归。
 - 假设：当前 GitHub main head = `c8afc4a95433e1ea14d4343023565ceab01c904c`，本地 `origin/main` 与之对齐。
 
-## 变更记录（Change log）
-
-- 2026-04-12: 创建双 PR 后端结构债 fast-track spec，冻结 PR1/PR2 范围与 merge+cleanup 终点。
-- 2026-04-12: PR1 已完成 `proxy + upstream_accounts/routing` 真模块化并合入 `main`，本地 `cargo fmt/check/test` 与 shared-testbox `proxy-parallel/raw` smoke 通过。
-- 2026-04-12: PR2 已完成 `api + hourly_rollups router builders` 结构收敛，新增 `scripts/shared-testbox-api-read-smoke`，本地 `cargo fmt/check/test` 与 shared-testbox `api-read/proxy-parallel/raw` smoke 通过。
-
 ## 参考（References）
 
 - `docs/specs/wt76b-backend-structure-convergence/SPEC.md`

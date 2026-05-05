@@ -57,25 +57,7 @@
 - `cd web && npm run test`
 - `cd web && npm run test:e2e -- tests/e2e/invocation-table-layout.spec.ts`
 
-## 里程碑（Milestones）
-
-- [x] M1: 新建规格并锁定断点契约与验收矩阵。
-- [x] M2: 完成 InvocationTable 响应式双视图改造与桌面防溢出。
-- [x] M3: 扩展 E2E 回归并通过本地验证。
-- [x] M4: 快车道收敛（push + PR + checks + review-loop）。
-- [x] M5: 回写规格状态与变更记录。
-
 ## 风险 / 假设
 
 - 假设：`md (768~1023)` 采用表格视图。
 - 风险：超长无空格文本可能触发单元格挤压，需通过截断策略兜底。
-
-## 变更记录（Change log）
-
-- 2026-03-02: 创建规格，进入实现阶段。
-- 2026-03-02: `InvocationTable` 完成双视图改造（`<768` 列表卡片、`>=768` 表格），并统一展开详情行为。
-- 2026-03-02: 表格视图收敛列宽预算与长文本截断策略，覆盖长 endpoint / 长错误串场景，`lg+` 无横向滚动。
-- 2026-03-02: E2E 扩展为 Dashboard/Live × `375/768/1024/1280/1440/1873` 全矩阵，校验视图形态、溢出约束与详情交互。
-- 2026-03-02: 本地验证通过：`npm run test`、`npm run build`、`E2E_BASE_URL=http://127.0.0.1:4173 npm run test:e2e -- tests/e2e/invocation-table-layout.spec.ts`。
-- 2026-03-02: 快车道交付 PR [#79](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/79)，标签 `type:patch` + `channel:stable`。
-- 2026-03-02: 修复 `768px` 展开后右侧留白：按 `xl` 可见列动态设置 `colSpan`，并重配 `md/xl` 列宽预算；E2E 新增“首行右侧空隙 <= 1px”断言。

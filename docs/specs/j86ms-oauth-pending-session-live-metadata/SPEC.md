@@ -92,8 +92,3 @@
 - 2026-03-25: `cd /Users/ivan/.codex/worktrees/f3f3/codex-vibe-monitor/web && bun run build-storybook`
 - 2026-03-25: `cargo test` 仍被现存基线用例 `tests::pool_route_non_capture_request_body_read_timeout_applies_to_replay_stream` 阻塞。
 - 2026-03-25: `cd /Users/ivan/.codex/worktrees/f3f3/codex-vibe-monitor/web && bun run test` 仍被现存基线失败阻塞，主要落在 `src/pages/account-pool/UpstreamAccounts.test.tsx`、`src/pages/Records.test.tsx`、`src/pages/Live.test.tsx` 与 `src/components/AccountTagFilterCombobox.test.tsx`。
-
-## 变更记录
-
-- 2026-03-25: 创建增量 spec，冻结 pending OAuth login session metadata live-sync 的接口、交互与验收边界。
-- 2026-03-25: 完成后端 pending-session metadata PATCH、前端单账号/批量 OAuth 热更新、Storybook/Vitest/Rust 定向回归，并补充本地视觉证据。

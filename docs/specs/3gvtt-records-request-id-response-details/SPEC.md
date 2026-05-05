@@ -163,11 +163,6 @@
 - 假设：当前用户所说“请求 ID”指向 `invokeId`，而不是上游返回的 request id。
 - 假设：完整详情继续采用右侧 drawer 是正确的交互方向，不需要切成 modal 或独立页面。
 
-## 变更记录（Change log）
-
-- 2026-04-04: 创建 follow-up spec，冻结 `/records` 的请求 ID 精确筛选、异常响应体节选与完整详情抽屉范围。
-- 2026-04-04: 补齐 records 页的前后端契约、Storybook、测试与本地构建验证，并将 mock visual evidence 归档到 spec 目录。
-
 ## 参考（References）
 
 - `docs/specs/6whgx-records-stable-snapshot-analytics/SPEC.md`

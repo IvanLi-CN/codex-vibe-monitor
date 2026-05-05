@@ -121,12 +121,6 @@
 - 假设 raw 继续全量保留，但 born-gzip 足以显著降低大 payload 的热存储膨胀；若后续流量继续上升，仍可能需要独立存储层 follow-up。
 - 风险主要集中在 streaming raw writer 与 retention/born-gzip 兼容边界，因此必须依赖 targeted regression 与 shared-testbox smoke 收口。
 
-## 变更记录（Change log）
-
-- 2026-04-13: 创建 follow-up spec，冻结 born-gzip、bounded historical rollup auto-heal 与 upstream-rejected cooldown 的范围与验收。
-- 2026-04-13: 完成 born-gzip raw capture、bounded historical rollup auto-heal、upstream-rejected 6h cooldown、README/deployment 同步，以及本地 + shared-testbox 验证。
-- 2026-04-17: 修正 maintenance-upstream-rejected cooldown 的实现漂移：`cooldown_until` 改为显式真相源，并为 legacy 空字段行补齐 bounded reconciliation。
-
 ## 实施结果
 
 - `src/proxy/raw_capture.rs` 与 `src/proxy/usage_persistence.rs` 现在会按 `PROXY_RAW_IMMEDIATE_GZIP_BYTES` 在首次落盘时选择 plain / gzip writer，并同步持久化正确的 `*_raw_path` / `*_raw_codec`。

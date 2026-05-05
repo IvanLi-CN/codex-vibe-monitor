@@ -144,13 +144,7 @@
 - 需要决策的问题：None。
 - 假设（需主人确认）：若 XY 上游未返回 `serviceTier/service_tier`，该来源记录允许保持缺失而不追加猜测值。
 
-## 变更记录（Change log）
-
-- 2026-03-07: 创建规格，冻结“仅实际 `service_tier=priority` 算 Fast”口径，并要求以 payload-only + 启动回填实现。
-- 2026-03-07: 已完成后端 service tier 采集 / 回填、InvocationTable 图标与详情展示，以及 `cargo test`、`cargo check`、`cd web && npm run test`、`cd web && npm run build`、`cd web && npm run test:e2e -- invocation-table-layout.spec.ts` 验证。
-- 2026-03-07: 已创建 PR #93，review-loop 发现并修复了 legacy `serviceTier=null` 时未回退 `service_tier` 的投影问题；合并 `main` 后重新推送，PR 已恢复 `mergeable_state=clean` 且 checks 全部通过。
-
-## Visual Evidence (PR)
+## Visual Evidence
 
 - source_type: storybook_canvas
   target_program: mock-only

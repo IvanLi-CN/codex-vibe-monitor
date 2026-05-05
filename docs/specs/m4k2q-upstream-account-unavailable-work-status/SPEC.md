@@ -136,15 +136,3 @@
   evidence_note: 验证旧 quota 历史存在时，新的上游 402 / rejected 异常在详情抽屉头部仍保留“上游拒绝”具体健康态，同时工作态统一落到“不可用”。
   image:
   ![不可用详情头部（上游拒绝）](./assets/unavailable-detail-upstream-rejected.png)
-
-## 里程碑（Milestones）
-
-- [x] M1: 新增 follow-up spec，冻结 `unavailable` 的调度语义与筛选契约。
-- [x] M2: 后端读模型与列表 query 支持 `workStatus=unavailable`。
-- [x] M3: 前端筛选、详情头部、翻译与 Storybook mock 统一到 `unavailable`。
-- [x] M4: Storybook 覆盖 `unavailable` 三类异常并完成视觉证据。
-- [ ] M5: 验证、review-loop 与 PR 收敛到 merge-ready。
-
-## 变更记录（Change log）
-
-- 2026-04-08: 回填 sync-classified hard-unavailable follow-up；旧 quota / 429 marker 不得再把 `401/402/403` 维护同步导回 `rate_limited`，新增后端回归与 Storybook stale-quota 402 场景。

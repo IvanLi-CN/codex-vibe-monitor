@@ -86,8 +86,3 @@
   - `healthStatus=normal&healthStatus=needs_reauth&healthStatus=upstream_unavailable`
 
 ![Local preview status multi-select smoke](./assets/upstream-status-filters-local-preview.png)
-
-## 变更记录（Change log）
-
-- 2026-03-27：创建 follow-up spec，冻结三组状态筛选改为多选、重复 query 参数与同维度 OR 匹配的范围和契约。
-- 2026-03-27：完成前后端多选筛选改造、定向测试、Storybook 构建与本地预览视觉证据落盘。

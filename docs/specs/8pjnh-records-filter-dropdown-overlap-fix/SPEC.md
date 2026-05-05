@@ -101,7 +101,7 @@
 - In-plan references: `![Records dropdown overlap fixed](./assets/records-filter-dropdown-fixed.png)`
 - PR visual evidence source: 使用 Records 页面修复后浏览器截图。
 
-## Visual Evidence (PR)
+## Visual Evidence
 
 本地 mock records 页面，注入测试用 overlap 样式后验证 dropdown 仍位于 summary panel 之上：
 ![Records dropdown overlap fixed](./assets/records-filter-dropdown-fixed.png)
@@ -129,14 +129,6 @@ None
 - 风险：E2E 几何断言受亚像素影响，因此需保留少量容差。
 - 需要决策的问题：None。
 - 假设（需主人确认）：None。
-
-## 变更记录（Change log）
-
-- 2026-03-12: 创建 hotfix spec，冻结页面级抬层方案、回归范围与视觉证据要求。
-- 2026-03-12: 已完成 Records 页层级热修、Vitest / Playwright / build 验证，并补充本地 mock overlap 视觉证据。
-- 2026-03-12: PR #116 checks 全部成功，codex review loop 清零，无剩余阻塞项。
-- 2026-03-12: 补充 1279px 非 xl 窄桌面断点的 Playwright 遮挡 smoke，降低 breakpoint 回归风险。
-- 2026-03-12: 将 front-end Vitest 与 Records overlay Playwright 定点回归接入 CI gate，避免仅本地守护。
 
 ## 参考（References）
 

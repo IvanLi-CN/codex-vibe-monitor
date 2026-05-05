@@ -147,14 +147,6 @@ presetGroupFilter?: {
 - `cd /Users/ivan/.codex/worktrees/8590/codex-vibe-monitor/web && bun run build-storybook`
 - Storybook mock-only 视觉验证：覆盖分组页默认态、仅未分组态、空态，以及从分组页跳转到账号页的 preset filter 行为。
 
-## 里程碑（Milestones）
-
-- [x] M1: 新建增量 spec，冻结路由、列表信息密度、未分组处理与跳转语义。
-- [x] M2: 抽取共享分组聚合 helper 与分组摘要组件，统一 grouped roster / groups page 口径。
-- [x] M3: 落地 `/account-pool/groups` 页面、二级页签与 preset group filter state 协议。
-- [x] M4: 补齐 i18n、Storybook、Vitest 与人类项目文档。
-- [x] M5: 快车道收敛到 merge-ready。
-
 ## Visual Evidence
 
 - source_type: storybook_canvas

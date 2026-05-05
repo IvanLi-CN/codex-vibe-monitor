@@ -101,7 +101,7 @@ None
 
 - `cargo fmt` / `cargo clippy` via lefthook (commit hooks).
 
-## Visual Evidence (PR)
+## Visual Evidence
 
 None
 
@@ -126,10 +126,6 @@ None
 
 - 风险：若 upstream pricing/规则变更，需要再次手动刷新默认目录。
 - 假设：`usage.input_tokens` 代表 prompt token 数量（用于 272K 阈值判定）。
-
-## 变更记录（Change log）
-
-- 2026-03-06: Create spec and record current implementation (PR #89).
 
 ## 参考（References）
 

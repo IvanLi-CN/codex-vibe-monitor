@@ -120,8 +120,3 @@
   evidence_note: 验证当前 Dashboard 工作中对话卡片在 `pool_assigned_account_blocked` 时保留具体账号 `sticky-account-52@example.com`，而真正无账号身份的 `pool_no_available_account` 才显示“未分配上游账号”。
 
   ![Dashboard working-conversation assigned-account vs no-account semantics](./assets/dashboard-working-conversation-account-semantics.png)
-
-## 变更记录
-
-- 2026-04-18: 创建 follow-up spec，冻结“live 先定账号、显式综合打分、node shunt 仅降权不拒派、concrete owner block 保留账号身份”的实现边界。
-- 2026-04-18: 完成 live 显式评分、assigned-account blocked 持久化与 Invocation / Dashboard 失败语义修正；本地 `cargo test`、Vitest、Vite build 与 Storybook 视觉证据已通过。

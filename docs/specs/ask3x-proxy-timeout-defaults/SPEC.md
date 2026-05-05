@@ -84,11 +84,6 @@
 - 风险：历史 `docs/plan/**` 属于兼容保留目录，本次只清理会造成当前默认值歧义的条目，不做整批迁移或删除。
 - 假设：`/v1/responses/compact` 继续保持当前精确路径匹配，不引入额外 compact 变体路由。
 
-## 变更记录（Change log）
-
-- 2026-03-10: 创建 spec，冻结 `60s / 180s / 180s` 的默认口径、实现边界与文档清理范围。
-- 2026-03-10: 已完成代码、测试与文档收敛；PR [#108](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/108) 已创建，`Lint & Format Check`、`Backend Tests`、`Build Artifacts` 全部通过，local `codex review --base main` 无阻塞项。
-
 ## 参考（References）
 
 - `docs/specs/g3amk-codex-remote-compact-observability/SPEC.md`

@@ -69,14 +69,6 @@
 - `cd web && bun run test`
 - Storybook mock-only 截图 + `chrome-devtools` smoke：确认列表行和详情头部都已显示“限流 / 正常”，而不是“上游拒绝”。
 
-## 里程碑（Milestones）
-
-- [x] M1: 创建 follow-up spec 并冻结导出语义、验证口径与视觉证据归档位置。
-- [x] M2: 修正后端 `health/display/work` 派生逻辑并补齐回归测试。
-- [x] M3: 更新 Storybook 场景与前端断言，固定 quota-exhausted OAuth 的显示结果。
-- [x] M4: 完成本地验证、Storybook 截图与浏览器 smoke。
-- [x] M5: 快车道收敛（review-loop clear、PR #231 建立、spec sync 与视觉证据已入库）。
-
 ## Visual Evidence
 
 - source_type: storybook_canvas
@@ -117,9 +109,3 @@
 - 假设 quota-exhausted 的 route failure 仍是前端“限流”语义的一部分，不需要新增 `hard_rate_limited` 等新状态。
 - 风险：如果后端仍有其他路径单独根据 `lastError` 推导状态，可能出现列表与详情重新分叉，需要通过 summary/detail 双回归共同收口。
 - 风险：视觉证据需要截图文件入库；若主人不允许提交截图文件，需要改为仅在对话中回传图片并在 spec 中记录阻断说明。
-
-## 变更记录（Change log）
-
-- 2026-03-25: 创建 follow-up spec，冻结 OAuth quota-exhausted 账号误标为“上游拒绝”的修复目标、验收标准与视觉证据位置。
-- 2026-03-25: 完成后端状态派生修复、前端 Storybook 场景与测试回归，并补齐 Storybook mock-only 截图与 `chrome-devtools` smoke 证据。
-- 2026-03-25: 快车道收敛到 PR #231，视觉证据已获主人批准并随分支提交，spec 状态切换为完成。

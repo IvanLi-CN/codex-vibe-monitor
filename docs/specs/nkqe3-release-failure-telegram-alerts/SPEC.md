@@ -44,7 +44,3 @@
 - Given `Release` 成功
   When notifier workflow 评估事件
   Then 不发送失败告警
-
-## 变更记录
-
-- 2026-04-11: 首次为 `codex-vibe-monitor` 接入共享 Telegram 发布失败告警与 repo-local smoke test。

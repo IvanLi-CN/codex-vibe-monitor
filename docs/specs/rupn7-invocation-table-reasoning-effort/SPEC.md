@@ -109,7 +109,7 @@
 - `cd web && npm run test`
 - `cd web && npm run build`
 
-## Visual Evidence (PR)
+## Visual Evidence
 
 ![InvocationTable 默认列表（完整裁剪版）](./assets/invocation-table-default.png)
 
@@ -143,12 +143,6 @@
 - 风险：不同 endpoint 的请求体字段形状存在差异，需要保证提取逻辑互不误伤。
 - 需要决策的问题：None.
 - 假设（需主人确认）：未知推理强度值直接原样展示即可满足观察诉求。
-
-## 变更记录（Change log）
-
-- 2026-03-07: 初始化规格，冻结“主列表展示推理强度 + 详情展示推理强度与 reasoningTokens + 历史 raw-file best-effort 回填”口径。
-- 2026-03-07: 完成后端 `reasoningEffort` 采集/回填、InvocationTable 展示与回归测试，并通过 PR #92 提交。
-- 2026-03-07: 补充 Storybook 视觉证据截图，并将默认列表态与展开详情态写入 spec/PR 证据链。
 
 ## 参考（References）
 

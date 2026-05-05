@@ -91,7 +91,3 @@
 - 风险：本 session 未暴露 `chrome-devtools` MCP 时，浏览器验收需要改用本地可用的无头浏览器或退化为 HTTP/DOM 证据。
 - 假设：`/api/stats/timeseries` 返回点位已按时间升序排列，前端无需再排序。
 - 回滚：若累计面积图引发解读问题，可仅回退 `timeseriesChartModel` 的阈值与 running-sum 分支，不影响后端接口或其它图表。
-
-## 变更记录（Change log）
-
-- 2026-03-20: 创建 spec，冻结“Stats 顶部趋势图按 `<=7` / `>7` 切换柱状与累积面积”的实现边界。

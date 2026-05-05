@@ -51,12 +51,6 @@
 - [x] M4: Live 代理表新增权重趋势列并完成断点布局调整。
 - [x] M5: Rust + Vitest 校验通过并进入 fast-track PR 流程。
 
-## 变更记录（Change log）
-
-- 2026-03-02: 新建规格，冻结本轮实现范围与验收口径。
-- 2026-03-02: 完成后端 `weight24h` 聚合与前端表格改版，补齐 Rust/Vitest 校验，进入 fast-track PR 阶段。
-- 2026-03-02: 收敛 review-loop，补齐权重桶并发写入顺序保护、i18n/可访问性文案，PR #83 checks 全绿。
-
 ## 参考（References）
 
 - `src/main.rs`
