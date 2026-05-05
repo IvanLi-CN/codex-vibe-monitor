@@ -1,10 +1,5 @@
 # 代理热路径并发稳定性与传输背压收口（#q8h3n）
 
-## 状态
-
-- Status: 已完成
-- Note: 已移除错误的 whole-proxy admission gate，`PROXY_REQUEST_CONCURRENCY_*` 已进入 deprecated/ignored 兼容态；共享测试机 `codex-testbox` 100 并行压测通过，确认 `/v1/*` 不再因本地 admission gate 返回 `503`。
-
 ## 背景 / 问题陈述
 
 - 已落地的 raw 异步旁路、records 查询收敛与 summary/quota debounce 确实缓解了 `180s first-chunk timeout`、`database is locked` 与热路径抖动。
@@ -52,19 +47,6 @@
 - summary/quota follow-up 必须具备 burst coalesce，避免每条新记录都立即跑完整汇总。
 - `PROXY_REQUEST_CONCURRENCY_LIMIT` / `PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS` 只能作为弃用兼容项继续被读取与告警，不得再影响 `/v1/*` 准入。
 
-## Task Orchestration
-
-- wave: 1
-  - main-agent => 从 `/v1/*` 入口移除 whole-proxy admission gate，把 permit 改成纯观测型 in-flight tracking，并对 `PROXY_REQUEST_CONCURRENCY_*` 输出 deprecated/ignored 告警 (skill: $fast-flow)
-- wave: 2
-  - main-agent => 保留并复验 request/response raw 异步旁路与 summary/quota debounce，确保移除 gate 后业务流优先级不回退 (skill: $fast-flow)
-- wave: 3
-  - main-agent => 补齐本地回归：100 并行不再本地 503、长流期间 in-flight tracking 到 body 结束、raw 饱和只丢 capture、不影响业务流 (skill: $fast-flow)
-- wave: 4
-  - main-agent => 新增 `scripts/shared-testbox-proxy-parallel-smoke`，在 `codex-testbox` 上用隔离 run dir、唯一 Compose project、LXC caps 兼容 override 跑 100 并行压测 (skill: $shared-testbox-runner)
-- wave: 5
-  - main-agent => 完成本地验证、共享测试机压测、fast-track review/PR/merge/release，并在 101 与浏览器侧复验不再出现本地 admission reject (skill: $fast-flow)
-
 ## 验收标准（Acceptance Criteria）
 
 - `codex-testbox` 上 100 个同时发起的 `/v1/*` 代理请求不会出现任何本地 `503 proxy concurrency limit reached; retry later`。
@@ -73,15 +55,6 @@
 - `/api/invocations` 的分页主查询只先选出当前页 id，再对当前页记录执行完整投影。
 - summary/quota follow-up 在 burst 写入时能够合并，不再对每条记录立即触发一次完整汇总。
 - 即使线上环境仍设置 `PROXY_REQUEST_CONCURRENCY_LIMIT` / `PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS`，它们也只会产生日志告警，不会改变 `/v1/*` 准入行为。
-
-## 验证
-
-- `cargo fmt --check`
-- `cargo check --tests`
-- `cargo test proxy_request_tracking_can_reach_100_in_flight_without_local_rejection -- --nocapture`
-- `cargo test proxy_openai_v1_via_pool_reads_request_body_without_local_admission_gate -- --nocapture`
-- `cargo test list_invocations_ -- --nocapture`
-- `scripts/shared-testbox-proxy-parallel-smoke`
 
 ## 参考
 

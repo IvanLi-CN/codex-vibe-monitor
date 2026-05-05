@@ -1,11 +1,5 @@
 # SSE 驱动的请求记录与统计实时更新（#5932d）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-02-25
-- Last: 2026-02-25
-
 ## 背景 / 问题陈述
 
 - 前端 `Dashboard` 与 `Live` 已订阅 SSE，但当前代理链路写库成功后不会即时推送 `records`/`summary`/`quota`。
@@ -85,24 +79,10 @@
 - Given 命中 `INSERT OR IGNORE` 未插入，When 请求完成，Then 不重复发送 `records` 事件。
 - Given SSE 发生断线并恢复，When 连接 open，Then 前端列表通过静默回源补齐，且与后端一致。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- 运行并通过与改动直接相关的 Rust 测试（覆盖代理落库后广播路径）。
-- 运行并通过前端构建或测试校验（至少一种自动化验证）。
-
 ### Performance & Reliability
 
 - 代理主链路不可因广播失败而失败。
 - 不新增显著阻塞路径与重复广播噪声。
-
-## 实现里程碑（Milestones / Delivery checklist）
-
-- [x] M1: 抽取落库后广播 helper，并改造 `persist_proxy_capture_record` 返回语义支持“是否新插入”。
-- [x] M2: 替换代理链路 5 处落库调用点为统一 helper。
-- [x] M3: 前端 `useInvocationStream` 增加 SSE open 后静默回源补齐。
-- [x] M4: 完成验证、提交、PR、checks 与 review-loop 收敛（fast-track）。
 
 ## 风险 / 假设
 

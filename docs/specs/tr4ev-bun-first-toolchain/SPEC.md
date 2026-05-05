@@ -1,11 +1,5 @@
 # Bun-first 工具链收敛（#tr4ev）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-03-12
-- Last: 2026-03-12
-
 ## 背景 / 问题陈述
 
 - 仓库当前把 `npm` / `npx` / Node 20 作为前端与交付链路默认入口：`README.md`、`AGENTS.md`、`lefthook.yml`、`Dockerfile`、`.github/workflows/ci.yml`、`web/package.json` 都直接依赖这些命令。
@@ -26,7 +20,7 @@
 
 - 不把仓库根与 `web/` 合并成 workspace。
 - 不改 Rust 后端实现、HTTP API、数据库 schema、迁移或运行时业务逻辑。
-- 不批量改写历史 `docs/specs/**` 与 `docs/plan/**` 中已经记录为历史事实的 `npm` 命令。
+- 不批量改写历史归档文档中已经记录为历史事实的 `npm` 命令。
 - 不为“看起来更纯”删除仍被工具链合理使用的 `node:` 标准库导入、`@types/node`、`tsconfig.node.json`。
 
 ## 范围（Scope）
@@ -64,7 +58,7 @@
   - Docker web builder：官方 `oven/bun` 镜像 + `bun install --frozen-lockfile` + `bun run build`
 - Bun-first guard 只检查运营面文件；允许以下残留：
   - `docs/specs/**/SPEC.md`
-  - `docs/plan/**`
+  - `docs/archive/specs/**`
   - lockfile 内容
   - `node:` import
   - `@types/node`
@@ -78,34 +72,6 @@
 - Given Docker build 使用新的 web builder，When 构建镜像并运行 `/.github/scripts/smoke-test-image.sh`，Then 镜像可以成功产出前端静态资源并通过 `/health` smoke。
 - Given 运行 Bun-first guard，When 扫描运营面文件，Then 不再命中禁止项；若重新引入禁止项则 guard 失败。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `bun install --frozen-lockfile`
-- `cd web && bun install --frozen-lockfile`
-- `cargo fmt --all -- --check`
-- `cargo check --locked --all-targets --all-features`
-- `cargo test --locked --all-features`
-- `cd web && bun run lint`
-- `cd web && bun run test`
-- `cd web && bun run build`
-- `cd web && bun run build-storybook`
-- `bun run check:bun-first`
-- `docker build -t codex-vibe-monitor:bun-smoke --build-arg APP_EFFECTIVE_VERSION=dev .`
-- `./.github/scripts/smoke-test-image.sh codex-vibe-monitor:bun-smoke`
-
-### Quality checks
-
-- `codex --sandbox read-only -a never review --base origin/main`
-- PR required checks 保持为 `Validate PR labels`、`Lint & Format Check`、`Backend Tests`、`Build Artifacts`、`Review Policy Gate`
-
-## 实现里程碑（Milestones / Delivery checklist）
-
-- [x] M1: 建立 Bun-first spec，冻结“只改直接执行面、不动业务接口”的范围。
-- [x] M2: 完成仓库根与 `web/` 的 Bun lockfile、脚本、hooks、Docker、CI、文档迁移。
-- [x] M3: 跑通本地验证、Docker smoke、PR checks 与 review-loop 收敛。
-
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
 - 风险：Bun 与 Vite/Storybook/Playwright 的兼容性若有边角差异，可能首先暴露在 build 或 storybook 阶段；必须以实际命令验证收敛。
@@ -113,10 +79,3 @@
 - 风险：CI 切换到 Bun 后，若 required check 名称意外变化会影响分支保护，因此只能替换 step/命令，不能改 job name。
 - 开放问题：None。
 - 假设：Bun `1.3.10` 可兼容当前仓库的 React/Vite/Storybook/Playwright 依赖组合。
-
-## 变更记录（Change log）
-
-- 2026-03-12: 创建 spec，冻结“Bun-first direct execution surface”定义、允许残留项与 PR 阶段 Docker smoke 要求。
-- 2026-03-12: 仓库根与 `web/` 已迁移到文本 `bun.lock`，`package-lock.json` 删除，`README.md`、`AGENTS.md`、`lefthook.yml`、`Dockerfile`、`.github/workflows/ci.yml` 全部切换到 Bun-first 入口。
-- 2026-03-12: 新增 `/.github/scripts/check-bun-first.sh` 作为运营面守门；本地已通过 `bun install --frozen-lockfile`（root + web）、`cargo fmt --all -- --check`、`cargo check --locked --all-targets --all-features`、`cargo test --locked --all-features`、`cd web && bun run lint`、`cd web && bun run test`、`cd web && bun run build`、`cd web && bun run build-storybook`，并在 shared testbox 完成 Docker smoke。
-- 2026-03-12: PR #115 已创建并打上 `type:skip` / `channel:stable`；GitHub required checks 通过，`spec_drift_check.sh --base-ref origin/main --spec-path docs/specs/tr4ev-bun-first-toolchain/SPEC.md` 返回 `Spec同步状态=通过` / `Spec漂移=不存在`，`codex review --base origin/main` 未发现阻塞项。

@@ -1,11 +1,5 @@
 # Release `latest` 仅指向最新已发布 stable（#8239m）
 
-## 状态
-
-- Status: 已实现，待 PR / CI 收敛
-- Created: 2026-03-29
-- Last: 2026-03-29
-
 ## 背景 / 问题陈述
 
 - 当前 release snapshot 在写入 git notes 时，会把 stable 的 `tags_csv` 预写成 `vX.Y.Z + latest`。
@@ -69,26 +63,10 @@
   When 查看 immutable note 中的 `tags_csv`
   Then 只包含 `${image}:vX.Y.Z`。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-- `bash .github/scripts/test-release-snapshot.sh`
-
-## 实现里程碑（Milestones / Delivery checklist）
-
-- [x] M1: 拆分 immutable tags 与 publish-time tags 责任边界
-- [x] M2: 让 `latest` 只受更高已发布 stable 影响
-- [x] M3: README 与脚本级回归测试对齐新语义
-- [ ] M4: fast-track 推进到 PR / CI / review 收敛
-
 ## 风险 / 假设（Risks / Assumptions）
 
 - 风险：历史 note 仍可能保存 `latest`，所以 release workflow 必须继续通过 `--resolve-publication-tags` 动态重算。
 - 假设：当前 workflow 的发布顺序保持“manifest push/verify -> git tag -> GitHub Release”，因此 `release_tag_points_to_target()` 足以代表“已发布 stable”。
-
-## 变更记录（Change log）
-
-- 2026-03-29：落地 immutable tag / publish-time `latest` 分离，补齐 pending stable、旧 stable rerun/backfill 与 rc 语义回归，并完成本地 `test-release-snapshot` 验证。
-- 2026-03-29：创建 PR #266，进入 fast-track 的 CI / review 收敛阶段。
 
 ## 参考（References）
 

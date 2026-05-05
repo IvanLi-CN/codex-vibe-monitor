@@ -1,11 +1,5 @@
 # 建立全局 UI 规范文档体系（#quhzx）
 
-## 状态
-
-- Status: 已完成（5/5）
-- Created: 2026-03-18
-- Last: 2026-03-18
-
 ## 背景 / 问题陈述
 
 - 当前仓库已经有稳定的 UI 实现、Storybook stories 与多份 feature spec，但缺少统一的全局 UI 文档入口。
@@ -73,40 +67,6 @@
 - Given 阅读 `data-viz.md`，When 查找图表与数字展示规则，Then 能明确 count/cost/token 的颜色语义与热力图梯度来源。
 - Given 执行文档校验，When 运行 `bunx dprint check` 与 `cd web && bun run build-storybook`，Then 命令通过。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `bunx dprint check docs/ui docs/specs/quhzx-ui-guidelines-system README.md`
-- `cd web && bun run build-storybook`
-- 路径存在性检查：文档中引用的实现文件、stories 与规范文件均可解析
-
-### Quality checks
-
-- 保持 docs-only 变更
-- 文档不添加修订版标记或版本后缀
-- PR 标签满足 `type:docs` 与 `channel:stable`
-
-## 文档更新（Docs to Update）
-
-- `docs/ui/README.md`
-- `docs/ui/foundations.md`
-- `docs/ui/components.md`
-- `docs/ui/patterns.md`
-- `docs/ui/data-viz.md`
-- `docs/ui/storybook.md`
-- `docs/specs/README.md`
-- `docs/specs/quhzx-ui-guidelines-system/SPEC.md`
-- `README.md`
-
-## 实现里程碑（Milestones / Delivery checklist）
-
-- [x] M1: 创建 `docs/ui/` 文档体系与主入口
-- [x] M2: 完成 foundations / components / patterns / data-viz / storybook 五份规范正文
-- [x] M3: 创建 spec 并同步索引与 README 入口
-- [x] M4: 完成本地验证（dprint、路径检查、Storybook build）
-- [x] M5: 完成 docs-only fast-track 交付（提交、PR、checks、review-loop、spec-sync）
-
 ## 方案概述（Approach, high-level）
 
 - 从现有 CSS、theme context、chart token、Storybook preview 与关键 stories 提取稳定事实。
@@ -119,9 +79,3 @@
 - 风险：Storybook build 若暴露现有无关问题，需明确区分是文档问题还是仓库既有问题。
 - 开放问题：无。
 - 假设：当前 bun 与 Storybook 依赖可直接用于 docs-only 验证。
-
-## 变更记录（Change log）
-
-- 2026-03-18: 创建 spec，冻结 docs-only UI 规范补档范围、验收标准与 fast-track 交付路径。
-- 2026-03-18: 完成 `docs/ui/` 六份文档、README 入口与本地验证；进入 PR 交付与 review 收敛阶段。
-- 2026-03-18: 修复 review 指出的 specs 索引表渲染问题与 foundations spacing 约束缺口，随后同步 `origin/main`、更新 PR #173 到 mergeable clean，并确认 checks green / review-loop clear。
