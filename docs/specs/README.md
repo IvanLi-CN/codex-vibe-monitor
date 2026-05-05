@@ -1,6 +1,6 @@
 # 规格（Spec）总览
 
-本目录只保存 active topic-level specs。历史任务规格已原样移至 `docs/archive/specs/`；legacy plans 保留在 `docs/plan/**`，等待删除审批。
+本目录只保存 active topic-level specs。历史任务规格已原样移至 `docs/archive/specs/`；legacy plans have been removed after migration into active topic specs.
 
 ## Index
 
@@ -18,4 +18,4 @@
 ## Archived Sources
 
 - Historical specs: `docs/archive/specs/`
-- Legacy plans pending delete approval: `docs/plan/**/PLAN.md`
+- Legacy plans: removed after migration

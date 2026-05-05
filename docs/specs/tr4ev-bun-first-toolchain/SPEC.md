@@ -20,7 +20,7 @@
 
 - 不把仓库根与 `web/` 合并成 workspace。
 - 不改 Rust 后端实现、HTTP API、数据库 schema、迁移或运行时业务逻辑。
-- 不批量改写历史 `docs/specs/**` 与 `docs/plan/**` 中已经记录为历史事实的 `npm` 命令。
+- 不批量改写历史归档文档中已经记录为历史事实的 `npm` 命令。
 - 不为“看起来更纯”删除仍被工具链合理使用的 `node:` 标准库导入、`@types/node`、`tsconfig.node.json`。
 
 ## 范围（Scope）
@@ -58,7 +58,7 @@
   - Docker web builder：官方 `oven/bun` 镜像 + `bun install --frozen-lockfile` + `bun run build`
 - Bun-first guard 只检查运营面文件；允许以下残留：
   - `docs/specs/**/SPEC.md`
-  - `docs/plan/**`
+  - `docs/archive/specs/**`
   - lockfile 内容
   - `node:` import
   - `@types/node`
