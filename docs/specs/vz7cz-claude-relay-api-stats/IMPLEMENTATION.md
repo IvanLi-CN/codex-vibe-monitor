@@ -27,3 +27,22 @@
 
 - `README.md`: 新增外部统计源配置项与合并口径说明。
 - `docs/system-design.md`: 更新“数据来源定位/入库设计/统计口径”章节。
+
+## Additional Migrated Task Notes
+
+### UI / Storybook (if applicable)
+
+- Stories to add/update: 暂无。
+- Visual regression baseline changes (if any): 无。
+
+### Quality checks
+
+- `cargo fmt`
+- `cargo check`
+- `cargo test`
+
+## 里程碑（Milestones）
+
+- [ ] M1: 明确外部接口契约与口径（含样例数据/时区/回退策略）。
+- [ ] M2: 数据库结构与增量计算方案确定（来源区分 + 日统计快照）。
+- [ ] M3: 统计 API/SSE 合并口径方案与测试清单确认。

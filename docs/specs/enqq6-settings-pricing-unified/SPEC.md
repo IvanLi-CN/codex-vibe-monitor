@@ -40,8 +40,3 @@
 - 2026-02-23: 初始化计划并冻结范围与验收标准。
 - 2026-02-23: 完成旧方案替换（`/api/settings/proxy-models` 下线、`/settings` 上线、价目表改为 SQLite 持久化并可在线编辑）。
 - 2026-02-23: 创建 PR #47，完成本地验证（cargo test / web lint+build / settings e2e）并跟踪 CI Pipeline #142 通过。
-
-## Legacy Source
-
-- `docs/plan/enqq6-settings-pricing-unified/PLAN.md`
-- Deletion status: pending delete approval

@@ -115,23 +115,6 @@
   When 系统检测到该异常
   Then 记录错误日志并忽略该次回退（保持当日最大值）。
 
-### UI / Storybook (if applicable)
-
-- Stories to add/update: 暂无。
-- Visual regression baseline changes (if any): 无。
-
-### Quality checks
-
-- `cargo fmt`
-- `cargo check`
-- `cargo test`
-
-## 里程碑（Milestones）
-
-- [ ] M1: 明确外部接口契约与口径（含样例数据/时区/回退策略）。
-- [ ] M2: 数据库结构与增量计算方案确定（来源区分 + 日统计快照）。
-- [ ] M3: 统计 API/SSE 合并口径方案与测试清单确认。
-
 ## 方案概述（Approach, high-level）
 
 - 基于 `POST /apiStats/api/user-model-stats`（period=daily）拉取模型级日统计，汇总为当日总量。
@@ -147,20 +130,7 @@
 - 风险：合并后错误分布与总量不一致可能引发理解偏差。
 - 风险：若外部源在非 0 点回到 0，将按“取当日最大值”处理，可能低估实际当日总量（但保证口径稳定）。
 
-## 开放问题（需要主人回答）
-
-- 无。
-
-## 假设（Assumptions，待确认）
-
-- 无。
-
 ## 参考（References）
 
 - 项目现有统计 API 与数据表定义。
 - Chrome DevTools 抓包（2026-01-16，外部统计接口）。
-
-## Legacy Source
-
-- `docs/plan/0001:claude-relay-api-stats/PLAN.md`
-- Deletion status: pending delete approval

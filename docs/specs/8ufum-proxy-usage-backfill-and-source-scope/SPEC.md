@@ -34,8 +34,3 @@
 - 合并来源可能引入跨来源重复计数（当同一请求被多源记录）。
 - 启动期回填在大数据库上可能延长启动时间。
 - 响应编码异常可能导致个别记录仍无法解析 usage。
-
-## Legacy Source
-
-- `docs/plan/0009:proxy-usage-backfill-and-source-scope/PLAN.md`
-- Deletion status: pending delete approval

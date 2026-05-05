@@ -55,12 +55,6 @@
   Then 对应 `devctl status` 变为 stopped，端口不再监听。
 - `.codex/` 不应出现在 `git status` 未跟踪文件中（已被 `.gitignore` 忽略）。
 
-## 里程碑（Milestones）
-
-- [x] M1: `scripts/` 启动/停止脚本迁移为 `devctl`（No fallback）
-- [x] M2: 文档口径对齐（AGENTS.md + README.md + .gitignore）
-- [x] M3: 最小验证与 PR 交付（PR + checks 结果明确）
-
 ## 风险与开放问题（Risks / Open questions）
 
 - 本仓库脚本强依赖 `zellij` + `~/.codex/bin/devctl`；若不满足则启动失败（符合 No fallback 的预期）。
@@ -68,8 +62,3 @@
 ## 变更记录（Change log）
 
 - 2026-02-20: 对齐开发环境长驻服务到 devctl+zellij（脚本、文档、忽略规则）。PR #37。
-
-## Legacy Source
-
-- `docs/plan/0003:dev-runtime-service-manager/PLAN.md`
-- Deletion status: pending delete approval

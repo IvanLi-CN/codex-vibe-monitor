@@ -84,12 +84,6 @@
   When tag/Release 已存在且指向同一 SHA
   Then rerun 不失败。
 
-## 里程碑（Milestones）
-
-- [x] M1: 创建 labels + 新增 label gate workflow
-- [x] M2: release-intent gate + 版本计算（stable/rc）落地
-- [x] M3: tag 创建幂等 + GitHub Release 创建幂等 + README 更新
-
 ## 参考（References）
 
 - Style playbook: `PR label release`（`/Users/ivan/.codex/skills/style-playbook/references/tags/pr-label-release.md`）
@@ -97,8 +91,3 @@
 ## 变更记录（Change log）
 
 - 2026-02-19: 落地 PR 标签驱动发版（label gate + CI release gate + 版本/tag/Release 规则）。PR #36。
-
-## Legacy Source
-
-- `docs/plan/0002:pr-label-release/PLAN.md`
-- Deletion status: pending delete approval

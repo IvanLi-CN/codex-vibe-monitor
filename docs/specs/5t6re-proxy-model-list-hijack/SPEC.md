@@ -79,8 +79,3 @@
   - 缓解：解析失败按“上游失败”路径降级，仅返回预置列表。
 - 风险：新增状态读写引入并发一致性问题。
   - 缓解：设置更新采用“DB 成功后更新内存状态”的单向提交流程。
-
-## Legacy Source
-
-- `docs/plan/0006:proxy-model-list-hijack/PLAN.md`
-- Deletion status: pending delete approval

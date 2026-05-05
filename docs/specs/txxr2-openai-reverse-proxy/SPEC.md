@@ -65,8 +65,3 @@
   - 缓解：集中封装过滤函数，并加测试覆盖。
 - 风险：上游不可用时错误语义不清。
   - 缓解：统一 `502` 并返回结构化错误信息。
-
-## Legacy Source
-
-- `docs/plan/0005:openai-reverse-proxy/PLAN.md`
-- Deletion status: pending delete approval

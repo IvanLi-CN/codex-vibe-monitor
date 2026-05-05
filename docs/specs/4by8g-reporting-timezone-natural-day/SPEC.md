@@ -49,17 +49,6 @@
   When 后端执行任何 `occurred_at >= ?` 的时间窗过滤
   Then 下界绑定与解析一致，不再出现系统性 8 小时错位。
 
-## 里程碑（Milestones）
-
-- [x] M1: 后端引入 `timeZone` 参数并修复 `occurred_at` 下界绑定。
-- [x] M2: 实现 `bucket=1d` 的严格自然日分桶与 DST 覆盖。
-- [x] M3: 前端默认附带浏览器时区，并修复日历视图的 off-by-one 与展示口径提示。
-
 ## 交付（Delivery）
 
 - PR: #38
-
-## Legacy Source
-
-- `docs/plan/0004:reporting-timezone-natural-day/PLAN.md`
-- Deletion status: pending delete approval

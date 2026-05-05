@@ -70,8 +70,3 @@
   - 缓解：TTL 清理 + 可配置上限 + 截断原因可观测。
 - 风险：切换到代理来源后统计口径抖动。
   - 缓解：记录 `source` 并保留旧历史只读。
-
-## Legacy Source
-
-- `docs/plan/0007:proxy-mitm-usage-billing/PLAN.md`
-- Deletion status: pending delete approval

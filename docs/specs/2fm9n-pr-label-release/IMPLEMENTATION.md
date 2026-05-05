@@ -20,3 +20,9 @@
 - 本地至少执行 1 条与改动相关的自动化验证：
   - `bash -n .github/scripts/compute-version.sh`
 - PR 的 CI（lint/unit-tests/build）应保持通过；label gate 应通过。
+
+## 里程碑（Milestones）
+
+- [x] M1: 创建 labels + 新增 label gate workflow
+- [x] M2: release-intent gate + 版本计算（stable/rc）落地
+- [x] M3: tag 创建幂等 + GitHub Release 创建幂等 + README 更新

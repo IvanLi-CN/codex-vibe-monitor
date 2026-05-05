@@ -37,8 +37,3 @@
 - PR: #43
 - Automated: `cargo fmt`, `cargo test`（55 passed, 0 failed）
 - Codex 联调：`codex exec` 走 `http://127.0.0.1:8080/v1`，连续 5 次稳定性验证通过（`pass=5, mismatch=0, fail=0`）
-
-## Legacy Source
-
-- `docs/plan/0008:proxy-stream-stability/PLAN.md`
-- Deletion status: pending delete approval

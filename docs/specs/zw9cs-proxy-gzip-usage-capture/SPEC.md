@@ -36,8 +36,3 @@
 - PR: #48
 - Automated: `cargo fmt -- --check`, `cargo test`（62 passed, 0 failed）
 - Shared testbox: 在 `codex-testbox` 复现 gzip SSE 上游，验证 `/api/stats` 的 `totalTokens` 增长，且 `/api/invocations` 成功记录含非空 `inputTokens`/`outputTokens`/`cacheInputTokens`/`totalTokens`。
-
-## Legacy Source
-
-- `docs/plan/0009:proxy-gzip-usage-capture/PLAN.md`
-- Deletion status: pending delete approval

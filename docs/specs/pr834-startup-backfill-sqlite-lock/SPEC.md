@@ -34,8 +34,3 @@
 - 回填改为分页批处理后，单批大小过大会增加单次事务时长（默认 200，需要在回归中确认）。
 - 强制 WAL 依赖目标环境文件系统支持共享内存与 WAL 文件写入。
 - busy timeout 提高会延后真实锁异常暴露时间，需要通过日志区分“短暂竞争”与“持续异常”。
-
-## Legacy Source
-
-- `docs/plan/0010:startup-backfill-sqlite-lock/PLAN.md`
-- Deletion status: pending delete approval
