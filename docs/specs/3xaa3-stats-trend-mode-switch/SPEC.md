@@ -1,11 +1,5 @@
 # 统计页趋势图按点数切换柱状 / 累积面积模式（#3xaa3）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-03-20
-- Last: 2026-03-20
-
 ## 背景 / 问题陈述
 
 - 统计页顶部“趋势”图当前按 `48` 个点做视觉分流：点少时展示按桶柱状图，点多时展示面积图。
@@ -65,12 +59,6 @@
 - Given 累积模式启用，When 检查任意后续点，Then 三条序列都等于从首点到当前点的 running sum，且非递减。
 - Given Stats 页现有范围 / 粒度选择逻辑，When 切换范围或后端返回 bucket fallback，Then 页面行为继续兼容，不因本次趋势图切换回归。
 - Given 使用 101 上 `ai-codex-vibe-monitor-data` 的一致性 SQLite 快照在共享测试机启动预览，When 打开 Stats 页并切换到一组 `<= 7` 点配置与一组 `> 7` 点配置，Then 可以实际看到柱状图 / 累积面积图两种模式。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit tests: `cd web && bunx vitest run src/components/timeseriesChartModel.test.ts src/components/TimeseriesChart.test.tsx src/pages/Stats.test.tsx src/pages/Stats.bucket-fallback.test.tsx`
 
 ### Quality checks
 

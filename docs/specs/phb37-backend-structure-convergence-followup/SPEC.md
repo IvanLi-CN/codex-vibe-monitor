@@ -1,11 +1,5 @@
 # 后端结构收敛 follow-up（#phb37）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-04-11
-- Last: 2026-04-11
-
 ## 背景 / 问题陈述
 
 - `src/` 已经形成多个超大热点文件，尤其集中在 `proxy/`、`api/slices/`、`upstream_accounts/` 与 `maintenance/`，review 与定位成本过高。
@@ -95,14 +89,6 @@ None
 - 对外兼容约束已冻结
 - shared-testbox 验证入口已明确沿用既有脚本
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit tests: `cargo test --locked --all-features`
-- Integration tests: `cargo check --locked --all-targets --all-features`
-- E2E tests (if applicable): `scripts/shared-testbox-proxy-parallel-smoke`、`scripts/shared-testbox-raw-smoke`
-
 ### UI / Storybook (if applicable)
 
 - Not applicable
@@ -112,11 +98,6 @@ None
 - `cargo fmt --all -- --check`
 - `cargo check --locked --all-targets --all-features`
 - `cargo test --locked --all-features`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 新增本 spec 索引，并在完成后更新状态/备注
-- `docs/specs/phb37-backend-structure-convergence-followup/SPEC.md`: 记录实现结果、验证与 shared-testbox 证据
 
 ## 计划资产（Plan assets）
 

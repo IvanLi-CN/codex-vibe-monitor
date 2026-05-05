@@ -1,11 +1,5 @@
 # OAuth 手动邮箱域名识别与缺失即创建（#fffqk）
 
-## 状态
-
-- Status: 已完成（PR #234）
-- Created: 2026-03-25
-- Last: 2026-03-25
-
 ## 背景
 
 - 现有 `m7a9k` 已支持单账号 OAuth / reauth 手动附着 MoeMail 邮箱，但后端仍假设 MoeMail `/api/config` 的域名列表一定是“裸域名逗号串”。

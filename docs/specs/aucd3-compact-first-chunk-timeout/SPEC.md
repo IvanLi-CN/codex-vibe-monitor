@@ -1,11 +1,5 @@
 # 号池 compact 首 chunk 超时口径对齐（#aucd3）
 
-## 状态
-
-- Status: 部分完成（2/3）
-- Created: 2026-03-17
-- Last: 2026-03-17
-
 ## 背景 / 问题陈述
 
 - `v1.12.6` 已修复号池 live upstream 复用整请求总超时 client 导致的约 `60s` 截流问题，但 101 线上 `/v1/responses/compact` 仍然明显偏慢。
@@ -76,22 +70,10 @@
 - Given 相同配置，When 号池 POST `/v1/responses?mode=slow-first-chunk`，Then 返回 `502` 且错误体包含 `first upstream chunk`。
 - Given 现有 compact handshake 回归，When 重新运行测试，Then 仍然通过，说明未破坏既有 compact 超时语义。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `cargo test pool_openai_v1_responses_`
-- `cargo test proxy_capture_target_compact_uses_dedicated_handshake_timeout`
-
 ### Quality checks
 
 - `cargo fmt --all`
 - `cargo test`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-- `docs/specs/aucd3-compact-first-chunk-timeout/SPEC.md`
 
 ## 实现里程碑（Milestones / Delivery checklist）
 

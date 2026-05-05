@@ -94,13 +94,6 @@ None
 - Given 查看 KPI 与 tooltip，Then 不出现 `金额/分钟`，统一显示 `消费速率` / `Spend rate`。
 - Given 运行定向验证、前端 build 与 Storybook build，Then 全部通过。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit tests: `DashboardActivityOverview.test.tsx`、`DashboardTodayActivityChart.test.tsx`、`dashboardTodayRateSnapshot.test.ts`、`TodayStatsOverview.test.tsx`
-- Storybook interaction tests: `DashboardActivityOverview.stories.tsx`
-
 ### UI / Storybook
 
 - Stories to add/update: `DashboardActivityOverview.stories.tsx`、`TodayStatsOverview.stories.tsx`

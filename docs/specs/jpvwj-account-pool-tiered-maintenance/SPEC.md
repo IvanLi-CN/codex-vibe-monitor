@@ -1,11 +1,5 @@
 # 号池分层同步高级设置与前 100 溢出低频更新（#jpvwj）
 
-## 状态
-
-- Status: 已完成（5/5，PR#211）
-- Created: 2026-03-23
-- Last: 2026-04-04
-
 ## 背景 / 问题陈述
 
 - 当前号池后台维护只受 `UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS` 单一环境变量驱动，所有 OAuth 账号按同一频率进入 usage 同步，没有项目内可视化设置入口。
@@ -98,12 +92,12 @@
 
 ## 接口契约（Interfaces & Contracts）
 
-| 接口（Name）                  | 类型（Kind）    | 范围（Scope） | 变更（Change） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes）                            |
-| ----------------------------- | --------------- | ------------- | -------------- | --------------- | ------------------- | ---------------------------------------- |
-| `/api/pool/routing-settings`  | HTTP API        | internal      | Modify         | backend         | web                 | 新增 maintenance 返回与部分更新能力      |
-| `pool_routing_settings`       | SQLite          | internal      | Modify         | backend         | backend             | 新增维护配置列，保留 API key 单例语义    |
-| `PoolRoutingSettings`         | Rust + TS types | internal      | Modify         | backend + web   | web                 | 新增 `maintenance` 子对象                |
-| `maintenance tier resolver`   | backend logic   | internal      | Add            | backend         | backend             | 主层/次层计算与到期过滤，不暴露为独立 API |
+| 接口（Name）                 | 类型（Kind）    | 范围（Scope） | 变更（Change） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes）                             |
+| ---------------------------- | --------------- | ------------- | -------------- | --------------- | ------------------- | ----------------------------------------- |
+| `/api/pool/routing-settings` | HTTP API        | internal      | Modify         | backend         | web                 | 新增 maintenance 返回与部分更新能力       |
+| `pool_routing_settings`      | SQLite          | internal      | Modify         | backend         | backend             | 新增维护配置列，保留 API key 单例语义     |
+| `PoolRoutingSettings`        | Rust + TS types | internal      | Modify         | backend + web   | web                 | 新增 `maintenance` 子对象                 |
+| `maintenance tier resolver`  | backend logic   | internal      | Add            | backend         | backend             | 主层/次层计算与到期过滤，不暴露为独立 API |
 
 ## 验收标准（Acceptance Criteria）
 
@@ -116,13 +110,6 @@
 - Given 某账号最近一次同步早于任一窗口的 `resetsAt` 且当前时间已跨过该 `resetsAt`，When 后台维护运行，Then 它会在下一个 maintenance tick 立即补一次同步，即使原主频 / 次频尚未到期。
 - Given 用户提交 `secondarySyncIntervalSecs < primarySyncIntervalSecs` 或小于 60 秒的值，When 请求到达前后端，Then 保存被拒绝且 UI 显示明确错误。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Rust tests：schema migration/default fallback、routing settings partial update、tier resolver 排序与分层、working / degraded 高频、reset 跨点补同步、到期过滤、异常账号主层保留、健康账号超过 `100` 的次频溢出。
-- Web tests：routing 对话框维护设置渲染、仅保存 maintenance、非法值禁用/拒绝保存、保存后保持 routing 错误隔离。
-
 ### Quality checks
 
 - `cargo fmt`
@@ -130,12 +117,6 @@
 - `cargo check`
 - `cd web && bun run test`
 - `cd web && bun run build`
-
-## 文档更新（Docs to Update）
-
-- `README.md`：说明主频 env 仅作为默认回退，运行期配置改在账号池高级设置中完成。
-- `docs/deployment.md`：说明新的维护设置来源与默认值。
-- `docs/specs/README.md`：新增索引并在实现/PR 阶段同步状态。
 
 ## 实现里程碑（Milestones / Delivery checklist）
 
@@ -163,6 +144,7 @@
 ## Visual Evidence
 
 PR: include
+
 - source_type: storybook_canvas
   target_program: mock-only
   capture_scope: element

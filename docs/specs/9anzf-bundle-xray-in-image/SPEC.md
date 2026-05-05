@@ -1,11 +1,5 @@
 # Bundle Xray-core in Docker image for forward proxy subscriptions（#9anzf）
 
-## 状态
-
-- Status: 部分完成（2/3）
-- Created: 2026-03-01
-- Last: 2026-03-01
-
 ## 背景 / 问题陈述
 
 - 当前 Docker 镜像运行时未内置 `xray`（Xray-core）二进制。

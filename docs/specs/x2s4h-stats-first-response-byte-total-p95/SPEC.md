@@ -1,11 +1,5 @@
 # 统计页成功/失败图改为首字总耗时 P95（#x2s4h）
 
-## 状态
-
-- Status: 已实现
-- Created: 2026-03-26
-- Last: 2026-03-26
-
 ## 背景 / 问题陈述
 
 - 既有统计页“成功/失败次数”图来自 [#8dun3](../8dun3-stats-success-failure-ttfb/SPEC.md)，其延迟折线使用的是 `t_upstream_ttfb_ms` 的成功样本均值 / P95。
@@ -79,25 +73,10 @@
 
 ## 非功能性验收 / 质量门槛
 
-### Testing
-
-- `cargo test`
-- `cd web && bun run test`
-- `cd web && bun run build`
-- `cd web && bun run storybook:build`
-
 ### UI / Storybook
 
 - 新增稳定故事：`web/src/components/SuccessFailureChart.stories.tsx`
 - 视觉证据来源：`Stats / SuccessFailureChart / FirstResponseByteTotalP95`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-
-## Plan assets
-
-- Directory: `docs/specs/x2s4h-stats-first-response-byte-total-p95/assets/`
 
 ## Visual Evidence
 

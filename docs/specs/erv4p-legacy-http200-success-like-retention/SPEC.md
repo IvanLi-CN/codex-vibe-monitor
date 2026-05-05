@@ -1,9 +1,5 @@
 # 修复 legacy `http_200` success-like retention 漏清理（#erv4p）
 
-## 状态
-
-- Status: 已实现，待 PR / CI 收敛
-
 ## 背景 / 问题陈述
 
 - 101 只读排查确认：`ai-codex-vibe-monitor-data` 当前约 `116.6G`，其中 `proxy_raw_payloads` 约 `110.5G`。
@@ -39,11 +35,3 @@
 - Given 一条 `occurred_at` 落在 `invocation_success_full_days..invocation_max_days` 之间、`detail_level=full`、`status=http_200`、`error_message` 为空且带 raw path 的 legacy invocation，When 运行 retention live 模式，Then 该记录被标记为 `structured_only`，raw 路径清空且磁盘 raw 文件被删除。
 - Given 一条 `status=http_200` 但 `error_message` 非空的记录，When 运行 retention，Then 该记录不会走 success-like structured prune，仍保留 failure 语义。
 - Given 现有 `status=success` 的 success/full retention 用例，When 补丁落地后再次运行，Then 原有 structured prune、cold compression 与 archive 行为不回归。
-
-## 验证
-
-- `cargo test retention_prunes_old_success_invocation_details_and_sweeps_orphans -- --test-threads=1`
-- `cargo test retention_prunes_old_legacy_http_200_success_like_invocation_details -- --test-threads=1`
-- `cargo test retention_does_not_prune_legacy_http_200_rows_with_error_message -- --test-threads=1`
-- `cargo test retention_compresses_cold_raw_payloads_and_updates_paths -- --test-threads=1`
-- `cargo check`

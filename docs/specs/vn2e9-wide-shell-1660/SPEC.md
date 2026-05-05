@@ -1,11 +1,5 @@
 # 全站 1660 宽屏壳层适配（#vn2e9）
 
-## 状态
-
-- Status: 已完成（5/5，PR #298）
-- Created: 2026-04-06
-- Last: 2026-04-07
-
 ## 背景 / 问题陈述
 
 - 当前站点级 shell 仍被 `1200px` 左右的历史容器约束，Header / Main / Footer / Update banner 与页面级容器存在多处宽度真相源，导致宽屏显示时内容过早收缩。
@@ -81,9 +75,9 @@
 
 ### 接口清单（Inventory）
 
-| 接口（Name） | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes） |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| None | None | internal | Modify | None | web | web UI | 本轮不新增/修改后端或外部接口，只调整前端布局契约与测试证据 |
+| 接口（Name） | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes）                                               |
+| ------------ | ------------ | ------------- | -------------- | ------------------------ | --------------- | ------------------- | ----------------------------------------------------------- |
+| None         | None         | internal      | Modify         | None                     | web             | web UI              | 本轮不新增/修改后端或外部接口，只调整前端布局契约与测试证据 |
 
 ### 契约文档（按 Kind 拆分）
 
@@ -103,15 +97,6 @@ None
 - 顶层路由清单、视觉证据清单与回归命令已冻结。
 - 本轮接口契约为 `None`，前端实现与测试可直接围绕布局契约落地。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Frontend build: `cd /Users/ivan/.codex/worktrees/7556/codex-vibe-monitor/web && bun run build`
-- Frontend unit tests: `cd /Users/ivan/.codex/worktrees/7556/codex-vibe-monitor/web && bun run test`
-- Storybook build: `cd /Users/ivan/.codex/worktrees/7556/codex-vibe-monitor/web && bun run build-storybook`
-- E2E regression: `cd /Users/ivan/.codex/worktrees/7556/codex-vibe-monitor/web && bun run test:e2e -- tests/e2e/sticky-footer.spec.ts tests/e2e/usage-calendar.spec.ts tests/e2e/invocation-table-layout.spec.ts tests/e2e/wide-shell-layout.spec.ts`
-
 ### UI / Storybook (if applicable)
 
 - Stories to add/update: `web/src/components/AppLayout.stories.tsx`, `DashboardPage.stories.tsx`, `StatsPage.stories.tsx`, `LivePage.stories.tsx`, `RecordsPage.stories.tsx`, `SettingsPage.stories.tsx`, `AccountPoolLayout.stories.tsx`
@@ -122,11 +107,6 @@ None
 ### Quality checks
 
 - 统一使用仓库既有 `bun run build` / `bun run test` / `bun run build-storybook` / `bun run test:e2e`，不引入新工具链。
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 新增本 spec 索引，并在交付完成后同步状态与备注。
-- `docs/specs/vn2e9-wide-shell-1660/SPEC.md`: 更新里程碑、最终状态与视觉证据。
 
 ## 计划资产（Plan assets）
 

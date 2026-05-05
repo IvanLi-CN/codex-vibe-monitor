@@ -1,11 +1,5 @@
 # Dashboard：把“历史”并入“活动总览”，并将“今日统计信息”改为单行 KPI（#7s4kw）
 
-## 状态
-
-- Status: 已实现，待 PR / CI / review-proof 收敛
-- Created: 2026-04-07
-- Last: 2026-04-07
-
 ## 背景 / 问题陈述
 
 - Dashboard 当前把独立历史日历视图拆散在总览之外，导致总览信息被割裂，阅读路径不连贯。
@@ -56,31 +50,17 @@
 - Given 查看 `今日统计信息`，When 处于桌面宽度，Then 5 个 KPI tile 单行排列，且不再有 total tile 独占整行。
 - Given 运行前端验证命令，When 执行 `cd web && bun run test && bun run build && bun run build-storybook`，Then 命令通过。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
 ### Visual / UX
 
 - `活动总览` 合并后不得引入新层级的重复 panel 外壳或桌面双栏阅读路径。
 - 历史日历嵌入模式必须保留独立卡一致的配色语义与 tooltip 语义，但隐藏内层标题与时区说明，避免与总览上下文重复。
 - `今日统计信息` 在桌面端保持高信息密度，同时在窄屏下允许回落换行，且无异常横向溢出。
 
-### Testing
-
-- Frontend targeted tests:
-  - `cd web && bun run test -- src/components/DashboardActivityOverview.test.tsx src/components/UsageCalendar.test.tsx src/components/TodayStatsOverview.test.tsx src/pages/Dashboard.test.tsx`
-- Storybook build:
-  - `cd web && bun run build-storybook`
-
 ### Quality checks
 
 - `cd web && bun run test`
 - `cd web && bun run build`
 - `cd web && bun run build-storybook`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-- `docs/specs/7s4kw-dashboard-usage-activity-overview/SPEC.md`
 
 ## 实现里程碑（Milestones / Delivery checklist）
 

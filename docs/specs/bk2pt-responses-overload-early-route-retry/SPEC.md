@@ -1,11 +1,5 @@
 # Responses-family `server_is_overloaded` 早期重试与分层换路由收口（#bk2pt）
 
-## 状态
-
-- Status: 已实现，待 PR / CI / review-proof 收敛
-- Created: 2026-04-08
-- Last: 2026-04-08
-
 ## 背景 / 问题陈述
 
 - `responses` family 里存在一类特殊上游失败：HTTP 仍为 `200`，但在响应体里提前给出 `upstream_response_failed + server_is_overloaded`。
@@ -41,12 +35,12 @@
 
 ## 接口契约（Interfaces & Contracts）
 
-| 接口（Name） | 类型（Kind） | 范围（Scope） | 变更（Change） | 使用方（Consumers） | 备注（Notes） |
-| --- | --- | --- | --- | --- | --- |
-| `/v1/responses` early SSE gate | runtime behavior | internal | Modify | pool routing / proxy stream forwarder | metadata-only 起始事件继续缓冲；首个非 metadata 事件才结束透明重试窗口 |
-| overload failover ladder | routing behavior | internal | Add | pool failover loop | 原账号 3 次重试后，先同 route 再其他 route |
-| `resolve_pool_account_for_request_with_route_requirement()` | Rust helper | internal | Add | overload failover | 仅为局部 route pin 服务；原有 resolver 包装器保持可用 |
-| `/v1/responses/compact` pre-forward overload gate | runtime behavior | internal | Add | compact proxy path | 只检查首个未下发 chunk；不做 full-body buffering |
+| 接口（Name）                                                | 类型（Kind）     | 范围（Scope） | 变更（Change） | 使用方（Consumers）                   | 备注（Notes）                                                          |
+| ----------------------------------------------------------- | ---------------- | ------------- | -------------- | ------------------------------------- | ---------------------------------------------------------------------- |
+| `/v1/responses` early SSE gate                              | runtime behavior | internal      | Modify         | pool routing / proxy stream forwarder | metadata-only 起始事件继续缓冲；首个非 metadata 事件才结束透明重试窗口 |
+| overload failover ladder                                    | routing behavior | internal      | Add            | pool failover loop                    | 原账号 3 次重试后，先同 route 再其他 route                             |
+| `resolve_pool_account_for_request_with_route_requirement()` | Rust helper      | internal      | Add            | overload failover                     | 仅为局部 route pin 服务；原有 resolver 包装器保持可用                  |
+| `/v1/responses/compact` pre-forward overload gate           | runtime behavior | internal      | Add            | compact proxy path                    | 只检查首个未下发 chunk；不做 full-body buffering                       |
 
 ## 验收标准（Acceptance Criteria）
 
@@ -57,20 +51,6 @@
 - Given `/v1/responses` 已向下游放出首个非 metadata 事件，When 后续出现 `server_is_overloaded`，Then 不得透明重试，且 route 仍保持 retryable / 无 cooldown 的 late-failure 语义。
 - Given `/v1/responses/compact` 在首个未下发 chunk 内返回 `server_is_overloaded`，When 请求仍处于 pre-forward 阶段，Then 必须按同一 overload ladder 重试；但不得引入整包缓冲或 body 已下发后的回放。
 - Given `response.failed` 的错误码不是 `server_is_overloaded`，When 它落在 metadata-only 窗口内，Then 仍按原流转发，而不是被误判为透明重试。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-- `cargo fmt`
-- `cargo check`
-- `cargo test pool_openai_v1_responses_overload -- --test-threads=1`
-- `cargo test pool_openai_v1_responses_retries_same_account_on_server_overloaded_before_forwarding -- --test-threads=1`
-- `cargo test pool_openai_v1_compact_overload_falls_back_to_alternate_route_before_body_forward -- --test-threads=1`
-- `cargo test gate_pool_initial_response_stream_keeps_non_overload_response_failed_on_original_stream -- --test-threads=1`
-- `cargo test capture_target_pool_route_marks_server_overloaded_after_forward_as_retryable_without_cooldown -- --test-threads=1`
-
-## 文档更新（Docs to Update）
-
-- `/Users/ivan/.codex/worktrees/1175/codex-vibe-monitor/docs/specs/README.md`
 
 ## 方案概述（Approach, high-level）
 

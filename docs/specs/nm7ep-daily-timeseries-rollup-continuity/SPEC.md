@@ -1,12 +1,5 @@
 # Daily timeseries archive continuity and subday bucket guard（#nm7ep）
 
-## 状态
-
-- Status: 已完成（4/4）
-- Created: 2026-03-11
-- Last: 2026-03-25
-- Note: 本 hotfix 只保留为历史背景；在线历史时序语义已由 `#h9r2m` 接管，不再使用“跨归档窗口强制降级到 `1d`”作为当前契约。
-
 ## 背景 / 问题陈述
 
 - `RETENTION_ENABLED=true` 与 `INVOCATION_MAX_DAYS=7` 的线上 retention 会把较老 proxy invocation 明细归档出主库，仅保留 `invocation_rollup_daily` 的按天汇总。
@@ -78,15 +71,6 @@
 - Given 请求 `range=30d&bucket=12h` 且范围早于 live subday window，When 请求 timeseries，Then 返回 `bucketSeconds=86400`、`effectiveBucket=1d`、`availableBuckets=["1d"]`，并包含对应 archived rollup day。
 - Given 请求 `range=7d&bucket=12h` 且范围仍在 live subday window，When 请求 timeseries，Then 保持 `bucketSeconds=43200` 与 `effectiveBucket=12h`，不得无条件提升到 `1d`。
 - Given 统计页进入归档窗口且旧状态残留 `12h` 等无效 bucket，When 页面拿到 timeseries 响应，Then bucket select 只展示 `1d`，并自动同步为 `1d`。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `cargo test` 覆盖新增的 daily rollup continuity 用例。
-- `cargo test` 覆盖新增的 archive-aware subday fallback 用例。
-- `cd web && bun run test` 覆盖新增的 stats bucket helper 用例。
-- `cargo check` 通过，且不引入新的 lint / 编译错误。
 
 ### Quality checks
 

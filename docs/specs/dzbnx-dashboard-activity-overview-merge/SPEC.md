@@ -1,11 +1,5 @@
 # Dashboard：合并 24h / 7d 活动总览卡片（#dzbnx）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-03-20
-- Last: 2026-03-20
-
 ## 背景 / 问题陈述
 
 - 当前 Dashboard 将“最近 7 天活动图”和“最近 24 小时统计”拆成两个独立卡片，纵向空间占用偏大，信息密度不够紧凑。
@@ -53,22 +47,10 @@
 - Given `7 日` 下将指标切到 `金额`，When 再切回 `24 小时` 改成 `Tokens` 后返回 `7 日`，Then `7 日` 仍保持 `金额`，`24 小时` 仍保持 `Tokens`。
 - Given 运行前端测试与构建，When 执行本次改动相关命令，Then `cd web && bun run test` 与 `cd web && bun run build` 通过。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit tests: `cd web && bun run test -- Dashboard`
-- Unit tests: `cd web && bun run test -- WeeklyHourlyHeatmap`
-
 ### Quality checks
 
 - Frontend test suite: `cd web && bun run test`
 - Frontend build: `cd web && bun run build`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`：新增本 spec 索引并同步状态 / Notes。
-- `docs/specs/dzbnx-dashboard-activity-overview-merge/SPEC.md`：记录实现、验证与快车道收敛结果。
 
 ## 实现里程碑（Milestones / Delivery checklist）
 

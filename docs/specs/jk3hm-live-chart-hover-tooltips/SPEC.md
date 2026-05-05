@@ -1,11 +1,5 @@
 # Live 小图表悬浮详情统一升级（#jk3hm）
 
-## 状态
-
-- Status: 已完成（5/5）
-- Created: 2026-03-08
-- Last: 2026-03-09
-
 ## 背景 / 问题陈述
 
 - `Live` 页面已有 3 类高密度微图表：代理 24h 请求量柱图、代理 24h 权重趋势图、Prompt Cache 24h Token 累计 sparkline。
@@ -73,10 +67,6 @@
 - 已用 Storybook mock + chrome-devtools 复核 hover / keyboard / tap 三套交互，未见原生 tooltip 残留。
 - 已补同一代理行的请求量/权重微图联动高亮：请求柱与权重点按 `bucketStart` 同步，桌面 hover 与键盘切换均保持一致。
 - Fast-track PR: `#97 feat(web): unify live inline chart tooltips`。
-
-## Change log
-
-- 2026-03-09：补充同一代理行请求量/权重微图联动高亮要求，并同步实现与验证记录。
 
 ## 参考
 

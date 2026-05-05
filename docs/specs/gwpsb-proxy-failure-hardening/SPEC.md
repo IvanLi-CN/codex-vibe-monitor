@@ -1,11 +1,5 @@
 # 线上失败请求分类治理与可观测性增强（#gwpsb）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-02-24
-- Last: 2026-03-11
-
 ## 背景 / 问题陈述
 
 - 当前失败统计把服务端故障、调用方错误、客户端中断混在一起，无法快速定位可行动问题。
@@ -92,13 +86,6 @@
 - Given `/v1/responses` 返回 `HTTP 200` 且 SSE 中出现 `event: response.failed` 或 `type:error`，When 调用记录落库，Then `status=http_200`、`failureKind=upstream_response_failed`、`failureClass=service_failure`、`isActionable=true`，且可读取 `streamTerminalEvent`、`upstreamErrorCode`、`upstreamErrorMessage`、`upstreamRequestId`。
 - Given 历史误记为 `success` 的 proxy 记录仍保留失败 SSE 原始证据，When 启动 backfill，Then 该记录会被修正并进入服务失败统计。
 - Given 统计页切换 scope，When 数据刷新，Then 饼图按对应范围更新。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `cargo test` 至少覆盖新增分类函数单测。
-- `cd web && npm run test` 通过（至少覆盖受影响 hook/API 调用路径）。
 
 ### Quality checks
 

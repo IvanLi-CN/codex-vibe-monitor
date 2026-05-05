@@ -1,11 +1,5 @@
 # 请求实况即时展示与“用时”订正（#mj5nt）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-03-17
-- Last: 2026-03-17
-
 ## 背景 / 问题陈述
 
 - 当前 `Dashboard` 与 `Live` 的请求列表只会在终态落库后收到 `records` SSE，用户无法在请求发起时立即看到一条“进行中”记录。
@@ -86,10 +80,10 @@
 
 ### 接口清单（Inventory）
 
-| 接口（Name） | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes） |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `BroadcastPayload::Records` / `ApiInvocation` | events + internal types | internal | Modify | None | backend + web | `useInvocationStream`, `InvocationTable`, `Live` chart | 不新增事件类型，仅允许发送临时 `running` 快照 |
-| `/api/invocations` | HTTP API | internal | None | None | backend | Dashboard / Live / Records | 终态接口形状不变 |
+| 接口（Name）                                  | 类型（Kind）            | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers）                                    | 备注（Notes）                                 |
+| --------------------------------------------- | ----------------------- | ------------- | -------------- | ------------------------ | --------------- | ------------------------------------------------------ | --------------------------------------------- |
+| `BroadcastPayload::Records` / `ApiInvocation` | events + internal types | internal      | Modify         | None                     | backend + web   | `useInvocationStream`, `InvocationTable`, `Live` chart | 不新增事件类型，仅允许发送临时 `running` 快照 |
+| `/api/invocations`                            | HTTP API                | internal      | None           | None                     | backend         | Dashboard / Live / Records                             | 终态接口形状不变                              |
 
 ### 契约文档（按 Kind 拆分）
 
@@ -109,14 +103,6 @@
 - SSE 继续复用 `records` 事件、SQLite 不落临时记录的口径已确认。
 - 可见条数裁剪规则明确由前端 `useInvocationStream` 承担，不引入按订阅者定制的后端 SSE。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit tests: Rust 覆盖临时 SSE 快照与终态替换；Vitest 覆盖 `useInvocationStream`/`InvocationTable` 合并与“用时”展示。
-- Integration tests: 代理请求生命周期中 `records` SSE 的 running -> enriched running -> terminal 顺序。
-- E2E tests (if applicable): Dashboard / Live 共享 InvocationTable 的即时展示回归。
-
 ### UI / Storybook (if applicable)
 
 - Stories to add/update: `web/src/components/InvocationTable.stories.tsx`（如需要补 running 展示态）
@@ -128,10 +114,6 @@
 - `cargo test`
 - `cd web && bun run test`
 - `cd web && bun run build`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 登记本规格并同步最终状态
 
 ## 计划资产（Plan assets）
 

@@ -1,11 +1,5 @@
 # `/records` 请求 ID 筛选与异常响应详情抽屉（#3gvtt）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-04-04
-- Last: 2026-04-04
-
 ## 背景 / 问题陈述
 
 - `/#/records` 现有筛选仍保留“上游”字段，但该字段对实际排障帮助有限，反而占用紧张的筛选区密度。
@@ -88,13 +82,13 @@
 
 ### 接口清单（Inventory）
 
-| 接口（Name） | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes） |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `GET /api/invocations` | HTTP API | internal | Modify | None | backend | records page | 新增 `requestId` 精确过滤 |
-| `GET /api/invocations/summary` | HTTP API | internal | Modify | None | backend | records page | 新增 `requestId` 过滤并保持 snapshot 语义 |
-| `GET /api/invocations/new-count` | HTTP API | internal | Modify | None | backend | records page | 新增 `requestId` 过滤 |
-| `GET /api/invocations/:id/detail` | HTTP API | internal | New | None | backend | records detail drawer | 返回结构化详情 + 异常响应体节选 |
-| `GET /api/invocations/:id/response-body` | HTTP API | internal | New | None | backend | records detail drawer | 按需返回完整异常响应体或不可用原因 |
+| 接口（Name）                             | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers）   | 备注（Notes）                             |
+| ---------------------------------------- | ------------ | ------------- | -------------- | ------------------------ | --------------- | --------------------- | ----------------------------------------- |
+| `GET /api/invocations`                   | HTTP API     | internal      | Modify         | None                     | backend         | records page          | 新增 `requestId` 精确过滤                 |
+| `GET /api/invocations/summary`           | HTTP API     | internal      | Modify         | None                     | backend         | records page          | 新增 `requestId` 过滤并保持 snapshot 语义 |
+| `GET /api/invocations/new-count`         | HTTP API     | internal      | Modify         | None                     | backend         | records page          | 新增 `requestId` 过滤                     |
+| `GET /api/invocations/:id/detail`        | HTTP API     | internal      | New            | None                     | backend         | records detail drawer | 返回结构化详情 + 异常响应体节选           |
+| `GET /api/invocations/:id/response-body` | HTTP API     | internal      | New            | None                     | backend         | records detail drawer | 按需返回完整异常响应体或不可用原因        |
 
 ### 契约文档（按 Kind 拆分）
 
@@ -115,14 +109,6 @@
 - 行内详情与右侧 drawer 已有基础 UI 容器可复用，无需新增路由级详情页。
 - raw response 文件的读取失败与 structured-only 退化状态已有后端语义可复用。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Rust tests: `cargo test build_invocation_filters_normalizes_request_id -- --exact`
-- Rust tests: `cargo test response_body_ -- --nocapture`
-- Frontend tests: `cd web && bun run test src/pages/Records.test.tsx src/components/InvocationRecordsTable.test.tsx src/lib/api.test.ts src/lib/invocationRecords.test.ts`
-
 ### UI / Storybook (if applicable)
 
 - Stories to add/update: `web/src/components/InvocationRecordsTable.stories.tsx`, `web/src/components/RecordsPage.stories.tsx`
@@ -134,11 +120,6 @@
 - `cargo check`
 - `cd web && bun run build`
 - `cd web && bun run build-storybook`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 新增 follow-up spec 索引，标记该 records 增量需求已有规格落点。
-- `docs/specs/3gvtt-records-request-id-response-details/SPEC.md`: 固定范围、接口、验收和视觉证据。
 
 ## 计划资产（Plan assets）
 

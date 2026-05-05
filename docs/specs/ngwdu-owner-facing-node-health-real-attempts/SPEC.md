@@ -1,11 +1,5 @@
 # Owner-facing 节点健康统一为真实节点尝试口径（#ngwdu）
 
-## 状态
-
-- Status: active
-- Created: 2026-04-24
-- Last: 2026-04-24
-
 ## 背景 / 问题陈述
 
 - `Live` 代理运行态、`Settings` 正向代理节点统计、`/api/stats/forward-proxy/timeseries`，以及分组/绑定节点弹窗的 `24H` 节点成功/失败此前并未统一到同一后端口径。
@@ -140,11 +134,6 @@
 - `cd web && bun run test`
 - `cd web && bun run build`
 - `cd web && bun run build-storybook`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-- `docs/specs/3np57-group-bound-proxy-real-traffic-stats/SPEC.md`
 
 ## Visual Evidence
 

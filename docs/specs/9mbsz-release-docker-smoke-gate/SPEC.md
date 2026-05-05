@@ -1,11 +1,5 @@
 # Release 前 Docker Smoke Gate（#9mbsz）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-03-01
-- Last: 2026-03-01
-
 ## 背景 / 问题陈述
 
 - 当前 CI 在 `main` push 时会构建并推送 GHCR 镜像、打 git tag、创建 GitHub Release，但不验证镜像是否能启动以及服务是否可用。
@@ -68,8 +62,6 @@ None
 - Given `release_enabled=false`（`type:docs` 或 `type:skip`）
   When workflow 在 `main` push 触发
   Then build/smoke/push/tag/release 相关步骤不会执行（与现有行为一致）。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
 
 ### Quality checks
 

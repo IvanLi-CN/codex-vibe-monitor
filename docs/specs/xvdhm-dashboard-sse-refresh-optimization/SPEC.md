@@ -1,11 +1,5 @@
 # Dashboard SSE 更新链路优化（#xvdhm）
 
-## 状态
-
-- Status: 已完成（6/6）
-- Created: 2026-03-07
-- Last: 2026-03-07
-
 ## 背景 / 问题陈述
 
 - Dashboard 当前复用单一 `/events` SSE 通道，但总览页多个共享 hook 对同一批事件的处理策略不一致。
@@ -121,23 +115,11 @@ None
 - calendar windows 继续以浏览器时区配合现有 HTTP summary 计算，不新增时区态 SSE 契约。
 - `90d / 1d` UsageCalendar 的历史 bucket 实时一致性依赖 reconnect/回前台/跨日校准，允许非同帧强一致。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Rust tests: 覆盖 no-subscriber skip 与 changed-only summary/quota broadcast。
-- Unit tests: 覆盖 calendar summary 1 秒节流、timeseries request sequencing / stale suppression / no-storm 行为。
-- E2E / browser check: 验证 Dashboard 在真实浏览器中的网络请求数量与重连补拉行为。
-
 ### Quality checks
 
 - `cargo test`
 - `cd web && npm run test`
 - `cd web && npm run build`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 新增 #xvdhm 索引，并在实现推进后更新状态与 Notes。
 
 ## 计划资产（Plan assets）
 

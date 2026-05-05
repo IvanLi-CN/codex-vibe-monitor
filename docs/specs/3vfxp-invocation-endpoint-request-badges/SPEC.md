@@ -1,11 +1,5 @@
 # InvocationTable 请求类型 Badge 化（#3vfxp）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-03-22
-- Last: 2026-03-22
-
 ## 背景 / 问题陈述
 
 - 当前 `InvocationTable` 摘要区直接显示原始 endpoint 路径，只有 `compact` 路径额外套了一个 `text-info` 着色特判；对 Dashboard / Live 首屏来说，可读性不够稳定。
@@ -81,10 +75,10 @@
 
 ### 接口清单（Inventory）
 
-| 接口（Name） | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes） |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `InvocationTable` endpoint summary rendering | UI presentation rule | internal | Modify | None | web | Dashboard / Live | 仅前端摘要语义变化，详情 raw endpoint 保留 |
-| `resolveInvocationEndpointDisplay` | TS helper | internal | New | None | web | InvocationTable | 纯展示语义 helper，不改 API 数据流 |
+| 接口（Name）                                 | 类型（Kind）         | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes）                              |
+| -------------------------------------------- | -------------------- | ------------- | -------------- | ------------------------ | --------------- | ------------------- | ------------------------------------------ |
+| `InvocationTable` endpoint summary rendering | UI presentation rule | internal      | Modify         | None                     | web             | Dashboard / Live    | 仅前端摘要语义变化，详情 raw endpoint 保留 |
+| `resolveInvocationEndpointDisplay`           | TS helper            | internal      | New            | None                     | web             | InvocationTable     | 纯展示语义 helper，不改 API 数据流         |
 
 ### 契约文档（按 Kind 拆分）
 
@@ -104,13 +98,6 @@
 - recognized endpoint 集合固定为三个精确匹配路径：已明确
 - 快车道本轮终点为 merge-ready，不自动 merge：已明确
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit tests: `cd web && bunx vitest run src/components/InvocationTable.test.tsx`
-- E2E tests (if applicable): `cd web && bun run test:e2e -- invocation-table-layout.spec.ts`
-
 ### UI / Storybook (if applicable)
 
 - Stories to add/update: `web/src/components/InvocationTable.stories.tsx`
@@ -119,10 +106,6 @@
 ### Quality checks
 
 - `cd web && bun run build`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 追加本 spec 索引并同步状态
 
 ## 计划资产（Plan assets）
 

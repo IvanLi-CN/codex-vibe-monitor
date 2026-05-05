@@ -1,11 +1,5 @@
 # OAuth 邮件多语言验证码与邀请识别（#g4e6a）
 
-## 状态
-
-- Status: 进行中
-- Created: 2026-03-24
-- Last: 2026-03-24
-
 ## 背景 / 问题陈述
 
 - `3n287` 已把 MoeMail 邮箱会话、验证码摘要和邀请摘要接进 OAuth 创建流，但当前后端解析仍主要依赖英文模板。
@@ -95,24 +89,9 @@
 - 已确认本轮不新增 sender/from 字段，因此品牌判定只能依赖现有正文、主题与链接
 - 已确认前端消费契约保持不变，仅允许后端内部解析升级
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `cargo test parse_mailbox -- --nocapture`
-- `cargo test normalize_mailbox_text -- --nocapture`
-- `cargo check`
-- `cargo test`
-- `cd web && bun run test`
-- `cd web && bun run build`
-
 ### Quality checks
 
 - fast-track PR 收敛期间必须执行 spec-sync，确保 spec 与最终行为一致
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 新增索引并在 PR / merge 事实确定后同步状态与备注
 
 ## 实现里程碑（Milestones / Delivery checklist）
 

@@ -1,11 +1,5 @@
 # Dashboard 工作中对话卡片：1660 宽屏四栏 follow-up（#mbnns）
 
-## 状态
-
-- Status: 已完成（6/6）
-- Created: 2026-04-07
-- Last: 2026-04-07
-
 ## 背景 / 问题陈述
 
 - `#w3t3w` 已把 Dashboard 底部替换为“当前工作中的对话”卡片区，`#vn2e9` 又把全站壳层统一放宽到 `1660px`，因此工作中对话区在最宽桌面 tier 具备继续提升信息密度的空间。
@@ -54,27 +48,12 @@
 - Given 点击卡片内账号名称或调用槽位，When 交互发生，Then 共享账号抽屉与调用详情抽屉行为不回退。
 - Given 运行本轮相关验证，When 执行 targeted Vitest / build / Storybook build / Playwright，Then 宽屏四栏合同通过，或仅剩与本轮无关的既有阻断被明确记录。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
 ### Visual / UX
 
 - 仅在 `desktop1660` 切换到 4 栏；`2xl` 仍保持 3 栏，避免中宽桌面过早压缩卡片内容。
 - 卡片顶部序列号、3 个摘要指标、当前 / 上一条双槽、placeholder 等高语义必须完整保留。
 - 四栏下卡片内容允许必要的截断与换行，但不得出现字段重叠、横向滚动或 slot 内容被裁切。
 - 页面级横向滚动为 0；若其它 Dashboard 模块在宽屏 mock 下暴露轻微外溢，本轮只允许做维持页面合同所需的最小修正，不扩展成独立重构。
-
-### Testing
-
-- Frontend lint: `cd /Users/ivan/.codex/worktrees/9b79/codex-vibe-monitor/web && bun run lint`
-- Frontend targeted Vitest: `cd /Users/ivan/.codex/worktrees/9b79/codex-vibe-monitor/web && bunx vitest run src/components/DashboardWorkingConversationsSection.test.tsx src/pages/Dashboard.test.tsx`
-- Frontend build: `cd /Users/ivan/.codex/worktrees/9b79/codex-vibe-monitor/web && bun run build`
-- Storybook build: `cd /Users/ivan/.codex/worktrees/9b79/codex-vibe-monitor/web && bun run build-storybook`
-- E2E regression: `cd /Users/ivan/.codex/worktrees/9b79/codex-vibe-monitor/web && E2E_BASE_URL=http://127.0.0.1:<leased-port> bun run test:e2e -- tests/e2e/dashboard-working-conversations-layout.spec.ts tests/e2e/wide-shell-layout.spec.ts`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-- `docs/specs/mbnns-dashboard-working-conversations-wide-4col/SPEC.md`
 
 ## 计划资产（Plan assets）
 

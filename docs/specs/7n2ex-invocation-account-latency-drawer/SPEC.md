@@ -1,11 +1,5 @@
 # InvocationTable 账号归因、时延压缩展示与当前页账号抽屉（#7n2ex）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-03-16
-- Last: 2026-03-17
-
 ## 背景 / 问题陈述
 
 - 当前 InvocationTable 把“代理”和“时延”挤在同一列里，无法直接看出本次请求究竟走了反向代理还是号池中的某个账号。
@@ -89,11 +83,11 @@
 
 ### 接口清单（Inventory）
 
-| 接口（Name） | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes） |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `/api/invocations` | HTTP API | internal | Modify | None | backend | Dashboard / Live / records consumers | 新增 route/account/compression 字段 |
-| `ApiInvocation` | TS + Rust types | internal | Modify | None | backend + web | InvocationTable / SSE | 前后端契约同步扩展 |
-| `/api/pool/upstream-accounts/:id` | HTTP API | internal | Reuse | None | backend | Dashboard / Live read-only drawer | 只新增消费方，不改接口形状 |
+| 接口（Name）                      | 类型（Kind）    | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers）                  | 备注（Notes）                       |
+| --------------------------------- | --------------- | ------------- | -------------- | ------------------------ | --------------- | ------------------------------------ | ----------------------------------- |
+| `/api/invocations`                | HTTP API        | internal      | Modify         | None                     | backend         | Dashboard / Live / records consumers | 新增 route/account/compression 字段 |
+| `ApiInvocation`                   | TS + Rust types | internal      | Modify         | None                     | backend + web   | InvocationTable / SSE                | 前后端契约同步扩展                  |
+| `/api/pool/upstream-accounts/:id` | HTTP API        | internal      | Reuse          | None                     | backend         | Dashboard / Live read-only drawer    | 只新增消费方，不改接口形状          |
 
 ### 契约文档（按 Kind 拆分）
 
@@ -115,14 +109,6 @@
 - `/api/invocations` 新字段与历史降级语义已在本 spec 中明确。
 - 当前页账号详情采用只读抽屉，不复用号池页编辑行为。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit tests: Rust invocation payload / query projection tests；`web/src/components/InvocationTable.test.tsx`
-- Integration tests: `/api/invocations` 返回新增字段并被前端类型消费
-- E2E tests (if applicable): `web/tests/e2e/invocation-table-layout.spec.ts`
-
 ### UI / Storybook (if applicable)
 
 - Stories to add/update: `web/src/components/InvocationTable.stories.tsx`
@@ -135,10 +121,6 @@
 - `cd web && bun run test`
 - `cd web && bun run build`
 - `cd web && bun run test:e2e -- invocation-table-layout.spec.ts`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 登记本 spec 与进度
 
 ## 计划资产（Plan assets）
 

@@ -1,11 +1,5 @@
 # pool `/v1/*` live 路由显式综合打分 follow-up（#5uxj8）
 
-## 状态
-
-- Status: 已实现，待 PR / CI / review-proof 收敛
-- Created: 2026-04-18
-- Last: 2026-04-18
-
 ## 背景
 
 - `#6b9ra` 把 `nodeShuntEnabled` 定义成“节点即槽位”的独占分流模型，但 live 路由仍把“节点/槽位执行问题”混进了“账号是否被分配”的语义里。

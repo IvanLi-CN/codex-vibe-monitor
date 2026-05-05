@@ -1,10 +1,5 @@
 # 上游账号分组持久化目录（#j5x9m）
 
-## 状态
-
-- Status: 已实现
-- Owner: account-pool / upstream-accounts
-
 ## 背景
 
 - `#thyxm` 把分组共享设置定义成“依附账号的前端草稿”，只有首个账号真正落入该分组后才允许持久化。

@@ -1,11 +1,5 @@
 # 请求记录筛选下拉遮挡修复（#8pjnh）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-03-12
-- Last: 2026-03-12
-
 ## 背景 / 问题陈述
 
 - `/#/records` 顶部筛选区的 `FilterableCombobox` 在展开 `Prompt Cache Key` 等建议下拉时，会被下方“统计”卡片盖住，导致列表底部无法点击或阅读。
@@ -92,14 +86,6 @@
 - 页面级抬层策略已锁定为本次最小修复方案，不引入 portal 重构。
 - Records 页现有 `activeSuggestionField` 状态足以作为单一抬层信号。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit tests: `cd web && bun run test -- src/pages/Records.test.tsx`
-- E2E tests: `cd web && bun run test:e2e -- records-filter-overlay.spec.ts`
-- PR CI gate: `.github/workflows/ci.yml` runs `Front-end Tests` and `Records Overlay E2E`
-
 ### UI / Storybook (if applicable)
 
 - Stories to add/update: None
@@ -108,11 +94,6 @@
 ### Quality checks
 
 - Build: `cd web && bun run build`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 新增 hotfix spec 索引并同步状态/备注。
-- `docs/specs/8pjnh-records-filter-dropdown-overlap-fix/SPEC.md`: 持续记录实现、验证与 PR 视觉证据。
 
 ## 计划资产（Plan assets）
 

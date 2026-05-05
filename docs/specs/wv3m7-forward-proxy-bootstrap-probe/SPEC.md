@@ -1,11 +1,5 @@
 # Forward Proxy 新增后异步首轮探测补齐（#wv3m7）
 
-## 状态
-
-- Status: 已完成（3/3）
-- Created: 2026-03-02
-- Last: 2026-03-02
-
 ## 背景 / 问题陈述
 
 - 当前 forward proxy 在新增节点后不会立即执行首轮探测，节点可能在“长期未探测”状态下直接进入调度。
@@ -97,21 +91,10 @@
 - 目标、范围、验收标准已冻结。
 - 现有 forward proxy 运行时权重更新逻辑可复用。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit tests: 新增 forward proxy 首轮探测触发与失败惩罚回归测试。
-- Integration tests: 复用本地测试 server 覆盖 settings/refresh 入口。
-
 ### Quality checks
 
 - `cargo fmt`
 - `cargo test`（至少覆盖新增 forward proxy 用例）
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 新增索引并更新状态。
 
 ## 计划资产（Plan assets）
 

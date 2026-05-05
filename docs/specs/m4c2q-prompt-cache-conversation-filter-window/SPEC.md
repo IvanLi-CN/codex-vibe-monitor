@@ -1,11 +1,5 @@
 # Prompt Cache Key 对话筛选增强与动态时间轴（#m4c2q）
 
-## 状态
-
-- Status: 已完成（4/4）
-- Created: 2026-03-19
-- Last: 2026-03-19
-
 ## 背景 / 问题陈述
 
 - Live 页的 Prompt Cache Key 对话区块目前只支持“数量”筛选，且默认绑定“最近 24 小时活跃”这一隐含条件，用户无法直接切到更短的最近活动窗口。
@@ -65,13 +59,6 @@
 - Given 命中了筛选显式条件但被隐含条件过滤，When 页面渲染，Then 表格下方显示小字提示；若没有触发隐含过滤，则不显示提示。
 - Given Prompt Cache Key 表存在至少一行，When 页面持续停留，Then 图表列标题与 aria 按“表内最早创建时间到当前时间”的小时差上取整实时更新，而不是固定写死 `24h`。
 - Given 最近活动窗口不变但没有新 SSE 数据，When 前端共享 `now` 时钟推进，Then 图表结束时间与小时列名仍会变化。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Rust: `cargo test prompt_cache_conversations -- --nocapture`
-- Web: `cd web && bunx vitest run src/components/PromptCacheConversationTable.test.tsx src/hooks/usePromptCacheConversations.test.tsx src/hooks/usePromptCacheConversations.test.ts src/pages/Live.test.tsx src/lib/api.test.ts`
 
 ### Quality checks
 

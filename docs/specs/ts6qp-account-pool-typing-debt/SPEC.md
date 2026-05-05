@@ -1,11 +1,5 @@
 # account-pool 前端类型债清偿（#ts6qp）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-04-12
-- Last: 2026-04-12
-
 ## 背景 / 问题陈述
 
 - `web/src/pages/account-pool/**` 仍有多处生产代码依赖文件级 `@ts-nocheck`，绕过了仓库现有的 TypeScript `strict` 约束。
@@ -76,9 +70,9 @@
 
 ### 接口清单（Inventory）
 
-| 接口（Name） | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes） |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| account-pool page internals | internal | internal | Modify | None | frontend | account-pool pages + stories + tests | 仅内部模块边界与类型改善 |
+| 接口（Name）                | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers）                  | 备注（Notes）            |
+| --------------------------- | ------------ | ------------- | -------------- | ------------------------ | --------------- | ------------------------------------ | ------------------------ |
+| account-pool page internals | internal     | internal      | Modify         | None                     | frontend        | account-pool pages + stories + tests | 仅内部模块边界与类型改善 |
 
 ### 契约文档（按 Kind 拆分）
 
@@ -86,16 +80,16 @@ None
 
 ## 验收标准（Acceptance Criteria）
 
-- Given `account-pool` 生产实现文件  
-  When 运行 TypeScript 严格构建  
+- Given `account-pool` 生产实现文件\
+  When 运行 TypeScript 严格构建\
   Then 本轮范围内生产文件不再依赖文件级 `@ts-nocheck`
 
-- Given `UpstreamAccounts` 与 `UpstreamAccountCreate` 页面  
-  When 运行既有单元测试、Storybook 构建与本地构建  
+- Given `UpstreamAccounts` 与 `UpstreamAccountCreate` 页面\
+  When 运行既有单元测试、Storybook 构建与本地构建\
   Then 页面行为、Storybook 入口和公开 API 调用语义保持兼容
 
-- Given 本轮改动命中 Web UI  
-  When 收口到普通流程的本地 PR-ready  
+- Given 本轮改动命中 Web UI\
+  When 收口到普通流程的本地 PR-ready\
   Then 已回传一组基于 Storybook 的视觉证据并落盘到本 spec
 
 ## 实现前置条件（Definition of Ready / Preconditions）
@@ -103,14 +97,6 @@ None
 - 目标、非目标与兼容边界已明确
 - 不新增外部接口或 schema 变更
 - 本地验证清单固定为 `lint/test/build/build-storybook`
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit tests: `cd web && bun run test`
-- Integration tests: none
-- E2E tests (if applicable): none
 
 ### UI / Storybook (if applicable)
 
@@ -121,10 +107,6 @@ None
 ### Quality checks
 
 - Lint / typecheck / formatting: `cd web && bun run lint && bun run build && bun run build-storybook`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 新增本 spec 并在完成后更新状态
 
 ## 计划资产（Plan assets）
 

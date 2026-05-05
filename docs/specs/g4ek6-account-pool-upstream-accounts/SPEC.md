@@ -1,11 +1,5 @@
 # 号池模块第一阶段：上游账号管理（#g4ek6）
 
-## 状态
-
-- Status: 已实现
-- Created: 2026-03-11
-- Last: 2026-04-01
-
 ## 背景 / 问题陈述
 
 - 当前项目只有 dashboard / stats / live / settings 四个顶级模块，还没有面向号池的控制面，无法管理上游账号、查看配额窗口，也无法为后续账号路由提供持久化基础。
@@ -201,14 +195,6 @@
 - Given 用户在账号 A 点击 `保存` 后继续编辑当前草稿，When 较早那次保存成功回包稍后返回，Then 页面不得用该回包覆盖这些后续输入；只有当当前草稿仍等于发起保存时的快照，才允许把表单重播种为最新已保存值。
 - 新建账号页顶部的全局错误提示只允许承载创建流程自己的错误或 list 级错误；详情页背景 detail 错误不得冒泡成创建页的通用错误横幅。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Rust tests：schema 创建 / 迁移、加密 round-trip、OAuth 登录会话生命周期、callback state/TTL/single-use 校验、refresh 分类、usage payload 归一化、母号唯一性与 session 落库，以及“维护不阻塞无关账号启停 / 同账号写操作与维护严格串行 / 重复维护请求去重”并发回归。
-- Web tests：账号列表与详情渲染、OAuth 轮询流程、API Key 表单、母号皇冠互斥、系统通知撤销、空态/错误态、导航路由。
-- Browser smoke：本地打开 `号池 -> 上游账号`，验证新增 OAuth/API Key、同步与详情图表渲染。
-
 ### Quality checks
 
 - `cargo fmt`
@@ -217,12 +203,6 @@
 - `cd web && npm run test`
 - `cd web && npm run build`
 
-## 文档更新（Docs to Update）
-
-- `README.md`：新增账号管理 env、OAuth 配置与使用说明。
-- `docs/deployment.md`：新增加密密钥、OAuth callback 与运维保活说明。
-- `docs/specs/README.md`：状态与 PR 记录同步。
-
 ## 实现里程碑（Milestones / Delivery checklist）
 
 - [x] M1: 新增账号管理 SQLite schema、配置与后端 API。
@@ -230,15 +210,6 @@
 - [x] M3: `号池 -> 上游账号` 前端页面、列表、详情、图表与交互完成。
 - [x] M4: Rust + Web 自动化验证补齐，并完成本地浏览器 smoke。
 - [ ] M5: spec sync、PR、checks、review-loop 收敛。
-
-## Change log
-
-- 2026-04-23：把上游账号分组升级为可持久化 catalog，保存分组设置后立即落库并保留 `0` 账号分组；所有新分组创建入口改为先弹分组设置对话框、保存成功后才回填 `groupName`，分组下拉同步展示全量 `accountCount`，且分组设置对话框统一为“左下角删除空分组 / 右侧取消与保存”的图标+文字 CTA。
-- 2026-03-16：补充账号详情抽屉的异步一致性约束，明确账号级 busy state 与 action error 都要按账号隔离、同一账号任一写操作进行中时其它写入口必须锁住、账号切换要在同一交互拍内使旧 detail 请求失效、保存/同步成功要先失效旧 detail reload、refresh 必须用列表数据纯计算最终选中账号后再刷新 detail 且列表失败时不得清空当前 detail、hook 级 list/detail 错误必须按来源隔离、同类动作跨账号并发时不得互相覆盖 busy/error 态、晚到 detail 成功/失败响应与 sync 响应都要按当前选中账号过滤，以及同步按钮 idle 态改用 outline 图标。
-- 2026-03-20：补充账号级 actor 串行与后台维护去重约束，明确维护只允许阻塞同一账号、无关账号启停在维护竞争下需以 `1 秒内完成服务端提交` 为目标，并新增对应的 Rust 并发回归测试要求。
-- 2026-04-01：将号池活跃 sticky 共享窗口从 30 分钟统一收敛为 5 分钟，`workStatus=working` 与 `activeConversationCount` 继续共用同一时间口径，且不引入新的 API、schema 或配置项。
-- 2026-03-23：把上游账号列表的混合 `displayStatus` 读模型拆成 `workStatus` / `enableStatus` / `healthStatus` / `syncState` 四个维度，列表筛选同步拆成 `工作状态`、`启用状态`、`账号状态` 三组服务端交集筛选，并锁定“不新增持久化状态列”的实现边界。
-- 2026-04-09：补充详情抽屉编辑会话的草稿冻结约束，明确同账号静默 refresh / detail reload / SSE open-resync 在草稿 pristine 时仍需跟随最新详情、在用户产生未提交修改后不得覆盖当前输入；保存成功只允许在仍属于当前活跃编辑会话且当前草稿仍等于发起保存时快照时重播种，关闭抽屉或切到别的账号后回到原账号都视为新会话，旧会话或较早保存的晚到回包不得覆盖更新后的草稿。
 
 ## Visual Evidence
 

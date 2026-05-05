@@ -1,11 +1,5 @@
 # 后端 archive 结构收敛（#g7n33）
 
-## 状态
-
-- Status: 已实现，待 PR / CI / review-proof 收敛
-- Created: 2026-04-12
-- Last: 2026-04-12
-
 ## 背景 / 问题陈述
 
 - `/Users/ivan/Projects/Ivan/codex-vibe-monitor/src/maintenance/archive.rs` 目前仍是 3k+ 行巨型实现文件，承担 archive retention、manifest rebuild、upstream activity backfill、hourly rollup materialization 等多类职责。
@@ -79,9 +73,9 @@
 
 ### 接口清单（Inventory）
 
-| 接口（Name） | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes） |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| archive maintenance internal API | Rust module API | internal | Modify | None | backend | retention/startup/stats/proxy/tests | 仅模块边界与 re-export 调整 |
+| 接口（Name）                     | 类型（Kind）    | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers）                 | 备注（Notes）               |
+| -------------------------------- | --------------- | ------------- | -------------- | ------------------------ | --------------- | ----------------------------------- | --------------------------- |
+| archive maintenance internal API | Rust module API | internal      | Modify         | None                     | backend         | retention/startup/stats/proxy/tests | 仅模块边界与 re-export 调整 |
 
 ### 契约文档（按 Kind 拆分）
 
@@ -107,14 +101,6 @@ None
 - 验收标准覆盖本地验证、shared-testbox 验证与 merge+cleanup 终点。
 - 本轮仅改 archive 结构边界，不扩展到其它债务面。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit tests: 现有 archive / hourly rollup / retention 相关 Rust tests 随迁通过。
-- Integration tests: `cargo test --locked --all-features`。
-- E2E tests (if applicable): None。
-
 ### Quality checks
 
 - `cargo fmt --all -- --check`
@@ -122,11 +108,6 @@ None
 - `cargo test --locked --all-features`
 - `scripts/shared-testbox-raw-smoke --cleanup`
 - `scripts/shared-testbox-api-read-smoke --cleanup`（若本轮 read-side 受影响则必跑）
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/g7n33-backend-archive-structure-convergence/SPEC.md`: 跟踪实现与收尾状态。
-- `docs/specs/README.md`: 新增条目并在合并前后同步状态。
 
 ## 计划资产（Plan assets）
 

@@ -1,11 +1,5 @@
 # Dashboard：工作中对话卡片替换（#w3t3w）
 
-## 状态
-
-- Status: 已完成（6/6，PR #295）
-- Created: 2026-04-04
-- Last: 2026-04-06
-
 ## 背景 / 问题陈述
 
 - Dashboard 底部目前仍展示“最近 20 条实况”表格，和页面其余总览卡片相比，信息组织更偏流水明细，不利于快速扫读“当前有哪些对话仍在工作中”。
@@ -59,8 +53,6 @@
 - Given 在 Storybook 中切换 `Theme` toolbar，When Canvas 从 `light` 切到 `dark` 或反向切换，Then 卡片表面、占位层与正文前景都跟随主题 token 渲染，文本保持可读。
 - Given 运行本次相关验证命令，When 执行 Rust / Vitest / build / Storybook build，Then 命令通过，或仅剩与本次无关的既有阻断被明确记录。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
 ### Visual / UX
 
 - 卡片区遵循全局 `ui-ux-pro-max` skill 的 `real-time monitoring + dark OLED` 局部规则，但保留仓库既有 navy/cyan 监控语言。
@@ -69,24 +61,12 @@
 - hover / focus 仅允许颜色、阴影、边框等非布局位移反馈，并尊重 `prefers-reduced-motion`。
 - 响应式在 `375 / 768 / 1024 / 1440` 下无横向滚动。
 
-### Testing
-
-- Rust targeted tests: `cargo test prompt_cache_conversation`
-- Frontend targeted tests: `cd web && bunx vitest run src/pages/Dashboard.test.tsx src/hooks/usePromptCacheConversations.test.tsx`
-- Storybook interaction proof: `CreatedAtDescendingOrder` story `play` 必须断言 `pck-created-newest -> pck-created-middle -> pck-created-oldest`
-- Storybook build: `cd web && bun run storybook:build`
-
 ### Quality checks
 
 - `cargo test`
 - `cd web && bunx vitest run`
 - `cd web && bun run build`
 - `cd web && bun run storybook:build`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-- `docs/specs/w3t3w-dashboard-working-conversations-cards/SPEC.md`
 
 ## 实现里程碑（Milestones / Delivery checklist）
 

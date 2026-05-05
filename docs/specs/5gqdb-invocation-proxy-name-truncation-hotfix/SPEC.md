@@ -1,11 +1,5 @@
 # InvocationTable 桌面代理名省略回归热修（#5gqdb）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-03-09
-- Last: 2026-03-10
-
 ## 背景 / 问题陈述
 
 - `InvocationTable` 的桌面表格代理列原本依赖受限宽度的 badge + `truncate` 组合来兜底超长代理名，避免长无空格文本挤压后续列。
@@ -92,13 +86,6 @@
 - 回归边界已锁定为前端展示 hotfix，不涉及 API / 数据库 / pricing 改动。
 - 长代理名样例与发布标签已冻结，可直接进入实现与快车道验证。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit tests: `cd web && npm run test -- --run src/components/InvocationTable.test.tsx`
-- E2E tests: `cd web && npm run test:e2e -- tests/e2e/invocation-table-layout.spec.ts`
-
 ### UI / Storybook (if applicable)
 
 - Stories to add/update: `web/src/components/InvocationTable.stories.tsx`
@@ -107,11 +94,6 @@
 ### Quality checks
 
 - Build / Storybook: `cd web && npm run build`、`cd web && npm run build-storybook`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 新增 hotfix spec 索引并同步状态/备注。
-- `docs/specs/5gqdb-invocation-proxy-name-truncation-hotfix/SPEC.md`: 记录实现进度、验证结果与变更说明。
 
 ## 计划资产（Plan assets）
 

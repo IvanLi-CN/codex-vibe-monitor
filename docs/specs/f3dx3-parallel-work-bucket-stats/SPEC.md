@@ -1,11 +1,5 @@
 # 并行工作 bucket 统计（#f3dx3）
 
-## 状态
-
-- Status: 已实现，PR 收敛中
-- Created: 2026-04-07
-- Last: 2026-04-07
-
 ## 背景 / 问题陈述
 
 - 统计页当前提供的是请求量、成功失败、错误原因等指标，但缺少“同一时间段内实际有多少个工作对话在推进”的视角。
@@ -99,16 +93,6 @@
 
 ## 非功能性验收 / 质量门槛
 
-### Testing
-
-- `cargo check`
-- `cargo test parallel_work_stats`
-- `cd web && bun run test -- ParallelWorkStatsSection useParallelWorkStats api Stats`
-- `cd web && bun run test-storybook`
-- `cd web && bun run build`
-- `ParallelWorkStatsSection.test.tsx` 覆盖图表模式边界：页面周期不超过 24 小时且存在 `conversations` 时渲染 `data-chart-mode="conversation-gantt"`；页面周期超过 24 小时即使存在 `conversations` 也保持 Recharts `ResponsiveContainer` + `AreaChart` 趋势图。
-- `StatsPage.stories.tsx` 的 Storybook play 覆盖跨页面行为：默认 today 周期渲染对话甘特图；切换到 `最近 7 天` 后断言不再出现 `parallel-work-conversation-gantt`。
-
 ### UI / Storybook
 
 - 新增稳定故事：`web/src/components/ParallelWorkStatsSection.stories.tsx`
@@ -117,14 +101,6 @@
 - 新增证据故事：`Pages/StatsPage/Evidence / Today Minute Options + Gantt`
 - 新增证据故事：`Pages/StatsPage/Evidence / Seven Day Recharts Page`
 - 证据来源：`storybook_canvas` 截图 + Storybook play 断言；截图用于人工确认密度与布局，play/Vitest 断言用于证明 24 小时边界与图表模式选择。
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-
-## Plan assets
-
-- Directory: `docs/specs/f3dx3-parallel-work-bucket-stats/assets/`
 
 ## Visual Evidence
 

@@ -1,11 +1,5 @@
 # `main.rs` 结构化拆分与基线同步重构（#krsd4）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-04-06
-- Last: 2026-04-06
-
 ## 背景 / 问题陈述
 
 - [src/main.rs](/Users/ivan/.codex/worktrees/5311/codex-vibe-monitor/src/main.rs) 已超过 24k 行，同时承载入口装配、配置解析、运行时生命周期、maintenance 任务、archive/rollup 逻辑与 share-link 解析。
@@ -97,9 +91,9 @@
 
 ### 接口清单（Inventory）
 
-| 接口（Name） | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes） |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Rust shared module exports | internal | internal | Modify | None | backend | `api` / `forward_proxy` / `stats` / `upstream_accounts` / `tests` | 仅调整模块归属与导入路径，不改行为 |
+| 接口（Name）               | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers）                                               | 备注（Notes）                      |
+| -------------------------- | ------------ | ------------- | -------------- | ------------------------ | --------------- | ----------------------------------------------------------------- | ---------------------------------- |
+| Rust shared module exports | internal     | internal      | Modify         | None                     | backend         | `api` / `forward_proxy` / `stats` / `upstream_accounts` / `tests` | 仅调整模块归属与导入路径，不改行为 |
 
 ### 契约文档（按 Kind 拆分）
 
@@ -126,14 +120,6 @@ None
 - 验证门槛固定为 `cargo check` + 完整 `cargo test`
 - 当前分支已完成基线同步并保留 rebase 前备份引用
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit tests: 现有 Rust 单测与模块内测试需保持通过。
-- Integration tests: 继续依赖现有 `cargo test` 覆盖 archive / retention / proxy / share-link / startup flows。
-- E2E tests (if applicable): None
-
 ### UI / Storybook (if applicable)
 
 - None
@@ -142,10 +128,6 @@ None
 
 - `cargo check`
 - `cargo test`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 追加本 spec 索引并记录状态/日期/说明
 
 ## 计划资产（Plan assets）
 

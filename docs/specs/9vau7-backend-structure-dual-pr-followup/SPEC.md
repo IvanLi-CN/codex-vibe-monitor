@@ -1,11 +1,5 @@
 # 后端结构债双 PR 快车道（#9vau7）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-04-12
-- Last: 2026-04-12
-
 ## 背景 / 问题陈述
 
 - `src/proxy.rs`、`src/api/mod.rs` 与 `src/upstream_accounts/mod.rs` 仍把大量生产控制流停留在 `include!()` 级别，真实模块边界不清晰。
@@ -49,25 +43,9 @@
 - 两条 PR 合并前都必须完成 `$codex-review-loop` 收敛，标签固定为 `type:skip` + `channel:stable`。
 - 本轮不得把 warning 基线从当前 `cargo check --locked --all-targets --all-features` 的 40 条继续抬高，也不得新增新的 warning 家族。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `cargo fmt --all -- --check`
-- `cargo check --locked --all-targets --all-features`
-- `cargo test --locked --all-features`
-- `scripts/shared-testbox-proxy-parallel-smoke --cleanup`
-- `scripts/shared-testbox-raw-smoke --cleanup`
-- `scripts/shared-testbox-api-read-smoke --cleanup`（PR2）
-
 ### UI / Storybook (if applicable)
 
 - Not applicable
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-- `docs/specs/9vau7-backend-structure-dual-pr-followup/SPEC.md`
 
 ## Visual Evidence
 

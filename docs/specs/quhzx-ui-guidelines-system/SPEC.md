@@ -1,11 +1,5 @@
 # 建立全局 UI 规范文档体系（#quhzx）
 
-## 状态
-
-- Status: 已完成（5/5）
-- Created: 2026-03-18
-- Last: 2026-03-18
-
 ## 背景 / 问题陈述
 
 - 当前仓库已经有稳定的 UI 实现、Storybook stories 与多份 feature spec，但缺少统一的全局 UI 文档入口。
@@ -73,31 +67,11 @@
 - Given 阅读 `data-viz.md`，When 查找图表与数字展示规则，Then 能明确 count/cost/token 的颜色语义与热力图梯度来源。
 - Given 执行文档校验，When 运行 `bunx dprint check` 与 `cd web && bun run build-storybook`，Then 命令通过。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `bunx dprint check docs/ui docs/specs/quhzx-ui-guidelines-system README.md`
-- `cd web && bun run build-storybook`
-- 路径存在性检查：文档中引用的实现文件、stories 与规范文件均可解析
-
 ### Quality checks
 
 - 保持 docs-only 变更
 - 文档不添加修订版标记或版本后缀
 - PR 标签满足 `type:docs` 与 `channel:stable`
-
-## 文档更新（Docs to Update）
-
-- `docs/ui/README.md`
-- `docs/ui/foundations.md`
-- `docs/ui/components.md`
-- `docs/ui/patterns.md`
-- `docs/ui/data-viz.md`
-- `docs/ui/storybook.md`
-- `docs/specs/README.md`
-- `docs/specs/quhzx-ui-guidelines-system/SPEC.md`
-- `README.md`
 
 ## 实现里程碑（Milestones / Delivery checklist）
 

@@ -1,11 +1,5 @@
 # Dashboard 活动总览增加“昨日”页签（#mpgea）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-04-11
-- Last: 2026-04-11
-
 ## 背景 / 问题陈述
 
 - `#r99mz` 已把“今日”并入 `活动总览`，当前总览切换为 `今日 / 24 小时 / 7 日 / 历史` 四段，但主人需要继续补齐“上一自然日”的固定回看入口。
@@ -81,23 +75,10 @@
 - Given 运行定向验证，When 执行 `cargo test`、`cargo check`、`cd web && bun run test -- <targeted files>`、`cd web && bun run build` 与 `cd web && bun run build-storybook`，Then 命令通过。
 - Given Storybook `YesterdayView` 与页面级切换场景，When 生成视觉证据，Then 本 spec 的 `## Visual Evidence` 记录最终 mock-only 截图与说明。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Rust：named range / summary-window helper 回归 + 至少一个 yesterday summary/timeseries API 级过滤回归。
-- Frontend：`DashboardActivityOverview` / `Dashboard` / `useStats` / `useTimeseries` / `DashboardTodayActivityChart` 定向 Vitest。
-- Storybook：新增 / 更新 yesterday 场景并通过 `build-storybook`。
-
 ### Visual / UX
 
 - `昨日` 页签在视觉上必须与 `今日` 同构，不得引入新的 panel 层级或重复 header。
 - 视觉证据统一使用 Storybook canvas / mock 数据，不截真实生产数据页面。
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-- `docs/specs/mpgea-dashboard-yesterday-activity-overview/SPEC.md`
 
 ## 实现里程碑（Milestones / Delivery checklist）
 

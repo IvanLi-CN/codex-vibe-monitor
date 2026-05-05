@@ -1,11 +1,5 @@
 # Prompt Cache 图表时间轴 24 小时封顶热修（#e6082）
 
-## 状态
-
-- Status: 已完成（4/4）
-- Created: 2026-03-20
-- Last: 2026-03-20
-
 ## 背景 / 问题陈述
 
 - Prompt Cache Key 对话表新增“近 1/3/6/12/24 小时活动”筛选后，图表列当前按“表内最早 `createdAt` 到当前时间”直接计算共享时间轴。
@@ -65,13 +59,6 @@
 - Given 选择 `近 1 小时活动`，When 表内包含创建于 24 小时之前但最近仍活跃的对话，Then 图表列标题最多显示 `24 小时 Token 累计`。
 - Given 某个对话既有 50 小时前的历史点，也有最近 24 小时内的新点，When 渲染 Prompt Cache 图表，Then 累计值只基于最近 24 小时内的点重新计算。
 - Given 运行 Prompt Cache 相关 Rust 与 Vitest 回归，When 执行本次热修验证命令，Then 新增 24 小时封顶断言通过，且原有筛选/提示逻辑不回归。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Rust: `cargo test prompt_cache_conversations -- --nocapture`
-- Web: `cd web && bunx vitest run src/components/PromptCacheConversationTable.test.tsx`
 
 ### Quality checks
 

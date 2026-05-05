@@ -1,11 +1,5 @@
 # 运行中调用主记录实时落库与中断恢复修复（#yf3s3）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-04-07
-- Last: 2026-04-08
-
 ## 背景 / 问题陈述
 
 - Dashboard 与 Live 已经会通过 SSE 展示运行中的调用，但这些运行态记录当前仍可能只是内存中的临时快照，而不是 `codex_invocations` 里的已提交主记录。
@@ -74,8 +68,6 @@
 - Given 服务在调用运行中异常退出，When 下次启动恢复完成，Then 残留主记录显示为 `interrupted / proxy_interrupted / service_failure / actionable`，并且 records 查询、requestId 精确查询与 rollup 统计一致。
 - Given Dashboard 工作中对话卡片已经显示某条运行中调用，When 打开调用详情抽屉，Then 不再出现“调用记录不可用”空态。
 - Given `interrupted` 记录出现在 Records、Dashboard 调用详情或工作中对话相关状态 badge 中，When 渲染 UI，Then 显示稳定的错误态 badge 与对应文案，而不是 raw unknown。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
 
 ### Backend
 

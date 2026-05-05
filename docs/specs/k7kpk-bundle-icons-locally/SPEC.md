@@ -1,11 +1,5 @@
 # 前端运行时图标内置打包（#k7kpk）
 
-## 状态
-
-- Status: 部分完成（3/4）
-- Created: 2026-03-14
-- Last: 2026-03-14
-
 ## 背景 / 问题陈述
 
 - 当前前端在 17 个运行时代码文件里通过 `@iconify/react` 直接传入 `mdi:*` 字符串图标名。
@@ -69,13 +63,6 @@
 - Given 查看运行时代码，When 搜索 `mdi:` 与 `@iconify/react`，Then 仅允许保留在本地图标封装层或测试/文档中，不允许出现在其它运行时代码文件。
 - Given 现有按钮、badge、折叠箭头、loading 态和提示图标，When 完成替换，Then 交互与视觉语义保持不变。
 - Given 执行前端测试与生产构建，When 命令结束，Then 全部通过。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-- Unit tests: `cd web && bun run test`
-- Build: `cd web && bun run build`
-- Browser verification: 打开生产预览并检查关键页面网络面板，确认无第三方图标请求
-- Review: 运行 `$codex-review-loop` 收敛实现范围内问题
 
 ## 实现里程碑（Milestones / Delivery checklist）
 

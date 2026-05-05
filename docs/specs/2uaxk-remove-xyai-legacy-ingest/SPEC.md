@@ -1,9 +1,5 @@
 # 移除 XYAI 采集，保留历史读取（#2uaxk）
 
-## 状态
-
-- Status: 已完成（4/4）
-
 ## 背景 / 问题陈述
 
 - 项目当前同时承载了历史读取能力与 legacy XYAI 采集链路，但产品方向已经调整，不再需要从 XYAI 上游拉取新数据。
@@ -83,22 +79,9 @@
 - Given 服务正常运行，When 产生 CRS tick 或 proxy 请求，Then 不会触发任何 XYAI 上游抓取，也不会写入新的 `source='xy'` 记录或新的 quota snapshot。
 - Given proxy / CRS 既有测试场景，When 执行相关测试，Then 行为维持现状且测试继续通过。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `cargo test`
-- `cd web && npm run test`
-- `cargo run --help`
-
 ### Quality checks
 
 - `cargo fmt`
-
-## 文档更新（Docs to Update）
-
-- `README.md`: 移除 XYAI 接入说明与示例，明确 quota 为历史只读。
-- `docs/specs/README.md`: 收录本 spec，并在交付后更新状态与 PR 备注。
 
 ## 实现里程碑（Milestones / Delivery checklist）
 

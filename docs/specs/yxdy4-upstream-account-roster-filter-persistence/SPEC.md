@@ -1,11 +1,5 @@
 # 上游账号列表筛选前端持久化（#yxdy4）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-03-29
-- Last: 2026-03-29
-
 ## 背景 / 问题陈述
 
 - `号池 -> 上游账号` 列表已经支持 `工作状态 / 启用状态 / 账号状态 / 账号分组 / 账号标签` 五类筛选，但这些选择只保存在当前页面内存中。
@@ -99,12 +93,6 @@
 - Given 本地 payload 损坏或状态值越界，When 打开页面，Then 页面静默回退到默认值，不报错。
 - Given 本地 payload 保存的是 `groupFilter=ungrouped`，When 从中文切到英文后重新进入页面，Then 页面显示 `Ungrouped`，并继续请求 `groupUngrouped=true`。
 - Given 本地 payload 包含失效 tag id，When 打开页面，Then 首次查询不发送失效 id，且本地存储会被回写为清洗后的 tag id 集合。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `cd web && bun run test -- src/pages/account-pool/UpstreamAccounts.test.tsx`
 
 ### Quality checks
 

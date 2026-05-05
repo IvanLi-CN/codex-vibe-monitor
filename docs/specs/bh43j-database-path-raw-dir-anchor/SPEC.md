@@ -1,11 +1,5 @@
 # 数据库环境变量重命名与 raw 路径锚点修复（#bh43j）
 
-## 状态
-
-- Status: 已完成（5/5）
-- Created: 2026-03-09
-- Last: 2026-03-09
-
 ## 背景 / 问题陈述
 
 - 运行时当前仍使用 `XY_DATABASE_PATH` 作为数据库路径环境变量，这个命名已经脱离现有产品语义，也容易和已移除的 XYAI 历史能力混淆。
@@ -103,23 +97,10 @@
 - 生产现存 stray raw 文件不做自动迁移：已确定。
 - 需要更新的对外文档至少包含 `README.md` 与 `docs/deployment.md`：已确定。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Rust tests：覆盖 `DATABASE_PATH` 生效、`XY_DATABASE_PATH` fail-fast、raw 目录锚定数据库父目录、cwd 兼容读取旧相对路径、orphan sweep 不再依赖 cwd。
-- 构建验证：`cargo fmt --all -- --check`、`cargo test --locked --all-features`、`cargo check --locked --all-targets --all-features`。
-
 ### Quality checks
 
 - 文档中的数据库 env 示例全部切换到 `DATABASE_PATH`。
 - 文档中所有“相对 archive/raw 目录”描述都明确以 `DATABASE_PATH` 为锚点。
-
-## 文档更新（Docs to Update）
-
-- `README.md`
-- `docs/deployment.md`
-- `docs/specs/README.md`
 
 ## 实现里程碑（Milestones / Delivery checklist）
 

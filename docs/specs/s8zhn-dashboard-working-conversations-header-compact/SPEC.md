@@ -1,11 +1,5 @@
 # Dashboard 工作中对话卡片头部压缩（#s8zhn）
 
-## 状态
-
-- Status: 已实现，待 PR / CI / review-proof 收敛
-- Created: 2026-04-08
-- Last: 2026-04-24
-
 ## 背景 / 问题陈述
 
 - Dashboard 工作中对话卡片当前把状态 + 时间放在第一行、`WC-` 短号与 raw Prompt Cache Key 放在第二行；对高密度监控卡来说，这组信息占了两行高度，但其中 `WC-` 前缀和 raw key 的卡片级可见展示价值都偏低。
@@ -58,8 +52,6 @@
 - Given recent invocation endpoint 为 `/v1/responses/compact`，When Dashboard 卡片渲染当前调用槽，Then 顶部 endpoint badge 必须显示 compact 语义，而不是退回 `Responses`。
 - Given 视觉证据截图需要写回 spec 或进入 PR，When 尚未获得主人明确许可，Then 相关截图只允许本地回图，不得先 push。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
 ### Visual / UX
 
 - 头部信息层级必须比当前双行版本更紧凑，但不允许靠减小到不可读字号换取单行。
@@ -67,18 +59,6 @@
 - raw Prompt Cache Key 从卡片头部完全移除，不再保留 hover title。
 - 宽屏四栏与窄屏单列合同保持不变。
 - 账号展示优先使用单行截断策略，不再依赖 `line-clamp-2 break-all`。
-
-### Testing
-
-- `cd /Users/ivan/.codex/worktrees/4aa2/codex-vibe-monitor/web && bun run lint`
-- `cd /Users/ivan/.codex/worktrees/4aa2/codex-vibe-monitor/web && bunx vitest run src/lib/dashboardWorkingConversations.test.ts src/components/DashboardWorkingConversationsSection.test.tsx src/components/DashboardInvocationDetailDrawer.test.tsx src/pages/Dashboard.test.tsx`
-- `cd /Users/ivan/.codex/worktrees/4aa2/codex-vibe-monitor/web && bun run build`
-- `cd /Users/ivan/.codex/worktrees/4aa2/codex-vibe-monitor/web && bun run storybook:build`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-- `docs/specs/s8zhn-dashboard-working-conversations-header-compact/SPEC.md`
 
 ## 计划资产（Plan assets）
 

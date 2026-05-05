@@ -1,11 +1,5 @@
 # InvocationTable 推理强度与详情 reasoningTokens（#rupn7）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-03-07
-- Last: 2026-03-07
-
 ## 背景 / 问题陈述
 
 - 当前请求记录列表已经具备 `reasoningTokens` 数据链路，但列表与展开详情都没有展示该字段，导致用户无法直接判断响应里是否发生了推理 token 消耗。
@@ -102,14 +96,6 @@
 - 历史回填口径已冻结为“仅 raw request 可读时 best-effort 回填”。
 - 前后端字段命名统一为 `reasoningEffort`。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit tests: Rust 请求体解析、`list_invocations` 投影与 malformed payload 容错回归。
-- Integration tests: 启动期 reasoningEffort backfill 回填成功/失败路径。
-- E2E tests (if applicable): InvocationTable 列表与详情展示推理强度/`reasoningTokens`。
-
 ### UI / Storybook (if applicable)
 
 - Stories to add/update: `InvocationTable.stories.tsx` 补充 `reasoningEffort` 与详情 `reasoningTokens` 场景。
@@ -122,10 +108,6 @@
 - `cargo check`
 - `cd web && npm run test`
 - `cd web && npm run build`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 新增本 spec 索引并更新状态。
 
 ## Visual Evidence (PR)
 

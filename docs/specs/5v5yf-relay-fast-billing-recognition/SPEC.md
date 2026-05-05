@@ -1,9 +1,5 @@
 # 通用 API Keys 计费层级修复（#5v5yf）
 
-## 状态
-
-- Status: 已实现，待截图提交授权 / PR 收敛
-
 ## 背景
 
 - proxy 链路同时采集 `requestedServiceTier` 与响应 `serviceTier`，但此前错误地把“实际计费层级”绑定到了特定 relay host。
@@ -82,12 +78,12 @@
 
 ## 接口契约
 
-| 接口 | 类型 | 变更 |
-| --- | --- | --- |
-| `GET /api/invocations` record | HTTP API | 保持 `serviceTier`，继续返回 `billingServiceTier?: string` |
-| `events` SSE `records` | Event | 与 HTTP 记录同构，继续返回 `billingServiceTier?: string` |
-| `ApiInvocation` | TypeScript type | 不新增 host/relay 字段，继续保留三层 tier |
-| `priceVersion` | persisted string | 从通道策略后缀推导，不再包含 relay/host 专有命名 |
+| 接口                          | 类型             | 变更                                                       |
+| ----------------------------- | ---------------- | ---------------------------------------------------------- |
+| `GET /api/invocations` record | HTTP API         | 保持 `serviceTier`，继续返回 `billingServiceTier?: string` |
+| `events` SSE `records`        | Event            | 与 HTTP 记录同构，继续返回 `billingServiceTier?: string`   |
+| `ApiInvocation`               | TypeScript type  | 不新增 host/relay 字段，继续保留三层 tier                  |
+| `priceVersion`                | persisted string | 从通道策略后缀推导，不再包含 relay/host 专有命名           |
 
 ## 核心行为
 

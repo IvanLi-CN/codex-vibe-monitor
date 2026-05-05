@@ -1,11 +1,5 @@
 # OAuth 配额耗尽账号误标为上游拒绝修复（#js2gr）
 
-## 状态
-
-- Status: 已完成（PR #231）
-- Created: 2026-03-25
-- Last: 2026-03-25
-
 ## 背景 / 问题陈述
 
 - 线上浏览器实测确认，账号 `oliviang.1j3cd@mail-tw.707079.xyz` 的最近失败链路是 `upstream_http_429_quota_exhausted`，最近动作是 `sync_recovery_blocked / quota_still_exhausted`，额度窗口也显示主窗口 `100%` 已耗尽。

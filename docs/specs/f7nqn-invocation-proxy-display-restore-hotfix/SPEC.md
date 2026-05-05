@@ -1,10 +1,5 @@
 # InvocationTable 代理节点展示热修（#f7nqn)
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-03-17
-
 ## 背景 / 问题陈述
 
 - 生产 `Dashboard / Live` 的 InvocationTable 已经切成“账号 / 代理”双行摘要，但 2026-03-17 的新请求出现了两类错误：
@@ -68,22 +63,6 @@
 - Given 前端收到新记录广播，When 渲染摘要与展开详情，Then 账号、代理、HTTP 压缩算法与列表接口返回保持一致。
 - Given 生产发布完成后新产生一条 pool invocation，When 在生产页面查看，Then 不再出现“账号=反向代理、代理=上游 host”这种语义错误。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `cargo check`
-- `cargo test proxy_capture_persist_and_broadcast_emits_records_summary_and_quota`
-- `cargo test list_invocations_projects_payload_context_fields`
-- `cargo test capture_target_pool_route_retries_first_chunk_failure_and_persists_single_invocation`
-- `cd web && bunx vitest run src/components/InvocationTable.test.tsx`
-- `cd web && bun run build-storybook`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-- `docs/specs/f7nqn-invocation-proxy-display-restore-hotfix/SPEC.md`
-
 ## 风险 / 假设
 
 - 风险：pool 路由当前没有稳定的真实代理节点上下文，因此热修选择“宁可为空也不伪造”。
@@ -101,4 +80,3 @@
   evidence_note: Verifies the compact `账号 / 代理` badge and the six supported account-versus-proxy combinations, including pool accounts, reverse-proxy fallback, and empty proxy-node handling.
 
   ![InvocationTable account/proxy semantics canvas](./assets/invocation-account-proxy-semantics-canvas-tight.png)
-

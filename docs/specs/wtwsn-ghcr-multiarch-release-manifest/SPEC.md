@@ -1,11 +1,5 @@
 # GHCR 发布切换多架构 manifest（amd64 + arm64）（#wtwsn）
 
-## 状态
-
-- Status: 已完成（5/5）
-- Created: 2026-03-01
-- Last: 2026-03-01
-
 ## 背景 / 问题陈述
 
 - 线上发布的 `stable/latest` 标签此前是单架构 manifest（`linux/amd64`），部分平台展示为 `arch 未知`。

@@ -1,13 +1,5 @@
 # 绑定代理节点改为“本组真实流量统计”（#3np57）
 
-## 状态
-
-- Status: superseded(#ngwdu)
-- Created: 2026-04-13
-- Last: 2026-04-24
-
-> Superseded note: `#ngwdu` replaced this spec's owner-facing semantics. Binding-node dialogs no longer use group-scoped node health counts; they now show the same global real node-attempt health counts as Live / Settings while preserving this spec's snapshot fields.
-
 ## 背景 / 问题陈述
 
 - 号池分组设置弹窗里的“绑定代理节点”`24H` 成功/失败，当前实际读取的是全局 `forward_proxy_attempt_hourly`。
@@ -104,14 +96,6 @@
 - `cd web && bunx vitest run src/lib/api.test.ts src/hooks/useForwardProxyBindingNodes.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx src/pages/account-pool/UpstreamAccountCreate.test.tsx`
 - `cd web && bun run build`
 - `cd web && bun run build-storybook`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-
-## Plan assets
-
-- Directory: `docs/specs/3np57-group-bound-proxy-real-traffic-stats/assets/`
 
 ## Visual Evidence
 

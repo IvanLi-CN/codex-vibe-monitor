@@ -1,11 +1,5 @@
 # 反向代理 Fast 模式请求改写（三态设置，`requestedServiceTier`=上游实际请求值）（#dvwja）
 
-## 状态
-
-- Status: 已完成（4/4）
-- Created: 2026-03-09
-- Last: 2026-04-05
-
 ## 背景 / 问题陈述
 
 - 现有内置反向代理已经能采集 `requestedServiceTier` 与 `serviceTier`，但尚不支持按设置自动把请求改写为 Fast / priority processing。
@@ -99,15 +93,6 @@
 - Given `force_priority` 且任一目标端点请求已有 `service_tier=default`，When 请求被转发，Then 上游收到 `service_tier=priority`，且 `requestedServiceTier` 为 `priority`。
 - Given 历史 proxy 记录存在 `request_raw_path` 且 payload 缺 `requestedServiceTier`，When 服务启动执行回填，Then 回填值与 raw request 中最终 tier 一致。
 - Given 设置页切换三态后刷新页面，When 重新加载 `/api/settings`，Then UI 回显与服务端保存值一致。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Rust tests：覆盖 schema migration 默认值、settings API、双接口三态 rewrite、alias cleanup 与 requested tier 语义。
-- Vitest：覆盖 settings payload normalization 与设置页三态 UI 文案/回显。
-- Playwright：覆盖设置页切换三态并验证刷新后保持。
-- 回归：`cargo test`、`cargo check`、`cd web && npm run test`、`cd web && npm run build`。
 
 ## 方案概述（Approach, high-level）
 

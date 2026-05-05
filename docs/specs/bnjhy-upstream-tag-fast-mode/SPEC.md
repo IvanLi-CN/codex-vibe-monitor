@@ -1,11 +1,5 @@
 # 上游账号 Tag Fast 模式服务层改造（#bnjhy）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-04-04
-- Last: 2026-04-04
-
 ## 背景 / 问题陈述
 
 - 现有 Fast tier 请求改写仍残留在全局 proxy settings 语义中，无法按最终命中的上游账号动态生效。
@@ -96,11 +90,6 @@
 - Given tag fast 模式为 `force_remove`，When 请求体原本包含 `service_tier` 或 `serviceTier`，Then 发送给上游的最终请求中这两个字段都不存在。
 - Given `PUT /api/settings/proxy`，When 提交旧的 `fastModeRewriteMode` 字段，Then 服务端不再依赖该字段保存或驱动运行时 fast rewrite。
 - Given `POST /v1/responses/compact`，When 账号 tag fast 模式为任意四态，Then 请求体仍保持透明透传。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-- `cargo check`
-- `cargo test`
 
 ## 风险 / 假设
 

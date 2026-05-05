@@ -1,11 +1,5 @@
 # Compact 502 可追踪性与号池动态超时（#4reae）
 
-## 状态
-
-- Status: 已完成（5/5）
-- Created: 2026-03-24
-- Last: 2026-03-24
-
 ## 背景 / 问题陈述
 
 - 线上 `/v1/responses/compact` 失败时最终经常统一表现为 `502`，但返回体里没有可直接回查的 `invoke_id`，导致记录页和 pool attempts 很难关联。
@@ -106,31 +100,11 @@
 - compact 成功会把账号状态标记为 `supported`；显式 unsupported/no-channel-for-compact 类错误会标记为 `unsupported`；timeout/transport/泛化 5xx 不会把账号能力改成 `unsupported`。
 - 账号池列表与详情页能看到 compact 支持状态、最近观测时间与原因；pool attempts API 能看到每次尝试的 compact 观测结果。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `cargo test --quiet pool_routing_settings_backfill_defaults_and_persist_timeout_updates`
-- `cargo test --quiet proxy_request_timeouts_only_apply_pool_overrides_to_pool_routes`
-- `cargo test --quiet proxy_capture_target_responses_stream_timeout_applies_after_first_byte`
-- `cargo test --quiet proxy_capture_target_compact_stream_timeout_applies_after_first_byte`
-- `cargo test pool_routing_settings_`
-- `cargo test pool_route_compact_`
-- `cargo test proxy_openai_v1_`
-- `cd web && bun run test -- UpstreamAccounts`
-- `cd web && bun run test -- api.test.ts`
-
 ### Quality checks
 
 - `cargo fmt --all`
 - `cargo check`
 - `cd web && bun run test`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-- `docs/specs/4reae-compact-502-traceability-dynamic-pool-timeouts/SPEC.md`
-- `README.md`
 
 ## 实现里程碑（Milestones / Delivery checklist）
 

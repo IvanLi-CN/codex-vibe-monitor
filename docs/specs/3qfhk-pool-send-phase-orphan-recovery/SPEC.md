@@ -1,11 +1,5 @@
 # 修复 pool send-phase 孤儿请求长期挂起（#3qfhk）
 
-## 状态
-
-- Status: 已实现，待 PR / CI / review-proof 收敛
-- Created: 2026-04-09
-- Last: 2026-04-09
-
 ## 背景 / 问题陈述
 
 - 线上 101 出现 pool `/v1/responses` 请求在 `sending_request` 阶段长时间停留为 `running/pending` 的事故，直到服务重启后才被 startup recovery 收尾。
@@ -81,9 +75,9 @@
 
 ### 接口清单（Inventory）
 
-| 接口（Name） | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes） |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| None | None | internal | Modify | None | backend | backend | 无新增/删除对外接口；仅内部恢复与日志行为调整 |
+| 接口（Name） | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes）                                 |
+| ------------ | ------------ | ------------- | -------------- | ------------------------ | --------------- | ------------------- | --------------------------------------------- |
+| None         | None         | internal      | Modify         | None                     | backend         | backend             | 无新增/删除对外接口；仅内部恢复与日志行为调整 |
 
 ### 契约文档（按 Kind 拆分）
 
@@ -103,25 +97,11 @@ None
 - 本次修复明确限定为 backend/runtime hotfix，不扩展到上游 routing 策略重构。
 - 不新增接口、schema 或配置开关；实现与测试可以直接按现有仓库约定落地。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit / integration tests:
-  - `cargo test recover_orphaned_pool_upstream_request_attempts_marks_pending_rows_terminal`
-  - `cargo test recover_orphaned_proxy_invocations_marks_running_rows_interrupted`
-  - 本次新增 early-phase abort / stale sweeper / streaming guard 相关 Rust 测试
-
 ### Quality checks
 
 - `cargo fmt --check`
 - `cargo check`
 - `cargo test`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`：登记 follow-up spec 与状态。
-- `docs/specs/3qfhk-pool-send-phase-orphan-recovery/SPEC.md`：记录范围、验收口径与实现状态。
 
 ## 计划资产（Plan assets）
 

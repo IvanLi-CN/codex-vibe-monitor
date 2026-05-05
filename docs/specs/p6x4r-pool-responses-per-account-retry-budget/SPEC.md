@@ -1,12 +1,5 @@
 # 号池 `/v1/responses*` 临时失败改为“每个当前账号先重试再切号”（#p6x4r）
 
-## 状态
-
-- Status: 已实现，待 PR / CI / review-proof 收敛
-- Created: 2026-04-15
-- Last: 2026-04-15
-- Note: fast-track / pool `/v1/responses*` temporary failure family only / no HTTP API or SQLite schema change
-
 ## 背景 / 问题陈述
 
 - 现有 pool `/v1/responses*` 对 same-account retry budget 有一条额外收口：只有首个真实 distinct account 能拿到完整的同账号临时失败重试预算，后续切到的新账号会被硬降成单次尝试。
@@ -84,26 +77,6 @@
 - Given group-level `upstream429RetryEnabled=true`，When 同账号先经历 retryable `5xx` 再命中 `429`，Then `5xx` 仍走 `/v1/responses*` temporary failure budget，`429` 仍走分组级 override，不混淆预算来源。
 - Given `/v1/responses*` 命中 timeout-shaped failure，When timeout-route failover 生效，Then 仍必须立即切到其它 route key 或直接返回既有 timeout terminal，而不是先耗尽当前 route 的 same-account retry budget。
 - Given `/v1/responses*` 多账号/多次重试累计触达 `300s`，When 总预算耗尽，Then 终态仍为 `pool_total_timeout_exhausted`，且不会因新的 per-account retry 规则继续拉长。
-
-## 验证
-
-- `cargo fmt --check`
-- `cargo check --tests`
-- `cargo test pool_same_account_attempt_budget_keeps_follow_up_accounts_retryable_for_responses_family -- --nocapture`
-- `cargo test pool_route_responses_compact_retries_follow_up_accounts_before_switching -- --nocapture`
-- `cargo test capture_target_pool_route_stops_after_three_distinct_accounts -- --nocapture`
-- `cargo test capture_target_pool_route_timeout_switches_to_alternate_upstream_route -- --nocapture`
-- `cargo test capture_target_pool_route_timeout_returns_no_alternate_when_only_same_route_remains -- --nocapture`
-- `cargo test capture_target_pool_route_timeout_surfaces_blocked_policy_terminal -- --nocapture`
-- `cargo test capture_target_pool_route_timeout_ignores_broken_same_route_groups -- --nocapture`
-- `cargo test pool_route_existing_sticky_owner_preserves_last_failure_after_cutout_alternate_fails -- --nocapture`
-- `cargo test pool_route_existing_sticky_owner_preserves_last_failure_after_distinct_budget_exhausts -- --nocapture`
-- `cargo test pool_route_does_not_use_pool_wide_429_message_when_budget_exhaustion_is_mixed -- --nocapture`
-- `cargo test pool_route_group_upstream_429_retry_keeps_separate_budget_from_server_errors -- --nocapture`
-- `cargo test pool_route_live_request_switches_accounts_immediately_after_upstream_429 -- --nocapture`
-- `cargo test pool_openai_v1_responses_failover_reapplies_account_fast_mode_from_original_body -- --nocapture`
-- `cargo test pool_openai_v1_responses_compact_total_timeout_caps_same_account_retry_before_first_byte -- --nocapture`
-- `cargo test pool_route_compact_502_returns_cvm_id_and_attempt_observations -- --nocapture`
 
 ## 参考
 

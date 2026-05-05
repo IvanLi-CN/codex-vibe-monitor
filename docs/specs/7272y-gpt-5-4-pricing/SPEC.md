@@ -1,11 +1,5 @@
 # 内置 GPT-5.4 系列计费规则与下游模型列表（#7272y）
 
-## 状态
-
-- Status: 已完成（4/4）
-- Created: 2026-03-06
-- Last: 2026-03-06
-
 ## 背景 / 问题陈述
 
 - 代理侧需要为下游提供可选模型列表（`/v1/models` hijack preset），以及在未配置外部 pricing catalog 时的默认计费目录。
@@ -103,20 +97,9 @@ None
   When 估算成本
   Then input 部分 x2，output 部分 x1.5（reasoning 同 output）
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit tests: `cargo test`
-
 ### Quality checks
 
 - `cargo fmt` / `cargo clippy` via lefthook (commit hooks).
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: add index row for #7272y
-- `docs/specs/7272y-gpt-5-4-pricing/SPEC.md`: this spec
 
 ## Visual Evidence (PR)
 

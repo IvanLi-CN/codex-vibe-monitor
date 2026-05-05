@@ -1,11 +1,5 @@
 # OAuth 上游 `x-codex-installation-id` 代理侧稳定改写（#jm3hb）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-04-11
-- Last: 2026-04-11
-
 ## 背景 / 问题陈述
 
 - 当前 OAuth `/v1/responses` 转发会保留下游请求体里的 `client_metadata.x-codex-installation-id`。
@@ -86,10 +80,10 @@
 
 ### 接口清单（Inventory）
 
-| 接口（Name） | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes） |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| OAuth `/v1/responses` rewrite | internal | internal | Modify | None | backend | oauth bridge | 仅改 body 里的 installation id 归一化 |
-| deployment installation seed storage | internal | internal | New | None | backend | oauth bridge runtime | SQLite 单行持久化 |
+| 接口（Name）                         | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers）  | 备注（Notes）                         |
+| ------------------------------------ | ------------ | ------------- | -------------- | ------------------------ | --------------- | -------------------- | ------------------------------------- |
+| OAuth `/v1/responses` rewrite        | internal     | internal      | Modify         | None                     | backend         | oauth bridge         | 仅改 body 里的 installation id 归一化 |
+| deployment installation seed storage | internal     | internal      | New            | None                     | backend         | oauth bridge runtime | SQLite 单行持久化                     |
 
 ### 契约文档（按 Kind 拆分）
 
@@ -128,14 +122,6 @@ None
 - 非 OAuth 路由与 header 策略明确不在本次范围内
 - 验收标准已覆盖稳定性、覆盖、strip 与回归场景
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit tests: OAuth body rewrite / seed helper / installation id 派生稳定性
-- Integration tests: mock upstream 验证 rewrite body 与 passthrough body 的转发观测值
-- E2E tests (if applicable): None
-
 ### UI / Storybook (if applicable)
 
 - 不适用
@@ -144,10 +130,6 @@ None
 
 - `cargo fmt`
 - `cargo test`（至少覆盖 oauth bridge 相关测试与新增场景）
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 新增索引并在收尾时同步状态
 
 ## 计划资产（Plan assets）
 

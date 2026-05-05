@@ -1,11 +1,5 @@
 # Responses overload early gate preview-cap follow-up（#br38t）
 
-## 状态
-
-- Status: 已实现，待 PR / CI / review-proof 收敛
-- Created: 2026-04-22
-- Last: 2026-04-22
-
 ## 背景
 
 - `#bk2pt` 已把 `/v1/responses` 的 early overload 重试窗扩展到 metadata-only 阶段，但当前实现仍把 raw preview 的 `16 KiB` 上限复用成 early gate 的缓冲上限。

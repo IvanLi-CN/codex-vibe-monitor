@@ -1,11 +1,5 @@
 # Worktree bootstrap 同步开发环境配置（#v7se4）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-03-14
-- Last: 2026-03-14
-
 ## 背景 / 问题陈述
 
 - 当前仓库已经固定了 Bun-first、`lefthook.yml`、`.env.local` 与 linked worktree 的使用方式，但新 worktree 仍需要手工补本地配置，容易漏掉环境文件。
@@ -138,24 +132,10 @@ None
 - [x] 接口契约明确为内部 CLI / Git hook，不涉及业务接口变更。
 - [x] 快车道交付授权已确认。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `bun install`
-- `bash scripts/test-worktree-bootstrap.sh`
-- `bun run check:bun-first`
-
 ### Quality checks
 
 - 继续保持现有 `Lint & Format Check` job 名称不变。
 - 不新增业务代码验证范围之外的 required check 名称。
-
-## 文档更新（Docs to Update）
-
-- `README.md`: 增加 worktree bootstrap 的首次安装、自动行为与手动补跑说明。
-- `AGENTS.md`: 增加 repo-level hook/bootstrap 命令与 linked worktree 行为说明。
-- `docs/specs/README.md`: 登记该 spec。
 
 ## 计划资产（Plan assets）
 

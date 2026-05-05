@@ -1,11 +1,5 @@
 # 号池流式上游误用整请求超时（#ynr8z）
 
-## 状态
-
-- Status: 进行中
-- Created: 2026-03-17
-- Last: 2026-03-17
-
 ## 背景 / 问题陈述
 
 - `#154` 已经把代理编码协商改为透明透传，但 101 线上在 `2026-03-17 10:00 +08:00` 之后仍持续出现 `routeMode=pool` 的 `upstream_stream_error`。
@@ -80,23 +74,10 @@
 - Given 同样的配置，When 非号池后台任务仍使用 shared client，Then 其 `request_timeout` 行为不变。
 - Given 线上样本全文检索 `routeMode=pool` 的 `upstream_stream_error`，When 修复发布并部署后复核，Then 不应再出现稳定集中在约 `60000ms` 的同类截断模式。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `cargo test pool_openai_v1_e2e_stream_survives_short_request_timeout`
-- `cargo test pool_openai_v1_responses_stream_survives_short_request_timeout`
-- `cargo test proxy_openai_v1_e2e_stream_survives_short_request_timeout`
-
 ### Quality checks
 
 - `cargo fmt --check`
 - `cargo test`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`：新增规格索引，并在流程推进后同步状态。
-- `docs/specs/ynr8z-pool-stream-total-timeout/SPEC.md`：记录实现进展、验证与 PR/发布状态。
 
 ## 实现里程碑（Milestones / Delivery checklist）
 

@@ -1,10 +1,5 @@
 # 代理热路径停止 response raw 二次回读（#n7c2r）
 
-## 状态
-
-- Status: 已实现，待 PR / CI 收敛
-- Note: `/v1/responses` 与 `/v1/responses/compact` 的 capture 热路径已改为只依赖 live stream parser 与 bounded preview；完整 raw 文件仍照常落盘，但请求处理阶段不再为判型或 metadata 补全回读 `response_raw_path`。
-
 ## 背景 / 问题陈述
 
 - 代理已经把响应原文写入 `response_raw_path`，同时 `raw_response` 只保留 preview。
@@ -81,17 +76,6 @@
 - 标准 SSE、大 gzip SSE、超大终态 SSE、大非流 JSON 等回归全部通过。
 - 测试能够显式证明热路径 raw reread 计数为零。
 - 当 metadata 无法仅凭 live parser / preview 补全时，记录必须稳定带出 `usageMissingReason`，而不是静默回退到 raw reread。
-
-## 验证
-
-- `cargo fmt --check`
-- `cargo check`
-- `cargo test proxy_capture_target_ -- --nocapture`
-- `cargo test proxy_capture_target_large_stream_soak_keeps_rss_within_stable_window -- --ignored --nocapture --test-threads=1`
-
-## Change log
-
-- 将 proxy capture 成功热路径中的 raw-file SSE hint / response parse fallback 从在线请求链路移除，保留 raw helper 作为非热路径能力，并补上“热路径 raw reread 为零”的回归断言。
 
 ## 参考
 

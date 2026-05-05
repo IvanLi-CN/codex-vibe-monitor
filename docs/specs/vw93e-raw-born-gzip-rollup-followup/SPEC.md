@@ -1,11 +1,5 @@
 # raw 保真降本与历史维护追平 follow-up（#vw93e）
 
-## 状态
-
-- Status: 已实现，待 PR / CI / review-proof 收敛
-- Created: 2026-04-13
-- Last: 2026-04-17
-
 ## 背景 / 问题陈述
 
 - 线上 `proxy_raw_payloads` 已经由成功请求的 full raw 主导，近实时排障确实依赖 raw，但当前“全部先写热明文，再等后续 maintenance 冷压缩”的策略会把磁盘与 retention backlog 一起推高。
@@ -85,12 +79,12 @@
 
 ## 接口契约（Interfaces & Contracts）
 
-| Name | Kind | Scope | Change | Notes |
-| --- | --- | --- | --- | --- |
-| `PROXY_RAW_IMMEDIATE_GZIP_BYTES` | env | runtime | 新增 | 默认 `1048576`；`0` 禁用 born-gzip；仅在 `PROXY_RAW_COMPRESSION=gzip` 时生效 |
-| `request_raw_path` / `response_raw_path` | DB/API field | existing | 兼容扩展 | 值可能为 `.bin` 或 `.bin.gz` |
-| `request_raw_codec` / `response_raw_codec` | DB field | existing | 语义延续 | 继续显式区分 `identity | gzip` |
-| `maintenance.historicalRollupBackfill` | stats | existing | 行为增强 | backlog 由 bounded auto-heal 持续推进，而不是长期依赖人工执行 |
+| Name                                       | Kind         | Scope    | Change   | Notes                                                                        |
+| ------------------------------------------ | ------------ | -------- | -------- | ---------------------------------------------------------------------------- |
+| `PROXY_RAW_IMMEDIATE_GZIP_BYTES`           | env          | runtime  | 新增     | 默认 `1048576`；`0` 禁用 born-gzip；仅在 `PROXY_RAW_COMPRESSION=gzip` 时生效 |
+| `request_raw_path` / `response_raw_path`   | DB/API field | existing | 兼容扩展 | 值可能为 `.bin` 或 `.bin.gz`                                                 |
+| `request_raw_codec` / `response_raw_codec` | DB field     | existing | 语义延续 | 继续显式区分 `identity                                                       |
+| `maintenance.historicalRollupBackfill`     | stats        | existing | 行为增强 | backlog 由 bounded auto-heal 持续推进，而不是长期依赖人工执行                |
 
 ## 验收标准（Acceptance Criteria）
 
@@ -100,29 +94,9 @@
 - Given seeded legacy archive backlog，When startup/follow-up maintenance 持续执行，Then `historicalRollupBackfill.alertLevel` 最终可从 `critical` 降为非 critical，而无需依赖每次人工手动运行。
 - Given 账号最近错误是 `deactivated_workspace` / `upstream_http_402`，When maintenance 同轮或 6 小时 cooldown 内再次评估该账号，Then 不会触发 browser-UA retry，也不会继续高频同步。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `cargo check`
-- `cargo test born_gzip -- --test-threads=1`
-- `cargo test materialize_historical_rollups_marks_batches_and_prune_removes_files -- --test-threads=1`
-- `cargo test fetch_usage_snapshot_skips_browser_user_agent_retry_for_upstream_rejected_402 -- --test-threads=1`
-- `cargo test maintenance_plan_is_not_due_during_upstream_rejected_cooldown -- --test-threads=1`
-- `cargo test record_pool_route_http_failure_marks_402_as_hard_error_and_records_reason -- --test-threads=1`
-- `cargo test sync_triggered_402_summary_and_detail_export_as_upstream_rejected -- --test-threads=1`
-- `scripts/shared-testbox-raw-smoke`
-
 ### UI / Storybook (if applicable)
 
 - 不适用（后端与运维路径变更）
-
-## 文档更新（Docs to Update）
-
-- `README.md`
-- `docs/deployment.md`
-- `docs/specs/README.md`
-- `docs/specs/vw93e-raw-born-gzip-rollup-followup/SPEC.md`
 
 ## Visual Evidence
 

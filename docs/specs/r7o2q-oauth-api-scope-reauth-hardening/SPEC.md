@@ -1,11 +1,5 @@
 # OAuth 池账号 API Scope 与重授权误判修复（#r7o2q）
 
-## 状态
-
-- Status: 已废弃（被固定 OAuth bridge sidecar 方案取代）
-- Created: 2026-03-16
-- Last: 2026-03-16
-
 ## 背景 / 问题陈述
 
 - 这份规格最初假设“给官方 OAuth 登录补 API scopes 后即可直连 `api.openai.com`”，但现网回调已经确认官方 `auth.openai.com` client 不允许请求 `api.model.read` / `api.responses.write`。

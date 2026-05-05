@@ -1,11 +1,5 @@
 # OAuth 导入最小校验修复与单条粘贴入列（#w8seb）
 
-## 状态
-
-- Status: 已实现，待 PR / CI / review-proof 收敛
-- Created: 2026-04-02
-- Last: 2026-04-14
-
 ## 背景
 
 - `cgz7s-oauth-token-json-import` 已经交付了 OAuth JSON 批量导入、任务式校验与复用缓存导入主链路，但它默认把导入 JSON 直接反序列化成强类型结构。

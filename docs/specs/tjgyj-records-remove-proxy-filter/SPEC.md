@@ -1,11 +1,5 @@
 # `/records` 移除代理筛选（#tjgyj）
 
-## 状态
-
-- Status: 已完成（5/5）
-- Created: 2026-04-06
-- Last: 2026-04-06
-
 ## 背景 / 问题陈述
 
 - `/records` 的筛选区仍保留“代理”筛选，但实际业务数据已经不再提供可稳定筛选的代理名集合。
@@ -79,12 +73,12 @@
 
 ### 接口清单（Inventory）
 
-| 接口（Name） | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes） |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `GET /api/invocations` | HTTP API | internal | Modify | None | backend | records page | records 查询不再消费 `proxy` |
-| `GET /api/invocations/summary` | HTTP API | internal | Modify | None | backend | records page | summary 不再消费 `proxy` |
-| `GET /api/invocations/new-count` | HTTP API | internal | Modify | None | backend | records page | new-count 不再消费 `proxy` |
-| `GET /api/invocations/suggestions` | HTTP API | internal | Modify | None | backend | records page | 响应移除 `proxy` bucket |
+| 接口（Name）                       | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes）                |
+| ---------------------------------- | ------------ | ------------- | -------------- | ------------------------ | --------------- | ------------------- | ---------------------------- |
+| `GET /api/invocations`             | HTTP API     | internal      | Modify         | None                     | backend         | records page        | records 查询不再消费 `proxy` |
+| `GET /api/invocations/summary`     | HTTP API     | internal      | Modify         | None                     | backend         | records page        | summary 不再消费 `proxy`     |
+| `GET /api/invocations/new-count`   | HTTP API     | internal      | Modify         | None                     | backend         | records page        | new-count 不再消费 `proxy`   |
+| `GET /api/invocations/suggestions` | HTTP API     | internal      | Modify         | None                     | backend         | records page        | 响应移除 `proxy` bucket      |
 
 ### 契约文档（按 Kind 拆分）
 
@@ -104,14 +98,6 @@
 - `#3gvtt` 已经把 `/records` 的筛选区收敛到“移除上游、增加请求 ID”的最新基线。
 - 已确认这次需求只移除筛选，不移除展示语义。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Rust tests: `cargo test build_invocation_filters_ -- --nocapture`
-- Rust tests: `cargo test fetch_invocation_suggestions_ -- --nocapture`
-- Frontend tests: `cd web && bunx vitest run src/pages/Records.test.tsx src/lib/invocationRecords.test.ts src/lib/api.test.ts src/components/InvocationRecordsTable.test.tsx`
-
 ### UI / Storybook (if applicable)
 
 - Stories to add/update: `web/src/components/RecordsPage.stories.tsx`
@@ -123,11 +109,6 @@
 - `cargo check`
 - `cd web && bun run build`
 - `cd web && bun run build-storybook`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 新增本次 follow-up spec 索引。
-- `docs/specs/tjgyj-records-remove-proxy-filter/SPEC.md`: 记录筛选退场范围、契约、验证和视觉证据。
 
 ## 计划资产（Plan assets）
 

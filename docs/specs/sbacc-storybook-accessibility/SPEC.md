@@ -1,12 +1,5 @@
 # Storybook Accessibility Gate
 
-## Status
-
-- Spec ID: `sbacc`
-- Status: Implemented, pending PR CI convergence
-- Created: 2026-03-13
-- Updated: 2026-04-26
-
 ## Context
 
 PR #123 originally added a Storybook accessibility gate, but its branch drifted behind the current split CI topology and conflicted with the retired single-workflow layout. The branch is revived on top of the current `main` baseline with the gate wired into the active PR and main CI workflows.
@@ -20,14 +13,6 @@ Current Storybook contains many legacy interaction stories and known light-theme
 - Existing non-test stories are excluded from Vitest component execution by default.
 - The opt-in accessibility fixture must fail CI on axe semantic violations.
 - Color contrast remains disabled in the axe run until the tracked palette contrast debt is handled separately.
-
-## Implementation
-
-- `web/vitest.config.ts` defines separate `unit` and `storybook` Vitest projects.
-- `web/.storybook/main.ts` registers `@storybook/addon-vitest`.
-- `web/.storybook/preview.ts` enables addon-a11y `test: 'error'`, disables `color-contrast`, and sets default `!test` tags for legacy stories.
-- `web/src/components/AccessibilityGate.stories.tsx` is the opt-in `test` story used by CI.
-- `.github/workflows/ci-pr.yml` and `.github/workflows/ci-main.yml` run `bun run test-storybook` inside `Front-end Tests` after the unit suite.
 
 ## Verification
 

@@ -1,11 +1,5 @@
 # Live Prompt Cache 调用记录同源实时同步（#v5qtm）
 
-## 状态
-
-- Status: 已实现，PR 收敛中
-- Created: 2026-03-27
-- Last: 2026-03-27
-
 ## 背景 / 问题陈述
 
 - Live 页 `对话` 区块里的 Prompt Cache 行内 preview 与“全部调用记录”抽屉没有直接复用同页“最新记录”使用的 `/events` `records` 通道。
@@ -61,14 +55,6 @@
 - Given 同一 invoke 先收到 runtime snapshot、后收到 final persisted row，When preview 或抽屉重新渲染，Then 必须只保留一条记录，且展示 final record 的完整字段。
 - Given 当前 Prompt Cache 选择模式为 `count` 或 `activityWindow`，When live overlay 插入新的对话或新记录，Then 当前排序 / 截断语义保持不变，后续 HTTP resync 负责收敛 hidden count 与权威 totals。
 - Given Prompt Cache conversations 结果已命中 5 秒轻缓存，When 新代理记录成功落库，Then 下一次 Prompt Cache conversations 回源不得继续命中旧聚合。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Rust: `cargo test prompt_cache_conversations_cache_ -- --nocapture`
-- Web: `cd web && bun run test -- src/hooks/usePromptCacheConversations.test.tsx src/components/PromptCacheConversationTable.test.tsx src/pages/Live.test.tsx`
-- Storybook: `cd web && bun run build-storybook`
 
 ### Visual Evidence
 

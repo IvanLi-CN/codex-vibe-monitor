@@ -1,12 +1,5 @@
 # Release 失败 Telegram 告警接入
 
-## 状态
-
-- Spec ID: `nkqe3`
-- State: `active`
-- Status: `已完成`
-- Scope: 为 `Release` workflow 接入失败告警与 repo-local smoke test
-
 ## 目标
 
 为 `codex-vibe-monitor` 接入共享的 Telegram 失败告警工作流，使真实 `Release` 失败能够通过 `workflow_run` 自动告警，同时保留一个安全的 repo-local `workflow_dispatch` smoke test 入口。

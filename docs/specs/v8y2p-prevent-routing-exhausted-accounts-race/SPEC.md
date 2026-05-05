@@ -1,11 +1,5 @@
 # 修复额度耗尽账号仍被路由与并发误恢复（#v8y2p）
 
-## 状态
-
-- Status: 已完成（PR #227）
-- Created: 2026-03-25
-- Last: 2026-03-25
-
 ## 背景 / 问题陈述
 
 - 线上真实样本 `proxy-566-1774370134065` 显示，三个账号在请求发起前的最新 usage snapshot 都已经是 `100%` exhausted，但 resolver 仍会继续把它们当作可路由候选，导致单次请求连续撞上 3 次必败 `429 quota exhausted`。
@@ -42,14 +36,14 @@
 
 ## 接口契约（Interfaces & Contracts）
 
-| 接口（Name） | 类型（Kind） | 范围（Scope） | 变更（Change） | 使用方（Consumers） | 备注（Notes） |
-| --- | --- | --- | --- | --- | --- |
-| `AccountRoutingCandidateRow` | Rust row | internal | Modify | resolver | 增加 credits exhaustion 所需字段 |
-| `upstream_usage_snapshot_is_exhausted_*` helper | Rust helper | internal | Add | resolver / summary / sync | 统一 persisted snapshot exhaustion 语义 |
-| `record_pool_route_success(..., started_at_utc, ...)` | Rust fn | internal | Modify | pool live / capture | 防止 stale success 覆盖新 hard-stop |
-| `sync_hard_unavailable` | account action | internal | Add | backend / web / ops | 同步主动隔离 exhausted 账号 |
-| `usage_snapshot_exhausted` | reason code | internal | Add | backend / web / ops | fresh snapshot 已明确耗尽 |
-| `upstream_usage_snapshot_quota_exhausted` | failure kind | internal | Add | backend / web / ops | 非真实 429、由 sync snapshot 主动隔离 |
+| 接口（Name）                                          | 类型（Kind）   | 范围（Scope） | 变更（Change） | 使用方（Consumers）       | 备注（Notes）                           |
+| ----------------------------------------------------- | -------------- | ------------- | -------------- | ------------------------- | --------------------------------------- |
+| `AccountRoutingCandidateRow`                          | Rust row       | internal      | Modify         | resolver                  | 增加 credits exhaustion 所需字段        |
+| `upstream_usage_snapshot_is_exhausted_*` helper       | Rust helper    | internal      | Add            | resolver / summary / sync | 统一 persisted snapshot exhaustion 语义 |
+| `record_pool_route_success(..., started_at_utc, ...)` | Rust fn        | internal      | Modify         | pool live / capture       | 防止 stale success 覆盖新 hard-stop     |
+| `sync_hard_unavailable`                               | account action | internal      | Add            | backend / web / ops       | 同步主动隔离 exhausted 账号             |
+| `usage_snapshot_exhausted`                            | reason code    | internal      | Add            | backend / web / ops       | fresh snapshot 已明确耗尽               |
+| `upstream_usage_snapshot_quota_exhausted`             | failure kind   | internal      | Add            | backend / web / ops       | 非真实 429、由 sync snapshot 主动隔离   |
 
 ## 验收标准（Acceptance Criteria）
 
@@ -58,22 +52,6 @@
 - Given OAuth sync 在执行期间该账号先被 route 侧写入 quota hard-stop，When sync 收尾，Then 最新状态仍为 blocked，不能写成 `sync_succeeded`。
 - Given fresh snapshot exhausted 但账号此前还没有真实 `429` hard-stop，When sync 完成，Then 账号被主动隔离并记录 `sync_hard_unavailable / usage_snapshot_exhausted`。
 - Given 一个较早开始、较晚结束的 success 在更晚的 quota hard-stop 之后才落库，When `record_pool_route_success()` 执行，Then 它不会清空 `last_route_failure_*`、cooldown 或 sticky。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-- `cargo fmt --check`
-- `cargo check`
-- `cargo test resolver_short_circuits_when_only_persisted_snapshot_exhausted_accounts_remain -- --test-threads=1`
-- `cargo test resolver_skips_persisted_snapshot_exhausted_account_before_routing -- --test-threads=1`
-- `cargo test oauth_sync_proactively_quarantines_snapshot_exhausted_account_without_prior_route_failure -- --test-threads=1`
-- `cargo test record_pool_route_success_does_not_clear_newer_route_failure_state -- --test-threads=1`
-- `cargo test oauth_sync_ignores_stale_input_row_after_newer_quota_hard_stop -- --test-threads=1`
-- `cd web && bun run test -- src/components/UpstreamAccountsTable.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-- `docs/specs/ppt8w-pool-usage-limit-hard-stop-recovery-gate/SPEC.md`
 
 ## 方案概述（Approach, high-level）
 

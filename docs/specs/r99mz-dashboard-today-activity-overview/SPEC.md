@@ -1,11 +1,5 @@
 # Dashboard：把“今日”并入“活动总览”，并为今日新增分钟级柱状 / 累计面积图（#r99mz）
 
-## 状态
-
-- Status: 已实现
-- Created: 2026-04-08
-- Last: 2026-04-11
-
 ## 背景 / 问题陈述
 
 - `#7s4kw` 已把“历史”并入 `活动总览`，但 Dashboard 顶部仍然保留了一块独立的“今日统计信息”卡，页面信息仍被切成上下两个中心区域。
@@ -73,8 +67,6 @@
 - Given KPI 卡片的完整数字在当前宽度下会溢出，When 组件完成布局测量，Then 卡片数值会自动切换为紧凑写法（如 `1.31B`），并通过 tooltip 保留完整值。
 - Given 运行前端验证命令，When 执行 `cd web && bun run test && bun run build && bun run build-storybook`，Then 命令通过。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
 ### Visual / UX
 
 - `今日` KPI 必须嵌入在总览内部，不新增重复 panel 层级，也不重新引入顶部独立今日卡。
@@ -82,35 +74,12 @@
 - KPI 数值在桌面单行布局下不得撑破卡片；超长数字应优先收敛为紧凑记数法而不是溢出裁切。
 - `历史` 继续沿用 `#7s4kw` 的半年日历外观，不重新引入重复标题 / 时区说明或月份标签重叠。
 
-### Testing
-
-- Frontend targeted tests:
-  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bunx vitest run src/components/DashboardTodayActivityChart.test.tsx src/components/PromptCacheConversationTable.test.tsx src/lib/promptCacheLive.test.ts src/hooks/useTimeseries.test.ts src/lib/api.test.ts`
-- Backend targeted tests:
-  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test timeseries_and_summary_do_not_treat_running_rows_with_failure_metadata_as_failures -- --nocapture`
-  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test timeseries_and_summary_count_completed_rows_as_success -- --nocapture`
-  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test timeseries_hourly_backed_ignores_missing_exact_archive_batch -- --nocapture`
-  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test all_time_summary_missing_archive_does_not_mark_repair_complete -- --nocapture`
-  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test prompt_cache_last24h_requests_keep_null_status_rows_neutral -- --nocapture`
-  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test prompt_cache_last24h_requests_treat_running_rows_with_error_text_as_failures -- --nocapture`
-  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test prompt_cache_last24h_requests_treat_pending_rows_with_failure_kind_as_failures -- --nocapture`
-  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test combined_totals_count_legacy_null_status_failures_when_only_downstream_error_exists -- --nocapture`
-  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test combined_totals_count_legacy_http_200_failures_when_only_downstream_error_exists -- --nocapture`
-  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test timeseries_and_summary_count_http_200_rows_with_downstream_only_failure_metadata -- --nocapture`
-- Storybook build:
-  - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run build-storybook`
-
 ### Quality checks
 
 - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run test`
 - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run build`
 - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor/web && bun run build-storybook`
 - `cd /Users/ivan/.codex/worktrees/1918/codex-vibe-monitor && cargo test fetch_invocation_summary_normalizes_top_level_success_and_failure_counts -- --nocapture && cargo test hourly_backed_summary_replays_pre_cutoff_full_hour_live_rows_after_rollup_cursor -- --nocapture && cargo test timeseries_hourly_backed_repairs_stale_archived_rollup_counts_before_querying -- --nocapture && cargo test timeseries_and_summary_do_not_treat_running_rows_with_failure_metadata_as_failures -- --nocapture && cargo test timeseries_and_summary_count_completed_rows_as_success -- --nocapture && cargo test prompt_cache_last24h_requests_keep_null_status_rows_neutral -- --nocapture && cargo test prompt_cache_last24h_requests_treat_running_rows_with_error_text_as_failures -- --nocapture && cargo test prompt_cache_last24h_requests_treat_pending_rows_with_failure_kind_as_failures -- --nocapture && cargo test combined_totals_count_legacy_null_status_failures_when_only_downstream_error_exists -- --nocapture && cargo test combined_totals_count_legacy_http_200_failures_when_only_downstream_error_exists -- --nocapture && cargo test timeseries_and_summary_count_http_200_rows_with_downstream_only_failure_metadata -- --nocapture && cargo check`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-- `docs/specs/r99mz-dashboard-today-activity-overview/SPEC.md`
 
 ## 计划资产（Plan assets）
 

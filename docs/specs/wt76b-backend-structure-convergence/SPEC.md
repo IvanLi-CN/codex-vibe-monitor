@@ -1,9 +1,5 @@
 # 后端优先源码结构收敛（#wt76b）
 
-## 状态
-
-- Status: 已完成
-
 ## 背景 / 问题陈述
 
 - `/Users/ivan/Projects/Ivan/codex-vibe-monitor/src/main.rs` 当前约 `26396` 行，已经同时承载启动装配、HTTP 路由、forward proxy/Xray、统计查询、SSE、settings、价格目录与大量白盒测试，导航与回归成本过高。
@@ -78,14 +74,6 @@
 - 新增或迁移后的模块文件名能够按职责快速定位：测试、forward proxy、api 读侧、stats helper 不再混在同一文件。
 - PR 说明中明确记录前端后续优先级，但本轮实现中这些文件 `不存在` 结构性修改。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit tests: 现有 Rust 白盒测试继续通过。
-- Integration tests: None。
-- E2E tests: None。
-
 ### Quality checks
 
 - `cargo fmt`
@@ -96,11 +84,6 @@
 - `cd web && npm run lint -- --max-warnings=0`
 - `cd web && npx tsc -b`
 - `codex --sandbox read-only -a never review --base origin/main`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 新增 spec 索引并在完成后更新状态/PR 记录。
-- `docs/specs/wt76b-backend-structure-convergence/SPEC.md`: 记录实施进度、PR 与收敛状态。
 
 ## 实现里程碑（Milestones / Delivery checklist）
 

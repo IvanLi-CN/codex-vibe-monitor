@@ -36,13 +36,6 @@
 - Given 同一 Team 组织簇没有手动母号，When 读取 roster / detail，Then 两边都不显示“母号”。
 - Given 同一 Team 组织簇已有手动母号，When 读取 roster / detail，Then 继续显示手动母号，不产生额外自动母号。
 
-## Validation
-
-- `cargo test same_group_team_shared_org_accounts_are_not_flagged_as_duplicates -- --test-threads=1`
-- `cargo test same_group_team_shared_org_accounts_keep_manual_mother_only -- --test-threads=1`
-- `cd web && bun run test -- src/components/UpstreamAccountsTable.test.tsx`
-- `cd web && bun run build-storybook`
-
 ## Visual Evidence
 
 - source_type: storybook_canvas

@@ -1,11 +1,5 @@
 # 文档站与 Storybook GitHub Pages 同构发布（#j9frr）
 
-## 状态
-
-- Status: 已完成（5/5）
-- Created: 2026-03-19
-- Last: 2026-03-19
-
 ## 背景 / 问题陈述
 
 - 当前仓库已经有根 README、`docs/ui/**` 规范文档、`docs/deployment.md` 与一组可运行的 Storybook stories，但缺少一个面向协作者和评审的公开文档壳层。
@@ -84,13 +78,13 @@
 
 ### 接口清单（Inventory）
 
-| 接口（Name） | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes） |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `DOCS_PORT` | env | internal | New | None | docs-site | 本地 docs-site dev/preview | 默认 `60081` |
-| `DOCS_BASE` | env | internal | New | None | docs-site / CI | GitHub Pages build | 用于子路径部署 |
-| `VITE_STORYBOOK_DEV_ORIGIN` | env | internal | New | None | docs-site | 本地 docs-site `storybook.html` | 默认回退 `http://127.0.0.1:60082` |
-| `STORYBOOK_PORT` | env | internal | Modify | None | `web/scripts/run-storybook.mjs` | 本地 Storybook dev | 默认 `60082` |
-| `Docs Pages` | workflow | internal | New | None | `.github/workflows/docs-pages.yml` | PR artifacts / GitHub Pages | 不加入 required checks |
+| 接口（Name）                | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner）                    | 使用方（Consumers）             | 备注（Notes）                     |
+| --------------------------- | ------------ | ------------- | -------------- | ------------------------ | ---------------------------------- | ------------------------------- | --------------------------------- |
+| `DOCS_PORT`                 | env          | internal      | New            | None                     | docs-site                          | 本地 docs-site dev/preview      | 默认 `60081`                      |
+| `DOCS_BASE`                 | env          | internal      | New            | None                     | docs-site / CI                     | GitHub Pages build              | 用于子路径部署                    |
+| `VITE_STORYBOOK_DEV_ORIGIN` | env          | internal      | New            | None                     | docs-site                          | 本地 docs-site `storybook.html` | 默认回退 `http://127.0.0.1:60082` |
+| `STORYBOOK_PORT`            | env          | internal      | Modify         | None                     | `web/scripts/run-storybook.mjs`    | 本地 Storybook dev              | 默认 `60082`                      |
+| `Docs Pages`                | workflow     | internal      | New            | None                     | `.github/workflows/docs-pages.yml` | PR artifacts / GitHub Pages     | 不加入 required checks            |
 
 ### 契约文档（按 Kind 拆分）
 
@@ -121,15 +115,6 @@
 - docs-site 只承载 public docs，内部实现规范继续留在 `docs/ui/**`
 - 现有 quality-gates required check 名称保持不变
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `cd docs-site && bun run build`
-- `cd web && bun run storybook:build`
-- `bash .github/scripts/assemble-pages-site.sh docs-site/doc_build web/storybook-static .tmp/pages-site`
-- 浏览器验收：`docs-site` 首页、`storybook.html` 重定向、一个 Storybook docs 深链，以及按 `DOCS_BASE` 子路径提供的 assembled `/storybook/` 访问
-
 ### UI / Storybook (if applicable)
 
 - Docs pages / state galleries to add/update: `docs-site/docs/storybook.mdx`
@@ -141,13 +126,6 @@
 - `bun install --cwd web`
 - `bun run check:bun-first`
 - `python3 .github/scripts/check_quality_gates_contract.py --repo-root "$PWD"`
-
-## 文档更新（Docs to Update）
-
-- `README.md`: 增加 public docs / docs-site / Storybook / Pages 入口与本地 URL 合同
-- `web/README.md`: 替换模板内容，明确 app / Storybook / docs-site 协作方式
-- `docs/ui/README.md`: 明确 public docs 与内部 UI 规范的边界
-- `docs/ui/storybook.md`: 增加 public docs/storybook 回链说明
 
 ## 计划资产（Plan assets）
 

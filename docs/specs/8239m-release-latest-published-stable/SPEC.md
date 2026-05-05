@@ -1,11 +1,5 @@
 # Release `latest` 仅指向最新已发布 stable（#8239m）
 
-## 状态
-
-- Status: 已实现，待 PR / CI 收敛
-- Created: 2026-03-29
-- Last: 2026-03-29
-
 ## 背景 / 问题陈述
 
 - 当前 release snapshot 在写入 git notes 时，会把 stable 的 `tags_csv` 预写成 `vX.Y.Z + latest`。
@@ -68,10 +62,6 @@
 - Given 新写入的 stable snapshot
   When 查看 immutable note 中的 `tags_csv`
   Then 只包含 `${image}:vX.Y.Z`。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-- `bash .github/scripts/test-release-snapshot.sh`
 
 ## 实现里程碑（Milestones / Delivery checklist）
 

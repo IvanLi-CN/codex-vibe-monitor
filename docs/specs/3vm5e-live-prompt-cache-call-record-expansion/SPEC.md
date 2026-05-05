@@ -1,11 +1,5 @@
 # Live Prompt Cache 调用记录展开与历史抽屉（#3vm5e）
 
-## 状态
-
-- Status: 已实现，待截图提交授权 / PR 收敛
-- Created: 2026-03-26
-- Last: 2026-03-27
-
 ## 背景 / 问题陈述
 
 - Live 页的 `对话` 区块当前按 Prompt Cache Key 聚合展示 totals 与 24 小时趋势，无法直接回看某个对话最近落下来的原始调用。
@@ -70,14 +64,6 @@
 - Given 点击历史抽屉 icon，When 抽屉打开，Then 以时间倒序展示该 Prompt Cache Key 的全部保留调用记录，并自动续拉后续页直到拉满。
 - Given 某对话 totals 仍存在但 raw rows 已被清理，When 表内 preview 与抽屉渲染，Then 显示“暂无调用记录”，同时 totals / 图表 / 上游账号摘要保持正常。
 - Given Live 数据因 SSE 或轮询刷新，When 对话仍在当前结果集中，Then 已展开 preview 保持展开；若对话被筛掉，其展开状态会被清理。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Rust: `cargo test prompt_cache_conversations -- --nocapture`
-- Web: `cd web && bun run test -- src/components/PromptCacheConversationTable.test.tsx src/lib/api.test.ts src/pages/Live.test.tsx`
-- Storybook: `cd web && bun run build-storybook`
 
 ### Quality checks
 

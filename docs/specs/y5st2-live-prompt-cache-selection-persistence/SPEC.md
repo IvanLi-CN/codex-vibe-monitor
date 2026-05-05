@@ -1,11 +1,5 @@
 # Live 页 Prompt Cache 对话筛选本地记忆（#y5st2）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-03-23
-- Last: 2026-03-23
-
 ## 背景 / 问题陈述
 
 - Live 页 `Prompt Cache Key 对话` 区块已经支持数量模式与最近活动时间模式筛选，但当前选择只保存在页面内存里。
@@ -98,19 +92,9 @@ None
 - 验收标准覆盖默认、非法值、写回、count/activityWindow 恢复
 - 不涉及后端或跨端契约变更
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit tests: `cd web && bunx vitest run src/pages/Live.test.tsx`
-
 ### Quality checks
 
 - Web build: `cd web && bun run build`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 新增索引行并在完成后同步状态
 
 ## 计划资产（Plan assets）
 

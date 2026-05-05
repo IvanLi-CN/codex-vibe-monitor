@@ -1,11 +1,5 @@
 # Live Prompt Cache 对话表改成“上游账号 / 总计”双列复合展示（#7y5yf）
 
-## 状态
-
-- Status: 已完成（4/4）
-- Created: 2026-03-21
-- Last: 2026-03-21
-
 ## 背景 / 问题陈述
 
 - Live 页 Prompt Cache Key 对话表目前把 `请求数 / 总 Tokens / 总成本` 拆成三列，信息密度低，也看不到一个对话具体关联了哪些上游账号。
@@ -67,13 +61,6 @@
 - Given 某个账号缺失名称但存在 id，When 行块渲染，Then 账号标题显示 `账号 #<id>`；若名称与 id 都缺失，则显示 `—`。
 - Given `总计` 列渲染，When 用户查看单元格，Then 固定显示 3 行 `请求数 / Tokens / 成本`，且值与旧 totals 完全一致。
 - Given 图表列与对话筛选正常工作，When 切换数量模式或活动时间模式，Then 图表、排序、隐含过滤提示和刷新行为保持不变。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Rust: `cargo test prompt_cache_conversations -- --nocapture`
-- Web: `cd web && bunx vitest run src/components/PromptCacheConversationTable.test.tsx src/lib/api.test.ts src/pages/Live.test.tsx`
 
 ### Quality checks
 

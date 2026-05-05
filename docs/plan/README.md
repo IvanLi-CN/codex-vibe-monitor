@@ -66,3 +66,21 @@
 |  0010 | 启动回填 SQLite 锁冲突修复     | 已完成 | `0010:startup-backfill-sqlite-lock/PLAN.md`          | 2026-02-24 | PR #49                                           |
 | fd4pw | 代理请求读体超时与失败分型修复 | 已完成 | `fd4pw-proxy-request-read-timeout-rc-fix/PLAN.md`    | 2026-02-23 | PR #45，RC 已替换测试线，PR #46 补齐 30 分钟观测 |
 | enqq6 | 统一设置页替换旧配置方案       | 已完成 | `enqq6-settings-pricing-unified/PLAN.md`             | 2026-02-23 | PR #47                                           |
+
+## Pending Delete Approval
+
+Canonical spec targets have been established for the legacy plans below. The legacy files remain in place until explicit delete approval is granted.
+
+- `docs/plan/0001:claude-relay-api-stats/PLAN.md` -> `docs/specs/0001-claude-relay-api-stats/SPEC.md`
+- `docs/plan/0002:pr-label-release/PLAN.md` -> `docs/specs/0002-pr-label-release/SPEC.md`
+- `docs/plan/0003:dev-runtime-service-manager/PLAN.md` -> `docs/specs/0003-dev-runtime-service-manager/SPEC.md`
+- `docs/plan/0004:reporting-timezone-natural-day/PLAN.md` -> `docs/specs/0004-reporting-timezone-natural-day/SPEC.md`
+- `docs/plan/0005:openai-reverse-proxy/PLAN.md` -> `docs/specs/0005-openai-reverse-proxy/SPEC.md`
+- `docs/plan/0006:proxy-model-list-hijack/PLAN.md` -> `docs/specs/0006-proxy-model-list-hijack/SPEC.md`
+- `docs/plan/0007:proxy-mitm-usage-billing/PLAN.md` -> `docs/specs/0007-proxy-mitm-usage-billing/SPEC.md`
+- `docs/plan/0008:proxy-stream-stability/PLAN.md` -> `docs/specs/0008-proxy-stream-stability/SPEC.md`
+- `docs/plan/0009:proxy-usage-backfill-and-source-scope/PLAN.md` -> `docs/specs/0009-proxy-usage-backfill-and-source-scope/SPEC.md`
+- `docs/plan/0009:proxy-gzip-usage-capture/PLAN.md` -> `docs/specs/zw9cs-proxy-gzip-usage-capture/SPEC.md`
+- `docs/plan/0010:startup-backfill-sqlite-lock/PLAN.md` -> `docs/specs/0010-startup-backfill-sqlite-lock/SPEC.md`
+- `docs/plan/fd4pw-proxy-request-read-timeout-rc-fix/PLAN.md` -> `docs/specs/fd4pw-proxy-request-read-timeout-rc-fix/SPEC.md`
+- `docs/plan/enqq6-settings-pricing-unified/PLAN.md` -> `docs/specs/enqq6-settings-pricing-unified/SPEC.md`

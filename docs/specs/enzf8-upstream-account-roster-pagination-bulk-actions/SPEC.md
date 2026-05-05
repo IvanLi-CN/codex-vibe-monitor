@@ -1,11 +1,5 @@
 # 上游账号列表分页、跨页选择与批量操作（#enzf8）
 
-## 状态
-
-- Status: 已实现，待 PR / CI 收敛
-- Created: 2026-03-22
-- Last: 2026-04-02
-
 ## 背景 / 问题陈述
 
 - 上游账号列表已经具备基础筛选与详情能力，但当前仍是一次性加载全部账号，账号数增长后会放大首屏负载，也不利于批量管理。
@@ -141,14 +135,6 @@
 - Given 批量同步以 `completed` 结束且 `failed=0`、`skipped=0`，When 页面收到终态事件，Then 右下角同步进度气泡自动收起，同时仍会刷新账号列表。
 - Given 批量同步以 `failed`、`cancelled` 结束，或 `completed` 但存在任一 `failed/skipped` 行，When 页面收到终态事件，Then 同步进度以悬浮气泡形式保持可见、展示终态结果，并允许用户手动点击“收起”关闭而不清空当前跨页选择。
 - Given 用户在账号列表中查看或滚动内容，When 同步进度气泡出现，Then 它必须以浮层形式悬浮在视口右下角，不占用列表正文的文档流高度。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Rust: `cargo test upstream_accounts -- --nocapture`
-- Web: `cd web && bun x vitest run src/hooks/useUpstreamAccounts.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx src/components/UpstreamAccountsTable.test.tsx`
-- Storybook: `cd web && bun run build-storybook`
 
 ### Quality checks
 

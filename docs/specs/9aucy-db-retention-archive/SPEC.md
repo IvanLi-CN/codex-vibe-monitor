@@ -1,10 +1,5 @@
 # 数据分层保留、离线归档与长周期汇总（#9aucy）
 
-## 状态
-
-- Status: 已完成
-- Note: 本 spec 保留 retention/archive 基线；在线长期统计主来源与 archive 在线读取边界后续已由 `#h9r2m` 接管。
-
 ## 背景 / 问题陈述
 
 - 线上数据库的主要压力来自调用明细里的原始 payload / raw response / raw file 引用，以及持续增长的代理尝试与统计快照表。

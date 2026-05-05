@@ -1,11 +1,5 @@
 # 当前 pool `/v1/models` 路径级覆盖与 GPT-5.5 默认价格刷新（#47ran）
 
-## 状态
-
-- Status: 已实现，待 PR / CI / review-proof 收敛
-- Created: 2026-04-25
-- Last: 2026-04-25
-
 ## 背景 / 问题陈述
 
 - `#mww8f` 移除了 Settings 页中的全局 `/v1/models` 覆盖设置，并把 `/api/settings/proxy` 下线；当前运行态只剩 forward proxy 与 pricing。
@@ -86,12 +80,6 @@
 - Given 当前请求带有效 pool route key，When `GET /v1/models` 且 hijack 开启 / merge 开启，Then merge success 时回 merged payload，merge 失败时回 preset fallback，并打 merge-status header。
 - Given `GET /api/settings`，When Settings 页加载，Then 响应同时包含 `proxy`、`forwardProxy`、`pricing`。
 - Given repo-managed default pricing / preset migrated state，When 启动加载，Then 新增 GPT-5.5 系列与 GPT-5.4 mini 会补齐，但 custom 覆盖不被回写。
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-- `README.md`
-- `docs/deployment.md`
 
 ## Visual Evidence
 

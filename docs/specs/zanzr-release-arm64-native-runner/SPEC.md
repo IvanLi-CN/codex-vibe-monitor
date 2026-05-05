@@ -1,11 +1,5 @@
 # Release 构建加速：arm64 迁移到 GitHub-hosted ARM runner（#zanzr）
 
-## 状态
-
-- Status: 部分完成（3/4）
-- Created: 2026-03-01
-- Last: 2026-03-01
-
 ## 背景 / 问题陈述
 
 - 当前 release workflow 在 `linux/arm64` 平台构建时依赖 QEMU（x64 runner + setup-qemu）。

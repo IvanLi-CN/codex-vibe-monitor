@@ -1,10 +1,5 @@
 # PR CI 关键路径提速（#9r45m）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-03-13
-
 ## 背景 / 问题陈述
 
 - PR run `23019610982` 虽然整体通过，但关键路径接近 12 分钟；`Build Artifacts` 必须等待 `lint`、`frontend-tests`、`records-overlay-e2e`、`unit-tests` 全部结束后才会启动。
@@ -66,8 +61,6 @@
 - Given 本仓库的 `quality-gates` 校验脚本
   When 以 bootstrap profile 校验当前仓库
   Then 校验通过，且 required/informational checks 覆盖关系不变。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
 
 ### Quality checks
 

@@ -1,11 +1,5 @@
 # 统计页选择器切换为 shadcn 并补齐最近 7 天的 24 小时粒度（#p3u4s）
 
-## 状态
-
-- Status: 已实现
-- Created: 2026-03-19
-- Last: 2026-03-19
-
 ## 背景 / 问题陈述
 
 - 统计页右上角的时间范围与聚合粒度控件仍使用原生 `select`，与仓库现有 shadcn 风格基础组件不一致。
@@ -51,20 +45,9 @@
 - Given 切换错误范围控件，When 页面渲染，Then 错误范围也使用同一套 shadcn `Select` 组件。
 - Given 运行前端页面测试与 TypeScript 构建，When 执行本次改动相关命令，Then 全部通过。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit tests: `cd web && bunx vitest run src/pages/Stats.test.tsx`
-
 ### Quality checks
 
 - TypeScript build: `cd web && bunx tsc -b`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`：新增本 spec 索引并同步状态。
-- `docs/specs/p3u4s-stats-select-shadcn-24h-bucket/SPEC.md`：记录本轮实现与验证结论。
 
 ## 实现里程碑（Milestones / Delivery checklist）
 

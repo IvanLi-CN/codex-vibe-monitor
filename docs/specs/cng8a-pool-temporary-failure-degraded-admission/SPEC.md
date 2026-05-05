@@ -1,11 +1,5 @@
 # 号池临时故障“工作降级”与新对话准入收口（#cng8a）
 
-## 状态
-
-- Status: 已实现，待 PR / CI / review-proof 收敛
-- Created: 2026-03-30
-- Last: 2026-03-30
-
 ## 背景 / 问题陈述
 
 - 当前 route 侧 plain `429`、`5xx`、transport、timeout、stream failure 会在首次命中后直接写入 cooldown，并立即清除 sticky route。

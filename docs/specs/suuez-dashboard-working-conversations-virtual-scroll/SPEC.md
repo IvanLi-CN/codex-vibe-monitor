@@ -1,11 +1,5 @@
 # Dashboard 工作中对话无限列表、虚拟滚动与增量同步（#suuez）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-04-10
-- Last: 2026-04-11
-
 ## 背景 / 问题陈述
 
 - `#w3t3w` 已把 Dashboard 下半区改成“当前工作中的对话”卡片区，但前端仍额外裁到 `20` 条，后端 `activityMinutes=5` 路径也还保留隐式 `50` 条 cap，所以总览页实际上无法浏览完整工作集。
@@ -93,27 +87,12 @@
 - Given 某已加载对话超出 5 分钟工作窗口且不再 in-flight，When 本地时钟推进或 reconnect / resync 发生，Then 该项会尽快从工作集剔除，不会长期停在过时状态。
 - Given 高频 `records` 连续到达，When 观察 Dashboard 网络请求，Then working-conversations 不再每次都整表回源，只允许节流首屏 resync 与滚动触发的按页加载。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
 ### Performance / Data freshness
 
 - `detail=compact` 必须避免带上 `last24hRequests`、`upstreamAccounts` 等重载荷。
 - 分页工作集必须使用稳定 keyset 顺序：`createdAt DESC + promptCacheKey DESC`。
 - 首屏 resync 与滚动续页共享 `snapshotAt` 会话一致性，避免跨页重叠或漏项。
 - 滚动中收到新数据时，优先 patch 已加载项；对未知 key 仅做节流首屏刷新，不允许每个 `records` 都整表补拉。
-
-### Testing
-
-- Rust targeted: `cargo test prompt_cache_conversation`
-- Rust full: `cargo test`
-- Frontend targeted: `cd /Users/ivan/.codex/worktrees/468e/codex-vibe-monitor/web && bunx vitest run src/hooks/useDashboardWorkingConversations.test.tsx src/components/DashboardWorkingConversationsSection.test.tsx src/pages/Dashboard.test.tsx`
-- Frontend build: `cd /Users/ivan/.codex/worktrees/468e/codex-vibe-monitor/web && bun run build`
-- Storybook build: `cd /Users/ivan/.codex/worktrees/468e/codex-vibe-monitor/web && bun run storybook:build`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-- `docs/specs/suuez-dashboard-working-conversations-virtual-scroll/SPEC.md`
 
 ## 计划资产（Plan assets）
 

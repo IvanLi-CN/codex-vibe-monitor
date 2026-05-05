@@ -1,11 +1,5 @@
 # 全站 segmented control family 统一与 Dashboard 样式修复（#h5k2r）
 
-## 状态
-
-- Status: 已完成（5/5）
-- Created: 2026-03-24
-- Last: 2026-03-24
-
 ## 背景 / 问题陈述
 
 - 当前仓库里“看起来是同一类控件”的导航和分段切换实际上分成了三套实现：`segment-group/segment-button`、`app-nav-item/app-nav-item-active`，以及页面私有的额外 padding/font-weight 拼装。
@@ -67,25 +61,10 @@
 - Given 运行本轮前端验证命令，When 执行 `cd web && bun run test`、`cd web && bun run build`、`cd web && bun run build-storybook`，Then 全部通过。
 - Given 进入快车道 PR 阶段，When latest PR checks 和 review-loop 收敛完成，Then 终态为 merge-ready 而不是 merged。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `cd web && bun run test`
-- 定向回归：`cd web && bun run test -- src/components/ui/segmented-control.test.tsx src/components/AppLayout.test.tsx src/pages/Dashboard.test.tsx src/pages/Live.test.tsx src/pages/Records.test.tsx src/components/WeeklyHourlyHeatmap.test.tsx`
-
 ### Quality checks
 
 - `cd web && bun run build`
 - `cd web && bun run build-storybook`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-- `docs/specs/h5k2r-segmented-control-family/SPEC.md`
-- `docs/ui/components.md`
-- `docs/ui/patterns.md`
-- `docs/ui/storybook.md`
 
 ## 视觉验收快照（Visual References）
 

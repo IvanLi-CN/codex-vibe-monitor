@@ -1,11 +1,5 @@
 # Dashboard 长驻崩溃：working-conversations 泄露与 today 面板重渲染硬化（#kwmjr）
 
-## 状态
-
-- Status: 已实现，待 PR / CI / review-proof 收敛
-- Created: 2026-04-13
-- Last: 2026-04-13
-
 ## 背景 / 问题陈述
 
 - `/dashboard` 长时间停留后会出现浏览器标签页崩溃，线上观测表现为 heap 大幅抖动、`summary?window=today` 高频回源，以及 working conversations 数据在 SSE patch 后持续滞留。

@@ -1,11 +1,5 @@
 # Dashboard TPM 整数显示热修（#8shg4)
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-04-11
-- Last: 2026-04-11
-
 ## 背景 / 问题陈述
 
 - `TPM (5m avg)` 已替换进入今日 KPI，但当前仍沿用通用 number 格式，窗口均值出现小数时会直接显示小数点。
@@ -68,9 +62,9 @@
 
 ### 接口清单（Inventory）
 
-| 接口（Name） | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes） |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| TodayStatsOverview TPM display format | ui-component-prop | internal | Modify | None | web/dashboard | Dashboard today KPI | 仅 UI 格式变更，不改数据口径 |
+| 接口（Name）                          | 类型（Kind）      | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes）                |
+| ------------------------------------- | ----------------- | ------------- | -------------- | ------------------------ | --------------- | ------------------- | ---------------------------- |
+| TodayStatsOverview TPM display format | ui-component-prop | internal      | Modify         | None                     | web/dashboard   | Dashboard today KPI | 仅 UI 格式变更，不改数据口径 |
 
 ### 契约文档（按 Kind 拆分）
 
@@ -86,13 +80,6 @@
 
 - 保持本次变更仅限前端格式层，不触及窗口算法与后端契约。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit tests: `TodayStatsOverview.test.tsx` 覆盖 fractional TPM 整数显示。
-- Integration tests: `DashboardActivityOverview.test.tsx` 保持 today rate flow 回归不破。
-
 ### UI / Storybook (if applicable)
 
 - Stories to add/update: `TodayStatsOverview.stories.tsx`
@@ -105,11 +92,6 @@
 - `cd web && bun run test -- src/components/TodayStatsOverview.test.tsx src/components/DashboardActivityOverview.test.tsx`
 - `cd web && bun run build`
 - `cd web && bun run build-storybook`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 新增 follow-up spec 索引并同步状态。
-- `docs/specs/8shg4-dashboard-tpm-whole-number-hotfix/SPEC.md`: 记录本次格式热修的范围、验收与验证。
 
 ## 计划资产（Plan assets）
 

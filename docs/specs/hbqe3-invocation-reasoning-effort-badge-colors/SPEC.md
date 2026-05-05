@@ -1,11 +1,5 @@
 # InvocationTable 推理强度徽标色阶优化（#hbqe3）
 
-## 状态
-
-- Status: 已完成（4/4）
-- Created: 2026-03-07
-- Last: 2026-03-07
-
 ## 背景 / 问题陈述
 
 - 当前 `InvocationTable` 的推理强度徽标只对 `high / medium / low` 做了粗粒度映射，其余状态大多退化成统一的灰色，视觉上难以看出强度梯度。
@@ -60,21 +54,10 @@
 - Given `reasoningEffort` 缺失，When 组件渲染，Then 仍显示 `—`，且不产生多余徽标容器。
 - Given Storybook `Reasoning Effort States`，When 主人查看所有状态，Then 能用文档与视觉结果一起确认颜色语义。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `cd web && npm run test -- --run src/components/InvocationTable.test.tsx`
-- `cd web && npm run build`
-
 ### UI / Storybook (if applicable)
 
 - Stories to update: `InvocationTable.stories.tsx`
 - Visual regression baseline changes (if any): None
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 新增本 spec 索引。
 
 ## Visual Evidence (PR)
 

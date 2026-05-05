@@ -1,11 +1,5 @@
 # Forward proxy validation allows 404 as reachable（#k52tw）
 
-## 状态
-
-- Status: 已完成（3/3）
-- Created: 2026-03-01
-- Last: 2026-03-01
-
 ## 背景 / 问题陈述
 
 - 线上订阅验证流程在上游返回 `404 Not Found` 时会被判定为不可达，并导致“添加订阅链接”失败。

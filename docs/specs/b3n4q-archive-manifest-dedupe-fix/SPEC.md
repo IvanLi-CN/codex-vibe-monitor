@@ -1,11 +1,5 @@
 # 修复 archive manifest 重复账号唯一键冲突（#b3n4q）
 
-## 状态
-
-- Status: 已实现，待 PR / CI 收敛
-- Created: 2026-03-27
-- Last: 2026-03-27
-
 ## 背景 / 问题陈述
 
 - 101 当前 `ai-codex-vibe-monitor` 在 `2026-03-27T11:08:12Z` 报出 `UNIQUE constraint failed: archive_batch_upstream_activity.archive_batch_id, archive_batch_upstream_activity.account_id`，整轮 retention maintenance 被中断。
@@ -43,21 +37,6 @@
 - Given 单个 archive batch 中同一 `upstreamAccountId` 跨越多个 `400` 行 chunk，When `run_data_retention_maintenance()` 执行 archive，Then 不再报唯一键错误，archive 成功落盘，live rows 被删除，对应 raw 文件被清空。
 - Given archive 文件内同一账号有多条历史 invocation，When `maintenance archive-upstream-activity-manifest` 重建 manifest，Then manifest 中每个账号只落一行，且 `last_activity_at` 为该账号最大时间戳。
 - Given manifest 写入收到重复 `(account_id, last_activity_at)` 输入，When 执行写入，Then 同一 `(archive_batch_id, account_id)` 最终只有一行，并能幂等重跑。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-- `cargo fmt --check`
-- `cargo check`
-- `cargo test retention_archives_duplicate_upstream_activity_across_chunks -- --test-threads=1`
-- `cargo test archive_manifest_refresh_dedupes_duplicate_account_rows_from_archive_file -- --test-threads=1`
-- `cargo test archive_backfill_waits_for_manifest_until_rebuilt -- --test-threads=1`
-- `cargo test archive_manifest_refresh_leaves_missing_batches_pending_for_retry -- --test-threads=1`
-- `cargo test retention_archives_rows_with_compressed_raw_payload_files -- --test-threads=1`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-- `docs/specs/b3n4q-archive-manifest-dedupe-fix/SPEC.md`
 
 ## 方案概述（Approach, high-level）
 

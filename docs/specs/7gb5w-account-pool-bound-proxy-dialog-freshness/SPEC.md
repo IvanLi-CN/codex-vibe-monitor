@@ -1,11 +1,5 @@
 # 号池分组设置弹窗“绑定代理节点”目录加载与同步热修（#7gb5w）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-04-12
-- Last: 2026-04-12
-
 ## 背景 / 问题陈述
 
 - 号池分组设置弹窗里的“绑定代理节点”区块，在真实线上会话里会先显示“当前没有可用的代理节点”，但设置页里同一批 forward-proxy 节点其实已经存在。
@@ -93,26 +87,10 @@
 - Given 同一浏览器会话里刚保存 forward-proxy 设置，When 不做 hard reload 再打开分组设置弹窗，Then 节点目录会自动同步到最新结果。
 - Given 历史绑定了当前缺失 / 不可用的节点，When 弹窗渲染，Then 仍会展示 missing / unavailable badge，不因 loading tri-state 被吞掉。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `cd web && bunx vitest run src/hooks/useSettings.test.tsx src/hooks/useUpstreamAccounts.test.tsx src/components/UpstreamAccountGroupNoteDialog.test.tsx`
-- `cd web && bun run build`
-- `cd web && bun run build-storybook`
-
 ### UI / Storybook
 
 - 视觉证据来源：`storybook_docs`（若仓库最终对该 story 只能稳定走 canvas，则记录为 `storybook_canvas`）
 - 必须先展示 loading 与 settings-save-sync 两类关键状态
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-
-## Plan assets
-
-- Directory: `docs/specs/7gb5w-account-pool-bound-proxy-dialog-freshness/assets/`
 
 ## Visual Evidence
 

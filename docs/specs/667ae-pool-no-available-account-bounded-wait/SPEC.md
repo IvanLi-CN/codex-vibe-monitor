@@ -1,11 +1,5 @@
 # 号池暂时无号时的 10 秒有界等待与 503 终态（#667ae）
 
-## 状态
-
-- Status: 已实现，待 PR / CI / review-proof 收敛
-- Created: 2026-04-04
-- Last: 2026-04-04
-
 ## 背景 / 问题陈述
 
 - 线上 `pool_no_available_account` 故障会在本地选路层快速失败，典型延迟只有 `100-200ms`，但实际恢复窗口常落在几秒到十几秒内。
@@ -42,12 +36,12 @@
 
 ## 接口契约（Interfaces & Contracts）
 
-| 接口（Name） | 类型（Kind） | 范围（Scope） | 变更（Change） | 使用方（Consumers） | 备注（Notes） |
-| --- | --- | --- | --- | --- | --- |
-| pool generic no-account terminal | HTTP behavior | external | Modify | pool callers | 从立即 `502` 改为 bounded wait 后 `503 + Retry-After: 10` |
-| `ProxyErrorResponse` | Rust struct | internal | Modify | proxy HTTP adapter | 增加 `retry_after_secs`，用于注入响应头 |
-| `PoolNoAvailableWaitSettings` | Rust runtime struct | internal | Add | pool callers / tests | 内部默认固定值；测试 helper 可缩短 timeout 与 poll interval |
-| `resolve_pool_account_for_request_with_wait()` | Rust helper | internal | Add | pool routing callers | caller-side bounded wait，不改 resolver 契约 |
+| 接口（Name）                                   | 类型（Kind）        | 范围（Scope） | 变更（Change） | 使用方（Consumers）  | 备注（Notes）                                               |
+| ---------------------------------------------- | ------------------- | ------------- | -------------- | -------------------- | ----------------------------------------------------------- |
+| pool generic no-account terminal               | HTTP behavior       | external      | Modify         | pool callers         | 从立即 `502` 改为 bounded wait 后 `503 + Retry-After: 10`   |
+| `ProxyErrorResponse`                           | Rust struct         | internal      | Modify         | proxy HTTP adapter   | 增加 `retry_after_secs`，用于注入响应头                     |
+| `PoolNoAvailableWaitSettings`                  | Rust runtime struct | internal      | Add            | pool callers / tests | 内部默认固定值；测试 helper 可缩短 timeout 与 poll interval |
+| `resolve_pool_account_for_request_with_wait()` | Rust helper         | internal      | Add            | pool routing callers | caller-side bounded wait，不改 resolver 契约                |
 
 ## 验收标准（Acceptance Criteria）
 
@@ -57,20 +51,6 @@
 - Given 当前请求已经拿到具体 upstream failure，When 后续 fresh candidate 在等待后仍是 `NoCandidate`，Then 对外继续保留该 upstream failure，而不是改写成 generic `503`。
 - Given 终态属于 `BlockedByPolicy`，When 请求返回，Then 状态码为 `503` 且 message 保持具体原因，不等待、不附 `Retry-After`。
 - Given 终态属于 `RateLimited`、`DegradedOnly` 或 `pool_no_alternate_upstream_after_timeout`，When 请求返回，Then 它们保持原有状态码与 message，不被这次修复改变。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-- `cargo fmt --check`
-- `cargo check`
-- `cargo test pool_route_waits_for_header_sticky_account_before_first_attempt -- --test-threads=1`
-- `cargo test pool_route_body_sticky_returns_503_after_wait_timeout -- --test-threads=1`
-- `cargo test pool_route_keeps_generic_no_candidate_when_other_accounts_are_unavailable_for_other_reasons -- --test-threads=1`
-- `cargo test pool_route_returns_specific_ungrouped_error_when_all_candidates_are_ungrouped -- --test-threads=1`
-- `cargo test pool_route_returns_ungrouped_error_for_sticky_account_when_cut_out_is_forbidden -- --test-threads=1`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
 
 ## 方案概述（Approach, high-level）
 

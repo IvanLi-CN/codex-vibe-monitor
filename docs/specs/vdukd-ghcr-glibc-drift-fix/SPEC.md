@@ -1,11 +1,5 @@
 # Fix GHCR image GLIBC drift (Debian bookworm runtime)（#vdukd）
 
-## 状态
-
-- Status: 已完成（3/3）
-- Created: 2026-03-01
-- Last: 2026-03-01
-
 ## 背景 / 问题陈述
 
 - `v0.11.0` 发布的镜像在 Debian 12 (bookworm, glibc 2.36) 运行时启动即退出：
@@ -78,19 +72,9 @@ None
 - 新发布镜像启动后 30s 内 `GET /health` 返回 `ok`。
 - CI release job 的 smoke step 失败时，不会 push 镜像 tags，也不会创建 git tag / GitHub Release。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit tests: `cargo test --locked --all-features`
-
 ### Quality checks
 
 - Formatting: `cargo fmt --all -- --check`
-
-## 文档更新（Docs to Update）
-
-- None（本修复不改变使用方式；仅修复镜像构建与发布门禁）
 
 ## 资产晋升（Asset promotion）
 

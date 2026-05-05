@@ -1,11 +1,5 @@
 # Extend subscription validation timeout to 60s (keep single-proxy at 5s)（#c5yag）
 
-## 状态
-
-- Status: 已完成（3/3）
-- Created: 2026-03-01
-- Last: 2026-03-01
-
 ## 背景 / 问题陈述
 
 - 设置页“添加订阅链接”在慢链路场景中频繁出现 `validation request timed out after 5s`。

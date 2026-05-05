@@ -1,11 +1,5 @@
 # 请求详情补齐代理信息与本次权重变化（#hrvtt）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-03-02
-- Last: 2026-03-02
-
 ## 背景 / 问题陈述
 
 - 当前请求详情虽然已展示基础上下文和阶段耗时，但缺少独立的“代理”字段，定位某次请求命中的代理节点不够直接。
@@ -102,14 +96,6 @@
 - 后端权重变化计算位置固定在 `record_forward_proxy_attempt`。
 - 前后端字段命名统一为 `proxyWeightDelta`。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit tests: Rust `list_invocations` 投影回归 + malformed payload 容错回归。
-- Integration tests: 代理 capture 路径 payload 包含 `proxyWeightDelta`。
-- E2E tests (if applicable): InvocationTable 展开详情时可见权重变化字段。
-
 ### UI / Storybook (if applicable)
 
 - Stories to add/update: `InvocationTable.stories.tsx` 示例记录补充 `proxyWeightDelta`。
@@ -122,10 +108,6 @@
 - `cargo check`
 - `cd web && npm run test`
 - `cd web && npm run build`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 新增本 spec 索引并更新状态。
 
 ## 计划资产（Plan assets）
 

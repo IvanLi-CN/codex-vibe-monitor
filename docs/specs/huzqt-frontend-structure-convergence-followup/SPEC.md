@@ -1,11 +1,5 @@
 # 前端结构收敛 follow-up（#huzqt）
 
-## 状态
-
-- Status: 已验证
-- Created: 2026-04-11
-- Last: 2026-04-11
-
 ## 背景 / 问题陈述
 
 - `web/src/pages/account-pool/` 仍集中承载超大页面实现，`UpstreamAccounts.page-local-shared.tsx`、`UpstreamAccounts.page-impl.tsx`、`UpstreamAccountCreate.sections.tsx`、`UpstreamAccountCreate.page-impl.tsx` 等文件同时混合 controller、section 组装、overlay/drawer、draft/state 与交互 glue，导航与 review 成本过高。

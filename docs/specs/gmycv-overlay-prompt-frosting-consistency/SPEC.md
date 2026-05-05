@@ -1,11 +1,5 @@
 # 浮层提示磨砂隔离一致性修复（#gmycv）
 
-## 状态
-
-- Status: 已实现，待截图提交授权 / PR 收敛
-- Created: 2026-03-25
-- Last: 2026-03-25
-
 ## 背景 / 问题陈述
 
 - `67acu-update-banner-readability` 已经修复过更新横幅的可读性，但后续配色调整把 `UpdateAvailableBanner` 收敛为 `border-primary/35 + bg-primary/10`，没有同步引入高遮罩底面或 blur，导致高密度内容在横幅下方可见时，文本再次被底层表格干扰。

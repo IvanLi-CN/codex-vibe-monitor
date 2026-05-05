@@ -1,11 +1,5 @@
 # Permanent online hourly stats retention（#h9r2m）
 
-## 状态
-
-- Status: 已实现
-- Created: 2026-03-21
-- Updated: 2026-03-25
-
 ## 背景 / 问题陈述
 
 - 现有 retention 会把旧的 `codex_invocations` 与 `forward_proxy_attempts` 明细归档出主库。
@@ -93,16 +87,3 @@
 - prompt cache conversations 与 sticky key conversations 在 raw 明细归档后仍保留历史 totals / first seen / last activity。
 - `/api/stats/forward-proxy/timeseries` 能返回历史 request buckets 与 weight buckets，且 `forward_proxy_attempts` 被清理后结果仍连续。
 - 缺失 legacy archive 文件时，`/api/stats*` 与 `/api/stats/summary` 继续可用，不再因为在线请求触发 archive exact read 而报 `500`。
-
-## 验证
-
-- `cargo check`
-- Rust targeted tests covering:
-  - invocation hourly continuity across archive boundary
-  - forward proxy historical hourly continuity after retention
-  - prompt cache / sticky key aggregate continuity
-- Rust targeted tests covering:
-  - legacy archive materialization + prune
-  - missing archive file no longer breaks historical stats
-  - pool attempt route is live-only
-- `cd web && bun run test -- api.test.ts`

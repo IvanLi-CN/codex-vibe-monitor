@@ -1,11 +1,5 @@
 # Dashboard / stats 读链路 SQLite 锁冲突治理（#ay33j）
 
-## 状态
-
-- Status: 已实现，待 PR / CI / review-proof 收敛
-- Created: 2026-04-12
-- Last: 2026-04-12
-
 ## 背景 / 问题陈述
 
 - Dashboard 与共享 stats 读接口当前会在 GET 请求里同步执行 hourly rollup catch-up 与历史 summary rollup repair，导致“读中带写”。
@@ -91,12 +85,6 @@ None
 - 共享受影响面已锁定为 Dashboard + stats 共享读接口
 - merge-ready 终点已锁定，不自动 merge / cleanup
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit / integration tests: `cargo test --locked --all-features`（至少覆盖本轮新增/修改的锁冲突与后台 catch-up 回归）
-
 ### UI / Storybook (if applicable)
 
 - Not applicable（后端-only）
@@ -107,11 +95,6 @@ None
 - `cargo check --locked --all-targets --all-features` ✅
 - `cargo test --locked --all-features` ✅
 - Dashboard 浏览器 smoke（无 `database is locked` 横幅，`summary / timeseries / prompt-cache-conversations` 维持 2xx）✅
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 新增本 spec 索引，并在实现/PR 收敛后更新状态与备注
-- `docs/specs/ay33j-stats-read-path-lock-elimination/SPEC.md`: 记录实施结果与验证
 
 ## 计划资产（Plan assets）
 

@@ -1,11 +1,5 @@
 # 实况页新增“代理”统计表与 24h 成败示意图（#c58kc）
 
-## 状态
-
-- Status: 已完成（5/5）
-- Created: 2026-03-01
-- Last: 2026-03-02
-
 ## 背景 / 问题陈述
 
 - `Live` 页面当前只有汇总卡片、实时图表与最新请求列表，缺少“按代理节点”的运行态观察。
@@ -105,14 +99,6 @@
 - UI 位置和信息层级已确定（summary 与 chart 之间）。
 - 验收口径覆盖 core path、空态和异常态。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit tests: Rust 新增接口聚合与补零逻辑测试。
-- Integration tests: Rust handler 返回结构与 direct 节点覆盖。
-- Front-end tests: Vitest 覆盖 API/hook/组件关键渲染分支。
-
 ### UI / Storybook (if applicable)
 
 - Stories to add/update: 本轮可不新增（可选）。
@@ -125,11 +111,6 @@
 - `cargo test`
 - `cd web && npm run test`
 - `cd web && npm run build`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`：新增 spec 索引并同步状态。
-- `docs/specs/c58kc-live-forward-proxy-table/SPEC.md`：随实现进度更新里程碑与状态。
 
 ## 计划资产（Plan assets）
 

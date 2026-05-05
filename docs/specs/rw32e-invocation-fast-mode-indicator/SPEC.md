@@ -1,11 +1,5 @@
 # 请求列表 Fast 模式标识（service tier 版）（#rw32e）
 
-## 状态
-
-- Status: 已完成（5/5）
-- Created: 2026-03-07
-- Last: 2026-03-07
-
 ## 背景 / 问题陈述
 
 - 当前请求列表会展示模型名、代理、耗时与详情上下文，但无法直接判断某次请求是否实际命中了 OpenAI 的 fast / priority processing。
@@ -108,14 +102,6 @@
 - Fast 图标判定口径已冻结为“仅 `priority` 点亮”。
 - 历史记录需尽力回填且仍保持“不新增 SQLite 列”的实现边界。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit tests: Rust 覆盖非流 / 流响应 `service_tier` 提取、`list_invocations` 字段投影与历史回填。
-- Integration tests: proxy capture / XY record 持久化后 payload 能携带 `serviceTier`。
-- E2E tests (if applicable): invocation table 的 Playwright 回归验证 priority 图标显示、详情字段存在、flex 不点亮。
-
 ### UI / Storybook (if applicable)
 
 - Stories to add/update: `InvocationTable.stories.tsx` 覆盖 `priority`、`flex`、缺失三类记录。
@@ -128,10 +114,6 @@
 - `cd web && npm run test`
 - `cd web && npm run build`
 - `cd web && npm run test:e2e -- invocation-table-layout.spec.ts`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 新增规格索引并同步状态。
 
 ## 计划资产（Plan assets）
 

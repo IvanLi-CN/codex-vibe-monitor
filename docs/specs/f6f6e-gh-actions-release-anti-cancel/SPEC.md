@@ -1,11 +1,5 @@
 # GH Actions 防取消发布链路全面对齐（#f6f6e）
 
-## 状态
-
-- Status: 部分完成（3/4）
-- Created: 2026-03-14
-- Last: 2026-04-29
-
 ## 背景 / 问题陈述
 
 - 当前仓库把 PR 检查、`main` 校验与 release 发布都耦合在 `.github/workflows/ci.yml`，只能做到“运行中的 `main` run 不被新 push 取消”，不能从工作流拓扑上明确区分 PR 与发布职责。
@@ -90,8 +84,6 @@
 - Given `CI Main` 以 `failure`、`cancelled` 或其他非 `success` 结论完成
   When `Release` 被 `workflow_run` 触发
   Then `CI Main Gate` 必须失败并让 `Release` run 进入 `failure`，从而触发现有 release failure 通知链路。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
 
 ### Quality checks
 

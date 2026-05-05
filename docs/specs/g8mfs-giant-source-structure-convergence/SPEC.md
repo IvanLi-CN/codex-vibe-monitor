@@ -1,11 +1,5 @@
 # 巨型源码结构收敛（#g8mfs）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-04-09
-- Last: 2026-04-09
-
 ## 背景 / 问题陈述
 
 - 当前仓库仍存在多处超大源码文件，后端以 `/Users/ivan/.codex/worktrees/b368/codex-vibe-monitor/src/upstream_accounts/mod.rs`、`/Users/ivan/.codex/worktrees/b368/codex-vibe-monitor/src/proxy.rs`、`/Users/ivan/.codex/worktrees/b368/codex-vibe-monitor/src/tests/mod.rs` 为代表，前端以 `/Users/ivan/.codex/worktrees/b368/codex-vibe-monitor/web/src/lib/api.ts`、`/Users/ivan/.codex/worktrees/b368/codex-vibe-monitor/web/src/pages/account-pool/UpstreamAccountCreate.tsx`、`/Users/ivan/.codex/worktrees/b368/codex-vibe-monitor/web/src/pages/account-pool/UpstreamAccounts.tsx` 为代表。
@@ -62,8 +56,6 @@
   - `cd web && bun run build-storybook`
 - 若改动影响 UI，可见视觉证据需先在对话中回传给主人，再推进 PR / merge 路径。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
 ### Quality checks
 
 - `cargo fmt --all -- --check`
@@ -73,11 +65,6 @@
 - `cd web && bun run test`
 - `cd web && bun run build`
 - `cd web && bun run build-storybook`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-- `docs/specs/g8mfs-giant-source-structure-convergence/SPEC.md`
 
 ## Visual Evidence
 

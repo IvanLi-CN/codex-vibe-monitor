@@ -1,11 +1,5 @@
 # 优雅停机补强（#fmfuf）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-03-10
-- Last: 2026-03-10
-
 ## 背景 / 问题陈述
 
 - 当前服务已具备基础停机能力：主进程会监听 `Ctrl+C` / `SIGTERM`，HTTP 服务接入了 `axum` 的 graceful shutdown，scheduler / retention / forward proxy maintenance 等常驻任务也会监听共享取消信号。
@@ -78,22 +72,10 @@
 - Given summary/quota broadcast worker 或 forward proxy probe worker 已准备启动，When shutdown 已经开始，Then worker 不再继续执行新的 broadcast/probe 循环。
 - Given 全部后台任务完成退出，When shutdown 流程结束，Then 日志中可观察到停机开始、关键 drain/terminate 事件与停机完成事件。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Rust tests：覆盖运行时停机编排、HTTP graceful shutdown、Xray soft terminate / fallback kill、detached worker shutdown 短路。
-- 回归测试需保持现有 proxy / forward proxy 行为不变，不新增对外接口断言变更。
-
 ### Quality checks
 
 - `cargo fmt --check`
 - `cargo test`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`：新增 spec 索引，并在交付完成后同步状态、PR 与 checks 结果。
-- `docs/specs/fmfuf-graceful-shutdown-hardening/SPEC.md`：记录验收、测试结果与最终交付状态。
 
 ## 实现里程碑（Milestones / Delivery checklist）
 

@@ -1,11 +1,5 @@
 # 修复 Live 实时统计闪烁与数字滚动被打断（#rkc7k）
 
-## 状态
-
-- Status: 已完成（6/6）
-- Created: 2026-03-02
-- Last: 2026-03-02
-
 ## 背景 / 问题陈述
 
 - Live 页面“实时统计”卡片在高频 records 推送时出现明显闪烁。
@@ -83,21 +77,10 @@ None
 - Given `AnimatedDigits` 在短时间内多次接收新值，When 动画 effect 反复触发，Then 不出现旧帧覆盖新帧导致的跳变。
 - Given 30m/1h/1d 窗口，When 接收 summary SSE，Then 行为与改动前一致。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit tests: `web/src/hooks/useStats.test.ts` 补充节流与 pending 合并用例。
-- Unit tests: 现有 `useStats` 兼容用例继续通过。
-
 ### Quality checks
 
 - `cd web && npm run test`
 - `cd web && npm run build`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 新增 #rkc7k 规格索引，并在实现完成后回填状态。
 
 ## 计划资产（Plan assets）
 

@@ -1,11 +1,5 @@
 # OpenAI 兼容 WebSocket 代理（#w5s2x）
 
-## 状态
-
-- Status: active
-- Created: 2026-05-04
-- Last: 2026-05-04
-
 ## 背景 / 问题陈述
 
 OpenAI Responses API 已公开 WebSocket mode，Codex 也已开始使用 WebSocket 承载多数 Responses API 流量。当前本服务的 OpenAI 兼容代理只处理 `/v1/*` HTTP 请求；若下游客户端切换为 WebSocket，本服务无法接入、路由到账号池或记录连接级状态。

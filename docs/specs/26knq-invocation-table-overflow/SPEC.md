@@ -1,11 +1,5 @@
 # 修复 InvocationTable 异常横向滚动（#26knq）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-02-26
-- Last: 2026-02-26
-
 ## 背景 / 问题陈述
 
 - 线上 `https://vibe-code.ivanli.cc/#/dashboard` 的“最近 20 条实况”表格在桌面宽度下出现了不合理横向滚动。
@@ -92,12 +86,6 @@
 - 范围、验收标准、流程类型已冻结（快车道）。
 - 无后端接口变更需求。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- E2E tests: 新增 `invocation-table-layout.spec.ts` 并通过。
-
 ### UI / Storybook (if applicable)
 
 - Stories to add/update: None
@@ -105,11 +93,6 @@
 ### Quality checks
 
 - `cd web && npm run build`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 新增规格索引并同步状态
-- `docs/specs/26knq-invocation-table-overflow/SPEC.md`: 同步里程碑与变更记录
 
 ## 计划资产（Plan assets）
 

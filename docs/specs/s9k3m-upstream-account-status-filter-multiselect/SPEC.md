@@ -1,11 +1,5 @@
 # 上游账号列表三组状态筛选改为多选（#s9k3m）
 
-## 状态
-
-- Status: 进行中
-- Created: 2026-03-27
-- Last: 2026-03-27
-
 ## 背景 / 问题陈述
 
 - 当前账号列表的 `工作状态 / 启用状态 / 账号状态` 三组筛选仍是单选，下钻排查时必须反复切换单个状态，效率很差。
@@ -73,13 +67,6 @@
 - Given 清空某个状态维度，When 再次请求列表，Then 不会发送该维度 query 参数，触发器显示“全部…”。
 - Given 用户修改任一状态筛选、分组、标签或 `pageSize`，When 列表刷新，Then 页码回到 `1` 且跨页批量选择被清空。
 - Given Storybook `StatusFilters` 场景，When 选中同一维度的多个状态，Then mock roster 会按 OR 语义显示对应账号。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Rust: `cargo test upstream_accounts -- --nocapture`
-- Web targeted: `cd web && ./node_modules/.bin/vitest run src/lib/api.test.ts src/hooks/useUpstreamAccounts.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx src/components/AccountTagFilterCombobox.test.tsx src/components/MultiSelectFilterCombobox.test.tsx`
 
 ### Quality checks
 

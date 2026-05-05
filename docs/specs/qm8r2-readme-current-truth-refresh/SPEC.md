@@ -1,11 +1,5 @@
 # README 当前真相重写与展示刷新（#qm8r2）
 
-## 状态
-
-- Status: 已实现，待 PR / CI / review-proof 收敛
-- Created: 2026-04-23
-- Last: 2026-04-24
-
 ## 背景 / 问题陈述
 
 - 根 `README.md` 已经落后于当前项目真实能力，仍残留旧的特性口径、环境变量堆砌与过期截图，不能正确回答“项目现在是什么、能做什么、如何开始”。
@@ -77,11 +71,11 @@
 
 ### 接口清单（Inventory）
 
-| 接口（Name） | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes） |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `README.md` | doc | public | Modify | None | repo root docs | GitHub 仓库访客 / 协作者 | 改为 current truth 入口 |
-| `docs/readme-assets/final/*` | asset | public | New | None | README assets | README / 仓库首页 | 稳定展示图资产 |
-| `DashboardPage.stories.tsx#ReadmeDense` | storybook story | internal | New | None | web Storybook | README 截图生成 / UI 评审 | 12 条 working conversations |
+| 接口（Name）                            | 类型（Kind）    | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers）       | 备注（Notes）               |
+| --------------------------------------- | --------------- | ------------- | -------------- | ------------------------ | --------------- | ------------------------- | --------------------------- |
+| `README.md`                             | doc             | public        | Modify         | None                     | repo root docs  | GitHub 仓库访客 / 协作者  | 改为 current truth 入口     |
+| `docs/readme-assets/final/*`            | asset           | public        | New            | None                     | README assets   | README / 仓库首页         | 稳定展示图资产              |
+| `DashboardPage.stories.tsx#ReadmeDense` | storybook story | internal      | New            | None                     | web Storybook   | README 截图生成 / UI 评审 | 12 条 working conversations |
 
 ### 契约文档（按 Kind 拆分）
 
@@ -101,14 +95,6 @@
 - docs-site 已提供相对新鲜的 public docs，可作为 README 的事实来源补充。
 - Storybook 已具备稳定页面级截图能力，可承载 README 展示图来源。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `cd /Users/ivan/Projects/Ivan/codex-vibe-monitor/web && bun run lint`
-- `cd /Users/ivan/Projects/Ivan/codex-vibe-monitor/web && bun run build`
-- `cd /Users/ivan/Projects/Ivan/codex-vibe-monitor/web && bun run build-storybook`
-
 ### UI / Storybook (if applicable)
 
 - Stories to add/update: `web/src/components/DashboardPage.stories.tsx`
@@ -118,12 +104,6 @@
 
 - README 命令与路径必须与当前 `package.json` / `web/package.json` / `docs-site/package.json` 对齐。
 - README 的页面与接口口径必须与 `web/src/App.tsx`、`src/maintenance/hourly_rollups.rs`、`src/oauth_bridge.rs` 对齐。
-
-## 文档更新（Docs to Update）
-
-- `README.md`: 以 current truth 重写仓库首页入口
-- `docs/specs/README.md`: 新增本 spec 索引并同步当前状态
-- `docs/specs/qm8r2-readme-current-truth-refresh/SPEC.md`: 记录本轮 README 重写范围、验收与视觉证据
 
 ## 计划资产（Plan assets）
 

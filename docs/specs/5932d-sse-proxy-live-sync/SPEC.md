@@ -1,11 +1,5 @@
 # SSE 驱动的请求记录与统计实时更新（#5932d）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-02-25
-- Last: 2026-02-25
-
 ## 背景 / 问题陈述
 
 - 前端 `Dashboard` 与 `Live` 已订阅 SSE，但当前代理链路写库成功后不会即时推送 `records`/`summary`/`quota`。
@@ -84,13 +78,6 @@
 - Given 同一代理请求，When `records` 事件发送后，Then 能收到对应窗口的 `summary` 与最新 `quota` 事件。
 - Given 命中 `INSERT OR IGNORE` 未插入，When 请求完成，Then 不重复发送 `records` 事件。
 - Given SSE 发生断线并恢复，When 连接 open，Then 前端列表通过静默回源补齐，且与后端一致。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- 运行并通过与改动直接相关的 Rust 测试（覆盖代理落库后广播路径）。
-- 运行并通过前端构建或测试校验（至少一种自动化验证）。
 
 ### Performance & Reliability
 

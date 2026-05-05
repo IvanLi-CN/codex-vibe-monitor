@@ -1,11 +1,5 @@
 # 号池 `/v1/responses*` 超时护栏收口为 `180s / 300s`（#t9m3p）
 
-## 状态
-
-- Status: 已实现
-- Created: 2026-03-23
-- Last: 2026-03-25
-
 ## 背景 / 问题陈述
 
 - 101 线上 `routeMode=pool` 的 `/v1/responses` 长尾请求已经不只是“长对话本身慢”，而是内部 failover 链路会把多次超时串起来，导致调用方体感接近“卡住”。
@@ -86,25 +80,10 @@
 - Given 第一跳 timeout 后只剩同 route key 的健康账号，以及其它已知 exhausted 的候选，When resolver 继续 failover，Then 终态是 `no alternate upstream route is available after timeout`，而不是 `pool_all_accounts_rate_limited`。
 - Given 非 `/v1/responses*` 的 pool 请求，When 本次修复完成，Then 既有超时语义保持不变。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `cargo test capture_target_pool_route_total_timeout`
-- `cargo test pool_openai_v1_responses_compact_total_timeout_exhausts_before_third_route`
-- `cargo test app_config_from_sources_uses_proxy_timeout_defaults`
-- `cargo test app_config_from_sources_reads_proxy_timeout_envs`
-- `cargo test app_config_from_sources_rejects_zero_pool_upstream_responses_total_timeout`
-
 ### Quality checks
 
 - `cargo fmt`
 - `cargo test`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-- `docs/specs/t9m3p-pool-responses-timeout-guardrails/SPEC.md`
 
 ## 实现里程碑（Milestones / Delivery checklist）
 

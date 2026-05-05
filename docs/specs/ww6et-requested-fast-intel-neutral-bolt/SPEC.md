@@ -1,11 +1,5 @@
 # 请求侧 Fast 情报与中性闪电标识（#ww6et）
 
-## 状态
-
-- Status: 已完成（5/5）
-- Created: 2026-03-08
-- Last: 2026-03-08
-
 ## 背景 / 问题陈述
 
 - 现有请求列表只展示响应侧 `serviceTier`，因此只能看出“实际命中了什么 tier”，无法看出“请求时是否明确想要 Fast / priority processing”。
@@ -103,15 +97,6 @@
 - `requestedServiceTier` 的唯一来源和判定口径已冻结为“请求体顶层 `service_tier/serviceTier` 原值归一化”。
 - 三态闪电的颜色与语义已冻结：琥珀色表示实际命中，中性色表示请求想要但未命中。
 - 历史回填范围已冻结为 proxy + request raw 文件存在的记录。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Rust tests：覆盖请求侧 tier 提取、payload summary 写入、列表/SSE 投影与历史回填幂等。
-- Vitest：覆盖三态闪电 helper 与详情字段渲染。
-- Playwright：覆盖 `priority/priority`、`priority/auto`、`priority/缺失`、`auto/priority`、`flex/*` 至少一组表格/列表断言。
-- Storybook：补齐 `effective`、`requested_only`、`none` 三类示例记录。
 
 ## 方案概述（Approach, high-level）
 

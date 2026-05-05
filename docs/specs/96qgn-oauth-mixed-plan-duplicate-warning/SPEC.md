@@ -1,11 +1,5 @@
 # 不同计划 OAuth 账号共存时取消重复 warning（#96qgn）
 
-## 状态
-
-- Status: 已实现，待截图提交授权 / PR 收敛
-- Created: 2026-04-04
-- Last: 2026-04-04
-
 ## 背景 / 问题陈述
 
 - 当前 OAuth 重复账号 warning 只要命中相同 `chatgptAccountId` 或 `chatgptUserId` 就会触发，实际没有把“有效计划类型不同”的共存语义完整纳入判定。

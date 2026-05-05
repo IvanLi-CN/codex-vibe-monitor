@@ -1,10 +1,5 @@
 # 代理热路径并发稳定性与传输背压收口（#q8h3n）
 
-## 状态
-
-- Status: 已完成
-- Note: 已移除错误的 whole-proxy admission gate，`PROXY_REQUEST_CONCURRENCY_*` 已进入 deprecated/ignored 兼容态；共享测试机 `codex-testbox` 100 并行压测通过，确认 `/v1/*` 不再因本地 admission gate 返回 `503`。
-
 ## 背景 / 问题陈述
 
 - 已落地的 raw 异步旁路、records 查询收敛与 summary/quota debounce 确实缓解了 `180s first-chunk timeout`、`database is locked` 与热路径抖动。
@@ -73,15 +68,6 @@
 - `/api/invocations` 的分页主查询只先选出当前页 id，再对当前页记录执行完整投影。
 - summary/quota follow-up 在 burst 写入时能够合并，不再对每条记录立即触发一次完整汇总。
 - 即使线上环境仍设置 `PROXY_REQUEST_CONCURRENCY_LIMIT` / `PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS`，它们也只会产生日志告警，不会改变 `/v1/*` 准入行为。
-
-## 验证
-
-- `cargo fmt --check`
-- `cargo check --tests`
-- `cargo test proxy_request_tracking_can_reach_100_in_flight_without_local_rejection -- --nocapture`
-- `cargo test proxy_openai_v1_via_pool_reads_request_body_without_local_admission_gate -- --nocapture`
-- `cargo test list_invocations_ -- --nocapture`
-- `scripts/shared-testbox-proxy-parallel-smoke`
 
 ## 参考
 

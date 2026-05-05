@@ -1,11 +1,5 @@
 # 上游账号详情改为 URL / ID 驱动并跨页面统一（#t9wwm）
 
-## 状态
-
-- Status: 已实现
-- Created: 2026-03-28
-- Last: 2026-03-28
-
 ## 背景 / 问题陈述
 
 - 当前号池页的账号详情抽屉仍然跟着列表当前项走：列表刷新、分页、筛选或删除当前账号后，详情会自动漂移到别的账号，和“我正在看哪个账号”这一用户心智不一致。
@@ -83,11 +77,11 @@
 
 ### 接口清单（Inventory）
 
-| 接口（Name） | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes） |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `?upstreamAccountId=<number>` | route query | internal | New | None | web | account pool + monitoring pages | 详情抽屉开关与身份源 |
-| `/api/pool/upstream-accounts/:id` | HTTP API | internal | Reuse | None | backend | shared upstream account drawer | 不改返回字段 |
-| `UpstreamAccountDetail` | TS type | internal | Reuse | None | backend + web | shared upstream account drawer | 不改 shape |
+| 接口（Name）                      | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers）             | 备注（Notes）        |
+| --------------------------------- | ------------ | ------------- | -------------- | ------------------------ | --------------- | ------------------------------- | -------------------- |
+| `?upstreamAccountId=<number>`     | route query  | internal      | New            | None                     | web             | account pool + monitoring pages | 详情抽屉开关与身份源 |
+| `/api/pool/upstream-accounts/:id` | HTTP API     | internal      | Reuse          | None                     | backend         | shared upstream account drawer  | 不改返回字段         |
+| `UpstreamAccountDetail`           | TS type      | internal      | Reuse          | None                     | backend + web   | shared upstream account drawer  | 不改 shape           |
 
 ### 契约文档（按 Kind 拆分）
 
@@ -110,28 +104,12 @@
 - 监控侧详情抽屉与号池详情抽屉的差异边界已明确：这轮统一为号池同款，而非继续保留只读阉割版。
 - URL query 只承载 `upstreamAccountId`，其余瞬时 overlay 状态保持本地 UI 状态。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `cd web && bun run test -- src/pages/account-pool/UpstreamAccounts.test.tsx`
-- `cd web && bun run test -- src/components/InvocationTable.test.tsx`
-- `cd web && bun run test -- src/components/InvocationRecordsTable.test.tsx`
-- `cd web && bun run test -- src/components/PromptCacheConversationTable.test.tsx`
-- `cd web && bun run build`
-- `cd web && bun run build-storybook`
-
 ### UI / Storybook
 
 - Stories to add/update: `web/src/components/UpstreamAccountsPage.overlays.stories.tsx`、`web/src/components/InvocationTable.stories.tsx`、`web/src/components/PromptCacheConversationTable.stories.tsx`
 - Docs pages / state galleries to add/update: 复用现有 autodocs / canvas stories，不新增独立 MDX
 - `play` / interaction coverage to add/update: URL 打开态、跨页面共享抽屉态、删除关闭与 not-found 关闭语义
 - Visual regression baseline changes (if any): 号池页 URL 打开态、监控页共享详情抽屉态
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 新增本 spec 索引并记录 fast-track follow-up
-- `docs/specs/t9wwm-upstream-account-detail-url-state/SPEC.md`: 维护范围、验收、视觉证据与 PR 事实
 
 ## 计划资产（Plan assets）
 

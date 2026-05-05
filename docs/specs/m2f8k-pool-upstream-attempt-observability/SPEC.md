@@ -1,12 +1,5 @@
 # 号池逐次上游尝试明细、三账号 failover 上限与 7+30 保留（#m2f8k）
 
-## 状态
-
-- Status: 进行中
-- Created: 2026-03-22
-- Last: 2026-04-10
-- Note: 在线历史读取语义已由 `#h9r2m` 接管；本 spec 中涉及 archive 回读的描述仅保留为原始设计背景，不再代表当前契约。
-
 ## 背景 / 问题陈述
 
 - 当前 `codex_invocations` 只保留每个客户端调用的最终落定结果，`routeMode=pool` 在一次请求内部换过哪些上游账号、每次失败在什么阶段、是否已经耗尽 failover 预算，都无法从在线记录直接还原。
@@ -97,13 +90,13 @@
 
 ### 接口清单（Inventory）
 
-| 接口（Name） | 类型（Kind） | 范围（Scope） | 变更（Change） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes） |
-| --- | --- | --- | --- | --- | --- | --- |
-| `pool_upstream_request_attempts` | SQLite table | internal | Add | backend | retention / API / ops | 记录 pool 每次真实上游尝试 |
-| `GET /api/invocations/{invokeId}/pool-attempts` | HTTP API | internal | Add | backend | InvocationTable details | 非 pool 返回空数组 |
-| `ApiInvocation.poolAttempt*` | Rust + TS fields | internal | Modify | backend + web | Dashboard / Live / records detail | 仅是汇总字段，不内嵌 attempts |
-| `BroadcastPayload::pool_attempts` | SSE event | internal | Add | backend + web | InvocationTable details | 同一 SSE 通道内推送单条 invocation 的完整 attempts |
-| `archive_batches.coverage_* / archive_expires_at` | SQLite manifest fields | internal | Modify | backend | retention / archive reads | 支持 archive TTL 清理 |
+| 接口（Name）                                      | 类型（Kind）           | 范围（Scope） | 变更（Change） | 负责人（Owner） | 使用方（Consumers）               | 备注（Notes）                                      |
+| ------------------------------------------------- | ---------------------- | ------------- | -------------- | --------------- | --------------------------------- | -------------------------------------------------- |
+| `pool_upstream_request_attempts`                  | SQLite table           | internal      | Add            | backend         | retention / API / ops             | 记录 pool 每次真实上游尝试                         |
+| `GET /api/invocations/{invokeId}/pool-attempts`   | HTTP API               | internal      | Add            | backend         | InvocationTable details           | 非 pool 返回空数组                                 |
+| `ApiInvocation.poolAttempt*`                      | Rust + TS fields       | internal      | Modify         | backend + web   | Dashboard / Live / records detail | 仅是汇总字段，不内嵌 attempts                      |
+| `BroadcastPayload::pool_attempts`                 | SSE event              | internal      | Add            | backend + web   | InvocationTable details           | 同一 SSE 通道内推送单条 invocation 的完整 attempts |
+| `archive_batches.coverage_* / archive_expires_at` | SQLite manifest fields | internal      | Modify         | backend         | retention / archive reads         | 支持 archive TTL 清理                              |
 
 ## 验收标准（Acceptance Criteria）
 
@@ -125,13 +118,6 @@
 - “最多换三个账号”解释为“一次调用最多尝试 3 个不同账号，含首个账号”：已确定。
 - attempt 详情只放 Dashboard / Live 的 InvocationTable 展开详情，不扩展到账号详情页：已确定。
 - attempt 明细不新增 raw body 文件：已确定。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Rust: 覆盖 attempt 落库、3 账号预算、同账号 retry 计数、attempt retention/archive/archive TTL 清理。
-- Vitest: 覆盖详情懒加载、非 pool 空态、attempt 列表渲染与错误态。
 
 ### Quality checks
 
@@ -155,10 +141,6 @@
 - evidence_note: `证明本次任务新增的号池尝试明细在展开详情后可直接看到最终落定的 attempt 行，且同一条 attempt 会原地补齐 HTTP 状态、阶段耗时与 upstream request id，不会出现空明细或重复 attempt 行。`
 
 ![号池尝试明细生命周期 Storybook 截图](./assets/pool-attempt-detail-lifecycle.png)
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`：登记本 spec 与当前状态。
 
 ## 实现里程碑（Milestones / Delivery checklist）
 

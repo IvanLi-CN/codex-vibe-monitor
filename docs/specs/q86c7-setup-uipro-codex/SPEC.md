@@ -1,11 +1,5 @@
 # 接入 ui-ux-pro-max（Codex）并修正 .gitignore 追踪策略（#q86c7）
 
-## 状态
-
-- Status: 已取代（项目改用全局 `ui-ux-pro-max` skill）
-- Created: 2026-02-24
-- Last: 2026-04-29
-
 ## 当前结论
 
 - 本 spec 记录 2026-02-24 的项目级 `ui-ux-pro-max` 接入工作。
@@ -93,22 +87,10 @@ None
 - [x] 变更边界明确为工程配置与技能资产。
 - [x] 分支策略与 PR 标签已确定。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- 命令级验证：`search.py --design-system` 成功。
-- 命令级验证：`search.py --domain style` 成功。
-
 ### Quality checks
 
 - `git check-ignore` 语义检查。
 - 无业务代码改动（`src/**`、`web/src/**` 不变）。
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-- `docs/specs/q86c7-setup-uipro-codex/SPEC.md`
 
 ## 实现里程碑（Milestones / Delivery checklist）
 

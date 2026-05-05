@@ -1,11 +1,5 @@
 # 反向代理上游 429 自动重试（设置可配）（#uwke5）
 
-## 状态
-
-- Status: 已完成（5/5）
-- Created: 2026-03-10
-- Last: 2026-03-10
-
 ## 背景 / 问题陈述
 
 - 现有反向代理在上游返回 `429 Too Many Requests` 时会直接把结果返回客户端，缺少代理侧的自动重试能力。
@@ -102,14 +96,6 @@
 - Given generic `/v1/*` 透传路径首个上游响应为 `429`、第二次为 `200`，When 客户端发起请求，Then 第二次请求收到与第一次完全相同的 body，并成功返回。
 - Given 上游 `429` 带 `Retry-After: 2` 或合法 HTTP-date，When helper 执行等待，Then 实际等待优先采用该值；Given header 无效，Then 退回 fallback backoff。
 - Given `/v1/models` merge upstream 连续返回 `429` 直到耗尽，When 代理返回 hijack 结果，Then 返回 preset payload 且 `x-proxy-model-merge-upstream=failed`。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Rust tests：settings roundtrip、legacy schema migration default、capture-target retry success/exhaustion、generic proxy body replay、`/v1/models` merge retry、`Retry-After` 解析/backoff。
-- Front-end tests：API normalize/update payload、Storybook/mock 设置 roundtrip。
-- Browser smoke：真实浏览器打开 settings 页面，确认新控件可保存且页面会话保持打开供复查。
 
 ### Quality checks
 

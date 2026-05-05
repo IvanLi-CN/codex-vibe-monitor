@@ -1,11 +1,5 @@
 # Dashboard：修复 UsageCalendar 加载骨架右偏 + 首行骨架按真实两卡布局（#rzxey）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-03-05
-- Last: 2026-03-05
-
 ## 背景 / 问题陈述
 
 - 刷新 Dashboard（`/dashboard`）时，右侧 UsageCalendar 在加载期间会出现明显的水平错位：骨架阶段卡片整体向右偏移，待数据返回后再跳回，产生可感知的 layout shift。

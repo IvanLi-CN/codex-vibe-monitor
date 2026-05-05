@@ -1,11 +1,5 @@
 # 上游账号详情调用记录与 Sticky 对话对齐 Live 交互（#cg6um）
 
-## 状态
-
-- Status: 已实现，待 PR 收敛
-- Created: 2026-03-30
-- Last: 2026-04-27
-
 ## 背景 / 问题陈述
 
 - 共享上游账号详情抽屉目前只有 `概览 / 编辑 / 路由 / 健康与事件` 四个页签，缺少与实况“最新记录”同款的调用记录视图，排障时无法直接确认该账号最近到底承接了哪些请求。
@@ -110,16 +104,6 @@
 - Given 用户打开 Sticky 对话“全部调用记录”抽屉，When 历史记录加载完成，Then 按 `occurredAt DESC` 展示该 Sticky Key + 当前账号的全部保留调用记录，而不是模糊 keyword 搜索结果。
 - Given 账号池页、Live 页、Records 页任一入口触发共享账号详情抽屉，When 查看 `调用记录` 与 Sticky 对话区，Then 三个入口行为保持一致。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Rust: `cargo test upstream_account_sticky -- --nocapture`
-- Rust: `cargo test invocation_records -- --nocapture`
-- Web: `cd web && bun run test -- src/components/StickyKeyConversationTable.test.tsx src/hooks/useUpstreamStickyConversations.test.tsx src/hooks/useUpstreamStickyConversations.test.ts src/pages/account-pool/UpstreamAccounts.test.tsx src/lib/api.test.ts`
-- Storybook: `cd web && bun run build-storybook`
-- Visual evidence: Storybook canvas 截图覆盖账号详情 `调用记录 + 活动总览` 的 populated 与 empty 状态，并写入本 spec。
-
 ### UI / Storybook
 
 - Stories to add/update:
@@ -131,11 +115,6 @@
   - Sticky 对话切换到活动窗口模式
   - Sticky 单行展开
   - Sticky 历史抽屉打开
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-- `docs/specs/cg6um-upstream-account-detail-records-sticky-conversations/SPEC.md`
 
 ## 计划资产（Plan assets）
 

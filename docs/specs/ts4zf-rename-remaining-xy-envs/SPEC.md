@@ -1,12 +1,5 @@
 # 修正剩余 `XY_*` 环境变量命名（#ts4zf）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-03-10
-- Last: 2026-03-10
-- Supersedes: `docs/specs/2uaxk-remove-xyai-legacy-ingest/SPEC.md` 中“仍然通用的 `XY_*` 配置键不重命名”的旧非目标；该 supersede 仅限公开环境变量命名，不恢复任何 XYAI 采集逻辑。
-
 ## 背景 / 问题陈述
 
 - 仓库在移除 XYAI 新写入后，仍保留了一组对外公开且运行时继续接受的 `XY_*` 环境变量；它们已经不再对应当前产品边界，却仍然是部署文档、Docker 默认值和配置解析的 canonical 名称。
@@ -117,24 +110,9 @@
 - Given 历史数据库中存在 `source='xy'` 调用记录或 quota snapshot，When 请求相关只读接口与聚合接口，Then 读取与聚合行为保持现状，不受 env rename 影响。
 - Given README、部署文档、Docker 默认 env 与代码中的公开 env 示例，When 进行残留扫描，Then 除专门 migration 说明外，不再发布仍被支持的 `XY_*` 名称。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `cargo test`
-- 针对 config parsing 的定向回归：新 canonical 名称可成功解析；被移除的旧键会 fail-fast。
-- 文档/代码残留扫描：针对 README、Dockerfile、部署文档与源码中的公开 env 名称执行检索确认。
-
 ### Quality checks
 
 - `cargo fmt --check`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`：新增本 spec，并在交付完成后写入 PR / checks / review-loop 状态。
-- `README.md`：把公开 env 示例、retention/archive 说明与 migration note 统一到新命名。
-- `docs/deployment.md`：把运维配置说明与 archive 路径描述统一到新命名。
-- `Dockerfile`：把 runtime 默认 env 与 Xray 相关注释更新到新命名。
 
 ## 实现里程碑（Milestones / Delivery checklist）
 

@@ -1,11 +1,5 @@
 # 号池工作状态新增“不可用（不可调度）”（#m4k2q）
 
-## 状态
-
-- Status: 已实现，待 PR / CI 收敛
-- Created: 2026-03-27
-- Last: 2026-04-08
-
 ## 背景 / 问题陈述
 
 - 当前账号列表已经把 `needs_reauth`、`upstream_unavailable`、`upstream_rejected`、`error_other` 这些异常原因导出为 `healthStatus`，但 `workStatus` 仍只有 `working / idle / rate_limited` 三值。

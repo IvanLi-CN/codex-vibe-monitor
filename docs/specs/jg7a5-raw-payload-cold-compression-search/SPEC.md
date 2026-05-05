@@ -1,11 +1,5 @@
 # raw 负载冷压缩与磁盘全文搜索（#jg7a5）
 
-## 状态
-
-- Status: 进行中
-- Created: 2026-03-13
-- Last: 2026-03-13
-
 ## 背景 / 问题陈述
 
 - 线上 `proxy_raw_payloads` 在当前流量下增长过快，3 天窗口内也会快速堆积出大量 raw 文件。
@@ -119,12 +113,6 @@
 - Given retention dry-run，When 执行 maintenance，Then 数据库与文件不变，但能输出 gzip 后体积估算。
 - Given prune/archive 清理老记录，When raw path 指向 `*.bin` 或 `*.bin.gz`，Then 对应磁盘文件都能被删除。
 - Given 一个 token 同时存在于 plain raw 与 gzip raw，When 执行 `search-raw`，Then 两种文件都能命中，并统一输出 `path:line:text`。
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-- `README.md`
-- `docs/deployment.md`
 
 ## 实现里程碑（Milestones / Delivery checklist）
 

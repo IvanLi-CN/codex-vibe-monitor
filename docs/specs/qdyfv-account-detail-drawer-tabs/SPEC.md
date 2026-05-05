@@ -1,11 +1,5 @@
 # 账号详情抽屉统一关闭语义与 Tabs 分组（#qdyfv）
 
-## 状态
-
-- Status: 已完成（4/4）
-- Created: 2026-03-25
-- Last: 2026-03-27
-
 ## 背景 / 问题陈述
 
 - 当前号池页 `UpstreamAccounts` 与监控页 `InvocationAccountDetailDrawer` 的账号详情抽屉拥有两套不同的壳层交互：前者只依赖遮罩点击关闭，后者同时支持外层 gutter 点击关闭，用户在两个页面之间切换时关闭语义不一致。
@@ -91,10 +85,10 @@
 
 ### 接口清单（Inventory）
 
-| 接口（Name） | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes） |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `/api/pool/upstream-accounts/:id` | HTTP API | internal | Reuse | None | backend | account pool + invocation drawers | 只调整前端展示分组 |
-| `UpstreamAccountDetail` | TS type | internal | Reuse | None | backend + web | account detail drawers | 不改字段形状 |
+| 接口（Name）                      | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers）               | 备注（Notes）      |
+| --------------------------------- | ------------ | ------------- | -------------- | ------------------------ | --------------- | --------------------------------- | ------------------ |
+| `/api/pool/upstream-accounts/:id` | HTTP API     | internal      | Reuse          | None                     | backend         | account pool + invocation drawers | 只调整前端展示分组 |
+| `UpstreamAccountDetail`           | TS type      | internal      | Reuse          | None                     | backend + web   | account detail drawers            | 不改字段形状       |
 
 ### 契约文档（按 Kind 拆分）
 
@@ -119,14 +113,6 @@
 - 接口契约保持 `Reuse / None`，实现不需要等待后端变更
 - Storybook 作为主要视觉证据来源的路径已明确
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit tests: 账号详情抽屉关闭语义、tabs 复位语义、overlay subtree 挂载回归
-- Integration tests: `UpstreamAccounts.test.tsx`、相关 invocation drawer tests
-- E2E tests (if applicable): 无新增专属 E2E，沿用现有 smoke 范围
-
 ### UI / Storybook (if applicable)
 
 - Stories to add/update: `web/src/components/UpstreamAccountsPage.overlays.stories.tsx`、`web/src/components/InvocationTable.stories.tsx`
@@ -141,11 +127,6 @@
 - `cd web && bun run test -- src/components/InvocationTable.test.tsx`
 - `cd web && bun run build`
 - `cd web && bun run build-storybook`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 新增本 spec 索引
-- `docs/specs/qdyfv-account-detail-drawer-tabs/SPEC.md`: 维护范围、验收与视觉证据
 
 ## 计划资产（Plan assets）
 
@@ -176,7 +157,7 @@
   image:
   ![号池详情抽屉缺失窗口占位](./assets/account-pool-detail-missing-window-placeholders-dark.png)
 
- - source_type: storybook_canvas
+- source_type: storybook_canvas
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: N/A

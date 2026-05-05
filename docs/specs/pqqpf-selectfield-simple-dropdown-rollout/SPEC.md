@@ -1,11 +1,5 @@
 # 全站简单下拉统一为 `SelectField`（#pqqpf）
 
-## 状态
-
-- Status: 已完成（5/5）
-- Created: 2026-03-22
-- Last: 2026-03-22
-
 ## 背景 / 问题陈述
 
 - 仓库内简单下拉当前分成三套口径：原生 `<select>`、页面直拼 low-level `Select` primitives，以及已封装的 searchable combobox。
@@ -71,24 +65,10 @@
 - Given 运行前端验证命令，When 执行 Vitest、build、storybook build 与相关 Playwright，Then 本轮改动全部通过。
 - Given 进入快车道 PR 收敛，When latest PR checks 与 review 收口完成，Then 状态达到 merge-ready 而不是 merged。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `cd web && bun run test`
-- `cd web && bun run test:e2e -- proxy-model-settings.spec.ts`
-
 ### Quality checks
 
 - `cd web && bun run build`
 - `cd web && bun run build-storybook`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-- `docs/specs/pqqpf-selectfield-simple-dropdown-rollout/SPEC.md`
-- `docs/ui/storybook.md`
-- `docs/ui/components.md`
 
 ## 实现里程碑（Milestones / Delivery checklist）
 

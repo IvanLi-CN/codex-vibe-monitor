@@ -1,11 +1,5 @@
 # Dashboard 工作中对话调用详情抽屉（#r4m6v）
 
-## 状态
-
-- Status: 已完成（4/4）
-- Created: 2026-04-06
-- Last: 2026-05-04
-
 ## 背景 / 问题陈述
 
 - Dashboard 的“当前工作中的对话”卡片已经把当前调用和上一条调用压缩成双槽位摘要，但用户仍然只能看到有限字段，无法在当前页直接深入查看调用细节。
@@ -120,14 +114,6 @@
 - `3gvtt` 已经证明 `requestId=invokeId` 精确查询和异常响应体抽屉链路可复用。
 - `qdyfv` / `t9wwm` 已经冻结共享账号抽屉语义，Dashboard 页可以直接复用现有 route-driven 账号详情抽屉。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `cd web && bunx vitest run src/components/DashboardWorkingConversationsSection.test.tsx src/components/DashboardInvocationDetailDrawer.test.tsx src/pages/Dashboard.test.tsx`
-- `cd web && bun run build`
-- `cd web && bun run storybook:build`
-
 ### UI / Storybook (if applicable)
 
 - Stories to add/update: `web/src/components/DashboardWorkingConversationsSection.stories.tsx`
@@ -139,11 +125,6 @@
 - `cd web && bunx vitest run`
 - `cd web && bun run build`
 - `cd web && bun run storybook:build`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-- `docs/specs/r4m6v-dashboard-working-conversations-invocation-drawer/SPEC.md`
 
 ## 计划资产（Plan assets）
 

@@ -1,11 +1,5 @@
 # 号池账号邮箱 / 名称联动 / mixed-plan 同名放宽 / OAuth 计划徽章优化（#swze7）
 
-## 状态
-
-- Status: 已实现，待 PR / CI / review-proof 收敛
-- Created: 2026-04-24
-- Last: 2026-04-24
-
 ## 背景 / 问题陈述
 
 - 号池新增与编辑流程目前没有把 `email` 当成可维护字段，运营无法在 OAuth / API Key 账号上显式修正邮箱。
@@ -98,13 +92,6 @@
 - `cd web && bun run test`
 - `cd web && bun run build`
 - `cd web && bun run build-storybook`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-- `docs/specs/swze7-account-pool-email-name-plan-badge/SPEC.md`
-- `docs/specs/swze7-account-pool-email-name-plan-badge/IMPLEMENTATION.md`
-- `docs/specs/swze7-account-pool-email-name-plan-badge/HISTORY.md`
 
 ## Visual Evidence
 

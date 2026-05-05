@@ -1,11 +1,5 @@
 # 号池上游 429 立即切号与终态 429（#h4p2x）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-03-23
-- Last: 2026-03-23
-
 ## 背景 / 问题陈述
 
 - 号池上游账号命中 `429` 时，现有实现会把它与 `5xx` 一样视为“同账号可重试”错误，导致同一账号在已经触发上游限额或周限后仍被重复命中。
@@ -80,12 +74,12 @@
 
 ### 接口清单（Inventory）
 
-| 接口（Name） | 类型（Kind） | 范围（Scope） | 变更（Change） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes） |
-| --- | --- | --- | --- | --- | --- | --- |
-| `PoolAccountResolution::RateLimited` | Rust enum | internal | Modify | backend | pool routing | 专门表示“可用候选都被 429 cooldown 挡住” |
-| `pool_upstream_accounts.last_route_failure_kind` | SQLite column | internal | Add | backend | account resolver / ops | 避免依赖 `last_error` 文本解析 |
-| pool `/v1/*` rate-limited terminal | HTTP behavior | external | Modify | backend | pool callers | 状态码统一为 `429`，JSON 壳不变 |
-| `pool_upstream_request_attempts.same_account_retry_index` | SQLite behavior | internal | Modify | backend | ops / attempts API | `429` 路径固定为 `1` |
+| 接口（Name）                                              | 类型（Kind）    | 范围（Scope） | 变更（Change） | 负责人（Owner） | 使用方（Consumers）    | 备注（Notes）                            |
+| --------------------------------------------------------- | --------------- | ------------- | -------------- | --------------- | ---------------------- | ---------------------------------------- |
+| `PoolAccountResolution::RateLimited`                      | Rust enum       | internal      | Modify         | backend         | pool routing           | 专门表示“可用候选都被 429 cooldown 挡住” |
+| `pool_upstream_accounts.last_route_failure_kind`          | SQLite column   | internal      | Add            | backend         | account resolver / ops | 避免依赖 `last_error` 文本解析           |
+| pool `/v1/*` rate-limited terminal                        | HTTP behavior   | external      | Modify         | backend         | pool callers           | 状态码统一为 `429`，JSON 壳不变          |
+| `pool_upstream_request_attempts.same_account_retry_index` | SQLite behavior | internal      | Modify         | backend         | ops / attempts API     | `429` 路径固定为 `1`                     |
 
 ## 验收标准（Acceptance Criteria）
 
@@ -94,20 +88,6 @@
 - Given 全部账号都已处于有效 `429` cooldown，When 新请求到达，Then resolver 直接返回 rate-limited 终态，且无需额外上游尝试。
 - Given 3 个不同账号连续返回 `429`，When failover 预算耗尽，Then外部状态码为 `429`，同时 attempts 中保留 3 条 `http_failure` 与 1 条 `budget_exhausted_final`。
 - Given 上游返回 `500` 或 transport / handshake / first-chunk failure，When 同账号仍有预算，Then 行为保持为同账号重试，不被这次修复改变。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `cargo test pool_route_ -- --test-threads=1`
-- `cargo check`
-- `cargo fmt --check`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-- `docs/specs/m2f8k-pool-upstream-attempt-observability/SPEC.md`
-- 后续硬失效矩阵与账号动作审计扩展由 `docs/specs/k2z9h-pool-account-hard-failure-audit/SPEC.md` 继续承接
 
 ## 方案概述（Approach, high-level）
 

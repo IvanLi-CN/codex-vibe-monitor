@@ -1,11 +1,5 @@
 # Bun-first 工具链收敛（#tr4ev）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-03-12
-- Last: 2026-03-12
-
 ## 背景 / 问题陈述
 
 - 仓库当前把 `npm` / `npx` / Node 20 作为前端与交付链路默认入口：`README.md`、`AGENTS.md`、`lefthook.yml`、`Dockerfile`、`.github/workflows/ci.yml`、`web/package.json` 都直接依赖这些命令。
@@ -77,23 +71,6 @@
 - Given GitHub PR CI 运行，When 进入 `Lint & Format Check` 与 `Build Artifacts`，Then workflow 使用 `setup-bun` 和 Bun 安装流程，并在 `Build Artifacts` 内完成 Docker smoke。
 - Given Docker build 使用新的 web builder，When 构建镜像并运行 `/.github/scripts/smoke-test-image.sh`，Then 镜像可以成功产出前端静态资源并通过 `/health` smoke。
 - Given 运行 Bun-first guard，When 扫描运营面文件，Then 不再命中禁止项；若重新引入禁止项则 guard 失败。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `bun install --frozen-lockfile`
-- `cd web && bun install --frozen-lockfile`
-- `cargo fmt --all -- --check`
-- `cargo check --locked --all-targets --all-features`
-- `cargo test --locked --all-features`
-- `cd web && bun run lint`
-- `cd web && bun run test`
-- `cd web && bun run build`
-- `cd web && bun run build-storybook`
-- `bun run check:bun-first`
-- `docker build -t codex-vibe-monitor:bun-smoke --build-arg APP_EFFECTIVE_VERSION=dev .`
-- `./.github/scripts/smoke-test-image.sh codex-vibe-monitor:bun-smoke`
 
 ### Quality checks
 

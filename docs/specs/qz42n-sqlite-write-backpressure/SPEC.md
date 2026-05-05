@@ -1,12 +1,5 @@
 # SQLite 写入可靠性与后台背压（#qz42n）
 
-## 状态
-
-- Status: 已实现，待 PR / CI / review-proof 收敛
-- Created: 2026-04-26
-- Last: 2026-04-26
-- Flow: fast-track，merge-ready PR，不自动合并
-
 ## 背景 / 问题陈述
 
 - 2026-04-26 15:30-16:30 CST 的 101 生产排查显示，新增 OAuth 上游账号期间应用层返回 44 次 `502 Bad Gateway`，同时日志出现 11 次 SQLite `database is locked`，并伴随多条 28-30 秒连接等待与 `pool timed out while waiting for an open connection`。

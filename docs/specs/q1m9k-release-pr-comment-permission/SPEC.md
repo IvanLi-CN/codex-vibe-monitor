@@ -1,11 +1,5 @@
 # Release PR 评论权限补齐（#q1m9k）
 
-## 状态
-
-- Status: 进行中
-- Created: 2026-03-17
-- Last: 2026-03-17
-
 ## 背景 / 问题陈述
 
 - `Release` workflow 已经执行到 `Upsert PR release version comment`，但线上真实 run 对 `PR #161` 返回 `Resource not accessible by integration`。

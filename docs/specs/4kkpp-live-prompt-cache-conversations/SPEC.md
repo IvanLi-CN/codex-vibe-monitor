@@ -1,11 +1,5 @@
 # Live 对话统计（按 Prompt Cache Key）— 无统计表方案（#4kkpp）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-03-03
-- Last: 2026-03-03
-
 ## 背景 / 问题陈述
 
 - Live 页已有请求级与代理级视图，但缺少“按 Prompt Cache Key 归并后的对话级”观察能力。

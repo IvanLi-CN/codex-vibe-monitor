@@ -1,11 +1,5 @@
 # 第三方上游账号开放 API 与 APIKey 管理（#q6mys）
 
-## 状态
-
-- Status: 待实现
-- Created: 2026-04-17
-- Last: 2026-04-17
-
 ## 背景 / 问题陈述
 
 - 当前上游账号管理接口只面向站内 same-origin 写入，第三方号源无法稳定地批量填充、更新或修复 OAuth 上游账号。
@@ -85,11 +79,11 @@
 
 ### 接口清单（Inventory）
 
-| 接口（Name） | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers） | 备注（Notes） |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| External API keys management | HTTP API | internal | New | ./contracts/http-apis.md | backend / web | settings | `/api/settings/external-api-keys` |
-| External OAuth upstream accounts | HTTP API | external | New | ./contracts/http-apis.md | backend | third-party source provider | `/api/external/v1/upstream-accounts/oauth/*` |
-| External API keys + upstream mapping schema | DB | internal | New / Modify | ./contracts/db.md | backend | sqlite runtime | 新表 + 账号映射列 |
+| 接口（Name）                                | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers）         | 备注（Notes）                                |
+| ------------------------------------------- | ------------ | ------------- | -------------- | ------------------------ | --------------- | --------------------------- | -------------------------------------------- |
+| External API keys management                | HTTP API     | internal      | New            | ./contracts/http-apis.md | backend / web   | settings                    | `/api/settings/external-api-keys`            |
+| External OAuth upstream accounts            | HTTP API     | external      | New            | ./contracts/http-apis.md | backend         | third-party source provider | `/api/external/v1/upstream-accounts/oauth/*` |
+| External API keys + upstream mapping schema | DB           | internal      | New / Modify   | ./contracts/db.md        | backend         | sqlite runtime              | 新表 + 账号映射列                            |
 
 ### 契约文档（按 Kind 拆分）
 
@@ -113,14 +107,6 @@
 - `external_client_id + sourceAccountId` 作为第三方幂等主键已确认。
 - 允许在 `external_api_keys` 中新增稳定 `client_id` 以承载 key 轮换后的归属连续性。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- Unit tests: external API key create / rotate / disable / auth；external OAuth upsert / patch / relogin helper。
-- Integration tests: route-level 401/403/404/409 映射、同 client 幂等、跨 client 隔离、relogin 同步恢复。
-- E2E tests (if applicable): none。
-
 ### UI / Storybook (if applicable)
 
 - Stories to add/update: `web/src/components/SettingsPage.stories.tsx`
@@ -136,12 +122,6 @@
 - `cd web && bun run test`
 - `cd web && bun run build`
 - `cd web && bun run build-storybook`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`: 增加 spec 索引行
-- `docs/specs/q6mys-external-upstream-api-keys/contracts/http-apis.md`: 记录开放接口与内部管理接口
-- `docs/specs/q6mys-external-upstream-api-keys/contracts/db.md`: 记录 schema 变更与 rollout
 
 ## 计划资产（Plan assets）
 

@@ -1,11 +1,5 @@
 # `main` 主干保护禁止直推与 PR 全检查必过（#wjowd）
 
-## 状态
-
-- Status: 已实现，待 PR / CI / review-proof 收敛
-- Created: 2026-04-22
-- Last: 2026-04-22
-
 ## 背景 / 问题陈述
 
 - 仓库已经声明 `main` 需要 PR 与 required checks，但实际 GitHub ruleset 仍允许高权限身份直接 push。

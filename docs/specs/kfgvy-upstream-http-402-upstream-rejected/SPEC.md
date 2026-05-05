@@ -1,11 +1,5 @@
 # 402 `deactivated_workspace` 账号状态改判为上游拒绝（#kfgvy）
 
-## 状态
-
-- Status: 已完成（5/5，PR #244）
-- Created: 2026-03-26
-- Last: 2026-04-08
-
 ## 背景 / 问题陈述
 
 - 线上账号详情抽屉已经把最近动作原因结构化记录为 `upstream_http_402`，同时保留了 `HTTP 402` 与 `{"detail":{"code":"deactivated_workspace"}}` 原文。

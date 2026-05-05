@@ -1,11 +1,5 @@
 # 上游账号列表 100ms / 10ms 延迟治理（#uhn89）
 
-## 状态
-
-- Status: 已实现，待 PR / CI / review-proof 收敛
-- Created: 2026-04-22
-- Last: 2026-04-22
-
 ## 背景 / 问题陈述
 
 - 当前 `/api/pool/upstream-accounts` 在列表请求内同步计算窗口 `actualUsage`，会把 `#43bpp` 的窗口统计直接串进号池首屏链路。

@@ -1,11 +1,5 @@
 # 请求日志可观测性增强（IP / Cache Tokens / 分阶段耗时 / Prompt Cache Key）（#z9h7v）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-02-25
-- Last: 2026-02-25
-
 ## 背景 / 问题陈述
 
 - 当前 `/api/invocations` 虽已包含 token 与成本，但缺少请求方来源信息（IP）、稳定请求标识（prompt cache key）与易读的阶段耗时展示。
@@ -97,14 +91,6 @@
 - Given 成功或失败记录，When 用户展开表格详情，Then 可见 endpoint、failureKind 与完整阶段耗时。
 - Given 旧记录或 `source=xy` 记录缺扩展字段，When 页面渲染，Then 不崩溃且缺值显示 `—`。
 - Given 历史 proxy 记录存在 `request_raw_path` 且 payload 缺 `promptCacheKey`，When 服务启动完成，Then 字段被自动回填且不会重复更新已完成记录。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `cargo test`
-- `cargo check`
-- `cd web && npm run build`
 
 ### Manual verification
 

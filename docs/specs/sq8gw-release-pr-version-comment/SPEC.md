@@ -1,11 +1,5 @@
 # Release 工作流 PR 版本评论（#sq8gw）
 
-## 状态
-
-- Status: 进行中
-- Created: 2026-03-17
-- Last: 2026-03-17
-
 ## 背景 / 问题陈述
 
 - 现有 `Release` workflow 会创建 tag、GitHub Release 与多架构镜像，但 merged PR 本身不会收到“本次实际发布了哪个版本”的直接反馈。
@@ -66,8 +60,6 @@
 - Given 仓库执行 `python3 .github/scripts/check_quality_gates_contract.py --repo-root "$PWD" --profile final`
   When 校验 release workflow contract
   Then 新增的评论权限与步骤约束会被验证并通过。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
 
 ### Quality checks
 

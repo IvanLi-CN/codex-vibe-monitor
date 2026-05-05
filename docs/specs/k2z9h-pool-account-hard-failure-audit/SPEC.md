@@ -1,11 +1,5 @@
 # 号池硬失效账号淘汰与账号动作审计可视化（#k2z9h）
 
-## 状态
-
-- Status: 已完成（5/5）
-- Created: 2026-03-23
-- Last: 2026-03-23
-
 ## 背景 / 问题陈述
 
 - 号池在上游返回 `401`、`402`、`403` 与“额度耗尽型 `429`”时，仍缺少统一的硬失效收敛；部分路径会把账号继续保留在可用集合中，或只留下模糊 `last_error`。
@@ -50,12 +44,12 @@
 
 ## 接口契约（Interfaces & Contracts）
 
-| 接口（Name） | 类型（Kind） | 范围（Scope） | 变更（Change） | 使用方（Consumers） | 备注（Notes） |
-| --- | --- | --- | --- | --- | --- |
-| `pool_upstream_account_events` | SQLite table | internal | Add | backend / ops / web | 账号动作审计时间线 |
-| `pool_upstream_accounts.last_action_*` | SQLite columns | internal | Add | backend / web | 列表页最新动作摘要 |
-| `UpstreamAccountSummary` | Rust + TS type | internal | Modify | web | 新增 latest action 摘要字段 |
-| `UpstreamAccountDetail.recentActions` | Rust + TS type | internal | Modify | web | 固定返回最近 20 条动作 |
+| 接口（Name）                           | 类型（Kind）   | 范围（Scope） | 变更（Change） | 使用方（Consumers） | 备注（Notes）               |
+| -------------------------------------- | -------------- | ------------- | -------------- | ------------------- | --------------------------- |
+| `pool_upstream_account_events`         | SQLite table   | internal      | Add            | backend / ops / web | 账号动作审计时间线          |
+| `pool_upstream_accounts.last_action_*` | SQLite columns | internal      | Add            | backend / web       | 列表页最新动作摘要          |
+| `UpstreamAccountSummary`               | Rust + TS type | internal      | Modify         | web                 | 新增 latest action 摘要字段 |
+| `UpstreamAccountDetail.recentActions`  | Rust + TS type | internal      | Modify         | web                 | 固定返回最近 20 条动作      |
 
 ## 验收标准（Acceptance Criteria）
 
@@ -63,18 +57,6 @@
 - Given 上游返回带 quota / billing 语义的 `429`，When 账号被标记，Then 该账号不再作为 active candidate 参与后续路由，同时 UI 可直接看到来源、原因与最近事件。
 - Given 手动同步命中普通 `429` 或 `5xx`，When 同步结束，Then 账号保留可用状态，但 recent action 明确记录同步失败来源与原因。
 - Given 用户打开账号详情抽屉，When 该账号已有事件，Then 页面展示 latest action 卡片与 recent events 列表；若没有事件，则展示清晰空态。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-- `cargo fmt --check`
-- `cargo check`
-- `cargo test pool_route_ -- --test-threads=1`
-- `cd web && bun run test -- src/components/UpstreamAccountsTable.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx`
-
-## 文档更新（Docs to Update）
-
-- `docs/specs/README.md`
-- `docs/specs/h4p2x-pool-upstream-429-immediate-failover/SPEC.md`
 
 ## 方案概述（Approach, high-level）
 
