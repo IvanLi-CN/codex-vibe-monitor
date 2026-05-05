@@ -9,4 +9,5 @@
 
 ## Key Decisions
 
-- No separate historical decision record was present before this migration.
+- The migrated legacy plan is treated as completed historical project work and archived in the canonical catalog.
+- The original source remains retained under `docs/plan/**` until explicit delete approval.

@@ -5,13 +5,13 @@
 - Canonical spec: `docs/specs/vz7cz-claude-relay-api-stats/SPEC.md`
 - Migrated from legacy source: `docs/plan/0001:claude-relay-api-stats/PLAN.md`
 - Legacy source retention: pending delete approval
-- Implementation summary: 待实现
+- Implementation summary: 已完成；legacy plan migration records this topic as archived.
 
 ## Migrated Implementation Notes
 
 ## 状态
 
-- Status: 待实现
+- Status: 已完成
 - Created: 2026-01-16
 - Last: 2026-01-16
 
@@ -43,6 +43,6 @@
 
 ## 里程碑（Milestones）
 
-- [ ] M1: 明确外部接口契约与口径（含样例数据/时区/回退策略）。
-- [ ] M2: 数据库结构与增量计算方案确定（来源区分 + 日统计快照）。
-- [ ] M3: 统计 API/SSE 合并口径方案与测试清单确认。
+- [x] M1: 明确外部接口契约与口径（含样例数据/时区/回退策略）。
+- [x] M2: 数据库结构与增量计算方案确定（来源区分 + 日统计快照）。
+- [x] M3: 统计 API/SSE 合并口径方案与测试清单确认。
