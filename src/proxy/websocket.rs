@@ -1078,6 +1078,7 @@ async fn persist_ws_usage_event(
         pool_distinct_account_count: None,
         pool_attempt_terminal_reason: None,
     });
+    let payload = mark_websocket_payload_transport(payload)?;
     let is_failed_terminal_event = event.event_type == "response.failed";
     let failure_kind = ws_terminal_event_failure_kind(&event.event_type);
     persist_and_broadcast_proxy_capture_runtime_snapshot(
@@ -1114,6 +1115,18 @@ async fn persist_ws_usage_event(
         },
     )
     .await
+}
+
+fn mark_websocket_payload_transport(payload: String) -> Result<String> {
+    let mut value = serde_json::from_str::<Value>(&payload)
+        .context("failed to parse websocket proxy payload summary")?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "transport".to_string(),
+            Value::String("websocket".to_string()),
+        );
+    }
+    serde_json::to_string(&value).context("failed to serialize websocket proxy payload summary")
 }
 
 fn ws_terminal_event_failure_kind(event_type: &str) -> Option<&'static str> {
@@ -1919,6 +1932,24 @@ mod websocket_tests {
         assert_eq!(event.usage.output_tokens, Some(3));
         assert_eq!(event.usage.cache_input_tokens, Some(2));
         assert_eq!(event.usage.total_tokens, Some(10));
+    }
+
+    #[test]
+    fn websocket_usage_payload_marks_transport() {
+        let payload = mark_websocket_payload_transport(
+            r#"{"endpoint":"/v1/responses","model":"gpt-5.5"}"#.to_string(),
+        )
+        .expect("marked payload");
+        let value: Value = serde_json::from_str(&payload).expect("json payload");
+
+        assert_eq!(
+            value.get("transport").and_then(Value::as_str),
+            Some("websocket")
+        );
+        assert_eq!(
+            value.get("endpoint").and_then(Value::as_str),
+            Some("/v1/responses")
+        );
     }
 
     #[test]

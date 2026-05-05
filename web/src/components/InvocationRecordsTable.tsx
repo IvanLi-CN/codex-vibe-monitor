@@ -32,6 +32,7 @@ import { Alert } from "./ui/alert";
 import { Badge } from "./ui/badge";
 import { Spinner } from "./ui/spinner";
 import { cn } from "../lib/utils";
+import { renderInvocationTransportBadge } from "./invocation-transport-badge";
 
 interface InvocationRecordsTableProps {
   focus: InvocationFocus;
@@ -335,10 +336,13 @@ function renderDetailSummaryStrip(
           {t("table.column.model")}
         </div>
         <div
-          className="flex items-start gap-1 text-sm font-medium"
+          className="flex items-center gap-1 text-sm font-medium"
           title={row.modelValue}
         >
-          <span className="min-w-0 flex-1 truncate">{row.modelValue}</span>
+          <span className="min-w-0 max-w-full truncate leading-none">
+            {row.modelValue}
+          </span>
+          {renderInvocationTransportBadge(row.record)}
           {renderFastIndicator(row.fastIndicatorState, t)}
         </div>
         <div className="mt-2 w-fit max-w-full">
@@ -947,12 +951,13 @@ export function InvocationRecordsTable({
               </div>
               <div className="mt-3">
                 <div
-                  className="flex items-start gap-1 text-sm font-medium"
+                  className="flex items-center gap-1 text-sm font-medium"
                   title={row.modelValue}
                 >
-                  <span className="min-w-0 flex-1 truncate">
+                  <span className="min-w-0 max-w-full truncate leading-none">
                     {row.modelValue}
                   </span>
+                  {renderInvocationTransportBadge(row.record)}
                   {renderFastIndicator(row.fastIndicatorState, t)}
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-2 text-xs font-mono text-base-content/70">
@@ -1057,12 +1062,13 @@ export function InvocationRecordsTable({
                     </td>
                     <td className="max-w-[14rem] px-3 py-3 align-middle text-left text-xs">
                       <div
-                        className="flex items-start gap-1"
+                        className="flex items-center gap-1"
                         title={row.modelValue}
                       >
-                        <span className="min-w-0 flex-1 truncate">
+                        <span className="min-w-0 max-w-full truncate leading-none">
                           {row.modelValue}
                         </span>
+                        {renderInvocationTransportBadge(row.record)}
                         {renderFastIndicator(row.fastIndicatorState, t)}
                       </div>
                     </td>

@@ -92,6 +92,7 @@ function createPreview(
     downstreamStatusCode: overrides.downstreamStatusCode,
     downstreamErrorMessage: overrides.downstreamErrorMessage,
     failureKind: overrides.failureKind,
+    transport: overrides.transport,
     requestedServiceTier: overrides.requestedServiceTier ?? "priority",
     serviceTier: overrides.serviceTier ?? "priority",
     tReqReadMs: overrides.tReqReadMs ?? 10,
@@ -311,6 +312,39 @@ function rerenderSectionWithCards(
 }
 
 describe("DashboardWorkingConversationsSection", () => {
+  it("renders the WS transport badge only in websocket invocation slots", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-ws-transport", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-current-ws",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "running",
+            transport: "websocket",
+          }),
+          createPreview({
+            id: 2,
+            invokeId: "invoke-previous-http",
+            occurredAt: "2026-04-04T10:03:00Z",
+            status: "failed",
+            transport: "http",
+          }),
+        ]),
+      ]),
+    );
+
+    const badges = host?.querySelectorAll(
+      '[data-testid="invocation-transport-badge"]',
+    );
+    expect(badges).toHaveLength(1);
+    expect(
+      badges?.[0]?.querySelector('[aria-hidden="true"]')?.textContent,
+    ).toBe("WS");
+    expect(badges?.[0]?.textContent).toContain("WebSocket transport");
+    expect(badges?.[0]?.getAttribute("title")).toBe("WebSocket");
+  });
+
   it("shows a bare hash in the card header while keeping the raw prompt cache key non-visible", () => {
     const cards = renderSection(
       createResponse([

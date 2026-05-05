@@ -14,6 +14,8 @@
 - 已实现：Responses WS terminal usage 事件的保守计费解析，完整 `input_tokens` + `output_tokens` 才生成 invocation/cost 记录。
 - 已实现：upstream WS text 帧先转发给 downstream，再执行 terminal usage 持久化，避免计费写入阻塞 `response.completed` 交付。
 - 已实现：设置页可保存 downstream WS 与 upstream WS 默认开关，后续 WS 请求运行时读取持久化全局设置；账号池 Storybook 展示 `不支持 WS` 系统标签。
+- 已实现：WebSocket terminal usage 记录在 payload 中持久化 `transport="websocket"`；调用列表、SSE records、prompt-cache conversation preview 和账号 sticky preview 均序列化该字段。
+- 已实现：监控 UI 只在 WebSocket 调用记录上显示轻量 `WS` badge；普通 HTTP/旧记录保持无协议 badge。
 
 ## Account Failover
 
@@ -34,3 +36,6 @@
 - Storybook visual evidence:
   - `docs/specs/w5s2x-openai-websocket-proxy/assets/upstream-account-ws-unsupported-badge.png`
   - `docs/specs/w5s2x-openai-websocket-proxy/assets/settings-websocket-global-switches.png`
+  - `docs/specs/w5s2x-openai-websocket-proxy/assets/ws-badge-latest-records.png`
+  - `docs/specs/w5s2x-openai-websocket-proxy/assets/ws-badge-request-records.png`
+  - `docs/specs/w5s2x-openai-websocket-proxy/assets/ws-badge-working-conversations.png`

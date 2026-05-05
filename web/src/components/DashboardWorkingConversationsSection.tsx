@@ -36,6 +36,7 @@ import {
   renderEndpointSummary,
   renderFastIndicator,
 } from "./invocation-details-shared";
+import { renderInvocationTransportBadge } from "./invocation-transport-badge";
 
 interface DashboardWorkingConversationsSectionProps {
   cards: DashboardWorkingConversationCardModel[];
@@ -540,6 +541,10 @@ function InvocationSlot({
             />
             <span>{statusLabel}</span>
           </Badge>
+          {renderInvocationTransportBadge(
+            invocation.record,
+            "h-4.5 border-primary/45 bg-primary/10 px-1.5 text-[8.5px]",
+          )}
           <div className="flex h-5 shrink-0 items-center">
             {renderEndpointSummary(
               viewModel.endpointDisplay,
@@ -619,7 +624,7 @@ function InvocationSlot({
               >
                 <span
                   data-testid="dashboard-working-conversation-model-name"
-                  className="min-w-0 truncate font-mono"
+                  className="min-w-0 truncate font-mono leading-none"
                 >
                   {viewModel.modelValue}
                 </span>

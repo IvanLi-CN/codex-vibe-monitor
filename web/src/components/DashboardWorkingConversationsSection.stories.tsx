@@ -76,6 +76,7 @@ function createPreview(
         ? (overrides.upstreamAccountName ?? null)
         : "pool-alpha@example.com",
     endpoint: overrides.endpoint ?? "/v1/responses",
+    transport: overrides.transport,
     source: overrides.source ?? "pool",
     inputTokens: overrides.inputTokens ?? 148,
     outputTokens: overrides.outputTokens ?? 92,
@@ -179,6 +180,7 @@ function buildRecordFromPreview(
     upstreamAccountId: preview.upstreamAccountId ?? null,
     upstreamAccountName: preview.upstreamAccountName ?? undefined,
     endpoint: preview.endpoint ?? undefined,
+    transport: preview.transport,
     model: preview.model ?? undefined,
     status: preview.status,
     inputTokens: preview.inputTokens,
@@ -259,6 +261,40 @@ const runningOnlyResponse = createResponse([
       status: "completed",
       upstreamAccountName: "watch-alpha@example.com",
       model: "gpt-5.4-mini",
+    }),
+  ]),
+]);
+
+const transportBadgeResponse = createResponse([
+  createConversation("pck-websocket-mixed", [
+    createPreview({
+      id: 36,
+      invokeId: "invoke-ws-current",
+      occurredAt: "2026-04-04T10:04:55Z",
+      status: "running",
+      transport: "websocket",
+      upstreamAccountName: "ws-alpha@example.com",
+      reasoningEffort: "medium",
+      tTotalMs: null,
+    }),
+    createPreview({
+      id: 35,
+      invokeId: "invoke-http-previous",
+      occurredAt: "2026-04-04T10:02:28Z",
+      status: "completed",
+      transport: null,
+      upstreamAccountName: "ws-alpha@example.com",
+      model: "gpt-5.4-mini",
+    }),
+  ]),
+  createConversation("pck-http-control", [
+    createPreview({
+      id: 34,
+      invokeId: "invoke-http-control",
+      occurredAt: "2026-04-04T10:03:42Z",
+      status: "completed",
+      upstreamAccountName: "http-control@example.com",
+      model: "gpt-5.4",
     }),
   ]),
 ]);
@@ -1145,6 +1181,34 @@ export const RunningOnlyConversation: Story = {
     cards: buildCards(runningOnlyResponse),
     isLoading: false,
     error: null,
+  },
+};
+
+export const TransportBadgeMixed: Story = {
+  args: {
+    cards: buildCards(transportBadgeResponse),
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Mixed transport working-conversation cards. The current WebSocket invocation shows `WS` between the status badge and endpoint pill; the previous HTTP slot stays unbadged.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const badges = canvasElement.querySelectorAll(
+      '[data-testid="invocation-transport-badge"]',
+    );
+    expect(badges.length).toBeGreaterThanOrEqual(1);
+    expect(
+      Array.from(badges).every(
+        (badge) =>
+          badge.querySelector('[aria-hidden="true"]')?.textContent === "WS",
+      ),
+    ).toBe(true);
   },
 };
 

@@ -197,6 +197,7 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
                 response_content_encoding: normalize_trimmed_optional_string(
                     row.response_content_encoding,
                 ),
+                transport: normalize_trimmed_optional_string(row.transport),
                 requested_service_tier: normalize_trimmed_optional_string(
                     row.requested_service_tier,
                 ),
@@ -396,4 +397,3 @@ fn resolve_prompt_cache_upstream_account_group_key(
     }
     "unknown".to_string()
 }
-

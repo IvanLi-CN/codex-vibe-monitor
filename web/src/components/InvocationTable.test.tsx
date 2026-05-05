@@ -337,6 +337,55 @@ describe("getReasoningEffortTone", () => {
 });
 
 describe("InvocationTable", () => {
+  it("renders the WS transport badge for websocket records", () => {
+    const websocketHtml = renderTable([
+      {
+        id: 21,
+        invokeId: "invocation-ws-transport",
+        occurredAt: "2026-03-07T03:13:52Z",
+        createdAt: "2026-03-07T03:13:52Z",
+        source: "proxy",
+        endpoint: "/v1/responses",
+        model: "gpt-5.5",
+        status: "success",
+        transport: "websocket",
+      },
+    ]);
+
+    expect(websocketHtml).toContain('data-testid="invocation-transport-badge"');
+    expect(websocketHtml).toContain('aria-hidden="true">WS</span>');
+    expect(websocketHtml).toContain("WebSocket transport");
+    expect(websocketHtml).toContain('title="WebSocket"');
+  });
+
+  it("does not render the WS transport badge for http or legacy records", () => {
+    const html = renderTable([
+      {
+        id: 22,
+        invokeId: "invocation-http-transport",
+        occurredAt: "2026-03-07T03:13:51Z",
+        createdAt: "2026-03-07T03:13:51Z",
+        source: "proxy",
+        endpoint: "/v1/responses",
+        model: "gpt-5.5",
+        status: "success",
+        transport: "http",
+      },
+      {
+        id: 23,
+        invokeId: "invocation-legacy-transport",
+        occurredAt: "2026-03-07T03:13:50Z",
+        createdAt: "2026-03-07T03:13:50Z",
+        source: "proxy",
+        endpoint: "/v1/responses",
+        model: "gpt-5.5",
+        status: "success",
+      },
+    ]);
+
+    expect(html).not.toContain('data-testid="invocation-transport-badge"');
+  });
+
   it("renders resolved failure rows as failed even when the raw status still says running", () => {
     const html = renderTable([
       {
