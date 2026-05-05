@@ -96,14 +96,6 @@
 
 - 启动 backend/frontend 后打开 `/dashboard` 与 `/#/live`，验证新增列与详情展开可用。
 
-## 实现里程碑（Milestones / Delivery checklist）
-
-- [x] M1: specs-first 建档与索引更新。
-- [x] M2: 后端采集与接口输出增强（IP/prompt cache key/payload 投影）。
-- [x] M3: 前端表格与文案升级（主表 + 详情）。
-- [x] M4: 历史记录全量回填与幂等校验。
-- [x] M5: 回归验证通过并完成本地提交。
-
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
 - 风险：上游请求不保证稳定携带 `prompt_cache_key`，仍可能出现正常缺失。

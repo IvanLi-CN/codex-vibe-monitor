@@ -32,3 +32,11 @@
   - main-agent => 在 101 上执行 dry-run、记录预计归档行数/文件/磁盘变化，真实执行首次 cleanup、跑 `VACUUM`、收集 before/after 体积与 API 响应证据 (skill: $fast-flow)
 - wave: 6
   - main-agent => push 分支、创建 PR、附上 101 rollout 证据与回滚说明、收敛 checks 与 review 反馈直到状态清晰且可合并 (skill: $codex-review-loop + $fast-flow)
+
+## Migrated Implementation Sections
+
+## 101 Rollout Gate
+
+- 首次上线前先执行 `--retention-run-once --retention-dry-run`，确认预计归档行数、archive 文件数与磁盘变化。
+- 首次真实清理后，需要保留四组证据：dry-run 计数、archive batch 文件清单、数据库体积前后对比、`/api/stats/summary?window=all` 与 `/api/invocations?limit=200` 核验结果。
+- backlog cleanup 完成后，在维护窗口人工执行一次 `VACUUM`，不把它放进常驻任务。

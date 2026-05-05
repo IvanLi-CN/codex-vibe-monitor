@@ -120,12 +120,6 @@
 - 最近 30 天的 `codex_quota_snapshots` 逐条保留，更老日期只保留每天最后一条在线记录。
 - 前端旧 payload 缺失新字段时仍能稳定渲染，并在展开详情中默认按 `Full` 展示。
 
-## 101 Rollout Gate
-
-- 首次上线前先执行 `--retention-run-once --retention-dry-run`，确认预计归档行数、archive 文件数与磁盘变化。
-- 首次真实清理后，需要保留四组证据：dry-run 计数、archive batch 文件清单、数据库体积前后对比、`/api/stats/summary?window=all` 与 `/api/invocations?limit=200` 核验结果。
-- backlog cleanup 完成后，在维护窗口人工执行一次 `VACUUM`，不把它放进常驻任务。
-
 ## 参考
 
 - `README.md`

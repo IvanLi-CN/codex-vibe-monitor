@@ -63,13 +63,6 @@
   When 查看 immutable note 中的 `tags_csv`
   Then 只包含 `${image}:vX.Y.Z`。
 
-## 实现里程碑（Milestones / Delivery checklist）
-
-- [x] M1: 拆分 immutable tags 与 publish-time tags 责任边界
-- [x] M2: 让 `latest` 只受更高已发布 stable 影响
-- [x] M3: README 与脚本级回归测试对齐新语义
-- [ ] M4: fast-track 推进到 PR / CI / review 收敛
-
 ## 风险 / 假设（Risks / Assumptions）
 
 - 风险：历史 note 仍可能保存 `latest`，所以 release workflow 必须继续通过 `--resolve-publication-tags` 动态重算。

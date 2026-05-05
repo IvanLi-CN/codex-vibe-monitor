@@ -67,20 +67,6 @@
 - Given 阅读 `data-viz.md`，When 查找图表与数字展示规则，Then 能明确 count/cost/token 的颜色语义与热力图梯度来源。
 - Given 执行文档校验，When 运行 `bunx dprint check` 与 `cd web && bun run build-storybook`，Then 命令通过。
 
-### Quality checks
-
-- 保持 docs-only 变更
-- 文档不添加修订版标记或版本后缀
-- PR 标签满足 `type:docs` 与 `channel:stable`
-
-## 实现里程碑（Milestones / Delivery checklist）
-
-- [x] M1: 创建 `docs/ui/` 文档体系与主入口
-- [x] M2: 完成 foundations / components / patterns / data-viz / storybook 五份规范正文
-- [x] M3: 创建 spec 并同步索引与 README 入口
-- [x] M4: 完成本地验证（dprint、路径检查、Storybook build）
-- [x] M5: 完成 docs-only fast-track 交付（提交、PR、checks、review-loop、spec-sync）
-
 ## 方案概述（Approach, high-level）
 
 - 从现有 CSS、theme context、chart token、Storybook preview 与关键 stories 提取稳定事实。

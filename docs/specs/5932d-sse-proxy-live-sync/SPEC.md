@@ -84,13 +84,6 @@
 - 代理主链路不可因广播失败而失败。
 - 不新增显著阻塞路径与重复广播噪声。
 
-## 实现里程碑（Milestones / Delivery checklist）
-
-- [x] M1: 抽取落库后广播 helper，并改造 `persist_proxy_capture_record` 返回语义支持“是否新插入”。
-- [x] M2: 替换代理链路 5 处落库调用点为统一 helper。
-- [x] M3: 前端 `useInvocationStream` 增加 SSE open 后静默回源补齐。
-- [x] M4: 完成验证、提交、PR、checks 与 review-loop 收敛（fast-track）。
-
 ## 风险 / 假设
 
 - 风险：summary/quota 查询在高频代理流量下增加读压；通过错误隔离和轻量查询控制影响。

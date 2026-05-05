@@ -72,17 +72,6 @@
 - Given Docker build 使用新的 web builder，When 构建镜像并运行 `/.github/scripts/smoke-test-image.sh`，Then 镜像可以成功产出前端静态资源并通过 `/health` smoke。
 - Given 运行 Bun-first guard，When 扫描运营面文件，Then 不再命中禁止项；若重新引入禁止项则 guard 失败。
 
-### Quality checks
-
-- `codex --sandbox read-only -a never review --base origin/main`
-- PR required checks 保持为 `Validate PR labels`、`Lint & Format Check`、`Backend Tests`、`Build Artifacts`、`Review Policy Gate`
-
-## 实现里程碑（Milestones / Delivery checklist）
-
-- [x] M1: 建立 Bun-first spec，冻结“只改直接执行面、不动业务接口”的范围。
-- [x] M2: 完成仓库根与 `web/` 的 Bun lockfile、脚本、hooks、Docker、CI、文档迁移。
-- [x] M3: 跑通本地验证、Docker smoke、PR checks 与 review-loop 收敛。
-
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
 - 风险：Bun 与 Vite/Storybook/Playwright 的兼容性若有边角差异，可能首先暴露在 build 或 storybook 阶段；必须以实际命令验证收敛。
