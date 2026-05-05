@@ -265,7 +265,11 @@ export function renderFastIndicator(state: FastIndicatorState, t: Translator) {
       data-fast-state={state}
       role="img"
     >
-      <AppIcon name="lightning-bolt" className="h-3.5 w-3.5" aria-hidden />
+      <AppIcon
+        name="lightning-bolt"
+        className="h-3.5 w-3.5 -translate-y-px"
+        aria-hidden
+      />
     </span>
   );
 }
