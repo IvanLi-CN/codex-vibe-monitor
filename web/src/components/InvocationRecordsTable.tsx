@@ -339,7 +339,9 @@ function renderDetailSummaryStrip(
           className="flex items-center gap-1 text-sm font-medium"
           title={row.modelValue}
         >
-          <span className="min-w-0 flex-1 truncate">{row.modelValue}</span>
+          <span className="min-w-0 max-w-full truncate leading-none">
+            {row.modelValue}
+          </span>
           {renderInvocationTransportBadge(row.record)}
           {renderFastIndicator(row.fastIndicatorState, t)}
         </div>
@@ -952,7 +954,7 @@ export function InvocationRecordsTable({
                   className="flex items-center gap-1 text-sm font-medium"
                   title={row.modelValue}
                 >
-                  <span className="min-w-0 flex-1 truncate">
+                  <span className="min-w-0 max-w-full truncate leading-none">
                     {row.modelValue}
                   </span>
                   {renderInvocationTransportBadge(row.record)}
@@ -1063,7 +1065,7 @@ export function InvocationRecordsTable({
                         className="flex items-center gap-1"
                         title={row.modelValue}
                       >
-                        <span className="min-w-0 flex-1 truncate">
+                        <span className="min-w-0 max-w-full truncate leading-none">
                           {row.modelValue}
                         </span>
                         {renderInvocationTransportBadge(row.record)}

@@ -465,7 +465,7 @@ export function InvocationTable({
                     className="flex items-center justify-end gap-1 text-right"
                     title={row.modelValue}
                   >
-                    <span className="min-w-0 flex-1 truncate">
+                    <span className="min-w-0 max-w-full truncate leading-none">
                       {row.modelValue}
                     </span>
                     {renderInvocationTransportBadge(row.record)}
@@ -698,7 +698,7 @@ export function InvocationTable({
                         <div className="flex min-w-0 flex-col items-end justify-center gap-1 leading-tight text-right">
                           <div className="flex w-full items-center justify-end gap-1">
                             <span
-                              className="min-w-0 flex-1 truncate whitespace-nowrap text-base-content/85"
+                              className="min-w-0 max-w-full truncate whitespace-nowrap leading-none text-base-content/85"
                               title={row.modelValue}
                             >
                               {row.modelValue}

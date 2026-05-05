@@ -624,7 +624,7 @@ function InvocationSlot({
               >
                 <span
                   data-testid="dashboard-working-conversation-model-name"
-                  className="min-w-0 truncate font-mono"
+                  className="min-w-0 truncate font-mono leading-none"
                 >
                   {viewModel.modelValue}
                 </span>

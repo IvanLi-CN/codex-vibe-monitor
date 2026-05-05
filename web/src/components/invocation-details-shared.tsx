@@ -256,7 +256,7 @@ export function renderFastIndicator(state: FastIndicatorState, t: Translator) {
   return (
     <span
       className={cn(
-        "mt-0.5 inline-flex h-3.5 w-3.5 flex-none",
+        "inline-flex h-4 w-4 flex-none items-center justify-center",
         isEffective ? "text-amber-500" : "text-base-content/50",
       )}
       title={t(titleKey)}
