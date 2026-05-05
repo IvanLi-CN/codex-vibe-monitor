@@ -71,16 +71,16 @@
 
 Canonical spec targets have been established for the legacy plans below. The legacy files remain in place until explicit delete approval is granted.
 
-- `docs/plan/0001:claude-relay-api-stats/PLAN.md` -> `docs/specs/0001-claude-relay-api-stats/SPEC.md`
-- `docs/plan/0002:pr-label-release/PLAN.md` -> `docs/specs/0002-pr-label-release/SPEC.md`
-- `docs/plan/0003:dev-runtime-service-manager/PLAN.md` -> `docs/specs/0003-dev-runtime-service-manager/SPEC.md`
-- `docs/plan/0004:reporting-timezone-natural-day/PLAN.md` -> `docs/specs/0004-reporting-timezone-natural-day/SPEC.md`
-- `docs/plan/0005:openai-reverse-proxy/PLAN.md` -> `docs/specs/0005-openai-reverse-proxy/SPEC.md`
-- `docs/plan/0006:proxy-model-list-hijack/PLAN.md` -> `docs/specs/0006-proxy-model-list-hijack/SPEC.md`
-- `docs/plan/0007:proxy-mitm-usage-billing/PLAN.md` -> `docs/specs/0007-proxy-mitm-usage-billing/SPEC.md`
-- `docs/plan/0008:proxy-stream-stability/PLAN.md` -> `docs/specs/0008-proxy-stream-stability/SPEC.md`
-- `docs/plan/0009:proxy-usage-backfill-and-source-scope/PLAN.md` -> `docs/specs/0009-proxy-usage-backfill-and-source-scope/SPEC.md`
+- `docs/plan/0001:claude-relay-api-stats/PLAN.md` -> `docs/specs/vz7cz-claude-relay-api-stats/SPEC.md`
+- `docs/plan/0002:pr-label-release/PLAN.md` -> `docs/specs/2fm9n-pr-label-release/SPEC.md`
+- `docs/plan/0003:dev-runtime-service-manager/PLAN.md` -> `docs/specs/yy98c-dev-runtime-service-manager/SPEC.md`
+- `docs/plan/0004:reporting-timezone-natural-day/PLAN.md` -> `docs/specs/4by8g-reporting-timezone-natural-day/SPEC.md`
+- `docs/plan/0005:openai-reverse-proxy/PLAN.md` -> `docs/specs/txxr2-openai-reverse-proxy/SPEC.md`
+- `docs/plan/0006:proxy-model-list-hijack/PLAN.md` -> `docs/specs/5t6re-proxy-model-list-hijack/SPEC.md`
+- `docs/plan/0007:proxy-mitm-usage-billing/PLAN.md` -> `docs/specs/jpwap-proxy-mitm-usage-billing/SPEC.md`
+- `docs/plan/0008:proxy-stream-stability/PLAN.md` -> `docs/specs/a7gcp-proxy-stream-stability/SPEC.md`
+- `docs/plan/0009:proxy-usage-backfill-and-source-scope/PLAN.md` -> `docs/specs/8ufum-proxy-usage-backfill-and-source-scope/SPEC.md`
 - `docs/plan/0009:proxy-gzip-usage-capture/PLAN.md` -> `docs/specs/zw9cs-proxy-gzip-usage-capture/SPEC.md`
-- `docs/plan/0010:startup-backfill-sqlite-lock/PLAN.md` -> `docs/specs/0010-startup-backfill-sqlite-lock/SPEC.md`
+- `docs/plan/0010:startup-backfill-sqlite-lock/PLAN.md` -> `docs/specs/pr834-startup-backfill-sqlite-lock/SPEC.md`
 - `docs/plan/fd4pw-proxy-request-read-timeout-rc-fix/PLAN.md` -> `docs/specs/fd4pw-proxy-request-read-timeout-rc-fix/SPEC.md`
 - `docs/plan/enqq6-settings-pricing-unified/PLAN.md` -> `docs/specs/enqq6-settings-pricing-unified/SPEC.md`
