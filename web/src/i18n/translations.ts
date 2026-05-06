@@ -968,7 +968,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.oauth.callbackUrlPlaceholder":
       "http://localhost:43210/oauth/callback?code=...&state=...",
     "accountPool.upstreamAccounts.oauth.mailboxHint":
-      "Generate a temp mailbox or enter a MoeMail address here. Supported addresses keep code parsing and invite detection enabled.",
+      "Generate a temp mailbox or enter a KaisouMail address here. Supported addresses keep code parsing and invite detection enabled.",
     "accountPool.upstreamAccounts.oauth.mailboxEmpty": "No mailbox yet",
     "accountPool.upstreamAccounts.oauth.mailboxInputPlaceholder":
       "Enter a supported mailbox address or generate a new one",
@@ -996,9 +996,9 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.oauth.mailboxUnsupportedInvalidFormat":
       "This does not look like a valid email address, so mailbox enhancements stay disabled.",
     "accountPool.upstreamAccounts.oauth.mailboxUnsupportedDomain":
-      "This mailbox domain is not supported by the current MoeMail integration, so mailbox enhancements stay disabled.",
+      "This mailbox domain is not supported by the current KaisouMail integration, so mailbox enhancements stay disabled.",
     "accountPool.upstreamAccounts.oauth.mailboxUnsupportedNotReadable":
-      "This mailbox is not readable through the current MoeMail integration, so mailbox enhancements stay disabled.",
+      "This mailbox is not readable through the current KaisouMail integration, so mailbox enhancements stay disabled.",
     "accountPool.upstreamAccounts.oauth.codeCardTitle": "Verification code",
     "accountPool.upstreamAccounts.oauth.codeCardEmpty":
       "No verification code detected yet.",
@@ -2827,7 +2827,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.oauth.callbackUrlPlaceholder":
       "http://localhost:43210/oauth/callback?code=...&state=...",
     "accountPool.upstreamAccounts.oauth.mailboxHint":
-      "这里既可以生成临时邮箱，也可以手动填写已接入的 MoeMail 邮箱；只有受支持地址才会继续启用验证码解析和邀请识别。",
+      "这里既可以生成临时邮箱，也可以手动填写已接入的 KaisouMail 邮箱；只有受支持地址才会继续启用验证码解析和邀请识别。",
     "accountPool.upstreamAccounts.oauth.mailboxEmpty": "还没有生成邮箱",
     "accountPool.upstreamAccounts.oauth.mailboxInputPlaceholder":
       "填写已支持的邮箱地址，或者直接生成一个新邮箱",
@@ -2851,9 +2851,9 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.oauth.mailboxUnsupportedInvalidFormat":
       "这个邮箱地址格式不正确，所以邮箱增强能力暂时不会启用。",
     "accountPool.upstreamAccounts.oauth.mailboxUnsupportedDomain":
-      "这个邮箱域名不在当前 MoeMail 集成支持范围内，所以邮箱增强能力暂时不会启用。",
+      "这个邮箱域名不在当前 KaisouMail 集成支持范围内，所以邮箱增强能力暂时不会启用。",
     "accountPool.upstreamAccounts.oauth.mailboxUnsupportedNotReadable":
-      "当前 MoeMail 集成暂时读不到这个邮箱，所以邮箱增强能力暂时不会启用。",
+      "当前 KaisouMail 集成暂时读不到这个邮箱，所以邮箱增强能力暂时不会启用。",
     "accountPool.upstreamAccounts.oauth.codeCardTitle": "验证码",
     "accountPool.upstreamAccounts.oauth.codeCardEmpty":
       "暂时还没有识别到验证码。",

@@ -1918,7 +1918,7 @@
 
     #[test]
     fn parse_mailbox_code_prefers_subject_match() {
-        let detail = MoeMailMessageDetail {
+        let detail = KaisouMailMessageDetail {
             id: "msg_1".to_string(),
             subject: Some("Your ChatGPT code is 612345".to_string()),
             content: Some("Ignore body 000000".to_string()),
@@ -1933,7 +1933,7 @@
 
     #[test]
     fn parse_mailbox_code_falls_back_to_body_match() {
-        let detail = MoeMailMessageDetail {
+        let detail = KaisouMailMessageDetail {
             id: "msg_2".to_string(),
             subject: Some("Security notice".to_string()),
             content: Some("Use this verification code: 481122 to continue.".to_string()),
@@ -1948,7 +1948,7 @@
 
     #[test]
     fn parse_mailbox_code_supports_localized_subjects() {
-        let detail = MoeMailMessageDetail {
+        let detail = KaisouMailMessageDetail {
             id: "msg_zh_subject".to_string(),
             subject: Some("你的 OpenAI 代码为 438211".to_string()),
             content: Some("如果这不是你本人操作，请重置密码。".to_string()),
@@ -1963,7 +1963,7 @@
 
     #[test]
     fn parse_mailbox_code_supports_localized_html_and_fullwidth_digits() {
-        let detail = MoeMailMessageDetail {
+        let detail = KaisouMailMessageDetail {
             id: "msg_zh_html".to_string(),
             subject: Some("安全提醒".to_string()),
             content: None,
@@ -1981,7 +1981,7 @@
 
     #[test]
     fn parse_mailbox_code_prefers_digits_after_marker() {
-        let detail = MoeMailMessageDetail {
+        let detail = KaisouMailMessageDetail {
             id: "msg_order_and_code".to_string(),
             subject: Some("OpenAI order update".to_string()),
             content: Some("Order 1234. Your verification code is 567890.".to_string()),
@@ -1996,7 +1996,7 @@
 
     #[test]
     fn parse_mailbox_code_rejects_weak_subject_match_without_local_brand() {
-        let detail = MoeMailMessageDetail {
+        let detail = KaisouMailMessageDetail {
             id: "msg_weak_subject_without_local_brand".to_string(),
             subject: Some("Your code is 123456".to_string()),
             content: Some("OpenAI account activity summary".to_string()),
@@ -2009,7 +2009,7 @@
 
     #[test]
     fn parse_mailbox_code_rejects_strong_subject_match_without_brand() {
-        let detail = MoeMailMessageDetail {
+        let detail = KaisouMailMessageDetail {
             id: "msg_strong_subject_without_brand".to_string(),
             subject: Some("验证码 123456".to_string()),
             content: Some("请在十分钟内完成验证。".to_string()),
@@ -2022,7 +2022,7 @@
 
     #[test]
     fn parse_mailbox_code_rejects_unrelated_numbers_without_code_semantics() {
-        let detail = MoeMailMessageDetail {
+        let detail = KaisouMailMessageDetail {
             id: "msg_negative_code".to_string(),
             subject: Some("OpenAI receipt 438211".to_string()),
             content: Some("Invoice total: 23.00 USD".to_string()),
@@ -2035,7 +2035,7 @@
 
     #[test]
     fn parse_mailbox_invite_extracts_workspace_link() {
-        let detail = MoeMailMessageDetail {
+        let detail = KaisouMailMessageDetail {
             id: "msg_3".to_string(),
             subject: Some("Alex has invited you to a workspace".to_string()),
             content: Some(
@@ -2056,7 +2056,7 @@
 
     #[test]
     fn parse_mailbox_invite_supports_localized_templates() {
-        let detail = MoeMailMessageDetail {
+        let detail = KaisouMailMessageDetail {
             id: "msg_zh_invite".to_string(),
             subject: Some("Alice 邀请你加入 OpenAI 工作区".to_string()),
             content: Some("请接受邀请：https://chatgpt.com/workspace/invite/abc123".to_string()),
@@ -2074,7 +2074,7 @@
 
     #[test]
     fn parse_mailbox_invite_accepts_body_only_workspace_invites() {
-        let detail = MoeMailMessageDetail {
+        let detail = KaisouMailMessageDetail {
             id: "msg_body_only_invite".to_string(),
             subject: Some("OpenAI workspace update".to_string()),
             content: Some(
@@ -2094,7 +2094,7 @@
 
     #[test]
     fn parse_mailbox_invite_accepts_query_driven_cta_links() {
-        let detail = MoeMailMessageDetail {
+        let detail = KaisouMailMessageDetail {
             id: "msg_query_invite".to_string(),
             subject: Some("Alice has invited you to a workspace".to_string()),
             content: Some(
@@ -2113,7 +2113,7 @@
 
     #[test]
     fn parse_mailbox_invite_accepts_body_only_invites_without_workspace_keyword() {
-        let detail = MoeMailMessageDetail {
+        let detail = KaisouMailMessageDetail {
             id: "msg_body_only_plain_invite".to_string(),
             subject: Some("OpenAI account notice".to_string()),
             content: Some("Accept invitation: https://chatgpt.com/invite/abc123".to_string()),
@@ -2127,7 +2127,7 @@
 
     #[test]
     fn parse_mailbox_invite_accepts_redirect_wrapped_brand_invites() {
-        let detail = MoeMailMessageDetail {
+        let detail = KaisouMailMessageDetail {
             id: "msg_redirect_wrapped_invite".to_string(),
             subject: Some("Alex has invited you to a workspace".to_string()),
             content: Some(
@@ -2146,7 +2146,7 @@
 
     #[test]
     fn parse_mailbox_invite_rejects_non_invite_workspace_links() {
-        let detail = MoeMailMessageDetail {
+        let detail = KaisouMailMessageDetail {
             id: "msg_negative_invite".to_string(),
             subject: Some("OpenAI workspace digest".to_string()),
             content: Some("Workspace docs: https://chatgpt.com/workspace".to_string()),
@@ -2159,7 +2159,7 @@
 
     #[test]
     fn parse_mailbox_invite_rejects_help_articles_about_accepting_invites() {
-        let detail = MoeMailMessageDetail {
+        let detail = KaisouMailMessageDetail {
             id: "msg_help_article".to_string(),
             subject: Some("OpenAI workspace help".to_string()),
             content: Some(
@@ -2175,7 +2175,7 @@
 
     #[test]
     fn parse_mailbox_invite_rejects_generic_workspace_url_even_with_invite_subject() {
-        let detail = MoeMailMessageDetail {
+        let detail = KaisouMailMessageDetail {
             id: "msg_negative_workspace_home".to_string(),
             subject: Some("Alice has invited you to a workspace".to_string()),
             content: Some("Open workspace: https://chatgpt.com/workspace".to_string()),
@@ -2214,7 +2214,7 @@
     }
 
     #[test]
-    fn normalize_mailbox_domain_accepts_common_moemail_variants() {
+    fn normalize_mailbox_domain_accepts_common_kaisoumail_variants() {
         assert_eq!(
             normalize_mailbox_domain("MAIL-TW.707079.XYZ"),
             Some("mail-tw.707079.xyz".to_string())
@@ -2231,17 +2231,54 @@
     }
 
     #[test]
-    fn moemail_supported_domains_normalize_config_tokens() {
-        let payload = MoeMailConfigPayload {
-            email_domains: Some(
-                "mail-tw.707079.xyz, @MAIL-US.707079.XYZ ; finance.lab.d5r@mail-eu.707079.xyz"
-                    .to_string(),
-            ),
+    fn kaisoumail_supported_domains_normalize_config_tokens() {
+        let payload = KaisouMailMetaPayload {
+            domains: vec![
+                "707079.xyz".to_string(),
+                "@707979.XYZ".to_string(),
+                "finance.lab.d5r@fkoai.asia".to_string(),
+            ],
         };
-        let domains = moemail_supported_domains(&payload);
-        assert!(domains.contains("mail-tw.707079.xyz"));
-        assert!(domains.contains("mail-us.707079.xyz"));
-        assert!(domains.contains("mail-eu.707079.xyz"));
+        let domains = kaisoumail_supported_domains(&payload);
+        assert!(domains.contains("707079.xyz"));
+        assert!(domains.contains("707979.xyz"));
+        assert!(domains.contains("fkoai.asia"));
+    }
+
+    #[test]
+    fn kaisoumail_split_mailbox_domain_uses_configured_mail_domain() {
+        let (subdomain, mail_domain) =
+            kaisoumail_split_mailbox_domain("mail-tw.707079.xyz", "707079.xyz")
+                .expect("split mailbox domain");
+        assert_eq!(subdomain, "mail-tw");
+        assert_eq!(mail_domain, "707079.xyz");
+    }
+
+    #[test]
+    fn validate_kaisoumail_mailbox_address_matches_requested_manual_address() {
+        let payload = KaisouMailMailboxPayload {
+            id: "mailbox_1".to_string(),
+            address: "Finance.Lab.D5R@mail-tw.707079.xyz".to_string(),
+            expires_at: None,
+        };
+        assert!(
+            validate_kaisoumail_mailbox_address_matches_request(
+                &payload,
+                "finance.lab.d5r@mail-tw.707079.xyz"
+            )
+            .is_ok()
+        );
+
+        let rewritten = KaisouMailMailboxPayload {
+            address: "other@mail-tw.707079.xyz".to_string(),
+            ..payload
+        };
+        let err = validate_kaisoumail_mailbox_address_matches_request(
+            &rewritten,
+            "finance.lab.d5r@mail-tw.707079.xyz",
+        )
+        .expect_err("rewritten address should be rejected");
+        assert!(err.to_string().contains("does not match requested"));
     }
 
     #[test]
@@ -2330,29 +2367,29 @@
     }
 
     #[test]
-    fn moemail_attach_status_is_not_readable_only_for_permission_and_missing() {
-        assert!(moemail_attach_status_is_not_readable(
+    fn kaisoumail_attach_status_is_not_readable_only_for_permission_and_missing() {
+        assert!(kaisoumail_attach_status_is_not_readable(
             reqwest::StatusCode::FORBIDDEN
         ));
-        assert!(moemail_attach_status_is_not_readable(
+        assert!(kaisoumail_attach_status_is_not_readable(
             reqwest::StatusCode::NOT_FOUND
         ));
-        assert!(!moemail_attach_status_is_not_readable(
+        assert!(!kaisoumail_attach_status_is_not_readable(
             reqwest::StatusCode::INTERNAL_SERVER_ERROR
         ));
-        assert!(!moemail_attach_status_is_not_readable(
+        assert!(!kaisoumail_attach_status_is_not_readable(
             reqwest::StatusCode::GATEWAY_TIMEOUT
         ));
     }
 
     #[tokio::test]
     async fn create_oauth_mailbox_session_accepts_supported_domain_variants_for_existing_mailbox() {
-        let harness = spawn_moemail_test_harness(
-            "@MAIL-TW.707079.XYZ, mail-us.707079.xyz",
+        let harness = spawn_kaisoumail_test_harness(
+            "@707079.XYZ, 707979.xyz",
             vec![(
                 "email_existing".to_string(),
                 "finance.lab.d5r@mail-tw.707079.xyz".to_string(),
-                Some("2026-03-20T12:50:00.000Z".to_string()),
+                Some("2026-06-01T00:00:00.000Z".to_string()),
             )],
         )
         .await;
@@ -2393,8 +2430,53 @@
     }
 
     #[tokio::test]
+    async fn create_oauth_mailbox_session_restores_expired_existing_mailbox_before_attach() {
+        let harness = spawn_kaisoumail_test_harness(
+            "@707079.xyz",
+            vec![(
+                "email_expired".to_string(),
+                "finance.lab.d5r@mail-tw.707079.xyz".to_string(),
+                Some("2026-03-20T12:50:00.000Z".to_string()),
+            )],
+        )
+        .await;
+        let payload: CreateOauthMailboxSessionRequest = serde_json::from_value(json!({
+            "emailAddress": "finance.lab.d5r@mail-tw.707079.xyz"
+        }))
+        .expect("deserialize mailbox request");
+
+        let Json(response) = create_oauth_mailbox_session(
+            State(harness.state.clone()),
+            HeaderMap::new(),
+            Json(payload),
+        )
+        .await
+        .expect("create mailbox session");
+
+        assert!(response.supported);
+        assert_eq!(
+            response.source.as_deref(),
+            Some(OAUTH_MAILBOX_SOURCE_ATTACHED)
+        );
+        assert_eq!(response.expires_at.as_deref(), Some("2026-06-01T00:00:00Z"));
+        let session_id = response.session_id.expect("session id");
+        let row = load_oauth_mailbox_session(&harness.state.pool, &session_id)
+            .await
+            .expect("load mailbox session")
+            .expect("stored mailbox session");
+        assert_eq!(row.remote_email_id, "email_expired");
+        assert_eq!(row.expires_at, "2026-06-01T00:00:00Z");
+        assert!(
+            harness.stub.generated_requests.lock().await.is_empty(),
+            "restoring an existing mailbox should not create a new one"
+        );
+
+        harness.abort();
+    }
+
+    #[tokio::test]
     async fn create_oauth_mailbox_session_creates_missing_supported_mailbox() {
-        let harness = spawn_moemail_test_harness("@mail-tw.707079.xyz", Vec::new()).await;
+        let harness = spawn_kaisoumail_test_harness("@707079.xyz", Vec::new()).await;
         let payload: CreateOauthMailboxSessionRequest = serde_json::from_value(json!({
             "emailAddress": "finance.lab.d5r@mail-tw.707079.xyz"
         }))
@@ -2438,7 +2520,7 @@
 
     #[tokio::test]
     async fn create_oauth_mailbox_session_rejects_true_unsupported_domains() {
-        let harness = spawn_moemail_test_harness("mail-us.707079.xyz", Vec::new()).await;
+        let harness = spawn_kaisoumail_test_harness("707979.xyz", Vec::new()).await;
         let payload: CreateOauthMailboxSessionRequest = serde_json::from_value(json!({
             "emailAddress": "finance.lab.d5r@mail-tw.707079.xyz"
         }))
@@ -2464,7 +2546,7 @@
 
     #[tokio::test]
     async fn delete_oauth_mailbox_session_deletes_remote_for_generated_manual_mailbox() {
-        let harness = spawn_moemail_test_harness("@mail-tw.707079.xyz", Vec::new()).await;
+        let harness = spawn_kaisoumail_test_harness("@707079.xyz", Vec::new()).await;
         let payload: CreateOauthMailboxSessionRequest = serde_json::from_value(json!({
             "emailAddress": "finance.lab.d5r@mail-tw.707079.xyz"
         }))
@@ -2507,8 +2589,8 @@
 
     #[tokio::test]
     async fn cleanup_expired_oauth_mailbox_sessions_deletes_remote_for_generated_manual_mailbox() {
-        let harness = spawn_moemail_test_harness(
-            "@mail-tw.707079.xyz",
+        let harness = spawn_kaisoumail_test_harness(
+            "@707079.xyz",
             vec![(
                 "generated_1".to_string(),
                 "finance.lab.d5r@mail-tw.707079.xyz".to_string(),
@@ -2558,17 +2640,17 @@
     #[test]
     fn collect_unseen_mailbox_messages_stops_at_last_seen_id() {
         let messages = vec![
-            MoeMailMessageSummary {
+            KaisouMailMessageSummary {
                 id: "msg_3".to_string(),
                 subject: Some("newest".to_string()),
                 received_at: Some("2026-03-16T03:00:00Z".to_string()),
             },
-            MoeMailMessageSummary {
+            KaisouMailMessageSummary {
                 id: "msg_2".to_string(),
                 subject: Some("baseline".to_string()),
                 received_at: Some("2026-03-16T02:00:00Z".to_string()),
             },
-            MoeMailMessageSummary {
+            KaisouMailMessageSummary {
                 id: "msg_1".to_string(),
                 subject: Some("older".to_string()),
                 received_at: Some("2026-03-16T01:00:00Z".to_string()),
@@ -2584,12 +2666,12 @@
     #[test]
     fn collect_unseen_mailbox_messages_keeps_all_when_baseline_is_missing() {
         let messages = vec![
-            MoeMailMessageSummary {
+            KaisouMailMessageSummary {
                 id: "msg_2".to_string(),
                 subject: None,
                 received_at: Some("2026-03-16T02:00:00Z".to_string()),
             },
-            MoeMailMessageSummary {
+            KaisouMailMessageSummary {
                 id: "msg_1".to_string(),
                 subject: None,
                 received_at: Some("2026-03-16T01:00:00Z".to_string()),
@@ -2606,12 +2688,12 @@
     #[test]
     fn next_mailbox_cursor_after_refresh_advances_to_latest_processed_message() {
         let processed = vec![
-            MoeMailMessageSummary {
+            KaisouMailMessageSummary {
                 id: "msg_5".to_string(),
                 subject: Some("latest".to_string()),
                 received_at: Some("2026-03-16T05:00:00Z".to_string()),
             },
-            MoeMailMessageSummary {
+            KaisouMailMessageSummary {
                 id: "msg_4".to_string(),
                 subject: Some("older".to_string()),
                 received_at: Some("2026-03-16T04:00:00Z".to_string()),

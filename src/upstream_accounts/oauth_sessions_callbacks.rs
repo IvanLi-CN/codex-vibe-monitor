@@ -155,22 +155,22 @@ pub(crate) async fn create_oauth_mailbox_session(
                 "invalid_format",
             )));
         }
-        let moemail_config = moemail_get_config(&state.http_clients.shared, config)
+        let kaisoumail_meta = kaisoumail_get_meta(&state.http_clients.shared, config)
             .await
             .map_err(internal_error_tuple)?;
-        let supported_domains = moemail_supported_domains(&moemail_config);
+        let supported_domains = kaisoumail_supported_domains(&kaisoumail_meta);
         let email_domain = manual_email_address
             .split('@')
             .nth(1)
             .unwrap_or_default()
             .to_ascii_lowercase();
-        if !supported_domains.is_empty() && !supported_domains.contains(&email_domain) {
+        if !kaisoumail_domain_is_supported(&email_domain, &supported_domains) {
             return Ok(Json(oauth_mailbox_session_unsupported_response(
                 manual_email_address,
                 "unsupported_domain",
             )));
         }
-        let existing_remote_mailbox = moemail_list_emails(&state.http_clients.shared, config)
+        let existing_remote_mailbox = kaisoumail_list_mailboxes(&state.http_clients.shared, config)
             .await
             .map_err(internal_error_tuple)?
             .into_iter()
@@ -178,18 +178,18 @@ pub(crate) async fn create_oauth_mailbox_session(
                 normalize_mailbox_address(&item.address) == Some(manual_email_address.clone())
             });
         let Some(remote_mailbox) = existing_remote_mailbox else {
-            let generated = moemail_create_email_for_address(
+            let generated = kaisoumail_ensure_mailbox_for_address(
                 &state.http_clients.shared,
                 config,
                 &manual_email_address,
             )
             .await
             .map_err(internal_error_tuple)?;
-            let email_address = generated.email.trim().to_string();
+            let email_address = generated.address.trim().to_string();
             let email_domain = email_address
                 .split('@')
                 .nth(1)
-                .unwrap_or(config.default_domain.as_str())
+                .unwrap_or(config.default_mail_domain.as_str())
                 .to_string();
             let session_id = random_hex(16)?;
             let now = Utc::now();
@@ -198,7 +198,8 @@ pub(crate) async fn create_oauth_mailbox_session(
                     DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_SESSION_TTL_SECS as i64,
                 );
             let now_iso = format_utc_iso(now);
-            let expires_at_iso = format_utc_iso(expires_at);
+            let session_expires_at =
+                normalize_mailbox_session_expires_at(generated.expires_at.as_deref(), expires_at);
             sqlx::query(
                 r#"
                 INSERT INTO pool_oauth_mailbox_sessions (
@@ -215,7 +216,7 @@ pub(crate) async fn create_oauth_mailbox_session(
             .bind(&email_domain)
             .bind(OAUTH_MAILBOX_SOURCE_GENERATED)
             .bind(&now_iso)
-            .bind(&expires_at_iso)
+            .bind(&session_expires_at)
             .execute(&state.pool)
             .await
             .map_err(internal_error_tuple)?;
@@ -223,20 +224,35 @@ pub(crate) async fn create_oauth_mailbox_session(
             return Ok(Json(oauth_mailbox_session_supported_response(
                 session_id,
                 email_address,
-                expires_at_iso,
+                session_expires_at,
                 OAUTH_MAILBOX_SOURCE_GENERATED,
             )));
         };
-        let mut remote_messages = match moemail_list_messages_for_attach(
+        let session_id = random_hex(16)?;
+        let now = Utc::now();
+        let mut remote_mailbox_id = remote_mailbox.id;
+        let mut remote_mailbox_expires_at = remote_mailbox.expires_at;
+        if mailbox_expires_at_is_expired(remote_mailbox_expires_at.as_deref(), now) {
+            let restored = kaisoumail_ensure_mailbox_for_address(
+                &state.http_clients.shared,
+                config,
+                &manual_email_address,
+            )
+            .await
+            .map_err(internal_error_tuple)?;
+            remote_mailbox_id = restored.id;
+            remote_mailbox_expires_at = restored.expires_at;
+        }
+        let mut remote_messages = match kaisoumail_list_messages_for_attach(
             &state.http_clients.shared,
             config,
-            &remote_mailbox.id,
+            &manual_email_address,
         )
         .await
         .map_err(internal_error_tuple)?
         {
-            MoeMailAttachReadState::Readable(messages) => messages,
-            MoeMailAttachReadState::NotReadable => {
+            KaisouMailAttachReadState::Readable(messages) => messages,
+            KaisouMailAttachReadState::NotReadable => {
                 return Ok(Json(oauth_mailbox_session_unsupported_response(
                     manual_email_address,
                     "not_readable",
@@ -248,24 +264,21 @@ pub(crate) async fn create_oauth_mailbox_session(
         let (latest_code, latest_invite) = match resolve_mailbox_message_state_for_attach(
             &state.http_clients.shared,
             config,
-            &remote_mailbox.id,
             &remote_messages,
         )
         .await
         .map_err(internal_error_tuple)?
         {
-            MoeMailAttachReadState::Readable(state) => state,
-            MoeMailAttachReadState::NotReadable => {
+            KaisouMailAttachReadState::Readable(state) => state,
+            KaisouMailAttachReadState::NotReadable => {
                 return Ok(Json(oauth_mailbox_session_unsupported_response(
                     manual_email_address,
                     "not_readable",
                 )));
             }
         };
-        let session_id = random_hex(16)?;
-        let now = Utc::now();
         let expires_at = normalize_mailbox_session_expires_at(
-            remote_mailbox.expires_at.as_deref(),
+            remote_mailbox_expires_at.as_deref(),
             now + ChronoDuration::seconds(
                 DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_SESSION_TTL_SECS as i64,
             ),
@@ -282,7 +295,7 @@ pub(crate) async fn create_oauth_mailbox_session(
             "#,
         )
         .bind(&session_id)
-        .bind(&remote_mailbox.id)
+        .bind(&remote_mailbox_id)
         .bind(&manual_email_address)
         .bind(&email_domain)
         .bind(OAUTH_MAILBOX_SOURCE_ATTACHED)
@@ -308,21 +321,22 @@ pub(crate) async fn create_oauth_mailbox_session(
             OAUTH_MAILBOX_SOURCE_ATTACHED,
         )));
     }
-    let generated = moemail_create_email(&state.http_clients.shared, config)
+    let generated = kaisoumail_create_mailbox(&state.http_clients.shared, config)
         .await
         .map_err(internal_error_tuple)?;
-    let email_address = generated.email.trim().to_string();
+    let email_address = generated.address.trim().to_string();
     let email_domain = email_address
         .split('@')
         .nth(1)
-        .unwrap_or(config.default_domain.as_str())
+        .unwrap_or(config.default_mail_domain.as_str())
         .to_string();
     let session_id = random_hex(16)?;
     let now = Utc::now();
     let expires_at =
         now + ChronoDuration::seconds(DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_SESSION_TTL_SECS as i64);
     let now_iso = format_utc_iso(now);
-    let expires_at_iso = format_utc_iso(expires_at);
+    let session_expires_at =
+        normalize_mailbox_session_expires_at(generated.expires_at.as_deref(), expires_at);
     sqlx::query(
         r#"
         INSERT INTO pool_oauth_mailbox_sessions (
@@ -339,7 +353,7 @@ pub(crate) async fn create_oauth_mailbox_session(
     .bind(&email_domain)
     .bind(OAUTH_MAILBOX_SOURCE_GENERATED)
     .bind(&now_iso)
-    .bind(&expires_at_iso)
+    .bind(&session_expires_at)
     .execute(&state.pool)
     .await
     .map_err(internal_error_tuple)?;
@@ -347,7 +361,7 @@ pub(crate) async fn create_oauth_mailbox_session(
     Ok(Json(oauth_mailbox_session_supported_response(
         session_id,
         email_address,
-        expires_at_iso,
+        session_expires_at,
         OAUTH_MAILBOX_SOURCE_GENERATED,
     )))
 }
@@ -409,15 +423,16 @@ pub(crate) async fn delete_oauth_mailbox_session(
         return Ok(StatusCode::NO_CONTENT);
     };
     if row.mailbox_source.as_deref() != Some(OAUTH_MAILBOX_SOURCE_ATTACHED)
-        && let Some(config) = state.config.upstream_accounts_moemail.as_ref()
+        && let Some(config) = state.config.upstream_accounts_kaisoumail.as_ref()
         && let Err(err) =
-            moemail_delete_email(&state.http_clients.shared, config, &row.remote_email_id).await
+            kaisoumail_delete_mailbox(&state.http_clients.shared, config, &row.remote_email_id)
+                .await
     {
         debug!(
             mailbox_session_id = %row.session_id,
             remote_email_id = %row.remote_email_id,
             error = %err,
-            "failed to delete moemail mailbox during explicit cleanup"
+            "failed to delete kaisoumail mailbox during explicit cleanup"
         );
     }
     delete_oauth_mailbox_session_with_executor(&state.pool, &session_id)

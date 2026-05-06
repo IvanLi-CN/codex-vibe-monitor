@@ -275,7 +275,7 @@ export const ManualMailboxUnsupported: Story = {
     await userEvent.type(canvas.getByPlaceholderText(/enter a supported mailbox address/i), 'manual@example.com')
     await userEvent.click(canvas.getByRole('button', { name: /use address/i }))
     await expect(
-      canvas.getByText(/mailbox is not readable through the current moemail integration/i),
+      canvas.getByText(/mailbox is not readable through the current kaisoumail integration/i),
     ).toBeInTheDocument()
     await expect(canvas.getByRole('button', { name: /generate oauth url/i })).toBeEnabled()
   },
