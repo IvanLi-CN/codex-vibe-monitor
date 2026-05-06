@@ -33,7 +33,10 @@ use std::{
     convert::Infallible,
     io::Write,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex as StdMutex, atomic::AtomicUsize},
+    sync::{
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 use tokio::net::TcpListener;
@@ -1419,7 +1422,7 @@ async fn validate_subscription_candidate_accepts_probe_404() {
     )
     .await;
 
-    let response = validate_subscription_candidate(state.as_ref(), subscription_url.clone())
+    let response = validate_subscription_candidate(state.clone(), subscription_url.clone())
         .await
         .expect("404 should be treated as reachable for subscription validation");
 
@@ -1450,12 +1453,12 @@ async fn validate_subscription_candidate_keeps_5xx_as_failure() {
     )
     .await;
 
-    let err = validate_subscription_candidate(state.as_ref(), subscription_url)
+    let err = validate_subscription_candidate(state.clone(), subscription_url)
         .await
         .expect_err("5xx should still fail subscription validation");
     let message = format!("{err:#}");
     assert!(
-        message.contains("subscription proxy probe failed"),
+        message.contains("subscription validation scanned 1 proxy entries"),
         "expected subscription probe failure context, got: {message}"
     );
     assert!(
@@ -1465,6 +1468,247 @@ async fn validate_subscription_candidate_keeps_5xx_as_failure() {
 
     subscription_handle.abort();
     proxy_handle.abort();
+}
+
+#[tokio::test]
+async fn validate_subscription_candidate_scans_beyond_first_three_nodes() {
+    let mut handles = Vec::new();
+    let mut body = String::new();
+    for _ in 0..3 {
+        let (proxy_url, proxy_handle) =
+            spawn_test_forward_proxy_status(StatusCode::INTERNAL_SERVER_ERROR).await;
+        body.push_str(&proxy_url);
+        body.push('\n');
+        handles.push(proxy_handle);
+    }
+    let (available_proxy_url, available_proxy_handle) =
+        spawn_test_forward_proxy_status(StatusCode::NOT_FOUND).await;
+    body.push_str(&available_proxy_url);
+    body.push('\n');
+    handles.push(available_proxy_handle);
+
+    let (subscription_url, subscription_handle) = spawn_test_subscription_source(body).await;
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid probe target"),
+    )
+    .await;
+
+    let response = validate_subscription_candidate(state.clone(), subscription_url)
+        .await
+        .expect("available node after the first three entries should pass validation");
+
+    assert!(response.ok);
+    assert_eq!(response.discovered_nodes, Some(4));
+
+    subscription_handle.abort();
+    for handle in handles {
+        handle.abort();
+    }
+}
+
+#[tokio::test]
+async fn validate_subscription_candidate_does_not_let_slow_first_node_block_success() {
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let release_request = Arc::new(Notify::new());
+    let slow_app = Router::new().fallback({
+        let request_count = request_count.clone();
+        let release_request = release_request.clone();
+        any(move || {
+            let request_count = request_count.clone();
+            let release_request = release_request.clone();
+            async move {
+                request_count.fetch_add(1, Ordering::SeqCst);
+                release_request.notified().await;
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({
+                        "status": StatusCode::NOT_FOUND.as_u16(),
+                    })),
+                )
+            }
+        })
+    });
+    let slow_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind blocking forward proxy status test server");
+    let slow_addr = slow_listener
+        .local_addr()
+        .expect("blocking forward proxy status test server addr");
+    let slow_proxy_handle = tokio::spawn(async move {
+        axum::serve(slow_listener, slow_app)
+            .await
+            .expect("blocking forward proxy status test server should run");
+    });
+    let slow_proxy_url = format!("http://{slow_addr}");
+    let (available_proxy_url, available_proxy_handle) =
+        spawn_test_forward_proxy_status(StatusCode::NOT_FOUND).await;
+    let (subscription_url, subscription_handle) =
+        spawn_test_subscription_source(format!("{slow_proxy_url}\n{available_proxy_url}\n")).await;
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid probe target"),
+    )
+    .await;
+
+    let started = Instant::now();
+    let validation_task = tokio::spawn({
+        let state = state.clone();
+        let subscription_url = subscription_url.clone();
+        async move { validate_subscription_candidate(state, subscription_url).await }
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while request_count.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("slow first node should receive a request");
+
+    release_request.notify_waiters();
+    let response = validation_task
+        .await
+        .expect("validation task should finish")
+        .expect("concurrent validation should pass through the available second node");
+
+    assert!(response.ok);
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "slow first node should not block concurrent subscription validation"
+    );
+
+    assert!(request_count.load(Ordering::SeqCst) >= 1);
+    subscription_handle.abort();
+    slow_proxy_handle.abort();
+    available_proxy_handle.abort();
+}
+
+#[tokio::test]
+async fn validate_subscription_candidate_retries_each_node_at_most_three_times() {
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let (proxy_url, proxy_handle) = spawn_test_counting_forward_proxy_status(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        request_count.clone(),
+    )
+    .await;
+    let (subscription_url, subscription_handle) =
+        spawn_test_subscription_source(format!("{proxy_url}\n")).await;
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid probe target"),
+    )
+    .await;
+
+    let err = validate_subscription_candidate(state.clone(), subscription_url)
+        .await
+        .expect_err("all failed attempts should fail validation");
+    let message = format!("{err:#}");
+
+    assert_eq!(request_count.load(Ordering::SeqCst), 3);
+    assert!(
+        message.contains("3 attempts per entry"),
+        "failure message should describe retry budget, got: {message}"
+    );
+
+    subscription_handle.abort();
+    proxy_handle.abort();
+}
+
+#[tokio::test]
+async fn validate_subscription_candidate_limits_node_probe_concurrency_to_ten() {
+    let in_flight = Arc::new(AtomicUsize::new(0));
+    let total_requests = Arc::new(AtomicUsize::new(0));
+    let release_request = Arc::new(Notify::new());
+    let mut handles = Vec::new();
+    let mut urls = Vec::new();
+    for _ in 0..11 {
+        let app = Router::new().fallback({
+            let in_flight = in_flight.clone();
+            let total_requests = total_requests.clone();
+            let release_request = release_request.clone();
+            any(move || {
+                let in_flight = in_flight.clone();
+                let total_requests = total_requests.clone();
+                let release_request = release_request.clone();
+                async move {
+                    let request_index = total_requests.fetch_add(1, Ordering::SeqCst) + 1;
+                    if request_index <= 10 {
+                        in_flight.fetch_add(1, Ordering::SeqCst);
+                        release_request.notified().await;
+                        in_flight.fetch_sub(1, Ordering::SeqCst);
+                    }
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({
+                            "status": StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                        })),
+                    )
+                }
+            })
+        });
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind blocking concurrency test server");
+        let addr = listener
+            .local_addr()
+            .expect("blocking concurrency test server addr");
+        handles.push(tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("blocking concurrency test server should run");
+        }));
+        urls.push(format!("http://{addr}"));
+    }
+    let subscription_body = urls.join("\n");
+    let (subscription_url, subscription_handle) =
+        spawn_test_subscription_source(format!("{subscription_body}\n")).await;
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid probe target"),
+    )
+    .await;
+
+    let validation_task = tokio::spawn({
+        let state = state.clone();
+        let subscription_url = subscription_url.clone();
+        async move { validate_subscription_candidate(state, subscription_url).await }
+    });
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if total_requests.load(Ordering::SeqCst) >= 10 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("first ten nodes should start probing");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert_eq!(in_flight.load(Ordering::SeqCst), 10);
+    assert_eq!(
+        total_requests.load(Ordering::SeqCst),
+        10,
+        "the eleventh node should wait for a concurrency slot"
+    );
+
+    release_request.notify_waiters();
+    let err = validation_task
+        .await
+        .expect("validation task should finish")
+        .expect_err("all nodes return 500");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("concurrency 10"),
+        "failure message should describe concurrency, got: {message}"
+    );
+    assert!(
+        total_requests.load(Ordering::SeqCst) >= 11,
+        "queued nodes should run after slots are released"
+    );
+
+    subscription_handle.abort();
+    for handle in handles {
+        handle.abort();
+    }
 }
 
 #[tokio::test]
