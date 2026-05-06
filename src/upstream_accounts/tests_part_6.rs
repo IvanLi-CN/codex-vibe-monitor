@@ -1932,6 +1932,49 @@
     }
 
     #[test]
+    fn decode_mailbox_detail_accepts_text_and_preview_text_together() {
+        let payload: KaisouMailMessageDetailPayload = serde_json::from_value(json!({
+            "message": {
+                "id": "msg_preview_and_text",
+                "subject": "Your temporary ChatGPT verification code",
+                "previewText": "Preview fallback 123456",
+                "text": null,
+                "html": "<p>OpenAI verification code: 654321</p>",
+                "receivedAt": "2026-05-06T20:09:49.322Z"
+            }
+        }))
+        .expect("decode message detail with both previewText and text");
+
+        assert_eq!(payload.message.id, "msg_preview_and_text");
+        assert_eq!(
+            payload.message.content.as_deref(),
+            Some("Preview fallback 123456")
+        );
+        assert_eq!(
+            parse_mailbox_code(&payload.message)
+                .expect("code from subject/html")
+                .value,
+            "654321"
+        );
+    }
+
+    #[test]
+    fn kaisoumail_config_debug_redacts_api_key() {
+        let config = UpstreamAccountsKaisouMailConfig {
+            base_url: Url::parse("https://km.example.test").expect("url"),
+            api_key: "cfm_secret_value".to_string(),
+            default_mail_domain: "example.test".to_string(),
+            default_subdomain: "mail".to_string(),
+        };
+
+        let debug = format!("{config:?}");
+
+        assert!(debug.contains("api_key"));
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("cfm_secret_value"));
+    }
+
+    #[test]
     fn parse_mailbox_code_falls_back_to_body_match() {
         let detail = KaisouMailMessageDetail {
             id: "msg_2".to_string(),
