@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.57.0",
+  "base_stable_version": "1.56.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-05-06T21:00:59Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.57.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "48918da55000495b57385db4cbd9c958348cbf4d",
+  "pr_number": 399,
+  "pr_title": "feat(web): add dashboard response time card",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.57.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.57.0",
+  "target_sha": "5b7935e443ab22543d500e668bc70d767d968371",
+  "type_label": "type:minor"
+}
