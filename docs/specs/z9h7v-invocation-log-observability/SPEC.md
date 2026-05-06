@@ -1,11 +1,5 @@
 # 请求日志可观测性增强（IP / Cache Tokens / 分阶段耗时 / Prompt Cache Key）（#z9h7v）
 
-## 状态
-
-- Status: 已完成
-- Created: 2026-02-25
-- Last: 2026-02-25
-
 ## 背景 / 问题陈述
 
 - 当前 `/api/invocations` 虽已包含 token 与成本，但缺少请求方来源信息（IP）、稳定请求标识（prompt cache key）与易读的阶段耗时展示。
@@ -98,36 +92,12 @@
 - Given 旧记录或 `source=xy` 记录缺扩展字段，When 页面渲染，Then 不崩溃且缺值显示 `—`。
 - Given 历史 proxy 记录存在 `request_raw_path` 且 payload 缺 `promptCacheKey`，When 服务启动完成，Then 字段被自动回填且不会重复更新已完成记录。
 
-## 非功能性验收 / 质量门槛（Quality Gates）
-
-### Testing
-
-- `cargo test`
-- `cargo check`
-- `cd web && npm run build`
-
 ### Manual verification
 
 - 启动 backend/frontend 后打开 `/dashboard` 与 `/#/live`，验证新增列与详情展开可用。
-
-## 实现里程碑（Milestones / Delivery checklist）
-
-- [x] M1: specs-first 建档与索引更新。
-- [x] M2: 后端采集与接口输出增强（IP/prompt cache key/payload 投影）。
-- [x] M3: 前端表格与文案升级（主表 + 详情）。
-- [x] M4: 历史记录全量回填与幂等校验。
-- [x] M5: 回归验证通过并完成本地提交。
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
 - 风险：上游请求不保证稳定携带 `prompt_cache_key`，仍可能出现正常缺失。
 - 开放问题：是否后续在 SQLite 增加独立 `prompt_cache_key` 列（本次不做）。
 - 假设：现有代理链路 payload 存储可承载新增上下文字段。
-
-## 变更记录（Change log）
-
-- 2026-02-25: 初始化规格，冻结实现边界与验收口径。
-- 2026-02-25: 完成后端字段采集、`/api/invocations` 投影扩展与前端表格升级，并通过 `cargo test`、`cargo check`、`web npm run build` 验证。
-- 2026-02-25: 修复 SSE `records` 广播回查 SQL 投影不全问题，确保 `endpoint/requesterIp/promptCacheKey/failureKind` 与 `/api/invocations` 一致，并补充回归测试。
-- 2026-02-25: 将对外字段从 `codexSessionId` 切换为 `promptCacheKey`，新增启动期历史数据全量回填与旧键清理，并补充回填幂等/异常分支测试。
-- 2026-02-25: 修复启动回填对历史相对路径 raw 文件的兼容性（新增 `database_path` 父目录兜底），避免因工作目录变化导致 `skipped_missing_file` 异常偏高。
