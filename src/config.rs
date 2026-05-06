@@ -330,7 +330,7 @@ struct AppConfig {
     upstream_accounts_sync_interval: Duration,
     upstream_accounts_refresh_lead_time: Duration,
     upstream_accounts_history_retention_days: u64,
-    upstream_accounts_moemail: Option<UpstreamAccountsMoeMailConfig>,
+    upstream_accounts_kaisoumail: Option<UpstreamAccountsKaisouMailConfig>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -344,11 +344,12 @@ struct CrsStatsConfig {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct UpstreamAccountsMoeMailConfig {
+struct UpstreamAccountsKaisouMailConfig {
     base_url: Url,
     #[serde(skip_serializing)]
     api_key: String,
-    default_domain: String,
+    default_mail_domain: String,
+    default_subdomain: String,
 }
 
 impl AppConfig {
@@ -691,38 +692,46 @@ impl AppConfig {
             ENV_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS,
             DEFAULT_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS,
         )?;
-        let moemail_base_url_raw = env::var(ENV_UPSTREAM_ACCOUNTS_MOEMAIL_BASE_URL)
+        let kaisoumail_base_url_raw = env::var(ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_BASE_URL)
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
-        let moemail_api_key = env::var(ENV_UPSTREAM_ACCOUNTS_MOEMAIL_API_KEY)
+        let kaisoumail_api_key = env::var(ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_API_KEY)
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
-        let moemail_default_domain = env::var(ENV_UPSTREAM_ACCOUNTS_MOEMAIL_DEFAULT_DOMAIN)
+        let kaisoumail_default_mail_domain = env::var(ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_DEFAULT_MAIL_DOMAIN)
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
-        let upstream_accounts_moemail = match (
-            moemail_base_url_raw,
-            moemail_api_key,
-            moemail_default_domain,
+        let kaisoumail_default_subdomain =
+            env::var(ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_DEFAULT_SUBDOMAIN)
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty());
+        let upstream_accounts_kaisoumail = match (
+            kaisoumail_base_url_raw,
+            kaisoumail_api_key,
+            kaisoumail_default_mail_domain,
+            kaisoumail_default_subdomain,
         ) {
-            (None, None, None) => None,
-            (Some(base_url), Some(api_key), Some(default_domain)) => {
-                Some(UpstreamAccountsMoeMailConfig {
+            (None, None, None, None) => None,
+            (Some(base_url), Some(api_key), Some(default_mail_domain), Some(default_subdomain)) => {
+                Some(UpstreamAccountsKaisouMailConfig {
                     base_url: Url::parse(&base_url)
-                        .context("invalid UPSTREAM_ACCOUNTS_MOEMAIL_BASE_URL")?,
+                        .context("invalid UPSTREAM_ACCOUNTS_KAISOUMAIL_BASE_URL")?,
                     api_key,
-                    default_domain,
+                    default_mail_domain,
+                    default_subdomain,
                 })
             }
             _ => {
                 return Err(anyhow!(
-                    "{} , {}, and {} must be set together",
-                    ENV_UPSTREAM_ACCOUNTS_MOEMAIL_BASE_URL,
-                    ENV_UPSTREAM_ACCOUNTS_MOEMAIL_API_KEY,
-                    ENV_UPSTREAM_ACCOUNTS_MOEMAIL_DEFAULT_DOMAIN
+                    "{}, {}, {}, and {} must be set together",
+                    ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_BASE_URL,
+                    ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_API_KEY,
+                    ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_DEFAULT_MAIL_DOMAIN,
+                    ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_DEFAULT_SUBDOMAIN
                 ));
             }
         };
@@ -815,7 +824,7 @@ impl AppConfig {
             upstream_accounts_sync_interval,
             upstream_accounts_refresh_lead_time,
             upstream_accounts_history_retention_days,
-            upstream_accounts_moemail,
+            upstream_accounts_kaisoumail,
         })
     }
 

@@ -617,7 +617,7 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     });
   }, 15_000);
 
-  it("auto-creates a supported mailbox from the batch popover editor when moemail is missing it", async () => {
+  it("auto-creates a supported mailbox from the batch popover editor when kaisoumail is missing it", async () => {
     const beginOauthMailboxSessionForAddress = vi.fn().mockResolvedValue({
       supported: true,
       sessionId: "mailbox-generated-row-1",
@@ -782,7 +782,7 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     );
     expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
     expect(host?.textContent).toContain(
-      "This mailbox is not readable through the current MoeMail integration, so mailbox enhancements stay disabled.",
+      "This mailbox is not readable through the current KaisouMail integration, so mailbox enhancements stay disabled.",
     );
   }, 15_000);
 

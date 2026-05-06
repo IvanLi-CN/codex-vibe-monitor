@@ -264,7 +264,7 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     expect(findButton(/Generate OAuth URL/i)?.disabled).toBe(false);
   });
 
-  it("auto-creates a supported manual mailbox address when moemail is missing it", async () => {
+  it("auto-creates a supported manual mailbox address when kaisoumail is missing it", async () => {
     const beginOauthLogin = vi.fn().mockResolvedValue({
       loginId: "login-1",
       status: "pending",
@@ -519,7 +519,7 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
       "manual-existing@example.com",
     );
     expect(host?.textContent).toContain(
-      "This mailbox is not readable through the current MoeMail integration, so mailbox enhancements stay disabled.",
+      "This mailbox is not readable through the current KaisouMail integration, so mailbox enhancements stay disabled.",
     );
     expect(findButton(/Generate OAuth URL/i)?.disabled).toBe(false);
     expect(findButton(/Copy code/i)?.disabled).toBe(true);

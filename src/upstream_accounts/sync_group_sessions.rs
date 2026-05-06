@@ -1917,7 +1917,7 @@ async fn delete_oauth_mailbox_session_with_executor(
 }
 
 async fn cleanup_expired_oauth_mailbox_sessions(state: &AppState) -> Result<()> {
-    let moemail_config = state.config.upstream_accounts_moemail.as_ref();
+    let kaisoumail_meta = state.config.upstream_accounts_kaisoumail.as_ref();
     let now_iso = format_utc_iso(Utc::now());
     let expired_rows = sqlx::query_as::<_, OauthMailboxSessionRow>(
         r#"
@@ -1937,15 +1937,15 @@ async fn cleanup_expired_oauth_mailbox_sessions(state: &AppState) -> Result<()> 
 
     for row in expired_rows {
         if expired_mailbox_session_requires_remote_delete(&row)
-            && let Some(config) = moemail_config
+            && let Some(config) = kaisoumail_meta
             && let Err(err) =
-                moemail_delete_email(&state.http_clients.shared, config, &row.remote_email_id).await
+                kaisoumail_delete_mailbox(&state.http_clients.shared, config, &row.remote_email_id).await
         {
             debug!(
                 mailbox_session_id = %row.session_id,
                 remote_email_id = %row.remote_email_id,
                 error = %err,
-                "failed to delete expired moemail mailbox"
+                "failed to delete expired kaisoumail mailbox"
             );
         }
         delete_oauth_mailbox_session_with_executor(&state.pool, &row.session_id).await?;
