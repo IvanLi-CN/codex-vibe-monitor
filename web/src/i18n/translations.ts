@@ -1424,6 +1424,7 @@ const baseTranslations = {
     "dashboard.today.dayBadge": "Today",
     "dashboard.today.tokensPerMinute": "TPM",
     "dashboard.today.spendRate": "Spend rate",
+    "dashboard.today.responseTime": "Response time",
     "dashboard.today.parallelConversations": "Parallel conversations",
     "dashboard.today.todayCost": "Today cost",
     "dashboard.today.yesterdayCost": "Yesterday cost",
@@ -1433,6 +1434,8 @@ const baseTranslations = {
       "Tokens per minute, calculated from the active tail inside the latest 5-minute window. Leading idle time is ignored.",
     "dashboard.today.spendRateDescription":
       "Cost per minute, calculated from the active tail inside the latest 5-minute window. Leading idle time is ignored.",
+    "dashboard.today.responseTimeDescription":
+      "Average first-response-byte total from the active tail inside the latest 5-minute window.",
     "dashboard.today.parallelConversationsDescription":
       "Current number of prompt-cache conversations active in the latest minute bucket.",
     "dashboard.today.successDescription":
@@ -3247,6 +3250,7 @@ const baseTranslations = {
     "dashboard.today.dayBadge": "今日",
     "dashboard.today.tokensPerMinute": "TPM",
     "dashboard.today.spendRate": "消费速率",
+    "dashboard.today.responseTime": "响应时间",
     "dashboard.today.parallelConversations": "并行对话",
     "dashboard.today.todayCost": "今日成本",
     "dashboard.today.yesterdayCost": "昨日成本",
@@ -3256,6 +3260,8 @@ const baseTranslations = {
       "每分钟 Tokens，按最近 5 分钟窗口内的活跃尾段计算均值；前置空闲时间不参与分母。",
     "dashboard.today.spendRateDescription":
       "每分钟消费金额，按最近 5 分钟窗口内的活跃尾段计算均值；前置空闲时间不参与分母。",
+    "dashboard.today.responseTimeDescription":
+      "首字总耗时均值，按最近 5 分钟窗口内的活跃尾段计算；无完整样本时显示为空。",
     "dashboard.today.parallelConversationsDescription":
       "最近一分钟切片内仍在活动的 prompt-cache 对话数量。",
     "dashboard.today.successDescription":
