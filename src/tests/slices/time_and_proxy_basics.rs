@@ -1712,6 +1712,76 @@ async fn validate_subscription_candidate_limits_node_probe_concurrency_to_ten() 
 }
 
 #[tokio::test]
+async fn validate_subscription_candidate_preserves_total_validation_deadline_during_scan() {
+    let release_request = Arc::new(Notify::new());
+    let app = Router::new().fallback({
+        let release_request = release_request.clone();
+        any(move || {
+            let release_request = release_request.clone();
+            async move {
+                release_request.notified().await;
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "status": StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                    })),
+                )
+            }
+        })
+    });
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind blocking deadline test server");
+    let addr = listener
+        .local_addr()
+        .expect("blocking deadline test server addr");
+    let proxy_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("blocking deadline test server should run");
+    });
+    let proxy_url = format!("http://{addr}");
+    let endpoints: Vec<_> = (0..11)
+        .map(|index| ForwardProxyEndpoint {
+            key: format!("deadline-{index}"),
+            source: FORWARD_PROXY_SOURCE_SUBSCRIPTION.to_string(),
+            display_name: format!("deadline-{index}"),
+            protocol: ForwardProxyProtocol::Http,
+            endpoint_url: Some(Url::parse(&proxy_url).expect("valid deadline proxy url")),
+            raw_url: Some(proxy_url.clone()),
+        })
+        .collect();
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid probe target"),
+    )
+    .await;
+
+    let started = Instant::now();
+    let err = validate_subscription_endpoints_concurrently(
+        state,
+        endpoints,
+        Duration::from_millis(100),
+        started,
+    )
+    .await
+    .expect_err("total validation deadline should stop the scan");
+    let elapsed = started.elapsed();
+    let message = format!("{err:#}");
+
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "total validation deadline should stop in-flight probes, elapsed: {elapsed:?}"
+    );
+    assert!(
+        message.contains("validation request timed out after 1s"),
+        "deadline failure should use validation timeout wording, got: {message}"
+    );
+
+    release_request.notify_waiters();
+    proxy_handle.abort();
+}
+
+#[tokio::test]
 async fn validate_single_forward_proxy_candidate_keeps_xray_startup_running_during_shutdown() {
     let temp_root = make_temp_test_dir("xray-validation-shutdown");
     let runtime_dir = temp_root.join("runtime");

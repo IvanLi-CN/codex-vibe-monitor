@@ -2206,7 +2206,13 @@ pub(crate) async fn validate_subscription_candidate(
     }
 
     let discovered_nodes = endpoints.len();
-    let latency_ms = validate_subscription_endpoints_concurrently(state, endpoints).await?;
+    let latency_ms = validate_subscription_endpoints_concurrently(
+        state,
+        endpoints,
+        validation_timeout,
+        validation_started,
+    )
+    .await?;
 
     Ok(ForwardProxyCandidateValidationResponse::success(
         "subscription validation succeeded",
@@ -2219,6 +2225,8 @@ pub(crate) async fn validate_subscription_candidate(
 pub(crate) async fn validate_subscription_endpoints_concurrently(
     state: Arc<AppState>,
     endpoints: Vec<ForwardProxyEndpoint>,
+    validation_timeout: Duration,
+    validation_started: Instant,
 ) -> Result<f64> {
     let endpoint_count = endpoints.len();
     let concurrency = FORWARD_PROXY_SUBSCRIPTION_PROBE_CONCURRENCY.max(1);
@@ -2255,6 +2263,8 @@ pub(crate) async fn validate_subscription_endpoints_concurrently(
                 &endpoint,
                 attempts,
                 attempt_timeout,
+                validation_timeout,
+                validation_started,
                 &cancellation,
             )
             .await;
@@ -2276,7 +2286,27 @@ pub(crate) async fn validate_subscription_endpoints_concurrently(
 
     let mut completed = 0usize;
     let mut last_error: Option<String> = None;
-    while let Some(result) = rx.recv().await {
+    loop {
+        let Some(remaining_timeout) =
+            remaining_timeout_budget(validation_timeout, validation_started.elapsed())
+        else {
+            cancellation.cancel();
+            return Err(timeout_error_for_duration(validation_timeout));
+        };
+        if remaining_timeout.is_zero() {
+            cancellation.cancel();
+            return Err(timeout_error_for_duration(validation_timeout));
+        }
+
+        let result = match timeout(remaining_timeout, rx.recv()).await {
+            Ok(Some(result)) => result,
+            Ok(None) => break,
+            Err(_) => {
+                cancellation.cancel();
+                return Err(timeout_error_for_duration(validation_timeout));
+            }
+        };
+
         completed += 1;
         match result {
             Ok(latency_ms) => {
@@ -2313,6 +2343,8 @@ async fn probe_subscription_endpoint_with_retries(
     endpoint: &ForwardProxyEndpoint,
     attempts: usize,
     attempt_timeout: Duration,
+    validation_timeout: Duration,
+    validation_started: Instant,
     cancellation: &CancellationToken,
 ) -> Result<f64> {
     let mut last_error: Option<anyhow::Error> = None;
@@ -2320,9 +2352,28 @@ async fn probe_subscription_endpoint_with_retries(
         if cancellation.is_cancelled() {
             return Err(shutdown_cancelled_forward_proxy_probe());
         }
-        match probe_forward_proxy_endpoint(state, endpoint, attempt_timeout, Some(cancellation))
-            .await
-        {
+        let Some(remaining_timeout) =
+            remaining_timeout_budget(validation_timeout, validation_started.elapsed())
+        else {
+            return Err(timeout_error_for_duration(validation_timeout));
+        };
+        if remaining_timeout.is_zero() {
+            return Err(timeout_error_for_duration(validation_timeout));
+        }
+
+        let probe_result = tokio::select! {
+            _ = cancellation.cancelled() => {
+                return Err(shutdown_cancelled_forward_proxy_probe());
+            }
+            _ = tokio::time::sleep(remaining_timeout) => {
+                return Err(timeout_error_for_duration(validation_timeout));
+            }
+            result = probe_forward_proxy_endpoint(state, endpoint, attempt_timeout, Some(cancellation)) => {
+                result
+            }
+        };
+
+        match probe_result {
             Ok(Some(latency_ms)) => return Ok(latency_ms),
             Ok(None) => return Err(shutdown_cancelled_forward_proxy_probe()),
             Err(err) => {
