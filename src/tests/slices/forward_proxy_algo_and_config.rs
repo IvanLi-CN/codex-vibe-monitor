@@ -1487,7 +1487,7 @@ fn test_config() -> AppConfig {
             DEFAULT_UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS,
         ),
         upstream_accounts_history_retention_days: DEFAULT_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS,
-        upstream_accounts_moemail: None,
+        upstream_accounts_kaisoumail: None,
     }
 }
 

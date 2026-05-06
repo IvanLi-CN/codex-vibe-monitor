@@ -106,7 +106,7 @@ pub(crate) mod config {
     pub(crate) use crate::{
         AppConfig, ArchiveBatchLayout, ArchiveFileCodec, ArchiveSegmentGranularity, CliArgs,
         CliCommand, CrsStatsConfig, ForwardProxyAlgo, MaintenanceCliArgs, MaintenanceCommand,
-        MaintenanceDryRunArgs, RawCompressionCodec, UpstreamAccountsMoeMailConfig,
+        MaintenanceDryRunArgs, RawCompressionCodec, UpstreamAccountsKaisouMailConfig,
         should_recover_pending_pool_attempts_on_startup,
     };
 }
@@ -521,6 +521,19 @@ const LEGACY_ENV_RENAMES: &[(&str, &str)] = &[
     (
         LEGACY_ENV_QUOTA_SNAPSHOT_FULL_DAYS,
         ENV_QUOTA_SNAPSHOT_FULL_DAYS,
+    ),
+    // These MoeMail entries are rejection hints only; AppConfig fails fast on any legacy env.
+    (
+        LEGACY_ENV_UPSTREAM_ACCOUNTS_MOEMAIL_BASE_URL,
+        ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_BASE_URL,
+    ),
+    (
+        LEGACY_ENV_UPSTREAM_ACCOUNTS_MOEMAIL_API_KEY,
+        ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_API_KEY,
+    ),
+    (
+        LEGACY_ENV_UPSTREAM_ACCOUNTS_MOEMAIL_DEFAULT_DOMAIN,
+        ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_DEFAULT_MAIL_DOMAIN,
     ),
 ];
 static NEXT_PROXY_REQUEST_ID: AtomicU64 = AtomicU64::new(1);

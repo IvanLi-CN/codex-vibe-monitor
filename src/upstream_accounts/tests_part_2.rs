@@ -1,112 +1,166 @@
-    async fn spawn_moemail_test_harness(
-        email_domains: &str,
+    async fn spawn_kaisoumail_test_harness(
+        domains: &str,
         emails: Vec<(String, String, Option<String>)>,
-    ) -> MoeMailTestHarness {
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct GenerateRequest {
-            name: String,
-            domain: String,
+    ) -> KaisouMailTestHarness {
+        fn mailbox_parts_for_test(address: &str) -> (String, String) {
+            let (local, domain) = address.split_once('@').expect("test mailbox address");
+            (local.to_string(), domain.to_string())
         }
 
-        async fn config_handler(
-            State(state): State<MoeMailStubState>,
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct CreateMailboxRequest {
+            local_part: String,
+            subdomain: String,
+            mail_domain: String,
+        }
+
+        async fn meta_handler(
+            State(state): State<KaisouMailStubState>,
         ) -> axum::Json<serde_json::Value> {
             axum::Json(json!({
-                "defaultRole": "DUKE",
-                "emailDomains": state.email_domains,
-                "maxEmails": "20",
+                "domains": state.domains,
+                "supportsUnlimitedMailboxTtl": true,
+                "defaultMailboxTtlMinutes": 60,
+                "minMailboxTtlMinutes": 60,
+                "maxMailboxTtlMinutes": 525600,
             }))
         }
 
-        async fn list_emails_handler(
-            State(state): State<MoeMailStubState>,
+        async fn list_mailboxes_handler(
+            State(state): State<KaisouMailStubState>,
         ) -> axum::Json<serde_json::Value> {
             let emails = state.emails.lock().await.clone();
             axum::Json(json!({
-                "emails": emails.into_iter().map(|(id, address, expires_at)| json!({
+                "mailboxes": emails.into_iter().map(|(id, address, expires_at)| json!({
                     "id": id,
                     "address": address,
                     "expiresAt": expires_at,
                 })).collect::<Vec<_>>(),
-                "nextCursor": null,
             }))
         }
 
-        async fn create_email_handler(
-            State(state): State<MoeMailStubState>,
-            axum::Json(payload): axum::Json<GenerateRequest>,
+        async fn create_mailbox_handler(
+            State(state): State<KaisouMailStubState>,
+            axum::Json(payload): axum::Json<CreateMailboxRequest>,
         ) -> axum::Json<serde_json::Value> {
             let index = state
                 .next_generated_id
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
                 + 1;
-            let email = format!("{}@{}", payload.name, payload.domain);
+            let email = format!(
+                "{}@{}.{}",
+                payload.local_part, payload.subdomain, payload.mail_domain
+            );
             let id = format!("generated_{index}");
             state
                 .generated_requests
                 .lock()
                 .await
-                .push((payload.name.clone(), payload.domain.clone()));
+                .push((payload.local_part.clone(), format!("{}.{}", payload.subdomain, payload.mail_domain)));
             state
                 .emails
                 .lock()
                 .await
                 .push((id.clone(), email.clone(), None));
-            axum::Json(json!({ "id": id, "email": email }))
+            axum::Json(json!({ "id": id, "address": email, "expiresAt": null }))
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct EnsureMailboxRequest {
+            address: String,
+        }
+
+        async fn ensure_mailbox_handler(
+            State(state): State<KaisouMailStubState>,
+            axum::Json(payload): axum::Json<EnsureMailboxRequest>,
+        ) -> axum::Json<serde_json::Value> {
+            let mut emails = state.emails.lock().await;
+            let existing_index = emails
+                .iter()
+                .position(|(_, address, _)| address == &payload.address);
+            let (id, address, expires_at) = match existing_index {
+                Some(index) => {
+                    let id = emails[index].0.clone();
+                    let address = emails[index].1.clone();
+                    let expires_at = Some("2026-06-01T00:00:00.000Z".to_string());
+                    emails[index].2 = expires_at.clone();
+                    (id, address, expires_at)
+                }
+                None => {
+                    let index = state
+                        .next_generated_id
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                        + 1;
+                    let id = format!("generated_{index}");
+                    state
+                        .generated_requests
+                        .lock()
+                        .await
+                        .push(mailbox_parts_for_test(&payload.address));
+                    emails.push((id.clone(), payload.address.clone(), None));
+                    (id, payload.address, None)
+                }
+            };
+            axum::Json(json!({ "id": id, "address": address, "expiresAt": expires_at }))
         }
 
         async fn messages_handler() -> axum::Json<serde_json::Value> {
             axum::Json(json!({ "messages": [] }))
         }
 
-        async fn delete_email_handler(
-            State(state): State<MoeMailStubState>,
+        async fn delete_mailbox_handler(
+            State(state): State<KaisouMailStubState>,
             axum::extract::Path(email_id): axum::extract::Path<String>,
-        ) -> axum::Json<serde_json::Value> {
+        ) -> axum::http::StatusCode {
             state.deleted_ids.lock().await.push(email_id.clone());
             state
                 .emails
                 .lock()
                 .await
                 .retain(|(existing_id, _, _)| existing_id != &email_id);
-            axum::Json(json!({ "success": true }))
+            axum::http::StatusCode::NO_CONTENT
         }
 
-        let stub = MoeMailStubState {
-            email_domains: email_domains.to_string(),
+        let stub = KaisouMailStubState {
+            domains: domains
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.trim_start_matches('@').to_ascii_lowercase())
+                .collect(),
             emails: Arc::new(Mutex::new(emails)),
             generated_requests: Arc::new(Mutex::new(Vec::new())),
             deleted_ids: Arc::new(Mutex::new(Vec::new())),
             next_generated_id: Arc::new(AtomicUsize::new(0)),
         };
         let app = Router::new()
-            .route("/api/config", get(config_handler))
-            .route("/api/emails", get(list_emails_handler))
-            .route("/api/emails/generate", post(create_email_handler))
-            .route(
-                "/api/emails/:email_id",
-                get(messages_handler).delete(delete_email_handler),
-            )
+            .route("/api/meta", get(meta_handler))
+            .route("/api/mailboxes", get(list_mailboxes_handler).post(create_mailbox_handler))
+            .route("/api/mailboxes/ensure", post(ensure_mailbox_handler))
+            .route("/api/mailboxes/:email_id", delete(delete_mailbox_handler))
+            .route("/api/messages", get(messages_handler))
             .with_state(stub.clone());
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
-            .expect("bind moemail test listener");
-        let addr = listener.local_addr().expect("moemail listener addr");
+            .expect("bind kaisoumail test listener");
+        let addr = listener.local_addr().expect("kaisoumail listener addr");
         let server = tokio::spawn(async move {
             axum::serve(listener, app)
                 .await
-                .expect("serve moemail test app");
+                .expect("serve kaisoumail test app");
         });
 
         let mut config = usage_snapshot_test_config(
             "https://chatgpt.com/backend-api",
             "codex-vibe-monitor/test",
         );
-        config.upstream_accounts_moemail = Some(UpstreamAccountsMoeMailConfig {
-            base_url: Url::parse(&format!("http://{addr}")).expect("valid moemail test url"),
-            api_key: "test-moemail-key".to_string(),
-            default_domain: "mail-tw.707079.xyz".to_string(),
+        config.upstream_accounts_kaisoumail = Some(UpstreamAccountsKaisouMailConfig {
+            base_url: Url::parse(&format!("http://{addr}")).expect("valid kaisoumail test url"),
+            api_key: "test-kaisoumail-key".to_string(),
+            default_mail_domain: "707079.xyz".to_string(),
+            default_subdomain: "mail-tw".to_string(),
         });
         let http_clients = HttpClients::build(&config).expect("build http clients");
         let (broadcaster, _) = broadcast::channel(8);
@@ -160,7 +214,7 @@
             upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
         });
 
-        MoeMailTestHarness {
+        KaisouMailTestHarness {
             state,
             stub,
             server,

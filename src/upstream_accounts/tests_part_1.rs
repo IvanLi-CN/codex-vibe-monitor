@@ -2608,7 +2608,7 @@
             ),
             upstream_accounts_history_retention_days:
                 DEFAULT_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS,
-            upstream_accounts_moemail: None,
+            upstream_accounts_kaisoumail: None,
         }
     }
 
@@ -3561,21 +3561,21 @@
     }
 
     #[derive(Clone)]
-    struct MoeMailStubState {
-        email_domains: String,
+    struct KaisouMailStubState {
+        domains: Vec<String>,
         emails: Arc<Mutex<Vec<(String, String, Option<String>)>>>,
         generated_requests: Arc<Mutex<Vec<(String, String)>>>,
         deleted_ids: Arc<Mutex<Vec<String>>>,
         next_generated_id: Arc<AtomicUsize>,
     }
 
-    struct MoeMailTestHarness {
+    struct KaisouMailTestHarness {
         state: Arc<AppState>,
-        stub: MoeMailStubState,
+        stub: KaisouMailStubState,
         server: tokio::task::JoinHandle<()>,
     }
 
-    impl MoeMailTestHarness {
+    impl KaisouMailTestHarness {
         fn abort(self) {
             self.server.abort();
         }

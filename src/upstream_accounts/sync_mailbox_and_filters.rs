@@ -15,27 +15,13 @@ struct ParsedMailboxInvite {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct MoeMailConfigPayload {
-    email_domains: Option<String>,
+struct KaisouMailMetaPayload {
+    domains: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct MoeMailGenerateEmailPayload {
-    id: String,
-    email: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct MoeMailEmailListPayload {
-    emails: Vec<MoeMailEmailSummary>,
-    next_cursor: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct MoeMailEmailSummary {
+struct KaisouMailMailboxPayload {
     id: String,
     address: String,
     expires_at: Option<String>,
@@ -43,14 +29,28 @@ struct MoeMailEmailSummary {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct MoeMailMessageListPayload {
-    messages: Vec<MoeMailMessageSummary>,
+struct KaisouMailMailboxListPayload {
+    mailboxes: Vec<KaisouMailMailboxSummary>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KaisouMailMailboxSummary {
+    id: String,
+    address: String,
+    expires_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KaisouMailMessageListPayload {
+    messages: Vec<KaisouMailMessageSummary>,
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct MoeMailMessageSummary {
+struct KaisouMailMessageSummary {
     id: String,
     subject: Option<String>,
     received_at: Option<String>,
@@ -58,16 +58,17 @@ struct MoeMailMessageSummary {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct MoeMailMessageDetailPayload {
-    message: MoeMailMessageDetail,
+struct KaisouMailMessageDetailPayload {
+    message: KaisouMailMessageDetail,
 }
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct MoeMailMessageDetail {
+struct KaisouMailMessageDetail {
     id: String,
     subject: Option<String>,
+    #[serde(alias = "text", alias = "previewText")]
     content: Option<String>,
     html: Option<String>,
     received_at: Option<String>,
@@ -244,22 +245,67 @@ fn normalize_mailbox_domain(value: &str) -> Option<String> {
     Some(domain_like.to_ascii_lowercase())
 }
 
-fn moemail_supported_domains(payload: &MoeMailConfigPayload) -> HashSet<String> {
+fn kaisoumail_supported_domains(payload: &KaisouMailMetaPayload) -> HashSet<String> {
     payload
-        .email_domains
-        .as_deref()
-        .unwrap_or_default()
-        .split(|ch: char| matches!(ch, ',' | ';' | '\n' | '\r'))
+        .domains
+        .iter()
+        .map(String::as_str)
         .filter_map(normalize_mailbox_domain)
         .collect()
 }
 
-fn mailbox_local_part(value: &str) -> Option<&str> {
-    let (local_part, domain) = value.split_once('@')?;
-    if local_part.is_empty() || domain.is_empty() {
-        return None;
+fn kaisoumail_domain_is_supported(email_domain: &str, supported_domains: &HashSet<String>) -> bool {
+    if supported_domains.is_empty() {
+        return true;
     }
-    Some(local_part)
+    let Some(email_domain) = normalize_mailbox_domain(email_domain) else {
+        return false;
+    };
+    supported_domains.iter().any(|supported_domain| {
+        email_domain == *supported_domain || email_domain.ends_with(&format!(".{supported_domain}"))
+    })
+}
+
+fn validate_kaisoumail_mailbox_address_matches_request(
+    payload: &KaisouMailMailboxPayload,
+    requested_email: &str,
+) -> Result<()> {
+    let returned_email = normalize_mailbox_address(&payload.address)
+        .ok_or_else(|| anyhow!("ensured kaisoumail address must not be blank"))?;
+    if returned_email != requested_email {
+        bail!(
+            "ensured kaisoumail address {} does not match requested {}",
+            payload.address,
+            requested_email
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn kaisoumail_split_mailbox_domain(
+    mailbox_domain: &str,
+    default_mail_domain: &str,
+) -> Result<(String, String)> {
+    let mailbox_domain = normalize_mailbox_domain(mailbox_domain)
+        .ok_or_else(|| anyhow!("manual kaisoumail domain is invalid"))?;
+    let default_mail_domain = normalize_mailbox_domain(default_mail_domain)
+        .ok_or_else(|| anyhow!("default kaisoumail mail domain is invalid"))?;
+    if mailbox_domain == default_mail_domain {
+        bail!("manual kaisoumail address is missing subdomain");
+    }
+    let suffix = format!(".{default_mail_domain}");
+    let Some(subdomain) = mailbox_domain.strip_suffix(&suffix) else {
+        bail!(
+            "manual kaisoumail domain {} is outside configured mail domain {}",
+            mailbox_domain,
+            default_mail_domain
+        );
+    };
+    if subdomain.trim().is_empty() {
+        bail!("manual kaisoumail address is missing subdomain");
+    }
+    Ok((subdomain.to_string(), default_mail_domain))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -287,15 +333,16 @@ fn mailbox_address_is_valid(value: &str) -> bool {
 
 fn upstream_mailbox_config(
     config: &AppConfig,
-) -> Result<&UpstreamAccountsMoeMailConfig, (StatusCode, String)> {
-    config.upstream_accounts_moemail.as_ref().ok_or_else(|| {
+) -> Result<&UpstreamAccountsKaisouMailConfig, (StatusCode, String)> {
+    config.upstream_accounts_kaisoumail.as_ref().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             format!(
-                "oauth temp mail requires {}, {}, and {}",
-                ENV_UPSTREAM_ACCOUNTS_MOEMAIL_BASE_URL,
-                ENV_UPSTREAM_ACCOUNTS_MOEMAIL_API_KEY,
-                ENV_UPSTREAM_ACCOUNTS_MOEMAIL_DEFAULT_DOMAIN
+                "oauth temp mail requires {}, {}, {}, and {}",
+                ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_BASE_URL,
+                ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_API_KEY,
+                ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_DEFAULT_MAIL_DOMAIN,
+                ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_DEFAULT_SUBDOMAIN
             ),
         )
     })
@@ -331,6 +378,13 @@ fn normalize_mailbox_session_expires_at(value: Option<&str>, fallback: DateTime<
                 .map(|parsed| format_utc_iso(parsed.with_timezone(&Utc)))
         })
         .unwrap_or_else(|| format_utc_iso(fallback))
+}
+
+fn mailbox_expires_at_is_expired(value: Option<&str>, now: DateTime<Utc>) -> bool {
+    value
+        .and_then(|raw| DateTime::parse_from_rfc3339(raw).ok())
+        .map(|expires_at| expires_at.with_timezone(&Utc) <= now)
+        .unwrap_or(false)
 }
 
 async fn validate_mailbox_binding(
@@ -572,7 +626,7 @@ fn mailbox_url_has_brand(url: &str) -> bool {
         })
 }
 
-fn parse_mailbox_code(detail: &MoeMailMessageDetail) -> Option<ParsedMailboxCode> {
+fn parse_mailbox_code(detail: &KaisouMailMessageDetail) -> Option<ParsedMailboxCode> {
     let subject = detail.subject.as_deref().unwrap_or_default();
     let content = detail.content.as_deref().unwrap_or_default();
     let html_text = strip_html_tags(detail.html.as_deref().unwrap_or_default());
@@ -614,7 +668,7 @@ fn parse_mailbox_code(detail: &MoeMailMessageDetail) -> Option<ParsedMailboxCode
     None
 }
 
-fn parse_mailbox_invite(detail: &MoeMailMessageDetail) -> Option<ParsedMailboxInvite> {
+fn parse_mailbox_invite(detail: &KaisouMailMessageDetail) -> Option<ParsedMailboxInvite> {
     let subject = detail.subject.as_deref().unwrap_or_default().trim();
     if subject.is_empty() {
         return None;
@@ -721,18 +775,18 @@ fn merge_mailbox_invite(
     }
 }
 
-fn sort_mailbox_messages_desc(messages: &mut [MoeMailMessageSummary]) {
+fn sort_mailbox_messages_desc(messages: &mut [KaisouMailMessageSummary]) {
     messages.sort_by(|left, right| right.received_at.cmp(&left.received_at));
 }
 
-fn latest_mailbox_message_id(messages: &[MoeMailMessageSummary]) -> Option<String> {
+fn latest_mailbox_message_id(messages: &[KaisouMailMessageSummary]) -> Option<String> {
     messages.first().map(|message| message.id.clone())
 }
 
 fn collect_unseen_mailbox_messages(
-    messages: Vec<MoeMailMessageSummary>,
+    messages: Vec<KaisouMailMessageSummary>,
     last_message_id: Option<&str>,
-) -> Vec<MoeMailMessageSummary> {
+) -> Vec<KaisouMailMessageSummary> {
     let Some(last_message_id) = last_message_id.filter(|value| !value.trim().is_empty()) else {
         return messages;
     };
@@ -749,7 +803,7 @@ fn collect_unseen_mailbox_messages(
 
 fn next_mailbox_cursor_after_refresh(
     previous_last_message_id: Option<&str>,
-    processed_messages: &[MoeMailMessageSummary],
+    processed_messages: &[KaisouMailMessageSummary],
 ) -> Option<String> {
     processed_messages
         .first()
@@ -759,9 +813,8 @@ fn next_mailbox_cursor_after_refresh(
 
 async fn resolve_mailbox_message_state(
     client: &Client,
-    config: &UpstreamAccountsMoeMailConfig,
-    remote_email_id: &str,
-    messages: &[MoeMailMessageSummary],
+    config: &UpstreamAccountsKaisouMailConfig,
+    messages: &[KaisouMailMessageSummary],
 ) -> Result<(Option<ParsedMailboxCode>, Option<ParsedMailboxInvite>)> {
     let mut latest_code = None;
     let mut latest_invite = None;
@@ -769,7 +822,7 @@ async fn resolve_mailbox_message_state(
         if latest_code.is_some() && latest_invite.is_some() {
             break;
         }
-        let detail = moemail_get_message(client, config, remote_email_id, &summary.id).await?;
+        let detail = kaisoumail_get_message(client, config, &summary.id).await?;
         if latest_code.is_none() {
             latest_code = parse_mailbox_code(&detail);
         }
@@ -781,12 +834,12 @@ async fn resolve_mailbox_message_state(
     Ok((latest_code, latest_invite))
 }
 
-enum MoeMailAttachReadState<T> {
+enum KaisouMailAttachReadState<T> {
     Readable(T),
     NotReadable,
 }
 
-fn moemail_attach_status_is_not_readable(status: reqwest::StatusCode) -> bool {
+fn kaisoumail_attach_status_is_not_readable(status: reqwest::StatusCode) -> bool {
     matches!(
         status,
         reqwest::StatusCode::FORBIDDEN | reqwest::StatusCode::NOT_FOUND
@@ -795,23 +848,19 @@ fn moemail_attach_status_is_not_readable(status: reqwest::StatusCode) -> bool {
 
 async fn resolve_mailbox_message_state_for_attach(
     client: &Client,
-    config: &UpstreamAccountsMoeMailConfig,
-    remote_email_id: &str,
-    messages: &[MoeMailMessageSummary],
-) -> Result<MoeMailAttachReadState<(Option<ParsedMailboxCode>, Option<ParsedMailboxInvite>)>> {
+    config: &UpstreamAccountsKaisouMailConfig,
+    messages: &[KaisouMailMessageSummary],
+) -> Result<KaisouMailAttachReadState<(Option<ParsedMailboxCode>, Option<ParsedMailboxInvite>)>> {
     let mut latest_code = None;
     let mut latest_invite = None;
     for summary in messages.iter() {
         if latest_code.is_some() && latest_invite.is_some() {
             break;
         }
-        let detail =
-            match moemail_get_message_for_attach(client, config, remote_email_id, &summary.id)
-                .await?
-            {
-                MoeMailAttachReadState::Readable(detail) => detail,
-                MoeMailAttachReadState::NotReadable => {
-                    return Ok(MoeMailAttachReadState::NotReadable);
+        let detail = match kaisoumail_get_message_for_attach(client, config, &summary.id).await? {
+                KaisouMailAttachReadState::Readable(detail) => detail,
+                KaisouMailAttachReadState::NotReadable => {
+                    return Ok(KaisouMailAttachReadState::NotReadable);
                 }
             };
         if latest_code.is_none() {
@@ -822,273 +871,271 @@ async fn resolve_mailbox_message_state_for_attach(
         }
     }
 
-    Ok(MoeMailAttachReadState::Readable((
+    Ok(KaisouMailAttachReadState::Readable((
         latest_code,
         latest_invite,
     )))
 }
 
-async fn moemail_create_email(
+async fn kaisoumail_create_mailbox(
     client: &Client,
-    config: &UpstreamAccountsMoeMailConfig,
-) -> Result<MoeMailGenerateEmailPayload> {
+    config: &UpstreamAccountsKaisouMailConfig,
+) -> Result<KaisouMailMailboxPayload> {
     let local_name = generate_mailbox_local_name().map_err(|(_, message)| anyhow!(message))?;
-    moemail_create_email_with_name_and_domain(client, config, &local_name, &config.default_domain)
-        .await
-}
-
-async fn moemail_create_email_for_address(
-    client: &Client,
-    config: &UpstreamAccountsMoeMailConfig,
-    email_address: &str,
-) -> Result<MoeMailGenerateEmailPayload> {
-    let requested_email = normalize_mailbox_address(email_address)
-        .ok_or_else(|| anyhow!("manual moemail address must not be blank"))?;
-    let requested_domain = normalize_mailbox_domain(&requested_email)
-        .ok_or_else(|| anyhow!("manual moemail domain is invalid"))?;
-    let requested_local = mailbox_local_part(&requested_email)
-        .ok_or_else(|| anyhow!("manual moemail local part is invalid"))?;
-    let generated = moemail_create_email_with_name_and_domain(
+    kaisoumail_create_mailbox_with_parts(
         client,
         config,
-        requested_local,
-        &requested_domain,
+        &local_name,
+        &config.default_subdomain,
+        &config.default_mail_domain,
     )
-    .await?;
-    let generated_email = normalize_mailbox_address(&generated.email)
-        .ok_or_else(|| anyhow!("generated moemail address must not be blank"))?;
-    if generated_email != requested_email {
-        bail!(
-            "generated moemail address {} does not match requested {}",
-            generated.email,
-            requested_email
-        );
-    }
-    Ok(generated)
+    .await
 }
 
-async fn moemail_create_email_with_name_and_domain(
+async fn kaisoumail_create_mailbox_with_parts(
     client: &Client,
-    config: &UpstreamAccountsMoeMailConfig,
+    config: &UpstreamAccountsKaisouMailConfig,
     local_name: &str,
-    domain: &str,
-) -> Result<MoeMailGenerateEmailPayload> {
+    subdomain: &str,
+    mail_domain: &str,
+) -> Result<KaisouMailMailboxPayload> {
     let response = client
         .post(
             config
                 .base_url
-                .join("/api/emails/generate")
-                .context("invalid moemail generate endpoint")?,
+                .join("/api/mailboxes")
+                .context("invalid kaisoumail mailbox create endpoint")?,
         )
-        .header("X-API-Key", config.api_key.as_str())
+        .bearer_auth(config.api_key.as_str())
         .json(&json!({
-            "name": local_name,
-            "expiryTime": DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_SESSION_TTL_SECS * 1000,
-            "domain": domain,
+            "localPart": local_name,
+            "subdomain": subdomain,
+            "mailDomain": mail_domain,
+            "expiresInMinutes": DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_SESSION_TTL_SECS / 60,
         }))
         .send()
         .await
-        .context("failed to create moemail mailbox")?
+        .context("failed to create kaisoumail mailbox")?
         .error_for_status()
-        .context("moemail mailbox creation request failed")?;
+        .context("kaisoumail mailbox creation request failed")?;
 
     response
-        .json::<MoeMailGenerateEmailPayload>()
+        .json::<KaisouMailMailboxPayload>()
         .await
-        .context("failed to decode moemail create mailbox response")
+        .context("failed to decode kaisoumail create mailbox response")
 }
 
-async fn moemail_get_config(
+async fn kaisoumail_ensure_mailbox_for_address(
     client: &Client,
-    config: &UpstreamAccountsMoeMailConfig,
-) -> Result<MoeMailConfigPayload> {
+    config: &UpstreamAccountsKaisouMailConfig,
+    email_address: &str,
+) -> Result<KaisouMailMailboxPayload> {
+    let requested_email = normalize_mailbox_address(email_address)
+        .ok_or_else(|| anyhow!("manual kaisoumail address must not be blank"))?;
     let response = client
-        .get(
+        .post(
             config
                 .base_url
-                .join("/api/config")
-                .context("invalid moemail config endpoint")?,
+                .join("/api/mailboxes/ensure")
+                .context("invalid kaisoumail mailbox ensure endpoint")?,
         )
-        .header("X-API-Key", config.api_key.as_str())
+        .bearer_auth(config.api_key.as_str())
+        .json(&json!({
+            "address": requested_email,
+            "expiresInMinutes": DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_SESSION_TTL_SECS / 60,
+        }))
         .send()
         .await
-        .context("failed to load moemail config")?
+        .context("failed to ensure kaisoumail mailbox")?
         .error_for_status()
-        .context("moemail config request failed")?;
-
-    response
-        .json::<MoeMailConfigPayload>()
-        .await
-        .context("failed to decode moemail config response")
-}
-
-async fn moemail_list_emails(
-    client: &Client,
-    config: &UpstreamAccountsMoeMailConfig,
-) -> Result<Vec<MoeMailEmailSummary>> {
-    let mut items = Vec::new();
-    let mut cursor: Option<String> = None;
-    loop {
-        let mut url = config
-            .base_url
-            .join("/api/emails")
-            .context("invalid moemail email list endpoint")?;
-        if let Some(current_cursor) = cursor.as_deref() {
-            url.query_pairs_mut().append_pair("cursor", current_cursor);
-        }
-        let response = client
-            .get(url)
-            .header("X-API-Key", config.api_key.as_str())
-            .send()
-            .await
-            .context("failed to list moemail mailboxes")?
-            .error_for_status()
-            .context("moemail email list request failed")?;
-        let payload = response
-            .json::<MoeMailEmailListPayload>()
-            .await
-            .context("failed to decode moemail email list response")?;
-        items.extend(payload.emails);
-        match payload.next_cursor {
-            Some(next_cursor) if !next_cursor.trim().is_empty() => cursor = Some(next_cursor),
-            _ => break,
-        }
-    }
-    Ok(items)
-}
-
-async fn moemail_list_messages(
-    client: &Client,
-    config: &UpstreamAccountsMoeMailConfig,
-    remote_email_id: &str,
-) -> Result<Vec<MoeMailMessageSummary>> {
-    let response = client
-        .get(
-            config
-                .base_url
-                .join(&format!("/api/emails/{remote_email_id}"))
-                .context("invalid moemail email detail endpoint")?,
-        )
-        .header("X-API-Key", config.api_key.as_str())
-        .send()
-        .await
-        .with_context(|| format!("failed to list moemail messages for {remote_email_id}"))?
-        .error_for_status()
-        .with_context(|| format!("moemail list messages request failed for {remote_email_id}"))?;
+        .context("kaisoumail mailbox ensure request failed")?;
 
     let payload = response
-        .json::<MoeMailMessageListPayload>()
+        .json::<KaisouMailMailboxPayload>()
         .await
-        .context("failed to decode moemail message list response")?;
+        .context("failed to decode kaisoumail ensure mailbox response")?;
+    validate_kaisoumail_mailbox_address_matches_request(&payload, &requested_email)?;
+    Ok(payload)
+}
+
+async fn kaisoumail_get_meta(
+    client: &Client,
+    config: &UpstreamAccountsKaisouMailConfig,
+) -> Result<KaisouMailMetaPayload> {
+    let response = client
+        .get(
+            config
+                .base_url
+                .join("/api/meta")
+                .context("invalid kaisoumail meta endpoint")?,
+        )
+        .bearer_auth(config.api_key.as_str())
+        .send()
+        .await
+        .context("failed to load kaisoumail config")?
+        .error_for_status()
+        .context("kaisoumail config request failed")?;
+
+    response
+        .json::<KaisouMailMetaPayload>()
+        .await
+        .context("failed to decode kaisoumail meta response")
+}
+
+async fn kaisoumail_list_mailboxes(
+    client: &Client,
+    config: &UpstreamAccountsKaisouMailConfig,
+) -> Result<Vec<KaisouMailMailboxSummary>> {
+    let response = client
+        .get(
+            config
+                .base_url
+                .join("/api/mailboxes")
+                .context("invalid kaisoumail mailbox list endpoint")?,
+        )
+        .bearer_auth(config.api_key.as_str())
+        .send()
+        .await
+        .context("failed to list kaisoumail mailboxes")?
+        .error_for_status()
+        .context("kaisoumail mailbox list request failed")?;
+    let payload = response
+        .json::<KaisouMailMailboxListPayload>()
+        .await
+        .context("failed to decode kaisoumail mailbox list response")?;
+    Ok(payload.mailboxes)
+}
+
+async fn kaisoumail_list_messages(
+    client: &Client,
+    config: &UpstreamAccountsKaisouMailConfig,
+    mailbox_address: &str,
+) -> Result<Vec<KaisouMailMessageSummary>> {
+    let mut url = config
+        .base_url
+        .join("/api/messages")
+        .context("invalid kaisoumail message list endpoint")?;
+    url.query_pairs_mut().append_pair("mailbox", mailbox_address);
+    let response = client
+        .get(url)
+        .bearer_auth(config.api_key.as_str())
+        .send()
+        .await
+        .with_context(|| format!("failed to list kaisoumail messages for {mailbox_address}"))?
+        .error_for_status()
+        .with_context(|| format!("kaisoumail list messages request failed for {mailbox_address}"))?;
+
+    let payload = response
+        .json::<KaisouMailMessageListPayload>()
+        .await
+        .context("failed to decode kaisoumail message list response")?;
     Ok(payload.messages)
 }
 
-async fn moemail_list_messages_for_attach(
+async fn kaisoumail_list_messages_for_attach(
     client: &Client,
-    config: &UpstreamAccountsMoeMailConfig,
-    remote_email_id: &str,
-) -> Result<MoeMailAttachReadState<Vec<MoeMailMessageSummary>>> {
+    config: &UpstreamAccountsKaisouMailConfig,
+    mailbox_address: &str,
+) -> Result<KaisouMailAttachReadState<Vec<KaisouMailMessageSummary>>> {
+    let mut url = config
+        .base_url
+        .join("/api/messages")
+        .context("invalid kaisoumail message list endpoint")?;
+    url.query_pairs_mut().append_pair("mailbox", mailbox_address);
     let response = client
-        .get(
-            config
-                .base_url
-                .join(&format!("/api/emails/{remote_email_id}"))
-                .context("invalid moemail email detail endpoint")?,
-        )
-        .header("X-API-Key", config.api_key.as_str())
+        .get(url)
+        .bearer_auth(config.api_key.as_str())
         .send()
         .await
-        .with_context(|| format!("failed to list moemail messages for {remote_email_id}"))?;
-    if moemail_attach_status_is_not_readable(response.status()) {
-        return Ok(MoeMailAttachReadState::NotReadable);
+        .with_context(|| format!("failed to list kaisoumail messages for {mailbox_address}"))?;
+    if kaisoumail_attach_status_is_not_readable(response.status()) {
+        return Ok(KaisouMailAttachReadState::NotReadable);
     }
     let response = response
         .error_for_status()
-        .with_context(|| format!("moemail list messages request failed for {remote_email_id}"))?;
+        .with_context(|| format!("kaisoumail list messages request failed for {mailbox_address}"))?;
 
     let payload = response
-        .json::<MoeMailMessageListPayload>()
+        .json::<KaisouMailMessageListPayload>()
         .await
-        .context("failed to decode moemail message list response")?;
-    Ok(MoeMailAttachReadState::Readable(payload.messages))
+        .context("failed to decode kaisoumail message list response")?;
+    Ok(KaisouMailAttachReadState::Readable(payload.messages))
 }
 
-async fn moemail_get_message(
+async fn kaisoumail_get_message(
     client: &Client,
-    config: &UpstreamAccountsMoeMailConfig,
-    remote_email_id: &str,
+    config: &UpstreamAccountsKaisouMailConfig,
     message_id: &str,
-) -> Result<MoeMailMessageDetail> {
+) -> Result<KaisouMailMessageDetail> {
     let response = client
         .get(
             config
                 .base_url
-                .join(&format!("/api/emails/{remote_email_id}/{message_id}"))
-                .context("invalid moemail message detail endpoint")?,
+                .join(&format!("/api/messages/{message_id}"))
+                .context("invalid kaisoumail message detail endpoint")?,
         )
-        .header("X-API-Key", config.api_key.as_str())
+        .bearer_auth(config.api_key.as_str())
         .send()
         .await
-        .with_context(|| format!("failed to load moemail message {message_id}"))?
+        .with_context(|| format!("failed to load kaisoumail message {message_id}"))?
         .error_for_status()
-        .with_context(|| format!("moemail message request failed for {message_id}"))?;
+        .with_context(|| format!("kaisoumail message request failed for {message_id}"))?;
 
     let payload = response
-        .json::<MoeMailMessageDetailPayload>()
+        .json::<KaisouMailMessageDetailPayload>()
         .await
-        .context("failed to decode moemail message detail response")?;
+        .context("failed to decode kaisoumail message detail response")?;
     Ok(payload.message)
 }
 
-async fn moemail_get_message_for_attach(
+async fn kaisoumail_get_message_for_attach(
     client: &Client,
-    config: &UpstreamAccountsMoeMailConfig,
-    remote_email_id: &str,
+    config: &UpstreamAccountsKaisouMailConfig,
     message_id: &str,
-) -> Result<MoeMailAttachReadState<MoeMailMessageDetail>> {
+) -> Result<KaisouMailAttachReadState<KaisouMailMessageDetail>> {
     let response = client
         .get(
             config
                 .base_url
-                .join(&format!("/api/emails/{remote_email_id}/{message_id}"))
-                .context("invalid moemail message detail endpoint")?,
+                .join(&format!("/api/messages/{message_id}"))
+                .context("invalid kaisoumail message detail endpoint")?,
         )
-        .header("X-API-Key", config.api_key.as_str())
+        .bearer_auth(config.api_key.as_str())
         .send()
         .await
-        .with_context(|| format!("failed to load moemail message {message_id}"))?;
-    if moemail_attach_status_is_not_readable(response.status()) {
-        return Ok(MoeMailAttachReadState::NotReadable);
+        .with_context(|| format!("failed to load kaisoumail message {message_id}"))?;
+    if kaisoumail_attach_status_is_not_readable(response.status()) {
+        return Ok(KaisouMailAttachReadState::NotReadable);
     }
     let response = response
         .error_for_status()
-        .with_context(|| format!("moemail message request failed for {message_id}"))?;
+        .with_context(|| format!("kaisoumail message request failed for {message_id}"))?;
 
     let payload = response
-        .json::<MoeMailMessageDetailPayload>()
+        .json::<KaisouMailMessageDetailPayload>()
         .await
-        .context("failed to decode moemail message detail response")?;
-    Ok(MoeMailAttachReadState::Readable(payload.message))
+        .context("failed to decode kaisoumail message detail response")?;
+    Ok(KaisouMailAttachReadState::Readable(payload.message))
 }
 
-async fn moemail_delete_email(
+async fn kaisoumail_delete_mailbox(
     client: &Client,
-    config: &UpstreamAccountsMoeMailConfig,
+    config: &UpstreamAccountsKaisouMailConfig,
     remote_email_id: &str,
 ) -> Result<()> {
     client
         .delete(
             config
                 .base_url
-                .join(&format!("/api/emails/{remote_email_id}"))
-                .context("invalid moemail delete endpoint")?,
+                .join(&format!("/api/mailboxes/{remote_email_id}"))
+                .context("invalid kaisoumail delete endpoint")?,
         )
-        .header("X-API-Key", config.api_key.as_str())
+        .bearer_auth(config.api_key.as_str())
         .send()
         .await
-        .with_context(|| format!("failed to delete moemail mailbox {remote_email_id}"))?
+        .with_context(|| format!("failed to delete kaisoumail mailbox {remote_email_id}"))?
         .error_for_status()
-        .with_context(|| format!("moemail delete request failed for {remote_email_id}"))?;
+        .with_context(|| format!("kaisoumail delete request failed for {remote_email_id}"))?;
     Ok(())
 }
 
@@ -1098,14 +1145,13 @@ async fn refresh_oauth_mailbox_session_status(
 ) -> Result<OauthMailboxSessionRow> {
     let config = upstream_mailbox_config(&state.config).map_err(|(_, message)| anyhow!(message))?;
     let mut messages =
-        moemail_list_messages(&state.http_clients.shared, config, &row.remote_email_id).await?;
+        kaisoumail_list_messages(&state.http_clients.shared, config, &row.email_address).await?;
     sort_mailbox_messages_desc(&mut messages);
 
     let unseen_messages = collect_unseen_mailbox_messages(messages, row.last_message_id.as_deref());
     let (fresh_code, fresh_invite) = resolve_mailbox_message_state(
         &state.http_clients.shared,
         config,
-        &row.remote_email_id,
         &unseen_messages,
     )
     .await?;
