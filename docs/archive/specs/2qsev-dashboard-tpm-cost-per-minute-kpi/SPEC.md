@@ -23,12 +23,12 @@
 - 合并成功和失败卡片：主要显示成功数，辅助显示失败数和失败率。
 - 在成功卡片后增加并行对话卡片：主要显示实时并行对话数，辅助显示与昨日平均并行数比较和今日日均并行数。
 - `TPM` 与 `消费速率` 辅助显示今日工作分钟日均值，以及与昨日日均的百分比差异。工作分钟日均值只统计有调用的分钟切片。
-- `总成本` 改名为 `今日成本`，辅助显示前 7 个完整自然日的每日均值，以及与昨日完整日成本的百分比差异。
-- `总 Tokens` 改名为 `今日 Tokens`，辅助显示缓存命中比率，以及与昨日完整日 Tokens 的百分比差异。
+- `总成本` 改名为 `今日成本`，辅助显示前 7 个完整自然日的每日均值，以及与昨日同刻进度成本的百分比差异。
+- `总 Tokens` 改名为 `今日 Tokens`，辅助显示缓存命中比率，以及与昨日同刻进度 Tokens 的百分比差异。
 - 与昨日比较的百分比必须用正负颜色区分。
 - 数据卡片标题可点击 / 聚焦 / 悬停打开 tooltip，解释字段含义与速率算法。
 - summary 成功但 timeseries 尚未可用时，只让两个速率 tile 进入 skeleton / `—` 降级，其余累计 tile 保持可读。
-- `TodayStatsOverview` 升级成 6 个等权 tile，并在 Storybook `desktop1440` 下保持单行。
+- `TodayStatsOverview` 在当前主干的 7 个等权 tile 下保持单行，并保留已新增的响应时间卡片。
 - 生成并归档 Storybook 视觉证据，供快车道 PR merge-ready 使用。
 
 ### Non-goals
@@ -42,7 +42,7 @@
 ### In scope
 
 - `web/src/components/DashboardActivityOverview.tsx`：新增 today 速率派生层并把 snapshot 传入 KPI 组件。
-- `web/src/components/TodayStatsOverview.tsx`：重排为 6 tile，并支持速率 tile 独立 loading / unavailable。
+- `web/src/components/TodayStatsOverview.tsx`：重排为当前主干的 7 tile，并支持速率 tile 独立 loading / unavailable。
 - `web/src/components/dashboardKpiComparisons.ts`：集中派生工作分钟日均、缓存命中、失败率、昨日比较与并行对话快照。
 - `src/api/slices/**`、`src/stats/mod.rs`：为 summary 增加 `previous7d` 窗口，并让分钟级 timeseries 暴露 `cacheInputTokens`。
 - `web/src/hooks/useParallelWorkStats.ts`：支持禁用账号范围下的全局并行对话请求。
@@ -65,7 +65,7 @@
 - 今日窗口内活动尾段少于 5 分钟时，按实际活动尾段 elapsed minutes 求均值；若无活动，显示数值 `0`。
 - 当前进行中分钟参与显示速率；由于 timeseries 为 1m 桶，首个活动秒级起点按该桶 `bucketStart` 近似。
 - 今日工作分钟日均值按 `今日总量 / totalCount > 0 的 1m 切片数` 计算；没有工作分钟时显示 `—`。
-- 昨日比较采用昨日同口径完整自然日：TPM / 消费速率使用昨日工作分钟日均，成本 / Tokens 使用昨日完整日总量，并行对话使用昨日平均并行数。
+- 昨日比较采用指标各自的同口径基线：TPM / 消费速率使用昨日工作分钟日均，成本 / Tokens 使用昨日从自然日 00:00 到今日同一日内进度的累计量，并行对话使用昨日平均并行数。
 - 前 7 日每日均值采用今天之前的 7 个完整自然日，不包含今天。
 - `今日 Tokens` 的缓存命中比率使用 today timeseries 中的 `cacheInputTokens / totalTokens` 派生；无 tokens 时显示 `0%`。
 - summary error 时保持整个 today overview 现有 alert 语义。
@@ -74,7 +74,7 @@
 ### SHOULD
 
 - 速率 helper 独立成可测试模块，避免把计算逻辑塞进组件 JSX。
-- Storybook 直接展示 6-tile 单行桌面态和 partial fallback 态。
+- Storybook 直接展示 7-tile 单行桌面态和 partial fallback 态。
 
 ### COULD
 
@@ -84,13 +84,13 @@
 
 ### Core flows
 
-- Dashboard 今日视图加载成功后，KPI 行显示：`TPM`、`消费速率` / `Spend rate`、`成功`、`并行对话`、`今日成本`、`今日 Tokens`。
+- Dashboard 今日视图加载成功后，KPI 行显示：`TPM`、`消费速率` / `Spend rate`、`成功`、`并行对话`、`响应时间` / `Response time`、`今日成本`、`今日 Tokens`。
 - `TPM` 与 `消费速率` 来自 today 1 分钟时序：以同自然日内较新的 `now` / `rangeEnd` 为 anchor，取最近 5 分钟内的 points，找到最早的非零 token/cost bucket，并用 `anchor - activeStart` 作为分母。
 - `TPM` 与 `消费速率` 辅助信息分别显示今日工作分钟日均值和较昨日工作分钟日均值的百分比差异。
 - `成功` 卡片以成功数为主要信息，辅助展示失败数和失败率。
 - `并行对话` 卡片以最新分钟并行数为主要信息，辅助展示较昨日平均并行数的百分比差异和今日平均并行数。
-- `今日成本` 卡片以今日累计成本为主要信息，辅助展示前 7 完整日每日均值和较昨日完整日成本的百分比差异。
-- `今日 Tokens` 卡片以今日累计 Tokens 为主要信息，辅助展示缓存命中比率和较昨日完整日 Tokens 的百分比差异。
+- `今日成本` 卡片以今日累计成本为主要信息，辅助展示前 7 完整日每日均值和较昨日的百分比差异；该百分比内部基线为昨日同刻进度成本。
+- `今日 Tokens` 卡片以今日累计 Tokens 为主要信息，辅助展示缓存命中比率和较昨日的百分比差异；该百分比内部基线为昨日同刻进度 Tokens。
 - 如果最近 5 分钟内前三分半都是 0、后 1.5 分钟有数据，则使用后 1.5 分钟总量除以 `1.5`。
 - 如果首个活动桶之后存在缺失分钟或 0 值分钟，这段时间继续计入分母。
 
@@ -127,8 +127,8 @@
 - Given summary 成功但 timeseries 正在加载，When 渲染 today KPI，Then 只有两个速率 tile 显示 skeleton。
 - Given summary 成功但 timeseries 失败，When 渲染 today KPI，Then 只有两个速率 tile 显示 `—`。
 - Given summary 失败，When 渲染 today KPI，Then 保持现有整块 alert 语义。
-- Given Storybook `desktop1440` 视口，When 查看 today KPI，Then 6 个 tile 单行展示且无横向溢出。
-- Given 今日统计加载成功，When 查看 KPI 行，Then 卡片顺序为 `TPM`、`消费速率`、`成功`、`并行对话`、`今日成本`、`今日 Tokens`。
+- Given Storybook `desktop1440` 视口，When 查看 today KPI，Then 7 个 tile 单行展示且无横向溢出。
+- Given 今日统计加载成功，When 查看 KPI 行，Then 卡片顺序为 `TPM`、`消费速率`、`成功`、`并行对话`、`响应时间`、`今日成本`、`今日 Tokens`。
 - Given 今日有成功和失败调用，When 查看成功卡片，Then 主信息是成功数，辅助信息是失败数和失败率。
 - Given 今日并行对话统计可用，When 查看并行对话卡片，Then 主信息是最新并行数，辅助信息是较昨日和日均。
 - Given 今日有 cache input tokens，When 查看今日 Tokens 卡片，Then 辅助信息显示缓存命中比率。
@@ -145,7 +145,7 @@
 ### Testing
 
 - Unit tests: `dashboardTodayRateSnapshot` 速率计算覆盖活跃尾段、前置 0 不稀释、当前部分分钟参与、活动后静默计入分母、零活动窗口；`dashboardKpiComparisons` 覆盖工作分钟日均、百分比差异、缓存命中和并行对话快照。
-- Integration tests: `TodayStatsOverview.test.tsx`、`DashboardActivityOverview.test.tsx`、`Dashboard.test.tsx` 覆盖 6 tile 与 partial fallback。
+- Integration tests: `TodayStatsOverview.test.tsx`、`DashboardActivityOverview.test.tsx`、`Dashboard.test.tsx` 覆盖 7 tile 与 partial fallback。
 - E2E tests (if applicable): None。
 
 ### UI / Storybook (if applicable)
@@ -196,7 +196,7 @@
   submission_gate: approved
   story_id_or_title: `dashboard-todaystatsoverview--desktop-single-row`
   state: desktop single row
-  evidence_note: 证明 `desktop1440` 下 6 个 KPI tile 保持单行，且顺序为 `TPM`、`消费速率`、`成功`、`并行对话`、`今日成本`、`今日 Tokens`；辅助信息包含日均、较昨日、失败率、7 日均与缓存命中。
+  evidence_note: 证明 `desktop1440` 下 7 个 KPI tile 保持单行，且顺序为 `TPM`、`消费速率`、`成功`、`并行对话`、`响应时间`、`今日成本`、`今日 Tokens`；辅助信息沿用原 UI 文案，包含日均、较昨日、失败率、响应时间、7 日均与缓存命中。
   PR: include
   image:
   ![Today KPI desktop single row](./assets/today-kpi-desktop-single-row.png)
@@ -220,7 +220,7 @@
 ## 实现里程碑（Milestones / Delivery checklist）
 
 - [x] M1: today 1 分钟时序速率 helper 落地并接入 Dashboard today KPI。
-- [x] M2: `TodayStatsOverview` 升级为 6 tile，支持速率 tile 独立 loading / unavailable。
+- [x] M2: `TodayStatsOverview` 升级为当前主干的 7 tile，支持速率 tile 独立 loading / unavailable。
 - [x] M3: Vitest 与 Storybook 场景覆盖补齐。
 - [x] M4: 视觉证据归档并推进到 PR merge-ready。
 
@@ -234,7 +234,7 @@
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
 - 风险：`useTimeseries(today)` 只提供 1m 桶，无法恢复首个非零桶内的真实秒级活动起点；本轮按 `bucketStart` 近似并通过 tooltip 明确口径。
-- 风险：6 tile 在较窄桌面宽度下可能压缩数值，需要继续依赖 `AdaptiveMetricValue` 的 compact fallback。
+- 风险：7 tile 在较窄桌面宽度下可能压缩数值，需要继续依赖 `AdaptiveMetricValue` 的 compact fallback。
 - 假设：`desktop1440` 是本次“单行 KPI”主要验收视口。
 
 ## 变更记录（Change log）
@@ -243,6 +243,7 @@
 - 2026-04-10: 完成前端 5m-avg 速率派生、6-tile KPI 重排、Vitest/Storybook 覆盖与本地视觉证据归档，并获主人授权将截图随 PR 一起提交。
 - 2026-04-28: 根据主人反馈修正速率口径：从最近 5 个已完成分钟桶改为最近 5 分钟活跃尾段均值，当前部分分钟参与，前置空闲不稀释速率，活动后的安静期会随当前时间继续拉长分母；同时为 KPI 标题增加字段说明 tooltip。
 - 2026-04-30: 将今日 KPI 升级为一个主信息加两个辅助信息；合并成功/失败，新增并行对话卡片，补充工作分钟日均、前 7 完整日均值、缓存命中和较昨日百分比颜色区分。
+- 2026-05-07: 将今日成本与今日 Tokens 的昨日比较改为昨日同刻进度累计量，并保留当前主干的响应时间卡片。
 
 ## 参考（References）
 
