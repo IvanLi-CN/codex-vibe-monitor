@@ -789,6 +789,38 @@ async fn spawn_test_forward_proxy_status(status: StatusCode) -> (String, JoinHan
     (format!("http://{addr}"), handle)
 }
 
+async fn spawn_test_counting_forward_proxy_status(
+    status: StatusCode,
+    request_count: Arc<AtomicUsize>,
+) -> (String, JoinHandle<()>) {
+    let app = Router::new().fallback(any(move || {
+        let request_count = request_count.clone();
+        async move {
+            request_count.fetch_add(1, Ordering::SeqCst);
+            (
+                status,
+                Json(json!({
+                    "status": status.as_u16(),
+                })),
+            )
+        }
+    }));
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind counting forward proxy status test server");
+    let addr = listener
+        .local_addr()
+        .expect("counting forward proxy status test server addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("counting forward proxy status test server should run");
+    });
+
+    (format!("http://{addr}"), handle)
+}
+
 async fn spawn_test_blocking_forward_proxy_status(
     status: StatusCode,
     request_started: Arc<Notify>,

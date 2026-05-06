@@ -2130,7 +2130,7 @@ pub(crate) async fn post_forward_proxy_candidate_validation(
             validate_single_forward_proxy_candidate(state.as_ref(), payload.value).await
         }
         ForwardProxyValidationKind::SubscriptionUrl => {
-            validate_subscription_candidate(state.as_ref(), payload.value).await
+            validate_subscription_candidate(state.clone(), payload.value).await
         }
     };
 
@@ -2179,7 +2179,7 @@ pub(crate) async fn validate_single_forward_proxy_candidate(
 }
 
 pub(crate) async fn validate_subscription_candidate(
-    state: &AppState,
+    state: Arc<AppState>,
     value: String,
 ) -> Result<ForwardProxyCandidateValidationResponse> {
     let validation_timeout =
@@ -2205,54 +2205,186 @@ pub(crate) async fn validate_subscription_candidate(
         bail!("subscription contains no supported proxy entries");
     }
 
-    let mut last_error: Option<anyhow::Error> = None;
-    let mut best_latency_ms: Option<f64> = None;
-    for endpoint in endpoints.iter().take(3) {
-        let Some(remaining_timeout) =
-            remaining_timeout_budget(validation_timeout, validation_started.elapsed())
-        else {
-            last_error = Some(timeout_error_for_duration(validation_timeout));
-            break;
-        };
-        if remaining_timeout.is_zero() {
-            last_error = Some(timeout_error_for_duration(validation_timeout));
-            break;
-        }
-
-        match probe_forward_proxy_endpoint(state, endpoint, remaining_timeout, None).await {
-            Ok(Some(latency_ms)) => {
-                best_latency_ms = Some(latency_ms);
-                break;
-            }
-            Ok(None) => {
-                last_error = Some(shutdown_cancelled_forward_proxy_probe());
-                break;
-            }
-            Err(err) => {
-                if timeout_budget_exhausted(validation_timeout, validation_started.elapsed()) {
-                    last_error = Some(timeout_error_for_duration(validation_timeout));
-                    break;
-                }
-                last_error = Some(err);
-            }
-        }
-    }
-
-    let Some(latency_ms) = best_latency_ms else {
-        if let Some(err) = last_error {
-            return Err(anyhow!(
-                "subscription proxy probe failed: {err}; no entry passed validation"
-            ));
-        }
-        bail!("no subscription proxy entry passed validation");
-    };
+    let discovered_nodes = endpoints.len();
+    let latency_ms = validate_subscription_endpoints_concurrently(
+        state,
+        endpoints,
+        validation_timeout,
+        validation_started,
+    )
+    .await?;
 
     Ok(ForwardProxyCandidateValidationResponse::success(
         "subscription validation succeeded",
         Some(normalized_subscription),
-        Some(endpoints.len()),
+        Some(discovered_nodes),
         Some(latency_ms),
     ))
+}
+
+pub(crate) async fn validate_subscription_endpoints_concurrently(
+    state: Arc<AppState>,
+    endpoints: Vec<ForwardProxyEndpoint>,
+    validation_timeout: Duration,
+    validation_started: Instant,
+) -> Result<f64> {
+    let endpoint_count = endpoints.len();
+    let concurrency = FORWARD_PROXY_SUBSCRIPTION_PROBE_CONCURRENCY.max(1);
+    let attempts = FORWARD_PROXY_SUBSCRIPTION_PROBE_ATTEMPTS.max(1);
+    let attempt_timeout =
+        Duration::from_secs(FORWARD_PROXY_SUBSCRIPTION_PROBE_ATTEMPT_TIMEOUT_SECS.max(1));
+    let cancellation = CancellationToken::new();
+    let _cancel_on_drop = ProbeCancellationGuard(cancellation.clone());
+    let semaphore = Arc::new(Semaphore::new(concurrency));
+    let (tx, mut rx) = mpsc::channel::<Result<f64, String>>(endpoint_count.max(1));
+
+    for endpoint in endpoints {
+        let state = state.clone();
+        let semaphore = semaphore.clone();
+        let cancellation = cancellation.clone();
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            let _permit = match semaphore.acquire_owned().await {
+                Ok(permit) => permit,
+                Err(err) => {
+                    let _ = tx
+                        .send(Err(format!(
+                            "subscription validation concurrency limiter closed: {err}"
+                        )))
+                        .await;
+                    return;
+                }
+            };
+            if cancellation.is_cancelled() {
+                return;
+            }
+            let result = probe_subscription_endpoint_with_retries(
+                state.as_ref(),
+                &endpoint,
+                attempts,
+                attempt_timeout,
+                validation_timeout,
+                validation_started,
+                &cancellation,
+            )
+            .await;
+            match result {
+                Ok(latency_ms) => {
+                    cancellation.cancel();
+                    let _ = tx.send(Ok(latency_ms)).await;
+                }
+                Err(err) if cancellation.is_cancelled() => {
+                    let _ = tx.send(Err(format!("{err:#}"))).await;
+                }
+                Err(err) => {
+                    let _ = tx.send(Err(format!("{err:#}"))).await;
+                }
+            }
+        });
+    }
+    drop(tx);
+
+    let mut completed = 0usize;
+    let mut last_error: Option<String> = None;
+    loop {
+        let Some(remaining_timeout) =
+            remaining_timeout_budget(validation_timeout, validation_started.elapsed())
+        else {
+            cancellation.cancel();
+            return Err(timeout_error_for_duration(validation_timeout));
+        };
+        if remaining_timeout.is_zero() {
+            cancellation.cancel();
+            return Err(timeout_error_for_duration(validation_timeout));
+        }
+
+        let result = match timeout(remaining_timeout, rx.recv()).await {
+            Ok(Some(result)) => result,
+            Ok(None) => break,
+            Err(_) => {
+                cancellation.cancel();
+                return Err(timeout_error_for_duration(validation_timeout));
+            }
+        };
+
+        completed += 1;
+        match result {
+            Ok(latency_ms) => {
+                cancellation.cancel();
+                return Ok(latency_ms);
+            }
+            Err(err) => last_error = Some(err),
+        }
+        if completed >= endpoint_count {
+            break;
+        }
+    }
+
+    let mut message = format!(
+        "subscription validation scanned {endpoint_count} proxy entries with concurrency {concurrency}, {attempts} attempts per entry, and {}s per attempt; no entry passed validation",
+        timeout_seconds_for_message(attempt_timeout)
+    );
+    if let Some(err) = last_error {
+        message.push_str(&format!("; last error: {err}"));
+    }
+    bail!(message)
+}
+
+struct ProbeCancellationGuard(CancellationToken);
+
+impl Drop for ProbeCancellationGuard {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
+async fn probe_subscription_endpoint_with_retries(
+    state: &AppState,
+    endpoint: &ForwardProxyEndpoint,
+    attempts: usize,
+    attempt_timeout: Duration,
+    validation_timeout: Duration,
+    validation_started: Instant,
+    cancellation: &CancellationToken,
+) -> Result<f64> {
+    let mut last_error: Option<anyhow::Error> = None;
+    for attempt in 1..=attempts {
+        if cancellation.is_cancelled() {
+            return Err(shutdown_cancelled_forward_proxy_probe());
+        }
+        let Some(remaining_timeout) =
+            remaining_timeout_budget(validation_timeout, validation_started.elapsed())
+        else {
+            return Err(timeout_error_for_duration(validation_timeout));
+        };
+        if remaining_timeout.is_zero() {
+            return Err(timeout_error_for_duration(validation_timeout));
+        }
+
+        let probe_result = tokio::select! {
+            _ = cancellation.cancelled() => {
+                return Err(shutdown_cancelled_forward_proxy_probe());
+            }
+            _ = tokio::time::sleep(remaining_timeout) => {
+                return Err(timeout_error_for_duration(validation_timeout));
+            }
+            result = probe_forward_proxy_endpoint(state, endpoint, attempt_timeout, Some(cancellation)) => {
+                result
+            }
+        };
+
+        match probe_result {
+            Ok(Some(latency_ms)) => return Ok(latency_ms),
+            Ok(None) => return Err(shutdown_cancelled_forward_proxy_probe()),
+            Err(err) => {
+                last_error = Some(err.context(format!(
+                    "attempt {attempt}/{attempts} failed for {}",
+                    endpoint.display_name
+                )));
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow!("subscription proxy probe did not run")))
 }
 
 fn shutdown_cancelled_forward_proxy_probe() -> anyhow::Error {
