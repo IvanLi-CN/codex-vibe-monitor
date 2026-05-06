@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.56.0",
+  "base_stable_version": "1.55.5",
+  "channel_label": "channel:stable",
+  "created_at": "2026-05-06T20:00:19Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.56.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "ea1e1f740d476de100f2b398dffa7aa1cd0d72c0",
+  "pr_number": 397,
+  "pr_title": "feat(upstream-accounts): switch mailbox adapter to KaisouMail",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.56.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.56.0",
+  "target_sha": "6f8292c0b291cc2c3cf973377c733208a1f31208",
+  "type_label": "type:minor"
+}
