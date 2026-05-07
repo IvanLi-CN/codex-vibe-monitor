@@ -189,7 +189,7 @@ pub(crate) async fn create_oauth_mailbox_session(
             let email_domain = email_address
                 .split('@')
                 .nth(1)
-                .unwrap_or(config.default_mail_domain.as_str())
+                .unwrap_or_default()
                 .to_string();
             let session_id = random_hex(16)?;
             let now = Utc::now();
@@ -328,7 +328,7 @@ pub(crate) async fn create_oauth_mailbox_session(
     let email_domain = email_address
         .split('@')
         .nth(1)
-        .unwrap_or(config.default_mail_domain.as_str())
+        .unwrap_or_default()
         .to_string();
     let session_id = random_hex(16)?;
     let now = Utc::now();

@@ -309,32 +309,6 @@ fn validate_kaisoumail_mailbox_address_matches_request(
     Ok(())
 }
 
-#[cfg(test)]
-fn kaisoumail_split_mailbox_domain(
-    mailbox_domain: &str,
-    default_mail_domain: &str,
-) -> Result<(String, String)> {
-    let mailbox_domain = normalize_mailbox_domain(mailbox_domain)
-        .ok_or_else(|| anyhow!("manual kaisoumail domain is invalid"))?;
-    let default_mail_domain = normalize_mailbox_domain(default_mail_domain)
-        .ok_or_else(|| anyhow!("default kaisoumail mail domain is invalid"))?;
-    if mailbox_domain == default_mail_domain {
-        bail!("manual kaisoumail address is missing subdomain");
-    }
-    let suffix = format!(".{default_mail_domain}");
-    let Some(subdomain) = mailbox_domain.strip_suffix(&suffix) else {
-        bail!(
-            "manual kaisoumail domain {} is outside configured mail domain {}",
-            mailbox_domain,
-            default_mail_domain
-        );
-    };
-    if subdomain.trim().is_empty() {
-        bail!("manual kaisoumail address is missing subdomain");
-    }
-    Ok((subdomain.to_string(), default_mail_domain))
-}
-
 #[derive(Debug, PartialEq, Eq)]
 enum RequestedManualMailboxAddress {
     Missing,
@@ -365,11 +339,9 @@ fn upstream_mailbox_config(
         (
             StatusCode::SERVICE_UNAVAILABLE,
             format!(
-                "oauth temp mail requires {}, {}, {}, and {}",
+                "oauth temp mail requires {} and {}",
                 ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_BASE_URL,
-                ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_API_KEY,
-                ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_DEFAULT_MAIL_DOMAIN,
-                ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_DEFAULT_SUBDOMAIN
+                ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_API_KEY
             ),
         )
     })
@@ -908,24 +880,6 @@ async fn kaisoumail_create_mailbox(
     client: &Client,
     config: &UpstreamAccountsKaisouMailConfig,
 ) -> Result<KaisouMailMailboxPayload> {
-    let local_name = generate_mailbox_local_name().map_err(|(_, message)| anyhow!(message))?;
-    kaisoumail_create_mailbox_with_parts(
-        client,
-        config,
-        &local_name,
-        &config.default_subdomain,
-        &config.default_mail_domain,
-    )
-    .await
-}
-
-async fn kaisoumail_create_mailbox_with_parts(
-    client: &Client,
-    config: &UpstreamAccountsKaisouMailConfig,
-    local_name: &str,
-    subdomain: &str,
-    mail_domain: &str,
-) -> Result<KaisouMailMailboxPayload> {
     let response = client
         .post(
             config
@@ -935,9 +889,6 @@ async fn kaisoumail_create_mailbox_with_parts(
         )
         .bearer_auth(config.api_key.as_str())
         .json(&json!({
-            "localPart": local_name,
-            "subdomain": subdomain,
-            "mailDomain": mail_domain,
             "expiresInMinutes": DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_SESSION_TTL_SECS / 60,
         }))
         .send()

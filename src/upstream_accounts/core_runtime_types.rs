@@ -10,7 +10,9 @@ use axum::{
 };
 use base64::engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD};
 use futures_util::FutureExt;
-use rand::{Rng, RngCore, rngs::OsRng};
+#[cfg(test)]
+use rand::Rng;
+use rand::{RngCore, rngs::OsRng};
 use sqlx::Transaction;
 use std::{any::Any, collections::BTreeSet, panic::AssertUnwindSafe};
 pub(crate) const ENV_UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET: &str =
