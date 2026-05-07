@@ -63,15 +63,42 @@ struct KaisouMailMessageDetailPayload {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 struct KaisouMailMessageDetail {
     id: String,
     subject: Option<String>,
-    #[serde(alias = "text", alias = "previewText")]
     content: Option<String>,
     html: Option<String>,
     received_at: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KaisouMailMessageDetailRaw {
+    id: String,
+    subject: Option<String>,
+    content: Option<String>,
+    text: Option<String>,
+    preview_text: Option<String>,
+    html: Option<String>,
+    received_at: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for KaisouMailMessageDetail {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = KaisouMailMessageDetailRaw::deserialize(deserializer)?;
+        Ok(Self {
+            id: raw.id,
+            subject: raw.subject,
+            content: raw.content.or(raw.text).or(raw.preview_text),
+            html: raw.html,
+            received_at: raw.received_at,
+        })
+    }
 }
 
 const MAILBOX_CODE_CONTEXT_WINDOW_BYTES: usize = 64;

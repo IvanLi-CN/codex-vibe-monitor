@@ -342,7 +342,7 @@ struct CrsStatsConfig {
     poll_interval: Duration,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct UpstreamAccountsKaisouMailConfig {
     base_url: Url,
@@ -350,6 +350,18 @@ struct UpstreamAccountsKaisouMailConfig {
     api_key: String,
     default_mail_domain: String,
     default_subdomain: String,
+}
+
+impl fmt::Debug for UpstreamAccountsKaisouMailConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UpstreamAccountsKaisouMailConfig")
+            .field("base_url", &self.base_url)
+            .field("api_key", &"<redacted>")
+            .field("default_mail_domain", &self.default_mail_domain)
+            .field("default_subdomain", &self.default_subdomain)
+            .finish()
+    }
 }
 
 impl AppConfig {
