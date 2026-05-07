@@ -3564,6 +3564,7 @@
     struct KaisouMailStubState {
         domains: Vec<String>,
         emails: Arc<Mutex<Vec<(String, String, Option<String>)>>>,
+        create_requests: Arc<Mutex<Vec<Value>>>,
         generated_requests: Arc<Mutex<Vec<(String, String)>>>,
         deleted_ids: Arc<Mutex<Vec<String>>>,
         next_generated_id: Arc<AtomicUsize>,

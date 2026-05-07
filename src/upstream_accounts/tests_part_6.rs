@@ -1963,8 +1963,6 @@
         let config = UpstreamAccountsKaisouMailConfig {
             base_url: Url::parse("https://km.example.test").expect("url"),
             api_key: "cfm_secret_value".to_string(),
-            default_mail_domain: "example.test".to_string(),
-            default_subdomain: "mail".to_string(),
         };
 
         let debug = format!("{config:?}");
@@ -2289,15 +2287,6 @@
     }
 
     #[test]
-    fn kaisoumail_split_mailbox_domain_uses_configured_mail_domain() {
-        let (subdomain, mail_domain) =
-            kaisoumail_split_mailbox_domain("mail-tw.707079.xyz", "707079.xyz")
-                .expect("split mailbox domain");
-        assert_eq!(subdomain, "mail-tw");
-        assert_eq!(mail_domain, "707079.xyz");
-    }
-
-    #[test]
     fn validate_kaisoumail_mailbox_address_matches_requested_manual_address() {
         let payload = KaisouMailMailboxPayload {
             id: "mailbox_1".to_string(),
@@ -2468,6 +2457,43 @@
             harness.stub.generated_requests.lock().await.is_empty(),
             "existing readable mailbox should not be recreated"
         );
+
+        harness.abort();
+    }
+
+    #[tokio::test]
+    async fn create_oauth_mailbox_session_lets_kaisoumail_generate_address_upstream() {
+        let harness = spawn_kaisoumail_test_harness("@707079.xyz", Vec::new()).await;
+        let payload: CreateOauthMailboxSessionRequest =
+            serde_json::from_value(json!({})).expect("deserialize mailbox request");
+
+        let Json(response) = create_oauth_mailbox_session(
+            State(harness.state.clone()),
+            HeaderMap::new(),
+            Json(payload),
+        )
+        .await
+        .expect("create mailbox session");
+
+        assert!(response.supported);
+        assert_eq!(
+            response.email_address,
+            "upstream-generated-1@mailbox.kaisoumail.test"
+        );
+        assert_eq!(
+            response.source.as_deref(),
+            Some(OAUTH_MAILBOX_SOURCE_GENERATED)
+        );
+        let create_requests = harness.stub.create_requests.lock().await.clone();
+        assert_eq!(create_requests, vec![json!({ "expiresInMinutes": 60 })]);
+        let session_id = response.session_id.expect("session id");
+        let row = load_oauth_mailbox_session(&harness.state.pool, &session_id)
+            .await
+            .expect("load mailbox session")
+            .expect("stored mailbox session");
+        assert_eq!(row.remote_email_id, "generated_1");
+        assert_eq!(row.email_address, "upstream-generated-1@mailbox.kaisoumail.test");
+        assert_eq!(row.email_domain, "mailbox.kaisoumail.test");
 
         harness.abort();
     }
@@ -2793,20 +2819,6 @@
 
         assert_eq!(merged.subject, "New invite");
         assert_eq!(merged.copy_value, "https://example.com/new");
-    }
-
-    #[test]
-    fn generate_mailbox_local_name_looks_like_human_or_org_style() {
-        let local = generate_mailbox_local_name().expect("mailbox local part");
-        assert!(local.len() >= 10);
-        assert!(
-            local
-                .chars()
-                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '.' || ch == '-')
-        );
-        assert!(local.chars().any(|ch| ch.is_ascii_digit()));
-        assert!(!local.starts_with('-'));
-        assert!(!local.ends_with('-'));
     }
 
     #[test]

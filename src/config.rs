@@ -189,6 +189,13 @@ fn reject_legacy_env_vars(renames: &[(&str, &str)]) -> Result<()> {
     Ok(())
 }
 
+fn reject_removed_env_var(name: &str, reason: &str) -> Result<()> {
+    if env::var_os(name).is_some() {
+        bail!("{name} is not supported; remove it because {reason}");
+    }
+    Ok(())
+}
+
 #[derive(Parser, Debug, Default)]
 #[command(
     name = "codex-vibe-monitor",
@@ -348,8 +355,6 @@ struct UpstreamAccountsKaisouMailConfig {
     base_url: Url,
     #[serde(skip_serializing)]
     api_key: String,
-    default_mail_domain: String,
-    default_subdomain: String,
 }
 
 impl fmt::Debug for UpstreamAccountsKaisouMailConfig {
@@ -358,8 +363,6 @@ impl fmt::Debug for UpstreamAccountsKaisouMailConfig {
             .debug_struct("UpstreamAccountsKaisouMailConfig")
             .field("base_url", &self.base_url)
             .field("api_key", &"<redacted>")
-            .field("default_mail_domain", &self.default_mail_domain)
-            .field("default_subdomain", &self.default_subdomain)
             .finish()
     }
 }
@@ -712,38 +715,32 @@ impl AppConfig {
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
-        let kaisoumail_default_mail_domain = env::var(ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_DEFAULT_MAIL_DOMAIN)
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
-        let kaisoumail_default_subdomain =
-            env::var(ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_DEFAULT_SUBDOMAIN)
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty());
-        let upstream_accounts_kaisoumail = match (
-            kaisoumail_base_url_raw,
-            kaisoumail_api_key,
-            kaisoumail_default_mail_domain,
-            kaisoumail_default_subdomain,
-        ) {
-            (None, None, None, None) => None,
-            (Some(base_url), Some(api_key), Some(default_mail_domain), Some(default_subdomain)) => {
-                Some(UpstreamAccountsKaisouMailConfig {
-                    base_url: Url::parse(&base_url)
-                        .context("invalid UPSTREAM_ACCOUNTS_KAISOUMAIL_BASE_URL")?,
-                    api_key,
-                    default_mail_domain,
-                    default_subdomain,
-                })
-            }
+        let kaisoumail_default_removed_reason =
+            "KaisouMail chooses generated mailbox local parts and domains upstream";
+        reject_removed_env_var(
+            ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_DEFAULT_MAIL_DOMAIN,
+            kaisoumail_default_removed_reason,
+        )?;
+        reject_removed_env_var(
+            ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_DEFAULT_SUBDOMAIN,
+            kaisoumail_default_removed_reason,
+        )?;
+        reject_removed_env_var(
+            LEGACY_ENV_UPSTREAM_ACCOUNTS_MOEMAIL_DEFAULT_DOMAIN,
+            kaisoumail_default_removed_reason,
+        )?;
+        let upstream_accounts_kaisoumail = match (kaisoumail_base_url_raw, kaisoumail_api_key) {
+            (None, None) => None,
+            (Some(base_url), Some(api_key)) => Some(UpstreamAccountsKaisouMailConfig {
+                base_url: Url::parse(&base_url)
+                    .context("invalid UPSTREAM_ACCOUNTS_KAISOUMAIL_BASE_URL")?,
+                api_key,
+            }),
             _ => {
                 return Err(anyhow!(
-                    "{}, {}, {}, and {} must be set together",
+                    "{} and {} must be set together",
                     ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_BASE_URL,
-                    ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_API_KEY,
-                    ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_DEFAULT_MAIL_DOMAIN,
-                    ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_DEFAULT_SUBDOMAIN
+                    ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_API_KEY
                 ));
             }
         };

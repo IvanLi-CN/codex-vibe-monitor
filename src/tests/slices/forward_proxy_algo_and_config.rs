@@ -1235,6 +1235,57 @@ fn app_config_from_sources_rejects_all_legacy_public_env_renames() {
 }
 
 #[test]
+fn app_config_from_sources_accepts_kaisoumail_base_url_and_api_key_only() {
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
+    let _env = EnvVarGuard::set(&[
+        (
+            ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_BASE_URL,
+            Some("https://km.example.test"),
+        ),
+        (ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_API_KEY, Some("cfm_test_key")),
+        (ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_DEFAULT_MAIL_DOMAIN, None),
+        (ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_DEFAULT_SUBDOMAIN, None),
+        (LEGACY_ENV_UPSTREAM_ACCOUNTS_MOEMAIL_BASE_URL, None),
+        (LEGACY_ENV_UPSTREAM_ACCOUNTS_MOEMAIL_API_KEY, None),
+        (LEGACY_ENV_UPSTREAM_ACCOUNTS_MOEMAIL_DEFAULT_DOMAIN, None),
+    ]);
+
+    let config = AppConfig::from_sources(&CliArgs::default())
+        .expect("KaisouMail should only require base URL and API key");
+
+    assert!(config.upstream_accounts_kaisoumail.is_some());
+}
+
+#[test]
+fn app_config_from_sources_rejects_kaisoumail_default_generation_env_vars() {
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
+
+    for name in [
+        ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_DEFAULT_MAIL_DOMAIN,
+        ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_DEFAULT_SUBDOMAIN,
+        LEGACY_ENV_UPSTREAM_ACCOUNTS_MOEMAIL_DEFAULT_DOMAIN,
+    ] {
+        let _env = EnvVarGuard::set(&[
+            (ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_BASE_URL, None),
+            (ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_API_KEY, None),
+            (ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_DEFAULT_MAIL_DOMAIN, None),
+            (ENV_UPSTREAM_ACCOUNTS_KAISOUMAIL_DEFAULT_SUBDOMAIN, None),
+            (LEGACY_ENV_UPSTREAM_ACCOUNTS_MOEMAIL_BASE_URL, None),
+            (LEGACY_ENV_UPSTREAM_ACCOUNTS_MOEMAIL_API_KEY, None),
+            (LEGACY_ENV_UPSTREAM_ACCOUNTS_MOEMAIL_DEFAULT_DOMAIN, None),
+            (name, Some("mail-tw.707979.xyz")),
+        ]);
+
+        let err = AppConfig::from_sources(&CliArgs::default())
+            .expect_err("KaisouMail generated-address defaults should be rejected");
+        assert!(
+            err.to_string().contains("is not supported; remove it"),
+            "error should ask to remove {name}, got {err}"
+        );
+    }
+}
+
+#[test]
 fn app_config_from_sources_uses_proxy_timeout_defaults() {
     let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
     let names = [

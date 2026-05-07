@@ -8,6 +8,7 @@
 ## Implementation Notes
 
 - 后端 mailbox client 已切换到 KaisouMail Bearer API。
+- 系统自动生成邮箱只向 KaisouMail 传 `expiresInMinutes`，不在项目内指定 local part、默认域名或默认子域名。
 - 项目内 OAuth mailbox session API 保持兼容。
 - 手动地址仍走非阻塞降级：非法格式、unsupported domain 或不可读时不阻断 OAuth 主流程。
 - `generated` 会话保存 KaisouMail mailbox `id` 并执行远端删除；`attached` 会话只清理本地记录。

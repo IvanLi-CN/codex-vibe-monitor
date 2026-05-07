@@ -975,6 +975,7 @@ fn random_hex(size: usize) -> Result<String, (StatusCode, String)> {
     Ok(output)
 }
 
+#[cfg(test)]
 fn random_base36(size: usize) -> Result<String, (StatusCode, String)> {
     const ALPHABET: &[u8; 36] = b"abcdefghijklmnopqrstuvwxyz0123456789";
     const LETTERS: &[u8; 26] = b"abcdefghijklmnopqrstuvwxyz";
@@ -999,71 +1000,6 @@ fn random_base36(size: usize) -> Result<String, (StatusCode, String)> {
         output[letter_pos] = LETTERS[rng.gen_range(0..LETTERS.len())];
     }
     String::from_utf8(output).map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
-}
-
-fn generate_mailbox_local_name() -> Result<String, (StatusCode, String)> {
-    const GIVEN_NAMES: &[&str] = &[
-        "alex", "emma", "olivia", "liam", "sophia", "noah", "ava", "mia", "ethan", "nora", "lucas",
-        "zoe",
-    ];
-    const FAMILY_NAMES: &[&str] = &[
-        "carter", "ng", "morgan", "patel", "reed", "young", "kim", "bennett", "wong", "brooks",
-    ];
-    const ORG_NAMES: &[&str] = &[
-        "northstar",
-        "acorn",
-        "harbor",
-        "summit",
-        "evergreen",
-        "lattice",
-        "brightpath",
-        "aurora",
-    ];
-    const TEAM_NAMES: &[&str] = &[
-        "ops", "research", "growth", "support", "finance", "design", "legal", "success",
-    ];
-    const UNIT_NAMES: &[&str] = &[
-        "team", "desk", "hub", "group", "office", "lab", "studio", "center",
-    ];
-
-    let mut rng = OsRng;
-    let suffix_len = rng.gen_range(3..=5);
-    let suffix = random_base36(suffix_len)?;
-    let maybe_join = |left: &str, right: &str, rng: &mut OsRng| match rng.gen_range(0..4) {
-        0 => format!("{left}{right}"),
-        1 => format!("{left}.{right}"),
-        _ => format!("{left}-{right}"),
-    };
-    let mut local = match rng.gen_range(0..3) {
-        0 => {
-            let base = maybe_join(
-                GIVEN_NAMES[rng.gen_range(0..GIVEN_NAMES.len())],
-                FAMILY_NAMES[rng.gen_range(0..FAMILY_NAMES.len())],
-                &mut rng,
-            );
-            maybe_join(&base, &suffix, &mut rng)
-        }
-        1 => {
-            let base = maybe_join(
-                ORG_NAMES[rng.gen_range(0..ORG_NAMES.len())],
-                TEAM_NAMES[rng.gen_range(0..TEAM_NAMES.len())],
-                &mut rng,
-            );
-            maybe_join(&base, &suffix, &mut rng)
-        }
-        _ => {
-            let base = maybe_join(
-                TEAM_NAMES[rng.gen_range(0..TEAM_NAMES.len())],
-                UNIT_NAMES[rng.gen_range(0..UNIT_NAMES.len())],
-                &mut rng,
-            );
-            maybe_join(&base, &suffix, &mut rng)
-        }
-    };
-    if local.len() < 10 {
-        local.push_str(&random_base36(10 - local.len())?);
-    }
-    Ok(local)
 }
 
 fn format_window_label(window_duration_mins: i64) -> String {

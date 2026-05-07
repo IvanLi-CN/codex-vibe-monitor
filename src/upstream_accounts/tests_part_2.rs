@@ -7,14 +7,6 @@
             (local.to_string(), domain.to_string())
         }
 
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct CreateMailboxRequest {
-            local_part: String,
-            subdomain: String,
-            mail_domain: String,
-        }
-
         async fn meta_handler(
             State(state): State<KaisouMailStubState>,
         ) -> axum::Json<serde_json::Value> {
@@ -42,22 +34,15 @@
 
         async fn create_mailbox_handler(
             State(state): State<KaisouMailStubState>,
-            axum::Json(payload): axum::Json<CreateMailboxRequest>,
+            axum::Json(payload): axum::Json<Value>,
         ) -> axum::Json<serde_json::Value> {
             let index = state
                 .next_generated_id
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
                 + 1;
-            let email = format!(
-                "{}@{}.{}",
-                payload.local_part, payload.subdomain, payload.mail_domain
-            );
+            state.create_requests.lock().await.push(payload);
+            let email = format!("upstream-generated-{index}@mailbox.kaisoumail.test");
             let id = format!("generated_{index}");
-            state
-                .generated_requests
-                .lock()
-                .await
-                .push((payload.local_part.clone(), format!("{}.{}", payload.subdomain, payload.mail_domain)));
             state
                 .emails
                 .lock()
@@ -131,6 +116,7 @@
                 .map(|value| value.trim_start_matches('@').to_ascii_lowercase())
                 .collect(),
             emails: Arc::new(Mutex::new(emails)),
+            create_requests: Arc::new(Mutex::new(Vec::new())),
             generated_requests: Arc::new(Mutex::new(Vec::new())),
             deleted_ids: Arc::new(Mutex::new(Vec::new())),
             next_generated_id: Arc::new(AtomicUsize::new(0)),
@@ -159,8 +145,6 @@
         config.upstream_accounts_kaisoumail = Some(UpstreamAccountsKaisouMailConfig {
             base_url: Url::parse(&format!("http://{addr}")).expect("valid kaisoumail test url"),
             api_key: "test-kaisoumail-key".to_string(),
-            default_mail_domain: "707079.xyz".to_string(),
-            default_subdomain: "mail-tw".to_string(),
         });
         let http_clients = HttpClients::build(&config).expect("build http clients");
         let (broadcaster, _) = broadcast::channel(8);
