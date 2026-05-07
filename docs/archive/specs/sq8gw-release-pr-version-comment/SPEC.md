@@ -44,7 +44,7 @@
 ### MUST
 
 - 仅在 `release_enabled == true` 的发布路径上执行 PR 评论。
-- 评论必须基于 `release-meta` 已冻结的输出（`pr_number`、`release_tag`、`app_effective_version`、`target_sha`），不得重新推导版本。
+- 评论必须基于 `release-meta` 从 immutable release snapshot 导出的输出（`pr_number`、`release_tag`、`app_effective_version`、`target_sha`），不得重新推导版本或重新查询 PR 标签。
 - 评论必须带固定 marker，便于后续 rerun / backfill 更新同一条评论。
 - 若目标 PR 不存在、`pr_number` 为空或评论 API 调用失败，workflow 应记录 notice / warning，但不能破坏已完成的发布结果或阻断后续 release queue。
 - `release-publish` 必须显式声明完成评论所需的最小权限。
@@ -84,7 +84,7 @@
 ## 风险 / 假设（Risks / Assumptions）
 
 - 风险：GitHub comments API 短暂失败时，PR 版本评论可能缺席；本次选择 best-effort，不让评论失败回滚已完成发布。
-- 假设：发布 commit 总能关联到唯一 merged PR，且 `release-meta.outputs.pr_number` 可用。
+- 假设：发布 commit 的 PR 身份来自以 `merge_commit_sha` 为键冻结的 immutable release snapshot；即使 squash merge 后 GitHub commit 反查 PR 为空，`release-meta.outputs.pr_number` 仍由 snapshot 提供。
 
 ## 参考（References）
 

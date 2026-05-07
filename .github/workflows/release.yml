@@ -176,6 +176,7 @@ jobs:
             --github-token "${GITHUB_TOKEN}" \
             --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
             --registry "${REGISTRY}" \
+            --snapshot-source manual-backfill \
             --target-only \
             --skip-publish \
             --output "$RUNNER_TEMP/release-snapshot.json"
