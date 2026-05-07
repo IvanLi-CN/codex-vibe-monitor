@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.57.3",
+  "base_stable_version": "1.57.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-05-07T07:14:29Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.57.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "5705206183c94e453b86e2eaebf37c1b2e681b74",
+  "pr_number": 402,
+  "pr_title": "fix(upstream-accounts): defer mailbox address generation to KaisouMail",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.57.3",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.57.3",
+  "target_sha": "ce869f6f1152f623ce0cbf1b7e3f67e36022b2c9",
+  "type_label": "type:patch"
+}
