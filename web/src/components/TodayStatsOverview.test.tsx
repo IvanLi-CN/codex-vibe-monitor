@@ -229,6 +229,13 @@ describe('TodayStatsOverview', () => {
           totalCost: 2.1,
           totalTokens: 8000,
         }}
+        comparisonStats={{
+          totalCount: 176,
+          successCount: 160,
+          failureCount: 16,
+          totalCost: 4.2,
+          totalTokens: 16000,
+        }}
         rate={null}
         loading={false}
         rateLoading
@@ -240,6 +247,9 @@ describe('TodayStatsOverview', () => {
     expect(host?.querySelector('[data-testid="today-stats-value-spend-rate"]')).toBeNull()
     expect(host?.querySelector('[data-testid="today-stats-value-success"]')?.textContent).toContain('80')
     expect(host?.querySelector('[data-testid="today-stats-secondary-failures"]')?.textContent).toContain('8')
+    expect(host?.textContent).toContain('vs yesterday')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-cost-delta"]')?.textContent).toBe('-50%')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-tokens-delta"]')?.textContent).toBe('-50%')
   })
 
   it('renders TPM as a whole number even when the averaged rate is fractional', () => {
@@ -270,6 +280,61 @@ describe('TodayStatsOverview', () => {
     expect(tpmText).toContain('1,001')
     expect(tpmText).not.toContain('.')
     expect(spendRateText).toContain('$0.10')
+  })
+
+  it('compares cost and token totals against yesterday at the same day progress', () => {
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 12,
+          successCount: 12,
+          failureCount: 0,
+          totalCost: 12,
+          totalTokens: 1200,
+        }}
+        comparisonStats={{
+          totalCount: 100,
+          successCount: 100,
+          failureCount: 0,
+          totalCost: 100,
+          totalTokens: 10000,
+        }}
+        timeseries={{
+          rangeStart: '2026-04-10T00:00:00.000Z',
+          rangeEnd: '2026-04-10T00:03:00.000Z',
+          bucketSeconds: 60,
+          points: [],
+        }}
+        comparisonTimeseries={{
+          rangeStart: '2026-04-09T00:00:00.000Z',
+          rangeEnd: '2026-04-10T00:00:00.000Z',
+          bucketSeconds: 60,
+          points: [1, 2, 3, 99].map((value, index) => ({
+            bucketStart: new Date(Date.parse('2026-04-09T00:00:00.000Z') + index * 60_000).toISOString(),
+            bucketEnd: new Date(Date.parse('2026-04-09T00:01:00.000Z') + index * 60_000).toISOString(),
+            totalCount: 1,
+            successCount: 1,
+            failureCount: 0,
+            totalTokens: value * 100,
+            cacheInputTokens: 0,
+            totalCost: value,
+          })),
+        }}
+        rate={{
+          tokensPerMinute: 1000,
+          spendRate: 0.1,
+          windowMinutes: 5,
+          available: true,
+        }}
+        loading={false}
+        error={null}
+      />,
+    )
+
+    expect(host?.textContent).toContain('vs yesterday')
+    expect(host?.textContent).not.toContain('vs yesterday same time')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-cost-delta"]')?.textContent).toBe('+100%')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-tokens-delta"]')?.textContent).toBe('+100%')
   })
 
   it('opens field descriptions from metric titles', () => {

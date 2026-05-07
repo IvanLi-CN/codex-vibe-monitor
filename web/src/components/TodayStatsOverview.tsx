@@ -12,6 +12,7 @@ import { buildDashboardResponseTimeSnapshot } from './dashboardResponseTimeSnaps
 import {
   buildActiveMinuteAverages,
   buildParallelWorkKpiSnapshot,
+  buildSameProgressUsageSnapshot,
   cacheHitRate,
   failureRate,
   percentDelta,
@@ -240,6 +241,7 @@ export function TodayStatsOverview({
   const failureCount = stats?.failureCount ?? 0
   const totalCost = stats?.totalCost ?? 0
   const totalTokens = stats?.totalTokens ?? 0
+  const isToday = dayKind === 'today'
   const previous7dDailyCost = previous7dStats ? previous7dStats.totalCost / PREVIOUS_FULL_DAY_COUNT : null
   const activeAverages = buildActiveMinuteAverages(stats, timeseries)
   const comparisonActiveAverages = buildActiveMinuteAverages(comparisonStats, comparisonTimeseries)
@@ -258,8 +260,15 @@ export function TodayStatsOverview({
     responseTimeSnapshot?.dayAverageMs,
     comparisonResponseTimeSnapshot?.dayAverageMs,
   )
-  const totalCostDelta = percentDelta(totalCost, comparisonStats?.totalCost)
-  const totalTokensDelta = percentDelta(totalTokens, comparisonStats?.totalTokens)
+  const sameProgressUsage = buildSameProgressUsageSnapshot(timeseries, comparisonTimeseries, { timeZone })
+  const totalCostDelta = percentDelta(
+    totalCost,
+    isToday ? (sameProgressUsage.totalCost ?? comparisonStats?.totalCost) : comparisonStats?.totalCost,
+  )
+  const totalTokensDelta = percentDelta(
+    totalTokens,
+    isToday ? (sameProgressUsage.totalTokens ?? comparisonStats?.totalTokens) : comparisonStats?.totalTokens,
+  )
   const terminalFailureRate = failureRate(successCount, failureCount)
   const tokenCacheHitRate = cacheHitRate(sumCacheInputTokens(timeseries), totalTokens)
   const parallelSnapshot = buildParallelWorkKpiSnapshot(parallelWorkStats, comparisonParallelWorkStats)
@@ -269,7 +278,6 @@ export function TodayStatsOverview({
   const responseTimeCurrentUnavailable = rateUnavailable || responseTimeSnapshot?.responseTimeMs == null
   const tokensPerMinute = rate?.tokensPerMinute ?? 0
   const spendRate = rate?.spendRate ?? 0
-  const isToday = dayKind === 'today'
   const costLabel = isToday ? t('dashboard.today.todayCost') : t('dashboard.today.yesterdayCost')
   const tokensLabel = isToday ? t('dashboard.today.todayTokens') : t('dashboard.today.yesterdayTokens')
   const comparisonLabel = isToday
