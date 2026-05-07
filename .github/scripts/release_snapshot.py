@@ -16,7 +16,13 @@ from urllib import error, parse, request
 
 SNAPSHOT_SCHEMA_VERSION = 1
 DEFAULT_NOTES_REF = "refs/notes/release-snapshots"
-ALLOWED_SNAPSHOT_SOURCES = {"ci-main", "manual-backfill", "pr-intent-artifact", "legacy-pr-labels"}
+ALLOWED_SNAPSHOT_SOURCES = {
+    "ci-main",
+    "manual-backfill",
+    "merged-pr",
+    "pr-intent-artifact",
+    "legacy-pr-labels",
+}
 ALLOWED_TYPE_LABELS = {
     "type:patch",
     "type:minor",
@@ -76,6 +82,7 @@ def parse_args() -> argparse.Namespace:
     ensure.add_argument("--notes-ref", default=DEFAULT_NOTES_REF)
     ensure.add_argument("--registry", default="ghcr.io")
     ensure.add_argument("--api-root", default=os.environ.get("GITHUB_API_URL", "https://api.github.com"))
+    ensure.add_argument("--snapshot-source", default="ci-main")
     ensure.add_argument("--output", required=True)
     ensure.add_argument("--max-attempts", type=int, default=6)
     ensure.add_argument(
@@ -278,19 +285,39 @@ def load_pr_for_commit(
     allow_zero: bool = False,
 ) -> dict[str, Any] | None:
     owner, repo = repository.split("/", 1)
-    payload = github_request_json(api_root, token, f"/repos/{owner}/{repo}/commits/{target_sha}/pulls")
-    if not isinstance(payload, list):
-        raise SnapshotError("GitHub API returned an unexpected payload for commit-associated PRs")
-    if len(payload) == 0 and allow_zero:
+    payload: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        page_payload = github_request_json(
+            api_root,
+            token,
+            f"/repos/{owner}/{repo}/pulls",
+            {
+                "state": "closed",
+                "sort": "updated",
+                "direction": "desc",
+                "per_page": 100,
+                "page": page,
+            },
+        )
+        if not isinstance(page_payload, list):
+            raise SnapshotError("GitHub API returned an unexpected payload for merged pull requests")
+        payload.extend(item for item in page_payload if isinstance(item, dict))
+        if len(page_payload) < 100:
+            break
+        page += 1
+
+    merged_payload = [pr for pr in payload if pr.get("merged_at") and pr.get("merge_commit_sha") == target_sha]
+    if len(merged_payload) == 0 and allow_zero:
         return None
-    if len(payload) != 1:
-        raise SnapshotError(f"Expected exactly 1 PR associated with commit {target_sha}, got {len(payload)}")
-    pr_summary = payload[0]
+    if len(merged_payload) != 1:
+        raise SnapshotError(f"Expected exactly 1 merged PR associated with commit {target_sha}, got {len(merged_payload)}")
+    pr_summary = merged_payload[0]
     if not isinstance(pr_summary, dict):
         raise SnapshotError("GitHub API returned a malformed PR payload")
     pr_number = pr_summary.get("number")
     if not isinstance(pr_number, int):
-        raise SnapshotError("Commit-associated PR payload is missing a numeric PR number")
+        raise SnapshotError("Merged PR payload is missing a numeric PR number")
     pr = github_request_json(api_root, token, f"/repos/{owner}/{repo}/pulls/{pr_number}")
     if not isinstance(pr, dict):
         raise SnapshotError("GitHub API returned a malformed pull request payload")
@@ -468,13 +495,14 @@ def build_snapshot(
     notes_ref: str,
     registry: str,
     api_root: str,
+    snapshot_source: str = "ci-main",
     pr: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if pr is None:
         pr = load_pr_for_commit(api_root, repository, token, target_sha)
     if pr is None:
         raise SnapshotError(f"Commit {target_sha} is not associated with a merged pull request")
-    type_label, channel_label, snapshot_source, pr_head_sha = resolve_release_intent_for_pr(pr)
+    type_label, channel_label, _, pr_head_sha = resolve_release_intent_for_pr(pr)
     release_bump = type_label.split(":", 1)[1]
     release_channel = channel_label.split(":", 1)[1]
     image_name_lower = repository.lower()
@@ -673,6 +701,7 @@ def ensure_snapshot(args: argparse.Namespace) -> int:
                     notes_ref=args.notes_ref,
                     registry=args.registry,
                     api_root=args.api_root,
+                    snapshot_source=getattr(args, "snapshot_source", "ci-main"),
                     pr=pr,
                 )
                 write_json(temp_note, snapshot)

@@ -44,7 +44,7 @@ grep -q "implementation_profile='final' does not match workflow profile 'bootstr
 baseline_repo="$tmp_dir/baseline-repo"
 copy_repo_snapshot "$repo_root" "$baseline_repo"
 cp "$fixtures_root/quality-gates.json" "$baseline_repo/.github/quality-gates.json"
-for workflow in ci-pr.yml ci-main.yml release.yml label-gate.yml review-policy.yml; do
+for workflow in ci-pr.yml ci-main.yml release.yml release-snapshot-pr.yml label-gate.yml review-policy.yml; do
   cp "$fixtures_root/$workflow" "$baseline_repo/.github/workflows/$workflow"
 done
 
@@ -53,7 +53,7 @@ bash "$repo_root/.github/scripts/test-inline-metadata-workflows.sh"
 
 simplified_topology_repo="$tmp_dir/simplified-topology-repo"
 copy_repo_snapshot "$baseline_repo" "$simplified_topology_repo"
-for workflow in ci-main.yml release.yml label-gate.yml; do
+for workflow in ci-main.yml release.yml release-snapshot-pr.yml label-gate.yml; do
   cp "$fixtures_root/simplified/$workflow" "$simplified_topology_repo/.github/workflows/$workflow"
 done
 

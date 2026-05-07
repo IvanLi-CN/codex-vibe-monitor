@@ -48,8 +48,8 @@
 - PR 侧 required checks 继续保持 `Validate PR labels`、`Lint & Format Check`、`Backend Tests`、`Build Artifacts`、`Review Policy Gate`。
 - `CI PR` 对同一 PR 必须保持可抢占；`CI Main` 与 `Release` 对运行中的 main/release run 必须保持非抢占，并使用固定并发组做全局串行。
 - `Label Gate` 必须在 trusted base 上校验 merged PR 进入主线前的 `type:*` / `channel:*` 标签合法性，但不再负责冻结或传递发布意图元数据。
-- `CI Main` 必须为 mainline 上尚未持久化的 merged commits 写入 immutable release snapshot，冻结当前 PR labels、版本分配与镜像/tag 元数据；后续成功的 `CI Main` run 必须能够 catch up 之前因 pending 替换而漏掉的 commits。
-- `CI Main` 写 snapshot 时，自动发布路径必须直接读取 merged commit 关联 PR 的当前 labels；不得依赖 artifact、timeline label 回放或历史 rollout 分支。
+- `CI Main` 必须为 mainline 上尚未持久化的 merged commits 写入 immutable release snapshot；merged PR 关闭事件也必须在 `merge_commit_sha` 上冻结同一份 snapshot，冻结当前 PR labels、版本分配与镜像/tag 元数据；后续成功的 `CI Main` run 必须能够 catch up 之前因 pending 替换而漏掉的 commits。
+- `CI Main` 写 snapshot 时，自动发布路径必须优先读取已冻结的 immutable snapshot；历史兼容补齐只允许按 `merge_commit_sha` 做受控补查，不得再依赖 `commits/{sha}/pulls` 或其它 commit 反查 PR 行为。
 - `Release` 必须同时支持 `workflow_run(CI Main success)` 与 `workflow_dispatch(commit_sha)` 两种入口，并复用同一套 publish 逻辑；自动入口每次只发布 mainline 上最早一个尚未发布的 snapshot，成功后继续串行排下一个；自动与手动入口都只能消费 immutable release snapshot，禁止重新读取 PR labels 或重算版本。
 - 当 `workflow_run` 入口收到非成功的 `CI Main` 结论时，`Release` 必须 fail closed 并显式失败，不能让整条发布 run 以 silent `skipped` 结束。
 - `CI PR` 必须允许同仓库 PR 修改 quality-gates contract 包时使用当前分支 contract 校验当前分支拓扑；fork PR 与普通 PR 继续使用 base trusted source。
@@ -111,7 +111,7 @@
 
 - PR 路径只保留 PR/merge_group 相关 job；release job 从 PR workflow 中完全拆出。
 - `CI Main` 复用现有 lint/test/build 逻辑，但不再承担发布；发布只由 `Release` workflow 负责。
-- `CI Main` 通过 git notes 写入 immutable release snapshot，把 PR labels、版本分配与镜像/tag 元数据冻结到 merge commit。
+- `CI Main` 通过 git notes 写入 immutable release snapshot，把 PR labels、版本分配与镜像/tag 元数据冻结到 merge commit；`pull_request_target.closed && merged == true` 额外负责在合并瞬间冻结同一份 snapshot，避免 squash merge 失去 PR 关联。
 - `Label Gate` 在 trusted source 上校验标签；`CI Main` 再把当前 PR labels 提升为 immutable git-notes snapshot。
 - `Release` 通过统一的 target SHA 解析层兼容自动与手动入口，但只加载 snapshot 并复用现有 smoke / manifest / tag / GitHub Release 步骤。
 - `Release` 在发布元数据解析前先用 `CI Main Gate` 捕获非成功上游结论；成功上游或手动 backfill 不受该 gate 阻断。
@@ -124,6 +124,7 @@
 - 风险：若上游失败只让 `release-meta` 条件跳过，GitHub 会把整条 `Release` 记成 `skipped`，现有失败通知不会触发。
 - 风险：`workflow_dispatch` backfill 若未验证 SHA 所属分支，可能误对非 main commit 执行发布。
 - 风险：若合并后有人手改 release labels，后续手动 backfill 会跟随漂移，因此必须把“merge 后不得改 release labels”写成仓库操作规约。
+- 风险：如果 merged PR 冻结入口和 CI Main 回填入口对同一 `merge_commit_sha` 重复写 note，必须依赖幂等 git notes 处理和重试，而不能靠 commit→PR 关联来兜底。
 - 假设：仓库权限允许 `workflow_run` 触发 release 并继续推 tag / 建 GitHub Release。
 
 ## 变更记录（Change log）
@@ -132,6 +133,7 @@
 - 2026-03-14: 完成 workflow split、final quality-gates contract、release backfill 入口与本地 contract/self-tests。
 - 2026-03-15: 将发布链路进一步收敛为“PR 标签校验 → 全局串行 `CI Main` 写/补 snapshot → 全局串行 `Release` 按最早未发布 snapshot 排队发布”，删除 artifact、rollout 与 legacy fallback 复杂度。
 - 2026-04-29: 增加 `CI Main Gate`，把上游 `CI Main` 非成功结论从 silent skipped 转为显式 failed release；同时允许同仓库 quality-gates contract PR 使用当前分支 contract 自证更新后的拓扑。
+- 2026-05-07: 新增 `Release Snapshot PR` 冻结入口，以 `pull_request_target.closed` 在 `merge_commit_sha` 上先行冻结 immutable snapshot，彻底移除对 `/commits/{sha}/pulls` 的主路径依赖，兼容 squash merge。
 
 ## 参考（References）
 

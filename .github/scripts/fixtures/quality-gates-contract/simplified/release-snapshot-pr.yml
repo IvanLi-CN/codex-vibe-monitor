@@ -1,0 +1,54 @@
+name: Release Snapshot PR
+
+on:
+  pull_request_target:
+    branches:
+      - main
+    types:
+      - closed
+
+concurrency:
+  group: release-snapshot-pr-${{ github.event.pull_request.merge_commit_sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: read
+
+env:
+  REGISTRY: ghcr.io
+  RELEASE_SNAPSHOT_NOTES_REF: refs/notes/release-snapshots
+
+jobs:
+  freeze-release-snapshot:
+    name: Freeze merged PR release snapshot
+    runs-on: ubuntu-latest
+    if: ${{ github.event.pull_request.merged == true }}
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+
+      - name: Configure git identity for release notes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Freeze immutable release snapshot
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/release_snapshot.py ensure \
+            --target-sha "${{ github.event.pull_request.merge_commit_sha }}" \
+            --github-repository "${GITHUB_REPOSITORY}" \
+            --github-token "${GITHUB_TOKEN}" \
+            --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
+            --registry "${REGISTRY}" \
+            --snapshot-source merged-pr \
+            --target-only \
+            --output "$RUNNER_TEMP/release-snapshot.json"

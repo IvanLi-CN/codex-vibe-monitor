@@ -81,6 +81,107 @@ finally:
     module.time.sleep = original_sleep
 
 
+original_github_request_json = module.github_request_json
+try:
+    calls: list[tuple[str, tuple[tuple[str, object], ...] | None]] = []
+
+    def fake_github_request_json(api_root, token, path, query=None, *, max_attempts=4):
+        calls.append((path, tuple(sorted((query or {}).items())) if query else None))
+        if "/commits/" in path:
+            raise AssertionError(f"unexpected commit-associated PR lookup: {path}")
+        if path.endswith("/pulls"):
+            return [
+                {
+                    "number": 699,
+                    "title": "Closed but unmerged",
+                    "merged_at": None,
+                    "merge_commit_sha": "f" * 40,
+                    "head": {"sha": "1" * 40},
+                    "labels": [{"name": "type:patch"}, {"name": "channel:stable"}],
+                },
+                {
+                    "number": 700,
+                    "title": "Merged via squash",
+                    "merged_at": "2026-03-15T00:00:00Z",
+                    "merge_commit_sha": "a" * 40,
+                    "head": {"sha": "2" * 40},
+                    "labels": [{"name": "type:minor"}, {"name": "channel:stable"}],
+                },
+                {
+                    "number": 701,
+                    "title": "Different merged PR",
+                    "merged_at": "2026-03-15T00:00:00Z",
+                    "merge_commit_sha": "b" * 40,
+                    "head": {"sha": "3" * 40},
+                    "labels": [{"name": "type:patch"}, {"name": "channel:rc"}],
+                },
+            ]
+        if path.endswith("/pulls/700"):
+            return {
+                "number": 700,
+                "title": "Merged via squash",
+                "head": {"sha": "2" * 40},
+                "labels": [{"name": "type:minor"}, {"name": "channel:stable"}],
+            }
+        raise AssertionError(f"unexpected GitHub API path: {path}")
+
+    module.github_request_json = fake_github_request_json
+    merged_pr = module.load_pr_for_commit(
+        "https://api.github.test",
+        "IvanLi-CN/codex-vibe-monitor",
+        "token",
+        "a" * 40,
+    )
+    assert merged_pr is not None
+    assert merged_pr["number"] == 700
+    assert module.load_pr_for_commit(
+        "https://api.github.test",
+        "IvanLi-CN/codex-vibe-monitor",
+        "token",
+        "c" * 40,
+        allow_zero=True,
+    ) is None
+    assert all("/commits/" not in path for path, _ in calls)
+finally:
+    module.github_request_json = original_github_request_json
+
+
+with tempfile.TemporaryDirectory(prefix="release-snapshot-merged-pr-") as tmp:
+    repo = Path(tmp)
+    run("init", cwd=repo)
+    run("config", "user.name", "Test User", cwd=repo)
+    run("config", "user.email", "test@example.com", cwd=repo)
+    run("checkout", "-b", "main", cwd=repo)
+    (repo / "Cargo.toml").write_text('[package]\nname = "demo"\nversion = "0.1.0"\n')
+    (repo / "README.md").write_text("base\n")
+    run("add", "Cargo.toml", "README.md", cwd=repo)
+    run("commit", "-m", "base", cwd=repo)
+
+    original_cwd = Path.cwd()
+    original_loader = module.load_pr_for_commit
+    try:
+        os.chdir(repo)
+        module.load_pr_for_commit = lambda api_root, repository, token, target_sha, **kwargs: make_pr(
+            702, "Merged PR", target_sha, ["type:patch", "channel:stable"]
+        )
+        snapshot = module.build_snapshot(
+            target_sha=run("rev-parse", "HEAD", cwd=repo),
+            repository="IvanLi-CN/codex-vibe-monitor",
+            token="token",
+            notes_ref=module.DEFAULT_NOTES_REF,
+            registry="ghcr.io",
+            api_root="https://api.github.com",
+            pr=make_pr(702, "Merged PR", "4" * 40, ["type:patch", "channel:stable"]),
+            snapshot_source="merged-pr",
+        )
+        assert snapshot["snapshot_source"] == "merged-pr"
+        assert snapshot["pr_number"] == 702
+        assert snapshot["release_enabled"] is True
+    finally:
+        module.load_pr_for_commit = original_loader
+        os.chdir(original_cwd)
+
+
 with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
     repo = Path(tmp)
     run("init", cwd=repo)
