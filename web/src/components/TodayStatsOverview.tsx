@@ -8,6 +8,7 @@ import { Alert } from './ui/alert'
 import { Badge } from './ui/badge'
 import { Tooltip } from './ui/tooltip'
 import type { DashboardTodayRateSnapshot } from './dashboardTodayRateSnapshot'
+import { buildDashboardResponseTimeSnapshot } from './dashboardResponseTimeSnapshot'
 import {
   buildActiveMinuteAverages,
   buildParallelWorkKpiSnapshot,
@@ -174,6 +175,11 @@ function comparisonTone(value: number | null) {
   return value > 0 ? 'text-success' : 'text-error'
 }
 
+function latencyComparisonTone(value: number | null) {
+  if (value == null || Math.abs(value) < 0.000_001) return 'text-base-content/70'
+  return value > 0 ? 'text-error' : 'text-success'
+}
+
 function formatNumberValue(value: number | null, localeTag: string, maximumFractionDigits = 2) {
   if (value == null || !Number.isFinite(value)) return '—'
   return new Intl.NumberFormat(localeTag, {
@@ -188,6 +194,21 @@ function formatCurrencyValue(value: number | null, localeTag: string) {
     currency: 'USD',
     maximumFractionDigits: 2,
   }).format(value)
+}
+
+function formatLatencyValue(value: number | null, localeTag: string) {
+  if (value == null || !Number.isFinite(value)) return '—'
+  if (value < 1000) {
+    return `${new Intl.NumberFormat(localeTag, { maximumFractionDigits: 1 }).format(value)} ms`
+  }
+
+  const seconds = value / 1000
+  const precision = Math.abs(seconds) >= 100 ? 1 : Math.abs(seconds) >= 1 ? 2 : 3
+  const rounded = Number(seconds.toFixed(precision))
+  return `${rounded.toLocaleString(localeTag, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: precision,
+  })} s`
 }
 
 export function TodayStatsOverview({
@@ -222,8 +243,21 @@ export function TodayStatsOverview({
   const previous7dDailyCost = previous7dStats ? previous7dStats.totalCost / PREVIOUS_FULL_DAY_COUNT : null
   const activeAverages = buildActiveMinuteAverages(stats, timeseries)
   const comparisonActiveAverages = buildActiveMinuteAverages(comparisonStats, comparisonTimeseries)
+  const responseTimeSnapshot = buildDashboardResponseTimeSnapshot(timeseries ?? null, {
+    closedNaturalDay: dayKind === 'yesterday',
+  })
+  const comparisonResponseTimeSnapshot =
+    dayKind === 'today'
+      ? buildDashboardResponseTimeSnapshot(comparisonTimeseries ?? null, {
+          closedNaturalDay: true,
+        })
+      : null
   const tpmDailyDelta = percentDelta(activeAverages.tokensPerMinute, comparisonActiveAverages.tokensPerMinute)
   const spendRateDailyDelta = percentDelta(activeAverages.spendRate, comparisonActiveAverages.spendRate)
+  const responseTimeDailyDelta = percentDelta(
+    responseTimeSnapshot?.dayAverageMs,
+    comparisonResponseTimeSnapshot?.dayAverageMs,
+  )
   const totalCostDelta = percentDelta(totalCost, comparisonStats?.totalCost)
   const totalTokensDelta = percentDelta(totalTokens, comparisonStats?.totalTokens)
   const terminalFailureRate = failureRate(successCount, failureCount)
@@ -232,6 +266,7 @@ export function TodayStatsOverview({
   const parallelDelta = percentDelta(parallelSnapshot.currentCount, parallelSnapshot.yesterdayAverage)
 
   const rateUnavailable = !loading && !rateLoading && rateError != null
+  const responseTimeCurrentUnavailable = rateUnavailable || responseTimeSnapshot?.responseTimeMs == null
   const tokensPerMinute = rate?.tokensPerMinute ?? 0
   const spendRate = rate?.spendRate ?? 0
   const isToday = dayKind === 'today'
@@ -262,7 +297,7 @@ export function TodayStatsOverview({
       ) : (
         <div
           data-testid="today-stats-metrics-grid"
-          className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-6"
+          className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-7"
         >
           <MetricTile
             label={t('dashboard.today.tokensPerMinute')}
@@ -363,6 +398,34 @@ export function TodayStatsOverview({
               ]}
             />
           ) : null}
+          <MetricTile
+            label={t('dashboard.today.responseTime')}
+            description={t('dashboard.today.responseTimeDescription')}
+            localeTag={localeTag}
+            loading={loading || rateLoading}
+            valueTestId="today-stats-value-response-time"
+            displayText={formatLatencyValue(
+              responseTimeCurrentUnavailable ? null : (responseTimeSnapshot?.responseTimeMs ?? null),
+              localeTag,
+            )}
+            subdued={responseTimeCurrentUnavailable}
+            secondaryItems={[
+              {
+                label: t('dashboard.today.secondary.dayAverage'),
+                value: formatLatencyValue(
+                  rateUnavailable ? null : (responseTimeSnapshot?.dayAverageMs ?? null),
+                  localeTag,
+                ),
+                valueTestId: 'today-stats-secondary-response-time-day-average',
+              },
+              {
+                label: comparisonLabel,
+                value: formatPercentValue(rateUnavailable ? null : responseTimeDailyDelta, localeTag),
+                toneClass: latencyComparisonTone(rateUnavailable ? null : responseTimeDailyDelta),
+                valueTestId: 'today-stats-secondary-response-time-delta',
+              },
+            ]}
+          />
           <MetricTile
             label={costLabel}
             description={t('dashboard.today.totalCostDescription')}

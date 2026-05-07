@@ -50,6 +50,8 @@ const sampleTimeseries: TimeseriesResponse = {
     totalTokens: 78000 + index * 6100,
     cacheInputTokens: 18000 + index * 1200,
     totalCost: Number((1.1 + index * 0.08).toFixed(2)),
+    firstResponseByteTotalSampleCount: index % 3 === 0 ? 0 : 2 + index,
+    firstResponseByteTotalAvgMs: index % 3 === 0 ? null : Number((780 + index * 96.5).toFixed(1)),
   })),
 }
 
@@ -61,6 +63,10 @@ const comparisonTimeseries: TimeseriesResponse = {
     ...point,
     bucketStart: new Date(Date.parse('2026-04-09T00:00:00.000Z') + index * 60_000).toISOString(),
     bucketEnd: new Date(Date.parse('2026-04-09T00:01:00.000Z') + index * 60_000).toISOString(),
+    firstResponseByteTotalAvgMs:
+      point.firstResponseByteTotalAvgMs == null
+        ? null
+        : Number((point.firstResponseByteTotalAvgMs * 0.82).toFixed(1)),
   })),
 }
 
@@ -143,6 +149,8 @@ export const Populated: Story = {
     const canvas = within(canvasElement)
     await userEvent.click(canvas.getByRole('button', { name: /tokens per minute|每分钟 tokens/i }))
     await expect(within(document.body).getByRole('tooltip')).toBeInTheDocument()
+    await userEvent.click(canvas.getByRole('button', { name: /response time|响应时间/i }))
+    await expect(within(document.body).getByRole('tooltip')).toBeInTheDocument()
   },
 }
 
@@ -158,6 +166,14 @@ export const DesktopSingleRow: Story = {
     viewport: {
       defaultViewport: 'desktop1440',
     },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const tiles = canvas.getAllByTestId('today-stats-metric-tile')
+    await expect(tiles).toHaveLength(7)
+    const labels = tiles.map((tile) => tile.textContent ?? '')
+    expect(labels[3]).toMatch(/parallel conversations|并行对话/i)
+    expect(labels[4]).toMatch(/response time|响应时间/i)
   },
 }
 
@@ -360,7 +376,14 @@ function LiveTickerPreview() {
         <span>Live demo auto-updates every 1.4s</span>
         <span className="font-semibold text-primary">Tick #{step}</span>
       </div>
-      <TodayStatsOverview stats={ready ? stats : null} rate={ready ? rate : null} loading={!ready} error={null} />
+      <TodayStatsOverview
+        stats={ready ? stats : null}
+        rate={ready ? rate : null}
+        timeseries={ready ? sampleTimeseries : null}
+        comparisonTimeseries={ready ? comparisonTimeseries : null}
+        loading={!ready}
+        error={null}
+      />
     </div>
   )
 }
@@ -381,7 +404,7 @@ function StateGalleryPreview() {
       <div className="section-heading">
         <h2 className="section-title">Today stats states</h2>
         <p className="section-description">
-          Desktop preview keeps all six KPI tiles on one row while preserving loading, partial fallback, and failure states.
+          Desktop preview keeps all seven KPI tiles on one row while preserving loading, partial fallback, and failure states.
         </p>
       </div>
       <div className="grid gap-10">
