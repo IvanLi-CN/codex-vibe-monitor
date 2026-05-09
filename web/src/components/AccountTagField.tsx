@@ -53,6 +53,7 @@ interface AccountTagFieldProps {
   selectedTagIds: number[]
   writesEnabled: boolean
   pageCreatedTagIds?: number[]
+  hideLabel?: boolean
   labels: AccountTagFieldLabels
   onChange: (tagIds: number[]) => void
   onCreateTag: (payload: CreateTagPayload) => Promise<TagDetail>
@@ -65,6 +66,7 @@ export function AccountTagField({
   selectedTagIds,
   writesEnabled,
   pageCreatedTagIds = [],
+  hideLabel = false,
   labels,
   onChange,
   onCreateTag,
@@ -174,7 +176,7 @@ export function AccountTagField({
 
   return (
     <div className="field gap-3">
-      <span className="field-label">{labels.label}</span>
+      <span className={cn('field-label', hideLabel && 'sr-only')}>{labels.label}</span>
       <div
         className={cn(
           'flex min-h-12 items-center gap-2 rounded-[1.2rem] border border-base-300/80 bg-base-100/55 px-3 py-2 shadow-sm transition-colors',

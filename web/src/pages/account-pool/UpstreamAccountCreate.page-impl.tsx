@@ -21,7 +21,11 @@ import { apiConcurrencyLimitToSliderValue } from "../../lib/concurrencyLimit";
 import {
   buildGroupOptions,
   isExistingGroup,
+  markUpstreamAccountGroupUsed,
   normalizeGroupName,
+  readUpstreamAccountGroupUsage,
+  resolveMostRecentlyUsedGroupName,
+  writeUpstreamAccountGroupUsage,
 } from "../../lib/upstreamAccountGroups";
 import { validateUpstreamBaseUrl } from "../../lib/upstreamBaseUrl";
 import { applyMotherUpdateToItems } from "../../lib/upstreamMother";
@@ -332,6 +336,9 @@ export default function UpstreamAccountCreatePage() {
   const importValidationEventCleanupRef = useRef<(() => void) | null>(null);
   const importValidationJobIdRef = useRef<string | null>(null);
   const [pageCreatedTagIds, setPageCreatedTagIds] = useState<number[]>([]);
+  const [groupUsage, setGroupUsage] = useState(() =>
+    readUpstreamAccountGroupUsage(),
+  );
   const previousBatchTagIdsRef = useRef<number[] | null>(null);
   const previousCompletedSharedTagBaselineRef = useRef<string | null>(null);
   const [batchRows, setBatchRows] = useState<BatchOauthRow[]>(
@@ -562,8 +569,10 @@ export default function UpstreamAccountCreatePage() {
           ),
           ...groupDraftNotes,
         },
+        groupUsage,
       ),
     [
+      groupUsage,
       groupDraftBoundProxyKeys,
       groupDraftConcurrencyLimits,
       groupDraftNodeShuntEnabled,
@@ -574,6 +583,49 @@ export default function UpstreamAccountCreatePage() {
       items,
     ],
   );
+  const markGroupUsed = useCallback((groupName?: string | null) => {
+    const normalized = normalizeGroupName(groupName);
+    if (!normalized) return;
+    setGroupUsage((current) => {
+      const next = markUpstreamAccountGroupUsed(current, normalized);
+      writeUpstreamAccountGroupUsage(next);
+      return next;
+    });
+  }, []);
+  const rememberedBatchDefaultGroupAppliedRef = useRef(false);
+  useEffect(() => {
+    if (rememberedBatchDefaultGroupAppliedRef.current) return;
+    if (draft?.batchOauth?.defaultGroupName) {
+      rememberedBatchDefaultGroupAppliedRef.current = true;
+      return;
+    }
+    if (batchDefaultGroupName.trim()) {
+      rememberedBatchDefaultGroupAppliedRef.current = true;
+      return;
+    }
+    const rememberedGroupName = resolveMostRecentlyUsedGroupName(
+      groupOptions,
+      groupUsage,
+    );
+    if (!rememberedGroupName) return;
+    rememberedBatchDefaultGroupAppliedRef.current = true;
+    setBatchDefaultGroupName(rememberedGroupName);
+    setBatchRows((current) =>
+      current.map((row) =>
+        row.inheritsDefaultGroup
+          ? {
+              ...row,
+              groupName: rememberedGroupName,
+            }
+          : row,
+      ),
+    );
+  }, [
+    batchDefaultGroupName,
+    draft?.batchOauth?.defaultGroupName,
+    groupOptions,
+    groupUsage,
+  ]);
   const formatGroupAccountCountLabel = useCallback(
     (count: number) =>
       t("accountPool.upstreamAccounts.groupOptionCount", { count }),
@@ -1804,47 +1856,101 @@ export default function UpstreamAccountCreatePage() {
   const handleOauthGroupCreateRequest = useCallback(
     (groupName: string) => {
       openGroupNoteEditor(groupName, {
-        onSaved: (savedGroupName) => setOauthGroupName(savedGroupName),
+        onSaved: (savedGroupName) => {
+          setOauthGroupName(savedGroupName);
+          markGroupUsed(savedGroupName);
+        },
       });
     },
-    [openGroupNoteEditor],
+    [markGroupUsed, openGroupNoteEditor],
   );
 
   const handleImportGroupCreateRequest = useCallback(
     (groupName: string) => {
       openGroupNoteEditor(groupName, {
-        onSaved: (savedGroupName) => setImportGroupName(savedGroupName),
+        onSaved: (savedGroupName) => {
+          setImportGroupName(savedGroupName);
+          markGroupUsed(savedGroupName);
+        },
       });
     },
-    [openGroupNoteEditor],
+    [markGroupUsed, openGroupNoteEditor],
   );
 
   const handleApiKeyGroupCreateRequest = useCallback(
     (groupName: string) => {
       openGroupNoteEditor(groupName, {
-        onSaved: (savedGroupName) => setApiKeyGroupName(savedGroupName),
+        onSaved: (savedGroupName) => {
+          setApiKeyGroupName(savedGroupName);
+          markGroupUsed(savedGroupName);
+        },
       });
     },
-    [openGroupNoteEditor],
+    [markGroupUsed, openGroupNoteEditor],
   );
 
   const handleBatchDefaultGroupCreateRequest = useCallback(
     (groupName: string) => {
       openGroupNoteEditor(groupName, {
-        onSaved: (savedGroupName) => handleBatchDefaultGroupChange(savedGroupName),
+        onSaved: (savedGroupName) => {
+          handleBatchDefaultGroupChange(savedGroupName);
+          markGroupUsed(savedGroupName);
+        },
       });
     },
-    [handleBatchDefaultGroupChange, openGroupNoteEditor],
+    [handleBatchDefaultGroupChange, markGroupUsed, openGroupNoteEditor],
   );
 
   const handleBatchRowGroupCreateRequest = useCallback(
     (rowId: string, groupName: string) => {
       openGroupNoteEditor(groupName, {
-        onSaved: (savedGroupName) =>
-          handleBatchGroupValueChange(rowId, savedGroupName),
+        onSaved: (savedGroupName) => {
+          handleBatchGroupValueChange(rowId, savedGroupName);
+          markGroupUsed(savedGroupName);
+        },
       });
     },
-    [handleBatchGroupValueChange, openGroupNoteEditor],
+    [handleBatchGroupValueChange, markGroupUsed, openGroupNoteEditor],
+  );
+
+  const handleRememberingBatchDefaultGroupChange = useCallback(
+    (value: string) => {
+      handleBatchDefaultGroupChange(value);
+      markGroupUsed(value);
+    },
+    [handleBatchDefaultGroupChange, markGroupUsed],
+  );
+
+  const handleRememberingBatchGroupValueChange = useCallback(
+    (rowId: string, value: string) => {
+      handleBatchGroupValueChange(rowId, value);
+      markGroupUsed(value);
+    },
+    [handleBatchGroupValueChange, markGroupUsed],
+  );
+
+  const setRememberingOauthGroupName = useCallback(
+    (value: string) => {
+      setOauthGroupName(value);
+      markGroupUsed(value);
+    },
+    [markGroupUsed],
+  );
+
+  const setRememberingImportGroupName = useCallback(
+    (value: string) => {
+      setImportGroupName(value);
+      markGroupUsed(value);
+    },
+    [markGroupUsed],
+  );
+
+  const setRememberingApiKeyGroupName = useCallback(
+    (value: string) => {
+      setApiKeyGroupName(value);
+      markGroupUsed(value);
+    },
+    [markGroupUsed],
   );
 
 
@@ -2146,11 +2252,11 @@ export default function UpstreamAccountCreatePage() {
     handleBatchCopyMailboxCode,
     handleBatchCopyOauthUrl,
     handleBatchDefaultGroupCreateRequest,
-    handleBatchDefaultGroupChange,
+    handleBatchDefaultGroupChange: handleRememberingBatchDefaultGroupChange,
     handleBatchGenerateMailbox,
     handleBatchGenerateOauthUrl,
     handleBatchRowGroupCreateRequest,
-    handleBatchGroupValueChange,
+    handleBatchGroupValueChange: handleRememberingBatchGroupValueChange,
     handleBatchMailboxEditorValueChange,
     handleBatchMailboxFetch,
     handleBatchMetadataChange,
@@ -2253,7 +2359,7 @@ export default function UpstreamAccountCreatePage() {
     setActionError,
     setApiKeyDisplayName,
     setApiKeyEmail,
-    setApiKeyGroupName,
+    setApiKeyGroupName: setRememberingApiKeyGroupName,
     setApiKeyIsMother,
     setApiKeyLimitUnit,
     setApiKeyNote,
@@ -2269,7 +2375,7 @@ export default function UpstreamAccountCreatePage() {
     setDuplicateDetailOpen,
     setGroupNoteEditor,
     setGroupNoteError,
-    setImportGroupName,
+    setImportGroupName: setRememberingImportGroupName,
     setImportPasteDraft,
     setImportPasteDraftSerial,
     setImportPasteError,
@@ -2281,7 +2387,7 @@ export default function UpstreamAccountCreatePage() {
     setOauthDisplayName,
     setOauthEmail,
     setOauthEmailResolution,
-    setOauthGroupName,
+    setOauthGroupName: setRememberingOauthGroupName,
     setOauthIsMother,
     setOauthMailboxInput,
     setOauthNote,

@@ -144,6 +144,7 @@ export function UpstreamAccountCreatePrimaryCard() {
                   selectedTagIds={batchTagIds}
                   writesEnabled={writesEnabled && !hasBatchMetadataBusy}
                   pageCreatedTagIds={pageCreatedTagIds}
+                  hideLabel
                   labels={tagFieldLabels}
                   onChange={(nextTagIds) => {
                     batchSharedTagSyncEnabledRef.current = true;

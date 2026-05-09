@@ -153,6 +153,7 @@ function createDetail(summary: TagSummary): TagDetail {
 function createHarness(options?: {
   initialSelectedTagIds?: number[]
   pageCreatedTagIds?: number[]
+  hideLabel?: boolean
   onChangeSpy?: (tagIds: number[]) => void
   onCreateTagSpy?: (payload: CreateTagPayload) => void
   onUpdateTagSpy?: (tagId: number, payload: UpdateTagPayload) => void
@@ -161,6 +162,7 @@ function createHarness(options?: {
   const {
     initialSelectedTagIds = [],
     pageCreatedTagIds = [],
+    hideLabel = false,
     onChangeSpy,
     onCreateTagSpy,
     onUpdateTagSpy,
@@ -229,6 +231,7 @@ function createHarness(options?: {
         selectedTagIds={selectedTagIds}
         writesEnabled
         pageCreatedTagIds={pageCreatedTagIds}
+        hideLabel={hideLabel}
         labels={labels}
         onChange={onChange}
         onCreateTag={onCreateTag}
@@ -240,6 +243,19 @@ function createHarness(options?: {
 }
 
 describe('AccountTagField', () => {
+  it('can hide the visible label while keeping an accessible label', () => {
+    const Harness = createHarness({ hideLabel: true })
+    render(<Harness />)
+
+    const label = Array.from(document.body.querySelectorAll('.field-label')).find(
+      (node) => node.textContent === 'Tags',
+    )
+
+    expect(label).toBeTruthy()
+    expect(label?.classList.contains('sr-only')).toBe(true)
+    expect(document.querySelector('button[aria-label="Add tag"]')).toBeTruthy()
+  })
+
   it('renders empty state inline and keeps the popover open while toggling multiple tags', () => {
     const onChangeSpy = vi.fn()
     const Harness = createHarness({ onChangeSpy })
