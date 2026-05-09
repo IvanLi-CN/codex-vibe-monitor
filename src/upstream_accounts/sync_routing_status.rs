@@ -1166,7 +1166,7 @@ fn account_update_requests_manual_recovery(payload: &UpdateUpstreamAccountReques
             .is_some_and(|value| !value.trim().is_empty())
 }
 
-async fn set_account_status(
+pub(crate) async fn set_account_status(
     pool: &Pool<Sqlite>,
     account_id: i64,
     status: &str,

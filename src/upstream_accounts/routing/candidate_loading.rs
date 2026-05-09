@@ -274,8 +274,15 @@ async fn prepare_pool_account_with_scopes(
                             )
                 })
                 .unwrap_or(true);
+            let deferred_status = if row.status.trim().is_empty()
+                || row.status == UPSTREAM_ACCOUNT_STATUS_SYNCING
+            {
+                UPSTREAM_ACCOUNT_STATUS_ACTIVE
+            } else {
+                row.status.as_str()
+            };
             if refresh_due {
-                match refresh_oauth_tokens_for_required_scope_without_maintenance_throttle(
+                match refresh_oauth_tokens_for_required_scope(
                     state,
                     &refresh_proxy_scope,
                     &value.refresh_token,
@@ -326,6 +333,7 @@ async fn prepare_pool_account_with_scopes(
                             Some(&throttle.proxy_display_name),
                         )
                         .await?;
+                        set_account_status(&state.pool, row.id, deferred_status, None).await?;
                         return Ok(None);
                     }
                     Err(err) if is_reauth_error(&err) => {
