@@ -1,4 +1,12 @@
-import { memo, useEffect, useMemo } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import {
   Area,
   AreaChart,
@@ -96,6 +104,100 @@ function formatCountValue(
   formatter: Intl.NumberFormat,
 ) {
   return `${formatter.format(value)} ${unitLabel}`;
+}
+
+const MIN_VISIBLE_MINUTES = 30;
+const HORIZONTAL_WHEEL_THRESHOLD = 2;
+const WHEEL_ZOOM_INTENSITY = 0.0018;
+const WHEEL_PAN_INTENSITY = 0.012;
+const POINTER_AXIS_LOCK_THRESHOLD_PX = 8;
+const POINTER_AXIS_LOCK_RATIO = 1.45;
+const POINTER_FREE_DIAGONAL_RATIO = 0.72;
+
+interface ChartViewport {
+  startIndex: number;
+  endIndex: number;
+}
+
+type PointerDragAxis = "pending" | "horizontal" | "vertical" | "free";
+
+function clampValue(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizeViewport(
+  viewport: ChartViewport,
+  pointCount: number,
+): ChartViewport {
+  if (pointCount <= 0) {
+    return { startIndex: 0, endIndex: 0 };
+  }
+
+  const maxIndex = pointCount - 1;
+  const minSpan = Math.min(MIN_VISIBLE_MINUTES, pointCount);
+  const currentSpan = Math.max(
+    minSpan,
+    Math.min(pointCount, viewport.endIndex - viewport.startIndex + 1),
+  );
+  const startIndex = clampValue(
+    Math.round(viewport.startIndex),
+    0,
+    Math.max(0, pointCount - currentSpan),
+  );
+
+  return {
+    startIndex,
+    endIndex: Math.min(maxIndex, startIndex + currentSpan - 1),
+  };
+}
+
+function shiftViewport(
+  viewport: ChartViewport,
+  pointCount: number,
+  deltaIndexes: number,
+): ChartViewport {
+  const span = viewport.endIndex - viewport.startIndex + 1;
+  return normalizeViewport(
+    {
+      startIndex: viewport.startIndex + deltaIndexes,
+      endIndex: viewport.startIndex + deltaIndexes + span - 1,
+    },
+    pointCount,
+  );
+}
+
+function isSameViewport(left: ChartViewport, right: ChartViewport) {
+  return (
+    left.startIndex === right.startIndex &&
+    left.endIndex === right.endIndex
+  );
+}
+
+function zoomViewport(
+  viewport: ChartViewport,
+  pointCount: number,
+  zoomDelta: number,
+  anchorRatio: number,
+): ChartViewport {
+  if (pointCount <= 0) return viewport;
+
+  const currentSpan = viewport.endIndex - viewport.startIndex + 1;
+  const nextSpan = clampValue(
+    Math.round(currentSpan * Math.exp(zoomDelta)),
+    Math.min(MIN_VISIBLE_MINUTES, pointCount),
+    pointCount,
+  );
+  const safeAnchorRatio = clampValue(anchorRatio, 0, 1);
+  const anchorIndex = viewport.startIndex + (currentSpan - 1) * safeAnchorRatio;
+  const nextStart = Math.round(anchorIndex - (nextSpan - 1) * safeAnchorRatio);
+
+  return normalizeViewport(
+    {
+      startIndex: nextStart,
+      endIndex: nextStart + nextSpan - 1,
+    },
+    pointCount,
+  );
 }
 
 interface TooltipPayloadEntry {
@@ -245,6 +347,48 @@ function DashboardTodayActivityChartImpl({
     () => buildTodayMinuteChartData(response, { localeTag, closedNaturalDay }),
     [closedNaturalDay, localeTag, response],
   );
+  const [viewport, setViewport] = useState<ChartViewport>({
+    startIndex: 0,
+    endIndex: Math.max(0, data.length - 1),
+  });
+  const viewportRef = useRef<ChartViewport>(viewport);
+  const viewportIdentity = `${closedNaturalDay ? "closed" : "live"}:${response?.rangeStart ?? "empty"}:${response?.bucketSeconds ?? "none"}`;
+  const viewportIdentityRef = useRef(viewportIdentity);
+  const interactionRef = useRef<HTMLDivElement | null>(null);
+  const dragPreviewLayerRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    currentClientX: number;
+    currentClientY: number;
+    axis: PointerDragAxis;
+    viewport: ChartViewport;
+  } | null>(null);
+  const dragPreviewOffsetRef = useRef(0);
+  const dragPreviewFrameRef = useRef<number | null>(null);
+  const wheelPanDeltaRef = useRef(0);
+  const wheelPanFrameRef = useRef<number | null>(null);
+  const wheelZoomDeltaRef = useRef(0);
+  const wheelZoomAnchorRatioRef = useRef(0.5);
+  const wheelZoomFrameRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    viewportRef.current = viewport;
+  }, [viewport]);
+
+  useEffect(() => {
+    setViewport((current) => {
+      if (viewportIdentityRef.current !== viewportIdentity) {
+        viewportIdentityRef.current = viewportIdentity;
+        return normalizeViewport(
+          { startIndex: 0, endIndex: Math.max(0, data.length - 1) },
+          data.length,
+        );
+      }
+      return normalizeViewport(current, data.length);
+    });
+  }, [data.length, viewportIdentity]);
 
   const countUnit = t("unit.calls");
   const countSeriesNames = useMemo(
@@ -266,8 +410,39 @@ function DashboardTodayActivityChartImpl({
     }),
     [t],
   );
+  const chartData =
+    data.length > 0
+      ? data
+      : buildTodayMinuteChartData(response, { localeTag, closedNaturalDay });
+  const visibleWindow = normalizeViewport(viewport, chartData.length);
+  const visibleChartData = chartData.slice(
+    visibleWindow.startIndex,
+    visibleWindow.endIndex + 1,
+  );
+  const tenMinuteTrendData = chartData.filter(
+    (point) =>
+      point.chartTokensPerMinute != null || point.chartSpendRate != null,
+  );
+  const visibleTenMinuteTrendData = tenMinuteTrendData.filter(
+    (point) =>
+      point.index >= visibleWindow.startIndex &&
+      point.index <= visibleWindow.endIndex,
+  );
+  const viewportSpan =
+    visibleWindow.endIndex - visibleWindow.startIndex + 1;
+  const isZoomed = chartData.length > 0 && viewportSpan < chartData.length;
+  const xDomain: [number, number] = [
+    visibleWindow.startIndex,
+    visibleWindow.endIndex,
+  ];
+  const countBarSize = useMemo(() => {
+    if (chartData.length <= 0) return 1;
+    const zoomFactor = chartData.length / Math.max(1, viewportSpan);
+    return clampValue(Math.round(zoomFactor * 0.75), 1, 10);
+  }, [chartData.length, viewportSpan]);
+
   const countAxisBound = useMemo(() => {
-    const maxValue = data.reduce(
+    const maxValue = chartData.reduce(
       (current, item) =>
         Math.max(
           current,
@@ -277,7 +452,242 @@ function DashboardTodayActivityChartImpl({
       0,
     );
     return Math.max(1, maxValue);
-  }, [data]);
+  }, [chartData]);
+
+  const getAnchorRatio = useCallback((clientX: number) => {
+    const rect = interactionRef.current?.getBoundingClientRect();
+    if (!rect || rect.width <= 0) return 0.5;
+    return clampValue((clientX - rect.left) / rect.width, 0, 1);
+  }, []);
+
+  const scheduleWheelPan = useCallback(
+    (deltaIndexes: number) => {
+      wheelPanDeltaRef.current += deltaIndexes;
+      if (wheelPanFrameRef.current != null) return;
+
+      wheelPanFrameRef.current = window.requestAnimationFrame(() => {
+        wheelPanFrameRef.current = null;
+        const pendingDelta = wheelPanDeltaRef.current;
+        wheelPanDeltaRef.current = 0;
+        if (pendingDelta === 0) return;
+
+        const roundedDelta =
+          Math.round(pendingDelta) ||
+          Math.sign(pendingDelta) *
+            Math.max(1, Math.round(WHEEL_PAN_INTENSITY * MIN_VISIBLE_MINUTES));
+        setViewport((current) => {
+          const normalized = normalizeViewport(current, chartData.length);
+          const next = shiftViewport(
+            normalized,
+            chartData.length,
+            roundedDelta,
+          );
+          return isSameViewport(normalized, next) ? current : next;
+        });
+      });
+    },
+    [chartData.length],
+  );
+
+  const scheduleWheelZoom = useCallback(
+    (deltaY: number, anchorRatio: number) => {
+      wheelZoomDeltaRef.current += deltaY;
+      wheelZoomAnchorRatioRef.current = anchorRatio;
+      if (wheelZoomFrameRef.current != null) return;
+
+      wheelZoomFrameRef.current = window.requestAnimationFrame(() => {
+        wheelZoomFrameRef.current = null;
+        const pendingDelta = wheelZoomDeltaRef.current;
+        const pendingAnchorRatio = wheelZoomAnchorRatioRef.current;
+        wheelZoomDeltaRef.current = 0;
+        if (pendingDelta === 0) return;
+
+        setViewport((current) => {
+          const normalized = normalizeViewport(current, chartData.length);
+          const next = zoomViewport(
+            normalized,
+            chartData.length,
+            pendingDelta * WHEEL_ZOOM_INTENSITY,
+            pendingAnchorRatio,
+          );
+          return isSameViewport(normalized, next) ? current : next;
+        });
+      });
+    },
+    [chartData.length],
+  );
+
+  useEffect(
+    () => () => {
+      if (wheelPanFrameRef.current != null) {
+        window.cancelAnimationFrame(wheelPanFrameRef.current);
+      }
+      if (wheelZoomFrameRef.current != null) {
+        window.cancelAnimationFrame(wheelZoomFrameRef.current);
+      }
+    },
+    [],
+  );
+
+  const handleWheel = useCallback(
+    (event: WheelEvent) => {
+      if (chartData.length <= MIN_VISIBLE_MINUTES) return;
+
+      const horizontalIntent =
+        Math.abs(event.deltaX) >= HORIZONTAL_WHEEL_THRESHOLD &&
+        Math.abs(event.deltaX) >= Math.abs(event.deltaY) &&
+        !event.ctrlKey;
+      const hasZoomIntent =
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey ||
+        Math.abs(event.deltaY) >= HORIZONTAL_WHEEL_THRESHOLD;
+      if (!horizontalIntent && !hasZoomIntent) return;
+
+      event.preventDefault();
+      if (horizontalIntent) {
+        const normalized = normalizeViewport(viewportRef.current, chartData.length);
+        const width = interactionRef.current?.getBoundingClientRect().width ?? 1;
+        const span = normalized.endIndex - normalized.startIndex + 1;
+        scheduleWheelPan((event.deltaX / Math.max(1, width)) * span);
+        return;
+      }
+
+      scheduleWheelZoom(event.deltaY, getAnchorRatio(event.clientX));
+    },
+    [chartData.length, getAnchorRatio, scheduleWheelPan, scheduleWheelZoom],
+  );
+
+  useEffect(() => {
+    const layer = interactionRef.current;
+    if (!layer) return;
+
+    layer.addEventListener("wheel", handleWheel, { passive: false });
+    return () => {
+      layer.removeEventListener("wheel", handleWheel);
+    };
+  }, [handleWheel]);
+
+  const handlePointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0 || chartData.length <= MIN_VISIBLE_MINUTES) return;
+      dragPreviewOffsetRef.current = 0;
+      if (dragPreviewLayerRef.current) {
+        dragPreviewLayerRef.current.style.transform = "";
+      }
+      const normalized = normalizeViewport(viewport, chartData.length);
+      dragRef.current = {
+        pointerId: event.pointerId,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        currentClientX: event.clientX,
+        currentClientY: event.clientY,
+        axis: "pending",
+        viewport: normalized,
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+    },
+    [chartData.length, viewport],
+  );
+
+  const scheduleDragPreview = useCallback(() => {
+    if (dragPreviewFrameRef.current != null) return;
+
+    dragPreviewFrameRef.current = window.requestAnimationFrame(() => {
+      dragPreviewFrameRef.current = null;
+      const drag = dragRef.current;
+      if (!drag) return;
+
+      const previewOffsetPx = drag.currentClientX - drag.startClientX;
+      if (previewOffsetPx === dragPreviewOffsetRef.current) return;
+      dragPreviewOffsetRef.current = previewOffsetPx;
+      if (dragPreviewLayerRef.current) {
+        dragPreviewLayerRef.current.style.transform =
+          previewOffsetPx === 0
+            ? ""
+            : `translate3d(${previewOffsetPx}px, 0, 0)`;
+      }
+    });
+  }, []);
+
+  const handlePointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const drag = dragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      drag.currentClientX = event.clientX;
+      drag.currentClientY = event.clientY;
+
+      if (drag.axis === "pending") {
+        const deltaX = Math.abs(drag.currentClientX - drag.startClientX);
+        const deltaY = Math.abs(drag.currentClientY - drag.startClientY);
+        const distance = Math.hypot(deltaX, deltaY);
+
+        if (distance < POINTER_AXIS_LOCK_THRESHOLD_PX) return;
+
+        if (deltaX >= deltaY * POINTER_AXIS_LOCK_RATIO) {
+          drag.axis = "horizontal";
+        } else if (deltaY >= deltaX * POINTER_AXIS_LOCK_RATIO) {
+          drag.axis = "vertical";
+          dragRef.current = null;
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }
+          return;
+        } else if (
+          Math.min(deltaX, deltaY) >=
+          Math.max(deltaX, deltaY) * POINTER_FREE_DIAGONAL_RATIO
+        ) {
+          drag.axis = "free";
+        } else {
+          return;
+        }
+      }
+
+      if (drag.axis === "vertical") return;
+      scheduleDragPreview();
+    },
+    [scheduleDragPreview],
+  );
+
+  const handlePointerEnd = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const drag = dragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+
+      if (drag.axis === "horizontal" || drag.axis === "free") {
+        const width = interactionRef.current?.getBoundingClientRect().width ?? 1;
+        const span = drag.viewport.endIndex - drag.viewport.startIndex + 1;
+        const deltaIndexes = Math.round(
+          ((drag.startClientX - drag.currentClientX) / Math.max(1, width)) * span,
+        );
+        setViewport((current) => {
+          const next = shiftViewport(drag.viewport, chartData.length, deltaIndexes);
+          return isSameViewport(normalizeViewport(current, chartData.length), next)
+            ? current
+            : next;
+        });
+      }
+
+      dragRef.current = null;
+      dragPreviewOffsetRef.current = 0;
+      if (dragPreviewLayerRef.current) {
+        dragPreviewLayerRef.current.style.transform = "";
+      }
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    },
+    [chartData.length],
+  );
+
+  useEffect(
+    () => () => {
+      if (dragPreviewFrameRef.current != null) {
+        window.cancelAnimationFrame(dragPreviewFrameRef.current);
+      }
+    },
+    [],
+  );
 
   if (error) {
     return <Alert variant="error">{error}</Alert>;
@@ -293,15 +703,7 @@ function DashboardTodayActivityChartImpl({
     return <Alert>{t("chart.noDataRange")}</Alert>;
   }
 
-  const chartData =
-    data.length > 0
-      ? data
-      : buildTodayMinuteChartData(response, { localeTag, closedNaturalDay });
-  const tenMinuteTrendData = chartData.filter(
-    (point) =>
-      point.chartTokensPerMinute != null || point.chartSpendRate != null,
-  );
-  const animate = chartData.length <= 800;
+  const animate = false;
   const chartMode =
     metric === "totalCount"
       ? "count-bars"
@@ -392,16 +794,37 @@ function DashboardTodayActivityChartImpl({
 
   return (
     <section
-      className="rounded-xl border border-base-300/75 bg-base-200/40 p-4"
+      className="overscroll-x-contain rounded-xl border border-base-300/75 bg-base-200/40 p-4"
       data-testid="dashboard-today-activity-chart"
       data-chart-mode={chartMode}
       data-chart-metric={metric}
+      data-visible-start-index={visibleWindow.startIndex}
+      data-visible-end-index={visibleWindow.endIndex}
+      data-visible-span={viewportSpan}
+      data-zoomed={isZoomed ? "true" : "false"}
     >
-      <div className="h-80 w-full" data-chart-kind="dashboard-today-activity">
-        <ResponsiveContainer>
+      <div
+        ref={interactionRef}
+        className="h-80 w-full cursor-grab touch-pan-y overflow-hidden overscroll-x-contain select-none active:cursor-grabbing"
+        data-testid="dashboard-today-activity-chart-interaction-layer"
+        data-chart-kind="dashboard-today-activity"
+        data-min-visible-minutes={MIN_VISIBLE_MINUTES}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerEnd}
+        onPointerCancel={handlePointerEnd}
+        onLostPointerCapture={handlePointerEnd}
+      >
+        <div
+          ref={dragPreviewLayerRef}
+          data-testid="dashboard-today-activity-chart-drag-layer"
+          className="h-full w-full will-change-transform"
+          style={{ transform: undefined }}
+        >
+          <ResponsiveContainer>
           {metric === "totalCount" ? (
             <ComposedChart
-              data={chartData}
+              data={visibleChartData}
               margin={{ top: 12, right: 24, left: 0, bottom: 8 }}
               barGap="-100%"
             >
@@ -412,7 +835,7 @@ function DashboardTodayActivityChartImpl({
               <XAxis
                 dataKey="index"
                 type="number"
-                domain={[0, Math.max(0, chartData.length - 1)]}
+                domain={xDomain}
                 minTickGap={28}
                 axisLine={{ stroke: chartColors.gridLine }}
                 tickLine={{ stroke: chartColors.gridLine }}
@@ -484,7 +907,7 @@ function DashboardTodayActivityChartImpl({
                 name={countSeriesNames.success}
                 stackId="positive"
                 fill={chartColors.success}
-                barSize={1}
+                barSize={countBarSize}
                 radius={[0, 0, 0, 0]}
                 isAnimationActive={animate}
               />
@@ -494,7 +917,7 @@ function DashboardTodayActivityChartImpl({
                 name={countSeriesNames.inFlight}
                 stackId="positive"
                 fill={chartColors.accent}
-                barSize={1}
+                barSize={countBarSize}
                 radius={[3, 3, 0, 0]}
                 isAnimationActive={animate}
               />
@@ -503,7 +926,7 @@ function DashboardTodayActivityChartImpl({
                 dataKey="chartFailureCountNegative"
                 name={countSeriesNames.failures}
                 fill={chartColors.failure}
-                barSize={1}
+                barSize={countBarSize}
                 radius={[0, 0, 3, 3]}
                 isAnimationActive={animate}
               />
@@ -527,7 +950,7 @@ function DashboardTodayActivityChartImpl({
             </ComposedChart>
           ) : metric === "trend" ? (
             <ComposedChart
-              data={tenMinuteTrendData}
+              data={visibleTenMinuteTrendData}
               margin={{ top: 12, right: 24, left: 0, bottom: 8 }}
             >
               <CartesianGrid
@@ -537,7 +960,7 @@ function DashboardTodayActivityChartImpl({
               <XAxis
                 dataKey="index"
                 type="number"
-                domain={[0, Math.max(0, chartData.length - 1)]}
+                domain={xDomain}
                 minTickGap={28}
                 axisLine={{ stroke: chartColors.gridLine }}
                 tickLine={{ stroke: chartColors.gridLine }}
@@ -628,7 +1051,7 @@ function DashboardTodayActivityChartImpl({
             </ComposedChart>
           ) : (
             <AreaChart
-              data={chartData}
+              data={visibleChartData}
               margin={{ top: 12, right: 24, left: 0, bottom: 8 }}
             >
               <CartesianGrid
@@ -638,7 +1061,7 @@ function DashboardTodayActivityChartImpl({
               <XAxis
                 dataKey="index"
                 type="number"
-                domain={[0, Math.max(0, chartData.length - 1)]}
+                domain={xDomain}
                 minTickGap={28}
                 axisLine={{ stroke: chartColors.gridLine }}
                 tickLine={{ stroke: chartColors.gridLine }}
@@ -709,7 +1132,8 @@ function DashboardTodayActivityChartImpl({
               />
             </AreaChart>
           )}
-        </ResponsiveContainer>
+          </ResponsiveContainer>
+        </div>
       </div>
     </section>
   );

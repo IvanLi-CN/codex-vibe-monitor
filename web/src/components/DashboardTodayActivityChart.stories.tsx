@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { expect, waitFor, within } from "storybook/test";
 import { I18nProvider } from "../i18n";
 import type { TimeseriesResponse } from "../lib/api";
 import { DashboardTodayActivityChart } from "./DashboardTodayActivityChart";
@@ -232,6 +233,57 @@ export const CountBarsMinuteGranularityZoom: Story = {
       </div>
     </div>
   ),
+};
+
+export const CountBarsInteractiveViewport: Story = {
+  args: {
+    response: buildFullNaturalDayResponse(1.18),
+    loading: false,
+    error: null,
+    metric: "totalCount",
+    closedNaturalDay: true,
+  },
+  parameters: {
+    viewport: {
+      defaultViewport: "desktop1440",
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const chart = await canvas.findByTestId("dashboard-today-activity-chart");
+    const layer = await canvas.findByTestId(
+      "dashboard-today-activity-chart-interaction-layer",
+    );
+    const rect = layer.getBoundingClientRect();
+
+    layer.dispatchEvent(
+      new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        deltaY: -700,
+        clientX: rect.left + rect.width / 2,
+      }),
+    );
+
+    await expect(chart).toHaveAttribute("data-zoomed", "true");
+    const zoomedStart = Number(chart.getAttribute("data-visible-start-index"));
+
+    layer.dispatchEvent(
+      new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        deltaX: 320,
+        deltaY: 4,
+        clientX: rect.left + rect.width / 2,
+      }),
+    );
+
+    await waitFor(() => {
+      expect(Number(chart.getAttribute("data-visible-start-index"))).toBeGreaterThan(
+        zoomedStart,
+      );
+    });
+  },
 };
 
 export const EmptyState: Story = {

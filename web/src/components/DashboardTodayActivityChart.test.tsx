@@ -34,7 +34,12 @@ vi.mock("recharts", () => ({
     <div data-testid="responsive">{children}</div>
   ),
   CartesianGrid: () => <div data-testid="grid" />,
-  XAxis: () => <div data-testid="x-axis" />,
+  XAxis: ({ domain }: { domain?: [number, number] }) => (
+    <div
+      data-testid="x-axis"
+      data-domain={domain == null ? "" : domain.join(":")}
+    />
+  ),
   YAxis: () => <div data-testid="y-axis" />,
   Tooltip: ({
     content,
@@ -225,6 +230,99 @@ function render(ui: React.ReactNode) {
   root = createRoot(host);
   act(() => {
     root?.render(ui);
+  });
+}
+
+function rerender(ui: React.ReactNode) {
+  act(() => {
+    root?.render(ui);
+  });
+}
+
+function chartSection() {
+  const section = host?.querySelector(
+    '[data-testid="dashboard-today-activity-chart"]',
+  ) as HTMLElement | null;
+  if (!section) throw new Error("missing chart section");
+  return section;
+}
+
+function interactionLayer() {
+  const layer = host?.querySelector(
+    '[data-testid="dashboard-today-activity-chart-interaction-layer"]',
+  ) as HTMLElement | null;
+  if (!layer) throw new Error("missing chart interaction layer");
+  layer.getBoundingClientRect = () =>
+    ({
+      x: 0,
+      y: 0,
+      top: 0,
+      right: 1000,
+      bottom: 320,
+      left: 0,
+      width: 1000,
+      height: 320,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  layer.setPointerCapture = vi.fn();
+  layer.releasePointerCapture = vi.fn();
+  layer.hasPointerCapture = vi.fn(() => true);
+  return layer;
+}
+
+function dragLayer() {
+  const layer = host?.querySelector(
+    '[data-testid="dashboard-today-activity-chart-drag-layer"]',
+  ) as HTMLElement | null;
+  if (!layer) throw new Error("missing chart drag layer");
+  return layer;
+}
+
+function dispatchWheel(
+  element: HTMLElement,
+  init: WheelEventInit & { clientX?: number },
+) {
+  const event = new WheelEvent("wheel", {
+    bubbles: true,
+    cancelable: true,
+    ...init,
+  });
+  if (init.clientX != null) {
+    Object.defineProperty(event, "clientX", {
+      configurable: true,
+      value: init.clientX,
+    });
+  }
+  act(() => {
+    element.dispatchEvent(event);
+  });
+  return event;
+}
+
+function dispatchPointer(
+  element: HTMLElement,
+  type: string,
+  init: MouseEventInit & { pointerId?: number },
+) {
+  const event = new MouseEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    ...init,
+  });
+  Object.defineProperty(event, "pointerId", {
+    configurable: true,
+    value: init.pointerId ?? 1,
+  });
+  act(() => {
+    element.dispatchEvent(event);
+  });
+}
+
+async function flushAnimationFrame() {
+  await act(async () => {
+    await new Promise<void>((resolve) => {
+      window.requestAnimationFrame(() => resolve());
+    });
   });
 }
 
@@ -750,9 +848,363 @@ describe("DashboardTodayActivityChart", () => {
     expect(html).toContain('data-data-key="chartFailureCountNegative"');
     expect(html).toContain('data-bar-size="1"');
     expect(html).toContain('data-stack-id="positive"');
+    expect(html).toContain('data-domain="0:1439"');
     expect(html).not.toContain(
       'data-data-key="chartFailureCountNegative" data-stack-id="positive"',
     );
+  });
+
+  it("zooms horizontally around the wheel pointer and keeps the view clamped", async () => {
+    render(
+      <DashboardTodayActivityChart
+        response={response}
+        loading={false}
+        error={null}
+        metric="totalCount"
+      />,
+    );
+
+    const layer = interactionLayer();
+    dispatchWheel(layer, { ctrlKey: true, deltaY: -600, clientX: 500 });
+    await flushAnimationFrame();
+    const section = chartSection();
+
+    expect(section.dataset.zoomed).toBe("true");
+    expect(Number(section.dataset.visibleSpan)).toBeLessThan(1440);
+    expect(Number(section.dataset.visibleStartIndex)).toBeGreaterThan(0);
+    expect(Number(section.dataset.visibleEndIndex)).toBeLessThan(1439);
+    expect(Number(section.querySelector('[data-testid="bar-series"]')?.getAttribute("data-bar-size"))).toBeGreaterThan(1);
+    expect(latestChartData).toHaveLength(Number(section.dataset.visibleSpan));
+
+    dispatchWheel(layer, { ctrlKey: true, deltaY: -5000, clientX: 500 });
+    await flushAnimationFrame();
+    expect(Number(chartSection().dataset.visibleSpan)).toBe(30);
+
+    dispatchWheel(layer, { ctrlKey: true, deltaY: 5000, clientX: 500 });
+    await flushAnimationFrame();
+    expect(Number(chartSection().dataset.visibleSpan)).toBe(1440);
+    expect(chartSection().dataset.zoomed).toBe("false");
+  });
+
+  it("zooms with ordinary vertical wheel scrolling inside the chart", async () => {
+    render(
+      <DashboardTodayActivityChart
+        response={response}
+        loading={false}
+        error={null}
+        metric="totalCount"
+      />,
+    );
+
+    const layer = interactionLayer();
+    const event = dispatchWheel(layer, { deltaY: -600, clientX: 500 });
+
+    expect(event.defaultPrevented).toBe(true);
+    await flushAnimationFrame();
+    expect(chartSection().dataset.zoomed).toBe("true");
+    expect(Number(chartSection().dataset.visibleSpan)).toBeLessThan(1440);
+  });
+
+  it("pans horizontally with trackpad wheel deltas and pointer dragging", async () => {
+    render(
+      <DashboardTodayActivityChart
+        response={response}
+        loading={false}
+        error={null}
+        metric="totalCost"
+      />,
+    );
+
+    const layer = interactionLayer();
+    dispatchWheel(layer, { ctrlKey: true, deltaY: -700, clientX: 500 });
+    await flushAnimationFrame();
+    const zoomedStart = Number(chartSection().dataset.visibleStartIndex);
+
+    const horizontalWheel = dispatchWheel(layer, {
+      deltaX: 260,
+      deltaY: 8,
+      clientX: 500,
+    });
+    expect(horizontalWheel.defaultPrevented).toBe(true);
+    await flushAnimationFrame();
+    const wheelPannedStart = Number(chartSection().dataset.visibleStartIndex);
+    expect(wheelPannedStart).toBeGreaterThan(zoomedStart);
+
+    dispatchPointer(layer, "pointerdown", {
+      button: 0,
+      clientX: 500,
+      pointerId: 8,
+    });
+    dispatchPointer(layer, "pointermove", {
+      clientX: 220,
+      pointerId: 8,
+    });
+    await flushAnimationFrame();
+    expect(Number(chartSection().dataset.visibleStartIndex)).toBe(
+      wheelPannedStart,
+    );
+    expect(dragLayer().style.transform).toContain("translate3d");
+
+    dispatchPointer(layer, "pointerup", {
+      clientX: 220,
+      pointerId: 8,
+    });
+    await flushAnimationFrame();
+    const draggedStart = Number(chartSection().dataset.visibleStartIndex);
+    expect(draggedStart).toBeGreaterThan(wheelPannedStart);
+
+    dispatchWheel(layer, { deltaX: -100_000, deltaY: 0, clientX: 500 });
+    await flushAnimationFrame();
+    expect(Number(chartSection().dataset.visibleStartIndex)).toBe(0);
+  });
+
+  it("axis-locks pointer drags so vertical gestures do not pan the chart", async () => {
+    render(
+      <DashboardTodayActivityChart
+        response={response}
+        loading={false}
+        error={null}
+        metric="totalCost"
+      />,
+    );
+
+    const layer = interactionLayer();
+    dispatchWheel(layer, { deltaY: -700, clientX: 500 });
+    await flushAnimationFrame();
+    const zoomedStart = Number(chartSection().dataset.visibleStartIndex);
+
+    dispatchPointer(layer, "pointerdown", {
+      button: 0,
+      clientX: 500,
+      clientY: 100,
+      pointerId: 12,
+    });
+    dispatchPointer(layer, "pointermove", {
+      clientX: 505,
+      clientY: 180,
+      pointerId: 12,
+    });
+    await flushAnimationFrame();
+
+    expect(Number(chartSection().dataset.visibleStartIndex)).toBe(zoomedStart);
+    expect(layer.releasePointerCapture).toHaveBeenCalledWith(12);
+  });
+
+  it("keeps horizontal pointer drags locked even with small vertical drift", async () => {
+    render(
+      <DashboardTodayActivityChart
+        response={response}
+        loading={false}
+        error={null}
+        metric="totalCost"
+      />,
+    );
+
+    const layer = interactionLayer();
+    dispatchWheel(layer, { deltaY: -700, clientX: 500 });
+    await flushAnimationFrame();
+    const zoomedStart = Number(chartSection().dataset.visibleStartIndex);
+
+    dispatchPointer(layer, "pointerdown", {
+      button: 0,
+      clientX: 500,
+      clientY: 100,
+      pointerId: 13,
+    });
+    dispatchPointer(layer, "pointermove", {
+      clientX: 220,
+      clientY: 125,
+      pointerId: 13,
+    });
+    await flushAnimationFrame();
+
+    expect(Number(chartSection().dataset.visibleStartIndex)).toBe(zoomedStart);
+    expect(dragLayer().style.transform).toContain("translate3d");
+
+    dispatchPointer(layer, "pointerup", {
+      clientX: 220,
+      clientY: 125,
+      pointerId: 13,
+    });
+    await flushAnimationFrame();
+    expect(Number(chartSection().dataset.visibleStartIndex)).toBeGreaterThan(
+      zoomedStart,
+    );
+  });
+
+  it("allows large diagonal pointer drags to pan with the horizontal component", async () => {
+    render(
+      <DashboardTodayActivityChart
+        response={response}
+        loading={false}
+        error={null}
+        metric="totalCost"
+      />,
+    );
+
+    const layer = interactionLayer();
+    dispatchWheel(layer, { deltaY: -700, clientX: 500 });
+    await flushAnimationFrame();
+    const zoomedStart = Number(chartSection().dataset.visibleStartIndex);
+
+    dispatchPointer(layer, "pointerdown", {
+      button: 0,
+      clientX: 500,
+      clientY: 100,
+      pointerId: 14,
+    });
+    dispatchPointer(layer, "pointermove", {
+      clientX: 240,
+      clientY: 340,
+      pointerId: 14,
+    });
+    await flushAnimationFrame();
+
+    expect(Number(chartSection().dataset.visibleStartIndex)).toBe(zoomedStart);
+    expect(dragLayer().style.transform).toContain("translate3d");
+
+    dispatchPointer(layer, "pointerup", {
+      clientX: 240,
+      clientY: 340,
+      pointerId: 14,
+    });
+    await flushAnimationFrame();
+    expect(Number(chartSection().dataset.visibleStartIndex)).toBeGreaterThan(
+      zoomedStart,
+    );
+  });
+
+  it("pans when horizontal wheel intent dominates vertical drift", async () => {
+    render(
+      <DashboardTodayActivityChart
+        response={response}
+        loading={false}
+        error={null}
+        metric="totalCount"
+      />,
+    );
+
+    const layer = interactionLayer();
+    dispatchWheel(layer, { ctrlKey: true, deltaY: -700, clientX: 500 });
+    await flushAnimationFrame();
+    const zoomedStart = Number(chartSection().dataset.visibleStartIndex);
+
+    const event = dispatchWheel(layer, {
+      deltaX: 120,
+      deltaY: 18,
+      clientX: 500,
+    });
+
+    expect(event.defaultPrevented).toBe(true);
+    await flushAnimationFrame();
+    expect(Number(chartSection().dataset.visibleStartIndex)).toBeGreaterThan(
+      zoomedStart,
+    );
+  });
+
+  it("widens count bars as the viewport zooms in", async () => {
+    render(
+      <DashboardTodayActivityChart
+        response={response}
+        loading={false}
+        error={null}
+        metric="totalCount"
+      />,
+    );
+
+    const layer = interactionLayer();
+    dispatchWheel(layer, { deltaY: -600, clientX: 500 });
+    await flushAnimationFrame();
+
+    const bars = host?.querySelectorAll('[data-testid="bar-series"]');
+    expect(bars?.length).toBe(3);
+    expect(Number(bars?.[0]?.getAttribute("data-bar-size"))).toBeGreaterThan(1);
+  });
+
+  it("applies the same horizontal viewport to trend mode data", async () => {
+    render(
+      <DashboardTodayActivityChart
+        response={{
+          rangeStart: "2026-04-08 00:00:00",
+          rangeEnd: "2026-04-08 00:22:00",
+          bucketSeconds: 60,
+          points: Array.from({ length: 22 }, (_, index) => ({
+            bucketStart: `2026-04-08 00:${String(index).padStart(2, "0")}:00`,
+            bucketEnd: `2026-04-08 00:${String(index).padStart(2, "0")}:59`,
+            totalCount: 2,
+            successCount: 2,
+            failureCount: 0,
+            totalTokens: 1000 + index * 10,
+            totalCost: 0.2 + index * 0.01,
+          })),
+        }}
+        loading={false}
+        error={null}
+        metric="trend"
+      />,
+    );
+
+    const layer = interactionLayer();
+    dispatchWheel(layer, { ctrlKey: true, deltaY: -800, clientX: 0 });
+    await flushAnimationFrame();
+    const section = chartSection();
+    const visibleStart = Number(section.dataset.visibleStartIndex);
+    const visibleEnd = Number(section.dataset.visibleEndIndex);
+
+    expect(section.dataset.chartMode).toBe("trend-area");
+    expect(latestChartData.length).toBeGreaterThan(0);
+    expect(
+      latestChartData.every(
+        (item) =>
+          typeof item.index === "number" &&
+          item.index >= visibleStart &&
+          item.index <= visibleEnd,
+      ),
+    ).toBe(true);
+  });
+
+  it("resets the horizontal viewport when the displayed day changes", async () => {
+    render(
+      <DashboardTodayActivityChart
+        response={response}
+        loading={false}
+        error={null}
+        metric="totalCount"
+      />,
+    );
+
+    const layer = interactionLayer();
+    dispatchWheel(layer, { ctrlKey: true, deltaY: -700, clientX: 500 });
+    await flushAnimationFrame();
+    expect(chartSection().dataset.zoomed).toBe("true");
+
+    rerender(
+      <DashboardTodayActivityChart
+        response={{
+          ...response,
+          rangeStart: "2026-04-09 00:00:00",
+          rangeEnd: "2026-04-09 00:03:22",
+          points: response.points.map((point) => ({
+            ...point,
+            bucketStart: String(point.bucketStart).replace(
+              "2026-04-08",
+              "2026-04-09",
+            ),
+            bucketEnd: String(point.bucketEnd).replace(
+              "2026-04-08",
+              "2026-04-09",
+            ),
+          })),
+        }}
+        loading={false}
+        error={null}
+        metric="totalCount"
+      />,
+    );
+
+    expect(chartSection().dataset.zoomed).toBe("false");
+    expect(Number(chartSection().dataset.visibleStartIndex)).toBe(0);
+    expect(Number(chartSection().dataset.visibleEndIndex)).toBe(1439);
   });
 
   it("renders cost and token modes as cumulative area charts", () => {
