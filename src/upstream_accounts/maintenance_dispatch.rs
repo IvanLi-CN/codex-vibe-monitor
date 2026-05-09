@@ -1067,8 +1067,8 @@ pub(crate) async fn probe_imported_oauth_credentials(
             .or(Some(imported.chatgpt_account_id.as_str())),
     )
     .await;
-    let (snapshot, usage_snapshot_warning) = match usage_result {
-        Ok(snapshot) => (Some(snapshot), None),
+    let (snapshot, maintenance_proxy_snapshot, usage_snapshot_warning) = match usage_result {
+        Ok((snapshot, proxy_snapshot)) => (Some(snapshot), Some(proxy_snapshot), None),
         Err(err) if is_import_invalid_error_message(&err.to_string()) => return Err(err),
         Err(err) if err.to_string().contains("401") || err.to_string().contains("403") => {
             let response = refresh_oauth_tokens_for_required_scope(
@@ -1104,13 +1104,14 @@ pub(crate) async fn probe_imported_oauth_credentials(
             )
             .await
             {
-                Ok(snapshot) => (Some(snapshot), None),
+                Ok((snapshot, proxy_snapshot)) => (Some(snapshot), Some(proxy_snapshot), None),
                 Err(retry_err)
                     if !is_import_invalid_error_message(&retry_err.to_string())
                         && !retry_err.to_string().contains("401")
                         && !retry_err.to_string().contains("403") =>
                 {
                     (
+                        None,
                         None,
                         Some(format!(
                             "usage snapshot unavailable during validation: {retry_err}"
@@ -1121,6 +1122,7 @@ pub(crate) async fn probe_imported_oauth_credentials(
             }
         }
         Err(err) => (
+            None,
             None,
             Some(format!(
                 "usage snapshot unavailable during validation: {err}"
@@ -1133,6 +1135,7 @@ pub(crate) async fn probe_imported_oauth_credentials(
         credentials,
         claims,
         usage_snapshot: snapshot.clone(),
+        maintenance_proxy_snapshot,
         exhausted: snapshot
             .as_ref()
             .is_some_and(imported_snapshot_is_exhausted),

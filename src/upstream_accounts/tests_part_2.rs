@@ -1198,6 +1198,7 @@
                 Some("user_imported"),
             ),
             usage_snapshot: None,
+            maintenance_proxy_snapshot: None,
             exhausted: false,
             usage_snapshot_warning: Some("usage snapshot unavailable".to_string()),
         };

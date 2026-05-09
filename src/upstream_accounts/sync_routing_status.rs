@@ -515,27 +515,91 @@ fn upstream_account_history_retention_days() -> u64 {
     .unwrap_or(DEFAULT_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS)
 }
 
+fn derive_upstream_account_action_result(
+    action: &str,
+    reason_code: Option<&str>,
+    reason_message: Option<&str>,
+) -> &'static str {
+    if action == UPSTREAM_ACCOUNT_ACTION_SYNC_DEFERRED
+        || reason_code == Some(UPSTREAM_ACCOUNT_ACTION_REASON_EGRESS_THROTTLED)
+        || reason_message.is_some_and(|message| message.contains("remaining"))
+    {
+        return "deferred";
+    }
+    if matches!(
+        action,
+        UPSTREAM_ACCOUNT_ACTION_ROUTE_RECOVERED
+            | UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED
+            | UPSTREAM_ACCOUNT_ACTION_ACCOUNT_UPDATED
+    ) {
+        return "success";
+    }
+    "failed"
+}
+
 async fn record_upstream_account_action(
     pool: &Pool<Sqlite>,
     account_id: i64,
     payload: UpstreamAccountActionPayload<'_>,
 ) -> Result<()> {
+    record_upstream_account_action_with_proxy_snapshot(pool, account_id, payload, None).await
+}
+
+async fn record_upstream_account_action_with_proxy_snapshot(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    payload: UpstreamAccountActionPayload<'_>,
+    proxy_snapshot: Option<&AccountMaintenanceProxySnapshot>,
+) -> Result<()> {
     let reason_message = payload
         .reason_message
         .and_then(sanitize_account_action_message);
     let created_at = payload.occurred_at;
+    let account_snapshot = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+        r#"
+        SELECT display_name, group_name
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_optional(pool)
+    .await?;
+    let (account_display_name, account_group_name) = account_snapshot.unwrap_or_default();
+    let result = derive_upstream_account_action_result(
+        payload.action,
+        payload.reason_code,
+        reason_message.as_deref(),
+    );
     sqlx::query(
         r#"
         INSERT INTO pool_upstream_account_events (
-            account_id, occurred_at, action, source, reason_code, reason_message,
-            http_status, failure_kind, invoke_id, sticky_key, created_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            account_id, occurred_at, action, source, account_display_name, account_group_name,
+            forward_proxy_key, forward_proxy_display_name, forward_proxy_egress_ip, result,
+            result_description, reason_code, reason_message, http_status, failure_kind, invoke_id,
+            sticky_key, created_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
         "#,
     )
     .bind(account_id)
     .bind(payload.occurred_at)
     .bind(payload.action)
     .bind(payload.source)
+    .bind(account_display_name)
+    .bind(account_group_name)
+    .bind(proxy_snapshot.as_ref().map(|snapshot| snapshot.proxy_key.as_str()))
+    .bind(
+        proxy_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.proxy_display_name.as_str()),
+    )
+    .bind(
+        proxy_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.proxy_egress_ip.as_deref()),
+    )
+    .bind(result)
+    .bind(reason_message.as_deref())
     .bind(payload.reason_code)
     .bind(&reason_message)
     .bind(payload.http_status.map(|value| i64::from(value.as_u16())))
@@ -583,6 +647,155 @@ async fn record_upstream_account_action(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+pub(crate) async fn record_account_maintenance_deferred(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    source: &'static str,
+    reason_message: &str,
+    occurred_at: &str,
+    forward_proxy_key: Option<&str>,
+    forward_proxy_display_name: Option<&str>,
+) -> Result<()> {
+    let proxy_snapshot = forward_proxy_key.map(|proxy_key| AccountMaintenanceProxySnapshot {
+        proxy_key: proxy_key.to_string(),
+        proxy_display_name: forward_proxy_display_name
+            .unwrap_or(proxy_key)
+            .to_string(),
+        proxy_egress_ip: None,
+    });
+    record_upstream_account_action_with_proxy_snapshot(
+        pool,
+        account_id,
+        UpstreamAccountActionPayload {
+            action: UPSTREAM_ACCOUNT_ACTION_SYNC_DEFERRED,
+            source,
+            reason_code: Some(UPSTREAM_ACCOUNT_ACTION_REASON_EGRESS_THROTTLED),
+            reason_message: Some(reason_message),
+            http_status: None,
+            failure_kind: None,
+            invoke_id: None,
+            sticky_key: None,
+            occurred_at,
+        },
+        proxy_snapshot.as_ref(),
+    )
+    .await
+}
+
+#[cfg(test)]
+mod account_action_event_tests {
+    use super::*;
+    use sqlx::Row;
+
+    async fn test_pool() -> Pool<Sqlite> {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite");
+        ensure_upstream_accounts_schema(&pool)
+            .await
+            .expect("ensure upstream account schema");
+        pool
+    }
+
+    async fn insert_test_account(pool: &Pool<Sqlite>) -> i64 {
+        let now = format_utc_iso(Utc::now());
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_accounts (
+                kind, provider, display_name, group_name, status, enabled, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?6)
+            "#,
+        )
+        .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
+        .bind(UPSTREAM_ACCOUNT_PROVIDER_CODEX)
+        .bind("Fixture Account")
+        .bind("production")
+        .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+        .bind(&now)
+        .execute(pool)
+        .await
+        .expect("insert test account")
+        .last_insert_rowid()
+    }
+
+    #[tokio::test]
+    async fn record_action_persists_snapshot_result_and_proxy_fields() {
+        let pool = test_pool().await;
+        let account_id = insert_test_account(&pool).await;
+        let occurred_at = format_utc_iso(Utc::now());
+
+        let proxy_snapshot = AccountMaintenanceProxySnapshot {
+            proxy_key: "jp-edge-01".to_string(),
+            proxy_display_name: "JP Edge 01".to_string(),
+            proxy_egress_ip: Some("203.0.113.10".to_string()),
+        };
+        record_upstream_account_action_with_proxy_snapshot(
+            &pool,
+            account_id,
+            UpstreamAccountActionPayload {
+                action: UPSTREAM_ACCOUNT_ACTION_SYNC_DEFERRED,
+                source: UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
+                reason_code: Some(UPSTREAM_ACCOUNT_ACTION_REASON_EGRESS_THROTTLED),
+                reason_message: Some(
+                    "maintenance egress via JP Edge 01 is throttled for another 520 seconds",
+                ),
+                http_status: None,
+                failure_kind: None,
+                invoke_id: None,
+                sticky_key: None,
+                occurred_at: &occurred_at,
+            },
+            Some(&proxy_snapshot),
+        )
+        .await
+        .expect("record action");
+
+        let row = sqlx::query(
+            r#"
+            SELECT account_display_name, account_group_name, forward_proxy_key,
+                   forward_proxy_display_name, forward_proxy_egress_ip, result,
+                   result_description
+            FROM pool_upstream_account_events
+            WHERE account_id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load event");
+
+        assert_eq!(
+            row.try_get::<String, _>("account_display_name").unwrap(),
+            "Fixture Account"
+        );
+        assert_eq!(
+            row.try_get::<String, _>("account_group_name").unwrap(),
+            "production"
+        );
+        assert_eq!(
+            row.try_get::<String, _>("forward_proxy_key").unwrap(),
+            "jp-edge-01"
+        );
+        assert_eq!(
+            row.try_get::<String, _>("forward_proxy_display_name")
+                .unwrap(),
+            "JP Edge 01"
+        );
+        assert_eq!(
+            row.try_get::<String, _>("forward_proxy_egress_ip")
+                .unwrap(),
+            "203.0.113.10"
+        );
+        assert_eq!(row.try_get::<String, _>("result").unwrap(), "deferred");
+        assert_eq!(
+            row.try_get::<String, _>("result_description").unwrap(),
+            "maintenance egress via JP Edge 01 is throttled for another 520 seconds"
+        );
+    }
 }
 
 fn message_mentions_http_status(message: &str, status: StatusCode) -> bool {
@@ -953,7 +1166,7 @@ fn account_update_requests_manual_recovery(payload: &UpdateUpstreamAccountReques
             .is_some_and(|value| !value.trim().is_empty())
 }
 
-async fn set_account_status(
+pub(crate) async fn set_account_status(
     pool: &Pool<Sqlite>,
     account_id: i64,
     status: &str,
@@ -1014,6 +1227,16 @@ async fn mark_account_sync_success(
     source: &str,
     route_state: SyncSuccessRouteState,
 ) -> Result<()> {
+    mark_account_sync_success_with_proxy_snapshot(pool, account_id, source, route_state, None).await
+}
+
+async fn mark_account_sync_success_with_proxy_snapshot(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    source: &str,
+    route_state: SyncSuccessRouteState,
+    proxy_snapshot: Option<&AccountMaintenanceProxySnapshot>,
+) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
     match route_state {
         SyncSuccessRouteState::PreserveFailureState => {
@@ -1068,7 +1291,7 @@ async fn mark_account_sync_success(
             .await?;
         }
     }
-    record_upstream_account_action(
+    record_upstream_account_action_with_proxy_snapshot(
         pool,
         account_id,
         UpstreamAccountActionPayload {
@@ -1082,6 +1305,7 @@ async fn mark_account_sync_success(
             sticky_key: None,
             occurred_at: &now_iso,
         },
+        proxy_snapshot,
     )
     .await?;
     Ok(())
@@ -1206,6 +1430,35 @@ async fn record_account_sync_failure(
     preserved_route_failure_kind: Option<&str>,
     clear_transient_route_failure_state: bool,
 ) -> Result<()> {
+    record_account_sync_failure_with_proxy_snapshot(
+        pool,
+        account_id,
+        source,
+        status,
+        error_message,
+        reason_code,
+        http_status,
+        failure_kind,
+        preserved_route_failure_kind,
+        clear_transient_route_failure_state,
+        None,
+    )
+    .await
+}
+
+async fn record_account_sync_failure_with_proxy_snapshot(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    source: &str,
+    status: &str,
+    error_message: &str,
+    reason_code: &'static str,
+    http_status: Option<StatusCode>,
+    failure_kind: &'static str,
+    preserved_route_failure_kind: Option<&str>,
+    clear_transient_route_failure_state: bool,
+    proxy_snapshot: Option<&AccountMaintenanceProxySnapshot>,
+) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
     let cooldown_until =
         maintenance_sync_rejected_cooldown_until(source, reason_code, error_message, &now_iso);
@@ -1252,7 +1505,7 @@ async fn record_account_sync_failure(
     .bind("upstream_rejected")
     .execute(pool)
     .await?;
-    record_upstream_account_action(
+    record_upstream_account_action_with_proxy_snapshot(
         pool,
         account_id,
         UpstreamAccountActionPayload {
@@ -1266,6 +1519,7 @@ async fn record_account_sync_failure(
             sticky_key: None,
             occurred_at: &now_iso,
         },
+        proxy_snapshot,
     )
     .await?;
     Ok(())
@@ -1276,6 +1530,23 @@ async fn record_classified_account_sync_failure(
     row: &UpstreamAccountRow,
     source: &str,
     error_message: &str,
+) -> Result<()> {
+    record_classified_account_sync_failure_with_proxy_snapshot(
+        pool,
+        row,
+        source,
+        error_message,
+        None,
+    )
+    .await
+}
+
+async fn record_classified_account_sync_failure_with_proxy_snapshot(
+    pool: &Pool<Sqlite>,
+    row: &UpstreamAccountRow,
+    source: &str,
+    error_message: &str,
+    proxy_snapshot: Option<&AccountMaintenanceProxySnapshot>,
 ) -> Result<()> {
     let (disposition, reason_code, next_status, http_status, failure_kind) =
         classify_sync_failure(&row.kind, error_message);
@@ -1305,7 +1576,7 @@ async fn record_classified_account_sync_failure(
             false,
         ),
     };
-    record_account_sync_failure(
+    record_account_sync_failure_with_proxy_snapshot(
         pool,
         row.id,
         source,
@@ -1316,6 +1587,7 @@ async fn record_classified_account_sync_failure(
         failure_kind,
         preserved_route_failure_kind,
         clear_transient_route_failure_state,
+        proxy_snapshot,
     )
     .await
 }

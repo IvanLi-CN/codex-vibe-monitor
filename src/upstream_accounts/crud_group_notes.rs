@@ -18,6 +18,13 @@ pub(crate) async fn list_upstream_accounts_from_uri(
     list_upstream_accounts_from_params(state, params).await
 }
 
+pub(crate) async fn list_upstream_account_action_events(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ListUpstreamAccountActionEventsQuery>,
+) -> Result<Json<UpstreamAccountActionEventListResponse>, (StatusCode, String)> {
+    list_upstream_account_action_events_from_params(state, params).await
+}
+
 pub(crate) async fn list_upstream_accounts_from_params(
     state: Arc<AppState>,
     params: ListUpstreamAccountsQuery,
@@ -116,6 +123,123 @@ pub(crate) async fn list_upstream_accounts_from_params(
         forward_proxy_nodes,
         has_ungrouped_accounts,
         routing: build_pool_routing_settings_response(state.as_ref(), &routing),
+    }))
+}
+
+pub(crate) async fn list_upstream_account_action_events_from_params(
+    state: Arc<AppState>,
+    params: ListUpstreamAccountActionEventsQuery,
+) -> Result<Json<UpstreamAccountActionEventListResponse>, (StatusCode, String)> {
+    let page = normalize_upstream_account_list_page(params.page);
+    let page_size = normalize_upstream_account_list_page_size(params.page_size);
+    let result_filter =
+        normalize_upstream_account_action_event_result_filter(params.result.as_deref())
+            .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    let account_filter = normalize_optional_search_filter(params.account.as_deref());
+    let group_filter = normalize_optional_search_filter(params.group.as_deref());
+    let proxy_key_filter = normalize_optional_exact_filter(params.proxy_key.as_deref());
+
+    let mut conditions = Vec::new();
+    let mut binds: Vec<String> = Vec::new();
+
+    if let Some(filter) = account_filter.as_deref() {
+        conditions.push(
+            "(lower(COALESCE(event.account_display_name, account.display_name)) LIKE lower(?) OR lower(COALESCE(account.email, '')) LIKE lower(?) OR CAST(event.account_id AS TEXT) LIKE ?)"
+                .to_string(),
+        );
+        let wildcard = format!("%{filter}%");
+        binds.push(wildcard.clone());
+        binds.push(wildcard.clone());
+        binds.push(wildcard);
+    }
+    if let Some(filter) = group_filter.as_deref() {
+        conditions.push(
+            "lower(COALESCE(event.account_group_name, account.group_name, '')) LIKE lower(?)"
+                .to_string(),
+        );
+        binds.push(format!("%{filter}%"));
+    }
+    if let Some(filter) = proxy_key_filter.as_deref() {
+        conditions.push("lower(COALESCE(event.forward_proxy_key, '')) = lower(?)".to_string());
+        binds.push(filter.to_string());
+    }
+    if let Some(filter) = result_filter.as_deref() {
+        conditions.push("lower(COALESCE(event.result, '')) = lower(?)".to_string());
+        binds.push(filter.to_string());
+    }
+
+    let where_clause = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", conditions.join(" AND "))
+    };
+
+    let total_sql = format!(
+        r#"
+        SELECT COUNT(*)
+        FROM pool_upstream_account_events event
+        INNER JOIN pool_upstream_accounts account ON account.id = event.account_id
+        {where_clause}
+        "#
+    );
+    let mut total_query = sqlx::query_scalar::<_, i64>(&total_sql);
+    for bind in &binds {
+        total_query = total_query.bind(bind);
+    }
+    let total = total_query
+        .fetch_one(&state.pool)
+        .await
+        .map_err(internal_error_tuple)? as usize;
+
+    let offset = page.saturating_sub(1).saturating_mul(page_size);
+    let items_sql = format!(
+        r#"
+        SELECT
+            event.id,
+            event.occurred_at,
+            event.action,
+            event.source,
+            COALESCE(event.account_display_name, account.display_name) AS account_display_name,
+            COALESCE(event.account_group_name, account.group_name) AS account_group_name,
+            event.forward_proxy_key,
+            event.forward_proxy_display_name,
+            event.forward_proxy_egress_ip,
+            event.result,
+            event.result_description,
+            event.reason_code,
+            event.reason_message,
+            event.http_status,
+            event.failure_kind,
+            event.invoke_id,
+            event.sticky_key,
+            event.created_at
+        FROM pool_upstream_account_events event
+        INNER JOIN pool_upstream_accounts account ON account.id = event.account_id
+        {where_clause}
+        ORDER BY event.occurred_at DESC, event.id DESC
+        LIMIT ? OFFSET ?
+        "#
+    );
+    let mut items_query = sqlx::query_as::<_, UpstreamAccountActionEventRow>(&items_sql);
+    for bind in &binds {
+        items_query = items_query.bind(bind);
+    }
+    let rows = items_query
+        .bind(page_size as i64)
+        .bind(offset as i64)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(internal_error_tuple)?;
+    let items = rows
+        .iter()
+        .map(build_action_event_from_row)
+        .collect::<Vec<_>>();
+
+    Ok(Json(UpstreamAccountActionEventListResponse {
+        items,
+        total,
+        page,
+        page_size,
     }))
 }
 
@@ -276,6 +400,34 @@ pub(crate) fn parse_list_upstream_accounts_query(
     }
 
     Ok(params)
+}
+
+fn normalize_optional_search_filter(value: Option<&str>) -> Option<String> {
+    let normalized = value?.trim();
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized.to_string())
+    }
+}
+
+fn normalize_optional_exact_filter(value: Option<&str>) -> Option<String> {
+    normalize_optional_search_filter(value)
+}
+
+fn normalize_upstream_account_action_event_result_filter(
+    value: Option<&str>,
+) -> Result<Option<String>, String> {
+    let Some(normalized) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let lower = normalized.to_ascii_lowercase();
+    match lower.as_str() {
+        "success" | "failed" | "deferred" => Ok(Some(lower)),
+        other => Err(format!(
+            "invalid result value `{other}`; expected success, failed, or deferred"
+        )),
+    }
 }
 
 pub(crate) async fn list_tags(

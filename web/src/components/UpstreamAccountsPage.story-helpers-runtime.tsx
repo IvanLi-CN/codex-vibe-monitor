@@ -274,6 +274,37 @@ export function StorybookUpstreamAccountsMock({
         return jsonResponse(payload)
       }
 
+      if (path === '/api/pool/upstream-account-events' && method === 'GET') {
+        const accountFilter = parsedUrl.searchParams.get('account')?.trim().toLowerCase() || ''
+        const groupFilter = parsedUrl.searchParams.get('group')?.trim().toLowerCase() || ''
+        const proxyKeyFilter = parsedUrl.searchParams.get('proxyKey')?.trim().toLowerCase() || ''
+        const resultFilter = parsedUrl.searchParams.get('result')?.trim().toLowerCase() || ''
+        const rawPageSize = Number(parsedUrl.searchParams.get('pageSize') || 20)
+        const requestedPageSize =
+          Number.isFinite(rawPageSize) && rawPageSize > 0 ? rawPageSize : 20
+        const rawPage = Number(parsedUrl.searchParams.get('page') || 1)
+        const requestedPage = Number.isFinite(rawPage) && rawPage > 0 ? rawPage : 1
+        const filteredEvents = store.maintenanceEvents.filter((event) => {
+          const accountText = `${event.accountDisplayName ?? ''} ${event.accountGroupName ?? ''}`.toLowerCase()
+          const proxyText = `${event.forwardProxyKey ?? ''} ${event.forwardProxyDisplayName ?? ''}`.toLowerCase()
+          if (accountFilter && !accountText.includes(accountFilter)) return false
+          if (groupFilter && !(event.accountGroupName ?? '').toLowerCase().includes(groupFilter)) return false
+          if (proxyKeyFilter && !proxyText.includes(proxyKeyFilter)) return false
+          if (resultFilter && (event.result ?? '').toLowerCase() !== resultFilter) return false
+          return true
+        })
+        const total = filteredEvents.length
+        const pageCount = Math.max(1, Math.ceil(total / requestedPageSize))
+        const page = Math.min(requestedPage, pageCount)
+        const start = (page - 1) * requestedPageSize
+        return jsonResponse({
+          items: filteredEvents.slice(start, start + requestedPageSize),
+          total,
+          page,
+          pageSize: requestedPageSize,
+        })
+      }
+
       if (
         path === '/api/pool/upstream-accounts/window-usage' &&
         method === 'POST'
