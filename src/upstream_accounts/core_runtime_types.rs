@@ -87,6 +87,7 @@ const UPSTREAM_ACCOUNT_ACTION_ROUTE_COOLDOWN_STARTED: &str = "route_cooldown_sta
 const UPSTREAM_ACCOUNT_ACTION_ROUTE_RETRYABLE_FAILURE: &str = "route_retryable_failure";
 const UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE: &str = "route_hard_unavailable";
 const UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED: &str = "sync_succeeded";
+const UPSTREAM_ACCOUNT_ACTION_SYNC_DEFERRED: &str = "sync_deferred";
 const UPSTREAM_ACCOUNT_ACTION_SYNC_HARD_UNAVAILABLE: &str = "sync_hard_unavailable";
 const UPSTREAM_ACCOUNT_ACTION_SYNC_RECOVERY_BLOCKED: &str = "sync_recovery_blocked";
 const UPSTREAM_ACCOUNT_ACTION_SYNC_FAILED: &str = "sync_failed";
@@ -100,6 +101,7 @@ const UPSTREAM_ACCOUNT_ACTION_SOURCE_ACCOUNT_UPDATE: &str = "account_update";
 const UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_OK: &str = "sync_ok";
 const UPSTREAM_ACCOUNT_ACTION_REASON_ACCOUNT_UPDATED: &str = "account_updated";
 const UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR: &str = "sync_error";
+const UPSTREAM_ACCOUNT_ACTION_REASON_EGRESS_THROTTLED: &str = "egress_throttled";
 const UPSTREAM_ACCOUNT_ACTION_REASON_USAGE_SNAPSHOT_EXHAUSTED: &str = "usage_snapshot_exhausted";
 const UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED: &str = "quota_still_exhausted";
 const UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED: &str =
@@ -856,6 +858,15 @@ pub(crate) struct UpstreamAccountListResponse {
     routing: PoolRoutingSettingsResponse,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpstreamAccountActionEventListResponse {
+    items: Vec<UpstreamAccountActionEvent>,
+    total: usize,
+    page: usize,
+    page_size: usize,
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpstreamAccountWindowUsageRequest {
@@ -885,6 +896,17 @@ pub(crate) struct ListForwardProxyBindingNodesQuery {
     #[serde(default)]
     pub(crate) include_current: bool,
     pub(crate) group_name: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ListUpstreamAccountActionEventsQuery {
+    pub(crate) account: Option<String>,
+    pub(crate) group: Option<String>,
+    pub(crate) proxy_key: Option<String>,
+    pub(crate) result: Option<String>,
+    pub(crate) page: Option<usize>,
+    pub(crate) page_size: Option<usize>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1191,6 +1213,13 @@ pub(crate) struct UpstreamAccountActionEvent {
     occurred_at: String,
     action: String,
     source: String,
+    account_display_name: Option<String>,
+    account_group_name: Option<String>,
+    forward_proxy_key: Option<String>,
+    forward_proxy_display_name: Option<String>,
+    forward_proxy_egress_ip: Option<String>,
+    result: Option<String>,
+    result_description: Option<String>,
     reason_code: Option<String>,
     reason_message: Option<String>,
     http_status: Option<u16>,

@@ -4,7 +4,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     render("/account-pool/upstream-accounts");
 
     const headerCells = Array.from(
-      document.body.querySelectorAll("thead th"),
+      document.body.querySelector("thead")?.querySelectorAll("th") ?? [],
     ).map((cell) => cell.textContent?.trim() || "");
     expect(headerCells).toEqual(["", "Account", "Sync / Call", "Windows", ""]);
     expect(document.body.textContent).toContain("vip");

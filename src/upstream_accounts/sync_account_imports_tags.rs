@@ -293,6 +293,13 @@ async fn sync_oauth_account(
         }
     };
     let refresh_scope = usage_scope.clone();
+    let deferred_status = if row.status.trim().is_empty()
+        || row.status == UPSTREAM_ACCOUNT_STATUS_SYNCING
+    {
+        UPSTREAM_ACCOUNT_STATUS_ACTIVE
+    } else {
+        row.status.as_str()
+    };
     set_account_status(&state.pool, row.id, UPSTREAM_ACCOUNT_STATUS_SYNCING, None).await?;
 
     if refresh_due {
@@ -323,6 +330,24 @@ async fn sync_oauth_account(
                     &token_expires_at,
                 )
                 .await?;
+            }
+            Err(err)
+                if err
+                    .downcast_ref::<AccountMaintenanceEgressThrottleError>()
+                    .is_some() =>
+            {
+                let throttle = err
+                    .downcast_ref::<AccountMaintenanceEgressThrottleError>()
+                    .expect("checked throttle error");
+                record_oauth_maintenance_throttled(
+                    state,
+                    row.id,
+                    sync_source,
+                    deferred_status,
+                    throttle,
+                )
+                .await?;
+                return Ok(());
             }
             Err(err) if is_reauth_error(&err) => {
                 record_account_sync_failure(
@@ -400,6 +425,24 @@ async fn sync_oauth_account(
 
     let snapshot = match usage_result {
         Ok(snapshot) => snapshot,
+        Err(err)
+            if err
+                .downcast_ref::<AccountMaintenanceEgressThrottleError>()
+                .is_some() =>
+        {
+            let throttle = err
+                .downcast_ref::<AccountMaintenanceEgressThrottleError>()
+                .expect("checked throttle error");
+            record_oauth_maintenance_throttled(
+                state,
+                row.id,
+                sync_source,
+                deferred_status,
+                throttle,
+            )
+            .await?;
+            return Ok(());
+        }
         Err(err) if err.to_string().contains("401") || err.to_string().contains("403") => {
             match refresh_oauth_tokens_for_required_scope(
                 state,
@@ -442,6 +485,24 @@ async fn sync_oauth_account(
                     .await
                     {
                         Ok(snapshot) => snapshot,
+                        Err(retry_err)
+                            if retry_err
+                                .downcast_ref::<AccountMaintenanceEgressThrottleError>()
+                                .is_some() =>
+                        {
+                            let throttle = retry_err
+                                .downcast_ref::<AccountMaintenanceEgressThrottleError>()
+                                .expect("checked throttle error");
+                            record_oauth_maintenance_throttled(
+                                state,
+                                row.id,
+                                sync_source,
+                                deferred_status,
+                                throttle,
+                            )
+                            .await?;
+                            return Ok(());
+                        }
                         Err(retry_err) => {
                             record_classified_account_sync_failure(
                                 &state.pool,
@@ -466,6 +527,24 @@ async fn sync_oauth_account(
                         PROXY_FAILURE_UPSTREAM_HTTP_AUTH,
                         None,
                         false,
+                    )
+                    .await?;
+                    return Ok(());
+                }
+                Err(refresh_err)
+                    if refresh_err
+                        .downcast_ref::<AccountMaintenanceEgressThrottleError>()
+                        .is_some() =>
+                {
+                    let throttle = refresh_err
+                        .downcast_ref::<AccountMaintenanceEgressThrottleError>()
+                        .expect("checked throttle error");
+                    record_oauth_maintenance_throttled(
+                        state,
+                        row.id,
+                        sync_source,
+                        deferred_status,
+                        throttle,
                     )
                     .await?;
                     return Ok(());
@@ -550,6 +629,30 @@ async fn sync_oauth_account(
     )
     .await?;
     Ok(())
+}
+
+async fn record_oauth_maintenance_throttled(
+    state: &AppState,
+    account_id: i64,
+    sync_source: &'static str,
+    next_status: &str,
+    throttle: &AccountMaintenanceEgressThrottleError,
+) -> Result<()> {
+    let reason_message = format!(
+        "maintenance egress via {} is throttled for another {} seconds",
+        throttle.proxy_display_name, throttle.retry_after_secs
+    );
+    record_account_maintenance_deferred(
+        &state.pool,
+        account_id,
+        sync_source,
+        &reason_message,
+        &format_utc_iso(Utc::now()),
+        Some(&throttle.proxy_key),
+        Some(&throttle.proxy_display_name),
+    )
+    .await?;
+    set_account_status(&state.pool, account_id, next_status, None).await
 }
 
 async fn persist_oauth_credentials(
@@ -2593,11 +2696,28 @@ async fn load_upstream_account_detail(
     let recent_action_rows = sqlx::query_as::<_, UpstreamAccountActionEventRow>(
         r#"
         SELECT
-            id, occurred_at, action, source, reason_code, reason_message,
-            http_status, failure_kind, invoke_id, sticky_key, created_at
-        FROM pool_upstream_account_events
-        WHERE account_id = ?1
-        ORDER BY occurred_at DESC, id DESC
+            event.id,
+            event.occurred_at,
+            event.action,
+            event.source,
+            COALESCE(event.account_display_name, account.display_name) AS account_display_name,
+            COALESCE(event.account_group_name, account.group_name) AS account_group_name,
+            event.forward_proxy_key,
+            event.forward_proxy_display_name,
+            event.forward_proxy_egress_ip,
+            event.result,
+            event.result_description,
+            event.reason_code,
+            event.reason_message,
+            event.http_status,
+            event.failure_kind,
+            event.invoke_id,
+            event.sticky_key,
+            event.created_at
+        FROM pool_upstream_account_events event
+        INNER JOIN pool_upstream_accounts account ON account.id = event.account_id
+        WHERE event.account_id = ?1
+        ORDER BY event.occurred_at DESC, event.id DESC
         LIMIT 20
         "#,
     )

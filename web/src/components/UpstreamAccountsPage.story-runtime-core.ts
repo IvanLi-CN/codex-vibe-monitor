@@ -11,6 +11,7 @@ import type {
   PoolRoutingSettings,
   PoolRoutingTimeoutSettings,
   TagSummary,
+  UpstreamAccountActionEvent,
   UpstreamAccountDetail,
   UpstreamAccountSummary,
 } from '../lib/api'
@@ -21,6 +22,7 @@ export type StoryStore = {
   routing: PoolRoutingSettings
   accounts: UpstreamAccountSummary[]
   details: Record<number, UpstreamAccountDetail>
+  maintenanceEvents: UpstreamAccountActionEvent[]
   rosterFetchCount: number
   groupNotes: Record<string, string>
   groupBoundProxyKeys: Record<string, string[]>
@@ -297,6 +299,51 @@ const detailRichRecentActions = [
   },
 ]
 
+const defaultMaintenanceEvents = [
+  buildMaintenanceEvent(
+    8101,
+    '2026-03-17T12:58:10.000Z',
+    'sync_deferred',
+    'sync_maintenance',
+    'deferred',
+    'Maintenance egress via JP Edge 01 is throttled for another 520 seconds.',
+    'Fixture Billing Team',
+    'production',
+    'jp-edge-01',
+    'JP Edge 01',
+    null,
+    'egress_throttled',
+  ),
+  buildMaintenanceEvent(
+    8102,
+    '2026-03-17T12:41:00.000Z',
+    'sync_succeeded',
+    'sync_manual',
+    'success',
+    'Manual sync refreshed the access token and usage snapshot.',
+    'Fixture Billing Team',
+    'production',
+    'jp-edge-01',
+    'JP Edge 01',
+    null,
+    'sync_ok',
+  ),
+  buildMaintenanceEvent(
+    8103,
+    '2026-03-17T11:52:00.000Z',
+    'route_retryable_failure',
+    'call',
+    'failed',
+    'Proxy returned 429 upstream quota exhausted.',
+    'Fixture APAC Burst',
+    'production-apac-burst',
+    subscriptionVlessKey,
+    'Ivan-hinet-vless-vision-01KF874741GBN6MQYD6TNMYDVS',
+    null,
+    'upstream_http_429_quota_exhausted',
+  ),
+]
+
 function atMinuteOffset(minutes: number) {
   return new Date(Date.parse(now) + minutes * 60_000).toISOString()
 }
@@ -337,6 +384,42 @@ function buildRecentAction(
     httpStatus: httpStatus ?? null,
     failureKind: failureKind ?? null,
     invokeId: null,
+    stickyKey: null,
+    createdAt: occurredAt,
+  }
+}
+
+function buildMaintenanceEvent(
+  id: number,
+  occurredAt: string,
+  action: string,
+  source: string,
+  result: string,
+  resultDescription: string,
+  accountDisplayName: string,
+  accountGroupName: string,
+  forwardProxyKey: string,
+  forwardProxyDisplayName: string,
+  forwardProxyEgressIp?: string | null,
+  reasonCode?: string | null,
+) {
+  return {
+    id,
+    occurredAt,
+    action,
+    source,
+    accountDisplayName,
+    accountGroupName,
+    forwardProxyKey,
+    forwardProxyDisplayName,
+    forwardProxyEgressIp: forwardProxyEgressIp ?? null,
+    result,
+    resultDescription,
+    reasonCode: reasonCode ?? null,
+    reasonMessage: resultDescription,
+    httpStatus: null,
+    failureKind: null,
+    invokeId: `evt_story_${id}`,
     stickyKey: null,
     createdAt: occurredAt,
   }
@@ -2425,6 +2508,7 @@ export function createStore(): StoryStore {
     },
     accounts,
     details,
+    maintenanceEvents: defaultMaintenanceEvents,
     rosterFetchCount: 0,
     nextId: Math.max(...Object.keys(details).map((value) => Number(value))) + 1,
     sessions: {},

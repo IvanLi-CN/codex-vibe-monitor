@@ -321,6 +321,13 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             occurred_at TEXT NOT NULL,
             action TEXT NOT NULL,
             source TEXT NOT NULL,
+            account_display_name TEXT,
+            account_group_name TEXT,
+            forward_proxy_key TEXT,
+            forward_proxy_display_name TEXT,
+            forward_proxy_egress_ip TEXT,
+            result TEXT,
+            result_description TEXT,
             reason_code TEXT,
             reason_message TEXT,
             http_status INTEGER,
@@ -354,6 +361,60 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure idx_pool_upstream_account_events_time")?;
+
+    ensure_nullable_text_column(pool, "pool_upstream_account_events", "account_display_name")
+        .await
+        .context("failed to ensure pool_upstream_account_events.account_display_name")?;
+    ensure_nullable_text_column(pool, "pool_upstream_account_events", "account_group_name")
+        .await
+        .context("failed to ensure pool_upstream_account_events.account_group_name")?;
+    ensure_nullable_text_column(pool, "pool_upstream_account_events", "forward_proxy_key")
+        .await
+        .context("failed to ensure pool_upstream_account_events.forward_proxy_key")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_account_events",
+        "forward_proxy_display_name",
+    )
+    .await
+    .context("failed to ensure pool_upstream_account_events.forward_proxy_display_name")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_account_events",
+        "forward_proxy_egress_ip",
+    )
+    .await
+    .context("failed to ensure pool_upstream_account_events.forward_proxy_egress_ip")?;
+    ensure_nullable_text_column(pool, "pool_upstream_account_events", "result")
+        .await
+        .context("failed to ensure pool_upstream_account_events.result")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_account_events",
+        "result_description",
+    )
+    .await
+    .context("failed to ensure pool_upstream_account_events.result_description")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_account_events_proxy_time
+        ON pool_upstream_account_events (forward_proxy_key, occurred_at DESC, id DESC)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure idx_pool_upstream_account_events_proxy_time")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_account_events_result_time
+        ON pool_upstream_account_events (result, occurred_at DESC, id DESC)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure idx_pool_upstream_account_events_result_time")?;
 
     sqlx::query(
         r#"
@@ -389,6 +450,20 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure pool_oauth_login_sessions table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS pool_upstream_account_egress_throttle (
+            egress_key TEXT PRIMARY KEY,
+            last_sent_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure pool_upstream_account_egress_throttle table existence")?;
 
     ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "group_name")
         .await

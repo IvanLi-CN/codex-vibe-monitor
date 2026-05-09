@@ -303,6 +303,31 @@ async fn prepare_pool_account_with_scopes(
                         )
                         .await?;
                     }
+                    Err(err)
+                        if err
+                            .downcast_ref::<AccountMaintenanceEgressThrottleError>()
+                            .is_some() =>
+                    {
+                        let throttle = err
+                            .downcast_ref::<AccountMaintenanceEgressThrottleError>()
+                            .expect("checked throttle error");
+                        let reason_message = format!(
+                            "maintenance egress via {} is throttled for another {} seconds",
+                            throttle.proxy_display_name, throttle.retry_after_secs
+                        );
+                        let now_iso = format_utc_iso(Utc::now());
+                        record_account_maintenance_deferred(
+                            &state.pool,
+                            row.id,
+                            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
+                            &reason_message,
+                            &now_iso,
+                            Some(&throttle.proxy_key),
+                            Some(&throttle.proxy_display_name),
+                        )
+                        .await?;
+                        return Ok(None);
+                    }
                     Err(err) if is_reauth_error(&err) => {
                         let err_text = err.to_string();
                         let now_iso = format_utc_iso(Utc::now());

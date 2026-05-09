@@ -202,6 +202,13 @@ export interface UpstreamAccountActionEvent {
   occurredAt: string;
   action: string;
   source: string;
+  accountDisplayName?: string | null;
+  accountGroupName?: string | null;
+  forwardProxyKey?: string | null;
+  forwardProxyDisplayName?: string | null;
+  forwardProxyEgressIp?: string | null;
+  result?: string | null;
+  resultDescription?: string | null;
   reasonCode?: string | null;
   reasonMessage?: string | null;
   httpStatus?: number | null;
@@ -219,6 +226,13 @@ export interface UpstreamAccountDetail extends UpstreamAccountSummary {
   lastRefreshedAt?: string | null;
   history: UpstreamAccountHistoryPoint[];
   recentActions?: UpstreamAccountActionEvent[];
+}
+
+export interface UpstreamAccountActionEventListResponse {
+  items: UpstreamAccountActionEvent[];
+  total: number;
+  page: number;
+  pageSize: number;
 }
 
 export interface UpstreamAccountGroupSummary {
@@ -300,6 +314,15 @@ export interface FetchUpstreamAccountsQuery {
   pageSize?: number;
   includeAll?: boolean;
   tagIds?: number[];
+}
+
+export interface FetchUpstreamAccountActionEventsQuery {
+  account?: string;
+  group?: string;
+  proxyKey?: string;
+  result?: string;
+  page?: number;
+  pageSize?: number;
 }
 
 export interface UpstreamAccountListMetrics {
@@ -1094,6 +1117,31 @@ function normalizeUpstreamAccountActionEvent(
     occurredAt,
     action,
     source,
+    accountDisplayName:
+      typeof payload.accountDisplayName === "string"
+        ? payload.accountDisplayName
+        : null,
+    accountGroupName:
+      typeof payload.accountGroupName === "string"
+        ? payload.accountGroupName
+        : null,
+    forwardProxyKey:
+      typeof payload.forwardProxyKey === "string"
+        ? payload.forwardProxyKey
+        : null,
+    forwardProxyDisplayName:
+      typeof payload.forwardProxyDisplayName === "string"
+        ? payload.forwardProxyDisplayName
+        : null,
+    forwardProxyEgressIp:
+      typeof payload.forwardProxyEgressIp === "string"
+        ? payload.forwardProxyEgressIp
+        : null,
+    result: typeof payload.result === "string" ? payload.result : null,
+    resultDescription:
+      typeof payload.resultDescription === "string"
+        ? payload.resultDescription
+        : null,
     reasonCode:
       typeof payload.reasonCode === "string" ? payload.reasonCode : null,
     reasonMessage:
@@ -1203,6 +1251,21 @@ function normalizeUpstreamAccountListResponse(
     pageSize,
     metrics: normalizeUpstreamAccountListMetrics(payload.metrics),
     routing: normalizePoolRoutingSettings(payload.routing),
+  };
+}
+
+function normalizeUpstreamAccountActionEventListResponse(
+  raw: unknown,
+): UpstreamAccountActionEventListResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const itemsRaw = Array.isArray(payload.items) ? payload.items : [];
+  return {
+    items: itemsRaw
+      .map(normalizeUpstreamAccountActionEvent)
+      .filter((item): item is UpstreamAccountActionEvent => item != null),
+    total: normalizeFiniteNumber(payload.total) ?? 0,
+    page: normalizeFiniteNumber(payload.page) ?? 1,
+    pageSize: normalizeFiniteNumber(payload.pageSize) ?? 20,
   };
 }
 
@@ -1764,6 +1827,24 @@ export async function fetchUpstreamAccounts(
       : "/api/pool/upstream-accounts",
   );
   return normalizeUpstreamAccountListResponse(response);
+}
+
+export async function fetchUpstreamAccountActionEvents(
+  query?: FetchUpstreamAccountActionEventsQuery,
+): Promise<UpstreamAccountActionEventListResponse> {
+  const search = new URLSearchParams();
+  if (query?.account) search.set("account", query.account);
+  if (query?.group) search.set("group", query.group);
+  if (query?.proxyKey) search.set("proxyKey", query.proxyKey);
+  if (query?.result) search.set("result", query.result);
+  if (query?.page != null) search.set("page", String(query.page));
+  if (query?.pageSize != null) search.set("pageSize", String(query.pageSize));
+  const response = await fetchJson<unknown>(
+    search.size
+      ? `/api/pool/upstream-account-events?${search.toString()}`
+      : "/api/pool/upstream-account-events",
+  );
+  return normalizeUpstreamAccountActionEventListResponse(response);
 }
 
 export async function fetchUpstreamAccountWindowUsage(

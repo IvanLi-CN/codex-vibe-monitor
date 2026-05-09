@@ -59,6 +59,7 @@ const hookMocks = vi.hoisted(() => ({
 }));
 const apiMocks = vi.hoisted(() => ({
   createBulkUpstreamAccountSyncJobEventSource: vi.fn(),
+  fetchUpstreamAccountActionEvents: vi.fn(),
 }));
 const virtualizerMocks = vi.hoisted(() => ({
   visibleIndexes: null as number[] | null,
@@ -99,6 +100,7 @@ vi.mock("../../lib/api", async () => {
     ...actual,
     createBulkUpstreamAccountSyncJobEventSource:
       apiMocks.createBulkUpstreamAccountSyncJobEventSource,
+    fetchUpstreamAccountActionEvents: apiMocks.fetchUpstreamAccountActionEvents,
   };
 });
 
@@ -288,6 +290,13 @@ beforeEach(() => {
       throw new Error("unexpected bulk sync event source");
     },
   );
+  apiMocks.fetchUpstreamAccountActionEvents.mockReset();
+  apiMocks.fetchUpstreamAccountActionEvents.mockResolvedValue({
+    items: [],
+    total: 0,
+    page: 1,
+    pageSize: 20,
+  });
   hookMocks.useUpstreamStickyConversations.mockReturnValue({
     stats: null,
     isLoading: false,

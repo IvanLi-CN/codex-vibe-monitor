@@ -30,6 +30,7 @@ export {
   fetchPerfStats,
   fetchQuotaSnapshot,
   fetchUpstreamAccounts,
+  fetchUpstreamAccountActionEvents,
   fetchUpstreamAccountWindowUsage,
   fetchForwardProxyBindingNodes,
   fetchTags,
@@ -62,4 +63,10 @@ export {
   createBulkUpstreamAccountSyncJob,
   fetchBulkUpstreamAccountSyncJob,
   cancelBulkUpstreamAccountSyncJob,
+} from "./core";
+
+export type {
+  FetchUpstreamAccountActionEventsQuery,
+  UpstreamAccountActionEvent,
+  UpstreamAccountActionEventListResponse,
 } from "./core";

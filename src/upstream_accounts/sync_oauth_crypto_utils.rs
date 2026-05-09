@@ -1,3 +1,25 @@
+const ACCOUNT_MAINTENANCE_EGRESS_MIN_INTERVAL_SECS: i64 = 600;
+
+#[derive(Debug, Clone)]
+pub(crate) struct AccountMaintenanceEgressThrottleError {
+    pub(crate) proxy_key: String,
+    pub(crate) proxy_display_name: String,
+    pub(crate) retry_after_secs: u64,
+}
+
+impl std::fmt::Display for AccountMaintenanceEgressThrottleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "maintenance egress via {} is throttled for another {} seconds",
+            self.proxy_display_name,
+            self.retry_after_secs
+        )
+    }
+}
+
+impl std::error::Error for AccountMaintenanceEgressThrottleError {}
+
 async fn record_account_update_action(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -64,6 +86,93 @@ async fn client_for_required_proxy_scope(
         .context("failed to initialize required forward proxy client")
 }
 
+async fn client_for_required_maintenance_proxy_scope(
+    state: &AppState,
+    scope: &ForwardProxyRouteScope,
+) -> Result<Client> {
+    let selected_proxy = select_forward_proxy_for_scope(state, scope)
+        .await
+        .map_err(|err| map_required_group_proxy_selection_error(scope, err))?;
+    reserve_account_maintenance_egress_slot_for_runtime(&state.pool, &selected_proxy).await?;
+    state
+        .http_clients
+        .client_for_forward_proxy(selected_proxy.endpoint_url.as_ref())
+        .context("failed to initialize required forward proxy client")
+}
+
+async fn reserve_account_maintenance_egress_slot(
+    pool: &Pool<Sqlite>,
+    selected_proxy: &SelectedForwardProxy,
+) -> Result<()> {
+    let now = Utc::now();
+    let now_iso = format_utc_iso(now);
+    let mut tx = pool.begin().await.context("failed to open egress throttle transaction")?;
+    let existing_last_sent_at = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT last_sent_at
+        FROM pool_upstream_account_egress_throttle
+        WHERE egress_key = ?1
+        "#,
+    )
+    .bind(&selected_proxy.key)
+    .fetch_optional(&mut *tx)
+    .await
+    .context("failed to load egress throttle state")?;
+
+    if let Some(last_sent_at) = existing_last_sent_at
+        && let Some(last_sent_at) = parse_rfc3339_utc(&last_sent_at)
+    {
+        let elapsed_secs = now.signed_duration_since(last_sent_at).num_seconds();
+        if elapsed_secs < ACCOUNT_MAINTENANCE_EGRESS_MIN_INTERVAL_SECS {
+            let retry_after_secs =
+                (ACCOUNT_MAINTENANCE_EGRESS_MIN_INTERVAL_SECS - elapsed_secs).max(1) as u64;
+            tx.rollback()
+                .await
+                .context("failed to roll back throttled egress reservation")?;
+            return Err(anyhow!(AccountMaintenanceEgressThrottleError {
+                proxy_key: selected_proxy.key.clone(),
+                proxy_display_name: selected_proxy.display_name.clone(),
+                retry_after_secs,
+            }));
+        }
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_egress_throttle (
+            egress_key, last_sent_at, created_at, updated_at
+        ) VALUES (?1, ?2, ?2, ?2)
+        ON CONFLICT(egress_key) DO UPDATE SET
+            last_sent_at = excluded.last_sent_at,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(&selected_proxy.key)
+    .bind(&now_iso)
+    .execute(&mut *tx)
+    .await
+    .context("failed to update egress throttle state")?;
+    tx.commit()
+        .await
+        .context("failed to commit egress throttle reservation")?;
+    Ok(())
+}
+
+async fn reserve_account_maintenance_egress_slot_for_runtime(
+    pool: &Pool<Sqlite>,
+    selected_proxy: &SelectedForwardProxy,
+) -> Result<()> {
+    #[cfg(test)]
+    {
+        if std::env::var_os("CVM_ENFORCE_ACCOUNT_MAINTENANCE_EGRESS_THROTTLE_IN_RUNTIME_TESTS")
+            .is_none()
+        {
+            return Ok(());
+        }
+    }
+    reserve_account_maintenance_egress_slot(pool, selected_proxy).await
+}
+
 async fn exchange_authorization_code_for_required_scope(
     state: &AppState,
     scope: &ForwardProxyRouteScope,
@@ -105,7 +214,7 @@ async fn refresh_oauth_tokens_for_required_scope(
     scope: &ForwardProxyRouteScope,
     refresh_token: &str,
 ) -> Result<OAuthTokenResponse> {
-    let client = client_for_required_proxy_scope(state, scope).await?;
+    let client = client_for_required_maintenance_proxy_scope(state, scope).await?;
     refresh_oauth_tokens(&client, &state.config, refresh_token).await
 }
 
@@ -267,6 +376,7 @@ async fn request_usage_snapshot_with_user_agent_via_forward_proxy(
     user_agent: &str,
 ) -> Result<NormalizedUsageSnapshot> {
     let selected_proxy = select_forward_proxy_for_scope(state, scope).await?;
+    reserve_account_maintenance_egress_slot_for_runtime(&state.pool, &selected_proxy).await?;
     let client = match state
         .http_clients
         .client_for_forward_proxy(selected_proxy.endpoint_url.as_ref())
@@ -1245,4 +1355,55 @@ fn internal_error_html(err: impl ToString) -> (StatusCode, String) {
         StatusCode::INTERNAL_SERVER_ERROR,
         render_callback_page(false, "OAuth callback failed", &err.to_string()),
     )
+}
+
+#[cfg(test)]
+mod account_maintenance_egress_throttle_tests {
+    use super::*;
+
+    async fn test_pool() -> Pool<Sqlite> {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite");
+        ensure_upstream_accounts_schema(&pool)
+            .await
+            .expect("ensure upstream account schema");
+        pool
+    }
+
+    fn selected_proxy(key: &str) -> SelectedForwardProxy {
+        SelectedForwardProxy {
+            key: key.to_string(),
+            source: "manual".to_string(),
+            display_name: key.to_string(),
+            endpoint_url: None,
+            endpoint_url_raw: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn reserve_slot_enforces_ten_minutes_per_egress_key() {
+        let pool = test_pool().await;
+        let proxy = selected_proxy("jp-edge-01");
+        let other_proxy = selected_proxy("sg-edge-01");
+
+        reserve_account_maintenance_egress_slot(&pool, &proxy)
+            .await
+            .expect("first egress should reserve");
+        let err = reserve_account_maintenance_egress_slot(&pool, &proxy)
+            .await
+            .expect_err("second same-egress request should throttle");
+        let throttle = err
+            .downcast_ref::<AccountMaintenanceEgressThrottleError>()
+            .expect("throttle error");
+        assert_eq!(throttle.proxy_key, "jp-edge-01");
+        assert!(throttle.retry_after_secs > 0);
+        assert!(throttle.retry_after_secs <= 600);
+
+        reserve_account_maintenance_egress_slot(&pool, &other_proxy)
+            .await
+            .expect("different egress should not be throttled");
+    }
 }

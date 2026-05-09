@@ -1621,6 +1621,10 @@ fn build_pool_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
             get(list_upstream_accounts_from_uri).post(bulk_update_upstream_accounts),
         )
         .route(
+            "/api/pool/upstream-account-events",
+            get(list_upstream_account_action_events),
+        )
+        .route(
             "/api/pool/upstream-accounts/window-usage",
             post(get_upstream_account_window_usage),
         )

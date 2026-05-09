@@ -398,6 +398,40 @@ export const Operational: Story = {
   },
 }
 
+export const MaintenanceEvents: Story = {
+  name: 'Maintenance Events',
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
+  play: async ({ canvasElement, step }) => {
+    const canvasScope = within(canvasElement)
+    await step('shows the execution records table with the new two-line layout', async () => {
+      await expect(
+        await canvasScope.findByText(/non-model call execution records|非模型调用执行记录/i),
+      ).toBeInTheDocument()
+      await expect(
+        await canvasScope.findByRole('columnheader', { name: /execution time|执行时间/i }),
+      ).toBeInTheDocument()
+      await expect(
+        await canvasScope.findByRole('columnheader', { name: /account|账号/i }),
+      ).toBeInTheDocument()
+      await expect(
+        await canvasScope.findByRole('columnheader', { name: /proxy|代理/i }),
+      ).toBeInTheDocument()
+      await expect(
+        await canvasScope.findByRole('columnheader', { name: /action|动作/i }),
+      ).toBeInTheDocument()
+      await expect(
+        await canvasScope.findByRole('columnheader', { name: /result|结果/i }),
+      ).toBeInTheDocument()
+      await expect(
+        await canvasScope.findByText(/Fixture Billing Team/i),
+      ).toBeInTheDocument()
+      await expect(
+        await canvasScope.findByText(/deferred|success/i),
+      ).toBeInTheDocument()
+    })
+  },
+}
+
 export const DenseRoster: Story = {
   render: () => (
     <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />

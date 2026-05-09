@@ -1077,6 +1077,8 @@ const baseTranslations = {
       "Sync marked unavailable",
     "accountPool.upstreamAccounts.latestAction.actions.sync_succeeded":
       "Sync succeeded",
+    "accountPool.upstreamAccounts.latestAction.actions.sync_deferred":
+      "Sync deferred",
     "accountPool.upstreamAccounts.latestAction.actions.sync_recovery_blocked":
       "Recovery still blocked",
     "accountPool.upstreamAccounts.latestAction.actions.sync_failed":
@@ -1094,6 +1096,68 @@ const baseTranslations = {
       "OAuth import",
     "accountPool.upstreamAccounts.latestAction.sources.account_update":
       "Account update",
+    "accountPool.upstreamAccounts.maintenanceEvents.title":
+      "Non-model call execution records",
+    "accountPool.upstreamAccounts.maintenanceEvents.description":
+      "Recent account maintenance calls, syncs, and proxy-bound checks.",
+    "accountPool.upstreamAccounts.maintenanceEvents.resetFilters":
+      "Reset filters",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.account":
+      "Account",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.accountPlaceholder":
+      "Search account name or ID",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.group":
+      "Group",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.groupPlaceholder":
+      "Search group name",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.node":
+      "Node",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.result":
+      "Result",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.allNodes":
+      "All nodes",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.allResults":
+      "All results",
+    "accountPool.upstreamAccounts.maintenanceEvents.columns.time":
+      "Execution time",
+    "accountPool.upstreamAccounts.maintenanceEvents.columns.account":
+      "Account",
+    "accountPool.upstreamAccounts.maintenanceEvents.columns.proxy":
+      "Proxy",
+    "accountPool.upstreamAccounts.maintenanceEvents.columns.action":
+      "Action",
+    "accountPool.upstreamAccounts.maintenanceEvents.columns.result":
+      "Result",
+    "accountPool.upstreamAccounts.maintenanceEvents.results.success":
+      "Success",
+    "accountPool.upstreamAccounts.maintenanceEvents.results.failed":
+      "Failed",
+    "accountPool.upstreamAccounts.maintenanceEvents.results.deferred":
+      "Deferred",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_deferred":
+      "Sync deferred",
+    "accountPool.upstreamAccounts.maintenanceEvents.unknownAccount":
+      "Unknown account",
+    "accountPool.upstreamAccounts.maintenanceEvents.unknownGroup":
+      "Unknown group",
+    "accountPool.upstreamAccounts.maintenanceEvents.unknownProxy":
+      "Unknown proxy",
+    "accountPool.upstreamAccounts.maintenanceEvents.noEgressIp":
+      "Egress IP unavailable",
+    "accountPool.upstreamAccounts.maintenanceEvents.noDescription":
+      "No result description",
+    "accountPool.upstreamAccounts.maintenanceEvents.descriptions.egressThrottledWithSeconds":
+      "Same egress {{proxy}} is rate-limited. Retry after {{seconds}}s.",
+    "accountPool.upstreamAccounts.maintenanceEvents.descriptions.egressThrottled":
+      "Same egress {{proxy}} is rate-limited. Retry later.",
+    "accountPool.upstreamAccounts.maintenanceEvents.descriptions.syncOk":
+      "Maintenance sync completed and refreshed the account snapshot.",
+    "accountPool.upstreamAccounts.maintenanceEvents.descriptions.upstream429":
+      "The upstream reported quota pressure or rate limiting.",
+    "accountPool.upstreamAccounts.maintenanceEvents.descriptions.syncError":
+      "Maintenance sync failed before a usable account snapshot was saved.",
+    "accountPool.upstreamAccounts.maintenanceEvents.descriptions.httpStatus":
+      "Maintenance request returned HTTP {{status}}.",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_ok":
       "Sync completed successfully",
     "accountPool.upstreamAccounts.latestAction.reasons.account_updated":
@@ -2930,6 +2994,8 @@ const baseTranslations = {
       "同步标记为不可用",
     "accountPool.upstreamAccounts.latestAction.actions.sync_succeeded":
       "同步成功",
+    "accountPool.upstreamAccounts.latestAction.actions.sync_deferred":
+      "同步延期",
     "accountPool.upstreamAccounts.latestAction.actions.sync_recovery_blocked":
       "恢复仍被阻止",
     "accountPool.upstreamAccounts.latestAction.actions.sync_failed": "同步失败",
@@ -2945,6 +3011,68 @@ const baseTranslations = {
       "OAuth 导入",
     "accountPool.upstreamAccounts.latestAction.sources.account_update":
       "账号修改",
+    "accountPool.upstreamAccounts.maintenanceEvents.title":
+      "非模型调用执行记录",
+    "accountPool.upstreamAccounts.maintenanceEvents.description":
+      "展示最近的账号维护调用、同步与代理探测。",
+    "accountPool.upstreamAccounts.maintenanceEvents.resetFilters":
+      "重置筛选",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.account":
+      "账号",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.accountPlaceholder":
+      "搜索账号名或 ID",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.group":
+      "分组",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.groupPlaceholder":
+      "搜索分组名",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.node":
+      "节点",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.result":
+      "结果",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.allNodes":
+      "全部节点",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.allResults":
+      "全部结果",
+    "accountPool.upstreamAccounts.maintenanceEvents.columns.time":
+      "执行时间",
+    "accountPool.upstreamAccounts.maintenanceEvents.columns.account":
+      "账号",
+    "accountPool.upstreamAccounts.maintenanceEvents.columns.proxy":
+      "代理",
+    "accountPool.upstreamAccounts.maintenanceEvents.columns.action":
+      "动作",
+    "accountPool.upstreamAccounts.maintenanceEvents.columns.result":
+      "结果",
+    "accountPool.upstreamAccounts.maintenanceEvents.results.success":
+      "成功",
+    "accountPool.upstreamAccounts.maintenanceEvents.results.failed":
+      "失败",
+    "accountPool.upstreamAccounts.maintenanceEvents.results.deferred":
+      "延期",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_deferred":
+      "同步延期",
+    "accountPool.upstreamAccounts.maintenanceEvents.unknownAccount":
+      "未知账号",
+    "accountPool.upstreamAccounts.maintenanceEvents.unknownGroup":
+      "未知分组",
+    "accountPool.upstreamAccounts.maintenanceEvents.unknownProxy":
+      "未知代理",
+    "accountPool.upstreamAccounts.maintenanceEvents.noEgressIp":
+      "出口 IP 不可用",
+    "accountPool.upstreamAccounts.maintenanceEvents.noDescription":
+      "暂无结果描述",
+    "accountPool.upstreamAccounts.maintenanceEvents.descriptions.egressThrottledWithSeconds":
+      "同出口 {{proxy}} 正在限频，{{seconds}} 秒后可再次执行。",
+    "accountPool.upstreamAccounts.maintenanceEvents.descriptions.egressThrottled":
+      "同出口 {{proxy}} 正在限频，稍后可再次执行。",
+    "accountPool.upstreamAccounts.maintenanceEvents.descriptions.syncOk":
+      "维护同步已完成，账号快照已刷新。",
+    "accountPool.upstreamAccounts.maintenanceEvents.descriptions.upstream429":
+      "上游返回配额压力或限流，需要稍后重试。",
+    "accountPool.upstreamAccounts.maintenanceEvents.descriptions.syncError":
+      "维护同步失败，未保存可用的账号快照。",
+    "accountPool.upstreamAccounts.maintenanceEvents.descriptions.httpStatus":
+      "维护请求返回 HTTP {{status}}。",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_ok": "同步完成",
     "accountPool.upstreamAccounts.latestAction.reasons.account_updated":
       "账号设置已更新",
