@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.57.4",
+  "base_stable_version": "1.57.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-05-09T10:35:25Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.57.4",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "2cff00d241e859eeed69a302f9540de29456648b",
+  "pr_number": 404,
+  "pr_title": "fix(web): remember account pool group selection",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.57.4",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.57.4",
+  "target_sha": "7fd1bebc9c29d2aff5554c213be53135af06c100",
+  "type_label": "type:patch"
+}
