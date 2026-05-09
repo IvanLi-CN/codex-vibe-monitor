@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, userEvent, within } from 'storybook/test'
 import type { OauthMailboxSession } from '../lib/api'
+import { UPSTREAM_ACCOUNT_CREATE_GROUP_USAGE_STORAGE_KEY } from '../lib/upstreamAccountGroups'
 import { createPendingSession } from './UpstreamAccountsPage.story-data'
 import {
   AccountPoolStoryRouter,
@@ -241,6 +242,29 @@ export const GenerateAutoCopyFallback: Story = {
         value: originalExecCommand,
       })
     }
+  },
+}
+
+export const RememberedGroupHeaderAlignment: Story = {
+  render: () => {
+    window.localStorage.setItem(
+      UPSTREAM_ACCOUNT_CREATE_GROUP_USAGE_STORAGE_KEY,
+      JSON.stringify({
+        production: 1700000000000,
+        staging: 1700000005000,
+      }),
+    )
+    return <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=batchOauth" />
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const defaultGroupTrigger = canvas.getAllByRole('combobox')[0]
+    await expect(defaultGroupTrigger).toHaveTextContent(/staging/i)
+    const tagLabel = Array.from(canvasElement.querySelectorAll('.field-label')).find(
+      (node) => node.textContent?.trim().toLowerCase() === 'tags',
+    )
+    await expect(tagLabel).toHaveClass('sr-only')
+    await expect(canvas.getByRole('button', { name: /添加 tag|add tag/i })).toBeInTheDocument()
   },
 }
 

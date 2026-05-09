@@ -6,8 +6,84 @@ export interface UpstreamAccountGroupOption {
   isPersisted?: boolean
 }
 
+export type UpstreamAccountGroupUsageMap = Record<string, number>
+
+export const UPSTREAM_ACCOUNT_CREATE_GROUP_USAGE_STORAGE_KEY =
+  'codex-vibe-monitor.account-pool.create.group-usage'
+
 export function normalizeGroupName(value?: string | null): string {
   return value?.trim() ?? ''
+}
+
+export function readUpstreamAccountGroupUsage(
+  storage?: Storage,
+): UpstreamAccountGroupUsageMap {
+  try {
+    const resolvedStorage =
+      storage ?? (typeof window === 'undefined' ? undefined : window.localStorage)
+    if (!resolvedStorage) return {}
+    const raw = resolvedStorage.getItem(UPSTREAM_ACCOUNT_CREATE_GROUP_USAGE_STORAGE_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const usage: UpstreamAccountGroupUsageMap = {}
+    for (const [groupName, usedAt] of Object.entries(parsed)) {
+      const normalized = normalizeGroupName(groupName)
+      if (!normalized || typeof usedAt !== 'number' || !Number.isFinite(usedAt)) continue
+      usage[normalized] = usedAt
+    }
+    return usage
+  } catch {
+    return {}
+  }
+}
+
+export function writeUpstreamAccountGroupUsage(
+  usage: UpstreamAccountGroupUsageMap,
+  storage?: Storage,
+) {
+  try {
+    const resolvedStorage =
+      storage ?? (typeof window === 'undefined' ? undefined : window.localStorage)
+    if (!resolvedStorage) return
+    resolvedStorage.setItem(UPSTREAM_ACCOUNT_CREATE_GROUP_USAGE_STORAGE_KEY, JSON.stringify(usage))
+  } catch {
+    // Ignore storage quota/privacy failures; group memory is only a preference.
+  }
+}
+
+export function markUpstreamAccountGroupUsed(
+  usage: UpstreamAccountGroupUsageMap,
+  groupName?: string | null,
+  usedAt = Date.now(),
+): UpstreamAccountGroupUsageMap {
+  const normalized = normalizeGroupName(groupName)
+  if (!normalized) return usage
+  return {
+    ...usage,
+    [normalized]: usedAt,
+  }
+}
+
+export function resolveMostRecentlyUsedGroupName(
+  options: UpstreamAccountGroupOption[],
+  usage: UpstreamAccountGroupUsageMap,
+): string {
+  return options.reduce<{ groupName: string; usedAt: number }>(
+    (current, option) => {
+      const normalized = normalizeGroupName(option.groupName)
+      const usedAt = normalized ? usage[normalized] : undefined
+      if (typeof usedAt !== 'number' || !Number.isFinite(usedAt)) return current
+      if (!current.groupName || usedAt > current.usedAt) {
+        return { groupName: normalized, usedAt }
+      }
+      if (usedAt === current.usedAt && normalized.localeCompare(current.groupName) < 0) {
+        return { groupName: normalized, usedAt }
+      }
+      return current
+    },
+    { groupName: '', usedAt: Number.NEGATIVE_INFINITY },
+  ).groupName
 }
 
 export function buildGroupNoteMap(groups: UpstreamAccountGroupSummary[]): Map<string, string> {
@@ -40,6 +116,7 @@ export function buildGroupOptions(
   names: Array<string | null | undefined>,
   groups: UpstreamAccountGroupSummary[],
   drafts: Record<string, string>,
+  usage: UpstreamAccountGroupUsageMap = {},
 ): UpstreamAccountGroupOption[] {
   const values = new Set<string>()
   const options = new Map<string, UpstreamAccountGroupOption>()
@@ -76,7 +153,19 @@ export function buildGroupOptions(
   }
 
   return Array.from(values)
-    .sort((left, right) => left.localeCompare(right))
+    .sort((left, right) => {
+      const leftUsedAt = usage[left]
+      const rightUsedAt = usage[right]
+      const leftHasUsage = typeof leftUsedAt === 'number' && Number.isFinite(leftUsedAt)
+      const rightHasUsage = typeof rightUsedAt === 'number' && Number.isFinite(rightUsedAt)
+      if (leftHasUsage && rightHasUsage && leftUsedAt !== rightUsedAt) {
+        return rightUsedAt - leftUsedAt
+      }
+      if (leftHasUsage !== rightHasUsage) {
+        return leftHasUsage ? -1 : 1
+      }
+      return left.localeCompare(right)
+    })
     .map((groupName) => options.get(groupName) ?? {
       groupName,
       accountCount: 0,

@@ -30,6 +30,7 @@ import type {
   ImportedOauthValidationRow,
   LoginSessionStatusResponse,
 } from "../../lib/api";
+import { UPSTREAM_ACCOUNT_CREATE_GROUP_USAGE_STORAGE_KEY } from "../../lib/upstreamAccountGroups";
 import UpstreamAccountCreatePage from "./UpstreamAccountCreate";
 
 const navigateMock = vi.hoisted(() => vi.fn());
@@ -390,25 +391,28 @@ function rerender(
     search: normalizedEntry.search,
     state: {
       ...baseState,
-      draft: {
-        ...baseDraft,
-        oauth: {
-          groupName: TEST_REQUIRED_GROUP_NAME,
-          ...oauthDraft,
-        },
-        batchOauth: {
-          defaultGroupName: TEST_REQUIRED_GROUP_NAME,
-          ...batchOauthDraft,
-        },
-        import: {
-          defaultGroupName: TEST_REQUIRED_GROUP_NAME,
-          ...importDraft,
-        },
-        apiKey: {
-          groupName: TEST_REQUIRED_GROUP_NAME,
-          ...apiKeyDraft,
-        },
-      },
+      draft:
+        baseState.__skipDefaultDraft === true
+          ? baseState.draft
+          : {
+              ...baseDraft,
+              oauth: {
+                groupName: TEST_REQUIRED_GROUP_NAME,
+                ...oauthDraft,
+              },
+              batchOauth: {
+                defaultGroupName: TEST_REQUIRED_GROUP_NAME,
+                ...batchOauthDraft,
+              },
+              import: {
+                defaultGroupName: TEST_REQUIRED_GROUP_NAME,
+                ...importDraft,
+              },
+              apiKey: {
+                groupName: TEST_REQUIRED_GROUP_NAME,
+                ...apiKeyDraft,
+              },
+            },
     },
   } satisfies RenderEntry;
   act(() => {
@@ -1129,6 +1133,99 @@ function clickGroupSettingsButtonForInput(selector: string) {
   });
   return button;
 }
+
+describe("UpstreamAccountCreatePage group memory", () => {
+  it("uses the latest remembered group for batch OAuth when no draft overrides it", async () => {
+    vi.mocked(window.localStorage.getItem).mockImplementation((key: string) => {
+      if (key === "codex-vibe-monitor.locale") return "en";
+      if (key === UPSTREAM_ACCOUNT_CREATE_GROUP_USAGE_STORAGE_KEY) {
+        return JSON.stringify({ alpha: 100, beta: 300 });
+      }
+      return null;
+    });
+    mockUpstreamAccounts();
+
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: { __skipDefaultDraft: true },
+    });
+    await flushAsync();
+
+    expect(readHiddenInputValue('[name="batchOauthDefaultGroupName"]')).toBe("beta");
+    expect(readHiddenInputValue('[name^="batchOauthGroupName-"]')).toBe("beta");
+  });
+
+  it("keeps a restored draft group ahead of remembered local preference", async () => {
+    vi.mocked(window.localStorage.getItem).mockImplementation((key: string) => {
+      if (key === "codex-vibe-monitor.locale") return "en";
+      if (key === UPSTREAM_ACCOUNT_CREATE_GROUP_USAGE_STORAGE_KEY) {
+        return JSON.stringify({ beta: 300 });
+      }
+      return null;
+    });
+    mockUpstreamAccounts();
+
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        __skipDefaultDraft: true,
+        draft: {
+          batchOauth: {
+            defaultGroupName: "alpha",
+            rows: [
+              {
+                id: "row-1",
+                groupName: "alpha",
+                inheritsDefaultGroup: true,
+              },
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    expect(readHiddenInputValue('[name="batchOauthDefaultGroupName"]')).toBe("alpha");
+    expect(readHiddenInputValue('[name^="batchOauthGroupName-"]')).toBe("alpha");
+  });
+
+  it("stores the selected batch default group as the latest local preference", async () => {
+    mockUpstreamAccounts();
+
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: { __skipDefaultDraft: true },
+    });
+    await flushAsync();
+
+    const defaultGroupTrigger = Array.from(
+      document.body.querySelectorAll('button[role="combobox"]'),
+    )[0] as HTMLButtonElement;
+    act(() => {
+      defaultGroupTrigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    const betaOption = Array.from(document.body.querySelectorAll("[cmdk-item]")).find(
+      (candidate) => candidate.textContent?.includes("beta"),
+    );
+    if (!(betaOption instanceof HTMLElement)) {
+      throw new Error("missing beta group option");
+    }
+    act(() => {
+      betaOption.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    expect(window.localStorage.setItem).toHaveBeenCalledWith(
+      UPSTREAM_ACCOUNT_CREATE_GROUP_USAGE_STORAGE_KEY,
+      expect.stringContaining('"beta"'),
+    );
+  });
+});
 
 describe("UpstreamAccountCreatePage group deletion", () => {
   it("clears selected group fields after deleting the active saved group", async () => {
