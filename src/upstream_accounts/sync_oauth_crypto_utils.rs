@@ -134,12 +134,12 @@ async fn client_for_required_maintenance_proxy_scope(
     let selected_proxy = select_forward_proxy_for_scope(state, scope)
         .await
         .map_err(|err| map_required_group_proxy_selection_error(scope, err))?;
-    reserve_account_maintenance_egress_slot_for_runtime(&state.pool, &selected_proxy).await?;
     let snapshot = AccountMaintenanceProxySnapshot::from_selected_proxy(&selected_proxy);
     let client = state
         .http_clients
         .client_for_forward_proxy(selected_proxy.endpoint_url.as_ref())
         .context("failed to initialize required forward proxy client")?;
+    reserve_account_maintenance_egress_slot_for_runtime(&state.pool, &selected_proxy).await?;
     Ok((client, snapshot))
 }
 
@@ -428,7 +428,6 @@ async fn request_usage_snapshot_with_user_agent_via_forward_proxy(
     user_agent: &str,
 ) -> Result<(NormalizedUsageSnapshot, AccountMaintenanceProxySnapshot)> {
     let selected_proxy = select_forward_proxy_for_scope(state, scope).await?;
-    reserve_account_maintenance_egress_slot_for_runtime(&state.pool, &selected_proxy).await?;
     let proxy_snapshot = AccountMaintenanceProxySnapshot::from_selected_proxy(&selected_proxy);
     let client = match state
         .http_clients
@@ -451,6 +450,7 @@ async fn request_usage_snapshot_with_user_agent_via_forward_proxy(
             }));
         }
     };
+    reserve_account_maintenance_egress_slot_for_runtime(&state.pool, &selected_proxy).await?;
 
     let result = request_usage_snapshot_with_user_agent(
         &client,
