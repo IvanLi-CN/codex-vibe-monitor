@@ -331,6 +331,7 @@ async fn prepare_pool_account_with_scopes(
                     Err(err) if is_reauth_error(&err) => {
                         let err_text = err.to_string();
                         let now_iso = format_utc_iso(Utc::now());
+                        let proxy_snapshot = maintenance_proxy_snapshot_from_error(&err);
                         sqlx::query(
                             r#"
                             UPDATE pool_upstream_accounts
@@ -353,7 +354,7 @@ async fn prepare_pool_account_with_scopes(
                         .bind(PROXY_FAILURE_UPSTREAM_HTTP_AUTH)
                         .execute(&state.pool)
                         .await?;
-                        record_upstream_account_action(
+                        record_upstream_account_action_with_proxy_snapshot(
                             &state.pool,
                             row.id,
                             UpstreamAccountActionPayload {
@@ -367,12 +368,14 @@ async fn prepare_pool_account_with_scopes(
                                 sticky_key: None,
                                 occurred_at: &now_iso,
                             },
+                            proxy_snapshot.as_ref(),
                         )
                         .await?;
                         return Ok(None);
                     }
                     Err(err) => {
                         let err_text = err.to_string();
+                        let proxy_snapshot = maintenance_proxy_snapshot_from_error(&err);
                         let (disposition, reason_code, next_status, http_status, failure_kind) =
                             classify_sync_failure(&row.kind, &err_text);
                         match disposition {
@@ -400,12 +403,12 @@ async fn prepare_pool_account_with_scopes(
                                 .bind(failure_kind)
                                 .execute(&state.pool)
                                 .await?;
-                                record_upstream_account_action(
-                                    &state.pool,
-                                    row.id,
-                                    UpstreamAccountActionPayload {
-                                        action: UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE,
-                                        source: UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
+                        record_upstream_account_action_with_proxy_snapshot(
+                            &state.pool,
+                            row.id,
+                            UpstreamAccountActionPayload {
+                                action: UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE,
+                                source: UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
                                         reason_code: Some(reason_code),
                                         reason_message: Some(&err_text),
                                         http_status,
@@ -414,6 +417,7 @@ async fn prepare_pool_account_with_scopes(
                                         sticky_key: None,
                                         occurred_at: &now_iso,
                                     },
+                                    proxy_snapshot.as_ref(),
                                 )
                                 .await?;
                             }
