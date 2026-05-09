@@ -270,6 +270,15 @@ async fn refresh_oauth_tokens_for_required_scope(
     }
 }
 
+async fn refresh_oauth_tokens_for_required_scope_without_maintenance_throttle(
+    state: &AppState,
+    scope: &ForwardProxyRouteScope,
+    refresh_token: &str,
+) -> Result<OAuthTokenResponse> {
+    let client = client_for_required_proxy_scope(state, scope).await?;
+    refresh_oauth_tokens(&client, &state.config, refresh_token).await
+}
+
 async fn parse_token_response(response: reqwest::Response) -> Result<OAuthTokenResponse> {
     let status = response.status();
     let body = response

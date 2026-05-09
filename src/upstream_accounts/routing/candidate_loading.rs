@@ -275,7 +275,7 @@ async fn prepare_pool_account_with_scopes(
                 })
                 .unwrap_or(true);
             if refresh_due {
-                match refresh_oauth_tokens_for_required_scope(
+                match refresh_oauth_tokens_for_required_scope_without_maintenance_throttle(
                     state,
                     &refresh_proxy_scope,
                     &value.refresh_token,
