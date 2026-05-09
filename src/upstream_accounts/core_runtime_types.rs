@@ -2218,6 +2218,7 @@ pub(crate) struct ImportedOauthProbeOutcome {
     credentials: StoredOauthCredentials,
     claims: ChatgptJwtClaims,
     usage_snapshot: Option<NormalizedUsageSnapshot>,
+    maintenance_proxy_snapshot: Option<AccountMaintenanceProxySnapshot>,
     exhausted: bool,
     usage_snapshot_warning: Option<String>,
 }

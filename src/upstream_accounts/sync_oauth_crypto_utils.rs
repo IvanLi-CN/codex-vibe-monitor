@@ -20,6 +20,47 @@ impl std::fmt::Display for AccountMaintenanceEgressThrottleError {
 
 impl std::error::Error for AccountMaintenanceEgressThrottleError {}
 
+#[derive(Debug, Clone)]
+pub(crate) struct AccountMaintenanceProxySnapshot {
+    pub(crate) proxy_key: String,
+    pub(crate) proxy_display_name: String,
+    pub(crate) proxy_egress_ip: Option<String>,
+}
+
+impl AccountMaintenanceProxySnapshot {
+    fn from_selected_proxy(selected_proxy: &SelectedForwardProxy) -> Self {
+        Self {
+            proxy_key: selected_proxy.key.clone(),
+            proxy_display_name: selected_proxy.display_name.clone(),
+            proxy_egress_ip: None,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct AccountMaintenanceProxyAwareError {
+    proxy_snapshot: AccountMaintenanceProxySnapshot,
+    message: String,
+}
+
+impl std::fmt::Display for AccountMaintenanceProxyAwareError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for AccountMaintenanceProxyAwareError {}
+
+pub(crate) fn maintenance_proxy_snapshot_from_error(
+    err: &anyhow::Error,
+) -> Option<AccountMaintenanceProxySnapshot> {
+    err.chain().find_map(|cause| {
+        cause
+            .downcast_ref::<AccountMaintenanceProxyAwareError>()
+            .map(|value| value.proxy_snapshot.clone())
+    })
+}
+
 async fn record_account_update_action(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -89,15 +130,17 @@ async fn client_for_required_proxy_scope(
 async fn client_for_required_maintenance_proxy_scope(
     state: &AppState,
     scope: &ForwardProxyRouteScope,
-) -> Result<Client> {
+) -> Result<(Client, AccountMaintenanceProxySnapshot)> {
     let selected_proxy = select_forward_proxy_for_scope(state, scope)
         .await
         .map_err(|err| map_required_group_proxy_selection_error(scope, err))?;
     reserve_account_maintenance_egress_slot_for_runtime(&state.pool, &selected_proxy).await?;
-    state
+    let snapshot = AccountMaintenanceProxySnapshot::from_selected_proxy(&selected_proxy);
+    let client = state
         .http_clients
         .client_for_forward_proxy(selected_proxy.endpoint_url.as_ref())
-        .context("failed to initialize required forward proxy client")
+        .context("failed to initialize required forward proxy client")?;
+    Ok((client, snapshot))
 }
 
 async fn reserve_account_maintenance_egress_slot(
@@ -106,7 +149,10 @@ async fn reserve_account_maintenance_egress_slot(
 ) -> Result<()> {
     let now = Utc::now();
     let now_iso = format_utc_iso(now);
-    let mut tx = pool.begin().await.context("failed to open egress throttle transaction")?;
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .context("failed to open egress throttle transaction")?;
     let existing_last_sent_at = sqlx::query_scalar::<_, String>(
         r#"
         SELECT last_sent_at
@@ -214,8 +260,14 @@ async fn refresh_oauth_tokens_for_required_scope(
     scope: &ForwardProxyRouteScope,
     refresh_token: &str,
 ) -> Result<OAuthTokenResponse> {
-    let client = client_for_required_maintenance_proxy_scope(state, scope).await?;
-    refresh_oauth_tokens(&client, &state.config, refresh_token).await
+    let (client, proxy_snapshot) = client_for_required_maintenance_proxy_scope(state, scope).await?;
+    match refresh_oauth_tokens(&client, &state.config, refresh_token).await {
+        Ok(response) => Ok(response),
+        Err(err) => Err(anyhow!(AccountMaintenanceProxyAwareError {
+            proxy_snapshot,
+            message: err.to_string(),
+        })),
+    }
 }
 
 async fn parse_token_response(response: reqwest::Response) -> Result<OAuthTokenResponse> {
@@ -325,7 +377,7 @@ async fn fetch_usage_snapshot_via_forward_proxy(
     config: &AppConfig,
     access_token: &str,
     chatgpt_account_id: Option<&str>,
-) -> Result<NormalizedUsageSnapshot> {
+) -> Result<(NormalizedUsageSnapshot, AccountMaintenanceProxySnapshot)> {
     let primary_result = request_usage_snapshot_with_user_agent_via_forward_proxy(
         state,
         scope,
@@ -374,9 +426,10 @@ async fn request_usage_snapshot_with_user_agent_via_forward_proxy(
     access_token: &str,
     chatgpt_account_id: Option<&str>,
     user_agent: &str,
-) -> Result<NormalizedUsageSnapshot> {
+) -> Result<(NormalizedUsageSnapshot, AccountMaintenanceProxySnapshot)> {
     let selected_proxy = select_forward_proxy_for_scope(state, scope).await?;
     reserve_account_maintenance_egress_slot_for_runtime(&state.pool, &selected_proxy).await?;
+    let proxy_snapshot = AccountMaintenanceProxySnapshot::from_selected_proxy(&selected_proxy);
     let client = match state
         .http_clients
         .client_for_forward_proxy(selected_proxy.endpoint_url.as_ref())
@@ -390,7 +443,12 @@ async fn request_usage_snapshot_with_user_agent_via_forward_proxy(
                 ForwardProxyRouteResultKind::NetworkFailure,
             )
             .await;
-            return Err(err).context("failed to initialize usage snapshot forward proxy client");
+            return Err(anyhow!(AccountMaintenanceProxyAwareError {
+                proxy_snapshot,
+                message: err
+                    .context("failed to initialize usage snapshot forward proxy client")
+                    .to_string(),
+            }));
         }
     };
 
@@ -426,6 +484,13 @@ async fn request_usage_snapshot_with_user_agent_via_forward_proxy(
     }
 
     result
+        .map(|snapshot| (snapshot, proxy_snapshot.clone()))
+        .map_err(|err| {
+            anyhow!(AccountMaintenanceProxyAwareError {
+                proxy_snapshot,
+                message: err.to_string(),
+            })
+        })
 }
 
 async fn request_usage_snapshot_with_user_agent(

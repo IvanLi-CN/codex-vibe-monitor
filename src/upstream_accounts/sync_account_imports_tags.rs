@@ -350,7 +350,8 @@ async fn sync_oauth_account(
                 return Ok(());
             }
             Err(err) if is_reauth_error(&err) => {
-                record_account_sync_failure(
+                let proxy_snapshot = maintenance_proxy_snapshot_from_error(&err);
+                record_account_sync_failure_with_proxy_snapshot(
                     &state.pool,
                     row.id,
                     sync_source,
@@ -361,6 +362,7 @@ async fn sync_oauth_account(
                     PROXY_FAILURE_UPSTREAM_HTTP_AUTH,
                     None,
                     false,
+                    proxy_snapshot.as_ref(),
                 )
                 .await?;
                 return Ok(());
@@ -382,7 +384,8 @@ async fn sync_oauth_account(
                     UpstreamAccountFailureDisposition::RateLimited
                     | UpstreamAccountFailureDisposition::Retryable => None,
                 };
-                record_account_sync_failure(
+                let proxy_snapshot = maintenance_proxy_snapshot_from_error(&err);
+                record_account_sync_failure_with_proxy_snapshot(
                     &state.pool,
                     row.id,
                     sync_source,
@@ -393,6 +396,7 @@ async fn sync_oauth_account(
                     failure_kind,
                     route_failure_kind,
                     disposition == UpstreamAccountFailureDisposition::HardUnavailable,
+                    proxy_snapshot.as_ref(),
                 )
                 .await?;
                 return Ok(());
@@ -423,8 +427,8 @@ async fn sync_oauth_account(
     )
     .await;
 
-    let snapshot = match usage_result {
-        Ok(snapshot) => snapshot,
+    let (snapshot, usage_proxy_snapshot) = match usage_result {
+        Ok((snapshot, proxy_snapshot)) => (snapshot, Some(proxy_snapshot)),
         Err(err)
             if err
                 .downcast_ref::<AccountMaintenanceEgressThrottleError>()
@@ -484,7 +488,7 @@ async fn sync_oauth_account(
                     )
                     .await
                     {
-                        Ok(snapshot) => snapshot,
+                        Ok((snapshot, proxy_snapshot)) => (snapshot, Some(proxy_snapshot)),
                         Err(retry_err)
                             if retry_err
                                 .downcast_ref::<AccountMaintenanceEgressThrottleError>()
@@ -504,11 +508,14 @@ async fn sync_oauth_account(
                             return Ok(());
                         }
                         Err(retry_err) => {
-                            record_classified_account_sync_failure(
+                            let proxy_snapshot =
+                                maintenance_proxy_snapshot_from_error(&retry_err);
+                            record_classified_account_sync_failure_with_proxy_snapshot(
                                 &state.pool,
                                 &latest_row,
                                 sync_source,
                                 &retry_err.to_string(),
+                                proxy_snapshot.as_ref(),
                             )
                             .await?;
                             return Ok(());
@@ -516,7 +523,8 @@ async fn sync_oauth_account(
                     }
                 }
                 Err(refresh_err) if is_reauth_error(&refresh_err) => {
-                    record_account_sync_failure(
+                    let proxy_snapshot = maintenance_proxy_snapshot_from_error(&refresh_err);
+                    record_account_sync_failure_with_proxy_snapshot(
                         &state.pool,
                         row.id,
                         sync_source,
@@ -527,6 +535,7 @@ async fn sync_oauth_account(
                         PROXY_FAILURE_UPSTREAM_HTTP_AUTH,
                         None,
                         false,
+                        proxy_snapshot.as_ref(),
                     )
                     .await?;
                     return Ok(());
@@ -550,11 +559,13 @@ async fn sync_oauth_account(
                     return Ok(());
                 }
                 Err(refresh_err) => {
-                    record_classified_account_sync_failure(
+                    let proxy_snapshot = maintenance_proxy_snapshot_from_error(&refresh_err);
+                    record_classified_account_sync_failure_with_proxy_snapshot(
                         &state.pool,
                         &latest_row,
                         sync_source,
                         &refresh_err.to_string(),
+                        proxy_snapshot.as_ref(),
                     )
                     .await?;
                     return Ok(());
@@ -562,11 +573,13 @@ async fn sync_oauth_account(
             }
         }
         Err(err) => {
-            record_classified_account_sync_failure(
+            let proxy_snapshot = maintenance_proxy_snapshot_from_error(&err);
+            record_classified_account_sync_failure_with_proxy_snapshot(
                 &state.pool,
                 &latest_row,
                 sync_source,
                 &err.to_string(),
+                proxy_snapshot.as_ref(),
             )
             .await?;
             return Ok(());
@@ -617,7 +630,7 @@ async fn sync_oauth_account(
         .await?;
         return Ok(());
     }
-    mark_account_sync_success(
+    mark_account_sync_success_with_proxy_snapshot(
         &state.pool,
         row.id,
         sync_source,
@@ -626,6 +639,7 @@ async fn sync_oauth_account(
         } else {
             SyncSuccessRouteState::PreserveFailureState
         },
+        usage_proxy_snapshot.as_ref(),
     )
     .await?;
     Ok(())
@@ -854,11 +868,12 @@ async fn apply_imported_oauth_probe_result(
             state.config.upstream_accounts_history_retention_days,
         )
         .await?;
-        mark_account_sync_success(
+        mark_account_sync_success_with_proxy_snapshot(
             &state.pool,
             account_id,
             UPSTREAM_ACCOUNT_ACTION_SOURCE_OAUTH_IMPORT,
             SyncSuccessRouteState::ClearFailureState,
+            probe.maintenance_proxy_snapshot.as_ref(),
         )
         .await?;
     }
