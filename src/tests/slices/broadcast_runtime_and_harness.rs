@@ -2278,7 +2278,7 @@ async fn forward_proxy_timeseries_reads_pending_archived_node_health_without_mat
 
     let older_attempt_at = Utc
         .timestamp_opt(
-            align_bucket_epoch((Utc::now() - ChronoDuration::days(70)).timestamp(), 3600, 0)
+            align_bucket_epoch((Utc::now() - ChronoDuration::days(75)).timestamp(), 3600, 0)
                 + 5 * 60,
             0,
         )
@@ -2286,7 +2286,7 @@ async fn forward_proxy_timeseries_reads_pending_archived_node_health_without_mat
         .expect("older archived attempt timestamp should be valid");
     let newer_attempt_at = Utc
         .timestamp_opt(
-            align_bucket_epoch((Utc::now() - ChronoDuration::days(40)).timestamp(), 3600, 0)
+            align_bucket_epoch((Utc::now() - ChronoDuration::days(35)).timestamp(), 3600, 0)
                 + 10 * 60,
             0,
         )
