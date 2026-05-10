@@ -13,7 +13,7 @@
 - 在账号池上游账号页增加全局“非模型调用执行记录”列表。
 - 列表支持按节点、结果、账号、分组筛选，并展示执行时间、账号、代理、动作、结果。
 - 扩展账号维护事件落库字段与全局分页 API，使旧账号详情 `recentActions` 保持兼容。
-- 所有账号维护类外呼按最终 forward proxy 出口或 direct 出口执行 600 秒限频；被限频任务写入 deferred/skipped 类执行记录。
+- 所有账号维护类外呼按最终 forward proxy 出口或 direct 出口执行 10 秒限频；被限频任务写入 deferred/skipped 类执行记录。
 
 ### Non-goals
 
@@ -49,7 +49,7 @@
 - 筛选支持节点、结果、账号、分组。
 - 事件数据包含账号名、分组、forward proxy key/display name、出口 IP、动作、结果、结果描述。
 - 旧事件缺字段时 API 与 UI 不崩溃。
-- 同一出口连续维护真实外呼小于 600 秒时，后一次不发出网络请求，写入 deferred 记录并说明剩余等待时间。
+- 同一出口连续维护真实外呼小于 10 秒时，后一次不发出网络请求，写入 deferred 记录并说明剩余等待时间。
 - 不同出口互不阻塞；direct 作为单独出口限频。
 
 ### SHOULD
@@ -94,8 +94,8 @@
 - Given 多个账号维护事件，When 打开账号池上游账号页，Then 能看到跨账号记录列表与四个筛选项。
 - Given 事件有结果描述，When 列表渲染，Then 描述跨动作列与结果列第二行显示。
 - Given 旧事件缺账号快照或代理字段，When 列表渲染，Then 显示空态而不是报错。
-- Given 同一出口 10 分钟内连续维护外呼，When 第二次执行，Then 不发出真实网络请求并写入 deferred 事件。
-- Given 不同出口维护外呼，When 间隔小于 10 分钟，Then 不互相阻塞。
+- Given 同一出口 10 秒内连续维护外呼，When 第二次执行，Then 不发出真实网络请求并写入 deferred 事件。
+- Given 不同出口维护外呼，When 间隔小于 10 秒，Then 不互相阻塞。
 
 ## Visual Evidence
 
