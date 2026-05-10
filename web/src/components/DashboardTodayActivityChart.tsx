@@ -355,6 +355,7 @@ function DashboardTodayActivityChartImpl({
   const viewportIdentity = `${closedNaturalDay ? "closed" : "live"}:${response?.rangeStart ?? "empty"}:${response?.bucketSeconds ?? "none"}`;
   const viewportIdentityRef = useRef(viewportIdentity);
   const interactionRef = useRef<HTMLDivElement | null>(null);
+  const wheelListenerElementRef = useRef<HTMLDivElement | null>(null);
   const dragPreviewLayerRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{
     pointerId: number;
@@ -558,15 +559,21 @@ function DashboardTodayActivityChartImpl({
     [chartData.length, getAnchorRatio, scheduleWheelPan, scheduleWheelZoom],
   );
 
-  useEffect(() => {
-    const layer = interactionRef.current;
-    if (!layer) return;
+  const setInteractionLayerRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      if (wheelListenerElementRef.current) {
+        wheelListenerElementRef.current.removeEventListener("wheel", handleWheel);
+        wheelListenerElementRef.current = null;
+      }
 
-    layer.addEventListener("wheel", handleWheel, { passive: false });
-    return () => {
-      layer.removeEventListener("wheel", handleWheel);
-    };
-  }, [handleWheel]);
+      interactionRef.current = node;
+      if (!node) return;
+
+      node.addEventListener("wheel", handleWheel, { passive: false });
+      wheelListenerElementRef.current = node;
+    },
+    [handleWheel],
+  );
 
   const handlePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -804,7 +811,7 @@ function DashboardTodayActivityChartImpl({
       data-zoomed={isZoomed ? "true" : "false"}
     >
       <div
-        ref={interactionRef}
+        ref={setInteractionLayerRef}
         className="h-80 w-full cursor-grab touch-pan-y overflow-hidden overscroll-x-contain select-none active:cursor-grabbing"
         data-testid="dashboard-today-activity-chart-interaction-layer"
         data-chart-kind="dashboard-today-activity"
