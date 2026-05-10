@@ -12,7 +12,7 @@
 - 新增全局账号维护事件分页 API，并支持账号、分组、节点、结果筛选。
 - 账号池新增 `维护记录` 独立页，承载“非模型调用执行记录”列表，包含执行时间列、四项筛选、分页和两行记录布局。
 - 扩展 `forward_proxy_metadata_history`，通过 ipify 每 600 秒刷新一次 proxy/direct 出口 IP，维护事件写入时快照该 IP。
-- 维护外呼在真实请求前预留 600 秒出口槽位；被限频时写入 deferred 事件，且账号不保持 `syncing` 状态。
+- 维护外呼在真实请求前预留 10 秒出口槽位；被限频时写入 deferred 事件，且账号不保持 `syncing` 状态。
 
 ## Quality Gates
 
@@ -27,7 +27,7 @@
 
 ## Review Disposition
 
-- `codex review` raised that OAuth refresh followed by usage sync can defer the second request on the same egress. This is by design for this spec because both token refresh and usage snapshot are real non-model maintenance outbound calls, and the locked acceptance rule requires at least 600 seconds between any two real outbound calls on the same egress.
+- `codex review` raised that OAuth refresh followed by usage sync can defer the second request on the same egress. This is by design for this spec because both token refresh and usage snapshot are real non-model maintenance outbound calls, and the locked acceptance rule requires at least 10 seconds between any two real outbound calls on the same egress.
 
 ## Disposition
 

@@ -1,4 +1,4 @@
-const ACCOUNT_MAINTENANCE_EGRESS_MIN_INTERVAL_SECS: i64 = 600;
+const ACCOUNT_MAINTENANCE_EGRESS_MIN_INTERVAL_SECS: i64 = 10;
 
 #[derive(Debug, Clone)]
 pub(crate) struct AccountMaintenanceEgressThrottleError {
@@ -1469,7 +1469,7 @@ mod account_maintenance_egress_throttle_tests {
     }
 
     #[tokio::test]
-    async fn reserve_slot_enforces_ten_minutes_per_egress_key() {
+    async fn reserve_slot_enforces_ten_seconds_per_egress_key() {
         let pool = test_pool().await;
         let proxy = selected_proxy("jp-edge-01");
         let other_proxy = selected_proxy("sg-edge-01");
@@ -1485,7 +1485,7 @@ mod account_maintenance_egress_throttle_tests {
             .expect("throttle error");
         assert_eq!(throttle.proxy_key, "jp-edge-01");
         assert!(throttle.retry_after_secs > 0);
-        assert!(throttle.retry_after_secs <= 600);
+        assert!(throttle.retry_after_secs <= 10);
 
         reserve_account_maintenance_egress_slot(&pool, &other_proxy)
             .await
