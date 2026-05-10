@@ -657,13 +657,14 @@ pub(crate) async fn record_account_maintenance_deferred(
     occurred_at: &str,
     forward_proxy_key: Option<&str>,
     forward_proxy_display_name: Option<&str>,
+    forward_proxy_egress_ip: Option<&str>,
 ) -> Result<()> {
     let proxy_snapshot = forward_proxy_key.map(|proxy_key| AccountMaintenanceProxySnapshot {
         proxy_key: proxy_key.to_string(),
         proxy_display_name: forward_proxy_display_name
             .unwrap_or(proxy_key)
             .to_string(),
-        proxy_egress_ip: None,
+        proxy_egress_ip: forward_proxy_egress_ip.map(ToOwned::to_owned),
     });
     record_upstream_account_action_with_proxy_snapshot(
         pool,

@@ -1,7 +1,5 @@
 /* eslint-disable react-hooks/exhaustive-deps */
 import {
-  Fragment,
-  type ReactNode,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -21,7 +19,6 @@ import {
   CardHeader,
   CardTitle,
 } from "../../components/ui/card";
-import { Input } from "../../components/ui/input";
 import {
   Dialog,
   DialogCloseIcon,
@@ -35,7 +32,6 @@ import { formFieldSpanVariants } from "../../components/ui/form-control";
 import { SelectField } from "../../components/ui/select-field";
 import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
 import { Spinner } from "../../components/ui/spinner";
-import { Tooltip } from "../../components/ui/tooltip";
 import { AccountTagFilterCombobox } from "../../components/AccountTagFilterCombobox";
 import { MultiSelectFilterCombobox } from "../../components/MultiSelectFilterCombobox";
 import { UpstreamAccountGroupCombobox } from "../../components/UpstreamAccountGroupCombobox";
@@ -50,15 +46,12 @@ import type {
   BulkUpstreamAccountSyncSnapshot,
   PoolRoutingMaintenanceSettings,
   FetchUpstreamAccountsQuery,
-  FetchUpstreamAccountActionEventsQuery,
   PoolRoutingTimeoutSettings,
-  UpstreamAccountActionEvent,
   UpstreamAccountDuplicateInfo,
   UpstreamAccountSummary,
 } from "../../lib/api";
 import {
   createBulkUpstreamAccountSyncJobEventSource,
-  fetchUpstreamAccountActionEvents,
   normalizeBulkUpstreamAccountSyncFailedEventPayload,
   normalizeBulkUpstreamAccountSyncRowEventPayload,
   normalizeBulkUpstreamAccountSyncSnapshotEventPayload,
@@ -184,25 +177,6 @@ export default function UpstreamAccountsPage() {
   );
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-  const [maintenanceEventAccountFilter, setMaintenanceEventAccountFilter] =
-    useState("");
-  const [maintenanceEventGroupFilter, setMaintenanceEventGroupFilter] =
-    useState("");
-  const [maintenanceEventProxyKeyFilter, setMaintenanceEventProxyKeyFilter] =
-    useState("");
-  const [maintenanceEventResultFilter, setMaintenanceEventResultFilter] =
-    useState("");
-  const [maintenanceEventPage, setMaintenanceEventPage] = useState(1);
-  const [maintenanceEventPageSize, setMaintenanceEventPageSize] = useState(20);
-  const [maintenanceEvents, setMaintenanceEvents] = useState<
-    UpstreamAccountActionEvent[]
-  >([]);
-  const [maintenanceEventTotal, setMaintenanceEventTotal] = useState(0);
-  const [maintenanceEventLoading, setMaintenanceEventLoading] =
-    useState(false);
-  const [maintenanceEventError, setMaintenanceEventError] = useState<
-    string | null
-  >(null);
   const [rosterViewMode, setRosterViewMode] = useState<AccountRosterViewMode>("grid");
   const [visibleGroupedAccountIds, setVisibleGroupedAccountIds] = useState<number[]>([]);
   const [selectedAccountIds, setSelectedAccountIds] = useState<number[]>([]);
@@ -285,25 +259,6 @@ export default function UpstreamAccountsPage() {
     rosterViewMode,
     shouldDeferRosterQuery,
     workStatusFilter,
-  ]);
-  const maintenanceEventQuery = useMemo<
-    FetchUpstreamAccountActionEventsQuery | null
-  >(() => {
-    return {
-      account: maintenanceEventAccountFilter.trim() || undefined,
-      group: maintenanceEventGroupFilter.trim() || undefined,
-      proxyKey: maintenanceEventProxyKeyFilter.trim() || undefined,
-      result: maintenanceEventResultFilter.trim() || undefined,
-      page: maintenanceEventPage,
-      pageSize: maintenanceEventPageSize,
-    };
-  }, [
-    maintenanceEventAccountFilter,
-    maintenanceEventGroupFilter,
-    maintenanceEventPage,
-    maintenanceEventPageSize,
-    maintenanceEventProxyKeyFilter,
-    maintenanceEventResultFilter,
   ]);
   const workStatusFilterOptions = useMemo(
     () => [
@@ -408,67 +363,6 @@ export default function UpstreamAccountsPage() {
     total,
     metrics: listMetrics,
   } = useUpstreamAccounts(accountListQuery);
-  useEffect(() => {
-    if (!maintenanceEventQuery) return;
-    const controller = new AbortController();
-    setMaintenanceEventLoading(true);
-    setMaintenanceEventError(null);
-    void fetchUpstreamAccountActionEvents(maintenanceEventQuery)
-      .then((response) => {
-        if (controller.signal.aborted) return;
-        setMaintenanceEvents(response.items);
-        setMaintenanceEventTotal(response.total);
-        setMaintenanceEventPage(response.page);
-        setMaintenanceEventPageSize(response.pageSize);
-      })
-      .catch((error: unknown) => {
-        if (controller.signal.aborted) return;
-        setMaintenanceEventError(error instanceof Error ? error.message : String(error));
-        setMaintenanceEvents([]);
-        setMaintenanceEventTotal(0);
-      })
-      .finally(() => {
-        if (controller.signal.aborted) return;
-        setMaintenanceEventLoading(false);
-      });
-    return () => {
-      controller.abort();
-    };
-  }, [maintenanceEventQuery]);
-  const maintenanceEventProxyOptions = useMemo(
-    () => [
-      {
-        value: "",
-        label: t("accountPool.upstreamAccounts.maintenanceEvents.filters.allNodes"),
-      },
-      ...forwardProxyNodes.map((node) => ({
-        value: node.key,
-        label: node.displayName,
-      })),
-    ],
-    [forwardProxyNodes, t],
-  );
-  const maintenanceEventResultOptions = useMemo(
-    () => [
-      {
-        value: "",
-        label: t("accountPool.upstreamAccounts.maintenanceEvents.filters.allResults"),
-      },
-      {
-        value: "success",
-        label: t("accountPool.upstreamAccounts.maintenanceEvents.results.success"),
-      },
-      {
-        value: "failed",
-        label: t("accountPool.upstreamAccounts.maintenanceEvents.results.failed"),
-      },
-      {
-        value: "deferred",
-        label: t("accountPool.upstreamAccounts.maintenanceEvents.results.deferred"),
-      },
-    ],
-    [t],
-  );
   const [routingDraft, setRoutingDraft] = useState(() =>
     buildRoutingDraft(null),
   );
@@ -596,8 +490,6 @@ export default function UpstreamAccountsPage() {
   const paginationStatusText = showBlockingRosterError
     ? t("accountPool.upstreamAccounts.pagination.error")
     : null;
-  const maintenanceEventPageCount =
-    Math.max(1, Math.ceil(maintenanceEventTotal / Math.max(maintenanceEventPageSize, 1)));
   const rosterRegionMinHeight =
     showBlockingRosterLoading && lastStableRosterRegionHeight != null
       ? `${lastStableRosterRegionHeight}px`
@@ -681,13 +573,6 @@ export default function UpstreamAccountsPage() {
     },
     [clearBulkSelection],
   );
-  const handleMaintenanceEventFilterReset = useCallback(() => {
-    setMaintenanceEventAccountFilter("");
-    setMaintenanceEventGroupFilter("");
-    setMaintenanceEventProxyKeyFilter("");
-    setMaintenanceEventResultFilter("");
-    setMaintenanceEventPage(1);
-  }, []);
 
   const handleOpenRoutingDialog = useCallback(() => {
     setRoutingDraft(buildRoutingDraft(routing));
@@ -1108,140 +993,6 @@ export default function UpstreamAccountsPage() {
     const key = `accountPool.upstreamAccounts.latestAction.reasons.${reason}`;
     const translated = t(key);
     return translated === key ? reason : translated;
-  };
-  const maintenanceEventActionLabel = (action?: string | null) => {
-    if (!action) return null;
-    const key = `accountPool.upstreamAccounts.maintenanceEvents.actions.${action}`;
-    const translated = t(key);
-    if (translated !== key) return translated;
-    const latestActionKey = `accountPool.upstreamAccounts.latestAction.actions.${action}`;
-    const latestActionTranslated = t(latestActionKey);
-    if (latestActionTranslated !== latestActionKey) return latestActionTranslated;
-    return action
-      .split("_")
-      .filter(Boolean)
-      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-      .join(" ");
-  };
-  const maintenanceEventResultLabel = (result?: string | null) => {
-    if (!result) return null;
-    const key = `accountPool.upstreamAccounts.maintenanceEvents.results.${result}`;
-    const translated = t(key);
-    return translated === key ? result : translated;
-  };
-  const maintenanceEventActionBadgeVariant = (
-    action?: string | null,
-  ): "secondary" | "success" | "info" | "warning" | "error" => {
-    if (!action) return "secondary";
-    if (action.includes("succeeded") || action.includes("recovered")) {
-      return "success";
-    }
-    if (
-      action.includes("deferred") ||
-      action.includes("cooldown") ||
-      action.includes("blocked")
-    ) {
-      return "warning";
-    }
-    if (
-      action.includes("failed") ||
-      action.includes("failure") ||
-      action.includes("unavailable")
-    ) {
-      return "error";
-    }
-    if (action.includes("updated")) return "info";
-    return "secondary";
-  };
-  const maintenanceEventResultBadgeVariant = (
-    result?: string | null,
-  ): "secondary" | "success" | "warning" | "error" => {
-    switch (result) {
-      case "success":
-        return "success";
-      case "failed":
-        return "error";
-      case "deferred":
-        return "warning";
-      default:
-        return "secondary";
-    }
-  };
-  const maintenanceEventDescriptionLabel = (
-    event: UpstreamAccountActionEvent,
-  ) => {
-    if (event.reasonCode === "egress_throttled") {
-      const retryAfter = event.reasonMessage?.match(/another\s+(\d+)\s+seconds/i)?.[1];
-      const proxyName =
-        event.forwardProxyDisplayName ??
-        event.forwardProxyKey ??
-        t("accountPool.upstreamAccounts.maintenanceEvents.unknownProxy");
-      return retryAfter
-        ? t("accountPool.upstreamAccounts.maintenanceEvents.descriptions.egressThrottledWithSeconds", {
-            proxy: proxyName,
-            seconds: retryAfter,
-          })
-        : t("accountPool.upstreamAccounts.maintenanceEvents.descriptions.egressThrottled", {
-            proxy: proxyName,
-          });
-    }
-    if (event.reasonCode === "sync_ok") {
-      return t("accountPool.upstreamAccounts.maintenanceEvents.descriptions.syncOk");
-    }
-    if (event.reasonCode === "upstream_http_429") {
-      return t("accountPool.upstreamAccounts.maintenanceEvents.descriptions.upstream429");
-    }
-    if (event.reasonCode === "sync_error") {
-      return t("accountPool.upstreamAccounts.maintenanceEvents.descriptions.syncError");
-    }
-    if (event.httpStatus != null) {
-      return t("accountPool.upstreamAccounts.maintenanceEvents.descriptions.httpStatus", {
-        status: event.httpStatus,
-      });
-    }
-    return (
-      event.resultDescription ??
-      event.reasonMessage ??
-      t("accountPool.upstreamAccounts.maintenanceEvents.noDescription")
-    );
-  };
-  const renderMaintenanceEventTruncatedValue = (
-    value: ReactNode,
-    tooltip: ReactNode,
-    className?: string,
-  ) => (
-    <Tooltip
-      content={tooltip}
-      side="top"
-      contentClassName="max-w-[28rem] break-words leading-5"
-      className="min-w-0 max-w-full overflow-hidden whitespace-nowrap align-baseline"
-      triggerProps={{
-        className: "min-w-0 max-w-full overflow-hidden whitespace-nowrap",
-      }}
-    >
-      <span className={cn("block min-w-0 max-w-full truncate whitespace-nowrap", className)}>
-        {value}
-      </span>
-    </Tooltip>
-  );
-  const formatMaintenanceEventOccurredAt = (value: string) => {
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) {
-      return { time: value, date: value };
-    }
-    return {
-      time: new Intl.DateTimeFormat("zh-CN", {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        hour12: false,
-      }).format(date),
-      date: new Intl.DateTimeFormat("zh-CN", {
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-      }).format(date),
-    };
   };
   const accountRosterLabels = useMemo<UpstreamAccountsTableLabels>(
     () => ({
@@ -2707,311 +2458,6 @@ export default function UpstreamAccountsPage() {
                   </div>
                 </div>
               ) : null}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section className="grid gap-6">
-        <div className="surface-panel overflow-hidden">
-          <div className="surface-panel-body gap-4">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-              <div className="section-heading">
-                <h2 className="section-title">
-                  {t("accountPool.upstreamAccounts.maintenanceEvents.title")}
-                </h2>
-                <p className="section-description">
-                  {t("accountPool.upstreamAccounts.maintenanceEvents.description")}
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <Tooltip
-                  content={t("accountPool.upstreamAccounts.maintenanceEvents.resetFilters")}
-                  side="left"
-                >
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="h-11 w-11 rounded-xl lg:h-10 lg:w-10"
-                    aria-label={t("accountPool.upstreamAccounts.maintenanceEvents.resetFilters")}
-                    onClick={handleMaintenanceEventFilterReset}
-                  >
-                    <AppIcon name="refresh" className="h-4 w-4" aria-hidden />
-                  </Button>
-                </Tooltip>
-              </div>
-            </div>
-
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-12">
-              <label className={cn("field min-w-0", formFieldSpanVariants({ size: "compact" }))}>
-                <span className="field-label">
-                  {t("accountPool.upstreamAccounts.maintenanceEvents.filters.account")}
-                </span>
-                <Input
-                  value={maintenanceEventAccountFilter}
-                  onChange={(event) => {
-                    setMaintenanceEventAccountFilter(event.target.value)
-                    setMaintenanceEventPage(1)
-                  }}
-                  placeholder={t("accountPool.upstreamAccounts.maintenanceEvents.filters.accountPlaceholder")}
-                  className="h-11 border-base-300/90 bg-base-100 lg:h-10"
-                />
-              </label>
-              <label className={cn("field min-w-0", formFieldSpanVariants({ size: "compact" }))}>
-                <span className="field-label">
-                  {t("accountPool.upstreamAccounts.maintenanceEvents.filters.group")}
-                </span>
-                <Input
-                  value={maintenanceEventGroupFilter}
-                  onChange={(event) => {
-                    setMaintenanceEventGroupFilter(event.target.value)
-                    setMaintenanceEventPage(1)
-                  }}
-                  placeholder={t("accountPool.upstreamAccounts.maintenanceEvents.filters.groupPlaceholder")}
-                  className="h-11 border-base-300/90 bg-base-100 lg:h-10"
-                />
-              </label>
-              <label className={cn("field min-w-0", formFieldSpanVariants({ size: "compact" }))}>
-                <span className="field-label">
-                  {t("accountPool.upstreamAccounts.maintenanceEvents.filters.node")}
-                </span>
-                <SelectField
-                  size="sm"
-                  value={maintenanceEventProxyKeyFilter}
-                  options={maintenanceEventProxyOptions}
-                  triggerClassName="h-11 border-base-300/90 bg-base-100 lg:h-10"
-                  onValueChange={(value) => {
-                    setMaintenanceEventProxyKeyFilter(value)
-                    setMaintenanceEventPage(1)
-                  }}
-                />
-              </label>
-              <label className={cn("field min-w-0", formFieldSpanVariants({ size: "compact" }))}>
-                <span className="field-label">
-                  {t("accountPool.upstreamAccounts.maintenanceEvents.filters.result")}
-                </span>
-                <SelectField
-                  size="sm"
-                  value={maintenanceEventResultFilter}
-                  options={maintenanceEventResultOptions}
-                  triggerClassName="h-11 border-base-300/90 bg-base-100 lg:h-10"
-                  onValueChange={(value) => {
-                    setMaintenanceEventResultFilter(value)
-                    setMaintenanceEventPage(1)
-                  }}
-                />
-              </label>
-            </div>
-
-            {maintenanceEventError ? (
-              <Alert variant="error">
-                <AppIcon
-                  name="alert-circle-outline"
-                  className="mt-0.5 h-4 w-4 shrink-0"
-                  aria-hidden
-                />
-                <div>{maintenanceEventError}</div>
-              </Alert>
-            ) : null}
-
-            <div className="overflow-hidden rounded-[1rem] border border-base-300/80 bg-base-100/70">
-              <div className="overflow-x-auto">
-              <table className="min-w-[60rem] table-fixed divide-y divide-base-300/70 text-sm lg:min-w-full">
-                <thead className="bg-base-100/80">
-                  <tr className="text-left text-xs font-semibold uppercase tracking-[0.12em] text-base-content/55">
-                    <th className="w-[8rem] px-3 py-2.5">{t("accountPool.upstreamAccounts.maintenanceEvents.columns.time")}</th>
-                    <th className="w-[15rem] px-3 py-2.5">{t("accountPool.upstreamAccounts.maintenanceEvents.columns.account")}</th>
-                    <th className="w-[15rem] px-3 py-2.5">{t("accountPool.upstreamAccounts.maintenanceEvents.columns.proxy")}</th>
-                    <th className="px-3 py-2.5">{t("accountPool.upstreamAccounts.maintenanceEvents.columns.action")}</th>
-                    <th className="w-[7rem] px-3 py-2.5">{t("accountPool.upstreamAccounts.maintenanceEvents.columns.result")}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {maintenanceEventLoading ? (
-                    <tr>
-                      <td className="px-4 py-8 text-center text-sm text-base-content/60" colSpan={5}>
-                        {t("accountPool.upstreamAccounts.loadingTitle")}
-                      </td>
-                    </tr>
-                  ) : maintenanceEvents.length === 0 ? (
-                    <tr>
-                      <td className="px-4 py-8 text-center text-sm text-base-content/60" colSpan={5}>
-                        {t("accountPool.upstreamAccounts.maintenanceEvents.empty")}
-                      </td>
-                    </tr>
-                  ) : (
-                    maintenanceEvents.map((event) => {
-                      const occurredAt = formatMaintenanceEventOccurredAt(event.occurredAt)
-                      const actionLabel = maintenanceEventActionLabel(event.action) ?? event.action
-                      const resultLabel = maintenanceEventResultLabel(event.result) ?? event.result ?? '-'
-                      const actionBadgeVariant = maintenanceEventActionBadgeVariant(event.action)
-                      const resultBadgeVariant = maintenanceEventResultBadgeVariant(event.result)
-                      const accountLabel = event.accountDisplayName ?? t("accountPool.upstreamAccounts.maintenanceEvents.unknownAccount")
-                      const groupLabel = event.accountGroupName ?? t("accountPool.upstreamAccounts.maintenanceEvents.unknownGroup")
-                      const proxyLabel = event.forwardProxyDisplayName ?? event.forwardProxyKey ?? t("accountPool.upstreamAccounts.maintenanceEvents.unknownProxy")
-                      const egressIpLabel = event.forwardProxyEgressIp ?? t("accountPool.upstreamAccounts.maintenanceEvents.noEgressIp")
-                      const descriptionLabel = maintenanceEventDescriptionLabel(event)
-                      return (
-                        <Fragment key={event.id}>
-                          <tr className="border-t border-base-300/60 align-baseline first:border-t-0">
-                            <td className="whitespace-nowrap px-3 pb-0.5 pt-3 align-baseline text-xs tabular-nums text-base-content/72">
-                              {renderMaintenanceEventTruncatedValue(
-                                occurredAt.time,
-                                occurredAt.time,
-                                "font-mono text-[12px] font-semibold leading-4 text-base-content",
-                              )}
-                            </td>
-                            <td className="min-w-0 px-3 pb-0.5 pt-3 align-baseline">
-                              {renderMaintenanceEventTruncatedValue(
-                                accountLabel,
-                                accountLabel,
-                                "font-medium leading-4 text-base-content",
-                              )}
-                            </td>
-                            <td className="min-w-0 px-3 pb-0.5 pt-3 align-baseline">
-                              {renderMaintenanceEventTruncatedValue(
-                                proxyLabel,
-                                proxyLabel,
-                                "font-medium leading-4 text-base-content",
-                              )}
-                            </td>
-                            <td className="max-w-[18rem] px-3 pb-0.5 pt-3 align-baseline">
-                              <Tooltip
-                                content={actionLabel}
-                                side="top"
-                                contentClassName="max-w-[28rem] break-words leading-5"
-                                className="max-w-full whitespace-nowrap align-baseline"
-                                triggerProps={{
-                                  className: "max-w-full whitespace-nowrap",
-                                }}
-                              >
-                                <Badge
-                                  data-maintenance-event-badge="true"
-                                  variant={actionBadgeVariant}
-                                  className="w-fit max-w-none whitespace-nowrap px-2 py-0 text-[11px] font-semibold leading-5"
-                                >
-                                  {actionLabel}
-                                </Badge>
-                              </Tooltip>
-                            </td>
-                            <td className="min-w-0 px-3 pb-0.5 pt-3 align-baseline">
-                              <Tooltip
-                                content={resultLabel}
-                                side="top"
-                                contentClassName="max-w-[28rem] break-words leading-5"
-                                className="max-w-full whitespace-nowrap align-baseline"
-                                triggerProps={{
-                                  className: "max-w-full whitespace-nowrap",
-                                }}
-                              >
-                                <Badge
-                                  data-maintenance-event-badge="true"
-                                  variant={resultBadgeVariant}
-                                  className="w-fit max-w-none whitespace-nowrap px-2 py-0 text-[11px] font-semibold leading-5"
-                                >
-                                  {resultLabel}
-                                </Badge>
-                              </Tooltip>
-                            </td>
-                          </tr>
-                          <tr>
-                            <td className="whitespace-nowrap px-3 pb-3 pt-0 align-baseline font-mono text-[11px] leading-4 tabular-nums text-base-content/55">
-                              {renderMaintenanceEventTruncatedValue(
-                                occurredAt.date,
-                                occurredAt.date,
-                                "font-mono text-[11px] leading-4 tabular-nums text-base-content/55",
-                              )}
-                            </td>
-                            <td className="min-w-0 px-3 pb-3 pt-0 align-baseline">
-                              {renderMaintenanceEventTruncatedValue(
-                                groupLabel,
-                                groupLabel,
-                                "text-xs leading-4 text-base-content/60",
-                              )}
-                            </td>
-                            <td className="min-w-0 px-3 pb-3 pt-0 align-baseline">
-                              {renderMaintenanceEventTruncatedValue(
-                                egressIpLabel,
-                                egressIpLabel,
-                                "font-mono text-xs leading-4 tabular-nums text-base-content/60",
-                              )}
-                            </td>
-                            <td className="min-w-0 px-3 pb-3 pt-0 align-baseline text-xs leading-4 text-base-content/65" colSpan={2}>
-                              {renderMaintenanceEventTruncatedValue(
-                                descriptionLabel,
-                                descriptionLabel,
-                                "text-xs leading-4 text-base-content/65",
-                              )}
-                            </td>
-                          </tr>
-                        </Fragment>
-                      )
-                    })
-                  )}
-                </tbody>
-              </table>
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-3 border-t border-base-300/70 pt-4 sm:flex-row sm:items-end sm:justify-between">
-              <div className="space-y-2">
-                <div className="text-sm text-base-content/70">
-                  {t("accountPool.upstreamAccounts.pagination.summary", {
-                    page: maintenanceEventPage,
-                    pageCount: maintenanceEventPageCount,
-                    total: maintenanceEventTotal,
-                  })}
-                </div>
-              </div>
-              <div className="flex flex-wrap items-center gap-3">
-                <div className="flex items-center gap-2 rounded-xl border border-base-300/70 bg-base-100/55 px-3 py-2">
-                  <span className="text-sm font-medium text-base-content/65">
-                    {t("accountPool.upstreamAccounts.pagination.pageSize")}
-                  </span>
-                  <SelectField
-                    className="min-w-[7rem]"
-                    value={String(maintenanceEventPageSize)}
-                    options={pageSizeOptions}
-                    size="sm"
-                    triggerClassName="h-11 rounded-xl border-base-300/90 bg-base-100 px-3 text-sm lg:h-10"
-                    aria-label={t("accountPool.upstreamAccounts.pagination.pageSize")}
-                    onValueChange={(value) => {
-                      setMaintenanceEventPageSize(Number(value))
-                      setMaintenanceEventPage(1)
-                    }}
-                  />
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-11 rounded-xl px-4 lg:h-10"
-                    onClick={() => setMaintenanceEventPage((current) => Math.max(1, current - 1))}
-                    disabled={maintenanceEventLoading || maintenanceEventPage <= 1}
-                  >
-                    {t("accountPool.upstreamAccounts.pagination.previous")}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-11 rounded-xl px-4 lg:h-10"
-                    onClick={() =>
-                      setMaintenanceEventPage((current) =>
-                        Math.min(maintenanceEventPageCount, current + 1),
-                      )
-                    }
-                    disabled={
-                      maintenanceEventLoading ||
-                      maintenanceEventPage >= maintenanceEventPageCount
-                    }
-                  >
-                    {t("accountPool.upstreamAccounts.pagination.next")}
-                  </Button>
-                </div>
-              </div>
             </div>
           </div>
         </div>

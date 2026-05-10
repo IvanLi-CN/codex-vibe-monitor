@@ -7,6 +7,7 @@ import SettingsPage from './pages/Settings'
 import StatsPage from './pages/Stats'
 import AccountPoolLayout from './pages/account-pool/AccountPoolLayout'
 import GroupsPage from './pages/account-pool/Groups'
+import MaintenanceRecordsPage from './pages/account-pool/MaintenanceRecords'
 import UpstreamAccountsPage from './pages/account-pool/UpstreamAccounts'
 import UpstreamAccountCreatePage from './pages/account-pool/UpstreamAccountCreate'
 import TagsPage from './pages/account-pool/Tags'
@@ -24,6 +25,7 @@ function App() {
           <Route index element={<Navigate to="/account-pool/upstream-accounts" replace />} />
           <Route path="upstream-accounts" element={<UpstreamAccountsPage />} />
           <Route path="upstream-accounts/new" element={<UpstreamAccountCreatePage />} />
+          <Route path="maintenance-records" element={<MaintenanceRecordsPage />} />
           <Route path="groups" element={<GroupsPage />} />
           <Route path="tags" element={<TagsPage />} />
         </Route>

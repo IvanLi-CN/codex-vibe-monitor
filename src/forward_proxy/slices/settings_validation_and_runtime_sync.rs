@@ -1790,6 +1790,11 @@ impl ForwardProxyManager {
                     source: descriptor.source.clone(),
                     display_name: descriptor.display_name.clone(),
                     protocol_label: descriptor.protocol_label.clone(),
+                    egress_ip: None,
+                    egress_ip_checked_at: None,
+                    egress_ip_provider: None,
+                    egress_ip_error: None,
+                    egress_ip_error_at: None,
                     penalized,
                     selectable: self
                         .endpoints
@@ -1806,6 +1811,11 @@ impl ForwardProxyManager {
             source: FORWARD_PROXY_SOURCE_DIRECT.to_string(),
             display_name: FORWARD_PROXY_DIRECT_LABEL.to_string(),
             protocol_label: ForwardProxyProtocol::Direct.label().to_string(),
+            egress_ip: None,
+            egress_ip_checked_at: None,
+            egress_ip_provider: None,
+            egress_ip_error: None,
+            egress_ip_error_at: None,
             penalized: false,
             selectable: true,
             last24h: Vec::new(),
@@ -1967,4 +1977,3 @@ impl ForwardProxyManager {
         self.last_probe_at = Utc::now();
     }
 }
-
