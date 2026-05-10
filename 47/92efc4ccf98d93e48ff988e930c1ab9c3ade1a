@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.60.0",
+  "base_stable_version": "1.59.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-05-10T06:19:46Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.60.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "81d5e5b932b7690d142b1242cd597c45d223a4a9",
+  "pr_number": 408,
+  "pr_title": "feat(account-pool): add maintenance records page",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.60.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.60.0",
+  "target_sha": "4792efc4ccf98d93e48ff988e930c1ab9c3ade1a",
+  "type_label": "type:minor"
+}
