@@ -10,7 +10,7 @@
 
 ### Goals
 
-- 在账号池上游账号页增加全局“非模型调用执行记录”列表。
+- 在账号池新增 `维护记录` 独立标签页，展示全局“非模型调用执行记录”列表。
 - 列表支持按节点、结果、账号、分组筛选，并展示执行时间、账号、代理、动作、结果。
 - 扩展账号维护事件落库字段与全局分页 API，使旧账号详情 `recentActions` 保持兼容。
 - 所有账号维护类外呼按最终 forward proxy 出口或 direct 出口执行 600 秒限频；被限频任务写入 deferred/skipped 类执行记录。
@@ -20,7 +20,7 @@
 - 不改变 `/v1/*` 模型调用热路径。
 - 不改变账号分组、标签、节点分流的选择优先级。
 - 不新增用户可配置的限频间隔。
-- 不回填历史旧事件的出口 IP；缺字段由 UI 显示为空态。
+- 不回填历史旧事件的出口 IP；缺字段由 UI 显示历史未记录状态。
 
 ## 范围（Scope）
 
@@ -28,15 +28,15 @@
 
 - SQLite schema：扩展 `pool_upstream_account_events`，新增维护出口限频表。
 - Rust API：新增全局账号维护事件分页查询与筛选。
-- Rust runtime：在维护外呼真实发送前按出口预留限频槽位。
-- Web UI：账号池上游账号页新增列表、筛选、分页、空态/加载/错误态与 i18n。
+- Rust runtime：在维护外呼真实发送前按出口预留限频槽位，并维护 forward proxy 出口 IP 元数据。
+- Web UI：账号池 `维护记录` 独立页新增列表、筛选、分页、空态/加载/错误态与 i18n。
 - Storybook：补稳定 mock story 和视觉证据。
 
 ### Out of scope
 
 - 代理节点健康探测算法。
 - 模型调用 attempt / invocation 统计口径。
-- 账号详情抽屉之外的新独立页面。
+- 用户可配置的出口 IP 元数据 provider 或刷新间隔。
 
 ## 需求（Requirements）
 
@@ -48,6 +48,7 @@
 - 执行时间两行展示，时间比日期优先。
 - 筛选支持节点、结果、账号、分组。
 - 事件数据包含账号名、分组、forward proxy key/display name、出口 IP、动作、结果、结果描述。
+- 正向代理出口 IP 元数据通过 ipify 获取，按 proxy/direct 出口每 600 秒最多刷新一次。
 - 旧事件缺字段时 API 与 UI 不崩溃。
 - 同一出口连续维护真实外呼小于 600 秒时，后一次不发出网络请求，写入 deferred 记录并说明剩余等待时间。
 - 不同出口互不阻塞；direct 作为单独出口限频。
@@ -89,13 +90,21 @@
 - 预留成功才允许发送真实请求。
 - 预留失败返回结构化 throttle error，账号维护同步路径写入 deferred 事件。
 
+### Forward proxy egress IP metadata
+
+- 选中 forward proxy 后读取出口 IP 元数据；缺失或超过 600 秒时通过 `https://api.ipify.org?format=json` 刷新。
+- proxy 节点通过对应代理客户端请求 ipify；direct 节点通过无代理客户端请求 ipify。
+- 刷新成功后写入 `forward_proxy_metadata_history` 并在维护事件中快照 `forward_proxy_egress_ip`。
+- 刷新失败保留最近成功 IP，只记录失败信息与失败时间，不阻断维护外呼。
+
 ## 验收标准（Acceptance Criteria）
 
-- Given 多个账号维护事件，When 打开账号池上游账号页，Then 能看到跨账号记录列表与四个筛选项。
+- Given 多个账号维护事件，When 打开账号池 `维护记录` 标签页，Then 能看到跨账号记录列表与四个筛选项。
 - Given 事件有结果描述，When 列表渲染，Then 描述跨动作列与结果列第二行显示。
 - Given 旧事件缺账号快照或代理字段，When 列表渲染，Then 显示空态而不是报错。
 - Given 同一出口 10 分钟内连续维护外呼，When 第二次执行，Then 不发出真实网络请求并写入 deferred 事件。
 - Given 不同出口维护外呼，When 间隔小于 10 分钟，Then 不互相阻塞。
+- Given 当前代理元数据已刷新，When 维护事件写入，Then 事件快照包含可展示出口 IP。
 
 ## Visual Evidence
 
@@ -107,11 +116,11 @@
   viewport_strategy: devtools-emulate
   sensitive_exclusion: N/A
   submission_gate: pending-owner-approval
-  evidence_note: 验证账号池上游账号页新增非模型调用执行记录列表，包含执行时间列、账号/代理/动作/结果列、筛选区与跨列结果描述。
+  evidence_note: 验证账号池维护记录独立页新增非模型调用执行记录列表，包含执行时间列、账号/代理/动作/结果列、筛选区与跨列结果描述。
 
-![Maintenance events Storybook evidence](./assets/maintenance-events-story.png)
+![Maintenance events Storybook evidence](./assets/maintenance-records-story.png)
 
 ## 风险 / 假设
 
-- 当前 forward proxy 节点数据未保证存在可观测出口 IP；实现保留 `forward_proxy_egress_ip` 字段，缺失时显示为空态。
+- 出口 IP 元数据刷新是 best-effort；刷新失败保留最近成功 IP，历史旧事件仍可能显示为未记录。
 - OAuth 凭据 refresh 与 usage snapshot 可能原本在同一维护流程内连续外呼；新限频会让后续外呼 deferred，这是预期行为。

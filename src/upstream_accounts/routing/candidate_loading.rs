@@ -331,6 +331,7 @@ async fn prepare_pool_account_with_scopes(
                             &now_iso,
                             Some(&throttle.proxy_key),
                             Some(&throttle.proxy_display_name),
+                            throttle.proxy_egress_ip.as_deref(),
                         )
                         .await?;
                         set_account_status(&state.pool, row.id, deferred_status, None).await?;

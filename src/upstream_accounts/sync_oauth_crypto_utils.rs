@@ -4,6 +4,7 @@ const ACCOUNT_MAINTENANCE_EGRESS_MIN_INTERVAL_SECS: i64 = 600;
 pub(crate) struct AccountMaintenanceEgressThrottleError {
     pub(crate) proxy_key: String,
     pub(crate) proxy_display_name: String,
+    pub(crate) proxy_egress_ip: Option<String>,
     pub(crate) retry_after_secs: u64,
 }
 
@@ -32,7 +33,7 @@ impl AccountMaintenanceProxySnapshot {
         Self {
             proxy_key: selected_proxy.key.clone(),
             proxy_display_name: selected_proxy.display_name.clone(),
-            proxy_egress_ip: None,
+            proxy_egress_ip: selected_proxy.egress_ip.clone(),
         }
     }
 }
@@ -131,15 +132,23 @@ async fn client_for_required_maintenance_proxy_scope(
     state: &AppState,
     scope: &ForwardProxyRouteScope,
 ) -> Result<(Client, AccountMaintenanceProxySnapshot)> {
-    let selected_proxy = select_forward_proxy_for_scope(state, scope)
+    let mut selected_proxy = select_forward_proxy_for_scope(state, scope)
         .await
         .map_err(|err| map_required_group_proxy_selection_error(scope, err))?;
-    let snapshot = AccountMaintenanceProxySnapshot::from_selected_proxy(&selected_proxy);
+    selected_proxy.egress_ip =
+        crate::forward_proxy::load_forward_proxy_egress_ip_snapshot(state, &selected_proxy)
+            .await
+            .unwrap_or(None);
     let client = state
         .http_clients
         .client_for_forward_proxy(selected_proxy.endpoint_url.as_ref())
         .context("failed to initialize required forward proxy client")?;
     reserve_account_maintenance_egress_slot_for_runtime(&state.pool, &selected_proxy).await?;
+    selected_proxy.egress_ip =
+        crate::forward_proxy::refresh_forward_proxy_egress_ip_if_stale(state, &selected_proxy)
+            .await
+            .unwrap_or_else(|_| selected_proxy.egress_ip.clone());
+    let snapshot = AccountMaintenanceProxySnapshot::from_selected_proxy(&selected_proxy);
     Ok((client, snapshot))
 }
 
@@ -178,6 +187,7 @@ async fn reserve_account_maintenance_egress_slot(
             return Err(anyhow!(AccountMaintenanceEgressThrottleError {
                 proxy_key: selected_proxy.key.clone(),
                 proxy_display_name: selected_proxy.display_name.clone(),
+                proxy_egress_ip: selected_proxy.egress_ip.clone(),
                 retry_after_secs,
             }));
         }
@@ -427,7 +437,11 @@ async fn request_usage_snapshot_with_user_agent_via_forward_proxy(
     chatgpt_account_id: Option<&str>,
     user_agent: &str,
 ) -> Result<(NormalizedUsageSnapshot, AccountMaintenanceProxySnapshot)> {
-    let selected_proxy = select_forward_proxy_for_scope(state, scope).await?;
+    let mut selected_proxy = select_forward_proxy_for_scope(state, scope).await?;
+    selected_proxy.egress_ip =
+        crate::forward_proxy::load_forward_proxy_egress_ip_snapshot(state, &selected_proxy)
+            .await
+            .unwrap_or(None);
     let proxy_snapshot = AccountMaintenanceProxySnapshot::from_selected_proxy(&selected_proxy);
     let client = match state
         .http_clients
@@ -451,6 +465,11 @@ async fn request_usage_snapshot_with_user_agent_via_forward_proxy(
         }
     };
     reserve_account_maintenance_egress_slot_for_runtime(&state.pool, &selected_proxy).await?;
+    selected_proxy.egress_ip =
+        crate::forward_proxy::refresh_forward_proxy_egress_ip_if_stale(state, &selected_proxy)
+            .await
+            .unwrap_or_else(|_| selected_proxy.egress_ip.clone());
+    let proxy_snapshot = AccountMaintenanceProxySnapshot::from_selected_proxy(&selected_proxy);
 
     let result = request_usage_snapshot_with_user_agent(
         &client,
@@ -1445,6 +1464,7 @@ mod account_maintenance_egress_throttle_tests {
             display_name: key.to_string(),
             endpoint_url: None,
             endpoint_url_raw: None,
+            egress_ip: None,
         }
     }
 

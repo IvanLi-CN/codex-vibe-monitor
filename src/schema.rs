@@ -1534,6 +1534,11 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             display_name TEXT NOT NULL,
             source TEXT NOT NULL,
             endpoint_url TEXT,
+            egress_ip TEXT,
+            egress_ip_provider TEXT,
+            egress_ip_checked_at TEXT,
+            egress_ip_error TEXT,
+            egress_ip_error_at TEXT,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
         "#,
@@ -1541,6 +1546,27 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure forward_proxy_metadata_history table existence")?;
+
+    let forward_proxy_metadata_columns =
+        load_sqlite_table_columns(pool, "forward_proxy_metadata_history").await?;
+    for (column, ty) in [
+        ("egress_ip", "TEXT"),
+        ("egress_ip_provider", "TEXT"),
+        ("egress_ip_checked_at", "TEXT"),
+        ("egress_ip_error", "TEXT"),
+        ("egress_ip_error_at", "TEXT"),
+    ] {
+        if !forward_proxy_metadata_columns.contains(column) {
+            let statement =
+                format!("ALTER TABLE forward_proxy_metadata_history ADD COLUMN {column} {ty}");
+            sqlx::query(&statement)
+                .execute(pool)
+                .await
+                .with_context(|| {
+                    format!("failed to add forward_proxy_metadata_history column {column}")
+                })?;
+        }
+    }
 
     sqlx::query(
         r#"
