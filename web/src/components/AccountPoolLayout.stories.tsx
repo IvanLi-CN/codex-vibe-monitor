@@ -70,6 +70,7 @@ export const Default: Story = {
     const canvas = within(canvasElement)
     await expect(canvas.getByRole('heading', { name: '号池' })).toBeVisible()
     await expect(canvas.getByRole('link', { name: '上游账号' })).toHaveAttribute('aria-current', 'page')
+    await expect(canvas.getByRole('link', { name: '维护记录' })).toBeVisible()
     await expect(canvas.getByRole('link', { name: '分组' })).toBeVisible()
     await expect(canvas.getByRole('link', { name: '标签' })).toBeVisible()
   },

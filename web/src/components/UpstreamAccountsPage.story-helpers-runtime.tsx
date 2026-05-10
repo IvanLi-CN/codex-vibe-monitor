@@ -15,6 +15,7 @@ import type {
   UpstreamAccountListResponse,
 } from '../lib/api'
 import AccountPoolLayout from '../pages/account-pool/AccountPoolLayout'
+import MaintenanceRecordsPage from '../pages/account-pool/MaintenanceRecords'
 import UpstreamAccountCreatePage from '../pages/account-pool/UpstreamAccountCreate'
 import { resolveDisplayNameAfterEmailChange } from '../pages/account-pool/UpstreamAccountCreate.shared'
 import GroupsPage from '../pages/account-pool/Groups'
@@ -1016,6 +1017,10 @@ export function AccountPoolStoryRouter({
             <Route
               path="upstream-accounts/new"
               element={<UpstreamAccountCreatePage />}
+            />
+            <Route
+              path="maintenance-records"
+              element={<MaintenanceRecordsPage />}
             />
             <Route path="groups" element={<GroupsPage />} />
             <Route path="tags" element={<TagsPage />} />

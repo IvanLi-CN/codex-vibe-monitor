@@ -935,6 +935,11 @@ export interface ForwardProxyBindingNode {
   source: string;
   displayName: string;
   protocolLabel: string;
+  egressIp?: string | null;
+  egressIpCheckedAt?: string | null;
+  egressIpProvider?: string | null;
+  egressIpError?: string | null;
+  egressIpErrorAt?: string | null;
   penalized: boolean;
   selectable: boolean;
   last24h: ForwardProxyHourlyBucket[];
@@ -1520,6 +1525,21 @@ export function normalizeForwardProxyBindingNode(
         ? payload.protocolLabel
         : undefined,
     ),
+    egressIp: typeof payload.egressIp === "string" ? payload.egressIp : null,
+    egressIpCheckedAt:
+      typeof payload.egressIpCheckedAt === "string"
+        ? payload.egressIpCheckedAt
+        : null,
+    egressIpProvider:
+      typeof payload.egressIpProvider === "string"
+        ? payload.egressIpProvider
+        : null,
+    egressIpError:
+      typeof payload.egressIpError === "string" ? payload.egressIpError : null,
+    egressIpErrorAt:
+      typeof payload.egressIpErrorAt === "string"
+        ? payload.egressIpErrorAt
+        : null,
     penalized: Boolean(payload.penalized),
     selectable: payload.selectable === true,
     last24h: bucketsRaw

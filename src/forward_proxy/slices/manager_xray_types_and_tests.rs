@@ -5,6 +5,7 @@ pub(crate) struct SelectedForwardProxy {
     pub(crate) display_name: String,
     pub(crate) endpoint_url: Option<Url>,
     pub(crate) endpoint_url_raw: Option<String>,
+    pub(crate) egress_ip: Option<String>,
 }
 
 impl SelectedForwardProxy {
@@ -15,6 +16,7 @@ impl SelectedForwardProxy {
             display_name: endpoint.display_name.clone(),
             endpoint_url: endpoint.endpoint_url.clone(),
             endpoint_url_raw: endpoint.raw_url.clone(),
+            egress_ip: None,
         }
     }
 }
@@ -953,6 +955,11 @@ pub(crate) struct ForwardProxyBindingNodeResponse {
     pub(crate) source: String,
     pub(crate) display_name: String,
     pub(crate) protocol_label: String,
+    pub(crate) egress_ip: Option<String>,
+    pub(crate) egress_ip_checked_at: Option<String>,
+    pub(crate) egress_ip_provider: Option<String>,
+    pub(crate) egress_ip_error: Option<String>,
+    pub(crate) egress_ip_error_at: Option<String>,
     pub(crate) penalized: bool,
     pub(crate) selectable: bool,
     pub(crate) last24h: Vec<ForwardProxyHourlyBucketResponse>,
@@ -1353,5 +1360,54 @@ mod tests {
             Some(binding_key.as_str())
         );
         assert_eq!(group_state.consecutive_network_failures, 0);
+    }
+
+    #[tokio::test]
+    async fn egress_ip_metadata_preserves_last_success_when_refresh_fails() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite");
+        ensure_schema(&pool).await.expect("ensure schema");
+        let selected_proxy = SelectedForwardProxy {
+            key: "jp-edge-01".to_string(),
+            source: "manual".to_string(),
+            display_name: "JP Edge 01".to_string(),
+            endpoint_url: None,
+            endpoint_url_raw: Some("http://jp-edge-01:8080".to_string()),
+            egress_ip: None,
+        };
+
+        persist_forward_proxy_egress_ip_result(
+            &pool,
+            &selected_proxy,
+            Some("203.0.113.24"),
+            None,
+        )
+        .await
+        .expect("persist successful egress IP");
+        persist_forward_proxy_egress_ip_result(
+            &pool,
+            &selected_proxy,
+            None,
+            Some("metadata refresh timed out"),
+        )
+        .await
+        .expect("persist failed refresh");
+
+        let metadata = load_forward_proxy_metadata_history(&pool, &[selected_proxy.key.clone()])
+            .await
+            .expect("load metadata")
+            .remove(&selected_proxy.key)
+            .expect("metadata row");
+        assert_eq!(metadata.egress_ip.as_deref(), Some("203.0.113.24"));
+        assert_eq!(metadata.egress_ip_provider.as_deref(), Some("ipify"));
+        assert_eq!(
+            metadata.egress_ip_error.as_deref(),
+            Some("metadata refresh timed out")
+        );
+        assert!(metadata.egress_ip_checked_at.is_some());
+        assert!(metadata.egress_ip_error_at.is_some());
     }
 }

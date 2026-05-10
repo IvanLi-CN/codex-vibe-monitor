@@ -664,6 +664,7 @@ async fn record_oauth_maintenance_throttled(
         &format_utc_iso(Utc::now()),
         Some(&throttle.proxy_key),
         Some(&throttle.proxy_display_name),
+        throttle.proxy_egress_ip.as_deref(),
     )
     .await?;
     set_account_status(&state.pool, account_id, next_status, None).await

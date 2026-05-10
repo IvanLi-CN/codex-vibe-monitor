@@ -400,10 +400,13 @@ export const Operational: Story = {
 
 export const MaintenanceEvents: Story = {
   name: 'Maintenance Events',
-  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/maintenance-records" />,
   play: async ({ canvasElement, step }) => {
     const canvasScope = within(canvasElement)
     await step('shows the execution records table with the new two-line layout', async () => {
+      await expect(
+        await canvasScope.findByRole('link', { name: /maintenance records|维护记录/i }),
+      ).toBeInTheDocument()
       await expect(
         await canvasScope.findByText(/non-model call execution records|非模型调用执行记录/i),
       ).toBeInTheDocument()

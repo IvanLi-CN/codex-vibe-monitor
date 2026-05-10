@@ -525,6 +525,7 @@ fn resolve_invocation_proxy_display_name_prefers_selected_forward_proxy() {
         display_name: "Tokyo-Edge-1".to_string(),
         endpoint_url: Some(Url::parse("http://127.0.0.1:7890").expect("valid proxy url")),
         endpoint_url_raw: Some("http://127.0.0.1:7890".to_string()),
+        egress_ip: None,
     };
 
     assert_eq!(

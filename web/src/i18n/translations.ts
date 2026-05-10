@@ -72,6 +72,7 @@ const baseTranslations = {
     "accountPool.description":
       "Manage Codex upstream accounts, persistent login sessions, and normalized 5h / 7d quota snapshots.",
     "accountPool.nav.upstreamAccounts": "Upstream Accounts",
+    "accountPool.nav.maintenanceRecords": "Records",
     "accountPool.nav.groups": "Groups",
     "accountPool.nav.tags": "Tags",
     "accountPool.groups.title": "Group overview",
@@ -1136,6 +1137,24 @@ const baseTranslations = {
       "Deferred",
     "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_deferred":
       "Sync deferred",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_succeeded":
+      "Sync succeeded",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_failed":
+      "Sync failed",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_hard_unavailable":
+      "Sync unavailable",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_recovery_blocked":
+      "Recovery blocked",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.route_recovered":
+      "Route recovered",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.route_cooldown_started":
+      "Route cooldown",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.route_retryable_failure":
+      "Route retryable failure",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.route_hard_unavailable":
+      "Route unavailable",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.account_updated":
+      "Account updated",
     "accountPool.upstreamAccounts.maintenanceEvents.unknownAccount":
       "Unknown account",
     "accountPool.upstreamAccounts.maintenanceEvents.unknownGroup":
@@ -1143,7 +1162,9 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.maintenanceEvents.unknownProxy":
       "Unknown proxy",
     "accountPool.upstreamAccounts.maintenanceEvents.noEgressIp":
-      "Egress IP unavailable",
+      "Not recorded",
+    "accountPool.upstreamAccounts.maintenanceEvents.egressIpPending":
+      "Refresh pending",
     "accountPool.upstreamAccounts.maintenanceEvents.noDescription":
       "No result description",
     "accountPool.upstreamAccounts.maintenanceEvents.descriptions.egressThrottledWithSeconds":
@@ -2062,6 +2083,7 @@ const baseTranslations = {
     "accountPool.description":
       "集中管理 Codex 上游账号、持久登录状态，以及归一化后的 5 小时 / 7 天额度快照。",
     "accountPool.nav.upstreamAccounts": "上游账号",
+    "accountPool.nav.maintenanceRecords": "维护记录",
     "accountPool.nav.groups": "分组",
     "accountPool.nav.tags": "标签",
     "accountPool.groups.title": "分组总览",
@@ -3051,6 +3073,24 @@ const baseTranslations = {
       "延期",
     "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_deferred":
       "同步延期",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_succeeded":
+      "同步成功",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_failed":
+      "同步失败",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_hard_unavailable":
+      "同步不可用",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.sync_recovery_blocked":
+      "恢复受阻",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.route_recovered":
+      "路由恢复成功",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.route_cooldown_started":
+      "路由冷却",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.route_retryable_failure":
+      "路由临时失败",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.route_hard_unavailable":
+      "路由不可用",
+    "accountPool.upstreamAccounts.maintenanceEvents.actions.account_updated":
+      "账号已更新",
     "accountPool.upstreamAccounts.maintenanceEvents.unknownAccount":
       "未知账号",
     "accountPool.upstreamAccounts.maintenanceEvents.unknownGroup":
@@ -3058,7 +3098,9 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.maintenanceEvents.unknownProxy":
       "未知代理",
     "accountPool.upstreamAccounts.maintenanceEvents.noEgressIp":
-      "出口 IP 不可用",
+      "未记录",
+    "accountPool.upstreamAccounts.maintenanceEvents.egressIpPending":
+      "等待刷新",
     "accountPool.upstreamAccounts.maintenanceEvents.noDescription":
       "暂无结果描述",
     "accountPool.upstreamAccounts.maintenanceEvents.descriptions.egressThrottledWithSeconds":

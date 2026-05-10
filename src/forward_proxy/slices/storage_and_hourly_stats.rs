@@ -1,6 +1,11 @@
 use crate::stats::*;
 use crate::*;
 
+const FORWARD_PROXY_EGRESS_IP_PROVIDER: &str = "ipify";
+const FORWARD_PROXY_EGRESS_IP_ENDPOINT: &str = "https://api.ipify.org?format=json";
+const FORWARD_PROXY_EGRESS_IP_REFRESH_INTERVAL_SECS: i64 = 600;
+const FORWARD_PROXY_EGRESS_IP_TIMEOUT_SECS: u64 = 5;
+
 #[derive(Debug, FromRow)]
 struct PoolUpstreamBindingWindowStatsRow {
     proxy_binding_key_snapshot: String,
@@ -253,6 +258,11 @@ pub(crate) struct ForwardProxyMetadataHistoryRow {
     pub(crate) display_name: String,
     pub(crate) source: String,
     pub(crate) endpoint_url: Option<String>,
+    pub(crate) egress_ip: Option<String>,
+    pub(crate) egress_ip_provider: Option<String>,
+    pub(crate) egress_ip_checked_at: Option<String>,
+    pub(crate) egress_ip_error: Option<String>,
+    pub(crate) egress_ip_error_at: Option<String>,
 }
 
 pub(crate) async fn load_forward_proxy_metadata_history(
@@ -264,7 +274,8 @@ pub(crate) async fn load_forward_proxy_metadata_history(
     }
 
     let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT proxy_key, display_name, source, endpoint_url \
+        "SELECT proxy_key, display_name, source, endpoint_url, \
+            egress_ip, egress_ip_provider, egress_ip_checked_at, egress_ip_error, egress_ip_error_at \
          FROM forward_proxy_metadata_history \
          WHERE proxy_key IN (",
     );
@@ -293,6 +304,161 @@ pub(crate) async fn load_forward_proxy_metadata_history(
         .into_iter()
         .map(|row| (row.proxy_key.clone(), row))
         .collect())
+}
+
+fn forward_proxy_egress_ip_is_fresh(checked_at: Option<&str>) -> bool {
+    checked_at
+        .and_then(|raw| {
+            DateTime::parse_from_rfc3339(raw)
+                .ok()
+                .map(|value| value.with_timezone(&Utc))
+        })
+        .is_some_and(|checked_at| {
+            (Utc::now() - checked_at).num_seconds() < FORWARD_PROXY_EGRESS_IP_REFRESH_INTERVAL_SECS
+        })
+}
+
+async fn persist_forward_proxy_egress_ip_result(
+    pool: &Pool<Sqlite>,
+    selected_proxy: &SelectedForwardProxy,
+    egress_ip: Option<&str>,
+    error: Option<&str>,
+) -> Result<()> {
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO forward_proxy_metadata_history (
+            proxy_key,
+            display_name,
+            source,
+            endpoint_url,
+            egress_ip,
+            egress_ip_provider,
+            egress_ip_checked_at,
+            egress_ip_error,
+            egress_ip_error_at,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?7)
+        ON CONFLICT(proxy_key) DO UPDATE SET
+            display_name = excluded.display_name,
+            source = excluded.source,
+            endpoint_url = excluded.endpoint_url,
+            egress_ip = COALESCE(excluded.egress_ip, forward_proxy_metadata_history.egress_ip),
+            egress_ip_provider = excluded.egress_ip_provider,
+            egress_ip_checked_at = excluded.egress_ip_checked_at,
+            egress_ip_error = excluded.egress_ip_error,
+            egress_ip_error_at = excluded.egress_ip_error_at,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(&selected_proxy.key)
+    .bind(&selected_proxy.display_name)
+    .bind(&selected_proxy.source)
+    .bind(selected_proxy.endpoint_url_raw.as_deref().or_else(|| {
+        selected_proxy
+            .endpoint_url
+            .as_ref()
+            .map(|url| url.as_str())
+    }))
+    .bind(egress_ip)
+    .bind(FORWARD_PROXY_EGRESS_IP_PROVIDER)
+    .bind(&now_iso)
+    .bind(error)
+    .bind(error.map(|_| now_iso.as_str()))
+    .execute(pool)
+    .await
+    .with_context(|| {
+        format!(
+            "failed to persist forward proxy egress IP metadata for {}",
+            selected_proxy.key
+        )
+    })?;
+    Ok(())
+}
+
+async fn fetch_forward_proxy_egress_ip(
+    client: &Client,
+    request_timeout: Duration,
+) -> Result<String> {
+    let response = timeout(request_timeout, client.get(FORWARD_PROXY_EGRESS_IP_ENDPOINT).send())
+        .await
+        .map_err(|_| anyhow!("egress IP metadata request timed out"))?
+        .context("failed to request egress IP metadata")?;
+    if !response.status().is_success() {
+        bail!("egress IP metadata endpoint returned {}", response.status());
+    }
+    let body = timeout(request_timeout, response.text())
+        .await
+        .map_err(|_| anyhow!("egress IP metadata body read timed out"))?
+        .context("failed to read egress IP metadata body")?;
+    let value: Value = serde_json::from_str(&body).context("failed to decode egress IP JSON")?;
+    let ip = value
+        .get("ip")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("egress IP metadata response did not include ip"))?;
+    ip.parse::<std::net::IpAddr>()
+        .with_context(|| format!("invalid egress IP metadata value: {ip}"))?;
+    Ok(ip.to_string())
+}
+
+pub(crate) async fn refresh_forward_proxy_egress_ip_if_stale(
+    state: &AppState,
+    selected_proxy: &SelectedForwardProxy,
+) -> Result<Option<String>> {
+    let existing = load_forward_proxy_metadata_history(&state.pool, std::slice::from_ref(&selected_proxy.key))
+        .await?
+        .remove(&selected_proxy.key);
+    if let Some(row) = existing.as_ref()
+        && forward_proxy_egress_ip_is_fresh(row.egress_ip_checked_at.as_deref())
+    {
+        return Ok(row.egress_ip.clone());
+    }
+
+    let client = state
+        .http_clients
+        .client_for_forward_proxy(selected_proxy.endpoint_url.as_ref())
+        .context("failed to initialize egress IP metadata client")?;
+    let result = fetch_forward_proxy_egress_ip(
+        &client,
+        Duration::from_secs(FORWARD_PROXY_EGRESS_IP_TIMEOUT_SECS),
+    )
+    .await;
+    match result {
+        Ok(egress_ip) => {
+            persist_forward_proxy_egress_ip_result(
+                &state.pool,
+                selected_proxy,
+                Some(&egress_ip),
+                None,
+            )
+            .await?;
+            Ok(Some(egress_ip))
+        }
+        Err(err) => {
+            let previous_ip = existing.and_then(|row| row.egress_ip);
+            persist_forward_proxy_egress_ip_result(
+                &state.pool,
+                selected_proxy,
+                None,
+                Some(&err.to_string()),
+            )
+            .await?;
+            Ok(previous_ip)
+        }
+    }
+}
+
+pub(crate) async fn load_forward_proxy_egress_ip_snapshot(
+    state: &AppState,
+    selected_proxy: &SelectedForwardProxy,
+) -> Result<Option<String>> {
+    Ok(load_forward_proxy_metadata_history(&state.pool, std::slice::from_ref(&selected_proxy.key))
+        .await?
+        .remove(&selected_proxy.key)
+        .and_then(|row| row.egress_ip))
 }
 
 fn is_missing_forward_proxy_metadata_history_table(err: &sqlx::Error) -> bool {
@@ -1423,7 +1589,23 @@ async fn build_forward_proxy_binding_node_catalog(
         .map(ToOwned::to_owned)
         .filter(|key| seen.insert(key.clone()))
         .collect::<Vec<_>>();
-    let metadata_map = load_forward_proxy_metadata_history(&state.pool, &extra_keys).await?;
+    let metadata_lookup_keys = nodes
+        .iter()
+        .map(|node| node.key.clone())
+        .chain(extra_keys.iter().cloned())
+        .collect::<Vec<_>>();
+    let metadata_map =
+        load_forward_proxy_metadata_history(&state.pool, &metadata_lookup_keys).await?;
+
+    for node in &mut nodes {
+        if let Some(metadata) = metadata_map.get(&node.key) {
+            node.egress_ip = metadata.egress_ip.clone();
+            node.egress_ip_checked_at = metadata.egress_ip_checked_at.clone();
+            node.egress_ip_provider = metadata.egress_ip_provider.clone();
+            node.egress_ip_error = metadata.egress_ip_error.clone();
+            node.egress_ip_error_at = metadata.egress_ip_error_at.clone();
+        }
+    }
 
     {
         let manager = state.forward_proxy.lock().await;
@@ -1454,6 +1636,11 @@ async fn build_forward_proxy_binding_node_catalog(
                     .filter(|value| !value.trim().is_empty())
                     .unwrap_or_else(|| proxy_key.clone()),
                 protocol_label: "UNKNOWN".to_string(),
+                egress_ip: metadata.and_then(|item| item.egress_ip.clone()),
+                egress_ip_checked_at: metadata.and_then(|item| item.egress_ip_checked_at.clone()),
+                egress_ip_provider: metadata.and_then(|item| item.egress_ip_provider.clone()),
+                egress_ip_error: metadata.and_then(|item| item.egress_ip_error.clone()),
+                egress_ip_error_at: metadata.and_then(|item| item.egress_ip_error_at.clone()),
                 penalized: false,
                 selectable: false,
                 last24h: Vec::new(),
