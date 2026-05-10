@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.60.1",
+  "base_stable_version": "1.60.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-05-10T22:36:29Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.60.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "6da2e33db7b5997a7be89242a68171117e2ab991",
+  "pr_number": 409,
+  "pr_title": "fix(upstream-accounts): reduce maintenance egress throttle",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.60.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.60.1",
+  "target_sha": "6ed07d8dfae377a40a991ddde210a2569d7519f7",
+  "type_label": "type:patch"
+}
