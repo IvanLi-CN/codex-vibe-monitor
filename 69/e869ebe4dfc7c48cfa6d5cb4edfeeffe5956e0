@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.60.2",
+  "base_stable_version": "1.60.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-05-11T01:05:42Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.60.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "9bbf28c02b3bb07718ed729977ee719f8286729a",
+  "pr_number": 410,
+  "pr_title": "fix(upstream-accounts): queue maintenance egress retries",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.60.2",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.60.2",
+  "target_sha": "69e869ebe4dfc7c48cfa6d5cb4edfeeffe5956e0",
+  "type_label": "type:patch"
+}
