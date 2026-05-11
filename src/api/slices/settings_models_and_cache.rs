@@ -14,6 +14,8 @@ pub(crate) struct ApiPoolUpstreamRequestAttempt {
     pub(crate) upstream_account_name: Option<String>,
     #[sqlx(default)]
     pub(crate) upstream_route_key: Option<String>,
+    #[sqlx(default)]
+    pub(crate) proxy_binding_key_snapshot: Option<String>,
     pub(crate) attempt_index: i64,
     pub(crate) distinct_account_index: i64,
     pub(crate) same_account_retry_index: i64,

@@ -766,6 +766,33 @@ describe("InvocationTable", () => {
     expect(afterExpandMatches.length).toBeGreaterThanOrEqual(2);
   });
 
+  it("does not display source as a request-detail proxy fallback", () => {
+    const record: ApiInvocation = {
+      id: 36,
+      invokeId: "invocation-source-not-proxy-fallback",
+      occurredAt: "2026-03-24T06:50:52Z",
+      createdAt: "2026-03-24T06:50:52Z",
+      source: "xy-custom-source",
+      routeMode: "pool",
+      upstreamAccountId: 17,
+      upstreamAccountName: "API Keys Pool",
+      endpoint: "/v1/responses",
+      model: "gpt-5.4",
+      status: "failed",
+      totalTokens: 4096,
+      cost: 0.1024,
+    };
+
+    const html = renderToStaticMarkup(
+      <I18nProvider>
+        <InvocationDetailProbe record={record} />
+      </I18nProvider>,
+    );
+
+    expect(html).not.toContain("来源");
+    expect(html).not.toContain("xy-custom-source");
+  });
+
   it("keeps latency summary fields out of request details while preserving stage timings", async () => {
     const record: ApiInvocation = {
       id: 34,
@@ -845,6 +872,7 @@ describe("InvocationTable", () => {
         endpoint: "/v1/responses",
         upstreamAccountId: 7,
         upstreamAccountName: "pool-account-a",
+        proxyBindingKeySnapshot: "fpb_pool_attempt_visible",
         attemptIndex: 1,
         distinctAccountIndex: 1,
         sameAccountRetryIndex: 1,
@@ -901,6 +929,8 @@ describe("InvocationTable", () => {
     );
 
     expect(document.body.textContent).toContain("号池尝试明细");
+    expect(document.body.textContent).toContain("代理");
+    expect(document.body.textContent).toContain("fpb_pool_attempt_visible");
     expect(document.body.textContent).toContain("pool-account-a");
     expect(document.body.textContent).toContain("成功");
   });

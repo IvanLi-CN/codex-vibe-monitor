@@ -237,9 +237,13 @@ export function renderReasoningEffortBadge(value: string) {
 export function resolveProxyDisplayName(record: ApiInvocation) {
   const payloadProxyName = record.proxyDisplayName?.trim();
   if (payloadProxyName) return payloadProxyName;
-  const sourceValue = record.source?.trim();
-  if (sourceValue && sourceValue.toLowerCase() !== "proxy") return sourceValue;
   return FALLBACK_CELL;
+}
+
+function formatPoolAttemptProxyBindingKey(attempt: ApiPoolUpstreamRequestAttempt) {
+  const proxyBindingKey = attempt.proxyBindingKeySnapshot?.trim();
+  if (!proxyBindingKey) return FALLBACK_CELL;
+  return proxyBindingKey === "__direct__" ? "Direct" : proxyBindingKey;
 }
 
 export function renderFastIndicator(state: FastIndicatorState, t: Translator) {
@@ -545,11 +549,6 @@ export function buildInvocationDetailViewModel({
       key: "invokeId",
       label: t("table.details.invokeId"),
       value: record.invokeId || FALLBACK_CELL,
-    },
-    {
-      key: "source",
-      label: t("table.details.source"),
-      value: record.source || FALLBACK_CELL,
     },
     {
       key: "account",
@@ -1360,6 +1359,8 @@ function renderPoolAttemptsContent(
             const downstreamHttpStatusValue = formatOptionalStatusCode(
               attempt.downstreamHttpStatus,
             );
+            const proxyBindingKeyValue =
+              formatPoolAttemptProxyBindingKey(attempt);
 
             return (
               <div
@@ -1392,6 +1393,17 @@ function renderPoolAttemptsContent(
                     <span className="font-mono">
                       {attempt.sameAccountRetryIndex}/
                       {attempt.distinctAccountIndex}
+                    </span>
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
+                      {t("table.poolAttempts.proxy")}
+                    </span>
+                    <span
+                      className="min-w-0 truncate whitespace-nowrap font-mono"
+                      title={proxyBindingKeyValue}
+                    >
+                      {proxyBindingKeyValue}
                     </span>
                   </div>
                   <div className="flex items-start gap-2">

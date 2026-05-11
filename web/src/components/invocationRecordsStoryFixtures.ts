@@ -369,6 +369,10 @@ export function createStoryPoolAttemptsByInvokeId(records: ApiInvocation[]) {
       const status = isLastAttempt ? finalStatus : attemptIndex % 2 === 0 ? 'transport_failure' : 'http_failure'
       const startedAtMs = Date.parse(record.occurredAt) - (attemptTotal - attemptIndex) * 900
       const finishedAtMs = startedAtMs + 240 + attemptIndex * 90
+      const proxyBindingKeySnapshot =
+        record.invokeId === 'inv_story_6104'
+          ? '__direct__'
+          : `fpb_story_${record.invokeId.replace(/[^a-zA-Z0-9]/g, '_')}_${attemptIndex + 1}`
 
       const syntheticOauthBridgeAttempt =
         record.invokeId === 'inv_story_6108' && isLastAttempt
@@ -417,6 +421,7 @@ export function createStoryPoolAttemptsByInvokeId(records: ApiInvocation[]) {
         invokeId: record.invokeId,
         occurredAt: record.occurredAt,
         endpoint: record.endpoint ?? '/v1/responses',
+        proxyBindingKeySnapshot,
         attemptIndex: attemptIndex + 1,
         distinctAccountIndex,
         sameAccountRetryIndex,
