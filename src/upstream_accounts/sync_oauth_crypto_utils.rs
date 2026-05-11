@@ -1,4 +1,5 @@
 const ACCOUNT_MAINTENANCE_EGRESS_MIN_INTERVAL_SECS: i64 = 10;
+const ACCOUNT_MAINTENANCE_EGRESS_RUNTIME_WAIT_MAX_SECS: u64 = 180;
 
 #[derive(Debug, Clone)]
 pub(crate) struct AccountMaintenanceEgressThrottleError {
@@ -226,7 +227,42 @@ async fn reserve_account_maintenance_egress_slot_for_runtime(
             return Ok(());
         }
     }
-    reserve_account_maintenance_egress_slot(pool, selected_proxy).await
+    reserve_account_maintenance_egress_slot_with_bounded_wait(
+        pool,
+        selected_proxy,
+        ACCOUNT_MAINTENANCE_EGRESS_RUNTIME_WAIT_MAX_SECS,
+    )
+    .await
+}
+
+async fn reserve_account_maintenance_egress_slot_with_bounded_wait(
+    pool: &Pool<Sqlite>,
+    selected_proxy: &SelectedForwardProxy,
+    max_wait_secs: u64,
+) -> Result<()> {
+    let mut waited_secs = 0u64;
+    loop {
+        match reserve_account_maintenance_egress_slot(pool, selected_proxy).await {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                let Some(throttle) =
+                    err.downcast_ref::<AccountMaintenanceEgressThrottleError>()
+                else {
+                    return Err(err);
+                };
+                if waited_secs >= max_wait_secs {
+                    return Err(err);
+                }
+                let remaining_wait_budget = max_wait_secs - waited_secs;
+                let wait_secs = throttle
+                    .retry_after_secs
+                    .min(remaining_wait_budget)
+                    .max(1);
+                sleep(Duration::from_secs(wait_secs)).await;
+                waited_secs += wait_secs;
+            }
+        }
+    }
 }
 
 async fn exchange_authorization_code_for_required_scope(
@@ -1490,5 +1526,59 @@ mod account_maintenance_egress_throttle_tests {
         reserve_account_maintenance_egress_slot(&pool, &other_proxy)
             .await
             .expect("different egress should not be throttled");
+    }
+
+    #[tokio::test]
+    async fn runtime_wait_retries_until_egress_slot_is_available() {
+        let pool = test_pool().await;
+        let proxy = selected_proxy("jp-edge-01");
+
+        reserve_account_maintenance_egress_slot(&pool, &proxy)
+            .await
+            .expect("first egress should reserve");
+        let nearly_available_at =
+            format_utc_iso(Utc::now() - ChronoDuration::seconds(9));
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_account_egress_throttle
+            SET last_sent_at = ?2, updated_at = ?2
+            WHERE egress_key = ?1
+            "#,
+        )
+        .bind(&proxy.key)
+        .bind(&nearly_available_at)
+        .execute(&pool)
+        .await
+        .expect("seed near-expired egress throttle slot");
+
+        reserve_account_maintenance_egress_slot_with_bounded_wait(&pool, &proxy, 3)
+            .await
+            .expect("runtime wait should retry once the egress slot is available");
+
+        let err = reserve_account_maintenance_egress_slot(&pool, &proxy)
+            .await
+            .expect_err("runtime wait should reserve the egress slot before returning");
+        assert!(err
+            .downcast_ref::<AccountMaintenanceEgressThrottleError>()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn runtime_wait_preserves_deferred_path_after_budget_exhaustion() {
+        let pool = test_pool().await;
+        let proxy = selected_proxy("jp-edge-01");
+
+        reserve_account_maintenance_egress_slot(&pool, &proxy)
+            .await
+            .expect("first egress should reserve");
+        let err =
+            reserve_account_maintenance_egress_slot_with_bounded_wait(&pool, &proxy, 0)
+                .await
+                .expect_err("exhausted wait budget should preserve throttle error");
+
+        let throttle = err
+            .downcast_ref::<AccountMaintenanceEgressThrottleError>()
+            .expect("throttle error");
+        assert_eq!(throttle.proxy_key, "jp-edge-01");
     }
 }

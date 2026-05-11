@@ -13,7 +13,7 @@
 - 在账号池新增 `维护记录` 独立标签页，展示全局“非模型调用执行记录”列表。
 - 列表支持按节点、结果、账号、分组筛选，并展示执行时间、账号、代理、动作、结果。
 - 扩展账号维护事件落库字段与全局分页 API，使旧账号详情 `recentActions` 保持兼容。
-- 所有账号维护类外呼按最终 forward proxy 出口或 direct 出口执行 10 秒限频；被限频任务写入 deferred/skipped 类执行记录。
+- 所有账号维护类外呼按最终 forward proxy 出口或 direct 出口执行 10 秒限频；运行期维护任务在有界预算内等待同出口槽位，预算耗尽后写入 deferred/skipped 类执行记录。
 
 ### Non-goals
 
@@ -50,7 +50,7 @@
 - 事件数据包含账号名、分组、forward proxy key/display name、出口 IP、动作、结果、结果描述。
 - 正向代理出口 IP 元数据通过 ipify 获取，按 proxy/direct 出口每 600 秒最多刷新一次。
 - 旧事件缺字段时 API 与 UI 不崩溃。
-- 同一出口连续维护真实外呼小于 10 秒时，后一次不发出网络请求，写入 deferred 记录并说明剩余等待时间。
+- 同一出口连续维护真实外呼小于 10 秒时，运行期维护 worker 必须先在有界预算内等待槽位；预算耗尽后才不发出网络请求，写入 deferred 记录并说明剩余等待时间。
 - 不同出口互不阻塞；direct 作为单独出口限频。
 
 ### SHOULD
@@ -88,7 +88,8 @@
 - 维护外呼在 forward proxy 选择完成后、真实 HTTP 请求前预留限频槽位。
 - 限频 key 使用最终选中 proxy key；无代理时使用 direct 出口 key。
 - 预留成功才允许发送真实请求。
-- 预留失败返回结构化 throttle error，账号维护同步路径写入 deferred 事件。
+- 运行期维护同步遇到同出口未到 10 秒槽位时，必须在有界预算内等待并重试预留，避免 reset due 账号因同代理批量调度长期只产生 `sync_deferred / egress_throttled`。
+- 等待预算耗尽后，预留失败返回结构化 throttle error，账号维护同步路径写入 deferred 事件。
 
 ### Forward proxy egress IP metadata
 
@@ -102,9 +103,11 @@
 - Given 多个账号维护事件，When 打开账号池 `维护记录` 标签页，Then 能看到跨账号记录列表与四个筛选项。
 - Given 事件有结果描述，When 列表渲染，Then 描述跨动作列与结果列第二行显示。
 - Given 旧事件缺账号快照或代理字段，When 列表渲染，Then 显示空态而不是报错。
-- Given 同一出口 10 秒内连续维护外呼，When 第二次执行，Then 不发出真实网络请求并写入 deferred 事件。
+- Given 同一出口 10 秒内连续维护外呼，When 第二次运行期维护执行且等待预算足够，Then 等待槽位后发送真实网络请求。
+- Given 同一出口 10 秒内连续维护外呼，When 第二次运行期维护执行且等待预算耗尽，Then 不发出真实网络请求并写入 deferred 事件。
 - Given 不同出口维护外呼，When 间隔小于 10 秒，Then 不互相阻塞。
 - Given 当前代理元数据已刷新，When 维护事件写入，Then 事件快照包含可展示出口 IP。
+- Given OAuth 账号处于 quota exhausted 且 reset due，When 维护同步排到同出口槽位，Then 能实际拉取后续 usage snapshot，并继续按 snapshot 是否 exhausted 来保持或退出限流。
 
 ## Visual Evidence
 
@@ -123,4 +126,4 @@
 ## 风险 / 假设
 
 - 出口 IP 元数据刷新是 best-effort；刷新失败保留最近成功 IP，历史旧事件仍可能显示为未记录。
-- OAuth 凭据 refresh 与 usage snapshot 可能原本在同一维护流程内连续外呼；新限频会让后续外呼 deferred，这是预期行为。
+- OAuth 凭据 refresh 与 usage snapshot 可能原本在同一维护流程内连续外呼；运行期会等待同出口槽位，只有等待预算耗尽时才 deferred，这是预期行为。

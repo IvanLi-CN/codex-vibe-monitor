@@ -12,13 +12,16 @@
 - 新增全局账号维护事件分页 API，并支持账号、分组、节点、结果筛选。
 - 账号池新增 `维护记录` 独立页，承载“非模型调用执行记录”列表，包含执行时间列、四项筛选、分页和两行记录布局。
 - 扩展 `forward_proxy_metadata_history`，通过 ipify 每 600 秒刷新一次 proxy/direct 出口 IP，维护事件写入时快照该 IP。
-- 维护外呼在真实请求前预留 10 秒出口槽位；被限频时写入 deferred 事件，且账号不保持 `syncing` 状态。
+- 维护外呼在真实请求前预留 10 秒出口槽位；运行期维护同步遇到同出口槽位未释放时会在有界预算内等待并重试，预算耗尽后写入 deferred 事件，且账号不保持 `syncing` 状态。
+- OAuth quota exhausted 账号不会按 reset time 自动退出限流；reset due 只触发后续 usage snapshot 维护同步，成功 snapshot 再按既有状态机保持或清除限流标记。
 
 ## Quality Gates
 
 - `cargo fmt --check`
 - `cargo check`
 - `cargo test account_`
+- `cargo test quota_exhausted -- --test-threads=1`
+- `cargo test runtime_wait_retries_until_egress_slot_is_available -- --test-threads=1`
 - `cargo test`
 - `cd web && bun run test`
 - `cd web && bun run build`
@@ -27,10 +30,10 @@
 
 ## Review Disposition
 
-- `codex review` raised that OAuth refresh followed by usage sync can defer the second request on the same egress. This is by design for this spec because both token refresh and usage snapshot are real non-model maintenance outbound calls, and the locked acceptance rule requires at least 10 seconds between any two real outbound calls on the same egress.
+- Earlier review noted that OAuth refresh followed by usage sync can hit the same egress slot. Runtime maintenance now queues within a bounded wait budget, so reset-due OAuth accounts are not starved by immediate `sync_deferred / egress_throttled`; budget exhaustion still preserves the deferred path.
 
 ## Disposition
 
-- `spec_disposition=create`
+- `spec_disposition=update`
 - `project_doc_disposition=none`
 - `solution_disposition=none`
