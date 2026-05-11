@@ -834,6 +834,7 @@ function DashboardTodayActivityChartImpl({
               data={visibleChartData}
               margin={{ top: 12, right: 24, left: 0, bottom: 8 }}
               barGap="-100%"
+              stackOffset="sign"
             >
               <CartesianGrid
                 stroke={chartColors.gridLine}

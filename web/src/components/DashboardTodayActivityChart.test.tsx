@@ -143,16 +143,19 @@ vi.mock("recharts", () => ({
     children,
     barGap,
     data,
+    stackOffset,
   }: {
     children: ReactNode;
     barGap?: string | number;
     data?: Array<Record<string, unknown>>;
+    stackOffset?: string;
   }) => {
     latestChartData = data ?? [];
     return (
       <div
         data-testid="composed-chart"
         data-bar-gap={String(barGap ?? "")}
+        data-stack-offset={stackOffset ?? ""}
         data-data-length={String(latestChartData.length)}
       >
         {children}
@@ -841,6 +844,7 @@ describe("DashboardTodayActivityChart", () => {
     expect(html).toContain('data-chart-mode="count-bars"');
     expect(html).toContain('data-testid="composed-chart"');
     expect(html).toContain('data-bar-gap="-100%"');
+    expect(html).toContain('data-stack-offset="sign"');
     expect(html).toContain('data-data-length="1440"');
     expect(html).not.toContain('data-testid="area-chart"');
     expect(html).toContain('data-data-key="chartSuccessCount"');
