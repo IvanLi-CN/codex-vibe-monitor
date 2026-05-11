@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.60.4",
+  "base_stable_version": "1.60.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-05-11T13:21:25Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.60.4",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "71e833a70575044ca39a236675a0e49f937cf06e",
+  "pr_number": 414,
+  "pr_title": "fix(invocations): show pool attempt proxy bindings",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.60.4",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.60.4",
+  "target_sha": "b763cfdd4cbda11b62f4bb5a9b40934bc2375f0f",
+  "type_label": "type:patch"
+}
