@@ -7,3 +7,4 @@
 - 2026-05-11: 限频固定间隔调整为 10 秒，仍不新增配置项。
 - 2026-05-10: 限频粒度使用最终网络出口；无代理/direct 作为单独出口。
 - 2026-05-10: OAuth 维护流程中的后续外呼若被限频，应写入 deferred 记录并恢复账号运行状态，避免停留在 `syncing`。
+- 2026-05-11: 生产发现 reset due 的 OAuth quota exhausted 账号会被同 egress 维护批量调度反复饿死，只产生 `sync_deferred / egress_throttled` 而拿不到后续 usage snapshot。运行期维护改为在有界预算内等待同出口槽位，预算耗尽后才沿用 deferred 行为；限流进入/退出状态机保持不变。
