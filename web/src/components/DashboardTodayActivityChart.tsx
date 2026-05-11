@@ -932,6 +932,7 @@ function DashboardTodayActivityChartImpl({
                 yAxisId="count"
                 dataKey="chartFailureCountNegative"
                 name={countSeriesNames.failures}
+                stackId="positive"
                 fill={chartColors.failure}
                 barSize={countBarSize}
                 radius={[0, 0, 3, 3]}

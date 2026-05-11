@@ -827,7 +827,7 @@ describe("DashboardTodayActivityChart", () => {
     expect(html).toContain('data-data-length=""');
   });
 
-  it("renders count mode as a composed chart with split success and failure bars", () => {
+  it("renders count mode with success, in-flight, and failure bars sharing one stack", () => {
     const html = renderToStaticMarkup(
       <DashboardTodayActivityChart
         response={response}
@@ -849,9 +849,10 @@ describe("DashboardTodayActivityChart", () => {
     expect(html).toContain('data-bar-size="1"');
     expect(html).toContain('data-stack-id="positive"');
     expect(html).toContain('data-domain="0:1439"');
-    expect(html).not.toContain(
-      'data-data-key="chartFailureCountNegative" data-stack-id="positive"',
+    expect(html).toContain(
+      'data-stack-id="positive" data-data-key="chartFailureCountNegative"',
     );
+    expect(html.match(/data-stack-id="positive"/g)).toHaveLength(3);
   });
 
   it("zooms horizontally around the wheel pointer and keeps the view clamped", async () => {
