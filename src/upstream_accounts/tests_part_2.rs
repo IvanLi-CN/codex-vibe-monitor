@@ -2844,6 +2844,100 @@
         );
     }
 
+    #[test]
+    fn maintenance_reset_due_ignores_deferred_egress_throttle_after_reset() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 3, 23, 12, 0, 0)
+            .single()
+            .expect("valid time");
+        let mut candidate = maintenance_candidates(
+            15,
+            UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+            Some("2026-03-23T11:58:30Z"),
+            None,
+            Some("2026-04-23T12:00:00Z"),
+            Some(10.0),
+            Some(10.0),
+        );
+        candidate.primary_resets_at = Some("2026-03-23T11:59:00Z".to_string());
+        candidate.last_action_source =
+            Some(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE.to_string());
+        candidate.last_action_at = Some("2026-03-23T11:59:20Z".to_string());
+        candidate.last_action_reason_code =
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_EGRESS_THROTTLED.to_string());
+
+        assert!(
+            maintenance_reset_due(&candidate, now),
+            "egress-deferred maintenance should not consume the post-reset catch-up sync"
+        );
+    }
+
+    #[test]
+    fn maintenance_interval_is_due_respects_deferred_egress_throttle_anchor() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 3, 23, 12, 0, 0)
+            .single()
+            .expect("valid time");
+        let mut candidate = maintenance_candidates(
+            16,
+            UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+            Some("2026-03-23T11:00:00Z"),
+            None,
+            Some("2026-04-23T12:00:00Z"),
+            Some(10.0),
+            Some(10.0),
+        );
+        candidate.last_action_source =
+            Some(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE.to_string());
+        candidate.last_action_at = Some("2026-03-23T11:59:20Z".to_string());
+        candidate.last_action_reason_code =
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_EGRESS_THROTTLED.to_string());
+
+        assert!(
+            !maintenance_interval_is_due(&candidate, 300, now),
+            "ordinary maintenance should still use egress-deferred actions as the retry anchor"
+        );
+    }
+
+    #[test]
+    fn resolve_due_maintenance_dispatch_plans_requeues_reset_due_after_deferred_egress_throttle() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 3, 23, 12, 0, 0)
+            .single()
+            .expect("valid time");
+        let settings = PoolRoutingMaintenanceSettings {
+            primary_sync_interval_secs: 300,
+            secondary_sync_interval_secs: 1800,
+            priority_available_account_cap: 100,
+        };
+        let mut candidate = maintenance_candidates(
+            17,
+            UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+            Some("2026-03-23T11:58:30Z"),
+            None,
+            Some("2026-04-23T12:00:00Z"),
+            Some(10.0),
+            Some(10.0),
+        );
+        candidate.primary_resets_at = Some("2026-03-23T11:59:00Z".to_string());
+        candidate.last_action_source =
+            Some(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE.to_string());
+        candidate.last_action_at = Some("2026-03-23T11:59:20Z".to_string());
+        candidate.last_action_reason_code =
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_EGRESS_THROTTLED.to_string());
+
+        let plans = resolve_due_maintenance_dispatch_plans(
+            vec![candidate],
+            settings,
+            Duration::from_secs(15 * 60),
+            now,
+        );
+
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].tier, MaintenanceTier::Priority);
+        assert_eq!(plans[0].sync_interval_secs, 300);
+    }
+
     fn test_routing_candidate(id: i64) -> AccountRoutingCandidateRow {
         AccountRoutingCandidateRow {
             id,

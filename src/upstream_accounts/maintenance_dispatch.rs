@@ -599,8 +599,20 @@ pub(crate) fn maintenance_last_attempt_recorded_after_reset(
     candidate: &MaintenanceCandidateRow,
     reset_at: DateTime<Utc>,
 ) -> bool {
-    maintenance_last_sync_attempt_at(candidate)
+    maintenance_last_reset_catchup_attempt_at(candidate)
         .is_some_and(|last_attempt_at| last_attempt_at >= reset_at)
+}
+
+fn maintenance_last_reset_catchup_attempt_at(
+    candidate: &MaintenanceCandidateRow,
+) -> Option<DateTime<Utc>> {
+    if maintenance_sync_action_is_deferred(candidate.last_action_reason_code.as_deref()) {
+        return candidate
+            .last_synced_at
+            .as_deref()
+            .and_then(parse_rfc3339_utc);
+    }
+    maintenance_last_sync_attempt_at(candidate)
 }
 
 pub(crate) fn maintenance_interval_is_due(
@@ -641,6 +653,13 @@ pub(crate) fn maintenance_reset_due(
 ) -> bool {
     maintenance_window_reset_due(candidate, candidate.primary_resets_at.as_deref(), now)
         || maintenance_window_reset_due(candidate, candidate.secondary_resets_at.as_deref(), now)
+}
+
+fn maintenance_sync_action_is_deferred(last_action_reason_code: Option<&str>) -> bool {
+    matches!(
+        last_action_reason_code,
+        Some(UPSTREAM_ACCOUNT_ACTION_REASON_EGRESS_THROTTLED)
+    )
 }
 
 pub(crate) fn maintenance_plan_is_due(

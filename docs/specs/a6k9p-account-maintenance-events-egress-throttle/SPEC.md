@@ -90,6 +90,7 @@
 - 预留成功才允许发送真实请求。
 - 运行期维护同步遇到同出口未到 10 秒槽位时，必须在有界预算内等待并重试预留，避免 reset due 账号因同代理批量调度长期只产生 `sync_deferred / egress_throttled`。
 - 等待预算耗尽后，预留失败返回结构化 throttle error，账号维护同步路径写入 deferred 事件。
+- `sync_deferred / egress_throttled` 不代表真实 usage snapshot 已执行；它不得消耗 reset due 账号的 post-reset catch-up 窗口，但仍应作为普通维护间隔的最近一次尝试记录，避免无限重排。
 
 ### Forward proxy egress IP metadata
 
@@ -108,6 +109,7 @@
 - Given 不同出口维护外呼，When 间隔小于 10 秒，Then 不互相阻塞。
 - Given 当前代理元数据已刷新，When 维护事件写入，Then 事件快照包含可展示出口 IP。
 - Given OAuth 账号处于 quota exhausted 且 reset due，When 维护同步排到同出口槽位，Then 能实际拉取后续 usage snapshot，并继续按 snapshot 是否 exhausted 来保持或退出限流。
+- Given OAuth 账号处于 quota exhausted 且 reset due，When 本轮维护因 egress throttle 写入 `sync_deferred`，Then 下一轮维护仍视为 reset due，直到真实同步尝试产生 usage snapshot 或真实失败结果。
 
 ## Visual Evidence
 
