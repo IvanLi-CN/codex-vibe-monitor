@@ -1481,6 +1481,8 @@ const baseTranslations = {
     "dashboard.workingConversations.promptCacheKeyLabel": "Prompt cache key",
     "dashboard.workingConversations.currentInvocation": "Current invocation",
     "dashboard.workingConversations.previousInvocation": "Previous invocation",
+    "dashboard.workingConversations.openConversation":
+      "Open conversation details",
     "dashboard.workingConversations.openInvocation": "Open invocation details",
     "dashboard.workingConversations.placeholderBadge": "Waiting",
     "dashboard.workingConversations.previousPlaceholder":
@@ -3411,6 +3413,7 @@ const baseTranslations = {
     "dashboard.workingConversations.promptCacheKeyLabel": "Prompt Cache Key",
     "dashboard.workingConversations.currentInvocation": "当前调用",
     "dashboard.workingConversations.previousInvocation": "上一条调用",
+    "dashboard.workingConversations.openConversation": "打开对话详情",
     "dashboard.workingConversations.openInvocation": "打开调用详情",
     "dashboard.workingConversations.placeholderBadge": "占位",
     "dashboard.workingConversations.previousPlaceholder":

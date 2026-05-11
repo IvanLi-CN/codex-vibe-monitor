@@ -48,9 +48,15 @@ interface DashboardWorkingConversationsSectionProps {
   onLoadMore?: () => void;
   setRefreshTargetCount?: (count: number) => void;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+  onOpenConversation?: (selection: DashboardWorkingConversationSelection) => void;
   onOpenInvocation?: (
     selection: DashboardWorkingConversationInvocationSelection,
   ) => void;
+}
+
+export interface DashboardWorkingConversationSelection {
+  conversationSequenceId: string;
+  promptCacheKey: string;
 }
 
 type StatusMeta = {
@@ -819,6 +825,7 @@ export function DashboardWorkingConversationsSection({
   onLoadMore,
   setRefreshTargetCount,
   onOpenUpstreamAccount,
+  onOpenConversation,
   onOpenInvocation,
 }: DashboardWorkingConversationsSectionProps) {
   const { t, locale } = useTranslation();
@@ -1208,7 +1215,7 @@ export function DashboardWorkingConversationsSection({
                                 new Date(card.sortAnchorEpoch),
                               )
                             : FALLBACK_CELL;
-                        const sequenceInvocationActionLabel = `${t("dashboard.workingConversations.openInvocation")} · ${t("dashboard.workingConversations.currentInvocation")} · ${displaySequenceId} · ${card.currentInvocation.record.invokeId}`;
+                        const sequenceConversationActionLabel = `${t("dashboard.workingConversations.openConversation")} · ${displaySequenceId} · ${card.promptCacheKey}`;
 
                         return (
                           <article
@@ -1229,20 +1236,18 @@ export function DashboardWorkingConversationsSection({
                           >
                             <div className="relative">
                               <div className="flex min-w-0 items-center justify-between gap-3">
-                                {onOpenInvocation ? (
+                                {onOpenConversation ? (
                                   <button
                                     type="button"
                                     data-testid="dashboard-working-conversation-sequence-button"
                                     className="inline-flex min-w-0 shrink cursor-pointer appearance-none items-center border-0 bg-transparent p-0 text-left font-mono text-[0.95rem] font-semibold tracking-[0.08em] text-base-content transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-                                    aria-label={sequenceInvocationActionLabel}
-                                    title={sequenceInvocationActionLabel}
+                                    aria-label={sequenceConversationActionLabel}
+                                    title={sequenceConversationActionLabel}
                                     onClick={() => {
-                                      onOpenInvocation({
-                                        slotKind: "current",
+                                      onOpenConversation({
                                         conversationSequenceId:
                                           card.conversationSequenceId,
                                         promptCacheKey: card.promptCacheKey,
-                                        invocation: card.currentInvocation,
                                       });
                                     }}
                                   >

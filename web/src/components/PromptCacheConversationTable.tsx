@@ -273,9 +273,11 @@ function PromptCacheConversationInvocationTable({
   );
 }
 
-function PromptCacheConversationHistoryDrawer({
+export function PromptCacheConversationHistoryDrawer({
   open,
   conversationKey,
+  conversationLabel,
+  disableLiveUpdates = false,
   onClose,
   t,
   onOpenUpstreamAccount,
@@ -284,6 +286,8 @@ function PromptCacheConversationHistoryDrawer({
 }: {
   open: boolean;
   conversationKey: string | null;
+  conversationLabel?: string | null;
+  disableLiveUpdates?: boolean;
   onClose: () => void;
   t: (key: string, values?: Record<string, string | number>) => string;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
@@ -467,6 +471,7 @@ function PromptCacheConversationHistoryDrawer({
   }, [clearPendingRefreshTimer, conversationKey, load, open]);
 
   useEffect(() => {
+    if (disableLiveUpdates) return;
     if (!open || !conversationKey) return;
     const unsubscribe = subscribeToSse((payload) => {
       if (payload.type !== "records") return;
@@ -487,18 +492,20 @@ function PromptCacheConversationHistoryDrawer({
     return unsubscribe;
   }, [
     conversationKey,
+    disableLiveUpdates,
     historyRecordMatchesConversationKey,
     open,
     triggerSseRefresh,
   ]);
 
   useEffect(() => {
+    if (disableLiveUpdates) return;
     if (!open) return;
     const unsubscribe = subscribeToSseOpen(() => {
       triggerOpenResync(true);
     });
     return unsubscribe;
-  }, [open, triggerOpenResync]);
+  }, [disableLiveUpdates, open, triggerOpenResync]);
 
   useEffect(
     () => () => {
@@ -513,6 +520,11 @@ function PromptCacheConversationHistoryDrawer({
     () => mergeInvocationRecordCollections(liveRecords, records),
     [liveRecords, records],
   );
+  const displayTitle = conversationLabel?.trim() || conversationKey || FALLBACK_CELL;
+  const shouldShowConversationKey =
+    Boolean(conversationLabel?.trim()) &&
+    Boolean(conversationKey?.trim()) &&
+    conversationLabel?.trim() !== conversationKey?.trim();
   const effectiveTotal = useMemo(() => {
     const loadedStableKeys = new Set(records.map(invocationStableKey));
     const optimisticCount = liveRecords.reduce(
@@ -538,8 +550,13 @@ function PromptCacheConversationHistoryDrawer({
               {t("live.conversations.drawer.eyebrow")}
             </p>
             <h2 id={titleId} className="section-title break-all">
-              {conversationKey || FALLBACK_CELL}
+              {displayTitle}
             </h2>
+            {shouldShowConversationKey ? (
+              <p className="break-all font-mono text-xs text-base-content/62">
+                {conversationKey}
+              </p>
+            ) : null}
             <p className="section-description">
               {t("live.conversations.drawer.description")}
             </p>

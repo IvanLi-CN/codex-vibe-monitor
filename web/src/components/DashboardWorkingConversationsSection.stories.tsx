@@ -1,6 +1,7 @@
 import {
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -8,7 +9,7 @@ import {
 } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, waitFor, within } from "storybook/test";
-import { I18nProvider } from "../i18n";
+import { I18nProvider, useTranslation } from "../i18n";
 import type {
   ApiInvocation,
   ApiInvocationRecordDetailResponse,
@@ -26,6 +27,7 @@ import {
 } from "../lib/dashboardWorkingConversations";
 import { DashboardInvocationDetailDrawer } from "./DashboardInvocationDetailDrawer";
 import { DashboardWorkingConversationsSection } from "./DashboardWorkingConversationsSection";
+import { PromptCacheConversationHistoryDrawer } from "./PromptCacheConversationTable";
 import { AccountDetailDrawerShell } from "./AccountDetailDrawerShell";
 
 function StorySurface({ children }: { children: ReactNode }) {
@@ -836,6 +838,7 @@ function HeadInsertAnchorStory() {
 
 function buildStoryMockData(response: PromptCacheConversationsResponse) {
   const recordsByInvokeId = new Map<string, ApiInvocation>();
+  const recordsByPromptCacheKey = new Map<string, ApiInvocation[]>();
   const detailByRecordId = new Map<number, ApiInvocationRecordDetailResponse>();
   const responseBodyByRecordId = new Map<
     number,
@@ -850,6 +853,13 @@ function buildStoryMockData(response: PromptCacheConversationsResponse) {
     for (const preview of conversation.recentInvocations) {
       const record = buildRecordFromPreview(preview);
       recordsByInvokeId.set(record.invokeId, record);
+      const conversationRecords =
+        recordsByPromptCacheKey.get(conversation.promptCacheKey) ?? [];
+      conversationRecords.push(record);
+      recordsByPromptCacheKey.set(
+        conversation.promptCacheKey,
+        conversationRecords,
+      );
 
       const normalizedStatus = (record.status ?? "").trim().toLowerCase();
       const isAbnormal =
@@ -910,6 +920,7 @@ function buildStoryMockData(response: PromptCacheConversationsResponse) {
 
   return {
     recordsByInvokeId,
+    recordsByPromptCacheKey,
     detailByRecordId,
     responseBodyByRecordId,
     poolAttemptsByInvokeId,
@@ -988,6 +999,76 @@ function StoryAccountDrawer({
   );
 }
 
+class StoryNoopEventSource implements EventTarget {
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSED = 2;
+
+  readonly url: string;
+  readonly withCredentials = false;
+  readyState = StoryNoopEventSource.CONNECTING;
+  onerror: ((this: EventSource, ev: Event) => unknown) | null = null;
+  onmessage: ((this: EventSource, ev: MessageEvent<string>) => unknown) | null = null;
+  onopen: ((this: EventSource, ev: Event) => unknown) | null = null;
+
+  private listeners = new Map<string, Set<EventListenerOrEventListenerObject>>();
+
+  constructor(url: string | URL) {
+    this.url = typeof url === "string" ? url : url.toString();
+    window.setTimeout(() => {
+      if (this.readyState === StoryNoopEventSource.CLOSED) return;
+      this.readyState = StoryNoopEventSource.OPEN;
+      this.dispatchEvent(new Event("open"));
+    }, 0);
+  }
+
+  addEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+  ) {
+    if (!listener) return;
+    const bucket =
+      this.listeners.get(type) ?? new Set<EventListenerOrEventListenerObject>();
+    bucket.add(listener);
+    this.listeners.set(type, bucket);
+  }
+
+  removeEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+  ) {
+    if (!listener) return;
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  dispatchEvent(event: Event) {
+    if (event.type === "open") {
+      this.onopen?.call(this as unknown as EventSource, event);
+    }
+    if (event.type === "message") {
+      this.onmessage?.call(
+        this as unknown as EventSource,
+        event as MessageEvent<string>,
+      );
+    }
+    if (event.type === "error") {
+      this.onerror?.call(this as unknown as EventSource, event);
+    }
+    for (const listener of this.listeners.get(event.type) ?? []) {
+      if (typeof listener === "function") {
+        listener(event);
+      } else {
+        listener.handleEvent(event);
+      }
+    }
+    return true;
+  }
+
+  close() {
+    this.readyState = StoryNoopEventSource.CLOSED;
+  }
+}
+
 function DrawerPreviewStory({
   response,
   initialSelection,
@@ -998,13 +1079,19 @@ function DrawerPreviewStory({
     slotKind: "current" | "previous";
   };
 }) {
+  const { t } = useTranslation();
   const cards = useMemo(() => buildCards(response), [response]);
   const storyMocks = useMemo(() => buildStoryMockData(response), [response]);
   const originalFetchRef = useRef<typeof window.fetch | null>(null);
+  const originalEventSourceRef = useRef<typeof window.EventSource | null>(null);
   const [selectedInvocation, setSelectedInvocation] =
     useState<DashboardWorkingConversationInvocationSelection | null>(() =>
       resolveInitialSelection(cards, initialSelection),
     );
+  const [selectedConversation, setSelectedConversation] = useState<{
+    promptCacheKey: string;
+    conversationSequenceId: string;
+  } | null>(null);
   const [selectedAccount, setSelectedAccount] = useState<{
     id: number;
     label: string;
@@ -1012,8 +1099,21 @@ function DrawerPreviewStory({
 
   useEffect(() => {
     setSelectedInvocation(resolveInitialSelection(cards, initialSelection));
+    setSelectedConversation(null);
     setSelectedAccount(null);
   }, [cards, initialSelection]);
+
+  useLayoutEffect(() => {
+    originalEventSourceRef.current = window.EventSource;
+    window.EventSource =
+      StoryNoopEventSource as unknown as typeof window.EventSource;
+    return () => {
+      if (originalEventSourceRef.current) {
+        window.EventSource = originalEventSourceRef.current;
+      }
+      originalEventSourceRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     if (!originalFetchRef.current) {
@@ -1039,6 +1139,18 @@ function DrawerPreviewStory({
             page: 1,
             pageSize: 1,
             records: record ? [record] : [],
+          });
+        }
+        const promptCacheKey = url.searchParams.get("promptCacheKey");
+        if (promptCacheKey) {
+          const records =
+            storyMocks.recordsByPromptCacheKey.get(promptCacheKey) ?? [];
+          return jsonResponse({
+            snapshotId: 1,
+            total: records.length,
+            page: Number(url.searchParams.get("page") ?? "1"),
+            pageSize: Number(url.searchParams.get("pageSize") ?? "200"),
+            records,
           });
         }
       }
@@ -1104,9 +1216,16 @@ function DrawerPreviewStory({
         error={null}
         onOpenUpstreamAccount={(accountId, accountLabel) => {
           setSelectedInvocation(null);
+          setSelectedConversation(null);
           setSelectedAccount({ id: accountId, label: accountLabel });
         }}
+        onOpenConversation={(selection) => {
+          setSelectedInvocation(null);
+          setSelectedAccount(null);
+          setSelectedConversation(selection);
+        }}
         onOpenInvocation={(selection) => {
+          setSelectedConversation(null);
           setSelectedAccount(null);
           setSelectedInvocation(selection);
         }}
@@ -1117,6 +1236,26 @@ function DrawerPreviewStory({
         onClose={() => setSelectedInvocation(null)}
         onOpenUpstreamAccount={(accountId, accountLabel) => {
           setSelectedInvocation(null);
+          setSelectedConversation(null);
+          setSelectedAccount({ id: accountId, label: accountLabel });
+        }}
+      />
+      <PromptCacheConversationHistoryDrawer
+        open={selectedConversation != null}
+        conversationKey={selectedConversation?.promptCacheKey ?? null}
+        conversationLabel={
+          selectedConversation
+            ? formatDashboardWorkingConversationSequenceId(
+                selectedConversation.conversationSequenceId,
+              )
+            : null
+        }
+        onClose={() => setSelectedConversation(null)}
+        t={t}
+        disableLiveUpdates
+        onOpenUpstreamAccount={(accountId, accountLabel) => {
+          setSelectedInvocation(null);
+          setSelectedConversation(null);
           setSelectedAccount({ id: accountId, label: accountLabel });
         }}
       />
@@ -1129,9 +1268,11 @@ function DrawerPreviewStory({
         <span data-testid="story-drawer-state" className="font-mono">
           {selectedInvocation
             ? `invocation:${selectedInvocation.invocation.record.invokeId}`
-            : selectedAccount
-              ? `account:${selectedAccount.id}`
-              : "none"}
+            : selectedConversation
+              ? `conversation:${selectedConversation.promptCacheKey}`
+              : selectedAccount
+                ? `account:${selectedAccount.id}`
+                : "none"}
         </span>
       </div>
     </>
@@ -1305,7 +1446,7 @@ export const FailedWithClickableAccount: Story = {
   },
 };
 
-export const SequenceButtonOpensCurrentInvocation: Story = {
+export const SequenceButtonOpensConversationDrawer: Story = {
   args: {
     cards: [],
     isLoading: false,
@@ -1324,19 +1465,23 @@ export const SequenceButtonOpensCurrentInvocation: Story = {
     await waitFor(() => {
       expect(
         document.body.querySelector(
-          '[data-testid="dashboard-invocation-detail-drawer"]',
-        ),
-      ).not.toBeNull();
+          '[data-testid="story-drawer-state"]',
+        )?.textContent,
+      ).toContain("conversation:pck-failed-clickable");
     });
     await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
-      "invocation:invoke-failed-clickable-current",
+      "conversation:pck-failed-clickable",
     );
+    expect(document.body.textContent ?? "").toContain(
+      sequenceButton.textContent ?? "",
+    );
+    expect(document.body.textContent ?? "").toContain("pck-failed-clickable");
   },
   parameters: {
     docs: {
       description: {
         story:
-          "Only the compact conversation sequence id is a hot zone for opening the current invocation drawer; the rest of the card header remains passive.",
+          "Only the compact conversation sequence id is a hot zone for opening the conversation history drawer; invocation slots still own invocation detail navigation.",
       },
     },
   },
