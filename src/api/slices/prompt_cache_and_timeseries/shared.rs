@@ -236,6 +236,7 @@ pub(crate) async fn query_pool_attempt_records_from_live(
             attempts.upstream_account_id,
             accounts.display_name AS upstream_account_name,
             attempts.upstream_route_key,
+            attempts.proxy_binding_key_snapshot,
             attempts.attempt_index,
             attempts.distinct_account_index,
             attempts.same_account_retry_index,

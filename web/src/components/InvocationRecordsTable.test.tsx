@@ -407,6 +407,7 @@ describe("InvocationRecordsTable", () => {
         sameAccountRetryIndex: 1,
         status: "success",
         httpStatus: 200,
+        proxyBindingKeySnapshot: "__direct__",
         createdAt: "2026-03-10T00:00:01Z",
         upstreamAccountId: 42,
         upstreamAccountName: "pool-account-42",
@@ -445,6 +446,8 @@ describe("InvocationRecordsTable", () => {
       host?.querySelector('[data-testid="pool-attempts-list"]'),
     ).not.toBeNull();
     expect(host?.textContent ?? "").toContain("pool-account-42");
+    expect(host?.textContent ?? "").toContain("table.poolAttempts.proxy");
+    expect(host?.textContent ?? "").toContain("Direct");
   });
 
   it("renders the pool attempt error state when lazy loading fails", async () => {
@@ -503,6 +506,7 @@ describe("InvocationRecordsTable", () => {
           "failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
         downstreamErrorMessage:
           "pool upstream responded with 502: failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
+        proxyBindingKeySnapshot: "fpb_failed_oauth_bridge",
         createdAt: "2026-03-10T00:00:02Z",
         upstreamAccountId: 42,
         upstreamAccountName: "pool-account-42",
@@ -558,6 +562,7 @@ describe("InvocationRecordsTable", () => {
       "failed to contact oauth codex upstream",
     );
     expect(host?.textContent ?? "").toContain("pool upstream responded with 502");
+    expect(host?.textContent ?? "").toContain("fpb_failed_oauth_bridge");
   });
 
   it("uses downstream-facing diagnostics as the collapsed exception summary when upstream is empty", () => {
