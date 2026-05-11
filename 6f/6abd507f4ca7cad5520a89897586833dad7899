@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.60.3",
+  "base_stable_version": "1.60.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-05-11T02:33:54Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.60.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "8ca20c20f07e1a5730fb09617a5de5e0b8d66955",
+  "pr_number": 411,
+  "pr_title": "fix(upstream-accounts): preserve reset catch-up after deferred sync",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.60.3",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.60.3",
+  "target_sha": "6f6abd507f4ca7cad5520a89897586833dad7899",
+  "type_label": "type:patch"
+}
