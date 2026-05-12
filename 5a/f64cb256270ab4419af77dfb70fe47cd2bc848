@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.60.6",
+  "base_stable_version": "1.60.5",
+  "channel_label": "channel:stable",
+  "created_at": "2026-05-12T07:33:23Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.60.6",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "5e943ed33f37e05d1ba613a9d7e2b0b0924b02a4",
+  "pr_number": 413,
+  "pr_title": "fix(web): open dashboard conversation details from sequence",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.60.6",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.60.6",
+  "target_sha": "5af64cb256270ab4419af77dfb70fe47cd2bc848",
+  "type_label": "type:patch"
+}
