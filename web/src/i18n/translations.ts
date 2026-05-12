@@ -3601,7 +3601,7 @@ const baseTranslations = {
     "live.conversations.drawer.close": "关闭调用记录抽屉",
     "live.conversations.drawer.eyebrow": "全部保留调用记录",
     "live.conversations.drawer.description":
-      "按时间倒序展示当前仍可回放的原始调用记录。",
+      "覆盖从首条到最新一条当前仍可回放的原始调用记录。",
     "live.conversations.drawer.progress":
       "已加载 {{loaded}} / {{total}} 条保留调用记录",
     "live.conversations.drawer.progressComplete": "共 {{count}} 条保留调用记录",

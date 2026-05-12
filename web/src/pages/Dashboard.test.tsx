@@ -193,18 +193,6 @@ vi.mock("../components/DashboardWorkingConversationsSection", () => ({
           </button>
           <button
             type="button"
-            data-testid="dashboard-open-conversation"
-            onClick={() =>
-              onOpenConversation?.({
-                conversationSequenceId: cards[0].conversationSequenceId,
-                promptCacheKey: cards[0].promptCacheKey,
-              })
-            }
-          >
-            open conversation
-          </button>
-          <button
-            type="button"
             data-testid="dashboard-open-account"
             onClick={() =>
               onOpenUpstreamAccount?.(77, "section-account@example.com")
@@ -862,11 +850,6 @@ describe("DashboardPage", () => {
     expect(
       host?.querySelector(
         '[data-testid="dashboard-invocation-detail-drawer-mock"]',
-      ),
-    ).toBeNull();
-    expect(
-      host?.querySelector(
-        '[data-testid="dashboard-conversation-history-drawer-mock"]',
       ),
     ).toBeNull();
     expect(

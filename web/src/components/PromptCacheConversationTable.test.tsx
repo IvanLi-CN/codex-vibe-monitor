@@ -1015,6 +1015,95 @@ describe("PromptCacheConversationTable", () => {
     expect(document.body.textContent).not.toContain("全部保留调用记录");
   });
 
+  it("keeps a single historical invocation visible in the activity chart", async () => {
+    apiMocks.fetchInvocationRecordsSummary.mockResolvedValueOnce({
+      snapshotId: 900,
+      newRecordsCount: 0,
+      totalCount: 1,
+      successCount: 1,
+      failureCount: 0,
+      totalCost: 0.31,
+      totalTokens: 1500,
+      token: {
+        requestCount: 1,
+        totalTokens: 1500,
+        avgTokensPerRequest: 1500,
+        cacheInputTokens: 300,
+        totalCost: 0.31,
+      },
+      network: {
+        avgTtfbMs: null,
+        p95TtfbMs: null,
+        avgTotalMs: 12345,
+        p95TotalMs: 12345,
+      },
+      exception: {
+        failureCount: 0,
+        serviceFailureCount: 0,
+        clientFailureCount: 0,
+        clientAbortCount: 0,
+        actionableFailureCount: 0,
+      },
+    });
+    apiMocks.fetchInvocationRecords.mockResolvedValue({
+      snapshotId: 901,
+      total: 1,
+      page: 1,
+      pageSize: 200,
+      records: [
+        {
+          id: 71,
+          invokeId: "single-history-71",
+          occurredAt: "2026-02-01T12:30:00Z",
+          status: "completed",
+          failureClass: "none",
+          totalTokens: 1500,
+          cost: 0.31,
+          endpoint: "/v1/responses",
+          promptCacheKey: "pck-single-history",
+          upstreamAccountId: 101,
+          upstreamAccountName: "Pool Alpha",
+          proxyDisplayName: "Proxy West",
+          createdAt: "2026-02-01T12:30:00Z",
+        },
+      ],
+    });
+
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-single-history",
+          requestCount: 1,
+          totalTokens: 1500,
+          totalCost: 0.31,
+          createdAt: "2026-02-01T12:30:00Z",
+          lastActivityAt: "2026-02-01T12:30:00Z",
+          last24hRequests: [],
+        }),
+      ],
+    });
+
+    const historyButton = findButtonByAriaLabel("打开全部调用记录");
+    expect(historyButton).toBeTruthy();
+
+    await act(async () => {
+      historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+
+    const chart = document.querySelector(
+      '[data-testid="conversation-activity-chart"]',
+    );
+    expect(chart?.getAttribute("data-visible-total-count")).toBe("1");
+    expect(document.body.textContent).toContain("Proxy West");
+  });
+
   it("streams live history rows into the open drawer and replaces running snapshots with final records", async () => {
     let resolveRefresh!: (value: {
       snapshotId: number;

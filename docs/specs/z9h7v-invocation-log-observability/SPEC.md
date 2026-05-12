@@ -127,9 +127,9 @@
   image:
   ![号池终态记录拆分效果](visual-evidence/pool-terminal-state.png)
 - source_type: storybook_canvas
-  story_id_or_title: Dashboard/WorkingConversationsSection/SequenceButtonOpensConversationHistory
+  story_id_or_title: Dashboard/WorkingConversationsSection/ConversationHistoryDrawerOpen
   state: dashboard conversation history drawer
-  evidence_note: verifies the dashboard conversation sequence opens the full retained call history drawer with no time-range selector, while records remain newest-first.
+  evidence_note: verifies the dashboard conversation detail opens to the full retained call history drawer with no time-range selector, paginates the 316-record retained history snapshot, renders the zoomable and pannable activity chart, keeps records newest-first, and uses the dark floating tooltip surface.
   image:
   ![Dashboard conversation history drawer](visual-evidence/dashboard-conversation-history-drawer.png)
 
