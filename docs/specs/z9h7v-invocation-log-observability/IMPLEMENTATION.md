@@ -31,4 +31,4 @@
 - [x] M3: 前端表格与文案升级（主表 + 详情）。
 - [x] M4: 历史记录全量回填与幂等校验。
 - [x] M5: 回归验证通过并完成本地提交。
-- [x] M6: 调用详情移除 `source` 展示与代理名 fallback；号池尝试明细展示 `proxyBindingKeySnapshot`。
+- [x] M6: 调用详情移除 `source` 展示与代理名 fallback；号池尝试明细展示从 `proxyBindingKeySnapshot` 解析出的代理显示名，解析失败时使用紧凑 key fallback。
