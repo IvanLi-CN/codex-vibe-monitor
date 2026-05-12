@@ -67,8 +67,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Configure git identity for release notes
         run: |
@@ -385,7 +383,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.release-meta.outputs.target_sha }}
-          fetch-depth: 0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
