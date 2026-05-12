@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { AppIcon } from "./AppIcon";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
@@ -9,7 +9,9 @@ import {
   type ApiInvocation,
   type ApiInvocationAbnormalResponseBodyPreview,
   type ApiPoolUpstreamRequestAttempt,
+  type ForwardProxyBindingNode,
 } from "../lib/api";
+import { useForwardProxyBindingNodes } from "../hooks/useForwardProxyBindingNodes";
 import {
   formatProxyWeightDelta,
   formatResponseContentEncoding,
@@ -240,10 +242,62 @@ export function resolveProxyDisplayName(record: ApiInvocation) {
   return FALLBACK_CELL;
 }
 
-function formatPoolAttemptProxyBindingKey(attempt: ApiPoolUpstreamRequestAttempt) {
+function compactProxyBindingKey(proxyBindingKey: string) {
+  if (proxyBindingKey.length <= 18) return proxyBindingKey;
+  return `${proxyBindingKey.slice(0, 8)}...${proxyBindingKey.slice(-6)}`;
+}
+
+function collectPoolAttemptProxyBindingKeys(
+  attempts: ApiPoolUpstreamRequestAttempt[] | undefined,
+) {
+  if (!attempts?.length) return [];
+  return Array.from(
+    new Set(
+      attempts
+        .map((attempt) => attempt.proxyBindingKeySnapshot?.trim() ?? "")
+        .filter((key) => key.length > 0 && key !== "__direct__"),
+    ),
+  ).sort((left, right) => left.localeCompare(right));
+}
+
+function buildForwardProxyBindingNodeMap(nodes: ForwardProxyBindingNode[]) {
+  const entries = new Map<string, ForwardProxyBindingNode>();
+  for (const node of nodes) {
+    entries.set(node.key, node);
+    for (const aliasKey of node.aliasKeys ?? []) {
+      entries.set(aliasKey, node);
+    }
+  }
+  return entries;
+}
+
+function formatPoolAttemptProxyBindingDisplay(
+  attempt: ApiPoolUpstreamRequestAttempt,
+  proxyBindingNodesByKey: Map<string, ForwardProxyBindingNode>,
+) {
   const proxyBindingKey = attempt.proxyBindingKeySnapshot?.trim();
-  if (!proxyBindingKey) return FALLBACK_CELL;
-  return proxyBindingKey === "__direct__" ? "Direct" : proxyBindingKey;
+  if (!proxyBindingKey) {
+    return { value: FALLBACK_CELL, title: FALLBACK_CELL, resolved: false };
+  }
+  if (proxyBindingKey === "__direct__") {
+    return { value: "Direct", title: "Direct", resolved: true };
+  }
+
+  const node = proxyBindingNodesByKey.get(proxyBindingKey);
+  const displayName = node?.displayName.trim();
+  if (displayName && displayName !== proxyBindingKey) {
+    return {
+      value: displayName,
+      title: `${displayName} (${proxyBindingKey})`,
+      resolved: true,
+    };
+  }
+
+  return {
+    value: compactProxyBindingKey(proxyBindingKey),
+    title: proxyBindingKey,
+    resolved: false,
+  };
 }
 
 export function renderFastIndicator(state: FastIndicatorState, t: Translator) {
@@ -1296,6 +1350,7 @@ export function useInvocationPoolAttempts(
 function renderPoolAttemptsContent(
   record: ApiInvocation,
   poolAttemptsState: InvocationPoolAttemptsState,
+  proxyBindingNodesByKey: Map<string, ForwardProxyBindingNode>,
   t: Translator,
 ) {
   const invokeId = record.invokeId;
@@ -1359,8 +1414,10 @@ function renderPoolAttemptsContent(
             const downstreamHttpStatusValue = formatOptionalStatusCode(
               attempt.downstreamHttpStatus,
             );
-            const proxyBindingKeyValue =
-              formatPoolAttemptProxyBindingKey(attempt);
+            const proxyBindingDisplay = formatPoolAttemptProxyBindingDisplay(
+              attempt,
+              proxyBindingNodesByKey,
+            );
 
             return (
               <div
@@ -1400,10 +1457,16 @@ function renderPoolAttemptsContent(
                       {t("table.poolAttempts.proxy")}
                     </span>
                     <span
-                      className="min-w-0 truncate whitespace-nowrap font-mono"
-                      title={proxyBindingKeyValue}
+                      className={cn(
+                        "min-w-0 truncate whitespace-nowrap",
+                        proxyBindingDisplay.resolved
+                          ? "font-medium"
+                          : "font-mono",
+                      )}
+                      title={proxyBindingDisplay.title}
+                      data-testid="pool-attempt-proxy-value"
                     >
-                      {proxyBindingKeyValue}
+                      {proxyBindingDisplay.value}
                     </span>
                   </div>
                   <div className="flex items-start gap-2">
@@ -1563,6 +1626,21 @@ export function InvocationExpandedDetails({
   showFullDetailsAction = false,
   t,
 }: InvocationExpandedDetailsProps) {
+  const poolAttempts = poolAttemptsState.attemptsByInvokeId[record.invokeId];
+  const poolAttemptProxyBindingKeys = useMemo(
+    () => collectPoolAttemptProxyBindingKeys(poolAttempts),
+    [poolAttempts],
+  );
+  const { nodes: poolAttemptProxyBindingNodes } = useForwardProxyBindingNodes(
+    poolAttemptProxyBindingKeys,
+    {
+      enabled: poolAttemptProxyBindingKeys.length > 0,
+    },
+  );
+  const poolAttemptProxyBindingNodesByKey = useMemo(
+    () => buildForwardProxyBindingNodeMap(poolAttemptProxyBindingNodes),
+    [poolAttemptProxyBindingNodes],
+  );
   const canonicalUpstreamError = errorMessage.trim();
   const upstreamRawError = record.upstreamErrorMessage?.trim() ?? "";
   const downstreamErrorMessage = record.downstreamErrorMessage?.trim() ?? "";
@@ -1695,7 +1773,12 @@ export function InvocationExpandedDetails({
         </div>
       ) : null}
 
-      {renderPoolAttemptsContent(record, poolAttemptsState, t)}
+      {renderPoolAttemptsContent(
+        record,
+        poolAttemptsState,
+        poolAttemptProxyBindingNodesByKey,
+        t,
+      )}
 
       {showUpstreamErrorSection ? (
         <div className="flex flex-col gap-2">

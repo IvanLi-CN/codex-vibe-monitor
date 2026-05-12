@@ -3,6 +3,7 @@ import type {
   ApiInvocationRecordDetailResponse,
   ApiInvocationResponseBodyResponse,
   ApiPoolUpstreamRequestAttempt,
+  ForwardProxyBindingNode,
   InvocationExceptionSummary,
   InvocationNetworkSummary,
   InvocationRecordsResponse,
@@ -10,6 +11,29 @@ import type {
   InvocationTokenSummary,
   StatsResponse,
 } from '../lib/api'
+
+function formatStoryProxyBindingDisplayName(key: string) {
+  if (key === 'fpb_story_pool_attempt_lifecycle') return 'Storybook Dallas Egress'
+  const storyAttemptMatch = key.match(/^fpb_story_inv_story_(\d+)_(\d+)$/)
+  if (storyAttemptMatch) {
+    return `Story Proxy ${storyAttemptMatch[1]}-${storyAttemptMatch[2]}`
+  }
+  return `Story Proxy ${key.slice(-6)}`
+}
+
+export function createStoryForwardProxyBindingNodes(keys: string[]): ForwardProxyBindingNode[] {
+  return Array.from(new Set(keys.map((key) => key.trim()).filter(Boolean)))
+    .filter((key) => key !== '__direct__')
+    .map((key) => ({
+      key,
+      source: 'storybook',
+      displayName: formatStoryProxyBindingDisplayName(key),
+      protocolLabel: 'HTTP',
+      penalized: false,
+      selectable: true,
+      last24h: [],
+    }))
+}
 
 export const STORYBOOK_INVOCATION_RECORDS: ApiInvocation[] = [
   {

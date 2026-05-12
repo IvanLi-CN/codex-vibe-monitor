@@ -16,6 +16,7 @@ import { I18nProvider, useTranslation } from "../i18n";
 import type { ApiInvocation } from "../lib/api";
 import type { UpstreamAccountDetail } from "../lib/api";
 import type { BroadcastPayload } from "../lib/api";
+import type { ForwardProxyBindingNode } from "../lib/api";
 import {
   formatProxyWeightDelta,
   formatServiceTier,
@@ -34,6 +35,12 @@ const apiMocks = vi.hoisted(() => ({
   fetchUpstreamAccountDetail:
     vi.fn<(accountId: number) => Promise<UpstreamAccountDetail>>(),
   fetchInvocationPoolAttempts: vi.fn(),
+  fetchForwardProxyBindingNodes: vi.fn<
+    (
+      keys?: string[],
+      options?: { includeCurrent?: boolean; groupName?: string },
+    ) => Promise<ForwardProxyBindingNode[]>
+  >(),
 }));
 
 const sseMocks = vi.hoisted(() => ({
@@ -47,6 +54,7 @@ vi.mock("../lib/api", async () => {
     ...actual,
     fetchUpstreamAccountDetail: apiMocks.fetchUpstreamAccountDetail,
     fetchInvocationPoolAttempts: apiMocks.fetchInvocationPoolAttempts,
+    fetchForwardProxyBindingNodes: apiMocks.fetchForwardProxyBindingNodes,
   };
 });
 
@@ -88,7 +96,9 @@ beforeAll(() => {
 beforeEach(() => {
   apiMocks.fetchUpstreamAccountDetail.mockReset();
   apiMocks.fetchInvocationPoolAttempts.mockReset();
+  apiMocks.fetchForwardProxyBindingNodes.mockReset();
   apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([]);
+  apiMocks.fetchForwardProxyBindingNodes.mockResolvedValue([]);
   sseMocks.onMessage = null;
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -887,6 +897,17 @@ describe("InvocationTable", () => {
         createdAt: "2026-03-07T03:13:52Z",
       },
     ]);
+    apiMocks.fetchForwardProxyBindingNodes.mockResolvedValue([
+      {
+        key: "fpb_pool_attempt_visible",
+        source: "manual",
+        displayName: "Dallas Egress 01",
+        protocolLabel: "HTTP",
+        penalized: false,
+        selectable: true,
+        last24h: [],
+      },
+    ]);
 
     await renderInteractiveTable([
       {
@@ -922,15 +943,27 @@ describe("InvocationTable", () => {
     expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenCalledWith(
       "invocation-pool-attempts-visible",
     );
+    await waitForCondition(
+      () => apiMocks.fetchForwardProxyBindingNodes.mock.calls.length > 0,
+    );
+    expect(apiMocks.fetchForwardProxyBindingNodes).toHaveBeenCalledWith(
+      ["fpb_pool_attempt_visible"],
+      { includeCurrent: true, groupName: undefined },
+    );
 
     await waitForCondition(
-      () =>
-        document.querySelector('[data-testid="pool-attempt-item"]') !== null,
+      () => document.body.textContent?.includes("Dallas Egress 01") ?? false,
     );
 
     expect(document.body.textContent).toContain("号池尝试明细");
     expect(document.body.textContent).toContain("代理");
-    expect(document.body.textContent).toContain("fpb_pool_attempt_visible");
+    expect(document.body.textContent).toContain("Dallas Egress 01");
+    expect(document.body.textContent).not.toContain("fpb_pool_attempt_visible");
+    expect(
+      document
+        .querySelector('[data-testid="pool-attempt-proxy-value"]')
+        ?.getAttribute("title"),
+    ).toBe("Dallas Egress 01 (fpb_pool_attempt_visible)");
     expect(document.body.textContent).toContain("pool-account-a");
     expect(document.body.textContent).toContain("成功");
   });

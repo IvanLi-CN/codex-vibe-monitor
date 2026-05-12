@@ -11,7 +11,10 @@ import type {
   UpstreamAccountSummary,
 } from '../lib/api'
 import { invocationStableKey } from '../lib/invocation'
-import { STORYBOOK_FIRST_RESPONSE_BYTE_SEMANTICS_RECORDS } from './invocationRecordsStoryFixtures'
+import {
+  createStoryForwardProxyBindingNodes,
+  STORYBOOK_FIRST_RESPONSE_BYTE_SEMANTICS_RECORDS,
+} from './invocationRecordsStoryFixtures'
 import AccountPoolLayout from '../pages/account-pool/AccountPoolLayout'
 import UpstreamAccountsPage, { SharedUpstreamAccountDetailDrawer } from '../pages/account-pool/UpstreamAccounts'
 import { SystemNotificationProvider } from './ui/system-notifications'
@@ -924,6 +927,9 @@ function StorybookInvocationTableMock({ children }: { children: ReactNode }) {
             items: [],
           })
         }
+        if (url.pathname === '/api/pool/forward-proxy-binding-nodes') {
+          return jsonResponse(createStoryForwardProxyBindingNodes(url.searchParams.getAll('key')))
+        }
         const match = url.pathname.match(/^\/api\/pool\/upstream-accounts\/(\d+)$/)
         if (match) {
           const detail = accountDetails.get(Number(match[1]))
@@ -1622,6 +1628,7 @@ export const PoolAttemptDetailLifecycle: Story = {
       async () => {
         await expect(canvas.getByText(/号池尝试明细|pool attempt details/i)).toBeInTheDocument()
         await expect(canvas.getByText(/进行中|pending|running/i)).toBeInTheDocument()
+        await expect(canvas.getByText(/Storybook Dallas Egress/i)).toBeInTheDocument()
       },
       { timeout: 3000 },
     )

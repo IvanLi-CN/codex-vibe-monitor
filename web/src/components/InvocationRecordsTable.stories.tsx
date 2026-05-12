@@ -9,6 +9,7 @@ import type {
 } from '../lib/api'
 import { InvocationRecordsTable } from './InvocationRecordsTable'
 import {
+  createStoryForwardProxyBindingNodes,
   createStoryInvocationRecordDetailsById,
   createStoryInvocationResponseBodiesById,
   createStoryPoolAttemptsByInvokeId,
@@ -69,6 +70,7 @@ function ensureStorybookPoolAttemptsRegistry() {
     const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
     const url = new URL(requestUrl, window.location.origin)
     const poolAttemptsMatch = url.pathname.match(/^\/api\/invocations\/([^/]+)\/pool-attempts$/)
+    const proxyBindingNodesMatch = url.pathname === '/api/pool/forward-proxy-binding-nodes'
     const detailMatch = url.pathname.match(/^\/api\/invocations\/(\d+)\/detail$/)
     const responseBodyMatch = url.pathname.match(/^\/api\/invocations\/(\d+)\/response-body$/)
 
@@ -84,6 +86,10 @@ function ensureStorybookPoolAttemptsRegistry() {
       }
 
       return jsonResponse([])
+    }
+
+    if (proxyBindingNodesMatch) {
+      return jsonResponse(createStoryForwardProxyBindingNodes(url.searchParams.getAll('key')))
     }
 
     if (detailMatch) {

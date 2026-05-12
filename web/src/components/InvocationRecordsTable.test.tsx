@@ -1,15 +1,33 @@
 /** @vitest-environment jsdom */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { InvocationRecordsTable } from "./InvocationRecordsTable";
-import type { ApiInvocation, ApiPoolUpstreamRequestAttempt } from "../lib/api";
+import type {
+  ApiInvocation,
+  ApiPoolUpstreamRequestAttempt,
+  ForwardProxyBindingNode,
+} from "../lib/api";
 
 const { apiMocks } = vi.hoisted(() => ({
   apiMocks: {
     fetchInvocationPoolAttempts: vi.fn(),
     fetchInvocationRecordDetail: vi.fn(),
     fetchInvocationResponseBody: vi.fn(),
+    fetchForwardProxyBindingNodes: vi.fn<
+      (
+        keys?: string[],
+        options?: { includeCurrent?: boolean; groupName?: string },
+      ) => Promise<ForwardProxyBindingNode[]>
+    >(),
   },
 }));
 
@@ -21,6 +39,7 @@ vi.mock("../lib/api", async () => {
     fetchInvocationPoolAttempts: apiMocks.fetchInvocationPoolAttempts,
     fetchInvocationRecordDetail: apiMocks.fetchInvocationRecordDetail,
     fetchInvocationResponseBody: apiMocks.fetchInvocationResponseBody,
+    fetchForwardProxyBindingNodes: apiMocks.fetchForwardProxyBindingNodes,
   };
 });
 
@@ -46,6 +65,10 @@ beforeAll(() => {
   });
 });
 
+beforeEach(() => {
+  apiMocks.fetchForwardProxyBindingNodes.mockResolvedValue([]);
+});
+
 afterEach(() => {
   act(() => {
     root?.unmount();
@@ -57,6 +80,8 @@ afterEach(() => {
   apiMocks.fetchInvocationPoolAttempts.mockReset();
   apiMocks.fetchInvocationRecordDetail.mockReset();
   apiMocks.fetchInvocationResponseBody.mockReset();
+  apiMocks.fetchForwardProxyBindingNodes.mockReset();
+  apiMocks.fetchForwardProxyBindingNodes.mockResolvedValue([]);
 });
 
 function render(ui: React.ReactNode) {
@@ -512,6 +537,17 @@ describe("InvocationRecordsTable", () => {
         upstreamAccountName: "pool-account-42",
       },
     ]);
+    apiMocks.fetchForwardProxyBindingNodes.mockResolvedValue([
+      {
+        key: "fpb_failed_oauth_bridge",
+        source: "missing",
+        displayName: "OAuth Bridge Proxy",
+        protocolLabel: "HTTP",
+        penalized: false,
+        selectable: true,
+        last24h: [],
+      },
+    ]);
 
     render(
       <InvocationRecordsTable
@@ -562,7 +598,85 @@ describe("InvocationRecordsTable", () => {
       "failed to contact oauth codex upstream",
     );
     expect(host?.textContent ?? "").toContain("pool upstream responded with 502");
-    expect(host?.textContent ?? "").toContain("fpb_failed_oauth_bridge");
+    await waitFor(() =>
+      (host?.textContent ?? "").includes("OAuth Bridge Proxy"),
+    );
+    expect(apiMocks.fetchForwardProxyBindingNodes).toHaveBeenCalledWith(
+      ["fpb_failed_oauth_bridge"],
+      { includeCurrent: true, groupName: undefined },
+    );
+    expect(host?.textContent ?? "").toContain("OAuth Bridge Proxy");
+    expect(host?.textContent ?? "").not.toContain("fpb_failed_oauth_bridge");
+    expect(
+      host
+        ?.querySelector('[data-testid="pool-attempt-proxy-value"]')
+        ?.getAttribute("title"),
+    ).toBe("OAuth Bridge Proxy (fpb_failed_oauth_bridge)");
+  });
+
+  it("renders an unresolved pool attempt proxy as a compact single-line key", async () => {
+    apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([
+      {
+        id: 20,
+        invokeId: "invoke-unresolved-proxy",
+        occurredAt: "2026-03-10T00:00:00Z",
+        endpoint: "/v1/responses",
+        attemptIndex: 1,
+        distinctAccountIndex: 1,
+        sameAccountRetryIndex: 1,
+        status: "transport_failure",
+        proxyBindingKeySnapshot: "fpb_281c35167c1348e9d84a9f7dd26",
+        createdAt: "2026-03-10T00:00:02Z",
+        upstreamAccountId: 42,
+        upstreamAccountName: "pool-account-42",
+      },
+    ]);
+    apiMocks.fetchForwardProxyBindingNodes.mockResolvedValue([
+      {
+        key: "fpb_281c35167c1348e9d84a9f7dd26",
+        source: "missing",
+        displayName: "fpb_281c35167c1348e9d84a9f7dd26",
+        protocolLabel: "UNKNOWN",
+        penalized: false,
+        selectable: false,
+        last24h: [],
+      },
+    ]);
+
+    render(
+      <InvocationRecordsTable
+        focus="network"
+        isLoading={false}
+        records={[
+          createRecord({
+            id: 34,
+            invokeId: "invoke-unresolved-proxy",
+            routeMode: "pool",
+            upstreamAccountId: 42,
+            upstreamAccountName: "pool-account-42",
+            poolAttemptCount: 1,
+            poolDistinctAccountCount: 1,
+          }),
+        ]}
+      />,
+    );
+
+    clickFirstToggle();
+
+    await waitFor(
+      () =>
+        host?.querySelector('[data-testid="pool-attempt-proxy-value"]') != null,
+    );
+
+    const proxyValue = host?.querySelector(
+      '[data-testid="pool-attempt-proxy-value"]',
+    );
+    expect(proxyValue?.textContent).toBe("fpb_281c...f7dd26");
+    expect(proxyValue?.getAttribute("title")).toBe(
+      "fpb_281c35167c1348e9d84a9f7dd26",
+    );
+    expect(proxyValue?.className).toContain("whitespace-nowrap");
+    expect(proxyValue?.className).toContain("truncate");
   });
 
   it("uses downstream-facing diagnostics as the collapsed exception summary when upstream is empty", () => {
