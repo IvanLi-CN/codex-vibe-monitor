@@ -927,6 +927,73 @@ function buildStoryMockData(response: PromptCacheConversationsResponse) {
   };
 }
 
+function buildStoryInvocationSummary(records: ApiInvocation[]) {
+  const failureRecords = records.filter(
+    (record) =>
+      (record.failureClass ?? "").trim().toLowerCase() !== "none" &&
+      (record.failureClass ?? "").trim() !== "",
+  );
+  const totalMsRecords = records.filter(
+    (record) =>
+      typeof record.tTotalMs === "number" && Number.isFinite(record.tTotalMs),
+  );
+  const avgTotalMs =
+    totalMsRecords.length === 0
+      ? null
+      : totalMsRecords.reduce((sum, record) => sum + (record.tTotalMs ?? 0), 0) /
+        totalMsRecords.length;
+
+  return {
+    snapshotId: 1,
+    newRecordsCount: 0,
+    totalCount: records.length,
+    successCount: records.length - failureRecords.length,
+    failureCount: failureRecords.length,
+    totalCost: records.reduce((sum, record) => sum + (record.cost ?? 0), 0),
+    totalTokens: records.reduce(
+      (sum, record) => sum + (record.totalTokens ?? 0),
+      0,
+    ),
+    token: {
+      requestCount: records.length,
+      totalTokens: records.reduce(
+        (sum, record) => sum + (record.totalTokens ?? 0),
+        0,
+      ),
+      avgTokensPerRequest:
+        records.length === 0
+          ? 0
+          : records.reduce((sum, record) => sum + (record.totalTokens ?? 0), 0) /
+            records.length,
+      cacheInputTokens: records.reduce(
+        (sum, record) => sum + (record.cacheInputTokens ?? 0),
+        0,
+      ),
+      totalCost: records.reduce((sum, record) => sum + (record.cost ?? 0), 0),
+    },
+    network: {
+      avgTtfbMs: null,
+      p95TtfbMs: null,
+      avgTotalMs,
+      p95TotalMs: avgTotalMs,
+    },
+    exception: {
+      failureCount: failureRecords.length,
+      serviceFailureCount: failureRecords.filter(
+        (record) => record.failureClass === "service_failure",
+      ).length,
+      clientFailureCount: failureRecords.filter(
+        (record) => record.failureClass === "client_failure",
+      ).length,
+      clientAbortCount: failureRecords.filter(
+        (record) => record.failureClass === "client_abort",
+      ).length,
+      actionableFailureCount: failureRecords.filter((record) => record.isActionable)
+        .length,
+    },
+  };
+}
+
 function resolveInitialSelection(
   cards: ReturnType<typeof buildCards>,
   target?: {
@@ -1145,14 +1212,26 @@ function DrawerPreviewStory({
         if (promptCacheKey) {
           const records =
             storyMocks.recordsByPromptCacheKey.get(promptCacheKey) ?? [];
+          const page = Number(url.searchParams.get("page") ?? "1");
+          const pageSize = Number(url.searchParams.get("pageSize") ?? "200");
+          const pageStart = Math.max(0, (page - 1) * pageSize);
           return jsonResponse({
             snapshotId: 1,
             total: records.length,
-            page: Number(url.searchParams.get("page") ?? "1"),
-            pageSize: Number(url.searchParams.get("pageSize") ?? "200"),
-            records,
+            page,
+            pageSize,
+            records: records.slice(pageStart, pageStart + pageSize),
           });
         }
+      }
+
+      if (url.pathname === "/api/invocations/summary") {
+        const promptCacheKey = url.searchParams.get("promptCacheKey");
+        const records =
+          promptCacheKey == null
+            ? []
+            : (storyMocks.recordsByPromptCacheKey.get(promptCacheKey) ?? []);
+        return jsonResponse(buildStoryInvocationSummary(records));
       }
 
       const detailMatch = url.pathname.match(

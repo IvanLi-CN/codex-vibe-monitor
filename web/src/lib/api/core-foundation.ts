@@ -825,6 +825,7 @@ export async function fetchInvocationRecordsSummary(
   appendInvocationRecordsQuery(search, query);
   return fetchJson<InvocationRecordsSummaryResponse>(
     `/api/invocations/summary?${search.toString()}`,
+    { signal: query.signal },
   );
 }
 
