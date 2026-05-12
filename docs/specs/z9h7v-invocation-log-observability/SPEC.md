@@ -69,6 +69,7 @@
 - 前端表格默认显示关键字段（token/cost/latency），用户展开后看到请求元信息与阶段耗时明细。
 - 前端展开详情时隐藏 `source` 行，避免把来源分类误读成出站代理。
 - `/api/invocations/{invoke_id}/pool-attempts` 读取 `pool_upstream_request_attempts.proxy_binding_key_snapshot` 并作为 `proxyBindingKeySnapshot` 返回。
+- 号池详情中，真实上游尝试与合成终态记录分开展示。`budget_exhausted_final` 或 `sameAccountRetryIndex <= 0` 仅作为号池终态说明，不作为普通尝试卡片展示，不显示同账号重试序号或阶段耗时。
 - 启动阶段执行历史回填：读取 `request_raw_path` 指向的原始请求 JSON，提取 `prompt_cache_key` 后写回 payload。
 
 ### Edge cases / errors
@@ -76,6 +77,7 @@
 - 若 `x-forwarded-for` 首值不可解析，则回退到下一级来源，不中断请求。
 - 若 prompt cache key 候选键全部未命中，返回 `null` 并在前端显示 `—`。
 - 若阶段耗时缺失（旧记录），前端逐项显示 `—`。
+- 若号池达到不同账号尝试上限，前端应明确说明终态记录未发起新的上游请求，并可保留上一失败账号与上一错误状态作为诊断上下文。
 
 ## 接口契约（Interfaces & Contracts）
 
@@ -117,6 +119,12 @@
   evidence_note: verifies the invocation detail hides `source` and the pool-attempt card renders the persisted `proxyBindingKeySnapshot`.
   image:
   ![Pool attempt proxy binding detail](./assets/pool-attempt-proxy-binding-storybook.png)
+- source_type: storybook_canvas
+  story_id_or_title: Records/InvocationRecordsTable/BudgetExhaustedTerminalRecord
+  state: expanded pool attempt detail with synthetic terminal record
+  evidence_note: verifies seven real pool attempts render as attempt cards while the `budget_exhausted_final` row renders as a separate terminal state with no retry index or timing labels.
+  image:
+  ![号池终态记录拆分效果](visual-evidence/pool-terminal-state.png)
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 

@@ -4,6 +4,7 @@
 
 - Canonical spec: `docs/specs/z9h7v-invocation-log-observability/SPEC.md`
 - Implementation summary: 已完成
+- 号池尝试详情会将真实上游请求尝试与 `budget_exhausted_final` / `sameAccountRetryIndex <= 0` 合成终态记录分开展示；终态记录只展示未发起新请求的终态说明与上一失败账号上下文。
 
 ## Migrated Implementation Notes
 
