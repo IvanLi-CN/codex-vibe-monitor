@@ -89,7 +89,11 @@ jobs:
             exit 1
           fi
 
-          git fetch --no-tags origin main
+          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+            git fetch --no-tags --prune --unshallow origin "+refs/heads/main:refs/remotes/origin/main"
+          else
+            git fetch --no-tags --prune origin "+refs/heads/main:refs/remotes/origin/main"
+          fi
           if ! git cat-file -e "${target_sha}^{commit}" 2>/dev/null; then
             git fetch --no-tags origin "${target_sha}"
           fi
@@ -191,7 +195,11 @@ jobs:
             exit 0
           fi
 
-          git fetch --no-tags origin main
+          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+            git fetch --no-tags --prune --unshallow origin "+refs/heads/main:refs/remotes/origin/main"
+          else
+            git fetch --no-tags --prune origin "+refs/heads/main:refs/remotes/origin/main"
+          fi
           git fetch --tags origin
           git fetch --no-tags origin "+${RELEASE_SNAPSHOT_NOTES_REF}:${RELEASE_SNAPSHOT_NOTES_REF}" || true
           python3 .github/scripts/release_snapshot.py next-pending \
@@ -636,7 +644,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git fetch --no-tags origin main
+          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+            git fetch --no-tags --prune --unshallow origin "+refs/heads/main:refs/remotes/origin/main"
+          else
+            git fetch --no-tags --prune origin "+refs/heads/main:refs/remotes/origin/main"
+          fi
           git fetch --tags origin
           git fetch --no-tags origin "+${RELEASE_SNAPSHOT_NOTES_REF}:${RELEASE_SNAPSHOT_NOTES_REF}" || true
           python3 .github/scripts/release_snapshot.py next-pending \
