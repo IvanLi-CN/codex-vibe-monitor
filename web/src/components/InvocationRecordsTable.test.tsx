@@ -565,6 +565,217 @@ describe("InvocationRecordsTable", () => {
     expect(host?.textContent ?? "").toContain("fpb_failed_oauth_bridge");
   });
 
+  it("renders synthetic budget exhaustion as a terminal state, not a retry attempt", async () => {
+    apiMocks.fetchInvocationRecordDetail.mockResolvedValue({
+      id: 34,
+      abnormalResponseBody: null,
+    });
+    apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([
+      {
+        id: 701,
+        invokeId: "proxy-2694-1778487259104",
+        occurredAt: "2026-05-11T08:14:19Z",
+        endpoint: "/v1/responses",
+        attemptIndex: 1,
+        distinctAccountIndex: 1,
+        sameAccountRetryIndex: 1,
+        status: "transport_failure",
+        downstreamHttpStatus: 502,
+        failureKind: "failed_contact_upstream",
+        errorMessage:
+          "failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
+        downstreamErrorMessage:
+          "pool upstream responded with 502: failed to contact oauth codex upstream",
+        connectLatencyMs: 3918.4,
+        firstByteLatencyMs: null,
+        streamLatencyMs: null,
+        createdAt: "2026-05-11T08:14:23Z",
+        upstreamAccountId: 2562,
+        upstreamAccountName: "CaroleeKnorr31 Team",
+      },
+      {
+        id: 702,
+        invokeId: "proxy-2694-1778487259104",
+        occurredAt: "2026-05-11T08:14:19Z",
+        endpoint: "/v1/responses",
+        attemptIndex: 2,
+        distinctAccountIndex: 1,
+        sameAccountRetryIndex: 2,
+        status: "transport_failure",
+        downstreamHttpStatus: 502,
+        failureKind: "failed_contact_upstream",
+        errorMessage: "failed to contact oauth codex upstream",
+        connectLatencyMs: 3981.2,
+        createdAt: "2026-05-11T08:14:27Z",
+        upstreamAccountId: 2562,
+        upstreamAccountName: "CaroleeKnorr31 Team",
+      },
+      {
+        id: 703,
+        invokeId: "proxy-2694-1778487259104",
+        occurredAt: "2026-05-11T08:14:19Z",
+        endpoint: "/v1/responses",
+        attemptIndex: 3,
+        distinctAccountIndex: 1,
+        sameAccountRetryIndex: 3,
+        status: "transport_failure",
+        downstreamHttpStatus: 502,
+        failureKind: "failed_contact_upstream",
+        errorMessage: "failed to contact oauth codex upstream",
+        connectLatencyMs: 4047.9,
+        createdAt: "2026-05-11T08:14:31Z",
+        upstreamAccountId: 2562,
+        upstreamAccountName: "CaroleeKnorr31 Team",
+      },
+      {
+        id: 704,
+        invokeId: "proxy-2694-1778487259104",
+        occurredAt: "2026-05-11T08:14:19Z",
+        endpoint: "/v1/responses",
+        attemptIndex: 4,
+        distinctAccountIndex: 2,
+        sameAccountRetryIndex: 1,
+        status: "transport_failure",
+        downstreamHttpStatus: 502,
+        failureKind: "failed_contact_upstream",
+        errorMessage: "failed to contact oauth codex upstream",
+        connectLatencyMs: 4036.2,
+        createdAt: "2026-05-11T08:14:35Z",
+        upstreamAccountId: 2821,
+        upstreamAccountName: "orpvvgk884@outlook.com",
+      },
+      {
+        id: 705,
+        invokeId: "proxy-2694-1778487259104",
+        occurredAt: "2026-05-11T08:14:19Z",
+        endpoint: "/v1/responses",
+        attemptIndex: 5,
+        distinctAccountIndex: 2,
+        sameAccountRetryIndex: 2,
+        status: "transport_failure",
+        downstreamHttpStatus: 502,
+        failureKind: "failed_contact_upstream",
+        errorMessage: "failed to contact oauth codex upstream",
+        connectLatencyMs: 4071.8,
+        createdAt: "2026-05-11T08:14:39Z",
+        upstreamAccountId: 2821,
+        upstreamAccountName: "orpvvgk884@outlook.com",
+      },
+      {
+        id: 706,
+        invokeId: "proxy-2694-1778487259104",
+        occurredAt: "2026-05-11T08:14:19Z",
+        endpoint: "/v1/responses",
+        attemptIndex: 6,
+        distinctAccountIndex: 2,
+        sameAccountRetryIndex: 3,
+        status: "transport_failure",
+        downstreamHttpStatus: 502,
+        failureKind: "failed_contact_upstream",
+        errorMessage: "failed to contact oauth codex upstream",
+        connectLatencyMs: 4106.7,
+        createdAt: "2026-05-11T08:14:45Z",
+        upstreamAccountId: 2821,
+        upstreamAccountName: "orpvvgk884@outlook.com",
+      },
+      {
+        id: 707,
+        invokeId: "proxy-2694-1778487259104",
+        occurredAt: "2026-05-11T08:14:19Z",
+        endpoint: "/v1/responses",
+        attemptIndex: 7,
+        distinctAccountIndex: 3,
+        sameAccountRetryIndex: 1,
+        status: "http_failure",
+        httpStatus: 429,
+        failureKind: "upstream_http_429_quota_exhausted",
+        errorMessage:
+          "pool upstream responded with 429: The usage limit has been reached",
+        connectLatencyMs: 4940.9,
+        firstByteLatencyMs: null,
+        streamLatencyMs: null,
+        createdAt: "2026-05-11T08:14:50Z",
+        upstreamAccountId: 2644,
+        upstreamAccountName: "solacebambi9197 Team",
+      },
+      {
+        id: 708,
+        invokeId: "proxy-2694-1778487259104",
+        occurredAt: "2026-05-11T08:14:19Z",
+        endpoint: "/v1/responses",
+        attemptIndex: 8,
+        distinctAccountIndex: 3,
+        sameAccountRetryIndex: 0,
+        status: "budget_exhausted_final",
+        httpStatus: 429,
+        failureKind: "max_distinct_accounts_exhausted",
+        errorMessage:
+          "pool upstream responded with 429: The usage limit has been reached",
+        connectLatencyMs: null,
+        firstByteLatencyMs: null,
+        streamLatencyMs: null,
+        createdAt: "2026-05-11T08:14:50Z",
+        upstreamAccountId: 2644,
+        upstreamAccountName: "solacebambi9197 Team",
+      },
+    ]);
+
+    render(
+      <InvocationRecordsTable
+        focus="exception"
+        isLoading={false}
+        records={[
+          createRecord({
+            id: 34,
+            invokeId: "proxy-2694-1778487259104",
+            routeMode: "pool",
+            status: "failed",
+            failureClass: "service_failure",
+            failureKind: "upstream_http_429_quota_exhausted",
+            errorMessage:
+              "[upstream_http_429_quota_exhausted] pool upstream responded with 429: The usage limit has been reached",
+            poolAttemptCount: 7,
+            poolDistinctAccountCount: 3,
+            poolAttemptTerminalReason: "max_distinct_accounts_exhausted",
+            upstreamAccountId: 2644,
+            upstreamAccountName: "solacebambi9197 Team",
+          }),
+        ]}
+      />,
+    );
+
+    clickFirstToggle();
+
+    await waitFor(
+      () => host?.querySelector('[data-testid="pool-attempt-terminal-record"]') != null,
+    );
+
+    const attemptsList = host?.querySelector(
+      '[data-testid="pool-attempts-list"]',
+    );
+    expect(attemptsList?.querySelectorAll('[data-testid="pool-attempt-item"]')).toHaveLength(7);
+    expect(host?.textContent ?? "").toContain(
+      "table.poolAttempts.realAttemptCount: 7",
+    );
+    expect(host?.textContent ?? "").toContain(
+      "table.poolAttempts.terminalRecordCount: 1",
+    );
+
+    const terminalText =
+      host?.querySelector('[data-testid="pool-attempt-terminal-record"]')
+        ?.textContent ?? "";
+    expect(terminalText).toContain("table.poolAttempts.terminal.notDispatched");
+    expect(terminalText).toContain("table.poolAttempts.terminal.previousAccount");
+    expect(terminalText).toContain("solacebambi9197 Team");
+    expect(terminalText).toContain("max_distinct_accounts_exhausted");
+    expect(terminalText).not.toContain("table.poolAttempts.retry");
+    expect(terminalText).not.toContain("table.poolAttempts.connectLatency");
+    expect(terminalText).not.toContain("table.poolAttempts.firstByteLatency");
+    expect(terminalText).not.toContain("table.poolAttempts.streamLatency");
+    expect(terminalText).not.toContain("table.poolAttempts.status.httpFailure");
+    expect(terminalText).not.toContain("0/3");
+  });
+
   it("uses downstream-facing diagnostics as the collapsed exception summary when upstream is empty", () => {
     render(
       <InvocationRecordsTable
