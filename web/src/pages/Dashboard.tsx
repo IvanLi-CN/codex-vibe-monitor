@@ -3,15 +3,24 @@ import { DashboardInvocationDetailDrawer } from "../components/DashboardInvocati
 import { DashboardActivityOverview } from "../components/DashboardActivityOverview";
 import { DashboardPerformanceDiagnostics } from "../components/DashboardPerformanceDiagnostics";
 import { DashboardWorkingConversationsSection } from "../components/DashboardWorkingConversationsSection";
+import { PromptCacheConversationHistoryDrawer } from "../components/PromptCacheConversationTable";
 import { useDashboardWorkingConversations } from "../hooks/useDashboardWorkingConversations";
 import { resetDashboardPerformanceDiagnostics } from "../lib/dashboardPerformanceDiagnostics";
-import type { DashboardWorkingConversationInvocationSelection } from "../lib/dashboardWorkingConversations";
+import {
+  formatDashboardWorkingConversationSequenceId,
+  type DashboardWorkingConversationInvocationSelection,
+} from "../lib/dashboardWorkingConversations";
+import type { DashboardWorkingConversationSelection } from "../components/DashboardWorkingConversationsSection";
+import { useTranslation } from "../i18n";
 import { useUpstreamAccountDetailRoute } from "../hooks/useUpstreamAccountDetailRoute";
 import { SharedUpstreamAccountDetailDrawer } from "./account-pool/UpstreamAccounts";
 
 export default function DashboardPage() {
+  const { t } = useTranslation();
   const [selectedInvocation, setSelectedInvocation] =
     useState<DashboardWorkingConversationInvocationSelection | null>(null);
+  const [selectedConversation, setSelectedConversation] =
+    useState<DashboardWorkingConversationSelection | null>(null);
   const { upstreamAccountId, openUpstreamAccount, closeUpstreamAccount } =
     useUpstreamAccountDetailRoute();
   const {
@@ -28,6 +37,7 @@ export default function DashboardPage() {
   useEffect(() => {
     if (upstreamAccountId != null) {
       setSelectedInvocation(null);
+      setSelectedConversation(null);
     }
   }, [upstreamAccountId]);
 
@@ -51,10 +61,17 @@ export default function DashboardPage() {
         setRefreshTargetCount={setRefreshTargetCount}
         onOpenUpstreamAccount={(accountId) => {
           setSelectedInvocation(null);
+          setSelectedConversation(null);
           openUpstreamAccount(accountId);
+        }}
+        onOpenConversation={(selection) => {
+          closeUpstreamAccount({ replace: true });
+          setSelectedInvocation(null);
+          setSelectedConversation(selection);
         }}
         onOpenInvocation={(selection) => {
           closeUpstreamAccount({ replace: true });
+          setSelectedConversation(null);
           setSelectedInvocation(selection);
         }}
       />
@@ -64,6 +81,25 @@ export default function DashboardPage() {
         onClose={() => setSelectedInvocation(null)}
         onOpenUpstreamAccount={(accountId) => {
           setSelectedInvocation(null);
+          setSelectedConversation(null);
+          openUpstreamAccount(accountId);
+        }}
+      />
+      <PromptCacheConversationHistoryDrawer
+        open={selectedConversation != null}
+        conversationKey={selectedConversation?.promptCacheKey ?? null}
+        conversationLabel={
+          selectedConversation
+            ? formatDashboardWorkingConversationSequenceId(
+                selectedConversation.conversationSequenceId,
+              )
+            : null
+        }
+        onClose={() => setSelectedConversation(null)}
+        t={t}
+        onOpenUpstreamAccount={(accountId) => {
+          setSelectedInvocation(null);
+          setSelectedConversation(null);
           openUpstreamAccount(accountId);
         }}
       />

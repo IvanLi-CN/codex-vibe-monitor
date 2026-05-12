@@ -869,7 +869,7 @@ function poolAttemptStatusMeta(status: string | null | undefined): {
       };
     case "budget_exhausted_final":
       return {
-        variant: "error",
+        variant: "warning",
         key: "table.poolAttempts.status.budgetExhaustedFinal",
       };
     default:
@@ -927,6 +927,23 @@ function poolAttemptPhaseMeta(phase: string | null | undefined): {
 function isPoolAttemptTerminal(attempt: ApiPoolUpstreamRequestAttempt) {
   if (attempt.finishedAt?.trim()) return true;
   return attempt.status.trim().toLowerCase() !== "pending";
+}
+
+function isSyntheticPoolTerminalAttempt(attempt: ApiPoolUpstreamRequestAttempt) {
+  const normalizedStatus = attempt.status.trim().toLowerCase();
+  return (
+    normalizedStatus === "budget_exhausted_final" ||
+    attempt.sameAccountRetryIndex <= 0
+  );
+}
+
+function poolAttemptTerminalDescriptionKey(
+  terminalReason: string | null | undefined,
+): TranslationKey {
+  return terminalReason?.trim().toLowerCase() ===
+    "max_distinct_accounts_exhausted"
+    ? "table.poolAttempts.terminal.budgetExhaustedDescription"
+    : "table.poolAttempts.terminal.genericDescription";
 }
 
 function isInvocationDisplayTerminal(status: string | null | undefined) {
@@ -1382,6 +1399,19 @@ function renderPoolAttemptsContent(
     )}`,
     `${t("table.details.poolAttemptTerminalReason")}: ${formatOptionalText(record.poolAttemptTerminalReason)}`,
   ];
+  const realAttempts = attempts?.filter(
+    (attempt) => !isSyntheticPoolTerminalAttempt(attempt),
+  );
+  const syntheticTerminalAttempts = attempts?.filter(
+    isSyntheticPoolTerminalAttempt,
+  );
+  const loadedSummaryParts =
+    attempts && attempts.length > 0
+      ? [
+          `${t("table.poolAttempts.realAttemptCount")}: ${realAttempts?.length ?? 0}`,
+          `${t("table.poolAttempts.terminalRecordCount")}: ${syntheticTerminalAttempts?.length ?? 0}`,
+        ]
+      : [];
 
   return (
     <div className="flex flex-col gap-3" data-testid="pool-attempts-section">
@@ -1392,6 +1422,11 @@ function renderPoolAttemptsContent(
         <div className="text-xs text-base-content/60">
           {summaryParts.join(" · ")}
         </div>
+        {loadedSummaryParts.length > 0 ? (
+          <div className="text-xs text-base-content/60">
+            {loadedSummaryParts.join(" · ")}
+          </div>
+        ) : null}
       </div>
 
       {attemptsError ? (
@@ -1402,8 +1437,10 @@ function renderPoolAttemptsContent(
           {t("table.poolAttempts.loadError", { error: attemptsError })}
         </div>
       ) : attempts && attempts.length > 0 ? (
-        <div className="space-y-2" data-testid="pool-attempts-list">
-          {attempts.map((attempt) => {
+        <div className="space-y-3">
+          {realAttempts && realAttempts.length > 0 ? (
+            <div className="space-y-2" data-testid="pool-attempts-list">
+              {realAttempts.map((attempt) => {
             const statusMeta = poolAttemptStatusMeta(attempt.status);
             const phase = resolvePoolAttemptPhase(attempt);
             const phaseMeta = poolAttemptPhaseMeta(phase);
@@ -1563,6 +1600,112 @@ function renderPoolAttemptsContent(
                     </span>
                     <pre className="whitespace-pre-wrap break-words font-mono text-sm text-base-content/80">
                       {attempt.downstreamErrorMessage}
+                    </pre>
+                  </div>
+                ) : null}
+              </div>
+            );
+              })}
+            </div>
+          ) : null}
+          {syntheticTerminalAttempts?.map((attempt) => {
+            const statusMeta = poolAttemptStatusMeta(attempt.status);
+            const accountLabel = formatPoolAttemptAccountLabel(attempt);
+            const httpStatusValue = formatOptionalStatusCode(
+              attempt.httpStatus,
+            );
+            const distinctAccountValue =
+              attempt.distinctAccountIndex > 0
+                ? String(attempt.distinctAccountIndex)
+                : record.poolDistinctAccountCount != null
+                  ? String(record.poolDistinctAccountCount)
+                  : undefined;
+
+            return (
+              <div
+                key={`terminal-${attempt.id}-${attempt.attemptIndex}`}
+                className="overflow-hidden rounded-xl border border-warning/40 bg-warning/10 shadow-sm"
+                data-testid="pool-attempt-terminal-record"
+              >
+                <div className="flex flex-col gap-3 border-b border-warning/25 bg-warning/12 px-3 py-3 md:flex-row md:items-start md:justify-between">
+                  <div className="flex min-w-0 items-start gap-3">
+                    <span
+                      className="mt-1 h-2.5 w-2.5 flex-none rounded-full bg-warning ring-4 ring-warning/20"
+                      aria-hidden="true"
+                    />
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-semibold">
+                          {t("table.poolAttempts.terminal.title")}
+                        </span>
+                        <Badge variant={statusMeta.variant}>
+                          {t(statusMeta.key)}
+                        </Badge>
+                      </div>
+                      <p className="mt-1 max-w-3xl text-sm text-base-content/75">
+                        {t(
+                          poolAttemptTerminalDescriptionKey(
+                            attempt.failureKind ??
+                              record.poolAttemptTerminalReason,
+                          ),
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                  <Badge variant="secondary" className="w-fit">
+                    {t("table.poolAttempts.terminal.notDispatched")}
+                  </Badge>
+                </div>
+                <div className="grid gap-2 p-3 text-sm md:grid-cols-2 xl:grid-cols-3">
+                  <div className="rounded-lg border border-warning/20 bg-base-100/55 px-3 py-2">
+                    <span className="block text-xs uppercase tracking-wide text-base-content/60">
+                      {t("table.poolAttempts.terminal.realAttempts")}
+                    </span>
+                    <span className="mt-1 block font-mono text-base font-semibold">
+                      {String(realAttempts?.length ?? 0)}
+                    </span>
+                  </div>
+                  <div className="rounded-lg border border-warning/20 bg-base-100/55 px-3 py-2">
+                    <span className="block text-xs uppercase tracking-wide text-base-content/60">
+                      {t("table.poolAttempts.terminal.distinctAccounts")}
+                    </span>
+                    <span className="mt-1 block font-mono text-base font-semibold">
+                      {formatOptionalText(distinctAccountValue)}
+                    </span>
+                  </div>
+                  <div className="rounded-lg border border-base-300/70 bg-base-100/45 px-3 py-2">
+                    <span className="block text-xs uppercase tracking-wide text-base-content/60">
+                      {t("table.poolAttempts.terminal.previousAccount")}
+                    </span>
+                    <span className="mt-1 block break-all">{accountLabel}</span>
+                  </div>
+                  <div className="rounded-lg border border-base-300/70 bg-base-100/45 px-3 py-2">
+                    <span className="block text-xs uppercase tracking-wide text-base-content/60">
+                      {t("table.poolAttempts.terminal.previousHttpStatus")}
+                    </span>
+                    <span className="mt-1 block font-mono">
+                      {httpStatusValue}
+                    </span>
+                  </div>
+                  <div className="rounded-lg border border-base-300/70 bg-base-100/45 px-3 py-2 md:col-span-2 xl:col-span-1">
+                    <span className="block text-xs uppercase tracking-wide text-base-content/60">
+                      {t("table.poolAttempts.terminal.reason")}
+                    </span>
+                    <span className="mt-1 block break-all font-mono">
+                      {formatOptionalText(attempt.failureKind)}
+                    </span>
+                  </div>
+                </div>
+                {attempt.errorMessage?.trim() ? (
+                  <div
+                    className="border-t border-warning/20 bg-base-100/35 px-3 py-2"
+                    data-testid="pool-attempt-terminal-error"
+                  >
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-base-content/60">
+                      {t("table.poolAttempts.terminal.previousError")}
+                    </span>
+                    <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-sm text-base-content/80">
+                      {attempt.errorMessage}
                     </pre>
                   </div>
                 ) : null}

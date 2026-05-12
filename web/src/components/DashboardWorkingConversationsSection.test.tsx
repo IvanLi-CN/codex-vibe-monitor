@@ -186,6 +186,10 @@ function renderSection(
     onLoadMore?: () => void;
     setRefreshTargetCount?: (count: number) => void;
     onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+    onOpenConversation?: (selection: {
+      conversationSequenceId: string;
+      promptCacheKey: string;
+    }) => void;
     onOpenInvocation?: (selection: {
       slotKind: "current" | "previous";
       conversationSequenceId: string;
@@ -211,6 +215,10 @@ function renderSectionWithCards(
     onLoadMore?: () => void;
     setRefreshTargetCount?: (count: number) => void;
     onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+    onOpenConversation?: (selection: {
+      conversationSequenceId: string;
+      promptCacheKey: string;
+    }) => void;
     onOpenInvocation?: (selection: {
       slotKind: "current" | "previous";
       conversationSequenceId: string;
@@ -235,6 +243,7 @@ function renderSectionWithCards(
           onLoadMore={options?.onLoadMore}
           setRefreshTargetCount={options?.setRefreshTargetCount}
           onOpenUpstreamAccount={options?.onOpenUpstreamAccount}
+          onOpenConversation={options?.onOpenConversation}
           onOpenInvocation={options?.onOpenInvocation}
         />
       </I18nProvider>,
@@ -254,6 +263,10 @@ function rerenderSection(
     onLoadMore?: () => void;
     setRefreshTargetCount?: (count: number) => void;
     onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+    onOpenConversation?: (selection: {
+      conversationSequenceId: string;
+      promptCacheKey: string;
+    }) => void;
     onOpenInvocation?: (selection: {
       slotKind: "current" | "previous";
       conversationSequenceId: string;
@@ -279,6 +292,10 @@ function rerenderSectionWithCards(
     onLoadMore?: () => void;
     setRefreshTargetCount?: (count: number) => void;
     onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+    onOpenConversation?: (selection: {
+      conversationSequenceId: string;
+      promptCacheKey: string;
+    }) => void;
     onOpenInvocation?: (selection: {
       slotKind: "current" | "previous";
       conversationSequenceId: string;
@@ -303,6 +320,7 @@ function rerenderSectionWithCards(
           onLoadMore={options?.onLoadMore}
           setRefreshTargetCount={options?.setRefreshTargetCount}
           onOpenUpstreamAccount={options?.onOpenUpstreamAccount}
+          onOpenConversation={options?.onOpenConversation}
           onOpenInvocation={options?.onOpenInvocation}
         />
       </I18nProvider>,
@@ -1312,7 +1330,8 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(onOpenInvocation).toHaveBeenCalledTimes(2);
   });
 
-  it("opens the current invocation from the sequence id button only", () => {
+  it("opens the conversation detail from the sequence id button only", () => {
+    const onOpenConversation = vi.fn();
     const onOpenInvocation = vi.fn();
     const response = createResponse([
       createConversation("pck-sequence-open", [
@@ -1330,7 +1349,10 @@ describe("DashboardWorkingConversationsSection", () => {
         }),
       ]),
     ]);
-    const cards = renderSection(response, { onOpenInvocation });
+    const cards = renderSection(response, {
+      onOpenConversation,
+      onOpenInvocation,
+    });
 
     const sequenceButton = host?.querySelector(
       '[data-testid="dashboard-working-conversation-sequence-button"]',
@@ -1342,11 +1364,14 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(sequenceButton.textContent).toContain(
       cards[0]?.conversationSequenceId.replace(/^WC-/, "") ?? "",
     );
-    expect(sequenceButton.getAttribute("aria-label")).toContain(
+    expect(sequenceButton.getAttribute("aria-label")).not.toContain(
       "invoke-sequence-current",
     );
     expect(sequenceButton.getAttribute("aria-label")).not.toContain(
       "invoke-sequence-previous",
+    );
+    expect(sequenceButton.getAttribute("aria-label")).toContain(
+      "pck-sequence-open",
     );
     expect(sequenceButton.type).toBe("button");
 
@@ -1354,18 +1379,16 @@ describe("DashboardWorkingConversationsSection", () => {
       sequenceButton.click();
     });
 
-    expect(onOpenInvocation).toHaveBeenCalledWith(
+    expect(onOpenConversation).toHaveBeenCalledWith(
       expect.objectContaining({
-        slotKind: "current",
         conversationSequenceId: cards[0]?.conversationSequenceId,
         promptCacheKey: "pck-sequence-open",
       }),
     );
-    expect(
-      onOpenInvocation.mock.calls[0]?.[0]?.invocation?.record?.invokeId,
-    ).toBe("invoke-sequence-current");
-    expect(onOpenInvocation).toHaveBeenCalledTimes(1);
+    expect(onOpenConversation).toHaveBeenCalledTimes(1);
+    expect(onOpenInvocation).not.toHaveBeenCalled();
 
+    onOpenConversation.mockClear();
     onOpenInvocation.mockClear();
 
     const card = host?.querySelector(
@@ -1396,6 +1419,7 @@ describe("DashboardWorkingConversationsSection", () => {
     });
 
     expect(onOpenInvocation).not.toHaveBeenCalled();
+    expect(onOpenConversation).not.toHaveBeenCalled();
   });
 
   it("uses theme-aware surface classes instead of a hardcoded dark canvas surface", () => {

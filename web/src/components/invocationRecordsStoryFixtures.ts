@@ -357,6 +357,43 @@ export const STORYBOOK_INVOCATION_RECORDS: ApiInvocation[] = [
     tUpstreamTtfbMs: null,
     tTotalMs: 1450,
   },
+  {
+    id: 6110,
+    invokeId: 'inv_story_6110',
+    occurredAt: '2026-05-11T08:14:19.000Z',
+    createdAt: '2026-05-11T08:14:19.000Z',
+    source: 'pool',
+    proxyDisplayName: 'shanghai-edge-10',
+    routeMode: 'pool',
+    upstreamAccountId: 2644,
+    upstreamAccountName: 'solacebambi9197 Team',
+    poolAttemptCount: 7,
+    poolDistinctAccountCount: 3,
+    poolAttemptTerminalReason: 'max_distinct_accounts_exhausted',
+    endpoint: '/v1/responses',
+    model: 'gpt-5.5',
+    status: 'failed',
+    inputTokens: 13184,
+    outputTokens: 0,
+    cacheInputTokens: 0,
+    totalTokens: 13184,
+    cost: 0.052,
+    errorMessage:
+      '[upstream_http_429_quota_exhausted] pool upstream responded with 429: The usage limit has been reached',
+    failureKind: 'upstream_http_429_quota_exhausted',
+    failureClass: 'service_failure',
+    isActionable: true,
+    requesterIp: '192.168.31.6',
+    promptCacheKey: '019e1619-ab2a-7ec3-9f89-a5a2c2462baa',
+    requestedServiceTier: 'priority',
+    serviceTier: 'default',
+    billingServiceTier: 'priority',
+    responseContentEncoding: 'identity',
+    tUpstreamConnectMs: 4940.9,
+    tUpstreamTtfbMs: null,
+    tUpstreamStreamMs: null,
+    tTotalMs: 31620,
+  },
 ]
 
 function resolveStoryPoolAttemptStatus(record: ApiInvocation): ApiPoolUpstreamRequestAttempt['status'] {
@@ -371,6 +408,107 @@ export function createStoryPoolAttemptsByInvokeId(records: ApiInvocation[]) {
 
   records.forEach((record, recordIndex) => {
     if (record.routeMode !== 'pool') return
+
+    if (record.invokeId === 'inv_story_6110') {
+      const occurredAtMs = Date.parse(record.occurredAt)
+      const accounts = [
+        { id: 2562, name: 'CaroleeKnorr31 Team' },
+        { id: 2821, name: 'orpvvgk884@outlook.com' },
+        { id: 2644, name: 'solacebambi9197 Team' },
+      ]
+      const realAttempts: ApiPoolUpstreamRequestAttempt[] = [
+        ...Array.from({ length: 3 }, (_, index) => ({
+          account: accounts[0],
+          status: 'transport_failure' as const,
+          httpStatus: null,
+          failureKind: 'failed_contact_upstream',
+          errorMessage:
+            'failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)',
+          downstreamErrorMessage:
+            'pool upstream responded with 502: failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)',
+          connectLatencyMs: 3918.4 + index * 66,
+        })),
+        ...Array.from({ length: 3 }, (_, index) => ({
+          account: accounts[1],
+          status: 'transport_failure' as const,
+          httpStatus: null,
+          failureKind: 'failed_contact_upstream',
+          errorMessage:
+            'failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)',
+          downstreamErrorMessage:
+            'pool upstream responded with 502: failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)',
+          connectLatencyMs: 4036.2 + index * 35,
+        })),
+        {
+          account: accounts[2],
+          status: 'http_failure' as const,
+          httpStatus: 429,
+          failureKind: 'upstream_http_429_quota_exhausted',
+          errorMessage: 'pool upstream responded with 429: The usage limit has been reached',
+          downstreamErrorMessage: null,
+          connectLatencyMs: 4940.9,
+        },
+      ].map((attempt, index) => {
+        const startedAtMs = occurredAtMs + index * 4_000
+        const accountIndex = accounts.findIndex((account) => account.id === attempt.account.id)
+        const retryIndex =
+          index < 3 ? index + 1 : index < 6 ? index - 2 : 1
+
+        return {
+          id: record.id * 100 + index + 1,
+          invokeId: record.invokeId,
+          occurredAt: record.occurredAt,
+          endpoint: record.endpoint ?? '/v1/responses',
+          attemptIndex: index + 1,
+          distinctAccountIndex: accountIndex + 1,
+          sameAccountRetryIndex: retryIndex,
+          status: attempt.status,
+          httpStatus: attempt.httpStatus,
+          downstreamHttpStatus: attempt.status === 'transport_failure' ? 502 : null,
+          failureKind: attempt.failureKind,
+          errorMessage: attempt.errorMessage,
+          downstreamErrorMessage: attempt.downstreamErrorMessage,
+          connectLatencyMs: attempt.connectLatencyMs,
+          firstByteLatencyMs: null,
+          streamLatencyMs: null,
+          upstreamRequestId: attempt.status === 'http_failure' ? 'req_story_quota_429' : null,
+          startedAt: new Date(startedAtMs).toISOString(),
+          finishedAt: new Date(startedAtMs + 3_900).toISOString(),
+          createdAt: new Date(startedAtMs + 3_900).toISOString(),
+          upstreamAccountId: attempt.account.id,
+          upstreamAccountName: attempt.account.name,
+        }
+      })
+
+      attemptsByInvokeId[record.invokeId] = [
+        ...realAttempts,
+        {
+          id: record.id * 100 + 8,
+          invokeId: record.invokeId,
+          occurredAt: record.occurredAt,
+          endpoint: record.endpoint ?? '/v1/responses',
+          attemptIndex: 8,
+          distinctAccountIndex: 3,
+          sameAccountRetryIndex: 0,
+          status: 'budget_exhausted_final',
+          httpStatus: 429,
+          downstreamHttpStatus: null,
+          failureKind: 'max_distinct_accounts_exhausted',
+          errorMessage: 'pool upstream responded with 429: The usage limit has been reached',
+          downstreamErrorMessage: null,
+          connectLatencyMs: null,
+          firstByteLatencyMs: null,
+          streamLatencyMs: null,
+          upstreamRequestId: null,
+          startedAt: new Date(occurredAtMs + 28_000).toISOString(),
+          finishedAt: new Date(occurredAtMs + 28_000).toISOString(),
+          createdAt: new Date(occurredAtMs + 28_000).toISOString(),
+          upstreamAccountId: 2644,
+          upstreamAccountName: 'solacebambi9197 Team',
+        },
+      ]
+      return
+    }
 
     const attemptTotal = Math.max(1, record.poolAttemptCount ?? 1)
     const distinctTotal = Math.max(1, Math.min(attemptTotal, record.poolDistinctAccountCount ?? attemptTotal))

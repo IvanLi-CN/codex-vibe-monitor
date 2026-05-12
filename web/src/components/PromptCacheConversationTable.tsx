@@ -11,11 +11,13 @@ import { useTranslation } from "../i18n";
 import type {
   ApiInvocation,
   InvocationRecordsQuery,
+  InvocationRecordsSummaryResponse,
   PromptCacheConversation,
   PromptCacheConversationUpstreamAccount,
   PromptCacheConversationsResponse,
 } from "../lib/api";
-import { fetchInvocationRecords } from "../lib/api";
+import { fetchInvocationRecords, fetchInvocationRecordsSummary } from "../lib/api";
+import { resolvePromptCacheInvocationOutcome } from "../lib/conversationRequestPoint";
 import { mergeInvocationRecordCollections } from "../lib/invocationLiveMerge";
 import { invocationStableKey } from "../lib/invocation";
 import { buildInvocationFromPromptCachePreview } from "../lib/promptCacheLive";
@@ -29,6 +31,7 @@ import {
   findVisibleConversationChartMax,
 } from "./keyedConversationChart";
 import { Alert } from "./ui/alert";
+import { SegmentedControl, SegmentedControlItem } from "./ui/segmented-control";
 import { Spinner } from "./ui/spinner";
 
 interface PromptCacheConversationTableProps {
@@ -59,7 +62,33 @@ type ConversationHistoryRecordMatcher = NonNullable<
 const PROMPT_CACHE_NOW_TICK_MS = 30_000;
 const PROMPT_CACHE_CHART_MAX_WINDOW_MS = 24 * 3_600_000;
 const PROMPT_CACHE_HISTORY_PAGE_SIZE = 200;
+const PROMPT_CACHE_ACTIVITY_PAGE_SIZE = 200;
+const PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS = 1_000;
 const PROMPT_CACHE_HISTORY_RESYNC_THROTTLE_MS = 1_000;
+const PROMPT_CACHE_ACTIVITY_RESYNC_THROTTLE_MS = 1_000;
+
+type ConversationActivityRange = "today" | "yesterday" | "1d" | "7d" | "history";
+type ConversationActivityMetric = "totalCount" | "totalCost" | "totalTokens";
+
+const CONVERSATION_ACTIVITY_RANGES: Array<{
+  key: ConversationActivityRange;
+  labelKey: string;
+}> = [
+  { key: "today", labelKey: "dashboard.activityOverview.rangeToday" },
+  { key: "yesterday", labelKey: "dashboard.activityOverview.rangeYesterday" },
+  { key: "1d", labelKey: "dashboard.activityOverview.range24h" },
+  { key: "7d", labelKey: "dashboard.activityOverview.range7d" },
+  { key: "history", labelKey: "dashboard.activityOverview.rangeUsage" },
+];
+
+const CONVERSATION_ACTIVITY_METRICS: Array<{
+  key: ConversationActivityMetric;
+  labelKey: string;
+}> = [
+  { key: "totalCount", labelKey: "metric.totalCount" },
+  { key: "totalCost", labelKey: "metric.totalCost" },
+  { key: "totalTokens", labelKey: "metric.totalTokens" },
+];
 
 function parseEpoch(raw?: string | null) {
   if (!raw) return null;
@@ -273,9 +302,716 @@ function PromptCacheConversationInvocationTable({
   );
 }
 
-function PromptCacheConversationHistoryDrawer({
+function startOfLocalDay(value: Date) {
+  const next = new Date(value);
+  next.setHours(0, 0, 0, 0);
+  return next;
+}
+
+function resolveConversationActivityRange(range: ConversationActivityRange) {
+  if (range === "history") return {};
+
+  const now = new Date();
+  if (range === "today") {
+    return {
+      from: startOfLocalDay(now).toISOString(),
+      to: now.toISOString(),
+    };
+  }
+  if (range === "yesterday") {
+    const end = startOfLocalDay(now);
+    const start = new Date(end);
+    start.setDate(start.getDate() - 1);
+    return {
+      from: start.toISOString(),
+      to: end.toISOString(),
+    };
+  }
+  const durationMs = range === "7d" ? 7 * 86_400_000 : 86_400_000;
+  return {
+    from: new Date(now.getTime() - durationMs).toISOString(),
+    to: now.toISOString(),
+  };
+}
+
+function buildConversationActivityQuery(
+  conversationKey: string,
+  range: ConversationActivityRange,
+  historyQueryForConversationKey?: ConversationHistoryQueryBuilder,
+): Partial<InvocationRecordsQuery> {
+  const base = historyQueryForConversationKey?.(conversationKey) ?? {
+    promptCacheKey: conversationKey,
+  };
+  const { page, pageSize, snapshotId, sortBy, sortOrder, signal, ...filters } =
+    base;
+  void page;
+  void pageSize;
+  void snapshotId;
+  void sortBy;
+  void sortOrder;
+  void signal;
+  return {
+    ...filters,
+    ...resolveConversationActivityRange(range),
+  };
+}
+
+function formatCompactNumber(value: number | null | undefined, formatter: Intl.NumberFormat) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return FALLBACK_CELL;
+  return formatter.format(value);
+}
+
+function formatDurationMs(value: number | null | undefined, formatter: Intl.NumberFormat) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return FALLBACK_CELL;
+  const seconds = value / 1000;
+  const maximumFractionDigits = Math.abs(seconds) >= 10 ? 1 : 2;
+  return `${formatter.format(Number(seconds.toFixed(maximumFractionDigits)))} s`;
+}
+
+function getConversationActivityValue(
+  record: ApiInvocation,
+  metric: ConversationActivityMetric,
+) {
+  if (metric === "totalCost") return record.cost ?? 0;
+  if (metric === "totalTokens") return record.totalTokens ?? 0;
+  return 1;
+}
+
+interface ConversationActivityBucket {
+  label: string;
+  tooltipLabel: string;
+  success: number;
+  failure: number;
+  inFlight: number;
+  neutral: number;
+  totalCount: number;
+  totalCost: number;
+  totalTokens: number;
+  totalMs: number;
+  totalMsSamples: number;
+}
+
+function buildConversationActivityBuckets({
+  records,
+  range,
+  metric,
+  localeTag,
+}: {
+  records: ApiInvocation[];
+  range: ConversationActivityRange;
+  metric: ConversationActivityMetric;
+  localeTag: string;
+}) {
+  const now = new Date();
+  const rangeBounds = resolveConversationActivityRange(range);
+  let startMs = rangeBounds.from ? Date.parse(rangeBounds.from) : Number.POSITIVE_INFINITY;
+  let endMs = rangeBounds.to ? Date.parse(rangeBounds.to) : Number.NEGATIVE_INFINITY;
+
+  if (range === "history") {
+    for (const record of records) {
+      const occurredAt = Date.parse(record.occurredAt);
+      if (!Number.isFinite(occurredAt)) continue;
+      startMs = Math.min(startMs, occurredAt);
+      endMs = Math.max(endMs, occurredAt);
+    }
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+      endMs = now.getTime();
+      startMs = endMs - 86_400_000;
+    }
+  }
+
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+    endMs = now.getTime();
+    startMs = endMs - 86_400_000;
+  }
+
+  const targetBuckets =
+    range === "today" || range === "yesterday" ? 24 : range === "1d" ? 24 : 28;
+  const bucketMs = Math.max(60_000, Math.ceil((endMs - startMs) / targetBuckets));
+  const bucketCount = Math.max(1, Math.ceil((endMs - startMs) / bucketMs));
+  const labelFormatter = new Intl.DateTimeFormat(localeTag, {
+    month: range === "history" || range === "7d" ? "2-digit" : undefined,
+    day: range === "history" || range === "7d" ? "2-digit" : undefined,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    hourCycle: "h23",
+  });
+  const buckets: ConversationActivityBucket[] = Array.from(
+    { length: bucketCount },
+    (_, index) => {
+      const bucketStart = startMs + index * bucketMs;
+      return {
+        label: labelFormatter.format(new Date(bucketStart)),
+        tooltipLabel: labelFormatter.format(new Date(bucketStart)),
+        success: 0,
+        failure: 0,
+        inFlight: 0,
+        neutral: 0,
+        totalCount: 0,
+        totalCost: 0,
+        totalTokens: 0,
+        totalMs: 0,
+        totalMsSamples: 0,
+      };
+    },
+  );
+
+  for (const record of records) {
+    const occurredAt = Date.parse(record.occurredAt);
+    if (!Number.isFinite(occurredAt) || occurredAt < startMs || occurredAt > endMs) {
+      continue;
+    }
+    const index = Math.min(
+      buckets.length - 1,
+      Math.max(0, Math.floor((occurredAt - startMs) / bucketMs)),
+    );
+    const bucket = buckets[index];
+    if (!bucket) continue;
+    const outcome = resolvePromptCacheInvocationOutcome(record);
+    const metricValue = getConversationActivityValue(record, metric);
+    if (outcome === "success") bucket.success += metricValue;
+    else if (outcome === "failure") bucket.failure += metricValue;
+    else if (outcome === "in_flight") bucket.inFlight += metricValue;
+    else bucket.neutral += metricValue;
+    bucket.totalCount += 1;
+    bucket.totalCost += record.cost ?? 0;
+    bucket.totalTokens += record.totalTokens ?? 0;
+    if (typeof record.tTotalMs === "number" && Number.isFinite(record.tTotalMs)) {
+      bucket.totalMs += record.tTotalMs;
+      bucket.totalMsSamples += 1;
+    }
+  }
+
+  return buckets;
+}
+
+function ConversationActivityChart({
+  buckets,
+  metric,
+  loading,
+  numberFormatter,
+  currencyFormatter,
+  t,
+}: {
+  buckets: ConversationActivityBucket[];
+  metric: ConversationActivityMetric;
+  loading: boolean;
+  numberFormatter: Intl.NumberFormat;
+  currencyFormatter: Intl.NumberFormat;
+  t: (key: string, values?: Record<string, string | number>) => string;
+}) {
+  const width = 640;
+  const height = 180;
+  const padding = { top: 14, right: 18, bottom: 30, left: 28 };
+  const innerWidth = width - padding.left - padding.right;
+  const innerHeight = height - padding.top - padding.bottom;
+  const maxMetric = Math.max(
+    1,
+    ...buckets.map((bucket) =>
+      bucket.success + bucket.failure + bucket.inFlight + bucket.neutral,
+    ),
+  );
+  const maxDuration = Math.max(
+    1,
+    ...buckets.map((bucket) =>
+      bucket.totalMsSamples > 0 ? bucket.totalMs / bucket.totalMsSamples : 0,
+    ),
+  );
+  const barGap = 2;
+  const barWidth = Math.max(2, innerWidth / Math.max(buckets.length, 1) - barGap);
+  const durationPoints = buckets
+    .map((bucket, index) => {
+      if (bucket.totalMsSamples <= 0) return null;
+      const x =
+        padding.left +
+        (index / Math.max(buckets.length - 1, 1)) * innerWidth;
+      const avg = bucket.totalMs / bucket.totalMsSamples;
+      const y = padding.top + innerHeight - (avg / maxDuration) * innerHeight;
+      return `${x.toFixed(2)},${y.toFixed(2)}`;
+    })
+    .filter((point): point is string => point != null)
+    .join(" ");
+
+  const formatMetricValue = (value: number) => {
+    if (metric === "totalCost") return currencyFormatter.format(value);
+    return numberFormatter.format(value);
+  };
+
+  if (loading && buckets.length === 0) {
+    return (
+      <div className="flex h-44 items-center justify-center gap-2 rounded-lg border border-base-300/70 bg-base-200/20 text-sm text-base-content/60">
+        <Spinner size="sm" aria-label={t("chart.loadingDetailed")} />
+        <span>{t("chart.loadingDetailed")}</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-lg border border-base-300/70 bg-base-200/20 p-3">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-label={t("live.conversations.activity.chartAria")}
+        className="h-44 w-full overflow-visible"
+      >
+        <line
+          x1={padding.left}
+          x2={width - padding.right}
+          y1={padding.top + innerHeight}
+          y2={padding.top + innerHeight}
+          className="stroke-base-content/20"
+        />
+        {buckets.map((bucket, index) => {
+          const total =
+            bucket.success + bucket.failure + bucket.inFlight + bucket.neutral;
+          const x = padding.left + index * (barWidth + barGap);
+          let y = padding.top + innerHeight;
+          const segments = [
+            { key: "success", value: bucket.success, className: "fill-success" },
+            { key: "failure", value: bucket.failure, className: "fill-error" },
+            { key: "inFlight", value: bucket.inFlight, className: "fill-info" },
+            { key: "neutral", value: bucket.neutral, className: "fill-base-content/35" },
+          ];
+          return (
+            <g key={`${bucket.label}-${index}`}>
+              <title>
+                {`${bucket.tooltipLabel} · ${formatMetricValue(total)}`}
+              </title>
+              {segments.map((segment) => {
+                if (segment.value <= 0) return null;
+                const segmentHeight = Math.max(
+                  1,
+                  (segment.value / maxMetric) * innerHeight,
+                );
+                y -= segmentHeight;
+                return (
+                  <rect
+                    key={segment.key}
+                    x={x}
+                    y={y}
+                    width={barWidth}
+                    height={segmentHeight}
+                    className={segment.className}
+                    opacity={0.88}
+                  />
+                );
+              })}
+            </g>
+          );
+        })}
+        {durationPoints ? (
+          <polyline
+            points={durationPoints}
+            fill="none"
+            className="stroke-base-content/70"
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        ) : null}
+        {buckets[0] ? (
+          <text
+            x={padding.left}
+            y={height - 8}
+            className="fill-base-content/55 text-[10px]"
+          >
+            {buckets[0].label}
+          </text>
+        ) : null}
+        {buckets.at(-1) ? (
+          <text
+            x={width - padding.right}
+            y={height - 8}
+            textAnchor="end"
+            className="fill-base-content/55 text-[10px]"
+          >
+            {buckets.at(-1)?.label}
+          </text>
+        ) : null}
+      </svg>
+      <div className="mt-2 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-xs text-base-content/70">
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-2.5 w-2.5 rounded-sm bg-success" />
+          {t("live.conversations.activity.legendSuccess")}
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-2.5 w-2.5 rounded-sm bg-error" />
+          {t("live.conversations.activity.legendFailure")}
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-2.5 w-2.5 rounded-sm bg-info" />
+          {t("live.conversations.activity.legendInFlight")}
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-px w-5 bg-base-content/70" />
+          {t("live.conversations.activity.legendDuration")}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function PromptCacheConversationActivityOverview({
   open,
   conversationKey,
+  disableLiveUpdates,
+  historyQueryForConversationKey,
+  historyRecordMatchesConversationKey,
+  t,
+}: {
+  open: boolean;
+  conversationKey: string | null;
+  disableLiveUpdates: boolean;
+  historyQueryForConversationKey?: ConversationHistoryQueryBuilder;
+  historyRecordMatchesConversationKey?: ConversationHistoryRecordMatcher;
+  t: (key: string, values?: Record<string, string | number>) => string;
+}) {
+  const { locale } = useTranslation();
+  const localeTag = locale === "zh" ? "zh-CN" : "en-US";
+  const [activeRange, setActiveRange] =
+    useState<ConversationActivityRange>("today");
+  const [activeMetric, setActiveMetric] =
+    useState<ConversationActivityMetric>("totalCount");
+  const [summary, setSummary] =
+    useState<InvocationRecordsSummaryResponse | null>(null);
+  const [records, setRecords] = useState<ApiInvocation[]>([]);
+  const [chartTotal, setChartTotal] = useState(0);
+  const [chartIsSampled, setChartIsSampled] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const requestSeqRef = useRef(0);
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastRefreshAtRef = useRef(0);
+  const activeLoadControllerRef = useRef<AbortController | null>(null);
+  const isLoadingRef = useRef(false);
+
+  const numberFormatter = useMemo(
+    () =>
+      new Intl.NumberFormat(localeTag, {
+        maximumFractionDigits: 2,
+        notation: "compact",
+      }),
+    [localeTag],
+  );
+  const fullNumberFormatter = useMemo(
+    () => new Intl.NumberFormat(localeTag, { maximumFractionDigits: 2 }),
+    [localeTag],
+  );
+  const currencyFormatter = useMemo(
+    () =>
+      new Intl.NumberFormat(localeTag, {
+        style: "currency",
+        currency: "USD",
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 4,
+      }),
+    [localeTag],
+  );
+
+  const load = useCallback(
+    async ({ silent = false }: { silent?: boolean } = {}) => {
+      if (!open || !conversationKey) return;
+      const requestSeq = requestSeqRef.current + 1;
+      requestSeqRef.current = requestSeq;
+      activeLoadControllerRef.current?.abort();
+      const controller = new AbortController();
+      activeLoadControllerRef.current = controller;
+      const filters = buildConversationActivityQuery(
+        conversationKey,
+        activeRange,
+        historyQueryForConversationKey,
+      );
+      const shouldManageLoading = !silent || isLoadingRef.current;
+      if (shouldManageLoading) {
+        isLoadingRef.current = true;
+        setIsLoading(true);
+      }
+      try {
+        const summaryResponse = await fetchInvocationRecordsSummary({
+          ...filters,
+          signal: controller.signal,
+        });
+        if (requestSeq !== requestSeqRef.current) return;
+        setSummary(summaryResponse);
+
+        let page = 1;
+        let snapshotId: number | undefined;
+        let loaded: ApiInvocation[] = [];
+        let totalRecords = 0;
+        while (true) {
+          const response = await fetchInvocationRecords({
+            ...filters,
+            page,
+            pageSize: PROMPT_CACHE_ACTIVITY_PAGE_SIZE,
+            sortBy: "occurredAt",
+            sortOrder: "desc",
+            ...(snapshotId != null ? { snapshotId } : {}),
+            signal: controller.signal,
+          });
+          if (requestSeq !== requestSeqRef.current) return;
+          snapshotId = response.snapshotId;
+          totalRecords = response.total;
+          loaded = [...loaded, ...response.records].slice(
+            0,
+            PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS,
+          );
+          if (
+            loaded.length >= response.total ||
+            loaded.length >= PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS ||
+            response.records.length === 0
+          ) {
+            break;
+          }
+          page += 1;
+        }
+        if (requestSeq !== requestSeqRef.current) return;
+        setRecords(loaded);
+        setChartTotal(totalRecords);
+        setChartIsSampled(loaded.length < totalRecords);
+        setError(null);
+      } catch (err) {
+        if (requestSeq !== requestSeqRef.current) return;
+        if (
+          (err instanceof DOMException && err.name === "AbortError") ||
+          (err instanceof Error && err.name === "AbortError")
+        ) {
+          return;
+        }
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (requestSeq === requestSeqRef.current && shouldManageLoading) {
+          isLoadingRef.current = false;
+          setIsLoading(false);
+        }
+        if (activeLoadControllerRef.current === controller) {
+          activeLoadControllerRef.current = null;
+        }
+      }
+    },
+    [activeRange, conversationKey, historyQueryForConversationKey, open],
+  );
+
+  useEffect(() => {
+    requestSeqRef.current += 1;
+    activeLoadControllerRef.current?.abort();
+    activeLoadControllerRef.current = null;
+    if (refreshTimerRef.current) {
+      clearTimeout(refreshTimerRef.current);
+      refreshTimerRef.current = null;
+    }
+    if (!open || !conversationKey) {
+      setSummary(null);
+      setRecords([]);
+      setChartTotal(0);
+      setChartIsSampled(false);
+      isLoadingRef.current = false;
+      setIsLoading(false);
+      setError(null);
+      return;
+    }
+    setSummary(null);
+    setRecords([]);
+    setChartTotal(0);
+    setChartIsSampled(false);
+    isLoadingRef.current = false;
+    setError(null);
+    void load();
+  }, [conversationKey, load, open]);
+
+  const triggerRefresh = useCallback(() => {
+    const now = Date.now();
+    const delay = Math.max(
+      0,
+      PROMPT_CACHE_ACTIVITY_RESYNC_THROTTLE_MS -
+        (now - lastRefreshAtRef.current),
+    );
+    const run = () => {
+      refreshTimerRef.current = null;
+      lastRefreshAtRef.current = Date.now();
+      void load({ silent: true });
+    };
+    if (delay === 0) {
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+      run();
+      return;
+    }
+    if (refreshTimerRef.current) return;
+    refreshTimerRef.current = setTimeout(run, delay);
+  }, [load]);
+
+  useEffect(() => {
+    if (disableLiveUpdates) return;
+    if (!open || !conversationKey) return;
+    const unsubscribe = subscribeToSse((payload) => {
+      if (payload.type !== "records") return;
+      const matching = payload.records.some(
+        (record) =>
+          historyRecordMatchesConversationKey?.(record, conversationKey) ??
+          record.promptCacheKey?.trim() === conversationKey,
+      );
+      if (!matching) return;
+      triggerRefresh();
+    });
+    return unsubscribe;
+  }, [
+    conversationKey,
+    disableLiveUpdates,
+    historyRecordMatchesConversationKey,
+    open,
+    triggerRefresh,
+  ]);
+
+  useEffect(
+    () => () => {
+      requestSeqRef.current += 1;
+      activeLoadControllerRef.current?.abort();
+      activeLoadControllerRef.current = null;
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+    },
+    [],
+  );
+
+  const buckets = useMemo(
+    () =>
+      buildConversationActivityBuckets({
+        records,
+        range: activeRange,
+        metric: activeMetric,
+        localeTag,
+      }),
+    [activeMetric, activeRange, localeTag, records],
+  );
+
+  const metrics = [
+    {
+      label: t("live.conversations.activity.metricRequests"),
+      value: formatCompactNumber(summary?.totalCount, numberFormatter),
+      toneClass: "text-primary",
+    },
+    {
+      label: t("live.conversations.activity.metricSuccess"),
+      value: formatCompactNumber(summary?.successCount, numberFormatter),
+      toneClass: "text-success",
+    },
+    {
+      label: t("live.conversations.activity.metricFailures"),
+      value: formatCompactNumber(summary?.failureCount, numberFormatter),
+      toneClass: "text-error",
+    },
+    {
+      label: t("live.conversations.activity.metricAborts"),
+      value: formatCompactNumber(summary?.exception.clientAbortCount, numberFormatter),
+      toneClass: "text-warning",
+    },
+    {
+      label: t("live.conversations.activity.metricTokens"),
+      value: formatCompactNumber(summary?.token.totalTokens, numberFormatter),
+      toneClass: "text-info",
+    },
+    {
+      label: t("live.conversations.activity.metricCost"),
+      value:
+        summary == null
+          ? FALLBACK_CELL
+          : currencyFormatter.format(summary.token.totalCost),
+      toneClass: "text-primary",
+    },
+    {
+      label: t("live.conversations.activity.metricAvgDuration"),
+      value: formatDurationMs(summary?.network.avgTotalMs, fullNumberFormatter),
+      toneClass: "text-base-content",
+    },
+  ];
+
+  return (
+    <section className="space-y-3 rounded-xl border border-base-300/70 bg-base-100/55 p-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <h3 className="text-sm font-semibold">
+            {t("live.conversations.activity.title")}
+          </h3>
+          <SegmentedControl
+            size="compact"
+            role="tablist"
+            aria-label={t("dashboard.activityOverview.rangeToggleAria")}
+          >
+            {CONVERSATION_ACTIVITY_RANGES.map((range) => (
+              <SegmentedControlItem
+                key={range.key}
+                active={activeRange === range.key}
+                role="tab"
+                aria-selected={activeRange === range.key}
+                onClick={() => setActiveRange(range.key)}
+              >
+                {t(range.labelKey)}
+              </SegmentedControlItem>
+            ))}
+          </SegmentedControl>
+        </div>
+        <SegmentedControl
+          size="compact"
+          role="tablist"
+          aria-label={t("heatmap.metricsToggleAria")}
+        >
+          {CONVERSATION_ACTIVITY_METRICS.map((metric) => (
+            <SegmentedControlItem
+              key={metric.key}
+              active={activeMetric === metric.key}
+              role="tab"
+              aria-selected={activeMetric === metric.key}
+              onClick={() => setActiveMetric(metric.key)}
+            >
+              {t(metric.labelKey)}
+            </SegmentedControlItem>
+          ))}
+        </SegmentedControl>
+      </div>
+      {error ? (
+        <Alert variant="error">
+          <span>{t("records.summary.loadError", { error })}</span>
+        </Alert>
+      ) : null}
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
+        {metrics.map((metric) => (
+          <div
+            key={metric.label}
+            className="rounded-lg border border-base-300/60 bg-base-200/25 px-3 py-2"
+          >
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-base-content/55">
+              {metric.label}
+            </div>
+            <div className={`mt-1 text-lg font-semibold ${metric.toneClass}`}>
+              {isLoading && summary == null ? "…" : metric.value}
+            </div>
+          </div>
+        ))}
+      </div>
+      <ConversationActivityChart
+        buckets={buckets}
+        metric={activeMetric}
+        loading={isLoading}
+        numberFormatter={numberFormatter}
+        currencyFormatter={currencyFormatter}
+        t={t}
+      />
+      {chartIsSampled ? (
+        <p className="text-xs text-base-content/60">
+          {t("live.conversations.activity.sampledChart", {
+            loaded: formatCompactNumber(records.length, fullNumberFormatter),
+            total: formatCompactNumber(chartTotal, fullNumberFormatter),
+          })}
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+export function PromptCacheConversationHistoryDrawer({
+  open,
+  conversationKey,
+  conversationLabel,
+  disableLiveUpdates = false,
   onClose,
   t,
   onOpenUpstreamAccount,
@@ -284,6 +1020,8 @@ function PromptCacheConversationHistoryDrawer({
 }: {
   open: boolean;
   conversationKey: string | null;
+  conversationLabel?: string | null;
+  disableLiveUpdates?: boolean;
   onClose: () => void;
   t: (key: string, values?: Record<string, string | number>) => string;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
@@ -467,6 +1205,7 @@ function PromptCacheConversationHistoryDrawer({
   }, [clearPendingRefreshTimer, conversationKey, load, open]);
 
   useEffect(() => {
+    if (disableLiveUpdates) return;
     if (!open || !conversationKey) return;
     const unsubscribe = subscribeToSse((payload) => {
       if (payload.type !== "records") return;
@@ -487,18 +1226,20 @@ function PromptCacheConversationHistoryDrawer({
     return unsubscribe;
   }, [
     conversationKey,
+    disableLiveUpdates,
     historyRecordMatchesConversationKey,
     open,
     triggerSseRefresh,
   ]);
 
   useEffect(() => {
+    if (disableLiveUpdates) return;
     if (!open) return;
     const unsubscribe = subscribeToSseOpen(() => {
       triggerOpenResync(true);
     });
     return unsubscribe;
-  }, [open, triggerOpenResync]);
+  }, [disableLiveUpdates, open, triggerOpenResync]);
 
   useEffect(
     () => () => {
@@ -513,6 +1254,11 @@ function PromptCacheConversationHistoryDrawer({
     () => mergeInvocationRecordCollections(liveRecords, records),
     [liveRecords, records],
   );
+  const displayTitle = conversationLabel?.trim() || conversationKey || FALLBACK_CELL;
+  const shouldShowConversationKey =
+    Boolean(conversationLabel?.trim()) &&
+    Boolean(conversationKey?.trim()) &&
+    conversationLabel?.trim() !== conversationKey?.trim();
   const effectiveTotal = useMemo(() => {
     const loadedStableKeys = new Set(records.map(invocationStableKey));
     const optimisticCount = liveRecords.reduce(
@@ -538,8 +1284,13 @@ function PromptCacheConversationHistoryDrawer({
               {t("live.conversations.drawer.eyebrow")}
             </p>
             <h2 id={titleId} className="section-title break-all">
-              {conversationKey || FALLBACK_CELL}
+              {displayTitle}
             </h2>
+            {shouldShowConversationKey ? (
+              <p className="break-all font-mono text-xs text-base-content/62">
+                {conversationKey}
+              </p>
+            ) : null}
             <p className="section-description">
               {t("live.conversations.drawer.description")}
             </p>
@@ -558,6 +1309,16 @@ function PromptCacheConversationHistoryDrawer({
       }
     >
       <div className="space-y-3">
+        <PromptCacheConversationActivityOverview
+          open={open}
+          conversationKey={conversationKey}
+          disableLiveUpdates={disableLiveUpdates}
+          historyQueryForConversationKey={historyQueryForConversationKey}
+          historyRecordMatchesConversationKey={
+            historyRecordMatchesConversationKey
+          }
+          t={t}
+        />
         <PromptCacheConversationInvocationTable
           records={visibleRecords}
           isLoading={isLoading}

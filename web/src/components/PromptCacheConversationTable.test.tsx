@@ -25,6 +25,7 @@ const apiMocks = vi.hoisted(() => ({
   fetchUpstreamAccountDetail:
     vi.fn<(accountId: number) => Promise<UpstreamAccountDetail>>(),
   fetchInvocationRecords: vi.fn(),
+  fetchInvocationRecordsSummary: vi.fn(),
 }));
 
 const sseMocks = vi.hoisted(() => ({
@@ -39,6 +40,7 @@ vi.mock("../lib/api", async () => {
     ...actual,
     fetchUpstreamAccountDetail: apiMocks.fetchUpstreamAccountDetail,
     fetchInvocationRecords: apiMocks.fetchInvocationRecords,
+    fetchInvocationRecordsSummary: apiMocks.fetchInvocationRecordsSummary,
   };
 });
 
@@ -113,6 +115,36 @@ describe("PromptCacheConversationTable", () => {
     vi.setSystemTime(new Date("2026-03-03T00:00:00Z"));
     apiMocks.fetchUpstreamAccountDetail.mockReset();
     apiMocks.fetchInvocationRecords.mockReset();
+    apiMocks.fetchInvocationRecordsSummary.mockReset();
+    apiMocks.fetchInvocationRecordsSummary.mockResolvedValue({
+      snapshotId: 900,
+      newRecordsCount: 0,
+      totalCount: 0,
+      successCount: 0,
+      failureCount: 0,
+      totalCost: 0,
+      totalTokens: 0,
+      token: {
+        requestCount: 0,
+        totalTokens: 0,
+        avgTokensPerRequest: 0,
+        cacheInputTokens: 0,
+        totalCost: 0,
+      },
+      network: {
+        avgTtfbMs: null,
+        p95TtfbMs: null,
+        avgTotalMs: null,
+        p95TotalMs: null,
+      },
+      exception: {
+        failureCount: 0,
+        serviceFailureCount: 0,
+        clientFailureCount: 0,
+        clientAbortCount: 0,
+        actionableFailureCount: 0,
+      },
+    });
   });
 
   afterEach(() => {
@@ -825,8 +857,52 @@ describe("PromptCacheConversationTable", () => {
   });
 
   it("opens the history drawer and preserves loaded records when later pages fail", async () => {
-    apiMocks.fetchInvocationRecords
-      .mockResolvedValueOnce({
+    apiMocks.fetchInvocationRecordsSummary.mockResolvedValueOnce({
+      snapshotId: 900,
+      newRecordsCount: 0,
+      totalCount: 9,
+      successCount: 7,
+      failureCount: 2,
+      totalCost: 1.25,
+      totalTokens: 12000,
+      token: {
+        requestCount: 9,
+        totalTokens: 12000,
+        avgTokensPerRequest: 1333.33,
+        cacheInputTokens: 4000,
+        totalCost: 1.25,
+      },
+      network: {
+        avgTtfbMs: null,
+        p95TtfbMs: null,
+        avgTotalMs: 12345,
+        p95TotalMs: 22000,
+      },
+      exception: {
+        failureCount: 2,
+        serviceFailureCount: 2,
+        clientFailureCount: 0,
+        clientAbortCount: 0,
+        actionableFailureCount: 2,
+      },
+    });
+    apiMocks.fetchInvocationRecords.mockImplementation(async (query: {
+      page?: number;
+      snapshotId?: number;
+      sortOrder?: string;
+      signal?: AbortSignal;
+    }) => {
+      if (query.signal) {
+        return {
+          snapshotId: 900,
+          total: 0,
+          page: 1,
+          pageSize: 200,
+          records: [],
+        };
+      }
+      if (query.page === 1) {
+        return {
         snapshotId: 901,
         total: 3,
         page: 1,
@@ -863,8 +939,10 @@ describe("PromptCacheConversationTable", () => {
             createdAt: "2026-03-02T12:10:00Z",
           },
         ],
-      })
-      .mockRejectedValueOnce(new Error("page 2 failed"));
+        };
+      }
+      throw new Error("page 2 failed");
+    });
 
     renderInteractive({
       rangeStart: "2026-03-02T00:00:00Z",
@@ -894,14 +972,14 @@ describe("PromptCacheConversationTable", () => {
     });
     await flushInteractive();
 
-    expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(1, {
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledWith({
       promptCacheKey: "pck-history",
       page: 1,
       pageSize: 200,
       sortBy: "occurredAt",
       sortOrder: "desc",
     });
-    expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(2, {
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledWith({
       promptCacheKey: "pck-history",
       page: 2,
       pageSize: 200,
@@ -910,6 +988,12 @@ describe("PromptCacheConversationTable", () => {
       snapshotId: 901,
     });
     expect(document.body.textContent).toContain("全部保留调用记录");
+    expect(document.body.textContent).toContain("对话调用总览");
+    expect(apiMocks.fetchInvocationRecordsSummary).toHaveBeenCalledWith(
+      expect.objectContaining({
+        promptCacheKey: "pck-history",
+      }),
+    );
     expect(
       document.querySelector('[data-testid="invocation-table-scroll"]'),
     ).toBeTruthy();
@@ -949,31 +1033,48 @@ describe("PromptCacheConversationTable", () => {
       resolveRefresh = resolve;
     });
 
-    apiMocks.fetchInvocationRecords
-      .mockResolvedValueOnce({
-        snapshotId: 902,
-        total: 1,
-        page: 1,
-        pageSize: 200,
-        records: [
-          {
-            id: 61,
-            invokeId: "history-base-61",
-            occurredAt: "2026-03-02T12:10:00Z",
-            status: "completed",
-            failureClass: "none",
-            totalTokens: 900,
-            cost: 0.2,
-            endpoint: "/v1/responses",
-            promptCacheKey: "pck-history-live",
-            upstreamAccountId: 101,
-            upstreamAccountName: "Pool Alpha",
-            proxyDisplayName: "Proxy Base",
-            createdAt: "2026-03-02T12:10:00Z",
-          },
-        ],
-      })
-      .mockImplementationOnce(async () => refreshPromise);
+    apiMocks.fetchInvocationRecords.mockImplementation(async (query: {
+      page?: number;
+      snapshotId?: number;
+      sortOrder?: string;
+      signal?: AbortSignal;
+    }) => {
+      if (query.signal) {
+        return {
+          snapshotId: 900,
+          total: 0,
+          page: 1,
+          pageSize: 200,
+          records: [],
+        };
+      }
+      if (query.page === 1 && query.snapshotId == null) {
+        return {
+          snapshotId: 902,
+          total: 1,
+          page: 1,
+          pageSize: 200,
+          records: [
+            {
+              id: 61,
+              invokeId: "history-base-61",
+              occurredAt: "2026-03-02T12:10:00Z",
+              status: "completed",
+              failureClass: "none",
+              totalTokens: 900,
+              cost: 0.2,
+              endpoint: "/v1/responses",
+              promptCacheKey: "pck-history-live",
+              upstreamAccountId: 101,
+              upstreamAccountName: "Pool Alpha",
+              proxyDisplayName: "Proxy Base",
+              createdAt: "2026-03-02T12:10:00Z",
+            },
+          ],
+        };
+      }
+      return refreshPromise;
+    });
 
     renderInteractive({
       rangeStart: "2026-03-02T00:00:00Z",
@@ -1091,7 +1192,7 @@ describe("PromptCacheConversationTable", () => {
     });
     await flushInteractive();
 
-    expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(2, {
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledWith({
       promptCacheKey: "pck-history-live",
       page: 1,
       pageSize: 200,

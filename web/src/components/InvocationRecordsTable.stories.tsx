@@ -325,6 +325,47 @@ export const PoolRouteFocus: Story = {
   },
 }
 
+export const BudgetExhaustedTerminalRecord: Story = {
+  args: {
+    focus: 'exception',
+    records: STORYBOOK_INVOCATION_RECORDS.filter((record) => record.invokeId === 'inv_story_6110'),
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Focused fixture for seven real pool upstream attempts followed by one synthetic budget-exhausted terminal record. The terminal row is rendered as a neutral terminal state, not as another retry card.',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+
+    await userEvent.click(canvas.getByRole('button', { name: /展开详情|show details/i }))
+    await waitFor(() => {
+      expect(document.querySelector('[data-testid="pool-attempt-terminal-record"]')).not.toBeNull()
+      const visibleAttemptsList = Array.from(document.querySelectorAll('[data-testid="pool-attempts-list"]')).find(
+        (candidate) => candidate.getBoundingClientRect().width > 0,
+      )
+      expect(visibleAttemptsList?.querySelectorAll('[data-testid="pool-attempt-item"]')).toHaveLength(7)
+    })
+
+    const visibleTerminal = Array.from(document.querySelectorAll('[data-testid="pool-attempt-terminal-record"]')).find(
+      (candidate) => candidate.getBoundingClientRect().width > 0,
+    )
+    const terminalText = visibleTerminal?.textContent ?? ''
+    expect(terminalText).toContain('未发起新请求')
+    expect(terminalText).toContain('上一失败账号')
+    expect(terminalText).toContain('solacebambi9197 Team')
+    expect(terminalText).not.toContain('同账号重试 / 账号序号')
+    expect(terminalText).not.toContain('0/3')
+    expect(terminalText).not.toContain('HTTP 失败')
+    expect(terminalText).not.toContain('连接耗时')
+  },
+}
+
 export const SplitProxyErrorSemantics: Story = {
   args: {
     focus: 'exception',
