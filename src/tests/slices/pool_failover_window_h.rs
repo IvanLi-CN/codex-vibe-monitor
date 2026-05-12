@@ -603,7 +603,7 @@ async fn parallel_work_stats_current_day_bucket_aggregates_distinct_keys() {
     .await;
     insert_parallel_work_prompt_cache_rollup_hourly_row(
         &state.pool,
-        current_day_start + ChronoDuration::hours(1),
+        current_day_start,
         "pck-current-day",
         1,
     )
@@ -648,7 +648,7 @@ async fn parallel_work_stats_current_day_bucket_includes_current_page_period() {
         local_midnight_utc(Utc::now().with_timezone(&Shanghai).date_naive(), Shanghai);
     insert_parallel_work_prompt_cache_rollup_hourly_row(
         &state.pool,
-        current_day_start + ChronoDuration::hours(2),
+        current_day_start,
         "pck-today-only",
         1,
     )
