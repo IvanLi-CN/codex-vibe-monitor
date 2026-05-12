@@ -126,6 +126,12 @@
   evidence_note: verifies seven real pool attempts render as attempt cards while the `budget_exhausted_final` row renders as a separate terminal state with no retry index or timing labels.
   image:
   ![号池终态记录拆分效果](visual-evidence/pool-terminal-state.png)
+- source_type: storybook_canvas
+  story_id_or_title: Dashboard/WorkingConversationsSection/SequenceButtonOpensConversationHistory
+  state: dashboard conversation history drawer
+  evidence_note: verifies the dashboard conversation sequence opens the full retained call history drawer with no time-range selector, while records remain newest-first.
+  image:
+  ![Dashboard conversation history drawer](visual-evidence/dashboard-conversation-history-drawer.png)
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 

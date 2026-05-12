@@ -851,15 +851,18 @@ function buildStoryMockData(response: PromptCacheConversationsResponse) {
 
   for (const conversation of response.conversations) {
     for (const preview of conversation.recentInvocations) {
-      const record = buildRecordFromPreview(preview);
+      const record = {
+        ...buildRecordFromPreview(preview),
+        promptCacheKey: conversation.promptCacheKey,
+      };
       recordsByInvokeId.set(record.invokeId, record);
-      const conversationRecords =
-        recordsByPromptCacheKey.get(conversation.promptCacheKey) ?? [];
-      conversationRecords.push(record);
-      recordsByPromptCacheKey.set(
-        conversation.promptCacheKey,
-        conversationRecords,
-      );
+      const promptCacheKey = record.promptCacheKey?.trim();
+      if (promptCacheKey) {
+        recordsByPromptCacheKey.set(promptCacheKey, [
+          ...(recordsByPromptCacheKey.get(promptCacheKey) ?? []),
+          record,
+        ]);
+      }
 
       const normalizedStatus = (record.status ?? "").trim().toLowerCase();
       const isAbnormal =
@@ -1156,8 +1159,8 @@ function DrawerPreviewStory({
       resolveInitialSelection(cards, initialSelection),
     );
   const [selectedConversation, setSelectedConversation] = useState<{
-    promptCacheKey: string;
     conversationSequenceId: string;
+    promptCacheKey: string;
   } | null>(null);
   const [selectedAccount, setSelectedAccount] = useState<{
     id: number;
@@ -1208,19 +1211,23 @@ function DrawerPreviewStory({
             records: record ? [record] : [],
           });
         }
-        const promptCacheKey = url.searchParams.get("promptCacheKey");
+        const promptCacheKey = url.searchParams.get("promptCacheKey")?.trim();
         if (promptCacheKey) {
-          const records =
-            storyMocks.recordsByPromptCacheKey.get(promptCacheKey) ?? [];
-          const page = Number(url.searchParams.get("page") ?? "1");
-          const pageSize = Number(url.searchParams.get("pageSize") ?? "200");
-          const pageStart = Math.max(0, (page - 1) * pageSize);
+          const page = Math.max(1, Number(url.searchParams.get("page") ?? "1"));
+          const pageSize = Math.max(
+            1,
+            Number(url.searchParams.get("pageSize") ?? "200"),
+          );
+          const records = (storyMocks.recordsByPromptCacheKey.get(promptCacheKey) ?? [])
+            .slice()
+            .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt));
+          const start = (page - 1) * pageSize;
           return jsonResponse({
             snapshotId: 1,
             total: records.length,
             page,
             pageSize,
-            records: records.slice(pageStart, pageStart + pageSize),
+            records: records.slice(start, start + pageSize),
           });
         }
       }
@@ -1525,7 +1532,7 @@ export const FailedWithClickableAccount: Story = {
   },
 };
 
-export const SequenceButtonOpensConversationDrawer: Story = {
+export const SequenceButtonOpensConversationHistory: Story = {
   args: {
     cards: [],
     isLoading: false,
@@ -1555,12 +1562,15 @@ export const SequenceButtonOpensConversationDrawer: Story = {
       sequenceButton.textContent ?? "",
     );
     expect(document.body.textContent ?? "").toContain("pck-failed-clickable");
+    await expect(
+      within(document.body).getByText(/All retained calls/i),
+    ).toBeInTheDocument();
   },
   parameters: {
     docs: {
       description: {
         story:
-          "Only the compact conversation sequence id is a hot zone for opening the conversation history drawer; invocation slots still own invocation detail navigation.",
+          "Only the compact conversation sequence id is a hot zone for opening the full retained conversation history drawer; invocation slots still open single-call diagnostics.",
       },
     },
   },

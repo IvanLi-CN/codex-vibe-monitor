@@ -70,17 +70,6 @@ const PROMPT_CACHE_ACTIVITY_RESYNC_THROTTLE_MS = 1_000;
 type ConversationActivityRange = "today" | "yesterday" | "1d" | "7d" | "history";
 type ConversationActivityMetric = "totalCount" | "totalCost" | "totalTokens";
 
-const CONVERSATION_ACTIVITY_RANGES: Array<{
-  key: ConversationActivityRange;
-  labelKey: string;
-}> = [
-  { key: "today", labelKey: "dashboard.activityOverview.rangeToday" },
-  { key: "yesterday", labelKey: "dashboard.activityOverview.rangeYesterday" },
-  { key: "1d", labelKey: "dashboard.activityOverview.range24h" },
-  { key: "7d", labelKey: "dashboard.activityOverview.range7d" },
-  { key: "history", labelKey: "dashboard.activityOverview.rangeUsage" },
-];
-
 const CONVERSATION_ACTIVITY_METRICS: Array<{
   key: ConversationActivityMetric;
   labelKey: string;
@@ -669,8 +658,7 @@ function PromptCacheConversationActivityOverview({
 }) {
   const { locale } = useTranslation();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
-  const [activeRange, setActiveRange] =
-    useState<ConversationActivityRange>("today");
+  const activeRange: ConversationActivityRange = "history";
   const [activeMetric, setActiveMetric] =
     useState<ConversationActivityMetric>("totalCount");
   const [summary, setSummary] =
@@ -789,7 +777,7 @@ function PromptCacheConversationActivityOverview({
         }
       }
     },
-    [activeRange, conversationKey, historyQueryForConversationKey, open],
+    [conversationKey, historyQueryForConversationKey, open],
   );
 
   useEffect(() => {
@@ -880,7 +868,7 @@ function PromptCacheConversationActivityOverview({
         metric: activeMetric,
         localeTag,
       }),
-    [activeMetric, activeRange, localeTag, records],
+    [activeMetric, localeTag, records],
   );
 
   const metrics = [
@@ -927,28 +915,9 @@ function PromptCacheConversationActivityOverview({
   return (
     <section className="space-y-3 rounded-xl border border-base-300/70 bg-base-100/55 p-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <h3 className="text-sm font-semibold">
-            {t("live.conversations.activity.title")}
-          </h3>
-          <SegmentedControl
-            size="compact"
-            role="tablist"
-            aria-label={t("dashboard.activityOverview.rangeToggleAria")}
-          >
-            {CONVERSATION_ACTIVITY_RANGES.map((range) => (
-              <SegmentedControlItem
-                key={range.key}
-                active={activeRange === range.key}
-                role="tab"
-                aria-selected={activeRange === range.key}
-                onClick={() => setActiveRange(range.key)}
-              >
-                {t(range.labelKey)}
-              </SegmentedControlItem>
-            ))}
-          </SegmentedControl>
-        </div>
+        <h3 className="text-sm font-semibold">
+          {t("live.conversations.activity.title")}
+        </h3>
         <SegmentedControl
           size="compact"
           role="tablist"

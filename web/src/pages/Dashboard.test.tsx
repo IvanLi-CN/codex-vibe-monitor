@@ -193,6 +193,18 @@ vi.mock("../components/DashboardWorkingConversationsSection", () => ({
           </button>
           <button
             type="button"
+            data-testid="dashboard-open-conversation"
+            onClick={() =>
+              onOpenConversation?.({
+                conversationSequenceId: cards[0].conversationSequenceId,
+                promptCacheKey: cards[0].promptCacheKey,
+              })
+            }
+          >
+            open conversation
+          </button>
+          <button
+            type="button"
             data-testid="dashboard-open-account"
             onClick={() =>
               onOpenUpstreamAccount?.(77, "section-account@example.com")
@@ -854,6 +866,11 @@ describe("DashboardPage", () => {
     ).toBeNull();
     expect(
       host?.querySelector(
+        '[data-testid="dashboard-conversation-history-drawer-mock"]',
+      ),
+    ).toBeNull();
+    expect(
+      host?.querySelector(
         '[data-testid="shared-upstream-account-drawer-account-id"]',
       )?.textContent,
     ).toBe("77");
@@ -937,6 +954,32 @@ describe("DashboardPage", () => {
         '[data-testid="shared-upstream-account-drawer-account-id"]',
       )?.textContent,
     ).toBe("88");
+
+    act(() => {
+      openConversationButton.click();
+    });
+
+    const openAccountFromHistoryDrawerButton = host?.querySelector(
+      '[data-testid="dashboard-conversation-drawer-open-account"]',
+    );
+    if (!(openAccountFromHistoryDrawerButton instanceof HTMLButtonElement)) {
+      throw new Error("missing conversation history drawer account trigger");
+    }
+
+    act(() => {
+      openAccountFromHistoryDrawerButton.click();
+    });
+
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-conversation-history-drawer-mock"]',
+      ),
+    ).toBeNull();
+    expect(
+      host?.querySelector(
+        '[data-testid="shared-upstream-account-drawer-account-id"]',
+      )?.textContent,
+    ).toBe("99");
   });
 
   it("passes refresh target updates from the working conversations section back into the hook", () => {
