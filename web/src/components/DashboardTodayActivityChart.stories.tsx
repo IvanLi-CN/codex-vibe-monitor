@@ -133,6 +133,37 @@ const latencyMinuteAlignmentResponse: TimeseriesResponse = {
   }),
 };
 
+const mixedOutcomeMinuteAlignmentResponse: TimeseriesResponse = {
+  rangeStart: "2026-04-08T00:00:00+08:00",
+  rangeEnd: "2026-04-08T12:24:00+08:00",
+  bucketSeconds: 60,
+  points: Array.from({ length: 745 }, (_, index) => {
+    const bucketStart = new Date(STORY_DAY_START);
+    bucketStart.setMinutes(bucketStart.getMinutes() + index);
+    const bucketEnd = new Date(bucketStart.getTime() + MINUTE_MS);
+    const isAlignmentMinute = index >= 36 && index <= 48;
+    const isFocusMinute = index === 42;
+    const successCount = isAlignmentMinute ? (isFocusMinute ? 7 : 3) : 0;
+    const failureCount = isAlignmentMinute ? (isFocusMinute ? 4 : 2) : 0;
+    const inFlightCount = isFocusMinute ? 2 : 0;
+    const completedCount = successCount + failureCount;
+
+    return {
+      bucketStart: bucketStart.toISOString(),
+      bucketEnd: bucketEnd.toISOString(),
+      totalCount: successCount + failureCount + inFlightCount,
+      successCount,
+      failureCount,
+      inFlightCount,
+      totalTokens: completedCount * 920,
+      totalCost: Number((completedCount * 0.0166).toFixed(4)),
+      firstResponseByteTotalSampleCount: completedCount,
+      firstResponseByteTotalAvgMs:
+        completedCount > 0 ? 760 + (index - 42) * 18 : null,
+    };
+  }),
+};
+
 const meta = {
   title: "Dashboard/DashboardTodayActivityChart",
   component: DashboardTodayActivityChart,
@@ -210,6 +241,27 @@ export const CountBarsLatencyMinuteAlignment: Story = {
     error: null,
     metric: "totalCount",
   },
+};
+
+export const CountBarsMixedOutcomeAlignment: Story = {
+  args: {
+    response: mixedOutcomeMinuteAlignmentResponse,
+    loading: false,
+    error: null,
+    metric: "totalCount",
+  },
+  render: () => (
+    <div className="overflow-hidden" data-testid="mixed-outcome-alignment">
+      <div className="w-[7200px] max-w-none">
+        <DashboardTodayActivityChart
+          response={mixedOutcomeMinuteAlignmentResponse}
+          loading={false}
+          error={null}
+          metric="totalCount"
+        />
+      </div>
+    </div>
+  ),
 };
 
 export const CountBarsMinuteGranularityZoom: Story = {

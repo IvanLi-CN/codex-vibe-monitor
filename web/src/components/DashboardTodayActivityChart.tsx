@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
+  type ReactElement,
 } from "react";
 import {
   Area,
@@ -202,6 +203,63 @@ function zoomViewport(
 
 interface TooltipPayloadEntry {
   payload?: DashboardTodayMinuteDatum;
+}
+
+interface FailureBarShapeProps {
+  fill?: string;
+  x?: number | string;
+  y?: number | string;
+  width?: number | string;
+  height?: number | string;
+}
+
+function NegativeFailureBarShape({
+  fill = "currentColor",
+  x,
+  y,
+  width,
+  height,
+}: FailureBarShapeProps): ReactElement | null {
+  const rectX = Number(x);
+  const rectY = Number(y);
+  const rectWidth = Number(width);
+  const rectHeight = Number(height);
+
+  if (
+    !Number.isFinite(rectX) ||
+    !Number.isFinite(rectY) ||
+    !Number.isFinite(rectWidth) ||
+    !Number.isFinite(rectHeight) ||
+    rectWidth === 0 ||
+    rectHeight === 0
+  ) {
+    return null;
+  }
+
+  const left = Math.min(rectX, rectX + rectWidth);
+  const right = Math.max(rectX, rectX + rectWidth);
+  const top = Math.min(rectY, rectY + rectHeight);
+  const bottom = Math.max(rectY, rectY + rectHeight);
+  const normalizedWidth = right - left;
+  const normalizedHeight = bottom - top;
+  const radius = Math.min(3, normalizedWidth / 2, normalizedHeight / 2);
+
+  return (
+    <path
+      data-dashboard-failure-bar-shape="negative"
+      d={[
+        `M${left},${top}`,
+        `H${right}`,
+        `V${bottom - radius}`,
+        `Q${right},${bottom} ${right - radius},${bottom}`,
+        `H${left + radius}`,
+        `Q${left},${bottom} ${left},${bottom - radius}`,
+        "Z",
+      ].join(" ")}
+      fill={fill}
+      stroke="none"
+    />
+  );
 }
 
 interface ChartTooltipContentProps {
@@ -834,6 +892,7 @@ function DashboardTodayActivityChartImpl({
               data={visibleChartData}
               margin={{ top: 12, right: 24, left: 0, bottom: 8 }}
               barGap="-100%"
+              stackOffset="sign"
             >
               <CartesianGrid
                 stroke={chartColors.gridLine}
@@ -932,9 +991,10 @@ function DashboardTodayActivityChartImpl({
                 yAxisId="count"
                 dataKey="chartFailureCountNegative"
                 name={countSeriesNames.failures}
+                stackId="positive"
                 fill={chartColors.failure}
                 barSize={countBarSize}
-                radius={[0, 0, 3, 3]}
+                shape={<NegativeFailureBarShape />}
                 isAnimationActive={animate}
               />
               <Line
