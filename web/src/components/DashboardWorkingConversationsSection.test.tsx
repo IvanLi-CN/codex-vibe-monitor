@@ -1331,8 +1331,8 @@ describe("DashboardWorkingConversationsSection", () => {
   });
 
   it("opens the conversation detail from the sequence id button only", () => {
-    const onOpenConversation = vi.fn();
     const onOpenInvocation = vi.fn();
+    const onOpenConversation = vi.fn();
     const response = createResponse([
       createConversation("pck-sequence-open", [
         createPreview({
@@ -1362,6 +1362,9 @@ describe("DashboardWorkingConversationsSection", () => {
     }
 
     expect(sequenceButton.textContent).toContain(
+      cards[0]?.conversationSequenceId.replace(/^WC-/, "") ?? "",
+    );
+    expect(sequenceButton.getAttribute("aria-label")).toContain(
       cards[0]?.conversationSequenceId.replace(/^WC-/, "") ?? "",
     );
     expect(sequenceButton.getAttribute("aria-label")).not.toContain(

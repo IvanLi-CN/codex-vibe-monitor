@@ -937,6 +937,32 @@ describe("DashboardPage", () => {
         '[data-testid="shared-upstream-account-drawer-account-id"]',
       )?.textContent,
     ).toBe("88");
+
+    act(() => {
+      openConversationButton.click();
+    });
+
+    const openAccountFromHistoryDrawerButton = host?.querySelector(
+      '[data-testid="dashboard-conversation-drawer-open-account"]',
+    );
+    if (!(openAccountFromHistoryDrawerButton instanceof HTMLButtonElement)) {
+      throw new Error("missing conversation history drawer account trigger");
+    }
+
+    act(() => {
+      openAccountFromHistoryDrawerButton.click();
+    });
+
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-conversation-history-drawer-mock"]',
+      ),
+    ).toBeNull();
+    expect(
+      host?.querySelector(
+        '[data-testid="shared-upstream-account-drawer-account-id"]',
+      )?.textContent,
+    ).toBe("99");
   });
 
   it("passes refresh target updates from the working conversations section back into the hook", () => {

@@ -1681,6 +1681,7 @@ const baseTranslations = {
     "live.conversations.activity.legendSuccess": "Success",
     "live.conversations.activity.legendFailure": "Failure",
     "live.conversations.activity.legendInFlight": "Running",
+    "live.conversations.activity.legendNeutral": "Neutral",
     "live.conversations.activity.legendDuration": "Avg duration",
     "live.conversations.activity.sampledChart":
       "Chart samples the latest {{loaded}} / {{total}} matching calls; metric cards use the full server summary.",
@@ -3601,7 +3602,7 @@ const baseTranslations = {
     "live.conversations.drawer.close": "关闭调用记录抽屉",
     "live.conversations.drawer.eyebrow": "全部保留调用记录",
     "live.conversations.drawer.description":
-      "按时间倒序展示当前仍可回放的原始调用记录。",
+      "覆盖从首条到最新一条当前仍可回放的原始调用记录。",
     "live.conversations.drawer.progress":
       "已加载 {{loaded}} / {{total}} 条保留调用记录",
     "live.conversations.drawer.progressComplete": "共 {{count}} 条保留调用记录",
@@ -3620,6 +3621,7 @@ const baseTranslations = {
     "live.conversations.activity.legendSuccess": "成功",
     "live.conversations.activity.legendFailure": "失败",
     "live.conversations.activity.legendInFlight": "运行中",
+    "live.conversations.activity.legendNeutral": "中性",
     "live.conversations.activity.legendDuration": "平均耗时",
     "live.conversations.activity.sampledChart":
       "图表采样最近 {{loaded}} / {{total}} 条匹配调用；上方指标卡使用服务端完整统计。",

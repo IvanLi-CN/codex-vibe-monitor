@@ -38,6 +38,28 @@ function StorySurface({ children }: { children: ReactNode }) {
   );
 }
 
+function useStoryTheme(theme?: "vibe-light" | "vibe-dark") {
+  useLayoutEffect(() => {
+    if (!theme) return;
+    const previousHtmlTheme = document.documentElement.getAttribute("data-theme");
+    const previousBodyTheme = document.body.getAttribute("data-theme");
+    document.documentElement.setAttribute("data-theme", theme);
+    document.body.setAttribute("data-theme", theme);
+    return () => {
+      if (previousHtmlTheme) {
+        document.documentElement.setAttribute("data-theme", previousHtmlTheme);
+      } else {
+        document.documentElement.removeAttribute("data-theme");
+      }
+      if (previousBodyTheme) {
+        document.body.setAttribute("data-theme", previousBodyTheme);
+      } else {
+        document.body.removeAttribute("data-theme");
+      }
+    };
+  }, [theme]);
+}
+
 function jsonResponse(payload: unknown, status = 200) {
   return new Response(JSON.stringify(payload), {
     status,
@@ -333,6 +355,420 @@ const failedClickableResponse = createResponse([
     }),
   ]),
 ]);
+
+function buildDashboardHistoryEvidenceFixtures() {
+  const promptCacheKey = "pck-dashboard-history-realistic";
+  const topRecords = [
+    createPreview({
+      id: 910,
+      invokeId: "invoke-history-910",
+      occurredAt: "2026-05-12T08:15:57Z",
+      status: "completed",
+      model: "gpt-5.5",
+      upstreamAccountId: 311,
+      upstreamAccountName: "pool-ci-311@example.com",
+      endpoint: "/v1/responses",
+      inputTokens: 164_400,
+      cacheInputTokens: 156_032,
+      outputTokens: 37,
+      reasoningTokens: 0,
+      totalTokens: 164_437,
+      cost: 0.121,
+      reasoningEffort: "high",
+      responseContentEncoding: "identity",
+      requestedServiceTier: "auto",
+      serviceTier: "priority",
+      tTotalMs: 29_470,
+    }),
+    createPreview({
+      id: 909,
+      invokeId: "invoke-history-909",
+      occurredAt: "2026-05-12T08:15:37Z",
+      status: "http_502",
+      failureClass: "service_failure",
+      failureKind: "upstream_timeout",
+      errorMessage: "[downstream_reset] upstream closed before first byte",
+      model: "gpt-5.5",
+      upstreamAccountId: 311,
+      upstreamAccountName: "pool-ci-311@example.com",
+      endpoint: "/v1/responses",
+      inputTokens: 163_784,
+      cacheInputTokens: 155_520,
+      outputTokens: 570,
+      reasoningTokens: 137,
+      totalTokens: 164_354,
+      cost: 0.1362,
+      reasoningEffort: "high",
+      responseContentEncoding: "identity",
+      tTotalMs: 59_000,
+    }),
+    createPreview({
+      id: 908,
+      invokeId: "invoke-history-908",
+      occurredAt: "2026-05-12T08:15:00Z",
+      status: "completed",
+      model: "gpt-5.5",
+      upstreamAccountId: 312,
+      upstreamAccountName: "pool-ci-312@example.com",
+      endpoint: "/v1/responses",
+      inputTokens: 163_496,
+      cacheInputTokens: 155_520,
+      outputTokens: 37,
+      reasoningTokens: 0,
+      totalTokens: 163_533,
+      cost: 0.1188,
+      reasoningEffort: "high",
+      responseContentEncoding: "identity",
+      tTotalMs: 16_280,
+    }),
+    createPreview({
+      id: 907,
+      invokeId: "invoke-history-907",
+      occurredAt: "2026-05-12T08:14:00Z",
+      status: "http_502",
+      failureClass: "service_failure",
+      failureKind: "downstream_reset",
+      errorMessage: "[downstream_reset] response stream reset",
+      model: "gpt-5.5",
+      upstreamAccountId: 311,
+      upstreamAccountName: "pool-ci-311@example.com",
+      endpoint: "/v1/responses",
+      inputTokens: 163_101,
+      cacheInputTokens: 155_008,
+      outputTokens: 348,
+      reasoningTokens: 80,
+      totalTokens: 163_449,
+      cost: 0.1284,
+      reasoningEffort: "high",
+      responseContentEncoding: "identity",
+      tTotalMs: 50_960,
+    }),
+    createPreview({
+      id: 906,
+      invokeId: "invoke-history-906",
+      occurredAt: "2026-05-12T08:13:26Z",
+      status: "completed",
+      model: "gpt-5.5",
+      upstreamAccountId: 312,
+      upstreamAccountName: "pool-ci-312@example.com",
+      endpoint: "/v1/responses",
+      inputTokens: 162_990,
+      cacheInputTokens: 154_880,
+      outputTokens: 42,
+      reasoningTokens: 0,
+      totalTokens: 163_032,
+      cost: 0.1171,
+      reasoningEffort: "high",
+      responseContentEncoding: "identity",
+      tTotalMs: 33_760,
+    }),
+    createPreview({
+      id: 905,
+      invokeId: "invoke-history-905",
+      occurredAt: "2026-05-12T08:13:10Z",
+      status: "http_502",
+      failureClass: "service_failure",
+      failureKind: "upstream_timeout",
+      errorMessage: "[upstream_read_timeout] upstream read timed out",
+      model: "gpt-5.5",
+      upstreamAccountId: 313,
+      upstreamAccountName: "pool-ci-313@example.com",
+      endpoint: "/v1/responses",
+      inputTokens: 163_496,
+      cacheInputTokens: 155_520,
+      outputTokens: 37,
+      reasoningTokens: 0,
+      totalTokens: 163_533,
+      cost: 0.1188,
+      reasoningEffort: "high",
+      responseContentEncoding: "identity",
+      tTotalMs: 16_280,
+    }),
+    createPreview({
+      id: 904,
+      invokeId: "invoke-history-904",
+      occurredAt: "2026-05-12T08:12:18Z",
+      status: "completed",
+      model: "gpt-5.5",
+      upstreamAccountId: 312,
+      upstreamAccountName: "pool-ci-312@example.com",
+      endpoint: "/v1/responses",
+      inputTokens: 162_880,
+      cacheInputTokens: 154_752,
+      outputTokens: 41,
+      reasoningTokens: 0,
+      totalTokens: 162_921,
+      cost: 0.1167,
+      reasoningEffort: "high",
+      responseContentEncoding: "identity",
+      tTotalMs: 35_520,
+    }),
+    createPreview({
+      id: 903,
+      invokeId: "invoke-history-903",
+      occurredAt: "2026-05-12T08:11:42Z",
+      status: "completed",
+      model: "gpt-5.5",
+      upstreamAccountId: 314,
+      upstreamAccountName: "pool-ci-314@example.com",
+      endpoint: "/v1/responses",
+      inputTokens: 162_720,
+      cacheInputTokens: 154_624,
+      outputTokens: 46,
+      reasoningTokens: 0,
+      totalTokens: 162_766,
+      cost: 0.1164,
+      reasoningEffort: "high",
+      responseContentEncoding: "identity",
+      tTotalMs: 35_520,
+    }),
+    createPreview({
+      id: 902,
+      invokeId: "invoke-history-902",
+      occurredAt: "2026-05-12T08:00:34Z",
+      status: "completed",
+      model: "gpt-5.5",
+      upstreamAccountId: 315,
+      upstreamAccountName: "pool-ci-315@example.com",
+      endpoint: "/v1/responses",
+      inputTokens: 160_104,
+      cacheInputTokens: 151_920,
+      outputTokens: 37,
+      reasoningTokens: 0,
+      totalTokens: 160_141,
+      cost: 0.121,
+      reasoningEffort: "high",
+      responseContentEncoding: "identity",
+      tTotalMs: 29_470,
+    }),
+  ];
+
+  const fillerSlots = [
+    {
+      startAt: "2026-05-12T08:05:30Z",
+      count: 100,
+      spacingMs: 15_000,
+      kind: "recent",
+    },
+    {
+      startAt: "2026-05-12T07:31:20Z",
+      count: 90,
+      spacingMs: 15_000,
+      kind: "recent",
+    },
+    {
+      startAt: "2026-05-12T06:56:10Z",
+      count: 70,
+      spacingMs: 15_000,
+      kind: "recent",
+    },
+    {
+      startAt: "2026-05-12T06:21:00Z",
+      count: 46,
+      spacingMs: 15_000,
+      kind: "recent",
+    },
+    {
+      startAt: "2026-05-11T16:00:00Z",
+      count: 1,
+      spacingMs: 60_000,
+      kind: "first",
+    },
+  ] as const;
+
+  const fillerRecords: PromptCacheConversationInvocationPreview[] = [];
+  let fillerId = 801;
+  for (const [slotIndex, slot] of fillerSlots.entries()) {
+    const slotStartMs = Date.parse(slot.startAt);
+    for (let index = 0; index < slot.count; index += 1) {
+      const recordIndex = fillerRecords.length;
+      const id = fillerId;
+      const occurredAt = new Date(
+        slotStartMs - index * slot.spacingMs,
+      ).toISOString();
+      const cycle = recordIndex % 6;
+      const upstreamAccountId = 320 + (recordIndex % 4);
+      const baseTokens = 82_000 + (recordIndex % 11) * 3_700;
+      const totalTokens = baseTokens + (cycle % 2 === 0 ? 37 : 348);
+      const cost = Number((0.062 + (recordIndex % 7) * 0.0037).toFixed(4));
+      const durationBase = slot.kind === "first" || slotIndex > 0 ? 46_000 : 17_000;
+
+      if (slot.kind === "first") {
+        fillerRecords.push(
+          createPreview({
+            id,
+            invokeId: `invoke-history-${id}`,
+            occurredAt,
+            status: "completed",
+            model: "gpt-5.5",
+            upstreamAccountId,
+            upstreamAccountName: `pool-ci-${upstreamAccountId}@example.com`,
+            endpoint: "/v1/responses",
+            inputTokens: baseTokens,
+            cacheInputTokens: Math.max(0, baseTokens - 8_200),
+            outputTokens: 37,
+            reasoningTokens: 0,
+            totalTokens,
+            cost,
+            reasoningEffort: "high",
+            responseContentEncoding: "identity",
+            tTotalMs: durationBase,
+          }),
+        );
+        fillerId -= 1;
+        continue;
+      }
+
+      if (cycle === 0) {
+        fillerRecords.push(
+          createPreview({
+            id,
+            invokeId: `invoke-history-${id}`,
+            occurredAt,
+            status: "completed",
+            model: "gpt-5.5",
+            upstreamAccountId,
+            upstreamAccountName: `pool-ci-${upstreamAccountId}@example.com`,
+            endpoint: "/v1/responses",
+            inputTokens: baseTokens,
+            cacheInputTokens: Math.max(0, baseTokens - 8_200),
+            outputTokens: 37,
+            reasoningTokens: 0,
+            totalTokens,
+            cost,
+            reasoningEffort: "high",
+            responseContentEncoding: "identity",
+            tTotalMs: durationBase + (recordIndex % 5) * 800,
+          }),
+        );
+        fillerId -= 1;
+        continue;
+      }
+
+      if (cycle === 1 || cycle === 4) {
+        fillerRecords.push(
+          createPreview({
+            id,
+            invokeId: `invoke-history-${id}`,
+            occurredAt,
+            status: "http_502",
+            failureClass: "service_failure",
+            failureKind: "downstream_reset",
+            errorMessage: "[downstream_reset] upstream stream reset mid-flight",
+            model: "gpt-5.5",
+            upstreamAccountId,
+            upstreamAccountName: `pool-ci-${upstreamAccountId}@example.com`,
+            endpoint: "/v1/responses",
+            inputTokens: baseTokens,
+            cacheInputTokens: Math.max(0, baseTokens - 8_000),
+            outputTokens: 92 + (recordIndex % 6) * 11,
+            reasoningTokens: 48 + (recordIndex % 5) * 9,
+            totalTokens,
+            cost,
+            reasoningEffort: "high",
+            responseContentEncoding: "identity",
+            tTotalMs: durationBase + 2_400 + (recordIndex % 5) * 900,
+          }),
+        );
+        fillerId -= 1;
+        continue;
+      }
+
+      if (cycle === 2) {
+        fillerRecords.push(
+          createPreview({
+            id,
+            invokeId: `invoke-history-${id}`,
+            occurredAt,
+            status: "interrupted",
+            failureClass: "client_abort",
+            failureKind: "proxy_interrupted",
+            errorMessage: "proxy request was interrupted before completion",
+            model: "gpt-5.5",
+            upstreamAccountId,
+            upstreamAccountName: `pool-ci-${upstreamAccountId}@example.com`,
+            endpoint: "/v1/responses",
+            inputTokens: baseTokens,
+            cacheInputTokens: Math.max(0, baseTokens - 8_100),
+            outputTokens: 0,
+            reasoningTokens: 0,
+            totalTokens: baseTokens,
+            cost: 0,
+            reasoningEffort: "high",
+            responseContentEncoding: "identity",
+            tTotalMs: durationBase - 2_000 + (recordIndex % 4) * 600,
+          }),
+        );
+        fillerId -= 1;
+        continue;
+      }
+
+      fillerRecords.push(
+        createPreview({
+          id,
+          invokeId: `invoke-history-${id}`,
+          occurredAt,
+          status: "completed",
+          model: "gpt-5.5",
+          upstreamAccountId,
+          upstreamAccountName: `pool-ci-${upstreamAccountId}@example.com`,
+          endpoint: "/v1/responses",
+          inputTokens: baseTokens,
+          cacheInputTokens: Math.max(0, baseTokens - 7_900),
+          outputTokens: 37,
+          reasoningTokens: 0,
+          totalTokens: baseTokens + 37,
+          cost,
+          reasoningEffort: "high",
+          responseContentEncoding: "identity",
+          tTotalMs: durationBase + (recordIndex % 6) * 700,
+        }),
+      );
+      fillerId -= 1;
+    }
+  }
+
+  const historyInvocations = [...topRecords, ...fillerRecords].map(
+    (preview) => ({
+      ...preview,
+      upstreamAccountId: 311,
+      upstreamAccountName: "CIII",
+      proxyDisplayName: null,
+    }),
+  );
+  const totalTokens = historyInvocations.reduce(
+    (sum, preview) => sum + Math.max(0, preview.totalTokens),
+    0,
+  );
+  const totalCost = Number(
+    historyInvocations
+      .reduce((sum, preview) => sum + (preview.cost ?? 0), 0)
+      .toFixed(4),
+  );
+  const dashboardPreviewInvocations = historyInvocations.slice(0, 2);
+  return {
+    dashboardResponse: createResponse([
+      createConversation(promptCacheKey, dashboardPreviewInvocations, {
+        requestCount: historyInvocations.length,
+        totalTokens,
+        totalCost,
+        createdAt: "2026-05-11T16:00:12Z",
+        lastActivityAt: "2026-05-12T08:15:57Z",
+        upstreamAccounts: [
+          {
+            upstreamAccountId: 311,
+            upstreamAccountName: "CIII",
+            requestCount: 142,
+            totalTokens: 1_154_982,
+            totalCost: 9.4211,
+            lastActivityAt: "2026-05-12T08:15:57Z",
+          },
+        ],
+      }),
+    ]),
+    historyInvocationsByPromptCacheKey: new Map([[promptCacheKey, historyInvocations]]),
+  };
+}
 
 const interruptedRecoveryResponse = createResponse([
   createConversation("pck-interrupted-recovery", [
@@ -836,7 +1272,13 @@ function HeadInsertAnchorStory() {
   );
 }
 
-function buildStoryMockData(response: PromptCacheConversationsResponse) {
+function buildStoryMockData(
+  response: PromptCacheConversationsResponse,
+  historyInvocationsByPromptCacheKey = new Map<
+    string,
+    PromptCacheConversationInvocationPreview[]
+  >(),
+) {
   const recordsByInvokeId = new Map<string, ApiInvocation>();
   const recordsByPromptCacheKey = new Map<string, ApiInvocation[]>();
   const detailByRecordId = new Map<number, ApiInvocationRecordDetailResponse>();
@@ -849,17 +1291,22 @@ function buildStoryMockData(response: PromptCacheConversationsResponse) {
     ApiPoolUpstreamRequestAttempt[]
   >();
 
-  for (const conversation of response.conversations) {
-    for (const preview of conversation.recentInvocations) {
-      const record = buildRecordFromPreview(preview);
+  const ingestPreview = (
+    conversation: PromptCacheConversation,
+    preview: PromptCacheConversationInvocationPreview,
+  ) => {
+      const record = {
+        ...buildRecordFromPreview(preview),
+        promptCacheKey: conversation.promptCacheKey,
+      };
       recordsByInvokeId.set(record.invokeId, record);
-      const conversationRecords =
-        recordsByPromptCacheKey.get(conversation.promptCacheKey) ?? [];
-      conversationRecords.push(record);
-      recordsByPromptCacheKey.set(
-        conversation.promptCacheKey,
-        conversationRecords,
-      );
+      const promptCacheKey = record.promptCacheKey?.trim();
+      if (promptCacheKey) {
+        recordsByPromptCacheKey.set(promptCacheKey, [
+          ...(recordsByPromptCacheKey.get(promptCacheKey) ?? []),
+          record,
+        ]);
+      }
 
       const normalizedStatus = (record.status ?? "").trim().toLowerCase();
       const isAbnormal =
@@ -915,7 +1362,16 @@ function buildStoryMockData(response: PromptCacheConversationsResponse) {
           },
         ]);
       }
+  };
+
+  for (const conversation of response.conversations) {
+    const historyInvocations =
+      historyInvocationsByPromptCacheKey.get(conversation.promptCacheKey) ??
+      conversation.recentInvocations;
+    for (const preview of historyInvocations) {
+      ingestPreview(conversation, preview);
     }
+
   }
 
   return {
@@ -928,11 +1384,31 @@ function buildStoryMockData(response: PromptCacheConversationsResponse) {
 }
 
 function buildStoryInvocationSummary(records: ApiInvocation[]) {
+  const resolvedFailureClass = (record: ApiInvocation) => {
+    const failureClass = (record.failureClass ?? "").trim().toLowerCase();
+    if (
+      failureClass === "service_failure" ||
+      failureClass === "client_failure" ||
+      failureClass === "client_abort"
+    ) {
+      return failureClass;
+    }
+    return "none";
+  };
+  const isSuccessRecord = (record: ApiInvocation) => {
+    const status = (record.status ?? "").trim().toLowerCase();
+    const errorMessage = (record.errorMessage ?? "").trim();
+    return (
+      resolvedFailureClass(record) === "none" &&
+      (status === "success" ||
+        status === "completed" ||
+        (status === "http_200" && errorMessage === ""))
+    );
+  };
   const failureRecords = records.filter(
-    (record) =>
-      (record.failureClass ?? "").trim().toLowerCase() !== "none" &&
-      (record.failureClass ?? "").trim() !== "",
+    (record) => resolvedFailureClass(record) !== "none",
   );
+  const successRecords = records.filter(isSuccessRecord);
   const totalMsRecords = records.filter(
     (record) =>
       typeof record.tTotalMs === "number" && Number.isFinite(record.tTotalMs),
@@ -947,7 +1423,7 @@ function buildStoryInvocationSummary(records: ApiInvocation[]) {
     snapshotId: 1,
     newRecordsCount: 0,
     totalCount: records.length,
-    successCount: records.length - failureRecords.length,
+    successCount: successRecords.length,
     failureCount: failureRecords.length,
     totalCost: records.reduce((sum, record) => sum + (record.cost ?? 0), 0),
     totalTokens: records.reduce(
@@ -980,16 +1456,17 @@ function buildStoryInvocationSummary(records: ApiInvocation[]) {
     exception: {
       failureCount: failureRecords.length,
       serviceFailureCount: failureRecords.filter(
-        (record) => record.failureClass === "service_failure",
+        (record) => resolvedFailureClass(record) === "service_failure",
       ).length,
       clientFailureCount: failureRecords.filter(
-        (record) => record.failureClass === "client_failure",
+        (record) => resolvedFailureClass(record) === "client_failure",
       ).length,
       clientAbortCount: failureRecords.filter(
-        (record) => record.failureClass === "client_abort",
+        (record) => resolvedFailureClass(record) === "client_abort",
       ).length,
-      actionableFailureCount: failureRecords.filter((record) => record.isActionable)
-        .length,
+      actionableFailureCount: failureRecords.filter(
+        (record) => resolvedFailureClass(record) === "service_failure",
+      ).length,
     },
   };
 }
@@ -1139,16 +1616,33 @@ class StoryNoopEventSource implements EventTarget {
 function DrawerPreviewStory({
   response,
   initialSelection,
+  initialConversationKey,
+  historyInvocationsByPromptCacheKey,
+  theme,
 }: {
   response: PromptCacheConversationsResponse;
   initialSelection?: {
     promptCacheKey: string;
     slotKind: "current" | "previous";
   };
+  initialConversationKey?: string;
+  historyInvocationsByPromptCacheKey?: Map<
+    string,
+    PromptCacheConversationInvocationPreview[]
+  >;
+  theme?: "vibe-light" | "vibe-dark";
 }) {
+  useStoryTheme(theme);
   const { t } = useTranslation();
   const cards = useMemo(() => buildCards(response), [response]);
-  const storyMocks = useMemo(() => buildStoryMockData(response), [response]);
+  const storyMocks = useMemo(
+    () =>
+      buildStoryMockData(
+        response,
+        historyInvocationsByPromptCacheKey,
+      ),
+    [historyInvocationsByPromptCacheKey, response],
+  );
   const originalFetchRef = useRef<typeof window.fetch | null>(null);
   const originalEventSourceRef = useRef<typeof window.EventSource | null>(null);
   const [selectedInvocation, setSelectedInvocation] =
@@ -1156,9 +1650,19 @@ function DrawerPreviewStory({
       resolveInitialSelection(cards, initialSelection),
     );
   const [selectedConversation, setSelectedConversation] = useState<{
-    promptCacheKey: string;
     conversationSequenceId: string;
-  } | null>(null);
+    promptCacheKey: string;
+  } | null>(() => {
+    const initialCard = cards.find(
+      (card) => card.promptCacheKey === initialConversationKey,
+    );
+    return initialCard
+      ? {
+          conversationSequenceId: initialCard.conversationSequenceId,
+          promptCacheKey: initialCard.promptCacheKey,
+        }
+      : null;
+  });
   const [selectedAccount, setSelectedAccount] = useState<{
     id: number;
     label: string;
@@ -1166,9 +1670,19 @@ function DrawerPreviewStory({
 
   useEffect(() => {
     setSelectedInvocation(resolveInitialSelection(cards, initialSelection));
-    setSelectedConversation(null);
+    const initialCard = cards.find(
+      (card) => card.promptCacheKey === initialConversationKey,
+    );
+    setSelectedConversation(
+      initialCard
+        ? {
+            conversationSequenceId: initialCard.conversationSequenceId,
+            promptCacheKey: initialCard.promptCacheKey,
+          }
+        : null,
+    );
     setSelectedAccount(null);
-  }, [cards, initialSelection]);
+  }, [cards, initialConversationKey, initialSelection]);
 
   useLayoutEffect(() => {
     originalEventSourceRef.current = window.EventSource;
@@ -1182,10 +1696,12 @@ function DrawerPreviewStory({
     };
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!originalFetchRef.current) {
       originalFetchRef.current = window.fetch.bind(window);
     }
+    (window as typeof window & { __dashboardStoryFetchLog?: string[] })
+      .__dashboardStoryFetchLog = [];
 
     window.fetch = async (input, init) => {
       const request =
@@ -1195,6 +1711,10 @@ function DrawerPreviewStory({
             ? input.toString()
             : input.url;
       const url = new URL(request, window.location.origin);
+      (window as typeof window & { __dashboardStoryFetchLog?: string[] })
+        .__dashboardStoryFetchLog?.push(
+          `${url.pathname}?${url.searchParams.toString()}`,
+        );
 
       if (url.pathname === "/api/invocations") {
         const requestId = url.searchParams.get("requestId");
@@ -1208,19 +1728,23 @@ function DrawerPreviewStory({
             records: record ? [record] : [],
           });
         }
-        const promptCacheKey = url.searchParams.get("promptCacheKey");
+        const promptCacheKey = url.searchParams.get("promptCacheKey")?.trim();
         if (promptCacheKey) {
-          const records =
-            storyMocks.recordsByPromptCacheKey.get(promptCacheKey) ?? [];
-          const page = Number(url.searchParams.get("page") ?? "1");
-          const pageSize = Number(url.searchParams.get("pageSize") ?? "200");
-          const pageStart = Math.max(0, (page - 1) * pageSize);
+          const page = Math.max(1, Number(url.searchParams.get("page") ?? "1"));
+          const pageSize = Math.max(
+            1,
+            Number(url.searchParams.get("pageSize") ?? "200"),
+          );
+          const records = (storyMocks.recordsByPromptCacheKey.get(promptCacheKey) ?? [])
+            .slice()
+            .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt));
+          const start = (page - 1) * pageSize;
           return jsonResponse({
             snapshotId: 1,
             total: records.length,
             page,
             pageSize,
-            records: records.slice(pageStart, pageStart + pageSize),
+            records: records.slice(start, start + pageSize),
           });
         }
       }
@@ -1331,7 +1855,6 @@ function DrawerPreviewStory({
         }
         onClose={() => setSelectedConversation(null)}
         t={t}
-        disableLiveUpdates
         onOpenUpstreamAccount={(accountId, accountLabel) => {
           setSelectedInvocation(null);
           setSelectedConversation(null);
@@ -1525,13 +2048,24 @@ export const FailedWithClickableAccount: Story = {
   },
 };
 
-export const SequenceButtonOpensConversationDrawer: Story = {
+export const SequenceButtonOpensConversationHistory: Story = {
   args: {
     cards: [],
     isLoading: false,
     error: null,
   },
-  render: () => <DrawerPreviewStory response={failedClickableResponse} />,
+  render: () => {
+    const fixtures = buildDashboardHistoryEvidenceFixtures();
+    return (
+      <DrawerPreviewStory
+        response={fixtures.dashboardResponse}
+        historyInvocationsByPromptCacheKey={
+          fixtures.historyInvocationsByPromptCacheKey
+        }
+        theme="vibe-dark"
+      />
+    );
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const sequenceButton = await canvas.findByTestId(
@@ -1546,21 +2080,80 @@ export const SequenceButtonOpensConversationDrawer: Story = {
         document.body.querySelector(
           '[data-testid="story-drawer-state"]',
         )?.textContent,
-      ).toContain("conversation:pck-failed-clickable");
+      ).toContain("conversation:pck-dashboard-history-realistic");
     });
     await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
-      "conversation:pck-failed-clickable",
+      "conversation:pck-dashboard-history-realistic",
     );
     expect(document.body.textContent ?? "").toContain(
       sequenceButton.textContent ?? "",
     );
-    expect(document.body.textContent ?? "").toContain("pck-failed-clickable");
+    expect(document.body.textContent ?? "").toContain(
+      "pck-dashboard-history-realistic",
+    );
+    await expect(
+      within(document.body).getByText(/全部保留调用记录|All retained calls/i),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(document.body.textContent ?? "").toMatch(
+        /共 316 条保留调用记录|316 retained calls/i,
+      );
+    });
+    const dialog = within(document.body).getByRole("dialog");
+    expect(within(dialog).queryByRole("button", { name: "今日" })).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "昨日" })).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "24 小时" })).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "7 日" })).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "历史" })).toBeNull();
+    await waitFor(() => {
+      const fetchLog =
+        (window as typeof window & { __dashboardStoryFetchLog?: string[] })
+          .__dashboardStoryFetchLog ?? [];
+      expect(
+        fetchLog.some(
+          (entry) =>
+            entry.startsWith("/api/invocations?") &&
+            entry.includes("promptCacheKey=pck-dashboard-history-realistic") &&
+            entry.includes("page=2") &&
+            entry.includes("snapshotId=1"),
+        ),
+      ).toBe(true);
+    });
   },
   parameters: {
     docs: {
       description: {
         story:
-          "Only the compact conversation sequence id is a hot zone for opening the conversation history drawer; invocation slots still own invocation detail navigation.",
+          "Only the compact conversation sequence id is a hot zone for opening the full retained conversation history drawer; invocation slots still open single-call diagnostics.",
+      },
+    },
+  },
+};
+
+export const ConversationHistoryDrawerOpen: Story = {
+  args: {
+    cards: [],
+    isLoading: false,
+    error: null,
+  },
+  render: () => {
+    const fixtures = buildDashboardHistoryEvidenceFixtures();
+    return (
+      <DrawerPreviewStory
+        response={fixtures.dashboardResponse}
+        historyInvocationsByPromptCacheKey={
+          fixtures.historyInvocationsByPromptCacheKey
+        }
+        initialConversationKey="pck-dashboard-history-realistic"
+        theme="vibe-dark"
+      />
+    );
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Stable opened state for the full retained conversation history drawer, including the production-style activity chart and dark floating tooltip surface.",
       },
     },
   },
