@@ -138,31 +138,29 @@ const mixedOutcomeMinuteAlignmentResponse: TimeseriesResponse = {
   rangeEnd: "2026-04-08T12:24:00+08:00",
   bucketSeconds: 60,
   points: Array.from({ length: 745 }, (_, index) => {
-    if (index >= 20 && index <= 55) {
-      const bucketStart = new Date(STORY_DAY_START);
-      bucketStart.setMinutes(bucketStart.getMinutes() + index);
-      const bucketEnd = new Date(bucketStart.getTime() + MINUTE_MS);
-      const focusMinute = index === 42;
-      const successCount = focusMinute ? 7 : index % 3 === 0 ? 2 : 1;
-      const failureCount = focusMinute ? 4 : index % 5 === 0 ? 1 : 0;
-      const inFlightCount = focusMinute ? 2 : index % 7 === 0 ? 1 : 0;
-      const completedCount = successCount + failureCount;
+    const bucketStart = new Date(STORY_DAY_START);
+    bucketStart.setMinutes(bucketStart.getMinutes() + index);
+    const bucketEnd = new Date(bucketStart.getTime() + MINUTE_MS);
+    const isAlignmentMinute = index >= 36 && index <= 48;
+    const isFocusMinute = index === 42;
+    const successCount = isAlignmentMinute ? (isFocusMinute ? 7 : 3) : 0;
+    const failureCount = isAlignmentMinute ? (isFocusMinute ? 4 : 2) : 0;
+    const inFlightCount = isFocusMinute ? 2 : 0;
+    const completedCount = successCount + failureCount;
 
-      return {
-        bucketStart: bucketStart.toISOString(),
-        bucketEnd: bucketEnd.toISOString(),
-        totalCount: successCount + failureCount + inFlightCount,
-        successCount,
-        failureCount,
-        inFlightCount,
-        totalTokens: completedCount * 920,
-        totalCost: Number((completedCount * 0.0166).toFixed(4)),
-        firstResponseByteTotalSampleCount: completedCount,
-        firstResponseByteTotalAvgMs:
-          completedCount > 0 ? 760 + (index - 42) * 18 : null,
-      };
-    }
-    return buildRealisticPoint(index, 0.4);
+    return {
+      bucketStart: bucketStart.toISOString(),
+      bucketEnd: bucketEnd.toISOString(),
+      totalCount: successCount + failureCount + inFlightCount,
+      successCount,
+      failureCount,
+      inFlightCount,
+      totalTokens: completedCount * 920,
+      totalCost: Number((completedCount * 0.0166).toFixed(4)),
+      firstResponseByteTotalSampleCount: completedCount,
+      firstResponseByteTotalAvgMs:
+        completedCount > 0 ? 760 + (index - 42) * 18 : null,
+    };
   }),
 };
 
