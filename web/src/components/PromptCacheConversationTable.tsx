@@ -12,7 +12,6 @@ import {
   Bar,
   CartesianGrid,
   ComposedChart,
-  Legend,
   Line,
   ReferenceLine,
   ResponsiveContainer,
@@ -526,16 +525,30 @@ function buildConversationActivityBuckets({
   range,
   metric,
   localeTag,
+  rangeStartMs,
+  rangeEndMs,
 }: {
   records: ApiInvocation[];
   range: ConversationActivityRange;
   metric: ConversationActivityMetric;
   localeTag: string;
+  rangeStartMs?: number | null;
+  rangeEndMs?: number | null;
 }) {
   const now = new Date();
   const rangeBounds = resolveConversationActivityRange(range);
-  let startMs = rangeBounds.from ? Date.parse(rangeBounds.from) : Number.POSITIVE_INFINITY;
-  let endMs = rangeBounds.to ? Date.parse(rangeBounds.to) : Number.NEGATIVE_INFINITY;
+  let startMs =
+    typeof rangeStartMs === "number" && Number.isFinite(rangeStartMs)
+      ? rangeStartMs
+      : rangeBounds.from
+        ? Date.parse(rangeBounds.from)
+        : Number.POSITIVE_INFINITY;
+  let endMs =
+    typeof rangeEndMs === "number" && Number.isFinite(rangeEndMs)
+      ? rangeEndMs
+      : rangeBounds.to
+        ? Date.parse(rangeBounds.to)
+        : Number.NEGATIVE_INFINITY;
 
   if (range === "history") {
     for (const record of records) {
@@ -1075,13 +1088,14 @@ function ConversationActivityChart({
       success: status.success,
       failure: status.failure,
       inFlight: metricAccent("totalCount", themeMode),
+      neutral: themeMode === "dark" ? "#94a3b8" : "#64748b",
       firstByte: themeMode === "dark" ? "#cbd5e1" : "#475569",
     };
   }, [themeMode]);
   const maxCount = Math.max(
     1,
     ...visibleBuckets.map((bucket) =>
-      Math.max(bucket.success + bucket.inFlight, bucket.failure),
+      Math.max(bucket.success + bucket.inFlight + bucket.neutral, bucket.failure),
     ),
   );
   const formatMetricValue = (value: number) => {
@@ -1093,6 +1107,7 @@ function ConversationActivityChart({
     success: t("live.conversations.activity.legendSuccess"),
     failure: t("live.conversations.activity.legendFailure"),
     inFlight: t("live.conversations.activity.legendInFlight"),
+    neutral: t("live.conversations.activity.legendNeutral"),
     duration: t("table.details.firstResponseByteTotal"),
   };
   const renderTooltip = (bucket: ConversationActivityBucket) => [
@@ -1110,6 +1125,11 @@ function ConversationActivityChart({
       label: legendLabels.inFlight,
       value: `${formatMetricValue(bucket.inFlight)} ${metric === "totalCount" ? countUnit : ""}`.trim(),
       color: chartColors.inFlight,
+    },
+    {
+      label: legendLabels.neutral,
+      value: `${formatMetricValue(bucket.neutral)} ${metric === "totalCount" ? countUnit : ""}`.trim(),
+      color: chartColors.neutral,
     },
     {
       label: legendLabels.duration,
@@ -1238,7 +1258,6 @@ function ConversationActivityChart({
                 />
               )}
             />
-            <Legend wrapperStyle={{ color: chartColors.axisText }} />
             <ReferenceLine yAxisId="count" y={0} stroke={chartColors.gridLine} />
             <Bar
               yAxisId="count"
@@ -1266,6 +1285,16 @@ function ConversationActivityChart({
               stackId="positive"
               fill={chartColors.inFlight}
               barSize={barSize}
+              radius={[0, 0, 0, 0]}
+              isAnimationActive={false}
+            />
+            <Bar
+              yAxisId="count"
+              dataKey="neutral"
+              name={legendLabels.neutral}
+              stackId="positive"
+              fill={chartColors.neutral}
+              barSize={barSize}
               radius={[3, 3, 0, 0]}
               isAnimationActive={false}
             />
@@ -1288,6 +1317,34 @@ function ConversationActivityChart({
             />
           </ComposedChart>
         </ResponsiveContainer>
+        </div>
+        <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-xs text-base-content/70">
+          <span className="inline-flex items-center gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-sm bg-success" />
+            {legendLabels.success}
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-sm bg-error" />
+            {legendLabels.failure}
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span
+              className="h-2.5 w-2.5 rounded-sm"
+              style={{ backgroundColor: chartColors.inFlight }}
+            />
+            {legendLabels.inFlight}
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span
+              className="h-2.5 w-2.5 rounded-sm"
+              style={{ backgroundColor: chartColors.neutral }}
+            />
+            {legendLabels.neutral}
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="h-px w-5 bg-base-content/70" />
+            {legendLabels.duration}
+          </span>
         </div>
       </div>
     </div>
@@ -1317,6 +1374,10 @@ function PromptCacheConversationActivityOverview({
   const [summary, setSummary] =
     useState<InvocationRecordsSummaryResponse | null>(null);
   const [records, setRecords] = useState<ApiInvocation[]>([]);
+  const [chartRangeStartMs, setChartRangeStartMs] = useState<number | null>(
+    null,
+  );
+  const [chartRangeEndMs, setChartRangeEndMs] = useState<number | null>(null);
   const [chartTotal, setChartTotal] = useState(0);
   const [chartIsSampled, setChartIsSampled] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -1407,7 +1468,40 @@ function PromptCacheConversationActivityOverview({
           page += 1;
         }
         if (requestSeq !== requestSeqRef.current) return;
+        let startBoundaryMs = Number.POSITIVE_INFINITY;
+        let endBoundaryMs = Number.NEGATIVE_INFINITY;
+        for (const record of loaded) {
+          const occurredAt = Date.parse(record.occurredAt);
+          if (!Number.isFinite(occurredAt)) continue;
+          startBoundaryMs = Math.min(startBoundaryMs, occurredAt);
+          endBoundaryMs = Math.max(endBoundaryMs, occurredAt);
+        }
+        if (totalRecords > loaded.length && snapshotId != null) {
+          const oldestPage = await fetchInvocationRecords({
+            ...filters,
+            page: Math.max(
+              1,
+              Math.ceil(totalRecords / PROMPT_CACHE_ACTIVITY_PAGE_SIZE),
+            ),
+            pageSize: PROMPT_CACHE_ACTIVITY_PAGE_SIZE,
+            sortBy: "occurredAt",
+            sortOrder: "desc",
+            snapshotId,
+            signal: controller.signal,
+          });
+          if (requestSeq !== requestSeqRef.current) return;
+          for (const record of oldestPage.records) {
+            const occurredAt = Date.parse(record.occurredAt);
+            if (!Number.isFinite(occurredAt)) continue;
+            startBoundaryMs = Math.min(startBoundaryMs, occurredAt);
+            endBoundaryMs = Math.max(endBoundaryMs, occurredAt);
+          }
+        }
         setRecords(loaded);
+        setChartRangeStartMs(
+          Number.isFinite(startBoundaryMs) ? startBoundaryMs : null,
+        );
+        setChartRangeEndMs(Number.isFinite(endBoundaryMs) ? endBoundaryMs : null);
         setChartTotal(totalRecords);
         setChartIsSampled(loaded.length < totalRecords);
         setError(null);
@@ -1444,6 +1538,8 @@ function PromptCacheConversationActivityOverview({
     if (!open || !conversationKey) {
       setSummary(null);
       setRecords([]);
+      setChartRangeStartMs(null);
+      setChartRangeEndMs(null);
       setChartTotal(0);
       setChartIsSampled(false);
       isLoadingRef.current = false;
@@ -1453,6 +1549,8 @@ function PromptCacheConversationActivityOverview({
     }
     setSummary(null);
     setRecords([]);
+    setChartRangeStartMs(null);
+    setChartRangeEndMs(null);
     setChartTotal(0);
     setChartIsSampled(false);
     isLoadingRef.current = false;
@@ -1520,8 +1618,10 @@ function PromptCacheConversationActivityOverview({
         range: activeRange,
         metric: activeMetric,
         localeTag,
+        rangeStartMs: chartRangeStartMs,
+        rangeEndMs: chartRangeEndMs,
       }),
-    [activeMetric, localeTag, records],
+    [activeMetric, chartRangeEndMs, chartRangeStartMs, localeTag, records],
   );
 
   const metrics = [

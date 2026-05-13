@@ -1681,6 +1681,7 @@ const baseTranslations = {
     "live.conversations.activity.legendSuccess": "Success",
     "live.conversations.activity.legendFailure": "Failure",
     "live.conversations.activity.legendInFlight": "Running",
+    "live.conversations.activity.legendNeutral": "Neutral",
     "live.conversations.activity.legendDuration": "Avg duration",
     "live.conversations.activity.sampledChart":
       "Chart samples the latest {{loaded}} / {{total}} matching calls; metric cards use the full server summary.",
@@ -3620,6 +3621,7 @@ const baseTranslations = {
     "live.conversations.activity.legendSuccess": "成功",
     "live.conversations.activity.legendFailure": "失败",
     "live.conversations.activity.legendInFlight": "运行中",
+    "live.conversations.activity.legendNeutral": "中性",
     "live.conversations.activity.legendDuration": "平均耗时",
     "live.conversations.activity.sampledChart":
       "图表采样最近 {{loaded}} / {{total}} 条匹配调用；上方指标卡使用服务端完整统计。",
