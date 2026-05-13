@@ -124,16 +124,22 @@ vi.mock("recharts", () => ({
     stackId,
     dataKey,
     barSize,
+    radius,
+    shape,
   }: {
     stackId?: string;
     dataKey?: string;
     barSize?: number;
+    radius?: number[];
+    shape?: ReactNode;
   }) => (
     <div
       data-testid="bar-series"
       data-stack-id={stackId ?? ""}
       data-data-key={dataKey ?? ""}
       data-bar-size={String(barSize ?? "")}
+      data-radius={radius == null ? "" : radius.join(":")}
+      data-has-shape={shape == null ? "false" : "true"}
     />
   ),
   AreaChart: ({ children }: { children: ReactNode }) => (
@@ -143,16 +149,19 @@ vi.mock("recharts", () => ({
     children,
     barGap,
     data,
+    stackOffset,
   }: {
     children: ReactNode;
     barGap?: string | number;
     data?: Array<Record<string, unknown>>;
+    stackOffset?: string;
   }) => {
     latestChartData = data ?? [];
     return (
       <div
         data-testid="composed-chart"
         data-bar-gap={String(barGap ?? "")}
+        data-stack-offset={stackOffset ?? ""}
         data-data-length={String(latestChartData.length)}
       >
         {children}
@@ -827,7 +836,7 @@ describe("DashboardTodayActivityChart", () => {
     expect(html).toContain('data-data-length=""');
   });
 
-  it("renders count mode as a composed chart with split success and failure bars", () => {
+  it("renders count mode with success, in-flight, and failure bars sharing one stack", () => {
     const html = renderToStaticMarkup(
       <DashboardTodayActivityChart
         response={response}
@@ -841,6 +850,7 @@ describe("DashboardTodayActivityChart", () => {
     expect(html).toContain('data-chart-mode="count-bars"');
     expect(html).toContain('data-testid="composed-chart"');
     expect(html).toContain('data-bar-gap="-100%"');
+    expect(html).toContain('data-stack-offset="sign"');
     expect(html).toContain('data-data-length="1440"');
     expect(html).not.toContain('data-testid="area-chart"');
     expect(html).toContain('data-data-key="chartSuccessCount"');
@@ -849,9 +859,11 @@ describe("DashboardTodayActivityChart", () => {
     expect(html).toContain('data-bar-size="1"');
     expect(html).toContain('data-stack-id="positive"');
     expect(html).toContain('data-domain="0:1439"');
-    expect(html).not.toContain(
-      'data-data-key="chartFailureCountNegative" data-stack-id="positive"',
+    expect(html).toContain(
+      'data-stack-id="positive" data-data-key="chartFailureCountNegative" data-bar-size="1" data-radius="" data-has-shape="true"',
     );
+    expect(html.match(/data-stack-id="positive"/g)).toHaveLength(3);
+    expect(html.match(/data-has-shape="true"/g)).toHaveLength(1);
   });
 
   it("zooms horizontally around the wheel pointer and keeps the view clamped", async () => {
