@@ -857,7 +857,7 @@ describe("PromptCacheConversationTable", () => {
   });
 
   it("opens the history drawer and preserves loaded records when later pages fail", async () => {
-    apiMocks.fetchInvocationRecordsSummary.mockResolvedValueOnce({
+    apiMocks.fetchInvocationRecordsSummary.mockResolvedValue({
       snapshotId: 900,
       newRecordsCount: 0,
       totalCount: 9,
@@ -1013,6 +1013,341 @@ describe("PromptCacheConversationTable", () => {
     });
 
     expect(document.body.textContent).not.toContain("全部保留调用记录");
+  });
+
+  it("keeps a single historical invocation visible in the activity chart", async () => {
+    apiMocks.fetchInvocationRecordsSummary.mockResolvedValueOnce({
+      snapshotId: 900,
+      newRecordsCount: 0,
+      totalCount: 1,
+      successCount: 1,
+      failureCount: 0,
+      totalCost: 0.31,
+      totalTokens: 1500,
+      token: {
+        requestCount: 1,
+        totalTokens: 1500,
+        avgTokensPerRequest: 1500,
+        cacheInputTokens: 300,
+        totalCost: 0.31,
+      },
+      network: {
+        avgTtfbMs: null,
+        p95TtfbMs: null,
+        avgTotalMs: 12345,
+        p95TotalMs: 12345,
+      },
+      exception: {
+        failureCount: 0,
+        serviceFailureCount: 0,
+        clientFailureCount: 0,
+        clientAbortCount: 0,
+        actionableFailureCount: 0,
+      },
+    });
+    apiMocks.fetchInvocationRecords.mockResolvedValue({
+      snapshotId: 901,
+      total: 1,
+      page: 1,
+      pageSize: 200,
+      records: [
+        {
+          id: 71,
+          invokeId: "single-history-71",
+          occurredAt: "2026-02-01T12:30:00Z",
+          status: "completed",
+          failureClass: "none",
+          totalTokens: 1500,
+          cost: 0.31,
+          endpoint: "/v1/responses",
+          promptCacheKey: "pck-single-history",
+          upstreamAccountId: 101,
+          upstreamAccountName: "Pool Alpha",
+          proxyDisplayName: "Proxy West",
+          createdAt: "2026-02-01T12:30:00Z",
+        },
+      ],
+    });
+
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-single-history",
+          requestCount: 1,
+          totalTokens: 1500,
+          totalCost: 0.31,
+          createdAt: "2026-02-01T12:30:00Z",
+          lastActivityAt: "2026-02-01T12:30:00Z",
+          last24hRequests: [],
+        }),
+      ],
+    });
+
+    const historyButton = findButtonByAriaLabel("打开全部调用记录");
+    expect(historyButton).toBeTruthy();
+
+    await act(async () => {
+      historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+
+    const chart = document.querySelector(
+      '[data-testid="conversation-activity-chart"]',
+    );
+    expect(chart?.getAttribute("data-visible-total-count")).toBe("1");
+    expect(document.body.textContent).toContain("Proxy West");
+  });
+
+  it("renders neutral activity buckets in the chart", async () => {
+    apiMocks.fetchInvocationRecordsSummary.mockResolvedValueOnce({
+      snapshotId: 900,
+      newRecordsCount: 0,
+      totalCount: 1,
+      successCount: 0,
+      failureCount: 0,
+      totalCost: 0.07,
+      totalTokens: 700,
+      token: {
+        requestCount: 1,
+        totalTokens: 700,
+        avgTokensPerRequest: 700,
+        cacheInputTokens: 200,
+        totalCost: 0.07,
+      },
+      network: {
+        avgTtfbMs: null,
+        p95TtfbMs: null,
+        avgTotalMs: 4321,
+        p95TotalMs: 4321,
+      },
+      exception: {
+        failureCount: 0,
+        serviceFailureCount: 0,
+        clientFailureCount: 0,
+        clientAbortCount: 0,
+        actionableFailureCount: 0,
+      },
+    });
+    apiMocks.fetchInvocationRecords.mockResolvedValue({
+      snapshotId: 901,
+      total: 1,
+      page: 1,
+      pageSize: 200,
+      records: [
+        {
+          id: 72,
+          invokeId: "neutral-history-72",
+          occurredAt: "2026-02-02T12:30:00Z",
+          status: "",
+          failureClass: "none",
+          totalTokens: 700,
+          cost: 0.07,
+          endpoint: "/v1/responses",
+          promptCacheKey: "pck-neutral-history",
+          upstreamAccountId: 101,
+          upstreamAccountName: "Pool Alpha",
+          proxyDisplayName: "Proxy Neutral",
+          createdAt: "2026-02-02T12:30:00Z",
+        },
+      ],
+    });
+
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-neutral-history",
+          requestCount: 1,
+          totalTokens: 700,
+          totalCost: 0.07,
+          createdAt: "2026-02-02T12:30:00Z",
+          lastActivityAt: "2026-02-02T12:30:00Z",
+          last24hRequests: [],
+        }),
+      ],
+    });
+
+    const historyButton = findButtonByAriaLabel("打开全部调用记录");
+    expect(historyButton).toBeTruthy();
+
+    await act(async () => {
+      historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+
+    expect(document.body.textContent).toContain("中性");
+    expect(document.body.textContent).toContain("Proxy Neutral");
+  });
+
+  it("preserves the retained first-to-latest chart range when history records are sampled", async () => {
+    apiMocks.fetchInvocationRecordsSummary.mockResolvedValueOnce({
+      snapshotId: 900,
+      newRecordsCount: 0,
+      totalCount: 1001,
+      successCount: 1001,
+      failureCount: 0,
+      totalCost: 100.1,
+      totalTokens: 100100,
+      token: {
+        requestCount: 1001,
+        totalTokens: 100100,
+        avgTokensPerRequest: 100,
+        cacheInputTokens: 0,
+        totalCost: 100.1,
+      },
+      network: {
+        avgTtfbMs: null,
+        p95TtfbMs: null,
+        avgTotalMs: 1000,
+        p95TotalMs: 1000,
+      },
+      exception: {
+        failureCount: 0,
+        serviceFailureCount: 0,
+        clientFailureCount: 0,
+        clientAbortCount: 0,
+        actionableFailureCount: 0,
+      },
+    });
+    apiMocks.fetchInvocationRecords.mockImplementation(async (query: {
+      page?: number;
+      pageSize?: number;
+      snapshotId?: number;
+      sortOrder?: string;
+      signal?: AbortSignal;
+    }) => {
+      if (!query.signal) {
+        const listRecords = [
+          {
+            id: 1001,
+            invokeId: "sampled-history-1001",
+            occurredAt: "2026-03-02T23:00:00Z",
+            status: "completed",
+            failureClass: "none",
+            totalTokens: 100,
+            cost: 0.1,
+            endpoint: "/v1/responses",
+            promptCacheKey: "pck-sampled-history",
+            upstreamAccountId: null,
+            upstreamAccountName: null,
+            proxyDisplayName: "Proxy 1001",
+            createdAt: "2026-03-02T23:00:00Z",
+          },
+          {
+            id: 1000,
+            invokeId: "sampled-history-1000",
+            occurredAt: "2026-03-02T22:59:00Z",
+            status: "completed",
+            failureClass: "none",
+            totalTokens: 100,
+            cost: 0.1,
+            endpoint: "/v1/responses",
+            promptCacheKey: "pck-sampled-history",
+            upstreamAccountId: null,
+            upstreamAccountName: null,
+            proxyDisplayName: "Proxy 1000",
+            createdAt: "2026-03-02T22:59:00Z",
+          },
+        ];
+        return {
+          snapshotId: 901,
+          total: listRecords.length,
+          page: query.page ?? 1,
+          pageSize: query.pageSize ?? 200,
+          records: query.page === 1 ? listRecords : [],
+        };
+      }
+      const page = query.page ?? 1;
+      const pageSize = query.pageSize ?? 200;
+      const total = 1001;
+      const startOffset = (page - 1) * pageSize;
+      const count = Math.max(0, Math.min(pageSize, total - startOffset));
+      return {
+        snapshotId: 901,
+        total,
+        page,
+        pageSize,
+        records: Array.from({ length: count }, (_, index) => {
+          const offset = startOffset + index;
+          const id = total - offset;
+          const occurredAt =
+            offset === total - 1
+              ? "2026-01-01T00:00:00Z"
+              : new Date(Date.parse("2026-03-03T12:00:00Z") - offset * 60_000)
+                  .toISOString();
+          return {
+            id,
+            invokeId: `sampled-history-${id}`,
+            occurredAt,
+            status: "completed",
+            failureClass: "none",
+            totalTokens: 100,
+            cost: 0.1,
+            endpoint: "/v1/responses",
+            promptCacheKey: "pck-sampled-history",
+            upstreamAccountId: null,
+            upstreamAccountName: null,
+            proxyDisplayName: `Proxy ${id}`,
+            createdAt: occurredAt,
+          };
+        }),
+      };
+    });
+
+    renderInteractive({
+      rangeStart: "2026-01-01T00:00:00Z",
+      rangeEnd: "2026-03-03T12:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-sampled-history",
+          requestCount: 1001,
+          totalTokens: 100100,
+          totalCost: 100.1,
+          createdAt: "2026-01-01T00:00:00Z",
+          lastActivityAt: "2026-03-03T12:00:00Z",
+          last24hRequests: [],
+        }),
+      ],
+    });
+
+    const historyButton = findButtonByAriaLabel("打开全部调用记录");
+    expect(historyButton).toBeTruthy();
+
+    await act(async () => {
+      historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledWith(
+      expect.objectContaining({
+        promptCacheKey: "pck-sampled-history",
+        page: 6,
+        pageSize: 200,
+        sortBy: "occurredAt",
+        sortOrder: "desc",
+        snapshotId: 901,
+      }),
+    );
+    expect(document.body.textContent).toContain("01/01");
+    expect(document.body.textContent).toContain("03/03");
+    expect(document.body.textContent).toContain(
+      "图表采样最近 1,000 / 1,001 条匹配调用",
+    );
   });
 
   it("streams live history rows into the open drawer and replaces running snapshots with final records", async () => {

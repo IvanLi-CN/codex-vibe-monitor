@@ -6,7 +6,19 @@ import {
   useMemo,
   useRef,
   useState,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
+import {
+  Bar,
+  CartesianGrid,
+  ComposedChart,
+  Line,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { useTranslation } from "../i18n";
 import type {
   ApiInvocation,
@@ -17,11 +29,17 @@ import type {
   PromptCacheConversationsResponse,
 } from "../lib/api";
 import { fetchInvocationRecords, fetchInvocationRecordsSummary } from "../lib/api";
+import {
+  chartBaseTokens,
+  chartStatusTokens,
+  metricAccent,
+} from "../lib/chartTheme";
 import { resolvePromptCacheInvocationOutcome } from "../lib/conversationRequestPoint";
 import { mergeInvocationRecordCollections } from "../lib/invocationLiveMerge";
 import { invocationStableKey } from "../lib/invocation";
 import { buildInvocationFromPromptCachePreview } from "../lib/promptCacheLive";
 import { subscribeToSse, subscribeToSseOpen } from "../lib/sse";
+import type { ThemeMode } from "../theme";
 import { AccountDetailDrawerShell } from "./AccountDetailDrawerShell";
 import { AppIcon } from "./AppIcon";
 import { InvocationTable } from "./InvocationTable";
@@ -31,6 +49,7 @@ import {
   findVisibleConversationChartMax,
 } from "./keyedConversationChart";
 import { Alert } from "./ui/alert";
+import { floatingSurfaceStyle, type FloatingSurfaceTheme } from "./ui/floating-surface";
 import { SegmentedControl, SegmentedControlItem } from "./ui/segmented-control";
 import { Spinner } from "./ui/spinner";
 
@@ -66,20 +85,17 @@ const PROMPT_CACHE_ACTIVITY_PAGE_SIZE = 200;
 const PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS = 1_000;
 const PROMPT_CACHE_HISTORY_RESYNC_THROTTLE_MS = 1_000;
 const PROMPT_CACHE_ACTIVITY_RESYNC_THROTTLE_MS = 1_000;
+const CONVERSATION_ACTIVITY_MIN_VISIBLE_BUCKETS = 30;
+const CONVERSATION_ACTIVITY_WHEEL_THRESHOLD = 2;
+const CONVERSATION_ACTIVITY_WHEEL_ZOOM_INTENSITY = 0.0018;
+const CONVERSATION_ACTIVITY_WHEEL_PAN_INTENSITY = 0.012;
+const CONVERSATION_ACTIVITY_POINTER_AXIS_LOCK_THRESHOLD_PX = 8;
+const CONVERSATION_ACTIVITY_POINTER_AXIS_LOCK_RATIO = 1.45;
+const CONVERSATION_ACTIVITY_POINTER_FREE_DIAGONAL_RATIO = 0.72;
 
 type ConversationActivityRange = "today" | "yesterday" | "1d" | "7d" | "history";
 type ConversationActivityMetric = "totalCount" | "totalCost" | "totalTokens";
-
-const CONVERSATION_ACTIVITY_RANGES: Array<{
-  key: ConversationActivityRange;
-  labelKey: string;
-}> = [
-  { key: "today", labelKey: "dashboard.activityOverview.rangeToday" },
-  { key: "yesterday", labelKey: "dashboard.activityOverview.rangeYesterday" },
-  { key: "1d", labelKey: "dashboard.activityOverview.range24h" },
-  { key: "7d", labelKey: "dashboard.activityOverview.range7d" },
-  { key: "history", labelKey: "dashboard.activityOverview.rangeUsage" },
-];
+type ConversationActivityDragAxis = "pending" | "horizontal" | "vertical" | "free";
 
 const CONVERSATION_ACTIVITY_METRICS: Array<{
   key: ConversationActivityMetric;
@@ -378,10 +394,12 @@ function getConversationActivityValue(
 }
 
 interface ConversationActivityBucket {
+  index: number;
   label: string;
   tooltipLabel: string;
   success: number;
   failure: number;
+  failureNegative: number;
   inFlight: number;
   neutral: number;
   totalCount: number;
@@ -389,6 +407,117 @@ interface ConversationActivityBucket {
   totalTokens: number;
   totalMs: number;
   totalMsSamples: number;
+  avgTotalMs: number | null;
+}
+
+function endOfLocalDay(value: Date) {
+  const next = new Date(value);
+  next.setHours(23, 59, 59, 999);
+  return next;
+}
+
+function resolveDocumentThemeMode(): ThemeMode {
+  if (typeof document === "undefined") return "light";
+  const theme =
+    document.body.getAttribute("data-theme") ??
+    document.documentElement.getAttribute("data-theme") ??
+    "";
+  const normalizedTheme = theme.toLowerCase();
+  if (normalizedTheme.includes("dark")) return "dark";
+  if (normalizedTheme.includes("light")) return "light";
+  const colorMode =
+    document.body.getAttribute("data-color-mode") ??
+    document.documentElement.getAttribute("data-color-mode");
+  if (colorMode === "dark" || colorMode === "light") return colorMode;
+  return "light";
+}
+
+function resolveDocumentFloatingSurfaceTheme(): FloatingSurfaceTheme {
+  return resolveDocumentThemeMode() === "dark" ? "vibe-dark" : "vibe-light";
+}
+
+interface ConversationActivityViewport {
+  startIndex: number;
+  endIndex: number;
+}
+
+function clampConversationActivityValue(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizeConversationActivityViewport(
+  viewport: ConversationActivityViewport,
+  pointCount: number,
+): ConversationActivityViewport {
+  if (pointCount <= 0) {
+    return { startIndex: 0, endIndex: 0 };
+  }
+
+  const maxIndex = pointCount - 1;
+  const minSpan = Math.min(CONVERSATION_ACTIVITY_MIN_VISIBLE_BUCKETS, pointCount);
+  const currentSpan = Math.max(
+    minSpan,
+    Math.min(pointCount, viewport.endIndex - viewport.startIndex + 1),
+  );
+  const startIndex = clampConversationActivityValue(
+    Math.round(viewport.startIndex),
+    0,
+    Math.max(0, pointCount - currentSpan),
+  );
+
+  return {
+    startIndex,
+    endIndex: Math.min(maxIndex, startIndex + currentSpan - 1),
+  };
+}
+
+function shiftConversationActivityViewport(
+  viewport: ConversationActivityViewport,
+  pointCount: number,
+  deltaIndexes: number,
+): ConversationActivityViewport {
+  const span = viewport.endIndex - viewport.startIndex + 1;
+  return normalizeConversationActivityViewport(
+    {
+      startIndex: viewport.startIndex + deltaIndexes,
+      endIndex: viewport.startIndex + deltaIndexes + span - 1,
+    },
+    pointCount,
+  );
+}
+
+function isSameConversationActivityViewport(
+  left: ConversationActivityViewport,
+  right: ConversationActivityViewport,
+) {
+  return left.startIndex === right.startIndex && left.endIndex === right.endIndex;
+}
+
+function zoomConversationActivityViewport(
+  viewport: ConversationActivityViewport,
+  pointCount: number,
+  zoomDelta: number,
+  anchorRatio: number,
+): ConversationActivityViewport {
+  if (pointCount <= 0) return viewport;
+
+  const currentSpan = viewport.endIndex - viewport.startIndex + 1;
+  const nextSpan = clampConversationActivityValue(
+    Math.round(currentSpan * Math.exp(zoomDelta)),
+    Math.min(CONVERSATION_ACTIVITY_MIN_VISIBLE_BUCKETS, pointCount),
+    pointCount,
+  );
+  const safeAnchorRatio = clampConversationActivityValue(anchorRatio, 0, 1);
+  const anchorIndex = viewport.startIndex + (currentSpan - 1) * safeAnchorRatio;
+  const nextStart = Math.round(anchorIndex - (nextSpan - 1) * safeAnchorRatio);
+
+  return normalizeConversationActivityViewport(
+    {
+      startIndex: nextStart,
+      endIndex: nextStart + nextSpan - 1,
+    },
+    pointCount,
+  );
 }
 
 function buildConversationActivityBuckets({
@@ -396,16 +525,30 @@ function buildConversationActivityBuckets({
   range,
   metric,
   localeTag,
+  rangeStartMs,
+  rangeEndMs,
 }: {
   records: ApiInvocation[];
   range: ConversationActivityRange;
   metric: ConversationActivityMetric;
   localeTag: string;
+  rangeStartMs?: number | null;
+  rangeEndMs?: number | null;
 }) {
   const now = new Date();
   const rangeBounds = resolveConversationActivityRange(range);
-  let startMs = rangeBounds.from ? Date.parse(rangeBounds.from) : Number.POSITIVE_INFINITY;
-  let endMs = rangeBounds.to ? Date.parse(rangeBounds.to) : Number.NEGATIVE_INFINITY;
+  let startMs =
+    typeof rangeStartMs === "number" && Number.isFinite(rangeStartMs)
+      ? rangeStartMs
+      : rangeBounds.from
+        ? Date.parse(rangeBounds.from)
+        : Number.POSITIVE_INFINITY;
+  let endMs =
+    typeof rangeEndMs === "number" && Number.isFinite(rangeEndMs)
+      ? rangeEndMs
+      : rangeBounds.to
+        ? Date.parse(rangeBounds.to)
+        : Number.NEGATIVE_INFINITY;
 
   if (range === "history") {
     for (const record of records) {
@@ -420,13 +563,38 @@ function buildConversationActivityBuckets({
     }
   }
 
+  if (range === "history" && Number.isFinite(startMs) && startMs === endMs) {
+    const recordDate = new Date(startMs);
+    startMs = startOfLocalDay(recordDate).getTime();
+    endMs = endOfLocalDay(recordDate).getTime();
+  }
+
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
     endMs = now.getTime();
     startMs = endMs - 86_400_000;
   }
 
+  if (range === "history" && endMs - startMs <= 86_400_000) {
+    const startDate = new Date(startMs);
+    const endDate = new Date(endMs);
+    if (
+      startDate.getFullYear() === endDate.getFullYear() &&
+      startDate.getMonth() === endDate.getMonth() &&
+      startDate.getDate() === endDate.getDate()
+    ) {
+      startMs = startOfLocalDay(startDate).getTime();
+      endMs = endOfLocalDay(endDate).getTime();
+    }
+  }
+
   const targetBuckets =
-    range === "today" || range === "yesterday" ? 24 : range === "1d" ? 24 : 28;
+    endMs - startMs <= 86_400_000
+      ? Math.ceil((endMs - startMs) / 60_000) + 1
+      : range === "today" || range === "yesterday"
+        ? 24
+        : range === "1d"
+          ? 24
+          : 720;
   const bucketMs = Math.max(60_000, Math.ceil((endMs - startMs) / targetBuckets));
   const bucketCount = Math.max(1, Math.ceil((endMs - startMs) / bucketMs));
   const labelFormatter = new Intl.DateTimeFormat(localeTag, {
@@ -442,10 +610,12 @@ function buildConversationActivityBuckets({
     (_, index) => {
       const bucketStart = startMs + index * bucketMs;
       return {
+        index,
         label: labelFormatter.format(new Date(bucketStart)),
         tooltipLabel: labelFormatter.format(new Date(bucketStart)),
         success: 0,
         failure: 0,
+        failureNegative: 0,
         inFlight: 0,
         neutral: 0,
         totalCount: 0,
@@ -453,6 +623,7 @@ function buildConversationActivityBuckets({
         totalTokens: 0,
         totalMs: 0,
         totalMsSamples: 0,
+        avgTotalMs: null,
       };
     },
   );
@@ -483,7 +654,74 @@ function buildConversationActivityBuckets({
     }
   }
 
+  for (const bucket of buckets) {
+    bucket.failureNegative = bucket.failure > 0 ? -bucket.failure : 0;
+    bucket.avgTotalMs =
+      bucket.totalMsSamples > 0 ? bucket.totalMs / bucket.totalMsSamples : null;
+  }
+
   return buckets;
+}
+
+interface ConversationActivityTooltipPayloadEntry {
+  payload?: ConversationActivityBucket;
+}
+
+function ConversationActivityTooltipContent({
+  active,
+  label,
+  payload,
+  renderValue,
+}: {
+  active?: boolean;
+  label?: string | number;
+  payload?: ConversationActivityTooltipPayloadEntry[];
+  renderValue: (
+    bucket: ConversationActivityBucket,
+  ) => Array<{ label: string; value: string; color: string }>;
+}) {
+  const bucket = payload?.find((entry) => entry.payload)?.payload;
+  if (!active || !bucket) return null;
+
+  const rows = renderValue(bucket);
+  if (rows.length === 0) return null;
+  const surfaceTheme = resolveDocumentFloatingSurfaceTheme();
+
+  return (
+    <div
+      role="tooltip"
+      data-theme={surfaceTheme}
+      data-inline-chart-tooltip="true"
+      className="min-w-[11rem] max-w-[14rem] rounded-xl border px-3 py-2 text-[11px] leading-tight text-base-content"
+      style={{
+        ...floatingSurfaceStyle("neutral", surfaceTheme),
+      }}
+    >
+      <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/60">
+        {typeof label === "string" ? label : bucket.tooltipLabel}
+      </div>
+      <div className="mt-2 space-y-1.5">
+        {rows.map((row) => (
+          <div
+            key={row.label}
+            className="flex items-start gap-2"
+          >
+            <span
+              className="mt-[5px] h-1.5 w-1.5 shrink-0 rounded-full"
+              style={{ backgroundColor: row.color }}
+              aria-hidden="true"
+            />
+            <div className="min-w-0 flex-1">
+              <div className="text-base-content/62">{row.label}</div>
+              <div className="mt-0.5 font-mono text-[12px] font-semibold tracking-tight text-base-content">
+                {row.value}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function ConversationActivityChart({
@@ -501,46 +739,411 @@ function ConversationActivityChart({
   currencyFormatter: Intl.NumberFormat;
   t: (key: string, values?: Record<string, string | number>) => string;
 }) {
-  const width = 640;
-  const height = 180;
-  const padding = { top: 14, right: 18, bottom: 30, left: 28 };
-  const innerWidth = width - padding.left - padding.right;
-  const innerHeight = height - padding.top - padding.bottom;
-  const maxMetric = Math.max(
-    1,
-    ...buckets.map((bucket) =>
-      bucket.success + bucket.failure + bucket.inFlight + bucket.neutral,
-    ),
-  );
-  const maxDuration = Math.max(
-    1,
-    ...buckets.map((bucket) =>
-      bucket.totalMsSamples > 0 ? bucket.totalMs / bucket.totalMsSamples : 0,
-    ),
-  );
-  const barGap = 2;
-  const barWidth = Math.max(2, innerWidth / Math.max(buckets.length, 1) - barGap);
-  const durationPoints = buckets
-    .map((bucket, index) => {
-      if (bucket.totalMsSamples <= 0) return null;
-      const x =
-        padding.left +
-        (index / Math.max(buckets.length - 1, 1)) * innerWidth;
-      const avg = bucket.totalMs / bucket.totalMsSamples;
-      const y = padding.top + innerHeight - (avg / maxDuration) * innerHeight;
-      return `${x.toFixed(2)},${y.toFixed(2)}`;
-    })
-    .filter((point): point is string => point != null)
-    .join(" ");
+  const themeMode = resolveDocumentThemeMode();
+  const [viewport, setViewport] = useState<ConversationActivityViewport>({
+    startIndex: 0,
+    endIndex: Math.max(0, buckets.length - 1),
+  });
+  const viewportRef = useRef<ConversationActivityViewport>(viewport);
+  const viewportIdentity = `${buckets.length}:${buckets[0]?.tooltipLabel ?? "empty"}:${buckets.at(-1)?.tooltipLabel ?? "empty"}`;
+  const viewportIdentityRef = useRef(viewportIdentity);
+  const interactionRef = useRef<HTMLDivElement | null>(null);
+  const wheelListenerElementRef = useRef<HTMLDivElement | null>(null);
+  const dragPreviewLayerRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    currentClientX: number;
+    currentClientY: number;
+    axis: ConversationActivityDragAxis;
+    viewport: ConversationActivityViewport;
+  } | null>(null);
+  const dragPreviewOffsetRef = useRef(0);
+  const dragPreviewFrameRef = useRef<number | null>(null);
+  const wheelPanDeltaRef = useRef(0);
+  const wheelPanFrameRef = useRef<number | null>(null);
+  const wheelZoomDeltaRef = useRef(0);
+  const wheelZoomAnchorRatioRef = useRef(0.5);
+  const wheelZoomFrameRef = useRef<number | null>(null);
 
+  useEffect(() => {
+    viewportRef.current = viewport;
+  }, [viewport]);
+
+  useEffect(() => {
+    setViewport((current) => {
+      if (viewportIdentityRef.current !== viewportIdentity) {
+        viewportIdentityRef.current = viewportIdentity;
+        return normalizeConversationActivityViewport(
+          { startIndex: 0, endIndex: Math.max(0, buckets.length - 1) },
+          buckets.length,
+        );
+      }
+      return normalizeConversationActivityViewport(current, buckets.length);
+    });
+  }, [buckets.length, viewportIdentity]);
+
+  const visibleWindow = normalizeConversationActivityViewport(
+    viewport,
+    buckets.length,
+  );
+  const visibleBuckets = buckets.slice(
+    visibleWindow.startIndex,
+    visibleWindow.endIndex + 1,
+  );
+  const visibleTotalCount = visibleBuckets.reduce(
+    (sum, bucket) => sum + bucket.totalCount,
+    0,
+  );
+  const viewportSpan = visibleWindow.endIndex - visibleWindow.startIndex + 1;
+  const isZoomed = buckets.length > 0 && viewportSpan < buckets.length;
+  const xDomain: [number, number] = [visibleWindow.startIndex, visibleWindow.endIndex];
+  const barSize = useMemo(() => {
+    if (buckets.length <= 0) return 1;
+    const zoomFactor = buckets.length / Math.max(1, viewportSpan);
+    return clampConversationActivityValue(Math.round(zoomFactor * 0.75), 1, 10);
+  }, [buckets.length, viewportSpan]);
+
+  const getAnchorRatio = useCallback((clientX: number) => {
+    const rect = interactionRef.current?.getBoundingClientRect();
+    if (!rect || rect.width <= 0) return 0.5;
+    return clampConversationActivityValue((clientX - rect.left) / rect.width, 0, 1);
+  }, []);
+
+  const scheduleWheelPan = useCallback(
+    (deltaIndexes: number) => {
+      wheelPanDeltaRef.current += deltaIndexes;
+      if (wheelPanFrameRef.current != null) return;
+
+      wheelPanFrameRef.current = window.requestAnimationFrame(() => {
+        wheelPanFrameRef.current = null;
+        const pendingDelta = wheelPanDeltaRef.current;
+        wheelPanDeltaRef.current = 0;
+        if (pendingDelta === 0) return;
+
+        const roundedDelta =
+          Math.round(pendingDelta) ||
+          Math.sign(pendingDelta) *
+            Math.max(
+              1,
+              Math.round(
+                CONVERSATION_ACTIVITY_WHEEL_PAN_INTENSITY *
+                  CONVERSATION_ACTIVITY_MIN_VISIBLE_BUCKETS,
+              ),
+            );
+        setViewport((current) => {
+          const normalized = normalizeConversationActivityViewport(
+            current,
+            buckets.length,
+          );
+          const next = shiftConversationActivityViewport(
+            normalized,
+            buckets.length,
+            roundedDelta,
+          );
+          return isSameConversationActivityViewport(normalized, next)
+            ? current
+            : next;
+        });
+      });
+    },
+    [buckets.length],
+  );
+
+  const scheduleWheelZoom = useCallback(
+    (deltaY: number, anchorRatio: number) => {
+      wheelZoomDeltaRef.current += deltaY;
+      wheelZoomAnchorRatioRef.current = anchorRatio;
+      if (wheelZoomFrameRef.current != null) return;
+
+      wheelZoomFrameRef.current = window.requestAnimationFrame(() => {
+        wheelZoomFrameRef.current = null;
+        const pendingDelta = wheelZoomDeltaRef.current;
+        const pendingAnchorRatio = wheelZoomAnchorRatioRef.current;
+        wheelZoomDeltaRef.current = 0;
+        if (pendingDelta === 0) return;
+
+        setViewport((current) => {
+          const normalized = normalizeConversationActivityViewport(
+            current,
+            buckets.length,
+          );
+          const next = zoomConversationActivityViewport(
+            normalized,
+            buckets.length,
+            pendingDelta * CONVERSATION_ACTIVITY_WHEEL_ZOOM_INTENSITY,
+            pendingAnchorRatio,
+          );
+          return isSameConversationActivityViewport(normalized, next)
+            ? current
+            : next;
+        });
+      });
+    },
+    [buckets.length],
+  );
+
+  useEffect(
+    () => () => {
+      if (wheelPanFrameRef.current != null) {
+        window.cancelAnimationFrame(wheelPanFrameRef.current);
+      }
+      if (wheelZoomFrameRef.current != null) {
+        window.cancelAnimationFrame(wheelZoomFrameRef.current);
+      }
+    },
+    [],
+  );
+
+  const handleWheel = useCallback(
+    (event: WheelEvent) => {
+      if (buckets.length <= CONVERSATION_ACTIVITY_MIN_VISIBLE_BUCKETS) return;
+
+      const horizontalIntent =
+        Math.abs(event.deltaX) >= CONVERSATION_ACTIVITY_WHEEL_THRESHOLD &&
+        Math.abs(event.deltaX) >= Math.abs(event.deltaY) &&
+        !event.ctrlKey;
+      const hasZoomIntent =
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey;
+      if (!horizontalIntent && !hasZoomIntent) return;
+
+      event.preventDefault();
+      if (horizontalIntent) {
+        const normalized = normalizeConversationActivityViewport(
+          viewportRef.current,
+          buckets.length,
+        );
+        const width = interactionRef.current?.getBoundingClientRect().width ?? 1;
+        const span = normalized.endIndex - normalized.startIndex + 1;
+        scheduleWheelPan((event.deltaX / Math.max(1, width)) * span);
+        return;
+      }
+
+      scheduleWheelZoom(event.deltaY, getAnchorRatio(event.clientX));
+    },
+    [buckets.length, getAnchorRatio, scheduleWheelPan, scheduleWheelZoom],
+  );
+
+  const setInteractionLayerRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      if (wheelListenerElementRef.current) {
+        wheelListenerElementRef.current.removeEventListener("wheel", handleWheel);
+        wheelListenerElementRef.current = null;
+      }
+
+      interactionRef.current = node;
+      if (!node) return;
+
+      node.addEventListener("wheel", handleWheel, { passive: false });
+      wheelListenerElementRef.current = node;
+    },
+    [handleWheel],
+  );
+
+  const handlePointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (
+        event.button !== 0 ||
+        buckets.length <= CONVERSATION_ACTIVITY_MIN_VISIBLE_BUCKETS
+      ) {
+        return;
+      }
+      dragPreviewOffsetRef.current = 0;
+      if (dragPreviewLayerRef.current) {
+        dragPreviewLayerRef.current.style.transform = "";
+      }
+      const normalized = normalizeConversationActivityViewport(
+        viewport,
+        buckets.length,
+      );
+      dragRef.current = {
+        pointerId: event.pointerId,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        currentClientX: event.clientX,
+        currentClientY: event.clientY,
+        axis: "pending",
+        viewport: normalized,
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+    },
+    [buckets.length, viewport],
+  );
+
+  const scheduleDragPreview = useCallback(() => {
+    if (dragPreviewFrameRef.current != null) return;
+
+    dragPreviewFrameRef.current = window.requestAnimationFrame(() => {
+      dragPreviewFrameRef.current = null;
+      const drag = dragRef.current;
+      if (!drag) return;
+
+      const previewOffsetPx = drag.currentClientX - drag.startClientX;
+      if (previewOffsetPx === dragPreviewOffsetRef.current) return;
+      dragPreviewOffsetRef.current = previewOffsetPx;
+      if (dragPreviewLayerRef.current) {
+        dragPreviewLayerRef.current.style.transform =
+          previewOffsetPx === 0
+            ? ""
+            : `translate3d(${previewOffsetPx}px, 0, 0)`;
+      }
+    });
+  }, []);
+
+  const handlePointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const drag = dragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      drag.currentClientX = event.clientX;
+      drag.currentClientY = event.clientY;
+
+      if (drag.axis === "pending") {
+        const deltaX = Math.abs(drag.currentClientX - drag.startClientX);
+        const deltaY = Math.abs(drag.currentClientY - drag.startClientY);
+        const distance = Math.hypot(deltaX, deltaY);
+
+        if (distance < CONVERSATION_ACTIVITY_POINTER_AXIS_LOCK_THRESHOLD_PX) return;
+
+        if (deltaX >= deltaY * CONVERSATION_ACTIVITY_POINTER_AXIS_LOCK_RATIO) {
+          drag.axis = "horizontal";
+        } else if (deltaY >= deltaX * CONVERSATION_ACTIVITY_POINTER_AXIS_LOCK_RATIO) {
+          drag.axis = "vertical";
+          dragRef.current = null;
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }
+          return;
+        } else if (
+          Math.min(deltaX, deltaY) >=
+          Math.max(deltaX, deltaY) *
+            CONVERSATION_ACTIVITY_POINTER_FREE_DIAGONAL_RATIO
+        ) {
+          drag.axis = "free";
+        } else {
+          return;
+        }
+      }
+
+      if (drag.axis === "vertical") return;
+      scheduleDragPreview();
+    },
+    [scheduleDragPreview],
+  );
+
+  const handlePointerEnd = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const drag = dragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+
+      if (drag.axis === "horizontal" || drag.axis === "free") {
+        const width = interactionRef.current?.getBoundingClientRect().width ?? 1;
+        const span = drag.viewport.endIndex - drag.viewport.startIndex + 1;
+        const deltaIndexes = Math.round(
+          ((drag.startClientX - drag.currentClientX) / Math.max(1, width)) *
+            span,
+        );
+        setViewport((current) => {
+          const next = shiftConversationActivityViewport(
+            drag.viewport,
+            buckets.length,
+            deltaIndexes,
+          );
+          return isSameConversationActivityViewport(
+            normalizeConversationActivityViewport(current, buckets.length),
+            next,
+          )
+            ? current
+            : next;
+        });
+      }
+
+      dragRef.current = null;
+      dragPreviewOffsetRef.current = 0;
+      if (dragPreviewLayerRef.current) {
+        dragPreviewLayerRef.current.style.transform = "";
+      }
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    },
+    [buckets.length],
+  );
+
+  useEffect(
+    () => () => {
+      if (dragPreviewFrameRef.current != null) {
+        window.cancelAnimationFrame(dragPreviewFrameRef.current);
+      }
+    },
+    [],
+  );
+  const chartColors = useMemo(() => {
+    const base = chartBaseTokens(themeMode);
+    const status = chartStatusTokens(themeMode);
+    return {
+      ...base,
+      success: status.success,
+      failure: status.failure,
+      inFlight: metricAccent("totalCount", themeMode),
+      neutral: themeMode === "dark" ? "#94a3b8" : "#64748b",
+      firstByte: themeMode === "dark" ? "#cbd5e1" : "#475569",
+    };
+  }, [themeMode]);
+  const maxCount = Math.max(
+    1,
+    ...visibleBuckets.map((bucket) =>
+      Math.max(bucket.success + bucket.inFlight + bucket.neutral, bucket.failure),
+    ),
+  );
   const formatMetricValue = (value: number) => {
     if (metric === "totalCost") return currencyFormatter.format(value);
     return numberFormatter.format(value);
   };
+  const countUnit = t("unit.calls");
+  const legendLabels = {
+    success: t("live.conversations.activity.legendSuccess"),
+    failure: t("live.conversations.activity.legendFailure"),
+    inFlight: t("live.conversations.activity.legendInFlight"),
+    neutral: t("live.conversations.activity.legendNeutral"),
+    duration: t("table.details.firstResponseByteTotal"),
+  };
+  const renderTooltip = (bucket: ConversationActivityBucket) => [
+    {
+      label: legendLabels.success,
+      value: `${formatMetricValue(bucket.success)} ${metric === "totalCount" ? countUnit : ""}`.trim(),
+      color: chartColors.success,
+    },
+    {
+      label: legendLabels.failure,
+      value: `${formatMetricValue(bucket.failure)} ${metric === "totalCount" ? countUnit : ""}`.trim(),
+      color: chartColors.failure,
+    },
+    {
+      label: legendLabels.inFlight,
+      value: `${formatMetricValue(bucket.inFlight)} ${metric === "totalCount" ? countUnit : ""}`.trim(),
+      color: chartColors.inFlight,
+    },
+    {
+      label: legendLabels.neutral,
+      value: `${formatMetricValue(bucket.neutral)} ${metric === "totalCount" ? countUnit : ""}`.trim(),
+      color: chartColors.neutral,
+    },
+    {
+      label: legendLabels.duration,
+      value:
+        bucket.avgTotalMs == null
+          ? "-"
+          : `${numberFormatter.format(bucket.avgTotalMs)} ms`,
+      color: chartColors.firstByte,
+    },
+  ];
 
   if (loading && buckets.length === 0) {
     return (
-      <div className="flex h-44 items-center justify-center gap-2 rounded-lg border border-base-300/70 bg-base-200/20 text-sm text-base-content/60">
+      <div className="flex h-80 items-center justify-center gap-2 rounded-xl border border-base-300/75 bg-base-200/40 text-sm text-base-content/60">
         <Spinner size="sm" aria-label={t("chart.loadingDetailed")} />
         <span>{t("chart.loadingDetailed")}</span>
       </div>
@@ -548,105 +1151,201 @@ function ConversationActivityChart({
   }
 
   return (
-    <div className="rounded-lg border border-base-300/70 bg-base-200/20 p-3">
-      <svg
-        viewBox={`0 0 ${width} ${height}`}
+    <div
+      className="overscroll-x-contain rounded-xl border border-base-300/75 bg-base-200/40 p-4"
+      data-testid="conversation-activity-chart"
+      data-chart-kind="conversation-activity"
+      data-chart-metric={metric}
+      data-visible-start-index={visibleWindow.startIndex}
+      data-visible-end-index={visibleWindow.endIndex}
+      data-visible-span={viewportSpan}
+      data-visible-total-count={visibleTotalCount}
+      data-zoomed={isZoomed ? "true" : "false"}
+    >
+      <div
+        ref={setInteractionLayerRef}
+        className="h-80 w-full cursor-grab touch-pan-y overflow-hidden overscroll-x-contain select-none active:cursor-grabbing"
         role="img"
         aria-label={t("live.conversations.activity.chartAria")}
-        className="h-44 w-full overflow-visible"
+        data-testid="conversation-activity-chart-interaction-layer"
+        data-chart-kind="conversation-activity"
+        data-min-visible-buckets={CONVERSATION_ACTIVITY_MIN_VISIBLE_BUCKETS}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerEnd}
+        onPointerCancel={handlePointerEnd}
+        onLostPointerCapture={handlePointerEnd}
       >
-        <line
-          x1={padding.left}
-          x2={width - padding.right}
-          y1={padding.top + innerHeight}
-          y2={padding.top + innerHeight}
-          className="stroke-base-content/20"
-        />
-        {buckets.map((bucket, index) => {
-          const total =
-            bucket.success + bucket.failure + bucket.inFlight + bucket.neutral;
-          const x = padding.left + index * (barWidth + barGap);
-          let y = padding.top + innerHeight;
-          const segments = [
-            { key: "success", value: bucket.success, className: "fill-success" },
-            { key: "failure", value: bucket.failure, className: "fill-error" },
-            { key: "inFlight", value: bucket.inFlight, className: "fill-info" },
-            { key: "neutral", value: bucket.neutral, className: "fill-base-content/35" },
-          ];
-          return (
-            <g key={`${bucket.label}-${index}`}>
-              <title>
-                {`${bucket.tooltipLabel} · ${formatMetricValue(total)}`}
-              </title>
-              {segments.map((segment) => {
-                if (segment.value <= 0) return null;
-                const segmentHeight = Math.max(
-                  1,
-                  (segment.value / maxMetric) * innerHeight,
-                );
-                y -= segmentHeight;
-                return (
-                  <rect
-                    key={segment.key}
-                    x={x}
-                    y={y}
-                    width={barWidth}
-                    height={segmentHeight}
-                    className={segment.className}
-                    opacity={0.88}
-                  />
-                );
-              })}
-            </g>
-          );
-        })}
-        {durationPoints ? (
-          <polyline
-            points={durationPoints}
-            fill="none"
-            className="stroke-base-content/70"
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        ) : null}
-        {buckets[0] ? (
-          <text
-            x={padding.left}
-            y={height - 8}
-            className="fill-base-content/55 text-[10px]"
+        <div
+          ref={dragPreviewLayerRef}
+          data-testid="conversation-activity-chart-drag-layer"
+          className="h-full w-full will-change-transform"
+          style={{ transform: undefined }}
+        >
+        <ResponsiveContainer width="100%" height={320}>
+          <ComposedChart
+            data={visibleBuckets}
+            margin={{ top: 12, right: 24, left: 0, bottom: 8 }}
+            barGap="-100%"
           >
-            {buckets[0].label}
-          </text>
-        ) : null}
-        {buckets.at(-1) ? (
-          <text
-            x={width - padding.right}
-            y={height - 8}
-            textAnchor="end"
-            className="fill-base-content/55 text-[10px]"
-          >
-            {buckets.at(-1)?.label}
-          </text>
-        ) : null}
-      </svg>
-      <div className="mt-2 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-xs text-base-content/70">
-        <span className="inline-flex items-center gap-1.5">
-          <span className="h-2.5 w-2.5 rounded-sm bg-success" />
-          {t("live.conversations.activity.legendSuccess")}
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="h-2.5 w-2.5 rounded-sm bg-error" />
-          {t("live.conversations.activity.legendFailure")}
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="h-2.5 w-2.5 rounded-sm bg-info" />
-          {t("live.conversations.activity.legendInFlight")}
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="h-px w-5 bg-base-content/70" />
-          {t("live.conversations.activity.legendDuration")}
-        </span>
+            <CartesianGrid
+              stroke={chartColors.gridLine}
+              strokeDasharray="3 3"
+            />
+            <XAxis
+              dataKey="index"
+              type="number"
+              domain={xDomain}
+              minTickGap={28}
+              axisLine={{ stroke: chartColors.gridLine }}
+              tickLine={{ stroke: chartColors.gridLine }}
+              tick={{ fill: chartColors.axisText, fontSize: 12 }}
+              tickFormatter={(value: number) => {
+                const bucket =
+                  buckets[
+                    Math.max(
+                      0,
+                      Math.min(buckets.length - 1, Math.round(value)),
+                    )
+                  ];
+                return bucket?.label ?? String(value);
+              }}
+            />
+            <YAxis
+              yAxisId="count"
+              domain={[-maxCount, maxCount]}
+              allowDecimals={false}
+              tickFormatter={(value) =>
+                numberFormatter.format(Math.abs(Number(value)))
+              }
+              axisLine={{ stroke: chartColors.gridLine }}
+              tickLine={{ stroke: chartColors.gridLine }}
+              tick={{ fill: chartColors.axisText, fontSize: 12 }}
+            />
+            <YAxis
+              yAxisId="latency"
+              orientation="right"
+              tickFormatter={(value) => `${numberFormatter.format(Number(value))}ms`}
+              width={72}
+              axisLine={{ stroke: chartColors.gridLine }}
+              tickLine={{ stroke: chartColors.gridLine }}
+              tick={{ fill: chartColors.axisText, fontSize: 12 }}
+            />
+            <Tooltip
+              labelFormatter={(value) => {
+                const bucket =
+                  buckets[
+                    Math.max(
+                      0,
+                      Math.min(
+                        buckets.length - 1,
+                        Math.round(Number(value)),
+                      ),
+                    )
+                  ];
+                return bucket?.tooltipLabel ?? String(value);
+              }}
+              content={(props) => (
+                <ConversationActivityTooltipContent
+                  active={props.active}
+                  label={props.label}
+                  payload={
+                    props.payload as unknown as
+                      | ConversationActivityTooltipPayloadEntry[]
+                      | undefined
+                  }
+                  renderValue={renderTooltip}
+                />
+              )}
+            />
+            <ReferenceLine yAxisId="count" y={0} stroke={chartColors.gridLine} />
+            <Bar
+              yAxisId="count"
+              dataKey="failureNegative"
+              name={legendLabels.failure}
+              fill={chartColors.failure}
+              barSize={barSize}
+              radius={[0, 0, 3, 3]}
+              isAnimationActive={false}
+            />
+            <Bar
+              yAxisId="count"
+              dataKey="success"
+              name={legendLabels.success}
+              stackId="positive"
+              fill={chartColors.success}
+              barSize={barSize}
+              radius={[0, 0, 0, 0]}
+              isAnimationActive={false}
+            />
+            <Bar
+              yAxisId="count"
+              dataKey="inFlight"
+              name={legendLabels.inFlight}
+              stackId="positive"
+              fill={chartColors.inFlight}
+              barSize={barSize}
+              radius={[0, 0, 0, 0]}
+              isAnimationActive={false}
+            />
+            <Bar
+              yAxisId="count"
+              dataKey="neutral"
+              name={legendLabels.neutral}
+              stackId="positive"
+              fill={chartColors.neutral}
+              barSize={barSize}
+              radius={[3, 3, 0, 0]}
+              isAnimationActive={false}
+            />
+            <Line
+              yAxisId="latency"
+              type="monotone"
+              dataKey="avgTotalMs"
+              name={legendLabels.duration}
+              stroke={chartColors.firstByte}
+              strokeOpacity={0.72}
+              strokeWidth={1.25}
+              dot={{
+                r: 1.25,
+                strokeWidth: 0,
+                fill: chartColors.firstByte,
+                fillOpacity: 0.72,
+              }}
+              connectNulls={false}
+              isAnimationActive={false}
+            />
+          </ComposedChart>
+        </ResponsiveContainer>
+        </div>
+        <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-xs text-base-content/70">
+          <span className="inline-flex items-center gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-sm bg-success" />
+            {legendLabels.success}
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-sm bg-error" />
+            {legendLabels.failure}
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span
+              className="h-2.5 w-2.5 rounded-sm"
+              style={{ backgroundColor: chartColors.inFlight }}
+            />
+            {legendLabels.inFlight}
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span
+              className="h-2.5 w-2.5 rounded-sm"
+              style={{ backgroundColor: chartColors.neutral }}
+            />
+            {legendLabels.neutral}
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="h-px w-5 bg-base-content/70" />
+            {legendLabels.duration}
+          </span>
+        </div>
       </div>
     </div>
   );
@@ -669,13 +1368,16 @@ function PromptCacheConversationActivityOverview({
 }) {
   const { locale } = useTranslation();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
-  const [activeRange, setActiveRange] =
-    useState<ConversationActivityRange>("today");
+  const activeRange: ConversationActivityRange = "history";
   const [activeMetric, setActiveMetric] =
     useState<ConversationActivityMetric>("totalCount");
   const [summary, setSummary] =
     useState<InvocationRecordsSummaryResponse | null>(null);
   const [records, setRecords] = useState<ApiInvocation[]>([]);
+  const [chartRangeStartMs, setChartRangeStartMs] = useState<number | null>(
+    null,
+  );
+  const [chartRangeEndMs, setChartRangeEndMs] = useState<number | null>(null);
   const [chartTotal, setChartTotal] = useState(0);
   const [chartIsSampled, setChartIsSampled] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -766,7 +1468,40 @@ function PromptCacheConversationActivityOverview({
           page += 1;
         }
         if (requestSeq !== requestSeqRef.current) return;
+        let startBoundaryMs = Number.POSITIVE_INFINITY;
+        let endBoundaryMs = Number.NEGATIVE_INFINITY;
+        for (const record of loaded) {
+          const occurredAt = Date.parse(record.occurredAt);
+          if (!Number.isFinite(occurredAt)) continue;
+          startBoundaryMs = Math.min(startBoundaryMs, occurredAt);
+          endBoundaryMs = Math.max(endBoundaryMs, occurredAt);
+        }
+        if (totalRecords > loaded.length && snapshotId != null) {
+          const oldestPage = await fetchInvocationRecords({
+            ...filters,
+            page: Math.max(
+              1,
+              Math.ceil(totalRecords / PROMPT_CACHE_ACTIVITY_PAGE_SIZE),
+            ),
+            pageSize: PROMPT_CACHE_ACTIVITY_PAGE_SIZE,
+            sortBy: "occurredAt",
+            sortOrder: "desc",
+            snapshotId,
+            signal: controller.signal,
+          });
+          if (requestSeq !== requestSeqRef.current) return;
+          for (const record of oldestPage.records) {
+            const occurredAt = Date.parse(record.occurredAt);
+            if (!Number.isFinite(occurredAt)) continue;
+            startBoundaryMs = Math.min(startBoundaryMs, occurredAt);
+            endBoundaryMs = Math.max(endBoundaryMs, occurredAt);
+          }
+        }
         setRecords(loaded);
+        setChartRangeStartMs(
+          Number.isFinite(startBoundaryMs) ? startBoundaryMs : null,
+        );
+        setChartRangeEndMs(Number.isFinite(endBoundaryMs) ? endBoundaryMs : null);
         setChartTotal(totalRecords);
         setChartIsSampled(loaded.length < totalRecords);
         setError(null);
@@ -789,7 +1524,7 @@ function PromptCacheConversationActivityOverview({
         }
       }
     },
-    [activeRange, conversationKey, historyQueryForConversationKey, open],
+    [conversationKey, historyQueryForConversationKey, open],
   );
 
   useEffect(() => {
@@ -803,6 +1538,8 @@ function PromptCacheConversationActivityOverview({
     if (!open || !conversationKey) {
       setSummary(null);
       setRecords([]);
+      setChartRangeStartMs(null);
+      setChartRangeEndMs(null);
       setChartTotal(0);
       setChartIsSampled(false);
       isLoadingRef.current = false;
@@ -812,6 +1549,8 @@ function PromptCacheConversationActivityOverview({
     }
     setSummary(null);
     setRecords([]);
+    setChartRangeStartMs(null);
+    setChartRangeEndMs(null);
     setChartTotal(0);
     setChartIsSampled(false);
     isLoadingRef.current = false;
@@ -879,8 +1618,10 @@ function PromptCacheConversationActivityOverview({
         range: activeRange,
         metric: activeMetric,
         localeTag,
+        rangeStartMs: chartRangeStartMs,
+        rangeEndMs: chartRangeEndMs,
       }),
-    [activeMetric, activeRange, localeTag, records],
+    [activeMetric, chartRangeEndMs, chartRangeStartMs, localeTag, records],
   );
 
   const metrics = [
@@ -927,28 +1668,9 @@ function PromptCacheConversationActivityOverview({
   return (
     <section className="space-y-3 rounded-xl border border-base-300/70 bg-base-100/55 p-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <h3 className="text-sm font-semibold">
-            {t("live.conversations.activity.title")}
-          </h3>
-          <SegmentedControl
-            size="compact"
-            role="tablist"
-            aria-label={t("dashboard.activityOverview.rangeToggleAria")}
-          >
-            {CONVERSATION_ACTIVITY_RANGES.map((range) => (
-              <SegmentedControlItem
-                key={range.key}
-                active={activeRange === range.key}
-                role="tab"
-                aria-selected={activeRange === range.key}
-                onClick={() => setActiveRange(range.key)}
-              >
-                {t(range.labelKey)}
-              </SegmentedControlItem>
-            ))}
-          </SegmentedControl>
-        </div>
+        <h3 className="text-sm font-semibold">
+          {t("live.conversations.activity.title")}
+        </h3>
         <SegmentedControl
           size="compact"
           role="tablist"
