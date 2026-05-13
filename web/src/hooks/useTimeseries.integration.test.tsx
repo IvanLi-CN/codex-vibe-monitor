@@ -210,6 +210,21 @@ function CurrentDayProbe() {
   );
 }
 
+function TodayProbe() {
+  const { data, isLoading, error } = useTimeseries("today", { bucket: "1m" });
+  const point = data?.points[0];
+
+  return (
+    <div>
+      <div data-testid="loading">{isLoading ? "true" : "false"}</div>
+      <div data-testid="error">{error ?? ""}</div>
+      <div data-testid="range-end">{data?.rangeEnd ?? ""}</div>
+      <div data-testid="total">{String(point?.totalCount ?? 0)}</div>
+      <div data-testid="latency">{String(point?.firstResponseByteTotalAvgMs ?? "")}</div>
+    </div>
+  );
+}
+
 describe("useTimeseries remount cache hydration", () => {
   it("restores cached live deltas before applying a remount SSE settle", async () => {
     const response = createBaseTimeseries();
@@ -642,5 +657,101 @@ describe("useTimeseries remount cache hydration", () => {
         snapshotId: 1,
       }),
     );
+  });
+});
+
+describe("useTimeseries page restore resync", () => {
+  function createTodayTimeseries(
+    rangeEnd: string,
+    totalCount: number,
+    latencyMs: number,
+  ): TimeseriesResponse {
+    return {
+      rangeStart: "2026-04-10T00:00:00Z",
+      rangeEnd,
+      bucketSeconds: 60,
+      snapshotId: totalCount,
+      points: [
+        {
+          bucketStart: "2026-04-10T00:00:00Z",
+          bucketEnd: "2026-04-10T00:01:00Z",
+          totalCount,
+          successCount: totalCount,
+          failureCount: 0,
+          inFlightCount: 0,
+          totalTokens: 100 * totalCount,
+          totalCost: totalCount,
+          firstResponseByteTotalSampleCount: totalCount,
+          firstResponseByteTotalAvgMs: latencyMs,
+        },
+      ],
+    };
+  }
+
+  it("force-refreshes today's timeseries on pageshow so restored tabs match a full reload", async () => {
+    apiMocks.fetchTimeseries
+      .mockResolvedValueOnce(createTodayTimeseries("2026-04-10T00:01:00Z", 1, 500))
+      .mockResolvedValueOnce(createTodayTimeseries("2026-04-10T00:02:00Z", 2, 750));
+    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsPage([]));
+
+    render(<TodayProbe />);
+    await flushAsync();
+
+    expect(text("range-end")).toBe("2026-04-10T00:01:00Z");
+    expect(text("total")).toBe("1");
+    expect(text("latency")).toBe("500");
+
+    await act(async () => {
+      window.dispatchEvent(new Event("pageshow"));
+      await Promise.resolve();
+    });
+    await flushAsync();
+
+    expect(apiMocks.fetchTimeseries).toHaveBeenCalledTimes(2);
+    expect(text("range-end")).toBe("2026-04-10T00:02:00Z");
+    expect(text("total")).toBe("2");
+    expect(text("latency")).toBe("750");
+  });
+
+  it("force-refreshes today's timeseries on visible restore without open-resync cooldown", async () => {
+    apiMocks.fetchTimeseries
+      .mockResolvedValueOnce(createTodayTimeseries("2026-04-10T00:01:00Z", 1, 500))
+      .mockResolvedValueOnce(createTodayTimeseries("2026-04-10T00:02:00Z", 3, 825));
+    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsPage([]));
+
+    render(<TodayProbe />);
+    await flushAsync();
+
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      await Promise.resolve();
+    });
+    await flushAsync();
+
+    expect(apiMocks.fetchTimeseries).toHaveBeenCalledTimes(2);
+    expect(text("total")).toBe("3");
+    expect(text("latency")).toBe("825");
+  });
+
+  it("removes restore listeners on unmount", async () => {
+    apiMocks.fetchTimeseries.mockResolvedValue(
+      createTodayTimeseries("2026-04-10T00:01:00Z", 1, 500),
+    );
+    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsPage([]));
+
+    render(<TodayProbe />);
+    await flushAsync();
+    expect(apiMocks.fetchTimeseries).toHaveBeenCalledTimes(1);
+
+    unmountCurrent();
+
+    await act(async () => {
+      window.dispatchEvent(new Event("pageshow"));
+      document.dispatchEvent(new Event("visibilitychange"));
+      await Promise.resolve();
+    });
+    await flushAsync();
+
+    expect(apiMocks.fetchTimeseries).toHaveBeenCalledTimes(1);
   });
 });
