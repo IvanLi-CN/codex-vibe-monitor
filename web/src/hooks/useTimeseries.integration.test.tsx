@@ -114,6 +114,15 @@ function text(testId: string) {
   return element.textContent ?? "";
 }
 
+function dispatchPageShow({ persisted }: { persisted: boolean }) {
+  const event = new Event("pageshow");
+  Object.defineProperty(event, "persisted", {
+    configurable: true,
+    value: persisted,
+  });
+  window.dispatchEvent(event);
+}
+
 function emitRecords(records: ApiInvocation[]) {
   act(() => {
     sseMocks.listeners.forEach((listener) =>
@@ -688,7 +697,7 @@ describe("useTimeseries page restore resync", () => {
     };
   }
 
-  it("force-refreshes today's timeseries on pageshow so restored tabs match a full reload", async () => {
+  it("force-refreshes today's timeseries on persisted pageshow so restored tabs match a full reload", async () => {
     apiMocks.fetchTimeseries
       .mockResolvedValueOnce(createTodayTimeseries("2026-04-10T00:01:00Z", 1, 500))
       .mockResolvedValueOnce(createTodayTimeseries("2026-04-10T00:02:00Z", 2, 750));
@@ -702,7 +711,7 @@ describe("useTimeseries page restore resync", () => {
     expect(text("latency")).toBe("500");
 
     await act(async () => {
-      window.dispatchEvent(new Event("pageshow"));
+      dispatchPageShow({ persisted: true });
       await Promise.resolve();
     });
     await flushAsync();
@@ -711,6 +720,27 @@ describe("useTimeseries page restore resync", () => {
     expect(text("range-end")).toBe("2026-04-10T00:02:00Z");
     expect(text("total")).toBe("2");
     expect(text("latency")).toBe("750");
+  });
+
+  it("does not refresh today's timeseries on normal pageshow", async () => {
+    apiMocks.fetchTimeseries.mockResolvedValue(
+      createTodayTimeseries("2026-04-10T00:01:00Z", 1, 500),
+    );
+    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsPage([]));
+
+    render(<TodayProbe />);
+    await flushAsync();
+
+    await act(async () => {
+      dispatchPageShow({ persisted: false });
+      await Promise.resolve();
+    });
+    await flushAsync();
+
+    expect(apiMocks.fetchTimeseries).toHaveBeenCalledTimes(1);
+    expect(text("range-end")).toBe("2026-04-10T00:01:00Z");
+    expect(text("total")).toBe("1");
+    expect(text("latency")).toBe("500");
   });
 
   it("force-refreshes today's timeseries on visible restore without open-resync cooldown", async () => {
@@ -746,7 +776,7 @@ describe("useTimeseries page restore resync", () => {
     unmountCurrent();
 
     await act(async () => {
-      window.dispatchEvent(new Event("pageshow"));
+      dispatchPageShow({ persisted: true });
       document.dispatchEvent(new Event("visibilitychange"));
       await Promise.resolve();
     });

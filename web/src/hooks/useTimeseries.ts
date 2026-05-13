@@ -1904,7 +1904,8 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
       if (document.visibilityState !== "visible") return;
       resyncOnOpen();
     };
-    const onPageShow = () => {
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
       resyncOnOpen();
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
