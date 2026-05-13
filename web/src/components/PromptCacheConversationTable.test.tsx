@@ -1284,7 +1284,7 @@ describe("PromptCacheConversationTable", () => {
           const occurredAt =
             offset === total - 1
               ? "2026-01-01T00:00:00Z"
-              : new Date(Date.parse("2026-03-02T23:00:00Z") - offset * 60_000)
+              : new Date(Date.parse("2026-03-03T12:00:00Z") - offset * 60_000)
                   .toISOString();
           return {
             id,
@@ -1307,7 +1307,7 @@ describe("PromptCacheConversationTable", () => {
 
     renderInteractive({
       rangeStart: "2026-01-01T00:00:00Z",
-      rangeEnd: "2026-03-03T00:00:00Z",
+      rangeEnd: "2026-03-03T12:00:00Z",
       selectionMode: "count",
       selectedLimit: 50,
       selectedActivityHours: null,
@@ -1319,7 +1319,7 @@ describe("PromptCacheConversationTable", () => {
           totalTokens: 100100,
           totalCost: 100.1,
           createdAt: "2026-01-01T00:00:00Z",
-          lastActivityAt: "2026-03-02T23:00:00Z",
+          lastActivityAt: "2026-03-03T12:00:00Z",
           last24hRequests: [],
         }),
       ],
