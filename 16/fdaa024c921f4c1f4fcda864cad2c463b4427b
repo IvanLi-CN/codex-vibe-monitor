@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.60.10",
+  "base_stable_version": "1.60.9",
+  "channel_label": "channel:stable",
+  "created_at": "2026-05-13T05:00:54Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.60.10",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "3774c38a9ec50a8de8dd4b2a4a10f9386d7a54f0",
+  "pr_number": 420,
+  "pr_title": "fix(web): refresh dashboard response time on restore",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.60.10",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.60.10",
+  "target_sha": "16fdaa024c921f4c1f4fcda864cad2c463b4427b",
+  "type_label": "type:patch"
+}
