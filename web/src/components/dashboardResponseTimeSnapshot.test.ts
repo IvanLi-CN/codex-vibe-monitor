@@ -59,4 +59,17 @@ describe('buildDashboardResponseTimeSnapshot', () => {
     expect(snapshot?.responseTimeMs).toBeNull()
     expect(snapshot?.dayAverageMs).toBeCloseTo(500, 6)
   })
+
+  it('does not fall back to older same-day latency when the active tail is empty', () => {
+    const snapshot = buildDashboardResponseTimeSnapshot(
+      buildResponse([
+        buildPoint(1, 600, 2),
+        buildPoint(2, 800, 2),
+      ]),
+      { now: new Date('2026-04-10T00:12:00.000Z') },
+    )
+
+    expect(snapshot?.responseTimeMs).toBeNull()
+    expect(snapshot?.dayAverageMs).toBeCloseTo(700, 6)
+  })
 })
