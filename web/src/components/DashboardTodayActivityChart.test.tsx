@@ -124,16 +124,22 @@ vi.mock("recharts", () => ({
     stackId,
     dataKey,
     barSize,
+    radius,
+    shape,
   }: {
     stackId?: string;
     dataKey?: string;
     barSize?: number;
+    radius?: number[];
+    shape?: ReactNode;
   }) => (
     <div
       data-testid="bar-series"
       data-stack-id={stackId ?? ""}
       data-data-key={dataKey ?? ""}
       data-bar-size={String(barSize ?? "")}
+      data-radius={radius == null ? "" : radius.join(":")}
+      data-has-shape={shape == null ? "false" : "true"}
     />
   ),
   AreaChart: ({ children }: { children: ReactNode }) => (
@@ -854,9 +860,10 @@ describe("DashboardTodayActivityChart", () => {
     expect(html).toContain('data-stack-id="positive"');
     expect(html).toContain('data-domain="0:1439"');
     expect(html).toContain(
-      'data-stack-id="positive" data-data-key="chartFailureCountNegative"',
+      'data-stack-id="positive" data-data-key="chartFailureCountNegative" data-bar-size="1" data-radius="" data-has-shape="true"',
     );
     expect(html.match(/data-stack-id="positive"/g)).toHaveLength(3);
+    expect(html.match(/data-has-shape="true"/g)).toHaveLength(1);
   });
 
   it("zooms horizontally around the wheel pointer and keeps the view clamped", async () => {
