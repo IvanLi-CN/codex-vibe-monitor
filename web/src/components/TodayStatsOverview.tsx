@@ -26,6 +26,7 @@ export interface TodayStatsOverviewProps {
   stats: StatsResponse | null
   loading: boolean
   error?: string | null
+  now?: Date
   rate?: DashboardTodayRateSnapshot | null
   rateLoading?: boolean
   rateError?: string | null
@@ -216,6 +217,7 @@ export function TodayStatsOverview({
   stats,
   loading,
   error,
+  now,
   rate,
   rateLoading = false,
   rateError = null,
@@ -247,6 +249,7 @@ export function TodayStatsOverview({
   const comparisonActiveAverages = buildActiveMinuteAverages(comparisonStats, comparisonTimeseries)
   const responseTimeSnapshot = buildDashboardResponseTimeSnapshot(timeseries ?? null, {
     closedNaturalDay: dayKind === 'yesterday',
+    now,
   })
   const comparisonResponseTimeSnapshot =
     dayKind === 'today'

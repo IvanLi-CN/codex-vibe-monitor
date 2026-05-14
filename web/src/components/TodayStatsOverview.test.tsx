@@ -525,4 +525,60 @@ describe('TodayStatsOverview', () => {
     )
     expect(host?.querySelector('[data-testid="today-stats-secondary-response-time-delta"]')?.textContent).toBe('—')
   })
+
+  it('recomputes the response-time recent window when now changes without falling back to older samples', () => {
+    const timeseries: TimeseriesResponse = {
+      rangeStart: '2026-04-10T00:00:00.000Z',
+      rangeEnd: '2026-04-10T00:03:00.000Z',
+      bucketSeconds: 60,
+      points: [
+        {
+          bucketStart: '2026-04-10T00:02:00.000Z',
+          bucketEnd: '2026-04-10T00:03:00.000Z',
+          totalCount: 2,
+          successCount: 2,
+          failureCount: 0,
+          totalTokens: 1000,
+          totalCost: 0.5,
+          firstResponseByteTotalSampleCount: 2,
+          firstResponseByteTotalAvgMs: 500,
+        },
+      ],
+    }
+
+    const renderOverview = (now: Date) => (
+      <TodayStatsOverview
+        stats={{
+          totalCount: 2,
+          successCount: 2,
+          failureCount: 0,
+          totalCost: 0.5,
+          totalTokens: 1000,
+        }}
+        rate={{
+          tokensPerMinute: 0,
+          spendRate: 0,
+          windowMinutes: 5,
+          available: true,
+        }}
+        timeseries={timeseries}
+        loading={false}
+        error={null}
+        now={now}
+      />
+    )
+
+    render(renderOverview(new Date('2026-04-10T00:04:00.000Z')))
+
+    expect(host?.querySelector('[data-testid="today-stats-value-response-time"]')?.textContent).toBe('500 ms')
+
+    act(() => {
+      root?.render(renderOverview(new Date('2026-04-10T00:10:00.000Z')))
+    })
+
+    expect(host?.querySelector('[data-testid="today-stats-value-response-time"]')?.textContent).toBe('—')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-response-time-day-average"]')?.textContent).toBe(
+      '500 ms',
+    )
+  })
 })

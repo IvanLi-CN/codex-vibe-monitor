@@ -189,6 +189,7 @@ function DashboardNaturalDaySummaryOverview({
       rate={rate}
       rateLoading={loading}
       rateError={error}
+      now={rateNow}
       timeseries={response}
       comparisonStats={summaryWindow === 'today' ? comparisonSummary : null}
       comparisonTimeseries={summaryWindow === 'today' ? comparisonTimeseries : null}

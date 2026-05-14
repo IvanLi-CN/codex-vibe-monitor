@@ -1888,8 +1888,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
 
   useEffect(() => {
     if (typeof document === "undefined") return;
-    const onVisibilityChange = () => {
-      if (document.visibilityState !== "visible") return;
+    const resyncOnOpen = () => {
       const resyncMode = getVisibilityOpenResyncMode(
         range,
         syncPolicy.mode,
@@ -1901,9 +1900,20 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
           : undefined,
       );
     };
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "visible") return;
+      resyncOnOpen();
+    };
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      resyncOnOpen();
+    };
     document.addEventListener("visibilitychange", onVisibilityChange);
-    return () =>
+    window.addEventListener("pageshow", onPageShow);
+    return () => {
       document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("pageshow", onPageShow);
+    };
   }, [range, syncPolicy.mode, triggerOpenResync]);
 
   useEffect(() => {
