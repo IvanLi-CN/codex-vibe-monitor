@@ -686,19 +686,28 @@ function renderAlignedFailureBarShape({
   ) {
     return null;
   }
-  const normalizedHeight = Math.abs(numericHeight);
-  const normalizedY =
-    numericHeight < 0 ? numericY + numericHeight : numericY;
+  const left = Math.min(numericX, numericX + numericWidth);
+  const right = Math.max(numericX, numericX + numericWidth);
+  const top = Math.min(numericY, numericY + numericHeight);
+  const bottom = Math.max(numericY, numericY + numericHeight);
+  const normalizedWidth = right - left;
+  const normalizedHeight = bottom - top;
+  const radius = Math.min(3, normalizedWidth / 2, normalizedHeight / 2);
 
   return (
-    <rect
-      x={numericX - numericWidth}
-      y={normalizedY}
-      width={numericWidth}
-      height={normalizedHeight}
-      rx={2}
-      ry={2}
+    <path
+      data-conversation-failure-bar-shape="negative"
+      d={[
+        `M${left},${top}`,
+        `H${right}`,
+        `V${bottom - radius}`,
+        `Q${right},${bottom} ${right - radius},${bottom}`,
+        `H${left + radius}`,
+        `Q${left},${bottom} ${left},${bottom - radius}`,
+        "Z",
+      ].join(" ")}
       fill={fill}
+      stroke="none"
     />
   );
 }
@@ -1242,6 +1251,7 @@ function ConversationActivityChart({
             data={visibleBuckets}
             margin={{ top: 12, right: 24, left: 0, bottom: 8 }}
             barGap="-100%"
+            stackOffset="sign"
           >
             <CartesianGrid
               stroke={chartColors.gridLine}
@@ -1318,6 +1328,7 @@ function ConversationActivityChart({
               yAxisId="count"
               dataKey="failureNegative"
               name={legendLabels.failure}
+              stackId="positive"
               fill={chartColors.failure}
               barSize={barSize}
               radius={[0, 0, 3, 3]}
