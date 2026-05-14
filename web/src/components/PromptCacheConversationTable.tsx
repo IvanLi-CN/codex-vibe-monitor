@@ -410,10 +410,10 @@ interface ConversationActivityBucket {
   avgTotalMs: number | null;
 }
 
-function endOfLocalDay(value: Date) {
-  const next = new Date(value);
-  next.setHours(23, 59, 59, 999);
-  return next;
+interface ConversationActivityBucketSet {
+  buckets: ConversationActivityBucket[];
+  rangeStartMs: number;
+  rangeEndMs: number;
 }
 
 function resolveDocumentThemeMode(): ThemeMode {
@@ -534,7 +534,7 @@ function buildConversationActivityBuckets({
   localeTag: string;
   rangeStartMs?: number | null;
   rangeEndMs?: number | null;
-}) {
+}): ConversationActivityBucketSet {
   const now = new Date();
   const rangeBounds = resolveConversationActivityRange(range);
   let startMs =
@@ -563,27 +563,17 @@ function buildConversationActivityBuckets({
     }
   }
 
-  if (range === "history" && Number.isFinite(startMs) && startMs === endMs) {
-    const recordDate = new Date(startMs);
-    startMs = startOfLocalDay(recordDate).getTime();
-    endMs = endOfLocalDay(recordDate).getTime();
-  }
-
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
-    endMs = now.getTime();
-    startMs = endMs - 86_400_000;
-  }
-
-  if (range === "history" && endMs - startMs <= 86_400_000) {
-    const startDate = new Date(startMs);
-    const endDate = new Date(endMs);
     if (
-      startDate.getFullYear() === endDate.getFullYear() &&
-      startDate.getMonth() === endDate.getMonth() &&
-      startDate.getDate() === endDate.getDate()
+      range === "history" &&
+      Number.isFinite(startMs) &&
+      Number.isFinite(endMs) &&
+      startMs === endMs
     ) {
-      startMs = startOfLocalDay(startDate).getTime();
-      endMs = endOfLocalDay(endDate).getTime();
+      endMs = startMs + 60_000;
+    } else {
+      endMs = now.getTime();
+      startMs = endMs - 86_400_000;
     }
   }
 
@@ -660,11 +650,57 @@ function buildConversationActivityBuckets({
       bucket.totalMsSamples > 0 ? bucket.totalMs / bucket.totalMsSamples : null;
   }
 
-  return buckets;
+  return { buckets, rangeStartMs: startMs, rangeEndMs: endMs };
 }
 
 interface ConversationActivityTooltipPayloadEntry {
   payload?: ConversationActivityBucket;
+}
+
+interface ConversationActivityBarShapeProps {
+  x?: number | string;
+  y?: number | string;
+  width?: number | string;
+  height?: number | string;
+  fill?: string;
+}
+
+function renderAlignedFailureBarShape({
+  x,
+  y,
+  width,
+  height,
+  fill,
+}: ConversationActivityBarShapeProps) {
+  const numericX = Number(x);
+  const numericY = Number(y);
+  const numericWidth = Number(width);
+  const numericHeight = Number(height);
+  if (
+    !Number.isFinite(numericX) ||
+    !Number.isFinite(numericY) ||
+    !Number.isFinite(numericWidth) ||
+    !Number.isFinite(numericHeight) ||
+    numericWidth <= 0 ||
+    numericHeight === 0
+  ) {
+    return null;
+  }
+  const normalizedHeight = Math.abs(numericHeight);
+  const normalizedY =
+    numericHeight < 0 ? numericY + numericHeight : numericY;
+
+  return (
+    <rect
+      x={numericX - numericWidth}
+      y={normalizedY}
+      width={numericWidth}
+      height={normalizedHeight}
+      rx={2}
+      ry={2}
+      fill={fill}
+    />
+  );
 }
 
 function ConversationActivityTooltipContent({
@@ -726,6 +762,8 @@ function ConversationActivityTooltipContent({
 
 function ConversationActivityChart({
   buckets,
+  rangeStartMs,
+  rangeEndMs,
   metric,
   loading,
   numberFormatter,
@@ -733,6 +771,8 @@ function ConversationActivityChart({
   t,
 }: {
   buckets: ConversationActivityBucket[];
+  rangeStartMs: number | null;
+  rangeEndMs: number | null;
   metric: ConversationActivityMetric;
   loading: boolean;
   numberFormatter: Intl.NumberFormat;
@@ -802,7 +842,12 @@ function ConversationActivityChart({
   const barSize = useMemo(() => {
     if (buckets.length <= 0) return 1;
     const zoomFactor = buckets.length / Math.max(1, viewportSpan);
-    return clampConversationActivityValue(Math.round(zoomFactor * 0.75), 1, 10);
+    const minimumReadableBarSize = buckets.length <= 60 ? 5 : 1;
+    return clampConversationActivityValue(
+      Math.round(zoomFactor * 0.75),
+      minimumReadableBarSize,
+      10,
+    );
   }, [buckets.length, viewportSpan]);
 
   const getAnchorRatio = useCallback((clientX: number) => {
@@ -1161,6 +1206,16 @@ function ConversationActivityChart({
       data-visible-span={viewportSpan}
       data-visible-total-count={visibleTotalCount}
       data-zoomed={isZoomed ? "true" : "false"}
+      data-chart-range-start={
+        typeof rangeStartMs === "number" && Number.isFinite(rangeStartMs)
+          ? new Date(rangeStartMs).toISOString()
+          : undefined
+      }
+      data-chart-range-end={
+        typeof rangeEndMs === "number" && Number.isFinite(rangeEndMs)
+          ? new Date(rangeEndMs).toISOString()
+          : undefined
+      }
     >
       <div
         ref={setInteractionLayerRef}
@@ -1266,6 +1321,12 @@ function ConversationActivityChart({
               fill={chartColors.failure}
               barSize={barSize}
               radius={[0, 0, 3, 3]}
+              shape={(props: ConversationActivityBarShapeProps) =>
+                renderAlignedFailureBarShape({
+                  ...props,
+                  fill: chartColors.failure,
+                })
+              }
               isAnimationActive={false}
             />
             <Bar
@@ -1611,7 +1672,7 @@ function PromptCacheConversationActivityOverview({
     [],
   );
 
-  const buckets = useMemo(
+  const bucketSet = useMemo(
     () =>
       buildConversationActivityBuckets({
         records,
@@ -1710,7 +1771,9 @@ function PromptCacheConversationActivityOverview({
         ))}
       </div>
       <ConversationActivityChart
-        buckets={buckets}
+        buckets={bucketSet.buckets}
+        rangeStartMs={bucketSet.rangeStartMs}
+        rangeEndMs={bucketSet.rangeEndMs}
         metric={activeMetric}
         loading={isLoading}
         numberFormatter={numberFormatter}
