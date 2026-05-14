@@ -1101,7 +1101,156 @@ describe("PromptCacheConversationTable", () => {
       '[data-testid="conversation-activity-chart"]',
     );
     expect(chart?.getAttribute("data-visible-total-count")).toBe("1");
+    expect(chart?.getAttribute("data-visible-span")).toBe("1");
+    expect(chart?.getAttribute("data-chart-range-start")).toBe(
+      "2026-02-01T12:30:00.000Z",
+    );
+    expect(chart?.getAttribute("data-chart-range-end")).toBe(
+      "2026-02-01T12:31:00.000Z",
+    );
     expect(document.body.textContent).toContain("Proxy West");
+  });
+
+  it("uses the first and latest same-day invocation timestamps as the history chart range", async () => {
+    apiMocks.fetchInvocationRecordsSummary.mockResolvedValueOnce({
+      snapshotId: 900,
+      newRecordsCount: 0,
+      totalCount: 4,
+      successCount: 4,
+      failureCount: 0,
+      totalCost: 0.48,
+      totalTokens: 749_360,
+      token: {
+        requestCount: 4,
+        totalTokens: 749_360,
+        avgTokensPerRequest: 187_340,
+        cacheInputTokens: 735_000,
+        totalCost: 0.48,
+      },
+      network: {
+        avgTtfbMs: null,
+        p95TtfbMs: null,
+        avgTotalMs: 15_800,
+        p95TotalMs: 33_860,
+      },
+      exception: {
+        failureCount: 0,
+        serviceFailureCount: 0,
+        clientFailureCount: 0,
+        clientAbortCount: 0,
+        actionableFailureCount: 0,
+      },
+    });
+    apiMocks.fetchInvocationRecords.mockResolvedValue({
+      snapshotId: 901,
+      total: 4,
+      page: 1,
+      pageSize: 200,
+      records: [
+        {
+          id: 84,
+          invokeId: "same-day-84",
+          occurredAt: "2026-05-13T23:40:47.000Z",
+          status: "completed",
+          failureClass: "none",
+          totalTokens: 187_327,
+          cost: 0.0972,
+          endpoint: "/v1/responses",
+          promptCacheKey: "pck-same-day-short",
+          upstreamAccountId: 101,
+          upstreamAccountName: "Pool Alpha",
+          proxyDisplayName: "Proxy Latest",
+          createdAt: "2026-05-13T23:40:47.000Z",
+        },
+        {
+          id: 83,
+          invokeId: "same-day-83",
+          occurredAt: "2026-05-13T23:38:49.000Z",
+          status: "completed",
+          failureClass: "none",
+          totalTokens: 187_080,
+          cost: 0.1558,
+          endpoint: "/v1/responses",
+          promptCacheKey: "pck-same-day-short",
+          upstreamAccountId: 101,
+          upstreamAccountName: "Pool Alpha",
+          proxyDisplayName: "Proxy Mid",
+          createdAt: "2026-05-13T23:38:49.000Z",
+        },
+        {
+          id: 82,
+          invokeId: "same-day-82",
+          occurredAt: "2026-05-13T23:37:43.000Z",
+          status: "completed",
+          failureClass: "none",
+          totalTokens: 187_002,
+          cost: 0.11,
+          endpoint: "/v1/responses",
+          promptCacheKey: "pck-same-day-short",
+          upstreamAccountId: 101,
+          upstreamAccountName: "Pool Alpha",
+          proxyDisplayName: "Proxy Mid",
+          createdAt: "2026-05-13T23:37:43.000Z",
+        },
+        {
+          id: 81,
+          invokeId: "same-day-81",
+          occurredAt: "2026-05-13T23:26:12.000Z",
+          status: "completed",
+          failureClass: "none",
+          totalTokens: 188_951,
+          cost: 0.117,
+          endpoint: "/v1/responses",
+          promptCacheKey: "pck-same-day-short",
+          upstreamAccountId: 101,
+          upstreamAccountName: "Pool Alpha",
+          proxyDisplayName: "Proxy First",
+          createdAt: "2026-05-13T23:26:12.000Z",
+        },
+      ],
+    });
+
+    renderInteractive({
+      rangeStart: "2026-05-13T16:00:00Z",
+      rangeEnd: "2026-05-14T15:59:59Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-same-day-short",
+          requestCount: 4,
+          totalTokens: 749_360,
+          totalCost: 0.48,
+          createdAt: "2026-05-13T23:26:12.000Z",
+          lastActivityAt: "2026-05-13T23:40:47.000Z",
+          last24hRequests: [],
+        }),
+      ],
+    });
+
+    const historyButton = findButtonByAriaLabel("打开全部调用记录");
+    expect(historyButton).toBeTruthy();
+
+    await act(async () => {
+      historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+
+    const chart = document.querySelector(
+      '[data-testid="conversation-activity-chart"]',
+    );
+    expect(chart?.getAttribute("data-visible-total-count")).toBe("4");
+    expect(chart?.getAttribute("data-chart-range-start")).toBe(
+      "2026-05-13T23:26:12.000Z",
+    );
+    expect(chart?.getAttribute("data-chart-range-end")).toBe(
+      "2026-05-13T23:40:47.000Z",
+    );
+    expect(chart?.getAttribute("data-chart-range-start")).not.toBe(
+      "2026-05-13T16:00:00.000Z",
+    );
   });
 
   it("renders neutral activity buckets in the chart", async () => {
@@ -1342,6 +1491,15 @@ describe("PromptCacheConversationTable", () => {
         sortOrder: "desc",
         snapshotId: 901,
       }),
+    );
+    const chart = document.querySelector(
+      '[data-testid="conversation-activity-chart"]',
+    );
+    expect(chart?.getAttribute("data-chart-range-start")).toBe(
+      "2026-01-01T00:00:00.000Z",
+    );
+    expect(chart?.getAttribute("data-chart-range-end")).toBe(
+      "2026-03-03T12:00:00.000Z",
     );
     expect(document.body.textContent).toContain("01/01");
     expect(document.body.textContent).toContain("03/03");

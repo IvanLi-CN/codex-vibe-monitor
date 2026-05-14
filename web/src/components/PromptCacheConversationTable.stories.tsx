@@ -1,6 +1,6 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import { MemoryRouter } from "react-router-dom";
 import { I18nProvider } from "../i18n";
 import type {
@@ -297,6 +297,7 @@ function buildPreviewFromRecord(
 
 const CONVERSATION_ONE_KEY = "019d2b8f-f8d0-72c3-bb67-a3f0d24a01f1";
 const CONVERSATION_TWO_KEY = "019d2b8a-2df4-7580-bffc-6b4b1d8207c2";
+const CONVERSATION_SHORT_KEY = "019e239a-038c-7860-a185-46a9d45553f7";
 
 const conversationOneHistory = [
   buildInvocationRecord({
@@ -560,11 +561,83 @@ const conversationTwoHistory = [
   }),
 ];
 
+const shortSameDayStartMs = Date.parse("2026-05-13T23:26:12.000Z");
+const shortSameDayEndMs = Date.parse("2026-05-13T23:40:47.000Z");
+const shortSameDayOffsetsMs = [
+  0,
+  24_000,
+  48_000,
+  75_000,
+  108_000,
+  136_000,
+  169_000,
+  198_000,
+  232_000,
+  259_000,
+  286_000,
+  315_000,
+  348_000,
+  374_000,
+  402_000,
+  402_000,
+  458_000,
+  486_000,
+  514_000,
+  541_000,
+  566_000,
+  593_000,
+  620_000,
+  648_000,
+  676_000,
+  704_000,
+  731_000,
+  758_000,
+  785_000,
+  812_000,
+  shortSameDayEndMs - shortSameDayStartMs,
+];
+
+const shortSameDayHistory = shortSameDayOffsetsMs
+  .map((offsetMs, index) => {
+    const newestId = 930 - index;
+    const isFailure = index === 15 || index === 24 || index === 28;
+    const isSecondAccount = index % 5 === 2 || index % 7 === 4;
+    const totalTokens = 181_000 + ((index * 1_487) % 8_800);
+    const outputTokens = isFailure ? 0 : 34 + ((index * 173) % 2_400);
+    return buildInvocationRecord({
+      id: newestId,
+      invokeId: `invoke-short-${String(index + 1).padStart(2, "0")}`,
+      promptCacheKey: CONVERSATION_SHORT_KEY,
+      occurredAt: new Date(shortSameDayStartMs + offsetMs).toISOString(),
+      upstreamAccountId: isSecondAccount ? 22 : 21,
+      upstreamAccountName: isSecondAccount
+        ? "mia.7rmmq@support.example"
+        : "growth.6vv4@relay.example",
+      proxyDisplayName: isSecondAccount ? "madrid-edge-05" : "frankfurt-edge-04",
+      status: isFailure ? "http_502" : "completed",
+      failureClass: isFailure ? "service_failure" : "none",
+      isActionable: isFailure,
+      totalTokens,
+      inputTokens: totalTokens - outputTokens,
+      cacheInputTokens: Math.max(0, totalTokens - outputTokens - 512),
+      outputTokens,
+      reasoningTokens: isFailure ? 0 : index % 4 === 0 ? 812 : 0,
+      reasoningEffort: "medium",
+      cost: Number((0.091 + (index % 9) * 0.0087).toFixed(4)),
+      tTotalMs: isFailure ? 30_000 + index * 740 : 10_500 + (index % 11) * 1_920,
+      responseContentEncoding: "identity",
+    });
+  })
+  .reverse();
+
 const conversationOnePreviews = conversationOneHistory
   .slice(0, 5)
   .map(buildPreviewFromRecord);
 const conversationTwoPreviews = conversationTwoHistory
   .slice(0, 5)
+  .map(buildPreviewFromRecord);
+const shortSameDayPreviews = shortSameDayHistory
+  .slice(0, 4)
   .map(buildPreviewFromRecord);
 
 const historyRecordsByKey = new Map<string, ApiInvocation[]>([
@@ -576,7 +649,73 @@ const historyRecordsByKey = new Map<string, ApiInvocation[]>([
     CONVERSATION_TWO_KEY,
     conversationTwoHistory,
   ],
+  [
+    CONVERSATION_SHORT_KEY,
+    shortSameDayHistory,
+  ],
 ]);
+
+function buildInvocationSummary(records: ApiInvocation[]) {
+  const totalCost = records.reduce((sum, record) => sum + (record.cost ?? 0), 0);
+  const totalTokens = records.reduce(
+    (sum, record) => sum + (record.totalTokens ?? 0),
+    0,
+  );
+  const completedRecords = records.filter((record) => record.status === "completed");
+  const failedRecords = records.filter(
+    (record) =>
+      record.failureClass === "service_failure" ||
+      record.failureClass === "client_failure" ||
+      record.failureClass === "client_abort",
+  );
+  const durationSamples = records
+    .map((record) => record.tTotalMs)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  const avgTotalMs =
+    durationSamples.length > 0
+      ? durationSamples.reduce((sum, value) => sum + value, 0) /
+        durationSamples.length
+      : null;
+
+  return {
+    snapshotId: 8401,
+    newRecordsCount: 0,
+    totalCount: records.length,
+    successCount: completedRecords.length,
+    failureCount: failedRecords.length,
+    totalCost,
+    totalTokens,
+    token: {
+      requestCount: records.length,
+      totalTokens,
+      avgTokensPerRequest: records.length > 0 ? totalTokens / records.length : 0,
+      cacheInputTokens: records.reduce(
+        (sum, record) => sum + (record.cacheInputTokens ?? 0),
+        0,
+      ),
+      totalCost,
+    },
+    network: {
+      avgTtfbMs: null,
+      p95TtfbMs: null,
+      avgTotalMs,
+      p95TotalMs: durationSamples.length > 0 ? Math.max(...durationSamples) : null,
+    },
+    exception: {
+      failureCount: failedRecords.length,
+      serviceFailureCount: failedRecords.filter(
+        (record) => record.failureClass === "service_failure",
+      ).length,
+      clientFailureCount: failedRecords.filter(
+        (record) => record.failureClass === "client_failure",
+      ).length,
+      clientAbortCount: failedRecords.filter(
+        (record) => record.failureClass === "client_abort",
+      ).length,
+      actionableFailureCount: failedRecords.filter((record) => record.isActionable).length,
+    },
+  };
+}
 
 function StorybookPromptCacheAccountMock({
   children,
@@ -612,6 +751,14 @@ function StorybookPromptCacheAccountMock({
           return jsonResponse({ message: "Not found" }, 404);
         }
         return jsonResponse(detail);
+      }
+
+      if (parsedUrl.pathname === "/api/invocations/summary" && method === "GET") {
+        const promptCacheKey = parsedUrl.searchParams.get("promptCacheKey");
+        const records = promptCacheKey
+          ? historyRecordsByKey.get(promptCacheKey) ?? []
+          : [];
+        return jsonResponse(buildInvocationSummary(records));
       }
 
       if (parsedUrl.pathname === "/api/invocations" && method === "GET") {
@@ -918,6 +1065,76 @@ const sharedScaleStats: PromptCacheConversationsResponse = {
   ],
 };
 
+const shortSameDayStats: PromptCacheConversationsResponse = {
+  rangeStart: "2026-05-13T16:00:00.000Z",
+  rangeEnd: "2026-05-14T15:59:59.000Z",
+  selectionMode: "count",
+  selectedLimit: 50,
+  selectedActivityHours: null,
+  implicitFilter: { kind: null, filteredCount: 0 },
+  conversations: [
+    {
+      promptCacheKey: CONVERSATION_SHORT_KEY,
+      requestCount: shortSameDayHistory.length,
+      totalTokens: shortSameDayHistory.reduce(
+        (sum, record) => sum + (record.totalTokens ?? 0),
+        0,
+      ),
+      totalCost: shortSameDayHistory.reduce(
+        (sum, record) => sum + (record.cost ?? 0),
+        0,
+      ),
+      createdAt: shortSameDayHistory.at(-1)?.occurredAt ?? "",
+      lastActivityAt: shortSameDayHistory[0]?.occurredAt ?? "",
+      upstreamAccounts: [
+        {
+          upstreamAccountId: 21,
+          upstreamAccountName: "growth.6vv4@relay.example",
+          requestCount: shortSameDayHistory.filter(
+            (record) => record.upstreamAccountId === 21,
+          ).length,
+          totalTokens: shortSameDayHistory
+            .filter((record) => record.upstreamAccountId === 21)
+            .reduce((sum, record) => sum + (record.totalTokens ?? 0), 0),
+          totalCost: shortSameDayHistory
+            .filter((record) => record.upstreamAccountId === 21)
+            .reduce((sum, record) => sum + (record.cost ?? 0), 0),
+          lastActivityAt: shortSameDayHistory[0]?.occurredAt ?? "",
+        },
+        {
+          upstreamAccountId: 22,
+          upstreamAccountName: "mia.7rmmq@support.example",
+          requestCount: shortSameDayHistory.filter(
+            (record) => record.upstreamAccountId === 22,
+          ).length,
+          totalTokens: shortSameDayHistory
+            .filter((record) => record.upstreamAccountId === 22)
+            .reduce((sum, record) => sum + (record.totalTokens ?? 0), 0),
+          totalCost: shortSameDayHistory
+            .filter((record) => record.upstreamAccountId === 22)
+            .reduce((sum, record) => sum + (record.cost ?? 0), 0),
+          lastActivityAt:
+            shortSameDayHistory.find((record) => record.upstreamAccountId === 22)
+              ?.occurredAt ?? "",
+        },
+      ],
+      recentInvocations: shortSameDayPreviews,
+      last24hRequests: shortSameDayHistory
+        .slice()
+        .reverse()
+        .map((record, index, records) => ({
+          occurredAt: record.occurredAt,
+          status: record.status ?? "completed",
+          isSuccess: record.failureClass === "none",
+          requestTokens: record.totalTokens ?? 0,
+          cumulativeTokens: records
+            .slice(0, index + 1)
+            .reduce((sum, item) => sum + (item.totalTokens ?? 0), 0),
+        })),
+    },
+  ],
+};
+
 const meta = {
   title: "Monitoring/PromptCacheConversationTable",
   component: PromptCacheConversationTable,
@@ -1107,18 +1324,86 @@ export const DrawerOpen: Story = {
   play: async ({ canvasElement }) => {
     const documentScope = within(canvasElement.ownerDocument.body);
     const historyButton = documentScope.getAllByRole("button", {
-      name: /open full call history/i,
+      name: /打开全部调用记录|open full call history/i,
     })[0];
 
     await userEvent.click(historyButton);
     await expect(
-      await documentScope.findByText(/All retained calls/i),
+      await documentScope.findByText(/全部保留调用记录|All retained calls/i),
     ).toBeInTheDocument();
     await expect(
-      documentScope.getByText(/Loaded 6 \/ 6 retained record\(s\)/i),
+      documentScope.getByText(/已加载 6 \/ 6 条保留调用记录|Loaded 6 \/ 6 retained record\(s\)/i),
     ).toBeInTheDocument();
     await expect(
       documentScope.getAllByTestId("invocation-table-scroll").length,
     ).toBeGreaterThan(0);
+  },
+};
+
+export const ShortSameDayDrawerOpen: Story = {
+  args: {
+    stats: shortSameDayStats,
+    isLoading: false,
+    error: null,
+  },
+  globals: {
+    themeMode: "dark",
+    viewport: { value: "desktop1280", isRotated: false },
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Conversation history whose retained calls all occur within a short same-day window; the drawer chart should use the first and latest retained call timestamps instead of expanding to the full day.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body);
+    const historyButton = documentScope.getAllByRole("button", {
+      name: /打开全部调用记录|open full call history/i,
+    })[0];
+
+    await userEvent.click(historyButton);
+    await expect(
+      await documentScope.findByText(/全部保留调用记录|All retained calls/i),
+    ).toBeInTheDocument();
+    const chart = await documentScope.findByTestId("conversation-activity-chart");
+    await expect(chart).toHaveAttribute(
+      "data-chart-range-start",
+      "2026-05-13T23:26:12.000Z",
+    );
+    await expect(chart).toHaveAttribute(
+      "data-chart-range-end",
+      "2026-05-13T23:40:47.000Z",
+    );
+    await waitFor(() => {
+      const successBars = Array.from(
+        chart.querySelectorAll<SVGGraphicsElement>(
+          'path[fill="#22c55e"], rect[fill="#22c55e"]',
+        ),
+      )
+        .map((element) => element.getBBox())
+        .filter((box) => box.width > 0 && box.height > 0);
+      const failureBars = Array.from(
+        chart.querySelectorAll<SVGGraphicsElement>(
+          'path[fill="#f87171"], rect[fill="#f87171"]',
+        ),
+      )
+        .map((element) => element.getBBox())
+        .filter((box) => box.width > 0 && box.height > 0);
+      expect(successBars.length).toBeGreaterThan(0);
+      expect(failureBars.length).toBeGreaterThan(0);
+
+      const alignedMiddleBucket = failureBars.some((failureBox) => {
+        const failureCenter = failureBox.x + failureBox.width / 2;
+        if (failureCenter < 200) return false;
+        return successBars.some((successBox) => {
+          const successCenter = successBox.x + successBox.width / 2;
+          return Math.abs(successCenter - failureCenter) < 1;
+        });
+      });
+      expect(alignedMiddleBucket).toBe(true);
+    });
   },
 };

@@ -132,6 +132,12 @@
   evidence_note: verifies the dashboard conversation detail opens to the full retained call history drawer with no time-range selector, paginates the 316-record retained history snapshot, renders the zoomable and pannable activity chart, keeps records newest-first, and uses the dark floating tooltip surface.
   image:
   ![Dashboard conversation history drawer](visual-evidence/dashboard-conversation-history-drawer.png)
+- source_type: storybook_canvas
+  story_id_or_title: Monitoring/PromptCacheConversationTable/ShortSameDayDrawerOpen
+  state: short same-day conversation history drawer
+  evidence_note: verifies the retained-call activity chart uses the conversation's first and latest invocation timestamps instead of expanding the x-axis to the full local day.
+  image:
+  ![Short same-day conversation chart range](./assets/conversation-history-short-range.png)
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
