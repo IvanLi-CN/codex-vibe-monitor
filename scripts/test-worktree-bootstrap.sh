@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-vibe-monitor-worktree-bootstrap.XXXXXX")"
+tmp_dir="$(cd "$tmp_dir" && pwd)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 copy_repo() {
@@ -15,6 +16,7 @@ copy_repo() {
     --exclude 'web/.env.local' \
     --exclude 'node_modules' \
     --exclude 'web/node_modules' \
+    --exclude 'docs-site/node_modules' \
     --exclude 'target' \
     --exclude 'web/dist' \
     --exclude '.codex/logs' \
@@ -63,6 +65,17 @@ EOF_FAKE
   chmod +x "$native_dir/lefthook"
 }
 
+write_fake_bun() {
+  bin_dir="$1"
+  mkdir -p "$bin_dir"
+  cat > "$bin_dir/bun" <<'EOF_FAKE'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\t%s\n' "$(pwd)" "$*" >> "${BUN_INSTALL_LOG:?}"
+EOF_FAKE
+  chmod +x "$bin_dir/bun"
+}
+
 fixture_repo="$tmp_dir/fixture"
 copy_repo "$repo_root" "$fixture_repo"
 init_repo "$fixture_repo"
@@ -96,6 +109,21 @@ assert_file_contains "$worktree_dir/.lefthook-run.log" '--no-auto-install'
 
 bash "$worktree_dir/scripts/worktree-bootstrap.sh" >/dev/null
 assert_file_contains "$worktree_dir/.env.local" 'TARGET_SECRET=keep-me'
+if [ -e "$worktree_dir/node_modules" ] || [ -e "$worktree_dir/web/node_modules" ] || [ -e "$worktree_dir/docs-site/node_modules" ]; then
+  printf 'worktree bootstrap must not install dependency directories\n' >&2
+  exit 1
+fi
+
+fake_bun_dir="$tmp_dir/fake-bun"
+bun_install_log="$tmp_dir/bun-install.log"
+write_fake_bun "$fake_bun_dir"
+(
+  cd "$worktree_dir"
+  PATH="$fake_bun_dir:$PATH" BUN_INSTALL_LOG="$bun_install_log" bash scripts/worktree-setup.sh >/dev/null
+)
+assert_file_contains "$bun_install_log" "$worktree_dir"$'\t''install'
+assert_file_contains "$bun_install_log" "$worktree_dir/web"$'\t''install'
+assert_file_contains "$bun_install_log" "$worktree_dir/docs-site"$'\t''install'
 
 rm -f "$fixture_repo/scripts/run-lefthook-hook.sh" \
   "$fixture_repo/scripts/sync-worktree-resources.sh" \

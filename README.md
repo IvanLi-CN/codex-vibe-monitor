@@ -191,20 +191,28 @@ bun run dev
 
 ## Worktree bootstrap
 
-首次拉到包含该功能的版本后，在任一 worktree 执行一次：
+首次拉到包含该功能的版本后，在任一 worktree 执行一次，安装 shared Git hooks：
 
 ```bash
 bun install
 bun run hooks:install
 ```
 
-之后新建 linked worktree 时，shared Git `post-checkout` hook 会自动补齐缺失的 `.env.local`。如果需要手动重跑，可执行：
+之后新建 linked worktree 时，shared Git `post-checkout` hook 会自动补齐缺失的 `.env.local`。如果需要手动重跑轻量 bootstrap，可执行：
 
 ```bash
 bun run worktree:bootstrap
 ```
 
-该 bootstrap 只会复制 `scripts/worktree-sync.paths` 中声明的缺失本地资源；当前首版仅同步 `.env.local`，不会覆盖已有本地文件，也不会复制 `node_modules`、数据库文件或 `.codex/xray-forward` 一类运行态目录。
+该 bootstrap 只会复制 `scripts/worktree-sync.paths` 中声明的缺失本地资源；当前首版仅同步 `.env.local`，不会覆盖已有本地文件，也不会复制或安装 `node_modules`、数据库文件或 `.codex/xray-forward` 一类运行态目录。
+
+如果需要把当前 worktree 初始化成完整开发环境，显式执行：
+
+```bash
+bun run worktree:setup
+```
+
+`worktree:setup` 会依次安装 repo root、`web/` 与 `docs-site/` 的 Bun 依赖。依赖安装不会由 `post-checkout` 自动触发，避免 checkout 依赖网络或长时间阻塞。
 
 ## 第一次部署最该先确认的配置
 
