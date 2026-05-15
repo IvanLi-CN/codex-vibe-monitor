@@ -3,7 +3,7 @@
 ## Current State
 
 - Canonical spec: `docs/specs/pd77h-oauth-inline-adapter/SPEC.md`
-- Implementation summary: OAuth 凭据模型支持无 refresh token，相关自动刷新路径会跳过无 RT 账号，账号列表 API 和 Web roster 通过 `hasRefreshToken` 显示 `无 RT` 标记。
+- Implementation summary: OAuth 凭据模型支持无 refresh token，相关自动刷新路径会跳过无 RT 账号，账号列表 API 和 Web roster 通过 `hasRefreshToken` 显示 `无 RT` 标记；OAuth JSON 导入忽略 `type` 来源值，单条本地校验可一次性展示多个字段错误。
 
 ## Migrated Implementation Notes
 
@@ -19,7 +19,7 @@
 
 - Unit tests: OAuth adapter 请求改写、模型列表归一化、SSE completed/error 提取、错误摘要。
 - Integration tests: pool OAuth route 的 invalid_grant / token invalidated / 一次 stale token 恢复 / 单服务路径。
-- Account pool tests: 无 RT imported OAuth 解析与持久化、自动刷新跳过、`hasRefreshToken=false` 序列化、Web flat/list/grid badge 与导入本地校验。
+- Account pool tests: 无 RT imported OAuth 解析与持久化、自动刷新跳过、`hasRefreshToken=false` 序列化、Web flat/list/grid badge、非 `codex` 导入类型放行与单条导入本地多错误校验。
 - E2E tests (if applicable): 线上等价流程的账号详情错误口径与重新授权后的路由表现。
 
 ## 文档更新（Docs to Update）
@@ -58,6 +58,8 @@
 ![无 RT badge - grouped list](./assets/no-rt-grouped.png)
 
 ![无 RT badge - grid cards](./assets/no-rt-grid.png)
+
+![OAuth import local multi-error validation](./assets/import-multiple-errors.png)
 
 ## 资产晋升（Asset promotion）
 

@@ -41,6 +41,7 @@ function renderImportedOauthStory(defaultGroupName = 'production') {
 
 function buildPastedCredential(
   overrides?: Partial<{
+    type: string
     email: string
     account_id: string
     expired: string
@@ -49,7 +50,7 @@ function buildPastedCredential(
   }>,
 ) {
   return JSON.stringify({
-    type: 'codex',
+    type: overrides?.type ?? 'auth0',
     email: overrides?.email ?? 'paste-story@duckmail.sbs',
     account_id: overrides?.account_id ?? 'acct_paste_story',
     expired: overrides?.expired ?? '2026-03-20T00:00:00.000Z',
@@ -132,6 +133,27 @@ export const PasteInvalidEditable: Story = {
       canvas.getByText(/paste exactly one credential json object/i),
     ).toBeInTheDocument()
     await expect(editor).toHaveValue('[{"type":"codex"}]')
+  },
+}
+
+export const PasteMultipleErrors: Story = {
+  render: () => renderImportedOauthStory(),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const editor = canvas.getByLabelText(/paste one credential json/i)
+    await userEvent.click(editor)
+    await userEvent.paste(
+      JSON.stringify({
+        type: 'auth0',
+        access_token: '',
+        id_token: 'not-a-jwt',
+        expired: 123,
+      }),
+    )
+    await expect(canvas.getByText(/email is required/i)).toBeInTheDocument()
+    await expect(canvas.getByText(/account_id is required/i)).toBeInTheDocument()
+    await expect(canvas.getByText(/access_token is required/i)).toBeInTheDocument()
+    await expect(canvas.getByText(/id_token must be a valid jwt/i)).toBeInTheDocument()
   },
 }
 

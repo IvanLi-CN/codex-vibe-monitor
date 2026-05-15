@@ -1128,9 +1128,6 @@ fn normalize_imported_oauth_credentials(
         .ok_or_else(|| "content is required".to_string())?;
     let parsed: ImportedOauthCredentialsFile =
         serde_json::from_str(&content).map_err(|err| format!("invalid JSON: {err}"))?;
-    if !parsed.source_type.eq_ignore_ascii_case("codex") {
-        return Err("type must be codex".to_string());
-    }
     let email =
         normalize_required_secret(&parsed.email, "email").map_err(|(_, message)| message)?;
     let chatgpt_account_id = normalize_required_secret(&parsed.account_id, "account_id")

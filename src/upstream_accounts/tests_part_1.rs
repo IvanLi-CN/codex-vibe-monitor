@@ -1293,6 +1293,43 @@
     }
 
     #[test]
+    fn normalize_imported_oauth_credentials_accepts_non_codex_or_missing_type() {
+        for (name, source_type) in [
+            ("auth0", Some(json!("auth0"))),
+            ("blank", Some(json!("  "))),
+            ("missing", None),
+        ] {
+            let mut content = json!({
+                "email": format!("{name}@duckmail.sbs"),
+                "account_id": format!("acct_{name}"),
+                "expired": "2026-03-20T00:00:00Z",
+                "access_token": "access-token",
+                "refresh_token": "refresh-token",
+                "id_token": test_id_token(
+                    &format!("{name}@duckmail.sbs"),
+                    Some(&format!("acct_{name}")),
+                    Some(&format!("user_{name}")),
+                    Some("team"),
+                ),
+            });
+            if let Some(source_type) = source_type {
+                content["type"] = source_type;
+            }
+            let item = ImportOauthCredentialFileRequest {
+                source_id: format!("file-{name}"),
+                file_name: format!("{name}.json"),
+                content: content.to_string(),
+            };
+
+            let normalized = normalize_imported_oauth_credentials(&item)
+                .expect("normalize imported oauth credentials with any type");
+
+            assert_eq!(normalized.email, format!("{name}@duckmail.sbs"));
+            assert_eq!(normalized.chatgpt_account_id, format!("acct_{name}"));
+        }
+    }
+
+    #[test]
     fn normalize_imported_oauth_credentials_accepts_missing_or_blank_refresh_token() {
         for (name, refresh_token) in [
             ("missing", None),

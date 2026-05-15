@@ -90,9 +90,17 @@ export function UpstreamAccountCreateImportSection() {
       disabled={!writesEnabled || importPasteBusy}
     />
     {importPasteError ? (
-      <p className="mt-2 text-sm text-error">
-        {importPasteError}
-      </p>
+      <div className="mt-2 text-sm text-error">
+        {importPasteError.includes("\n") ? (
+          <ul className="list-disc space-y-1 pl-5">
+            {importPasteError.split("\n").map((message: string) => (
+              <li key={message}>{message}</li>
+            ))}
+          </ul>
+        ) : (
+          <p>{importPasteError}</p>
+        )}
+      </div>
     ) : importPasteBusy ? (
       <p className="mt-2 inline-flex items-center gap-2 text-sm text-base-content/65">
         <Spinner className="size-4" />

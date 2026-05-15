@@ -351,8 +351,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.createPage.tabs.batchOauth": "Batch OAuth",
     "accountPool.upstreamAccounts.createPage.tabs.import": "Import JSON",
     "accountPool.upstreamAccounts.createPage.tabs.apiKey": "API key",
-    "accountPool.upstreamAccounts.import.createTitle":
-      "Import Codex OAuth JSON",
+    "accountPool.upstreamAccounts.import.createTitle": "Import OAuth JSON",
     "accountPool.upstreamAccounts.import.createDescription":
       "Select exported credential files or paste one credential JSON at a time, run local checks and dedupe first, then use Validate and review for the actual server-side preview.",
     "accountPool.upstreamAccounts.import.fileInputLabel":
@@ -360,7 +359,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.import.paste.label":
       "Paste one credential JSON",
     "accountPool.upstreamAccounts.import.paste.placeholder":
-      '{\n  "type": "codex",\n  "email": "owner@example.com",\n  ...\n}',
+      '{\n  "type": "auth0",\n  "email": "owner@example.com",\n  ...\n}',
     "accountPool.upstreamAccounts.import.paste.hint":
       "Paste exactly one credential JSON object. A successful paste is checked locally and added to the queue automatically; actual API validation waits for Validate and review.",
     "accountPool.upstreamAccounts.import.paste.validating":
@@ -376,8 +375,6 @@ const baseTranslations = {
       "Paste exactly one credential JSON object.",
     "accountPool.upstreamAccounts.import.paste.unexpectedResponse":
       "The pasted credential returned an unexpected validation response.",
-    "accountPool.upstreamAccounts.import.local.invalidType":
-      "type must be codex.",
     "accountPool.upstreamAccounts.import.local.requiredField":
       "{{fieldName}} is required.",
     "accountPool.upstreamAccounts.import.local.invalidJwt":
@@ -2374,13 +2371,13 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.createPage.tabs.batchOauth": "批量 OAuth",
     "accountPool.upstreamAccounts.createPage.tabs.import": "导入 JSON",
     "accountPool.upstreamAccounts.createPage.tabs.apiKey": "API Key",
-    "accountPool.upstreamAccounts.import.createTitle": "导入 Codex OAuth JSON",
+    "accountPool.upstreamAccounts.import.createTitle": "导入 OAuth JSON",
     "accountPool.upstreamAccounts.import.createDescription":
       "选择导出的凭据 JSON 文件，或一次粘贴一条凭据 JSON，先做本地检查与去重，再通过“验证并预览”执行真正的服务端预览。",
     "accountPool.upstreamAccounts.import.fileInputLabel": "凭据 JSON 文件",
     "accountPool.upstreamAccounts.import.paste.label": "粘贴单条凭据 JSON",
     "accountPool.upstreamAccounts.import.paste.placeholder":
-      '{\n  "type": "codex",\n  "email": "owner@example.com",\n  ...\n}',
+      '{\n  "type": "auth0",\n  "email": "owner@example.com",\n  ...\n}',
     "accountPool.upstreamAccounts.import.paste.hint":
       "每次只粘贴一条凭据 JSON object。粘贴成功后会先做本地检查并自动加入列表；真正的接口校验会在“验证并预览”时统一执行。",
     "accountPool.upstreamAccounts.import.paste.validating":
@@ -2395,8 +2392,6 @@ const baseTranslations = {
       "一次只能粘贴一条凭据 JSON object。",
     "accountPool.upstreamAccounts.import.paste.unexpectedResponse":
       "粘贴凭据返回了无法识别的校验结果。",
-    "accountPool.upstreamAccounts.import.local.invalidType":
-      "type 必须是 codex。",
     "accountPool.upstreamAccounts.import.local.requiredField":
       "{{fieldName}} 不能为空。",
     "accountPool.upstreamAccounts.import.local.invalidJwt":

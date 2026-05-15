@@ -56,6 +56,7 @@
 
 - OAuth 账号同步：仍先刷新 access token、再抓 usage snapshot；该流程不依赖任何本地 sidecar。
 - OAuth 账号允许没有 refresh token。导入 JSON、外部 upsert/relogin 与 OAuth callback 中的 `refresh_token` 缺失、`null`、空白字符串都按“无 RT”持久化；自动刷新分支在无 RT 时跳过 token endpoint，继续用现有 access token 尝试 usage 或数据面请求，过期后的上游失败沿用现有错误分类。
+- OAuth JSON 导入不把 `type` 当作来源白名单；`type` 缺失、空白或非 `codex` 字符串不阻断导入。单条粘贴/单文件本地校验一次性展示可并行发现的多个字段错误，避免逐项修复才暴露下一条错误。
 - OAuth pool 路由：主进程直接根据请求路径调用内联 adapter，adapter 使用当前 access token 调用 `https://chatgpt.com/backend-api/codex` 并产出 OpenAI-compatible 响应。
 - API Key pool 路由：继续使用现有 `OPENAI_UPSTREAM_BASE_URL` / 账号级 `upstreamBaseUrl` 直连 reqwest 请求路径。
 - pool 消费链：不再要求上游一定是 `reqwest::Response`；统一从“状态码 + headers + body stream”抽象读取首包、透传 headers、记录 timings 与错误。
@@ -102,6 +103,14 @@ None
 - Given OAuth 凭据没有 refresh token
   When 同步、维护探测或 pool 路由候选加载需要 refresh-before-use 或 retry-after-401
   Then 服务不请求 OAuth token endpoint，仍允许当前 access token 先参与 usage 或数据面请求，并在账号列表 API 返回 `hasRefreshToken=false` 供 Web 标记 `无 RT`。
+
+- Given OAuth 导入 JSON 的 `type` 是 `auth0`、空白或缺失
+  When 用户粘贴或选择该凭据 JSON
+  Then 本地校验与服务端预览不会返回 `type must be codex`。
+
+- Given 单条 OAuth 导入 JSON 同时缺少多个必填字段
+  When 用户在导入页触发本地校验
+  Then 页面一次性展示多个字段错误，而不是每次只展示第一条错误。
 
 ## 方案概述（Approach, high-level）
 
