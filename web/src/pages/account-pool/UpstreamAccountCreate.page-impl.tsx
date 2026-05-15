@@ -1966,6 +1966,7 @@ export default function UpstreamAccountCreatePage() {
     handleCloseImportedOauthValidationDialog,
     handleImportValidatedOauth,
   } = useUpstreamAccountCreateImportedOauth({
+    activeTab,
     groupDraftConcurrencyLimits,
     groupDraftNotes,
     groups,

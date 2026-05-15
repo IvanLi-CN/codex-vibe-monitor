@@ -184,6 +184,10 @@ export function UpstreamAccountCreatePrimaryCard() {
                 ? t("accountPool.upstreamAccounts.oauth.createTitle")
                 : activeTab === "import"
                   ? t("accountPool.upstreamAccounts.import.createTitle")
+                  : activeTab === "importSession"
+                    ? t(
+                        "accountPool.upstreamAccounts.importSession.createTitle",
+                      )
                   : t("accountPool.upstreamAccounts.apiKey.createTitle")}
             </CardTitle>
             <CardDescription>
@@ -193,6 +197,10 @@ export function UpstreamAccountCreatePrimaryCard() {
                   ? t(
                       "accountPool.upstreamAccounts.import.createDescription",
                     )
+                  : activeTab === "importSession"
+                    ? t(
+                        "accountPool.upstreamAccounts.importSession.createDescription",
+                      )
                   : t("accountPool.upstreamAccounts.apiKey.createDescription")}
             </CardDescription>
           </>
@@ -206,6 +214,8 @@ export function UpstreamAccountCreatePrimaryCard() {
         ) : activeTab === "batchOauth" ? (
           <UpstreamAccountCreateBatchOauthSection />
         ) : activeTab === "import" ? (
+          <UpstreamAccountCreateImportSection />
+        ) : activeTab === "importSession" ? (
           <UpstreamAccountCreateImportSection />
         ) : (
           <UpstreamAccountCreateApiKeySection />
