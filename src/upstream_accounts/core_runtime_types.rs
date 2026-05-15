@@ -2219,7 +2219,8 @@ struct ChatgptJwtClaims {
 #[derive(Debug, Deserialize)]
 struct ImportedOauthCredentialsFile {
     #[serde(rename = "type")]
-    source_type: String,
+    #[serde(default)]
+    _source_type: Option<serde_json::Value>,
     email: String,
     account_id: String,
     #[serde(default)]

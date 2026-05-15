@@ -283,7 +283,7 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     });
     render("/account-pool/upstream-accounts/new?mode=import");
 
-    expect(host?.textContent).toContain("Import Codex OAuth JSON");
+    expect(host?.textContent).toContain("Import OAuth JSON");
 
     const fileInput = host?.querySelector('input[name="importOauthFiles"]');
     if (!(fileInput instanceof HTMLInputElement)) {

@@ -1139,6 +1139,22 @@ function clickGroupSettingsButtonForInput(selector: string) {
 }
 
 describe("imported OAuth local validation", () => {
+  const t = (key: string, values?: Record<string, string | number>) => {
+    if (key === "accountPool.upstreamAccounts.import.local.requiredField") {
+      return `${values?.fieldName} is required.`;
+    }
+    if (key === "accountPool.upstreamAccounts.import.local.invalidJwt") {
+      return `${values?.tokenName} must be a valid JWT.`;
+    }
+    if (key === "accountPool.upstreamAccounts.import.local.invalidExpired") {
+      return "expired must be a valid RFC3339 timestamp.";
+    }
+    if (key === "accountPool.upstreamAccounts.import.local.missingExpiry") {
+      return "expired is required when token exp is unavailable.";
+    }
+    return key;
+  };
+
   it("accepts Codex JSON without a refresh_token", () => {
     const result = validateImportedOauthCredentialLocally(
       JSON.stringify({
@@ -1149,11 +1165,55 @@ describe("imported OAuth local validation", () => {
         id_token:
           "e30.eyJleHAiOjE3Nzc3Nzc3NzcsImVtYWlsIjoibm8tcnRAZXhhbXBsZS5jb20iLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdF9ub19ydCJ9fQ.sig",
       }),
-      (key, values) =>
-        values?.field ? `${values.field} cannot be empty` : key,
+      t,
     );
 
     expect(result.ok).toBe(true);
+  });
+
+  it("accepts OAuth JSON when type is non-codex, blank, or missing", () => {
+    for (const typeValue of ["auth0", "  ", undefined]) {
+      const payload: Record<string, unknown> = {
+        email: "any-type@example.com",
+        account_id: "acct_any_type",
+        access_token: "access-token",
+        id_token:
+          "e30.eyJleHAiOjE3Nzc3Nzc3NzcsImVtYWlsIjoiYW55LXR5cGVAZXhhbXBsZS5jb20iLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdF9hbnlfdHlwZSJ9fQ.sig",
+      };
+      if (typeValue !== undefined) payload.type = typeValue;
+
+      const result = validateImportedOauthCredentialLocally(
+        JSON.stringify(payload),
+        t,
+      );
+
+      expect(result.ok).toBe(true);
+    }
+  });
+
+  it("reports multiple local validation errors at once", () => {
+    const result = validateImportedOauthCredentialLocally(
+      JSON.stringify({
+        type: "auth0",
+        access_token: "",
+        id_token: "not-a-jwt",
+        expired: 123,
+      }),
+      t,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors).toEqual([
+        "email is required.",
+        "account_id is required.",
+        "access_token is required.",
+        "expired must be a valid RFC3339 timestamp.",
+        "id_token must be a valid JWT.",
+      ]);
+      expect(result.error).toBe(result.errors.join("\n"));
+      expect(result.error).not.toContain("type must be codex");
+    }
   });
 
   it("converts ChatGPT Web session JSON into Codex import credentials", () => {

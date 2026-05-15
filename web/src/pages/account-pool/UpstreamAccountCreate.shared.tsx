@@ -1136,6 +1136,7 @@ export function validateImportedOauthCredentialLocally(
     return {
       ok: false as const,
       error: t("accountPool.upstreamAccounts.import.paste.emptyError"),
+      errors: [t("accountPool.upstreamAccounts.import.paste.emptyError")],
     };
   }
 
@@ -1146,6 +1147,7 @@ export function validateImportedOauthCredentialLocally(
     return {
       ok: false as const,
       error: t("accountPool.upstreamAccounts.import.paste.invalidJsonError"),
+      errors: [t("accountPool.upstreamAccounts.import.paste.invalidJsonError")],
     };
   }
 
@@ -1153,105 +1155,111 @@ export function validateImportedOauthCredentialLocally(
     return {
       ok: false as const,
       error: t("accountPool.upstreamAccounts.import.paste.singleObjectError"),
+      errors: [
+        t("accountPool.upstreamAccounts.import.paste.singleObjectError"),
+      ],
     };
   }
 
   const record = parsed as Record<string, unknown>;
-  const sourceType = record.type;
-  if (
-    typeof sourceType !== "string" ||
-    sourceType.trim().length === 0 ||
-    sourceType.trim().toLowerCase() !== "codex"
-  ) {
+  const errors: string[] = [];
+  const fail = () => {
+    const uniqueErrors = Array.from(new Set(errors));
     return {
       ok: false as const,
-      error: t("accountPool.upstreamAccounts.import.local.invalidType"),
+      error: uniqueErrors.join("\n"),
+      errors: uniqueErrors,
     };
-  }
+  };
 
   const emailResult = normalizeImportedOauthRequiredString(record.email, "email", t);
-  if (!emailResult.ok) return emailResult;
+  if (!emailResult.ok) errors.push(emailResult.error);
   const accountIdResult = normalizeImportedOauthRequiredString(
     record.account_id,
     "account_id",
     t,
   );
-  if (!accountIdResult.ok) return accountIdResult;
+  if (!accountIdResult.ok) errors.push(accountIdResult.error);
   const accessTokenResult = normalizeImportedOauthRequiredString(
     record.access_token,
     "access_token",
     t,
   );
-  if (!accessTokenResult.ok) return accessTokenResult;
+  if (!accessTokenResult.ok) errors.push(accessTokenResult.error);
   const idTokenResult = normalizeImportedOauthRequiredString(
     record.id_token,
     "id_token",
     t,
   );
-  if (!idTokenResult.ok) return idTokenResult;
+  if (!idTokenResult.ok) errors.push(idTokenResult.error);
 
   if (
     Object.prototype.hasOwnProperty.call(record, "expired") &&
     record.expired != null &&
     typeof record.expired !== "string"
   ) {
-    return {
-      ok: false as const,
-      error: t("accountPool.upstreamAccounts.import.local.invalidExpired"),
-    };
+    errors.push(t("accountPool.upstreamAccounts.import.local.invalidExpired"));
   }
 
-  const idTokenPayload = parseImportedOauthJwtPayload(
-    idTokenResult.value,
-    "id_token",
-    t,
-  );
-  if (!idTokenPayload.ok) return idTokenPayload;
+  const idTokenPayload = idTokenResult.ok
+    ? parseImportedOauthJwtPayload(idTokenResult.value, "id_token", t)
+    : null;
+  if (idTokenPayload && !idTokenPayload.ok) errors.push(idTokenPayload.error);
 
-  const jwtEmail = extractImportedOauthJwtEmail(idTokenPayload.payload);
+  const jwtEmail =
+    idTokenPayload?.ok === true
+      ? extractImportedOauthJwtEmail(idTokenPayload.payload)
+      : null;
   if (
+    emailResult.ok &&
     jwtEmail &&
     jwtEmail.toLowerCase() !== emailResult.value.toLowerCase()
   ) {
-    return {
-      ok: false as const,
-      error: t("accountPool.upstreamAccounts.import.local.emailMismatch"),
-    };
+    errors.push(t("accountPool.upstreamAccounts.import.local.emailMismatch"));
   }
 
-  const jwtAccountId = extractImportedOauthJwtAccountId(idTokenPayload.payload);
-  if (jwtAccountId && jwtAccountId !== accountIdResult.value) {
-    return {
-      ok: false as const,
-      error: t("accountPool.upstreamAccounts.import.local.accountIdMismatch"),
-    };
+  const jwtAccountId =
+    idTokenPayload?.ok === true
+      ? extractImportedOauthJwtAccountId(idTokenPayload.payload)
+      : null;
+  if (accountIdResult.ok && jwtAccountId && jwtAccountId !== accountIdResult.value) {
+    errors.push(
+      t("accountPool.upstreamAccounts.import.local.accountIdMismatch"),
+    );
   }
 
   const rawExpired =
     typeof record.expired === "string" ? record.expired.trim() : "";
   if (rawExpired) {
     if (!isImportedOauthRfc3339Timestamp(rawExpired)) {
-      return {
-        ok: false as const,
-        error: t("accountPool.upstreamAccounts.import.local.invalidExpired"),
-      };
+      errors.push(t("accountPool.upstreamAccounts.import.local.invalidExpired"));
     }
   } else {
-    const accessTokenPayload = parseImportedOauthJwtPayload(
-      accessTokenResult.value,
-      "access_token",
-      t,
-    );
-    const accessTokenExp = accessTokenPayload.ok
+    const idTokenExp =
+      idTokenPayload?.ok === true
+        ? parseImportedOauthJwtExpiration(idTokenPayload.payload)
+        : null;
+    const accessTokenPayload =
+      idTokenPayload?.ok === true && idTokenExp == null && accessTokenResult.ok
+        ? parseImportedOauthJwtPayload(accessTokenResult.value, "access_token", t)
+        : null;
+    if (accessTokenPayload && !accessTokenPayload.ok) {
+      errors.push(accessTokenPayload.error);
+    }
+    const accessTokenExp = accessTokenPayload?.ok === true
       ? parseImportedOauthJwtExpiration(accessTokenPayload.payload)
       : null;
-    const idTokenExp = parseImportedOauthJwtExpiration(idTokenPayload.payload);
-    if (accessTokenExp == null && idTokenExp == null) {
-      return {
-        ok: false as const,
-        error: t("accountPool.upstreamAccounts.import.local.missingExpiry"),
-      };
+    if (
+      idTokenPayload?.ok === true &&
+      accessTokenExp == null &&
+      idTokenExp == null
+    ) {
+      errors.push(t("accountPool.upstreamAccounts.import.local.missingExpiry"));
     }
+  }
+
+  if (errors.length > 0) {
+    return fail();
   }
 
   return {
