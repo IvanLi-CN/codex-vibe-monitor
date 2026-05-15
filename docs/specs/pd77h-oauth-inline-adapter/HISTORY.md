@@ -15,4 +15,5 @@
 
 - 2026-03-16: 创建替代 spec，定义用单进程 OAuth adapter 取代固定 sidecar。
 - 2026-05-15: 明确 OAuth 凭据可无 refresh token；无 RT 账号跳过自动刷新并在账号列表显示 `无 RT`。
+- 2026-05-15: 新增 Web Session 导入入口，把 ChatGPT Web session JSON 转换到现有 Codex OAuth 导入队列。
 - 2026-05-16: 放开 OAuth JSON 导入的 `type=codex` 限制；单条本地导入校验改为一次性报告多个字段错误。

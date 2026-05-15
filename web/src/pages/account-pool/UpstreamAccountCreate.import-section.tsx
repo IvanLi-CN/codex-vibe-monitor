@@ -12,6 +12,7 @@ import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.con
 
 export function UpstreamAccountCreateImportSection() {
   const {
+    activeTab,
     cn,
     formatGroupAccountCountLabel,
     groupOptions,
@@ -49,12 +50,16 @@ export function UpstreamAccountCreateImportSection() {
     updateTag,
     writesEnabled,
   } = useUpstreamAccountCreateViewContext();
+  const isSessionImport = activeTab === "importSession";
+  const importKeyPrefix = isSessionImport
+    ? "accountPool.upstreamAccounts.importSession"
+    : "accountPool.upstreamAccounts.import";
 
   return (
 <>
   <label className="field md:col-span-2">
     <span className="field-label">
-      {t("accountPool.upstreamAccounts.import.fileInputLabel")}
+      {t(`${importKeyPrefix}.fileInputLabel`)}
     </span>
     <Input
       key={importInputKey}
@@ -68,7 +73,7 @@ export function UpstreamAccountCreateImportSection() {
   </label>
   <label className="field md:col-span-2">
     <span className="field-label">
-      {t("accountPool.upstreamAccounts.import.paste.label")}
+      {t(`${importKeyPrefix}.paste.label`)}
     </span>
     <textarea
       className={cn(
@@ -82,7 +87,7 @@ export function UpstreamAccountCreateImportSection() {
       onChange={handleImportedOauthPasteDraftChange}
       onPaste={handleImportedOauthPaste}
       placeholder={t(
-        "accountPool.upstreamAccounts.import.paste.placeholder",
+        `${importKeyPrefix}.paste.placeholder`,
       )}
       autoCapitalize="none"
       spellCheck={false}
@@ -105,12 +110,12 @@ export function UpstreamAccountCreateImportSection() {
       <p className="mt-2 inline-flex items-center gap-2 text-sm text-base-content/65">
         <Spinner className="size-4" />
         {t(
-          "accountPool.upstreamAccounts.import.paste.validating",
+          `${importKeyPrefix}.paste.validating`,
         )}
       </p>
     ) : (
       <p className="mt-2 text-sm text-base-content/65">
-        {t("accountPool.upstreamAccounts.import.paste.hint")}
+        {t(`${importKeyPrefix}.paste.hint`)}
       </p>
     )}
     <div className="mt-3 flex flex-wrap gap-2">
@@ -126,7 +131,7 @@ export function UpstreamAccountCreateImportSection() {
           importPasteDraft.trim().length === 0
         }
       >
-        {t("accountPool.upstreamAccounts.import.paste.action")}
+        {t(`${importKeyPrefix}.paste.action`)}
       </Button>
       <Button
         type="button"
@@ -151,13 +156,13 @@ export function UpstreamAccountCreateImportSection() {
       <div>
         <p className="text-sm font-semibold text-base-content">
           {t(
-            "accountPool.upstreamAccounts.import.selectedFilesTitle",
+            `${importKeyPrefix}.selectedFilesTitle`,
           )}
         </p>
         <p className="mt-1 text-sm text-base-content/65">
           {importSelectionLabel ??
             t(
-              "accountPool.upstreamAccounts.import.selectedFilesEmpty",
+              `${importKeyPrefix}.selectedFilesEmpty`,
             )}
         </p>
       </div>
@@ -299,7 +304,7 @@ export function UpstreamAccountCreateImportSection() {
         className="mr-2 h-4 w-4"
         aria-hidden
       />
-      {t("accountPool.upstreamAccounts.import.validateAction")}
+      {t(`${importKeyPrefix}.validateAction`)}
     </Button>
   </div>
 </>

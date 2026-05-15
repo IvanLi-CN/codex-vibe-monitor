@@ -13,7 +13,13 @@ import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.con
 import { UpstreamAccountCreateDialogs } from "./UpstreamAccountCreate.dialogs";
 import { UpstreamAccountCreatePrimaryCard } from "./UpstreamAccountCreate.primary-card";
 
-const CREATE_TABS = ["oauth", "batchOauth", "import", "apiKey"] as const;
+const CREATE_TABS = [
+  "oauth",
+  "batchOauth",
+  "import",
+  "importSession",
+  "apiKey",
+] as const;
 
 export function UpstreamAccountCreatePageSections() {
   const {
@@ -266,6 +272,10 @@ export function UpstreamAccountCreatePageSections() {
                         ? t(
                             "accountPool.upstreamAccounts.createPage.tabs.import",
                           )
+                        : tab === "importSession"
+                          ? t(
+                              "accountPool.upstreamAccounts.createPage.tabs.importSession",
+                            )
                         : t(
                             "accountPool.upstreamAccounts.createPage.tabs.apiKey",
                           )}

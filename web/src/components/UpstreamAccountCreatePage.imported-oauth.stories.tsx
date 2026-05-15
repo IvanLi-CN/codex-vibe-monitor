@@ -39,6 +39,24 @@ function renderImportedOauthStory(defaultGroupName = 'production') {
   )
 }
 
+function renderImportedSessionStory(defaultGroupName = 'production') {
+  return (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts/new',
+        search: '?mode=importSession',
+        state: {
+          draft: {
+            import: {
+              defaultGroupName,
+            },
+          },
+        },
+      }}
+    />
+  )
+}
+
 function buildPastedCredential(
   overrides?: Partial<{
     type: string
@@ -68,6 +86,22 @@ function buildPastedCredential(
     ...(overrides?._storybookDetail
       ? { _storybookDetail: overrides._storybookDetail }
       : {}),
+  })
+}
+
+function buildPastedSession() {
+  return JSON.stringify({
+    user: {
+      id: 'user_session_story',
+      email: 'session-story@duckmail.sbs',
+    },
+    account: {
+      id: 'acct_session_story',
+      planType: 'plus',
+    },
+    accessToken: 'access-token',
+    sessionToken: 'session-token',
+    expires: '2026-08-06T14:29:36.155Z',
   })
 }
 
@@ -182,6 +216,19 @@ export const PasteDuplicateBlocked: Story = {
     await userEvent.paste(credential)
     await expect(canvas.getByText(/already queued/i)).toBeInTheDocument()
     await expect(canvas.getAllByText(/pasted credential #1\.json/i)).toHaveLength(1)
+  },
+}
+
+export const WebSessionPasteAddedToQueue: Story = {
+  render: () => renderImportedSessionStory(),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const editor = canvas.getByLabelText(/paste web session json/i)
+    await expect(canvas.getByText(/chatgpt web session/i)).toBeInTheDocument()
+    await userEvent.click(editor)
+    await userEvent.paste(buildPastedSession())
+    await expect(canvas.getByText(/pasted session #1/i)).toBeInTheDocument()
+    await expect(canvas.getByRole('button', { name: /validate/i })).toBeEnabled()
   },
 }
 

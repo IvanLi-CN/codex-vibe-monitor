@@ -57,6 +57,7 @@
 - OAuth 账号同步：仍先刷新 access token、再抓 usage snapshot；该流程不依赖任何本地 sidecar。
 - OAuth 账号允许没有 refresh token。导入 JSON、外部 upsert/relogin 与 OAuth callback 中的 `refresh_token` 缺失、`null`、空白字符串都按“无 RT”持久化；自动刷新分支在无 RT 时跳过 token endpoint，继续用现有 access token 尝试 usage 或数据面请求，过期后的上游失败沿用现有错误分类。
 - OAuth JSON 导入不把 `type` 当作来源白名单；`type` 缺失、空白或非 `codex` 字符串不阻断导入。单条粘贴/单文件本地校验一次性展示可并行发现的多个字段错误，避免逐项修复才暴露下一条错误。
+- 新增账号页提供 `导入 Session` 入口。前端把 ChatGPT Web session JSON 中的 `accessToken`、`sessionToken`、`user.email`、`account.id`、`account.planType`、`expires` 等字段转换成现有 Codex OAuth 导入 JSON；缺少 `id_token` 时仅合成本项目 claims 解析需要的 unsigned JWT，缺少 `refresh_token` 时按无 RT 账号导入。
 - OAuth pool 路由：主进程直接根据请求路径调用内联 adapter，adapter 使用当前 access token 调用 `https://chatgpt.com/backend-api/codex` 并产出 OpenAI-compatible 响应。
 - API Key pool 路由：继续使用现有 `OPENAI_UPSTREAM_BASE_URL` / 账号级 `upstreamBaseUrl` 直连 reqwest 请求路径。
 - pool 消费链：不再要求上游一定是 `reqwest::Response`；统一从“状态码 + headers + body stream”抽象读取首包、透传 headers、记录 timings 与错误。
@@ -111,6 +112,22 @@ None
 - Given 单条 OAuth 导入 JSON 同时缺少多个必填字段
   When 用户在导入页触发本地校验
   Then 页面一次性展示多个字段错误，而不是每次只展示第一条错误。
+
+- Given 用户粘贴 ChatGPT Web session JSON
+  When 其中包含 `accessToken`、账号邮箱、账号 id 和过期时间
+  Then `导入 Session` 会把它加入现有 OAuth 导入队列，并通过同一个服务端预览/导入流程落库。
+
+## Visual Evidence
+
+![无 RT badge - flat table](./assets/no-rt-flat.png)
+
+![无 RT badge - grouped list](./assets/no-rt-grouped.png)
+
+![无 RT badge - grid cards](./assets/no-rt-grid.png)
+
+![导入 Session Storybook evidence](./assets/import-session-story.png)
+
+![OAuth import local multi-error validation](./assets/import-multiple-errors.png)
 
 ## 方案概述（Approach, high-level）
 

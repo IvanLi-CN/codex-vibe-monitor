@@ -350,6 +350,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.createPage.tabs.oauth": "OAuth login",
     "accountPool.upstreamAccounts.createPage.tabs.batchOauth": "Batch OAuth",
     "accountPool.upstreamAccounts.createPage.tabs.import": "Import JSON",
+    "accountPool.upstreamAccounts.createPage.tabs.importSession":
+      "Import Session",
     "accountPool.upstreamAccounts.createPage.tabs.apiKey": "API key",
     "accountPool.upstreamAccounts.import.createTitle": "Import OAuth JSON",
     "accountPool.upstreamAccounts.import.createDescription":
@@ -405,6 +407,34 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.import.defaultMetadataHint":
       "Default group notes and tags apply only when the import creates a brand-new account.",
     "accountPool.upstreamAccounts.import.validateAction": "Validate and review",
+    "accountPool.upstreamAccounts.importSession.createTitle":
+      "Import ChatGPT Web Session",
+    "accountPool.upstreamAccounts.importSession.createDescription":
+      "Select exported ChatGPT Web session files or paste session JSON. The browser session is converted locally into the supported Codex OAuth import format before server-side preview.",
+    "accountPool.upstreamAccounts.importSession.fileInputLabel":
+      "Web session JSON files",
+    "accountPool.upstreamAccounts.importSession.paste.label":
+      "Paste Web Session JSON",
+    "accountPool.upstreamAccounts.importSession.paste.placeholder":
+      '{\n  "user": { "email": "owner@example.com" },\n  "account": { "id": "acct_...", "planType": "plus" },\n  "accessToken": "...",\n  "sessionToken": "...",\n  "expires": "2026-08-06T14:29:36.155Z"\n}',
+    "accountPool.upstreamAccounts.importSession.paste.hint":
+      "Paste a ChatGPT Web session object, array, or exported JSON containing sessions. Converted credentials without refresh tokens are marked No RT after import.",
+    "accountPool.upstreamAccounts.importSession.paste.validating":
+      "Converting pasted session locally…",
+    "accountPool.upstreamAccounts.importSession.paste.action":
+      "Convert and add to queue",
+    "accountPool.upstreamAccounts.importSession.paste.emptyError":
+      "Paste Web Session JSON before validating.",
+    "accountPool.upstreamAccounts.importSession.local.noSession":
+      "No ChatGPT Web session with accessToken and account identity was found.",
+    "accountPool.upstreamAccounts.importSession.local.missingAccessToken":
+      "accessToken is required.",
+    "accountPool.upstreamAccounts.importSession.selectedFilesTitle":
+      "Queued sessions",
+    "accountPool.upstreamAccounts.importSession.selectedFilesEmpty":
+      "No session has been added yet.",
+    "accountPool.upstreamAccounts.importSession.validateAction":
+      "Validate and review",
     "accountPool.upstreamAccounts.import.validation.title": "Import validation",
     "accountPool.upstreamAccounts.import.validation.description":
       "Checked {{checked}} of {{total}} unique credentials from {{files}} queued items.",
@@ -2370,6 +2400,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.createPage.tabs.oauth": "OAuth 登录",
     "accountPool.upstreamAccounts.createPage.tabs.batchOauth": "批量 OAuth",
     "accountPool.upstreamAccounts.createPage.tabs.import": "导入 JSON",
+    "accountPool.upstreamAccounts.createPage.tabs.importSession":
+      "导入 Session",
     "accountPool.upstreamAccounts.createPage.tabs.apiKey": "API Key",
     "accountPool.upstreamAccounts.import.createTitle": "导入 OAuth JSON",
     "accountPool.upstreamAccounts.import.createDescription":
@@ -2421,6 +2453,33 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.import.defaultMetadataHint":
       "默认分组备注和标签只会应用到新建账号，命中已有账号时不会覆盖现有元数据。",
     "accountPool.upstreamAccounts.import.validateAction": "验证并预览",
+    "accountPool.upstreamAccounts.importSession.createTitle":
+      "导入 ChatGPT Web Session",
+    "accountPool.upstreamAccounts.importSession.createDescription":
+      "选择导出的 ChatGPT Web session 文件，或粘贴 session JSON；前端会先转换成当前支持的 Codex OAuth 导入格式，再进入服务端预览。",
+    "accountPool.upstreamAccounts.importSession.fileInputLabel":
+      "Web Session JSON 文件",
+    "accountPool.upstreamAccounts.importSession.paste.label":
+      "粘贴 Web Session JSON",
+    "accountPool.upstreamAccounts.importSession.paste.placeholder":
+      '{\n  "user": { "email": "owner@example.com" },\n  "account": { "id": "acct_...", "planType": "plus" },\n  "accessToken": "...",\n  "sessionToken": "...",\n  "expires": "2026-08-06T14:29:36.155Z"\n}',
+    "accountPool.upstreamAccounts.importSession.paste.hint":
+      "可粘贴 ChatGPT Web session object、数组或包含 session 的导出 JSON。缺少 refresh token 的导入账号会显示无 RT。",
+    "accountPool.upstreamAccounts.importSession.paste.validating":
+      "正在本地转换粘贴的 Session…",
+    "accountPool.upstreamAccounts.importSession.paste.action":
+      "转换并加入列表",
+    "accountPool.upstreamAccounts.importSession.paste.emptyError":
+      "请先粘贴 Web Session JSON。",
+    "accountPool.upstreamAccounts.importSession.local.noSession":
+      "没有找到包含 accessToken 和账号身份的 ChatGPT Web Session。",
+    "accountPool.upstreamAccounts.importSession.local.missingAccessToken":
+      "accessToken 不能为空。",
+    "accountPool.upstreamAccounts.importSession.selectedFilesTitle":
+      "待验证 Session",
+    "accountPool.upstreamAccounts.importSession.selectedFilesEmpty":
+      "还没有加入任何 Session。",
+    "accountPool.upstreamAccounts.importSession.validateAction": "验证并预览",
     "accountPool.upstreamAccounts.import.validation.title": "导入验证",
     "accountPool.upstreamAccounts.import.validation.description":
       "已检查 {{files}} 个输入项中的 {{checked}} / {{total}} 条唯一凭据。",
