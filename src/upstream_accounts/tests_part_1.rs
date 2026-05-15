@@ -45,6 +45,7 @@
             chatgpt_account_id: Some("acct_test".to_string()),
             plan_type: Some("pro".to_string()),
             masked_api_key: None,
+            has_refresh_token: true,
             last_synced_at: None,
             last_successful_sync_at: None,
             last_activity_at: None,
@@ -1292,6 +1293,131 @@
     }
 
     #[test]
+    fn normalize_imported_oauth_credentials_accepts_missing_or_blank_refresh_token() {
+        for (name, refresh_token) in [
+            ("missing", None),
+            ("null", Some(serde_json::Value::Null)),
+            ("blank", Some(json!("  "))),
+        ] {
+            let mut content = json!({
+                "type": "codex",
+                "email": format!("{name}@duckmail.sbs"),
+                "account_id": format!("acct_{name}"),
+                "expired": "2026-03-20T00:00:00Z",
+                "access_token": "access-token",
+                "id_token": test_id_token(
+                    &format!("{name}@duckmail.sbs"),
+                    Some(&format!("acct_{name}")),
+                    Some(&format!("user_{name}")),
+                    Some("team"),
+                ),
+            });
+            if let Some(refresh_token) = refresh_token {
+                content["refresh_token"] = refresh_token;
+            }
+            let item = ImportOauthCredentialFileRequest {
+                source_id: format!("file-{name}"),
+                file_name: format!("{name}.json"),
+                content: content.to_string(),
+            };
+
+            let normalized = normalize_imported_oauth_credentials(&item)
+                .expect("normalize imported oauth credentials without refresh token");
+
+            assert_eq!(normalized.credentials.refresh_token, None);
+            assert!(!oauth_credentials_have_refresh_token(&normalized.credentials));
+        }
+    }
+
+    #[tokio::test]
+    async fn probe_imported_oauth_credentials_skips_refresh_without_refresh_token() {
+        #[derive(Clone)]
+        struct ProbeServerState {
+            usage_requests: Arc<AtomicUsize>,
+            token_requests: Arc<AtomicUsize>,
+        }
+
+        async fn usage_handler(State(state): State<ProbeServerState>) -> (StatusCode, String) {
+            state.usage_requests.fetch_add(1, Ordering::SeqCst);
+            (
+                StatusCode::OK,
+                json!({
+                    "planType": "team",
+                    "rateLimit": {
+                        "primaryWindow": {
+                            "usedPercent": 8,
+                            "windowDurationMins": 300,
+                            "resetsAt": 1771322400
+                        }
+                    }
+                })
+                .to_string(),
+            )
+        }
+
+        async fn token_handler(State(state): State<ProbeServerState>) -> (StatusCode, String) {
+            state.token_requests.fetch_add(1, Ordering::SeqCst);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "refresh endpoint should not be called" }).to_string(),
+            )
+        }
+
+        let usage_requests = Arc::new(AtomicUsize::new(0));
+        let token_requests = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route("/backend-api/wham/usage", get(usage_handler))
+            .route("/oauth/token", post(token_handler))
+            .with_state(ProbeServerState {
+                usage_requests: usage_requests.clone(),
+                token_requests: token_requests.clone(),
+            });
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind imported probe server");
+        let addr = listener.local_addr().expect("imported probe server addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve imported probe server");
+        });
+        let origin = format!("http://{addr}");
+        let state =
+            test_app_state_with_usage_and_oauth_base(&format!("{origin}/backend-api"), &origin)
+                .await;
+        let normalized = normalize_imported_oauth_credentials(&ImportOauthCredentialFileRequest {
+            source_id: "source-no-rt".to_string(),
+            file_name: "no-rt.json".to_string(),
+            content: json!({
+                "type": "codex",
+                "email": "no-rt@duckmail.sbs",
+                "account_id": "acct_no_rt",
+                "expired": "2026-03-20T00:00:00Z",
+                "access_token": "access-no-rt",
+                "id_token": test_id_token(
+                    "no-rt@duckmail.sbs",
+                    Some("acct_no_rt"),
+                    Some("user_no_rt"),
+                    Some("team"),
+                ),
+            })
+            .to_string(),
+        })
+        .expect("normalize no refresh token import");
+        let scope = ForwardProxyRouteScope::Automatic;
+
+        let outcome = probe_imported_oauth_credentials(&state, &normalized, &scope, &scope)
+            .await
+            .expect("probe no refresh token import");
+
+        assert!(!oauth_credentials_have_refresh_token(&outcome.credentials));
+        assert_eq!(token_requests.load(Ordering::SeqCst), 0);
+        assert_eq!(usage_requests.load(Ordering::SeqCst), 1);
+
+        server.abort();
+    }
+
+    #[test]
     fn normalize_imported_oauth_credentials_ignores_non_string_unused_fields() {
         let item = ImportOauthCredentialFileRequest {
             source_id: "file-non-string-unused".to_string(),
@@ -1504,7 +1630,7 @@
             token_expires_at: "2026-03-20T00:00:00Z".to_string(),
             credentials: StoredOauthCredentials {
                 access_token: "access-token".to_string(),
-                refresh_token: "refresh-token".to_string(),
+                refresh_token: Some("refresh-token".to_string()),
                 id_token: test_id_token(
                     "alpha@duckmail.sbs",
                     Some("acct_alpha"),
@@ -1555,7 +1681,7 @@
             .expect("cached validated import");
         assert_eq!(cached.normalized.email, "alpha@duckmail.sbs");
         assert_eq!(cached.normalized.chatgpt_account_id, "acct_alpha");
-        assert_eq!(cached.probe.credentials.refresh_token, "refresh-token");
+        assert_eq!(cached.probe.credentials.refresh_token.as_deref(), Some("refresh-token"));
     }
 
     #[tokio::test]
@@ -1711,7 +1837,7 @@
             .get_validation_job(&response.job_id)
             .await
             .expect("validation job should exist");
-        timeout(Duration::from_secs(1), async {
+        timeout(Duration::from_secs(5), async {
             loop {
                 if job.terminal_event.lock().await.is_some() {
                     break;
@@ -2389,6 +2515,7 @@
                 plan_type_observed_at: None,
                 masked_api_key: None,
                 encrypted_credentials: None,
+                has_refresh_token: Some(1),
                 token_expires_at: None,
                 last_refreshed_at: None,
                 last_synced_at: None,

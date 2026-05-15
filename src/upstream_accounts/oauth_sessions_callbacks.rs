@@ -1888,20 +1888,6 @@ pub(crate) async fn complete_oauth_login_session_with_query(
             "The token response did not include an id_token.".to_string(),
         ));
     };
-    let Some(refresh_token) = token_response.refresh_token.clone() else {
-        fail_login_session(
-            &state.pool,
-            &session.login_id,
-            "refresh_token missing in token exchange response",
-        )
-        .await
-        .map_err(internal_error_tuple)?;
-        return Err((
-            StatusCode::BAD_GATEWAY,
-            "The token response did not include a refresh token.".to_string(),
-        ));
-    };
-
     let claims = parse_chatgpt_jwt_claims(&id_token)
         .map_err(|err| (StatusCode::BAD_GATEWAY, err.to_string()))?;
     let crypto_key = state.upstream_accounts.crypto_key.as_ref().ok_or_else(|| {
@@ -1920,7 +1906,7 @@ pub(crate) async fn complete_oauth_login_session_with_query(
         crypto_key,
         &StoredCredentials::Oauth(StoredOauthCredentials {
             access_token: token_response.access_token.clone(),
-            refresh_token,
+            refresh_token: normalize_oauth_refresh_token(token_response.refresh_token.clone()),
             id_token,
             token_type: token_response.token_type.clone(),
         }),
@@ -1948,6 +1934,7 @@ pub(crate) async fn complete_oauth_login_session_with_query(
         verified_email: normalized_claim_email,
         claims,
         encrypted_credentials: credentials,
+        has_refresh_token: normalize_oauth_refresh_token(token_response.refresh_token).is_some(),
         token_expires_at,
     };
     let account_id = if let Some(existing_account_id) = input.session.account_id {
@@ -2072,6 +2059,7 @@ pub(crate) async fn persist_oauth_callback_inner(
             ),
             claims: &input.claims,
             encrypted_credentials: input.encrypted_credentials,
+            has_refresh_token: input.has_refresh_token,
             token_expires_at: &input.token_expires_at,
             external_identity: None,
         },

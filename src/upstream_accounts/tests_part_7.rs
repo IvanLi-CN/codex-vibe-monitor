@@ -110,7 +110,7 @@
         ExternalOauthCredentialsRequest {
             email: email.to_string(),
             access_token: access_token.to_string(),
-            refresh_token: refresh_token.to_string(),
+            refresh_token: Some(refresh_token.to_string()),
             id_token: test_id_token(email, Some(account_id), Some(user_id), Some("team")),
             token_type: Some("Bearer".to_string()),
             expired: Some(format_utc_iso(Utc::now() + ChronoDuration::days(30))),
@@ -487,7 +487,7 @@
             panic!("client A should keep oauth credentials");
         };
         assert_eq!(client_a_credentials.access_token, "access-a-2");
-        assert_eq!(client_a_credentials.refresh_token, "refresh-a-2");
+        assert_eq!(client_a_credentials.refresh_token.as_deref(), Some("refresh-a-2"));
 
         let _ = external_upsert_oauth_upstream_account_route(
             State(state.clone()),
@@ -1149,7 +1149,7 @@
             panic!("repaired account should keep oauth credentials");
         };
         assert_eq!(credentials.access_token, "repair-access-2");
-        assert_eq!(credentials.refresh_token, "repair-refresh-2");
+        assert_eq!(credentials.refresh_token.as_deref(), Some("repair-refresh-2"));
 
         assert_eq!(usage_requests.load(Ordering::SeqCst), 2);
         assert!(token_requests.load(Ordering::SeqCst) <= 1);
@@ -1269,7 +1269,7 @@
             panic!("repaired disabled account should keep oauth credentials");
         };
         assert_eq!(credentials.access_token, "disabled-repair-access-2");
-        assert_eq!(credentials.refresh_token, "disabled-repair-refresh-2");
+        assert_eq!(credentials.refresh_token.as_deref(), Some("disabled-repair-refresh-2"));
 
         assert_eq!(usage_requests.load(Ordering::SeqCst), 1);
         assert!(token_requests.load(Ordering::SeqCst) <= 1);

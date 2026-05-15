@@ -1162,6 +1162,7 @@ pub(crate) struct UpstreamAccountSummary {
     chatgpt_account_id: Option<String>,
     plan_type: Option<String>,
     masked_api_key: Option<String>,
+    has_refresh_token: bool,
     last_synced_at: Option<String>,
     last_successful_sync_at: Option<String>,
     last_activity_at: Option<String>,
@@ -2008,7 +2009,8 @@ pub(crate) struct ExternalAccountIdentity {
 pub(crate) struct ExternalOauthCredentialsRequest {
     pub(crate) email: String,
     pub(crate) access_token: String,
-    pub(crate) refresh_token: String,
+    #[serde(default)]
+    pub(crate) refresh_token: Option<String>,
     pub(crate) id_token: String,
     #[serde(default)]
     pub(crate) token_type: Option<String>,
@@ -2126,9 +2128,41 @@ struct StoredApiKeyCredentials {
 #[serde(rename_all = "camelCase")]
 struct StoredOauthCredentials {
     access_token: String,
-    refresh_token: String,
+    #[serde(default)]
+    refresh_token: Option<String>,
     id_token: String,
     token_type: Option<String>,
+}
+
+fn normalize_oauth_refresh_token(value: Option<String>) -> Option<String> {
+    normalize_optional_text(value)
+}
+
+fn oauth_refresh_token(credentials: &StoredOauthCredentials) -> Option<&str> {
+    credentials
+        .refresh_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn oauth_credentials_have_refresh_token(credentials: &StoredOauthCredentials) -> bool {
+    oauth_refresh_token(credentials).is_some()
+}
+
+fn apply_oauth_token_response(
+    credentials: &mut StoredOauthCredentials,
+    response: OAuthTokenResponse,
+) -> String {
+    credentials.access_token = response.access_token;
+    if let Some(refresh_token) = response.refresh_token {
+        credentials.refresh_token = normalize_oauth_refresh_token(Some(refresh_token));
+    }
+    if let Some(id_token) = response.id_token {
+        credentials.id_token = id_token;
+    }
+    credentials.token_type = response.token_type;
+    format_utc_iso(Utc::now() + ChronoDuration::seconds(response.expires_in.max(0)))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2191,7 +2225,8 @@ struct ImportedOauthCredentialsFile {
     #[serde(default)]
     expired: Option<String>,
     access_token: String,
-    refresh_token: String,
+    #[serde(default)]
+    refresh_token: Option<serde_json::Value>,
     id_token: String,
     #[serde(default)]
     #[serde(rename = "last_refresh")]
@@ -2236,6 +2271,7 @@ pub(crate) struct PersistOauthCallbackInput {
     verified_email: Option<String>,
     claims: ChatgptJwtClaims,
     encrypted_credentials: String,
+    has_refresh_token: bool,
     token_expires_at: String,
 }
 

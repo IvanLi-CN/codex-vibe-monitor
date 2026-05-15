@@ -19,6 +19,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             plan_type_observed_at TEXT,
             masked_api_key TEXT,
             encrypted_credentials TEXT,
+            has_refresh_token INTEGER NOT NULL DEFAULT 1,
             token_expires_at TEXT,
             last_refreshed_at TEXT,
             last_synced_at TEXT,
@@ -61,6 +62,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "verified_email")
         .await
         .context("failed to ensure pool_upstream_accounts.verified_email")?;
+    ensure_integer_column_with_default(pool, "pool_upstream_accounts", "has_refresh_token", "1")
+        .await
+        .context("failed to ensure pool_upstream_accounts.has_refresh_token")?;
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "last_selected_at")
         .await
         .context("failed to ensure pool_upstream_accounts.last_selected_at")?;

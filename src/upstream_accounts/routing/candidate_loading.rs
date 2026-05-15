@@ -281,26 +281,16 @@ async fn prepare_pool_account_with_scopes(
             } else {
                 row.status.as_str()
             };
-            if refresh_due {
+            if refresh_due && let Some(refresh_token) = oauth_refresh_token(&value) {
                 match refresh_oauth_tokens_for_required_scope(
                     state,
                     &refresh_proxy_scope,
-                    &value.refresh_token,
+                    refresh_token,
                 )
                 .await
                 {
                     Ok(response) => {
-                        value.access_token = response.access_token;
-                        if let Some(refresh_token) = response.refresh_token {
-                            value.refresh_token = refresh_token;
-                        }
-                        if let Some(id_token) = response.id_token {
-                            value.id_token = id_token;
-                        }
-                        value.token_type = response.token_type;
-                        let token_expires_at = format_utc_iso(
-                            Utc::now() + ChronoDuration::seconds(response.expires_in.max(0)),
-                        );
+                        let token_expires_at = apply_oauth_token_response(&mut value, response);
                         persist_oauth_credentials(
                             &state.pool,
                             row.id,

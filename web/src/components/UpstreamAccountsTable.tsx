@@ -60,6 +60,7 @@ export interface UpstreamAccountsTableProps {
     apiKey: string
     mother: string
     duplicate: string
+    noRefreshToken?: string
     hiddenTagsA11y: (count: number, names: string) => string
     workStatus: (status: string) => string
     workStatusCount: (count: number) => string
@@ -157,6 +158,15 @@ function formatCost(value: number) {
 
 export function kindLabel(item: UpstreamAccountSummary, labels: UpstreamAccountsTableProps['labels']) {
   return item.kind === 'oauth_codex' ? labels.oauth : labels.apiKey
+}
+
+export function renderNoRefreshTokenBadge(
+  item: UpstreamAccountSummary,
+  labels: UpstreamAccountsTableProps['labels'],
+) {
+  if (item.kind !== 'oauth_codex' || item.hasRefreshToken !== false) return null
+  const label = labels.noRefreshToken ?? '无 RT'
+  return compactBadge(label, 'warning', { title: label })
 }
 
 function shouldShowPlanBadge(planType?: string | null) {
@@ -1112,6 +1122,7 @@ export function UpstreamAccountsTable({
                             {badge.label}
                           </Badge>
                         ))}
+                        {renderNoRefreshTokenBadge(item, labels)}
                         {compactBadge(kindLabel(item, labels), 'secondary')}
                         {item.compactSupport?.status === 'unsupported' && labels.compactSupport?.(item)
                           ? compactBadge(

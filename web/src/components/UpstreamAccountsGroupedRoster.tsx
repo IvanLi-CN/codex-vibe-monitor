@@ -30,6 +30,7 @@ import {
   kindLabel,
   renderTagBadges,
   renderTagOverflowBadge,
+  renderNoRefreshTokenBadge,
   resolveRosterActionableStatusBadges,
   resolveRosterSummaryStatusBadges,
   resolveCurrentForwardProxyBadgeLabel,
@@ -297,6 +298,7 @@ function GroupMemberRow({
                     {badge.label}
                   </Badge>
                 ))}
+                {renderNoRefreshTokenBadge(item, labels)}
                 {compactBadge(kindLabel(item, labels), 'secondary')}
                 {showPlanBadge && item.planType && planBadge
                   ? compactBadge(item.planType, planBadge.variant, {
@@ -477,6 +479,7 @@ function GroupMemberGridCard({
               {badge.label}
             </Badge>
           ))}
+          {renderNoRefreshTokenBadge(item, labels)}
           {compactBadge(kindLabel(item, labels), 'secondary')}
           {compactSupportLabel
             ? compactBadge(compactSupportLabel, 'warning', {

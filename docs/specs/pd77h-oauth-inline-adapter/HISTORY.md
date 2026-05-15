@@ -14,3 +14,4 @@
 ## 变更记录（Change log）
 
 - 2026-03-16: 创建替代 spec，定义用单进程 OAuth adapter 取代固定 sidecar。
+- 2026-05-15: 明确 OAuth 凭据可无 refresh token；无 RT 账号跳过自动刷新并在账号列表显示 `无 RT`。

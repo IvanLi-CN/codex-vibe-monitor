@@ -1027,6 +1027,7 @@ export default function UpstreamAccountsPage() {
       apiKey: t("accountPool.upstreamAccounts.kind.apiKey"),
       mother: t("accountPool.upstreamAccounts.mother.badge"),
       duplicate: t("accountPool.upstreamAccounts.duplicate.badge"),
+      noRefreshToken: t("accountPool.upstreamAccounts.noRefreshToken.badge"),
       hiddenTagsA11y: (count, names) =>
         t("accountPool.upstreamAccounts.table.hiddenTagsA11y", {
           count,

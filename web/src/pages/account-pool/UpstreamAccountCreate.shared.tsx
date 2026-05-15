@@ -768,12 +768,6 @@ export function validateImportedOauthCredentialLocally(
     t,
   );
   if (!accessTokenResult.ok) return accessTokenResult;
-  const refreshTokenResult = normalizeImportedOauthRequiredString(
-    record.refresh_token,
-    "refresh_token",
-    t,
-  );
-  if (!refreshTokenResult.ok) return refreshTokenResult;
   const idTokenResult = normalizeImportedOauthRequiredString(
     record.id_token,
     "id_token",
