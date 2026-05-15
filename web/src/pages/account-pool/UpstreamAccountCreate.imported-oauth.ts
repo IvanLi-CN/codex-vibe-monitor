@@ -27,9 +27,11 @@ import {
   buildImportedOauthStateFromRows,
   buildImportedOauthStateFromSnapshot,
   chunkImportedOauthItems,
+  convertImportedWebSessionDocumentLocally,
   createImportedOauthPastedFileName,
   createImportedOauthPastedSourceId,
   createImportedOauthSourceId,
+  createImportedSessionPastedFileName,
   markImportedOauthRowsAsError,
   mergeImportedOauthValidationRow,
   mergeImportedOauthValidationRows,
@@ -69,6 +71,7 @@ export function useUpstreamAccountCreateImportedOauth(
     importValidationJobIdRef,
     importValidationState,
     importOauthAccounts,
+    activeTab,
     setActionError,
     setImportFiles,
     setImportInputKey,
@@ -84,6 +87,7 @@ export function useUpstreamAccountCreateImportedOauth(
     t,
     writesEnabled,
   } = ctx;
+  const isImportingWebSession = activeTab === "importSession";
 
   const closeImportValidationEventSource = useCallback(() => {
     importValidationEventCleanupRef.current?.();
@@ -495,6 +499,45 @@ export function useUpstreamAccountCreateImportedOauth(
     return matchKeys;
   }, [importFilesRef, t]);
 
+  const buildWebSessionCandidates = useCallback(
+    ({
+      content,
+      fileName,
+      createSourceId,
+    }: {
+      content: string;
+      fileName: string;
+      createSourceId: (index: number) => string;
+    }) => {
+      const parsed = convertImportedWebSessionDocumentLocally(content, t);
+      if (!parsed.ok) {
+        return {
+          ok: false as const,
+          error: parsed.error,
+        };
+      }
+      return {
+        ok: true as const,
+        candidates: parsed.items.map((item, index) => ({
+          fileName:
+            parsed.items.length === 1
+              ? fileName
+              : `${fileName.replace(/\.json$/i, "")} session ${index + 1}.json`,
+          matchKey: item.matchKey,
+          payload: {
+            sourceId: createSourceId(index),
+            fileName:
+              parsed.items.length === 1
+                ? fileName
+                : `${fileName.replace(/\.json$/i, "")} session ${index + 1}.json`,
+            content: item.content,
+          },
+        })),
+      };
+    },
+    [t],
+  );
+
   const validateAndQueueImportedOauthPaste = useCallback(
     async (
       draftContent: string,
@@ -502,9 +545,32 @@ export function useUpstreamAccountCreateImportedOauth(
         serial?: number | null;
       },
     ) => {
-      const parsedDraft = parseImportedOauthPasteDraft(draftContent, t);
-      if (!parsedDraft.ok) {
+      const normalizedDraft = draftContent.trim();
+      const parsedDraft = isImportingWebSession
+        ? null
+        : parseImportedOauthPasteDraft(draftContent, t);
+      const parsedSessionDraft = isImportingWebSession
+        ? buildWebSessionCandidates({
+            content: draftContent,
+            fileName: createImportedSessionPastedFileName(
+              options?.serial && options.serial > 0
+                ? options.serial
+                : importPasteSequenceRef.current + 1,
+            ),
+            createSourceId: (index) =>
+              `${createImportedOauthPastedSourceId(
+                options?.serial && options.serial > 0
+                  ? options.serial
+                  : importPasteSequenceRef.current + 1,
+              )}:session:${index}`,
+          })
+        : null;
+      if (parsedDraft && !parsedDraft.ok) {
         setImportPasteError(parsedDraft.error);
+        return;
+      }
+      if (parsedSessionDraft && !parsedSessionDraft.ok) {
+        setImportPasteError(parsedSessionDraft.error);
         return;
       }
       const serial =
@@ -522,39 +588,73 @@ export function useUpstreamAccountCreateImportedOauth(
       setActionError(null);
       setImportSelectionFeedback(null);
 
-      const item: ImportOauthCredentialFilePayload = {
-        sourceId: createImportedOauthPastedSourceId(serial),
-        fileName: createImportedOauthPastedFileName(serial),
-        content: parsedDraft.normalizedContent,
-      };
+      const items: Array<ImportOauthCredentialFilePayload & { matchKey: string }> = [];
+      if (parsedSessionDraft?.ok) {
+        items.push(
+          ...parsedSessionDraft.candidates.map((candidate, index) => ({
+            ...candidate.payload,
+            sourceId: `${createImportedOauthPastedSourceId(serial)}:session:${index}`,
+            fileName: createImportedSessionPastedFileName(
+              serial,
+              parsedSessionDraft.candidates.length === 1 ? undefined : index,
+            ),
+            matchKey: candidate.matchKey,
+          })),
+        );
+      } else if (parsedDraft?.ok) {
+        if (!parsedDraft.matchKey) {
+          setImportPasteError(
+            t("accountPool.upstreamAccounts.import.local.requiredField", {
+              fieldName: "account_id",
+            }),
+          );
+          return;
+        }
+        items.push({
+          sourceId: createImportedOauthPastedSourceId(serial),
+          fileName: createImportedOauthPastedFileName(serial),
+          content: parsedDraft.normalizedContent,
+          matchKey: parsedDraft.matchKey,
+        });
+      }
 
       try {
         const seenKeys = collectQueuedImportedOauthMatchKeys();
-        if (parsedDraft.matchKey && seenKeys.has(parsedDraft.matchKey)) {
-          setImportPasteError(
-            t("accountPool.upstreamAccounts.import.local.pasteDuplicate"),
-          );
-          return;
+        for (const item of items) {
+          if (item.matchKey && seenKeys.has(item.matchKey)) {
+            setImportPasteError(
+              t("accountPool.upstreamAccounts.import.local.pasteDuplicate"),
+            );
+            return;
+          }
+          if (item.matchKey) seenKeys.add(item.matchKey);
         }
         await resetImportValidationForSelectionChange();
         if (
           validationToken !== importPasteValidationTokenRef.current ||
-          importPasteDraftRef.current.trim() !== parsedDraft.normalizedContent
+          importPasteDraftRef.current.trim() !== normalizedDraft
         ) {
           return;
         }
         const refreshedSeenKeys = collectQueuedImportedOauthMatchKeys();
-        if (
-          parsedDraft.matchKey &&
-          refreshedSeenKeys.has(parsedDraft.matchKey)
-        ) {
-          setImportPasteError(
-            t("accountPool.upstreamAccounts.import.local.pasteDuplicate"),
-          );
-          return;
+        for (const item of items) {
+          if (item.matchKey && refreshedSeenKeys.has(item.matchKey)) {
+            setImportPasteError(
+              t("accountPool.upstreamAccounts.import.local.pasteDuplicate"),
+            );
+            return;
+          }
+          if (item.matchKey) refreshedSeenKeys.add(item.matchKey);
         }
         importFilesRevisionRef.current += 1;
-        const nextItems = [...(importFilesRef.current as ImportOauthCredentialFilePayload[]), item];
+        const nextItems = [
+          ...(importFilesRef.current as ImportOauthCredentialFilePayload[]),
+          ...items.map((item) => {
+            const { matchKey, ...queuedItem } = item;
+            void matchKey;
+            return queuedItem;
+          }),
+        ];
         importFilesRef.current = nextItems;
         setImportFiles(nextItems);
         importPasteDraftRef.current = "";
@@ -573,7 +673,9 @@ export function useUpstreamAccountCreateImportedOauth(
     },
     [
       collectQueuedImportedOauthMatchKeys,
+      buildWebSessionCandidates,
       importFilesRef,
+      isImportingWebSession,
       resetImportValidationForSelectionChange,
       t,
     ],
@@ -641,11 +743,56 @@ export function useUpstreamAccountCreateImportedOauth(
         const parsedItems = await Promise.all(
           selectedFiles.map(async (file, index) => {
             const content = await file.text();
+            const sourceIdBase = createImportedOauthSourceId(
+              file,
+              sourceIdOffset + index,
+            );
+            if (isImportingWebSession) {
+              const parsed = buildWebSessionCandidates({
+                content,
+                fileName: file.name,
+                createSourceId: (sessionIndex) =>
+                  `${sourceIdBase}:session:${sessionIndex}`,
+              });
+              return {
+                fileName: file.name,
+                parsed,
+              };
+            }
             const parsed = validateImportedOauthCredentialLocally(content, t);
+            if (parsed.ok && !parsed.matchKey) {
+              return {
+                fileName: file.name,
+                parsed: {
+                  ok: false as const,
+                  error: t("accountPool.upstreamAccounts.import.local.requiredField", {
+                    fieldName: "account_id",
+                  }),
+                },
+              };
+            }
+            if (parsed.ok) {
+              const matchKey = parsed.matchKey as string;
+              return {
+                fileName: file.name,
+                parsed: {
+                  ok: true as const,
+                  candidates: [
+                    {
+                      fileName: file.name,
+                      matchKey,
+                      payload: {
+                        sourceId: sourceIdBase,
+                        fileName: file.name,
+                        content: parsed.normalizedContent,
+                      },
+                    },
+                  ],
+                },
+              };
+            }
             return {
               fileName: file.name,
-              sourceId: createImportedOauthSourceId(file, sourceIdOffset + index),
-              content,
               parsed,
             };
           }),
@@ -665,24 +812,7 @@ export function useUpstreamAccountCreateImportedOauth(
             });
             continue;
           }
-          if (!item.parsed.matchKey) {
-            rejectedItems.push({
-              fileName: item.fileName,
-              reason: t("accountPool.upstreamAccounts.import.local.requiredField", {
-                fieldName: "account_id",
-              }),
-            });
-            continue;
-          }
-          validCandidates.push({
-            fileName: item.fileName,
-            matchKey: item.parsed.matchKey,
-            payload: {
-              sourceId: item.sourceId,
-              fileName: item.fileName,
-              content: item.parsed.normalizedContent,
-            },
-          });
+          validCandidates.push(...item.parsed.candidates);
         }
 
         const seenKeys = collectQueuedImportedOauthMatchKeys();
@@ -737,8 +867,10 @@ export function useUpstreamAccountCreateImportedOauth(
     },
     [
       collectQueuedImportedOauthMatchKeys,
+      buildWebSessionCandidates,
       importFileSourceSequenceRef,
       importFilesRef,
+      isImportingWebSession,
       resetImportValidationForSelectionChange,
       summarizeRejectedImportedOauthItems,
       t,

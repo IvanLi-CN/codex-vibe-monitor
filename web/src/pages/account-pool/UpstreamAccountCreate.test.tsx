@@ -32,7 +32,10 @@ import type {
 } from "../../lib/api";
 import { UPSTREAM_ACCOUNT_CREATE_GROUP_USAGE_STORAGE_KEY } from "../../lib/upstreamAccountGroups";
 import UpstreamAccountCreatePage from "./UpstreamAccountCreate";
-import { validateImportedOauthCredentialLocally } from "./UpstreamAccountCreate.shared";
+import {
+  convertImportedWebSessionDocumentLocally,
+  validateImportedOauthCredentialLocally,
+} from "./UpstreamAccountCreate.shared";
 
 const navigateMock = vi.hoisted(() => vi.fn());
 const hookMocks = vi.hoisted(() => ({
@@ -1151,6 +1154,66 @@ describe("imported OAuth local validation", () => {
     );
 
     expect(result.ok).toBe(true);
+  });
+
+  it("converts ChatGPT Web session JSON into Codex import credentials", () => {
+    const result = convertImportedWebSessionDocumentLocally(
+      JSON.stringify({
+        user: { email: "session@example.com", id: "user_session" },
+        account: { id: "acct_session", planType: "plus" },
+        accessToken: "access-token",
+        sessionToken: "session-token",
+        expires: "2026-08-06T14:29:36.155Z",
+      }),
+      (key, values) =>
+        values?.fieldName ? `${values.fieldName} cannot be empty` : key,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.items).toHaveLength(1);
+    const converted = JSON.parse(result.items[0].content);
+    expect(converted).toMatchObject({
+      type: "codex",
+      email: "session@example.com",
+      account_id: "acct_session",
+      access_token: "access-token",
+      session_token: "session-token",
+      expired: "2026-08-06T14:29:36.155Z",
+    });
+    expect(converted.refresh_token).toBeUndefined();
+    expect(typeof converted.id_token).toBe("string");
+    expect(result.items[0].matchKey).toBe("account:acct_session");
+  });
+
+  it("finds nested ChatGPT Web session arrays", () => {
+    const result = convertImportedWebSessionDocumentLocally(
+      JSON.stringify({
+        export: {
+          accounts: [
+            {
+              user: { email: "a@example.com" },
+              account: { id: "acct_a" },
+              accessToken: "access-a",
+              expires: "2026-08-06T14:29:36.155Z",
+            },
+            {
+              user: { email: "b@example.com" },
+              account: { id: "acct_b" },
+              accessToken: "access-b",
+              expires: "2026-08-07T14:29:36.155Z",
+            },
+          ],
+        },
+      }),
+      (key, values) =>
+        values?.fieldName ? `${values.fieldName} cannot be empty` : key,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.items.map((item) => item.matchKey)).toEqual([
+      "account:acct_a",
+      "account:acct_b",
+    ]);
   });
 });
 
