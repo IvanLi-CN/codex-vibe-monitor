@@ -1281,7 +1281,7 @@ async fn load_upstream_account_rows_for_groups(
         SELECT
             id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
             chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
-            encrypted_credentials, token_expires_at, last_refreshed_at,
+            encrypted_credentials, has_refresh_token, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
             last_action, last_action_source, last_action_reason_code, last_action_reason_message,
             last_action_http_status, last_action_invoke_id, last_action_at,

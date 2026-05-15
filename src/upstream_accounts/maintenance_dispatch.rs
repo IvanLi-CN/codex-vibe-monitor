@@ -974,7 +974,7 @@ pub(crate) async fn find_existing_import_match(
         SELECT
             id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
             chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
-            encrypted_credentials, token_expires_at, last_refreshed_at,
+            encrypted_credentials, has_refresh_token, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
             last_action, last_action_source, last_action_reason_code, last_action_reason_message,
             last_action_http_status, last_action_invoke_id, last_action_at,
@@ -1007,7 +1007,7 @@ pub(crate) async fn find_existing_import_match(
         SELECT
             id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
             chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
-            encrypted_credentials, token_expires_at, last_refreshed_at,
+            encrypted_credentials, has_refresh_token, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
             last_action, last_action_source, last_action_reason_code, last_action_reason_message,
             last_action_http_status, last_action_invoke_id, last_action_at,
@@ -1051,28 +1051,18 @@ pub(crate) async fn probe_imported_oauth_credentials(
         })
         .unwrap_or(true);
 
-    if refresh_due {
-        let response = refresh_oauth_tokens_for_required_scope(
-            state,
-            refresh_scope,
-            &credentials.refresh_token,
-        )
-        .await?;
-        credentials.access_token = response.access_token;
-        if let Some(refresh_token) = response.refresh_token {
-            credentials.refresh_token = refresh_token;
-        }
-        if let Some(id_token) = response.id_token {
-            credentials.id_token = id_token;
+    if refresh_due && let Some(refresh_token) = oauth_refresh_token(&credentials) {
+        let response =
+            refresh_oauth_tokens_for_required_scope(state, refresh_scope, refresh_token).await?;
+        let id_token_changed = response.id_token.is_some();
+        token_expires_at = apply_oauth_token_response(&mut credentials, response);
+        if id_token_changed {
             claims = parse_chatgpt_jwt_claims(&credentials.id_token)?;
             claims.email = claims.email.or_else(|| Some(imported.email.clone()));
             claims.chatgpt_account_id = claims
                 .chatgpt_account_id
                 .or_else(|| Some(imported.chatgpt_account_id.clone()));
         }
-        credentials.token_type = response.token_type;
-        token_expires_at =
-            format_utc_iso(Utc::now() + ChronoDuration::seconds(response.expires_in.max(0)));
     }
 
     let usage_result = fetch_usage_snapshot_via_forward_proxy(
@@ -1089,28 +1079,23 @@ pub(crate) async fn probe_imported_oauth_credentials(
     let (snapshot, maintenance_proxy_snapshot, usage_snapshot_warning) = match usage_result {
         Ok((snapshot, proxy_snapshot)) => (Some(snapshot), Some(proxy_snapshot), None),
         Err(err) if is_import_invalid_error_message(&err.to_string()) => return Err(err),
-        Err(err) if err.to_string().contains("401") || err.to_string().contains("403") => {
-            let response = refresh_oauth_tokens_for_required_scope(
-                state,
-                refresh_scope,
-                &credentials.refresh_token,
-            )
-            .await?;
-            credentials.access_token = response.access_token;
-            if let Some(refresh_token) = response.refresh_token {
-                credentials.refresh_token = refresh_token;
-            }
-            if let Some(id_token) = response.id_token {
-                credentials.id_token = id_token;
+        Err(err)
+            if (err.to_string().contains("401") || err.to_string().contains("403"))
+                && oauth_refresh_token(&credentials).is_some() =>
+        {
+            let refresh_token = oauth_refresh_token(&credentials).expect("checked refresh token");
+            let response =
+                refresh_oauth_tokens_for_required_scope(state, refresh_scope, refresh_token)
+                    .await?;
+            let id_token_changed = response.id_token.is_some();
+            token_expires_at = apply_oauth_token_response(&mut credentials, response);
+            if id_token_changed {
                 claims = parse_chatgpt_jwt_claims(&credentials.id_token)?;
                 claims.email = claims.email.or_else(|| Some(imported.email.clone()));
                 claims.chatgpt_account_id = claims
                     .chatgpt_account_id
                     .or_else(|| Some(imported.chatgpt_account_id.clone()));
             }
-            credentials.token_type = response.token_type;
-            token_expires_at =
-                format_utc_iso(Utc::now() + ChronoDuration::seconds(response.expires_in.max(0)));
             match fetch_usage_snapshot_via_forward_proxy(
                 state,
                 usage_scope,

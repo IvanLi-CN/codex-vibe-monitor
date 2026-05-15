@@ -409,7 +409,7 @@
             crypto_key,
             &StoredCredentials::Oauth(StoredOauthCredentials {
                 access_token: "access-token".to_string(),
-                refresh_token: "refresh-token".to_string(),
+                refresh_token: Some("refresh-token".to_string()),
                 id_token: test_id_token(email, Some(account_id), Some(user_id), Some("team")),
                 token_type: Some("Bearer".to_string()),
             }),
@@ -1183,7 +1183,7 @@
             token_expires_at: format_utc_iso(Utc::now() + ChronoDuration::days(30)),
             credentials: StoredOauthCredentials {
                 access_token: "imported-access-token".to_string(),
-                refresh_token: "imported-refresh-token".to_string(),
+                refresh_token: Some("imported-refresh-token".to_string()),
                 id_token: test_id_token(
                     "imported@example.com",
                     Some("org_imported"),

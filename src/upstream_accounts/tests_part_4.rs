@@ -54,6 +54,33 @@ async fn current_quota_route_failure_survives_informational_account_updates() {
     );
 }
 
+#[tokio::test]
+async fn oauth_summary_exports_missing_refresh_token_flag() {
+    let pool = test_pool().await;
+    let account_id = insert_oauth_account(&pool, "Manual RT omitted").await;
+    sqlx::query("UPDATE pool_upstream_accounts SET has_refresh_token = 0 WHERE id = ?")
+        .bind(account_id)
+        .execute(&pool)
+        .await
+        .expect("mark account as missing refresh token");
+
+    let row = load_upstream_account_row(&pool, account_id)
+        .await
+        .expect("load no refresh token row")
+        .expect("no refresh token row exists");
+    let summary = build_summary_from_row(
+        &row,
+        None,
+        row.last_activity_at.clone(),
+        vec![],
+        None,
+        0,
+        Utc::now(),
+    );
+
+    assert!(!summary.has_refresh_token);
+}
+
 async fn insert_limit_sample(
     pool: &SqlitePool,
     account_id: i64,
@@ -596,7 +623,7 @@ async fn oauth_sync_refresh_due_reuses_sync_only_scope_for_token_refresh() {
         panic!("unexpected credential kind after refresh-due sync")
     };
     assert_eq!(credentials.access_token, "proxy-refreshed-access-token");
-    assert_eq!(credentials.refresh_token, "proxy-refreshed-refresh-token");
+    assert_eq!(credentials.refresh_token.as_deref(), Some("proxy-refreshed-refresh-token"));
 
     server.abort();
 }
@@ -1704,7 +1731,7 @@ async fn oauth_sync_retry_after_refresh_settles_to_needs_reauth_without_stale_sy
         panic!("unexpected credential kind after refresh")
     };
     assert_eq!(credentials.access_token, "refreshed-access-token");
-    assert_eq!(credentials.refresh_token, "refresh-token-rotated");
+    assert_eq!(credentials.refresh_token.as_deref(), Some("refresh-token-rotated"));
 
     let summary = build_summary_from_row(
         &after,

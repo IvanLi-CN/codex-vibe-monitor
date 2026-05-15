@@ -302,26 +302,16 @@ async fn sync_oauth_account(
     };
     set_account_status(&state.pool, row.id, UPSTREAM_ACCOUNT_STATUS_SYNCING, None).await?;
 
-    if refresh_due {
+    if refresh_due && let Some(refresh_token) = oauth_refresh_token(&credentials) {
         match refresh_oauth_tokens_for_required_scope(
             state,
             &refresh_scope,
-            &credentials.refresh_token,
+            refresh_token,
         )
         .await
         {
             Ok(response) => {
-                credentials.access_token = response.access_token;
-                if let Some(refresh_token) = response.refresh_token {
-                    credentials.refresh_token = refresh_token;
-                }
-                if let Some(id_token) = response.id_token {
-                    credentials.id_token = id_token;
-                }
-                credentials.token_type = response.token_type;
-                let token_expires_at = format_utc_iso(
-                    Utc::now() + ChronoDuration::seconds(response.expires_in.max(0)),
-                );
+                let token_expires_at = apply_oauth_token_response(&mut credentials, response);
                 persist_oauth_credentials(
                     &state.pool,
                     row.id,
@@ -447,27 +437,21 @@ async fn sync_oauth_account(
             .await?;
             return Ok(());
         }
-        Err(err) if err.to_string().contains("401") || err.to_string().contains("403") => {
+        Err(err)
+            if (err.to_string().contains("401") || err.to_string().contains("403"))
+                && oauth_refresh_token(&credentials).is_some() =>
+        {
+            let refresh_token = oauth_refresh_token(&credentials).expect("checked refresh token");
             match refresh_oauth_tokens_for_required_scope(
                 state,
                 &refresh_scope,
-                &credentials.refresh_token,
+                refresh_token,
             )
             .await
             {
                 Ok(response) => {
                     let mut refreshed = credentials.clone();
-                    refreshed.access_token = response.access_token;
-                    if let Some(refresh_token) = response.refresh_token {
-                        refreshed.refresh_token = refresh_token;
-                    }
-                    if let Some(id_token) = response.id_token {
-                        refreshed.id_token = id_token;
-                    }
-                    refreshed.token_type = response.token_type;
-                    let token_expires_at = format_utc_iso(
-                        Utc::now() + ChronoDuration::seconds(response.expires_in.max(0)),
-                    );
+                    let token_expires_at = apply_oauth_token_response(&mut refreshed, response);
                     persist_oauth_credentials(
                         &state.pool,
                         row.id,
@@ -735,6 +719,7 @@ async fn persist_oauth_credentials(
         UPDATE pool_upstream_accounts
         SET encrypted_credentials = ?2,
             token_expires_at = ?3,
+            has_refresh_token = ?11,
             last_refreshed_at = ?4,
             email = ?5,
             verified_email = ?6,
@@ -760,6 +745,11 @@ async fn persist_oauth_credentials(
     .bind(claims.chatgpt_account_id)
     .bind(claims.chatgpt_user_id)
     .bind(claims.chatgpt_plan_type)
+    .bind(if oauth_credentials_have_refresh_token(credentials) {
+        1
+    } else {
+        0
+    })
     .execute(tx.as_mut())
     .await?;
     tx.commit().await?;
@@ -943,6 +933,7 @@ async fn persist_imported_oauth_existing_inner(
             requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
             claims: &probe.claims,
             encrypted_credentials,
+            has_refresh_token: oauth_credentials_have_refresh_token(&probe.credentials),
             token_expires_at: &probe.token_expires_at,
             external_identity: None,
         },
@@ -994,6 +985,7 @@ struct OauthAccountUpsert<'a> {
     requested_group_metadata_changes: RequestedGroupMetadataChanges,
     claims: &'a ChatgptJwtClaims,
     encrypted_credentials: String,
+    has_refresh_token: bool,
     token_expires_at: &'a str,
     external_identity: Option<&'a ExternalAccountIdentity>,
 }
@@ -1291,6 +1283,7 @@ async fn upsert_oauth_account(
         requested_group_metadata_changes,
         claims,
         encrypted_credentials,
+        has_refresh_token,
         token_expires_at,
         external_identity,
     } = payload;
@@ -1326,6 +1319,7 @@ async fn upsert_oauth_account(
                 END,
                 encrypted_credentials = ?14,
                 token_expires_at = ?15,
+                has_refresh_token = ?19,
                 last_refreshed_at = ?16,
                 external_client_id = COALESCE(?17, external_client_id),
                 external_source_account_id = COALESCE(?18, external_source_account_id),
@@ -1353,6 +1347,7 @@ async fn upsert_oauth_account(
         .bind(&now_iso)
         .bind(external_client_id)
         .bind(external_source_account_id)
+        .bind(if has_refresh_token { 1 } else { 0 })
         .execute(tx.as_mut())
         .await?;
         save_group_metadata_after_account_write(
@@ -1375,6 +1370,7 @@ async fn upsert_oauth_account(
                 kind, provider, display_name, group_name, is_mother, note, status, enabled,
                 email, verified_email, chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at,
                 masked_api_key, encrypted_credentials, token_expires_at,
+                has_refresh_token,
                 last_refreshed_at, last_synced_at, last_successful_sync_at,
                 last_error, last_error_at, local_primary_limit, local_secondary_limit,
                 local_limit_unit, external_client_id, external_source_account_id,
@@ -1383,6 +1379,7 @@ async fn upsert_oauth_account(
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, 1,
                 ?8, ?9, ?10, ?11, ?12, ?13,
                 NULL, ?14, ?15,
+                ?19,
                 ?16, NULL, NULL,
                 NULL, NULL, NULL, NULL,
                 NULL, ?17, ?18, ?16, ?16
@@ -1412,6 +1409,7 @@ async fn upsert_oauth_account(
         .bind(&now_iso)
         .bind(external_client_id)
         .bind(external_source_account_id)
+        .bind(if has_refresh_token { 1 } else { 0 })
         .fetch_one(tx.as_mut())
         .await?;
         save_group_metadata_after_account_write(
@@ -2228,7 +2226,7 @@ async fn load_upstream_account_summaries_for_query(
             id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
             verified_email,
             chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
-            encrypted_credentials, token_expires_at, last_refreshed_at,
+            encrypted_credentials, has_refresh_token, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
             last_action, last_action_source, last_action_reason_code, last_action_reason_message,
             last_action_http_status, last_action_invoke_id, last_action_at,
@@ -2459,7 +2457,7 @@ async fn load_upstream_account_rows_by_ids(
             id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
             verified_email,
             chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
-            encrypted_credentials, token_expires_at, last_refreshed_at,
+            encrypted_credentials, has_refresh_token, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
             last_action, last_action_source, last_action_reason_code, last_action_reason_message,
             last_action_http_status, last_action_invoke_id, last_action_at,
@@ -2813,7 +2811,7 @@ async fn load_upstream_account_row_conn(
             id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
             verified_email,
             chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
-            encrypted_credentials, token_expires_at, last_refreshed_at,
+            encrypted_credentials, has_refresh_token, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
             last_action, last_action_source, last_action_reason_code, last_action_reason_message,
             last_action_http_status, last_action_invoke_id, last_action_at,
@@ -2859,7 +2857,7 @@ async fn load_upstream_account_row_by_external_identity_conn(
             id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
             verified_email,
             chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
-            encrypted_credentials, token_expires_at, last_refreshed_at,
+            encrypted_credentials, has_refresh_token, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
             last_action, last_action_source, last_action_reason_code, last_action_reason_message,
             last_action_http_status, last_action_invoke_id, last_action_at,
@@ -3016,6 +3014,8 @@ fn build_summary_from_row(
             sample.and_then(|value| value.plan_type.as_deref()),
         ),
         masked_api_key: row.masked_api_key.clone(),
+        has_refresh_token: row.kind != UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX
+            || row.has_refresh_token.unwrap_or(1) != 0,
         last_synced_at: row.last_synced_at.clone(),
         last_successful_sync_at: row.last_successful_sync_at.clone(),
         last_activity_at: last_activity_at

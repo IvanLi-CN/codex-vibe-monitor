@@ -1035,6 +1035,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.fields.lastRefreshedAt": "Last refresh",
     "accountPool.upstreamAccounts.fields.tokenExpiresAt":
       "Access token expires",
+    "accountPool.upstreamAccounts.noRefreshToken.badge": "无 RT",
     "accountPool.upstreamAccounts.fields.lastSuccessSync":
       "Last successful sync",
     "accountPool.upstreamAccounts.fields.credits": "Credits",
@@ -3011,6 +3012,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.fields.lastSyncedAt": "最近同步",
     "accountPool.upstreamAccounts.fields.lastRefreshedAt": "最近刷新",
     "accountPool.upstreamAccounts.fields.tokenExpiresAt": "访问令牌过期时间",
+    "accountPool.upstreamAccounts.noRefreshToken.badge": "无 RT",
     "accountPool.upstreamAccounts.fields.lastSuccessSync": "最近成功同步",
     "accountPool.upstreamAccounts.fields.credits": "Credits",
     "accountPool.upstreamAccounts.fields.compactSupport": "Compact 支持",

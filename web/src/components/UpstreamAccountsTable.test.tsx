@@ -79,6 +79,7 @@ const labels = {
   apiKey: 'API key',
   duplicate: 'Duplicate',
   mother: 'Mother',
+  noRefreshToken: '无 RT',
   hiddenTagsA11y: (count: number, names: string) =>
     `Show ${count} hidden tags: ${names}`,
   workStatus: (status: string) =>
@@ -205,6 +206,43 @@ function renderInteractiveTable(
 }
 
 describe('UpstreamAccountsTable', () => {
+  it('marks OAuth accounts without refresh tokens and does not mark API key accounts', () => {
+    const html = renderTable([
+      {
+        id: 11,
+        kind: 'oauth_codex',
+        provider: 'codex',
+        displayName: 'Manual OAuth',
+        isMother: false,
+        groupName: 'prod',
+        status: 'active',
+        displayStatus: 'active',
+        enabled: true,
+        hasRefreshToken: false,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+      {
+        id: 12,
+        kind: 'api_key_codex',
+        provider: 'codex',
+        displayName: 'Fallback API key',
+        isMother: false,
+        groupName: 'prod',
+        status: 'active',
+        displayStatus: 'active',
+        enabled: true,
+        hasRefreshToken: false,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+    ])
+
+    expect(html).toContain('Manual OAuth')
+    expect(html).toContain('无 RT')
+    expect((html.match(/无 RT/g) ?? []).length).toBe(2)
+  })
+
   it('keeps summary row badges aligned with the pre-existing sync/health precedence', () => {
     const syncingItem: UpstreamAccountSummary = {
       id: 91,

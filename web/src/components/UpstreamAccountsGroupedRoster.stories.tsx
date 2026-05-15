@@ -42,6 +42,7 @@ const labels = {
   unavailable: 'Unavailable',
   oauth: 'OAuth',
   apiKey: 'API key',
+  noRefreshToken: '无 RT',
   duplicate: 'Duplicate',
   mother: 'Mother',
   hiddenTagsA11y: (count: number, names: string) => `Show ${count} hidden tags: ${names}`,
@@ -213,7 +214,11 @@ const baseGroups = [
     'production-apac',
     'production-apac',
     [
-      makeItem(1, { displayName: 'Codex Pro - Tokyo', currentForwardProxyDisplayName: 'JP Edge 01' }),
+      makeItem(1, {
+        displayName: 'Codex Pro - Tokyo',
+        currentForwardProxyDisplayName: 'JP Edge 01',
+        hasRefreshToken: false,
+      }),
       makeItem(2, { displayName: 'Codex Team - Osaka', planType: 'team', currentForwardProxyState: 'pending', currentForwardProxyKey: null, currentForwardProxyDisplayName: null }),
       makeItem(3, { displayName: 'Fallback Key - Seoul', kind: 'api_key_codex', currentForwardProxyState: 'unconfigured', currentForwardProxyKey: null, currentForwardProxyDisplayName: null }),
     ],

@@ -1550,6 +1550,7 @@ pub(crate) async fn import_validated_oauth_accounts(
                         requested_group_metadata_changes: requested_group_metadata_changes.clone(),
                         claims: &probe.claims,
                         encrypted_credentials,
+                        has_refresh_token: oauth_credentials_have_refresh_token(&probe.credentials),
                         token_expires_at: &probe.token_expires_at,
                         external_identity: None,
                     },

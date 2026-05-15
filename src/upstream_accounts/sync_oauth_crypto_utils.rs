@@ -1137,8 +1137,7 @@ fn normalize_imported_oauth_credentials(
         .map_err(|(_, message)| message)?;
     let access_token = normalize_required_secret(&parsed.access_token, "access_token")
         .map_err(|(_, message)| message)?;
-    let refresh_token = normalize_required_secret(&parsed.refresh_token, "refresh_token")
-        .map_err(|(_, message)| message)?;
+    let refresh_token = normalize_optional_json_text(parsed.refresh_token);
     let id_token =
         normalize_required_secret(&parsed.id_token, "id_token").map_err(|(_, message)| message)?;
     let token_expires_at =

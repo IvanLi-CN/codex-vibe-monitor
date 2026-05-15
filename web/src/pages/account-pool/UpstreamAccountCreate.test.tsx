@@ -32,6 +32,7 @@ import type {
 } from "../../lib/api";
 import { UPSTREAM_ACCOUNT_CREATE_GROUP_USAGE_STORAGE_KEY } from "../../lib/upstreamAccountGroups";
 import UpstreamAccountCreatePage from "./UpstreamAccountCreate";
+import { validateImportedOauthCredentialLocally } from "./UpstreamAccountCreate.shared";
 
 const navigateMock = vi.hoisted(() => vi.fn());
 const hookMocks = vi.hoisted(() => ({
@@ -1133,6 +1134,25 @@ function clickGroupSettingsButtonForInput(selector: string) {
   });
   return button;
 }
+
+describe("imported OAuth local validation", () => {
+  it("accepts Codex JSON without a refresh_token", () => {
+    const result = validateImportedOauthCredentialLocally(
+      JSON.stringify({
+        type: "codex",
+        email: "no-rt@example.com",
+        account_id: "acct_no_rt",
+        access_token: "access-token",
+        id_token:
+          "e30.eyJleHAiOjE3Nzc3Nzc3NzcsImVtYWlsIjoibm8tcnRAZXhhbXBsZS5jb20iLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdF9ub19ydCJ9fQ.sig",
+      }),
+      (key, values) =>
+        values?.field ? `${values.field} cannot be empty` : key,
+    );
+
+    expect(result.ok).toBe(true);
+  });
+});
 
 describe("UpstreamAccountCreatePage group memory", () => {
   it("uses the latest remembered group for batch OAuth when no draft overrides it", async () => {

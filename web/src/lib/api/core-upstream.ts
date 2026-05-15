@@ -167,6 +167,7 @@ export interface UpstreamAccountSummary {
   chatgptAccountId?: string | null;
   planType?: string | null;
   maskedApiKey?: string | null;
+  hasRefreshToken?: boolean;
   lastSyncedAt?: string | null;
   lastSuccessfulSyncAt?: string | null;
   lastActivityAt?: string | null;
@@ -964,6 +965,10 @@ function normalizeUpstreamAccountSummary(
     planType: typeof payload.planType === "string" ? payload.planType : null,
     maskedApiKey:
       typeof payload.maskedApiKey === "string" ? payload.maskedApiKey : null,
+    hasRefreshToken:
+      typeof payload.hasRefreshToken === "boolean"
+        ? payload.hasRefreshToken
+        : true,
     lastSyncedAt:
       typeof payload.lastSyncedAt === "string" ? payload.lastSyncedAt : null,
     lastSuccessfulSyncAt:

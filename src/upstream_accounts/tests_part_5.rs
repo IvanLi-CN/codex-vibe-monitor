@@ -1353,7 +1353,7 @@ async fn updated_oauth_login_session_metadata_is_used_when_callback_persists_acc
         crypto_key,
         &StoredCredentials::Oauth(StoredOauthCredentials {
             access_token: "callback-access".to_string(),
-            refresh_token: "callback-refresh".to_string(),
+            refresh_token: Some("callback-refresh".to_string()),
             id_token: test_id_token(
                 "callback@example.com",
                 Some("org_callback"),
@@ -1380,6 +1380,7 @@ async fn updated_oauth_login_session_metadata_is_used_when_callback_persists_acc
                 Some("user_callback"),
             ),
             encrypted_credentials,
+            has_refresh_token: true,
             token_expires_at: "2026-04-01T00:00:00Z".to_string(),
         },
     )
@@ -1501,7 +1502,7 @@ async fn persist_oauth_callback_preserves_group_node_shunt_for_legacy_pending_se
         crypto_key,
         &StoredCredentials::Oauth(StoredOauthCredentials {
             access_token: "legacy-access".to_string(),
-            refresh_token: "legacy-refresh".to_string(),
+            refresh_token: Some("legacy-refresh".to_string()),
             id_token: test_id_token(
                 "legacy@example.com",
                 Some("org_legacy"),
@@ -1528,6 +1529,7 @@ async fn persist_oauth_callback_preserves_group_node_shunt_for_legacy_pending_se
                 Some("user_legacy"),
             ),
             encrypted_credentials,
+            has_refresh_token: true,
             token_expires_at: "2026-04-01T00:00:00Z".to_string(),
         },
     )
@@ -1599,7 +1601,7 @@ async fn update_oauth_login_session_repairs_completed_callback_race_with_latest_
         crypto_key,
         &StoredCredentials::Oauth(StoredOauthCredentials {
             access_token: "race-access".to_string(),
-            refresh_token: "race-refresh".to_string(),
+            refresh_token: Some("race-refresh".to_string()),
             id_token: test_id_token(
                 "race@example.com",
                 Some("org_race"),
@@ -1622,6 +1624,7 @@ async fn update_oauth_login_session_repairs_completed_callback_race_with_latest_
             session: pending_session,
             claims: test_claims("race@example.com", Some("org_race"), Some("user_race")),
             encrypted_credentials,
+            has_refresh_token: true,
             token_expires_at: "2026-04-01T00:00:00Z".to_string(),
         },
     )
@@ -1822,7 +1825,7 @@ async fn update_oauth_login_session_rejects_stale_completed_race_repairs() {
         crypto_key,
         &StoredCredentials::Oauth(StoredOauthCredentials {
             access_token: "race-access".to_string(),
-            refresh_token: "race-refresh".to_string(),
+            refresh_token: Some("race-refresh".to_string()),
             id_token: test_id_token(
                 "race@example.com",
                 Some("org_race"),
@@ -1845,6 +1848,7 @@ async fn update_oauth_login_session_rejects_stale_completed_race_repairs() {
             session: pending_session,
             claims: test_claims("race@example.com", Some("org_race"), Some("user_race")),
             encrypted_credentials,
+            has_refresh_token: true,
             token_expires_at: "2026-04-01T00:00:00Z".to_string(),
         },
     )
@@ -1970,7 +1974,7 @@ async fn update_oauth_login_session_rejects_completed_repairs_after_group_note_c
         crypto_key,
         &StoredCredentials::Oauth(StoredOauthCredentials {
             access_token: "race-access".to_string(),
-            refresh_token: "race-refresh".to_string(),
+            refresh_token: Some("race-refresh".to_string()),
             id_token: test_id_token(
                 "race@example.com",
                 Some("org_race"),
@@ -1993,6 +1997,7 @@ async fn update_oauth_login_session_rejects_completed_repairs_after_group_note_c
             session: pending_session,
             claims: test_claims("race@example.com", Some("org_race"), Some("user_race")),
             encrypted_credentials,
+            has_refresh_token: true,
             token_expires_at: "2026-04-01T00:00:00Z".to_string(),
         },
     )
@@ -2108,7 +2113,7 @@ async fn update_oauth_login_session_rejects_completed_repairs_after_account_chan
         crypto_key,
         &StoredCredentials::Oauth(StoredOauthCredentials {
             access_token: "race-access".to_string(),
-            refresh_token: "race-refresh".to_string(),
+            refresh_token: Some("race-refresh".to_string()),
             id_token: test_id_token(
                 "race@example.com",
                 Some("org_race"),
@@ -2131,6 +2136,7 @@ async fn update_oauth_login_session_rejects_completed_repairs_after_account_chan
             session: pending_session,
             claims: test_claims("race@example.com", Some("org_race"), Some("user_race")),
             encrypted_credentials,
+            has_refresh_token: true,
             token_expires_at: "2026-04-01T00:00:00Z".to_string(),
         },
     )
@@ -2244,7 +2250,7 @@ async fn update_oauth_login_session_rejects_completed_repairs_after_account_emai
         crypto_key,
         &StoredCredentials::Oauth(StoredOauthCredentials {
             access_token: "race-access".to_string(),
-            refresh_token: "race-refresh".to_string(),
+            refresh_token: Some("race-refresh".to_string()),
             id_token: test_id_token(
                 "race@example.com",
                 Some("org_race"),
@@ -2267,6 +2273,7 @@ async fn update_oauth_login_session_rejects_completed_repairs_after_account_emai
             session: pending_session,
             claims: test_claims("race@example.com", Some("org_race"), Some("user_race")),
             encrypted_credentials,
+            has_refresh_token: true,
             token_expires_at: "2026-04-01T00:00:00Z".to_string(),
         },
     )

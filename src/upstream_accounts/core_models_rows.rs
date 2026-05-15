@@ -19,6 +19,8 @@ pub(crate) struct UpstreamAccountRow {
     plan_type_observed_at: Option<String>,
     masked_api_key: Option<String>,
     encrypted_credentials: Option<String>,
+    #[sqlx(default)]
+    has_refresh_token: Option<i64>,
     token_expires_at: Option<String>,
     last_refreshed_at: Option<String>,
     last_synced_at: Option<String>,

@@ -1516,6 +1516,7 @@ export function createOauthAccount(
     chatgptAccountId: 'org_tokyo',
     chatgptUserId: 'user_tokyo',
     planType: 'pro',
+    hasRefreshToken: true,
     lastSyncedAt: now,
     lastSuccessfulSyncAt: now,
     lastActivityAt: '2026-03-11T12:12:00.000Z',
@@ -1594,6 +1595,7 @@ export function createApiKeyAccount(
     chatgptUserId: null,
     planType: 'local',
     maskedApiKey: 'sk-live••••••c9f2',
+    hasRefreshToken: true,
     lastSyncedAt: now,
     lastSuccessfulSyncAt: now,
     lastActivityAt: '2026-03-11T12:24:00.000Z',
@@ -1670,6 +1672,7 @@ export function toSummary(detail: UpstreamAccountDetail): UpstreamAccountSummary
     chatgptAccountId: normalized.chatgptAccountId,
     planType: normalized.planType,
     maskedApiKey: normalized.maskedApiKey,
+    hasRefreshToken: normalized.hasRefreshToken ?? true,
     lastSyncedAt: normalized.lastSyncedAt,
     lastSuccessfulSyncAt: normalized.lastSuccessfulSyncAt,
     lastActivityAt: normalized.lastActivityAt,
@@ -1917,6 +1920,19 @@ export function createStore(): StoryStore {
             : 'Sibling OAuth account kept for duplicate identity review.',
         })
       : null
+  const noRefreshTokenOauth = createOauthAccount(106, {
+    displayName: 'Codex Pro - Manual RT omitted',
+    email: 'manual-no-rt@example.com',
+    chatgptAccountId: 'org_manual_no_rt',
+    chatgptUserId: 'user_manual_no_rt',
+    groupName: 'production',
+    isMother: false,
+    hasRefreshToken: false,
+    workStatus: 'idle',
+    activeConversationCount: 0,
+    note: 'Imported credential intentionally has no refresh token; automatic token refresh is skipped.',
+    tags: pickStoryTags('prodApac'),
+  })
   const compactExtraAccounts = compactStory
     ? [
         createOauthAccount(104, {
@@ -2466,6 +2482,7 @@ export function createStore(): StoryStore {
       : [
           oauth,
           ...(duplicateOauth ? [duplicateOauth] : []),
+          noRefreshTokenOauth,
           apiKey,
           ...compactExtraAccounts,
           ...operationalRosterAccounts,
