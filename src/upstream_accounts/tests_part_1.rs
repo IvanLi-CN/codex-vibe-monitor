@@ -1915,6 +1915,128 @@
     }
 
     #[tokio::test]
+    async fn imported_oauth_validation_job_probes_node_shunt_group_when_no_slot_is_available() {
+        async fn usage_handler() -> (StatusCode, String) {
+            (
+                StatusCode::OK,
+                json!({
+                    "planType": "team",
+                    "rateLimit": {
+                        "primaryWindow": {
+                            "usedPercent": 12,
+                            "windowDurationMins": 300,
+                            "resetsAt": 1771322400
+                        }
+                    }
+                })
+                .to_string(),
+            )
+        }
+
+        let app = Router::new().route("/backend-api/wham/usage", get(usage_handler));
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind imported validation server");
+        let addr = listener
+            .local_addr()
+            .expect("imported validation server addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve imported validation server");
+        });
+        let origin = format!("http://{addr}");
+
+        let state = test_app_state_with_usage_base(&format!("{origin}/backend-api")).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let occupying_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Occupying Account",
+            "occupying@example.com",
+            "org_occupying",
+            "user_occupying",
+        )
+        .await;
+        set_test_account_group_name(&state.pool, occupying_account_id, Some("import-group")).await;
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "import-group",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: test_required_group_bound_proxy_keys(),
+                node_shunt_enabled: true,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 0,
+            },
+        )
+        .await
+        .expect("save node shunt metadata");
+        drop(conn);
+
+        let Json(response) = create_imported_oauth_validation_job(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(ValidateImportedOauthAccountsRequest {
+                group_name: Some("import-group".to_string()),
+                group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
+                group_node_shunt_enabled: Some(true),
+                items: vec![ImportOauthCredentialFileRequest {
+                    source_id: "source-new".to_string(),
+                    file_name: "new-session.json".to_string(),
+                    content: json!({
+                        "type": "codex",
+                        "email": "new-session@example.com",
+                        "account_id": "acct_new_session",
+                        "expired": "2099-04-20T00:00:00Z",
+                        "access_token": "access-new-session",
+                        "id_token": test_id_token(
+                            "new-session@example.com",
+                            Some("acct_new_session"),
+                            Some("user_new_session"),
+                            Some("team"),
+                        ),
+                    })
+                    .to_string(),
+                }],
+            }),
+        )
+        .await
+        .expect("start imported oauth validation job");
+        let job = state
+            .upstream_accounts
+            .get_validation_job(&response.job_id)
+            .await
+            .expect("validation job should exist");
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if job.terminal_event.lock().await.is_some() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("validation job should finish");
+
+        let rows = job.snapshot.lock().await.rows.clone();
+        let row = rows.first().expect("validation row");
+        assert_eq!(row.status, IMPORT_VALIDATION_STATUS_OK);
+        assert_ne!(
+            row.detail.as_deref(),
+            Some(group_node_shunt_unassigned_error_message())
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn update_upstream_account_group_allows_note_only_edits_when_node_shunt_group_has_no_selectable_nodes()
      {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
