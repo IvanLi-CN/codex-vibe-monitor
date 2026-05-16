@@ -156,10 +156,18 @@ async fn resolve_imported_oauth_probe_scope(
             if binding.node_shunt_enabled
                 && is_group_node_shunt_unassigned_message(&err.to_string()) =>
         {
-            required_account_forward_proxy_scope(
-                Some(&binding.group_name),
-                binding.bound_proxy_keys.clone(),
-            )
+            let has_selectable_bound_proxy = {
+                let manager = state.forward_proxy.lock().await;
+                manager.has_selectable_bound_proxy_keys(&binding.bound_proxy_keys)
+            };
+            if has_selectable_bound_proxy {
+                required_account_forward_proxy_scope(
+                    Some(&binding.group_name),
+                    binding.bound_proxy_keys.clone(),
+                )
+            } else {
+                Err(err)
+            }
         }
         Err(err) => Err(err),
     }

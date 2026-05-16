@@ -2179,6 +2179,65 @@
     }
 
     #[tokio::test]
+    async fn imported_oauth_validation_job_keeps_node_shunt_group_blocked_without_selectable_nodes()
+    {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+
+        let Json(response) = create_imported_oauth_validation_job(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(ValidateImportedOauthAccountsRequest {
+                group_name: Some("stale-import-group".to_string()),
+                group_bound_proxy_keys: Some(vec!["stale-node".to_string()]),
+                group_node_shunt_enabled: Some(true),
+                items: vec![ImportOauthCredentialFileRequest {
+                    source_id: "source-stale".to_string(),
+                    file_name: "stale-session.json".to_string(),
+                    content: json!({
+                        "type": "codex",
+                        "email": "stale-session@example.com",
+                        "account_id": "acct_stale_session",
+                        "expired": "2099-04-20T00:00:00Z",
+                        "access_token": "access-stale-session",
+                        "id_token": test_id_token(
+                            "stale-session@example.com",
+                            Some("acct_stale_session"),
+                            Some("user_stale_session"),
+                            Some("team"),
+                        ),
+                    })
+                    .to_string(),
+                }],
+            }),
+        )
+        .await
+        .expect("start imported oauth validation job");
+        let job = state
+            .upstream_accounts
+            .get_validation_job(&response.job_id)
+            .await
+            .expect("validation job should exist");
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if job.terminal_event.lock().await.is_some() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("validation job should finish");
+
+        let rows = job.snapshot.lock().await.rows.clone();
+        let row = rows.first().expect("validation row");
+        assert_eq!(row.status, IMPORT_VALIDATION_STATUS_ERROR);
+        assert_eq!(
+            row.detail.as_deref(),
+            Some(group_node_shunt_unassigned_error_message())
+        );
+    }
+
+    #[tokio::test]
     async fn update_upstream_account_group_allows_note_only_edits_when_node_shunt_group_has_no_selectable_nodes()
      {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
