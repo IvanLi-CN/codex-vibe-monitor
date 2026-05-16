@@ -2037,6 +2037,148 @@
     }
 
     #[tokio::test]
+    async fn import_validated_oauth_accounts_persists_node_shunt_group_when_no_slot_is_available()
+    {
+        async fn usage_handler() -> (StatusCode, String) {
+            (
+                StatusCode::OK,
+                json!({
+                    "planType": "team",
+                    "rateLimit": {
+                        "primaryWindow": {
+                            "usedPercent": 12,
+                            "windowDurationMins": 300,
+                            "resetsAt": 1771322400
+                        }
+                    }
+                })
+                .to_string(),
+            )
+        }
+
+        let app = Router::new().route("/backend-api/wham/usage", get(usage_handler));
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind imported validation server");
+        let addr = listener
+            .local_addr()
+            .expect("imported validation server addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve imported validation server");
+        });
+        let origin = format!("http://{addr}");
+
+        let state = test_app_state_with_usage_base(&format!("{origin}/backend-api")).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let occupying_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Occupying Account",
+            "occupying@example.com",
+            "org_occupying",
+            "user_occupying",
+        )
+        .await;
+        set_test_account_group_name(&state.pool, occupying_account_id, Some("import-group")).await;
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "import-group",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: test_required_group_bound_proxy_keys(),
+                node_shunt_enabled: true,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 0,
+            },
+        )
+        .await
+        .expect("save node shunt metadata");
+        drop(conn);
+
+        let imported = ImportOauthCredentialFileRequest {
+            source_id: "source-new".to_string(),
+            file_name: "new-session.json".to_string(),
+            content: json!({
+                "type": "codex",
+                "email": "new-session@example.com",
+                "account_id": "acct_new_session",
+                "expired": "2099-04-20T00:00:00Z",
+                "access_token": "access-new-session",
+                "id_token": test_id_token(
+                    "new-session@example.com",
+                    Some("acct_new_session"),
+                    Some("user_new_session"),
+                    Some("team"),
+                ),
+            })
+            .to_string(),
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::HOST,
+            axum::http::HeaderValue::from_static("127.0.0.1:8080"),
+        );
+
+        let Json(response) = import_validated_oauth_accounts(
+            State(state.clone()),
+            headers,
+            Json(ImportValidatedOauthAccountsRequest {
+                items: vec![imported],
+                selected_source_ids: vec!["source-new".to_string()],
+                validation_job_id: None,
+                group_name: Some("import-group".to_string()),
+                group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
+                group_node_shunt_enabled: Some(true),
+                group_note: None,
+                concurrency_limit: None,
+                tag_ids: vec![],
+            }),
+        )
+        .await
+        .expect("import should persist even when node shunt slots are full");
+
+        assert_eq!(response.summary.created, 1);
+        assert_eq!(response.summary.failed, 0);
+        let account_id = response
+            .results
+            .first()
+            .and_then(|result| result.account_id)
+            .expect("created account id");
+        let assignments = build_upstream_account_node_shunt_assignments(state.as_ref())
+            .await
+            .expect("build node shunt assignments");
+        assert!(
+            !assignments.account_proxy_keys.contains_key(&account_id),
+            "new account should persist without stealing an occupied node shunt slot",
+        );
+        let row = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load imported account")
+            .expect("imported account");
+        let metadata = load_group_metadata(&state.pool, Some("import-group"))
+            .await
+            .expect("load group metadata");
+        let err = resolve_account_forward_proxy_scope_from_assignments(
+            row.id,
+            row.group_name.as_deref(),
+            &metadata,
+            &assignments,
+        )
+        .expect_err("persisted account should remain unroutable until a node shunt slot opens");
+        assert!(is_group_node_shunt_unassigned_message(&err.to_string()));
+
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn update_upstream_account_group_allows_note_only_edits_when_node_shunt_group_has_no_selectable_nodes()
      {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
