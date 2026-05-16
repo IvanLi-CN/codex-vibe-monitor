@@ -80,7 +80,7 @@ pub(crate) async fn build_imported_oauth_validation_response(
             }
         };
         let matched_account = existing_match.as_ref().map(import_match_summary_from_row);
-        let usage_scope = match resolve_group_forward_proxy_scope_for_provisioning(
+        let usage_scope = match resolve_imported_oauth_probe_scope(
             state,
             binding,
             assignments.as_ref(),
@@ -133,6 +133,44 @@ pub(crate) async fn build_imported_oauth_validation_response(
         items.len(),
         rows,
     ))
+}
+
+async fn resolve_imported_oauth_probe_scope(
+    state: &AppState,
+    binding: &ResolvedRequiredGroupProxyBinding,
+    assignments: Option<&UpstreamAccountNodeShuntAssignments>,
+    existing_match: Option<&UpstreamAccountRow>,
+    consumed_proxy_keys: &HashSet<String>,
+) -> Result<ForwardProxyRouteScope> {
+    match resolve_group_forward_proxy_scope_for_provisioning(
+        state,
+        binding,
+        assignments,
+        existing_match,
+        consumed_proxy_keys,
+    )
+    .await
+    {
+        Ok(scope) => Ok(scope),
+        Err(err)
+            if binding.node_shunt_enabled
+                && is_group_node_shunt_unassigned_message(&err.to_string()) =>
+        {
+            let has_selectable_bound_proxy = {
+                let manager = state.forward_proxy.lock().await;
+                manager.has_selectable_bound_proxy_keys(&binding.bound_proxy_keys)
+            };
+            if has_selectable_bound_proxy {
+                required_account_forward_proxy_scope(
+                    Some(&binding.group_name),
+                    binding.bound_proxy_keys.clone(),
+                )
+            } else {
+                Err(err)
+            }
+        }
+        Err(err) => Err(err),
+    }
 }
 
 pub(crate) fn build_imported_oauth_pending_response(
@@ -726,7 +764,7 @@ pub(crate) fn spawn_imported_oauth_validation_job(
                 };
                 let matched_account = existing_match.as_ref().map(import_match_summary_from_row);
 
-                let usage_scope = match resolve_group_forward_proxy_scope_for_provisioning(
+                let usage_scope = match resolve_imported_oauth_probe_scope(
                     state.as_ref(),
                     &binding,
                     Some(&assignments),
@@ -1442,7 +1480,7 @@ pub(crate) async fn import_validated_oauth_accounts(
             }
         };
         let matched_account = existing_match.as_ref().map(import_match_summary_from_row);
-        let usage_scope = match resolve_group_forward_proxy_scope_for_provisioning(
+        let usage_scope = match resolve_imported_oauth_probe_scope(
             state.as_ref(),
             &resolved_group_binding,
             Some(&assignments),
