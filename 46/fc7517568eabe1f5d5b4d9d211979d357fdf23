@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.63.1",
+  "base_stable_version": "1.63.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-05-16T07:40:52Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.63.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "a9315ceec58334defb046e45b17b2937732a3cec",
+  "pr_number": 426,
+  "pr_title": "fix(account-pool): allow session import into full node-shunt groups",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.63.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.63.1",
+  "target_sha": "46fc7517568eabe1f5d5b4d9d211979d357fdf23",
+  "type_label": "type:patch"
+}
