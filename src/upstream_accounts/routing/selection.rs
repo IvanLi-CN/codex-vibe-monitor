@@ -100,8 +100,8 @@ async fn load_recent_route_binding_failure_penalties(
         FROM pool_upstream_request_attempts
         WHERE upstream_route_key IS NOT NULL
           AND proxy_binding_key_snapshot IS NOT NULL
-          AND created_at >= datetime('now', ?1)
-        ORDER BY created_at ASC, id ASC
+          AND occurred_at >= datetime('now', ?1)
+        ORDER BY occurred_at ASC, id ASC
         "#,
     )
     .bind(format!(
