@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.63.2",
+  "base_stable_version": "1.63.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-05-18T07:47:07Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.63.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "2e6076ac802ad59f098aa88d4f8ba51f82fcf466",
+  "pr_number": 427,
+  "pr_title": "fix(pool): demote timed-out route proxy combinations",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.63.2",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.63.2",
+  "target_sha": "bb1160280f5ffb61768ccb2347d9f00be0de2e43",
+  "type_label": "type:patch"
+}
