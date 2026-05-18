@@ -1,4 +1,163 @@
 #[tokio::test]
+async fn resolver_demotes_recent_timeout_for_same_upstream_route_and_proxy_binding() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let primary_route = "https://primary-timeout.example.com/backend-api/codex";
+    let alternate_route = "https://alternate-timeout.example.com/backend-api/codex";
+    let primary = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Primary Timeout Combo",
+        "sk-primary-timeout-combo",
+        None,
+        Some(primary_route),
+    )
+    .await;
+    let alternate = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Alternate Timeout Combo",
+        "sk-alternate-timeout-combo",
+        None,
+        Some(alternate_route),
+    )
+    .await;
+    let now_iso = format_utc_iso(Utc::now());
+    insert_limit_sample_with_usage(&state.pool, primary, &now_iso, Some(1.0), Some(1.0)).await;
+    insert_limit_sample_with_usage(&state.pool, alternate, &now_iso, Some(80.0), Some(20.0)).await;
+    seed_route_binding_attempt(
+        &state.pool,
+        "route-binding-timeout",
+        primary_route,
+        FORWARD_PROXY_DIRECT_KEY,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+        Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT),
+    )
+    .await;
+
+    let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
+        .await
+        .expect("resolve pool account");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("expected resolved alternate account");
+    };
+    assert_eq!(account.account_id, alternate);
+}
+
+#[tokio::test]
+async fn resolver_does_not_demote_successful_or_non_timeout_route_proxy_history() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let primary_route = "https://primary-success.example.com/backend-api/codex";
+    let alternate_route = "https://alternate-success.example.com/backend-api/codex";
+    let primary = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Primary Successful Combo",
+        "sk-primary-success-combo",
+        None,
+        Some(primary_route),
+    )
+    .await;
+    let alternate = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Alternate Successful Combo",
+        "sk-alternate-success-combo",
+        None,
+        Some(alternate_route),
+    )
+    .await;
+    let now_iso = format_utc_iso(Utc::now());
+    insert_limit_sample_with_usage(&state.pool, primary, &now_iso, Some(1.0), Some(1.0)).await;
+    insert_limit_sample_with_usage(&state.pool, alternate, &now_iso, Some(80.0), Some(20.0)).await;
+    seed_route_binding_attempt(
+        &state.pool,
+        "route-binding-auth-failure",
+        primary_route,
+        FORWARD_PROXY_DIRECT_KEY,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+        Some(PROXY_FAILURE_UPSTREAM_HTTP_AUTH),
+    )
+    .await;
+    seed_route_binding_attempt(
+        &state.pool,
+        "route-binding-success",
+        primary_route,
+        FORWARD_PROXY_DIRECT_KEY,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+        None,
+    )
+    .await;
+
+    let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
+        .await
+        .expect("resolve pool account");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("expected resolved primary account");
+    };
+    assert_eq!(account.account_id, primary);
+}
+
+async fn seed_route_binding_attempt(
+    pool: &SqlitePool,
+    invoke_id: &str,
+    upstream_base_url: &str,
+    proxy_binding_key_snapshot: &str,
+    status: &str,
+    failure_kind: Option<&str>,
+) {
+    let upstream_route_key = canonical_pool_upstream_route_key(
+        &Url::parse(upstream_base_url).expect("valid upstream route"),
+    );
+    let now_iso = format_utc_iso(Utc::now());
+    let phase = if status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS {
+        POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED
+    } else {
+        POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED
+    };
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_request_attempts (
+            invoke_id,
+            occurred_at,
+            endpoint,
+            route_mode,
+            sticky_key,
+            group_name_snapshot,
+            proxy_binding_key_snapshot,
+            upstream_account_id,
+            upstream_route_key,
+            attempt_index,
+            distinct_account_index,
+            same_account_retry_index,
+            requester_ip,
+            started_at,
+            finished_at,
+            status,
+            phase,
+            http_status,
+            error_message,
+            failure_kind,
+            created_at
+        )
+        VALUES (
+            ?1, ?2, '/v1/responses', ?3, NULL, ?4, ?5, 41, ?6,
+            1, 1, 0, '203.0.113.10', ?2, ?2, ?7, ?8, ?9, ?10, ?11, datetime('now')
+        )
+        "#,
+    )
+    .bind(invoke_id)
+    .bind(&now_iso)
+    .bind(INVOCATION_ROUTE_MODE_POOL)
+    .bind(test_required_group_name())
+    .bind(proxy_binding_key_snapshot)
+    .bind(upstream_route_key)
+    .bind(status)
+    .bind(phase)
+    .bind((status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS).then_some(200_i64))
+    .bind((status != POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS).then_some("test failure"))
+    .bind(failure_kind)
+    .execute(pool)
+    .await
+    .expect("seed route binding attempt");
+}
+
+#[tokio::test]
 async fn resolver_returns_specific_group_proxy_error_when_only_bad_groups_remain() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let crypto_key = state
