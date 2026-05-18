@@ -2988,6 +2988,7 @@ async fn resolver_keeps_higher_priority_soft_degraded_candidate_ahead_of_lower_p
 fn retry_original_node_candidates_sort_after_sendable_candidates_even_when_priority_is_higher() {
     let retry_original = PoolRoutingCandidateScore {
         eligibility: PoolRoutingCandidateEligibility::SoftDegraded,
+        route_binding_failure_penalty: 0,
         routing_priority_rank: 0,
         capacity_lane: PoolRoutingCandidateCapacityLane::Primary,
         dispatch_state: PoolRoutingCandidateDispatchState::RetryOriginalNode,
@@ -2998,6 +2999,7 @@ fn retry_original_node_candidates_sort_after_sendable_candidates_even_when_prior
     };
     let ready_after_migration = PoolRoutingCandidateScore {
         eligibility: PoolRoutingCandidateEligibility::SoftDegraded,
+        route_binding_failure_penalty: 0,
         routing_priority_rank: 2,
         capacity_lane: PoolRoutingCandidateCapacityLane::Primary,
         dispatch_state: PoolRoutingCandidateDispatchState::ReadyAfterMigration,
@@ -3021,6 +3023,7 @@ fn retry_original_node_candidates_sort_after_sendable_candidates_even_when_prior
 fn overflow_candidates_sort_after_primary_candidates_even_when_priority_is_higher() {
     let overflow = PoolRoutingCandidateScore {
         eligibility: PoolRoutingCandidateEligibility::Assignable,
+        route_binding_failure_penalty: 0,
         routing_priority_rank: 0,
         capacity_lane: PoolRoutingCandidateCapacityLane::Overflow,
         dispatch_state: PoolRoutingCandidateDispatchState::ReadyOnOwnedNode,
@@ -3031,6 +3034,7 @@ fn overflow_candidates_sort_after_primary_candidates_even_when_priority_is_highe
     };
     let primary = PoolRoutingCandidateScore {
         eligibility: PoolRoutingCandidateEligibility::Assignable,
+        route_binding_failure_penalty: 0,
         routing_priority_rank: 2,
         capacity_lane: PoolRoutingCandidateCapacityLane::Primary,
         dispatch_state: PoolRoutingCandidateDispatchState::ReadyOnOwnedNode,

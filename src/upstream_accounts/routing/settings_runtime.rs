@@ -543,6 +543,7 @@ impl PoolRoutingCandidateDispatchState {
 #[derive(Debug, Clone)]
 pub(crate) struct PoolRoutingCandidateScore {
     pub(crate) eligibility: PoolRoutingCandidateEligibility,
+    pub(crate) route_binding_failure_penalty: i64,
     pub(crate) routing_priority_rank: u8,
     pub(crate) capacity_lane: PoolRoutingCandidateCapacityLane,
     pub(crate) dispatch_state: PoolRoutingCandidateDispatchState,

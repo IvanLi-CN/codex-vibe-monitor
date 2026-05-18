@@ -6,6 +6,8 @@ struct LivePoolCandidateEvaluation {
     blocked_message: Option<String>,
 }
 
+const POOL_ROUTE_BINDING_FAILURE_PENALTY_WINDOW_SECS: i64 = 300;
+
 pub(crate) fn compare_pool_routing_candidate_scores(
     lhs: &PoolRoutingCandidateScore,
     rhs: &PoolRoutingCandidateScore,
@@ -16,13 +18,18 @@ pub(crate) fn compare_pool_routing_candidate_scores(
         rhs.dispatch_state == PoolRoutingCandidateDispatchState::RetryOriginalNode;
     // Hard-blocked candidates are filtered before sort. Ready candidates should always beat
     // "retry original unavailable node" fallbacks. Among sendable candidates, soft-limit
-    // pressure should still demote overflow accounts before priority/scarcity tie-breakers.
+    // pressure still demotes overflow accounts first, then recent route+proxy transport
+    // failures demote a bad combination before account priority/scarcity tie-breakers.
     lhs_requires_retry_original
         .cmp(&rhs_requires_retry_original)
         .then_with(|| {
             lhs.capacity_lane
                 .rank()
                 .cmp(&rhs.capacity_lane.rank())
+                .then_with(|| {
+                    lhs.route_binding_failure_penalty
+                        .cmp(&rhs.route_binding_failure_penalty)
+                })
                 .then_with(|| lhs.routing_priority_rank.cmp(&rhs.routing_priority_rank))
                 .then_with(|| lhs.eligibility.rank().cmp(&rhs.eligibility.rank()))
                 .then_with(|| lhs.dispatch_state.rank().cmp(&rhs.dispatch_state.rank()))
@@ -47,6 +54,7 @@ fn build_pool_routing_candidate_score(
     };
     PoolRoutingCandidateScore {
         eligibility,
+        route_binding_failure_penalty: 0,
         routing_priority_rank: routing_priority_rank(Some(effective_rule)),
         capacity_lane,
         dispatch_state,
@@ -55,6 +63,111 @@ fn build_pool_routing_candidate_score(
         last_selected_at: candidate.last_selected_at.clone(),
         account_id: candidate.id,
     }
+}
+
+fn pool_route_binding_penalty_key(upstream_route_key: &str, proxy_binding_key: &str) -> String {
+    format!("{upstream_route_key}\n{proxy_binding_key}")
+}
+
+fn pool_route_binding_failure_is_penalized(status: &str, failure_kind: Option<&str>) -> bool {
+    status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
+        && matches!(
+            failure_kind,
+            Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT)
+                | Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM)
+                | Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
+        )
+}
+
+async fn load_recent_route_binding_failure_penalties(
+    pool: &Pool<Sqlite>,
+) -> Result<HashMap<String, i64>> {
+    #[derive(Debug, FromRow)]
+    struct RouteBindingAttemptRow {
+        upstream_route_key: String,
+        proxy_binding_key_snapshot: String,
+        status: String,
+        failure_kind: Option<String>,
+    }
+
+    let rows = sqlx::query_as::<_, RouteBindingAttemptRow>(
+        r#"
+        SELECT
+            upstream_route_key,
+            proxy_binding_key_snapshot,
+            status,
+            failure_kind
+        FROM pool_upstream_request_attempts
+        WHERE upstream_route_key IS NOT NULL
+          AND proxy_binding_key_snapshot IS NOT NULL
+          AND created_at >= datetime('now', ?1)
+        ORDER BY created_at ASC, id ASC
+        "#,
+    )
+    .bind(format!(
+        "-{} seconds",
+        POOL_ROUTE_BINDING_FAILURE_PENALTY_WINDOW_SECS
+    ))
+    .fetch_all(pool)
+    .await?;
+
+    let mut penalties = HashMap::new();
+    for row in rows {
+        let key = pool_route_binding_penalty_key(
+            row.upstream_route_key.as_str(),
+            row.proxy_binding_key_snapshot.as_str(),
+        );
+        if row.status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS {
+            penalties.remove(&key);
+            continue;
+        }
+        if pool_route_binding_failure_is_penalized(&row.status, row.failure_kind.as_deref()) {
+            *penalties.entry(key).or_insert(0) += 1;
+        }
+    }
+    Ok(penalties)
+}
+
+async fn route_binding_keys_for_candidate_scope(
+    state: &AppState,
+    scope: &ForwardProxyRouteScope,
+) -> Vec<String> {
+    let manager = state.forward_proxy.lock().await;
+    match scope {
+        ForwardProxyRouteScope::Automatic => Vec::new(),
+        ForwardProxyRouteScope::PinnedProxyKey(proxy_key) => manager
+            .canonicalize_bound_proxy_key(proxy_key, None)
+            .into_iter()
+            .collect(),
+        ForwardProxyRouteScope::BoundGroup {
+            group_name,
+            bound_proxy_keys,
+        } => manager
+            .current_bound_group_binding_key(group_name, bound_proxy_keys)
+            .map(|key| vec![key])
+            .unwrap_or_else(|| manager.selectable_bound_proxy_keys_in_order(bound_proxy_keys)),
+    }
+}
+
+async fn route_binding_failure_penalty_for_account(
+    state: &AppState,
+    account: &PoolResolvedAccount,
+    penalties: &HashMap<String, i64>,
+) -> i64 {
+    let upstream_route_key = account.upstream_route_key();
+    route_binding_keys_for_candidate_scope(state, &account.forward_proxy_scope)
+        .await
+        .into_iter()
+        .filter_map(|proxy_binding_key| {
+            penalties
+                .get(&pool_route_binding_penalty_key(
+                    upstream_route_key.as_str(),
+                    proxy_binding_key.as_str(),
+                ))
+                .copied()
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 async fn build_assigned_blocked_account(
@@ -332,6 +445,9 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
     let mut sticky_assigned_blocked = None;
     let mut group_proxy_blocked_messages = Vec::new();
     let mut node_shunt_assignments = build_upstream_account_node_shunt_assignments(state).await?;
+    let route_binding_failure_penalties =
+        load_recent_route_binding_failure_penalties(&state.pool).await?;
+    let mut resolved_candidates = Vec::new();
 
     let sticky_route = if let Some(sticky_key) = sticky_key {
         load_sticky_route(&state.pool, sticky_key).await?
@@ -389,7 +505,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
                 .await?
                 {
                     PoolAccountGroupProxyRoutingReadiness::Ready(group_metadata) => {
-                        let evaluation = evaluate_live_pool_candidate(
+                        let mut evaluation = evaluate_live_pool_candidate(
                             state,
                             &row,
                             sticky_candidate
@@ -421,19 +537,39 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
                             now,
                         )
                         .await?;
-                        if let Some(mut account) = evaluation.resolved_account {
+                        if let Some(mut account) = evaluation.resolved_account.take() {
                             account.routing_source = PoolRoutingSelectionSource::StickyReuse;
                             if !excluded_upstream_route_keys.contains(&account.upstream_route_key())
                             {
-                                return Ok(PoolAccountResolution::Resolved(account));
-                            }
-                            sticky_route_excluded_by_route_key = true;
-                            sticky_route_was_excluded = true;
-                            if is_account_degraded_for_routing(&row, sticky_snapshot_exhausted, now)
-                            {
-                                saw_degraded_candidate = true;
+                                let route_binding_failure_penalty =
+                                    route_binding_failure_penalty_for_account(
+                                        state,
+                                        &account,
+                                        &route_binding_failure_penalties,
+                                    )
+                                    .await;
+                                if route_binding_failure_penalty > 0 {
+                                    evaluation.score.route_binding_failure_penalty =
+                                        route_binding_failure_penalty;
+                                    evaluation.resolved_account = Some(account);
+                                    resolved_candidates.push(evaluation);
+                                    sticky_route_was_excluded = true;
+                                    saw_other_non_rate_limited_routing_candidate = true;
+                                } else {
+                                    return Ok(PoolAccountResolution::Resolved(account));
+                                }
                             } else {
-                                saw_excluded_route_candidate = true;
+                                sticky_route_excluded_by_route_key = true;
+                                sticky_route_was_excluded = true;
+                                if is_account_degraded_for_routing(
+                                    &row,
+                                    sticky_snapshot_exhausted,
+                                    now,
+                                ) {
+                                    saw_degraded_candidate = true;
+                                } else {
+                                    saw_excluded_route_candidate = true;
+                                }
                             }
                         } else if sticky_route_is_excluded_by_route_key {
                             sticky_route_excluded_by_route_key = true;
@@ -541,8 +677,6 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
             .collect::<Vec<_>>(),
     )
     .await?;
-    let mut resolved_candidates = Vec::new();
-
     for candidate in candidates {
         let Some(row) = load_upstream_account_row(&state.pool, candidate.id).await? else {
             continue;
@@ -629,7 +763,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
                 continue;
             }
         };
-        let evaluation = evaluate_live_pool_candidate(
+        let mut evaluation = evaluate_live_pool_candidate(
             state,
             &row,
             &candidate,
@@ -645,6 +779,15 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
             | PoolRoutingCandidateEligibility::SoftDegraded
                 if evaluation.resolved_account.is_some() =>
             {
+                if let Some(account) = evaluation.resolved_account.as_ref() {
+                    evaluation.score.route_binding_failure_penalty =
+                        route_binding_failure_penalty_for_account(
+                            state,
+                            account,
+                            &route_binding_failure_penalties,
+                        )
+                        .await;
+                }
                 resolved_candidates.push(evaluation);
             }
             PoolRoutingCandidateEligibility::HardBlocked => {

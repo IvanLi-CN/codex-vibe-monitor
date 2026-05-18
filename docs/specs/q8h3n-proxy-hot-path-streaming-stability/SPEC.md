@@ -14,6 +14,7 @@
 - 让 request raw 与 response raw 从业务转发热路径旁路出去；资源紧张时优先丢 raw，不阻塞代理流。
 - 让大 body sticky/rewrite 不再默认整包内存物化；大体积 body 只做前缀探测，必要时回落到 file-backed replay。
 - 让 `/api/invocations` 分页主查询只对当前页记录执行重型投影，并让 summary/quota follow-up 在 burst 写入时自动合并。
+- 让号池路由在近期上游传输超时后降低同一上游端点与同一代理节点组合的选择优先级，避免短窗口内连续命中同一个坏传输组合。
 - 在共享测试机 `codex-testbox` 上完成 100 并行压测，验证本地 admission reject 已消失，且已有效的 hot-path 修复没有回退。
 
 ### Non-goals
@@ -46,6 +47,7 @@
 - 大 body sticky 探测只允许读取固定前缀窗口；超过窗口仍未识别时，直接回落到“无 body sticky 优化”的 replay 路径。
 - summary/quota follow-up 必须具备 burst coalesce，避免每条新记录都立即跑完整汇总。
 - `PROXY_REQUEST_CONCURRENCY_LIMIT` / `PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS` 只能作为弃用兼容项继续被读取与告警，不得再影响 `/v1/*` 准入。
+- 号池路由只能把近期 `transport_failure` 且 failure kind 属于 `upstream_handshake_timeout`、`failed_contact_upstream` 或 `upstream_stream_error` 的 `upstream_route_key + proxy_binding_key_snapshot` 组合纳入短期降权；同组合后续成功应清除该短期惩罚，认证、配额、402 等账号级硬失败不得混入组合降权。
 
 ## 验收标准（Acceptance Criteria）
 
@@ -55,6 +57,7 @@
 - `/api/invocations` 的分页主查询只先选出当前页 id，再对当前页记录执行完整投影。
 - summary/quota follow-up 在 burst 写入时能够合并，不再对每条记录立即触发一次完整汇总。
 - 即使线上环境仍设置 `PROXY_REQUEST_CONCURRENCY_LIMIT` / `PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS`，它们也只会产生日志告警，不会改变 `/v1/*` 准入行为。
+- Given 某 `upstream_route_key + proxy_binding_key_snapshot` 近期发生超时/传输失败，When 号池还有其它可路由组合，Then 路由排序优先尝试其它组合；若只有该组合可用，仍允许回退使用而不是直接报无账号。
 
 ## 参考
 

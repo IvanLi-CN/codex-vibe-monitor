@@ -11,6 +11,7 @@
 
 - Status: 已完成
 - Note: 已移除错误的 whole-proxy admission gate，`PROXY_REQUEST_CONCURRENCY_*` 已进入 deprecated/ignored 兼容态；共享测试机 `codex-testbox` 100 并行压测通过，确认 `/v1/*` 不再因本地 admission gate 返回 `503`。
+- Note: 号池候选评分会读取最近 5 分钟的 `pool_upstream_request_attempts`，对最新仍处于 timeout/transport failure 的 `upstream_route_key + proxy_binding_key_snapshot` 组合增加短期排序惩罚；后续成功尝试会清除该短期惩罚。
 
 ## 验证
 
@@ -19,6 +20,9 @@
 - `cargo test proxy_request_tracking_can_reach_100_in_flight_without_local_rejection -- --nocapture`
 - `cargo test proxy_openai_v1_via_pool_reads_request_body_without_local_admission_gate -- --nocapture`
 - `cargo test list_invocations_ -- --nocapture`
+- `cargo test resolver_demotes_recent_timeout_for_same_upstream_route_and_proxy_binding -- --nocapture`
+- `cargo test resolver_does_not_demote_successful_or_non_timeout_route_proxy_history -- --nocapture`
+- `cargo test candidates_sort -- --nocapture`
 - `scripts/shared-testbox-proxy-parallel-smoke`
 
 ## Migrated Task-Ticket Sections
