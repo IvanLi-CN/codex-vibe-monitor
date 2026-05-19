@@ -1486,4 +1486,18 @@ mod tests {
             vec![(1, 0), (1, 1), (1, 2), (2, 0), (2, 1), (2, 2)]
         );
     }
+
+    #[test]
+    fn manual_latency_batch_query_accepts_repeated_keys() {
+        assert_eq!(
+            parse_forward_proxy_nodes_latency_test_keys(
+                "key=__direct__&key=fpn_a&ignored=value&key=fpn_b"
+            ),
+            vec![
+                "__direct__".to_string(),
+                "fpn_a".to_string(),
+                "fpn_b".to_string()
+            ]
+        );
+    }
 }
