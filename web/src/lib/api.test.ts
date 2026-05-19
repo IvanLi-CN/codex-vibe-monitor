@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS,
+  createForwardProxyNodesLatencyTestEventSource,
   createOauthMailboxSession,
   fetchInvocationRecords,
   fetchForwardProxyLiveStats,
@@ -15,6 +16,8 @@ import {
   fetchUpstreamAccounts,
   fetchUpstreamAccountWindowUsage,
   fetchUpstreamStickyConversations,
+  normalizeForwardProxyLatencyTestStreamEvent,
+  refreshForwardProxySubscriptions,
   updateOauthLoginSession,
   updatePoolRoutingSettings,
   updateProxySettings,
@@ -228,6 +231,83 @@ describe("fetchForwardProxyLiveStats", () => {
     const response = await fetchForwardProxyLiveStats();
     expect(response.nodes).toHaveLength(1);
     expect(response.nodes[0].weight24h).toEqual([]);
+  });
+});
+
+describe("forward proxy manual latency API", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("normalizes latency stream events with successful samples", () => {
+    const event = normalizeForwardProxyLatencyTestStreamEvent({
+      kind: "progress",
+      node: {
+        key: "node-a",
+        displayName: "Node A",
+        round: 2,
+        totalRounds: 5,
+        completedRounds: 2,
+        successCount: 3,
+        attemptCount: 4,
+        averageLatencyMs: 151.4,
+        egressIp: { ok: true, latencyMs: 120, ip: "203.0.113.10" },
+        oauthUpstream: { ok: true, latencyMs: 183, httpStatus: 401 },
+        done: false,
+        timedOut: false,
+        message: "151 ms",
+      },
+    });
+
+    expect(event?.kind).toBe("progress");
+    expect(event?.node.averageLatencyMs).toBe(151.4);
+    expect(event?.node.egressIp.ip).toBe("203.0.113.10");
+    expect(event?.node.oauthUpstream.httpStatus).toBe(401);
+  });
+
+  it("normalizes forced subscription refresh response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            forwardProxy: {
+              proxyUrls: ["socks5://127.0.0.1:1080"],
+              subscriptionUrls: ["https://example.com/sub"],
+              subscriptionUpdateIntervalSecs: 900,
+              nodes: [],
+            },
+            subscriptionCount: 1,
+            addedNodeCount: 2,
+            refreshedAt: "2026-05-19T06:00:00Z",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch,
+    );
+
+    const response = await refreshForwardProxySubscriptions();
+    expect(response.forwardProxy.subscriptionUpdateIntervalSecs).toBe(900);
+    expect(response.subscriptionCount).toBe(1);
+    expect(response.addedNodeCount).toBe(2);
+  });
+
+  it("creates breadth-first batch test event source URL with repeated keys", () => {
+    class MockEventSource {
+      static latestUrl = "";
+      readonly url: string;
+      constructor(url: string | URL) {
+        this.url = url.toString();
+        MockEventSource.latestUrl = this.url;
+      }
+      close() {}
+    }
+    vi.stubGlobal("EventSource", MockEventSource as unknown as typeof EventSource);
+
+    createForwardProxyNodesLatencyTestEventSource(["node-a", "node-b"]);
+    const url = new URL(MockEventSource.latestUrl, "http://localhost");
+    expect(url.pathname).toBe("/api/settings/forward-proxy/nodes/test-stream");
+    expect(url.searchParams.getAll("key")).toEqual(["node-a", "node-b"]);
   });
 });
 

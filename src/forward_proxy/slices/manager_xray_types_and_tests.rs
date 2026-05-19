@@ -1410,4 +1410,80 @@ mod tests {
         assert!(metadata.egress_ip_checked_at.is_some());
         assert!(metadata.egress_ip_error_at.is_some());
     }
+
+    #[test]
+    fn manual_latency_average_uses_only_successful_samples() {
+        let mut accumulator = ForwardProxyLatencyAccumulator::default();
+        accumulator.record_round(
+            &ForwardProxyLatencyProbeTargetResult {
+                ok: true,
+                latency_ms: Some(101.4),
+                ip: Some("203.0.113.24".to_string()),
+                http_status: None,
+                error: None,
+            },
+            &ForwardProxyLatencyProbeTargetResult {
+                ok: false,
+                latency_ms: None,
+                ip: None,
+                http_status: None,
+                error: Some("timeout".to_string()),
+            },
+        );
+        accumulator.record_round(
+            &ForwardProxyLatencyProbeTargetResult {
+                ok: true,
+                latency_ms: Some(198.6),
+                ip: None,
+                http_status: Some(401),
+                error: None,
+            },
+            &ForwardProxyLatencyProbeTargetResult {
+                ok: true,
+                latency_ms: Some(250.0),
+                ip: None,
+                http_status: Some(200),
+                error: None,
+            },
+        );
+
+        assert_eq!(accumulator.completed_rounds, 2);
+        assert_eq!(accumulator.success_count, 3);
+        assert_eq!(accumulator.average_latency_ms(), Some(183));
+    }
+
+    #[test]
+    fn manual_latency_average_is_none_when_all_rounds_fail() {
+        let mut accumulator = ForwardProxyLatencyAccumulator::default();
+        for _ in 0..forward_proxy_manual_latency_round_count() {
+            accumulator.record_round(
+                &ForwardProxyLatencyProbeTargetResult {
+                    ok: false,
+                    latency_ms: None,
+                    ip: None,
+                    http_status: None,
+                    error: Some("egress timeout".to_string()),
+                },
+                &ForwardProxyLatencyProbeTargetResult {
+                    ok: false,
+                    latency_ms: None,
+                    ip: None,
+                    http_status: None,
+                    error: Some("oauth timeout".to_string()),
+                },
+            );
+        }
+
+        assert_eq!(accumulator.completed_rounds, 5);
+        assert_eq!(accumulator.success_count, 0);
+        assert_eq!(accumulator.average_latency_ms(), None);
+    }
+
+    #[test]
+    fn manual_latency_batch_schedule_is_breadth_first() {
+        assert_eq!(
+            forward_proxy_latency_breadth_first_schedule(3, 2),
+            vec![(1, 0), (1, 1), (1, 2), (2, 0), (2, 1), (2, 2)]
+        );
+    }
 }

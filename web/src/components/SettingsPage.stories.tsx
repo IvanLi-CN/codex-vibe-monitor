@@ -282,6 +282,7 @@ function StorybookSettingsMock({
     externalApiKeysRef.current.reduce((max, item) => Math.max(max, item.id), 0) + 1,
   )
   const originalFetchRef = useRef<typeof window.fetch | null>(null)
+  const originalEventSourceRef = useRef<typeof window.EventSource | null>(null)
   const mockInstalledRef = useRef(false)
 
   if (typeof window !== 'undefined' && !mockInstalledRef.current) {
@@ -298,6 +299,88 @@ function StorybookSettingsMock({
     persistSettings(storageKey, settingsRef.current)
 
     originalFetchRef.current = window.fetch.bind(window)
+    originalEventSourceRef.current = window.EventSource
+
+    class MockForwardProxyEventSource extends EventTarget {
+      readonly url: string
+      readonly withCredentials = false
+      readyState = 0
+      onopen: ((event: Event) => void) | null = null
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+      private timers: number[] = []
+
+      constructor(url: string | URL) {
+        super()
+        this.url = url.toString()
+        this.readyState = 1
+        this.onopen?.(new Event('open'))
+        this.start()
+      }
+
+      close() {
+        this.readyState = 2
+        for (const timer of this.timers) {
+          window.clearTimeout(timer)
+        }
+        this.timers = []
+      }
+
+      private emit(eventName: 'progress' | 'completed', payload: unknown, delay: number) {
+        const timer = window.setTimeout(() => {
+          if (this.readyState === 2) return
+          const event = new MessageEvent(eventName, { data: JSON.stringify(payload) })
+          this.dispatchEvent(event)
+          if (this.onmessage) {
+            this.onmessage(new MessageEvent('message', { data: JSON.stringify(payload) }))
+          }
+        }, delay)
+        this.timers.push(timer)
+      }
+
+      private start() {
+        const parsedUrl = new URL(this.url, window.location.origin)
+        const keys = parsedUrl.pathname.includes('/nodes/test-stream')
+          ? parsedUrl.searchParams.getAll('key')
+          : [decodeURIComponent(parsedUrl.pathname.split('/').at(-2) ?? '')]
+        const activeKeys = keys.filter(Boolean)
+        let delay = 80
+        for (let round = 1; round <= 5; round += 1) {
+          for (const key of activeKeys) {
+            const node = settingsRef.current.forwardProxy.nodes.find((item) => item.key === key)
+            const baseLatency = 82 + activeKeys.indexOf(key) * 37 + round * 8
+            const success = !node?.displayName.includes('trojan') || round > 2
+            const payload = {
+              kind: round === 5 ? 'completed' : 'progress',
+              node: {
+                key,
+                displayName: node?.displayName ?? key,
+                round,
+                totalRounds: 5,
+                completedRounds: round,
+                successCount: success ? round * 2 : 0,
+                attemptCount: round * 2,
+                averageLatencyMs: success ? baseLatency : undefined,
+                egressIp: success
+                  ? { ok: true, latencyMs: baseLatency - 18, ip: '203.0.113.12' }
+                  : { ok: false, error: 'egress timeout' },
+                oauthUpstream: success
+                  ? { ok: true, latencyMs: baseLatency + 18, httpStatus: 401 }
+                  : { ok: false, error: 'oauth timeout' },
+                done: round === 5,
+                timedOut: !success && round === 5,
+                message: success ? `${baseLatency} ms` : 'timeout',
+              },
+            }
+            this.emit(round === 5 ? 'completed' : 'progress', payload, delay)
+            delay += 90
+          }
+        }
+      }
+    }
+
+    window.EventSource = MockForwardProxyEventSource as unknown as typeof EventSource
+
     const mockedFetch: typeof window.fetch = async (input, init) => {
       const method = (init?.method || (input instanceof Request ? input.method : 'GET')).toUpperCase()
       const inputUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
@@ -510,6 +593,33 @@ function StorybookSettingsMock({
         })
       }
 
+      if (path === '/api/settings/forward-proxy/refresh-subscriptions' && method === 'POST') {
+        const nextForwardProxy: ForwardProxySettings = {
+          ...settingsRef.current.forwardProxy,
+          nodes: [],
+        }
+        nextForwardProxy.nodes = [
+          ...buildNodesFromSettings(nextForwardProxy),
+          {
+            key: 'sub-refreshed-edge',
+            source: 'subscription',
+            displayName: 'refreshed-edge-1',
+            endpointUrl: 'socks5://refreshed.example.com:1080',
+            weight: 0.74,
+            penalized: false,
+            stats: statsPreset(3),
+          },
+        ]
+        settingsRef.current.forwardProxy = nextForwardProxy
+        persistSettings(storageKey, settingsRef.current)
+        return jsonResponse({
+          forwardProxy: nextForwardProxy,
+          subscriptionCount: nextForwardProxy.subscriptionUrls.length,
+          addedNodeCount: 1,
+          refreshedAt: new Date().toISOString(),
+        })
+      }
+
       if (path === '/api/settings/pricing' && method === 'PUT') {
         const body = parseBody<{ catalogVersion: string; entries: PricingEntry[] }>({
           catalogVersion: settingsRef.current.pricing.catalogVersion,
@@ -534,6 +644,10 @@ function StorybookSettingsMock({
       if (typeof window !== 'undefined' && originalFetchRef.current) {
         window.fetch = originalFetchRef.current
         originalFetchRef.current = null
+      }
+      if (typeof window !== 'undefined' && originalEventSourceRef.current) {
+        window.EventSource = originalEventSourceRef.current
+        originalEventSourceRef.current = null
       }
     }
   }, [])
@@ -635,6 +749,30 @@ export const SubscriptionHeavy: Story = {
     }),
   },
   render: () => <SettingsPage />,
+}
+
+export const ForwardProxyLatencyAndRefresh: Story = {
+  parameters: {
+    mockSettings: createStorySettings({
+      forwardProxy: {
+        proxyUrls: [
+          'http://tokyo-edge.example.com:8080',
+          'socks5://hk-edge.example.com:1080',
+          'trojan://storybook-secret@trojan.example.com:443?security=tls&type=ws&host=cdn.example.com&path=%2Fedge#trojan-edge',
+        ],
+        subscriptionUrls: ['https://example.com/subscription.base64'],
+      },
+    }),
+  },
+  render: () => <SettingsPage />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText('正向代理路由')).toBeVisible()
+    await userEvent.click(canvas.getByRole('button', { name: '测试全部' }))
+    await expect(await canvas.findByText(/ms$/)).toBeVisible()
+    await userEvent.click(canvas.getByRole('button', { name: '刷新订阅' }))
+    await expect(await canvas.findByText(/订阅已刷新/)).toBeVisible()
+  },
 }
 
 export const PenalizedPool: Story = {

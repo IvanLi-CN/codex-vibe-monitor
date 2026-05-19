@@ -1380,6 +1380,13 @@ const baseTranslations = {
     "settings.forwardProxy.save": "Save routing config",
     "settings.forwardProxy.addProxyBatch": "Import nodes",
     "settings.forwardProxy.addSubscription": "Add subscription",
+    "settings.forwardProxy.refreshSubscriptions": "Refresh subscriptions",
+    "settings.forwardProxy.refreshingSubscriptions": "Refreshing...",
+    "settings.forwardProxy.refreshSubscriptionsSuccess":
+      "Subscriptions refreshed: {{count}} source(s), {{added}} new node(s).",
+    "settings.forwardProxy.refreshSubscriptionsFailed":
+      "Subscription refresh failed: {{error}}",
+    "settings.forwardProxy.testAllLatency": "Test all",
     "settings.forwardProxy.proxyCount": "Configured nodes: {{count}}",
     "settings.forwardProxy.subscriptionCount":
       "Configured subscriptions: {{count}}",
@@ -1455,6 +1462,7 @@ const baseTranslations = {
     "settings.forwardProxy.modal.roundResultTimeout": "R{{round}} Timeout",
     "settings.forwardProxy.modal.roundResultFailed": "R{{round}} Failed",
     "settings.forwardProxy.table.proxy": "Proxy",
+    "settings.forwardProxy.table.latency": "Latency",
     "settings.forwardProxy.table.oneMinute": "1m",
     "settings.forwardProxy.table.fifteenMinutes": "15m",
     "settings.forwardProxy.table.oneHour": "1h",
@@ -1464,6 +1472,20 @@ const baseTranslations = {
     "settings.forwardProxy.table.successRate": "Success: {{value}}",
     "settings.forwardProxy.table.avgLatency": "Avg latency: {{value}}",
     "settings.forwardProxy.table.empty": "No proxy entry available.",
+    "settings.forwardProxy.latency.test": "Test",
+    "settings.forwardProxy.latency.testing": "Testing",
+    "settings.forwardProxy.latency.progress": "{{current}}/{{total}}",
+    "settings.forwardProxy.latency.empty": "--",
+    "settings.forwardProxy.latency.timeout": "Timeout",
+    "settings.forwardProxy.latency.streamFailed": "Latency test stream failed.",
+    "settings.forwardProxy.latency.tooltipIdle":
+      "Click to test this node with 5 rounds.",
+    "settings.forwardProxy.latency.tooltipTesting":
+      "Testing this node. The first valid sample will be shown immediately.",
+    "settings.forwardProxy.latency.tooltipReady":
+      "{{latency}} from {{success}}/{{attempts}} successful samples. Click to retest.",
+    "settings.forwardProxy.latency.ariaLabel":
+      "Test latency for {{node}}",
     "settings.pricing.title": "Pricing configuration",
     "settings.pricing.description":
       "Edit model pricing used by new request cost estimation. The default catalog now hardcodes GPT-5.5, GPT-5.5 Pro, and GPT-5.4 mini from the official release/pricing pages.",
@@ -3364,6 +3386,13 @@ const baseTranslations = {
     "settings.forwardProxy.save": "保存路由配置",
     "settings.forwardProxy.addProxyBatch": "批量导入节点",
     "settings.forwardProxy.addSubscription": "添加订阅",
+    "settings.forwardProxy.refreshSubscriptions": "刷新订阅",
+    "settings.forwardProxy.refreshingSubscriptions": "刷新中…",
+    "settings.forwardProxy.refreshSubscriptionsSuccess":
+      "订阅已刷新：{{count}} 个来源，新增 {{added}} 个节点。",
+    "settings.forwardProxy.refreshSubscriptionsFailed":
+      "订阅刷新失败：{{error}}",
+    "settings.forwardProxy.testAllLatency": "测试全部",
     "settings.forwardProxy.proxyCount": "已配置节点：{{count}}",
     "settings.forwardProxy.subscriptionCount": "已配置订阅：{{count}}",
     "settings.forwardProxy.nodeItemFallback": "节点 #{{index}}",
@@ -3436,6 +3465,7 @@ const baseTranslations = {
     "settings.forwardProxy.modal.roundResultTimeout": "第 {{round}} 轮 超时",
     "settings.forwardProxy.modal.roundResultFailed": "第 {{round}} 轮 失败",
     "settings.forwardProxy.table.proxy": "代理",
+    "settings.forwardProxy.table.latency": "延迟",
     "settings.forwardProxy.table.oneMinute": "1 分钟",
     "settings.forwardProxy.table.fifteenMinutes": "15 分钟",
     "settings.forwardProxy.table.oneHour": "1 小时",
@@ -3445,6 +3475,20 @@ const baseTranslations = {
     "settings.forwardProxy.table.successRate": "成功率：{{value}}",
     "settings.forwardProxy.table.avgLatency": "平均延迟：{{value}}",
     "settings.forwardProxy.table.empty": "暂无可用代理条目。",
+    "settings.forwardProxy.latency.test": "测试",
+    "settings.forwardProxy.latency.testing": "测试中",
+    "settings.forwardProxy.latency.progress": "{{current}}/{{total}}",
+    "settings.forwardProxy.latency.empty": "--",
+    "settings.forwardProxy.latency.timeout": "超时",
+    "settings.forwardProxy.latency.streamFailed": "延迟测试连接中断。",
+    "settings.forwardProxy.latency.tooltipIdle":
+      "点击后对该节点执行 5 轮测试。",
+    "settings.forwardProxy.latency.tooltipTesting":
+      "正在测试该节点；出现第一轮有效样本后会立即显示。",
+    "settings.forwardProxy.latency.tooltipReady":
+      "{{latency}}，来自 {{success}}/{{attempts}} 个成功样本。点击可重新测试。",
+    "settings.forwardProxy.latency.ariaLabel":
+      "测试 {{node}} 的延迟",
     "settings.pricing.title": "价格配置",
     "settings.pricing.description":
       "编辑用于新请求成本估算的模型价格；默认目录已按官方发布稿与 pricing 页面硬编码补齐 GPT-5.5、GPT-5.5 Pro 与 GPT-5.4 mini。",

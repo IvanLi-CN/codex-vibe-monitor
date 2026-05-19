@@ -26,7 +26,7 @@ use axum::{
     Router,
     body::{Body, Bytes, HttpBody},
     extract::ws::{Message as AxumWsMessage, WebSocket, WebSocketUpgrade},
-    extract::{ConnectInfo, DefaultBodyLimit, OriginalUri, Query, State},
+    extract::{ConnectInfo, DefaultBodyLimit, OriginalUri, Path as AxumPath, Query, State},
     http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, uri::Authority},
     response::{IntoResponse, Json, Response, Sse},
     routing::{any, delete, get, post, put},

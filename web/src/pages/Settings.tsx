@@ -11,7 +11,12 @@ import { SelectField } from '../components/ui/select-field'
 import { Switch } from '../components/ui/switch'
 import { useSettings } from '../hooks/useSettings'
 import {
+  createForwardProxyNodeLatencyTestEventSource,
+  createForwardProxyNodesLatencyTestEventSource,
   type ForwardProxyNodeStats,
+  type ForwardProxyLatencyTestNodeProgress,
+  normalizeForwardProxyLatencyTestStreamEvent,
+  refreshForwardProxySubscriptions,
   validateForwardProxyCandidate,
   type ForwardProxySettings,
   type PricingEntry,
@@ -82,6 +87,12 @@ type ForwardProxyTableNode = {
   penalized: boolean
   stats: ForwardProxyNodeStats
 }
+
+type ForwardProxyLatencyUiState =
+  | { status: 'idle' }
+  | { status: 'testing'; progress?: ForwardProxyLatencyTestNodeProgress }
+  | { status: 'ready'; progress: ForwardProxyLatencyTestNodeProgress }
+  | { status: 'failed'; progress?: ForwardProxyLatencyTestNodeProgress; message: string }
 
 const AUTO_SAVE_DEBOUNCE_MS = 600
 const FORWARD_PROXY_BATCH_VALIDATION_CONCURRENCY = 5
@@ -243,6 +254,15 @@ function formatLatency(value?: number): string {
   return `${value.toFixed(0)} ms`
 }
 
+function formatManualLatency(value?: number): string {
+  if (value == null || Number.isNaN(value)) return '--'
+  return `${value.toFixed(0)} ms`
+}
+
+function isDraftForwardProxyNodeKey(key: string): boolean {
+  return key.startsWith('__draft__')
+}
+
 function isForwardProxyValidationTimeout(message: string): boolean {
   const normalized = message.toLowerCase()
   return normalized.includes('timed out') || normalized.includes('timeout') || normalized.includes('超时')
@@ -288,6 +308,7 @@ export default function SettingsPage() {
     isPricingSaving,
     pricingRollbackVersion,
     error,
+    refresh: refreshSettings,
     saveProxy,
     saveForwardProxy,
     savePricing,
@@ -305,8 +326,13 @@ export default function SettingsPage() {
   const [forwardProxyBatchResults, setForwardProxyBatchResults] = useState<ForwardProxyBatchValidationItem[]>([])
   const [forwardProxyBatchTooltipKey, setForwardProxyBatchTooltipKey] = useState<string | null>(null)
   const [forwardProxyValidation, setForwardProxyValidation] = useState<ForwardProxyValidationState>({ status: 'idle' })
+  const [forwardProxyLatencyByKey, setForwardProxyLatencyByKey] = useState<Record<string, ForwardProxyLatencyUiState>>({})
+  const [isForwardProxyRefreshingSubscriptions, setIsForwardProxyRefreshingSubscriptions] = useState(false)
+  const [forwardProxyRefreshMessage, setForwardProxyRefreshMessage] = useState<string | null>(null)
   const forwardProxyUrlsRef = useRef<string[]>([])
   const forwardProxySubscriptionUrlsRef = useRef<string[]>([])
+  const forwardProxyLatencyEventSourceRef = useRef<EventSource | null>(null)
+  const forwardProxyLatencyPendingKeysRef = useRef<Set<string>>(new Set())
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const forwardProxyBatchValidationRunRef = useRef(0)
   const lastSyncedPricingKeyRef = useRef<string | null>(null)
@@ -320,6 +346,14 @@ export default function SettingsPage() {
   const applyForwardProxySubscriptionUrls = useCallback((nextUrls: string[]) => {
     forwardProxySubscriptionUrlsRef.current = nextUrls
     setForwardProxySubscriptionUrls(nextUrls)
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      forwardProxyLatencyEventSourceRef.current?.close()
+      forwardProxyLatencyEventSourceRef.current = null
+      forwardProxyLatencyPendingKeysRef.current.clear()
+    }
   }, [])
 
   useEffect(() => {
@@ -620,6 +654,121 @@ export default function SettingsPage() {
     forwardProxyUrls,
     saveForwardProxy,
   ])
+
+  const handleRefreshForwardProxySubscriptions = useCallback(async () => {
+    if (isForwardProxyRefreshingSubscriptions || forwardProxyDirty) return
+    setIsForwardProxyRefreshingSubscriptions(true)
+    setForwardProxyRefreshMessage(null)
+    try {
+      const result = await refreshForwardProxySubscriptions()
+      applyForwardProxyUrls(result.forwardProxy.proxyUrls)
+      applyForwardProxySubscriptionUrls(result.forwardProxy.subscriptionUrls)
+      setForwardProxyIntervalSecs(String(result.forwardProxy.subscriptionUpdateIntervalSecs))
+      setForwardProxyDirty(false)
+      await refreshSettings()
+      setForwardProxyRefreshMessage(
+        t('settings.forwardProxy.refreshSubscriptionsSuccess', {
+          added: result.addedNodeCount,
+          count: result.subscriptionCount,
+        }),
+      )
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setForwardProxyRefreshMessage(
+        t('settings.forwardProxy.refreshSubscriptionsFailed', {
+          error: message || 'unknown',
+        }),
+      )
+    } finally {
+      setIsForwardProxyRefreshingSubscriptions(false)
+    }
+  }, [
+    applyForwardProxySubscriptionUrls,
+    applyForwardProxyUrls,
+    forwardProxyDirty,
+    isForwardProxyRefreshingSubscriptions,
+    refreshSettings,
+    t,
+  ])
+
+  const handleForwardProxyLatencyStreamEvent = useCallback((rawEvent: MessageEvent) => {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(rawEvent.data) as unknown
+    } catch {
+      return
+    }
+    const payload = normalizeForwardProxyLatencyTestStreamEvent(parsed)
+    if (!payload) return
+    setForwardProxyLatencyByKey((current) => ({
+      ...current,
+      [payload.node.key]: payload.node.done
+        ? payload.node.averageLatencyMs != null
+          ? { status: 'ready', progress: payload.node }
+          : { status: 'failed', progress: payload.node, message: payload.node.message || t('settings.forwardProxy.latency.timeout') }
+        : { status: 'testing', progress: payload.node },
+    }))
+    if (payload.node.done) {
+      forwardProxyLatencyPendingKeysRef.current.delete(payload.node.key)
+      if (forwardProxyLatencyPendingKeysRef.current.size === 0) {
+        forwardProxyLatencyEventSourceRef.current?.close()
+        forwardProxyLatencyEventSourceRef.current = null
+      }
+    }
+  }, [t])
+
+  const startForwardProxyLatencyTest = useCallback(
+    (proxyKeys: string[]) => {
+      const testableKeys = proxyKeys.filter((key) => key && !isDraftForwardProxyNodeKey(key))
+      if (testableKeys.length === 0) return
+      forwardProxyLatencyEventSourceRef.current?.close()
+      forwardProxyLatencyPendingKeysRef.current = new Set(testableKeys)
+      setForwardProxyLatencyByKey((current) => {
+        const next = { ...current }
+        for (const key of testableKeys) {
+          next[key] = { status: 'testing' }
+        }
+        return next
+      })
+      const source =
+        testableKeys.length === 1
+          ? createForwardProxyNodeLatencyTestEventSource(testableKeys[0])
+          : createForwardProxyNodesLatencyTestEventSource(testableKeys)
+      forwardProxyLatencyEventSourceRef.current = source
+      source.addEventListener('progress', handleForwardProxyLatencyStreamEvent)
+      source.addEventListener('completed', handleForwardProxyLatencyStreamEvent)
+      source.onerror = () => {
+        if (forwardProxyLatencyPendingKeysRef.current.size === 0) {
+          source.close()
+          return
+        }
+        const failedKeys = [...forwardProxyLatencyPendingKeysRef.current]
+        forwardProxyLatencyPendingKeysRef.current.clear()
+        source.close()
+        if (forwardProxyLatencyEventSourceRef.current === source) {
+          forwardProxyLatencyEventSourceRef.current = null
+        }
+        setForwardProxyLatencyByKey((current) => {
+          const next = { ...current }
+          for (const key of failedKeys) {
+            const currentState = next[key]
+            if (currentState?.status === 'ready') continue
+            next[key] = {
+              status: 'failed',
+              progress: currentState?.status === 'testing' ? currentState.progress : undefined,
+              message: t('settings.forwardProxy.latency.streamFailed'),
+            }
+          }
+          return next
+        })
+      }
+    },
+    [handleForwardProxyLatencyStreamEvent, t],
+  )
+
+  const handleTestAllForwardProxyNodes = useCallback(() => {
+    startForwardProxyLatencyTest(forwardProxyTableNodes.map((node) => node.key))
+  }, [forwardProxyTableNodes, startForwardProxyLatencyTest])
 
   const persistForwardProxyDraft = useCallback(
     (overrides?: { proxyUrls?: string[]; subscriptionUrls?: string[] }) => {
@@ -1062,6 +1211,57 @@ export default function SettingsPage() {
     forwardProxyBatchHasFirstRoundForAll &&
     forwardProxyBatchAvailableCount > 0 &&
     !isForwardProxySaving
+  const renderForwardProxyLatencyButton = (node: ForwardProxyTableNode) => {
+    const state = forwardProxyLatencyByKey[node.key] ?? { status: 'idle' as const }
+    const disabled = isDraftForwardProxyNodeKey(node.key)
+    const progress = state.status === 'idle' ? undefined : state.progress
+    const label =
+      state.status === 'testing'
+        ? progress?.averageLatencyMs != null
+          ? formatManualLatency(progress.averageLatencyMs)
+          : progress
+            ? t('settings.forwardProxy.latency.progress', {
+              current: progress.completedRounds,
+              total: progress.totalRounds,
+            })
+            : t('settings.forwardProxy.latency.testing')
+        : state.status === 'ready'
+          ? formatManualLatency(state.progress.averageLatencyMs)
+          : state.status === 'failed'
+            ? t('settings.forwardProxy.latency.empty')
+            : t('settings.forwardProxy.latency.test')
+    const title =
+      state.status === 'ready'
+        ? t('settings.forwardProxy.latency.tooltipReady', {
+            latency: formatManualLatency(state.progress.averageLatencyMs),
+            success: state.progress.successCount,
+            attempts: state.progress.attemptCount,
+          })
+        : state.status === 'failed'
+          ? state.message
+          : state.status === 'testing'
+            ? t('settings.forwardProxy.latency.tooltipTesting')
+            : t('settings.forwardProxy.latency.tooltipIdle')
+    return (
+      <Button
+        type="button"
+        size="sm"
+        variant={state.status === 'ready' ? 'secondary' : 'ghost'}
+        className={cn(
+          'h-7 min-w-[4.5rem] rounded-full px-2.5 font-mono text-[11px] tabular-nums',
+          state.status === 'ready' ? 'border border-success/35 bg-success/12 text-success' : '',
+          state.status === 'failed' ? 'border border-base-300/70 bg-base-200/50 text-base-content/65' : '',
+          state.status === 'testing' ? 'border border-info/35 bg-info/10 text-info' : '',
+        )}
+        disabled={disabled}
+        title={title}
+        aria-label={t('settings.forwardProxy.latency.ariaLabel', { node: node.displayName })}
+        onClick={() => startForwardProxyLatencyTest([node.key])}
+      >
+        {label}
+      </Button>
+    )
+  }
 
   if (isLoading) {
     return (
@@ -1413,6 +1613,36 @@ export default function SettingsPage() {
             <span className="text-xs text-base-content/70">
               {t('settings.forwardProxy.subscriptionCount', { count: forwardProxySubscriptionUrls.length })}
             </span>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              disabled={
+                isForwardProxySaving ||
+                isForwardProxyRefreshingSubscriptions ||
+                forwardProxyDirty ||
+                forwardProxySubscriptionUrls.length === 0
+              }
+              onClick={() => void handleRefreshForwardProxySubscriptions()}
+            >
+              <AppIcon name="refresh" className="mr-1 h-4 w-4" aria-hidden />
+              {isForwardProxyRefreshingSubscriptions
+                ? t('settings.forwardProxy.refreshingSubscriptions')
+                : t('settings.forwardProxy.refreshSubscriptions')}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              disabled={forwardProxyTableNodes.every((node) => isDraftForwardProxyNodeKey(node.key))}
+              onClick={handleTestAllForwardProxyNodes}
+            >
+              <AppIcon name="timer-refresh-outline" className="mr-1 h-4 w-4" aria-hidden />
+              {t('settings.forwardProxy.testAllLatency')}
+            </Button>
+            {forwardProxyRefreshMessage && (
+              <span className="text-xs text-base-content/70">{forwardProxyRefreshMessage}</span>
+            )}
           </div>
 
           <div className="grid gap-3 lg:grid-cols-2">
@@ -1552,6 +1782,12 @@ export default function SettingsPage() {
                     </div>
                     <div className="text-right">
                       <div className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
+                        {t('settings.forwardProxy.table.latency')}
+                      </div>
+                      <div className="mt-1">{renderForwardProxyLatencyButton(node)}</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
                         {t('settings.forwardProxy.table.weight')}
                       </div>
                       <div className="font-mono text-sm tabular-nums">
@@ -1584,14 +1820,15 @@ export default function SettingsPage() {
             <table className="w-full table-fixed text-xs">
               <thead className="bg-base-200/70 uppercase tracking-[0.08em] text-base-content/65">
                 <tr>
-                  <th className={cn('box-border w-[29%]', pricingTableHeaderCellClass)}>{t('settings.forwardProxy.table.proxy')}</th>
-                  <th className={cn('box-border w-[12%] text-center', pricingTableHeaderCellClass)}>{t('settings.forwardProxy.table.oneMinute')}</th>
-                  <th className={cn('box-border w-[12%] text-center', pricingTableHeaderCellClass)}>
+                  <th className={cn('box-border w-[24%]', pricingTableHeaderCellClass)}>{t('settings.forwardProxy.table.proxy')}</th>
+                  <th className={cn('box-border w-[10%] text-center', pricingTableHeaderCellClass)}>{t('settings.forwardProxy.table.latency')}</th>
+                  <th className={cn('box-border w-[11%] text-center', pricingTableHeaderCellClass)}>{t('settings.forwardProxy.table.oneMinute')}</th>
+                  <th className={cn('box-border w-[11%] text-center', pricingTableHeaderCellClass)}>
                     {t('settings.forwardProxy.table.fifteenMinutes')}
                   </th>
-                  <th className={cn('box-border w-[12%] text-center', pricingTableHeaderCellClass)}>{t('settings.forwardProxy.table.oneHour')}</th>
-                  <th className={cn('box-border w-[12%] text-center', pricingTableHeaderCellClass)}>{t('settings.forwardProxy.table.oneDay')}</th>
-                  <th className={cn('box-border w-[12%] text-center', pricingTableHeaderCellClass)}>{t('settings.forwardProxy.table.sevenDays')}</th>
+                  <th className={cn('box-border w-[11%] text-center', pricingTableHeaderCellClass)}>{t('settings.forwardProxy.table.oneHour')}</th>
+                  <th className={cn('box-border w-[11%] text-center', pricingTableHeaderCellClass)}>{t('settings.forwardProxy.table.oneDay')}</th>
+                  <th className={cn('box-border w-[11%] text-center', pricingTableHeaderCellClass)}>{t('settings.forwardProxy.table.sevenDays')}</th>
                   <th className={cn('box-border w-[11%] text-right', pricingTableHeaderCellClass)}>{t('settings.forwardProxy.table.weight')}</th>
                 </tr>
               </thead>
@@ -1611,6 +1848,9 @@ export default function SettingsPage() {
                           {node.displayName}
                         </div>
                       </td>
+                      <td className={cn(pricingTableBodyCellClass, 'box-border px-2 text-center')}>
+                        {renderForwardProxyLatencyButton(node)}
+                      </td>
                       {windows.map((window, index) => (
                         <td key={`${node.key}-${index}`} className={cn(pricingTableBodyCellClass, 'box-border px-2 text-center')}>
                           <div className="space-y-0.5 text-[11px] leading-tight">
@@ -1627,7 +1867,7 @@ export default function SettingsPage() {
                 })}
                 {forwardProxyTableNodes.length === 0 && (
                   <tr>
-                    <td colSpan={7} className={cn(pricingTableBodyCellClass, 'py-6 text-center text-base-content/60')}>
+                    <td colSpan={8} className={cn(pricingTableBodyCellClass, 'py-6 text-center text-base-content/60')}>
                       {t('settings.forwardProxy.table.empty')}
                     </td>
                   </tr>

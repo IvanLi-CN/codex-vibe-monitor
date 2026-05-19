@@ -17,6 +17,10 @@ export {
   updatePricingSettings,
   updateProxySettings,
   updateForwardProxySettings,
+  refreshForwardProxySubscriptions,
+  createForwardProxyNodeLatencyTestEventSource,
+  createForwardProxyNodesLatencyTestEventSource,
+  normalizeForwardProxyLatencyTestStreamEvent,
   validateForwardProxyCandidate,
   fetchSummary,
   fetchForwardProxyLiveStats,
@@ -67,6 +71,8 @@ export {
 
 export type {
   FetchUpstreamAccountActionEventsQuery,
+  ForwardProxyLatencyTestNodeProgress,
+  ForwardProxyLatencyTestStreamEvent,
   UpstreamAccountActionEvent,
   UpstreamAccountActionEventListResponse,
 } from "./core";
