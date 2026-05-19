@@ -954,6 +954,42 @@ export interface ForwardProxySettings {
   nodes: ForwardProxyNode[];
 }
 
+export interface ForwardProxyRefreshSubscriptionsResult {
+  forwardProxy: ForwardProxySettings;
+  subscriptionCount: number;
+  addedNodeCount: number;
+  refreshedAt: string;
+}
+
+export interface ForwardProxyLatencyTargetResult {
+  ok: boolean;
+  latencyMs?: number;
+  ip?: string;
+  httpStatus?: number;
+  error?: string;
+}
+
+export interface ForwardProxyLatencyTestNodeProgress {
+  key: string;
+  displayName: string;
+  round: number;
+  totalRounds: number;
+  completedRounds: number;
+  successCount: number;
+  attemptCount: number;
+  averageLatencyMs?: number;
+  egressIp: ForwardProxyLatencyTargetResult;
+  oauthUpstream: ForwardProxyLatencyTargetResult;
+  done: boolean;
+  timedOut: boolean;
+  message: string;
+}
+
+export interface ForwardProxyLatencyTestStreamEvent {
+  kind: "progress" | "completed";
+  node: ForwardProxyLatencyTestNodeProgress;
+}
+
 export interface ForwardProxyHourlyBucket {
   bucketStart: string;
   bucketEnd: string;
@@ -1566,6 +1602,67 @@ function normalizeForwardProxySettings(raw: unknown): ForwardProxySettings {
       ...node,
       stats: node.stats ?? emptyForwardProxyNodeStats(),
     })),
+  };
+}
+
+function normalizeForwardProxyLatencyTargetResult(
+  raw: unknown,
+): ForwardProxyLatencyTargetResult {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const latencyMs = normalizeFiniteNumber(payload.latencyMs);
+  const httpStatus = normalizeFiniteNumber(payload.httpStatus);
+  return {
+    ok: payload.ok === true,
+    latencyMs,
+    ip: typeof payload.ip === "string" ? payload.ip : undefined,
+    httpStatus:
+      httpStatus == null ? undefined : Math.max(0, Math.trunc(httpStatus)),
+    error: typeof payload.error === "string" ? payload.error : undefined,
+  };
+}
+
+export function normalizeForwardProxyLatencyTestStreamEvent(
+  raw: unknown,
+): ForwardProxyLatencyTestStreamEvent | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const nodeRaw = (payload.node ?? {}) as Record<string, unknown>;
+  const key = typeof nodeRaw.key === "string" ? nodeRaw.key : "";
+  if (!key) return null;
+  const kind = payload.kind === "completed" ? "completed" : "progress";
+  return {
+    kind,
+    node: {
+      key,
+      displayName:
+        typeof nodeRaw.displayName === "string" ? nodeRaw.displayName : key,
+      round: normalizeFiniteNumber(nodeRaw.round) ?? 0,
+      totalRounds: normalizeFiniteNumber(nodeRaw.totalRounds) ?? 5,
+      completedRounds: normalizeFiniteNumber(nodeRaw.completedRounds) ?? 0,
+      successCount: normalizeFiniteNumber(nodeRaw.successCount) ?? 0,
+      attemptCount: normalizeFiniteNumber(nodeRaw.attemptCount) ?? 0,
+      averageLatencyMs:
+        normalizeFiniteNumber(nodeRaw.averageLatencyMs) ?? undefined,
+      egressIp: normalizeForwardProxyLatencyTargetResult(nodeRaw.egressIp),
+      oauthUpstream: normalizeForwardProxyLatencyTargetResult(
+        nodeRaw.oauthUpstream,
+      ),
+      done: nodeRaw.done === true || kind === "completed",
+      timedOut: nodeRaw.timedOut === true,
+      message: typeof nodeRaw.message === "string" ? nodeRaw.message : "",
+    },
+  };
+}
+
+function normalizeForwardProxyRefreshSubscriptionsResult(
+  raw: unknown,
+): ForwardProxyRefreshSubscriptionsResult {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  return {
+    forwardProxy: normalizeForwardProxySettings(payload.forwardProxy),
+    subscriptionCount: normalizeFiniteNumber(payload.subscriptionCount) ?? 0,
+    addedNodeCount: normalizeFiniteNumber(payload.addedNodeCount) ?? 0,
+    refreshedAt:
+      typeof payload.refreshedAt === "string" ? payload.refreshedAt : "",
   };
 }
 
@@ -2326,6 +2423,38 @@ export async function updateForwardProxySettings(payload: {
     body: JSON.stringify(payload),
   });
   return normalizeForwardProxySettings(response);
+}
+
+export async function refreshForwardProxySubscriptions(): Promise<ForwardProxyRefreshSubscriptionsResult> {
+  const response = await fetchJson<unknown>(
+    "/api/settings/forward-proxy/refresh-subscriptions",
+    { method: "POST", body: JSON.stringify({}) },
+  );
+  return normalizeForwardProxyRefreshSubscriptionsResult(response);
+}
+
+export function createForwardProxyNodeLatencyTestEventSource(
+  proxyKey: string,
+): EventSource {
+  return new EventSource(
+    withBase(
+      `/api/settings/forward-proxy/nodes/${encodeURIComponent(proxyKey)}/test-stream`,
+    ),
+  );
+}
+
+export function createForwardProxyNodesLatencyTestEventSource(
+  proxyKeys: string[],
+): EventSource {
+  const query = new URLSearchParams();
+  for (const proxyKey of proxyKeys) {
+    query.append("key", proxyKey);
+  }
+  return new EventSource(
+    withBase(
+      `/api/settings/forward-proxy/nodes/test-stream?${query.toString()}`,
+    ),
+  );
 }
 
 export async function validateForwardProxyCandidate(payload: {

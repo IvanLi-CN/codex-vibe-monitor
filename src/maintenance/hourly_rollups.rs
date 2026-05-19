@@ -1547,6 +1547,18 @@ fn build_settings_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>>
             "/api/settings/forward-proxy/validate",
             post(post_forward_proxy_candidate_validation),
         )
+        .route(
+            "/api/settings/forward-proxy/refresh-subscriptions",
+            post(post_forward_proxy_refresh_subscriptions),
+        )
+        .route(
+            "/api/settings/forward-proxy/nodes/:proxy_key/test-stream",
+            get(stream_forward_proxy_node_latency_test),
+        )
+        .route(
+            "/api/settings/forward-proxy/nodes/test-stream",
+            get(stream_forward_proxy_nodes_latency_test),
+        )
         .route("/api/settings/pricing", put(put_pricing_settings))
 }
 
