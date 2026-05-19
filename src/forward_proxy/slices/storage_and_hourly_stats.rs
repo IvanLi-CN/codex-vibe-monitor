@@ -2358,10 +2358,10 @@ pub(crate) async fn post_forward_proxy_refresh_subscriptions(
     }))
 }
 
-#[derive(Debug, Deserialize)]
-pub(crate) struct ForwardProxyNodesLatencyTestQuery {
-    #[serde(default)]
-    key: Vec<String>,
+pub(crate) fn parse_forward_proxy_nodes_latency_test_keys(raw_query: &str) -> Vec<String> {
+    url::form_urlencoded::parse(raw_query.as_bytes())
+        .filter_map(|(key, value)| (key == "key").then(|| value.into_owned()))
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2926,7 +2926,7 @@ pub(crate) async fn stream_forward_proxy_node_latency_test(
 pub(crate) async fn stream_forward_proxy_nodes_latency_test(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Query(query): Query<ForwardProxyNodesLatencyTestQuery>,
+    OriginalUri(uri): OriginalUri,
 ) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)>
 {
     if !is_same_origin_settings_write(&headers) {
@@ -2935,7 +2935,8 @@ pub(crate) async fn stream_forward_proxy_nodes_latency_test(
             "cross-origin settings writes are forbidden".to_string(),
         ));
     }
-    let endpoints = load_forward_proxy_endpoints_for_latency_test(state.as_ref(), &query.key).await?;
+    let proxy_keys = parse_forward_proxy_nodes_latency_test_keys(uri.query().unwrap_or_default());
+    let endpoints = load_forward_proxy_endpoints_for_latency_test(state.as_ref(), &proxy_keys).await?;
     Ok(stream_forward_proxy_latency_tests(state, endpoints, false))
 }
 
