@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.64.0",
+  "base_stable_version": "1.63.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-05-19T08:05:50Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.64.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "ee36a66e2ff47d7b60d79bbf86b1e9116903bc39",
+  "pr_number": 428,
+  "pr_title": "feat(forward-proxy): add manual latency testing",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.64.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.64.0",
+  "target_sha": "f3bea33204b68bccd2ef5448a6aee0f99618a848",
+  "type_label": "type:minor"
+}
