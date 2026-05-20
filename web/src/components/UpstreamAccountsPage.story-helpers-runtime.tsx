@@ -857,6 +857,42 @@ export function StorybookUpstreamAccountsMock({
         const nextEmail = Object.prototype.hasOwnProperty.call(body, 'email')
           ? (body.email ?? null)
           : detail.email
+        const nextEffectiveRoutingRule = body.routingRule
+          ? {
+              ...detail.effectiveRoutingRule,
+              ...body.routingRule,
+              fieldSources: {
+                guard:
+                  body.routingRule.guardEnabled == null
+                    ? detail.effectiveRoutingRule.fieldSources?.guard ?? 'root'
+                    : 'account',
+                allowCutOut:
+                  body.routingRule.allowCutOut == null
+                    ? detail.effectiveRoutingRule.fieldSources?.allowCutOut ?? 'root'
+                    : 'account',
+                allowCutIn:
+                  body.routingRule.allowCutIn == null
+                    ? detail.effectiveRoutingRule.fieldSources?.allowCutIn ?? 'root'
+                    : 'account',
+                priorityTier:
+                  body.routingRule.priorityTier == null
+                    ? detail.effectiveRoutingRule.fieldSources?.priorityTier ?? 'root'
+                    : 'account',
+                fastModeRewriteMode:
+                  body.routingRule.fastModeRewriteMode == null
+                    ? detail.effectiveRoutingRule.fieldSources?.fastModeRewriteMode ?? 'root'
+                    : 'account',
+                concurrencyLimit:
+                  body.routingRule.concurrencyLimit == null
+                    ? detail.effectiveRoutingRule.fieldSources?.concurrencyLimit ?? 'root'
+                    : 'account',
+                upstream429Retry:
+                  body.routingRule.upstream429RetryEnabled == null
+                    ? detail.effectiveRoutingRule.fieldSources?.upstream429Retry ?? 'root'
+                    : 'account',
+              },
+            }
+          : detail.effectiveRoutingRule
         const updated = syncLocalWindows({
           ...detail,
           displayName:
@@ -902,6 +938,7 @@ export function StorybookUpstreamAccountsMock({
                     'requests',
                 }
               : detail.localLimits,
+          effectiveRoutingRule: nextEffectiveRoutingRule,
         })
         store.details[accountId] = updated
         store.accounts = store.accounts.map((item) =>
@@ -943,6 +980,7 @@ export function StorybookUpstreamAccountsMock({
           groupName: normalized,
           note: note || null,
           boundProxyKeys,
+          routingRule: body.routingRule,
         })
       }
 

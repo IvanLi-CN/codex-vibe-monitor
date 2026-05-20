@@ -25,10 +25,13 @@ interface AccountTagFieldLabels {
   name: string
   namePlaceholder: string
   guardEnabled: string
+  forbidNewConversation?: string
   lookbackHours: string
   maxConversations: string
   allowCutOut: string
   allowCutIn: string
+  forbidCutOut?: string
+  forbidCutIn?: string
   priorityTier: string
   priorityPrimary: string
   priorityNormal: string
@@ -285,10 +288,13 @@ export function AccountTagField({
           name: labels.name,
           namePlaceholder: labels.namePlaceholder,
           guardEnabled: labels.guardEnabled,
+          forbidNewConversation: labels.forbidNewConversation,
           lookbackHours: labels.lookbackHours,
           maxConversations: labels.maxConversations,
           allowCutOut: labels.allowCutOut,
           allowCutIn: labels.allowCutIn,
+          forbidCutOut: labels.forbidCutOut,
+          forbidCutIn: labels.forbidCutIn,
           priorityTier: labels.priorityTier,
           priorityPrimary: labels.priorityPrimary,
           priorityNormal: labels.priorityNormal,

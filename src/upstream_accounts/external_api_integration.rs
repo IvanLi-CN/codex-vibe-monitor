@@ -164,6 +164,7 @@ fn external_metadata_to_update_request(
         local_secondary_limit: None,
         local_limit_unit: None,
         tag_ids: metadata.tag_ids,
+        routing_rule: None,
     }
 }
 

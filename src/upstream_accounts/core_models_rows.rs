@@ -47,6 +47,26 @@ pub(crate) struct UpstreamAccountRow {
     local_primary_limit: Option<f64>,
     local_secondary_limit: Option<f64>,
     local_limit_unit: Option<String>,
+    #[sqlx(default)]
+    policy_guard_enabled: Option<i64>,
+    #[sqlx(default)]
+    policy_lookback_hours: Option<i64>,
+    #[sqlx(default)]
+    policy_max_conversations: Option<i64>,
+    #[sqlx(default)]
+    policy_allow_cut_out: Option<i64>,
+    #[sqlx(default)]
+    policy_allow_cut_in: Option<i64>,
+    #[sqlx(default)]
+    policy_priority_tier: Option<String>,
+    #[sqlx(default)]
+    policy_fast_mode_rewrite_mode: Option<String>,
+    #[sqlx(default)]
+    policy_concurrency_limit: Option<i64>,
+    #[sqlx(default)]
+    policy_upstream_429_retry_enabled: Option<i64>,
+    #[sqlx(default)]
+    policy_upstream_429_max_retries: Option<i64>,
     upstream_base_url: Option<String>,
     #[sqlx(default)]
     external_client_id: Option<String>,
@@ -377,6 +397,10 @@ struct TagRow {
     priority_tier: String,
     fast_mode_rewrite_mode: String,
     concurrency_limit: i64,
+    #[sqlx(default)]
+    upstream_429_retry_enabled: i64,
+    #[sqlx(default)]
+    upstream_429_max_retries: i64,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -396,6 +420,10 @@ struct AccountTagRow {
     priority_tier: String,
     fast_mode_rewrite_mode: String,
     concurrency_limit: i64,
+    #[sqlx(default)]
+    upstream_429_retry_enabled: i64,
+    #[sqlx(default)]
+    upstream_429_max_retries: i64,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -414,9 +442,35 @@ struct TagListRow {
     priority_tier: String,
     fast_mode_rewrite_mode: String,
     concurrency_limit: i64,
+    #[sqlx(default)]
+    upstream_429_retry_enabled: i64,
+    #[sqlx(default)]
+    upstream_429_max_retries: i64,
     updated_at: String,
     account_count: i64,
     group_count: i64,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct UpstreamAccountGroupListRow {
+    group_name: String,
+    account_count: i64,
+    note: Option<String>,
+    bound_proxy_keys_json: Option<String>,
+    node_shunt_enabled: Option<i64>,
+    upstream_429_retry_enabled: Option<i64>,
+    upstream_429_max_retries: Option<i64>,
+    concurrency_limit: Option<i64>,
+    policy_guard_enabled: Option<i64>,
+    policy_lookback_hours: Option<i64>,
+    policy_max_conversations: Option<i64>,
+    policy_allow_cut_out: Option<i64>,
+    policy_allow_cut_in: Option<i64>,
+    policy_priority_tier: Option<String>,
+    policy_fast_mode_rewrite_mode: Option<String>,
+    policy_concurrency_limit: Option<i64>,
+    policy_upstream_429_retry_enabled: Option<i64>,
+    policy_upstream_429_max_retries: Option<i64>,
 }
 
 #[derive(Debug, FromRow)]

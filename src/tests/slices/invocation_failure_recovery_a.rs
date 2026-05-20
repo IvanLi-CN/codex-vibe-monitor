@@ -124,8 +124,8 @@ async fn reserve_pool_routing_account_tracks_pinned_sticky_reuse_slots() {
         forward_proxy_scope: ForwardProxyRouteScope::PinnedProxyKey(
             FORWARD_PROXY_DIRECT_KEY.to_string(),
         ),
-        group_upstream_429_retry_enabled: false,
-        group_upstream_429_max_retries: 0,
+        upstream_429_retry_enabled: false,
+        upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
     };
 

@@ -38,21 +38,26 @@ pub(crate) async fn load_effective_routing_rules_for_accounts(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    let group_metadata = load_group_metadata_map(pool, &group_names).await?;
+    let group_policy_overrides = load_group_routing_policy_override_map(pool, &group_names).await?;
+    let account_policy_overrides = load_account_routing_policy_override_map(pool, account_ids).await?;
     let mut rules = HashMap::with_capacity(account_group_map.len());
     for (account_id, group_name) in account_group_map {
-        let mut rule = build_effective_routing_rule(
-            tags_by_account
-                .get(&account_id)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]),
-        );
-        let group_concurrency_limit = normalize_optional_text(group_name)
-            .and_then(|name| group_metadata.get(&name))
-            .map(|metadata| metadata.concurrency_limit)
-            .unwrap_or_default();
-        rule.concurrency_limit =
-            merge_concurrency_limits(rule.concurrency_limit, group_concurrency_limit);
+        let mut rule = build_effective_routing_rule(&[]);
+        let normalized_group_name = normalize_optional_text(group_name.clone());
+        if let Some(group_name) = normalized_group_name.as_ref()
+            && let Some(group_policy) = group_policy_overrides.get(group_name)
+        {
+            apply_group_routing_policy_override(&mut rule, group_policy);
+        }
+        if let Some(tags) = tags_by_account.get(&account_id)
+            && !tags.is_empty()
+        {
+            let tag_rule = build_effective_routing_rule(tags);
+            apply_tag_layer_routing_policy(&mut rule, &tag_rule);
+        }
+        if let Some(account_policy) = account_policy_overrides.get(&account_id) {
+            apply_account_routing_policy_override(&mut rule, account_policy);
+        }
         rules.insert(account_id, rule);
     }
     Ok(rules)
@@ -225,8 +230,8 @@ fn build_pool_resolved_account(
         group_name: row.group_name.clone(),
         bound_proxy_keys: group_metadata.bound_proxy_keys.clone(),
         forward_proxy_scope,
-        group_upstream_429_retry_enabled: group_metadata.upstream_429_retry_enabled,
-        group_upstream_429_max_retries: group_metadata.upstream_429_max_retries,
+        upstream_429_retry_enabled: effective_rule.upstream_429_retry_enabled,
+        upstream_429_max_retries: effective_rule.upstream_429_max_retries,
         fast_mode_rewrite_mode: effective_rule.fast_mode_rewrite_mode,
         upstream_base_url,
         routing_source,

@@ -2,6 +2,26 @@ const GPT55_UNSUPPORTED_SYSTEM_TAG_KEY: &str = "unsupported_model:gpt-5.5";
 const GPT55_UNSUPPORTED_SYSTEM_TAG_NAME: &str = "不支持 gpt-5.5";
 const WEBSOCKET_UNSUPPORTED_SYSTEM_TAG_KEY: &str = "unsupported_transport:websocket";
 const WEBSOCKET_UNSUPPORTED_SYSTEM_TAG_NAME: &str = "不支持 WS";
+const UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS: &str = r#"
+    id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
+    verified_email,
+    chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
+    encrypted_credentials, has_refresh_token, token_expires_at, last_refreshed_at,
+    last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
+    last_action, last_action_source, last_action_reason_code, last_action_reason_message,
+    last_action_http_status, last_action_invoke_id, last_action_at,
+    last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
+    consecutive_route_failures, temporary_route_failure_streak_started_at,
+    compact_support_status, compact_support_observed_at,
+    compact_support_reason, local_primary_limit, local_secondary_limit,
+    local_limit_unit,
+    policy_guard_enabled, policy_lookback_hours, policy_max_conversations,
+    policy_allow_cut_out, policy_allow_cut_in, policy_priority_tier,
+    policy_fast_mode_rewrite_mode, policy_concurrency_limit,
+    policy_upstream_429_retry_enabled, policy_upstream_429_max_retries,
+    upstream_base_url, external_client_id, external_source_account_id,
+    created_at, updated_at
+"#;
 
 async fn ensure_protected_system_tag(pool: &Pool<Sqlite>, name: &str, system_key: &str) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
@@ -29,9 +49,10 @@ async fn ensure_protected_system_tag(pool: &Pool<Sqlite>, name: &str, system_key
         INSERT OR IGNORE INTO pool_tags (
             name, system_key, protected, guard_enabled, lookback_hours, max_conversations,
             allow_cut_out, allow_cut_in, priority_tier, fast_mode_rewrite_mode, concurrency_limit,
+            upstream_429_retry_enabled, upstream_429_max_retries,
             created_at, updated_at
         )
-        VALUES (?1, ?2, 1, 0, NULL, NULL, 1, 1, 'normal', 'keep_original', 0, ?3, ?3)
+        VALUES (?1, ?2, 1, 0, NULL, NULL, 1, 1, 'normal', 'keep_original', 0, 0, 0, ?3, ?3)
         "#,
     )
     .bind(name)
@@ -1713,7 +1734,9 @@ async fn load_account_tag_map(
             tag.allow_cut_in,
             tag.priority_tier,
             tag.fast_mode_rewrite_mode,
-            tag.concurrency_limit
+            tag.concurrency_limit,
+            tag.upstream_429_retry_enabled,
+            tag.upstream_429_max_retries
         FROM pool_upstream_account_tags link
         INNER JOIN pool_tags tag ON tag.id = link.tag_id
         WHERE link.account_id IN (
@@ -1757,7 +1780,9 @@ async fn load_tags_by_ids(pool: &Pool<Sqlite>, tag_ids: &[i64]) -> Result<Vec<Ta
             allow_cut_in,
             priority_tier,
             fast_mode_rewrite_mode,
-            concurrency_limit
+            concurrency_limit,
+            upstream_429_retry_enabled,
+            upstream_429_max_retries
         FROM pool_tags
         WHERE id IN (
         "#,
@@ -1790,7 +1815,9 @@ async fn load_tag_row(pool: &Pool<Sqlite>, tag_id: i64) -> Result<Option<TagRow>
             allow_cut_in,
             priority_tier,
             fast_mode_rewrite_mode,
-            concurrency_limit
+            concurrency_limit,
+            upstream_429_retry_enabled,
+            upstream_429_max_retries
         FROM pool_tags
         WHERE id = ?1
         LIMIT 1
@@ -1839,6 +1866,8 @@ async fn load_tag_summaries(
             tag.priority_tier,
             tag.fast_mode_rewrite_mode,
             tag.concurrency_limit,
+            tag.upstream_429_retry_enabled,
+            tag.upstream_429_max_retries,
             tag.updated_at,
             COUNT(DISTINCT link.account_id) AS account_count,
             COUNT(DISTINCT NULLIF(TRIM(account.group_name), '')) AS group_count
@@ -1873,7 +1902,7 @@ async fn load_tag_summaries(
             .push_bind(if allow_cut_out { 1 } else { 0 });
     }
     query.push(
-        " GROUP BY tag.id, tag.name, tag.system_key, tag.protected, tag.guard_enabled, tag.lookback_hours, tag.max_conversations, tag.allow_cut_out, tag.allow_cut_in, tag.priority_tier, tag.fast_mode_rewrite_mode, tag.concurrency_limit, tag.updated_at",
+        " GROUP BY tag.id, tag.name, tag.system_key, tag.protected, tag.guard_enabled, tag.lookback_hours, tag.max_conversations, tag.allow_cut_out, tag.allow_cut_in, tag.priority_tier, tag.fast_mode_rewrite_mode, tag.concurrency_limit, tag.upstream_429_retry_enabled, tag.upstream_429_max_retries, tag.updated_at",
     );
     if let Some(has_accounts) = params.has_accounts {
         query.push(if has_accounts {
@@ -1898,8 +1927,10 @@ async fn insert_tag(pool: &Pool<Sqlite>, name: &str, rule: &TagRoutingRule) -> R
     let inserted_id = sqlx::query_scalar::<_, i64>(
         r#"
         INSERT INTO pool_tags (
-            name, guard_enabled, lookback_hours, max_conversations, allow_cut_out, allow_cut_in, priority_tier, fast_mode_rewrite_mode, concurrency_limit, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
+            name, guard_enabled, lookback_hours, max_conversations, allow_cut_out, allow_cut_in,
+            priority_tier, fast_mode_rewrite_mode, concurrency_limit, upstream_429_retry_enabled,
+            upstream_429_max_retries, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)
         RETURNING id
         "#,
     )
@@ -1912,6 +1943,12 @@ async fn insert_tag(pool: &Pool<Sqlite>, name: &str, rule: &TagRoutingRule) -> R
     .bind(rule.priority_tier.as_str())
     .bind(rule.fast_mode_rewrite_mode.as_str())
     .bind(rule.concurrency_limit)
+    .bind(if rule.upstream_429_retry_enabled {
+        1_i64
+    } else {
+        0_i64
+    })
+    .bind(i64::from(rule.upstream_429_max_retries))
     .bind(&now_iso)
     .fetch_one(pool)
     .await?;
@@ -1939,7 +1976,9 @@ async fn persist_tag_update(
             priority_tier = ?8,
             fast_mode_rewrite_mode = ?9,
             concurrency_limit = ?10,
-            updated_at = ?11
+            upstream_429_retry_enabled = ?11,
+            upstream_429_max_retries = ?12,
+            updated_at = ?13
         WHERE id = ?1
         "#,
     )
@@ -1953,6 +1992,12 @@ async fn persist_tag_update(
     .bind(rule.priority_tier.as_str())
     .bind(rule.fast_mode_rewrite_mode.as_str())
     .bind(rule.concurrency_limit)
+    .bind(if rule.upstream_429_retry_enabled {
+        1_i64
+    } else {
+        0_i64
+    })
+    .bind(i64::from(rule.upstream_429_max_retries))
     .bind(&now_iso)
     .execute(pool)
     .await?;
@@ -2112,19 +2157,7 @@ async fn count_recent_account_conversations(
 async fn load_upstream_account_groups(
     pool: &Pool<Sqlite>,
 ) -> Result<Vec<UpstreamAccountGroupSummary>> {
-    let rows = sqlx::query_as::<
-        _,
-        (
-            String,
-            i64,
-            Option<String>,
-            Option<String>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-        ),
-    >(
+    let rows = sqlx::query_as::<_, UpstreamAccountGroupListRow>(
         r#"
         WITH account_groups AS (
             SELECT
@@ -2149,7 +2182,17 @@ async fn load_upstream_account_groups(
             notes.node_shunt_enabled,
             notes.upstream_429_retry_enabled,
             notes.upstream_429_max_retries,
-            notes.concurrency_limit
+            notes.concurrency_limit,
+            notes.policy_guard_enabled,
+            notes.policy_lookback_hours,
+            notes.policy_max_conversations,
+            notes.policy_allow_cut_out,
+            notes.policy_allow_cut_in,
+            notes.policy_priority_tier,
+            notes.policy_fast_mode_rewrite_mode,
+            notes.policy_concurrency_limit,
+            notes.policy_upstream_429_retry_enabled,
+            notes.policy_upstream_429_max_retries
         FROM catalog_groups
         LEFT JOIN account_groups
             ON account_groups.group_name = catalog_groups.group_name
@@ -2163,42 +2206,46 @@ async fn load_upstream_account_groups(
 
     Ok(rows
         .into_iter()
-        .map(
-            |(
-                group_name,
-                account_count,
-                note,
-                bound_proxy_keys_json,
-                node_shunt_enabled,
-                upstream_429_retry_enabled,
-                upstream_429_max_retries,
-                concurrency_limit,
-            )| {
+        .map(|row| {
                 let node_shunt_enabled =
-                    decode_group_node_shunt_enabled(node_shunt_enabled.unwrap_or_default());
+                    decode_group_node_shunt_enabled(row.node_shunt_enabled.unwrap_or_default());
                 let upstream_429_retry_enabled = decode_group_upstream_429_retry_enabled(
-                    upstream_429_retry_enabled.unwrap_or_default(),
+                    row.upstream_429_retry_enabled.unwrap_or_default(),
                 );
                 let upstream_429_max_retries = normalize_group_upstream_429_retry_metadata(
                     upstream_429_retry_enabled,
                     decode_group_upstream_429_max_retries(
-                        upstream_429_max_retries.unwrap_or_default(),
+                        row.upstream_429_max_retries.unwrap_or_default(),
                     ),
                 );
                 UpstreamAccountGroupSummary {
-                    group_name,
-                    account_count,
-                    note: normalize_optional_text(note),
+                    group_name: row.group_name,
+                    account_count: row.account_count,
+                    note: normalize_optional_text(row.note),
                     bound_proxy_keys: decode_group_bound_proxy_keys_json(
-                        bound_proxy_keys_json.as_deref(),
+                        row.bound_proxy_keys_json.as_deref(),
                     ),
                     node_shunt_enabled,
                     upstream_429_retry_enabled,
                     upstream_429_max_retries,
-                    concurrency_limit: concurrency_limit.unwrap_or_default(),
+                    concurrency_limit: row.concurrency_limit.unwrap_or_default(),
+                    routing_rule: group_routing_rule_from_columns(
+                        row.concurrency_limit.unwrap_or_default(),
+                        upstream_429_retry_enabled,
+                        upstream_429_max_retries,
+                        row.policy_guard_enabled,
+                        row.policy_lookback_hours,
+                        row.policy_max_conversations,
+                        row.policy_allow_cut_out,
+                        row.policy_allow_cut_in,
+                        row.policy_priority_tier.as_deref(),
+                        row.policy_fast_mode_rewrite_mode.as_deref(),
+                        row.policy_concurrency_limit,
+                        row.policy_upstream_429_retry_enabled,
+                        row.policy_upstream_429_max_retries,
+                    ),
                 }
-            },
-        )
+            })
         .collect())
 }
 async fn load_upstream_account_summaries(
@@ -2220,24 +2267,9 @@ async fn load_upstream_account_summaries_for_query(
         .collect::<Vec<_>>();
     normalized_tag_ids.sort_unstable();
     normalized_tag_ids.dedup();
-    let mut query = QueryBuilder::<Sqlite>::new(
-        r#"
-        SELECT
-            id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
-            verified_email,
-            chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
-            encrypted_credentials, has_refresh_token, token_expires_at, last_refreshed_at,
-            last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
-            last_action, last_action_source, last_action_reason_code, last_action_reason_message,
-            last_action_http_status, last_action_invoke_id, last_action_at,
-            last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
-            consecutive_route_failures, temporary_route_failure_streak_started_at,
-            compact_support_status, compact_support_observed_at,
-            compact_support_reason, local_primary_limit, local_secondary_limit,
-            local_limit_unit, upstream_base_url, created_at, updated_at
-        FROM pool_upstream_accounts
-        "#,
-    );
+    let mut query = QueryBuilder::<Sqlite>::new(format!(
+        "SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS} FROM pool_upstream_accounts"
+    ));
     query.push(" WHERE 1 = 1");
 
     if params.group_ungrouped.unwrap_or(false) {
@@ -2305,6 +2337,7 @@ async fn load_upstream_account_summaries_for_query(
             now.clone(),
         ));
     }
+    apply_effective_routing_rules_to_summaries(pool, &mut items).await?;
     Ok(items)
 }
 
@@ -2451,25 +2484,9 @@ async fn load_upstream_account_rows_by_ids(
     if account_ids.is_empty() {
         return Ok(Vec::new());
     }
-    let mut query = QueryBuilder::<Sqlite>::new(
-        r#"
-        SELECT
-            id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
-            verified_email,
-            chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
-            encrypted_credentials, has_refresh_token, token_expires_at, last_refreshed_at,
-            last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
-            last_action, last_action_source, last_action_reason_code, last_action_reason_message,
-            last_action_http_status, last_action_invoke_id, last_action_at,
-            last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
-            consecutive_route_failures, temporary_route_failure_streak_started_at,
-            compact_support_status, compact_support_observed_at,
-            compact_support_reason, local_primary_limit, local_secondary_limit,
-            local_limit_unit, upstream_base_url, created_at, updated_at
-        FROM pool_upstream_accounts
-        WHERE id IN (
-        "#,
-    );
+    let mut query = QueryBuilder::<Sqlite>::new(format!(
+        "SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS} FROM pool_upstream_accounts WHERE id IN ("
+    ));
     {
         let mut separated = query.separated(", ");
         for account_id in account_ids {
@@ -2494,7 +2511,7 @@ async fn load_upstream_account_window_usage_summaries(
     }
     let latest_sample_map = load_latest_usage_sample_map(pool, account_ids).await?;
     let now = Utc::now();
-    Ok(rows
+    let mut summaries = rows
         .into_iter()
         .map(|row| {
             build_summary_from_row(
@@ -2507,7 +2524,9 @@ async fn load_upstream_account_window_usage_summaries(
                 now.clone(),
             )
         })
-        .collect())
+        .collect::<Vec<_>>();
+    apply_effective_routing_rules_to_summaries(pool, &mut summaries).await?;
+    Ok(summaries)
 }
 
 async fn build_bulk_upstream_account_sync_pending_rows(
@@ -2555,6 +2574,7 @@ async fn apply_bulk_upstream_account_action(
             local_secondary_limit: None,
             local_limit_unit: None,
             tag_ids: None,
+            routing_rule: None,
         },
         BULK_UPSTREAM_ACCOUNT_ACTION_DISABLE => UpdateUpstreamAccountRequest {
             display_name: None,
@@ -2573,6 +2593,7 @@ async fn apply_bulk_upstream_account_action(
             local_secondary_limit: None,
             local_limit_unit: None,
             tag_ids: None,
+            routing_rule: None,
         },
         BULK_UPSTREAM_ACCOUNT_ACTION_SET_GROUP => UpdateUpstreamAccountRequest {
             display_name: None,
@@ -2591,6 +2612,7 @@ async fn apply_bulk_upstream_account_action(
             local_secondary_limit: None,
             local_limit_unit: None,
             tag_ids: None,
+            routing_rule: None,
         },
         BULK_UPSTREAM_ACCOUNT_ACTION_ADD_TAGS | BULK_UPSTREAM_ACCOUNT_ACTION_REMOVE_TAGS => {
             let current_tag_ids = load_account_tag_map(&state.pool, &[account_id])
@@ -2630,6 +2652,7 @@ async fn apply_bulk_upstream_account_action(
                 local_secondary_limit: None,
                 local_limit_unit: None,
                 tag_ids: Some(next_tag_ids),
+                routing_rule: None,
             }
         }
         BULK_UPSTREAM_ACCOUNT_ACTION_DELETE => {
@@ -2782,6 +2805,11 @@ async fn load_upstream_account_detail_with_actual_usage(
     let groups = load_canonicalized_upstream_account_groups(state).await?;
     enrich_window_actual_usage_for_summaries(state, std::slice::from_mut(&mut detail.summary))
         .await?;
+    apply_effective_routing_rules_to_summaries(
+        &state.pool,
+        std::slice::from_mut(&mut detail.summary),
+    )
+    .await?;
     enrich_node_shunt_routing_block_reasons(state, std::slice::from_mut(&mut detail.summary))
         .await?;
     enrich_current_forward_proxy_for_summaries(
@@ -2791,6 +2819,23 @@ async fn load_upstream_account_detail_with_actual_usage(
     )
     .await?;
     Ok(Some(detail))
+}
+
+async fn apply_effective_routing_rules_to_summaries(
+    pool: &Pool<Sqlite>,
+    summaries: &mut [UpstreamAccountSummary],
+) -> Result<()> {
+    if summaries.is_empty() {
+        return Ok(());
+    }
+    let account_ids = summaries.iter().map(|summary| summary.id).collect::<Vec<_>>();
+    let rules = load_effective_routing_rules_for_accounts(pool, &account_ids).await?;
+    for summary in summaries {
+        if let Some(rule) = rules.get(&summary.id) {
+            summary.effective_routing_rule = rule.clone();
+        }
+    }
+    Ok(())
 }
 
 async fn load_upstream_account_row(
@@ -2805,27 +2850,9 @@ async fn load_upstream_account_row_conn(
     conn: &mut SqliteConnection,
     id: i64,
 ) -> Result<Option<UpstreamAccountRow>> {
-    sqlx::query_as::<_, UpstreamAccountRow>(
-        r#"
-        SELECT
-            id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
-            verified_email,
-            chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
-            encrypted_credentials, has_refresh_token, token_expires_at, last_refreshed_at,
-            last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
-            last_action, last_action_source, last_action_reason_code, last_action_reason_message,
-            last_action_http_status, last_action_invoke_id, last_action_at,
-            last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
-            consecutive_route_failures, temporary_route_failure_streak_started_at,
-            compact_support_status, compact_support_observed_at,
-            compact_support_reason, local_primary_limit, local_secondary_limit,
-            local_limit_unit, upstream_base_url, external_client_id,
-            external_source_account_id, created_at, updated_at
-        FROM pool_upstream_accounts
-        WHERE id = ?1
-        LIMIT 1
-        "#,
-    )
+    sqlx::query_as::<_, UpstreamAccountRow>(&format!(
+        "SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS} FROM pool_upstream_accounts WHERE id = ?1 LIMIT 1"
+    ))
     .bind(id)
     .fetch_optional(conn)
     .await
@@ -2851,29 +2878,11 @@ async fn load_upstream_account_row_by_external_identity_conn(
     external_client_id: &str,
     external_source_account_id: &str,
 ) -> Result<Option<UpstreamAccountRow>> {
-    sqlx::query_as::<_, UpstreamAccountRow>(
-        r#"
-        SELECT
-            id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
-            verified_email,
-            chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
-            encrypted_credentials, has_refresh_token, token_expires_at, last_refreshed_at,
-            last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
-            last_action, last_action_source, last_action_reason_code, last_action_reason_message,
-            last_action_http_status, last_action_invoke_id, last_action_at,
-            last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
-            consecutive_route_failures, temporary_route_failure_streak_started_at,
-            compact_support_status, compact_support_observed_at,
-            compact_support_reason, local_primary_limit, local_secondary_limit,
-            local_limit_unit, upstream_base_url, external_client_id,
-            external_source_account_id, created_at, updated_at
-        FROM pool_upstream_accounts
-        WHERE external_client_id = ?1
-          AND external_source_account_id = ?2
-        ORDER BY id ASC
-        LIMIT 1
-        "#,
-    )
+    sqlx::query_as::<_, UpstreamAccountRow>(&format!(
+        "SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS} FROM pool_upstream_accounts \
+         WHERE external_client_id = ?1 AND external_source_account_id = ?2 \
+         ORDER BY id ASC LIMIT 1"
+    ))
     .bind(external_client_id)
     .bind(external_source_account_id)
     .fetch_optional(conn)

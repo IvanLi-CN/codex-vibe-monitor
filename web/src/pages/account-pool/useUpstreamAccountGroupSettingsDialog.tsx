@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import type {
+  TagRoutingRule,
   UpdateUpstreamAccountGroupPayload,
 } from "../../lib/api";
 import { apiConcurrencyLimitToSliderValue, sliderConcurrencyLimitToApiValue } from "../../lib/concurrencyLimit";
@@ -8,6 +9,7 @@ import { normalizeGroupName } from "../../lib/upstreamAccountGroups";
 import { useTranslation } from "../../i18n";
 import { useForwardProxyBindingNodes } from "../../hooks/useForwardProxyBindingNodes";
 import { UpstreamAccountGroupNoteDialog } from "../../components/UpstreamAccountGroupNoteDialog";
+import { TagRuleDialog } from "../../components/TagRuleDialog";
 import { useGroupNoteCatalogAutoRefresh } from "./useGroupNoteCatalogAutoRefresh";
 
 type GroupSettingsEditorState = {
@@ -21,6 +23,9 @@ type GroupSettingsEditorState = {
   nodeShuntEnabled: boolean;
   upstream429RetryEnabled: boolean;
   upstream429MaxRetries: number;
+  routingRule: TagRoutingRule;
+  routingRuleDirty: boolean;
+  policyEditorOpen: boolean;
   onSaved?: ((groupName: string) => void) | null;
   onDeleted?: ((groupName: string) => void) | null;
 };
@@ -35,6 +40,20 @@ export type UpstreamAccountGroupSettingsSnapshot = {
   nodeShuntEnabled?: boolean;
   upstream429RetryEnabled?: boolean;
   upstream429MaxRetries?: number;
+  routingRule?: TagRoutingRule;
+};
+
+const defaultRoutingRule: TagRoutingRule = {
+  guardEnabled: false,
+  lookbackHours: null,
+  maxConversations: null,
+  allowCutOut: true,
+  allowCutIn: true,
+  priorityTier: "normal",
+  fastModeRewriteMode: "keep_original",
+  concurrencyLimit: 0,
+  upstream429RetryEnabled: false,
+  upstream429MaxRetries: 0,
 };
 
 function createInitialEditorState(): GroupSettingsEditorState {
@@ -49,6 +68,9 @@ function createInitialEditorState(): GroupSettingsEditorState {
     nodeShuntEnabled: false,
     upstream429RetryEnabled: false,
     upstream429MaxRetries: 0,
+    routingRule: defaultRoutingRule,
+    routingRuleDirty: false,
+    policyEditorOpen: false,
     onSaved: null,
     onDeleted: null,
   };
@@ -150,6 +172,9 @@ export function useUpstreamAccountGroupSettingsDialog(
         nodeShuntEnabled: snapshot?.nodeShuntEnabled === true,
         upstream429RetryEnabled: snapshot?.upstream429RetryEnabled === true,
         upstream429MaxRetries: snapshot?.upstream429MaxRetries ?? 0,
+        routingRule: snapshot?.routingRule ?? defaultRoutingRule,
+        routingRuleDirty: false,
+        policyEditorOpen: false,
         onSaved: openOptions?.onSaved ?? null,
         onDeleted: openOptions?.onDeleted ?? null,
       });
@@ -192,6 +217,7 @@ export function useUpstreamAccountGroupSettingsDialog(
         nodeShuntEnabled: normalizedNodeShuntEnabled,
         upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
         upstream429MaxRetries: normalizedUpstream429MaxRetries,
+        ...(editor.routingRuleDirty ? { routingRule: editor.routingRule } : {}),
       }, { existing: editor.existing });
       editor.onSaved?.(normalizedGroupName);
       setEditor((current) => ({ ...current, open: false }));
@@ -222,6 +248,7 @@ export function useUpstreamAccountGroupSettingsDialog(
 
   const dialog = useMemo(
     () => (
+      <>
       <UpstreamAccountGroupNoteDialog
         open={editor.open}
         container={container}
@@ -233,6 +260,9 @@ export function useUpstreamAccountGroupSettingsDialog(
         nodeShuntEnabled={editor.nodeShuntEnabled}
         upstream429RetryEnabled={editor.upstream429RetryEnabled}
         upstream429MaxRetries={editor.upstream429MaxRetries}
+        onRoutingPolicyEdit={() =>
+          setEditor((current) => ({ ...current, policyEditorOpen: true }))
+        }
         availableProxyNodes={forwardProxyNodes}
         proxyBindingsCatalogKind={forwardProxyCatalogState.kind}
         proxyBindingsCatalogFreshness={forwardProxyCatalogState.freshness}
@@ -368,6 +398,15 @@ export function useUpstreamAccountGroupSettingsDialog(
                   { count: value },
                 ),
         }))}
+        routingPolicyLabel={t(
+          "accountPool.upstreamAccounts.groupNotes.routingPolicy.label",
+        )}
+        routingPolicyHint={t(
+          "accountPool.upstreamAccounts.groupNotes.routingPolicy.hint",
+        )}
+        routingPolicyEditLabel={t(
+          "accountPool.upstreamAccounts.groupNotes.routingPolicy.edit",
+        )}
         proxyBindingsLabel={t(
           "accountPool.upstreamAccounts.groupNotes.proxyBindings.label",
         )}
@@ -406,6 +445,84 @@ export function useUpstreamAccountGroupSettingsDialog(
         proxyBindingsChartInteractionHint={t("live.chart.tooltip.instructions")}
         proxyBindingsChartLocaleTag={locale === "zh" ? "zh-CN" : "en-US"}
       />
+      <TagRuleDialog
+        open={editor.open && editor.policyEditorOpen}
+        mode="edit"
+        policyOnly
+        title={t("accountPool.upstreamAccounts.groupNotes.routingPolicy.title")}
+        description={t(
+          "accountPool.upstreamAccounts.groupNotes.routingPolicy.description",
+        )}
+        submitLabel={t(
+          "accountPool.upstreamAccounts.groupNotes.routingPolicy.save",
+        )}
+        tag={{
+          id: 0,
+          name: editor.groupName,
+          routingRule: editor.routingRule,
+          accountCount: editor.accountCount,
+          groupCount: 1,
+          updatedAt: "",
+        }}
+        busy={busyAction != null}
+        onClose={() =>
+          setEditor((current) => ({ ...current, policyEditorOpen: false }))
+        }
+        onSubmit={(payload) => {
+          setEditor((current) => ({
+            ...current,
+            policyEditorOpen: false,
+            routingRuleDirty: true,
+            routingRule: {
+              guardEnabled: payload.guardEnabled ?? false,
+              lookbackHours: payload.lookbackHours ?? null,
+              maxConversations: payload.maxConversations ?? null,
+              allowCutOut: payload.allowCutOut ?? true,
+              allowCutIn: payload.allowCutIn ?? true,
+              priorityTier: payload.priorityTier ?? "normal",
+              fastModeRewriteMode:
+                payload.fastModeRewriteMode ?? "keep_original",
+              concurrencyLimit: payload.concurrencyLimit ?? 0,
+              upstream429RetryEnabled:
+                payload.upstream429RetryEnabled === true,
+              upstream429MaxRetries: payload.upstream429MaxRetries ?? 0,
+            },
+          }));
+        }}
+        labels={{
+          createTitle: t("accountPool.tags.dialog.createTitle"),
+          editTitle: t("accountPool.tags.dialog.editTitle"),
+          description: t("accountPool.tags.dialog.description"),
+          name: t("accountPool.tags.dialog.name"),
+          namePlaceholder: t("accountPool.tags.dialog.namePlaceholder"),
+          guardEnabled: t("accountPool.tags.dialog.guardEnabled"),
+          forbidNewConversation: t("accountPool.tags.dialog.forbidNewConversation"),
+          lookbackHours: t("accountPool.tags.dialog.lookbackHours"),
+          maxConversations: t("accountPool.tags.dialog.maxConversations"),
+          allowCutOut: t("accountPool.tags.dialog.allowCutOut"),
+          allowCutIn: t("accountPool.tags.dialog.allowCutIn"),
+          forbidCutOut: t("accountPool.tags.dialog.forbidCutOut"),
+          forbidCutIn: t("accountPool.tags.dialog.forbidCutIn"),
+          priorityTier: t("accountPool.tags.dialog.priorityTier"),
+          priorityPrimary: t("accountPool.tags.dialog.priorityPrimary"),
+          priorityNormal: t("accountPool.tags.dialog.priorityNormal"),
+          priorityFallback: t("accountPool.tags.dialog.priorityFallback"),
+          fastModeRewriteMode: t("accountPool.tags.dialog.fastModeRewriteMode"),
+          fastModeKeepOriginal: t("accountPool.tags.dialog.fastModeKeepOriginal"),
+          fastModeFillMissing: t("accountPool.tags.dialog.fastModeFillMissing"),
+          fastModeForceAdd: t("accountPool.tags.dialog.fastModeForceAdd"),
+          fastModeForceRemove: t("accountPool.tags.dialog.fastModeForceRemove"),
+          concurrencyLimit: t("accountPool.tags.dialog.concurrencyLimit"),
+          concurrencyHint: t("accountPool.tags.dialog.concurrencyHint"),
+          currentValue: t("accountPool.tags.dialog.currentValue"),
+          unlimited: t("accountPool.tags.dialog.unlimited"),
+          cancel: t("accountPool.tags.dialog.cancel"),
+          save: t("accountPool.tags.dialog.save"),
+          create: t("accountPool.tags.dialog.createAction"),
+          validation: t("accountPool.tags.dialog.validation"),
+        }}
+      />
+      </>
     ),
     [
       busyAction,
@@ -420,6 +537,8 @@ export function useUpstreamAccountGroupSettingsDialog(
       editor.nodeShuntEnabled,
       editor.note,
       editor.open,
+      editor.policyEditorOpen,
+      editor.routingRule,
       editor.upstream429MaxRetries,
       editor.upstream429RetryEnabled,
       error,

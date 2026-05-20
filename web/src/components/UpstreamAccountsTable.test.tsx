@@ -150,6 +150,18 @@ const labels = {
   latestActionFieldHttpStatus: 'HTTP',
   latestActionFieldOccurredAt: 'Occurred',
   latestActionFieldMessage: 'Message',
+  policyPriorityPrimary: 'Primary',
+  policyPriorityFallback: 'Fallback',
+  policyFastFillMissing: '+Fast',
+  policyFastForceAdd: 'Fast',
+  policyFastForceRemove: 'No Fast',
+  policyForbidCutOut: 'No out',
+  policyForbidCutIn: 'No in',
+  policyForbidNewConversation: 'No new',
+  policyConcurrency: (count: number) => `Conc ${count}`,
+  policyRetry: (count: number) => `Retry ${count}`,
+  policyGuardTitle: (hours: number, count: number) =>
+    `Block new conversations after ${count} in ${hours}h`,
 }
 
 function renderTable(items: UpstreamAccountSummary[]) {
@@ -316,6 +328,44 @@ describe('UpstreamAccountsTable', () => {
     }
 
     expect(resolveRosterActionableStatusBadges(unavailableItem, labels)).toEqual([])
+  })
+
+  it('renders active routing policy badges with compact labels', () => {
+    const html = renderTable([
+      {
+        id: 21,
+        kind: 'oauth_codex',
+        provider: 'codex',
+        displayName: 'Policy lane',
+        isMother: false,
+        groupName: 'prod',
+        status: 'active',
+        displayStatus: 'active',
+        enabled: true,
+        tags: [],
+        effectiveRoutingRule: {
+          ...defaultEffectiveRoutingRule,
+          guardEnabled: true,
+          lookbackHours: 5,
+          maxConversations: 20,
+          allowCutOut: false,
+          allowCutIn: false,
+          priorityTier: 'primary',
+          fastModeRewriteMode: 'force_add',
+          concurrencyLimit: 2,
+          upstream429RetryEnabled: true,
+          upstream429MaxRetries: 3,
+        },
+      },
+    ])
+
+    expect(html).toContain('Primary')
+    expect(html).toContain('Fast')
+    expect(html).toContain('No new')
+    expect(html).toContain('No out')
+    expect(html).toContain('No in')
+    expect(html).toContain('Conc 2')
+    expect(html).toContain('Retry 3')
   })
 
   it('renders a blocking loading shell when the current query is still pending', () => {

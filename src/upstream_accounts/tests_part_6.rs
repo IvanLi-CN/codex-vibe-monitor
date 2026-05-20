@@ -970,6 +970,7 @@
                     local_secondary_limit: None,
                     local_limit_unit: None,
                     tag_ids: None,
+                routing_rule: None,
                 },
             )
             .await

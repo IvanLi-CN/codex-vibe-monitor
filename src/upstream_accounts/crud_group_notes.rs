@@ -465,6 +465,8 @@ pub(crate) async fn create_tag(
         payload.priority_tier.as_deref(),
         payload.fast_mode_rewrite_mode.as_deref(),
         payload.concurrency_limit,
+        payload.upstream_429_retry_enabled,
+        payload.upstream_429_max_retries,
     )?;
     let detail = insert_tag(&state.pool, &name, &rule)
         .await
@@ -527,6 +529,14 @@ pub(crate) async fn update_tag(
         payload
             .concurrency_limit
             .or(Some(existing.concurrency_limit)),
+        payload
+            .upstream_429_retry_enabled
+            .or(Some(existing.upstream_429_retry_enabled != 0)),
+        payload
+            .upstream_429_max_retries
+            .or(Some(decode_group_upstream_429_max_retries(
+                existing.upstream_429_max_retries,
+            ))),
     )?;
     let detail = persist_tag_update(&state.pool, id, &name, &rule)
         .await
@@ -660,6 +670,82 @@ pub(crate) async fn update_upstream_account_group(
     )
     .await
     .map_err(internal_error_tuple)?;
+    if let Some(routing_rule) = payload.routing_rule.as_ref() {
+        validate_routing_guard_window(
+            routing_rule.guard_enabled,
+            routing_rule.lookback_hours,
+            routing_rule.max_conversations,
+        )?;
+        let policy_lookback_hours =
+            normalize_positive_i64(routing_rule.lookback_hours, "lookbackHours")?;
+        let policy_max_conversations =
+            normalize_positive_i64(routing_rule.max_conversations, "maxConversations")?;
+        let policy_concurrency_limit =
+            normalize_concurrency_limit(routing_rule.concurrency_limit, "concurrencyLimit")?;
+        let policy_priority_tier = routing_rule
+            .priority_tier
+            .as_deref()
+            .map(|value| normalize_tag_priority_tier(Some(value)).map(|tier| tier.as_str()))
+            .transpose()?;
+        let policy_fast_mode_rewrite_mode = routing_rule
+            .fast_mode_rewrite_mode
+            .as_deref()
+            .map(|value| {
+                normalize_tag_fast_mode_rewrite_mode(Some(value)).map(|mode| mode.as_str())
+            })
+            .transpose()?;
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_account_group_notes
+            SET policy_guard_enabled = COALESCE(?2, policy_guard_enabled),
+                policy_lookback_hours = COALESCE(?3, policy_lookback_hours),
+                policy_max_conversations = COALESCE(?4, policy_max_conversations),
+                policy_allow_cut_out = COALESCE(?5, policy_allow_cut_out),
+                policy_allow_cut_in = COALESCE(?6, policy_allow_cut_in),
+                policy_priority_tier = COALESCE(?7, policy_priority_tier),
+                policy_fast_mode_rewrite_mode = COALESCE(?8, policy_fast_mode_rewrite_mode),
+                policy_concurrency_limit = COALESCE(?9, policy_concurrency_limit),
+                policy_upstream_429_retry_enabled = COALESCE(?10, policy_upstream_429_retry_enabled),
+                policy_upstream_429_max_retries = COALESCE(?11, policy_upstream_429_max_retries)
+            WHERE group_name = ?1
+            "#,
+        )
+        .bind(&group_name)
+        .bind(
+            routing_rule
+                .guard_enabled
+                .map(|value| if value { 1_i64 } else { 0_i64 }),
+        )
+        .bind(policy_lookback_hours)
+        .bind(policy_max_conversations)
+        .bind(
+            routing_rule
+                .allow_cut_out
+                .map(|value| if value { 1_i64 } else { 0_i64 }),
+        )
+        .bind(
+            routing_rule
+                .allow_cut_in
+                .map(|value| if value { 1_i64 } else { 0_i64 }),
+        )
+        .bind(policy_priority_tier)
+        .bind(policy_fast_mode_rewrite_mode)
+        .bind(policy_concurrency_limit)
+        .bind(
+            routing_rule
+                .upstream_429_retry_enabled
+                .map(|value| if value { 1_i64 } else { 0_i64 }),
+        )
+        .bind(
+            routing_rule
+                .upstream_429_max_retries
+                .map(normalize_group_upstream_429_max_retries)
+                .map(i64::from),
+        )
+        .execute(tx.as_mut())
+        .await
+        .map_err(internal_error_tuple)?;
+    }
     tx.commit().await.map_err(internal_error_tuple)?;
 
     let saved = load_group_metadata(&state.pool, Some(&group_name))
@@ -670,7 +756,7 @@ pub(crate) async fn update_upstream_account_group(
         .await
         .map_err(internal_error_tuple)?;
     Ok(Json(UpstreamAccountGroupSummary {
-        group_name,
+        group_name: group_name.clone(),
         account_count,
         note: saved.note,
         bound_proxy_keys: saved.bound_proxy_keys,
@@ -678,6 +764,9 @@ pub(crate) async fn update_upstream_account_group(
         upstream_429_retry_enabled: saved.upstream_429_retry_enabled,
         upstream_429_max_retries: saved.upstream_429_max_retries,
         concurrency_limit: saved.concurrency_limit,
+        routing_rule: load_group_routing_rule(&state.pool, &group_name)
+            .await
+            .map_err(internal_error_tuple)?,
     }))
 }
 

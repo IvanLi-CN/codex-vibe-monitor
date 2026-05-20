@@ -463,8 +463,8 @@ pub(crate) struct PoolResolvedAccount {
     pub(crate) group_name: Option<String>,
     pub(crate) bound_proxy_keys: Vec<String>,
     pub(crate) forward_proxy_scope: ForwardProxyRouteScope,
-    pub(crate) group_upstream_429_retry_enabled: bool,
-    pub(crate) group_upstream_429_max_retries: u8,
+    pub(crate) upstream_429_retry_enabled: bool,
+    pub(crate) upstream_429_max_retries: u8,
     pub(crate) fast_mode_rewrite_mode: TagFastModeRewriteMode,
     pub(crate) upstream_base_url: Url,
     pub(crate) routing_source: PoolRoutingSelectionSource,
@@ -475,10 +475,10 @@ impl PoolResolvedAccount {
         canonical_pool_upstream_route_key(&self.upstream_base_url)
     }
 
-    pub(crate) fn effective_group_upstream_429_max_retries(&self) -> u8 {
+    pub(crate) fn effective_upstream_429_max_retries(&self) -> u8 {
         normalize_group_upstream_429_retry_metadata(
-            self.group_upstream_429_retry_enabled,
-            self.group_upstream_429_max_retries,
+            self.upstream_429_retry_enabled,
+            self.upstream_429_max_retries,
         )
     }
 }

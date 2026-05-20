@@ -476,8 +476,8 @@ async fn pool_route_large_oauth_responses_file_backed_body_rewrites_and_replaces
             Some(test_required_group_name()),
             test_required_group_bound_proxy_keys(),
         ),
-        group_upstream_429_retry_enabled: false,
-        group_upstream_429_max_retries: 0,
+        upstream_429_retry_enabled: false,
+        upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
     };
 
@@ -946,8 +946,8 @@ async fn pool_route_oauth_responses_file_backed_body_above_rewrite_limit_stays_p
             Some(test_required_group_name()),
             test_required_group_bound_proxy_keys(),
         ),
-        group_upstream_429_retry_enabled: false,
-        group_upstream_429_max_retries: 0,
+        upstream_429_retry_enabled: false,
+        upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
     };
 
@@ -1080,8 +1080,8 @@ async fn pool_route_oauth_responses_compressed_file_backed_body_stays_passthroug
             Some(test_required_group_name()),
             test_required_group_bound_proxy_keys(),
         ),
-        group_upstream_429_retry_enabled: false,
-        group_upstream_429_max_retries: 0,
+        upstream_429_retry_enabled: false,
+        upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
     };
 
@@ -1388,8 +1388,8 @@ fn capture_target_pool_route_prefers_account_upstream_base_for_redirect_rewrite(
             Some(test_required_group_name()),
             test_required_group_bound_proxy_keys(),
         ),
-        group_upstream_429_retry_enabled: false,
-        group_upstream_429_max_retries: 0,
+        upstream_429_retry_enabled: false,
+        upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
     };
 

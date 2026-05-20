@@ -1,5 +1,6 @@
 import type {
   ForwardProxyBindingNode,
+  TagRoutingRule,
   UpstreamAccountGroupSummary,
   UpstreamAccountSummary,
 } from "./api";
@@ -22,6 +23,7 @@ export interface AccountPoolGroupSummaryData {
   nodeShuntEnabled?: boolean;
   upstream429RetryEnabled?: boolean;
   upstream429MaxRetries?: number;
+  routingRule?: TagRoutingRule;
   hasCustomSettings?: boolean;
   planCounts: AccountPoolGroupPlanCount[];
 }
@@ -97,6 +99,7 @@ export function buildAccountPoolGroupSummaries(options: {
       nodeShuntEnabled: groupSummary?.nodeShuntEnabled ?? false,
       upstream429RetryEnabled: groupSummary?.upstream429RetryEnabled ?? false,
       upstream429MaxRetries: groupSummary?.upstream429MaxRetries ?? 0,
+      routingRule: groupSummary?.routingRule,
       hasCustomSettings:
         Boolean(groupSummary?.note?.trim()) ||
         (groupSummary?.boundProxyKeys?.length ?? 0) > 0 ||

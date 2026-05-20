@@ -31,6 +31,7 @@ import {
   renderTagBadges,
   renderTagOverflowBadge,
   renderNoRefreshTokenBadge,
+  renderActiveRoutingPolicyBadges,
   resolveRosterActionableStatusBadges,
   resolveRosterSummaryStatusBadges,
   resolveCurrentForwardProxyBadgeLabel,
@@ -299,6 +300,7 @@ function GroupMemberRow({
                   </Badge>
                 ))}
                 {renderNoRefreshTokenBadge(item, labels)}
+                {renderActiveRoutingPolicyBadges(item, labels)}
                 {compactBadge(kindLabel(item, labels), 'secondary')}
                 {showPlanBadge && item.planType && planBadge
                   ? compactBadge(item.planType, planBadge.variant, {
@@ -480,6 +482,7 @@ function GroupMemberGridCard({
             </Badge>
           ))}
           {renderNoRefreshTokenBadge(item, labels)}
+          {renderActiveRoutingPolicyBadges(item, labels)}
           {compactBadge(kindLabel(item, labels), 'secondary')}
           {compactSupportLabel
             ? compactBadge(compactSupportLabel, 'warning', {

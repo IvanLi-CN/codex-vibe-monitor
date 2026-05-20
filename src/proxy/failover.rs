@@ -899,7 +899,7 @@ pub(crate) async fn send_pool_request_with_failover(
             distinct_account_count,
             same_account_attempt_budget,
         );
-        let group_upstream_429_max_retries = account.effective_group_upstream_429_max_retries();
+        let group_upstream_429_max_retries = account.effective_upstream_429_max_retries();
         let same_account_attempt_loop_budget = overload_same_account_attempt_budget
             .saturating_add(1)
             .saturating_add(group_upstream_429_max_retries);

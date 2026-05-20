@@ -42,10 +42,13 @@ const labels = {
   name: 'Name',
   namePlaceholder: 'vip',
   guardEnabled: 'Guard',
+  forbidNewConversation: 'Block new conversations',
   lookbackHours: 'Lookback',
   maxConversations: 'Max conversations',
-  allowCutOut: 'Allow cut out',
-  allowCutIn: 'Allow cut in',
+  allowCutOut: 'Cut out is not blocked',
+  allowCutIn: 'Cut in is not blocked',
+  forbidCutOut: 'Block cut out',
+  forbidCutIn: 'Block cut in',
   priorityTier: 'Preferred usage',
   priorityPrimary: 'Primary',
   priorityNormal: 'Normal',
@@ -144,5 +147,97 @@ describe('TagRuleDialog', () => {
         concurrencyLimit: 6,
       }),
     )
+  })
+
+  it('submits policy-only payloads without a tag name', async () => {
+    const onSubmit = vi.fn()
+    render(
+      <TagRuleDialog
+        open
+        mode="edit"
+        policyOnly
+        title="Account routing policy"
+        submitLabel="Save account policy"
+        tag={null}
+        onClose={() => undefined}
+        onSubmit={onSubmit}
+        labels={labels}
+      />,
+    )
+
+    expect(document.querySelector('input[name="tagName"]')).toBeNull()
+    const submit = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Save account policy',
+    )
+
+    act(() => {
+      submit!.click()
+    })
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.not.objectContaining({
+        name: expect.anything(),
+      }),
+    )
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        priorityTier: 'normal',
+        fastModeRewriteMode: 'keep_original',
+        concurrencyLimit: 0,
+      }),
+    )
+  })
+
+  it('can submit only changed policy fields for inherited account policy edits', async () => {
+    const onSubmit = vi.fn()
+    const tag: TagSummary = {
+      id: 42,
+      name: 'account@example.com',
+      routingRule: {
+        guardEnabled: true,
+        lookbackHours: 5,
+        maxConversations: 2,
+        allowCutOut: true,
+        allowCutIn: false,
+        priorityTier: 'fallback',
+        fastModeRewriteMode: 'force_add',
+        concurrencyLimit: 4,
+        upstream429RetryEnabled: true,
+        upstream429MaxRetries: 3,
+      },
+      accountCount: 1,
+      groupCount: 1,
+      updatedAt: '2026-03-31T00:00:00.000Z',
+    }
+    render(
+      <TagRuleDialog
+        open
+        mode="edit"
+        policyOnly
+        changedFieldsOnly
+        title="Account routing policy"
+        submitLabel="Save account policy"
+        tag={tag}
+        onClose={() => undefined}
+        onSubmit={onSubmit}
+        labels={labels}
+      />,
+    )
+
+    const switches = Array.from(document.querySelectorAll('button[role="switch"]'))
+    act(() => {
+      switches[1]?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    const submit = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Save account policy',
+    )
+
+    act(() => {
+      submit!.click()
+    })
+
+    expect(onSubmit).toHaveBeenCalledWith({
+      allowCutOut: false,
+    })
   })
 })

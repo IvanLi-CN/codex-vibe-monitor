@@ -79,6 +79,18 @@ function buildScenarioPayload(
       nodeShuntEnabled: true,
       upstream429RetryEnabled: true,
       upstream429MaxRetries: 2,
+      routingRule: {
+        guardEnabled: true,
+        lookbackHours: 5,
+        maxConversations: 20,
+        allowCutOut: false,
+        allowCutIn: true,
+        priorityTier: "primary",
+        fastModeRewriteMode: "force_add",
+        concurrencyLimit: 6,
+        upstream429RetryEnabled: true,
+        upstream429MaxRetries: 3,
+      },
     },
     {
       groupName: "staging",

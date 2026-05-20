@@ -1373,6 +1373,27 @@ pub(crate) async fn update_upstream_account_inner(
         && route_failure_kind_requires_manual_api_key_recovery(
             row.last_route_failure_kind.as_deref(),
         );
+    if let Some(routing_rule) = payload.routing_rule.as_ref() {
+        validate_routing_guard_window(
+            routing_rule.guard_enabled,
+            routing_rule.lookback_hours,
+            routing_rule.max_conversations,
+        )?;
+    }
+    let policy_priority_tier = payload
+        .routing_rule
+        .as_ref()
+        .and_then(|rule| rule.priority_tier.as_deref())
+        .map(|value| normalize_tag_priority_tier(Some(value)).map(|tier| tier.as_str().to_string()))
+        .transpose()?;
+    let policy_fast_mode_rewrite_mode = payload
+        .routing_rule
+        .as_ref()
+        .and_then(|rule| rule.fast_mode_rewrite_mode.as_deref())
+        .map(|value| {
+            normalize_tag_fast_mode_rewrite_mode(Some(value)).map(|mode| mode.as_str().to_string())
+        })
+        .transpose()?;
     let tag_ids = match payload.tag_ids.as_ref() {
         Some(values) => Some(validate_tag_ids(&state.pool, values).await?),
         None => None,
@@ -1523,7 +1544,17 @@ pub(crate) async fn update_upstream_account_inner(
             local_secondary_limit = ?11,
             local_limit_unit = ?12,
             upstream_base_url = ?13,
-            updated_at = ?14
+            policy_guard_enabled = ?14,
+            policy_lookback_hours = ?15,
+            policy_max_conversations = ?16,
+            policy_allow_cut_out = ?17,
+            policy_allow_cut_in = ?18,
+            policy_priority_tier = ?19,
+            policy_fast_mode_rewrite_mode = ?20,
+            policy_concurrency_limit = ?21,
+            policy_upstream_429_retry_enabled = ?22,
+            policy_upstream_429_max_retries = ?23,
+            updated_at = ?24
         WHERE id = ?1
         "#,
     )
@@ -1540,6 +1571,74 @@ pub(crate) async fn update_upstream_account_inner(
     .bind(row.local_secondary_limit)
     .bind(&row.local_limit_unit)
     .bind(&row.upstream_base_url)
+    .bind(match payload.routing_rule.as_ref() {
+        Some(rule) => rule
+            .guard_enabled
+            .map(|value| if value { 1_i64 } else { 0_i64 })
+            .or(row.policy_guard_enabled),
+        None => row.policy_guard_enabled,
+    })
+    .bind(match payload.routing_rule.as_ref() {
+        Some(rule) => normalize_positive_i64(rule.lookback_hours, "lookbackHours")?
+            .or(row.policy_lookback_hours),
+        None => row.policy_lookback_hours,
+    })
+    .bind(match payload.routing_rule.as_ref() {
+        Some(rule) => normalize_positive_i64(rule.max_conversations, "maxConversations")?
+            .or(row.policy_max_conversations),
+        None => row.policy_max_conversations,
+    })
+    .bind(match payload.routing_rule.as_ref() {
+        Some(rule) => rule
+            .allow_cut_out
+            .map(|value| if value { 1_i64 } else { 0_i64 })
+            .or(row.policy_allow_cut_out),
+        None => row.policy_allow_cut_out,
+    })
+    .bind(match payload.routing_rule.as_ref() {
+        Some(rule) => rule
+            .allow_cut_in
+            .map(|value| if value { 1_i64 } else { 0_i64 })
+            .or(row.policy_allow_cut_in),
+        None => row.policy_allow_cut_in,
+    })
+    .bind(match payload.routing_rule.as_ref() {
+        Some(_) => policy_priority_tier
+            .clone()
+            .or(row.policy_priority_tier.clone()),
+        None => row.policy_priority_tier.clone(),
+    })
+    .bind(match payload.routing_rule.as_ref() {
+        Some(_) => policy_fast_mode_rewrite_mode
+            .clone()
+            .or(row.policy_fast_mode_rewrite_mode.clone()),
+        None => row.policy_fast_mode_rewrite_mode.clone(),
+    })
+    .bind(match payload.routing_rule.as_ref() {
+        Some(rule) => match rule.concurrency_limit {
+            Some(value) => Some(normalize_concurrency_limit(
+                Some(value),
+                "concurrencyLimit",
+            )?),
+            None => row.policy_concurrency_limit,
+        },
+        None => row.policy_concurrency_limit,
+    })
+    .bind(match payload.routing_rule.as_ref() {
+        Some(rule) => rule
+            .upstream_429_retry_enabled
+            .map(|value| if value { 1_i64 } else { 0_i64 })
+            .or(row.policy_upstream_429_retry_enabled),
+        None => row.policy_upstream_429_retry_enabled,
+    })
+    .bind(match payload.routing_rule.as_ref() {
+        Some(rule) => rule
+            .upstream_429_max_retries
+            .map(normalize_group_upstream_429_max_retries)
+            .map(i64::from)
+            .or(row.policy_upstream_429_max_retries),
+        None => row.policy_upstream_429_max_retries,
+    })
     .bind(&now_iso)
     .execute(tx.as_mut())
     .await
