@@ -980,6 +980,9 @@ export interface ForwardProxyLatencyTestNodeProgress {
   averageLatencyMs?: number;
   egressIp: ForwardProxyLatencyTargetResult;
   oauthUpstream: ForwardProxyLatencyTargetResult;
+  codexResponses: ForwardProxyLatencyTargetResult;
+  allTargetsOk: boolean;
+  failedTargets: string[];
   done: boolean;
   timedOut: boolean;
   message: string;
@@ -1629,6 +1632,22 @@ export function normalizeForwardProxyLatencyTestStreamEvent(
   const key = typeof nodeRaw.key === "string" ? nodeRaw.key : "";
   if (!key) return null;
   const kind = payload.kind === "completed" ? "completed" : "progress";
+  const egressIp = normalizeForwardProxyLatencyTargetResult(nodeRaw.egressIp);
+  const oauthUpstream = normalizeForwardProxyLatencyTargetResult(
+    nodeRaw.oauthUpstream,
+  );
+  const codexResponses = normalizeForwardProxyLatencyTargetResult(
+    nodeRaw.codexResponses,
+  );
+  const derivedFailedTargets = [
+    egressIp.ok ? null : "egressIp",
+    oauthUpstream.ok ? null : "oauthUpstream",
+    codexResponses.ok ? null : "codexResponses",
+  ].filter((target): target is string => target != null);
+  const failedTargets =
+    Array.isArray(nodeRaw.failedTargets) && nodeRaw.failedTargets.length > 0
+      ? normalizeStringArray(nodeRaw.failedTargets)
+      : derivedFailedTargets;
   return {
     kind,
     node: {
@@ -1642,10 +1661,14 @@ export function normalizeForwardProxyLatencyTestStreamEvent(
       attemptCount: normalizeFiniteNumber(nodeRaw.attemptCount) ?? 0,
       averageLatencyMs:
         normalizeFiniteNumber(nodeRaw.averageLatencyMs) ?? undefined,
-      egressIp: normalizeForwardProxyLatencyTargetResult(nodeRaw.egressIp),
-      oauthUpstream: normalizeForwardProxyLatencyTargetResult(
-        nodeRaw.oauthUpstream,
-      ),
+      egressIp,
+      oauthUpstream,
+      codexResponses,
+      allTargetsOk:
+        typeof nodeRaw.allTargetsOk === "boolean"
+          ? nodeRaw.allTargetsOk
+          : failedTargets.length === 0,
+      failedTargets,
       done: nodeRaw.done === true || kind === "completed",
       timedOut: nodeRaw.timedOut === true,
       message: typeof nodeRaw.message === "string" ? nodeRaw.message : "",

@@ -8,6 +8,10 @@ const FORWARD_PROXY_EGRESS_IP_TIMEOUT_SECS: u64 = 5;
 const FORWARD_PROXY_MANUAL_LATENCY_TEST_ROUNDS: usize = 5;
 const FORWARD_PROXY_MANUAL_LATENCY_ROUND_TIMEOUT_SECS: u64 = 5;
 const FORWARD_PROXY_MANUAL_LATENCY_SINGLE_TIMEOUT_SECS: u64 = 15;
+const FORWARD_PROXY_MANUAL_LATENCY_TARGET_COUNT: usize = 3;
+const FORWARD_PROXY_LATENCY_TARGET_EGRESS_IP: &str = "egressIp";
+const FORWARD_PROXY_LATENCY_TARGET_OAUTH_UPSTREAM: &str = "oauthUpstream";
+const FORWARD_PROXY_LATENCY_TARGET_CODEX_RESPONSES: &str = "codexResponses";
 
 #[derive(Debug, FromRow)]
 struct PoolUpstreamBindingWindowStatsRow {
@@ -2393,6 +2397,9 @@ pub(crate) struct ForwardProxyLatencyTestNodeProgress {
     average_latency_ms: Option<u64>,
     egress_ip: ForwardProxyLatencyProbeTargetResult,
     oauth_upstream: ForwardProxyLatencyProbeTargetResult,
+    codex_responses: ForwardProxyLatencyProbeTargetResult,
+    all_targets_ok: bool,
+    failed_targets: Vec<&'static str>,
     done: bool,
     timed_out: bool,
     message: String,
@@ -2410,6 +2417,12 @@ pub(crate) struct ForwardProxyLatencyAccumulator {
     total_latency_ms: f64,
     success_count: usize,
     completed_rounds: usize,
+    egress_ip_failures: usize,
+    oauth_upstream_failures: usize,
+    codex_responses_failures: usize,
+    last_egress_ip: Option<ForwardProxyLatencyProbeTargetResult>,
+    last_oauth_upstream: Option<ForwardProxyLatencyProbeTargetResult>,
+    last_codex_responses: Option<ForwardProxyLatencyProbeTargetResult>,
 }
 
 impl ForwardProxyLatencyAccumulator {
@@ -2417,11 +2430,13 @@ impl ForwardProxyLatencyAccumulator {
         &mut self,
         egress_ip: &ForwardProxyLatencyProbeTargetResult,
         oauth_upstream: &ForwardProxyLatencyProbeTargetResult,
+        codex_responses: &ForwardProxyLatencyProbeTargetResult,
     ) {
         self.completed_rounds += 1;
         for latency_ms in [
             egress_ip.success_latency(),
             oauth_upstream.success_latency(),
+            codex_responses.success_latency(),
         ]
         .into_iter()
         .flatten()
@@ -2429,6 +2444,30 @@ impl ForwardProxyLatencyAccumulator {
             self.total_latency_ms += latency_ms;
             self.success_count += 1;
         }
+        if !egress_ip.ok {
+            self.egress_ip_failures += 1;
+        }
+        if !oauth_upstream.ok {
+            self.oauth_upstream_failures += 1;
+        }
+        if !codex_responses.ok {
+            self.codex_responses_failures += 1;
+        }
+        preserve_forward_proxy_latency_target_result(
+            &mut self.last_egress_ip,
+            self.egress_ip_failures,
+            egress_ip,
+        );
+        preserve_forward_proxy_latency_target_result(
+            &mut self.last_oauth_upstream,
+            self.oauth_upstream_failures,
+            oauth_upstream,
+        );
+        preserve_forward_proxy_latency_target_result(
+            &mut self.last_codex_responses,
+            self.codex_responses_failures,
+            codex_responses,
+        );
     }
 
     pub(crate) fn average_latency_ms(&self) -> Option<u64> {
@@ -2437,6 +2476,63 @@ impl ForwardProxyLatencyAccumulator {
         }
         Some((self.total_latency_ms / self.success_count as f64).round() as u64)
     }
+
+    pub(crate) fn all_targets_ok(&self) -> bool {
+        self.completed_rounds > 0
+            && self.egress_ip_failures == 0
+            && self.oauth_upstream_failures == 0
+            && self.codex_responses_failures == 0
+    }
+
+    fn failed_targets(&self) -> Vec<&'static str> {
+        let mut targets = Vec::new();
+        if self.egress_ip_failures > 0 {
+            targets.push(FORWARD_PROXY_LATENCY_TARGET_EGRESS_IP);
+        }
+        if self.oauth_upstream_failures > 0 {
+            targets.push(FORWARD_PROXY_LATENCY_TARGET_OAUTH_UPSTREAM);
+        }
+        if self.codex_responses_failures > 0 {
+            targets.push(FORWARD_PROXY_LATENCY_TARGET_CODEX_RESPONSES);
+        }
+        targets
+    }
+}
+
+fn preserve_forward_proxy_latency_target_result(
+    slot: &mut Option<ForwardProxyLatencyProbeTargetResult>,
+    failure_count: usize,
+    result: &ForwardProxyLatencyProbeTargetResult,
+) {
+    if !result.ok || failure_count == 0 || slot.is_none() {
+        *slot = Some(result.clone());
+    }
+}
+
+fn accumulated_forward_proxy_latency_target_results(
+    accumulator: &ForwardProxyLatencyAccumulator,
+    egress_ip: &ForwardProxyLatencyProbeTargetResult,
+    oauth_upstream: &ForwardProxyLatencyProbeTargetResult,
+    codex_responses: &ForwardProxyLatencyProbeTargetResult,
+) -> (
+    ForwardProxyLatencyProbeTargetResult,
+    ForwardProxyLatencyProbeTargetResult,
+    ForwardProxyLatencyProbeTargetResult,
+) {
+    (
+        accumulator
+            .last_egress_ip
+            .clone()
+            .unwrap_or_else(|| egress_ip.clone()),
+        accumulator
+            .last_oauth_upstream
+            .clone()
+            .unwrap_or_else(|| oauth_upstream.clone()),
+        accumulator
+            .last_codex_responses
+            .clone()
+            .unwrap_or_else(|| codex_responses.clone()),
+    )
 }
 
 pub(crate) fn forward_proxy_manual_latency_round_timeout() -> Duration {
@@ -2594,9 +2690,7 @@ async fn timed_forward_proxy_oauth_upstream_probe(
     request_timeout: Duration,
 ) -> ForwardProxyLatencyProbeTargetResult {
     let started = Instant::now();
-    let target = match oauth_bridge::oauth_codex_upstream_base_url()
-        .and_then(|base| base.join("models").context("failed to build OAuth upstream probe target"))
-    {
+    let target = match oauth_codex_latency_probe_target("models") {
         Ok(target) => target,
         Err(err) => {
             return ForwardProxyLatencyProbeTargetResult {
@@ -2613,7 +2707,7 @@ async fn timed_forward_proxy_oauth_upstream_probe(
     match result {
         Ok(Ok(response)) => {
             let status = response.status();
-            let ok = is_validation_probe_reachable_status(status) || status.as_u16() < 500;
+            let ok = is_manual_latency_probe_reachable_status(status);
             ForwardProxyLatencyProbeTargetResult {
                 ok,
                 latency_ms: ok.then(|| elapsed_ms(started)),
@@ -2646,6 +2740,100 @@ async fn timed_forward_proxy_oauth_upstream_probe(
     }
 }
 
+pub(crate) fn oauth_codex_latency_probe_target(path_segment: &str) -> Result<Url> {
+    let mut target = oauth_bridge::oauth_codex_upstream_base_url()?;
+    target.set_path(&format!(
+        "{}/{}",
+        target.path().trim_end_matches('/'),
+        path_segment.trim_start_matches('/')
+    ));
+    Ok(target)
+}
+
+async fn timed_forward_proxy_codex_responses_probe(
+    client: &Client,
+    request_timeout: Duration,
+) -> ForwardProxyLatencyProbeTargetResult {
+    let started = Instant::now();
+    let target = match oauth_codex_latency_probe_target("responses") {
+        Ok(target) => target,
+        Err(err) => {
+            return ForwardProxyLatencyProbeTargetResult {
+                ok: false,
+                latency_ms: None,
+                ip: None,
+                http_status: None,
+                error: Some(err.to_string()),
+            };
+        }
+    };
+
+    let result = timeout(request_timeout, client.get(target).send()).await;
+    match result {
+        Ok(Ok(response)) => {
+            let status = response.status();
+            let ok = is_manual_latency_probe_reachable_status(status);
+            ForwardProxyLatencyProbeTargetResult {
+                ok,
+                latency_ms: ok.then(|| elapsed_ms(started)),
+                ip: None,
+                http_status: Some(status.as_u16()),
+                error: if ok {
+                    None
+                } else {
+                    Some(format!("Codex responses upstream returned status {status}"))
+                },
+            }
+        }
+        Ok(Err(err)) => ForwardProxyLatencyProbeTargetResult {
+            ok: false,
+            latency_ms: None,
+            ip: None,
+            http_status: None,
+            error: Some(err.to_string()),
+        },
+        Err(_) => ForwardProxyLatencyProbeTargetResult {
+            ok: false,
+            latency_ms: None,
+            ip: None,
+            http_status: None,
+            error: Some(format!(
+                "manual latency test round timed out after {}s",
+                timeout_seconds_for_message(request_timeout)
+            )),
+        },
+    }
+}
+
+fn failed_forward_proxy_latency_targets(
+    egress_ip: &ForwardProxyLatencyProbeTargetResult,
+    oauth_upstream: &ForwardProxyLatencyProbeTargetResult,
+    codex_responses: &ForwardProxyLatencyProbeTargetResult,
+) -> Vec<&'static str> {
+    let mut targets = Vec::new();
+    if !egress_ip.ok {
+        targets.push(FORWARD_PROXY_LATENCY_TARGET_EGRESS_IP);
+    }
+    if !oauth_upstream.ok {
+        targets.push(FORWARD_PROXY_LATENCY_TARGET_OAUTH_UPSTREAM);
+    }
+    if !codex_responses.ok {
+        targets.push(FORWARD_PROXY_LATENCY_TARGET_CODEX_RESPONSES);
+    }
+    targets
+}
+
+fn forward_proxy_latency_target_timed_out(result: &ForwardProxyLatencyProbeTargetResult) -> bool {
+    let Some(error) = result.error.as_deref() else {
+        return false;
+    };
+    error.contains("timed out") || error.contains("budget exhausted")
+}
+
+pub(crate) fn is_manual_latency_probe_reachable_status(status: StatusCode) -> bool {
+    status.as_u16() < 500
+}
+
 async fn run_forward_proxy_latency_test_round(
     state: Arc<AppState>,
     endpoint: &ForwardProxyEndpoint,
@@ -2673,6 +2861,7 @@ async fn run_forward_proxy_latency_test_round(
         error: Some("manual latency test budget exhausted".to_string()),
     };
     let mut oauth_upstream = egress_ip.clone();
+    let mut codex_responses = egress_ip.clone();
     let mut round_started = Instant::now();
 
     if !round_timeout.is_zero() {
@@ -2715,10 +2904,30 @@ async fn run_forward_proxy_latency_test_round(
                                 error: Some("manual latency test round budget exhausted".to_string()),
                             },
                         };
+                        let remaining_round = remaining_timeout_budget(
+                            round_timeout,
+                            round_started.elapsed(),
+                        )
+                        .filter(|remaining| !remaining.is_zero());
+                        codex_responses = match remaining_round {
+                            Some(remaining) => {
+                                timed_forward_proxy_codex_responses_probe(&client, remaining).await
+                            }
+                            None => ForwardProxyLatencyProbeTargetResult {
+                                ok: false,
+                                latency_ms: None,
+                                ip: None,
+                                http_status: None,
+                                error: Some(
+                                    "manual latency test round budget exhausted".to_string(),
+                                ),
+                            },
+                        };
                     }
                     Err(err) => {
                         egress_ip.error = Some(err.to_string());
                         oauth_upstream.error = Some(err.to_string());
+                        codex_responses.error = Some(err.to_string());
                     }
                 }
                 if let Some(temp_key) = temporary_xray_key {
@@ -2729,17 +2938,22 @@ async fn run_forward_proxy_latency_test_round(
             Err(err) => {
                 egress_ip.error = Some(err.to_string());
                 oauth_upstream.error = Some(err.to_string());
+                codex_responses.error = Some(err.to_string());
             }
         }
     }
 
-    accumulator.record_round(&egress_ip, &oauth_upstream);
-    let round_success = egress_ip.ok || oauth_upstream.ok;
+    accumulator.record_round(&egress_ip, &oauth_upstream, &codex_responses);
+    let round_success = egress_ip.ok && oauth_upstream.ok && codex_responses.ok;
     let round_latency_ms = {
-        let samples = [egress_ip.success_latency(), oauth_upstream.success_latency()]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
+        let samples = [
+            egress_ip.success_latency(),
+            oauth_upstream.success_latency(),
+            codex_responses.success_latency(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
         if samples.is_empty() {
             None
         } else {
@@ -2765,12 +2979,30 @@ async fn run_forward_proxy_latency_test_round(
                 forward_proxy_manual_latency_single_timeout(),
                 single_started.elapsed(),
             ));
-    let timed_out = done && accumulator.success_count == 0;
-    let message = if let Some(avg) = accumulator.average_latency_ms() {
+    let all_targets_ok = accumulator.all_targets_ok();
+    let failed_targets = accumulator.failed_targets();
+    let (display_egress_ip, display_oauth_upstream, display_codex_responses) =
+        accumulated_forward_proxy_latency_target_results(
+            accumulator,
+            &egress_ip,
+            &oauth_upstream,
+            &codex_responses,
+        );
+    let timed_out = done
+        && [
+            &egress_ip,
+            &oauth_upstream,
+            &codex_responses,
+        ]
+        .into_iter()
+        .any(forward_proxy_latency_target_timed_out);
+    let message = if !failed_targets.is_empty() {
+        format!("failed targets: {}", failed_targets.join(", "))
+    } else if let Some(avg) = accumulator.average_latency_ms() {
         format!(
             "{avg} ms from {}/{} successful samples",
             accumulator.success_count,
-            accumulator.completed_rounds * 2
+            accumulator.completed_rounds * FORWARD_PROXY_MANUAL_LATENCY_TARGET_COUNT
         )
     } else if done {
         "timeout".to_string()
@@ -2785,10 +3017,13 @@ async fn run_forward_proxy_latency_test_round(
         total_rounds: forward_proxy_manual_latency_round_count(),
         completed_rounds: accumulator.completed_rounds,
         success_count: accumulator.success_count,
-        attempt_count: accumulator.completed_rounds * 2,
+        attempt_count: accumulator.completed_rounds * FORWARD_PROXY_MANUAL_LATENCY_TARGET_COUNT,
         average_latency_ms: accumulator.average_latency_ms(),
-        egress_ip,
-        oauth_upstream,
+        egress_ip: display_egress_ip,
+        oauth_upstream: display_oauth_upstream,
+        codex_responses: display_codex_responses,
+        all_targets_ok,
+        failed_targets,
         done,
         timed_out,
         message,
@@ -2806,6 +3041,34 @@ fn forward_proxy_latency_timeout_progress(
         http_status: None,
         error: Some("manual latency test budget exhausted".to_string()),
     };
+    let (egress_ip, oauth_upstream, codex_responses) = if accumulator.completed_rounds == 0 {
+        (
+            timeout_result.clone(),
+            timeout_result.clone(),
+            timeout_result.clone(),
+        )
+    } else {
+        (
+            accumulator
+                .last_egress_ip
+                .clone()
+                .unwrap_or_else(|| timeout_result.clone()),
+            accumulator
+                .last_oauth_upstream
+                .clone()
+                .unwrap_or_else(|| timeout_result.clone()),
+            accumulator
+                .last_codex_responses
+                .clone()
+                .unwrap_or_else(|| timeout_result.clone()),
+        )
+    };
+    let failed_targets = if accumulator.completed_rounds == 0 {
+        failed_forward_proxy_latency_targets(&timeout_result, &timeout_result, &timeout_result)
+    } else {
+        accumulator.failed_targets()
+    };
+    let all_targets_ok = accumulator.all_targets_ok();
 
     ForwardProxyLatencyTestNodeProgress {
         key: endpoint.key.clone(),
@@ -2816,22 +3079,29 @@ fn forward_proxy_latency_timeout_progress(
         total_rounds: forward_proxy_manual_latency_round_count(),
         completed_rounds: accumulator.completed_rounds,
         success_count: accumulator.success_count,
-        attempt_count: accumulator.completed_rounds * 2,
+        attempt_count: accumulator.completed_rounds * FORWARD_PROXY_MANUAL_LATENCY_TARGET_COUNT,
         average_latency_ms: accumulator.average_latency_ms(),
-        egress_ip: timeout_result.clone(),
-        oauth_upstream: timeout_result,
+        egress_ip,
+        oauth_upstream,
+        codex_responses,
+        all_targets_ok,
+        failed_targets: failed_targets.clone(),
         done: true,
-        timed_out: accumulator.success_count == 0,
-        message: accumulator
-            .average_latency_ms()
-            .map(|avg| {
-                format!(
-                    "{avg} ms from {}/{} successful samples",
-                    accumulator.success_count,
-                    accumulator.completed_rounds * 2
-                )
-            })
-            .unwrap_or_else(|| "timeout".to_string()),
+        timed_out: !all_targets_ok,
+        message: if !failed_targets.is_empty() {
+            format!("failed targets: {}", failed_targets.join(", "))
+        } else {
+            accumulator
+                .average_latency_ms()
+                .map(|avg| {
+                    format!(
+                        "{avg} ms from {}/{} successful samples",
+                        accumulator.success_count,
+                        accumulator.completed_rounds * FORWARD_PROXY_MANUAL_LATENCY_TARGET_COUNT
+                    )
+                })
+                .unwrap_or_else(|| "timeout".to_string())
+        },
     }
 }
 

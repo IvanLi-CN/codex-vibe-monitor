@@ -253,6 +253,9 @@ describe("forward proxy manual latency API", () => {
         averageLatencyMs: 151.4,
         egressIp: { ok: true, latencyMs: 120, ip: "203.0.113.10" },
         oauthUpstream: { ok: true, latencyMs: 183, httpStatus: 401 },
+        codexResponses: { ok: true, latencyMs: 151, httpStatus: 405 },
+        allTargetsOk: true,
+        failedTargets: [],
         done: false,
         timedOut: false,
         message: "151 ms",
@@ -263,6 +266,38 @@ describe("forward proxy manual latency API", () => {
     expect(event?.node.averageLatencyMs).toBe(151.4);
     expect(event?.node.egressIp.ip).toBe("203.0.113.10");
     expect(event?.node.oauthUpstream.httpStatus).toBe(401);
+    expect(event?.node.codexResponses.httpStatus).toBe(405);
+    expect(event?.node.allTargetsOk).toBe(true);
+  });
+
+  it("normalizes failed Codex responses probes as abnormal", () => {
+    const event = normalizeForwardProxyLatencyTestStreamEvent({
+      kind: "completed",
+      node: {
+        key: "node-b",
+        displayName: "Node B",
+        round: 1,
+        totalRounds: 5,
+        completedRounds: 1,
+        successCount: 2,
+        attemptCount: 3,
+        averageLatencyMs: 131,
+        egressIp: { ok: true, latencyMs: 120, ip: "203.0.113.11" },
+        oauthUpstream: { ok: true, latencyMs: 142, httpStatus: 401 },
+        codexResponses: { ok: false, error: "responses timeout" },
+        allTargetsOk: false,
+        failedTargets: ["codexResponses"],
+        done: true,
+        timedOut: true,
+        message: "failed targets: codexResponses",
+      },
+    });
+
+    expect(event?.kind).toBe("completed");
+    expect(event?.node.averageLatencyMs).toBe(131);
+    expect(event?.node.allTargetsOk).toBe(false);
+    expect(event?.node.failedTargets).toEqual(["codexResponses"]);
+    expect(event?.node.codexResponses.error).toBe("responses timeout");
   });
 
   it("normalizes forced subscription refresh response", async () => {

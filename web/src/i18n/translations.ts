@@ -1540,7 +1540,14 @@ const baseTranslations = {
     "settings.forwardProxy.latency.tooltipTesting":
       "Testing this node. The first valid sample will be shown immediately.",
     "settings.forwardProxy.latency.tooltipReady":
-      "{{latency}} from {{success}}/{{attempts}} successful samples. Click to retest.",
+      "{{latency}} from {{success}}/{{attempts}} successful samples.\n{{targets}}\nClick to retest.",
+    "settings.forwardProxy.latency.tooltipFailed":
+      "{{message}}\n{{targets}}\nClick to retest.",
+    "settings.forwardProxy.latency.target.egressIp": "Egress IP",
+    "settings.forwardProxy.latency.target.oauthUpstream": "OAuth /models",
+    "settings.forwardProxy.latency.target.codexResponses": "Codex /responses",
+    "settings.forwardProxy.latency.targetOk": "{{target}}: reachable{{detail}}",
+    "settings.forwardProxy.latency.targetFailed": "{{target}}: failed{{detail}}",
     "settings.forwardProxy.latency.ariaLabel":
       "Test latency for {{node}}",
     "settings.pricing.title": "Pricing configuration",
@@ -3587,7 +3594,14 @@ const baseTranslations = {
     "settings.forwardProxy.latency.tooltipTesting":
       "正在测试该节点；出现第一轮有效样本后会立即显示。",
     "settings.forwardProxy.latency.tooltipReady":
-      "{{latency}}，来自 {{success}}/{{attempts}} 个成功样本。点击可重新测试。",
+      "{{latency}}，来自 {{success}}/{{attempts}} 个成功样本。\n{{targets}}\n点击可重新测试。",
+    "settings.forwardProxy.latency.tooltipFailed":
+      "{{message}}\n{{targets}}\n点击可重新测试。",
+    "settings.forwardProxy.latency.target.egressIp": "出站 IP",
+    "settings.forwardProxy.latency.target.oauthUpstream": "OAuth /models",
+    "settings.forwardProxy.latency.target.codexResponses": "Codex /responses",
+    "settings.forwardProxy.latency.targetOk": "{{target}}：可达{{detail}}",
+    "settings.forwardProxy.latency.targetFailed": "{{target}}：失败{{detail}}",
     "settings.forwardProxy.latency.ariaLabel":
       "测试 {{node}} 的延迟",
     "settings.pricing.title": "价格配置",

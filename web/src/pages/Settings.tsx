@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../co
 import { Input } from '../components/ui/input'
 import { SelectField } from '../components/ui/select-field'
 import { Switch } from '../components/ui/switch'
+import { Tooltip } from '../components/ui/tooltip'
 import { useSettings } from '../hooks/useSettings'
 import {
   createForwardProxyNodeLatencyTestEventSource,
@@ -257,6 +258,16 @@ function formatLatency(value?: number): string {
 function formatManualLatency(value?: number): string {
   if (value == null || Number.isNaN(value)) return '--'
   return `${value.toFixed(0)} ms`
+}
+
+function forwardProxyLatencyProgressFailed(progress: ForwardProxyLatencyTestNodeProgress): boolean {
+  return (
+    progress.allTargetsOk === false ||
+    progress.failedTargets.length > 0 ||
+    !progress.egressIp.ok ||
+    !progress.oauthUpstream.ok ||
+    !progress.codexResponses.ok
+  )
 }
 
 function isDraftForwardProxyNodeKey(key: string): boolean {
@@ -700,10 +711,11 @@ export default function SettingsPage() {
     }
     const payload = normalizeForwardProxyLatencyTestStreamEvent(parsed)
     if (!payload) return
+    const latencyFailed = forwardProxyLatencyProgressFailed(payload.node)
     setForwardProxyLatencyByKey((current) => ({
       ...current,
       [payload.node.key]: payload.node.done
-        ? payload.node.averageLatencyMs != null
+        ? !latencyFailed && payload.node.averageLatencyMs != null
           ? { status: 'ready', progress: payload.node }
           : { status: 'failed', progress: payload.node, message: payload.node.message || t('settings.forwardProxy.latency.timeout') }
         : { status: 'testing', progress: payload.node },
@@ -1211,6 +1223,27 @@ export default function SettingsPage() {
     forwardProxyBatchHasFirstRoundForAll &&
     forwardProxyBatchAvailableCount > 0 &&
     !isForwardProxySaving
+  const formatForwardProxyLatencyTargetRows = (progress: ForwardProxyLatencyTestNodeProgress) => {
+    const rows = [
+      { label: t('settings.forwardProxy.latency.target.egressIp'), result: progress.egressIp },
+      { label: t('settings.forwardProxy.latency.target.oauthUpstream'), result: progress.oauthUpstream },
+      { label: t('settings.forwardProxy.latency.target.codexResponses'), result: progress.codexResponses },
+    ]
+    return rows
+      .map(({ label, result }) => {
+        const detailParts = [
+          result.latencyMs == null ? null : formatManualLatency(result.latencyMs),
+          result.httpStatus == null ? null : `HTTP ${result.httpStatus}`,
+          result.ip ?? null,
+          result.ok ? null : result.error ?? null,
+        ].filter((part): part is string => Boolean(part))
+        return t(result.ok ? 'settings.forwardProxy.latency.targetOk' : 'settings.forwardProxy.latency.targetFailed', {
+          target: label,
+          detail: detailParts.length > 0 ? ` (${detailParts.join(', ')})` : '',
+        })
+      })
+      .join('\n')
+  }
   const renderForwardProxyLatencyButton = (node: ForwardProxyTableNode) => {
     const state = forwardProxyLatencyByKey[node.key] ?? { status: 'idle' as const }
     const disabled = isDraftForwardProxyNodeKey(node.key)
@@ -1236,13 +1269,19 @@ export default function SettingsPage() {
             latency: formatManualLatency(state.progress.averageLatencyMs),
             success: state.progress.successCount,
             attempts: state.progress.attemptCount,
+            targets: formatForwardProxyLatencyTargetRows(state.progress),
           })
         : state.status === 'failed'
-          ? state.message
+          ? t('settings.forwardProxy.latency.tooltipFailed', {
+            message: state.message,
+            targets: state.progress ? formatForwardProxyLatencyTargetRows(state.progress) : '',
+          })
           : state.status === 'testing'
-            ? t('settings.forwardProxy.latency.tooltipTesting')
+            ? progress
+              ? `${t('settings.forwardProxy.latency.tooltipTesting')}\n${formatForwardProxyLatencyTargetRows(progress)}`
+              : t('settings.forwardProxy.latency.tooltipTesting')
             : t('settings.forwardProxy.latency.tooltipIdle')
-    return (
+    const button = (
       <Button
         type="button"
         size="sm"
@@ -1250,7 +1289,7 @@ export default function SettingsPage() {
         className={cn(
           'h-7 min-w-[4.5rem] rounded-full px-2.5 font-mono text-[11px] tabular-nums',
           state.status === 'ready' ? 'border border-success/35 bg-success/12 text-success' : '',
-          state.status === 'failed' ? 'border border-base-300/70 bg-base-200/50 text-base-content/65' : '',
+          state.status === 'failed' ? 'border border-error/35 bg-error/10 text-error' : '',
           state.status === 'testing' ? 'border border-info/35 bg-info/10 text-info' : '',
         )}
         disabled={disabled}
@@ -1260,6 +1299,41 @@ export default function SettingsPage() {
       >
         {label}
       </Button>
+    )
+    if (!progress || state.status === 'idle') return button
+
+    const summary =
+      state.status === 'failed'
+        ? state.message
+        : state.status === 'ready'
+          ? t('settings.forwardProxy.latency.tooltipReady', {
+            latency: formatManualLatency(progress.averageLatencyMs),
+            success: progress.successCount,
+            attempts: progress.attemptCount,
+            targets: '',
+          }).trim()
+          : t('settings.forwardProxy.latency.tooltipTesting')
+
+    return (
+      <Tooltip
+        side="left"
+        contentClassName="max-w-[24rem]"
+        triggerProps={{
+          'aria-label': title,
+        }}
+        content={
+          <div className="space-y-2">
+            <div className={cn('text-[11px] font-semibold', state.status === 'failed' ? 'text-error' : 'text-base-content')}>
+              {summary}
+            </div>
+            <div className="whitespace-pre-line font-mono text-[11px] leading-5 text-base-content/78">
+              {formatForwardProxyLatencyTargetRows(progress)}
+            </div>
+          </div>
+        }
+      >
+        {button}
+      </Tooltip>
     )
   }
 
