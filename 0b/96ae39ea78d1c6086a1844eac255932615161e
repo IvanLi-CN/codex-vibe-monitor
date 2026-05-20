@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.65.0",
+  "base_stable_version": "1.64.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-05-20T11:18:29Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.65.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "d0d22a998fb4fe7ec25af331ae19e4329e46ce27",
+  "pr_number": 431,
+  "pr_title": "feat: add upstream account policy inheritance",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.65.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.65.0",
+  "target_sha": "0b96ae39ea78d1c6086a1844eac255932615161e",
+  "type_label": "type:minor"
+}
