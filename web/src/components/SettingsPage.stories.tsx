@@ -349,7 +349,8 @@ function StorybookSettingsMock({
           for (const key of activeKeys) {
             const node = settingsRef.current.forwardProxy.nodes.find((item) => item.key === key)
             const baseLatency = 82 + activeKeys.indexOf(key) * 37 + round * 8
-            const success = !node?.displayName.includes('trojan') || round > 2
+            const codexResponsesReachable = !node?.displayName.includes('trojan')
+            const success = codexResponsesReachable
             const payload = {
               kind: round === 5 ? 'completed' : 'progress',
               node: {
@@ -358,18 +359,19 @@ function StorybookSettingsMock({
                 round,
                 totalRounds: 5,
                 completedRounds: round,
-                successCount: success ? round * 2 : 0,
-                attemptCount: round * 2,
-                averageLatencyMs: success ? baseLatency : undefined,
-                egressIp: success
-                  ? { ok: true, latencyMs: baseLatency - 18, ip: '203.0.113.12' }
-                  : { ok: false, error: 'egress timeout' },
-                oauthUpstream: success
-                  ? { ok: true, latencyMs: baseLatency + 18, httpStatus: 401 }
-                  : { ok: false, error: 'oauth timeout' },
+                successCount: success ? round * 3 : round * 2,
+                attemptCount: round * 3,
+                averageLatencyMs: baseLatency,
+                egressIp: { ok: true, latencyMs: baseLatency - 18, ip: '203.0.113.12' },
+                oauthUpstream: { ok: true, latencyMs: baseLatency + 8, httpStatus: 401 },
+                codexResponses: codexResponsesReachable
+                  ? { ok: true, latencyMs: baseLatency + 18, httpStatus: 405 }
+                  : { ok: false, error: 'manual latency test round timed out after 5s' },
+                allTargetsOk: success,
+                failedTargets: success ? [] : ['codexResponses'],
                 done: round === 5,
                 timedOut: !success && round === 5,
-                message: success ? `${baseLatency} ms` : 'timeout',
+                message: success ? `${baseLatency} ms` : 'failed targets: codexResponses',
               },
             }
             this.emit(round === 5 ? 'completed' : 'progress', payload, delay)
@@ -770,6 +772,10 @@ export const ForwardProxyLatencyAndRefresh: Story = {
     await expect(canvas.getByText('正向代理路由')).toBeVisible()
     await userEvent.click(canvas.getByRole('button', { name: '测试全部' }))
     await expect(await canvas.findByText(/ms$/)).toBeVisible()
+    const failedLatencyButton = await canvas.findByTitle(/failed targets: codexResponses/)
+    await expect(failedLatencyButton).toBeVisible()
+    await userEvent.hover(failedLatencyButton)
+    await expect(await within(document.body).findByText(/Codex \/responses：失败/)).toBeVisible()
     await userEvent.click(canvas.getByRole('button', { name: '刷新订阅' }))
     await expect(await canvas.findByText(/订阅已刷新/)).toBeVisible()
   },
