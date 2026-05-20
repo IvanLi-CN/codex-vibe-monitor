@@ -85,9 +85,20 @@
                 priority_tier: TagPriorityTier::Normal,
                 fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
                 concurrency_limit: 0,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
                 source_tag_ids: vec![],
                 source_tag_names: vec![],
                 guard_rules: vec![],
+                field_sources: EffectiveRoutingRuleFieldSources {
+                    guard: "root".to_string(),
+                    allow_cut_out: "root".to_string(),
+                    allow_cut_in: "root".to_string(),
+                    priority_tier: "root".to_string(),
+                    fast_mode_rewrite_mode: "root".to_string(),
+                    concurrency_limit: "root".to_string(),
+                    upstream_429_retry: "root".to_string(),
+                },
             },
         }
     }
@@ -2273,6 +2284,7 @@
                 upstream_429_retry_enabled: None,
                 upstream_429_max_retries: None,
                 concurrency_limit: None,
+                routing_rule: None,
             }),
         )
         .await
@@ -2318,6 +2330,7 @@
                 upstream_429_retry_enabled: None,
                 upstream_429_max_retries: None,
                 concurrency_limit: None,
+                routing_rule: None,
             }),
         )
         .await
@@ -2364,6 +2377,7 @@
                 upstream_429_retry_enabled: None,
                 upstream_429_max_retries: None,
                 concurrency_limit: None,
+                routing_rule: None,
             }),
         )
         .await
@@ -2373,6 +2387,86 @@
         assert_eq!(
             err.1,
             "select at least one available proxy node or clear bindings before saving"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_upstream_account_group_rejects_enabled_guard_without_window() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+
+        let err = update_upstream_account_group(
+            State(state),
+            HeaderMap::new(),
+            AxumPath("guard-window".to_string()),
+            Json(UpdateUpstreamAccountGroupRequest {
+                note: None,
+                bound_proxy_keys: None,
+                node_shunt_enabled: None,
+                upstream_429_retry_enabled: None,
+                upstream_429_max_retries: None,
+                concurrency_limit: None,
+                routing_rule: Some(UpdateTagRequest {
+                    name: None,
+                    guard_enabled: Some(true),
+                    lookback_hours: None,
+                    max_conversations: None,
+                    allow_cut_out: None,
+                    allow_cut_in: None,
+                    priority_tier: None,
+                    fast_mode_rewrite_mode: None,
+                    concurrency_limit: None,
+                    upstream_429_retry_enabled: None,
+                    upstream_429_max_retries: None,
+                }),
+            }),
+        )
+        .await
+        .expect_err("enabled guard without window should be rejected");
+
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            err.1,
+            "lookbackHours and maxConversations are required when guardEnabled is true"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_upstream_account_group_rejects_invalid_routing_policy_enums() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+
+        let err = update_upstream_account_group(
+            State(state),
+            HeaderMap::new(),
+            AxumPath("invalid-policy".to_string()),
+            Json(UpdateUpstreamAccountGroupRequest {
+                note: None,
+                bound_proxy_keys: None,
+                node_shunt_enabled: None,
+                upstream_429_retry_enabled: None,
+                upstream_429_max_retries: None,
+                concurrency_limit: None,
+                routing_rule: Some(UpdateTagRequest {
+                    name: None,
+                    guard_enabled: None,
+                    lookback_hours: None,
+                    max_conversations: None,
+                    allow_cut_out: None,
+                    allow_cut_in: None,
+                    priority_tier: Some("urgent".to_string()),
+                    fast_mode_rewrite_mode: Some("keep_original".to_string()),
+                    concurrency_limit: None,
+                    upstream_429_retry_enabled: None,
+                    upstream_429_max_retries: None,
+                }),
+            }),
+        )
+        .await
+        .expect_err("invalid routing policy enum should be rejected");
+
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            err.1,
+            "priorityTier must be one of: primary, normal, fallback"
         );
     }
 
@@ -2553,6 +2647,7 @@
                 local_secondary_limit: None,
                 local_limit_unit: None,
                 tag_ids: None,
+                routing_rule: None,
             }),
         )
         .await
@@ -2902,6 +2997,16 @@
                 local_primary_limit: None,
                 local_secondary_limit: None,
                 local_limit_unit: None,
+                policy_guard_enabled: None,
+                policy_lookback_hours: None,
+                policy_max_conversations: None,
+                policy_allow_cut_out: None,
+                policy_allow_cut_in: None,
+                policy_priority_tier: None,
+                policy_fast_mode_rewrite_mode: None,
+                policy_concurrency_limit: None,
+                policy_upstream_429_retry_enabled: None,
+                policy_upstream_429_max_retries: None,
                 upstream_base_url: upstream_base_url.map(str::to_string),
                 created_at: "2026-03-15T00:00:00Z".to_string(),
                 updated_at: "2026-03-15T00:00:00Z".to_string(),

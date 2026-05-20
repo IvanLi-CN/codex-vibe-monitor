@@ -101,6 +101,18 @@ const baseTranslations = {
     "accountPool.groups.noteEmpty": "No shared note yet.",
     "accountPool.groups.upstream429Enabled": "429 retry ×{{count}}",
     "accountPool.groups.upstream429Disabled": "429 retry off",
+    "accountPool.policyBadges.primary": "Primary",
+    "accountPool.policyBadges.fallback": "Fallback",
+    "accountPool.policyBadges.fastFill": "+Fast",
+    "accountPool.policyBadges.fastAdd": "Fast",
+    "accountPool.policyBadges.fastRemove": "No Fast",
+    "accountPool.policyBadges.forbidCutOut": "No out",
+    "accountPool.policyBadges.forbidCutIn": "No in",
+    "accountPool.policyBadges.forbidNew": "No new",
+    "accountPool.policyBadges.concurrency": "Conc {{count}}",
+    "accountPool.policyBadges.retry": "Retry {{count}}",
+    "accountPool.policyBadges.guardTitle":
+      "Blocks new conversations after {{count}} conversations in {{hours}} hour(s)",
     "accountPool.upstreamAccounts.title": "Upstream accounts",
     "accountPool.upstreamAccounts.description":
       "Add single OAuth, batch OAuth, and API key accounts, then keep their login state and quota snapshots healthy.",
@@ -248,6 +260,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.actions.delete": "Delete",
     "accountPool.upstreamAccounts.actions.confirmDelete": "Delete account",
     "accountPool.upstreamAccounts.actions.save": "Save changes",
+    "accountPool.upstreamAccounts.actions.editRoutingPolicy":
+      "Edit account policy",
     "accountPool.upstreamAccounts.actions.enable": "Enabled",
     "accountPool.upstreamAccounts.actions.openDetails": "Open details",
     "accountPool.upstreamAccounts.actions.dismissDuplicateWarning":
@@ -602,6 +616,23 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupNotes.upstream429.countOnce": "1 retry",
     "accountPool.upstreamAccounts.groupNotes.upstream429.countMany":
       "{{count}} retries",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.label":
+      "Routing policy",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.hint":
+      "Customize priority, FAST mode, rolling guard, cut-in/cut-out, concurrency, and upstream 429 retry for this group.",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.edit":
+      "Edit policy",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.title":
+      "Group routing policy",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.description":
+      "These settings override root defaults for accounts in this group. Tags and account policy can still override them later.",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.save":
+      "Apply group policy",
+    "accountPool.upstreamAccounts.policyDialog.accountTitle":
+      "Account routing policy",
+    "accountPool.upstreamAccounts.policyDialog.accountDescription":
+      "These settings are the account layer and override group and tag policy for this account.",
+    "accountPool.upstreamAccounts.policyDialog.save": "Save account policy",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.label":
       "Bound proxy nodes",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.hint":
@@ -711,12 +742,14 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.noTags":
       "No tag is attached, so the account keeps the default pool routing behavior.",
     "accountPool.upstreamAccounts.effectiveRule.guardEnabled":
-      "Conversation guard on",
+      "Block new conversations",
     "accountPool.upstreamAccounts.effectiveRule.guardDisabled":
-      "Conversation guard off",
-    "accountPool.upstreamAccounts.effectiveRule.allowCutOut": "Allow cut out",
+      "New conversations are not blocked",
+    "accountPool.upstreamAccounts.effectiveRule.allowCutOut":
+      "Cut out is not blocked",
     "accountPool.upstreamAccounts.effectiveRule.denyCutOut": "Block cut out",
-    "accountPool.upstreamAccounts.effectiveRule.allowCutIn": "Allow cut in",
+    "accountPool.upstreamAccounts.effectiveRule.allowCutIn":
+      "Cut in is not blocked",
     "accountPool.upstreamAccounts.effectiveRule.denyCutIn": "Block cut in",
     "accountPool.upstreamAccounts.effectiveRule.priorityPrimary": "Primary",
     "accountPool.upstreamAccounts.effectiveRule.priorityNormal": "Normal",
@@ -734,6 +767,24 @@ const baseTranslations = {
       "Max {{count}} conversations within {{hours}} hour(s)",
     "accountPool.upstreamAccounts.effectiveRule.allGuardsApply":
       "All active guards must pass",
+    "accountPool.upstreamAccounts.effectiveRule.sourceBreakdownTitle":
+      "Field source breakdown",
+    "accountPool.upstreamAccounts.effectiveRule.fieldGuard":
+      "Block new conversations",
+    "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutOut":
+      "Block cut out",
+    "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutIn":
+      "Block cut in",
+    "accountPool.upstreamAccounts.effectiveRule.fieldPriority": "Priority",
+    "accountPool.upstreamAccounts.effectiveRule.fieldFastMode": "FAST mode",
+    "accountPool.upstreamAccounts.effectiveRule.fieldConcurrency":
+      "Concurrency",
+    "accountPool.upstreamAccounts.effectiveRule.fieldUpstream429":
+      "Upstream 429 retry",
+    "accountPool.upstreamAccounts.effectiveRule.sourceRoot": "Root default",
+    "accountPool.upstreamAccounts.effectiveRule.sourceGroup": "Group",
+    "accountPool.upstreamAccounts.effectiveRule.sourceTag": "Tag",
+    "accountPool.upstreamAccounts.effectiveRule.sourceAccount": "Account",
     "accountPool.upstreamAccounts.detailTitle": "Account details",
     "accountPool.upstreamAccounts.detailTabs.overview": "Overview",
     "accountPool.upstreamAccounts.detailTabs.records": "Records",
@@ -908,7 +959,7 @@ const baseTranslations = {
     "accountPool.tags.filters.option.unlinked": "Unlinked only",
     "accountPool.tags.filters.option.guardOn": "Guard on",
     "accountPool.tags.filters.option.guardOff": "Guard off",
-    "accountPool.tags.filters.option.allowed": "Allowed",
+    "accountPool.tags.filters.option.allowed": "Not blocked",
     "accountPool.tags.filters.option.blocked": "Blocked",
     "accountPool.tags.table.name": "Tag",
     "accountPool.tags.table.rule": "Routing rule",
@@ -917,9 +968,9 @@ const baseTranslations = {
     "accountPool.tags.table.updatedAt": "Updated",
     "accountPool.tags.rule.guard": "Max {{count}} conversations / {{hours}}h",
     "accountPool.tags.rule.guardOff": "Guard off",
-    "accountPool.tags.rule.cutOutOn": "Cut-out allowed",
+    "accountPool.tags.rule.cutOutOn": "Cut-out not blocked",
     "accountPool.tags.rule.cutOutOff": "Cut-out blocked",
-    "accountPool.tags.rule.cutInOn": "Cut-in allowed",
+    "accountPool.tags.rule.cutInOn": "Cut-in not blocked",
     "accountPool.tags.rule.cutInOff": "Cut-in blocked",
     "accountPool.tags.rule.priorityPrimary": "Primary",
     "accountPool.tags.rule.priorityNormal": "Normal",
@@ -949,12 +1000,18 @@ const baseTranslations = {
       "For example: vip, night-shift, warm-standby",
     "accountPool.tags.dialog.guardEnabled":
       "Limit conversations within a rolling time window",
+    "accountPool.tags.dialog.forbidNewConversation":
+      "Block new conversations",
     "accountPool.tags.dialog.lookbackHours": "Lookback hours",
     "accountPool.tags.dialog.maxConversations": "Max conversations",
     "accountPool.tags.dialog.allowCutOut":
-      "Allow moving conversations out of this account",
+      "Do not block moving conversations out of this account",
     "accountPool.tags.dialog.allowCutIn":
-      "Allow moving conversations into this account",
+      "Do not block moving conversations into this account",
+    "accountPool.tags.dialog.forbidCutOut":
+      "Block moving conversations out",
+    "accountPool.tags.dialog.forbidCutIn":
+      "Block moving conversations in",
     "accountPool.tags.dialog.priorityTier": "Preferred usage",
     "accountPool.tags.dialog.priorityPrimary": "Primary",
     "accountPool.tags.dialog.priorityNormal": "Normal",
@@ -2195,6 +2252,18 @@ const baseTranslations = {
     "accountPool.groups.noteEmpty": "还没有共享备注。",
     "accountPool.groups.upstream429Enabled": "429 重试 ×{{count}}",
     "accountPool.groups.upstream429Disabled": "429 重试关闭",
+    "accountPool.policyBadges.primary": "主力",
+    "accountPool.policyBadges.fallback": "兜底",
+    "accountPool.policyBadges.fastFill": "补Fast",
+    "accountPool.policyBadges.fastAdd": "Fast",
+    "accountPool.policyBadges.fastRemove": "禁Fast",
+    "accountPool.policyBadges.forbidCutOut": "禁出",
+    "accountPool.policyBadges.forbidCutIn": "禁入",
+    "accountPool.policyBadges.forbidNew": "禁新",
+    "accountPool.policyBadges.concurrency": "并发{{count}}",
+    "accountPool.policyBadges.retry": "重试{{count}}",
+    "accountPool.policyBadges.guardTitle":
+      "{{hours}} 小时内达到 {{count}} 个对话后禁止新对话",
     "accountPool.upstreamAccounts.title": "上游账号",
     "accountPool.upstreamAccounts.description":
       "新增单个 OAuth、批量 OAuth 与 API Key 账号，并持续维护登录状态和额度快照。",
@@ -2332,6 +2401,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.actions.delete": "删除",
     "accountPool.upstreamAccounts.actions.confirmDelete": "确认删除",
     "accountPool.upstreamAccounts.actions.save": "保存修改",
+    "accountPool.upstreamAccounts.actions.editRoutingPolicy": "编辑账号策略",
     "accountPool.upstreamAccounts.actions.enable": "启用",
     "accountPool.upstreamAccounts.actions.openDetails": "打开详情",
     "accountPool.upstreamAccounts.actions.dismissDuplicateWarning": "收起提示",
@@ -2652,6 +2722,20 @@ const baseTranslations = {
       "重试 1 次",
     "accountPool.upstreamAccounts.groupNotes.upstream429.countMany":
       "重试 {{count}} 次",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.label": "路由策略",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.hint":
+      "为该分组自定义优先级、FAST 模式、滚动窗口、切入/切出、并发和上游 429 retry。",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.edit": "编辑策略",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.title":
+      "分组路由策略",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.description":
+      "这些设置会覆盖根默认值，Tag 和账号策略仍可继续覆盖。",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.save":
+      "应用分组策略",
+    "accountPool.upstreamAccounts.policyDialog.accountTitle": "账号路由策略",
+    "accountPool.upstreamAccounts.policyDialog.accountDescription":
+      "这些设置属于账号层，会覆盖分组和 Tag 策略。",
+    "accountPool.upstreamAccounts.policyDialog.save": "保存账号策略",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.label":
       "绑定代理节点",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.hint":
@@ -2755,12 +2839,12 @@ const baseTranslations = {
       "这里展示的是当前账号在所有已关联 tag 合并后，真正参与路由判定的规则。",
     "accountPool.upstreamAccounts.effectiveRule.noTags":
       "当前没有关联 tag，所以这个账号仍使用号池默认路由行为。",
-    "accountPool.upstreamAccounts.effectiveRule.guardEnabled": "会话上限已开启",
+    "accountPool.upstreamAccounts.effectiveRule.guardEnabled": "禁止新对话",
     "accountPool.upstreamAccounts.effectiveRule.guardDisabled":
-      "会话上限未开启",
-    "accountPool.upstreamAccounts.effectiveRule.allowCutOut": "允许切出",
+      "未禁止新对话",
+    "accountPool.upstreamAccounts.effectiveRule.allowCutOut": "未禁止切出",
     "accountPool.upstreamAccounts.effectiveRule.denyCutOut": "禁止切出",
-    "accountPool.upstreamAccounts.effectiveRule.allowCutIn": "允许切入",
+    "accountPool.upstreamAccounts.effectiveRule.allowCutIn": "未禁止切入",
     "accountPool.upstreamAccounts.effectiveRule.denyCutIn": "禁止切入",
     "accountPool.upstreamAccounts.effectiveRule.priorityPrimary": "主力",
     "accountPool.upstreamAccounts.effectiveRule.priorityNormal": "正常",
@@ -2777,6 +2861,20 @@ const baseTranslations = {
       "{{hours}} 小时内最多 {{count}} 个对话",
     "accountPool.upstreamAccounts.effectiveRule.allGuardsApply":
       "所有已开启的上限规则都会同时生效",
+    "accountPool.upstreamAccounts.effectiveRule.sourceBreakdownTitle":
+      "字段来源明细",
+    "accountPool.upstreamAccounts.effectiveRule.fieldGuard": "禁止新对话",
+    "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutOut": "禁止切出",
+    "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutIn": "禁止切入",
+    "accountPool.upstreamAccounts.effectiveRule.fieldPriority": "优先级",
+    "accountPool.upstreamAccounts.effectiveRule.fieldFastMode": "FAST 模式",
+    "accountPool.upstreamAccounts.effectiveRule.fieldConcurrency": "并发限制",
+    "accountPool.upstreamAccounts.effectiveRule.fieldUpstream429":
+      "上游 429 重试",
+    "accountPool.upstreamAccounts.effectiveRule.sourceRoot": "根默认",
+    "accountPool.upstreamAccounts.effectiveRule.sourceGroup": "分组",
+    "accountPool.upstreamAccounts.effectiveRule.sourceTag": "Tag",
+    "accountPool.upstreamAccounts.effectiveRule.sourceAccount": "账号",
     "accountPool.upstreamAccounts.detailTitle": "账号详情",
     "accountPool.upstreamAccounts.detailTabs.overview": "概览",
     "accountPool.upstreamAccounts.detailTabs.records": "调用记录",
@@ -2943,7 +3041,7 @@ const baseTranslations = {
     "accountPool.tags.filters.option.unlinked": "仅未关联",
     "accountPool.tags.filters.option.guardOn": "仅已开启",
     "accountPool.tags.filters.option.guardOff": "仅未开启",
-    "accountPool.tags.filters.option.allowed": "仅允许",
+    "accountPool.tags.filters.option.allowed": "仅未禁止",
     "accountPool.tags.filters.option.blocked": "仅禁止",
     "accountPool.tags.table.name": "Tag",
     "accountPool.tags.table.rule": "路由规则",
@@ -2952,9 +3050,9 @@ const baseTranslations = {
     "accountPool.tags.table.updatedAt": "更新时间",
     "accountPool.tags.rule.guard": "{{hours}} 小时 / {{count}} 个对话",
     "accountPool.tags.rule.guardOff": "未开启会话上限",
-    "accountPool.tags.rule.cutOutOn": "允许切出",
+    "accountPool.tags.rule.cutOutOn": "未禁止切出",
     "accountPool.tags.rule.cutOutOff": "禁止切出",
-    "accountPool.tags.rule.cutInOn": "允许切入",
+    "accountPool.tags.rule.cutInOn": "未禁止切入",
     "accountPool.tags.rule.cutInOff": "禁止切入",
     "accountPool.tags.rule.priorityPrimary": "主力",
     "accountPool.tags.rule.priorityNormal": "正常",
@@ -2983,10 +3081,13 @@ const baseTranslations = {
     "accountPool.tags.dialog.namePlaceholder":
       "例如：vip、night-shift、warm-standby",
     "accountPool.tags.dialog.guardEnabled": "限制滚动时间窗内的对话数量",
+    "accountPool.tags.dialog.forbidNewConversation": "禁止新对话",
     "accountPool.tags.dialog.lookbackHours": "回看小时数",
     "accountPool.tags.dialog.maxConversations": "最大对话数",
-    "accountPool.tags.dialog.allowCutOut": "允许把对话切出到其他账号",
-    "accountPool.tags.dialog.allowCutIn": "允许把对话切入到当前账号",
+    "accountPool.tags.dialog.allowCutOut": "未禁止把对话切出到其他账号",
+    "accountPool.tags.dialog.allowCutIn": "未禁止把对话切入到当前账号",
+    "accountPool.tags.dialog.forbidCutOut": "禁止切出",
+    "accountPool.tags.dialog.forbidCutIn": "禁止切入",
     "accountPool.tags.dialog.priorityTier": "优先使用",
     "accountPool.tags.dialog.priorityPrimary": "主力",
     "accountPool.tags.dialog.priorityNormal": "正常",

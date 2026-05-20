@@ -1064,6 +1064,13 @@ describe("settings normalization", () => {
                 ],
                 upstream429RetryEnabled: true,
                 upstream429MaxRetries: 3,
+                routingRule: {
+                  priorityTier: "primary",
+                  fastModeRewriteMode: "force_add",
+                  concurrencyLimit: 4,
+                  upstream429RetryEnabled: true,
+                  upstream429MaxRetries: 2,
+                },
               },
             ],
             forwardProxyNodes: [
@@ -1112,6 +1119,13 @@ describe("settings normalization", () => {
     ]);
     expect(response.groups[0].upstream429RetryEnabled).toBe(true);
     expect(response.groups[0].upstream429MaxRetries).toBe(3);
+    expect(response.groups[0].routingRule?.priorityTier).toBe("primary");
+    expect(response.groups[0].routingRule?.fastModeRewriteMode).toBe(
+      "force_add",
+    );
+    expect(response.groups[0].routingRule?.concurrencyLimit).toBe(4);
+    expect(response.groups[0].routingRule?.upstream429RetryEnabled).toBe(true);
+    expect(response.groups[0].routingRule?.upstream429MaxRetries).toBe(2);
     expect(response.forwardProxyNodes ?? []).toHaveLength(2);
     expect(response.forwardProxyNodes?.[0]?.protocolLabel).toBe("HTTP");
     expect(response.forwardProxyNodes?.[0]?.aliasKeys).toEqual([
@@ -1496,6 +1510,8 @@ describe("account pool frontend API helpers", () => {
                       allowCutIn: true,
                       priorityTier: "primary",
                       fastModeRewriteMode: "force_add",
+                      upstream429RetryEnabled: true,
+                      upstream429MaxRetries: 3,
                     },
                   },
                 ],
@@ -1505,6 +1521,8 @@ describe("account pool frontend API helpers", () => {
                   allowCutIn: true,
                   priorityTier: "fallback",
                   fastModeRewriteMode: "force_remove",
+                  upstream429RetryEnabled: true,
+                  upstream429MaxRetries: 5,
                   sourceTagIds: [31],
                   sourceTagNames: ["priority-route"],
                   guardRules: [],
@@ -1524,6 +1542,12 @@ describe("account pool frontend API helpers", () => {
     );
     expect(response.items[0]?.effectiveRoutingRule?.fastModeRewriteMode).toBe(
       "force_remove",
+    );
+    expect(
+      response.items[0]?.effectiveRoutingRule?.upstream429RetryEnabled,
+    ).toBe(true);
+    expect(response.items[0]?.effectiveRoutingRule?.upstream429MaxRetries).toBe(
+      5,
     );
   });
 

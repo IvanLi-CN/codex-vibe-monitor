@@ -104,6 +104,19 @@ export default function GroupsPage() {
       upstream429Enabled: (count) =>
         t("accountPool.groups.upstream429Enabled", { count }),
       upstream429Disabled: t("accountPool.groups.upstream429Disabled"),
+      policyPriorityPrimary: t("accountPool.policyBadges.primary"),
+      policyPriorityFallback: t("accountPool.policyBadges.fallback"),
+      policyFastFillMissing: t("accountPool.policyBadges.fastFill"),
+      policyFastForceAdd: t("accountPool.policyBadges.fastAdd"),
+      policyFastForceRemove: t("accountPool.policyBadges.fastRemove"),
+      policyForbidCutOut: t("accountPool.policyBadges.forbidCutOut"),
+      policyForbidCutIn: t("accountPool.policyBadges.forbidCutIn"),
+      policyForbidNewConversation: t("accountPool.policyBadges.forbidNew"),
+      policyConcurrency: (count) =>
+        t("accountPool.policyBadges.concurrency", { count }),
+      policyRetry: (count) => t("accountPool.policyBadges.retry", { count }),
+      policyGuardTitle: (hours, count) =>
+        t("accountPool.policyBadges.guardTitle", { hours, count }),
     }),
     [t],
   );
@@ -130,6 +143,7 @@ export default function GroupsPage() {
           nodeShuntEnabled: group?.nodeShuntEnabled ?? false,
           upstream429RetryEnabled: group?.upstream429RetryEnabled ?? false,
           upstream429MaxRetries: group?.upstream429MaxRetries ?? 0,
+          routingRule: group?.routingRule,
         };
       },
       [groupSummaries],

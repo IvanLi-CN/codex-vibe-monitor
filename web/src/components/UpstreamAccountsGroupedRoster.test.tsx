@@ -162,6 +162,16 @@ const labels = {
   latestActionFieldMessage: 'Message',
   forwardProxyPending: 'Pending',
   forwardProxyUnconfigured: 'Unconfigured proxy',
+  policyPriorityPrimary: 'Primary',
+  policyPriorityFallback: 'Fallback',
+  policyFastFillMissing: '+Fast',
+  policyFastForceAdd: 'Fast',
+  policyFastForceRemove: 'No Fast',
+  policyForbidCutOut: 'No out',
+  policyForbidCutIn: 'No in',
+  policyForbidNewConversation: 'No new',
+  policyConcurrency: (count: number) => `Conc ${count}`,
+  policyRetry: (count: number) => `Retry ${count}`,
 }
 
 const groupLabels = {
@@ -177,6 +187,16 @@ const groupLabels = {
   settingsLabel: 'Edit group settings',
   upstream429Enabled: (count: number) => `429 retry × ${count}`,
   upstream429Disabled: '429 retry off',
+  policyPriorityPrimary: 'Primary',
+  policyPriorityFallback: 'Fallback',
+  policyFastFillMissing: '+Fast',
+  policyFastForceAdd: 'Fast',
+  policyFastForceRemove: 'No Fast',
+  policyForbidCutOut: 'No out',
+  policyForbidCutIn: 'No in',
+  policyForbidNewConversation: 'No new',
+  policyConcurrency: (count: number) => `Conc ${count}`,
+  policyRetry: (count: number) => `Retry ${count}`,
 }
 
 function usage(requestCount: number, totalTokens: number, totalCost: number) {
@@ -365,6 +385,47 @@ describe('UpstreamAccountsGroupedRoster', () => {
 
     expect(onEditGroupSettings).toHaveBeenCalledTimes(1)
     expect(host?.textContent).not.toContain('This note should not render in grouped list mode.')
+  })
+
+  it('renders active policy badges for groups and accounts', () => {
+    renderRoster([
+      makeGroup(
+        'analytics',
+        [
+          makeItem(1, {
+            effectiveRoutingRule: {
+              ...defaultEffectiveRoutingRule,
+              allowCutIn: false,
+              fastModeRewriteMode: 'force_add',
+              upstream429RetryEnabled: true,
+              upstream429MaxRetries: 3,
+            },
+          }),
+        ],
+        {
+          routingRule: {
+            guardEnabled: true,
+            lookbackHours: 5,
+            maxConversations: 10,
+            allowCutOut: false,
+            allowCutIn: true,
+            priorityTier: 'fallback',
+            fastModeRewriteMode: 'force_add',
+            concurrencyLimit: 4,
+            upstream429RetryEnabled: true,
+            upstream429MaxRetries: 3,
+          },
+        },
+      ),
+    ])
+
+    expect(host?.textContent).toContain('Fallback')
+    expect(host?.textContent).toContain('Fast')
+    expect(host?.textContent).toContain('No new')
+    expect(host?.textContent).toContain('No out')
+    expect(host?.textContent).toContain('No in')
+    expect(host?.textContent).toContain('Conc 4')
+    expect(host?.textContent).toContain('Retry 3')
   })
 
   it('reports visible member ids for rendered groups', async () => {

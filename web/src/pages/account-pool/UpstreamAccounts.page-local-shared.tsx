@@ -51,6 +51,7 @@ import { Spinner } from "../../components/ui/spinner";
 import { Switch } from "../../components/ui/switch";
 import { AccountTagField } from "../../components/AccountTagField";
 import { EffectiveRoutingRuleCard } from "../../components/EffectiveRoutingRuleCard";
+import { TagRuleDialog } from "../../components/TagRuleDialog";
 import { InvocationTable } from "../../components/InvocationTable";
 import {
   ACCOUNT_ACTIVITY_RANGE_STORAGE_KEY_PREFIX,
@@ -68,6 +69,8 @@ import { useUpstreamStickyConversations } from "../../hooks/useUpstreamStickyCon
 import type {
   ApiInvocation,
   StickyKeyConversationSelection,
+  TagRoutingRule,
+  UpdateTagPayload,
   UpstreamAccountDetail,
   UpstreamAccountDuplicateInfo,
   UpstreamAccountSummary,
@@ -848,6 +851,8 @@ function SharedUpstreamAccountDetailDrawerInner({
     accountActions: new Set(),
   }));
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
+  const [accountPolicyEditorOpen, setAccountPolicyEditorOpen] =
+    useState(false);
   const [pageCreatedTagIds, setPageCreatedTagIds] = useState<number[]>([]);
   const [
     stickyConversationSelectionValue,
@@ -1429,6 +1434,7 @@ function SharedUpstreamAccountDetailDrawerInner({
             resolveGroupUpstream429RetryEnabledForName(normalized),
           upstream429MaxRetries:
             resolveGroupUpstream429MaxRetriesForName(normalized),
+          routingRule: existingGroup?.routingRule,
         };
       },
       [
@@ -1474,6 +1480,7 @@ function SharedUpstreamAccountDetailDrawerInner({
           nodeShuntEnabled: normalizedNodeShuntEnabled,
           upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
           upstream429MaxRetries: normalizedUpstream429MaxRetries,
+          routingRule: payload.routingRule,
         });
         clearDraftGroupSettings(normalizedGroupName);
       },
@@ -1736,10 +1743,13 @@ function SharedUpstreamAccountDetailDrawerInner({
     name: t("accountPool.tags.dialog.name"),
     namePlaceholder: t("accountPool.tags.dialog.namePlaceholder"),
     guardEnabled: t("accountPool.tags.dialog.guardEnabled"),
+    forbidNewConversation: t("accountPool.tags.dialog.forbidNewConversation"),
     lookbackHours: t("accountPool.tags.dialog.lookbackHours"),
     maxConversations: t("accountPool.tags.dialog.maxConversations"),
     allowCutOut: t("accountPool.tags.dialog.allowCutOut"),
     allowCutIn: t("accountPool.tags.dialog.allowCutIn"),
+    forbidCutOut: t("accountPool.tags.dialog.forbidCutOut"),
+    forbidCutIn: t("accountPool.tags.dialog.forbidCutIn"),
     priorityTier: t("accountPool.tags.dialog.priorityTier"),
     priorityPrimary: t("accountPool.tags.dialog.priorityPrimary"),
     priorityNormal: t("accountPool.tags.dialog.priorityNormal"),
@@ -2023,6 +2033,49 @@ function SharedUpstreamAccountDetailDrawerInner({
       handleNotFoundClose,
       notifyMotherChange,
       resolvePendingGroupNoteForName,
+      saveAccount,
+    ],
+  );
+  const handleSaveAccountPolicy = useCallback(
+    async (source: UpstreamAccountDetail, payload: UpdateTagPayload) => {
+      if (hasBusyAccountAction(busyAction, source.id)) return;
+      setActionError((current) => {
+        const nextMessages = { ...current.accountMessages };
+        delete nextMessages[source.id];
+        return { ...current, accountMessages: nextMessages };
+      });
+      setBusyAction((current) => {
+        const nextActions = new Set(current.accountActions);
+        nextActions.add(createBusyActionKey("save", source.id));
+        return { ...current, accountActions: nextActions };
+      });
+      try {
+        const response = await saveAccount(source.id, {
+          routingRule: payload,
+        });
+        notifyMotherChange(response);
+        setAccountPolicyEditorOpen(false);
+      } catch (err) {
+        if (handleNotFoundClose(source.id, err)) return;
+        setActionError((current) => ({
+          ...current,
+          accountMessages: {
+            ...current.accountMessages,
+            [source.id]: err instanceof Error ? err.message : String(err),
+          },
+        }));
+      } finally {
+        setBusyAction((current) => {
+          const nextActions = new Set(current.accountActions);
+          nextActions.delete(createBusyActionKey("save", source.id));
+          return { ...current, accountActions: nextActions };
+        });
+      }
+    },
+    [
+      busyAction,
+      handleNotFoundClose,
+      notifyMotherChange,
       saveAccount,
     ],
   );
@@ -3069,6 +3122,28 @@ function SharedUpstreamAccountDetailDrawerInner({
                   aria-labelledby={detailTabIds.routing.tab}
                   className="grid gap-5"
                 >
+                  <div className="flex justify-end">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      className="gap-2"
+                      disabled={
+                        !writesEnabled ||
+                        hasBusyAccountAction(busyAction, selectedDetail.id)
+                      }
+                      onClick={() => setAccountPolicyEditorOpen(true)}
+                    >
+                      <AppIcon
+                        name="file-document-edit-outline"
+                        className="h-4 w-4"
+                        aria-hidden
+                      />
+                      {t(
+                        "accountPool.upstreamAccounts.actions.editRoutingPolicy",
+                      )}
+                    </Button>
+                  </div>
                   <EffectiveRoutingRuleCard
                     rule={selectedDetail.effectiveRoutingRule}
                     labels={{
@@ -3109,6 +3184,42 @@ function SharedUpstreamAccountDetailDrawerInner({
                         ),
                       allGuardsApply: t(
                         "accountPool.upstreamAccounts.effectiveRule.allGuardsApply",
+                      ),
+                      sourceBreakdownTitle: t(
+                        "accountPool.upstreamAccounts.effectiveRule.sourceBreakdownTitle",
+                      ),
+                      fieldGuard: t(
+                        "accountPool.upstreamAccounts.effectiveRule.fieldGuard",
+                      ),
+                      fieldAllowCutOut: t(
+                        "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutOut",
+                      ),
+                      fieldAllowCutIn: t(
+                        "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutIn",
+                      ),
+                      fieldPriority: t(
+                        "accountPool.upstreamAccounts.effectiveRule.fieldPriority",
+                      ),
+                      fieldFastMode: t(
+                        "accountPool.upstreamAccounts.effectiveRule.fieldFastMode",
+                      ),
+                      fieldConcurrency: t(
+                        "accountPool.upstreamAccounts.effectiveRule.fieldConcurrency",
+                      ),
+                      fieldUpstream429: t(
+                        "accountPool.upstreamAccounts.effectiveRule.fieldUpstream429",
+                      ),
+                      sourceRoot: t(
+                        "accountPool.upstreamAccounts.effectiveRule.sourceRoot",
+                      ),
+                      sourceGroup: t(
+                        "accountPool.upstreamAccounts.effectiveRule.sourceGroup",
+                      ),
+                      sourceTag: t(
+                        "accountPool.upstreamAccounts.effectiveRule.sourceTag",
+                      ),
+                      sourceAccount: t(
+                        "accountPool.upstreamAccounts.effectiveRule.sourceAccount",
                       ),
                       priorityPrimary: t(
                         "accountPool.upstreamAccounts.effectiveRule.priorityPrimary",
@@ -3487,6 +3598,77 @@ function SharedUpstreamAccountDetailDrawerInner({
       ) : null}
 
       {groupNoteDialog}
+      <TagRuleDialog
+        open={accountPolicyEditorOpen && selectedDetail != null}
+        mode="edit"
+        policyOnly
+        changedFieldsOnly
+        title={t("accountPool.upstreamAccounts.policyDialog.accountTitle")}
+        description={t(
+          "accountPool.upstreamAccounts.policyDialog.accountDescription",
+        )}
+        submitLabel={t("accountPool.upstreamAccounts.policyDialog.save")}
+        tag={
+          selectedDetail
+            ? {
+                id: selectedDetail.id,
+                name: selectedDetail.displayName,
+                routingRule:
+                  selectedDetail.effectiveRoutingRule as TagRoutingRule,
+                accountCount: 1,
+                groupCount: 1,
+                updatedAt: "",
+              }
+            : null
+        }
+        busy={
+          selectedDetail
+            ? hasBusyAccountAction(busyAction, selectedDetail.id)
+            : false
+        }
+        error={
+          selectedDetail
+            ? actionError.accountMessages[selectedDetail.id] ?? null
+            : null
+        }
+        onClose={() => setAccountPolicyEditorOpen(false)}
+        onSubmit={(payload) => {
+          if (!selectedDetail) return;
+          void handleSaveAccountPolicy(selectedDetail, payload as UpdateTagPayload);
+        }}
+        labels={{
+          createTitle: t("accountPool.tags.dialog.createTitle"),
+          editTitle: t("accountPool.tags.dialog.editTitle"),
+          description: t("accountPool.tags.dialog.description"),
+          name: t("accountPool.tags.dialog.name"),
+          namePlaceholder: t("accountPool.tags.dialog.namePlaceholder"),
+          guardEnabled: t("accountPool.tags.dialog.guardEnabled"),
+          forbidNewConversation: t("accountPool.tags.dialog.forbidNewConversation"),
+          lookbackHours: t("accountPool.tags.dialog.lookbackHours"),
+          maxConversations: t("accountPool.tags.dialog.maxConversations"),
+          allowCutOut: t("accountPool.tags.dialog.allowCutOut"),
+          allowCutIn: t("accountPool.tags.dialog.allowCutIn"),
+          forbidCutOut: t("accountPool.tags.dialog.forbidCutOut"),
+          forbidCutIn: t("accountPool.tags.dialog.forbidCutIn"),
+          priorityTier: t("accountPool.tags.dialog.priorityTier"),
+          priorityPrimary: t("accountPool.tags.dialog.priorityPrimary"),
+          priorityNormal: t("accountPool.tags.dialog.priorityNormal"),
+          priorityFallback: t("accountPool.tags.dialog.priorityFallback"),
+          fastModeRewriteMode: t("accountPool.tags.dialog.fastModeRewriteMode"),
+          fastModeKeepOriginal: t("accountPool.tags.dialog.fastModeKeepOriginal"),
+          fastModeFillMissing: t("accountPool.tags.dialog.fastModeFillMissing"),
+          fastModeForceAdd: t("accountPool.tags.dialog.fastModeForceAdd"),
+          fastModeForceRemove: t("accountPool.tags.dialog.fastModeForceRemove"),
+          concurrencyLimit: t("accountPool.tags.dialog.concurrencyLimit"),
+          concurrencyHint: t("accountPool.tags.dialog.concurrencyHint"),
+          currentValue: t("accountPool.tags.dialog.currentValue"),
+          unlimited: t("accountPool.tags.dialog.unlimited"),
+          cancel: t("accountPool.tags.dialog.cancel"),
+          save: t("accountPool.tags.dialog.save"),
+          create: t("accountPool.tags.dialog.createAction"),
+          validation: t("accountPool.tags.dialog.validation"),
+        }}
+      />
     </>
   );
 }

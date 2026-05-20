@@ -46,6 +46,7 @@ interface UpstreamAccountGroupNoteDialogProps {
   onNodeShuntEnabledChange?: (value: boolean) => void;
   onUpstream429RetryEnabledChange?: (value: boolean) => void;
   onUpstream429MaxRetriesChange?: (value: number) => void;
+  onRoutingPolicyEdit?: () => void;
   onClose: () => void;
   onSave: () => void;
   onDelete?: () => void;
@@ -77,6 +78,9 @@ interface UpstreamAccountGroupNoteDialogProps {
     value: number;
     label: string;
   }>;
+  routingPolicyLabel?: string;
+  routingPolicyHint?: string;
+  routingPolicyEditLabel?: string;
   proxyBindingsLabel?: string;
   proxyBindingsHint?: string;
   proxyBindingsAutomaticLabel?: string;
@@ -297,6 +301,7 @@ export function UpstreamAccountGroupNoteDialog({
   onNodeShuntEnabledChange,
   onUpstream429RetryEnabledChange,
   onUpstream429MaxRetriesChange,
+  onRoutingPolicyEdit,
   onClose,
   onSave,
   onDelete,
@@ -325,6 +330,9 @@ export function UpstreamAccountGroupNoteDialog({
   upstream429RetryToggleLabel,
   upstream429RetryCountLabel,
   upstream429RetryCountOptions,
+  routingPolicyLabel,
+  routingPolicyHint,
+  routingPolicyEditLabel,
   proxyBindingsLabel,
   proxyBindingsHint,
   proxyBindingsAutomaticLabel,
@@ -568,6 +576,29 @@ export function UpstreamAccountGroupNoteDialog({
               unlimitedLabel={concurrencyLimitUnlimitedLabel ?? "Unlimited"}
               onChange={onConcurrencyLimitChange}
             />
+
+            {onRoutingPolicyEdit ? (
+              <section className="flex items-center justify-between gap-4 rounded-2xl border border-base-300/80 bg-base-200/25 px-4 py-4">
+                <div className="min-w-0 space-y-1">
+                  <h3 className="text-sm font-semibold text-base-content">
+                    {routingPolicyLabel ?? "Routing policy"}
+                  </h3>
+                  <p className="text-xs leading-5 text-base-content/68">
+                    {routingPolicyHint ??
+                      "Customize priority, FAST mode, guard, cut-in/cut-out, concurrency, and upstream 429 retry for this group."}
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  disabled={busy}
+                  onClick={onRoutingPolicyEdit}
+                >
+                  {routingPolicyEditLabel ?? "Edit policy"}
+                </Button>
+              </section>
+            ) : null}
 
             {showUpstream429RetrySection ? (
               <section className="flex flex-col gap-3 rounded-2xl border border-base-300/80 bg-base-200/25 px-4 py-4">

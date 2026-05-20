@@ -1201,6 +1201,20 @@ fn normalize_positive_i64(
     }
 }
 
+fn validate_routing_guard_window(
+    guard_enabled: Option<bool>,
+    lookback_hours: Option<i64>,
+    max_conversations: Option<i64>,
+) -> Result<(), (StatusCode, String)> {
+    if guard_enabled == Some(true) && (lookback_hours.is_none() || max_conversations.is_none()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "lookbackHours and maxConversations are required when guardEnabled is true".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn normalize_bulk_upstream_account_ids(
     account_ids: &[i64],
 ) -> Result<Vec<i64>, (StatusCode, String)> {
@@ -1395,18 +1409,22 @@ fn normalize_tag_rule(
     priority_tier: Option<&str>,
     fast_mode_rewrite_mode: Option<&str>,
     concurrency_limit: Option<i64>,
+    upstream_429_retry_enabled: Option<bool>,
+    upstream_429_max_retries: Option<u8>,
 ) -> Result<TagRoutingRule, (StatusCode, String)> {
     let lookback_hours = normalize_positive_i64(lookback_hours, "lookbackHours")?;
     let max_conversations = normalize_positive_i64(max_conversations, "maxConversations")?;
     let priority_tier = normalize_tag_priority_tier(priority_tier)?;
     let fast_mode_rewrite_mode = normalize_tag_fast_mode_rewrite_mode(fast_mode_rewrite_mode)?;
     let concurrency_limit = normalize_concurrency_limit(concurrency_limit, "concurrencyLimit")?;
-    if guard_enabled && (lookback_hours.is_none() || max_conversations.is_none()) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "lookbackHours and maxConversations are required when guardEnabled is true".to_string(),
-        ));
-    }
+    let upstream_429_retry_enabled = upstream_429_retry_enabled.unwrap_or(false);
+    let upstream_429_max_retries = normalize_group_upstream_429_retry_metadata(
+        upstream_429_retry_enabled,
+        upstream_429_max_retries
+            .map(normalize_group_upstream_429_max_retries)
+            .unwrap_or_default(),
+    );
+    validate_routing_guard_window(Some(guard_enabled), lookback_hours, max_conversations)?;
     Ok(TagRoutingRule {
         guard_enabled,
         lookback_hours: if guard_enabled { lookback_hours } else { None },
@@ -1420,6 +1438,8 @@ fn normalize_tag_rule(
         priority_tier,
         fast_mode_rewrite_mode,
         concurrency_limit,
+        upstream_429_retry_enabled,
+        upstream_429_max_retries,
     })
 }
 
@@ -1520,6 +1540,13 @@ fn account_tag_summary_from_row(row: &AccountTagRow) -> AccountTagSummary {
             priority_tier: decode_tag_priority_tier(&row.priority_tier),
             fast_mode_rewrite_mode: decode_tag_fast_mode_rewrite_mode(&row.fast_mode_rewrite_mode),
             concurrency_limit: row.concurrency_limit,
+            upstream_429_retry_enabled: decode_group_upstream_429_retry_enabled(
+                row.upstream_429_retry_enabled,
+            ),
+            upstream_429_max_retries: normalize_group_upstream_429_retry_metadata(
+                decode_group_upstream_429_retry_enabled(row.upstream_429_retry_enabled),
+                decode_group_upstream_429_max_retries(row.upstream_429_max_retries),
+            ),
         },
         system_key: row.system_key.clone(),
         protected: row.protected != 0,
@@ -1539,6 +1566,13 @@ fn tag_summary_from_row(row: &TagListRow) -> TagSummary {
             priority_tier: decode_tag_priority_tier(&row.priority_tier),
             fast_mode_rewrite_mode: decode_tag_fast_mode_rewrite_mode(&row.fast_mode_rewrite_mode),
             concurrency_limit: row.concurrency_limit,
+            upstream_429_retry_enabled: decode_group_upstream_429_retry_enabled(
+                row.upstream_429_retry_enabled,
+            ),
+            upstream_429_max_retries: normalize_group_upstream_429_retry_metadata(
+                decode_group_upstream_429_retry_enabled(row.upstream_429_retry_enabled),
+                decode_group_upstream_429_max_retries(row.upstream_429_max_retries),
+            ),
         },
         account_count: row.account_count,
         group_count: row.group_count,
@@ -1546,4 +1580,133 @@ fn tag_summary_from_row(row: &TagListRow) -> TagSummary {
         system_key: row.system_key.clone(),
         protected: row.protected != 0,
     }
+}
+
+fn group_routing_rule_from_columns(
+    legacy_concurrency_limit: i64,
+    legacy_upstream_429_retry_enabled: bool,
+    legacy_upstream_429_max_retries: u8,
+    policy_guard_enabled: Option<i64>,
+    policy_lookback_hours: Option<i64>,
+    policy_max_conversations: Option<i64>,
+    policy_allow_cut_out: Option<i64>,
+    policy_allow_cut_in: Option<i64>,
+    policy_priority_tier: Option<&str>,
+    policy_fast_mode_rewrite_mode: Option<&str>,
+    policy_concurrency_limit: Option<i64>,
+    policy_upstream_429_retry_enabled: Option<i64>,
+    policy_upstream_429_max_retries: Option<i64>,
+) -> TagRoutingRule {
+    let guard_enabled = policy_guard_enabled.is_some_and(|value| value != 0);
+    let upstream_429_retry_enabled = policy_upstream_429_retry_enabled
+        .map(|value| value != 0)
+        .unwrap_or(legacy_upstream_429_retry_enabled);
+    TagRoutingRule {
+        guard_enabled,
+        lookback_hours: if guard_enabled { policy_lookback_hours } else { None },
+        max_conversations: if guard_enabled {
+            policy_max_conversations
+        } else {
+            None
+        },
+        allow_cut_out: policy_allow_cut_out.map(|value| value != 0).unwrap_or(true),
+        allow_cut_in: policy_allow_cut_in.map(|value| value != 0).unwrap_or(true),
+        priority_tier: decode_tag_priority_tier(policy_priority_tier.unwrap_or("normal")),
+        fast_mode_rewrite_mode: decode_tag_fast_mode_rewrite_mode(
+            policy_fast_mode_rewrite_mode.unwrap_or("keep_original"),
+        ),
+        concurrency_limit: policy_concurrency_limit.unwrap_or(legacy_concurrency_limit),
+        upstream_429_retry_enabled,
+        upstream_429_max_retries: normalize_group_upstream_429_retry_metadata(
+            upstream_429_retry_enabled,
+            policy_upstream_429_max_retries
+                .map(decode_group_upstream_429_max_retries)
+                .unwrap_or(legacy_upstream_429_max_retries),
+        ),
+    }
+}
+
+async fn load_group_routing_rule(pool: &Pool<Sqlite>, group_name: &str) -> Result<TagRoutingRule> {
+    let row = sqlx::query_as::<
+        _,
+        (
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+        ),
+    >(
+        r#"
+        SELECT
+            concurrency_limit,
+            upstream_429_retry_enabled,
+            upstream_429_max_retries,
+            policy_guard_enabled,
+            policy_lookback_hours,
+            policy_max_conversations,
+            policy_allow_cut_out,
+            policy_allow_cut_in,
+            policy_priority_tier,
+            policy_fast_mode_rewrite_mode,
+            policy_concurrency_limit,
+            policy_upstream_429_retry_enabled,
+            policy_upstream_429_max_retries
+        FROM pool_upstream_account_group_notes
+        WHERE group_name = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(group_name)
+    .fetch_optional(pool)
+    .await?;
+    let Some((
+        concurrency_limit,
+        upstream_429_retry_enabled,
+        upstream_429_max_retries,
+        policy_guard_enabled,
+        policy_lookback_hours,
+        policy_max_conversations,
+        policy_allow_cut_out,
+        policy_allow_cut_in,
+        policy_priority_tier,
+        policy_fast_mode_rewrite_mode,
+        policy_concurrency_limit,
+        policy_upstream_429_retry_enabled,
+        policy_upstream_429_max_retries,
+    )) = row
+    else {
+        return Ok(group_routing_rule_from_columns(
+            0, false, 0, None, None, None, None, None, None, None, None, None, None,
+        ));
+    };
+    let upstream_429_retry_enabled =
+        decode_group_upstream_429_retry_enabled(upstream_429_retry_enabled.unwrap_or_default());
+    let upstream_429_max_retries = normalize_group_upstream_429_retry_metadata(
+        upstream_429_retry_enabled,
+        decode_group_upstream_429_max_retries(upstream_429_max_retries.unwrap_or_default()),
+    );
+    Ok(group_routing_rule_from_columns(
+        concurrency_limit.unwrap_or_default(),
+        upstream_429_retry_enabled,
+        upstream_429_max_retries,
+        policy_guard_enabled,
+        policy_lookback_hours,
+        policy_max_conversations,
+        policy_allow_cut_out,
+        policy_allow_cut_in,
+        policy_priority_tier.as_deref(),
+        policy_fast_mode_rewrite_mode.as_deref(),
+        policy_concurrency_limit,
+        policy_upstream_429_retry_enabled,
+        policy_upstream_429_max_retries,
+    ))
 }

@@ -1037,6 +1037,18 @@ pub(crate) struct EffectiveConversationGuard {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct EffectiveRoutingRuleFieldSources {
+    guard: String,
+    allow_cut_out: String,
+    allow_cut_in: String,
+    priority_tier: String,
+    fast_mode_rewrite_mode: String,
+    concurrency_limit: String,
+    upstream_429_retry: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct EffectiveRoutingRule {
     guard_enabled: bool,
     lookback_hours: Option<i64>,
@@ -1046,9 +1058,12 @@ pub(crate) struct EffectiveRoutingRule {
     priority_tier: TagPriorityTier,
     pub(crate) fast_mode_rewrite_mode: TagFastModeRewriteMode,
     concurrency_limit: i64,
+    upstream_429_retry_enabled: bool,
+    upstream_429_max_retries: u8,
     source_tag_ids: Vec<i64>,
     source_tag_names: Vec<String>,
     guard_rules: Vec<EffectiveConversationGuard>,
+    field_sources: EffectiveRoutingRuleFieldSources,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1062,6 +1077,8 @@ pub(crate) struct TagRoutingRule {
     priority_tier: TagPriorityTier,
     fast_mode_rewrite_mode: TagFastModeRewriteMode,
     concurrency_limit: i64,
+    upstream_429_retry_enabled: bool,
+    upstream_429_max_retries: u8,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1102,6 +1119,7 @@ pub(crate) struct UpstreamAccountGroupSummary {
     upstream_429_retry_enabled: bool,
     upstream_429_max_retries: u8,
     concurrency_limit: i64,
+    routing_rule: TagRoutingRule,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1996,6 +2014,7 @@ pub(crate) struct UpdateUpstreamAccountRequest {
     local_secondary_limit: Option<f64>,
     local_limit_unit: Option<String>,
     tag_ids: Option<Vec<i64>>,
+    routing_rule: Option<UpdateTagRequest>,
 }
 
 #[derive(Debug, Clone)]
@@ -2062,6 +2081,8 @@ pub(crate) struct CreateTagRequest {
     priority_tier: Option<String>,
     fast_mode_rewrite_mode: Option<String>,
     concurrency_limit: Option<i64>,
+    upstream_429_retry_enabled: Option<bool>,
+    upstream_429_max_retries: Option<u8>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2076,6 +2097,8 @@ pub(crate) struct UpdateTagRequest {
     priority_tier: Option<String>,
     fast_mode_rewrite_mode: Option<String>,
     concurrency_limit: Option<i64>,
+    upstream_429_retry_enabled: Option<bool>,
+    upstream_429_max_retries: Option<u8>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2108,6 +2131,7 @@ pub(crate) struct UpdateUpstreamAccountGroupRequest {
     #[serde(default)]
     upstream_429_max_retries: Option<u8>,
     concurrency_limit: Option<i64>,
+    routing_rule: Option<UpdateTagRequest>,
 }
 
 #[derive(Debug, Deserialize)]

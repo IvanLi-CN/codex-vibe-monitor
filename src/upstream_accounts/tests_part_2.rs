@@ -259,6 +259,8 @@
             priority_tier: TagPriorityTier::Normal,
             fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
             concurrency_limit: 0,
+            upstream_429_retry_enabled: false,
+            upstream_429_max_retries: 0,
         }
     }
 
@@ -284,9 +286,20 @@
             priority_tier: TagPriorityTier::Normal,
             fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
             concurrency_limit,
+            upstream_429_retry_enabled: false,
+            upstream_429_max_retries: 0,
             source_tag_ids: vec![],
             source_tag_names: vec![],
             guard_rules: vec![],
+            field_sources: EffectiveRoutingRuleFieldSources {
+                guard: "root".to_string(),
+                allow_cut_out: "root".to_string(),
+                allow_cut_in: "root".to_string(),
+                priority_tier: "root".to_string(),
+                fast_mode_rewrite_mode: "root".to_string(),
+                concurrency_limit: "root".to_string(),
+                upstream_429_retry: "root".to_string(),
+            },
         }
     }
 
@@ -1117,6 +1130,7 @@
                     local_secondary_limit: None,
                     local_limit_unit: None,
                     tag_ids: None,
+                routing_rule: None,
                 },
             )
             .await
@@ -1295,6 +1309,7 @@
                             local_secondary_limit: None,
                             local_limit_unit: None,
                             tag_ids: None,
+                routing_rule: None,
                         },
                     )
                     .await
@@ -3264,7 +3279,7 @@
     }
 
     #[tokio::test]
-    async fn load_effective_routing_rule_for_account_uses_strictest_group_and_tag_limit() {
+    async fn load_effective_routing_rule_for_account_uses_tag_layer_over_group_limit() {
         let pool = test_pool().await;
         let account_id = insert_api_key_account(&pool, "Group Tag Limit").await;
         sqlx::query("UPDATE pool_upstream_accounts SET group_name = ?2 WHERE id = ?1")
@@ -3316,10 +3331,402 @@
             .expect("load effective routing rule");
 
         assert_eq!(rule.concurrency_limit, 2);
+        assert_eq!(rule.field_sources.concurrency_limit, "tag");
         assert_eq!(
             rule.source_tag_ids,
             vec![relaxed_tag.summary.id, strict_tag.summary.id]
         );
+    }
+
+    #[tokio::test]
+    async fn load_effective_routing_rule_for_account_applies_group_tag_account_overrides() {
+        let pool = test_pool().await;
+        let account_id = insert_api_key_account(&pool, "Layered Policy").await;
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET group_name = ?2,
+                policy_allow_cut_in = 1,
+                policy_fast_mode_rewrite_mode = 'force_remove',
+                policy_upstream_429_retry_enabled = 1,
+                policy_upstream_429_max_retries = 4
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind("layered")
+        .execute(&pool)
+        .await
+        .expect("assign account override");
+
+        let mut tag_rule = test_tag_routing_rule();
+        tag_rule.allow_cut_in = false;
+        tag_rule.priority_tier = TagPriorityTier::Fallback;
+        tag_rule.fast_mode_rewrite_mode = TagFastModeRewriteMode::FillMissing;
+        tag_rule.concurrency_limit = 3;
+        tag_rule.upstream_429_retry_enabled = true;
+        tag_rule.upstream_429_max_retries = 2;
+        let tag = insert_tag(&pool, "layered-tag", &tag_rule)
+            .await
+            .expect("insert layered tag");
+        sync_account_tag_links(&pool, account_id, &[tag.summary.id])
+            .await
+            .expect("attach layered tag");
+
+        let mut conn = pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "layered",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: vec![],
+                node_shunt_enabled: false,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 8,
+            },
+        )
+        .await
+        .expect("save legacy group metadata");
+        drop(conn);
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_account_group_notes
+            SET policy_priority_tier = 'primary',
+                policy_fast_mode_rewrite_mode = 'force_add',
+                policy_concurrency_limit = 5
+            WHERE group_name = 'layered'
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("save group policy override");
+
+        let rule = load_effective_routing_rule_for_account(&pool, account_id)
+            .await
+            .expect("load layered effective routing rule");
+
+        assert_eq!(rule.priority_tier, TagPriorityTier::Fallback);
+        assert_eq!(
+            rule.fast_mode_rewrite_mode,
+            TagFastModeRewriteMode::ForceRemove
+        );
+        assert_eq!(rule.concurrency_limit, 3);
+        assert_eq!(rule.field_sources.concurrency_limit, "tag");
+        assert!(rule.allow_cut_in);
+        assert_eq!(rule.field_sources.allow_cut_in, "account");
+        assert!(rule.upstream_429_retry_enabled);
+        assert_eq!(rule.upstream_429_max_retries, 4);
+        assert_eq!(rule.field_sources.priority_tier, "tag");
+        assert_eq!(rule.field_sources.fast_mode_rewrite_mode, "account");
+        assert_eq!(rule.field_sources.upstream_429_retry, "account");
+    }
+
+    #[tokio::test]
+    async fn load_effective_routing_rule_for_account_lets_tag_disable_group_retry() {
+        let pool = test_pool().await;
+        let account_id = insert_api_key_account(&pool, "Tag Retry Disable").await;
+        sqlx::query("UPDATE pool_upstream_accounts SET group_name = ?2 WHERE id = ?1")
+            .bind(account_id)
+            .bind("retry-group")
+            .execute(&pool)
+            .await
+            .expect("assign group name");
+
+        let tag_rule = test_tag_routing_rule();
+        assert!(!tag_rule.upstream_429_retry_enabled);
+        let tag = insert_tag(&pool, "retry-disabled-tag", &tag_rule)
+            .await
+            .expect("insert retry-disabled tag");
+        sync_account_tag_links(&pool, account_id, &[tag.summary.id])
+            .await
+            .expect("attach retry-disabled tag");
+
+        let mut conn = pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "retry-group",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: vec![],
+                node_shunt_enabled: false,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 0,
+            },
+        )
+        .await
+        .expect("save group metadata");
+        drop(conn);
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_account_group_notes
+            SET policy_upstream_429_retry_enabled = 1,
+                policy_upstream_429_max_retries = 5
+            WHERE group_name = 'retry-group'
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("save group retry policy");
+
+        let rule = load_effective_routing_rule_for_account(&pool, account_id)
+            .await
+            .expect("load effective routing rule");
+
+        assert!(!rule.upstream_429_retry_enabled);
+        assert_eq!(rule.upstream_429_max_retries, 0);
+        assert_eq!(rule.field_sources.upstream_429_retry, "tag");
+    }
+
+    #[tokio::test]
+    async fn load_effective_routing_rule_for_account_replaces_inherited_guard_rules() {
+        let pool = test_pool().await;
+        let account_id = insert_api_key_account(&pool, "Account Guard Override").await;
+        let mut tag_rule = test_tag_routing_rule();
+        tag_rule.guard_enabled = true;
+        tag_rule.lookback_hours = Some(24);
+        tag_rule.max_conversations = Some(1);
+        let tag = insert_tag(&pool, "guard-tag", &tag_rule)
+            .await
+            .expect("insert guard tag");
+        sync_account_tag_links(&pool, account_id, &[tag.summary.id])
+            .await
+            .expect("attach guard tag");
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET policy_guard_enabled = 1,
+                policy_lookback_hours = 5,
+                policy_max_conversations = 3
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .execute(&pool)
+        .await
+        .expect("save account guard policy");
+
+        let rule = load_effective_routing_rule_for_account(&pool, account_id)
+            .await
+            .expect("load effective routing rule");
+
+        assert_eq!(rule.field_sources.guard, "account");
+        assert_eq!(rule.lookback_hours, Some(5));
+        assert_eq!(rule.max_conversations, Some(3));
+        assert_eq!(rule.guard_rules.len(), 1);
+        assert_eq!(rule.guard_rules[0].tag_name, "override");
+        assert_eq!(rule.guard_rules[0].lookback_hours, 5);
+        assert_eq!(rule.guard_rules[0].max_conversations, 3);
+    }
+
+    #[tokio::test]
+    async fn update_upstream_account_preserves_account_policy_when_routing_rule_is_missing() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let account_id = insert_api_key_account(&state.pool, "Preserve Account Policy").await;
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET policy_allow_cut_in = 0,
+                policy_fast_mode_rewrite_mode = 'force_add',
+                policy_upstream_429_retry_enabled = 1,
+                policy_upstream_429_max_retries = 3
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .execute(&state.pool)
+        .await
+        .expect("seed account policy");
+
+        let detail = state
+            .upstream_accounts
+            .account_ops
+            .run_update_account(
+                state.clone(),
+                account_id,
+                UpdateUpstreamAccountRequest {
+                    display_name: None,
+                    email: OptionalField::Missing,
+                    group_name: None,
+                    group_bound_proxy_keys: None,
+                    group_node_shunt_enabled: None,
+                    note: Some("metadata only".to_string()),
+                    group_note: None,
+                    concurrency_limit: None,
+                    upstream_base_url: OptionalField::Missing,
+                    enabled: Some(false),
+                    is_mother: None,
+                    api_key: None,
+                    local_primary_limit: None,
+                    local_secondary_limit: None,
+                    local_limit_unit: None,
+                    tag_ids: None,
+                    routing_rule: None,
+                },
+            )
+            .await
+            .expect("metadata-only update");
+
+        let rule = load_effective_routing_rule_for_account(&state.pool, account_id)
+            .await
+            .expect("load preserved policy");
+        assert!(!rule.allow_cut_in);
+        assert_eq!(rule.field_sources.allow_cut_in, "account");
+        assert_eq!(
+            rule.fast_mode_rewrite_mode,
+            TagFastModeRewriteMode::ForceAdd
+        );
+        assert_eq!(rule.field_sources.fast_mode_rewrite_mode, "account");
+        assert!(rule.upstream_429_retry_enabled);
+        assert_eq!(rule.upstream_429_max_retries, 3);
+        assert_eq!(rule.field_sources.upstream_429_retry, "account");
+        assert!(!detail.summary.effective_routing_rule.allow_cut_in);
+        assert_eq!(
+            detail.summary.effective_routing_rule.fast_mode_rewrite_mode,
+            TagFastModeRewriteMode::ForceAdd
+        );
+        assert_eq!(
+            detail
+                .summary
+                .effective_routing_rule
+                .field_sources
+                .fast_mode_rewrite_mode,
+            "account"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_upstream_account_rejects_invalid_routing_policy_enums() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let account_id = insert_api_key_account(&state.pool, "Invalid Account Policy").await;
+
+        let err = state
+            .upstream_accounts
+            .account_ops
+            .run_update_account(
+                state.clone(),
+                account_id,
+                UpdateUpstreamAccountRequest {
+                    display_name: None,
+                    email: OptionalField::Missing,
+                    group_name: None,
+                    group_bound_proxy_keys: None,
+                    group_node_shunt_enabled: None,
+                    note: None,
+                    group_note: None,
+                    concurrency_limit: None,
+                    upstream_base_url: OptionalField::Missing,
+                    enabled: None,
+                    is_mother: None,
+                    api_key: None,
+                    local_primary_limit: None,
+                    local_secondary_limit: None,
+                    local_limit_unit: None,
+                    tag_ids: None,
+                    routing_rule: Some(UpdateTagRequest {
+                        name: None,
+                        guard_enabled: None,
+                        lookback_hours: None,
+                        max_conversations: None,
+                        allow_cut_out: None,
+                        allow_cut_in: None,
+                        priority_tier: Some("normal".to_string()),
+                        fast_mode_rewrite_mode: Some("always_fast".to_string()),
+                        concurrency_limit: None,
+                        upstream_429_retry_enabled: None,
+                        upstream_429_max_retries: None,
+                    }),
+                },
+            )
+            .await
+            .expect_err("invalid routing policy enum should be rejected");
+
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            err.1,
+            "fastModeRewriteMode must be one of: force_remove, keep_original, fill_missing, force_add"
+        );
+    }
+
+    #[tokio::test]
+    async fn load_upstream_account_detail_with_actual_usage_returns_layered_effective_policy() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let account_id = insert_api_key_account(&state.pool, "Layered Detail").await;
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET group_name = ?2,
+                policy_fast_mode_rewrite_mode = 'force_remove'
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind("detail-layered")
+        .execute(&state.pool)
+        .await
+        .expect("assign account detail policy");
+
+        let mut tag_rule = test_tag_routing_rule();
+        tag_rule.allow_cut_in = false;
+        tag_rule.priority_tier = TagPriorityTier::Fallback;
+        tag_rule.upstream_429_retry_enabled = true;
+        tag_rule.upstream_429_max_retries = 2;
+        let tag = insert_tag(&state.pool, "detail-layered-tag", &tag_rule)
+            .await
+            .expect("insert detail tag");
+        sync_account_tag_links(&state.pool, account_id, &[tag.summary.id])
+            .await
+            .expect("attach detail tag");
+
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "detail-layered",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: vec![],
+                node_shunt_enabled: false,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 7,
+            },
+        )
+        .await
+        .expect("save detail group metadata");
+        drop(conn);
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_account_group_notes
+            SET policy_priority_tier = 'primary',
+                policy_fast_mode_rewrite_mode = 'force_add',
+                policy_concurrency_limit = 5
+            WHERE group_name = 'detail-layered'
+            "#,
+        )
+        .execute(&state.pool)
+        .await
+        .expect("save detail group policy");
+
+        let detail = load_upstream_account_detail_with_actual_usage(state.as_ref(), account_id)
+            .await
+            .expect("load account detail")
+            .expect("detail exists");
+        let rule = detail.summary.effective_routing_rule;
+        assert_eq!(rule.priority_tier, TagPriorityTier::Fallback);
+        assert_eq!(rule.field_sources.priority_tier, "tag");
+        assert_eq!(
+            rule.fast_mode_rewrite_mode,
+            TagFastModeRewriteMode::ForceRemove
+        );
+        assert_eq!(rule.field_sources.fast_mode_rewrite_mode, "account");
+        assert_eq!(rule.concurrency_limit, 0);
+        assert_eq!(rule.field_sources.concurrency_limit, "tag");
+        assert!(!rule.allow_cut_in);
+        assert_eq!(rule.field_sources.allow_cut_in, "tag");
+        assert!(rule.upstream_429_retry_enabled);
+        assert_eq!(rule.upstream_429_max_retries, 2);
+        assert_eq!(rule.field_sources.upstream_429_retry, "tag");
     }
 
     #[tokio::test]
@@ -3411,6 +3818,8 @@
                 priority_tier: None,
                 fast_mode_rewrite_mode: None,
                 concurrency_limit: None,
+                upstream_429_retry_enabled: None,
+                upstream_429_max_retries: None,
             }),
         )
         .await
@@ -3434,6 +3843,8 @@
                 priority_tier: None,
                 fast_mode_rewrite_mode: Some("force_add".to_string()),
                 concurrency_limit: None,
+                upstream_429_retry_enabled: None,
+                upstream_429_max_retries: None,
             }),
         )
         .await

@@ -2420,8 +2420,8 @@ async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
             Some(test_required_group_name()),
             test_required_group_bound_proxy_keys(),
         ),
-        group_upstream_429_retry_enabled: false,
-        group_upstream_429_max_retries: 0,
+        upstream_429_retry_enabled: false,
+        upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
     };
 

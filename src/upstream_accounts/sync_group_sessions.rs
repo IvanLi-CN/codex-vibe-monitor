@@ -976,74 +976,6 @@ async fn load_group_metadata(
         .unwrap_or_default())
 }
 
-async fn load_group_metadata_map(
-    pool: &Pool<Sqlite>,
-    group_names: &[String],
-) -> Result<HashMap<String, UpstreamAccountGroupMetadata>> {
-    if group_names.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    let mut query = QueryBuilder::<Sqlite>::new(
-        r#"
-        SELECT
-            group_name,
-            note,
-            bound_proxy_keys_json,
-            node_shunt_enabled,
-            upstream_429_retry_enabled,
-            upstream_429_max_retries,
-            concurrency_limit
-        FROM pool_upstream_account_group_notes
-        WHERE group_name IN (
-        "#,
-    );
-    {
-        let mut separated = query.separated(", ");
-        for group_name in group_names {
-            separated.push_bind(group_name);
-        }
-    }
-    let rows = query
-        .push(")")
-        .build_query_as::<(String, String, Option<String>, i64, i64, i64, i64)>()
-        .fetch_all(pool)
-        .await?;
-    let mut metadata = HashMap::with_capacity(rows.len());
-    for (
-        group_name,
-        note,
-        bound_proxy_keys_json,
-        node_shunt_enabled,
-        upstream_429_retry_enabled,
-        upstream_429_max_retries,
-        concurrency_limit,
-    ) in rows
-    {
-        let node_shunt_enabled = decode_group_node_shunt_enabled(node_shunt_enabled);
-        let upstream_429_retry_enabled =
-            decode_group_upstream_429_retry_enabled(upstream_429_retry_enabled);
-        let upstream_429_max_retries = normalize_group_upstream_429_retry_metadata(
-            upstream_429_retry_enabled,
-            decode_group_upstream_429_max_retries(upstream_429_max_retries),
-        );
-        metadata.insert(
-            group_name,
-            UpstreamAccountGroupMetadata {
-                note: normalize_optional_text(Some(note)),
-                bound_proxy_keys: decode_group_bound_proxy_keys_json(
-                    bound_proxy_keys_json.as_deref(),
-                ),
-                node_shunt_enabled,
-                upstream_429_retry_enabled,
-                upstream_429_max_retries,
-                concurrency_limit,
-            },
-        );
-    }
-    Ok(metadata)
-}
-
 pub(crate) async fn load_required_account_forward_proxy_scope_from_group_metadata(
     state: &AppState,
     group_name: Option<&str>,
@@ -1098,6 +1030,16 @@ async fn save_group_metadata_record_conn(
             upstream_429_retry_enabled = excluded.upstream_429_retry_enabled,
             upstream_429_max_retries = excluded.upstream_429_max_retries,
             concurrency_limit = excluded.concurrency_limit,
+            policy_guard_enabled = pool_upstream_account_group_notes.policy_guard_enabled,
+            policy_lookback_hours = pool_upstream_account_group_notes.policy_lookback_hours,
+            policy_max_conversations = pool_upstream_account_group_notes.policy_max_conversations,
+            policy_allow_cut_out = pool_upstream_account_group_notes.policy_allow_cut_out,
+            policy_allow_cut_in = pool_upstream_account_group_notes.policy_allow_cut_in,
+            policy_priority_tier = pool_upstream_account_group_notes.policy_priority_tier,
+            policy_fast_mode_rewrite_mode = pool_upstream_account_group_notes.policy_fast_mode_rewrite_mode,
+            policy_concurrency_limit = pool_upstream_account_group_notes.policy_concurrency_limit,
+            policy_upstream_429_retry_enabled = pool_upstream_account_group_notes.policy_upstream_429_retry_enabled,
+            policy_upstream_429_max_retries = pool_upstream_account_group_notes.policy_upstream_429_max_retries,
             updated_at = excluded.updated_at
         "#,
     )

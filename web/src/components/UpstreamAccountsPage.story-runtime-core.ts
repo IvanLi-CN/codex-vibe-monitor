@@ -58,6 +58,15 @@ const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
   sourceTagIds: [],
   sourceTagNames: [],
   guardRules: [],
+  fieldSources: {
+    guard: 'root',
+    allowCutOut: 'root',
+    allowCutIn: 'root',
+    priorityTier: 'root',
+    fastModeRewriteMode: 'root',
+    concurrencyLimit: 'root',
+    upstream429Retry: 'root',
+  },
 }
 
 const compactDefaultTags: AccountTagSummary[] = [
@@ -265,7 +274,7 @@ const detailRichRoutingRule: EffectiveRoutingRule = {
   lookbackHours: 24,
   maxConversations: 8,
   allowCutOut: false,
-  allowCutIn: true,
+  allowCutIn: false,
   sourceTagIds: [1, 4, 20],
   sourceTagNames: ['vip', 'sticky-pool', 'priority-route'],
   guardRules: [
@@ -282,6 +291,20 @@ const detailRichRoutingRule: EffectiveRoutingRule = {
       maxConversations: 8,
     },
   ],
+  priorityTier: 'fallback',
+  fastModeRewriteMode: 'force_add',
+  concurrencyLimit: 3,
+  upstream429RetryEnabled: true,
+  upstream429MaxRetries: 3,
+  fieldSources: {
+    guard: 'group',
+    allowCutOut: 'tag',
+    allowCutIn: 'account',
+    priorityTier: 'tag',
+    fastModeRewriteMode: 'account',
+    concurrencyLimit: 'tag',
+    upstream429Retry: 'account',
+  },
 }
 
 const detailRichRecentActions = [
@@ -745,6 +768,23 @@ function buildOperationalRosterAccounts(replicaCount = 1) {
           ? `sk-live••••••${String(spec.id).padStart(4, '0').slice(-4)}`
           : null,
       note: `${spec.displayName} mock account for pagination, filtering, and bulk selection coverage.`,
+      effectiveRoutingRule:
+        spec.id === 109
+          ? {
+              ...detailRichRoutingRule,
+              sourceTagIds: [5, 6],
+              sourceTagNames: ['analytics', 'reporting'],
+              fieldSources: {
+                guard: 'group',
+                allowCutOut: 'tag',
+                allowCutIn: 'account',
+                priorityTier: 'tag',
+                fastModeRewriteMode: 'account',
+                concurrencyLimit: 'group',
+                upstream429Retry: 'account',
+              },
+            }
+          : undefined,
     }
 
     const statusOverrides: Partial<UpstreamAccountDetail> =

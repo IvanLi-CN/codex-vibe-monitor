@@ -913,10 +913,11 @@ export function useUpstreamAccounts(
         respectCurrentSelection: true,
         selectionAnchorId: selectedIdRef.current,
       })
+      await refreshCurrentSelectedDetail()
       emitUpstreamAccountsChanged()
       return response
     },
-    [invalidateListRequest, loadList],
+    [invalidateListRequest, loadList, refreshCurrentSelectedDetail],
   )
 
   const deleteGroupNote = useCallback(
@@ -930,9 +931,10 @@ export function useUpstreamAccounts(
         respectCurrentSelection: true,
         selectionAnchorId: selectedIdRef.current,
       })
+      await refreshCurrentSelectedDetail()
       emitUpstreamAccountsChanged()
     },
-    [invalidateListRequest, loadList],
+    [invalidateListRequest, loadList, refreshCurrentSelectedDetail],
   )
 
   const runBulkAction = useCallback(

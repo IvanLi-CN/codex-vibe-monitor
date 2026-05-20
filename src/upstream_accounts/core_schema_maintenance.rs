@@ -46,6 +46,16 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             local_primary_limit REAL,
             local_secondary_limit REAL,
             local_limit_unit TEXT,
+            policy_guard_enabled INTEGER,
+            policy_lookback_hours INTEGER,
+            policy_max_conversations INTEGER,
+            policy_allow_cut_out INTEGER,
+            policy_allow_cut_in INTEGER,
+            policy_priority_tier TEXT,
+            policy_fast_mode_rewrite_mode TEXT,
+            policy_concurrency_limit INTEGER,
+            policy_upstream_429_retry_enabled INTEGER,
+            policy_upstream_429_max_retries INTEGER,
             upstream_base_url TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
@@ -96,6 +106,44 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "upstream_base_url")
         .await
         .context("failed to ensure pool_upstream_accounts.upstream_base_url")?;
+    ensure_nullable_integer_column(pool, "pool_upstream_accounts", "policy_guard_enabled")
+        .await
+        .context("failed to ensure pool_upstream_accounts.policy_guard_enabled")?;
+    ensure_nullable_integer_column(pool, "pool_upstream_accounts", "policy_lookback_hours")
+        .await
+        .context("failed to ensure pool_upstream_accounts.policy_lookback_hours")?;
+    ensure_nullable_integer_column(pool, "pool_upstream_accounts", "policy_max_conversations")
+        .await
+        .context("failed to ensure pool_upstream_accounts.policy_max_conversations")?;
+    ensure_nullable_integer_column(pool, "pool_upstream_accounts", "policy_allow_cut_out")
+        .await
+        .context("failed to ensure pool_upstream_accounts.policy_allow_cut_out")?;
+    ensure_nullable_integer_column(pool, "pool_upstream_accounts", "policy_allow_cut_in")
+        .await
+        .context("failed to ensure pool_upstream_accounts.policy_allow_cut_in")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "policy_priority_tier")
+        .await
+        .context("failed to ensure pool_upstream_accounts.policy_priority_tier")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "policy_fast_mode_rewrite_mode")
+        .await
+        .context("failed to ensure pool_upstream_accounts.policy_fast_mode_rewrite_mode")?;
+    ensure_nullable_integer_column(pool, "pool_upstream_accounts", "policy_concurrency_limit")
+        .await
+        .context("failed to ensure pool_upstream_accounts.policy_concurrency_limit")?;
+    ensure_nullable_integer_column(
+        pool,
+        "pool_upstream_accounts",
+        "policy_upstream_429_retry_enabled",
+    )
+    .await
+    .context("failed to ensure pool_upstream_accounts.policy_upstream_429_retry_enabled")?;
+    ensure_nullable_integer_column(
+        pool,
+        "pool_upstream_accounts",
+        "policy_upstream_429_max_retries",
+    )
+    .await
+    .context("failed to ensure pool_upstream_accounts.policy_upstream_429_max_retries")?;
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "external_client_id")
         .await
         .context("failed to ensure pool_upstream_accounts.external_client_id")?;
@@ -558,6 +606,8 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             priority_tier TEXT NOT NULL DEFAULT 'normal',
             fast_mode_rewrite_mode TEXT NOT NULL DEFAULT 'keep_original',
             concurrency_limit INTEGER NOT NULL DEFAULT 0,
+            upstream_429_retry_enabled INTEGER NOT NULL DEFAULT 0,
+            upstream_429_max_retries INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -580,6 +630,12 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_integer_column_with_default(pool, "pool_tags", "concurrency_limit", "0")
         .await
         .context("failed to ensure pool_tags.concurrency_limit")?;
+    ensure_integer_column_with_default(pool, "pool_tags", "upstream_429_retry_enabled", "0")
+        .await
+        .context("failed to ensure pool_tags.upstream_429_retry_enabled")?;
+    ensure_integer_column_with_default(pool, "pool_tags", "upstream_429_max_retries", "0")
+        .await
+        .context("failed to ensure pool_tags.upstream_429_max_retries")?;
     ensure_nullable_text_column(pool, "pool_tags", "system_key")
         .await
         .context("failed to ensure pool_tags.system_key")?;
@@ -680,6 +736,16 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             upstream_429_retry_enabled INTEGER NOT NULL DEFAULT 0,
             upstream_429_max_retries INTEGER NOT NULL DEFAULT 0,
             concurrency_limit INTEGER NOT NULL DEFAULT 0,
+            policy_guard_enabled INTEGER,
+            policy_lookback_hours INTEGER,
+            policy_max_conversations INTEGER,
+            policy_allow_cut_out INTEGER,
+            policy_allow_cut_in INTEGER,
+            policy_priority_tier TEXT,
+            policy_fast_mode_rewrite_mode TEXT,
+            policy_concurrency_limit INTEGER,
+            policy_upstream_429_retry_enabled INTEGER,
+            policy_upstream_429_max_retries INTEGER,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -742,6 +808,34 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure pool_upstream_account_group_notes.concurrency_limit")?;
+    for column in [
+        "policy_guard_enabled",
+        "policy_lookback_hours",
+        "policy_max_conversations",
+        "policy_allow_cut_out",
+        "policy_allow_cut_in",
+        "policy_concurrency_limit",
+        "policy_upstream_429_retry_enabled",
+        "policy_upstream_429_max_retries",
+    ] {
+        ensure_nullable_integer_column(pool, "pool_upstream_account_group_notes", column)
+            .await
+            .with_context(|| format!("failed to ensure pool_upstream_account_group_notes.{column}"))?;
+    }
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_account_group_notes",
+        "policy_priority_tier",
+    )
+    .await
+    .context("failed to ensure pool_upstream_account_group_notes.policy_priority_tier")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_account_group_notes",
+        "policy_fast_mode_rewrite_mode",
+    )
+    .await
+    .context("failed to ensure pool_upstream_account_group_notes.policy_fast_mode_rewrite_mode")?;
 
     sqlx::query(
         r#"

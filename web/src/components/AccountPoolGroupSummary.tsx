@@ -3,9 +3,14 @@ import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
 import { upstreamPlanBadgeRecipe } from "../lib/upstreamAccountBadges";
+import {
+  resolveActiveRoutingPolicyBadges,
+  type ActiveRoutingPolicyBadgeLabels,
+} from "../lib/tagRoutingRule";
 import type { AccountPoolGroupSummaryData } from "../lib/accountPoolGroups";
+import type { TagRoutingRule } from "../lib/api";
 
-export type AccountPoolGroupSummaryLabels = {
+export type AccountPoolGroupSummaryLabels = ActiveRoutingPolicyBadgeLabels & {
   count: (count: number) => string;
   concurrency: (value: number) => string;
   exclusiveNode: string;
@@ -29,6 +34,24 @@ function groupPlanBadgeRecipe(planKey: string) {
   return upstreamPlanBadgeRecipe(planKey);
 }
 
+function resolveGroupRoutingRule(group: AccountPoolGroupSummaryData): TagRoutingRule {
+  const routingRule = group.routingRule;
+  return {
+    guardEnabled: routingRule?.guardEnabled ?? false,
+    lookbackHours: routingRule?.lookbackHours ?? null,
+    maxConversations: routingRule?.maxConversations ?? null,
+    allowCutOut: routingRule?.allowCutOut ?? true,
+    allowCutIn: routingRule?.allowCutIn ?? true,
+    priorityTier: routingRule?.priorityTier ?? "normal",
+    fastModeRewriteMode: routingRule?.fastModeRewriteMode ?? "keep_original",
+    concurrencyLimit: routingRule?.concurrencyLimit ?? group.concurrencyLimit ?? 0,
+    upstream429RetryEnabled:
+      routingRule?.upstream429RetryEnabled ?? group.upstream429RetryEnabled ?? false,
+    upstream429MaxRetries:
+      routingRule?.upstream429MaxRetries ?? group.upstream429MaxRetries ?? 0,
+  };
+}
+
 export function AccountPoolGroupSummary({
   group,
   labels,
@@ -50,6 +73,16 @@ export function AccountPoolGroupSummary({
     canEditGroupSettings &&
     Boolean(group.groupName) &&
     typeof onEditGroupSettings === "function";
+  const activePolicyBadges = resolveActiveRoutingPolicyBadges(
+    resolveGroupRoutingRule(group),
+    {
+      ...labels,
+      policyConcurrency:
+        labels.policyConcurrency ?? ((value) => labels.concurrency(value)),
+      policyRetry:
+        labels.policyRetry ?? ((count) => labels.upstream429Enabled(count)),
+    },
+  );
 
   return (
     <div
@@ -109,14 +142,16 @@ export function AccountPoolGroupSummary({
             </Badge>
           );
         })}
-        {typeof group.concurrencyLimit === "number" && group.concurrencyLimit > 0 ? (
+        {activePolicyBadges.map((badge) => (
           <Badge
-            variant="secondary"
+            key={`policy:${badge.key}`}
+            variant={badge.variant}
             className="px-2 py-px text-[11px] font-medium leading-4"
+            title={badge.title ?? badge.label}
           >
-            {labels.concurrency(group.concurrencyLimit)}
+            {badge.label}
           </Badge>
-        ) : null}
+        ))}
         {group.nodeShuntEnabled ? (
           <Badge
             variant="info"
@@ -125,14 +160,9 @@ export function AccountPoolGroupSummary({
             {labels.exclusiveNode}
           </Badge>
         ) : null}
-        {showRetryState ? (
-          <Badge
-            variant={group.upstream429RetryEnabled ? "warning" : "secondary"}
-            className="px-2 py-px text-[11px] font-medium leading-4"
-          >
-            {group.upstream429RetryEnabled
-              ? labels.upstream429Enabled(group.upstream429MaxRetries ?? 1)
-              : labels.upstream429Disabled}
+        {showRetryState && activePolicyBadges.length === 0 ? (
+          <Badge variant="secondary" className="px-2 py-px text-[11px] font-medium leading-4">
+            {labels.upstream429Disabled}
           </Badge>
         ) : null}
       </div>

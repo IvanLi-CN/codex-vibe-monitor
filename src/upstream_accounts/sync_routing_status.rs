@@ -11,6 +11,8 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
     };
     let mut fast_mode_rewrite_mode = TagFastModeRewriteMode::KeepOriginal;
     let mut concurrency_limit = 0;
+    let mut upstream_429_retry_enabled = false;
+    let mut upstream_429_max_retries = 0_u8;
     let mut representative_guard: Option<(i64, i64)> = None;
 
     for tag in tags {
@@ -26,6 +28,11 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
         }
         concurrency_limit =
             merge_concurrency_limits(concurrency_limit, tag.routing_rule.concurrency_limit);
+        if tag.routing_rule.upstream_429_retry_enabled {
+            upstream_429_retry_enabled = true;
+            upstream_429_max_retries =
+                upstream_429_max_retries.max(tag.routing_rule.upstream_429_max_retries);
+        }
         if tag.routing_rule.guard_enabled
             && let (Some(lookback_hours), Some(max_conversations)) = (
                 tag.routing_rule.lookback_hours,
@@ -51,6 +58,7 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
         }
     }
 
+    let field_source = if tags.is_empty() { "root" } else { "tag" }.to_string();
     EffectiveRoutingRule {
         guard_enabled: !guard_rules.is_empty(),
         lookback_hours: representative_guard.map(|(hours, _)| hours),
@@ -60,10 +68,293 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
         priority_tier,
         fast_mode_rewrite_mode,
         concurrency_limit,
+        upstream_429_retry_enabled,
+        upstream_429_max_retries: normalize_group_upstream_429_retry_metadata(
+            upstream_429_retry_enabled,
+            upstream_429_max_retries,
+        ),
         source_tag_ids,
         source_tag_names,
         guard_rules,
+        field_sources: EffectiveRoutingRuleFieldSources {
+            guard: field_source.clone(),
+            allow_cut_out: field_source.clone(),
+            allow_cut_in: field_source.clone(),
+            priority_tier: field_source.clone(),
+            fast_mode_rewrite_mode: field_source.clone(),
+            concurrency_limit: field_source.clone(),
+            upstream_429_retry: field_source,
+        },
     }
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct RoutingPolicyOverrideRow {
+    id: i64,
+    policy_guard_enabled: Option<i64>,
+    policy_lookback_hours: Option<i64>,
+    policy_max_conversations: Option<i64>,
+    policy_allow_cut_out: Option<i64>,
+    policy_allow_cut_in: Option<i64>,
+    policy_priority_tier: Option<String>,
+    policy_fast_mode_rewrite_mode: Option<String>,
+    policy_concurrency_limit: Option<i64>,
+    policy_upstream_429_retry_enabled: Option<i64>,
+    policy_upstream_429_max_retries: Option<i64>,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct GroupRoutingPolicyOverrideRow {
+    group_name: String,
+    concurrency_limit: i64,
+    upstream_429_retry_enabled: i64,
+    upstream_429_max_retries: i64,
+    policy_guard_enabled: Option<i64>,
+    policy_lookback_hours: Option<i64>,
+    policy_max_conversations: Option<i64>,
+    policy_allow_cut_out: Option<i64>,
+    policy_allow_cut_in: Option<i64>,
+    policy_priority_tier: Option<String>,
+    policy_fast_mode_rewrite_mode: Option<String>,
+    policy_concurrency_limit: Option<i64>,
+    policy_upstream_429_retry_enabled: Option<i64>,
+    policy_upstream_429_max_retries: Option<i64>,
+}
+
+fn apply_routing_policy_override(
+    rule: &mut EffectiveRoutingRule,
+    source: &str,
+    guard_enabled: Option<i64>,
+    lookback_hours: Option<i64>,
+    max_conversations: Option<i64>,
+    allow_cut_out: Option<i64>,
+    allow_cut_in: Option<i64>,
+    priority_tier: Option<&str>,
+    fast_mode_rewrite_mode: Option<&str>,
+    concurrency_limit: Option<i64>,
+    upstream_429_retry_enabled: Option<i64>,
+    upstream_429_max_retries: Option<i64>,
+) {
+    if let Some(guard_enabled) = guard_enabled {
+        rule.field_sources.guard = source.to_string();
+        rule.guard_enabled = guard_enabled != 0;
+        rule.guard_rules.clear();
+        if rule.guard_enabled {
+            rule.lookback_hours = lookback_hours;
+            rule.max_conversations = max_conversations;
+            if let (Some(lookback_hours), Some(max_conversations)) =
+                (lookback_hours, max_conversations)
+            {
+                rule.guard_rules.push(EffectiveConversationGuard {
+                    tag_id: 0,
+                    tag_name: "override".to_string(),
+                    lookback_hours,
+                    max_conversations,
+                });
+            }
+        } else {
+            rule.lookback_hours = None;
+            rule.max_conversations = None;
+        }
+    }
+    if let Some(allow_cut_out) = allow_cut_out {
+        rule.field_sources.allow_cut_out = source.to_string();
+        rule.allow_cut_out = allow_cut_out != 0;
+    }
+    if let Some(allow_cut_in) = allow_cut_in {
+        rule.field_sources.allow_cut_in = source.to_string();
+        rule.allow_cut_in = allow_cut_in != 0;
+    }
+    if priority_tier.is_some()
+        && let Ok(priority_tier) = normalize_tag_priority_tier(priority_tier)
+    {
+        rule.field_sources.priority_tier = source.to_string();
+        rule.priority_tier = priority_tier;
+    }
+    if fast_mode_rewrite_mode.is_some()
+        && let Ok(fast_mode_rewrite_mode) =
+        normalize_tag_fast_mode_rewrite_mode(fast_mode_rewrite_mode)
+    {
+        rule.field_sources.fast_mode_rewrite_mode = source.to_string();
+        rule.fast_mode_rewrite_mode = fast_mode_rewrite_mode;
+    }
+    if let Some(concurrency_limit) = concurrency_limit {
+        if let Ok(concurrency_limit) =
+            normalize_concurrency_limit(Some(concurrency_limit), "concurrencyLimit")
+        {
+            rule.field_sources.concurrency_limit = source.to_string();
+            rule.concurrency_limit = concurrency_limit;
+        }
+    }
+    if let Some(upstream_429_retry_enabled) = upstream_429_retry_enabled {
+        rule.field_sources.upstream_429_retry = source.to_string();
+        rule.upstream_429_retry_enabled = upstream_429_retry_enabled != 0;
+        rule.upstream_429_max_retries = normalize_group_upstream_429_retry_metadata(
+            rule.upstream_429_retry_enabled,
+            upstream_429_max_retries
+                .map(decode_group_upstream_429_max_retries)
+                .unwrap_or_default(),
+        );
+    }
+}
+
+async fn load_group_routing_policy_override_map(
+    pool: &Pool<Sqlite>,
+    group_names: &[String],
+) -> Result<HashMap<String, GroupRoutingPolicyOverrideRow>> {
+    if group_names.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            group_name,
+            concurrency_limit,
+            upstream_429_retry_enabled,
+            upstream_429_max_retries,
+            policy_guard_enabled,
+            policy_lookback_hours,
+            policy_max_conversations,
+            policy_allow_cut_out,
+            policy_allow_cut_in,
+            policy_priority_tier,
+            policy_fast_mode_rewrite_mode,
+            policy_concurrency_limit,
+            policy_upstream_429_retry_enabled,
+            policy_upstream_429_max_retries
+        FROM pool_upstream_account_group_notes
+        WHERE group_name IN (
+        "#,
+    );
+    {
+        let mut separated = query.separated(", ");
+        for group_name in group_names {
+            separated.push_bind(group_name);
+        }
+    }
+    let rows = query
+        .push(")")
+        .build_query_as::<GroupRoutingPolicyOverrideRow>()
+        .fetch_all(pool)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.group_name.clone(), row))
+        .collect())
+}
+
+async fn load_account_routing_policy_override_map(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+) -> Result<HashMap<i64, RoutingPolicyOverrideRow>> {
+    if account_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            id,
+            policy_guard_enabled,
+            policy_lookback_hours,
+            policy_max_conversations,
+            policy_allow_cut_out,
+            policy_allow_cut_in,
+            policy_priority_tier,
+            policy_fast_mode_rewrite_mode,
+            policy_concurrency_limit,
+            policy_upstream_429_retry_enabled,
+            policy_upstream_429_max_retries
+        FROM pool_upstream_accounts
+        WHERE id IN (
+        "#,
+    );
+    {
+        let mut separated = query.separated(", ");
+        for account_id in account_ids {
+            separated.push_bind(account_id);
+        }
+    }
+    let rows = query
+        .push(")")
+        .build_query_as::<RoutingPolicyOverrideRow>()
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.into_iter().map(|row| (row.id, row)).collect())
+}
+
+fn apply_group_routing_policy_override(
+    rule: &mut EffectiveRoutingRule,
+    row: &GroupRoutingPolicyOverrideRow,
+) {
+    apply_routing_policy_override(
+        rule,
+        "group",
+        row.policy_guard_enabled,
+        row.policy_lookback_hours,
+        row.policy_max_conversations,
+        row.policy_allow_cut_out,
+        row.policy_allow_cut_in,
+        row.policy_priority_tier.as_deref(),
+        row.policy_fast_mode_rewrite_mode.as_deref(),
+        row.policy_concurrency_limit,
+        row.policy_upstream_429_retry_enabled,
+        row.policy_upstream_429_max_retries,
+    );
+    if row.policy_concurrency_limit.is_none() && row.concurrency_limit > 0 {
+        rule.field_sources.concurrency_limit = "group".to_string();
+        rule.concurrency_limit = row.concurrency_limit;
+    }
+    if row.policy_upstream_429_retry_enabled.is_none()
+        && decode_group_upstream_429_retry_enabled(row.upstream_429_retry_enabled)
+    {
+        rule.field_sources.upstream_429_retry = "group".to_string();
+        rule.upstream_429_retry_enabled = true;
+        rule.upstream_429_max_retries = normalize_group_upstream_429_retry_metadata(
+            true,
+            decode_group_upstream_429_max_retries(row.upstream_429_max_retries),
+        );
+    }
+}
+
+fn apply_tag_layer_routing_policy(rule: &mut EffectiveRoutingRule, tag_rule: &EffectiveRoutingRule) {
+    rule.guard_enabled = tag_rule.guard_enabled;
+    rule.lookback_hours = tag_rule.lookback_hours;
+    rule.max_conversations = tag_rule.max_conversations;
+    rule.allow_cut_out = tag_rule.allow_cut_out;
+    rule.allow_cut_in = tag_rule.allow_cut_in;
+    rule.priority_tier = tag_rule.priority_tier;
+    rule.fast_mode_rewrite_mode = tag_rule.fast_mode_rewrite_mode;
+    rule.concurrency_limit = tag_rule.concurrency_limit;
+    rule.upstream_429_retry_enabled = tag_rule.upstream_429_retry_enabled;
+    rule.upstream_429_max_retries = if tag_rule.upstream_429_retry_enabled {
+        tag_rule.upstream_429_max_retries
+    } else {
+        0
+    };
+    rule.source_tag_ids = tag_rule.source_tag_ids.clone();
+    rule.source_tag_names = tag_rule.source_tag_names.clone();
+    rule.guard_rules = tag_rule.guard_rules.clone();
+    rule.field_sources = tag_rule.field_sources.clone();
+}
+
+fn apply_account_routing_policy_override(
+    rule: &mut EffectiveRoutingRule,
+    row: &RoutingPolicyOverrideRow,
+) {
+    apply_routing_policy_override(
+        rule,
+        "account",
+        row.policy_guard_enabled,
+        row.policy_lookback_hours,
+        row.policy_max_conversations,
+        row.policy_allow_cut_out,
+        row.policy_allow_cut_in,
+        row.policy_priority_tier.as_deref(),
+        row.policy_fast_mode_rewrite_mode.as_deref(),
+        row.policy_concurrency_limit,
+        row.policy_upstream_429_retry_enabled,
+        row.policy_upstream_429_max_retries,
+    );
 }
 
 fn merge_concurrency_limits(current: i64, next: i64) -> i64 {

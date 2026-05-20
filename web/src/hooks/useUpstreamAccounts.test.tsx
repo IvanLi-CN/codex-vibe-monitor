@@ -7,6 +7,7 @@ import type {
   ForwardProxyBindingNode,
   RateWindowActualUsage,
   UpstreamAccountDetail,
+  UpstreamAccountGroupSummary,
   UpstreamAccountListResponse,
   UpstreamAccountSummary,
   UpstreamAccountWindowUsageResponse,
@@ -27,9 +28,16 @@ const apiMocks = vi.hoisted(() => ({
   fetchUpstreamAccountWindowUsage: vi.fn<
     (accountIds: number[]) => Promise<UpstreamAccountWindowUsageResponse>
   >(),
+  updateUpstreamAccountGroup: vi.fn<
+    (
+      groupName: string,
+      payload: import("../lib/api").UpdateUpstreamAccountGroupPayload,
+    ) => Promise<UpstreamAccountGroupSummary>
+  >(),
   syncUpstreamAccount: vi.fn<(accountId: number) => Promise<UpstreamAccountDetail>>(),
   reloginUpstreamAccount: vi.fn<(accountId: number) => Promise<{ loginId: string }>>(),
   deleteUpstreamAccount: vi.fn<(accountId: number) => Promise<void>>(),
+  deleteUpstreamAccountGroup: vi.fn<(groupName: string) => Promise<void>>(),
 }));
 
 const sseMocks = vi.hoisted(() => ({
@@ -44,9 +52,11 @@ vi.mock("../lib/api", async () => {
     fetchUpstreamAccounts: apiMocks.fetchUpstreamAccounts,
     fetchUpstreamAccountDetail: apiMocks.fetchUpstreamAccountDetail,
     fetchUpstreamAccountWindowUsage: apiMocks.fetchUpstreamAccountWindowUsage,
+    updateUpstreamAccountGroup: apiMocks.updateUpstreamAccountGroup,
     syncUpstreamAccount: apiMocks.syncUpstreamAccount,
     reloginUpstreamAccount: apiMocks.reloginUpstreamAccount,
     deleteUpstreamAccount: apiMocks.deleteUpstreamAccount,
+    deleteUpstreamAccountGroup: apiMocks.deleteUpstreamAccountGroup,
   };
 });
 
@@ -89,6 +99,8 @@ beforeEach(() => {
   sseMocks.recordListeners.length = 0;
   sseMocks.openListeners.length = 0;
   apiMocks.fetchUpstreamAccounts.mockResolvedValue(createListResponse());
+  apiMocks.updateUpstreamAccountGroup.mockResolvedValue(createGroupSummary("prod"));
+  apiMocks.deleteUpstreamAccountGroup.mockResolvedValue();
 });
 
 afterEach(() => {
@@ -215,6 +227,23 @@ function createDetail(id: number, displayName: string): UpstreamAccountDetail {
   };
 }
 
+function createGroupSummary(
+  groupName: string,
+  overrides: Partial<UpstreamAccountGroupSummary> = {},
+): UpstreamAccountGroupSummary {
+  return {
+    groupName,
+    accountCount: 2,
+    note: null,
+    boundProxyKeys: [],
+    concurrencyLimit: null,
+    nodeShuntEnabled: false,
+    upstream429RetryEnabled: false,
+    upstream429MaxRetries: 0,
+    ...overrides,
+  };
+}
+
 function createWindowedSummary(
   id: number,
   displayName: string,
@@ -311,6 +340,7 @@ function Probe({ query }: { query?: FetchUpstreamAccountsQuery | null }) {
     hydrateWindowUsage,
     beginRelogin,
     removeAccount,
+    saveGroupNote,
   } =
     useUpstreamAccounts(query);
 
@@ -370,6 +400,12 @@ function Probe({ query }: { query?: FetchUpstreamAccountsQuery | null }) {
       </button>
       <button data-testid="remove-alpha" onClick={() => void removeAccount(1)}>
         remove alpha
+      </button>
+      <button
+        data-testid="save-prod-group"
+        onClick={() => void saveGroupNote("prod", { routingRule: { priorityTier: "fallback" } })}
+      >
+        save prod group
       </button>
     </div>
   );
@@ -883,6 +919,44 @@ describe("useUpstreamAccounts", () => {
       expect.any(AbortSignal),
     );
     expect(text("selected-id")).toBe("2");
+  });
+
+  it("reloads the currently selected account detail after group settings save", async () => {
+    apiMocks.fetchUpstreamAccounts
+      .mockResolvedValueOnce(createListResponse())
+      .mockResolvedValueOnce(createListResponse());
+    apiMocks.fetchUpstreamAccountDetail
+      .mockResolvedValueOnce(createDetail(1, "Alpha"))
+      .mockResolvedValue(createDetail(1, "Alpha Group Policy Fresh"));
+    apiMocks.updateUpstreamAccountGroup.mockResolvedValueOnce(
+      createGroupSummary("prod", {
+        routingRule: {
+          guardEnabled: false,
+          allowCutOut: false,
+          allowCutIn: false,
+          priorityTier: "fallback",
+        },
+      }),
+    );
+
+    render(<Probe />);
+    await flushAsync();
+
+    expect(text("detail-name")).toBe("Alpha");
+    click("save-prod-group");
+    await flushAsync();
+
+    expect(apiMocks.updateUpstreamAccountGroup).toHaveBeenCalledWith("prod", {
+      routingRule: { priorityTier: "fallback" },
+    });
+    expect(apiMocks.fetchUpstreamAccountDetail).toHaveBeenNthCalledWith(
+      2,
+      1,
+      expect.any(AbortSignal),
+    );
+    await flushAsync();
+    await flushAsync();
+    expect(text("detail-name")).toBe("Alpha Group Policy Fresh");
   });
 
   it("keeps synced detail when an older detail refresh resolves afterwards", async () => {

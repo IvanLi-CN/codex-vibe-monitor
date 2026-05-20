@@ -82,6 +82,8 @@ export interface TagRoutingRule {
   priorityTier?: TagPriorityTier;
   fastModeRewriteMode?: TagFastModeRewriteMode;
   concurrencyLimit?: number | null;
+  upstream429RetryEnabled?: boolean;
+  upstream429MaxRetries?: number;
 }
 
 export interface EffectiveConversationGuard {
@@ -91,10 +93,23 @@ export interface EffectiveConversationGuard {
   maxConversations: number;
 }
 
+export type EffectiveRoutingRuleSource = "root" | "group" | "tag" | "account" | string;
+
+export interface EffectiveRoutingRuleFieldSources {
+  guard: EffectiveRoutingRuleSource;
+  allowCutOut: EffectiveRoutingRuleSource;
+  allowCutIn: EffectiveRoutingRuleSource;
+  priorityTier: EffectiveRoutingRuleSource;
+  fastModeRewriteMode: EffectiveRoutingRuleSource;
+  concurrencyLimit: EffectiveRoutingRuleSource;
+  upstream429Retry: EffectiveRoutingRuleSource;
+}
+
 export interface EffectiveRoutingRule extends TagRoutingRule {
   sourceTagIds: number[];
   sourceTagNames: string[];
   guardRules: EffectiveConversationGuard[];
+  fieldSources?: EffectiveRoutingRuleFieldSources;
 }
 
 export interface AccountTagSummary {
@@ -245,6 +260,7 @@ export interface UpstreamAccountGroupSummary {
   nodeShuntEnabled?: boolean;
   upstream429RetryEnabled?: boolean;
   upstream429MaxRetries?: number;
+  routingRule?: TagRoutingRule;
 }
 
 export interface PoolRoutingSettings {
@@ -566,6 +582,7 @@ export interface UpdateUpstreamAccountPayload {
   localSecondaryLimit?: number | null;
   localLimitUnit?: string | null;
   tagIds?: number[];
+  routingRule?: UpdateTagPayload;
 }
 
 export interface ImportOauthCredentialFilePayload {
@@ -703,6 +720,7 @@ export interface UpdateUpstreamAccountGroupPayload {
   nodeShuntEnabled?: boolean;
   upstream429RetryEnabled?: boolean;
   upstream429MaxRetries?: number;
+  routingRule?: UpdateTagPayload;
 }
 
 function normalizeRateWindowActualUsage(
@@ -789,6 +807,9 @@ function normalizeLocalLimitSnapshot(raw: unknown): LocalLimitSnapshot | null {
 function normalizeTagRoutingRule(raw: unknown): TagRoutingRule {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const concurrencyLimit = normalizeFiniteNumber(payload.concurrencyLimit);
+  const upstream429MaxRetries = normalizeUpstreamAccountGroupMaxRetries(
+    payload.upstream429MaxRetries,
+  );
   return {
     guardEnabled: payload.guardEnabled === true,
     lookbackHours: normalizeFiniteNumber(payload.lookbackHours) ?? null,
@@ -809,6 +830,8 @@ function normalizeTagRoutingRule(raw: unknown): TagRoutingRule {
       concurrencyLimit != null && concurrencyLimit >= 0
         ? Math.min(concurrencyLimit, 30)
         : 0,
+    upstream429RetryEnabled: payload.upstream429RetryEnabled === true,
+    upstream429MaxRetries,
   };
 }
 
@@ -846,6 +869,9 @@ function normalizeAccountTagSummary(raw: unknown): AccountTagSummary | null {
 
 function normalizeEffectiveRoutingRule(raw: unknown): EffectiveRoutingRule {
   const payload = (raw ?? {}) as Record<string, unknown>;
+  const rawSources = (payload.fieldSources ?? {}) as Record<string, unknown>;
+  const normalizeSource = (value: unknown): EffectiveRoutingRuleSource =>
+    typeof value === "string" && value.trim() ? value : "root";
   const sourceTagIds = Array.isArray(payload.sourceTagIds)
     ? payload.sourceTagIds
         .map(normalizeFiniteNumber)
@@ -866,6 +892,15 @@ function normalizeEffectiveRoutingRule(raw: unknown): EffectiveRoutingRule {
     sourceTagIds,
     sourceTagNames,
     guardRules,
+    fieldSources: {
+      guard: normalizeSource(rawSources.guard),
+      allowCutOut: normalizeSource(rawSources.allowCutOut),
+      allowCutIn: normalizeSource(rawSources.allowCutIn),
+      priorityTier: normalizeSource(rawSources.priorityTier),
+      fastModeRewriteMode: normalizeSource(rawSources.fastModeRewriteMode),
+      concurrencyLimit: normalizeSource(rawSources.concurrencyLimit),
+      upstream429Retry: normalizeSource(rawSources.upstream429Retry),
+    },
   };
 }
 
@@ -1225,6 +1260,7 @@ function normalizeUpstreamAccountGroupSummary(
     upstream429MaxRetries: normalizeUpstreamAccountGroupMaxRetries(
       payload.upstream429MaxRetries,
     ),
+    routingRule: normalizeTagRoutingRule(payload.routingRule),
   };
 }
 

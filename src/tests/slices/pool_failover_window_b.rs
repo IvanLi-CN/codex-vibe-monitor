@@ -1421,7 +1421,7 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_pre_resolved_account_aft
 
     let pool = state.pool.clone();
     let primary_block_task = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::time::sleep(Duration::from_millis(80)).await;
         set_test_account_status(&pool, primary_id, "needs_reauth").await;
     });
 
@@ -1901,7 +1901,7 @@ async fn proxy_openai_v1_header_sticky_stream_reroute_preserves_original_wait_wi
         body_reroute_rx
             .await
             .expect("body reroute signal should arrive");
-        tokio::time::sleep(Duration::from_millis(80)).await;
+        tokio::time::sleep(Duration::from_millis(120)).await;
         set_test_account_status(&pool, delayed_id, "active").await;
     });
 

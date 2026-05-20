@@ -8,6 +8,7 @@ import { Badge } from './ui/badge'
 import { Tooltip } from './ui/tooltip'
 import type { AccountTagSummary, UpstreamAccountSummary } from '../lib/api'
 import { formatTokensShort } from '../lib/numberFormatters'
+import { resolveActiveRoutingPolicyBadges } from '../lib/tagRoutingRule'
 import { upstreamPlanBadgeRecipe } from '../lib/upstreamAccountBadges'
 import { cn } from '../lib/utils'
 
@@ -80,6 +81,17 @@ export interface UpstreamAccountsTableProps {
     latestActionFieldMessage: string
     forwardProxyPending?: string
     forwardProxyUnconfigured?: string
+    policyPriorityPrimary?: string
+    policyPriorityFallback?: string
+    policyFastFillMissing?: string
+    policyFastForceAdd?: string
+    policyFastForceRemove?: string
+    policyForbidCutOut?: string
+    policyForbidCutIn?: string
+    policyForbidNewConversation?: string
+    policyConcurrency?: (count: number) => string
+    policyRetry?: (count: number) => string
+    policyGuardTitle?: (hours: number, count: number) => string
   }
 }
 
@@ -167,6 +179,22 @@ export function renderNoRefreshTokenBadge(
   if (item.kind !== 'oauth_codex' || item.hasRefreshToken !== false) return null
   const label = labels.noRefreshToken ?? '无 RT'
   return compactBadge(label, 'warning', { title: label })
+}
+
+export function renderActiveRoutingPolicyBadges(
+  item: UpstreamAccountSummary,
+  labels: UpstreamAccountsTableProps['labels'],
+) {
+  return resolveActiveRoutingPolicyBadges(item.effectiveRoutingRule, labels).map((badge) => (
+    <Badge
+      key={`policy:${badge.key}`}
+      variant={badge.variant}
+      className="shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4"
+      title={badge.title ?? badge.label}
+    >
+      {badge.label}
+    </Badge>
+  ))
 }
 
 function shouldShowPlanBadge(planType?: string | null) {
@@ -1123,6 +1151,7 @@ export function UpstreamAccountsTable({
                           </Badge>
                         ))}
                         {renderNoRefreshTokenBadge(item, labels)}
+                        {renderActiveRoutingPolicyBadges(item, labels)}
                         {compactBadge(kindLabel(item, labels), 'secondary')}
                         {item.compactSupport?.status === 'unsupported' && labels.compactSupport?.(item)
                           ? compactBadge(
