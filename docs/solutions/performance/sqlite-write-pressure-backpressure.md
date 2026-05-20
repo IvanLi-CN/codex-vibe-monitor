@@ -26,6 +26,8 @@
 - gate 只包低优先级后台任务。
 - 任一后台任务遇到 SQLite busy/locked 或 pool acquire timeout，记录 pressure event 并进入 cooldown。
 - cooldown 内后台任务返回 success-like skip，由原有 ticker / coalesced follow-up 继续收敛。
+- scheduler preflight 不应占用稀缺后台槽位：enabled/due/progress 这类轻量判定应先完成，只有确定任务 due 且要执行重后台工作时才进入 gate。
+- 对恢复语义敏感的维护任务可以只针对 `BackgroundBusy` 做短预算等待，避免和同 tick 的其他后台任务形成稳定饥饿；`PressureCooldown` 仍应立即 fail-soft skip。
 
 ### 3. 查询热点先补索引
 
@@ -38,6 +40,7 @@
 
 - 只加 SQLite `busy_timeout` 会把问题变成 30 秒连接等待，并不减少锁竞争。
 - 后台任务拿到连接后再判断是否要运行，已经太晚；pressure gate 必须在 acquire DB connection 前。
+- 后台任务拿到唯一 background slot 后再判断是否 due，会把“未到期的空跑 tick”变成对其他维护任务的饥饿源。
 - skip 必须有日志和后续 ticker，否则会变成静默丢任务。
 - 为每个后台入口单独做局部退避，容易遗漏同一压力窗口内的其他维护任务；进程级 gate 更容易统一行为。
 

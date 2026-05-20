@@ -99,6 +99,13 @@
 - 刷新成功后写入 `forward_proxy_metadata_history` 并在维护事件中快照 `forward_proxy_egress_ip`。
 - 刷新失败保留最近成功 IP，只记录失败信息与失败时间，不阻断维护外呼。
 
+### Background scheduler fairness
+
+- 账号维护轮次通过 DB pressure gate 进入后台数据库工作区；遇到唯一后台槽位被短暂占用时，允许在有界预算内等待 `BackgroundBusy` 释放后继续调度 due 账号。
+- DB pressure cooldown 表示 SQLite busy/locked 或连接池 acquire timeout 压力窗口；账号维护遇到 cooldown 必须 fail-soft skip，不得消耗等待预算。
+- Startup backfill 只能在任务已 due 后占用后台槽位；enabled/due/progress preflight 不得持有唯一后台槽位，避免未到期回填任务饿死账号维护。
+- Reset due 的 quota exhausted OAuth 账号只提升维护同步资格；不得仅因 `resets_at` 到点恢复路由，仍需真实 usage snapshot 成功后按 snapshot 状态保持或退出限流。
+
 ## 验收标准（Acceptance Criteria）
 
 - Given 多个账号维护事件，When 打开账号池 `维护记录` 标签页，Then 能看到跨账号记录列表与四个筛选项。
@@ -110,6 +117,9 @@
 - Given 当前代理元数据已刷新，When 维护事件写入，Then 事件快照包含可展示出口 IP。
 - Given OAuth 账号处于 quota exhausted 且 reset due，When 维护同步排到同出口槽位，Then 能实际拉取后续 usage snapshot，并继续按 snapshot 是否 exhausted 来保持或退出限流。
 - Given OAuth 账号处于 quota exhausted 且 reset due，When 本轮维护因 egress throttle 写入 `sync_deferred`，Then 下一轮维护仍视为 reset due，直到真实同步尝试产生 usage snapshot 或真实失败结果。
+- Given startup backfill 任务未到期，When scheduler tick 与 upstream account maintenance 同时发生，Then backfill preflight 不得占用唯一后台槽位。
+- Given upstream account maintenance 遇到短暂 `BackgroundBusy`，When 槽位在等待预算内释放，Then 本轮维护继续 dispatch due 账号同步。
+- Given upstream account maintenance 遇到 DB pressure cooldown，When 维护轮次运行，Then 本轮 fail-soft skip 并由后续 ticker 重试。
 
 ## Visual Evidence
 

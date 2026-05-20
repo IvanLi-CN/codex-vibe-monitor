@@ -148,6 +148,8 @@ services:
 
 - hourly rollup refresh、startup backfill、retention 与 upstream account maintenance 进入统一 DB pressure gate。
 - 任一后台任务遇到 SQLite busy/locked 或连接池 acquire timeout，会触发短 cooldown；cooldown 内同类后台任务记录 skip/backoff 后退出。
+- upstream account maintenance 遇到后台槽位被短暂占用时会等待一个短预算；如果是 pressure cooldown，则仍立即 skip/backoff，等待后续 ticker。
+- startup backfill 的 enabled/due/progress preflight 不占用后台槽位，只有任务已到期并准备执行重后台工作时才进入 gate。
 - `/v1/*` 转发、OAuth callback、设置保存等前台路径不通过该后台 gate，避免 maintenance 抢占连接池时把用户请求放大成 502。
 - skip 不代表任务丢失；原有 ticker、coalesced follow-up 与 progress 表会在压力解除后继续收敛。
 

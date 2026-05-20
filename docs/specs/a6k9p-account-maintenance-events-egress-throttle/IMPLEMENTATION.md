@@ -15,14 +15,19 @@
 - 维护外呼在真实请求前预留 10 秒出口槽位；运行期维护同步遇到同出口槽位未释放时会在有界预算内等待并重试，预算耗尽后写入 deferred 事件，且账号不保持 `syncing` 状态。
 - OAuth quota exhausted 账号不会按 reset time 自动退出限流；reset due 只触发后续 usage snapshot 维护同步，成功 snapshot 再按既有状态机保持或清除限流标记。
 - `sync_deferred / egress_throttled` 不会消耗 reset catch-up 窗口；reset due 只会被真实同步尝试清掉，而普通维护间隔仍会把 deferred 记录当作最近一次尝试。
+- Upstream account maintenance 在 DB pressure gate 唯一后台槽位短暂繁忙时会有界等待，槽位释放后继续 dispatch due 账号；DB pressure cooldown 仍 fail-soft skip。
+- Startup backfill 的 enabled/due/progress preflight 不占用后台槽位，只有任务已 due 才进入 DB pressure gate，避免未到期 backfill 饿死账号维护。
 
 ## Quality Gates
 
-- `cargo fmt --check`
-- `cargo check`
+- `cargo fmt --all -- --check`
+- `cargo check --locked --all-targets --all-features`
+- `cargo test db_pressure --locked`
 - `cargo test account_`
 - `cargo test quota_exhausted -- --test-threads=1`
 - `cargo test maintenance_reset_due -- --test-threads=1`
+- `cargo test startup_backfill_not_due_check_does_not_claim_background_gate --locked -- --test-threads=1`
+- `cargo test maintenance_pass_waits_for_brief_background_busy_slot --locked -- --test-threads=1`
 - `cargo test runtime_wait_retries_until_egress_slot_is_available -- --test-threads=1`
 - `cargo test`
 - `cd web && bun run test`
@@ -34,9 +39,10 @@
 
 - Earlier review noted that OAuth refresh followed by usage sync can hit the same egress slot. Runtime maintenance now queues within a bounded wait budget, so reset-due OAuth accounts are not starved by immediate `sync_deferred / egress_throttled`; budget exhaustion still preserves the deferred path.
 - `sync_deferred / egress_throttled` now preserves the post-reset catch-up window instead of consuming it, which keeps the next maintenance pass eligible to retry the real usage snapshot.
+- Background DB gate fairness now keeps scheduler preflight outside scarce slots and lets account maintenance wait briefly for `BackgroundBusy`, preventing stable starvation when minute ticks collide.
 
 ## Disposition
 
 - `spec_disposition=update`
-- `project_doc_disposition=none`
-- `solution_disposition=none`
+- `project_doc_disposition=update`
+- `solution_disposition=update`
