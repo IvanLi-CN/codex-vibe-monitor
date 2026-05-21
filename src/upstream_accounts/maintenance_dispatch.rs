@@ -1,10 +1,27 @@
 use super::*;
 
 const LEGACY_UPSTREAM_REJECTED_COOLDOWN_RECONCILIATION_BATCH_SIZE: i64 = 64;
+const UPSTREAM_ACCOUNT_MAINTENANCE_BACKGROUND_BUSY_WAIT: Duration = Duration::from_secs(10);
 
 pub(crate) async fn run_upstream_account_maintenance_once(state: Arc<AppState>) -> Result<()> {
     let gate = crate::db_pressure::global_db_pressure_gate();
-    let _permit = match gate.try_begin_background("upstream_account_maintenance") {
+    run_upstream_account_maintenance_once_with_gate(
+        state,
+        gate,
+        UPSTREAM_ACCOUNT_MAINTENANCE_BACKGROUND_BUSY_WAIT,
+    )
+    .await
+}
+
+pub(crate) async fn run_upstream_account_maintenance_once_with_gate(
+    state: Arc<AppState>,
+    gate: &crate::db_pressure::DbPressureGate,
+    background_busy_wait: Duration,
+) -> Result<()> {
+    let _permit = match gate
+        .begin_background_with_busy_wait("upstream_account_maintenance", background_busy_wait)
+        .await
+    {
         Ok(permit) => permit,
         Err(reason) => {
             warn!(

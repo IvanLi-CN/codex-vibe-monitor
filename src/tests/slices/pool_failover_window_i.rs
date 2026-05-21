@@ -413,6 +413,48 @@ async fn startup_backfill_progress_persists_terminal_missing_raw_cursor() {
 }
 
 #[tokio::test]
+async fn startup_backfill_not_due_check_does_not_claim_background_gate() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task = StartupBackfillTask::ReasoningEffort;
+    let task_name = startup_backfill_task_progress_key(state.as_ref(), task).await;
+    let next_run_after = format_utc_iso(Utc::now() + ChronoDuration::hours(6));
+    save_startup_backfill_progress(
+        &state.pool,
+        &task_name,
+        StartupBackfillProgressUpdate {
+            cursor_id: 0,
+            scanned: 0,
+            updated: 0,
+            zero_update_streak: 0,
+            next_run_after: &next_run_after,
+            status: STARTUP_BACKFILL_STATUS_OK,
+        },
+    )
+    .await
+    .expect("seed not-due startup progress");
+
+    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(1));
+    let held_permit = gate
+        .try_begin_background("upstream_account_maintenance")
+        .expect("hold local gate slot");
+
+    run_startup_backfill_task_if_due_with_gate(&state, task, &gate)
+        .await
+        .expect("not-due startup backfill should not require a background slot");
+
+    assert_eq!(
+        gate.try_begin_background("upstream_account_maintenance")
+            .unwrap_err(),
+        crate::db_pressure::DbPressureDenyReason::BackgroundBusy,
+        "not-due backfill should leave the already held slot untouched"
+    );
+    drop(held_permit);
+}
+
+#[tokio::test]
 async fn failure_classification_backfill_skips_success_rows_with_complete_defaults() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await

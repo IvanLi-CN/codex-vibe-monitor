@@ -875,6 +875,68 @@
     }
 
     #[tokio::test]
+    async fn maintenance_pass_waits_for_brief_background_busy_slot() {
+        let (base_url, started, release, requests, server) = spawn_blocking_usage_server().await;
+        let state = test_app_state_with_usage_base(&base_url).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Waited Maintenance OAuth",
+            "waited-maintenance@example.com",
+            "org_waited_maintenance",
+            "user_waited_maintenance",
+        )
+        .await;
+
+        let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+            1,
+            Duration::from_secs(1),
+        ));
+        let held = gate
+            .try_begin_background("startup_backfill")
+            .expect("hold background slot");
+        let pass = tokio::spawn({
+            let gate = gate.clone();
+            let state = state.clone();
+            async move {
+                run_upstream_account_maintenance_once_with_gate(
+                    state,
+                    gate.as_ref(),
+                    Duration::from_millis(500),
+                )
+                .await
+            }
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !started.load(Ordering::SeqCst),
+            "maintenance sync should wait while the only background slot is busy"
+        );
+
+        drop(held);
+        pass.await
+            .expect("maintenance pass should not panic")
+            .expect("maintenance pass should dispatch after the slot is released");
+
+        wait_for_atomic_true(started.as_ref()).await;
+        release.notify_waiters();
+        timeout(Duration::from_secs(1), async {
+            while requests.load(Ordering::SeqCst) != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("queued maintenance request should complete");
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn drain_background_tasks_waits_for_queued_maintenance_syncs() {
         let (base_url, started, release, _requests, server) = spawn_blocking_usage_server().await;
         let state = test_app_state_with_usage_base(&base_url).await;

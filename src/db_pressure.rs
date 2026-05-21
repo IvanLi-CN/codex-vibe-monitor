@@ -14,6 +14,7 @@ use tracing::warn;
 
 const DEFAULT_BACKGROUND_DB_SLOTS: usize = 1;
 const DEFAULT_PRESSURE_COOLDOWN: Duration = Duration::from_secs(30);
+const BACKGROUND_BUSY_WAIT_POLL: Duration = Duration::from_millis(25);
 
 static GLOBAL_DB_PRESSURE_GATE: Lazy<DbPressureGate> = Lazy::new(|| {
     DbPressureGate::new_global(DEFAULT_BACKGROUND_DB_SLOTS, DEFAULT_PRESSURE_COOLDOWN)
@@ -136,6 +137,47 @@ impl DbPressureGate {
         })
     }
 
+    pub(crate) async fn begin_background_with_busy_wait(
+        &self,
+        _task: &'static str,
+        max_wait: Duration,
+    ) -> Result<DbBackgroundPermit, DbPressureDenyReason> {
+        #[cfg(test)]
+        if self.bypass_for_test_global {
+            return Ok(DbBackgroundPermit {
+                _permit: None,
+                started_at: Instant::now(),
+            });
+        }
+
+        let started_at = Instant::now();
+        loop {
+            let now_ms = current_epoch_ms();
+            let pressure_until_ms = self.pressure_until_epoch_ms.load(Ordering::Acquire);
+            if pressure_until_ms > now_ms {
+                self.background_skips.fetch_add(1, Ordering::Relaxed);
+                return Err(DbPressureDenyReason::PressureCooldown {
+                    remaining_ms: pressure_until_ms.saturating_sub(now_ms),
+                });
+            }
+
+            if let Ok(permit) = self.background_slots.clone().try_acquire_owned() {
+                return Ok(DbBackgroundPermit {
+                    _permit: Some(permit),
+                    started_at: Instant::now(),
+                });
+            }
+
+            let elapsed = started_at.elapsed();
+            if elapsed >= max_wait {
+                self.background_skips.fetch_add(1, Ordering::Relaxed);
+                return Err(DbPressureDenyReason::BackgroundBusy);
+            }
+            let remaining = max_wait.saturating_sub(elapsed);
+            tokio::time::sleep(remaining.min(BACKGROUND_BUSY_WAIT_POLL)).await;
+        }
+    }
+
     pub(crate) fn record_error(&self, task: &'static str, err: &Error) -> bool {
         if !is_db_pressure_error(err) {
             return false;
@@ -240,6 +282,54 @@ mod tests {
 
         drop(permit);
         assert!(gate.try_begin_background("second").is_ok());
+    }
+
+    #[tokio::test]
+    async fn gate_busy_waits_for_background_slot_release() {
+        let gate = Arc::new(DbPressureGate::new(1, Duration::from_secs(1)));
+        let permit = gate
+            .try_begin_background("first")
+            .expect("first background permit");
+        let waiter_gate = gate.clone();
+        let waiter = tokio::spawn(async move {
+            waiter_gate
+                .begin_background_with_busy_wait("second", Duration::from_secs(1))
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !waiter.is_finished(),
+            "waiter should stay pending while the slot is busy"
+        );
+
+        drop(permit);
+        let second = waiter
+            .await
+            .expect("waiter task should not panic")
+            .expect("second background permit");
+        drop(second);
+    }
+
+    #[tokio::test]
+    async fn gate_busy_wait_does_not_wait_through_pressure_cooldown() {
+        let gate = DbPressureGate::new(1, Duration::from_secs(60));
+        gate.record_pressure("test", "forced");
+        let started = Instant::now();
+
+        let denied = gate
+            .begin_background_with_busy_wait("maintenance", Duration::from_secs(1))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            denied,
+            DbPressureDenyReason::PressureCooldown { remaining_ms } if remaining_ms > 0
+        ));
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "pressure cooldown should fail fast instead of consuming the busy wait budget"
+        );
     }
 
     #[test]
