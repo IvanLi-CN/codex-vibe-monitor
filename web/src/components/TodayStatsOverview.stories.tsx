@@ -195,6 +195,35 @@ export const EmbeddedTodayTab: Story = {
   },
 }
 
+export const ScopedAccountEmbedded: Story = {
+  args: {
+    stats: sampleStats,
+    rate: sampleRate,
+    ...comparisonArgs,
+    loading: false,
+    error: null,
+    showParallelWork: false,
+    showSurface: false,
+    showHeader: false,
+    showDayBadge: false,
+  },
+  parameters: {
+    viewport: {
+      defaultViewport: 'desktop1440',
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const grid = canvas.getByTestId('today-stats-metrics-grid')
+    const tiles = canvas.getAllByTestId('today-stats-metric-tile')
+    await expect(grid).toHaveClass(/lg:grid-cols-6/)
+    await expect(grid).not.toHaveClass(/lg:grid-cols-7/)
+    await expect(tiles).toHaveLength(6)
+    await expect(canvas.queryByText(/parallel conversations|并行对话/i)).not.toBeInTheDocument()
+    await expect(canvas.getByText(/response time|响应时间/i)).toBeInTheDocument()
+  },
+}
+
 export const RateLoading: Story = {
   args: {
     stats: sampleStats,

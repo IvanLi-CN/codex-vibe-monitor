@@ -308,7 +308,10 @@ export function TodayStatsOverview({
       ) : (
         <div
           data-testid="today-stats-metrics-grid"
-          className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-7"
+          className={cn(
+            'grid grid-cols-1 gap-3 sm:grid-cols-2',
+            showParallelWork ? 'lg:grid-cols-7' : 'lg:grid-cols-6',
+          )}
         >
           <MetricTile
             label={t('dashboard.today.tokensPerMinute')}
