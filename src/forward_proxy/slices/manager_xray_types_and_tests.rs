@@ -1429,6 +1429,13 @@ mod tests {
                 http_status: None,
                 error: Some("timeout".to_string()),
             },
+            &ForwardProxyLatencyProbeTargetResult {
+                ok: false,
+                latency_ms: None,
+                ip: None,
+                http_status: None,
+                error: Some("timeout".to_string()),
+            },
         );
         accumulator.record_round(
             &ForwardProxyLatencyProbeTargetResult {
@@ -1444,6 +1451,13 @@ mod tests {
                 ip: None,
                 http_status: Some(200),
                 error: None,
+            },
+            &ForwardProxyLatencyProbeTargetResult {
+                ok: false,
+                latency_ms: None,
+                ip: None,
+                http_status: None,
+                error: Some("responses timeout".to_string()),
             },
         );
 
@@ -1471,12 +1485,222 @@ mod tests {
                     http_status: None,
                     error: Some("oauth timeout".to_string()),
                 },
+                &ForwardProxyLatencyProbeTargetResult {
+                    ok: false,
+                    latency_ms: None,
+                    ip: None,
+                    http_status: None,
+                    error: Some("responses timeout".to_string()),
+                },
             );
         }
 
         assert_eq!(accumulator.completed_rounds, 5);
         assert_eq!(accumulator.success_count, 0);
         assert_eq!(accumulator.average_latency_ms(), None);
+    }
+
+    #[test]
+    fn manual_latency_requires_codex_responses_reachable() {
+        let mut accumulator = ForwardProxyLatencyAccumulator::default();
+        let codex_responses = ForwardProxyLatencyProbeTargetResult {
+            ok: false,
+            latency_ms: None,
+            ip: None,
+            http_status: None,
+            error: Some("responses timeout".to_string()),
+        };
+        accumulator.record_round(
+            &ForwardProxyLatencyProbeTargetResult {
+                ok: true,
+                latency_ms: Some(91.0),
+                ip: Some("203.0.113.24".to_string()),
+                http_status: None,
+                error: None,
+            },
+            &ForwardProxyLatencyProbeTargetResult {
+                ok: true,
+                latency_ms: Some(142.0),
+                ip: None,
+                http_status: Some(401),
+                error: None,
+            },
+            &codex_responses,
+        );
+
+        assert_eq!(accumulator.success_count, 2);
+        assert_eq!(accumulator.average_latency_ms(), Some(117));
+        assert!(!accumulator.all_targets_ok());
+        assert_eq!(
+            accumulator.failed_targets(),
+            vec![FORWARD_PROXY_LATENCY_TARGET_CODEX_RESPONSES]
+        );
+        assert_eq!(
+            codex_responses.error.as_deref(),
+            Some("responses timeout")
+        );
+    }
+
+    #[test]
+    fn manual_latency_codex_responses_accepts_method_not_allowed() {
+        assert!(is_manual_latency_probe_reachable_status(
+            StatusCode::METHOD_NOT_ALLOWED
+        ));
+        assert!(!is_manual_latency_probe_reachable_status(
+            StatusCode::INTERNAL_SERVER_ERROR
+        ));
+    }
+
+    #[test]
+    fn manual_latency_timeout_progress_preserves_completed_target_results() {
+        let mut accumulator = ForwardProxyLatencyAccumulator::default();
+        accumulator.record_round(
+            &ForwardProxyLatencyProbeTargetResult {
+                ok: true,
+                latency_ms: Some(91.0),
+                ip: Some("203.0.113.24".to_string()),
+                http_status: None,
+                error: None,
+            },
+            &ForwardProxyLatencyProbeTargetResult {
+                ok: true,
+                latency_ms: Some(142.0),
+                ip: None,
+                http_status: Some(401),
+                error: None,
+            },
+            &ForwardProxyLatencyProbeTargetResult {
+                ok: true,
+                latency_ms: Some(188.0),
+                ip: None,
+                http_status: Some(405),
+                error: None,
+            },
+        );
+
+        let progress =
+            forward_proxy_latency_timeout_progress(&ForwardProxyEndpoint::direct(), &accumulator);
+
+        assert!(progress.all_targets_ok);
+        assert!(progress.failed_targets.is_empty());
+        assert!(progress.egress_ip.ok);
+        assert!(progress.oauth_upstream.ok);
+        assert!(progress.codex_responses.ok);
+        assert!(!progress.timed_out);
+        assert_eq!(progress.average_latency_ms, Some(140));
+    }
+
+    #[test]
+    fn manual_latency_preserves_failed_target_detail_after_later_success() {
+        let mut accumulator = ForwardProxyLatencyAccumulator::default();
+        accumulator.record_round(
+            &ForwardProxyLatencyProbeTargetResult {
+                ok: true,
+                latency_ms: Some(91.0),
+                ip: Some("203.0.113.24".to_string()),
+                http_status: None,
+                error: None,
+            },
+            &ForwardProxyLatencyProbeTargetResult {
+                ok: true,
+                latency_ms: Some(142.0),
+                ip: None,
+                http_status: Some(401),
+                error: None,
+            },
+            &ForwardProxyLatencyProbeTargetResult {
+                ok: false,
+                latency_ms: None,
+                ip: None,
+                http_status: None,
+                error: Some("responses timeout".to_string()),
+            },
+        );
+        accumulator.record_round(
+            &ForwardProxyLatencyProbeTargetResult {
+                ok: true,
+                latency_ms: Some(94.0),
+                ip: Some("203.0.113.24".to_string()),
+                http_status: None,
+                error: None,
+            },
+            &ForwardProxyLatencyProbeTargetResult {
+                ok: true,
+                latency_ms: Some(138.0),
+                ip: None,
+                http_status: Some(401),
+                error: None,
+            },
+            &ForwardProxyLatencyProbeTargetResult {
+                ok: true,
+                latency_ms: Some(188.0),
+                ip: None,
+                http_status: Some(405),
+                error: None,
+            },
+        );
+
+        let progress =
+            forward_proxy_latency_timeout_progress(&ForwardProxyEndpoint::direct(), &accumulator);
+
+        assert!(!progress.all_targets_ok);
+        assert_eq!(
+            progress.failed_targets,
+            vec![FORWARD_PROXY_LATENCY_TARGET_CODEX_RESPONSES]
+        );
+        assert!(!progress.codex_responses.ok);
+        assert_eq!(
+            progress.codex_responses.error.as_deref(),
+            Some("responses timeout")
+        );
+
+        let current_success = ForwardProxyLatencyProbeTargetResult {
+            ok: true,
+            latency_ms: Some(188.0),
+            ip: None,
+            http_status: Some(405),
+            error: None,
+        };
+        let (_, _, displayed_codex_responses) =
+            accumulated_forward_proxy_latency_target_results(
+                &accumulator,
+                &ForwardProxyLatencyProbeTargetResult {
+                    ok: true,
+                    latency_ms: Some(94.0),
+                    ip: Some("203.0.113.24".to_string()),
+                    http_status: None,
+                    error: None,
+                },
+                &ForwardProxyLatencyProbeTargetResult {
+                    ok: true,
+                    latency_ms: Some(138.0),
+                    ip: None,
+                    http_status: Some(401),
+                    error: None,
+                },
+                &current_success,
+            );
+        assert!(!displayed_codex_responses.ok);
+        assert_eq!(
+            displayed_codex_responses.error.as_deref(),
+            Some("responses timeout")
+        );
+    }
+
+    #[test]
+    fn manual_latency_oauth_codex_probe_targets_preserve_base_path() {
+        assert_eq!(
+            oauth_codex_latency_probe_target("models")
+                .expect("models target")
+                .as_str(),
+            "https://chatgpt.com/backend-api/codex/models"
+        );
+        assert_eq!(
+            oauth_codex_latency_probe_target("responses")
+                .expect("responses target")
+                .as_str(),
+            "https://chatgpt.com/backend-api/codex/responses"
+        );
     }
 
     #[test]

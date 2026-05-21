@@ -48,14 +48,16 @@
 - 单节点测速最多执行 5 轮，每轮预算 5 秒，整体预算 15 秒。
 - 批量测试必须广度优先，不能让单个节点连续跑完 5 轮后才测试下一个节点。
 - 均值只使用成功样本，算法为 `round(sum(successLatencyMs) / successCount)`。
-- 每轮测试包含出站 IP 请求与 OAuth 上游请求；两个目标的成功耗时都可贡献样本。
+- 每轮测试包含出站 IP、OAuth `/models` 上游和 Codex `/responses` 上游三个目标；三个目标全部可达才算该轮健康。
 - 出站 IP 请求使用 `https://api.ipify.org?format=json`。
 - OAuth 上游请求使用 `GET {oauth_codex_upstream_base_url()}/models`。
+- Codex responses 上游请求使用 `GET {oauth_codex_upstream_base_url()}/responses`；`405`、`401`、`403`、`404` 和其他 `<500` HTTP 状态均视为 endpoint reachable，transport error、超时和 `>=500` 视为不可达。
+- 任一目标不可达时，节点进度必须报告异常目标与错误原因；成功延迟样本只能用于展示统计，不能把节点最终状态改成正常。
 - 手动刷新订阅必须强制绕过订阅刷新间隔。
 
 ### SHOULD
 
-- 延迟 badge 的 tooltip 应显示有效样本数、已完成轮次、出站 IP 状态、OAuth 上游状态和失败摘要。
+- 延迟 badge 的 tooltip 应显示有效样本数、已完成轮次、出站 IP 状态、OAuth `/models` 状态、Codex `/responses` 状态和失败摘要。
 - 测速成功时应刷新出站 IP 元数据；OAuth 上游探测应写入 probe attempt。
 - 订阅刷新完成后 Settings 页应刷新节点列表。
 
@@ -71,8 +73,8 @@
 ### Edge cases / errors
 
 - 节点不存在时返回 404。
-- 单轮两个目标都失败时，该轮不贡献成功样本，但计入完成轮次。
-- 五轮后 `successCount=0` 时，节点进入失败展示状态。
+- 单轮任一目标失败时，该轮不写入成功 probe attempt，并在进度中保留失败目标；已成功目标的耗时仍可作为展示样本。
+- 五轮后任一目标存在失败时，节点进入失败/异常展示状态，即使 `averageLatencyMs` 存在也不能显示为正常延迟。
 - 单节点整体 15 秒预算耗尽后，返回已完成样本；无有效样本时显示超时。
 - 批量测试中单个节点失败不影响其他节点继续测试。
 
@@ -96,13 +98,15 @@
 - Given 某节点第 1 轮有有效耗时，When 该轮结束，Then UI 立即显示当前均值。
 - Given 某节点后续轮次继续成功，When 新样本到达，Then UI 显示更新后的整数毫秒均值。
 - Given 某节点 5 轮全部失败，When 测试结束，Then UI 显示 `--` 或“超时”。
+- Given 某节点 `egressIp` 与 OAuth `/models` 成功但 Codex `/responses` 超时，When 测试进度到达前端，Then UI 显示异常并展示 `codexResponses` 失败原因，而不是显示正常延迟。
+- Given Codex `/responses` 返回 `405`，When 后端记录该目标结果，Then 该目标视为可达并可贡献成功样本。
 - Given 用户点击刷新订阅，When 后端成功解析订阅，Then Settings 页节点列表包含刷新后的节点。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 
 ### Testing
 
-- Unit tests: 均值计算、全失败、部分失败、预算裁剪、广度优先调度。
+- Unit tests: 均值计算、全失败、部分失败、`/responses` 不可达异常判定、`405` 可达判定、预算裁剪、广度优先调度。
 - Integration tests: 订阅刷新强制执行、单节点测速写入 metadata/attempt。
 - E2E tests: 不适用。
 
@@ -129,10 +133,22 @@
   requested_viewport: desktop1660
   viewport_strategy: storybook-viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: owner-approved
   evidence_note: 验证 Settings 页 forward proxy 卡片新增延迟列、测试全部、刷新订阅反馈与新增订阅节点展示。
 
 ![Forward proxy latency and refresh evidence](./assets/settings-forward-proxy-latency-refresh.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Settings/SettingsPage/Forward Proxy Latency And Refresh
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: 1440x900
+  viewport_strategy: devtools-emulate
+  sensitive_exclusion: N/A
+  submission_gate: owner-approved
+  evidence_note: 验证 `codexResponses` 失败时延迟按钮显示异常，并在 hover/focus 浮层中展示 `Codex /responses` 失败详情。
+
+![Forward proxy latency tooltip evidence](./assets/settings-forward-proxy-latency-tooltip-evidence.png)
 
 ## Related PRs
 
