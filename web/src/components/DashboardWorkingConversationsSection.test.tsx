@@ -82,6 +82,10 @@ function createPreview(
       "upstreamAccountName" in overrides
         ? (overrides.upstreamAccountName ?? null)
         : "pool-alpha@example.com",
+    upstreamAccountPlanType:
+      "upstreamAccountPlanType" in overrides
+        ? (overrides.upstreamAccountPlanType ?? null)
+        : undefined,
     endpoint: overrides.endpoint ?? "/v1/responses",
     inputTokens: overrides.inputTokens ?? 120,
     outputTokens: overrides.outputTokens ?? 80,
@@ -504,6 +508,7 @@ describe("DashboardWorkingConversationsSection", () => {
             status: "running",
             upstreamAccountName:
               "paisleeeinar5710 Team sandbox workflow monitor",
+            upstreamAccountPlanType: "team",
             endpoint: "/v1/responses/compact",
             reasoningEffort: "medium",
             tTotalMs: null,
@@ -546,6 +551,8 @@ describe("DashboardWorkingConversationsSection", () => {
     }
 
     expect(accountLine.className).toContain("sm:flex-nowrap");
+    expect(accountChip.className).not.toContain("bg-base-100");
+    expect(accountChip.className).not.toContain("px-1.5");
     expect(accountName.className).toContain("truncate");
     expect(accountName.className).toContain("whitespace-nowrap");
     expect(accountName.className).not.toContain("line-clamp-2");
@@ -555,6 +562,81 @@ describe("DashboardWorkingConversationsSection", () => {
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0);
     expect(compactBadge.textContent).toMatch(/远程压缩|Compact/);
+    expect(currentSlot.textContent).toContain("Team");
+  });
+
+  it("renders compact account plan badges and hides local or missing plans", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-enterprise-plan", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-enterprise-plan",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "running",
+            upstreamAccountName: "enterprise-account@example.com",
+            upstreamAccountPlanType: "enterprise",
+          }),
+        ]),
+        createConversation("pck-plus-plan", [
+          createPreview({
+            id: 2,
+            invokeId: "invoke-plus-plan",
+            occurredAt: "2026-04-04T10:03:00Z",
+            status: "running",
+            upstreamAccountName: "plus-account@example.com",
+            upstreamAccountPlanType: "plus",
+          }),
+        ]),
+        createConversation("pck-free-plan", [
+          createPreview({
+            id: 3,
+            invokeId: "invoke-free-plan",
+            occurredAt: "2026-04-04T10:02:00Z",
+            status: "running",
+            upstreamAccountName: "free-account@example.com",
+            upstreamAccountPlanType: "free",
+          }),
+        ]),
+        createConversation("pck-pro-plan", [
+          createPreview({
+            id: 4,
+            invokeId: "invoke-pro-plan",
+            occurredAt: "2026-04-04T10:01:00Z",
+            status: "running",
+            upstreamAccountName: "pro-account@example.com",
+            upstreamAccountPlanType: "pro",
+          }),
+        ]),
+        createConversation("pck-local-plan", [
+          createPreview({
+            id: 5,
+            invokeId: "invoke-local-plan",
+            occurredAt: "2026-04-04T10:00:00Z",
+            status: "running",
+            upstreamAccountName: "local-account@example.com",
+            upstreamAccountPlanType: "local",
+          }),
+        ]),
+      ]),
+    );
+
+    const planBadges = Array.from(
+      host?.querySelectorAll(
+        '[data-testid="dashboard-working-conversation-account-plan"]',
+      ) ?? [],
+    );
+    const labels = planBadges.map((badge) => badge.textContent);
+
+    expect(labels).toEqual(expect.arrayContaining(["Ent", "Plus", "Free", "Pro"]));
+    expect(labels).not.toContain("enterprise");
+    expect(labels).not.toContain("local");
+
+    const enterpriseBadge = planBadges.find(
+      (badge) => badge.textContent === "Ent",
+    );
+    expect(enterpriseBadge?.getAttribute("title")).toBe("enterprise");
+    expect(enterpriseBadge?.getAttribute("data-plan")).toBe("enterprise");
   });
 
   it("keeps the virtualized viewport spanning the full responsive grid width", () => {

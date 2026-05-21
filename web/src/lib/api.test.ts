@@ -2223,6 +2223,7 @@ describe("account pool frontend API helpers", () => {
                   proxyDisplayName: "Proxy Alpha",
                   upstreamAccountId: 42,
                   upstreamAccountName: "Pool Alpha",
+                  upstreamAccountPlanType: "enterprise",
                   endpoint: "/v1/responses",
                   source: "proxy",
                   inputTokens: 18,
@@ -2283,6 +2284,10 @@ describe("account pool frontend API helpers", () => {
     expect(response.conversations[0]?.recentInvocations[0]?.endpoint).toBe(
       "/v1/responses",
     );
+    expect(
+      response.conversations[0]?.recentInvocations[0]
+        ?.upstreamAccountPlanType,
+    ).toBe("enterprise");
     expect(response.conversations[0]?.recentInvocations[0]?.source).toBe(
       "proxy",
     );

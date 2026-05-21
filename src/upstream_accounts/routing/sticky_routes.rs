@@ -153,6 +153,7 @@ pub(crate) async fn build_account_sticky_keys_response(
                     proxy_display_name: row.proxy_display_name,
                     upstream_account_id: row.upstream_account_id,
                     upstream_account_name: row.upstream_account_name,
+                    upstream_account_plan_type: None,
                     endpoint: row.endpoint,
                     source: row.source,
                     input_tokens: row.input_tokens,

@@ -101,6 +101,8 @@ pub(crate) async fn query_prompt_cache_conversation_recent_invocations(
         .push(" AS upstream_account_id, ")
         .push(INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL)
         .push(" AS upstream_account_name, ")
+        .push(INVOCATION_UPSTREAM_ACCOUNT_PLAN_TYPE_SQL)
+        .push(" AS upstream_account_plan_type, ")
         .push(INVOCATION_RESPONSE_CONTENT_ENCODING_SQL)
         .push(
             " AS response_content_encoding, \
@@ -166,7 +168,7 @@ pub(crate) async fn query_prompt_cache_conversation_recent_invocations(
     }
 
     query
-        .push(") SELECT prompt_cache_key, id, invoke_id, occurred_at, status, failure_class, route_mode, model, total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, reasoning_effort, error_message, downstream_status_code, downstream_error_message, failure_kind, is_actionable, proxy_display_name, upstream_account_id, upstream_account_name, response_content_encoding, transport, requested_service_tier, service_tier, billing_service_tier, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, endpoint FROM ranked WHERE row_number <= ")
+        .push(") SELECT prompt_cache_key, id, invoke_id, occurred_at, status, failure_class, route_mode, model, total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, reasoning_effort, error_message, downstream_status_code, downstream_error_message, failure_kind, is_actionable, proxy_display_name, upstream_account_id, upstream_account_name, upstream_account_plan_type, response_content_encoding, transport, requested_service_tier, service_tier, billing_service_tier, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, endpoint FROM ranked WHERE row_number <= ")
         .push_bind(limit_per_key)
         .push(" ORDER BY prompt_cache_key ASC, occurred_at DESC, id DESC");
 

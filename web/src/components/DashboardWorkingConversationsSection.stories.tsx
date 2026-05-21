@@ -99,6 +99,10 @@ function createPreview(
       "upstreamAccountName" in overrides
         ? (overrides.upstreamAccountName ?? null)
         : "pool-alpha@example.com",
+    upstreamAccountPlanType:
+      "upstreamAccountPlanType" in overrides
+        ? (overrides.upstreamAccountPlanType ?? null)
+        : undefined,
     endpoint: overrides.endpoint ?? "/v1/responses",
     transport: overrides.transport,
     source: overrides.source ?? "pool",
@@ -240,6 +244,7 @@ const currentAndPreviousResponse = createResponse([
       occurredAt: "2026-04-04T10:04:20Z",
       status: "completed",
       upstreamAccountName: "growth-alpha@example.com",
+      upstreamAccountPlanType: "plus",
       reasoningEffort: "medium",
     }),
     createPreview({
@@ -249,6 +254,7 @@ const currentAndPreviousResponse = createResponse([
       status: "completed",
       model: "gpt-5.4-mini",
       upstreamAccountName: "backup-alpha@example.com",
+      upstreamAccountPlanType: "free",
       requestedServiceTier: "auto",
       serviceTier: "auto",
     }),
@@ -284,6 +290,52 @@ const runningOnlyResponse = createResponse([
       occurredAt: "2026-04-04T09:54:20Z",
       status: "completed",
       upstreamAccountName: "watch-alpha@example.com",
+      model: "gpt-5.4-mini",
+    }),
+  ]),
+]);
+
+const accountPlanBadgeResponse = createResponse([
+  createConversation("pck-plan-enterprise", [
+    createPreview({
+      id: 221,
+      invokeId: "invoke-plan-enterprise",
+      occurredAt: "2026-04-04T10:04:58Z",
+      status: "running",
+      upstreamAccountName:
+        "maximiliano.joseph8832.enterprise-routing-lab@example.com",
+      upstreamAccountPlanType: "enterprise",
+      reasoningEffort: "high",
+      tTotalMs: null,
+    }),
+    createPreview({
+      id: 220,
+      invokeId: "invoke-plan-team",
+      occurredAt: "2026-04-04T10:02:40Z",
+      status: "completed",
+      upstreamAccountName:
+        "maximiliano.joseph8832.enterprise-routing-lab@example.com",
+      upstreamAccountPlanType: "team",
+      model: "gpt-5.4-mini",
+    }),
+  ]),
+  createConversation("pck-plan-plus-free", [
+    createPreview({
+      id: 219,
+      invokeId: "invoke-plan-plus",
+      occurredAt: "2026-04-04T10:03:58Z",
+      status: "completed",
+      upstreamAccountName: "plus-account-osaka@example.com",
+      upstreamAccountPlanType: "plus",
+      reasoningEffort: "medium",
+    }),
+    createPreview({
+      id: 218,
+      invokeId: "invoke-plan-free",
+      occurredAt: "2026-04-04T10:01:20Z",
+      status: "completed",
+      upstreamAccountName: "free-account-berlin@example.com",
+      upstreamAccountPlanType: "free",
       model: "gpt-5.4-mini",
     }),
   ]),
@@ -1924,6 +1976,35 @@ export const RunningOnlyConversation: Story = {
     cards: buildCards(runningOnlyResponse),
     isLoading: false,
     error: null,
+  },
+};
+
+export const AccountPlanBadges: Story = {
+  args: {
+    cards: buildCards(accountPlanBadgeResponse),
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Stable account-row polish case with long account names and compact plan badges. Enterprise is abbreviated to `Ent` while the full plan remains available in the badge title.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const badges = Array.from(
+      canvasElement.querySelectorAll(
+        '[data-testid="dashboard-working-conversation-account-plan"]',
+      ),
+    );
+    expect(badges.map((badge) => badge.textContent)).toEqual(
+      expect.arrayContaining(["Ent", "Team", "Plus", "Free"]),
+    );
+    expect(
+      badges.find((badge) => badge.textContent === "Ent")?.getAttribute("title"),
+    ).toBe("enterprise");
   },
 };
 

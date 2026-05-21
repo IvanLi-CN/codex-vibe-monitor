@@ -45,6 +45,7 @@ export interface InvocationDetailViewModel {
   accountLabel: string;
   accountId: number | null;
   accountClickable: boolean;
+  accountPlanType: string | null;
   proxyDisplayName: string;
   modelValue: string;
   requestedServiceTierValue: string;
@@ -802,6 +803,7 @@ export function buildInvocationDetailViewModel({
         ? Math.trunc(record.upstreamAccountId)
         : null,
     accountClickable,
+    accountPlanType: record.upstreamAccountPlanType?.trim() || null,
     proxyDisplayName,
     modelValue: record.model ?? FALLBACK_CELL,
     requestedServiceTierValue,
