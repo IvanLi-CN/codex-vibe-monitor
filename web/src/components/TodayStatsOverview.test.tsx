@@ -161,6 +161,39 @@ describe('TodayStatsOverview', () => {
     expect(host?.textContent).toContain('Today tokens')
   })
 
+  it('uses a six-tile desktop grid when parallel conversations are hidden', () => {
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 12474,
+          successCount: 9949,
+          failureCount: 2525,
+          totalCost: 539.42,
+          totalTokens: 1314275579,
+        }}
+        rate={{
+          tokensPerMinute: 1000,
+          spendRate: 0.1,
+          windowMinutes: 5,
+          available: true,
+        }}
+        timeseries={buildTimeseriesWithLatency()}
+        loading={false}
+        error={null}
+        showParallelWork={false}
+      />,
+    )
+
+    const grid = host?.querySelector('[data-testid="today-stats-metrics-grid"]')
+    expect(grid?.className).toContain('lg:grid-cols-6')
+    expect(grid?.className).not.toContain('lg:grid-cols-7')
+    expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(6)
+    expect(host?.textContent).not.toContain('Parallel conversations')
+    expect(host?.textContent).toContain('Response time')
+    expect(host?.textContent).toContain('Today cost')
+    expect(host?.textContent).toContain('Today tokens')
+  })
+
   it('supports embedded mode without rendering the outer surface panel', () => {
     render(
       <TodayStatsOverview
