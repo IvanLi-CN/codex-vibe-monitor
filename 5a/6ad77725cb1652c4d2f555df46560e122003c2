@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.65.2",
+  "base_stable_version": "1.65.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-05-21T01:32:28Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.65.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "3a815f144c3fd2ddda79510d15a657976e7f2666",
+  "pr_number": 432,
+  "pr_title": "fix: prevent account maintenance db gate starvation",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.65.2",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.65.2",
+  "target_sha": "5a6ad77725cb1652c4d2f555df46560e122003c2",
+  "type_label": "type:patch"
+}
