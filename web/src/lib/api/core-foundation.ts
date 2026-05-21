@@ -356,6 +356,7 @@ export interface ApiInvocation {
   routeMode?: string;
   upstreamAccountId?: number | null;
   upstreamAccountName?: string;
+  upstreamAccountPlanType?: string | null;
   responseContentEncoding?: string;
   poolAttemptCount?: number | null;
   poolDistinctAccountCount?: number | null;
@@ -1090,6 +1091,7 @@ export interface PromptCacheConversationInvocationPreview {
   proxyDisplayName: string | null;
   upstreamAccountId: number | null;
   upstreamAccountName: string | null;
+  upstreamAccountPlanType?: string | null;
   endpoint: string | null;
   source?: ApiInvocation["source"];
   inputTokens?: ApiInvocation["inputTokens"];
@@ -1912,6 +1914,11 @@ function normalizePromptCacheConversationInvocationPreview(
       typeof payload.upstreamAccountName === "string" &&
       payload.upstreamAccountName.trim()
         ? payload.upstreamAccountName.trim()
+        : null,
+    upstreamAccountPlanType:
+      typeof payload.upstreamAccountPlanType === "string" &&
+      payload.upstreamAccountPlanType.trim()
+        ? payload.upstreamAccountPlanType.trim()
         : null,
     endpoint:
       typeof payload.endpoint === "string" && payload.endpoint.trim()

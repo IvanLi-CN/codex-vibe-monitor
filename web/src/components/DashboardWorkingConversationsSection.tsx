@@ -27,6 +27,11 @@ import {
   getReasoningEffortTone,
   REASONING_EFFORT_TONE_CLASSNAMES,
 } from "./invocation-table-reasoning";
+import {
+  compactUpstreamPlanLabel,
+  shouldShowUpstreamPlanBadge,
+  upstreamPlanBadgeRecipe,
+} from "../lib/upstreamAccountBadges";
 import { Alert } from "./ui/alert";
 import { Badge } from "./ui/badge";
 import { Spinner } from "./ui/spinner";
@@ -181,6 +186,28 @@ function CompactReasoningEffortBadge({ value }: { value: string }) {
     >
       <span className="truncate whitespace-nowrap">{value}</span>
     </span>
+  );
+}
+
+function CompactAccountPlanBadge({ planType }: { planType: string | null }) {
+  if (!shouldShowUpstreamPlanBadge(planType)) return null;
+  const label = compactUpstreamPlanLabel(planType);
+  if (!label) return null;
+  const recipe = upstreamPlanBadgeRecipe(planType);
+
+  return (
+    <Badge
+      variant={recipe?.variant ?? "secondary"}
+      data-testid="dashboard-working-conversation-account-plan"
+      data-plan={recipe?.dataPlan}
+      className={cn(
+        "h-4 shrink-0 px-1.5 py-0 text-[7.5px] font-semibold leading-none",
+        recipe?.className,
+      )}
+      title={planType ?? undefined}
+    >
+      {label}
+    </Badge>
   );
 }
 
@@ -580,14 +607,14 @@ function InvocationSlot({
           value={
             <div
               data-testid="dashboard-working-conversation-account-line"
-              className="flex min-w-0 flex-wrap items-start gap-1.5 text-[8.5px] leading-[1.3] text-base-content sm:flex-nowrap sm:items-center"
+              className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[8.5px] leading-[1.3] text-base-content sm:flex-nowrap"
             >
-              <div className="min-w-0 flex-1 font-mono font-semibold">
+              <div className="flex min-w-[7rem] max-w-full flex-1 items-baseline gap-1.5 font-mono font-semibold">
                 {viewModel.accountClickable && viewModel.accountId != null ? (
                   <button
                     type="button"
                     data-testid="dashboard-working-conversation-account-chip"
-                    className="inline-flex min-w-0 max-w-full cursor-pointer appearance-none items-center rounded-[0.45rem] border border-base-300/55 bg-base-100/12 px-1.5 py-0.75 text-left font-mono text-[8.5px] font-semibold text-base-content no-underline transition-colors duration-200 hover:bg-base-100/18 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                    className="inline-flex min-w-0 max-w-full cursor-pointer appearance-none items-baseline border-0 bg-transparent p-0 text-left font-mono text-[8.5px] font-semibold text-base-content no-underline transition-colors duration-200 hover:text-primary focus-visible:rounded-[0.2rem] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                     onClick={(event) => {
                       event.stopPropagation();
                       onOpenUpstreamAccount?.(
@@ -611,7 +638,7 @@ function InvocationSlot({
                 ) : (
                   <span
                     data-testid="dashboard-working-conversation-account-chip"
-                    className="inline-flex min-w-0 max-w-full items-center rounded-[0.45rem] border border-base-300/45 bg-base-100/8 px-1.5 py-0.75"
+                    className="inline-flex min-w-0 max-w-full items-baseline"
                     title={viewModel.accountLabel}
                   >
                     <span
@@ -622,6 +649,7 @@ function InvocationSlot({
                     </span>
                   </span>
                 )}
+                <CompactAccountPlanBadge planType={viewModel.accountPlanType} />
               </div>
               <div
                 data-testid="dashboard-working-conversation-account-meta"
