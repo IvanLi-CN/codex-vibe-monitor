@@ -9,7 +9,7 @@ import { Tooltip } from './ui/tooltip'
 import type { AccountTagSummary, UpstreamAccountSummary } from '../lib/api'
 import { formatTokensShort } from '../lib/numberFormatters'
 import { resolveActiveRoutingPolicyBadges } from '../lib/tagRoutingRule'
-import { upstreamPlanBadgeRecipe } from '../lib/upstreamAccountBadges'
+import { shouldShowUpstreamPlanBadge, upstreamPlanBadgeRecipe } from '../lib/upstreamAccountBadges'
 import { cn } from '../lib/utils'
 
 type ActionDetailLabelResolver =
@@ -198,8 +198,7 @@ export function renderActiveRoutingPolicyBadges(
 }
 
 function shouldShowPlanBadge(planType?: string | null) {
-  const normalized = planType?.trim().toLowerCase()
-  return Boolean(normalized && normalized !== 'local')
+  return shouldShowUpstreamPlanBadge(planType)
 }
 
 export function accountEnableStatus(item: UpstreamAccountSummary) {

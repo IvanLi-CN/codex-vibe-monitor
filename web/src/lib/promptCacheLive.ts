@@ -47,6 +47,7 @@ type PromptCacheConversationPreviewExtras = Partial<
     | "requestedServiceTier"
     | "serviceTier"
     | "billingServiceTier"
+    | "upstreamAccountPlanType"
     | "tReqReadMs"
     | "tReqParseMs"
     | "tUpstreamConnectMs"
@@ -277,6 +278,7 @@ export function buildInvocationFromPromptCachePreview(
     endpoint: preview.endpoint ?? undefined,
     upstreamAccountId: preview.upstreamAccountId,
     upstreamAccountName: preview.upstreamAccountName ?? undefined,
+    upstreamAccountPlanType: preview.upstreamAccountPlanType ?? undefined,
     proxyDisplayName: preview.proxyDisplayName ?? undefined,
     responseContentEncoding: extras.responseContentEncoding,
     transport: extras.transport,
@@ -321,6 +323,7 @@ export function buildPromptCachePreviewFromInvocation(
         ? record.upstreamAccountId
         : null,
     upstreamAccountName: record.upstreamAccountName?.trim() || null,
+    upstreamAccountPlanType: record.upstreamAccountPlanType?.trim() || null,
     endpoint: record.endpoint?.trim() || null,
     source: record.source,
     inputTokens: record.inputTokens,
@@ -492,6 +495,12 @@ function authoritativePreviewLacksLiveExtras(
   if (
     !hasString(authoritative.billingServiceTier) &&
     hasString(live.billingServiceTier)
+  ) {
+    return true;
+  }
+  if (
+    !hasString(authoritative.upstreamAccountPlanType) &&
+    hasString(live.upstreamAccountPlanType)
   ) {
     return true;
   }

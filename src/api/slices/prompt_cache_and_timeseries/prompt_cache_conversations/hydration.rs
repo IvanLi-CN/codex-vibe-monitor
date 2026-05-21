@@ -180,6 +180,9 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
                 proxy_display_name: normalize_trimmed_optional_string(row.proxy_display_name),
                 upstream_account_id: row.upstream_account_id,
                 upstream_account_name: normalize_trimmed_optional_string(row.upstream_account_name),
+                upstream_account_plan_type: normalize_trimmed_optional_string(
+                    row.upstream_account_plan_type,
+                ),
                 endpoint: normalize_trimmed_optional_string(row.endpoint),
                 source: normalize_trimmed_optional_string(row.source),
                 input_tokens: row.input_tokens,

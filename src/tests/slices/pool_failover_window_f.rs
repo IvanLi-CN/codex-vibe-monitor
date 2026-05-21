@@ -555,6 +555,60 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
     assert_eq!(enriched_preview.t_persist_ms, Some(16.0));
     assert_eq!(enriched_preview.t_total_ms, Some(91.0));
 
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, status, enabled, plan_type, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+        "#,
+    )
+    .bind(303_i64)
+    .bind("oauth_codex")
+    .bind("codex")
+    .bind("Pool Gamma")
+    .bind("active")
+    .bind(1_i64)
+    .bind("free")
+    .bind(format_utc_iso(now))
+    .execute(&state.pool)
+    .await
+    .expect("insert upstream account with stale row plan");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_limit_samples (
+            account_id, captured_at, limit_id, limit_name, plan_type
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind(303_i64)
+    .bind(format_utc_iso(now + ChronoDuration::minutes(1)))
+    .bind("primary")
+    .bind("Primary")
+    .bind("team")
+    .execute(&state.pool)
+    .await
+    .expect("insert newer sample-backed plan type");
+
+    let effective_plan_rows = query_prompt_cache_conversation_recent_invocations(
+        &state.pool,
+        InvocationSourceScope::All,
+        &["pck-preview".to_string()],
+        5,
+        None,
+    )
+    .await
+    .expect("recent invocation previews should resolve effective plan type");
+    let sample_backed_plan = effective_plan_rows
+        .iter()
+        .find(|item| item.invoke_id == "preview-06")
+        .expect("preview-06 should be included in direct rows");
+    assert_eq!(
+        sample_backed_plan.upstream_account_plan_type.as_deref(),
+        Some("team")
+    );
+
     let proxy_only_rows = query_prompt_cache_conversation_recent_invocations(
         &state.pool,
         InvocationSourceScope::ProxyOnly,
