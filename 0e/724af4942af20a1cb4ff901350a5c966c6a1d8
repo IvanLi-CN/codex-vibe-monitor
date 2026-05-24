@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.66.0",
+  "base_stable_version": "1.65.5",
+  "channel_label": "channel:stable",
+  "created_at": "2026-05-24T16:43:23Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.66.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "7346104a723b026a01ebe6c370490f4d53b79ed8",
+  "pr_number": 436,
+  "pr_title": "feat: add group single-account rotation load",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.66.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.66.0",
+  "target_sha": "0e724af4942af20a1cb4ff901350a5c966c6a1d8",
+  "type_label": "type:minor"
+}
