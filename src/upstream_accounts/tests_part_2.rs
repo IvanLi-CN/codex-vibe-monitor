@@ -407,6 +407,41 @@
         .expect("insert oauth account")
     }
 
+    #[tokio::test]
+    async fn find_existing_import_match_loads_compact_support_fields() {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Compact support OAuth").await;
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET compact_support_status = ?2,
+                compact_support_observed_at = ?3,
+                compact_support_reason = ?4
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind("supported")
+        .bind("2026-05-24T00:00:00Z")
+        .bind("validation probe")
+        .execute(&pool)
+        .await
+        .expect("seed compact support fields");
+
+        let row = find_existing_import_match(&pool, "org_test", "oauth@example.com")
+            .await
+            .expect("find existing import match")
+            .expect("existing OAuth account should match");
+
+        assert_eq!(row.id, account_id);
+        assert_eq!(row.compact_support_status.as_deref(), Some("supported"));
+        assert_eq!(
+            row.compact_support_observed_at.as_deref(),
+            Some("2026-05-24T00:00:00Z")
+        );
+        assert_eq!(row.compact_support_reason.as_deref(), Some("validation probe"));
+    }
+
     async fn insert_syncable_oauth_account(
         pool: &SqlitePool,
         crypto_key: &[u8; 32],
