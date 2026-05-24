@@ -65,6 +65,9 @@ export function UpstreamAccountCreateDialogs() {
         concurrencyLimit={groupNoteEditor.concurrencyLimit}
         boundProxyKeys={groupNoteEditor.boundProxyKeys}
         nodeShuntEnabled={groupNoteEditor.nodeShuntEnabled}
+        singleAccountRotationEnabled={
+          groupNoteEditor.singleAccountRotationEnabled
+        }
         availableProxyNodes={forwardProxyNodes}
         proxyBindingsCatalogKind={forwardProxyCatalogState?.kind}
         proxyBindingsCatalogFreshness={forwardProxyCatalogState?.freshness}
@@ -94,6 +97,13 @@ export function UpstreamAccountCreateDialogs() {
           setGroupNoteEditor((current: any) => ({
             ...current,
             nodeShuntEnabled: value,
+          }));
+        }}
+        onSingleAccountRotationEnabledChange={(value) => {
+          setGroupNoteError(null);
+          setGroupNoteEditor((current: any) => ({
+            ...current,
+            singleAccountRotationEnabled: value,
           }));
         }}
         upstream429RetryEnabled={groupNoteEditor.upstream429RetryEnabled}
@@ -178,6 +188,15 @@ export function UpstreamAccountCreateDialogs() {
         )}
         nodeShuntWarning={t(
           "accountPool.upstreamAccounts.groupNotes.nodeShunt.warning",
+        )}
+        singleAccountRotationLabel={t(
+          "accountPool.upstreamAccounts.groupNotes.singleAccountRotation.label",
+        )}
+        singleAccountRotationHint={t(
+          "accountPool.upstreamAccounts.groupNotes.singleAccountRotation.hint",
+        )}
+        singleAccountRotationToggleLabel={t(
+          "accountPool.upstreamAccounts.groupNotes.singleAccountRotation.toggle",
         )}
         upstream429RetryLabel={t(
           "accountPool.upstreamAccounts.groupNotes.upstream429.label",

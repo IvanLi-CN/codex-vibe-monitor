@@ -23,6 +23,7 @@ type DialogHarnessProps = {
   error?: string | null;
   boundProxyKeys?: string[];
   nodeShuntEnabled?: boolean;
+  singleAccountRotationEnabled?: boolean;
   upstream429RetryEnabled?: boolean;
   upstream429MaxRetries?: number;
   availableProxyNodes?: ForwardProxyBindingNode[];
@@ -212,6 +213,7 @@ function DialogHarness({
   accountCount = 0,
   boundProxyKeys: initialBoundProxyKeys = [],
   nodeShuntEnabled: initialNodeShuntEnabled = false,
+  singleAccountRotationEnabled: initialSingleAccountRotationEnabled = false,
   upstream429RetryEnabled: initialUpstream429RetryEnabled = false,
   upstream429MaxRetries: initialUpstream429MaxRetries = 0,
   availableProxyNodes = defaultForwardProxyNodes,
@@ -225,6 +227,8 @@ function DialogHarness({
   const [nodeShuntEnabled, setNodeShuntEnabled] = useState(
     initialNodeShuntEnabled,
   );
+  const [singleAccountRotationEnabled, setSingleAccountRotationEnabled] =
+    useState(initialSingleAccountRotationEnabled);
   const [upstream429RetryEnabled, setUpstream429RetryEnabled] = useState(
     initialUpstream429RetryEnabled,
   );
@@ -254,6 +258,7 @@ function DialogHarness({
           concurrencyLimit={concurrencyLimit}
           boundProxyKeys={boundProxyKeys}
           nodeShuntEnabled={nodeShuntEnabled}
+          singleAccountRotationEnabled={singleAccountRotationEnabled}
           upstream429RetryEnabled={upstream429RetryEnabled}
           upstream429MaxRetries={upstream429MaxRetries}
           availableProxyNodes={availableProxyNodes}
@@ -261,6 +266,9 @@ function DialogHarness({
           onConcurrencyLimitChange={setConcurrencyLimit}
           onBoundProxyKeysChange={setBoundProxyKeys}
           onNodeShuntEnabledChange={setNodeShuntEnabled}
+          onSingleAccountRotationEnabledChange={
+            setSingleAccountRotationEnabled
+          }
           onUpstream429RetryEnabledChange={(value) => {
             setUpstream429RetryEnabled(value);
             if (value && upstream429MaxRetries <= 0) {
@@ -294,6 +302,9 @@ function DialogHarness({
           nodeShuntHint="Each selected node becomes an exclusive slot. Selecting 3 nodes means the group can provide 3 upstream accounts at the same time."
           nodeShuntToggleLabel="Enable exclusive node slots"
           nodeShuntWarning="Enable this strategy only after binding at least one node (including Direct)."
+          singleAccountRotationLabel="Single-account rotation load"
+          singleAccountRotationHint="Successful conversations stay on the same account. After upstream 429 retry is exhausted, only that conversation moves to the next reset-time candidate."
+          singleAccountRotationToggleLabel="Keep conversations on one account until final 429"
           upstream429RetryLabel="Upstream 429 retry"
           upstream429RetryHint="When enabled, this group keeps the same account and retries after upstream 429 with a random 1-10 second delay."
           upstream429RetryToggleLabel="Retry the same account after upstream 429"
@@ -348,6 +359,7 @@ const meta = {
     error: null,
     boundProxyKeys: [],
     nodeShuntEnabled: false,
+    singleAccountRotationEnabled: false,
     upstream429RetryEnabled: false,
     upstream429MaxRetries: 0,
     availableProxyNodes: defaultForwardProxyNodes,
@@ -374,6 +386,28 @@ export const Upstream429RetryEnabled: Story = {
       }),
     ).toHaveAttribute("aria-checked", "true");
     await expect(canvas.getByText(/3 retries/i)).toBeInTheDocument();
+  },
+};
+
+export const SingleAccountRotationEnabled: Story = {
+  args: {
+    singleAccountRotationEnabled: true,
+    upstream429RetryEnabled: true,
+    upstream429MaxRetries: 3,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      canvas.getByText(/Single-account rotation load/i),
+    ).toBeInTheDocument();
+    await expect(
+      canvas.getByRole("switch", {
+        name: /Keep conversations on one account until final 429/i,
+      }),
+    ).toHaveAttribute("aria-checked", "true");
+    await expect(
+      canvas.getByText(/After upstream 429 retry is exhausted/i),
+    ).toBeInTheDocument();
   },
 };
 

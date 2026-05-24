@@ -2313,7 +2313,8 @@ async fn insert_pool_upstream_terminal_attempt_preserves_scope_snapshots() {
                 group_name: Some("prod".to_string()),
                 bound_proxy_keys: vec![FORWARD_PROXY_DIRECT_KEY.to_string()],
                 forward_proxy_scope: ForwardProxyRouteScope::pinned(FORWARD_PROXY_DIRECT_KEY),
-                upstream_429_retry_enabled: false,
+                single_account_rotation_enabled: false,
+    upstream_429_retry_enabled: false,
                 upstream_429_max_retries: 0,
                 fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
                 upstream_base_url: Url::parse("https://api.openai.com/")
@@ -4567,7 +4568,8 @@ async fn send_pool_request_with_failover_defers_armed_guard_when_pending_attempt
             Some(test_required_group_name()),
             test_required_group_bound_proxy_keys(),
         ),
-        upstream_429_retry_enabled: false,
+        single_account_rotation_enabled: false,
+    upstream_429_retry_enabled: false,
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
     };
@@ -4677,7 +4679,8 @@ async fn send_pool_request_with_failover_disarms_guard_after_streaming_phase_is_
             Some(test_required_group_name()),
             test_required_group_bound_proxy_keys(),
         ),
-        upstream_429_retry_enabled: false,
+        single_account_rotation_enabled: false,
+    upstream_429_retry_enabled: false,
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
     };
@@ -4800,7 +4803,8 @@ async fn send_pool_request_with_failover_keeps_early_phase_guard_armed_when_stre
             Some(test_required_group_name()),
             test_required_group_bound_proxy_keys(),
         ),
-        upstream_429_retry_enabled: false,
+        single_account_rotation_enabled: false,
+    upstream_429_retry_enabled: false,
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
     };

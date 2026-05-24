@@ -1552,6 +1552,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             &state_for_task.pool,
                             account.account_id,
                             &account.kind,
+                            account.single_account_rotation_enabled,
                             sticky_key_for_task.as_deref(),
                             upstream_status,
                             &route_message,

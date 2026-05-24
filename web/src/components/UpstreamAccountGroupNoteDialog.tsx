@@ -37,6 +37,7 @@ interface UpstreamAccountGroupNoteDialogProps {
   existing: boolean;
   boundProxyKeys?: string[];
   nodeShuntEnabled?: boolean;
+  singleAccountRotationEnabled?: boolean;
   upstream429RetryEnabled?: boolean;
   upstream429MaxRetries?: number;
   availableProxyNodes?: ForwardProxyBindingNode[];
@@ -44,6 +45,7 @@ interface UpstreamAccountGroupNoteDialogProps {
   onConcurrencyLimitChange?: (value: number) => void;
   onBoundProxyKeysChange?: (value: string[]) => void;
   onNodeShuntEnabledChange?: (value: boolean) => void;
+  onSingleAccountRotationEnabledChange?: (value: boolean) => void;
   onUpstream429RetryEnabledChange?: (value: boolean) => void;
   onUpstream429MaxRetriesChange?: (value: number) => void;
   onRoutingPolicyEdit?: () => void;
@@ -70,6 +72,9 @@ interface UpstreamAccountGroupNoteDialogProps {
   nodeShuntHint?: string;
   nodeShuntToggleLabel?: string;
   nodeShuntWarning?: string;
+  singleAccountRotationLabel?: string;
+  singleAccountRotationHint?: string;
+  singleAccountRotationToggleLabel?: string;
   upstream429RetryLabel?: string;
   upstream429RetryHint?: string;
   upstream429RetryToggleLabel?: string;
@@ -292,6 +297,7 @@ export function UpstreamAccountGroupNoteDialog({
   existing,
   boundProxyKeys,
   nodeShuntEnabled = false,
+  singleAccountRotationEnabled = false,
   upstream429RetryEnabled = false,
   upstream429MaxRetries = 0,
   availableProxyNodes,
@@ -299,6 +305,7 @@ export function UpstreamAccountGroupNoteDialog({
   onConcurrencyLimitChange = () => undefined,
   onBoundProxyKeysChange,
   onNodeShuntEnabledChange,
+  onSingleAccountRotationEnabledChange,
   onUpstream429RetryEnabledChange,
   onUpstream429MaxRetriesChange,
   onRoutingPolicyEdit,
@@ -325,6 +332,9 @@ export function UpstreamAccountGroupNoteDialog({
   nodeShuntHint,
   nodeShuntToggleLabel,
   nodeShuntWarning,
+  singleAccountRotationLabel,
+  singleAccountRotationHint,
+  singleAccountRotationToggleLabel,
   upstream429RetryLabel,
   upstream429RetryHint,
   upstream429RetryToggleLabel,
@@ -353,6 +363,8 @@ export function UpstreamAccountGroupNoteDialog({
 }: UpstreamAccountGroupNoteDialogProps) {
   const normalizedBoundProxyKeys = normalizeBoundProxyKeys(boundProxyKeys);
   const normalizedNodeShuntEnabled = nodeShuntEnabled === true;
+  const normalizedSingleAccountRotationEnabled =
+    singleAccountRotationEnabled === true;
   const normalizedUpstream429RetryEnabled = upstream429RetryEnabled === true;
   const normalizedUpstream429MaxRetries = normalizeUpstream429MaxRetries(
     upstream429MaxRetries,
@@ -491,6 +503,10 @@ export function UpstreamAccountGroupNoteDialog({
     Boolean(onNodeShuntEnabledChange) ||
     Boolean(nodeShuntLabel) ||
     Boolean(nodeShuntHint);
+  const showSingleAccountRotationSection =
+    Boolean(onSingleAccountRotationEnabledChange) ||
+    Boolean(singleAccountRotationLabel) ||
+    Boolean(singleAccountRotationHint);
   const showUpstream429RetrySection =
     Boolean(onUpstream429RetryEnabledChange) ||
     Boolean(onUpstream429MaxRetriesChange) ||
@@ -597,6 +613,40 @@ export function UpstreamAccountGroupNoteDialog({
                 >
                   {routingPolicyEditLabel ?? "Edit policy"}
                 </Button>
+              </section>
+            ) : null}
+
+            {showSingleAccountRotationSection ? (
+              <section className="flex flex-col gap-3 rounded-2xl border border-base-300/80 bg-base-200/25 px-4 py-4">
+                <div className="space-y-1">
+                  <h3 className="text-sm font-semibold text-base-content">
+                    {singleAccountRotationLabel ?? "Single-account rotation"}
+                  </h3>
+                  <p className="text-xs leading-5 text-base-content/68">
+                    {singleAccountRotationHint ??
+                      "Keep each conversation on its current account, then move only that conversation to the next candidate after the account finally returns 429."}
+                  </p>
+                </div>
+
+                <div className="flex items-center justify-between gap-3 rounded-xl border border-base-300/80 bg-base-100/75 px-3 py-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-base-content">
+                      {singleAccountRotationToggleLabel ??
+                        "Bind conversations until final 429"}
+                    </p>
+                  </div>
+                  <Switch
+                    checked={normalizedSingleAccountRotationEnabled}
+                    onCheckedChange={(checked) =>
+                      onSingleAccountRotationEnabledChange?.(checked)
+                    }
+                    disabled={busy || !onSingleAccountRotationEnabledChange}
+                    aria-label={
+                      singleAccountRotationToggleLabel ??
+                      "Bind conversations until final 429"
+                    }
+                  />
+                </div>
               </section>
             ) : null}
 

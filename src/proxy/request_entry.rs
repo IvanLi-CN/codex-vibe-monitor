@@ -1387,10 +1387,10 @@ pub(crate) fn classify_pool_account_http_failure(
         && upstream_error_indicates_quota_exhausted(error_message)
     {
         return UpstreamAccountHttpFailureClassification {
-            disposition: UpstreamAccountFailureDisposition::HardUnavailable,
+            disposition: UpstreamAccountFailureDisposition::RateLimited,
             failure_kind: FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
             reason_code: "upstream_http_429_quota_exhausted",
-            next_account_status: Some("error"),
+            next_account_status: None,
         };
     }
     if status == StatusCode::TOO_MANY_REQUESTS {

@@ -7,6 +7,7 @@ async fn current_quota_route_failure_survives_informational_account_updates() {
             &pool,
             account_id,
             UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            false,
             Some("sticky-quota-after-edit"),
             StatusCode::TOO_MANY_REQUESTS,
             "oauth_upstream_rejected_request: pool upstream responded with 429: The usage limit has been reached",
@@ -139,6 +140,41 @@ async fn insert_limit_sample_with_usage(
     .execute(pool)
     .await
     .expect("insert limit sample with usage");
+}
+
+async fn insert_limit_sample_with_reset_times(
+    pool: &SqlitePool,
+    account_id: i64,
+    captured_at: &str,
+    primary_resets_at: Option<&str>,
+    secondary_resets_at: Option<&str>,
+    primary_used_percent: f64,
+    secondary_used_percent: f64,
+) {
+    sqlx::query(
+        r#"
+            INSERT INTO pool_upstream_account_limit_samples (
+                account_id, captured_at, limit_id, limit_name, plan_type,
+                primary_used_percent, primary_window_minutes, primary_resets_at,
+                secondary_used_percent, secondary_window_minutes, secondary_resets_at,
+                credits_has_credits, credits_unlimited, credits_balance
+            ) VALUES (
+                ?1, ?2, NULL, NULL, 'team',
+                ?3, 300, ?4,
+                ?5, 10080, ?6,
+                NULL, NULL, NULL
+            )
+            "#,
+    )
+    .bind(account_id)
+    .bind(captured_at)
+    .bind(primary_used_percent)
+    .bind(primary_resets_at)
+    .bind(secondary_used_percent)
+    .bind(secondary_resets_at)
+    .execute(pool)
+    .await
+    .expect("insert limit sample with reset times");
 }
 
 async fn seed_route_cooldown(
@@ -460,6 +496,7 @@ async fn sync_scope_reuses_live_reserved_node_for_same_account_before_shared_gro
             note: None,
             bound_proxy_keys: test_required_group_bound_proxy_keys(),
             node_shunt_enabled: true,
+            single_account_rotation_enabled: false,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
             concurrency_limit: 0,
@@ -560,6 +597,7 @@ async fn oauth_sync_refresh_due_reuses_sync_only_scope_for_token_refresh() {
                 secondary_proxy_key.clone(),
             ],
             node_shunt_enabled: true,
+            single_account_rotation_enabled: false,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
             concurrency_limit: 0,
@@ -666,6 +704,7 @@ async fn sync_scope_falls_back_to_shared_bound_group_when_exclusive_slot_is_full
             note: None,
             bound_proxy_keys: test_required_group_bound_proxy_keys(),
             node_shunt_enabled: true,
+            single_account_rotation_enabled: false,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
             concurrency_limit: 0,
@@ -773,6 +812,7 @@ async fn manual_sync_allows_group_node_shunt_unassigned_account_to_probe_bound_n
             note: None,
             bound_proxy_keys: test_required_group_bound_proxy_keys(),
             node_shunt_enabled: true,
+            single_account_rotation_enabled: false,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
             concurrency_limit: 0,
@@ -893,6 +933,7 @@ async fn maintenance_sync_allows_group_node_shunt_unassigned_account_to_probe_bo
             note: None,
             bound_proxy_keys: test_required_group_bound_proxy_keys(),
             node_shunt_enabled: true,
+            single_account_rotation_enabled: false,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
             concurrency_limit: 0,
@@ -996,6 +1037,7 @@ async fn bulk_sync_allows_group_node_shunt_unassigned_account_to_probe_bound_nod
             note: None,
             bound_proxy_keys: test_required_group_bound_proxy_keys(),
             node_shunt_enabled: true,
+            single_account_rotation_enabled: false,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
             concurrency_limit: 0,
@@ -1099,6 +1141,7 @@ async fn detail_preserves_group_node_shunt_unassigned_routing_block_reason() {
             note: None,
             bound_proxy_keys: test_required_group_bound_proxy_keys(),
             node_shunt_enabled: true,
+            single_account_rotation_enabled: false,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
             concurrency_limit: 0,
@@ -1161,6 +1204,7 @@ async fn list_upstream_accounts_applies_node_shunt_idle_rewrite_before_filters()
             note: None,
             bound_proxy_keys: test_required_group_bound_proxy_keys(),
             node_shunt_enabled: true,
+            single_account_rotation_enabled: false,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
             concurrency_limit: 0,
@@ -1323,6 +1367,7 @@ async fn updating_api_key_reactivates_manually_recoverable_account() {
                 group_name: None,
                 group_bound_proxy_keys: None,
                 group_node_shunt_enabled: None,
+                group_single_account_rotation_enabled: None,
                 note: None,
                 group_note: None,
                 concurrency_limit: None,
@@ -2791,6 +2836,127 @@ async fn resolver_skips_persisted_snapshot_exhausted_account_before_routing() {
 }
 
 #[tokio::test]
+async fn resolver_reuses_sticky_snapshot_exhausted_account_until_conversation_gets_429() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let crypto_key = state
+        .upstream_accounts
+        .crypto_key
+        .as_ref()
+        .expect("test crypto key");
+    let exhausted = insert_syncable_oauth_account(
+        &state.pool,
+        crypto_key,
+        "Sticky Snapshot Exhausted",
+        "sticky-snapshot-exhausted@example.com",
+        "org_sticky_snapshot_exhausted",
+        "user_sticky_snapshot_exhausted",
+    )
+    .await;
+    let available = insert_syncable_oauth_account(
+        &state.pool,
+        crypto_key,
+        "Sticky Snapshot Available",
+        "sticky-snapshot-available@example.com",
+        "org_sticky_snapshot_available",
+        "user_sticky_snapshot_available",
+    )
+    .await;
+    let now_iso = format_utc_iso(Utc::now());
+    insert_limit_sample_with_usage(&state.pool, exhausted, &now_iso, Some(100.0), Some(20.0))
+        .await;
+    insert_limit_sample_with_usage(&state.pool, available, &now_iso, Some(42.0), Some(10.0))
+        .await;
+    upsert_sticky_route(
+        &state.pool,
+        "sticky-snapshot-exhausted",
+        exhausted,
+        &now_iso,
+    )
+    .await
+    .expect("seed sticky route");
+
+    let resolution = resolve_pool_account_for_request(
+        &state,
+        Some("sticky-snapshot-exhausted"),
+        &[],
+        &HashSet::new(),
+    )
+    .await
+    .expect("resolve sticky snapshot exhausted account");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("expected sticky exhausted account to remain reusable, got {resolution:?}");
+    };
+    assert_eq!(account.account_id, exhausted);
+    assert_eq!(
+        account.routing_source,
+        PoolRoutingSelectionSource::StickyReuse
+    );
+}
+
+#[tokio::test]
+async fn resolver_preserves_sticky_record_but_rotates_after_auth_hard_failure() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let failed = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Sticky Auth Failed",
+        "sk-sticky-auth-failed",
+        Some("sticky-auth-rotation"),
+        Some("https://sticky-auth-failed.example.com/backend-api/codex"),
+    )
+    .await;
+    let available = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Sticky Auth Replacement",
+        "sk-sticky-auth-replacement",
+        Some("sticky-auth-rotation"),
+        Some("https://sticky-auth-replacement.example.com/backend-api/codex"),
+    )
+    .await;
+    let now_iso = format_utc_iso(Utc::now());
+    upsert_sticky_route(&state.pool, "sticky-auth-failed", failed, &now_iso)
+        .await
+        .expect("seed auth sticky route");
+
+    record_pool_route_http_failure(
+        &state.pool,
+        failed,
+        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+        false,
+        Some("sticky-auth-failed"),
+        StatusCode::UNAUTHORIZED,
+        "pool upstream responded with 401: invalid api key",
+        Some("invk_auth_failed"),
+    )
+    .await
+    .expect("record auth hard failure");
+
+    assert_eq!(
+        load_sticky_route(&state.pool, "sticky-auth-failed")
+            .await
+            .expect("load preserved sticky route")
+            .map(|route| route.account_id),
+        Some(failed),
+    );
+
+    let resolution = resolve_pool_account_for_request(
+        &state,
+        Some("sticky-auth-failed"),
+        &[],
+        &HashSet::new(),
+    )
+    .await
+    .expect("resolve after auth hard failure");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("expected resolver to rotate to another available account, got {resolution:?}");
+    };
+    assert_eq!(account.account_id, available);
+    assert_eq!(
+        account.routing_source,
+        PoolRoutingSelectionSource::FreshAssignment
+    );
+}
+
+#[tokio::test]
 async fn resolver_prefers_primary_priority_before_normal_and_fallback() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let fallback_account_id = insert_test_pool_api_key_account_with_options(
@@ -2944,6 +3110,7 @@ async fn resolver_keeps_higher_priority_soft_degraded_candidate_ahead_of_lower_p
             note: None,
             bound_proxy_keys: vec![FORWARD_PROXY_DIRECT_KEY.to_string()],
             node_shunt_enabled: true,
+            single_account_rotation_enabled: false,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
             concurrency_limit: 0,
@@ -2958,6 +3125,7 @@ async fn resolver_keeps_higher_priority_soft_degraded_candidate_ahead_of_lower_p
             note: None,
             bound_proxy_keys: vec![FORWARD_PROXY_DIRECT_KEY.to_string()],
             node_shunt_enabled: false,
+            single_account_rotation_enabled: false,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
             concurrency_limit: 0,
@@ -2993,6 +3161,9 @@ fn retry_original_node_candidates_sort_after_sendable_candidates_even_when_prior
         routing_priority_rank: 0,
         capacity_lane: PoolRoutingCandidateCapacityLane::Primary,
         dispatch_state: PoolRoutingCandidateDispatchState::RetryOriginalNode,
+        single_account_rotation_enabled: false,
+        secondary_reset_proximity_secs: None,
+        primary_reset_proximity_secs: None,
         scarcity_score: 0.0,
         effective_load: 0,
         last_selected_at: None,
@@ -3004,6 +3175,9 @@ fn retry_original_node_candidates_sort_after_sendable_candidates_even_when_prior
         routing_priority_rank: 2,
         capacity_lane: PoolRoutingCandidateCapacityLane::Primary,
         dispatch_state: PoolRoutingCandidateDispatchState::ReadyAfterMigration,
+        single_account_rotation_enabled: false,
+        secondary_reset_proximity_secs: None,
+        primary_reset_proximity_secs: None,
         scarcity_score: 0.0,
         effective_load: 0,
         last_selected_at: None,
@@ -3028,6 +3202,9 @@ fn overflow_candidates_sort_after_primary_candidates_even_when_priority_is_highe
         routing_priority_rank: 0,
         capacity_lane: PoolRoutingCandidateCapacityLane::Overflow,
         dispatch_state: PoolRoutingCandidateDispatchState::ReadyOnOwnedNode,
+        single_account_rotation_enabled: false,
+        secondary_reset_proximity_secs: None,
+        primary_reset_proximity_secs: None,
         scarcity_score: 0.0,
         effective_load: 9,
         last_selected_at: None,
@@ -3039,6 +3216,9 @@ fn overflow_candidates_sort_after_primary_candidates_even_when_priority_is_highe
         routing_priority_rank: 2,
         capacity_lane: PoolRoutingCandidateCapacityLane::Primary,
         dispatch_state: PoolRoutingCandidateDispatchState::ReadyOnOwnedNode,
+        single_account_rotation_enabled: false,
+        secondary_reset_proximity_secs: None,
+        primary_reset_proximity_secs: None,
         scarcity_score: 0.0,
         effective_load: 1,
         last_selected_at: None,
@@ -3053,6 +3233,251 @@ fn overflow_candidates_sort_after_primary_candidates_even_when_priority_is_highe
         compare_pool_routing_candidate_scores(&primary, &overflow),
         std::cmp::Ordering::Less
     );
+}
+
+#[test]
+fn reset_proximity_sorts_before_usage_pressure_after_priority_gates() {
+    let closer_secondary_reset = PoolRoutingCandidateScore {
+        eligibility: PoolRoutingCandidateEligibility::Assignable,
+        route_binding_failure_penalty: 0,
+        routing_priority_rank: 1,
+        capacity_lane: PoolRoutingCandidateCapacityLane::Primary,
+        dispatch_state: PoolRoutingCandidateDispatchState::ReadyOnOwnedNode,
+        single_account_rotation_enabled: true,
+        secondary_reset_proximity_secs: Some(60),
+        primary_reset_proximity_secs: Some(60 * 60 * 4),
+        scarcity_score: 0.95,
+        effective_load: 2,
+        last_selected_at: Some("2026-03-23T12:00:00Z".to_string()),
+        account_id: 20,
+    };
+    let farther_secondary_reset = PoolRoutingCandidateScore {
+        eligibility: PoolRoutingCandidateEligibility::Assignable,
+        route_binding_failure_penalty: 0,
+        routing_priority_rank: 1,
+        capacity_lane: PoolRoutingCandidateCapacityLane::Primary,
+        dispatch_state: PoolRoutingCandidateDispatchState::ReadyOnOwnedNode,
+        single_account_rotation_enabled: true,
+        secondary_reset_proximity_secs: Some(60 * 60 * 24),
+        primary_reset_proximity_secs: Some(60),
+        scarcity_score: 0.05,
+        effective_load: 0,
+        last_selected_at: None,
+        account_id: 21,
+    };
+
+    assert_eq!(
+        compare_pool_routing_candidate_scores(&closer_secondary_reset, &farther_secondary_reset),
+        std::cmp::Ordering::Less,
+        "7-day reset proximity should sort before short-window reset and usage pressure",
+    );
+}
+
+#[test]
+fn reset_proximity_places_missing_reset_after_known_reset() {
+    let known_reset = PoolRoutingCandidateScore {
+        eligibility: PoolRoutingCandidateEligibility::Assignable,
+        route_binding_failure_penalty: 0,
+        routing_priority_rank: 1,
+        capacity_lane: PoolRoutingCandidateCapacityLane::Primary,
+        dispatch_state: PoolRoutingCandidateDispatchState::ReadyOnOwnedNode,
+        single_account_rotation_enabled: true,
+        secondary_reset_proximity_secs: Some(60 * 5),
+        primary_reset_proximity_secs: None,
+        scarcity_score: 0.9,
+        effective_load: 3,
+        last_selected_at: Some("2026-03-23T12:00:00Z".to_string()),
+        account_id: 22,
+    };
+    let missing_reset = PoolRoutingCandidateScore {
+        eligibility: PoolRoutingCandidateEligibility::Assignable,
+        route_binding_failure_penalty: 0,
+        routing_priority_rank: 1,
+        capacity_lane: PoolRoutingCandidateCapacityLane::Primary,
+        dispatch_state: PoolRoutingCandidateDispatchState::ReadyOnOwnedNode,
+        single_account_rotation_enabled: true,
+        secondary_reset_proximity_secs: None,
+        primary_reset_proximity_secs: Some(1),
+        scarcity_score: 0.0,
+        effective_load: 0,
+        last_selected_at: None,
+        account_id: 23,
+    };
+
+    assert_eq!(
+        compare_pool_routing_candidate_scores(&known_reset, &missing_reset),
+        std::cmp::Ordering::Less,
+        "known 7-day reset times should beat accounts without a 7-day reset time",
+    );
+}
+
+#[test]
+fn reset_proximity_does_not_change_default_sort_when_rotation_is_disabled() {
+    let closer_secondary_reset = PoolRoutingCandidateScore {
+        eligibility: PoolRoutingCandidateEligibility::Assignable,
+        route_binding_failure_penalty: 0,
+        routing_priority_rank: 1,
+        capacity_lane: PoolRoutingCandidateCapacityLane::Primary,
+        dispatch_state: PoolRoutingCandidateDispatchState::ReadyOnOwnedNode,
+        single_account_rotation_enabled: false,
+        secondary_reset_proximity_secs: Some(60),
+        primary_reset_proximity_secs: Some(60),
+        scarcity_score: 0.95,
+        effective_load: 2,
+        last_selected_at: Some("2026-03-23T12:00:00Z".to_string()),
+        account_id: 24,
+    };
+    let lower_pressure = PoolRoutingCandidateScore {
+        eligibility: PoolRoutingCandidateEligibility::Assignable,
+        route_binding_failure_penalty: 0,
+        routing_priority_rank: 1,
+        capacity_lane: PoolRoutingCandidateCapacityLane::Primary,
+        dispatch_state: PoolRoutingCandidateDispatchState::ReadyOnOwnedNode,
+        single_account_rotation_enabled: false,
+        secondary_reset_proximity_secs: Some(60 * 60 * 24),
+        primary_reset_proximity_secs: Some(60 * 60 * 24),
+        scarcity_score: 0.05,
+        effective_load: 0,
+        last_selected_at: None,
+        account_id: 25,
+    };
+
+    assert_eq!(
+        compare_pool_routing_candidate_scores(&closer_secondary_reset, &lower_pressure),
+        std::cmp::Ordering::Greater,
+        "disabled groups should still fall through to usage pressure tie-breakers",
+    );
+}
+
+#[tokio::test]
+async fn resolver_uses_reset_time_candidate_after_single_account_rotation_429() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let group_name = "single-rotation-reset-order";
+    let sticky_key = "sticky-single-rotation-reset-order";
+    let crypto_key = state
+        .upstream_accounts
+        .crypto_key
+        .as_ref()
+        .expect("test crypto key");
+    let exhausted = insert_syncable_oauth_account(
+        &state.pool,
+        crypto_key,
+        "Rotation exhausted",
+        "rotation-exhausted@example.com",
+        "org_rotation_exhausted",
+        "user_rotation_exhausted",
+    )
+    .await;
+    let closer_reset = insert_syncable_oauth_account(
+        &state.pool,
+        crypto_key,
+        "Rotation closer reset",
+        "rotation-closer-reset@example.com",
+        "org_rotation_closer_reset",
+        "user_rotation_closer_reset",
+    )
+    .await;
+    let farther_reset = insert_syncable_oauth_account(
+        &state.pool,
+        crypto_key,
+        "Rotation farther reset",
+        "rotation-farther-reset@example.com",
+        "org_rotation_farther_reset",
+        "user_rotation_farther_reset",
+    )
+    .await;
+    set_test_account_group_name(&state.pool, exhausted, Some(group_name)).await;
+    set_test_account_group_name(&state.pool, closer_reset, Some(group_name)).await;
+    set_test_account_group_name(&state.pool, farther_reset, Some(group_name)).await;
+
+    let now = Utc::now();
+    let now_iso = format_utc_iso(now);
+    sqlx::query(
+        r#"
+            INSERT INTO pool_upstream_account_group_notes (
+                group_name, note, single_account_rotation_enabled, created_at, updated_at
+            ) VALUES (?1, '', 1, ?2, ?2)
+            ON CONFLICT(group_name) DO UPDATE SET
+                single_account_rotation_enabled = excluded.single_account_rotation_enabled,
+                updated_at = excluded.updated_at
+            "#,
+    )
+    .bind(group_name)
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await
+    .expect("enable single-account rotation for group");
+    upsert_test_group_binding(
+        &state.pool,
+        group_name,
+        vec![FORWARD_PROXY_DIRECT_KEY.to_string()],
+    )
+    .await;
+
+    upsert_sticky_route(&state.pool, sticky_key, exhausted, &now_iso)
+        .await
+        .expect("seed sticky route");
+    insert_limit_sample_with_reset_times(
+        &state.pool,
+        exhausted,
+        &now_iso,
+        Some(&format_utc_iso(now + ChronoDuration::minutes(5))),
+        Some(&format_utc_iso(now + ChronoDuration::minutes(5))),
+        1.0,
+        1.0,
+    )
+    .await;
+    insert_limit_sample_with_reset_times(
+        &state.pool,
+        closer_reset,
+        &now_iso,
+        Some(&format_utc_iso(now + ChronoDuration::hours(4))),
+        Some(&format_utc_iso(now + ChronoDuration::minutes(30))),
+        95.0,
+        95.0,
+    )
+    .await;
+    insert_limit_sample_with_reset_times(
+        &state.pool,
+        farther_reset,
+        &now_iso,
+        Some(&format_utc_iso(now + ChronoDuration::minutes(10))),
+        Some(&format_utc_iso(now + ChronoDuration::days(2))),
+        1.0,
+        1.0,
+    )
+    .await;
+
+    record_pool_route_http_failure(
+        &state.pool,
+        exhausted,
+        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+        true,
+        Some(sticky_key),
+        StatusCode::TOO_MANY_REQUESTS,
+        "pool upstream responded with 429: temporary rate limit",
+        Some("invk_single_rotation_reset_order"),
+    )
+    .await
+    .expect("record final 429");
+
+    let sticky_after_failure: Option<i64> =
+        sqlx::query_scalar("SELECT account_id FROM pool_sticky_routes WHERE sticky_key = ?1")
+            .bind(sticky_key)
+            .fetch_optional(&state.pool)
+            .await
+            .expect("load sticky route after 429");
+    assert_eq!(sticky_after_failure, None);
+
+    let resolution =
+        resolve_pool_account_for_request(&state, Some(sticky_key), &[], &HashSet::new())
+            .await
+            .expect("resolve after final 429");
+    let PoolAccountResolution::Resolved(account) = resolution.clone() else {
+        panic!("expected resolver to select the next reset-time candidate, got {resolution:?}");
+    };
+    assert_eq!(account.account_id, closer_reset);
+    assert!(account.single_account_rotation_enabled);
 }
 
 #[tokio::test]

@@ -563,10 +563,11 @@ pub(crate) async fn create_oauth_login_session(
         r#"
         INSERT INTO pool_oauth_login_sessions (
             login_id, account_id, display_name, email, group_name, group_bound_proxy_keys_json, group_node_shunt_enabled,
-            group_node_shunt_enabled_requested, is_mother, note, tag_ids_json, group_note, group_concurrency_limit,
+            group_node_shunt_enabled_requested, group_single_account_rotation_enabled,
+            group_single_account_rotation_enabled_requested, is_mother, note, tag_ids_json, group_note, group_concurrency_limit,
             mailbox_session_id, generated_mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
             error_message, expires_at, consumed_at, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, NULL, ?21, NULL, ?22, ?22)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, NULL, ?23, NULL, ?24, ?24)
         "#,
     )
     .bind(&login_id)
@@ -584,6 +585,19 @@ pub(crate) async fn create_oauth_login_session(
         0_i64
     })
     .bind(if payload.group_node_shunt_enabled.is_some() {
+        1_i64
+    } else {
+        0_i64
+    })
+    .bind(if payload
+        .group_single_account_rotation_enabled
+        .unwrap_or(false)
+    {
+        1_i64
+    } else {
+        0_i64
+    })
+    .bind(if payload.group_single_account_rotation_enabled.is_some() {
         1_i64
     } else {
         0_i64
@@ -763,6 +777,7 @@ pub(crate) async fn update_oauth_login_session(
         group_name: requested_group_name,
         group_bound_proxy_keys: requested_group_bound_proxy_keys,
         group_node_shunt_enabled: requested_group_node_shunt_enabled,
+        group_single_account_rotation_enabled: requested_group_single_account_rotation_enabled,
         note: requested_note,
         group_note: requested_group_note,
         concurrency_limit: requested_concurrency_limit,
@@ -776,6 +791,10 @@ pub(crate) async fn update_oauth_login_session(
         !matches!(requested_group_bound_proxy_keys, OptionalField::Missing);
     let requested_group_node_shunt_enabled_was_updated =
         !matches!(requested_group_node_shunt_enabled, OptionalField::Missing);
+    let requested_group_single_account_rotation_enabled_was_updated = !matches!(
+        requested_group_single_account_rotation_enabled,
+        OptionalField::Missing
+    );
     let requested_group_note_was_updated = !matches!(requested_group_note, OptionalField::Missing);
     let requested_group_concurrency_limit_was_updated =
         !matches!(requested_concurrency_limit, OptionalField::Missing);
@@ -806,6 +825,10 @@ pub(crate) async fn update_oauth_login_session(
         decode_group_node_shunt_enabled(session.group_node_shunt_enabled);
     let session_group_node_shunt_enabled_requested =
         decode_group_requested_flag(session.group_node_shunt_enabled_requested);
+    let session_group_single_account_rotation_enabled =
+        decode_group_single_account_rotation_enabled(session.group_single_account_rotation_enabled);
+    let session_group_single_account_rotation_enabled_requested =
+        decode_group_requested_flag(session.group_single_account_rotation_enabled_requested);
     let requested_group_note_missing = matches!(requested_group_note, OptionalField::Missing);
     let mut normalized_group_note = match requested_group_note {
         OptionalField::Missing => session.group_note.clone(),
@@ -841,6 +864,21 @@ pub(crate) async fn update_oauth_login_session(
             false
         } else {
             session_group_node_shunt_enabled_requested
+        };
+    let requested_group_single_account_rotation_enabled =
+        match requested_group_single_account_rotation_enabled {
+            OptionalField::Missing if group_name_changed => None,
+            OptionalField::Missing => Some(session_group_single_account_rotation_enabled),
+            OptionalField::Null => Some(false),
+            OptionalField::Value(value) => Some(value),
+        };
+    let stored_group_single_account_rotation_enabled_requested =
+        if requested_group_single_account_rotation_enabled_was_updated {
+            true
+        } else if group_name_changed {
+            false
+        } else {
+            session_group_single_account_rotation_enabled_requested
         };
     if requested_group_name_was_updated
         && (group_name.is_none() || (requested_group_note_missing && group_name_changed))
@@ -898,6 +936,8 @@ pub(crate) async fn update_oauth_login_session(
         requested_group_concurrency_limit_was_updated,
         Some(resolved_group_binding.node_shunt_enabled),
         requested_group_node_shunt_enabled_was_updated,
+        requested_group_single_account_rotation_enabled,
+        requested_group_single_account_rotation_enabled_was_updated,
     );
 
     let next_display_name = resolve_display_name_after_email_change(
@@ -957,14 +997,16 @@ pub(crate) async fn update_oauth_login_session(
                 group_bound_proxy_keys_json = ?5,
                 group_node_shunt_enabled = ?6,
                 group_node_shunt_enabled_requested = ?7,
-                is_mother = ?8,
-                note = ?9,
-                tag_ids_json = ?10,
-                group_note = ?11,
-                group_concurrency_limit = ?12,
-                mailbox_session_id = ?13,
-                generated_mailbox_address = ?14,
-                updated_at = ?15
+                group_single_account_rotation_enabled = ?8,
+                group_single_account_rotation_enabled_requested = ?9,
+                is_mother = ?10,
+                note = ?11,
+                tag_ids_json = ?12,
+                group_note = ?13,
+                group_concurrency_limit = ?14,
+                mailbox_session_id = ?15,
+                generated_mailbox_address = ?16,
+                updated_at = ?17
             WHERE login_id = ?1
             "#,
         )
@@ -982,6 +1024,18 @@ pub(crate) async fn update_oauth_login_session(
             0_i64
         })
         .bind(if stored_group_node_shunt_enabled_requested {
+            1_i64
+        } else {
+            0_i64
+        })
+        .bind(
+            if requested_group_single_account_rotation_enabled.unwrap_or(false) {
+                1_i64
+            } else {
+                0_i64
+            },
+        )
+        .bind(if stored_group_single_account_rotation_enabled_requested {
             1_i64
         } else {
             0_i64
@@ -1016,16 +1070,18 @@ pub(crate) async fn update_oauth_login_session(
             group_bound_proxy_keys_json = ?5,
             group_node_shunt_enabled = ?6,
             group_node_shunt_enabled_requested = ?7,
-            is_mother = ?8,
-            note = ?9,
-            tag_ids_json = ?10,
-            group_note = ?11,
-            group_concurrency_limit = ?12,
-            mailbox_session_id = ?13,
-            generated_mailbox_address = ?14,
-            updated_at = ?15
+            group_single_account_rotation_enabled = ?8,
+            group_single_account_rotation_enabled_requested = ?9,
+            is_mother = ?10,
+            note = ?11,
+            tag_ids_json = ?12,
+            group_note = ?13,
+            group_concurrency_limit = ?14,
+            mailbox_session_id = ?15,
+            generated_mailbox_address = ?16,
+            updated_at = ?17
         WHERE login_id = ?1
-          AND (?16 IS NULL OR updated_at = ?16)
+          AND (?18 IS NULL OR updated_at = ?18)
         "#,
     )
     .bind(&login_id)
@@ -1042,6 +1098,18 @@ pub(crate) async fn update_oauth_login_session(
         0_i64
     })
     .bind(if stored_group_node_shunt_enabled_requested {
+        1_i64
+    } else {
+        0_i64
+    })
+    .bind(
+        if requested_group_single_account_rotation_enabled.unwrap_or(false) {
+            1_i64
+        } else {
+            0_i64
+        },
+    )
+    .bind(if stored_group_single_account_rotation_enabled_requested {
         1_i64
     } else {
         0_i64
@@ -1160,6 +1228,7 @@ pub(crate) async fn relogin_upstream_account(
         group_name: None,
         group_bound_proxy_keys: None,
         group_node_shunt_enabled: None,
+        group_single_account_rotation_enabled: None,
         note: None,
         group_note: None,
         concurrency_limit: None,
@@ -1249,6 +1318,8 @@ pub(crate) async fn create_api_key_account_inner(
         payload.concurrency_limit.is_some(),
         payload.group_node_shunt_enabled,
         payload.group_node_shunt_enabled.is_some(),
+        payload.group_single_account_rotation_enabled,
+        payload.group_single_account_rotation_enabled.is_some(),
     );
     validate_group_note_target(group_name.as_deref(), has_group_note)?;
     let resolved_group_binding = resolve_required_group_proxy_binding_for_write(
@@ -1416,6 +1487,8 @@ pub(crate) async fn update_upstream_account_inner(
         payload.concurrency_limit.is_some(),
         payload.group_node_shunt_enabled,
         payload.group_node_shunt_enabled.is_some(),
+        payload.group_single_account_rotation_enabled,
+        payload.group_single_account_rotation_enabled.is_some(),
     );
 
     let requested_display_name = match payload.display_name.clone() {
@@ -1489,6 +1562,7 @@ pub(crate) async fn update_upstream_account_inner(
     let resolved_group_binding = if payload.group_name.is_some()
         || payload.group_bound_proxy_keys.is_some()
         || payload.group_node_shunt_enabled.is_some()
+        || payload.group_single_account_rotation_enabled.is_some()
     {
         Some(
             resolve_required_group_proxy_binding_for_write(
@@ -2155,6 +2229,12 @@ pub(crate) async fn persist_oauth_callback_inner(
                     session.group_node_shunt_enabled,
                 )),
                 decode_group_requested_flag(session.group_node_shunt_enabled_requested),
+                Some(decode_group_single_account_rotation_enabled(
+                    session.group_single_account_rotation_enabled,
+                )),
+                decode_group_requested_flag(
+                    session.group_single_account_rotation_enabled_requested,
+                ),
             ),
             claims: &input.claims,
             encrypted_credentials: input.encrypted_credentials,

@@ -479,6 +479,8 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             group_bound_proxy_keys_json TEXT NOT NULL DEFAULT '[]',
             group_node_shunt_enabled INTEGER NOT NULL DEFAULT 0,
             group_node_shunt_enabled_requested INTEGER NOT NULL DEFAULT 0,
+            group_single_account_rotation_enabled INTEGER NOT NULL DEFAULT 0,
+            group_single_account_rotation_enabled_requested INTEGER NOT NULL DEFAULT 0,
             is_mother INTEGER NOT NULL DEFAULT 0,
             note TEXT,
             tag_ids_json TEXT,
@@ -555,6 +557,24 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure pool_oauth_login_sessions.group_node_shunt_enabled_requested")?;
+    ensure_integer_column_with_default(
+        pool,
+        "pool_oauth_login_sessions",
+        "group_single_account_rotation_enabled",
+        "0",
+    )
+    .await
+    .context("failed to ensure pool_oauth_login_sessions.group_single_account_rotation_enabled")?;
+    ensure_integer_column_with_default(
+        pool,
+        "pool_oauth_login_sessions",
+        "group_single_account_rotation_enabled_requested",
+        "0",
+    )
+    .await
+    .context(
+        "failed to ensure pool_oauth_login_sessions.group_single_account_rotation_enabled_requested",
+    )?;
     ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "group_note")
         .await
         .context("failed to ensure pool_oauth_login_sessions.group_note")?;
@@ -733,6 +753,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             note TEXT NOT NULL,
             bound_proxy_keys_json TEXT NOT NULL DEFAULT '[]',
             node_shunt_enabled INTEGER NOT NULL DEFAULT 0,
+            single_account_rotation_enabled INTEGER NOT NULL DEFAULT 0,
             upstream_429_retry_enabled INTEGER NOT NULL DEFAULT 0,
             upstream_429_max_retries INTEGER NOT NULL DEFAULT 0,
             concurrency_limit INTEGER NOT NULL DEFAULT 0,
@@ -777,6 +798,19 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
         .execute(pool)
         .await
         .context("failed to add pool_upstream_account_group_notes.node_shunt_enabled")?;
+    }
+    if !existing_group_note_columns.contains("single_account_rotation_enabled") {
+        sqlx::query(
+            r#"
+            ALTER TABLE pool_upstream_account_group_notes
+            ADD COLUMN single_account_rotation_enabled INTEGER NOT NULL DEFAULT 0
+            "#,
+        )
+        .execute(pool)
+        .await
+        .context(
+            "failed to add pool_upstream_account_group_notes.single_account_rotation_enabled",
+        )?;
     }
     if !existing_group_note_columns.contains("upstream_429_retry_enabled") {
         sqlx::query(

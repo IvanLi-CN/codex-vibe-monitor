@@ -33,6 +33,22 @@ pub(crate) fn compare_pool_routing_candidate_scores(
                 .then_with(|| lhs.routing_priority_rank.cmp(&rhs.routing_priority_rank))
                 .then_with(|| lhs.eligibility.rank().cmp(&rhs.eligibility.rank()))
                 .then_with(|| lhs.dispatch_state.rank().cmp(&rhs.dispatch_state.rank()))
+                .then_with(|| {
+                    compare_reset_proximity_for_rotation_candidates(
+                        lhs.single_account_rotation_enabled,
+                        lhs.secondary_reset_proximity_secs,
+                        rhs.single_account_rotation_enabled,
+                        rhs.secondary_reset_proximity_secs,
+                    )
+                })
+                .then_with(|| {
+                    compare_reset_proximity_for_rotation_candidates(
+                        lhs.single_account_rotation_enabled,
+                        lhs.primary_reset_proximity_secs,
+                        rhs.single_account_rotation_enabled,
+                        rhs.primary_reset_proximity_secs,
+                    )
+                })
                 .then_with(|| lhs.scarcity_score.total_cmp(&rhs.scarcity_score))
                 .then_with(|| lhs.effective_load.cmp(&rhs.effective_load))
                 .then_with(|| lhs.last_selected_at.cmp(&rhs.last_selected_at))
@@ -40,11 +56,40 @@ pub(crate) fn compare_pool_routing_candidate_scores(
         })
 }
 
+fn compare_reset_proximity_for_rotation_candidates(
+    lhs_enabled: bool,
+    lhs_reset: Option<i64>,
+    rhs_enabled: bool,
+    rhs_reset: Option<i64>,
+) -> std::cmp::Ordering {
+    if lhs_enabled && rhs_enabled {
+        compare_optional_reset_proximity(lhs_reset, rhs_reset)
+    } else {
+        std::cmp::Ordering::Equal
+    }
+}
+
+fn compare_optional_reset_proximity(lhs: Option<i64>, rhs: Option<i64>) -> std::cmp::Ordering {
+    match (lhs, rhs) {
+        (Some(left), Some(right)) => left.cmp(&right),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+}
+
+fn reset_proximity_secs(resets_at: Option<&str>, now: DateTime<Utc>) -> Option<i64> {
+    resets_at
+        .and_then(parse_rfc3339_utc)
+        .map(|reset| reset.signed_duration_since(now).num_seconds().abs())
+}
+
 fn build_pool_routing_candidate_score(
     candidate: &AccountRoutingCandidateRow,
     effective_rule: &EffectiveRoutingRule,
     eligibility: PoolRoutingCandidateEligibility,
     dispatch_state: PoolRoutingCandidateDispatchState,
+    single_account_rotation_enabled: bool,
     now: DateTime<Utc>,
 ) -> PoolRoutingCandidateScore {
     let capacity_lane = if candidate.effective_load() <= candidate.capacity_profile().soft_limit {
@@ -58,6 +103,15 @@ fn build_pool_routing_candidate_score(
         routing_priority_rank: routing_priority_rank(Some(effective_rule)),
         capacity_lane,
         dispatch_state,
+        single_account_rotation_enabled,
+        secondary_reset_proximity_secs: reset_proximity_secs(
+            candidate.secondary_resets_at.as_deref(),
+            now,
+        ),
+        primary_reset_proximity_secs: reset_proximity_secs(
+            candidate.primary_resets_at.as_deref(),
+            now,
+        ),
         scarcity_score: candidate.scarcity_score(now),
         effective_load: candidate.effective_load(),
         last_selected_at: candidate.last_selected_at.clone(),
@@ -211,6 +265,7 @@ async fn evaluate_live_pool_candidate(
                     effective_rule,
                     eligibility,
                     dispatch_state,
+                    group_metadata.single_account_rotation_enabled,
                     now,
                 ),
                 resolved_account,

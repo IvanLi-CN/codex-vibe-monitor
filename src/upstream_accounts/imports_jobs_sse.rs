@@ -1307,6 +1307,7 @@ pub(crate) async fn validate_imported_oauth_accounts(
         ));
     }
     state.upstream_accounts.require_crypto_key()?;
+    let _ = payload.group_single_account_rotation_enabled;
     let binding = resolve_required_group_proxy_binding_for_write(
         state.as_ref(),
         payload.group_name,
@@ -1339,6 +1340,7 @@ pub(crate) async fn import_validated_oauth_accounts(
         group_name,
         group_bound_proxy_keys,
         group_node_shunt_enabled,
+        group_single_account_rotation_enabled,
         group_note,
         concurrency_limit,
         tag_ids,
@@ -1368,6 +1370,8 @@ pub(crate) async fn import_validated_oauth_accounts(
         concurrency_limit.is_some(),
         group_node_shunt_enabled,
         group_node_shunt_enabled.is_some(),
+        group_single_account_rotation_enabled,
+        group_single_account_rotation_enabled.is_some(),
     );
     let resolved_group_binding = resolve_required_group_proxy_binding_for_write(
         state.as_ref(),

@@ -895,6 +895,7 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
       groupName: TEST_REQUIRED_GROUP_NAME,
       groupBoundProxyKeys: ["stale-node"],
       groupNodeShuntEnabled: true,
+      groupSingleAccountRotationEnabled: false,
       items: [
         expect.objectContaining({
           fileName: fixture.fileName,

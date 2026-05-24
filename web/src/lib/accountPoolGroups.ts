@@ -21,6 +21,7 @@ export interface AccountPoolGroupSummaryData {
   boundProxyLabels?: string[];
   concurrencyLimit?: number | null;
   nodeShuntEnabled?: boolean;
+  singleAccountRotationEnabled?: boolean;
   upstream429RetryEnabled?: boolean;
   upstream429MaxRetries?: number;
   routingRule?: TagRoutingRule;
@@ -97,6 +98,8 @@ export function buildAccountPoolGroupSummaries(options: {
         ) ?? [],
       concurrencyLimit: groupSummary?.concurrencyLimit ?? null,
       nodeShuntEnabled: groupSummary?.nodeShuntEnabled ?? false,
+      singleAccountRotationEnabled:
+        groupSummary?.singleAccountRotationEnabled ?? false,
       upstream429RetryEnabled: groupSummary?.upstream429RetryEnabled ?? false,
       upstream429MaxRetries: groupSummary?.upstream429MaxRetries ?? 0,
       routingRule: groupSummary?.routingRule,
@@ -105,6 +108,7 @@ export function buildAccountPoolGroupSummaries(options: {
         (groupSummary?.boundProxyKeys?.length ?? 0) > 0 ||
         (groupSummary?.concurrencyLimit ?? 0) > 0 ||
         groupSummary?.nodeShuntEnabled === true ||
+        groupSummary?.singleAccountRotationEnabled === true ||
         groupSummary?.upstream429RetryEnabled === true ||
         (groupSummary?.upstream429MaxRetries ?? 0) > 0,
       planCounts: [],

@@ -8,3 +8,14 @@ export function resolvePersistedGroupNodeShuntEnabled(
   }
   return currentNodeShuntEnabled;
 }
+
+export function resolvePersistedGroupSingleAccountRotationEnabled(
+  hasDraftSingleAccountRotationEnabled: boolean,
+  draftSingleAccountRotationEnabled: boolean | undefined,
+  currentSingleAccountRotationEnabled: boolean,
+) {
+  if (hasDraftSingleAccountRotationEnabled) {
+    return draftSingleAccountRotationEnabled === true;
+  }
+  return currentSingleAccountRotationEnabled;
+}

@@ -10,7 +10,10 @@ import {
   apiConcurrencyLimitToSliderValue,
   sliderConcurrencyLimitToApiValue,
 } from "../../lib/concurrencyLimit";
-import { resolvePersistedGroupNodeShuntEnabled } from "../../lib/upstreamAccountGroupDrafts";
+import {
+  resolvePersistedGroupNodeShuntEnabled,
+  resolvePersistedGroupSingleAccountRotationEnabled,
+} from "../../lib/upstreamAccountGroupDrafts";
 import type { UpstreamAccountCreateControllerContext } from "./UpstreamAccountCreate.controller-context";
 import {
   type BatchOauthRow,
@@ -30,6 +33,7 @@ type GroupSummaryLike = {
   groupName: string;
   boundProxyKeys?: string[];
   nodeShuntEnabled?: boolean;
+  singleAccountRotationEnabled?: boolean;
   upstream429RetryEnabled?: boolean;
   upstream429MaxRetries?: number | null;
 };
@@ -52,6 +56,7 @@ export function useUpstreamAccountCreateGroupDrafts(
     groupDraftBoundProxyKeys,
     groupDraftConcurrencyLimits,
     groupDraftNodeShuntEnabled,
+    groupDraftSingleAccountRotationEnabled,
     groupDraftNotes,
     groupDraftUpstream429MaxRetries,
     groupDraftUpstream429RetryEnabled,
@@ -69,6 +74,7 @@ export function useUpstreamAccountCreateGroupDrafts(
     setGroupDraftBoundProxyKeys,
     setGroupDraftConcurrencyLimits,
     setGroupDraftNodeShuntEnabled,
+    setGroupDraftSingleAccountRotationEnabled,
     setGroupDraftNotes,
     setGroupDraftUpstream429MaxRetries,
     setGroupDraftUpstream429RetryEnabled,
@@ -119,6 +125,15 @@ export function useUpstreamAccountCreateGroupDrafts(
       return existingGroup.nodeShuntEnabled === true;
     }
     return groupDraftNodeShuntEnabled[normalized] === true;
+  }
+  function resolveGroupSingleAccountRotationEnabledForName(groupName: string) {
+    const normalized = normalizeGroupName(groupName);
+    if (!normalized) return false;
+    const existingGroup = resolveGroupSummaryForName(normalized);
+    if (existingGroup) {
+      return existingGroup.singleAccountRotationEnabled === true;
+    }
+    return groupDraftSingleAccountRotationEnabled[normalized] === true;
   }
   function resolveGroupUpstream429RetryEnabledForName(groupName: string) {
     const normalized = normalizeGroupName(groupName);
@@ -181,6 +196,7 @@ export function useUpstreamAccountCreateGroupDrafts(
       resolvePendingGroupBoundProxyKeysForName(groupName).length > 0 ||
       resolveGroupConcurrencyLimitForName(groupName) > 0 ||
       resolveGroupNodeShuntEnabledForName(groupName) ||
+      resolveGroupSingleAccountRotationEnabledForName(groupName) ||
       resolveGroupUpstream429RetryEnabledForName(groupName) ||
       resolveGroupUpstream429MaxRetriesForName(groupName) > 0
     );
@@ -299,6 +315,14 @@ export function useUpstreamAccountCreateGroupDrafts(
       delete next[normalized];
       return next;
     });
+    setGroupDraftSingleAccountRotationEnabled(
+      (current: Record<string, boolean>) => {
+        if (!(normalized in current)) return current;
+        const next = { ...current };
+        delete next[normalized];
+        return next;
+      },
+    );
     setGroupDraftConcurrencyLimits((current: Record<string, number>) => {
       if (!(normalized in current)) return current;
       const next = { ...current };
@@ -386,6 +410,8 @@ export function useUpstreamAccountCreateGroupDrafts(
         normalizedGroupName in groupDraftConcurrencyLimits;
       const hasDraftNodeShuntEnabled =
         normalizedGroupName in groupDraftNodeShuntEnabled;
+      const hasDraftSingleAccountRotationEnabled =
+        normalizedGroupName in groupDraftSingleAccountRotationEnabled;
       const hasDraftUpstream429RetryEnabled =
         normalizedGroupName in groupDraftUpstream429RetryEnabled;
       const hasDraftUpstream429MaxRetries =
@@ -395,6 +421,7 @@ export function useUpstreamAccountCreateGroupDrafts(
         !hasDraftBoundProxyKeys &&
         !hasDraftConcurrencyLimit &&
         !hasDraftNodeShuntEnabled &&
+        !hasDraftSingleAccountRotationEnabled &&
         !hasDraftUpstream429RetryEnabled &&
         !hasDraftUpstream429MaxRetries
       ) {
@@ -414,6 +441,12 @@ export function useUpstreamAccountCreateGroupDrafts(
         groupDraftNodeShuntEnabled[normalizedGroupName],
         resolveGroupNodeShuntEnabledForName(normalizedGroupName),
       );
+      const normalizedSingleAccountRotationEnabled =
+        resolvePersistedGroupSingleAccountRotationEnabled(
+          hasDraftSingleAccountRotationEnabled,
+          groupDraftSingleAccountRotationEnabled[normalizedGroupName],
+          resolveGroupSingleAccountRotationEnabledForName(normalizedGroupName),
+        );
       const normalizedUpstream429RetryEnabled = hasDraftUpstream429RetryEnabled
         ? groupDraftUpstream429RetryEnabled[normalizedGroupName] === true
         : false;
@@ -429,6 +462,7 @@ export function useUpstreamAccountCreateGroupDrafts(
         boundProxyKeys: normalizedBoundProxyKeys,
         concurrencyLimit: normalizedConcurrencyLimit,
         nodeShuntEnabled: normalizedNodeShuntEnabled,
+        singleAccountRotationEnabled: normalizedSingleAccountRotationEnabled,
         upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
         upstream429MaxRetries: normalizedUpstream429MaxRetries,
       });
@@ -439,10 +473,12 @@ export function useUpstreamAccountCreateGroupDrafts(
       groupDraftBoundProxyKeys,
       groupDraftConcurrencyLimits,
       groupDraftNodeShuntEnabled,
+      groupDraftSingleAccountRotationEnabled,
       groupDraftNotes,
       groupDraftUpstream429MaxRetries,
       groupDraftUpstream429RetryEnabled,
       resolveGroupNodeShuntEnabledForName,
+      resolveGroupSingleAccountRotationEnabledForName,
       saveGroupNote,
     ],
   );
@@ -469,6 +505,8 @@ export function useUpstreamAccountCreateGroupDrafts(
         existingGroup?.boundProxyKeys ??
         resolvePendingGroupBoundProxyKeysForName(normalized),
       nodeShuntEnabled: resolveGroupNodeShuntEnabledForName(normalized),
+      singleAccountRotationEnabled:
+        resolveGroupSingleAccountRotationEnabledForName(normalized),
       upstream429RetryEnabled:
         existingGroup?.upstream429RetryEnabled ??
         resolveGroupUpstream429RetryEnabledForName(normalized),
@@ -502,6 +540,8 @@ export function useUpstreamAccountCreateGroupDrafts(
     );
     const normalizedNodeShuntEnabled =
       groupNoteEditor.nodeShuntEnabled === true;
+    const normalizedSingleAccountRotationEnabled =
+      groupNoteEditor.singleAccountRotationEnabled === true;
     const normalizedUpstream429RetryEnabled =
       groupNoteEditor.upstream429RetryEnabled === true;
     const normalizedUpstream429MaxRetries = normalizedUpstream429RetryEnabled
@@ -525,6 +565,8 @@ export function useUpstreamAccountCreateGroupDrafts(
       (currentOauthGroupNote !== normalizedNote ||
         currentOauthGroupConcurrencyLimit !== normalizedConcurrencyLimit ||
         currentOauthGroupNodeShuntEnabled !== normalizedNodeShuntEnabled ||
+        resolveGroupSingleAccountRotationEnabledForName(oauthGroupName) !==
+          normalizedSingleAccountRotationEnabled ||
         currentOauthGroupBoundProxyKeys.length !==
           normalizedBoundProxyKeys.length ||
         currentOauthGroupBoundProxyKeys.some(
@@ -538,6 +580,7 @@ export function useUpstreamAccountCreateGroupDrafts(
         boundProxyKeys: normalizedBoundProxyKeys,
         concurrencyLimit: normalizedConcurrencyLimit,
         nodeShuntEnabled: normalizedNodeShuntEnabled,
+        singleAccountRotationEnabled: normalizedSingleAccountRotationEnabled,
         upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
         upstream429MaxRetries: normalizedUpstream429MaxRetries,
       });
@@ -600,6 +643,7 @@ export function useUpstreamAccountCreateGroupDrafts(
     resolveGroupConcurrencyLimitForName,
     resolveGroupBoundProxyKeysForName,
     resolveGroupNodeShuntEnabledForName,
+    resolveGroupSingleAccountRotationEnabledForName,
     resolveGroupUpstream429RetryEnabledForName,
     resolveGroupUpstream429MaxRetriesForName,
     resolvePendingGroupNoteForName,

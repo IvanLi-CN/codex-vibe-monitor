@@ -62,6 +62,7 @@ pub(crate) async fn record_pool_route_http_failure(
     pool: &Pool<Sqlite>,
     account_id: i64,
     account_kind: &str,
+    single_account_rotation_enabled: bool,
     sticky_key: Option<&str>,
     status: StatusCode,
     error_message: &str,
@@ -85,9 +86,6 @@ pub(crate) async fn record_pool_route_http_failure(
     let classification = classify_pool_account_http_failure(account_kind, status, error_message);
     match classification.disposition {
         UpstreamAccountFailureDisposition::HardUnavailable => {
-            if let Some(sticky_key) = sticky_key {
-                delete_sticky_route(pool, sticky_key).await?;
-            }
             let now_iso = format_utc_iso(Utc::now());
             sqlx::query(
                 r#"
@@ -135,6 +133,12 @@ pub(crate) async fn record_pool_route_http_failure(
         }
         UpstreamAccountFailureDisposition::RateLimited
         | UpstreamAccountFailureDisposition::Retryable => {
+            if single_account_rotation_enabled
+                && status == StatusCode::TOO_MANY_REQUESTS
+                && let Some(sticky_key) = sticky_key
+            {
+                delete_sticky_route(pool, sticky_key).await?;
+            }
             let base_secs = if status == StatusCode::TOO_MANY_REQUESTS {
                 15
             } else {

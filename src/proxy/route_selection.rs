@@ -830,10 +830,14 @@ pub(crate) async fn send_pool_request_live_first_attempt(
             )
             .await
         } else {
+            // Live-first records the initial failure before the replay/failover path can spend
+            // the group 429 retry budget. Keep sticky intact until failover records the final 429.
             record_pool_route_http_failure(
                 &state.pool,
                 account.account_id,
                 &account.kind,
+                account.single_account_rotation_enabled
+                    && account.effective_upstream_429_max_retries() == 0,
                 sticky_key,
                 status,
                 &route_error_message,

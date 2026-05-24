@@ -360,6 +360,10 @@ export default function UpstreamAccountCreatePage() {
     Record<string, boolean>
   >({});
   const [
+    groupDraftSingleAccountRotationEnabled,
+    setGroupDraftSingleAccountRotationEnabled,
+  ] = useState<Record<string, boolean>>({});
+  const [
     groupDraftUpstream429RetryEnabled,
     setGroupDraftUpstream429RetryEnabled,
   ] = useState<Record<string, boolean>>({});
@@ -378,6 +382,7 @@ export default function UpstreamAccountCreatePage() {
     concurrencyLimit: apiConcurrencyLimitToSliderValue(0),
     boundProxyKeys: [],
     nodeShuntEnabled: false,
+    singleAccountRotationEnabled: false,
     upstream429RetryEnabled: false,
     upstream429MaxRetries: 0,
     onSaved: null,
@@ -556,6 +561,11 @@ export default function UpstreamAccountCreatePage() {
             ]),
           ),
           ...Object.fromEntries(
+            Object.keys(groupDraftSingleAccountRotationEnabled).map(
+              (groupName) => [groupName, ""],
+            ),
+          ),
+          ...Object.fromEntries(
             Object.keys(groupDraftUpstream429RetryEnabled).map((groupName) => [
               groupName,
               "",
@@ -576,6 +586,7 @@ export default function UpstreamAccountCreatePage() {
       groupDraftBoundProxyKeys,
       groupDraftConcurrencyLimits,
       groupDraftNodeShuntEnabled,
+      groupDraftSingleAccountRotationEnabled,
       groupDraftNotes,
       groupDraftUpstream429MaxRetries,
       groupDraftUpstream429RetryEnabled,
@@ -724,6 +735,7 @@ export default function UpstreamAccountCreatePage() {
   }, [isRelinking]);
   const {
     resolveGroupNodeShuntEnabledForName,
+    resolveGroupSingleAccountRotationEnabledForName,
     resolvePendingGroupNoteForName,
     shouldIncludePendingGroupNoteForName,
     resolvePendingGroupConcurrencyLimitForName,
@@ -748,6 +760,7 @@ export default function UpstreamAccountCreatePage() {
     groupDraftBoundProxyKeys,
     groupDraftConcurrencyLimits,
     groupDraftNodeShuntEnabled,
+    groupDraftSingleAccountRotationEnabled,
     groupDraftNotes,
     groupDraftUpstream429MaxRetries,
     groupDraftUpstream429RetryEnabled,
@@ -765,6 +778,7 @@ export default function UpstreamAccountCreatePage() {
     setGroupDraftBoundProxyKeys,
     setGroupDraftConcurrencyLimits,
     setGroupDraftNodeShuntEnabled,
+    setGroupDraftSingleAccountRotationEnabled,
     setGroupDraftNotes,
     setGroupDraftUpstream429MaxRetries,
     setGroupDraftUpstream429RetryEnabled,
@@ -793,6 +807,8 @@ export default function UpstreamAccountCreatePage() {
           resolvePendingGroupBoundProxyKeysForName(oauthGroupName),
         groupNodeShuntEnabled:
           resolveGroupNodeShuntEnabledForName(oauthGroupName),
+        groupSingleAccountRotationEnabled:
+          resolveGroupSingleAccountRotationEnabledForName(oauthGroupName),
         note: oauthNote,
         groupNote: resolvePendingGroupNoteForName(oauthGroupName),
         groupConcurrencyLimit:
@@ -814,6 +830,7 @@ export default function UpstreamAccountCreatePage() {
     oauthTagIds,
     isRelinking,
     resolveGroupNodeShuntEnabledForName,
+    resolveGroupSingleAccountRotationEnabledForName,
     resolvePendingGroupBoundProxyKeysForName,
     resolvePendingGroupConcurrencyLimitForName,
     resolvePendingGroupNoteForName,
@@ -838,6 +855,8 @@ export default function UpstreamAccountCreatePage() {
           groupNodeShuntEnabled: resolveGroupNodeShuntEnabledForName(
             row.groupName,
           ),
+          groupSingleAccountRotationEnabled:
+            resolveGroupSingleAccountRotationEnabledForName(row.groupName),
           note: row.note,
           groupNote: resolvePendingGroupNoteForName(row.groupName),
           groupConcurrencyLimit: resolvePendingGroupConcurrencyLimitForName(
@@ -858,6 +877,7 @@ export default function UpstreamAccountCreatePage() {
     batchRows,
     batchTagIds,
     resolveGroupNodeShuntEnabledForName,
+    resolveGroupSingleAccountRotationEnabledForName,
     resolvePendingGroupBoundProxyKeysForName,
     resolvePendingGroupConcurrencyLimitForName,
     resolvePendingGroupNoteForName,
@@ -1771,6 +1791,17 @@ export default function UpstreamAccountCreatePage() {
     });
   }, [groups]);
   useEffect(() => {
+    setGroupDraftSingleAccountRotationEnabled((current) => {
+      const nextEntries = Object.entries(current).filter(
+        ([groupName]) => !isExistingGroup(groups, groupName),
+      );
+      if (nextEntries.length === Object.keys(current).length) {
+        return current;
+      }
+      return Object.fromEntries(nextEntries);
+    });
+  }, [groups]);
+  useEffect(() => {
     setGroupDraftUpstream429RetryEnabled((current) => {
       const nextEntries = Object.entries(current).filter(
         ([groupName]) => !isExistingGroup(groups, groupName),
@@ -1840,6 +1871,7 @@ export default function UpstreamAccountCreatePage() {
     removeOauthMailboxSession,
     resolvePendingGroupConcurrencyLimitForName,
     resolvePendingGroupNoteForName,
+    resolveGroupSingleAccountRotationEnabledForName,
     resolveRequiredGroupProxyState,
     saveAccount,
     setActiveTab,
@@ -1977,6 +2009,7 @@ export default function UpstreamAccountCreatePage() {
     importGroupName,
     importGroupProxyState,
     importOauthAccounts,
+    resolveGroupSingleAccountRotationEnabledForName,
     importPasteDraft,
     importPasteDraftRef,
     importPasteDraftSerial,
@@ -2098,6 +2131,7 @@ export default function UpstreamAccountCreatePage() {
     resolveMailboxIssue,
     resolvePendingGroupConcurrencyLimitForName,
     resolvePendingGroupNoteForName,
+    resolveGroupSingleAccountRotationEnabledForName,
     resolveRequiredGroupProxyState,
     scheduleBatchMailboxToneReset,
     scheduleSingleMailboxToneReset,

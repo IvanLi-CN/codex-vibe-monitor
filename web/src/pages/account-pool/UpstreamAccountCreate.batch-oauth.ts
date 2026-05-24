@@ -49,6 +49,7 @@ export function useUpstreamAccountCreateBatchOauth(
     removeOauthMailboxSession,
     resolvePendingGroupConcurrencyLimitForName,
     resolvePendingGroupNoteForName,
+    resolveGroupSingleAccountRotationEnabledForName,
     resolveRequiredGroupProxyState,
     saveAccount,
     setActiveTab,
@@ -235,6 +236,10 @@ export function useUpstreamAccountCreateBatchOauth(
           nextMetadata.groupName,
         );
         payload.groupNodeShuntEnabled = groupProxyState.nodeShuntEnabled;
+        payload.groupSingleAccountRotationEnabled =
+          resolveGroupSingleAccountRotationEnabledForName(
+            nextMetadata.groupName,
+          );
         payload.groupNote =
           resolvePendingGroupNoteForName(nextMetadata.groupName) || undefined;
       }
