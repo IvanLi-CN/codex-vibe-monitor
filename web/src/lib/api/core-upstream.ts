@@ -258,6 +258,7 @@ export interface UpstreamAccountGroupSummary {
   boundProxyKeys?: string[];
   concurrencyLimit?: number | null;
   nodeShuntEnabled?: boolean;
+  singleAccountRotationEnabled?: boolean;
   upstream429RetryEnabled?: boolean;
   upstream429MaxRetries?: number;
   routingRule?: TagRoutingRule;
@@ -486,6 +487,7 @@ export interface CreateOauthLoginSessionPayload {
   groupName?: string;
   groupBoundProxyKeys?: string[];
   groupNodeShuntEnabled?: boolean;
+  groupSingleAccountRotationEnabled?: boolean;
   note?: string;
   groupNote?: string;
   concurrencyLimit?: number;
@@ -502,6 +504,7 @@ export interface UpdateOauthLoginSessionPayload {
   groupName?: string;
   groupBoundProxyKeys?: string[];
   groupNodeShuntEnabled?: boolean;
+  groupSingleAccountRotationEnabled?: boolean;
   note?: string;
   groupNote?: string;
   concurrencyLimit?: number;
@@ -553,6 +556,7 @@ export interface CreateApiKeyAccountPayload {
   groupName?: string;
   groupBoundProxyKeys?: string[];
   groupNodeShuntEnabled?: boolean;
+  groupSingleAccountRotationEnabled?: boolean;
   note?: string;
   groupNote?: string;
   concurrencyLimit?: number;
@@ -572,6 +576,7 @@ export interface UpdateUpstreamAccountPayload {
   groupBoundProxyKeys?: string[];
   concurrencyLimit?: number;
   groupNodeShuntEnabled?: boolean;
+  groupSingleAccountRotationEnabled?: boolean;
   note?: string;
   groupNote?: string;
   upstreamBaseUrl?: string | null;
@@ -595,6 +600,7 @@ export interface ValidateImportedOauthAccountsPayload {
   groupName?: string;
   groupBoundProxyKeys?: string[];
   groupNodeShuntEnabled?: boolean;
+  groupSingleAccountRotationEnabled?: boolean;
   items: ImportOauthCredentialFilePayload[];
 }
 
@@ -670,6 +676,7 @@ export interface ImportValidatedOauthAccountsPayload {
   groupName?: string;
   groupBoundProxyKeys?: string[];
   groupNodeShuntEnabled?: boolean;
+  groupSingleAccountRotationEnabled?: boolean;
   groupNote?: string;
   concurrencyLimit?: number;
   tagIds?: number[];
@@ -718,6 +725,7 @@ export interface UpdateUpstreamAccountGroupPayload {
   boundProxyKeys?: string[];
   concurrencyLimit?: number;
   nodeShuntEnabled?: boolean;
+  singleAccountRotationEnabled?: boolean;
   upstream429RetryEnabled?: boolean;
   upstream429MaxRetries?: number;
   routingRule?: UpdateTagPayload;
@@ -1256,6 +1264,7 @@ function normalizeUpstreamAccountGroupSummary(
       return value != null && value >= 0 ? Math.min(value, 30) : 0;
     })(),
     nodeShuntEnabled: payload.nodeShuntEnabled === true,
+    singleAccountRotationEnabled: payload.singleAccountRotationEnabled === true,
     upstream429RetryEnabled: payload.upstream429RetryEnabled === true,
     upstream429MaxRetries: normalizeUpstreamAccountGroupMaxRetries(
       payload.upstream429MaxRetries,

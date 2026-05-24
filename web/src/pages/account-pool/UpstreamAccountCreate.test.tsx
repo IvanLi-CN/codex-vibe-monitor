@@ -228,6 +228,7 @@ const TEST_GROUP_SUMMARIES = [
   note: `${groupName} note`,
   boundProxyKeys: [...TEST_REQUIRED_BOUND_PROXY_KEYS],
   nodeShuntEnabled: false,
+  singleAccountRotationEnabled: false,
 }));
 
 function expectedGroupSelection(
@@ -238,6 +239,7 @@ function expectedGroupSelection(
     groupName,
     groupBoundProxyKeys: [...TEST_REQUIRED_BOUND_PROXY_KEYS],
     groupNodeShuntEnabled: false,
+    groupSingleAccountRotationEnabled: false,
   };
   if (options?.includeConcurrencyLimit === false) {
     return selection;
@@ -783,6 +785,8 @@ function mockUpstreamAccounts(
             ? payload.boundProxyKeys.map((value) => String(value))
             : [],
           nodeShuntEnabled: payload.nodeShuntEnabled === true,
+          singleAccountRotationEnabled:
+            payload.singleAccountRotationEnabled === true,
           upstream429RetryEnabled: payload.upstream429RetryEnabled === true,
           upstream429MaxRetries:
             typeof payload.upstream429MaxRetries === "number"

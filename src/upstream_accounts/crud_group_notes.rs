@@ -587,6 +587,8 @@ pub(crate) async fn update_upstream_account_group(
         .map(normalize_bound_proxy_keys)
         .unwrap_or_else(Vec::new);
     let node_shunt_enabled_was_updated = payload.node_shunt_enabled.is_some();
+    let single_account_rotation_enabled_was_updated =
+        payload.single_account_rotation_enabled.is_some();
     let upstream_429_retry_enabled_was_updated = payload.upstream_429_retry_enabled.is_some();
     let upstream_429_max_retries_was_updated = payload.upstream_429_max_retries.is_some();
     let normalized_upstream_429_max_retries = payload
@@ -652,6 +654,11 @@ pub(crate) async fn update_upstream_account_group(
             note,
             bound_proxy_keys: next_bound_proxy_keys,
             node_shunt_enabled: next_node_shunt_enabled,
+            single_account_rotation_enabled: if single_account_rotation_enabled_was_updated {
+                payload.single_account_rotation_enabled.unwrap_or(false)
+            } else {
+                existing_metadata.single_account_rotation_enabled
+            },
             upstream_429_retry_enabled: if upstream_429_retry_enabled_was_updated {
                 payload.upstream_429_retry_enabled.unwrap_or(false)
             } else {
@@ -761,6 +768,7 @@ pub(crate) async fn update_upstream_account_group(
         note: saved.note,
         bound_proxy_keys: saved.bound_proxy_keys,
         node_shunt_enabled: saved.node_shunt_enabled,
+        single_account_rotation_enabled: saved.single_account_rotation_enabled,
         upstream_429_retry_enabled: saved.upstream_429_retry_enabled,
         upstream_429_max_retries: saved.upstream_429_max_retries,
         concurrency_limit: saved.concurrency_limit,

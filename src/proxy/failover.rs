@@ -2155,6 +2155,7 @@ pub(crate) async fn send_pool_request_with_failover(
                         &state.pool,
                         account.account_id,
                         &account.kind,
+                        account.single_account_rotation_enabled,
                         sticky_key,
                         status,
                         &route_error_message,

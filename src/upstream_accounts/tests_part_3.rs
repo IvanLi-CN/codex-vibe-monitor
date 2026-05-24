@@ -40,6 +40,7 @@
                 note: None,
                 bound_proxy_keys: test_required_group_bound_proxy_keys(),
                 node_shunt_enabled: false,
+                single_account_rotation_enabled: false,
                 upstream_429_retry_enabled: false,
                 upstream_429_max_retries: 0,
                 concurrency_limit: 1,
@@ -147,6 +148,7 @@
                     secondary_proxy_key.clone(),
                 ],
                 node_shunt_enabled: true,
+                single_account_rotation_enabled: false,
                 upstream_429_retry_enabled: false,
                 upstream_429_max_retries: 0,
                 concurrency_limit: 0,
@@ -280,6 +282,7 @@
                     secondary_proxy_key.clone(),
                 ],
                 node_shunt_enabled: true,
+                single_account_rotation_enabled: false,
                 upstream_429_retry_enabled: false,
                 upstream_429_max_retries: 0,
                 concurrency_limit: 0,
@@ -382,6 +385,7 @@
                 note: None,
                 bound_proxy_keys: vec![FORWARD_PROXY_DIRECT_KEY.to_string()],
                 node_shunt_enabled: true,
+                single_account_rotation_enabled: false,
                 upstream_429_retry_enabled: false,
                 upstream_429_max_retries: 0,
                 concurrency_limit: 0,
@@ -472,6 +476,7 @@
                     secondary_proxy_key.clone(),
                 ],
                 node_shunt_enabled: true,
+                single_account_rotation_enabled: false,
                 upstream_429_retry_enabled: false,
                 upstream_429_max_retries: 0,
                 concurrency_limit: 0,
@@ -562,6 +567,7 @@
                     note: None,
                     bound_proxy_keys: vec![FORWARD_PROXY_DIRECT_KEY.to_string()],
                     node_shunt_enabled: true,
+                    single_account_rotation_enabled: false,
                     upstream_429_retry_enabled: false,
                     upstream_429_max_retries: 0,
                     concurrency_limit: 0,
@@ -631,6 +637,7 @@
                 note: None,
                 bound_proxy_keys: test_required_group_bound_proxy_keys(),
                 node_shunt_enabled: true,
+                single_account_rotation_enabled: false,
                 upstream_429_retry_enabled: false,
                 upstream_429_max_retries: 0,
                 concurrency_limit: 0,
@@ -710,6 +717,7 @@
                 note: None,
                 bound_proxy_keys: test_required_group_bound_proxy_keys(),
                 node_shunt_enabled: true,
+                single_account_rotation_enabled: false,
                 upstream_429_retry_enabled: false,
                 upstream_429_max_retries: 0,
                 concurrency_limit: 0,
@@ -775,6 +783,7 @@
                 note: None,
                 bound_proxy_keys: test_required_group_bound_proxy_keys(),
                 node_shunt_enabled: true,
+                single_account_rotation_enabled: false,
                 upstream_429_retry_enabled: false,
                 upstream_429_max_retries: 0,
                 concurrency_limit: 0,
@@ -905,6 +914,7 @@
                     secondary_proxy_key.clone(),
                 ],
                 node_shunt_enabled: true,
+                single_account_rotation_enabled: false,
                 upstream_429_retry_enabled: false,
                 upstream_429_max_retries: 0,
                 concurrency_limit: 0,
@@ -919,6 +929,7 @@
                 note: None,
                 bound_proxy_keys: vec![FORWARD_PROXY_DIRECT_KEY.to_string()],
                 node_shunt_enabled: true,
+                single_account_rotation_enabled: false,
                 upstream_429_retry_enabled: false,
                 upstream_429_max_retries: 0,
                 concurrency_limit: 0,
@@ -1029,6 +1040,7 @@
                     secondary_proxy_key.clone(),
                 ],
                 node_shunt_enabled: true,
+                single_account_rotation_enabled: false,
                 upstream_429_retry_enabled: false,
                 upstream_429_max_retries: 0,
                 concurrency_limit: 0,
@@ -1144,6 +1156,7 @@
                 note: None,
                 bound_proxy_keys: bound_proxy_keys.clone(),
                 node_shunt_enabled: true,
+                single_account_rotation_enabled: false,
                 upstream_429_retry_enabled: false,
                 upstream_429_max_retries: 0,
                 concurrency_limit: 0,
@@ -1241,6 +1254,7 @@
                 note: None,
                 bound_proxy_keys: test_required_group_bound_proxy_keys(),
                 node_shunt_enabled: true,
+                single_account_rotation_enabled: false,
                 upstream_429_retry_enabled: false,
                 upstream_429_max_retries: 0,
                 concurrency_limit: 0,
@@ -1359,6 +1373,7 @@
                 note: None,
                 bound_proxy_keys: test_required_group_bound_proxy_keys(),
                 node_shunt_enabled: true,
+                single_account_rotation_enabled: false,
                 upstream_429_retry_enabled: false,
                 upstream_429_max_retries: 0,
                 concurrency_limit: 0,
@@ -1459,6 +1474,7 @@
                 note: None,
                 bound_proxy_keys: test_required_group_bound_proxy_keys(),
                 node_shunt_enabled: false,
+                single_account_rotation_enabled: false,
                 upstream_429_retry_enabled: false,
                 upstream_429_max_retries: 0,
                 concurrency_limit: 1,
@@ -1528,6 +1544,7 @@
                 note: None,
                 bound_proxy_keys: test_required_group_bound_proxy_keys(),
                 node_shunt_enabled: false,
+                single_account_rotation_enabled: false,
                 upstream_429_retry_enabled: false,
                 upstream_429_max_retries: 0,
                 concurrency_limit: 1,
@@ -1788,6 +1805,7 @@
                     group_name: None,
                     group_bound_proxy_keys: None,
                     group_node_shunt_enabled: None,
+                    group_single_account_rotation_enabled: None,
                     note: Some("released".to_string()),
                     group_note: None,
                     concurrency_limit: None,
@@ -1824,6 +1842,7 @@
             &pool,
             account_id,
             UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            false,
             Some("sticky-scope"),
             StatusCode::UNAUTHORIZED,
             "pool upstream responded with 401: Missing scopes: api.responses.write",
@@ -1842,6 +1861,77 @@
     }
 
     #[tokio::test]
+    async fn record_pool_route_http_failure_clears_sticky_route_on_single_account_rotation_429() {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Single Rotation 429").await;
+        upsert_sticky_route(
+            &pool,
+            "sticky-single-rotation",
+            account_id,
+            &format_utc_iso(Utc::now()),
+        )
+        .await
+        .expect("seed sticky route");
+
+        record_pool_route_http_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            true,
+            Some("sticky-single-rotation"),
+            StatusCode::TOO_MANY_REQUESTS,
+            "pool upstream responded with 429: too many requests",
+            None,
+        )
+        .await
+        .expect("record single-account rotation 429");
+
+        assert!(
+            load_sticky_route(&pool, "sticky-single-rotation")
+                .await
+                .expect("load sticky route")
+                .is_none(),
+            "the conversation should be unbound so the next attempt can pick the next candidate",
+        );
+    }
+
+    #[tokio::test]
+    async fn record_pool_route_http_failure_preserves_sticky_route_when_single_account_rotation_is_off()
+    {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Legacy 429 Sticky").await;
+        upsert_sticky_route(
+            &pool,
+            "sticky-legacy-429",
+            account_id,
+            &format_utc_iso(Utc::now()),
+        )
+        .await
+        .expect("seed sticky route");
+
+        record_pool_route_http_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            false,
+            Some("sticky-legacy-429"),
+            StatusCode::TOO_MANY_REQUESTS,
+            "pool upstream responded with 429: too many requests",
+            None,
+        )
+        .await
+        .expect("record legacy 429");
+
+        assert!(
+            load_sticky_route(&pool, "sticky-legacy-429")
+                .await
+                .expect("load sticky route")
+                .is_some(),
+            "legacy groups keep existing sticky route behavior",
+        );
+    }
+
+    #[tokio::test]
     async fn record_pool_route_http_failure_marks_explicit_invalidated_oauth_for_reauth() {
         let pool = test_pool().await;
         let account_id = insert_oauth_account(&pool, "Invalidated OAuth").await;
@@ -1850,6 +1940,7 @@
             &pool,
             account_id,
             UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            false,
             Some("sticky-invalidated"),
             StatusCode::FORBIDDEN,
             "pool upstream responded with 403: Authentication token has been invalidated, please sign in again",
@@ -1876,6 +1967,7 @@
             &pool,
             account_id,
             UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            false,
             Some("sticky-bridge"),
             StatusCode::UNAUTHORIZED,
             "oauth bridge token exchange failed: oauth bridge responded with 502",
@@ -1902,6 +1994,7 @@
             &pool,
             account_id,
             UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+            false,
             Some("sticky-402"),
             StatusCode::PAYMENT_REQUIRED,
             "pool upstream responded with 402: subscription required",
@@ -1940,6 +2033,7 @@
             &pool,
             account_id,
             UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            false,
             Some("sticky-402-workspace"),
             StatusCode::PAYMENT_REQUIRED,
             "initial usage snapshot attempt with configured user agent failed: usage endpoint returned 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}",
@@ -2022,14 +2116,23 @@
     }
 
     #[tokio::test]
-    async fn record_pool_route_http_failure_marks_quota_429_as_hard_error_and_records_reason() {
+    async fn record_pool_route_http_failure_marks_quota_429_as_rate_limited_and_records_reason() {
         let pool = test_pool().await;
         let account_id = insert_api_key_account(&pool, "Quota Exhausted Key").await;
+        upsert_sticky_route(
+            &pool,
+            "sticky-429-quota",
+            account_id,
+            &format_utc_iso(Utc::now()),
+        )
+        .await
+        .expect("seed quota sticky route");
 
         record_pool_route_http_failure(
             &pool,
             account_id,
             UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+            false,
             Some("sticky-429-quota"),
             StatusCode::TOO_MANY_REQUESTS,
             "insufficient_quota: pool upstream responded with 429: weekly cap exhausted",
@@ -2042,7 +2145,7 @@
             .await
             .expect("load account row")
             .expect("account should exist");
-        assert_eq!(row.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+        assert_eq!(row.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
         assert_eq!(
             row.last_action_reason_code.as_deref(),
             Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
@@ -2053,6 +2156,13 @@
             Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
         );
         assert!(row.cooldown_until.is_none());
+        assert_eq!(
+            load_sticky_route(&pool, "sticky-429-quota")
+                .await
+                .expect("load quota sticky route")
+                .map(|route| route.account_id),
+            Some(account_id),
+        );
     }
 
     #[tokio::test]
@@ -2072,6 +2182,7 @@
             &pool,
             account_id,
             UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+            false,
             Some("sticky-degraded-first-hit"),
             StatusCode::TOO_MANY_REQUESTS,
             "pool upstream responded with 429: too many requests",
@@ -2132,6 +2243,7 @@
             &pool,
             account_id,
             UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+            false,
             Some("sticky-overloaded"),
             StatusCode::OK,
             "[upstream_response_failed] server_is_overloaded: Our servers are currently overloaded. Please try again later.",
@@ -2338,7 +2450,7 @@
 
         assert_eq!(
             classification.disposition,
-            UpstreamAccountFailureDisposition::HardUnavailable
+            UpstreamAccountFailureDisposition::RateLimited
         );
         assert_eq!(
             classification.reason_code,
@@ -2359,6 +2471,7 @@
             &pool,
             account_id,
             UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            false,
             Some("sticky-quota-exhausted"),
             StatusCode::TOO_MANY_REQUESTS,
             "oauth_upstream_rejected_request: pool upstream responded with 429: The usage limit has been reached",
@@ -2626,6 +2739,7 @@
             &pool,
             account_id,
             UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            false,
             Some("sticky-stale-quota"),
             StatusCode::TOO_MANY_REQUESTS,
             "oauth_upstream_rejected_request: pool upstream responded with 429: The usage limit has been reached",
@@ -2712,6 +2826,7 @@
             &pool,
             account_id,
             UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            false,
             Some("sticky-stale-quota"),
             StatusCode::TOO_MANY_REQUESTS,
             "oauth_upstream_rejected_request: pool upstream responded with 429: The usage limit has been reached",

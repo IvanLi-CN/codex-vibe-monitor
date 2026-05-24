@@ -133,6 +133,7 @@
                 group_name: group_name.map(str::to_string),
                 group_bound_proxy_keys: None,
                 group_node_shunt_enabled: None,
+                group_single_account_rotation_enabled: None,
                 note: note.map(str::to_string),
                 group_note: None,
                 concurrency_limit: None,

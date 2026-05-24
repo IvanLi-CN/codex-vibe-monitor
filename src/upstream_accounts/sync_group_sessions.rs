@@ -722,6 +722,10 @@ fn decode_group_node_shunt_enabled(raw: i64) -> bool {
     raw != 0
 }
 
+fn decode_group_single_account_rotation_enabled(raw: i64) -> bool {
+    raw != 0
+}
+
 fn decode_group_requested_flag(raw: i64) -> bool {
     raw != 0
 }
@@ -798,6 +802,8 @@ fn build_requested_group_metadata_changes(
     concurrency_limit_was_requested: bool,
     node_shunt_enabled: Option<bool>,
     node_shunt_enabled_was_requested: bool,
+    single_account_rotation_enabled: Option<bool>,
+    single_account_rotation_enabled_was_requested: bool,
 ) -> RequestedGroupMetadataChanges {
     RequestedGroupMetadataChanges {
         note: normalize_optional_text(note),
@@ -812,6 +818,8 @@ fn build_requested_group_metadata_changes(
         concurrency_limit_was_requested,
         node_shunt_enabled: node_shunt_enabled.unwrap_or(false),
         node_shunt_enabled_was_requested,
+        single_account_rotation_enabled: single_account_rotation_enabled.unwrap_or(false),
+        single_account_rotation_enabled_was_requested,
     }
 }
 
@@ -914,12 +922,13 @@ async fn load_group_metadata_conn(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     group_name: &str,
 ) -> Result<Option<UpstreamAccountGroupMetadata>> {
-    sqlx::query_as::<_, (String, Option<String>, i64, i64, i64, i64)>(
+    sqlx::query_as::<_, (String, Option<String>, i64, i64, i64, i64, i64)>(
         r#"
         SELECT
             note,
             bound_proxy_keys_json,
             node_shunt_enabled,
+            single_account_rotation_enabled,
             upstream_429_retry_enabled,
             upstream_429_max_retries,
             concurrency_limit
@@ -936,11 +945,14 @@ async fn load_group_metadata_conn(
                 note,
                 bound_proxy_keys_json,
                 node_shunt_enabled,
+                single_account_rotation_enabled,
                 upstream_429_retry_enabled,
                 upstream_429_max_retries,
                 concurrency_limit,
             )| {
                 let node_shunt_enabled = decode_group_node_shunt_enabled(node_shunt_enabled);
+                let single_account_rotation_enabled =
+                    decode_group_single_account_rotation_enabled(single_account_rotation_enabled);
                 let upstream_429_retry_enabled =
                     decode_group_upstream_429_retry_enabled(upstream_429_retry_enabled);
                 let upstream_429_max_retries = normalize_group_upstream_429_retry_metadata(
@@ -953,6 +965,7 @@ async fn load_group_metadata_conn(
                         bound_proxy_keys_json.as_deref(),
                     ),
                     node_shunt_enabled,
+                    single_account_rotation_enabled,
                     upstream_429_retry_enabled,
                     upstream_429_max_retries,
                     concurrency_limit,
@@ -999,6 +1012,7 @@ async fn save_group_metadata_record_conn(
     let normalized_note = normalize_optional_text(metadata.note);
     let normalized_bound_proxy_keys = normalize_bound_proxy_keys(metadata.bound_proxy_keys);
     let normalized_node_shunt_enabled = metadata.node_shunt_enabled;
+    let normalized_single_account_rotation_enabled = metadata.single_account_rotation_enabled;
     let normalized_upstream_429_retry_enabled = metadata.upstream_429_retry_enabled;
     let normalized_upstream_429_max_retries = normalize_group_upstream_429_retry_metadata(
         normalized_upstream_429_retry_enabled,
@@ -1016,17 +1030,19 @@ async fn save_group_metadata_record_conn(
             note,
             bound_proxy_keys_json,
             node_shunt_enabled,
+            single_account_rotation_enabled,
             upstream_429_retry_enabled,
             upstream_429_max_retries,
             concurrency_limit,
             created_at,
             updated_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
         ON CONFLICT(group_name) DO UPDATE SET
             note = excluded.note,
             bound_proxy_keys_json = excluded.bound_proxy_keys_json,
             node_shunt_enabled = excluded.node_shunt_enabled,
+            single_account_rotation_enabled = excluded.single_account_rotation_enabled,
             upstream_429_retry_enabled = excluded.upstream_429_retry_enabled,
             upstream_429_max_retries = excluded.upstream_429_max_retries,
             concurrency_limit = excluded.concurrency_limit,
@@ -1047,6 +1063,11 @@ async fn save_group_metadata_record_conn(
     .bind(normalized_note.unwrap_or_default())
     .bind(bound_proxy_keys_json)
     .bind(if normalized_node_shunt_enabled {
+        1_i64
+    } else {
+        0_i64
+    })
+    .bind(if normalized_single_account_rotation_enabled {
         1_i64
     } else {
         0_i64
@@ -1112,6 +1133,9 @@ async fn save_requested_group_metadata_changes(
     if changes.node_shunt_enabled_was_requested {
         metadata.node_shunt_enabled = changes.node_shunt_enabled;
     }
+    if changes.single_account_rotation_enabled_was_requested {
+        metadata.single_account_rotation_enabled = changes.single_account_rotation_enabled;
+    }
     save_group_metadata_record_conn(conn, group_name, metadata).await
 }
 
@@ -1158,13 +1182,14 @@ fn compare_node_shunt_reserved_candidates(
 async fn load_node_shunt_enabled_group_metadata_map(
     pool: &Pool<Sqlite>,
 ) -> Result<HashMap<String, UpstreamAccountGroupMetadata>> {
-    let rows = sqlx::query_as::<_, (String, String, Option<String>, i64, i64, i64, i64)>(
+    let rows = sqlx::query_as::<_, (String, String, Option<String>, i64, i64, i64, i64, i64)>(
         r#"
         SELECT
             group_name,
             note,
             bound_proxy_keys_json,
             node_shunt_enabled,
+            single_account_rotation_enabled,
             upstream_429_retry_enabled,
             upstream_429_max_retries,
             concurrency_limit
@@ -1181,12 +1206,15 @@ async fn load_node_shunt_enabled_group_metadata_map(
         note,
         bound_proxy_keys_json,
         node_shunt_enabled,
+        single_account_rotation_enabled,
         upstream_429_retry_enabled,
         upstream_429_max_retries,
         concurrency_limit,
     ) in rows
     {
         let node_shunt_enabled = decode_group_node_shunt_enabled(node_shunt_enabled);
+        let single_account_rotation_enabled =
+            decode_group_single_account_rotation_enabled(single_account_rotation_enabled);
         let upstream_429_retry_enabled =
             decode_group_upstream_429_retry_enabled(upstream_429_retry_enabled);
         let upstream_429_max_retries = normalize_group_upstream_429_retry_metadata(
@@ -1201,6 +1229,7 @@ async fn load_node_shunt_enabled_group_metadata_map(
                     bound_proxy_keys_json.as_deref(),
                 ),
                 node_shunt_enabled,
+                single_account_rotation_enabled,
                 upstream_429_retry_enabled,
                 upstream_429_max_retries,
                 concurrency_limit,
@@ -1733,7 +1762,8 @@ async fn load_login_session_by_login_id_with_executor(
         r#"
         SELECT
             login_id, account_id, display_name, email, group_name, group_bound_proxy_keys_json, group_node_shunt_enabled,
-            group_node_shunt_enabled_requested, is_mother, note, tag_ids_json, group_note,
+            group_node_shunt_enabled_requested, group_single_account_rotation_enabled,
+            group_single_account_rotation_enabled_requested, is_mother, note, tag_ids_json, group_note,
             group_concurrency_limit,
             mailbox_session_id, generated_mailbox_address AS mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
             error_message, expires_at, consumed_at, created_at, updated_at
@@ -1763,7 +1793,8 @@ async fn load_login_session_by_state(
         r#"
         SELECT
             login_id, account_id, display_name, email, group_name, group_bound_proxy_keys_json, group_node_shunt_enabled,
-            group_node_shunt_enabled_requested, is_mother, note, tag_ids_json, group_note,
+            group_node_shunt_enabled_requested, group_single_account_rotation_enabled,
+            group_single_account_rotation_enabled_requested, is_mother, note, tag_ids_json, group_note,
             group_concurrency_limit,
             mailbox_session_id, generated_mailbox_address AS mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
             error_message, expires_at, consumed_at, created_at, updated_at
@@ -1963,6 +1994,7 @@ async fn load_group_metadata_snapshot_conn_with_limit(
             note: fallback_note.map(str::to_string),
             bound_proxy_keys: Vec::new(),
             node_shunt_enabled: false,
+            single_account_rotation_enabled: false,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
             concurrency_limit: normalized_fallback_concurrency_limit,
@@ -1977,6 +2009,7 @@ async fn load_group_metadata_snapshot_conn_with_limit(
             .or_else(|| normalize_optional_text(fallback_note.map(str::to_string))),
         bound_proxy_keys: metadata.bound_proxy_keys,
         node_shunt_enabled: metadata.node_shunt_enabled,
+        single_account_rotation_enabled: metadata.single_account_rotation_enabled,
         upstream_429_retry_enabled: metadata.upstream_429_retry_enabled,
         upstream_429_max_retries: metadata.upstream_429_max_retries,
         concurrency_limit: metadata.concurrency_limit,

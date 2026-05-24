@@ -141,6 +141,8 @@ export default function GroupsPage() {
           concurrencyLimit: group?.concurrencyLimit ?? 0,
           boundProxyKeys: group?.boundProxyKeys ?? [],
           nodeShuntEnabled: group?.nodeShuntEnabled ?? false,
+          singleAccountRotationEnabled:
+            group?.singleAccountRotationEnabled ?? false,
           upstream429RetryEnabled: group?.upstream429RetryEnabled ?? false,
           upstream429MaxRetries: group?.upstream429MaxRetries ?? 0,
           routingRule: group?.routingRule,

@@ -230,6 +230,7 @@ fn build_pool_resolved_account(
         group_name: row.group_name.clone(),
         bound_proxy_keys: group_metadata.bound_proxy_keys.clone(),
         forward_proxy_scope,
+        single_account_rotation_enabled: group_metadata.single_account_rotation_enabled,
         upstream_429_retry_enabled: effective_rule.upstream_429_retry_enabled,
         upstream_429_max_retries: effective_rule.upstream_429_max_retries,
         fast_mode_rewrite_mode: effective_rule.fast_mode_rewrite_mode,
@@ -430,6 +431,7 @@ async fn prepare_pool_account_with_scopes(
                                 apply_pool_route_cooldown_failure(
                                     &state.pool,
                                     row.id,
+                                    UPSTREAM_ACCOUNT_STATUS_ACTIVE,
                                     None,
                                     &err_text,
                                     failure_kind,
@@ -530,13 +532,13 @@ pub(crate) async fn prepare_pool_account(
 pub(crate) fn is_account_selectable_for_sticky_reuse(
     row: &UpstreamAccountRow,
     snapshot_exhausted: bool,
-    now: DateTime<Utc>,
+    _now: DateTime<Utc>,
 ) -> bool {
-    if !is_routing_eligible_account(row) || snapshot_exhausted {
-        return false;
-    }
-    !account_has_active_cooldown(row.cooldown_until.as_deref(), now)
-        || is_account_degraded_for_routing(row, snapshot_exhausted, now)
+    row.provider == UPSTREAM_ACCOUNT_PROVIDER_CODEX
+        && row.enabled != 0
+        && row.encrypted_credentials.is_some()
+        && (row.status == UPSTREAM_ACCOUNT_STATUS_ACTIVE
+            || is_account_rate_limited_for_routing(row, snapshot_exhausted))
 }
 
 pub(crate) fn is_account_selectable_for_fresh_assignment(
@@ -544,7 +546,9 @@ pub(crate) fn is_account_selectable_for_fresh_assignment(
     snapshot_exhausted: bool,
     now: DateTime<Utc>,
 ) -> bool {
-    is_account_selectable_for_sticky_reuse(row, snapshot_exhausted, now)
+    is_routing_eligible_account(row)
+        && !snapshot_exhausted
+        && !is_account_rate_limited_for_routing(row, snapshot_exhausted)
         && !is_account_degraded_for_routing(row, snapshot_exhausted, now)
 }
 

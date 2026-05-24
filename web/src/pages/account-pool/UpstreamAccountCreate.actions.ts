@@ -82,6 +82,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
     resolveMailboxIssue,
     resolvePendingGroupConcurrencyLimitForName,
     resolvePendingGroupNoteForName,
+    resolveGroupSingleAccountRotationEnabledForName,
     resolveRequiredGroupProxyState,
     scheduleBatchMailboxToneReset,
     scheduleSingleMailboxToneReset,
@@ -376,6 +377,8 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         groupName: oauthGroupName,
         groupBoundProxyKeys: oauthGroupProxyState.boundProxyKeys,
         groupNodeShuntEnabled: oauthGroupProxyState.nodeShuntEnabled,
+        groupSingleAccountRotationEnabled:
+          resolveGroupSingleAccountRotationEnabledForName(oauthGroupName),
         note: oauthNote,
         groupNote: resolvePendingGroupNoteForName(oauthGroupName),
         groupConcurrencyLimit:
@@ -393,6 +396,8 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         groupName: oauthGroupProxyState.normalizedGroupName || undefined,
         groupBoundProxyKeys: oauthGroupProxyState.boundProxyKeys,
         groupNodeShuntEnabled: oauthGroupProxyState.nodeShuntEnabled,
+        groupSingleAccountRotationEnabled:
+          resolveGroupSingleAccountRotationEnabledForName(oauthGroupName),
         note: oauthNote.trim() || undefined,
         groupNote: resolvePendingGroupNoteForName(oauthGroupName) || undefined,
         concurrencyLimit:
@@ -800,6 +805,8 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         groupName: groupProxyState.normalizedGroupName,
         groupBoundProxyKeys: groupProxyState.boundProxyKeys,
         groupNodeShuntEnabled: groupProxyState.nodeShuntEnabled,
+        groupSingleAccountRotationEnabled:
+          resolveGroupSingleAccountRotationEnabledForName(row.groupName),
         note: row.note,
         groupNote: resolvePendingGroupNoteForName(row.groupName),
         groupConcurrencyLimit: resolvePendingGroupConcurrencyLimitForName(
@@ -819,6 +826,8 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         groupName: groupProxyState.normalizedGroupName || undefined,
         groupBoundProxyKeys: groupProxyState.boundProxyKeys,
         groupNodeShuntEnabled: groupProxyState.nodeShuntEnabled,
+        groupSingleAccountRotationEnabled:
+          resolveGroupSingleAccountRotationEnabledForName(row.groupName),
         note: row.note.trim() || undefined,
         tagIds: batchTagIds,
         groupNote: resolvePendingGroupNoteForName(row.groupName) || undefined,
@@ -1245,6 +1254,8 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         groupName: apiKeyGroupProxyState.normalizedGroupName || undefined,
         groupBoundProxyKeys: apiKeyGroupProxyState.boundProxyKeys,
         groupNodeShuntEnabled: apiKeyGroupProxyState.nodeShuntEnabled,
+        groupSingleAccountRotationEnabled:
+          resolveGroupSingleAccountRotationEnabledForName(apiKeyGroupName),
         note: apiKeyNote.trim() || undefined,
         groupNote: resolvePendingGroupNoteForName(apiKeyGroupName) || undefined,
         concurrencyLimit:

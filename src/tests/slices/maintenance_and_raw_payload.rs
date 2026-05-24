@@ -788,7 +788,8 @@ async fn reserve_test_pool_routing_account(
             Some(test_required_group_name()),
             test_required_group_bound_proxy_keys(),
         ),
-        upstream_429_retry_enabled: false,
+        single_account_rotation_enabled: false,
+    upstream_429_retry_enabled: false,
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
     };

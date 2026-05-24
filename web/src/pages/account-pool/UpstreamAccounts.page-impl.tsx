@@ -1159,6 +1159,8 @@ export default function UpstreamAccountsPage() {
           concurrencyLimit: groupSummary?.concurrencyLimit ?? 0,
           boundProxyKeys: groupSummary?.boundProxyKeys ?? [],
           nodeShuntEnabled: groupSummary?.nodeShuntEnabled ?? false,
+          singleAccountRotationEnabled:
+            groupSummary?.singleAccountRotationEnabled ?? false,
           upstream429RetryEnabled:
             groupSummary?.upstream429RetryEnabled ?? false,
           upstream429MaxRetries: groupSummary?.upstream429MaxRetries ?? 0,

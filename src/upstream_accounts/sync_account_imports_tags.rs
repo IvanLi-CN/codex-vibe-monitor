@@ -2180,6 +2180,7 @@ async fn load_upstream_account_groups(
             notes.note,
             notes.bound_proxy_keys_json,
             notes.node_shunt_enabled,
+            notes.single_account_rotation_enabled,
             notes.upstream_429_retry_enabled,
             notes.upstream_429_max_retries,
             notes.concurrency_limit,
@@ -2209,6 +2210,10 @@ async fn load_upstream_account_groups(
         .map(|row| {
                 let node_shunt_enabled =
                     decode_group_node_shunt_enabled(row.node_shunt_enabled.unwrap_or_default());
+                let single_account_rotation_enabled =
+                    decode_group_single_account_rotation_enabled(
+                        row.single_account_rotation_enabled.unwrap_or_default(),
+                    );
                 let upstream_429_retry_enabled = decode_group_upstream_429_retry_enabled(
                     row.upstream_429_retry_enabled.unwrap_or_default(),
                 );
@@ -2226,6 +2231,7 @@ async fn load_upstream_account_groups(
                         row.bound_proxy_keys_json.as_deref(),
                     ),
                     node_shunt_enabled,
+                    single_account_rotation_enabled,
                     upstream_429_retry_enabled,
                     upstream_429_max_retries,
                     concurrency_limit: row.concurrency_limit.unwrap_or_default(),
@@ -2563,6 +2569,7 @@ async fn apply_bulk_upstream_account_action(
             group_name: None,
             group_bound_proxy_keys: None,
             group_node_shunt_enabled: None,
+            group_single_account_rotation_enabled: None,
             note: None,
             group_note: None,
             concurrency_limit: None,
@@ -2582,6 +2589,7 @@ async fn apply_bulk_upstream_account_action(
             group_name: None,
             group_bound_proxy_keys: None,
             group_node_shunt_enabled: None,
+            group_single_account_rotation_enabled: None,
             note: None,
             group_note: None,
             concurrency_limit: None,
@@ -2601,6 +2609,7 @@ async fn apply_bulk_upstream_account_action(
             group_name,
             group_bound_proxy_keys: None,
             group_node_shunt_enabled: None,
+            group_single_account_rotation_enabled: None,
             note: None,
             group_note: None,
             concurrency_limit: None,
@@ -2641,6 +2650,7 @@ async fn apply_bulk_upstream_account_action(
                 group_name: None,
                 group_bound_proxy_keys: None,
                 group_node_shunt_enabled: None,
+                group_single_account_rotation_enabled: None,
                 note: None,
                 group_note: None,
                 concurrency_limit: None,

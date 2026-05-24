@@ -605,6 +605,12 @@ const baseTranslations = {
       "Enable exclusive node slots",
     "accountPool.upstreamAccounts.groupNotes.nodeShunt.warning":
       "Enable this strategy only after binding at least one node (including Direct).",
+    "accountPool.upstreamAccounts.groupNotes.singleAccountRotation.label":
+      "Single-account rotation load",
+    "accountPool.upstreamAccounts.groupNotes.singleAccountRotation.hint":
+      "Successful conversations stay on the same account. After upstream 429 retry is exhausted, only that conversation moves to the next reset-time candidate.",
+    "accountPool.upstreamAccounts.groupNotes.singleAccountRotation.toggle":
+      "Keep conversations on one account until final 429",
     "accountPool.upstreamAccounts.groupNotes.upstream429.label":
       "Upstream 429 retry",
     "accountPool.upstreamAccounts.groupNotes.upstream429.hint":
@@ -2717,6 +2723,12 @@ const baseTranslations = {
       "开启独占节点槽位",
     "accountPool.upstreamAccounts.groupNotes.nodeShunt.warning":
       "开启前请至少绑定一个节点（含 Direct）。",
+    "accountPool.upstreamAccounts.groupNotes.singleAccountRotation.label":
+      "分组单账号轮换负载",
+    "accountPool.upstreamAccounts.groupNotes.singleAccountRotation.hint":
+      "成功请求会让同一对话继续留在当前账号；上游 429 重试耗尽后，只把该对话切到按重置时间排序的下一候选账号。",
+    "accountPool.upstreamAccounts.groupNotes.singleAccountRotation.toggle":
+      "对话遇到最终 429 后才切换账号",
     "accountPool.upstreamAccounts.groupNotes.upstream429.label":
       "上游 429 重试",
     "accountPool.upstreamAccounts.groupNotes.upstream429.hint":

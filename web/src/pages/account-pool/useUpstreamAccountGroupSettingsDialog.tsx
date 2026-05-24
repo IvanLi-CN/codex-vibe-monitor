@@ -21,6 +21,7 @@ type GroupSettingsEditorState = {
   concurrencyLimit: number;
   boundProxyKeys: string[];
   nodeShuntEnabled: boolean;
+  singleAccountRotationEnabled: boolean;
   upstream429RetryEnabled: boolean;
   upstream429MaxRetries: number;
   routingRule: TagRoutingRule;
@@ -38,6 +39,7 @@ export type UpstreamAccountGroupSettingsSnapshot = {
   concurrencyLimit?: number | null;
   boundProxyKeys?: string[];
   nodeShuntEnabled?: boolean;
+  singleAccountRotationEnabled?: boolean;
   upstream429RetryEnabled?: boolean;
   upstream429MaxRetries?: number;
   routingRule?: TagRoutingRule;
@@ -66,6 +68,7 @@ function createInitialEditorState(): GroupSettingsEditorState {
     concurrencyLimit: apiConcurrencyLimitToSliderValue(0),
     boundProxyKeys: [],
     nodeShuntEnabled: false,
+    singleAccountRotationEnabled: false,
     upstream429RetryEnabled: false,
     upstream429MaxRetries: 0,
     routingRule: defaultRoutingRule,
@@ -170,6 +173,8 @@ export function useUpstreamAccountGroupSettingsDialog(
         ),
         boundProxyKeys: normalizeBoundProxyKeys(snapshot?.boundProxyKeys),
         nodeShuntEnabled: snapshot?.nodeShuntEnabled === true,
+        singleAccountRotationEnabled:
+          snapshot?.singleAccountRotationEnabled === true,
         upstream429RetryEnabled: snapshot?.upstream429RetryEnabled === true,
         upstream429MaxRetries: snapshot?.upstream429MaxRetries ?? 0,
         routingRule: snapshot?.routingRule ?? defaultRoutingRule,
@@ -201,6 +206,8 @@ export function useUpstreamAccountGroupSettingsDialog(
       editor.boundProxyKeys,
     );
     const normalizedNodeShuntEnabled = editor.nodeShuntEnabled === true;
+    const normalizedSingleAccountRotationEnabled =
+      editor.singleAccountRotationEnabled === true;
     const normalizedUpstream429RetryEnabled =
       editor.upstream429RetryEnabled === true;
     const normalizedUpstream429MaxRetries = normalizedUpstream429RetryEnabled
@@ -215,6 +222,7 @@ export function useUpstreamAccountGroupSettingsDialog(
         boundProxyKeys: normalizedBoundProxyKeys,
         concurrencyLimit: normalizedConcurrencyLimit,
         nodeShuntEnabled: normalizedNodeShuntEnabled,
+        singleAccountRotationEnabled: normalizedSingleAccountRotationEnabled,
         upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
         upstream429MaxRetries: normalizedUpstream429MaxRetries,
         ...(editor.routingRuleDirty ? { routingRule: editor.routingRule } : {}),
@@ -258,6 +266,7 @@ export function useUpstreamAccountGroupSettingsDialog(
         accountCount={editor.accountCount}
         boundProxyKeys={editor.boundProxyKeys}
         nodeShuntEnabled={editor.nodeShuntEnabled}
+        singleAccountRotationEnabled={editor.singleAccountRotationEnabled}
         upstream429RetryEnabled={editor.upstream429RetryEnabled}
         upstream429MaxRetries={editor.upstream429MaxRetries}
         onRoutingPolicyEdit={() =>
@@ -293,6 +302,13 @@ export function useUpstreamAccountGroupSettingsDialog(
           setEditor((current) => ({
             ...current,
             nodeShuntEnabled: value,
+          }));
+        }}
+        onSingleAccountRotationEnabledChange={(value) => {
+          setError(null);
+          setEditor((current) => ({
+            ...current,
+            singleAccountRotationEnabled: value,
           }));
         }}
         onUpstream429RetryEnabledChange={(value) => {
@@ -373,6 +389,15 @@ export function useUpstreamAccountGroupSettingsDialog(
         )}
         nodeShuntWarning={t(
           "accountPool.upstreamAccounts.groupNotes.nodeShunt.warning",
+        )}
+        singleAccountRotationLabel={t(
+          "accountPool.upstreamAccounts.groupNotes.singleAccountRotation.label",
+        )}
+        singleAccountRotationHint={t(
+          "accountPool.upstreamAccounts.groupNotes.singleAccountRotation.hint",
+        )}
+        singleAccountRotationToggleLabel={t(
+          "accountPool.upstreamAccounts.groupNotes.singleAccountRotation.toggle",
         )}
         upstream429RetryLabel={t(
           "accountPool.upstreamAccounts.groupNotes.upstream429.label",
@@ -539,6 +564,7 @@ export function useUpstreamAccountGroupSettingsDialog(
       editor.open,
       editor.policyEditorOpen,
       editor.routingRule,
+      editor.singleAccountRotationEnabled,
       editor.upstream429MaxRetries,
       editor.upstream429RetryEnabled,
       error,

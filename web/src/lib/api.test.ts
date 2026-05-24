@@ -1099,6 +1099,7 @@ describe("settings normalization", () => {
                 ],
                 upstream429RetryEnabled: true,
                 upstream429MaxRetries: 3,
+                singleAccountRotationEnabled: true,
                 routingRule: {
                   priorityTier: "primary",
                   fastModeRewriteMode: "force_add",
@@ -1154,6 +1155,7 @@ describe("settings normalization", () => {
     ]);
     expect(response.groups[0].upstream429RetryEnabled).toBe(true);
     expect(response.groups[0].upstream429MaxRetries).toBe(3);
+    expect(response.groups[0].singleAccountRotationEnabled).toBe(true);
     expect(response.groups[0].routingRule?.priorityTier).toBe("primary");
     expect(response.groups[0].routingRule?.fastModeRewriteMode).toBe(
       "force_add",

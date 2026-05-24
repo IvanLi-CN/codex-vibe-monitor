@@ -89,11 +89,13 @@ function renderDialog(props: Partial<DialogProps> = {}) {
     busy: false,
     error: null,
     boundProxyKeys: [],
+    singleAccountRotationEnabled: false,
     upstream429RetryEnabled: false,
     upstream429MaxRetries: 0,
     availableProxyNodes: defaultNodes,
     onNoteChange: () => undefined,
     onBoundProxyKeysChange: () => undefined,
+    onSingleAccountRotationEnabledChange: () => undefined,
     onUpstream429RetryEnabledChange: () => undefined,
     onUpstream429MaxRetriesChange: () => undefined,
     onClose: () => undefined,
@@ -118,6 +120,11 @@ function renderDialog(props: Partial<DialogProps> = {}) {
       { value: 2, label: "2 retries" },
       { value: 3, label: "3 retries" },
     ],
+    singleAccountRotationLabel: "Single-account rotation load",
+    singleAccountRotationHint:
+      "Successful conversations stay on the same account until upstream 429 retry is exhausted.",
+    singleAccountRotationToggleLabel:
+      "Keep conversations on one account until final 429",
     proxyBindingsLabel: "Bound proxy nodes",
     proxyBindingsHint: "Leave empty to keep automatic routing.",
     proxyBindingsAutomaticLabel:
@@ -509,6 +516,30 @@ describe("UpstreamAccountGroupNoteDialog", () => {
     expect(retryCount).not.toBeNull();
     expect(retryCount?.getAttribute("aria-disabled")).not.toBe("true");
     expect(bodyText()).toContain("3 retries");
+  });
+
+  it("renders the single-account rotation switch and preserves its checked state", () => {
+    const onSingleAccountRotationEnabledChange = vi.fn();
+    renderDialog({
+      singleAccountRotationEnabled: true,
+      onSingleAccountRotationEnabledChange,
+    });
+
+    expect(bodyText()).toContain("Single-account rotation load");
+    expect(bodyText()).toContain(
+      "Successful conversations stay on the same account until upstream 429 retry is exhausted.",
+    );
+
+    const toggle = document.querySelector(
+      '[role="switch"][aria-label="Keep conversations on one account until final 429"]',
+    ) as HTMLElement | null;
+    expect(toggle).not.toBeNull();
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+
+    act(() => {
+      toggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onSingleAccountRotationEnabledChange).toHaveBeenCalledWith(false);
   });
 
   it("blocks saving when node shunt is enabled without any bound node", () => {

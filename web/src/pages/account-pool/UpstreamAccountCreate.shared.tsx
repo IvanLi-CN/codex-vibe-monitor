@@ -75,6 +75,7 @@ export type GroupNoteEditorState = {
   concurrencyLimit: number;
   boundProxyKeys: string[];
   nodeShuntEnabled: boolean;
+  singleAccountRotationEnabled: boolean;
   upstream429RetryEnabled: boolean;
   upstream429MaxRetries: number;
   onSaved?: ((groupName: string) => void) | null;
@@ -1618,6 +1619,7 @@ export function buildOauthLoginSessionUpdatePayload({
   groupName,
   groupBoundProxyKeys,
   groupNodeShuntEnabled,
+  groupSingleAccountRotationEnabled,
   note,
   groupNote,
   groupConcurrencyLimit,
@@ -1631,6 +1633,7 @@ export function buildOauthLoginSessionUpdatePayload({
   groupName: string;
   groupBoundProxyKeys: string[];
   groupNodeShuntEnabled: boolean;
+  groupSingleAccountRotationEnabled: boolean;
   note: string;
   groupNote: string;
   groupConcurrencyLimit: number;
@@ -1647,6 +1650,7 @@ export function buildOauthLoginSessionUpdatePayload({
     groupName: normalizedGroupName,
     groupBoundProxyKeys,
     groupNodeShuntEnabled,
+    groupSingleAccountRotationEnabled,
     note: note.trim(),
     ...(normalizedGroupName && includeGroupNote
       ? { groupNote: groupNote.trim() }

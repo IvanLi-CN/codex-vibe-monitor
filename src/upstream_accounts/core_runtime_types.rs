@@ -1116,6 +1116,7 @@ pub(crate) struct UpstreamAccountGroupSummary {
     note: Option<String>,
     bound_proxy_keys: Vec<String>,
     node_shunt_enabled: bool,
+    single_account_rotation_enabled: bool,
     upstream_429_retry_enabled: bool,
     upstream_429_max_retries: u8,
     concurrency_limit: i64,
@@ -1127,6 +1128,7 @@ pub(crate) struct UpstreamAccountGroupMetadata {
     note: Option<String>,
     bound_proxy_keys: Vec<String>,
     node_shunt_enabled: bool,
+    single_account_rotation_enabled: bool,
     upstream_429_retry_enabled: bool,
     upstream_429_max_retries: u8,
     concurrency_limit: i64,
@@ -1142,6 +1144,8 @@ pub(crate) struct RequestedGroupMetadataChanges {
     concurrency_limit_was_requested: bool,
     node_shunt_enabled: bool,
     node_shunt_enabled_was_requested: bool,
+    single_account_rotation_enabled: bool,
+    single_account_rotation_enabled_was_requested: bool,
 }
 
 impl RequestedGroupMetadataChanges {
@@ -1150,6 +1154,7 @@ impl RequestedGroupMetadataChanges {
             || self.bound_proxy_keys_was_requested
             || self.concurrency_limit_was_requested
             || self.node_shunt_enabled_was_requested
+            || self.single_account_rotation_enabled_was_requested
     }
 }
 
@@ -1583,6 +1588,8 @@ pub(crate) struct CreateOauthLoginSessionRequest {
     group_bound_proxy_keys: Option<Vec<String>>,
     #[serde(default)]
     group_node_shunt_enabled: Option<bool>,
+    #[serde(default)]
+    group_single_account_rotation_enabled: Option<bool>,
     note: Option<String>,
     group_note: Option<String>,
     concurrency_limit: Option<i64>,
@@ -1617,6 +1624,8 @@ pub(crate) struct UpdateOauthLoginSessionRequest {
     group_bound_proxy_keys: OptionalField<Vec<String>>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     group_node_shunt_enabled: OptionalField<bool>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    group_single_account_rotation_enabled: OptionalField<bool>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     note: OptionalField<String>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
@@ -1660,6 +1669,8 @@ pub(crate) struct CreateApiKeyAccountRequest {
     group_bound_proxy_keys: Option<Vec<String>>,
     #[serde(default)]
     group_node_shunt_enabled: Option<bool>,
+    #[serde(default)]
+    group_single_account_rotation_enabled: Option<bool>,
     note: Option<String>,
     group_note: Option<String>,
     concurrency_limit: Option<i64>,
@@ -1690,6 +1701,8 @@ pub(crate) struct ValidateImportedOauthAccountsRequest {
     #[serde(default)]
     group_node_shunt_enabled: Option<bool>,
     #[serde(default)]
+    group_single_account_rotation_enabled: Option<bool>,
+    #[serde(default)]
     items: Vec<ImportOauthCredentialFileRequest>,
 }
 
@@ -1707,6 +1720,8 @@ pub(crate) struct ImportValidatedOauthAccountsRequest {
     group_bound_proxy_keys: Option<Vec<String>>,
     #[serde(default)]
     group_node_shunt_enabled: Option<bool>,
+    #[serde(default)]
+    group_single_account_rotation_enabled: Option<bool>,
     group_note: Option<String>,
     concurrency_limit: Option<i64>,
     #[serde(default)]
@@ -2002,6 +2017,8 @@ pub(crate) struct UpdateUpstreamAccountRequest {
     group_bound_proxy_keys: Option<Vec<String>>,
     #[serde(default)]
     group_node_shunt_enabled: Option<bool>,
+    #[serde(default)]
+    group_single_account_rotation_enabled: Option<bool>,
     note: Option<String>,
     group_note: Option<String>,
     concurrency_limit: Option<i64>,
@@ -2046,6 +2063,8 @@ pub(crate) struct ExternalUpstreamAccountMetadataRequest {
     pub(crate) group_bound_proxy_keys: Option<Vec<String>>,
     #[serde(default)]
     pub(crate) group_node_shunt_enabled: Option<bool>,
+    #[serde(default)]
+    pub(crate) group_single_account_rotation_enabled: Option<bool>,
     pub(crate) note: Option<String>,
     pub(crate) group_note: Option<String>,
     pub(crate) concurrency_limit: Option<i64>,
@@ -2126,6 +2145,8 @@ pub(crate) struct UpdateUpstreamAccountGroupRequest {
     bound_proxy_keys: Option<Vec<String>>,
     #[serde(default)]
     node_shunt_enabled: Option<bool>,
+    #[serde(default)]
+    single_account_rotation_enabled: Option<bool>,
     #[serde(default)]
     upstream_429_retry_enabled: Option<bool>,
     #[serde(default)]

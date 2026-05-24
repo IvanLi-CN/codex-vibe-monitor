@@ -71,6 +71,7 @@ export function useUpstreamAccountCreateImportedOauth(
     importValidationJobIdRef,
     importValidationState,
     importOauthAccounts,
+    resolveGroupSingleAccountRotationEnabledForName,
     activeTab,
     setActionError,
     setImportFiles,
@@ -388,6 +389,8 @@ export function useUpstreamAccountCreateImportedOauth(
           groupName: importGroupProxyState.normalizedGroupName || undefined,
           groupBoundProxyKeys: importGroupProxyState.boundProxyKeys,
           groupNodeShuntEnabled: importGroupProxyState.nodeShuntEnabled,
+          groupSingleAccountRotationEnabled:
+            resolveGroupSingleAccountRotationEnabledForName(importGroupName),
         });
         setImportValidationState((current: ImportedOauthValidationDialogState | null) => {
           if (merge && current) {
@@ -454,6 +457,8 @@ export function useUpstreamAccountCreateImportedOauth(
       importGroupProxyState.error,
       importGroupProxyState.nodeShuntEnabled,
       importGroupProxyState.normalizedGroupName,
+      importGroupName,
+      resolveGroupSingleAccountRotationEnabledForName,
       startImportedOauthValidationJob,
     ],
   );
@@ -1012,6 +1017,8 @@ export function useUpstreamAccountCreateImportedOauth(
           groupName: importGroupProxyState.normalizedGroupName || undefined,
           groupBoundProxyKeys: importGroupProxyState.boundProxyKeys,
           groupNodeShuntEnabled: importGroupProxyState.nodeShuntEnabled,
+          groupSingleAccountRotationEnabled:
+            resolveGroupSingleAccountRotationEnabledForName(importGroupName),
           groupNote: importGroupNote,
           concurrencyLimit: importGroupConcurrencyLimit,
           tagIds: importTagIds,

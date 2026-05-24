@@ -120,6 +120,7 @@ async fn resolve_external_group_binding(
     if metadata.group_name.is_some()
         || metadata.group_bound_proxy_keys.is_some()
         || metadata.group_node_shunt_enabled.is_some()
+        || metadata.group_single_account_rotation_enabled.is_some()
     {
         return resolve_required_group_proxy_binding_for_write(
             state,
@@ -153,6 +154,7 @@ fn external_metadata_to_update_request(
         group_name: metadata.group_name,
         group_bound_proxy_keys: metadata.group_bound_proxy_keys,
         group_node_shunt_enabled: metadata.group_node_shunt_enabled,
+        group_single_account_rotation_enabled: metadata.group_single_account_rotation_enabled,
         note: metadata.note,
         group_note: metadata.group_note,
         concurrency_limit: metadata.concurrency_limit,
@@ -173,6 +175,7 @@ fn external_metadata_has_any_change(metadata: &ExternalUpstreamAccountMetadataRe
         || metadata.group_name.is_some()
         || metadata.group_bound_proxy_keys.is_some()
         || metadata.group_node_shunt_enabled.is_some()
+        || metadata.group_single_account_rotation_enabled.is_some()
         || metadata.note.is_some()
         || metadata.group_note.is_some()
         || metadata.concurrency_limit.is_some()
@@ -305,6 +308,8 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
         metadata.concurrency_limit.is_some(),
         metadata.group_node_shunt_enabled,
         metadata.group_node_shunt_enabled.is_some(),
+        metadata.group_single_account_rotation_enabled,
+        metadata.group_single_account_rotation_enabled.is_some(),
     );
     validate_group_note_target(target_group_name.as_deref(), metadata.group_note.is_some())?;
     let resolved_group_binding =
@@ -543,6 +548,11 @@ pub(crate) async fn external_upsert_oauth_upstream_account(
         payload.metadata.concurrency_limit.is_some(),
         payload.metadata.group_node_shunt_enabled,
         payload.metadata.group_node_shunt_enabled.is_some(),
+        payload.metadata.group_single_account_rotation_enabled,
+        payload
+            .metadata
+            .group_single_account_rotation_enabled
+            .is_some(),
     );
     validate_group_note_target(
         target_group_name.as_deref(),

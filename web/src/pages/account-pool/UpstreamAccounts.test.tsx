@@ -933,6 +933,7 @@ function mockAccountsPage(options?: {
         note: "prod note",
         boundProxyKeys: ["jp-edge-01"],
         nodeShuntEnabled: false,
+        singleAccountRotationEnabled: false,
         upstream429RetryEnabled: false,
         upstream429MaxRetries: 0,
       },
@@ -945,6 +946,7 @@ function mockAccountsPage(options?: {
       ? group.boundProxyKeys.map((value) => String(value))
       : [],
     nodeShuntEnabled: group.nodeShuntEnabled === true,
+    singleAccountRotationEnabled: group.singleAccountRotationEnabled === true,
     upstream429RetryEnabled: group.upstream429RetryEnabled === true,
     upstream429MaxRetries:
       typeof group.upstream429MaxRetries === "number"
@@ -971,6 +973,8 @@ function mockAccountsPage(options?: {
             ? payload.boundProxyKeys.map((value) => String(value))
             : [],
           nodeShuntEnabled: payload.nodeShuntEnabled === true,
+          singleAccountRotationEnabled:
+            payload.singleAccountRotationEnabled === true,
           upstream429RetryEnabled: payload.upstream429RetryEnabled === true,
           upstream429MaxRetries:
             typeof payload.upstream429MaxRetries === "number"

@@ -213,6 +213,7 @@ describe("UpstreamAccountCreatePage api key", () => {
       boundProxyKeys: ["jp-edge-01"],
       concurrencyLimit: 0,
       nodeShuntEnabled: false,
+      singleAccountRotationEnabled: false,
       upstream429RetryEnabled: false,
       upstream429MaxRetries: 0,
     });

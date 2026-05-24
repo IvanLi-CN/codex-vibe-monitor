@@ -437,6 +437,7 @@ describe("UpstreamAccountsPage api key details", () => {
       groupName: "latam",
       note: "LATAM draft note",
       boundProxyKeys: ["jp-edge-01"],
+      singleAccountRotationEnabled: false,
       upstream429RetryEnabled: false,
       upstream429MaxRetries: 0,
     });
@@ -593,6 +594,8 @@ describe("UpstreamAccountsPage api key details", () => {
       boundProxyKeys: ["jp-edge-01"],
       concurrencyLimit: 0,
       nodeShuntEnabled: false,
+      routingRule: undefined,
+      singleAccountRotationEnabled: false,
       upstream429RetryEnabled: false,
       upstream429MaxRetries: 0,
     });

@@ -879,6 +879,10 @@ function SharedUpstreamAccountDetailDrawerInner({
     Record<string, boolean>
   >({});
   const [
+    groupDraftSingleAccountRotationEnabled,
+    setGroupDraftSingleAccountRotationEnabled,
+  ] = useState<Record<string, boolean>>({});
+  const [
     groupDraftUpstream429RetryEnabled,
     setGroupDraftUpstream429RetryEnabled,
   ] = useState<Record<string, boolean>>({});
@@ -1135,6 +1139,13 @@ function SharedUpstreamAccountDetailDrawerInner({
       if (nextEntries.length === Object.keys(current).length) return current;
       return Object.fromEntries(nextEntries);
     });
+    setGroupDraftSingleAccountRotationEnabled((current) => {
+      const nextEntries = Object.entries(current).filter(
+        ([groupName]) => !isExistingGroup(groups, groupName),
+      );
+      if (nextEntries.length === Object.keys(current).length) return current;
+      return Object.fromEntries(nextEntries);
+    });
     setGroupDraftConcurrencyLimits((current) => {
       const nextEntries = Object.entries(current).filter(
         ([groupName]) => !isExistingGroup(groups, groupName),
@@ -1225,6 +1236,9 @@ function SharedUpstreamAccountDetailDrawerInner({
         groupName,
         "",
       ]),
+      ...Object.keys(groupDraftSingleAccountRotationEnabled).map(
+        (groupName) => [groupName, ""],
+      ),
       ...Object.keys(groupDraftUpstream429RetryEnabled).map((groupName) => [
         groupName,
         "",
@@ -1246,6 +1260,7 @@ function SharedUpstreamAccountDetailDrawerInner({
     groupDraftBoundProxyKeys,
     groupDraftConcurrencyLimits,
     groupDraftNodeShuntEnabled,
+    groupDraftSingleAccountRotationEnabled,
     groupDraftNotes,
     groupDraftUpstream429MaxRetries,
     groupDraftUpstream429RetryEnabled,
@@ -1317,6 +1332,19 @@ function SharedUpstreamAccountDetailDrawerInner({
     [groupDraftNodeShuntEnabled, resolveGroupSummaryForName],
   );
 
+  const resolveGroupSingleAccountRotationEnabledForName = useCallback(
+    (groupName: string) => {
+      const normalizedGroupName = normalizeGroupName(groupName);
+      if (!normalizedGroupName) return false;
+      const existingGroup = resolveGroupSummaryForName(normalizedGroupName);
+      if (existingGroup) {
+        return existingGroup.singleAccountRotationEnabled === true;
+      }
+      return groupDraftSingleAccountRotationEnabled[normalizedGroupName] === true;
+    },
+    [groupDraftSingleAccountRotationEnabled, resolveGroupSummaryForName],
+  );
+
   const resolveGroupUpstream429RetryEnabledForName = useCallback(
     (groupName: string) => {
       const normalizedGroupName = normalizeGroupName(groupName);
@@ -1358,12 +1386,14 @@ function SharedUpstreamAccountDetailDrawerInner({
       resolveGroupBoundProxyKeysForName(groupName).length > 0 ||
       resolveGroupConcurrencyLimitForName(groupName) > 0 ||
       resolveGroupNodeShuntEnabledForName(groupName) ||
+      resolveGroupSingleAccountRotationEnabledForName(groupName) ||
       resolveGroupUpstream429RetryEnabledForName(groupName) ||
       resolveGroupUpstream429MaxRetriesForName(groupName) > 0,
     [
       resolveGroupBoundProxyKeysForName,
       resolveGroupConcurrencyLimitForName,
       resolveGroupNodeShuntEnabledForName,
+      resolveGroupSingleAccountRotationEnabledForName,
       resolveGroupNoteForName,
       resolveGroupUpstream429MaxRetriesForName,
       resolveGroupUpstream429RetryEnabledForName,
@@ -1386,6 +1416,12 @@ function SharedUpstreamAccountDetailDrawerInner({
       return next;
     });
     setGroupDraftNodeShuntEnabled((current) => {
+      if (!(normalizedGroupName in current)) return current;
+      const next = { ...current };
+      delete next[normalizedGroupName];
+      return next;
+    });
+    setGroupDraftSingleAccountRotationEnabled((current) => {
       if (!(normalizedGroupName in current)) return current;
       const next = { ...current };
       delete next[normalizedGroupName];
@@ -1430,6 +1466,8 @@ function SharedUpstreamAccountDetailDrawerInner({
           concurrencyLimit: resolveGroupConcurrencyLimitForName(normalized),
           boundProxyKeys: resolveGroupBoundProxyKeysForName(normalized),
           nodeShuntEnabled: resolveGroupNodeShuntEnabledForName(normalized),
+          singleAccountRotationEnabled:
+            resolveGroupSingleAccountRotationEnabledForName(normalized),
           upstream429RetryEnabled:
             resolveGroupUpstream429RetryEnabledForName(normalized),
           upstream429MaxRetries:
@@ -1441,6 +1479,7 @@ function SharedUpstreamAccountDetailDrawerInner({
         resolveGroupBoundProxyKeysForName,
         resolveGroupConcurrencyLimitForName,
         resolveGroupNodeShuntEnabledForName,
+        resolveGroupSingleAccountRotationEnabledForName,
         resolveGroupNoteForName,
         resolveGroupSummaryForName,
         resolveGroupUpstream429MaxRetriesForName,
@@ -1462,6 +1501,8 @@ function SharedUpstreamAccountDetailDrawerInner({
         );
         const normalizedConcurrencyLimit = payload.concurrencyLimit ?? 0;
         const normalizedNodeShuntEnabled = payload.nodeShuntEnabled === true;
+        const normalizedSingleAccountRotationEnabled =
+          payload.singleAccountRotationEnabled === true;
         const normalizedUpstream429RetryEnabled =
           payload.upstream429RetryEnabled === true;
         const normalizedUpstream429MaxRetries =
@@ -1478,6 +1519,7 @@ function SharedUpstreamAccountDetailDrawerInner({
           boundProxyKeys: normalizedBoundProxyKeys,
           concurrencyLimit: normalizedConcurrencyLimit,
           nodeShuntEnabled: normalizedNodeShuntEnabled,
+          singleAccountRotationEnabled: normalizedSingleAccountRotationEnabled,
           upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
           upstream429MaxRetries: normalizedUpstream429MaxRetries,
           routingRule: payload.routingRule,

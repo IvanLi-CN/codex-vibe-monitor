@@ -62,6 +62,7 @@ pub(crate) async fn record_pool_route_http_failure(
     pool: &Pool<Sqlite>,
     account_id: i64,
     account_kind: &str,
+    single_account_rotation_enabled: bool,
     sticky_key: Option<&str>,
     status: StatusCode,
     error_message: &str,
@@ -85,7 +86,9 @@ pub(crate) async fn record_pool_route_http_failure(
     let classification = classify_pool_account_http_failure(account_kind, status, error_message);
     match classification.disposition {
         UpstreamAccountFailureDisposition::HardUnavailable => {
-            if let Some(sticky_key) = sticky_key {
+            if is_scope_permission_error_message(error_message)
+                && let Some(sticky_key) = sticky_key
+            {
                 delete_sticky_route(pool, sticky_key).await?;
             }
             let now_iso = format_utc_iso(Utc::now());
@@ -135,14 +138,29 @@ pub(crate) async fn record_pool_route_http_failure(
         }
         UpstreamAccountFailureDisposition::RateLimited
         | UpstreamAccountFailureDisposition::Retryable => {
+            if single_account_rotation_enabled
+                && status == StatusCode::TOO_MANY_REQUESTS
+                && let Some(sticky_key) = sticky_key
+            {
+                delete_sticky_route(pool, sticky_key).await?;
+            }
             let base_secs = if status == StatusCode::TOO_MANY_REQUESTS {
                 15
             } else {
                 5
             };
+            let next_account_status = if account_kind == UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX
+                && classification.failure_kind
+                    == FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
+            {
+                UPSTREAM_ACCOUNT_STATUS_ERROR
+            } else {
+                UPSTREAM_ACCOUNT_STATUS_ACTIVE
+            };
             apply_pool_route_cooldown_failure(
                 pool,
                 account_id,
+                next_account_status,
                 sticky_key,
                 error_message,
                 classification.failure_kind,
@@ -166,6 +184,7 @@ pub(crate) async fn record_pool_route_retryable_overload_failure(
     apply_pool_route_cooldown_failure(
         pool,
         account_id,
+        UPSTREAM_ACCOUNT_STATUS_ACTIVE,
         sticky_key,
         error_message,
         PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
@@ -187,6 +206,7 @@ pub(crate) async fn record_pool_route_transport_failure(
     apply_pool_route_cooldown_failure(
         pool,
         account_id,
+        UPSTREAM_ACCOUNT_STATUS_ACTIVE,
         sticky_key,
         error_message,
         PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
@@ -250,6 +270,7 @@ pub(crate) async fn record_compact_support_observation(
 pub(crate) async fn apply_pool_route_cooldown_failure(
     pool: &Pool<Sqlite>,
     account_id: i64,
+    next_account_status: &str,
     sticky_key: Option<&str>,
     error_message: &str,
     failure_kind: &str,
@@ -308,7 +329,7 @@ pub(crate) async fn apply_pool_route_cooldown_failure(
         "#,
     )
     .bind(account_id)
-    .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+    .bind(next_account_status)
     .bind(error_message)
     .bind(&now_iso)
     .bind(failure_kind)

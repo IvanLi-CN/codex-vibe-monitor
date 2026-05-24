@@ -1279,6 +1279,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       boundProxyKeys: ["__direct__", "jp-edge-01"],
       concurrencyLimit: 0,
       nodeShuntEnabled: true,
+      singleAccountRotationEnabled: false,
       upstream429RetryEnabled: false,
       upstream429MaxRetries: 0,
     });
