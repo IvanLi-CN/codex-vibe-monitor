@@ -431,6 +431,7 @@ async fn prepare_pool_account_with_scopes(
                                 apply_pool_route_cooldown_failure(
                                     &state.pool,
                                     row.id,
+                                    UPSTREAM_ACCOUNT_STATUS_ACTIVE,
                                     None,
                                     &err_text,
                                     failure_kind,
@@ -547,6 +548,7 @@ pub(crate) fn is_account_selectable_for_fresh_assignment(
 ) -> bool {
     is_routing_eligible_account(row)
         && !snapshot_exhausted
+        && !is_account_rate_limited_for_routing(row, snapshot_exhausted)
         && !is_account_degraded_for_routing(row, snapshot_exhausted, now)
 }
 
