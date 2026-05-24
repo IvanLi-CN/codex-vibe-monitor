@@ -986,25 +986,15 @@ pub(crate) async fn find_existing_import_match(
     chatgpt_account_id: &str,
     email: &str,
 ) -> Result<Option<UpstreamAccountRow>> {
-    let account_id_matches = sqlx::query_as::<_, UpstreamAccountRow>(
+    let account_id_matches = sqlx::query_as::<_, UpstreamAccountRow>(&format!(
         r#"
-        SELECT
-            id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
-            chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
-            encrypted_credentials, has_refresh_token, token_expires_at, last_refreshed_at,
-            last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
-            last_action, last_action_source, last_action_reason_code, last_action_reason_message,
-            last_action_http_status, last_action_invoke_id, last_action_at,
-            last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
-            consecutive_route_failures, temporary_route_failure_streak_started_at,
-            local_primary_limit, local_secondary_limit,
-            local_limit_unit, upstream_base_url, created_at, updated_at
+        SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS}
         FROM pool_upstream_accounts
         WHERE kind = ?1
           AND chatgpt_account_id = ?2
         ORDER BY updated_at DESC, id DESC
-        "#,
-    )
+        "#
+    ))
     .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
     .bind(chatgpt_account_id)
     .fetch_all(pool)
@@ -1019,25 +1009,15 @@ pub(crate) async fn find_existing_import_match(
         return Ok(Some(row));
     }
 
-    let email_matches = sqlx::query_as::<_, UpstreamAccountRow>(
+    let email_matches = sqlx::query_as::<_, UpstreamAccountRow>(&format!(
         r#"
-        SELECT
-            id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
-            chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
-            encrypted_credentials, has_refresh_token, token_expires_at, last_refreshed_at,
-            last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
-            last_action, last_action_source, last_action_reason_code, last_action_reason_message,
-            last_action_http_status, last_action_invoke_id, last_action_at,
-            last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
-            consecutive_route_failures, temporary_route_failure_streak_started_at,
-            local_primary_limit, local_secondary_limit,
-            local_limit_unit, upstream_base_url, created_at, updated_at
+        SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS}
         FROM pool_upstream_accounts
         WHERE kind = ?1
           AND lower(trim(COALESCE(email, ''))) = lower(trim(?2))
         ORDER BY updated_at DESC, id DESC
-        "#,
-    )
+        "#
+    ))
     .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
     .bind(email)
     .fetch_all(pool)
