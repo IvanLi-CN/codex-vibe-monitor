@@ -1,13 +1,6 @@
 pub(crate) const HEADER_STICKY_EARLY_STICKY_SCAN_BYTES: usize = 64 * 1024;
 
-pub(crate) fn best_effort_extract_sticky_key_from_request_body_prefix(bytes: &[u8]) -> Option<String> {
-    const STICKY_KEY_PATTERNS: &[&[u8]] = &[
-        br#""sticky_key""#,
-        br#""stickyKey""#,
-        br#""prompt_cache_key""#,
-        br#""promptCacheKey""#,
-    ];
-
+fn best_effort_extract_json_string_for_patterns(bytes: &[u8], patterns: &[&[u8]]) -> Option<String> {
     fn find_subslice(haystack: &[u8], needle: &[u8], start: usize) -> Option<usize> {
         haystack[start..]
             .windows(needle.len())
@@ -56,7 +49,7 @@ pub(crate) fn best_effort_extract_sticky_key_from_request_body_prefix(bytes: &[u
         None
     }
 
-    for pattern in STICKY_KEY_PATTERNS {
+    for pattern in patterns {
         let mut cursor = 0usize;
         while let Some(key_start) = find_subslice(bytes, pattern, cursor) {
             let mut value_start = skip_ascii_whitespace(bytes, key_start + pattern.len());
@@ -77,6 +70,29 @@ pub(crate) fn best_effort_extract_sticky_key_from_request_body_prefix(bytes: &[u
         }
     }
     None
+}
+
+pub(crate) fn best_effort_extract_sticky_key_from_request_body_prefix(
+    bytes: &[u8],
+) -> Option<String> {
+    best_effort_extract_json_string_for_patterns(
+        bytes,
+        &[
+            br#""sticky_key""#,
+            br#""stickyKey""#,
+            br#""prompt_cache_key""#,
+            br#""promptCacheKey""#,
+        ],
+    )
+}
+
+pub(crate) fn best_effort_extract_prompt_cache_key_from_request_body_prefix(
+    bytes: &[u8],
+) -> Option<String> {
+    best_effort_extract_json_string_for_patterns(
+        bytes,
+        &[br#""prompt_cache_key""#, br#""promptCacheKey""#],
+    )
 }
 
 pub(crate) fn prepare_target_request_body(

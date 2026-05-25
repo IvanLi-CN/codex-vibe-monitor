@@ -375,6 +375,24 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             Instant::now(),
         );
     }
+    let prompt_cache_binding_constraint = if pool_route_active {
+        match load_prompt_cache_conversation_binding_constraint(
+            &state.pool,
+            prompt_cache_key.as_deref(),
+        )
+        .await
+        {
+            Ok(constraint) => constraint,
+            Err(err) => {
+                return Err((
+                    StatusCode::BAD_GATEWAY,
+                    format!("failed to resolve prompt cache conversation binding: {err}"),
+                ));
+            }
+        }
+    } else {
+        None
+    };
     let pool_attempt_trace_context = pool_route_active.then(|| PoolUpstreamAttemptTraceContext {
         invoke_id: invoke_id.clone(),
         occurred_at: occurred_at.clone(),
@@ -465,7 +483,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         final_requested_service_tier,
         upstream_response,
     ) = if pool_route_active {
-        match send_pool_request_with_failover(
+        match send_pool_request_with_failover_and_binding_constraint(
             state.clone(),
             proxy_request_id,
             Method::POST,
@@ -476,6 +494,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             pool_attempt_trace_context.clone(),
             pool_attempt_runtime_snapshot.clone(),
             sticky_key.as_deref(),
+            prompt_cache_binding_constraint.clone(),
             None,
             PoolFailoverProgress::default(),
             POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,

@@ -93,6 +93,91 @@ async fn resolver_does_not_demote_successful_or_non_timeout_route_proxy_history(
     assert_eq!(account.account_id, primary);
 }
 
+#[tokio::test]
+async fn resolver_applies_prompt_cache_group_binding_as_hard_constraint() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let preferred_group = "prompt-cache-bound-group";
+    let other_group = "prompt-cache-other-group";
+    let preferred = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Bound Group",
+        "sk-prompt-cache-bound-group",
+        Some(preferred_group),
+        Some("https://bound-group.example.com/backend-api/codex"),
+    )
+    .await;
+    let other = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Other Group",
+        "sk-prompt-cache-other-group",
+        Some(other_group),
+        Some("https://other-group.example.com/backend-api/codex"),
+    )
+    .await;
+    let now_iso = format_utc_iso(Utc::now());
+    insert_limit_sample_with_usage(&state.pool, preferred, &now_iso, Some(20.0), Some(20.0)).await;
+    insert_limit_sample_with_usage(&state.pool, other, &now_iso, Some(1.0), Some(1.0)).await;
+
+    let resolution = resolve_pool_account_for_request_with_binding_constraint(
+        &state,
+        None,
+        &[],
+        &HashSet::new(),
+        Some(&PromptCacheConversationBindingConstraint::Group(
+            preferred_group.to_string(),
+        )),
+    )
+    .await
+    .expect("resolve group-bound pool account");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("expected group-bound account");
+    };
+    assert_eq!(account.account_id, preferred);
+    assert_eq!(account.group_name.as_deref(), Some(preferred_group));
+}
+
+#[tokio::test]
+async fn resolver_applies_prompt_cache_account_binding_over_sticky_route() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let sticky = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Sticky Source",
+        "sk-prompt-cache-sticky-source",
+        Some(test_required_group_name()),
+        Some("https://sticky-source.example.com/backend-api/codex"),
+    )
+    .await;
+    let bound = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Bound Account",
+        "sk-prompt-cache-bound-account",
+        Some(test_required_group_name()),
+        Some("https://bound-account.example.com/backend-api/codex"),
+    )
+    .await;
+    let now_iso = format_utc_iso(Utc::now());
+    insert_limit_sample_with_usage(&state.pool, sticky, &now_iso, Some(1.0), Some(1.0)).await;
+    insert_limit_sample_with_usage(&state.pool, bound, &now_iso, Some(30.0), Some(30.0)).await;
+    upsert_sticky_route(&state.pool, "prompt-cache-bound-key", sticky, &now_iso)
+        .await
+        .expect("upsert sticky source");
+
+    let resolution = resolve_pool_account_for_request_with_binding_constraint(
+        &state,
+        Some("prompt-cache-bound-key"),
+        &[],
+        &HashSet::new(),
+        Some(&PromptCacheConversationBindingConstraint::UpstreamAccount(bound)),
+    )
+    .await
+    .expect("resolve account-bound pool account");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("expected account-bound account");
+    };
+    assert_eq!(account.account_id, bound);
+    assert_eq!(account.routing_source, PoolRoutingSelectionSource::FreshAssignment);
+}
+
 async fn seed_route_binding_attempt(
     pool: &SqlitePool,
     invoke_id: &str,

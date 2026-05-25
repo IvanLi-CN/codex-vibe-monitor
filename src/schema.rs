@@ -1625,6 +1625,47 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure pool_upstream_request_attempts table existence")?;
 
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS prompt_cache_conversation_bindings (
+            prompt_cache_key TEXT PRIMARY KEY,
+            binding_kind TEXT NOT NULL CHECK(binding_kind IN ('group', 'upstream_account')),
+            group_name TEXT,
+            upstream_account_id INTEGER,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            CHECK (
+                (binding_kind = 'group' AND group_name IS NOT NULL AND upstream_account_id IS NULL)
+                OR
+                (binding_kind = 'upstream_account' AND group_name IS NULL AND upstream_account_id IS NOT NULL)
+            )
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure prompt_cache_conversation_bindings table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_prompt_cache_conversation_bindings_group
+        ON prompt_cache_conversation_bindings (group_name)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_prompt_cache_conversation_bindings_group")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_prompt_cache_conversation_bindings_account
+        ON prompt_cache_conversation_bindings (upstream_account_id)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_prompt_cache_conversation_bindings_account")?;
+
     let existing_pool_attempt_columns =
         load_sqlite_table_columns(pool, "pool_upstream_request_attempts").await?;
     for (column, ty) in [

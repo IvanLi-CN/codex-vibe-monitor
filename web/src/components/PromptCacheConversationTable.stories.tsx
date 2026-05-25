@@ -8,6 +8,7 @@ import type {
   PromptCacheConversationInvocationPreview,
   PromptCacheConversationsResponse,
   UpstreamAccountDetail,
+  UpstreamAccountSummary,
 } from "../lib/api";
 import { PromptCacheConversationTable } from "./PromptCacheConversationTable";
 
@@ -38,6 +39,10 @@ type StoryPromptCacheConversationPreview =
         | "tTotalMs"
       >
     >;
+
+const CONVERSATION_ONE_KEY = "019d2b8f-f8d0-72c3-bb67-a3f0d24a01f1";
+const CONVERSATION_TWO_KEY = "019d2b8a-2df4-7580-bffc-6b4b1d8207c2";
+const CONVERSATION_SHORT_KEY = "019e239a-038c-7860-a185-46a9d45553f7";
 
 class MockEventSource implements EventTarget {
   static CONNECTING = 0;
@@ -209,6 +214,65 @@ const accountDetails = new Map<number, UpstreamAccountDetail>([
   [41, buildAccountDetail(41, "burst.f9m4@watch.example")],
 ]);
 
+function buildAccountSummary(
+  detail: UpstreamAccountDetail,
+  overrides?: Partial<UpstreamAccountSummary>,
+): UpstreamAccountSummary {
+  return {
+    id: detail.id,
+    kind: detail.kind,
+    provider: "codex",
+    displayName: detail.displayName,
+    groupName: overrides?.groupName ?? detail.groupName,
+    isMother: detail.isMother,
+    status: detail.status,
+    workStatus: "idle",
+    enableStatus: "enabled",
+    healthStatus: "normal",
+    syncState: "idle",
+    displayStatus: detail.status,
+    enabled: detail.enabled,
+    email: detail.email,
+    chatgptAccountId: detail.chatgptAccountId,
+    planType: detail.planType,
+    maskedApiKey: detail.maskedApiKey,
+    tags: detail.tags,
+    effectiveRoutingRule: detail.effectiveRoutingRule,
+    ...overrides,
+  };
+}
+
+const accountSummaries = Array.from(accountDetails.values()).map((detail, index) =>
+  buildAccountSummary(detail, {
+    groupName: index < 3 ? "JOZ Team" : index < 5 ? "CIII" : "Overflow",
+  }),
+);
+
+const bindingByPromptCacheKey = new Map<string, unknown>([
+  [
+    CONVERSATION_ONE_KEY,
+    {
+      promptCacheKey: CONVERSATION_ONE_KEY,
+      bindingKind: "group",
+      groupName: "JOZ Team",
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      updatedAt: "2026-03-27T03:16:00.000Z",
+    },
+  ],
+  [
+    CONVERSATION_SHORT_KEY,
+    {
+      promptCacheKey: CONVERSATION_SHORT_KEY,
+      bindingKind: "upstreamAccount",
+      groupName: null,
+      upstreamAccountId: 21,
+      upstreamAccountName: "growth.6vv4@relay.example",
+      updatedAt: "2026-05-13T23:42:00.000Z",
+    },
+  ],
+] as const);
+
 function buildInvocationRecord(
   overrides: Partial<ApiInvocation> & {
     id: number;
@@ -294,10 +358,6 @@ function buildPreviewFromRecord(
     tTotalMs: record.tTotalMs,
   };
 }
-
-const CONVERSATION_ONE_KEY = "019d2b8f-f8d0-72c3-bb67-a3f0d24a01f1";
-const CONVERSATION_TWO_KEY = "019d2b8a-2df4-7580-bffc-6b4b1d8207c2";
-const CONVERSATION_SHORT_KEY = "019e239a-038c-7860-a185-46a9d45553f7";
 
 const conversationOneHistory = [
   buildInvocationRecord({
@@ -742,6 +802,75 @@ function StorybookPromptCacheAccountMock({
             ? input.toString()
             : input.url;
       const parsedUrl = new URL(inputUrl, window.location.origin);
+      const bindingMatch = parsedUrl.pathname.match(
+        /^\/api\/stats\/prompt-cache-conversation-bindings\/(.+)$/,
+      );
+      if (bindingMatch && method === "GET") {
+        const promptCacheKey = decodeURIComponent(bindingMatch[1] ?? "");
+        return jsonResponse(
+          bindingByPromptCacheKey.get(promptCacheKey) ?? {
+            promptCacheKey,
+            bindingKind: "none",
+            groupName: null,
+            upstreamAccountId: null,
+            upstreamAccountName: null,
+            updatedAt: null,
+          },
+        );
+      }
+      if (bindingMatch && method === "PATCH") {
+        const promptCacheKey = decodeURIComponent(bindingMatch[1] ?? "");
+        const payload = init?.body ? JSON.parse(String(init.body)) : {};
+        const response =
+          payload.bindingKind === "upstreamAccount"
+            ? {
+                promptCacheKey,
+                bindingKind: "upstreamAccount",
+                groupName: null,
+                upstreamAccountId: Number(payload.upstreamAccountId),
+                upstreamAccountName:
+                  accountSummaries.find(
+                    (account) => account.id === Number(payload.upstreamAccountId),
+                  )?.displayName ?? null,
+                updatedAt: new Date().toISOString(),
+              }
+            : payload.bindingKind === "group"
+              ? {
+                  promptCacheKey,
+                  bindingKind: "group",
+                  groupName: String(payload.groupName ?? ""),
+                  upstreamAccountId: null,
+                  upstreamAccountName: null,
+                  updatedAt: new Date().toISOString(),
+                }
+              : {
+                  promptCacheKey,
+                  bindingKind: "none",
+                  groupName: null,
+                  upstreamAccountId: null,
+                  upstreamAccountName: null,
+                  updatedAt: null,
+                };
+        return jsonResponse(response);
+      }
+
+      if (parsedUrl.pathname === "/api/pool/upstream-accounts" && method === "GET") {
+        return jsonResponse({
+          writesEnabled: true,
+          items: accountSummaries,
+          groups: [
+            { groupName: "JOZ Team", accountCount: 3 },
+            { groupName: "CIII", accountCount: 2 },
+            { groupName: "Overflow", accountCount: 2 },
+          ],
+          hasUngroupedAccounts: false,
+          total: accountSummaries.length,
+          page: 1,
+          pageSize: accountSummaries.length,
+          routing: null,
+        });
+      }
+
       const match = parsedUrl.pathname.match(/^\/api\/pool\/upstream-accounts\/(\d+)$/);
 
       if (match && method === "GET") {
@@ -1405,5 +1534,49 @@ export const ShortSameDayDrawerOpen: Story = {
       });
       expect(alignedMiddleBucket).toBe(true);
     });
+  },
+};
+
+export const DrawerBindingControls: Story = {
+  args: {
+    stats: shortSameDayStats,
+    isLoading: false,
+    error: null,
+  },
+  globals: {
+    themeMode: "dark",
+    viewport: { value: "desktop1280", isRotated: false },
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "History drawer with prompt-cache conversation route binding controls visible and preloaded with an upstream-account binding.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body);
+    const historyButton = documentScope.getAllByRole("button", {
+      name: /打开全部调用记录|open full call history/i,
+    })[0];
+
+    await userEvent.click(historyButton);
+    await expect(
+      await documentScope.findByText(/路由绑定|Route binding/i),
+    ).toBeInTheDocument();
+    await expect(
+      documentScope.getByText(/当前：账号 growth\.6vv4@relay\.example|Current: account growth\.6vv4@relay\.example/i),
+    ).toBeInTheDocument();
+    const bindingKindSelect = documentScope.getByRole("combobox", {
+      name: /绑定类型|Binding type/i,
+    });
+    await expect(bindingKindSelect).toHaveTextContent(/上游账号|Account/i);
+
+    await userEvent.click(bindingKindSelect);
+    const bindingOptions = await documentScope.findByRole("listbox");
+    await expect(bindingOptions).toHaveTextContent(/清空|Clear/i);
+    await expect(bindingOptions).toHaveTextContent(/分组|Group/i);
+    await expect(bindingOptions).toHaveTextContent(/上游账号|Account/i);
   },
 };

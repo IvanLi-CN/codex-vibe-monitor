@@ -251,7 +251,7 @@ async fn proxy_openai_v1_chunked_json_without_header_sticky_uses_live_first_atte
 
 #[tokio::test]
 async fn proxy_openai_v1_responses_live_first_failover_restores_full_retry_budget_for_follow_up_accounts()
- {
+{
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[
         ("Bearer upstream-primary", 99),
         ("Bearer upstream-secondary", 2),
@@ -317,6 +317,203 @@ async fn proxy_openai_v1_responses_live_first_failover_restores_full_retry_budge
     assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
     assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(3));
     assert_eq!(attempts.get("Bearer upstream-tertiary").copied(), None);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_responses_live_first_failover_preserves_prompt_cache_group_binding() {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_retry_upstream(&[("Bearer upstream-primary", 99)]).await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(10),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let bound_group = "live-first-bound-group";
+    let other_group = "live-first-other-group";
+    ensure_test_group_binding(&state.pool, bound_group, None).await;
+    ensure_test_group_binding(&state.pool, other_group, None).await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Primary",
+        "upstream-primary",
+        Some(bound_group),
+        None,
+        None,
+    )
+    .await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Secondary",
+        "upstream-secondary",
+        Some(other_group),
+        None,
+        None,
+    )
+    .await;
+    let prompt_cache_key = "pck-live-first-bound-group";
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversation_bindings (
+            prompt_cache_key,
+            binding_kind,
+            group_name,
+            upstream_account_id,
+            created_at,
+            updated_at
+        )
+        VALUES (?1, 'group', ?2, NULL, ?3, ?3)
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .bind(bound_group)
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await
+    .expect("insert prompt cache group binding");
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    let first_chunk = format!(
+        "{{\"model\":\"gpt-5\",\"promptCacheKey\":\"{prompt_cache_key}\",\"input\":\"{}",
+        "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 256)
+    );
+    tokio::spawn(async move {
+        let _ = tx.send(Ok(Bytes::from(first_chunk))).await;
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        let _ = tx.send(Ok(Bytes::from_static(b"\"}"))).await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        5344,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect_err("binding-constrained live-first failover should not use other groups");
+
+    assert_eq!(response.0, StatusCode::SERVICE_UNAVAILABLE);
+    let attempts = attempts.lock().expect("lock live-first binding attempts");
+    assert!(matches!(
+        attempts.get("Bearer upstream-primary").copied(),
+        Some(count) if count > 0
+    ));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_responses_header_prompt_cache_key_preserves_group_binding() {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_retry_upstream(&[("Bearer upstream-primary", 99)]).await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(10),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let bound_group = "header-bound-group";
+    let other_group = "header-other-group";
+    ensure_test_group_binding(&state.pool, bound_group, None).await;
+    ensure_test_group_binding(&state.pool, other_group, None).await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Primary",
+        "upstream-primary",
+        Some(bound_group),
+        None,
+        None,
+    )
+    .await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Secondary",
+        "upstream-secondary",
+        Some(other_group),
+        None,
+        None,
+    )
+    .await;
+    let prompt_cache_key = "pck-header-bound-group";
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversation_bindings (
+            prompt_cache_key,
+            binding_kind,
+            group_name,
+            upstream_account_id,
+            created_at,
+            updated_at
+        )
+        VALUES (?1, 'group', ?2, NULL, ?3, ?3)
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .bind(bound_group)
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await
+    .expect("insert header prompt cache group binding");
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        5345,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-prompt-cache-key"),
+                HeaderValue::from_static(prompt_cache_key),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(r#"{"model":"gpt-5","input":"header-only"}"#),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect_err("header binding should not fail over outside its group");
+
+    assert_eq!(response.0, StatusCode::SERVICE_UNAVAILABLE);
+    let attempts = attempts.lock().expect("lock header binding attempts");
+    assert!(matches!(
+        attempts.get("Bearer upstream-primary").copied(),
+        Some(count) if count > 0
+    ));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
 
     upstream_handle.abort();
 }
@@ -1561,6 +1758,117 @@ async fn proxy_openai_v1_header_sticky_stream_body_override_beats_rate_limited_h
     wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
     assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-rate-limited").copied(), None);
+    assert_eq!(
+        attempts.get("Bearer upstream-replacement").copied(),
+        Some(1)
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_header_prompt_cache_binding_beats_rate_limited_sticky_terminal() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(20),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let sticky_group = "header-binding-sticky-group";
+    let bound_group = "header-binding-bound-group";
+    ensure_test_group_binding(&state.pool, sticky_group, None).await;
+    ensure_test_group_binding(&state.pool, bound_group, None).await;
+    let sticky_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Header Binding Sticky Rate Limited",
+        "upstream-rate-limited",
+        Some(sticky_group),
+        None,
+        None,
+    )
+    .await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Header Binding Replacement",
+        "upstream-replacement",
+        Some(bound_group),
+        None,
+        None,
+    )
+    .await;
+    set_test_account_rate_limited_cooldown(&state.pool, sticky_account_id, 120).await;
+    let sticky_seen_at = format_utc_iso(Utc::now());
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "header-binding-rate-limited-sticky",
+        sticky_account_id,
+        &sticky_seen_at,
+    )
+    .await;
+    let prompt_cache_key = "pck-header-binding-beats-sticky-terminal";
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversation_bindings (
+            prompt_cache_key,
+            binding_kind,
+            group_name,
+            upstream_account_id,
+            created_at,
+            updated_at
+        )
+        VALUES (?1, 'group', ?2, NULL, ?3, ?3)
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .bind(bound_group)
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await
+    .expect("insert prompt cache group binding");
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6246,
+        &"/v1/chat/completions".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-sticky-key"),
+                HeaderValue::from_static("header-binding-rate-limited-sticky"),
+            ),
+            (
+                HeaderName::from_static("x-prompt-cache-key"),
+                HeaderValue::from_static(prompt_cache_key),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(r#"{"model":"gpt-5","messages":[]}"#),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("prompt cache binding should route around sticky terminal");
+
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read via-pool response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
+    assert_eq!(payload["authorization"], "Bearer upstream-replacement");
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-rate-limited").copied(), None);
     assert_eq!(

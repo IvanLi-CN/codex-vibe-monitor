@@ -475,6 +475,25 @@ pub(crate) async fn resolve_pool_account_for_request(
         excluded_ids,
         excluded_upstream_route_keys,
         None,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn resolve_pool_account_for_request_with_binding_constraint(
+    state: &AppState,
+    sticky_key: Option<&str>,
+    excluded_ids: &[i64],
+    excluded_upstream_route_keys: &HashSet<String>,
+    binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
+) -> Result<PoolAccountResolution> {
+    resolve_pool_account_for_request_with_route_requirement(
+        state,
+        sticky_key,
+        excluded_ids,
+        excluded_upstream_route_keys,
+        None,
+        binding_constraint,
     )
     .await
 }
@@ -485,6 +504,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
     excluded_ids: &[i64],
     excluded_upstream_route_keys: &HashSet<String>,
     required_upstream_route_key: Option<&str>,
+    binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
 ) -> Result<PoolAccountResolution> {
     let now = Utc::now();
     let mut tried = excluded_ids.iter().copied().collect::<HashSet<_>>();
@@ -521,6 +541,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
             && let Some(row) = load_upstream_account_row(&state.pool, route.account_id).await?
         {
             tried.insert(route.account_id);
+            let sticky_route_matches_binding =
+                binding_constraint.is_none_or(|constraint| constraint.accepts_row(&row));
             let sticky_candidate =
                 load_account_routing_candidate(&state.pool, route.account_id).await?;
             let sticky_snapshot_exhausted = sticky_candidate
@@ -541,7 +563,16 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
             let sticky_route_is_excluded_by_route_key = sticky_route_key
                 .as_deref()
                 .is_some_and(|route_key| excluded_upstream_route_keys.contains(route_key));
-            if !sticky_route_matches_required {
+            if !sticky_route_matches_binding {
+                if is_account_rate_limited_for_routing(&row, sticky_snapshot_exhausted)
+                    || is_account_degraded_for_routing(&row, sticky_snapshot_exhausted, now)
+                    || is_routing_eligible_account(&row)
+                {
+                    saw_other_non_rate_limited_routing_candidate = true;
+                } else if is_pool_account_routing_candidate(&row) {
+                    saw_non_routing_candidate = true;
+                }
+            } else if !sticky_route_matches_required {
                 if is_account_rate_limited_for_routing(&row, sticky_snapshot_exhausted)
                     || is_account_degraded_for_routing(&row, sticky_snapshot_exhausted, now)
                     || is_routing_eligible_account(&row)
@@ -736,6 +767,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
         let Some(row) = load_upstream_account_row(&state.pool, candidate.id).await? else {
             continue;
         };
+        if binding_constraint.is_some_and(|constraint| !constraint.accepts_row(&row)) {
+            if is_pool_account_routing_candidate(&row) {
+                saw_other_non_rate_limited_routing_candidate = true;
+            }
+            continue;
+        }
         let snapshot_exhausted = routing_candidate_snapshot_is_exhausted(&candidate);
         let candidate_route_key =
             resolve_pool_account_upstream_base_url(&row, &state.config.openai_upstream_base_url)
