@@ -161,6 +161,41 @@ export const EditDraftSurvivesBackgroundRefresh: Story = {
   },
 }
 
+export const AccountPolicyDraftSurvivesBackgroundRefresh: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={detailRouteEntry(101)}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const dialog = await findTokyoDetailDialog(documentScope)
+    await userEvent.click(
+      within(dialog).getByRole('tab', { name: /路由|routing/i }),
+    )
+    await userEvent.click(
+      within(dialog).getByRole('button', { name: /编辑策略|edit routing policy/i }),
+    )
+    const policyDialog = await documentScope.findByRole('dialog', {
+      name: /账号路由策略|account routing policy/i,
+    })
+    await userEvent.click(
+      within(policyDialog).getByRole('combobox', { name: /优先使用|preferred usage/i }),
+    )
+    await userEvent.click(
+      await documentScope.findByRole('option', { name: /兜底|fallback/i }),
+    )
+
+    window.dispatchEvent(new CustomEvent(UPSTREAM_ACCOUNTS_CHANGED_EVENT))
+
+    await waitFor(() => {
+      expect(
+        within(policyDialog).getByRole('combobox', { name: /优先使用|preferred usage/i }),
+      ).toHaveTextContent(/兜底|fallback/i)
+    })
+  },
+}
+
 export const OauthEmailOverview: Story = {
   render: () => (
     <AccountPoolStoryRouter

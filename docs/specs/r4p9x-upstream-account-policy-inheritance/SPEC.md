@@ -82,6 +82,7 @@ Visual evidence is captured from stable Storybook scenarios for:
 - group policy settings with routing policy editor entry
 - account detail routing tab with field-level source breakdown
 - account routing policy editor
+- account routing policy editor retaining a local draft through background refresh
 
 PR: include
 ![Active account policy badges](visual-evidence/active-policy-account-badges.png)
@@ -101,3 +102,5 @@ PR: include
 ![Account detail routing tab](visual-evidence/account-detail-routing-tab.png)
 
 ![Account routing policy dialog](visual-evidence/account-policy-dialog.png)
+
+![Account policy draft survives background refresh](./assets/account-policy-draft-refresh.png)

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
@@ -44,6 +44,11 @@ function buildDraft(tag?: TagSummary | null, draftName = ''): TagRuleDraft {
     upstream429RetryEnabled: tag?.routingRule?.upstream429RetryEnabled === true,
     upstream429MaxRetries: normalizeRetryCount(tag?.routingRule?.upstream429MaxRetries),
   }
+}
+
+function buildDraftResetKey(tag?: TagSummary | null, draftName = ''): string {
+  if (tag) return tag.id === 0 ? `synthetic:${tag.name}` : `id:${tag.id}`
+  return `new:${draftName}`
 }
 
 function normalizePositiveInt(value: string): number | null {
@@ -202,11 +207,29 @@ export function TagRuleDialog({
   labels,
 }: TagRuleDialogProps) {
   const [draft, setDraft] = useState<TagRuleDraft>(() => buildDraft(tag, draftName))
-  const baseDraft = useMemo(() => buildDraft(tag, draftName), [draftName, tag])
+  const [baseDraft, setBaseDraft] = useState<TagRuleDraft>(() => buildDraft(tag, draftName))
+  const previousOpenRef = useRef(open)
+  const activeResetKeyRef = useRef<string | null>(open ? buildDraftResetKey(tag, draftName) : null)
+  const resetKey = useMemo(() => buildDraftResetKey(tag, draftName), [draftName, tag])
 
   useEffect(() => {
-    if (open) setDraft(baseDraft)
-  }, [baseDraft, open])
+    const wasOpen = previousOpenRef.current
+    previousOpenRef.current = open
+
+    if (!open) {
+      activeResetKeyRef.current = null
+      return
+    }
+
+    if (wasOpen && activeResetKeyRef.current === resetKey) {
+      return
+    }
+
+    const nextBaseDraft = buildDraft(tag, draftName)
+    activeResetKeyRef.current = resetKey
+    setBaseDraft(nextBaseDraft)
+    setDraft(nextBaseDraft)
+  }, [draftName, open, resetKey, tag])
 
   const payload = useMemo(
     () =>
