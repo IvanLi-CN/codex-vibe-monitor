@@ -35,6 +35,12 @@ function render(ui: React.ReactNode) {
   })
 }
 
+function rerender(ui: React.ReactNode) {
+  act(() => {
+    root?.render(ui)
+  })
+}
+
 const labels = {
   createTitle: 'Create tag',
   editTitle: 'Edit tag',
@@ -239,5 +245,157 @@ describe('TagRuleDialog', () => {
     expect(onSubmit).toHaveBeenCalledWith({
       allowCutOut: false,
     })
+  })
+
+  it('keeps an open policy draft when the same target is refreshed', async () => {
+    const onSubmit = vi.fn()
+    const originalTag: TagSummary = {
+      id: 42,
+      name: 'account@example.com',
+      routingRule: {
+        guardEnabled: false,
+        lookbackHours: null,
+        maxConversations: null,
+        allowCutOut: true,
+        allowCutIn: true,
+        priorityTier: 'normal',
+        fastModeRewriteMode: 'keep_original',
+        concurrencyLimit: 0,
+        upstream429RetryEnabled: false,
+        upstream429MaxRetries: 0,
+      },
+      accountCount: 1,
+      groupCount: 1,
+      updatedAt: '2026-03-31T00:00:00.000Z',
+    }
+    render(
+      <TagRuleDialog
+        open
+        mode="edit"
+        policyOnly
+        changedFieldsOnly
+        title="Account routing policy"
+        submitLabel="Save account policy"
+        tag={originalTag}
+        onClose={() => undefined}
+        onSubmit={onSubmit}
+        labels={labels}
+      />,
+    )
+
+    const switches = Array.from(document.querySelectorAll('button[role="switch"]'))
+    act(() => {
+      switches[1]?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    rerender(
+      <TagRuleDialog
+        open
+        mode="edit"
+        policyOnly
+        changedFieldsOnly
+        title="Account routing policy"
+        submitLabel="Save account policy"
+        tag={{
+          ...originalTag,
+          name: 'account refreshed@example.com',
+          routingRule: {
+            ...originalTag.routingRule,
+            priorityTier: 'primary',
+            concurrencyLimit: 6,
+          },
+          updatedAt: '2026-04-01T00:00:00.000Z',
+        }}
+        onClose={() => undefined}
+        onSubmit={onSubmit}
+        labels={labels}
+      />,
+    )
+
+    const submit = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Save account policy',
+    )
+    act(() => {
+      submit!.click()
+    })
+
+    expect(onSubmit).toHaveBeenCalledWith({
+      allowCutOut: false,
+    })
+  })
+
+  it('reinitializes the policy draft when the target changes while open', async () => {
+    const onSubmit = vi.fn()
+    const firstTag: TagSummary = {
+      id: 42,
+      name: 'first@example.com',
+      routingRule: {
+        guardEnabled: false,
+        lookbackHours: null,
+        maxConversations: null,
+        allowCutOut: true,
+        allowCutIn: true,
+        priorityTier: 'normal',
+        fastModeRewriteMode: 'keep_original',
+        concurrencyLimit: 0,
+        upstream429RetryEnabled: false,
+        upstream429MaxRetries: 0,
+      },
+      accountCount: 1,
+      groupCount: 1,
+      updatedAt: '2026-03-31T00:00:00.000Z',
+    }
+    const secondTag: TagSummary = {
+      ...firstTag,
+      id: 43,
+      name: 'second@example.com',
+      routingRule: {
+        ...firstTag.routingRule,
+        allowCutOut: false,
+      },
+    }
+    render(
+      <TagRuleDialog
+        open
+        mode="edit"
+        policyOnly
+        changedFieldsOnly
+        title="Account routing policy"
+        submitLabel="Save account policy"
+        tag={firstTag}
+        onClose={() => undefined}
+        onSubmit={onSubmit}
+        labels={labels}
+      />,
+    )
+
+    const switches = Array.from(document.querySelectorAll('button[role="switch"]'))
+    act(() => {
+      switches[1]?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    rerender(
+      <TagRuleDialog
+        open
+        mode="edit"
+        policyOnly
+        changedFieldsOnly
+        title="Account routing policy"
+        submitLabel="Save account policy"
+        tag={secondTag}
+        onClose={() => undefined}
+        onSubmit={onSubmit}
+        labels={labels}
+      />,
+    )
+
+    const submit = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Save account policy',
+    )
+    act(() => {
+      submit!.click()
+    })
+
+    expect(onSubmit).toHaveBeenCalledWith({})
   })
 })

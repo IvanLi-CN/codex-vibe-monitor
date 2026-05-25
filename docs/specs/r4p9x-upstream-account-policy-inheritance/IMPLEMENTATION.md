@@ -12,6 +12,8 @@ The API client normalizes the expanded routing policy surface on tags, groups, a
 
 The tag rule dialog edits upstream 429 retry alongside the existing routing controls. Group settings expose a routing policy editor entry, account detail exposes an account policy editor from the routing tab, and the effective routing card displays concurrency, upstream 429 retry state, and a field source breakdown for root, group, tag, and account layers.
 
+The routing policy dialog now treats an opened editor as a stable draft session. Background account refreshes can update the parent detail object without replacing in-progress account policy edits; closing/reopening or switching to a different target still reinitializes from the latest source data.
+
 ## Validation
 
 Validation covers:
@@ -21,3 +23,4 @@ Validation covers:
 - tag-layer override of group policy plus account override source tracking
 - frontend payload normalization for routing policy fields
 - tag dialog submission with expanded policy payloads
+- account policy drafts surviving background refresh while preserving changed-fields-only payloads
