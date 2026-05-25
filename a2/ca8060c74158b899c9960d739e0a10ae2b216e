@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.66.1",
+  "base_stable_version": "1.66.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-05-25T17:42:02Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.66.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "0da6dd23e32170e791b18b81022593781a232292",
+  "pr_number": 437,
+  "pr_title": "fix(web): preserve account policy drafts",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.66.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.66.1",
+  "target_sha": "a2ca8060c74158b899c9960d739e0a10ae2b216e",
+  "type_label": "type:patch"
+}
