@@ -1766,7 +1766,9 @@ async fn load_login_session_by_login_id_with_executor(
             group_single_account_rotation_enabled_requested, is_mother, note, tag_ids_json, group_note,
             group_concurrency_limit,
             mailbox_session_id, generated_mailbox_address AS mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
-            error_message, expires_at, consumed_at, created_at, updated_at
+            error_message, pending_encrypted_credentials, pending_token_expires_at, pending_verified_email,
+            pending_chatgpt_account_id, pending_chatgpt_user_id, pending_plan_type, pending_has_refresh_token,
+            expires_at, consumed_at, created_at, updated_at
         FROM pool_oauth_login_sessions
         WHERE login_id = ?1
         LIMIT 1
@@ -1797,7 +1799,9 @@ async fn load_login_session_by_state(
             group_single_account_rotation_enabled_requested, is_mother, note, tag_ids_json, group_note,
             group_concurrency_limit,
             mailbox_session_id, generated_mailbox_address AS mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
-            error_message, expires_at, consumed_at, created_at, updated_at
+            error_message, pending_encrypted_credentials, pending_token_expires_at, pending_verified_email,
+            pending_chatgpt_account_id, pending_chatgpt_user_id, pending_plan_type, pending_has_refresh_token,
+            expires_at, consumed_at, created_at, updated_at
         FROM pool_oauth_login_sessions
         WHERE state = ?1
         LIMIT 1
@@ -1814,13 +1818,22 @@ async fn expire_pending_login_sessions(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(
         r#"
         UPDATE pool_oauth_login_sessions
-        SET status = ?1, updated_at = ?2
-        WHERE status = ?3 AND expires_at < ?2
+        SET status = ?1,
+            updated_at = ?2,
+            pending_encrypted_credentials = NULL,
+            pending_token_expires_at = NULL,
+            pending_verified_email = NULL,
+            pending_chatgpt_account_id = NULL,
+            pending_chatgpt_user_id = NULL,
+            pending_plan_type = NULL,
+            pending_has_refresh_token = NULL
+        WHERE status IN (?3, ?4) AND expires_at < ?2
         "#,
     )
     .bind(LOGIN_SESSION_STATUS_EXPIRED)
     .bind(&now_iso)
     .bind(LOGIN_SESSION_STATUS_PENDING)
+    .bind(LOGIN_SESSION_STATUS_NEEDS_IDENTITY_CONFIRMATION)
     .execute(pool)
     .await?;
     Ok(())
@@ -1956,7 +1969,14 @@ async fn complete_login_session_with_executor(
             group_note = ?4,
             group_concurrency_limit = ?5,
             updated_at = ?6,
-            consumed_at = ?7
+            consumed_at = ?7,
+            pending_encrypted_credentials = NULL,
+            pending_token_expires_at = NULL,
+            pending_verified_email = NULL,
+            pending_chatgpt_account_id = NULL,
+            pending_chatgpt_user_id = NULL,
+            pending_plan_type = NULL,
+            pending_has_refresh_token = NULL
         WHERE login_id = ?1
         "#,
     )
@@ -2041,7 +2061,14 @@ async fn fail_login_session_with_executor(
         SET status = ?2,
             error_message = ?3,
             consumed_at = ?4,
-            updated_at = ?4
+            updated_at = ?4,
+            pending_encrypted_credentials = NULL,
+            pending_token_expires_at = NULL,
+            pending_verified_email = NULL,
+            pending_chatgpt_account_id = NULL,
+            pending_chatgpt_user_id = NULL,
+            pending_plan_type = NULL,
+            pending_has_refresh_token = NULL
         WHERE login_id = ?1
         "#,
     )
@@ -2100,7 +2127,36 @@ fn login_session_to_response(row: &OauthLoginSessionRow) -> LoginSessionStatusRe
         email: row.email.clone(),
         error: row.error_message.clone(),
         sync_applied: None,
+        identity_confirmation: login_session_identity_confirmation_response(row),
     }
+}
+
+fn login_session_identity_confirmation_response(
+    row: &OauthLoginSessionRow,
+) -> Option<OauthIdentityConfirmationResponse> {
+    if row.status != LOGIN_SESSION_STATUS_NEEDS_IDENTITY_CONFIRMATION {
+        return None;
+    }
+    Some(OauthIdentityConfirmationResponse {
+        current: OauthIdentitySummaryResponse {
+            account_id: row.account_id,
+            display_name: row.display_name.clone(),
+            email: row.email.clone(),
+            verified_email: None,
+            chatgpt_account_id: None,
+            chatgpt_user_id: None,
+            plan_type: None,
+        },
+        incoming: OauthIdentitySummaryResponse {
+            account_id: row.account_id,
+            display_name: None,
+            email: row.pending_verified_email.clone(),
+            verified_email: row.pending_verified_email.clone(),
+            chatgpt_account_id: row.pending_chatgpt_account_id.clone(),
+            chatgpt_user_id: row.pending_chatgpt_user_id.clone(),
+            plan_type: row.pending_plan_type.clone(),
+        },
+    })
 }
 
 fn login_session_to_response_with_sync_applied(

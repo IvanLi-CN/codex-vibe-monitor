@@ -45,6 +45,7 @@ export function UpstreamAccountCreateOauthSection() {
     handleDeleteTag,
     handleGenerateOauthMailbox,
     handleGenerateOauthUrl,
+    handleConfirmOauthIdentityOverwrite,
     handleOauthGroupCreateRequest,
     hasGroupSettings,
     invalidateRelinkPendingOauthSessionForMailboxChange,
@@ -101,6 +102,9 @@ export function UpstreamAccountCreateOauthSection() {
   const oauthResolutionPlanBadge = upstreamPlanBadgeRecipe(
     oauthEmailResolution?.detail.planType ?? null,
   );
+  const oauthNeedsIdentityConfirmation =
+    session?.status === "needs_identity_confirmation";
+  const oauthIdentityConfirmation = session?.identityConfirmation ?? null;
 
   return (
 <>
@@ -733,6 +737,70 @@ export function UpstreamAccountCreateOauthSection() {
     </div>
   </div>
 
+  {oauthNeedsIdentityConfirmation && oauthIdentityConfirmation ? (
+    <Alert variant="warning" className="grid gap-3">
+      <div className="flex items-start gap-2">
+        <AppIcon
+          name="alert-outline"
+          className="mt-0.5 h-4 w-4 shrink-0"
+          aria-hidden
+        />
+        <div className="min-w-0">
+          <p className="text-sm font-semibold">
+            {t(
+              "accountPool.upstreamAccounts.batchOauth.identityConfirmation.title",
+            )}
+          </p>
+          <p className="text-xs leading-5">
+            {t(
+              "accountPool.upstreamAccounts.batchOauth.identityConfirmation.body",
+            )}
+          </p>
+        </div>
+      </div>
+      <div className="grid gap-2 text-xs md:grid-cols-2">
+        <div className="rounded-lg border border-warning/25 bg-warning/8 px-3 py-2">
+          <p className="font-semibold">
+            {t(
+              "accountPool.upstreamAccounts.batchOauth.identityConfirmation.current",
+            )}
+          </p>
+          <p className="mt-1 break-words">
+            {(oauthIdentityConfirmation.current.displayName ??
+              oauthDisplayName) ||
+              t("accountPool.upstreamAccounts.identityUnavailable")}
+          </p>
+          <p className="break-words text-base-content/68">
+            {oauthIdentityConfirmation.current.email ??
+              t("accountPool.upstreamAccounts.identityUnavailable")}
+          </p>
+        </div>
+        <div className="rounded-lg border border-warning/25 bg-warning/8 px-3 py-2">
+          <p className="font-semibold">
+            {t(
+              "accountPool.upstreamAccounts.batchOauth.identityConfirmation.incoming",
+            )}
+          </p>
+          <p className="mt-1 break-words">
+            {oauthIdentityConfirmation.incoming.email ??
+              oauthIdentityConfirmation.incoming.verifiedEmail ??
+              t("accountPool.upstreamAccounts.identityUnavailable")}
+          </p>
+          <p className="break-words text-base-content/68">
+            {[
+              oauthIdentityConfirmation.incoming.chatgptAccountId,
+              oauthIdentityConfirmation.incoming.chatgptUserId,
+              oauthIdentityConfirmation.incoming.planType,
+            ]
+              .filter(Boolean)
+              .join(" / ") ||
+              t("accountPool.upstreamAccounts.identityUnavailable")}
+          </p>
+        </div>
+      </div>
+    </Alert>
+  ) : null}
+
   {oauthEmailResolution ? (
     <Alert variant="warning">
       <AppIcon
@@ -812,6 +880,29 @@ export function UpstreamAccountCreateOauthSection() {
       )}
       {t("accountPool.upstreamAccounts.actions.completeOauth")}
     </Button>
+    {oauthNeedsIdentityConfirmation ? (
+      <Button
+        type="button"
+        variant="secondary"
+        onClick={() => void handleConfirmOauthIdentityOverwrite()}
+        disabled={
+          busyAction === "oauth-confirm-identity" || !writesEnabled
+        }
+      >
+        {busyAction === "oauth-confirm-identity" ? (
+          <Spinner size="sm" className="mr-2" />
+        ) : (
+          <AppIcon
+            name="shield-key-outline"
+            className="mr-2 h-4 w-4"
+            aria-hidden
+          />
+        )}
+        {t(
+          "accountPool.upstreamAccounts.batchOauth.actions.confirmIdentityOverwrite",
+        )}
+      </Button>
+    ) : null}
     {oauthDuplicateWarning ? (
       <DuplicateWarningPopover
         duplicateWarning={oauthDuplicateWarning}

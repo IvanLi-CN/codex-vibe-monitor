@@ -50,7 +50,7 @@ export type CreateTab =
   | "apiKey"
   | "import"
   | "importSession";
-type BatchOauthBusyAction = "generate" | "complete" | null;
+type BatchOauthBusyAction = "generate" | "complete" | "confirm" | null;
 export type { ImportedOauthValidationDialogState };
 export type MailboxBusyAction = "attach" | "generate" | null;
 export type BatchOauthPersistedMetadata = {
@@ -1748,7 +1748,8 @@ export function batchStatusVariant(
 ): "success" | "warning" | "error" | "secondary" {
   if (status === "completed") return "success";
   if (status === "completedNeedsRefresh") return "warning";
-  if (status === "pending") return "warning";
+  if (status === "pending" || status === "needs_identity_confirmation")
+    return "warning";
   if (status === "failed" || status === "expired") return "error";
   return "secondary";
 }

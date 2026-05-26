@@ -49,6 +49,7 @@ export function UpstreamAccountCreateBatchOauthSection() {
     handleBatchCopyOauthUrl,
     handleBatchGenerateMailbox,
     handleBatchGenerateOauthUrl,
+    handleBatchConfirmOauthIdentityOverwrite,
     handleBatchGroupValueChange,
     handleBatchRowGroupCreateRequest,
     handleBatchMailboxEditorValueChange,
@@ -157,6 +158,8 @@ export function UpstreamAccountCreateBatchOauthSection() {
             const isRecoveredNeedsRefresh =
               status === "completedNeedsRefresh";
             const isPending = status === "pending";
+            const needsIdentityConfirmation =
+              status === "needs_identity_confirmation";
             const isBusy = row.busyAction != null;
             const isMailboxBusy = row.mailboxBusyAction != null;
             const metadataLocked =
@@ -795,6 +798,44 @@ export function UpstreamAccountCreateBatchOauthSection() {
                             />
                           </Button>
                         </Tooltip>
+                        {needsIdentityConfirmation ? (
+                          <Tooltip
+                            content={buildActionTooltip(
+                              t(
+                                "accountPool.upstreamAccounts.batchOauth.tooltip.confirmIdentityTitle",
+                              ),
+                              t(
+                                "accountPool.upstreamAccounts.batchOauth.tooltip.confirmIdentityBody",
+                              ),
+                            )}
+                          >
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="secondary"
+                              className="h-9 w-9 shrink-0 rounded-full"
+                              aria-label={t(
+                                "accountPool.upstreamAccounts.batchOauth.actions.confirmIdentityOverwrite",
+                              )}
+                              onClick={() =>
+                                void handleBatchConfirmOauthIdentityOverwrite(
+                                  row.id,
+                                )
+                              }
+                              disabled={!writesEnabled || isBusy}
+                            >
+                              {row.busyAction === "confirm" ? (
+                                <Spinner size="sm" />
+                              ) : (
+                                <AppIcon
+                                  name="shield-key-outline"
+                                  className="h-4 w-4"
+                                  aria-hidden
+                                />
+                              )}
+                            </Button>
+                          </Tooltip>
+                        ) : null}
                         <Tooltip
                           content={buildActionTooltip(
                             t(
@@ -987,6 +1028,81 @@ export function UpstreamAccountCreateBatchOauthSection() {
                                 "accountPool.upstreamAccounts.oauth.keepEnteredEmail",
                               )}
                             </Button>
+                          </div>
+                        </div>
+                      </Alert>
+                    ) : null}
+                    {needsIdentityConfirmation &&
+                    row.session?.identityConfirmation ? (
+                      <Alert variant="warning" className="grid gap-2">
+                        <div className="flex items-start gap-2">
+                          <AppIcon
+                            name="alert-outline"
+                            className="mt-0.5 h-4 w-4 shrink-0"
+                            aria-hidden
+                          />
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold">
+                              {t(
+                                "accountPool.upstreamAccounts.batchOauth.identityConfirmation.title",
+                              )}
+                            </p>
+                            <p className="text-xs leading-5">
+                              {t(
+                                "accountPool.upstreamAccounts.batchOauth.identityConfirmation.body",
+                              )}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="grid gap-2 text-xs md:grid-cols-2">
+                          <div className="rounded-lg border border-warning/25 bg-warning/8 px-3 py-2">
+                            <p className="font-semibold">
+                              {t(
+                                "accountPool.upstreamAccounts.batchOauth.identityConfirmation.current",
+                              )}
+                            </p>
+                            <p className="mt-1 break-words">
+                              {(row.session.identityConfirmation.current.displayName ??
+                                row.displayName) ||
+                                t(
+                                  "accountPool.upstreamAccounts.identityUnavailable",
+                                )}
+                            </p>
+                            <p className="break-words text-base-content/68">
+                              {row.session.identityConfirmation.current.email ??
+                                t(
+                                  "accountPool.upstreamAccounts.identityUnavailable",
+                                )}
+                            </p>
+                          </div>
+                          <div className="rounded-lg border border-warning/25 bg-warning/8 px-3 py-2">
+                            <p className="font-semibold">
+                              {t(
+                                "accountPool.upstreamAccounts.batchOauth.identityConfirmation.incoming",
+                              )}
+                            </p>
+                            <p className="mt-1 break-words">
+                              {row.session.identityConfirmation.incoming.email ??
+                                row.session.identityConfirmation.incoming.verifiedEmail ??
+                                t(
+                                  "accountPool.upstreamAccounts.identityUnavailable",
+                                )}
+                            </p>
+                            <p className="break-words text-base-content/68">
+                              {[
+                                row.session.identityConfirmation.incoming
+                                  .chatgptAccountId,
+                                row.session.identityConfirmation.incoming
+                                  .chatgptUserId,
+                                row.session.identityConfirmation.incoming
+                                  .planType,
+                              ]
+                                .filter(Boolean)
+                                .join(" / ") ||
+                                t(
+                                  "accountPool.upstreamAccounts.identityUnavailable",
+                                )}
+                            </p>
                           </div>
                         </div>
                       </Alert>
