@@ -20,6 +20,7 @@ import type {
   PromptCacheConversationBindingResponse,
   PromptCacheConversationsResponse,
   UpstreamAccountDetail,
+  UpstreamAccountSummary,
 } from "../lib/api";
 import { PromptCacheConversationTable } from "./PromptCacheConversationTable";
 
@@ -131,6 +132,7 @@ function createUpstreamAccountSummary(
   id: number,
   displayName: string,
   groupName: string,
+  overrides: Partial<UpstreamAccountSummary> = {},
 ) {
   return {
     id,
@@ -161,6 +163,7 @@ function createUpstreamAccountSummary(
       sourceTagNames: [],
       guardRules: [],
     },
+    ...overrides,
   };
 }
 
@@ -1156,10 +1159,20 @@ describe("PromptCacheConversationTable", () => {
       items: [
         createUpstreamAccountSummary(42, "Pool Alpha", "prod"),
         createUpstreamAccountSummary(77, "Pool Beta", "backup"),
+        createUpstreamAccountSummary(88, "Pool Disabled", "disabled-only", {
+          enabled: false,
+          enableStatus: "disabled",
+        }),
+        createUpstreamAccountSummary(99, "Pool Inactive", "inactive-only", {
+          status: "disabled",
+          displayStatus: "disabled",
+        }),
       ],
       groups: [
         { groupName: "prod", accountCount: 1 },
         { groupName: "backup", accountCount: 1 },
+        { groupName: "disabled-only", accountCount: 1 },
+        { groupName: "inactive-only", accountCount: 1 },
       ],
       forwardProxyNodes: [],
       hasUngroupedAccounts: false,
@@ -1228,6 +1241,8 @@ describe("PromptCacheConversationTable", () => {
     expect(document.querySelectorAll('[role="combobox"]')).toHaveLength(2);
 
     await user.click(kindSelect!);
+    expect(findSelectOption("disabled-only")).toBeUndefined();
+    expect(findSelectOption("inactive-only")).toBeUndefined();
     await user.click(findSelectOption("上游账号")!);
     await flushInteractive();
 
@@ -1235,6 +1250,8 @@ describe("PromptCacheConversationTable", () => {
       '[role="combobox"][aria-label="账号绑定目标"]',
     ) as HTMLElement | null;
     await user.click(accountSelect!);
+    expect(findSelectOption("Pool Disabled")).toBeUndefined();
+    expect(findSelectOption("Pool Inactive")).toBeUndefined();
     await user.click(findSelectOption("Pool Beta")!);
     const saveButton = findButtonByAriaLabel("保存");
     await act(async () => {

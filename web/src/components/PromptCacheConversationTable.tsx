@@ -154,6 +154,23 @@ function conversationBindingAccountLabel(account: UpstreamAccountSummary) {
   return group ? `${identity} · ${group}` : identity;
 }
 
+function accountCanBePromptCacheBindingTarget(account: UpstreamAccountSummary) {
+  if (
+    account.provider !== "codex" ||
+    !account.enabled ||
+    account.status !== "active"
+  ) {
+    return false;
+  }
+  if (account.kind === "api_key_codex") {
+    return Boolean(account.maskedApiKey?.trim());
+  }
+  if (account.kind === "oauth_codex") {
+    return account.hasRefreshToken !== false;
+  }
+  return true;
+}
+
 function currentBindingLabel(
   binding: PromptCacheConversationBindingResponse | null,
   t: (key: string, values?: Record<string, string | number>) => string,
@@ -2078,14 +2095,12 @@ export function PromptCacheConversationHistoryDrawer({
       .then(([nextBinding, accountList]) => {
         if (controller.signal.aborted) return;
         const accounts = accountList.items.filter(
-          (account) => account.provider === "codex",
+          accountCanBePromptCacheBindingTarget,
         );
         const groups = Array.from(
           new Set(
-            [
-              ...accountList.groups.map((group) => group.groupName),
-              ...accounts.map((account) => account.groupName ?? ""),
-            ]
+            accounts
+              .map((account) => account.groupName ?? "")
               .map((groupName) => groupName.trim())
               .filter((groupName) => groupName.length > 0),
           ),
