@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.67.0",
+  "base_stable_version": "1.66.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-05-26T16:06:57Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.67.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "1b9a259cc3b3d6871cd75c0011c5dfd026ec8160",
+  "pr_number": 438,
+  "pr_title": "feat(prompt-cache): add conversation routing bindings",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.67.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.67.0",
+  "target_sha": "7ee9fc49ac0ff08184d6d29355b7d952fb0767fd",
+  "type_label": "type:minor"
+}
