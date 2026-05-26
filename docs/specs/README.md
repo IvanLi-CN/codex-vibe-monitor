@@ -19,6 +19,7 @@
 | v7se4 | Worktree bootstrap 与显式依赖初始化                                       | active    | `v7se4-worktree-bootstrap/SPEC.md`                         | `v7se4-worktree-bootstrap/IMPLEMENTATION.md`                         | topic anchor: developer tooling / linked worktree   |
 | z9h7v | 请求日志可观测性增强（IP / Cache Tokens / 分阶段耗时 / Prompt Cache Key） | active    | `z9h7v-invocation-log-observability/SPEC.md`               | `z9h7v-invocation-log-observability/IMPLEMENTATION.md`               | topic anchor: records / invocations observability   |
 | kmr5z | Forward Proxy 节点延迟与订阅刷新                                          | active    | `kmr5z-forward-proxy-latency-refresh/SPEC.md`              | `kmr5z-forward-proxy-latency-refresh/IMPLEMENTATION.md`              | topic anchor: forward proxy / settings diagnostics  |
+| pbgwc | Prompt Cache 对话路由绑定                                                 | active    | `pbgwc-prompt-cache-conversation-bindings/SPEC.md`         | `pbgwc-prompt-cache-conversation-bindings/IMPLEMENTATION.md`         | topic anchor: prompt cache / account-pool routing   |
 
 ## Archived Sources
 

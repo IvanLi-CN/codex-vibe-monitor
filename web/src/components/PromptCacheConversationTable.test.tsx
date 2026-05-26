@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { act, type ComponentProps, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
+import userEvent from "@testing-library/user-event";
 import {
   afterEach,
   beforeAll,
@@ -16,8 +17,10 @@ import { I18nProvider } from "../i18n";
 import type {
   BroadcastPayload,
   PromptCacheConversation,
+  PromptCacheConversationBindingResponse,
   PromptCacheConversationsResponse,
   UpstreamAccountDetail,
+  UpstreamAccountSummary,
 } from "../lib/api";
 import { PromptCacheConversationTable } from "./PromptCacheConversationTable";
 
@@ -26,12 +29,34 @@ const apiMocks = vi.hoisted(() => ({
     vi.fn<(accountId: number) => Promise<UpstreamAccountDetail>>(),
   fetchInvocationRecords: vi.fn(),
   fetchInvocationRecordsSummary: vi.fn(),
+  fetchPromptCacheConversationBinding:
+    vi.fn<(promptCacheKey: string) => Promise<PromptCacheConversationBindingResponse>>(),
+  fetchUpstreamAccounts: vi.fn(),
+  updatePromptCacheConversationBinding: vi.fn(),
 }));
 
 const sseMocks = vi.hoisted(() => ({
   listeners: new Set<(payload: BroadcastPayload) => void>(),
   openListeners: new Set<() => void>(),
 }));
+
+class MockPointerEvent extends MouseEvent {
+  pointerType: string;
+
+  constructor(
+    type: string,
+    init: MouseEventInit & { pointerType?: string } = {},
+  ) {
+    super(type, init);
+    this.pointerType = init.pointerType ?? "mouse";
+  }
+}
+
+function findSelectOption(label: string) {
+  return Array.from(document.querySelectorAll('[role="option"]')).find(
+    (option) => option.textContent?.includes(label),
+  ) as HTMLElement | undefined;
+}
 
 vi.mock("../lib/api", async () => {
   const actual =
@@ -41,6 +66,11 @@ vi.mock("../lib/api", async () => {
     fetchUpstreamAccountDetail: apiMocks.fetchUpstreamAccountDetail,
     fetchInvocationRecords: apiMocks.fetchInvocationRecords,
     fetchInvocationRecordsSummary: apiMocks.fetchInvocationRecordsSummary,
+    fetchPromptCacheConversationBinding:
+      apiMocks.fetchPromptCacheConversationBinding,
+    fetchUpstreamAccounts: apiMocks.fetchUpstreamAccounts,
+    updatePromptCacheConversationBinding:
+      apiMocks.updatePromptCacheConversationBinding,
   };
 });
 
@@ -98,6 +128,45 @@ function createConversation(
   };
 }
 
+function createUpstreamAccountSummary(
+  id: number,
+  displayName: string,
+  groupName: string,
+  overrides: Partial<UpstreamAccountSummary> = {},
+) {
+  return {
+    id,
+    kind: "api_key_codex",
+    provider: "codex",
+    displayName,
+    groupName,
+    isMother: false,
+    status: "active",
+    workStatus: "idle",
+    enableStatus: "enabled",
+    healthStatus: "normal",
+    syncState: "idle",
+    displayStatus: "active",
+    enabled: true,
+    email: null,
+    chatgptAccountId: null,
+    planType: null,
+    maskedApiKey: "sk-***",
+    tags: [],
+    effectiveRoutingRule: {
+      guardEnabled: false,
+      lookbackHours: null,
+      maxConversations: null,
+      allowCutOut: true,
+      allowCutIn: true,
+      sourceTagIds: [],
+      sourceTagNames: [],
+      guardRules: [],
+    },
+    ...overrides,
+  };
+}
+
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
 
@@ -106,6 +175,36 @@ beforeAll(() => {
     configurable: true,
     writable: true,
     value: true,
+  });
+  Object.defineProperty(window, "PointerEvent", {
+    configurable: true,
+    writable: true,
+    value: MockPointerEvent,
+  });
+  Object.defineProperty(globalThis, "PointerEvent", {
+    configurable: true,
+    writable: true,
+    value: MockPointerEvent,
+  });
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+    configurable: true,
+    writable: true,
+    value: () => undefined,
+  });
+  Object.defineProperty(HTMLElement.prototype, "hasPointerCapture", {
+    configurable: true,
+    writable: true,
+    value: () => false,
+  });
+  Object.defineProperty(HTMLElement.prototype, "setPointerCapture", {
+    configurable: true,
+    writable: true,
+    value: () => undefined,
+  });
+  Object.defineProperty(HTMLElement.prototype, "releasePointerCapture", {
+    configurable: true,
+    writable: true,
+    value: () => undefined,
   });
 });
 
@@ -116,6 +215,37 @@ describe("PromptCacheConversationTable", () => {
     apiMocks.fetchUpstreamAccountDetail.mockReset();
     apiMocks.fetchInvocationRecords.mockReset();
     apiMocks.fetchInvocationRecordsSummary.mockReset();
+    apiMocks.fetchPromptCacheConversationBinding.mockReset();
+    apiMocks.fetchUpstreamAccounts.mockReset();
+    apiMocks.updatePromptCacheConversationBinding.mockReset();
+    apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
+      promptCacheKey: "pck-history",
+      bindingKind: "none",
+      groupName: null,
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      updatedAt: null,
+    });
+    apiMocks.fetchUpstreamAccounts.mockResolvedValue({
+      writesEnabled: true,
+      items: [],
+      groups: [],
+      forwardProxyNodes: [],
+      hasUngroupedAccounts: false,
+      total: 0,
+      page: 1,
+      pageSize: 500,
+      metrics: { total: 0, oauth: 0, apiKey: 0, attention: 0 },
+      routing: null,
+    });
+    apiMocks.updatePromptCacheConversationBinding.mockResolvedValue({
+      promptCacheKey: "pck-history",
+      bindingKind: "none",
+      groupName: null,
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      updatedAt: null,
+    });
     apiMocks.fetchInvocationRecordsSummary.mockResolvedValue({
       snapshotId: 900,
       newRecordsCount: 0,
@@ -1013,6 +1143,259 @@ describe("PromptCacheConversationTable", () => {
     });
 
     expect(document.body.textContent).not.toContain("全部保留调用记录");
+  });
+
+  it("saves an upstream account binding from the history drawer", async () => {
+    apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
+      promptCacheKey: "pck-binding",
+      bindingKind: "group",
+      groupName: "prod",
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      updatedAt: "2026-03-02T12:00:00Z",
+    });
+    apiMocks.fetchUpstreamAccounts.mockResolvedValue({
+      writesEnabled: true,
+      items: [
+        createUpstreamAccountSummary(42, "Pool Alpha", "prod"),
+        createUpstreamAccountSummary(77, "Pool Beta", "backup"),
+        createUpstreamAccountSummary(88, "Pool Disabled", "disabled-only", {
+          enabled: false,
+          enableStatus: "disabled",
+        }),
+        createUpstreamAccountSummary(99, "Pool Inactive", "inactive-only", {
+          status: "disabled",
+          displayStatus: "disabled",
+        }),
+      ],
+      groups: [
+        { groupName: "prod", accountCount: 1 },
+        { groupName: "backup", accountCount: 1 },
+        { groupName: "disabled-only", accountCount: 1 },
+        { groupName: "inactive-only", accountCount: 1 },
+      ],
+      forwardProxyNodes: [],
+      hasUngroupedAccounts: false,
+      total: 2,
+      page: 1,
+      pageSize: 500,
+      metrics: { total: 2, oauth: 0, apiKey: 2, attention: 0 },
+      routing: null,
+    });
+    apiMocks.updatePromptCacheConversationBinding.mockResolvedValue({
+      promptCacheKey: "pck-binding",
+      bindingKind: "upstreamAccount",
+      groupName: null,
+      upstreamAccountId: 77,
+      upstreamAccountName: "Pool Beta",
+      updatedAt: "2026-03-02T12:01:00Z",
+    });
+    apiMocks.fetchInvocationRecords.mockResolvedValue({
+      snapshotId: 1,
+      total: 0,
+      page: 1,
+      pageSize: 200,
+      records: [],
+    });
+
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-binding",
+          requestCount: 1,
+          totalTokens: 100,
+          totalCost: 0.01,
+          createdAt: "2026-03-02T10:00:00Z",
+          lastActivityAt: "2026-03-02T12:30:00Z",
+          last24hRequests: [],
+        }),
+      ],
+    });
+
+    const historyButton = findButtonByAriaLabel("打开全部调用记录");
+    await act(async () => {
+      historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const kindSelect = document.querySelector(
+      '[role="combobox"][aria-label="绑定类型"]',
+    ) as HTMLElement | null;
+    const targetSelect = document.querySelector(
+      '[role="combobox"][aria-label="分组绑定目标"]',
+    ) as HTMLElement | null;
+    expect(kindSelect?.textContent).toContain("分组");
+    expect(targetSelect?.textContent).toContain("prod");
+    expect(document.body.textContent).not.toContain(
+      "保存后，下一个相同 Prompt Cache Key 请求生效。",
+    );
+    expect(document.body.textContent).not.toContain("不保留硬路由绑定。");
+    expect(document.querySelectorAll("select")).toHaveLength(0);
+    expect(document.querySelectorAll('[role="combobox"]')).toHaveLength(2);
+
+    await user.click(kindSelect!);
+    expect(findSelectOption("disabled-only")).toBeUndefined();
+    expect(findSelectOption("inactive-only")).toBeUndefined();
+    await user.click(findSelectOption("上游账号")!);
+    await flushInteractive();
+
+    const accountSelect = document.querySelector(
+      '[role="combobox"][aria-label="账号绑定目标"]',
+    ) as HTMLElement | null;
+    await user.click(accountSelect!);
+    expect(findSelectOption("Pool Disabled")).toBeUndefined();
+    expect(findSelectOption("Pool Inactive")).toBeUndefined();
+    await user.click(findSelectOption("Pool Beta")!);
+    const saveButton = findButtonByAriaLabel("保存");
+    await act(async () => {
+      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+
+    expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledWith(
+      "pck-binding",
+      { bindingKind: "upstreamAccount", upstreamAccountId: 77 },
+    );
+    expect(document.body.textContent).toContain("当前：账号 Pool Beta");
+  });
+
+  it("allows retrying a binding save after a transient failure", async () => {
+    apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
+      promptCacheKey: "pck-binding",
+      bindingKind: "group",
+      groupName: "prod",
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      updatedAt: "2026-03-02T12:00:00Z",
+    });
+    apiMocks.fetchUpstreamAccounts.mockResolvedValue({
+      writesEnabled: true,
+      items: [createUpstreamAccountSummary(42, "Pool Alpha", "prod")],
+      groups: [{ groupName: "prod", accountCount: 1 }],
+      forwardProxyNodes: [],
+      hasUngroupedAccounts: false,
+      total: 1,
+      page: 1,
+      pageSize: 500,
+      metrics: { total: 1, oauth: 0, apiKey: 1, attention: 0 },
+      routing: null,
+    });
+    apiMocks.updatePromptCacheConversationBinding
+      .mockRejectedValueOnce(new Error("temporary save failure"))
+      .mockResolvedValueOnce({
+        promptCacheKey: "pck-binding",
+        bindingKind: "group",
+        groupName: "prod",
+        upstreamAccountId: null,
+        upstreamAccountName: null,
+        updatedAt: "2026-03-02T12:01:00Z",
+      });
+    apiMocks.fetchInvocationRecords.mockResolvedValue({
+      snapshotId: 1,
+      total: 0,
+      page: 1,
+      pageSize: 200,
+      records: [],
+    });
+
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-binding",
+          requestCount: 1,
+          totalTokens: 100,
+          totalCost: 0.01,
+          createdAt: "2026-03-02T10:00:00Z",
+          lastActivityAt: "2026-03-02T12:30:00Z",
+          last24hRequests: [],
+        }),
+      ],
+    });
+
+    const historyButton = findButtonByAriaLabel("打开全部调用记录");
+    await act(async () => {
+      historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+
+    const saveButton = findButtonByAriaLabel("保存");
+    await act(async () => {
+      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+
+    expect(document.body.textContent).toContain("temporary save failure");
+    expect(saveButton?.disabled).toBe(false);
+
+    await act(async () => {
+      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+
+    expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(2);
+    expect(document.body.textContent).toContain("当前：分组 prod");
+  });
+
+  it("does not allow saving a default binding draft after load failure", async () => {
+    apiMocks.fetchPromptCacheConversationBinding.mockRejectedValue(
+      new Error("binding load failed"),
+    );
+    apiMocks.fetchInvocationRecords.mockResolvedValue({
+      snapshotId: 1,
+      total: 0,
+      page: 1,
+      pageSize: 200,
+      records: [],
+    });
+
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-binding",
+          requestCount: 1,
+          totalTokens: 100,
+          totalCost: 0.01,
+          createdAt: "2026-03-02T10:00:00Z",
+          lastActivityAt: "2026-03-02T12:30:00Z",
+          last24hRequests: [],
+        }),
+      ],
+    });
+
+    const historyButton = findButtonByAriaLabel("打开全部调用记录");
+    await act(async () => {
+      historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+
+    expect(document.body.textContent).toContain("binding load failed");
+    const saveButton = findButtonByAriaLabel("保存");
+    expect(saveButton?.disabled).toBe(true);
+    await act(async () => {
+      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+
+    expect(apiMocks.updatePromptCacheConversationBinding).not.toHaveBeenCalled();
   });
 
   it("keeps a single historical invocation visible in the activity chart", async () => {

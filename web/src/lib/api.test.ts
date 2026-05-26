@@ -8,6 +8,7 @@ import {
   fetchForwardProxyBindingNodes,
   fetchForwardProxyTimeseries,
   fetchParallelWorkStats,
+  fetchPromptCacheConversationBinding,
   fetchPromptCacheConversations,
   fetchTimeseries,
   fetchSettings,
@@ -20,6 +21,7 @@ import {
   refreshForwardProxySubscriptions,
   updateOauthLoginSession,
   updatePoolRoutingSettings,
+  updatePromptCacheConversationBinding,
   updateProxySettings,
   validateForwardProxyCandidate,
 } from "./api";
@@ -2387,5 +2389,54 @@ describe("account pool frontend API helpers", () => {
     expect(response.selectionMode).toBe("activityWindow");
     expect(response.selectedActivityHours).toBeNull();
     expect(response.selectedActivityMinutes).toBe(5);
+  });
+
+  it("reads and updates prompt-cache conversation bindings by encoded key", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      expect(url).toContain(
+        "/api/stats/prompt-cache-conversation-bindings/pck%2Fwith%20space",
+      );
+      if (init?.method === "PATCH") {
+        expect(JSON.parse(String(init.body))).toEqual({
+          bindingKind: "upstreamAccount",
+          upstreamAccountId: 42,
+        });
+        return new Response(
+          JSON.stringify({
+            promptCacheKey: "pck/with space",
+            bindingKind: "upstreamAccount",
+            groupName: null,
+            upstreamAccountId: 42,
+            upstreamAccountName: "Pool Alpha",
+            updatedAt: "2026-03-10T23:59:00Z",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          promptCacheKey: "pck/with space",
+          bindingKind: "none",
+          groupName: null,
+          upstreamAccountId: null,
+          upstreamAccountName: null,
+          updatedAt: null,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    const initial = await fetchPromptCacheConversationBinding("pck/with space");
+    const updated = await updatePromptCacheConversationBinding("pck/with space", {
+      bindingKind: "upstreamAccount",
+      upstreamAccountId: 42,
+    });
+
+    expect(initial.bindingKind).toBe("none");
+    expect(updated.bindingKind).toBe("upstreamAccount");
+    expect(updated.upstreamAccountName).toBe("Pool Alpha");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

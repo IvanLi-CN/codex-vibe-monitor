@@ -3075,3 +3075,209 @@ async fn prompt_cache_last24h_requests_keep_status_only_http_failures_marked_as_
     assert!(!conversation.last24h_requests[0].is_success);
     assert_eq!(conversation.last24h_requests[0].outcome, "failure");
 }
+
+#[tokio::test]
+async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clearable() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let group_name = "prompt-cache-bindings-api-group";
+    ensure_test_group_binding(&state.pool, group_name, None).await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Binding API",
+        "sk-prompt-cache-binding-api",
+        Some(group_name),
+        None,
+        None,
+    )
+    .await;
+    let unselectable_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Binding Unselectable API",
+        "sk-prompt-cache-binding-unselectable-api",
+        Some(group_name),
+        None,
+        None,
+    )
+    .await;
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET encrypted_credentials = NULL WHERE id = ?1",
+    )
+    .bind(unselectable_account_id)
+    .execute(&state.pool)
+    .await
+    .expect("make prompt cache binding target unselectable");
+
+    let both_payload: UpdatePromptCacheConversationBindingRequest =
+        serde_json::from_value(json!({
+            "bindingKind": "group",
+            "groupName": group_name,
+            "upstreamAccountId": account_id,
+        }))
+        .expect("deserialize mutually exclusive binding payload");
+    let prompt_cache_key = "prompt-cache-binding-api+literal&part=value";
+    let both_err = patch_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(format!("  {prompt_cache_key}  ")),
+        Json(both_payload),
+    )
+    .await
+    .expect_err("mutually exclusive binding payload should fail");
+    assert!(matches!(both_err, ApiError::BadRequest(_)));
+
+    let group_payload: UpdatePromptCacheConversationBindingRequest =
+        serde_json::from_value(json!({
+            "bindingKind": "group",
+            "groupName": group_name,
+        }))
+        .expect("deserialize group binding payload");
+    let Json(group_response) = patch_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(format!("  {prompt_cache_key}  ")),
+        Json(group_payload),
+    )
+    .await
+    .expect("group binding should save");
+    assert_eq!(group_response.prompt_cache_key, prompt_cache_key);
+    assert_eq!(group_response.binding_kind, "group");
+    assert_eq!(group_response.group_name.as_deref(), Some(group_name));
+    assert_eq!(group_response.upstream_account_id, None);
+
+    let unselectable_payload: UpdatePromptCacheConversationBindingRequest =
+        serde_json::from_value(json!({
+            "bindingKind": "upstreamAccount",
+            "upstreamAccountId": unselectable_account_id,
+        }))
+        .expect("deserialize unselectable account binding payload");
+    let unselectable_err = patch_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        Json(unselectable_payload),
+    )
+    .await
+    .expect_err("unselectable account binding should fail");
+    assert!(matches!(unselectable_err, ApiError::BadRequest(_)));
+
+    let account_payload: UpdatePromptCacheConversationBindingRequest =
+        serde_json::from_value(json!({
+            "bindingKind": "upstreamAccount",
+            "upstreamAccountId": account_id,
+        }))
+        .expect("deserialize account binding payload");
+    let Json(account_response) = patch_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        Json(account_payload),
+    )
+    .await
+    .expect("account binding should save");
+    assert_eq!(account_response.binding_kind, "upstreamAccount");
+    assert_eq!(account_response.group_name, None);
+    assert_eq!(account_response.upstream_account_id, Some(account_id));
+
+    let clear_payload: UpdatePromptCacheConversationBindingRequest =
+        serde_json::from_value(json!({ "bindingKind": "none" }))
+            .expect("deserialize clear binding payload");
+    let Json(clear_response) = patch_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        Json(clear_payload),
+    )
+    .await
+    .expect("clear binding should delete row");
+    assert_eq!(clear_response.binding_kind, "none");
+    let Json(get_response) = get_prompt_cache_conversation_binding(
+        State(state),
+        AxumPath(prompt_cache_key.to_string()),
+    )
+    .await
+    .expect("get cleared binding");
+    assert_eq!(get_response.binding_kind, "none");
+}
+
+#[tokio::test]
+async fn prompt_cache_conversation_binding_route_accepts_encoded_key() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let group_name = "prompt-cache-bindings-route-group";
+    ensure_test_group_binding(&state.pool, group_name, None).await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Binding Route API",
+        "sk-prompt-cache-binding-route-api",
+        Some(group_name),
+        None,
+        None,
+    )
+    .await;
+    let prompt_cache_key = "prompt-cache route/key+literal&part=value";
+    let app = build_app_router(state.clone());
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test app listener");
+    let addr = listener.local_addr().expect("read test app listener addr");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve prompt cache binding test app");
+    });
+
+    let client = reqwest::Client::new();
+    let encoded_key = prompt_cache_key
+        .as_bytes()
+        .iter()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (*byte as char).to_string()
+            }
+            _ => format!("%{byte:02X}"),
+        })
+        .collect::<String>();
+    let patch_response = client
+        .patch(format!(
+            "http://{addr}/api/stats/prompt-cache-conversation-bindings/{encoded_key}"
+        ))
+        .json(&json!({
+            "bindingKind": "group",
+            "groupName": group_name,
+        }))
+        .send()
+        .await
+        .expect("patch route binding over router");
+    let patch_status = patch_response.status();
+    let patch_body = patch_response.text().await.expect("read patch response body");
+    assert_eq!(
+        patch_status,
+        reqwest::StatusCode::OK,
+        "unexpected patch response body: {patch_body}"
+    );
+    let patched: Value = serde_json::from_str(&patch_body).expect("decode patch response");
+    assert_eq!(patched["promptCacheKey"].as_str(), Some(prompt_cache_key));
+    assert_eq!(patched["bindingKind"].as_str(), Some("group"));
+    assert_eq!(patched["groupName"].as_str(), Some(group_name));
+
+    let get_response = client
+        .get(format!(
+            "http://{addr}/api/stats/prompt-cache-conversation-bindings/{encoded_key}"
+        ))
+        .send()
+        .await
+        .expect("get route binding over router");
+    let get_status = get_response.status();
+    let get_body = get_response.text().await.expect("read get response body");
+    assert_eq!(
+        get_status,
+        reqwest::StatusCode::OK,
+        "unexpected get response body: {get_body}"
+    );
+    let fetched: Value = serde_json::from_str(&get_body).expect("decode get response");
+    assert_eq!(fetched["promptCacheKey"].as_str(), Some(prompt_cache_key));
+    assert_eq!(fetched["bindingKind"].as_str(), Some("group"));
+    assert_eq!(fetched["groupName"].as_str(), Some(group_name));
+
+    server.abort();
+}

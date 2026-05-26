@@ -81,6 +81,31 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait(
     wait_deadline: &mut Option<Instant>,
     total_timeout_deadline: Option<Instant>,
 ) -> Result<PoolAccountResolutionWithWait> {
+    resolve_pool_account_for_request_with_wait_and_binding_constraint(
+        state,
+        sticky_key,
+        excluded_ids,
+        excluded_upstream_route_keys,
+        required_upstream_route_key,
+        None,
+        wait_for_no_available,
+        wait_deadline,
+        total_timeout_deadline,
+    )
+    .await
+}
+
+pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_constraint(
+    state: &AppState,
+    sticky_key: Option<&str>,
+    excluded_ids: &[i64],
+    excluded_upstream_route_keys: &HashSet<String>,
+    required_upstream_route_key: Option<&str>,
+    binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
+    wait_for_no_available: bool,
+    wait_deadline: &mut Option<Instant>,
+    total_timeout_deadline: Option<Instant>,
+) -> Result<PoolAccountResolutionWithWait> {
     let poll_interval = state.pool_no_available_wait.normalized_poll_interval();
 
     loop {
@@ -94,6 +119,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait(
             excluded_ids,
             excluded_upstream_route_keys,
             required_upstream_route_key,
+            binding_constraint,
         )
         .await?;
         if wait_for_no_available
@@ -152,6 +178,41 @@ pub(crate) async fn send_pool_request_with_failover(
     trace_context: Option<PoolUpstreamAttemptTraceContext>,
     runtime_snapshot_context: Option<PoolAttemptRuntimeSnapshotContext>,
     sticky_key: Option<&str>,
+    preferred_account: Option<PoolResolvedAccount>,
+    failover_progress: PoolFailoverProgress,
+    same_account_attempts: u8,
+) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
+    send_pool_request_with_failover_and_binding_constraint(
+        state,
+        proxy_request_id,
+        method,
+        original_uri,
+        headers,
+        body,
+        handshake_timeout,
+        trace_context,
+        runtime_snapshot_context,
+        sticky_key,
+        None,
+        preferred_account,
+        failover_progress,
+        same_account_attempts,
+    )
+    .await
+}
+
+pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
+    state: Arc<AppState>,
+    proxy_request_id: u64,
+    method: Method,
+    original_uri: &Uri,
+    headers: &HeaderMap,
+    body: Option<PoolReplayBodySnapshot>,
+    handshake_timeout: Duration,
+    trace_context: Option<PoolUpstreamAttemptTraceContext>,
+    runtime_snapshot_context: Option<PoolAttemptRuntimeSnapshotContext>,
+    sticky_key: Option<&str>,
+    binding_constraint: Option<PromptCacheConversationBindingConstraint>,
     preferred_account: Option<PoolResolvedAccount>,
     failover_progress: PoolFailoverProgress,
     same_account_attempts: u8,
@@ -226,7 +287,19 @@ pub(crate) async fn send_pool_request_with_failover(
             .is_some_and(pool_upstream_error_is_rate_limited)
     };
     let mut preferred_account = preferred_account
-        .filter(|account| !excluded_upstream_route_keys.contains(&account.upstream_route_key()));
+        .filter(|account| !excluded_upstream_route_keys.contains(&account.upstream_route_key()))
+        .filter(|account| {
+            binding_constraint.as_ref().is_none_or(|constraint| match constraint {
+                PromptCacheConversationBindingConstraint::Group(group_name) => account
+                    .group_name
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|value| value == group_name),
+                PromptCacheConversationBindingConstraint::UpstreamAccount(account_id) => {
+                    account.account_id == *account_id
+                }
+            })
+        });
     let initial_same_account_attempts = same_account_attempts.max(1);
     let mut attempt_count = failover_progress.attempt_count;
     let mut timeout_route_failover_pending = failover_progress.timeout_route_failover_pending;
@@ -416,12 +489,13 @@ pub(crate) async fn send_pool_request_with_failover(
                 }
                 combined
             };
-            match resolve_pool_account_for_request_with_wait(
+            match resolve_pool_account_for_request_with_wait_and_binding_constraint(
                 state.as_ref(),
                 sticky_key,
                 &combined_excluded_ids,
                 &excluded_upstream_route_keys,
                 route_scoped_overload_selection.as_deref(),
+                binding_constraint.as_ref(),
                 wait_for_no_available,
                 &mut no_available_wait_deadline,
                 total_timeout_deadline,

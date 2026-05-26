@@ -76,6 +76,19 @@ pub(crate) struct UpstreamAccountRow {
     updated_at: String,
 }
 
+impl UpstreamAccountRow {
+    pub(crate) fn id(&self) -> i64 {
+        self.id
+    }
+
+    pub(crate) fn normalized_group_name(&self) -> Option<&str> {
+        self.group_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+}
+
 #[derive(Debug, FromRow)]
 pub(crate) struct PoolRoutingSettingsRow {
     encrypted_api_key: Option<String>,

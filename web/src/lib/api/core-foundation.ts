@@ -1134,6 +1134,25 @@ export interface PromptCacheConversation {
   last24hRequests: PromptCacheConversationRequestPoint[];
 }
 
+export type PromptCacheConversationBindingKind =
+  | "none"
+  | "group"
+  | "upstreamAccount";
+
+export interface PromptCacheConversationBindingResponse {
+  promptCacheKey: string;
+  bindingKind: PromptCacheConversationBindingKind;
+  groupName: string | null;
+  upstreamAccountId: number | null;
+  upstreamAccountName: string | null;
+  updatedAt: string | null;
+}
+
+export type UpdatePromptCacheConversationBindingPayload =
+  | { bindingKind: "none" }
+  | { bindingKind: "group"; groupName: string }
+  | { bindingKind: "upstreamAccount"; upstreamAccountId: number };
+
 export type PromptCacheConversationSelectionMode = "count" | "activityWindow";
 export type PromptCacheConversationDetailLevel = "full" | "compact";
 
@@ -2567,6 +2586,35 @@ export async function fetchPromptCacheConversations(
   signal?: AbortSignal,
 ) {
   return fetchPromptCacheConversationsPage(selection, { signal });
+}
+
+export async function fetchPromptCacheConversationBinding(
+  promptCacheKey: string,
+  signal?: AbortSignal,
+): Promise<PromptCacheConversationBindingResponse> {
+  return fetchJson<PromptCacheConversationBindingResponse>(
+    `/api/stats/prompt-cache-conversation-bindings/${encodeURIComponent(
+      promptCacheKey,
+    )}`,
+    { signal },
+  );
+}
+
+export async function updatePromptCacheConversationBinding(
+  promptCacheKey: string,
+  payload: UpdatePromptCacheConversationBindingPayload,
+  signal?: AbortSignal,
+): Promise<PromptCacheConversationBindingResponse> {
+  return fetchJson<PromptCacheConversationBindingResponse>(
+    `/api/stats/prompt-cache-conversation-bindings/${encodeURIComponent(
+      promptCacheKey,
+    )}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+      signal,
+    },
+  );
 }
 
 export async function fetchPromptCacheConversationsPage(

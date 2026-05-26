@@ -14,7 +14,15 @@ pub(crate) async fn proxy_openai_v1(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    proxy_openai_v1_common(state, original_uri, method, headers, body, None).await
+    Box::pin(proxy_openai_v1_common(
+        state,
+        original_uri,
+        method,
+        headers,
+        body,
+        None,
+    ))
+    .await
 }
 
 pub(crate) async fn proxy_openai_v1_with_connect_info(
@@ -54,14 +62,14 @@ pub(crate) async fn proxy_openai_v1_with_connect_info(
         )
         .await;
     }
-    proxy_openai_v1_common(
+    Box::pin(proxy_openai_v1_common(
         state,
         original_uri,
         method,
         headers,
         body,
         connect_info.map(|info| info.0.ip()),
-    )
+    ))
     .await
 }
 
@@ -167,7 +175,7 @@ pub(crate) async fn proxy_openai_v1_common(
         .await,
     );
 
-    match proxy_openai_v1_inner(
+    match Box::pin(proxy_openai_v1_inner(
         state,
         proxy_request_id,
         invoke_id.clone(),
@@ -180,7 +188,7 @@ pub(crate) async fn proxy_openai_v1_common(
         pool_route_active,
         runtime_timeouts,
         proxy_request_permit,
-    )
+    ))
     .await
     {
         Ok(response) => {
@@ -1183,7 +1191,13 @@ pub(crate) enum PoolReplayBodyStatus {
 #[derive(Debug, Clone)]
 pub(crate) enum PoolReplayBodyStickyKeyProbeStatus {
     Pending,
-    Ready(Option<String>),
+    Ready(PoolReplayBodyKeyProbe),
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PoolReplayBodyKeyProbe {
+    pub(crate) sticky_key: Option<String>,
+    pub(crate) prompt_cache_key: Option<String>,
 }
 
 pub(crate) struct PoolReplayBodyBuffer {
@@ -1885,7 +1899,9 @@ pub(crate) fn spawn_pool_replayable_request_body(
         loop {
             if cancel_for_task.is_cancelled() {
                 if !sticky_key_probe_ready {
-                    let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(None));
+                    let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
+                        PoolReplayBodyKeyProbe::default(),
+                    ));
                 }
                 let _ = status_tx.send(PoolReplayBodyStatus::Incomplete);
                 return;
@@ -1909,7 +1925,9 @@ pub(crate) fn spawn_pool_replayable_request_body(
                     "openai proxy request body read timed out"
                 );
                 if !sticky_key_probe_ready {
-                    let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(None));
+                    let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
+                        PoolReplayBodyKeyProbe::default(),
+                    ));
                 }
                 let _ = status_tx.send(PoolReplayBodyStatus::ReadError(read_error.clone()));
                 let _ = tx
@@ -1924,7 +1942,9 @@ pub(crate) fn spawn_pool_replayable_request_body(
             let next_chunk = tokio::select! {
                 _ = cancel_for_task.cancelled() => {
                     if !sticky_key_probe_ready {
-                        let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(None));
+                        let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
+                            PoolReplayBodyKeyProbe::default(),
+                        ));
                     }
                     let _ = status_tx.send(PoolReplayBodyStatus::Incomplete);
                     return;
@@ -1949,7 +1969,9 @@ pub(crate) fn spawn_pool_replayable_request_body(
                                 "openai proxy request body read timed out"
                             );
                             if !sticky_key_probe_ready {
-                                let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(None));
+                                let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
+                                    PoolReplayBodyKeyProbe::default(),
+                                ));
                             }
                             let _ = status_tx.send(PoolReplayBodyStatus::ReadError(read_error.clone()));
                             let _ = tx
@@ -1967,7 +1989,15 @@ pub(crate) fn spawn_pool_replayable_request_body(
             let Some(chunk) = next_chunk else {
                 if !sticky_key_probe_ready {
                     let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
-                        best_effort_extract_sticky_key_from_request_body_prefix(&sticky_key_probe),
+                        PoolReplayBodyKeyProbe {
+                            sticky_key: best_effort_extract_sticky_key_from_request_body_prefix(
+                                &sticky_key_probe,
+                            ),
+                            prompt_cache_key:
+                                best_effort_extract_prompt_cache_key_from_request_body_prefix(
+                                    &sticky_key_probe,
+                                ),
+                        },
                     ));
                 }
                 match buffer.finish().await {
@@ -1994,7 +2024,9 @@ pub(crate) fn spawn_pool_replayable_request_body(
                         partial_body: Vec::new(),
                     };
                     if !sticky_key_probe_ready {
-                        let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(None));
+                        let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
+                            PoolReplayBodyKeyProbe::default(),
+                        ));
                     }
                     let _ = status_tx.send(PoolReplayBodyStatus::ReadError(read_error.clone()));
                     let _ = tx.send(Err(io::Error::other(read_error.message))).await;
@@ -2010,7 +2042,9 @@ pub(crate) fn spawn_pool_replayable_request_body(
                     partial_body: Vec::new(),
                 };
                 if !sticky_key_probe_ready {
-                    let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(None));
+                    let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
+                        PoolReplayBodyKeyProbe::default(),
+                    ));
                 }
                 let _ = status_tx.send(PoolReplayBodyStatus::ReadError(read_error.clone()));
                 let _ = tx.send(Err(io::Error::other(read_error.message))).await;
@@ -2021,7 +2055,9 @@ pub(crate) fn spawn_pool_replayable_request_body(
             if let Err(err) = buffer.append(&chunk).await {
                 let msg = format!("failed to cache replayable request body: {err}");
                 if !sticky_key_probe_ready {
-                    let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(None));
+                    let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
+                        PoolReplayBodyKeyProbe::default(),
+                    ));
                 }
                 let _ = tx.send(Err(io::Error::other(msg.clone()))).await;
                 let _ = status_tx.send(PoolReplayBodyStatus::InternalError(msg));
@@ -2033,15 +2069,22 @@ pub(crate) fn spawn_pool_replayable_request_body(
                 let probe_remaining =
                     HEADER_STICKY_EARLY_STICKY_SCAN_BYTES.saturating_sub(sticky_key_probe.len());
                 sticky_key_probe.extend_from_slice(&chunk[..chunk.len().min(probe_remaining)]);
-                if let Some(sticky_key) =
-                    best_effort_extract_sticky_key_from_request_body_prefix(&sticky_key_probe)
+                let key_probe = PoolReplayBodyKeyProbe {
+                    sticky_key: best_effort_extract_sticky_key_from_request_body_prefix(
+                        &sticky_key_probe,
+                    ),
+                    prompt_cache_key: best_effort_extract_prompt_cache_key_from_request_body_prefix(
+                        &sticky_key_probe,
+                    ),
+                };
+                if key_probe.sticky_key.is_some()
+                    || key_probe.prompt_cache_key.is_some()
+                    || sticky_key_probe.len() >= HEADER_STICKY_EARLY_STICKY_SCAN_BYTES
                 {
                     sticky_key_probe_ready = true;
-                    let _ = sticky_key_probe_tx
-                        .send(PoolReplayBodyStickyKeyProbeStatus::Ready(Some(sticky_key)));
-                } else if sticky_key_probe.len() >= HEADER_STICKY_EARLY_STICKY_SCAN_BYTES {
-                    sticky_key_probe_ready = true;
-                    let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(None));
+                    let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
+                        key_probe,
+                    ));
                 }
             }
 
@@ -2062,21 +2105,21 @@ pub(crate) fn spawn_pool_replayable_request_body(
 pub(crate) async fn wait_for_replay_body_sticky_key_probe(
     sticky_key_probe_rx: &watch::Receiver<PoolReplayBodyStickyKeyProbeStatus>,
     max_wait: Duration,
-) -> Option<String> {
+) -> PoolReplayBodyKeyProbe {
     let mut sticky_key_probe_rx = sticky_key_probe_rx.clone();
     let wait_deadline = Instant::now() + max_wait;
     loop {
         match sticky_key_probe_rx.borrow().clone() {
-            PoolReplayBodyStickyKeyProbeStatus::Ready(sticky_key) => return sticky_key,
+            PoolReplayBodyStickyKeyProbeStatus::Ready(key_probe) => return key_probe,
             PoolReplayBodyStickyKeyProbeStatus::Pending => {}
         }
         let remaining = wait_deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return None;
+            return PoolReplayBodyKeyProbe::default();
         }
         match timeout(remaining, sticky_key_probe_rx.changed()).await {
             Ok(Ok(())) => {}
-            Ok(Err(_)) | Err(_) => return None,
+            Ok(Err(_)) | Err(_) => return PoolReplayBodyKeyProbe::default(),
         }
     }
 }

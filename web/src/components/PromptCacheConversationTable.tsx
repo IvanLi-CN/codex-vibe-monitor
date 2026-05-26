@@ -25,10 +25,19 @@ import type {
   InvocationRecordsQuery,
   InvocationRecordsSummaryResponse,
   PromptCacheConversation,
+  PromptCacheConversationBindingResponse,
+  PromptCacheConversationBindingKind,
   PromptCacheConversationUpstreamAccount,
   PromptCacheConversationsResponse,
+  UpstreamAccountSummary,
 } from "../lib/api";
-import { fetchInvocationRecords, fetchInvocationRecordsSummary } from "../lib/api";
+import {
+  fetchInvocationRecords,
+  fetchInvocationRecordsSummary,
+  fetchPromptCacheConversationBinding,
+  fetchUpstreamAccounts,
+  updatePromptCacheConversationBinding,
+} from "../lib/api";
 import {
   chartBaseTokens,
   chartStatusTokens,
@@ -44,6 +53,7 @@ import { AccountDetailDrawerShell } from "./AccountDetailDrawerShell";
 import { AppIcon } from "./AppIcon";
 import { InvocationTable } from "./InvocationTable";
 import { ConversationSparkline } from "./KeyedConversationTable";
+import { Button } from "./ui/button";
 import {
   FALLBACK_CELL,
   findVisibleConversationChartMax,
@@ -51,6 +61,7 @@ import {
 import { Alert } from "./ui/alert";
 import { floatingSurfaceStyle, type FloatingSurfaceTheme } from "./ui/floating-surface";
 import { SegmentedControl, SegmentedControlItem } from "./ui/segmented-control";
+import { SelectField } from "./ui/select-field";
 import { Spinner } from "./ui/spinner";
 
 interface PromptCacheConversationTableProps {
@@ -96,6 +107,7 @@ const CONVERSATION_ACTIVITY_POINTER_FREE_DIAGONAL_RATIO = 0.72;
 type ConversationActivityRange = "today" | "yesterday" | "1d" | "7d" | "history";
 type ConversationActivityMetric = "totalCount" | "totalCost" | "totalTokens";
 type ConversationActivityDragAxis = "pending" | "horizontal" | "vertical" | "free";
+type ConversationBindingDraftKind = PromptCacheConversationBindingKind;
 
 const CONVERSATION_ACTIVITY_METRICS: Array<{
   key: ConversationActivityMetric;
@@ -134,6 +146,52 @@ function formatDateLabel(raw: string, formatter: Intl.DateTimeFormat) {
   const value = new Date(raw);
   if (Number.isNaN(value.getTime())) return raw || FALLBACK_CELL;
   return formatter.format(value);
+}
+
+function conversationBindingAccountLabel(account: UpstreamAccountSummary) {
+  const identity = account.email?.trim() || account.displayName.trim();
+  const group = account.groupName?.trim();
+  return group ? `${identity} · ${group}` : identity;
+}
+
+function accountCanBePromptCacheBindingTarget(account: UpstreamAccountSummary) {
+  if (
+    account.provider !== "codex" ||
+    !account.enabled ||
+    account.status !== "active"
+  ) {
+    return false;
+  }
+  if (account.kind === "api_key_codex") {
+    return Boolean(account.maskedApiKey?.trim());
+  }
+  if (account.kind === "oauth_codex") {
+    return account.hasRefreshToken !== false;
+  }
+  return true;
+}
+
+function currentBindingLabel(
+  binding: PromptCacheConversationBindingResponse | null,
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  if (!binding || binding.bindingKind === "none") {
+    return t("live.conversations.drawer.binding.currentNone");
+  }
+  if (binding.bindingKind === "group" && binding.groupName) {
+    return t("live.conversations.drawer.binding.currentGroup", {
+      group: binding.groupName,
+    });
+  }
+  if (
+    binding.bindingKind === "upstreamAccount" &&
+    binding.upstreamAccountId != null
+  ) {
+    return t("live.conversations.drawer.binding.currentAccount", {
+      account: binding.upstreamAccountName || `#${binding.upstreamAccountId}`,
+    });
+  }
+  return t("live.conversations.drawer.binding.currentNone");
 }
 
 function resolveUpstreamAccountLabel(
@@ -1837,6 +1895,19 @@ export function PromptCacheConversationHistoryDrawer({
   const [total, setTotal] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [binding, setBinding] =
+    useState<PromptCacheConversationBindingResponse | null>(null);
+  const [bindingKind, setBindingKind] =
+    useState<ConversationBindingDraftKind>("none");
+  const [bindingGroupName, setBindingGroupName] = useState("");
+  const [bindingAccountId, setBindingAccountId] = useState("");
+  const [bindingAccounts, setBindingAccounts] = useState<
+    UpstreamAccountSummary[]
+  >([]);
+  const [bindingGroups, setBindingGroups] = useState<string[]>([]);
+  const [bindingLoading, setBindingLoading] = useState(false);
+  const [bindingSaving, setBindingSaving] = useState(false);
+  const [bindingError, setBindingError] = useState<string | null>(null);
 
   const clearPendingRefreshTimer = useCallback(() => {
     if (!refreshTimerRef.current) return;
@@ -2001,6 +2072,64 @@ export function PromptCacheConversationHistoryDrawer({
   }, [clearPendingRefreshTimer, conversationKey, load, open]);
 
   useEffect(() => {
+    if (!open || !conversationKey) {
+      setBinding(null);
+      setBindingKind("none");
+      setBindingGroupName("");
+      setBindingAccountId("");
+      setBindingAccounts([]);
+      setBindingGroups([]);
+      setBindingLoading(false);
+      setBindingSaving(false);
+      setBindingError(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    setBindingLoading(true);
+    setBindingError(null);
+    void Promise.all([
+      fetchPromptCacheConversationBinding(conversationKey, controller.signal),
+      fetchUpstreamAccounts({ includeAll: true, pageSize: 500 }),
+    ])
+      .then(([nextBinding, accountList]) => {
+        if (controller.signal.aborted) return;
+        const accounts = accountList.items.filter(
+          accountCanBePromptCacheBindingTarget,
+        );
+        const groups = Array.from(
+          new Set(
+            accounts
+              .map((account) => account.groupName ?? "")
+              .map((groupName) => groupName.trim())
+              .filter((groupName) => groupName.length > 0),
+          ),
+        ).sort((left, right) => left.localeCompare(right));
+        setBinding(nextBinding);
+        setBindingKind(nextBinding.bindingKind);
+        setBindingGroupName(nextBinding.groupName ?? groups[0] ?? "");
+        setBindingAccountId(
+          nextBinding.upstreamAccountId != null
+            ? String(nextBinding.upstreamAccountId)
+            : accounts[0]
+              ? String(accounts[0].id)
+              : "",
+        );
+        setBindingAccounts(accounts);
+        setBindingGroups(groups);
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return;
+        setBindingError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setBindingLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [conversationKey, open]);
+
+  useEffect(() => {
     if (disableLiveUpdates) return;
     if (!open || !conversationKey) return;
     const unsubscribe = subscribeToSse((payload) => {
@@ -2065,6 +2194,70 @@ export function PromptCacheConversationHistoryDrawer({
     return total + optimisticCount;
   }, [liveRecords, records, total]);
   const loadedCount = visibleRecords.length;
+  const bindingSubmitDisabled =
+    !conversationKey ||
+    !binding ||
+    bindingLoading ||
+    bindingSaving ||
+    (bindingKind === "group" && !bindingGroupName) ||
+    (bindingKind === "upstreamAccount" && !bindingAccountId);
+  const bindingStatusLabel = currentBindingLabel(binding, t);
+  const bindingKindOptions = [
+    {
+      value: "none",
+      label: t("live.conversations.drawer.binding.kindNone"),
+    },
+    {
+      value: "group",
+      label: t("live.conversations.drawer.binding.kindGroup"),
+      disabled: bindingGroups.length === 0,
+    },
+    {
+      value: "upstreamAccount",
+      label: t("live.conversations.drawer.binding.kindAccount"),
+      disabled: bindingAccounts.length === 0,
+    },
+  ];
+  const saveBinding = useCallback(async () => {
+    if (!conversationKey || bindingSubmitDisabled) return;
+    setBindingSaving(true);
+    setBindingError(null);
+    try {
+      const nextBinding = await updatePromptCacheConversationBinding(
+        conversationKey,
+        bindingKind === "group"
+          ? { bindingKind: "group", groupName: bindingGroupName }
+          : bindingKind === "upstreamAccount"
+            ? {
+                bindingKind: "upstreamAccount",
+                upstreamAccountId: Number(bindingAccountId),
+              }
+            : { bindingKind: "none" },
+      );
+      setBinding(nextBinding);
+      setBindingKind(nextBinding.bindingKind);
+      setBindingGroupName(nextBinding.groupName ?? bindingGroups[0] ?? "");
+      setBindingAccountId(
+        nextBinding.upstreamAccountId != null
+          ? String(nextBinding.upstreamAccountId)
+          : bindingAccounts[0]
+            ? String(bindingAccounts[0].id)
+            : "",
+      );
+    } catch (err) {
+      setBindingError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBindingSaving(false);
+    }
+  }, [
+    bindingAccountId,
+    bindingAccounts,
+    bindingGroupName,
+    bindingGroups,
+    bindingKind,
+    bindingSubmitDisabled,
+    conversationKey,
+  ]);
 
   return (
     <AccountDetailDrawerShell
@@ -2074,32 +2267,104 @@ export function PromptCacheConversationHistoryDrawer({
       onClose={onClose}
       shellClassName="max-w-[78rem]"
       header={
-        <div className="space-y-3">
-          <div className="section-heading">
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary/75">
-              {t("live.conversations.drawer.eyebrow")}
-            </p>
-            <h2 id={titleId} className="section-title break-all">
-              {displayTitle}
-            </h2>
-            {shouldShowConversationKey ? (
-              <p className="break-all font-mono text-xs text-base-content/62">
-                {conversationKey}
+        <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(25rem,30rem)]">
+          <div className="space-y-3">
+            <div className="section-heading">
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary/75">
+                {t("live.conversations.drawer.eyebrow")}
               </p>
-            ) : null}
-            <p className="section-description">
-              {t("live.conversations.drawer.description")}
-            </p>
+              <h2 id={titleId} className="section-title break-all">
+                {displayTitle}
+              </h2>
+              {shouldShowConversationKey ? (
+                <p className="break-all font-mono text-xs text-base-content/62">
+                  {conversationKey}
+                </p>
+              ) : null}
+              <p className="section-description">
+                {t("live.conversations.drawer.description")}
+              </p>
+            </div>
+            <div className="text-sm text-base-content/70">
+              {effectiveTotal > 0 && loadedCount >= effectiveTotal
+                ? t("live.conversations.drawer.progressComplete", {
+                    count: effectiveTotal,
+                  })
+                : t("live.conversations.drawer.progress", {
+                    loaded: loadedCount,
+                    total: effectiveTotal,
+                  })}
+            </div>
           </div>
-          <div className="text-sm text-base-content/70">
-            {effectiveTotal > 0 && loadedCount >= effectiveTotal
-              ? t("live.conversations.drawer.progressComplete", {
-                  count: effectiveTotal,
-                })
-              : t("live.conversations.drawer.progress", {
-                  loaded: loadedCount,
-                  total: effectiveTotal,
-                })}
+          <div className="rounded border border-base-content/10 bg-base-200/50 p-3 text-sm">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="font-semibold text-base-content">
+                  {t("live.conversations.drawer.binding.title")}
+                </p>
+              </div>
+              {bindingLoading ? (
+                <Spinner
+                  size="sm"
+                  aria-label={t("live.conversations.drawer.binding.loading")}
+                />
+              ) : null}
+            </div>
+            <p className="mt-2 text-xs text-base-content/70">
+              {bindingStatusLabel}
+            </p>
+            <div className="mt-3 grid gap-2 sm:grid-cols-[8.5rem_minmax(0,1fr)_auto]">
+              <SelectField
+                value={bindingKind}
+                disabled={bindingLoading || bindingSaving}
+                aria-label={t("live.conversations.drawer.binding.kind")}
+                size="sm"
+                options={bindingKindOptions}
+                onValueChange={(value) =>
+                  setBindingKind(value as ConversationBindingDraftKind)
+                }
+              />
+              {bindingKind === "group" ? (
+                <SelectField
+                  value={bindingGroupName}
+                  disabled={bindingLoading || bindingSaving}
+                  aria-label={t("live.conversations.drawer.binding.group")}
+                  size="sm"
+                  options={bindingGroups.map((groupName) => ({
+                    value: groupName,
+                    label: groupName,
+                  }))}
+                  onValueChange={setBindingGroupName}
+                />
+              ) : bindingKind === "upstreamAccount" ? (
+                <SelectField
+                  value={bindingAccountId}
+                  disabled={bindingLoading || bindingSaving}
+                  aria-label={t("live.conversations.drawer.binding.account")}
+                  size="sm"
+                  options={bindingAccounts.map((account) => ({
+                    value: String(account.id),
+                    label: conversationBindingAccountLabel(account),
+                  }))}
+                  onValueChange={setBindingAccountId}
+                />
+              ) : (
+                <div className="hidden sm:block" aria-hidden="true" />
+              )}
+              <Button
+                type="button"
+                size="sm"
+                disabled={bindingSubmitDisabled}
+                onClick={() => void saveBinding()}
+              >
+                {bindingSaving
+                  ? t("live.conversations.drawer.binding.saving")
+                  : t("live.conversations.drawer.binding.save")}
+              </Button>
+            </div>
+            {bindingError ? (
+              <p className="mt-2 text-xs text-error">{bindingError}</p>
+            ) : null}
           </div>
         </div>
       }

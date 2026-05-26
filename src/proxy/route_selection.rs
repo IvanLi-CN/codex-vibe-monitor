@@ -96,6 +96,45 @@ pub(crate) async fn extract_sticky_key_from_replay_snapshot(
     }
 }
 
+pub(crate) async fn extract_prompt_cache_key_from_replay_snapshot(
+    snapshot: &PoolReplayBodySnapshot,
+) -> Option<String> {
+    match snapshot {
+        PoolReplayBodySnapshot::Empty => None,
+        PoolReplayBodySnapshot::Memory(bytes) => {
+            serde_json::from_slice::<Value>(bytes.as_ref())
+                .ok()
+                .and_then(|value| extract_prompt_cache_key_from_request_body(&value))
+        }
+        PoolReplayBodySnapshot::File { temp_file, .. } => {
+            let path = temp_file.path.clone();
+            tokio::task::spawn_blocking(move || {
+                let file = std::fs::File::open(path).ok()?;
+                serde_json::from_reader::<_, Value>(std::io::BufReader::new(file))
+                    .ok()
+                    .and_then(|value| extract_prompt_cache_key_from_request_body(&value))
+            })
+            .await
+            .ok()
+            .flatten()
+        }
+    }
+}
+
+async fn load_via_pool_prompt_cache_binding_constraint(
+    state: &AppState,
+    prompt_cache_key: Option<&str>,
+) -> Result<Option<PromptCacheConversationBindingConstraint>, (StatusCode, String)> {
+    load_prompt_cache_conversation_binding_constraint(&state.pool, prompt_cache_key)
+        .await
+        .map_err(|err| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("failed to resolve prompt cache conversation binding: {err}"),
+            )
+        })
+}
+
 pub(crate) fn pool_account_supports_live_request_body(
     account: &PoolResolvedAccount,
     original_uri: &Uri,
@@ -112,8 +151,7 @@ pub(crate) fn should_prebuffer_for_body_sticky_probe(
     body_size_hint_exact: Option<usize>,
 ) -> bool {
     !has_header_sticky_key
-        && content_type
-            .is_some_and(|value| value.to_ascii_lowercase().starts_with("application/json"))
+        && content_type.is_some_and(|value| value.to_ascii_lowercase().starts_with("application/json"))
         && body_size_hint_exact
             .is_some_and(|value| value <= POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES)
 }
@@ -1136,6 +1174,7 @@ pub(crate) async fn continue_or_retry_pool_live_request(
     handshake_timeout: Duration,
     initial_account: PoolResolvedAccount,
     sticky_key: Option<String>,
+    prompt_cache_binding_constraint: Option<PromptCacheConversationBindingConstraint>,
     responses_total_timeout_started_at: Option<Instant>,
     no_available_wait_deadline: Option<Instant>,
     replay_status_rx: &watch::Receiver<PoolReplayBodyStatus>,
@@ -1347,7 +1386,7 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                         POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS.saturating_sub(1),
                     )
                 };
-            send_pool_request_with_failover(
+            send_pool_request_with_failover_and_binding_constraint(
                 state,
                 proxy_request_id,
                 method,
@@ -1358,6 +1397,7 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                 None,
                 None,
                 replay_sticky_key.as_deref(),
+                prompt_cache_binding_constraint,
                 preferred_account,
                 failover_progress,
                 same_account_attempts,
@@ -1476,6 +1516,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
         )
     };
     let header_sticky_key = extract_sticky_key_from_headers(&headers);
+    let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
     let proxy_request_permit = take_or_acquire_proxy_request_concurrency_permit(
         &mut proxy_request_permit,
         state.as_ref(),
@@ -1514,16 +1555,28 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 return Err(pre_attempt_total_timeout_error());
             }
             let request_body_bytes = Bytes::from(request_body_bytes);
-            let body_sticky_key = serde_json::from_slice::<Value>(&request_body_bytes)
-                .ok()
-                .and_then(|value| extract_sticky_key_from_request_body(&value));
+            let parsed_request_body = serde_json::from_slice::<Value>(&request_body_bytes).ok();
+            let body_sticky_key = parsed_request_body
+                .as_ref()
+                .and_then(extract_sticky_key_from_request_body);
+            let body_prompt_cache_key = parsed_request_body
+                .as_ref()
+                .and_then(extract_prompt_cache_key_from_request_body);
+            let prompt_cache_binding_constraint =
+                load_via_pool_prompt_cache_binding_constraint(
+                    state.as_ref(),
+                    body_prompt_cache_key
+                        .as_deref()
+                        .or(header_prompt_cache_key.as_deref()),
+                )
+                .await?;
             let pool_attempt_trace_context = build_via_pool_attempt_trace_context(
                 proxy_request_id,
                 original_uri.path(),
                 body_sticky_key.clone(),
             );
             (
-                send_pool_request_with_failover(
+                send_pool_request_with_failover_and_binding_constraint(
                     state.clone(),
                     proxy_request_id,
                     method,
@@ -1534,6 +1587,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     Some(pool_attempt_trace_context),
                     None,
                     body_sticky_key.as_deref(),
+                    prompt_cache_binding_constraint,
                     None,
                     PoolFailoverProgress {
                         responses_total_timeout_started_at:
@@ -1552,6 +1606,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 body_sticky_key,
                 initial_account,
                 no_available_wait_deadline,
+                prompt_cache_binding_constraint,
             ) = if let Some(sticky_key) = header_sticky_key.clone() {
                 let initial_header_sticky_resolution = resolve_pool_account_for_request(
                     state.as_ref(),
@@ -1719,6 +1774,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 let request_body_deadline = Instant::now() + runtime_timeouts.request_read_timeout;
                 let mut request_body_len = 0usize;
                 let mut observed_body_sticky_key = None;
+                let mut observed_body_prompt_cache_key = None;
                 let mut sticky_key_probe = Vec::new();
                 let mut sticky_key_probe_exhausted = false;
                 let request_body_timeout_error = || RequestBodyReadError {
@@ -1813,17 +1869,27 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             }
                             if observed_body_sticky_key.as_deref() == Some(sticky_key.as_str())
                                 && let Some(terminal_error) =
-                                    pending_header_sticky_terminal_error.as_ref()
+                                    pending_header_sticky_terminal_error.clone()
                             {
-                                let trace_context = build_via_pool_attempt_trace_context(
-                                    proxy_request_id,
-                                    original_uri.path(),
-                                    Some(sticky_key.clone()),
-                                );
-                                terminal_error
-                                    .persist_if_needed(state.as_ref(), Some(&trace_context))
-                                    .await;
-                                return Err((terminal_error.status, terminal_error.message.clone()));
+                                let prompt_cache_binding_constraint =
+                                    load_via_pool_prompt_cache_binding_constraint(
+                                        state.as_ref(),
+                                        observed_body_prompt_cache_key
+                                            .as_deref()
+                                            .or(header_prompt_cache_key.as_deref()),
+                                    )
+                                    .await?;
+                                if prompt_cache_binding_constraint.is_none() {
+                                    let trace_context = build_via_pool_attempt_trace_context(
+                                        proxy_request_id,
+                                        original_uri.path(),
+                                        Some(sticky_key.clone()),
+                                    );
+                                    terminal_error
+                                        .persist_if_needed(state.as_ref(), Some(&trace_context))
+                                        .await;
+                                    return Err((terminal_error.status, terminal_error.message));
+                                }
                             }
                         }
                         next_chunk = timeout(remaining, request_body_stream.next()) => {
@@ -1875,6 +1941,10 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                     best_effort_extract_sticky_key_from_request_body_prefix(
                                         &sticky_key_probe,
                                     );
+                                observed_body_prompt_cache_key =
+                                    best_effort_extract_prompt_cache_key_from_request_body_prefix(
+                                        &sticky_key_probe,
+                                    );
                                 sticky_key_probe_exhausted =
                                     observed_body_sticky_key.is_some()
                                         || sticky_key_probe.len()
@@ -1883,17 +1953,27 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             if header_sticky_resolution_finished
                                 && observed_body_sticky_key.as_deref() == Some(sticky_key.as_str())
                                 && let Some(terminal_error) =
-                                    pending_header_sticky_terminal_error.as_ref()
+                                    pending_header_sticky_terminal_error.clone()
                             {
-                                let trace_context = build_via_pool_attempt_trace_context(
-                                    proxy_request_id,
-                                    original_uri.path(),
-                                    Some(sticky_key.clone()),
-                                );
-                                terminal_error
-                                    .persist_if_needed(state.as_ref(), Some(&trace_context))
-                                    .await;
-                                return Err((terminal_error.status, terminal_error.message.clone()));
+                                let prompt_cache_binding_constraint =
+                                    load_via_pool_prompt_cache_binding_constraint(
+                                        state.as_ref(),
+                                        observed_body_prompt_cache_key
+                                            .as_deref()
+                                            .or(header_prompt_cache_key.as_deref()),
+                                    )
+                                    .await?;
+                                if prompt_cache_binding_constraint.is_none() {
+                                    let trace_context = build_via_pool_attempt_trace_context(
+                                        proxy_request_id,
+                                        original_uri.path(),
+                                        Some(sticky_key.clone()),
+                                    );
+                                    terminal_error
+                                        .persist_if_needed(state.as_ref(), Some(&trace_context))
+                                        .await;
+                                    return Err((terminal_error.status, terminal_error.message));
+                                }
                             }
                         }
                     }
@@ -1975,7 +2055,17 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         }
                     }
                 }
-                if body_sticky_key.as_deref() == Some(sticky_key.as_str())
+                let prompt_cache_binding_constraint =
+                    load_via_pool_prompt_cache_binding_constraint(
+                        state.as_ref(),
+                        extract_prompt_cache_key_from_replay_snapshot(&request_body_snapshot)
+                            .await
+                            .as_deref()
+                            .or(header_prompt_cache_key.as_deref()),
+                    )
+                    .await?;
+                if prompt_cache_binding_constraint.is_none()
+                    && body_sticky_key.as_deref() == Some(sticky_key.as_str())
                     && let Some(terminal_error) = pending_header_sticky_terminal_error
                 {
                     let trace_context = build_via_pool_attempt_trace_context(
@@ -1992,7 +2082,35 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     header_sticky_wait_deadline.or(*shared_wait_deadline
                         .lock()
                         .expect("lock shared header wait deadline"));
-                let initial_account = if body_sticky_key.as_deref() == Some(sticky_key.as_str()) {
+                let initial_account = if prompt_cache_binding_constraint.is_some() {
+                    let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint(
+                        state.as_ref(),
+                        body_sticky_key.as_deref(),
+                        &[],
+                        &HashSet::new(),
+                        None,
+                        prompt_cache_binding_constraint.as_ref(),
+                        true,
+                        &mut no_available_wait_deadline,
+                        pre_attempt_total_timeout_deadline,
+                    )
+                    .await;
+                    let (initial_account, updated_no_available_wait_deadline) =
+                        unwrap_via_pool_initial_account(
+                            state.as_ref(),
+                            Some(&build_via_pool_attempt_trace_context(
+                                proxy_request_id,
+                                original_uri.path(),
+                                body_sticky_key.clone(),
+                            )),
+                            resolution,
+                            no_available_wait_deadline,
+                            responses_total_timeout,
+                        )
+                        .await?;
+                    no_available_wait_deadline = updated_no_available_wait_deadline;
+                    initial_account
+                } else if body_sticky_key.as_deref() == Some(sticky_key.as_str()) {
                     if let Some(account) = resolved_header_sticky_account {
                         account
                     } else {
@@ -2059,6 +2177,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     body_sticky_key,
                     initial_account,
                     no_available_wait_deadline,
+                    prompt_cache_binding_constraint,
                 )
             } else {
                 let mut no_available_wait_deadline = None;
@@ -2076,7 +2195,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 );
                 let replay_status_rx = replayable_body.status_rx.clone();
                 let replay_cancel = replayable_body.cancel.clone();
-                let live_body_sticky_key = if is_json_body {
+                let live_body_key_probe = if is_json_body {
                     let sticky_key_probe_wait_timeout = live_body_sticky_key_probe_wait_timeout(
                         runtime_timeouts.request_read_timeout,
                         pre_attempt_total_timeout_deadline,
@@ -2087,20 +2206,44 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     )
                     .await
                 } else {
-                    None
+                    PoolReplayBodyKeyProbe::default()
                 };
-
-                let resolution = resolve_pool_account_for_request_with_wait(
+                let live_body_sticky_key = live_body_key_probe.sticky_key;
+                let live_prompt_cache_key = live_body_key_probe
+                    .prompt_cache_key
+                    .or_else(|| header_prompt_cache_key.clone());
+                let prompt_cache_binding_constraint = load_via_pool_prompt_cache_binding_constraint(
                     state.as_ref(),
-                    live_body_sticky_key.as_deref(),
-                    &[],
-                    &HashSet::new(),
-                    None,
-                    true,
-                    &mut no_available_wait_deadline,
-                    pre_attempt_total_timeout_deadline,
+                    live_prompt_cache_key.as_deref(),
                 )
-                .await;
+                .await?;
+
+                let resolution = if prompt_cache_binding_constraint.is_some() {
+                    resolve_pool_account_for_request_with_wait_and_binding_constraint(
+                        state.as_ref(),
+                        live_body_sticky_key.as_deref(),
+                        &[],
+                        &HashSet::new(),
+                        None,
+                        prompt_cache_binding_constraint.as_ref(),
+                        true,
+                        &mut no_available_wait_deadline,
+                        pre_attempt_total_timeout_deadline,
+                    )
+                    .await
+                } else {
+                    resolve_pool_account_for_request_with_wait(
+                        state.as_ref(),
+                        live_body_sticky_key.as_deref(),
+                        &[],
+                        &HashSet::new(),
+                        None,
+                        true,
+                        &mut no_available_wait_deadline,
+                        pre_attempt_total_timeout_deadline,
+                    )
+                    .await
+                };
                 let (initial_account, no_available_wait_deadline) =
                     unwrap_via_pool_initial_account(
                         state.as_ref(),
@@ -2151,6 +2294,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             handshake_timeout,
                             initial_account,
                             live_body_sticky_key.clone(),
+                            prompt_cache_binding_constraint.clone(),
                             live_responses_total_timeout_started_at,
                             no_available_wait_deadline,
                             &replay_status_rx,
@@ -2416,13 +2560,24 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     extract_sticky_key_from_replay_snapshot(&request_body_snapshot)
                         .await
                         .or(live_body_sticky_key);
+                let body_prompt_cache_key =
+                    extract_prompt_cache_key_from_replay_snapshot(&request_body_snapshot).await;
+                let prompt_cache_binding_constraint =
+                    load_via_pool_prompt_cache_binding_constraint(
+                        state.as_ref(),
+                        body_prompt_cache_key
+                            .as_deref()
+                            .or(header_prompt_cache_key.as_deref()),
+                    )
+                    .await?;
                 let mut no_available_wait_deadline = None;
-                let resolution = resolve_pool_account_for_request_with_wait(
+                let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint(
                     state.as_ref(),
                     body_sticky_key.as_deref(),
                     &[],
                     &HashSet::new(),
                     None,
+                    prompt_cache_binding_constraint.as_ref(),
                     true,
                     &mut no_available_wait_deadline,
                     pre_attempt_total_timeout_deadline,
@@ -2446,10 +2601,11 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     body_sticky_key,
                     initial_account,
                     no_available_wait_deadline,
+                    prompt_cache_binding_constraint,
                 )
             };
             (
-                send_pool_request_with_failover(
+                send_pool_request_with_failover_and_binding_constraint(
                     state.clone(),
                     proxy_request_id,
                     method,
@@ -2464,6 +2620,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     )),
                     None,
                     body_sticky_key.as_deref(),
+                    prompt_cache_binding_constraint,
                     Some(initial_account),
                     PoolFailoverProgress {
                         responses_total_timeout_started_at:
@@ -2484,8 +2641,14 @@ pub(crate) async fn proxy_openai_v1_via_pool(
         } else {
             POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS
         };
+        let prompt_cache_binding_constraint =
+            load_via_pool_prompt_cache_binding_constraint(
+                state.as_ref(),
+                header_prompt_cache_key.as_deref(),
+            )
+            .await?;
         (
-            send_pool_request_with_failover(
+            send_pool_request_with_failover_and_binding_constraint(
                 state.clone(),
                 proxy_request_id,
                 method,
@@ -2500,6 +2663,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 )),
                 None,
                 header_sticky_key.as_deref(),
+                prompt_cache_binding_constraint,
                 None,
                 PoolFailoverProgress {
                     responses_total_timeout_started_at,

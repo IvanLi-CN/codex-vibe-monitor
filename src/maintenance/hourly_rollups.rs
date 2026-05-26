@@ -1610,6 +1610,10 @@ fn build_stats_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
             "/api/stats/prompt-cache-conversations",
             get(fetch_prompt_cache_conversations),
         )
+        .route(
+            "/api/stats/prompt-cache-conversation-bindings/*encodedPromptCacheKey",
+            get(get_prompt_cache_conversation_binding).patch(patch_prompt_cache_conversation_binding),
+        )
         .route("/api/quota/latest", get(latest_quota_snapshot))
 }
 
@@ -1752,16 +1756,20 @@ fn build_proxy_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
     router.route("/v1/*path", any(proxy_openai_v1_with_connect_info))
 }
 
-async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHandle<()>)> {
-    let cors_layer = build_cors_layer(&state.config);
-    let mut router = build_proxy_routes(build_event_routes(build_external_routes(
+pub(crate) fn build_app_router(state: Arc<AppState>) -> Router {
+    build_proxy_routes(build_event_routes(build_external_routes(
         build_pool_routes(build_stats_routes(build_invocation_routes(build_settings_routes(
             build_health_routes(Router::new()),
         )))),
     )))
-    .with_state(state.clone())
-    .layer(TraceLayer::new_for_http())
-    .layer(cors_layer);
+    .with_state(state)
+}
+
+async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHandle<()>)> {
+    let cors_layer = build_cors_layer(&state.config);
+    let mut router = build_app_router(state.clone())
+        .layer(TraceLayer::new_for_http())
+        .layer(cors_layer);
 
     // Optionally attach headers in the future; standard EventSource cannot read headers
 
