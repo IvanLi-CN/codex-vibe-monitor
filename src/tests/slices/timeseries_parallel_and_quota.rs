@@ -1463,6 +1463,7 @@ async fn spawn_pool_retry_upstream(
             .collect::<HashMap<_, _>>(),
     );
     let app = Router::new()
+        .route("/v1/models", get(pool_retry_upstream))
         .route("/v1/responses", post(pool_retry_upstream))
         .route("/v1/responses/compact", post(pool_retry_upstream))
         .route("/v1/chat/completions", post(pool_retry_upstream))

@@ -2641,8 +2641,14 @@ pub(crate) async fn proxy_openai_v1_via_pool(
         } else {
             POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS
         };
+        let prompt_cache_binding_constraint =
+            load_via_pool_prompt_cache_binding_constraint(
+                state.as_ref(),
+                header_prompt_cache_key.as_deref(),
+            )
+            .await?;
         (
-            send_pool_request_with_failover(
+            send_pool_request_with_failover_and_binding_constraint(
                 state.clone(),
                 proxy_request_id,
                 method,
@@ -2657,6 +2663,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 )),
                 None,
                 header_sticky_key.as_deref(),
+                prompt_cache_binding_constraint,
                 None,
                 PoolFailoverProgress {
                     responses_total_timeout_started_at,

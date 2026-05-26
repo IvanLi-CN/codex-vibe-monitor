@@ -75,7 +75,7 @@ pub(crate) async fn proxy_openai_v1_inner(
             return Ok(response);
         }
 
-        return proxy_openai_v1_via_pool(
+        return Box::pin(proxy_openai_v1_via_pool(
             state,
             proxy_request_id,
             &original_uri,
@@ -84,7 +84,7 @@ pub(crate) async fn proxy_openai_v1_inner(
             body,
             runtime_timeouts,
             proxy_request_permit.take(),
-        )
+        ))
         .await
         .map_err(|(status, message)| ProxyErrorResponse {
             retry_after_secs: retry_after_secs_for_proxy_error(status, &message),
@@ -119,7 +119,7 @@ pub(crate) async fn proxy_openai_v1_inner(
         });
     }
 
-    return proxy_openai_v1_via_pool(
+    return Box::pin(proxy_openai_v1_via_pool(
         state,
         proxy_request_id,
         &original_uri,
@@ -128,7 +128,7 @@ pub(crate) async fn proxy_openai_v1_inner(
         body,
         runtime_timeouts,
         proxy_request_permit.take(),
-    )
+    ))
     .await
     .map_err(|(status, message)| ProxyErrorResponse {
         retry_after_secs: retry_after_secs_for_proxy_error(status, &message),

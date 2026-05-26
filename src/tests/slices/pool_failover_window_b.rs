@@ -519,6 +519,99 @@ async fn proxy_openai_v1_responses_header_prompt_cache_key_preserves_group_bindi
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_bodyless_header_prompt_cache_key_preserves_group_binding() {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_retry_upstream(&[("Bearer upstream-primary", 99)]).await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(10),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let bound_group = "bodyless-header-bound-group";
+    let other_group = "bodyless-header-other-group";
+    ensure_test_group_binding(&state.pool, bound_group, None).await;
+    ensure_test_group_binding(&state.pool, other_group, None).await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Primary",
+        "upstream-primary",
+        Some(bound_group),
+        None,
+        None,
+    )
+    .await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Secondary",
+        "upstream-secondary",
+        Some(other_group),
+        None,
+        None,
+    )
+    .await;
+    let prompt_cache_key = "pck-bodyless-header-bound-group";
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversation_bindings (
+            prompt_cache_key,
+            binding_kind,
+            group_name,
+            upstream_account_id,
+            created_at,
+            updated_at
+        )
+        VALUES (?1, 'group', ?2, NULL, ?3, ?3)
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .bind(bound_group)
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await
+    .expect("insert bodyless header prompt cache group binding");
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        5346,
+        &"/v1/models".parse().expect("valid uri"),
+        Method::GET,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-prompt-cache-key"),
+                HeaderValue::from_static(prompt_cache_key),
+            ),
+        ]),
+        Body::empty(),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect_err("bodyless header binding should not fail over outside its group");
+
+    assert_eq!(response.0, StatusCode::SERVICE_UNAVAILABLE);
+    let attempts = attempts
+        .lock()
+        .expect("lock bodyless header binding attempts");
+    assert!(matches!(
+        attempts.get("Bearer upstream-primary").copied(),
+        Some(count) if count > 0
+    ));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_header_sticky_stream_prefers_body_timeout_before_pool_wait() {
     let mut config = test_config();
     config.openai_upstream_base_url =

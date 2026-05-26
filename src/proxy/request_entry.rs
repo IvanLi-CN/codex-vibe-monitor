@@ -14,7 +14,15 @@ pub(crate) async fn proxy_openai_v1(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    proxy_openai_v1_common(state, original_uri, method, headers, body, None).await
+    Box::pin(proxy_openai_v1_common(
+        state,
+        original_uri,
+        method,
+        headers,
+        body,
+        None,
+    ))
+    .await
 }
 
 pub(crate) async fn proxy_openai_v1_with_connect_info(
@@ -54,14 +62,14 @@ pub(crate) async fn proxy_openai_v1_with_connect_info(
         )
         .await;
     }
-    proxy_openai_v1_common(
+    Box::pin(proxy_openai_v1_common(
         state,
         original_uri,
         method,
         headers,
         body,
         connect_info.map(|info| info.0.ip()),
-    )
+    ))
     .await
 }
 
@@ -167,7 +175,7 @@ pub(crate) async fn proxy_openai_v1_common(
         .await,
     );
 
-    match proxy_openai_v1_inner(
+    match Box::pin(proxy_openai_v1_inner(
         state,
         proxy_request_id,
         invoke_id.clone(),
@@ -180,7 +188,7 @@ pub(crate) async fn proxy_openai_v1_common(
         pool_route_active,
         runtime_timeouts,
         proxy_request_permit,
-    )
+    ))
     .await
     {
         Ok(response) => {
