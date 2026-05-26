@@ -681,6 +681,14 @@ const baseTranslations = {
       "Current account",
     "accountPool.upstreamAccounts.batchOauth.identityConfirmation.incoming":
       "Incoming OAuth identity",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willUpdate":
+      "Will update:",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willUpdateDetail":
+      "OAuth credentials, verified email, ChatGPT identity, plan, and token metadata.",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willKeep":
+      "Will keep:",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willKeepDetail":
+      "Display name, manually entered email, group, tags, note, and mother account flag.",
     "accountPool.upstreamAccounts.batchOauth.tooltip.motherTitle":
       "Toggle mother account",
     "accountPool.upstreamAccounts.batchOauth.tooltip.motherBody":
@@ -2831,6 +2839,14 @@ const baseTranslations = {
       "当前账号",
     "accountPool.upstreamAccounts.batchOauth.identityConfirmation.incoming":
       "新 OAuth 身份",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willUpdate":
+      "将更新：",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willUpdateDetail":
+      "OAuth 凭据、可信邮箱、ChatGPT 身份、套餐和 token 元数据。",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willKeep":
+      "将保留：",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willKeepDetail":
+      "显示名称、手工邮箱、分组、标签、备注和母号标记。",
     "accountPool.upstreamAccounts.batchOauth.tooltip.motherTitle": "切换母号",
     "accountPool.upstreamAccounts.batchOauth.tooltip.motherBody":
       "把这一行设为所在分组的母号；同组其他草稿行会立刻让出皇冠标记。",

@@ -19,6 +19,7 @@ import { MotherAccountToggle } from "../../components/MotherAccountToggle";
 import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
 import {
   DuplicateWarningPopover,
+  OAuthIdentityConfirmationAlert,
   resolveDisplayNameAfterEmailChange,
 } from "./UpstreamAccountCreate.shared";
 import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.controller-context";
@@ -738,67 +739,16 @@ export function UpstreamAccountCreateOauthSection() {
   </div>
 
   {oauthNeedsIdentityConfirmation && oauthIdentityConfirmation ? (
-    <Alert variant="warning" className="grid gap-3">
-      <div className="flex items-start gap-2">
-        <AppIcon
-          name="alert-outline"
-          className="mt-0.5 h-4 w-4 shrink-0"
-          aria-hidden
-        />
-        <div className="min-w-0">
-          <p className="text-sm font-semibold">
-            {t(
-              "accountPool.upstreamAccounts.batchOauth.identityConfirmation.title",
-            )}
-          </p>
-          <p className="text-xs leading-5">
-            {t(
-              "accountPool.upstreamAccounts.batchOauth.identityConfirmation.body",
-            )}
-          </p>
-        </div>
-      </div>
-      <div className="grid gap-2 text-xs md:grid-cols-2">
-        <div className="rounded-lg border border-warning/25 bg-warning/8 px-3 py-2">
-          <p className="font-semibold">
-            {t(
-              "accountPool.upstreamAccounts.batchOauth.identityConfirmation.current",
-            )}
-          </p>
-          <p className="mt-1 break-words">
-            {(oauthIdentityConfirmation.current.displayName ??
-              oauthDisplayName) ||
-              t("accountPool.upstreamAccounts.identityUnavailable")}
-          </p>
-          <p className="break-words text-base-content/68">
-            {oauthIdentityConfirmation.current.email ??
-              t("accountPool.upstreamAccounts.identityUnavailable")}
-          </p>
-        </div>
-        <div className="rounded-lg border border-warning/25 bg-warning/8 px-3 py-2">
-          <p className="font-semibold">
-            {t(
-              "accountPool.upstreamAccounts.batchOauth.identityConfirmation.incoming",
-            )}
-          </p>
-          <p className="mt-1 break-words">
-            {oauthIdentityConfirmation.incoming.email ??
-              oauthIdentityConfirmation.incoming.verifiedEmail ??
-              t("accountPool.upstreamAccounts.identityUnavailable")}
-          </p>
-          <p className="break-words text-base-content/68">
-            {[
-              oauthIdentityConfirmation.incoming.chatgptAccountId,
-              oauthIdentityConfirmation.incoming.chatgptUserId,
-              oauthIdentityConfirmation.incoming.planType,
-            ]
-              .filter(Boolean)
-              .join(" / ") ||
-              t("accountPool.upstreamAccounts.identityUnavailable")}
-          </p>
-        </div>
-      </div>
-    </Alert>
+    <OAuthIdentityConfirmationAlert
+      identityConfirmation={oauthIdentityConfirmation}
+      fallbackDisplayName={oauthDisplayName}
+      confirmBusy={busyAction === "oauth-confirm-identity"}
+      confirmDisabled={
+        busyAction === "oauth-confirm-identity" || !writesEnabled
+      }
+      onConfirm={() => void handleConfirmOauthIdentityOverwrite()}
+      t={t}
+    />
   ) : null}
 
   {oauthEmailResolution ? (
@@ -855,52 +805,31 @@ export function UpstreamAccountCreateOauthSection() {
         {t("accountPool.upstreamAccounts.actions.cancel")}
       </Link>
     </Button>
-    <Button
-      type="button"
-      onClick={() => void handleCompleteOauth()}
-      disabled={
-        !oauthSessionActive ||
-        !oauthCallbackUrl.trim() ||
-        busyAction === "oauth-complete" ||
-        !writesEnabled
-      }
-    >
-      {busyAction === "oauth-complete" ? (
-        <AppIcon
-          name="loading"
-          className="mr-2 h-4 w-4 animate-spin"
-          aria-hidden
-        />
-      ) : (
-        <AppIcon
-          name="check-decagram-outline"
-          className="mr-2 h-4 w-4"
-          aria-hidden
-        />
-      )}
-      {t("accountPool.upstreamAccounts.actions.completeOauth")}
-    </Button>
-    {oauthNeedsIdentityConfirmation ? (
+    {!oauthNeedsIdentityConfirmation ? (
       <Button
         type="button"
-        variant="secondary"
-        onClick={() => void handleConfirmOauthIdentityOverwrite()}
+        onClick={() => void handleCompleteOauth()}
         disabled={
-          busyAction === "oauth-confirm-identity" || !writesEnabled
+          !oauthSessionActive ||
+          !oauthCallbackUrl.trim() ||
+          busyAction === "oauth-complete" ||
+          !writesEnabled
         }
       >
-        {busyAction === "oauth-confirm-identity" ? (
-          <Spinner size="sm" className="mr-2" />
+        {busyAction === "oauth-complete" ? (
+          <AppIcon
+            name="loading"
+            className="mr-2 h-4 w-4 animate-spin"
+            aria-hidden
+          />
         ) : (
           <AppIcon
-            name="shield-key-outline"
+            name="check-decagram-outline"
             className="mr-2 h-4 w-4"
             aria-hidden
           />
         )}
-        {t(
-          "accountPool.upstreamAccounts.batchOauth.actions.confirmIdentityOverwrite",
-        )}
+        {t("accountPool.upstreamAccounts.actions.completeOauth")}
       </Button>
     ) : null}
     {oauthDuplicateWarning ? (

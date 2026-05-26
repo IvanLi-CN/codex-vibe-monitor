@@ -169,6 +169,8 @@ export const NeedsIdentityConfirmation: Story = {
     await expect(canvas.getByText(/identity overwrite confirmation required|需要确认身份覆盖/i)).toBeInTheDocument()
     await expect(canvas.getByText(/ops-current@storybook\.example\.com/i)).toBeInTheDocument()
     await expect(canvas.getByText(/ops-new@storybook\.example\.com/i)).toBeInTheDocument()
+    await expect(canvas.getByText(/will update|将更新/i)).toBeInTheDocument()
+    await expect(canvas.getByText(/will keep|将保留/i)).toBeInTheDocument()
     await expect(canvas.getByRole('button', { name: /confirm identity overwrite|确认身份覆盖/i })).toBeEnabled()
   },
 }

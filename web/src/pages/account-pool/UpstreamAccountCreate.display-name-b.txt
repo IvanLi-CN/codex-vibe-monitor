@@ -1377,6 +1377,9 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     expect(document.body.textContent).toContain("Original OAuth");
     expect(document.body.textContent).toContain("incoming@example.com");
+    expect(document.body.textContent).toContain("Will update:");
+    expect(document.body.textContent).toContain("Will keep:");
+    expect(findButton(/Complete OAuth login/i)).toBeFalsy();
     clickButton(/Confirm identity overwrite/i);
     await flushAsync();
 

@@ -577,6 +577,8 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     expect(pageTextContent()).toContain("Identity overwrite confirmation required");
     expect(pageTextContent()).toContain("kept@example.com");
     expect(pageTextContent()).toContain("incoming@example.com");
+    expect(pageTextContent()).toContain("Will update:");
+    expect(pageTextContent()).toContain("Will keep:");
 
     const confirmButton = Array.from(host?.querySelectorAll("button") ?? []).find(
       (button) =>
