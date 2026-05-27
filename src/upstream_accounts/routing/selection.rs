@@ -535,9 +535,18 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
     } else {
         None
     };
+    let forced_binding_account_id = match binding_constraint {
+        Some(PromptCacheConversationBindingConstraint::UpstreamAccount(account_id)) => {
+            Some(*account_id)
+        }
+        _ => None,
+    };
 
     if let Some(route) = sticky_route.as_ref() {
-        if !tried.contains(&route.account_id)
+        let sticky_route_is_forced_binding_target =
+            forced_binding_account_id == Some(route.account_id);
+        if !sticky_route_is_forced_binding_target
+            && !tried.contains(&route.account_id)
             && let Some(row) = load_upstream_account_row(&state.pool, route.account_id).await?
         {
             tried.insert(route.account_id);
@@ -754,6 +763,11 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
     let mut candidates = load_account_routing_candidates(&state.pool, &tried).await?;
     for candidate in &mut candidates {
         candidate.in_flight_reservations = pool_routing_reservation_count(state, candidate.id);
+        if forced_binding_account_id == Some(candidate.id) && sticky_source_id == Some(candidate.id)
+        {
+            candidate.active_sticky_conversations =
+                candidate.active_sticky_conversations.saturating_sub(1);
+        }
     }
     let candidate_effective_rules = load_effective_routing_rules_for_accounts(
         &state.pool,
@@ -835,8 +849,13 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
             &state.pool,
             row.id,
             sticky_key,
-            sticky_source_id,
+            if forced_binding_account_id == Some(row.id) && sticky_source_id == Some(row.id) {
+                None
+            } else {
+                sticky_source_id
+            },
             effective_rule,
+            forced_binding_account_id == Some(row.id),
         )
         .await?
         {

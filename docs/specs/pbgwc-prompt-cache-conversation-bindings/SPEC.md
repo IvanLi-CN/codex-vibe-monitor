@@ -64,15 +64,23 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Proxy hot path extracts `promptCacheKey` using the existing header, prebuffered-body, and early live-body probe rules available before account-pool selection.
 - Before account-pool candidate selection, routing loads the current binding for the observed key.
 - Group binding filters candidates to matching `group_name`.
-- Upstream account binding filters candidates to the bound account id.
+- Upstream account binding filters candidates to the bound account id and is treated as an operator-forced account assignment.
 - Existing sticky reuse is still allowed only when the sticky account satisfies the binding constraint.
-- Existing account eligibility, policy, cut-in/cut-out, concurrency, retry, and forward-proxy readiness checks remain authoritative inside the constrained candidate set.
+- For forced upstream account binding, an existing sticky route cannot block the selected target through sticky cut-out policy, and the selected target's cut-in policy cannot reject the operator-forced transfer.
+- Existing account eligibility, health, quota, guard, concurrency, retry, route-key, and forward-proxy readiness checks remain authoritative inside the constrained candidate set.
+- Saving an upstream account binding immediately updates `pool_sticky_routes` for that `promptCacheKey` to the bound account so future requests and operator views agree on the effective assignment.
+- Clearing a binding removes only the binding row; any existing sticky route remains ordinary sticky-routing state and is governed by the normal sticky reuse and cut-out policy.
+- Group binding remains a hard filter only; it does not bypass cut-in or cut-out policy.
 
 ## Acceptance Criteria
 
 - Given a key bound to group `prod` and visible before selection, the request selects only accounts in `prod`.
 - Given a key bound to account `123` and visible before selection, the request selects only account `123`.
-- Given a cleared binding, requests use the normal account-pool routing behavior.
+- Given a key with an old sticky route to account `A` and a forced upstream account binding to account `B`, account `B` can be selected even when sticky policy would normally forbid cutting out of `A` or cutting into `B`.
+- Given a key bound to account `123` and account `123` is unavailable due to health, quota, concurrency, route-key, or forward-proxy readiness, routing fails without falling back to a different account.
+- Given a key bound to a group, target accounts in that group still honor normal cut-in policy.
+- Given an upstream account binding is saved, the key's sticky route is updated to the bound account.
+- Given a cleared binding, requests use normal account-pool routing behavior, including any sticky route that already exists for that key.
 - Given a PATCH payload containing both `groupName` and `upstreamAccountId`, the API rejects it.
 - Given a bound target that is disabled or unavailable, the request fails through the existing no-selectable-account path without fallback.
 - Given the conversation detail drawer is open, the operator can see the current binding, change it, and clear it.

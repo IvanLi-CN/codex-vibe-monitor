@@ -2137,6 +2137,7 @@ async fn count_recent_account_conversations(
     pool: &Pool<Sqlite>,
     account_id: i64,
     lookback_hours: i64,
+    exclude_sticky_key: Option<&str>,
 ) -> Result<i64> {
     let lower_bound = format_utc_iso(Utc::now() - ChronoDuration::hours(lookback_hours));
     sqlx::query_scalar::<_, i64>(
@@ -2145,10 +2146,12 @@ async fn count_recent_account_conversations(
         FROM pool_sticky_routes
         WHERE account_id = ?1
           AND last_seen_at >= ?2
+          AND (?3 IS NULL OR sticky_key != ?3)
         "#,
     )
     .bind(account_id)
     .bind(lower_bound)
+    .bind(exclude_sticky_key)
     .fetch_one(pool)
     .await
     .map_err(Into::into)

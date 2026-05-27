@@ -3176,6 +3176,13 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
     assert_eq!(account_response.binding_kind, "upstreamAccount");
     assert_eq!(account_response.group_name, None);
     assert_eq!(account_response.upstream_account_id, Some(account_id));
+    let sticky_account_id: i64 =
+        sqlx::query_scalar("SELECT account_id FROM pool_sticky_routes WHERE sticky_key = ?1")
+            .bind(prompt_cache_key)
+            .fetch_one(&state.pool)
+            .await
+            .expect("account binding should update sticky route");
+    assert_eq!(sticky_account_id, account_id);
 
     let clear_payload: UpdatePromptCacheConversationBindingRequest =
         serde_json::from_value(json!({ "bindingKind": "none" }))
@@ -3188,6 +3195,13 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
     .await
     .expect("clear binding should delete row");
     assert_eq!(clear_response.binding_kind, "none");
+    let sticky_account_id_after_clear: i64 =
+        sqlx::query_scalar("SELECT account_id FROM pool_sticky_routes WHERE sticky_key = ?1")
+            .bind(prompt_cache_key)
+            .fetch_one(&state.pool)
+            .await
+            .expect("clearing a binding should leave existing sticky route intact");
+    assert_eq!(sticky_account_id_after_clear, account_id);
     let Json(get_response) = get_prompt_cache_conversation_binding(
         State(state),
         AxumPath(prompt_cache_key.to_string()),
