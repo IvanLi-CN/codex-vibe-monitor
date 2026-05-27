@@ -17,10 +17,18 @@ import {
 } from './useParallelWorkStats'
 
 const apiMocks = vi.hoisted(() => ({
-  fetchParallelWorkStats: vi.fn<
-    (options?: { range?: string; bucket?: string; timeZone?: string; signal?: AbortSignal }) => Promise<ParallelWorkStatsResponse>
+  fetchParallelWorkStatsConditional: vi.fn<
+    (options?: { range?: string; bucket?: string; timeZone?: string; signal?: AbortSignal; etag?: string | null }) => Promise<{
+      data: ParallelWorkStatsResponse | null
+      etag: string | null
+      notModified: boolean
+    }>
   >(),
 }))
+
+type ConditionalParallelWorkStatsResponse = Awaited<
+  ReturnType<typeof apiMocks.fetchParallelWorkStatsConditional>
+>
 
 const sseMocks = vi.hoisted(() => ({
   listeners: new Set<(payload: BroadcastPayload) => void>(),
@@ -31,7 +39,7 @@ vi.mock('../lib/api', async () => {
   const actual = await vi.importActual<typeof import('../lib/api')>('../lib/api')
   return {
     ...actual,
-    fetchParallelWorkStats: apiMocks.fetchParallelWorkStats,
+    fetchParallelWorkStatsConditional: apiMocks.fetchParallelWorkStatsConditional,
   }
 })
 
@@ -132,6 +140,22 @@ function createStats(): ParallelWorkStatsResponse {
   }
 }
 
+function fullStatsResponse(stats = createStats(), etag = '"parallel-work-test"') {
+  return {
+    data: stats,
+    etag,
+    notModified: false,
+  }
+}
+
+function notModifiedResponse(etag = '"parallel-work-test"') {
+  return {
+    data: null,
+    etag,
+    notModified: true,
+  }
+}
+
 function Probe() {
   const { data, isLoading, error } = useParallelWorkStats({ range: '7d', bucket: '1m' })
   return (
@@ -146,13 +170,15 @@ function Probe() {
 describe('useParallelWorkStats helpers', () => {
   it('computes refresh delay from the last records refresh', () => {
     expect(getParallelWorkRecordsResyncDelay(10_000, 20_000)).toBe(
-      PARALLEL_WORK_REFRESH_THROTTLE_MS - 10_000,
+      0,
     )
-    expect(getParallelWorkRecordsResyncDelay(10_000, 80_000)).toBe(0)
+    expect(getParallelWorkRecordsResyncDelay(20_000, 22_000)).toBe(
+      PARALLEL_WORK_REFRESH_THROTTLE_MS - 2_000,
+    )
   })
 
   it('enforces the open-resync cooldown unless forced', () => {
-    expect(shouldTriggerParallelWorkOpenResync(0, 5_000)).toBe(false)
+    expect(shouldTriggerParallelWorkOpenResync(0, 4_999)).toBe(false)
     expect(
       shouldTriggerParallelWorkOpenResync(0, PARALLEL_WORK_OPEN_RESYNC_COOLDOWN_MS + 1),
     ).toBe(true)
@@ -174,15 +200,15 @@ describe('useParallelWorkStats helpers', () => {
 })
 
 describe('useParallelWorkStats', () => {
-  it('throttles records-triggered silent refreshes to at most once per minute', async () => {
+  it('throttles records-triggered silent refreshes to the configured interval', async () => {
     vi.useFakeTimers()
-    apiMocks.fetchParallelWorkStats.mockResolvedValue(createStats())
+    apiMocks.fetchParallelWorkStatsConditional.mockResolvedValue(fullStatsResponse())
 
     render(<Probe />)
     await flushAsync()
-    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(1)
-    expect(apiMocks.fetchParallelWorkStats).toHaveBeenLastCalledWith(
-      expect.objectContaining({ range: '7d', bucket: '1m' }),
+    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(1)
+    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenLastCalledWith(
+      expect.objectContaining({ range: '7d', bucket: '1m', etag: null }),
     )
     expect(host?.querySelector('[data-testid="current-count"]')?.textContent).toBe('1')
 
@@ -190,119 +216,142 @@ describe('useParallelWorkStats', () => {
       sseMocks.listeners.forEach((listener) => listener({ type: 'records', records: [] }))
     })
     await flushAsync()
-    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(2)
+    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(2)
 
     act(() => {
       sseMocks.listeners.forEach((listener) => listener({ type: 'records', records: [] }))
     })
     await vi.advanceTimersByTimeAsync(PARALLEL_WORK_REFRESH_THROTTLE_MS - 1)
-    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(2)
+    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(2)
 
     await vi.advanceTimersByTimeAsync(1)
     await flushAsync()
-    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(3)
+    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(3)
   })
 
   it('respects the SSE-open cooldown before queueing another refresh', async () => {
     vi.useFakeTimers()
-    apiMocks.fetchParallelWorkStats.mockResolvedValue(createStats())
+    apiMocks.fetchParallelWorkStatsConditional.mockResolvedValue(fullStatsResponse())
 
     render(<Probe />)
     await flushAsync()
-    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(1)
+    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(1)
 
     act(() => {
       sseMocks.openListeners.forEach((listener) => listener())
     })
     await flushAsync()
-    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(2)
+    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(2)
 
     act(() => {
       sseMocks.openListeners.forEach((listener) => listener())
     })
     await flushAsync()
-    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(2)
+    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(2)
 
     await vi.advanceTimersByTimeAsync(PARALLEL_WORK_OPEN_RESYNC_COOLDOWN_MS)
     act(() => {
       sseMocks.openListeners.forEach((listener) => listener())
     })
     await flushAsync()
-    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(3)
+    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(3)
   })
 
-  it('queues SSE-open refreshes instead of aborting an in-flight request', async () => {
-    let resolveRefresh: ((value: ParallelWorkStatsResponse) => void) | null = null
-    let refreshSignal: AbortSignal | undefined
-    apiMocks.fetchParallelWorkStats
-      .mockResolvedValueOnce(createStats())
-      .mockImplementationOnce(
-        ({ signal } = {}) =>
-          new Promise<ParallelWorkStatsResponse>((resolve) => {
-            refreshSignal = signal
-            resolveRefresh = resolve
-          }),
-      )
-      .mockResolvedValueOnce(createStats())
+  it('reuses the prior payload when the server returns 304', async () => {
+    vi.useFakeTimers()
+    apiMocks.fetchParallelWorkStatsConditional
+      .mockResolvedValueOnce(fullStatsResponse(createStats(), '"parallel-work-a"'))
+      .mockResolvedValueOnce(notModifiedResponse('"parallel-work-a"'))
 
     render(<Probe />)
     await flushAsync()
-    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(1)
+    expect(host?.querySelector('[data-testid="current-count"]')?.textContent).toBe('1')
 
     act(() => {
       sseMocks.listeners.forEach((listener) => listener({ type: 'records', records: [] }))
     })
     await flushAsync()
-    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(2)
-    expect(refreshSignal?.aborted).toBe(false)
 
-    act(() => {
-      sseMocks.openListeners.forEach((listener) => listener())
-    })
-    await flushAsync()
-    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(2)
-    expect(refreshSignal?.aborted).toBe(false)
-
-    await act(async () => {
-      resolveRefresh?.(createStats())
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-
-    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(3)
+    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(2)
+    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenLastCalledWith(
+      expect.objectContaining({ etag: '"parallel-work-a"' }),
+    )
+    expect(host?.querySelector('[data-testid="current-count"]')?.textContent).toBe('1')
+    expect(host?.querySelector('[data-testid="error"]')?.textContent).toBe('')
   })
 
-  it('queues a follow-up silent refresh when SSE-open arrives during hydration', async () => {
-    let resolveInitialLoad: ((value: ParallelWorkStatsResponse) => void) | null = null
-    apiMocks.fetchParallelWorkStats
+  it('queues SSE-open refreshes instead of aborting an in-flight request', async () => {
+    let resolveRefresh: ((value: ConditionalParallelWorkStatsResponse) => void) | null = null
+    let refreshSignal: AbortSignal | undefined
+    apiMocks.fetchParallelWorkStatsConditional
+      .mockResolvedValueOnce(fullStatsResponse())
       .mockImplementationOnce(
-        () =>
-          new Promise<ParallelWorkStatsResponse>((resolve) => {
-            resolveInitialLoad = resolve
+        ({ signal } = {}) =>
+          new Promise<ConditionalParallelWorkStatsResponse>((resolve) => {
+            refreshSignal = signal
+            resolveRefresh = resolve
           }),
       )
-      .mockResolvedValueOnce(createStats())
+      .mockResolvedValueOnce(fullStatsResponse())
 
     render(<Probe />)
     await flushAsync()
-    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(1)
+    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      sseMocks.listeners.forEach((listener) => listener({ type: 'records', records: [] }))
+    })
+    await flushAsync()
+    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(2)
+    expect(refreshSignal?.aborted).toBe(false)
+
+    act(() => {
+      sseMocks.openListeners.forEach((listener) => listener())
+    })
+    await flushAsync()
+    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(2)
+    expect(refreshSignal?.aborted).toBe(false)
+
+    await act(async () => {
+      resolveRefresh?.(fullStatsResponse())
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(3)
+  })
+
+  it('queues a follow-up silent refresh when SSE-open arrives during hydration', async () => {
+    let resolveInitialLoad: ((value: ConditionalParallelWorkStatsResponse) => void) | null = null
+    apiMocks.fetchParallelWorkStatsConditional
+      .mockImplementationOnce(
+        () =>
+          new Promise<ConditionalParallelWorkStatsResponse>((resolve) => {
+            resolveInitialLoad = resolve
+          }),
+      )
+      .mockResolvedValueOnce(fullStatsResponse())
+
+    render(<Probe />)
+    await flushAsync()
+    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(1)
 
     act(() => {
       sseMocks.openListeners.forEach((listener) => listener())
     })
 
     await act(async () => {
-      resolveInitialLoad?.(createStats())
+      resolveInitialLoad?.(fullStatsResponse())
       await Promise.resolve()
       await Promise.resolve()
     })
 
-    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(2)
+    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(2)
   })
 
   it('does not auto-retry permanent client errors', async () => {
     vi.useFakeTimers()
-    apiMocks.fetchParallelWorkStats.mockRejectedValue(
+    apiMocks.fetchParallelWorkStatsConditional.mockRejectedValue(
       new ApiRequestError(
         400,
         'Request failed: 400 unsupported timeZone for historical parallel-work rollups',
@@ -311,28 +360,28 @@ describe('useParallelWorkStats', () => {
 
     render(<Probe />)
     await flushAsync()
-    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(1)
+    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(1)
     expect(host?.querySelector('[data-testid="error"]')?.textContent).toContain('Request failed: 400')
 
     await vi.advanceTimersByTimeAsync(2_000)
     await flushAsync()
-    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(1)
+    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(1)
   })
 
   it('keeps auto-retrying transient server failures', async () => {
     vi.useFakeTimers()
-    apiMocks.fetchParallelWorkStats
+    apiMocks.fetchParallelWorkStatsConditional
       .mockRejectedValueOnce(new ApiRequestError(503, 'Request failed: 503 gateway timeout'))
-      .mockResolvedValueOnce(createStats())
+      .mockResolvedValueOnce(fullStatsResponse())
 
     render(<Probe />)
     await flushAsync()
-    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(1)
+    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(1)
     expect(host?.querySelector('[data-testid="error"]')?.textContent).toContain('Request failed: 503')
 
     await vi.advanceTimersByTimeAsync(2_000)
     await flushAsync()
-    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(2)
+    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(2)
     expect(host?.querySelector('[data-testid="error"]')?.textContent).toBe('')
     expect(host?.querySelector('[data-testid="current-count"]')?.textContent).toBe('1')
   })

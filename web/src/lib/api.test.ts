@@ -8,6 +8,7 @@ import {
   fetchForwardProxyBindingNodes,
   fetchForwardProxyTimeseries,
   fetchParallelWorkStats,
+  fetchParallelWorkStatsConditional,
   fetchPromptCacheConversationBinding,
   fetchPromptCacheConversations,
   fetchTimeseries,
@@ -667,6 +668,34 @@ describe("fetchParallelWorkStats", () => {
     expect(String(firstArg)).toBe(
       "/api/stats/parallel-work?timeZone=Australia%2FLord_Howe",
     );
+  });
+
+  it("sends If-None-Match and exposes 304 responses for cached parallel-work payloads", async () => {
+    const fetchMock = vi.fn(async () => {
+      return new Response(null, {
+        status: 304,
+        headers: { ETag: '"parallel-work-cached"' },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    const response = await fetchParallelWorkStatsConditional({
+      range: "today",
+      bucket: "1m",
+      timeZone: "UTC",
+      etag: '"parallel-work-cached"',
+    });
+
+    expect(response).toEqual({
+      data: null,
+      etag: '"parallel-work-cached"',
+      notModified: true,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
+    expect(init?.headers).toMatchObject({
+      "If-None-Match": '"parallel-work-cached"',
+    });
   });
 });
 

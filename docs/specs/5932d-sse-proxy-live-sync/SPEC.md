@@ -47,6 +47,7 @@
 
 - 复用 `collect_summary_snapshots` 与 `QuotaSnapshotResponse::fetch_latest`。
 - 避免在多个错误/成功分支复制广播逻辑。
+- Dashboard 实时消费应拆分“用户可见轻量补丁”和“HTTP 全量 reconcile”两类节奏，避免高频 SSE 记录把整页统计与图表一起重算。
 
 ## 功能与行为规格（Functional/Behavior Spec）
 
@@ -60,17 +61,32 @@
   - 不广播 `records`，并且不触发额外 summary/quota 广播。
 - 前端连接 SSE 成功（open）后：
   - 对 `useInvocationStream` 执行一次静默 `fetchInvocations(...)` 回源并合并去重。
+- Dashboard `today` summary:
+  - SSE `summary` payload 是 KPI 数字的快速路径，匹配窗口时直接提交并保持 ≤1s 可见。
+  - `records` payload 只触发 HTTP reconcile，不作为 KPI 快速路径；calendar-window HTTP reconcile 必须节流到不超过每 5 秒一次。
+- Dashboard 顶部 `today`/`yesterday` 1 分钟粒度活动图：
+  - 继续使用既有 Recharts 图表、tooltip、1 分钟 bucket 与交互结构。
+  - `today` 图表接收的 timeseries response 允许高频到达，但提交给图表渲染的数据快照必须独立节流到不超过每 5 秒一次。
+  - closed natural day（例如 `yesterday`）不需要延迟提交。
+- Dashboard working conversations:
+  - SSE `records` 对已加载会话的本地可见 patch 必须 1 秒合批提交，避免逐条记录触发卡片重排。
+  - 新会话、排序锚点变化或 head 需要重算时，HTTP head/snapshot reconcile 必须节流到不超过每 5 秒一次。
+- `/api/stats/parallel-work`:
+  - JSON shape 与字段集合必须保持不变。
+  - 服务端可以通过 ETag / `If-None-Match` / `304 Not Modified` 或等价 version 机制减少未变化 payload 传输。
 
 ### Edge cases / errors
 
 - summary 计算失败：记录 `warn`，继续执行 quota 广播尝试。
 - quota 拉取失败：记录 `warn`，不影响请求主流程。
 - SSE 广播通道拥塞/lag：记录 `warn`，代理请求照常返回。
+- Dashboard HTTP reconcile 失败不得清空已有 SSE 驱动 KPI、working conversations 或 parallel-work 数据；下一次 SSE/open/timer 仍可继续触发 reconcile。
 
 ## 接口契约（Interfaces & Contracts）
 
 - HTTP API: 无变更。
 - SSE schema: 保持现有 `records` / `summary` / `quota` / `version` 结构，不扩展字段与事件类型。
+- `/api/stats/parallel-work`: response body schema 不变；成功响应应带 `ETag`，匹配 `If-None-Match` 时可返回 `304` 且不带 body。
 
 ## 验收标准（Acceptance Criteria）
 
@@ -78,11 +94,16 @@
 - Given 同一代理请求，When `records` 事件发送后，Then 能收到对应窗口的 `summary` 与最新 `quota` 事件。
 - Given 命中 `INSERT OR IGNORE` 未插入，When 请求完成，Then 不重复发送 `records` 事件。
 - Given SSE 发生断线并恢复，When 连接 open，Then 前端列表通过静默回源补齐，且与后端一致。
+- Given Dashboard 收到 `today` 的 SSE `summary`，When payload 匹配当前窗口，Then KPI 数字不等待 HTTP reconcile 即可提交。
+- Given Dashboard 高频收到 `records`，When 需要更新 calendar-window summary、顶部 today 图表或 working conversation head，Then 对应 HTTP / chart commit 不超过每 5 秒一次。
+- Given working conversations 高频收到同一秒内多条 `records`，When 这些 records 命中已加载会话，Then 本地可见 patch 合并为 1 秒批次提交。
+- Given parallel-work payload 未变化，When 客户端带上前次 `ETag` 请求 `/api/stats/parallel-work`，Then 服务端可返回 `304`，客户端复用既有数据且不改变 JSON shape。
 
 ### Performance & Reliability
 
 - 代理主链路不可因广播失败而失败。
 - 不新增显著阻塞路径与重复广播噪声。
+- Dashboard 高频 SSE 消费不得让顶部图表、working conversation head reconcile 或 parallel-work 统计在每条记录上全量重渲染。
 
 ## 风险 / 假设
 

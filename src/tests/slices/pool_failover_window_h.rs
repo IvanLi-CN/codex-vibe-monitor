@@ -317,6 +317,67 @@ async fn parallel_work_stats_counts_distinct_prompt_cache_keys_per_bucket() {
 }
 
 #[tokio::test]
+async fn parallel_work_stats_returns_not_modified_for_matching_etag() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let current_minute_epoch =
+        align_reporting_bucket_epoch(Utc::now().timestamp(), 60, Shanghai).expect("align minute");
+    let minute = Utc
+        .timestamp_opt(current_minute_epoch - 3 * 60, 0)
+        .single()
+        .expect("minute");
+    insert_parallel_work_invocation(
+        &state.pool,
+        "parallel-etag-1",
+        minute + ChronoDuration::seconds(10),
+        "pck-etag",
+    )
+    .await;
+
+    let query = || ParallelWorkStatsQuery {
+        range: "7d".to_string(),
+        bucket: Some("1m".to_string()),
+        time_zone: Some("Asia/Shanghai".to_string()),
+    };
+    let first_response = fetch_parallel_work_stats_cached(
+        State(state.clone()),
+        HeaderMap::new(),
+        Query(query()),
+    )
+    .await
+    .expect("fetch first parallel-work stats response");
+    assert_eq!(first_response.status(), StatusCode::OK);
+    let etag = first_response
+        .headers()
+        .get(axum::http::header::ETAG)
+        .expect("etag header")
+        .clone();
+    let body = axum::body::to_bytes(first_response.into_body(), usize::MAX)
+        .await
+        .expect("read first response body");
+    assert!(!body.is_empty());
+
+    let mut headers = HeaderMap::new();
+    headers.insert(axum::http::header::IF_NONE_MATCH, etag.clone());
+    let second_response = fetch_parallel_work_stats_cached(
+        State(state),
+        headers,
+        Query(query()),
+    )
+    .await
+    .expect("fetch cached parallel-work stats response");
+
+    assert_eq!(second_response.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(second_response.headers().get(axum::http::header::ETAG), Some(&etag));
+    let second_body = axum::body::to_bytes(second_response.into_body(), usize::MAX)
+        .await
+        .expect("read cached response body");
+    assert!(second_body.is_empty());
+}
+
+#[tokio::test]
 async fn parallel_work_stats_minute7d_supports_non_shanghai_reporting_timezones() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

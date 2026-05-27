@@ -2,7 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchSummary } from '../lib/api'
 import type { ApiInvocation, StatsResponse } from '../lib/api'
 import { subscribeToSse, subscribeToSseOpen } from '../lib/sse'
-import { recordTodaySummaryRefresh } from '../lib/dashboardPerformanceDiagnostics'
+import {
+  recordTodaySummaryRefresh,
+  recordTodaySummarySseCommit,
+} from '../lib/dashboardPerformanceDiagnostics'
 
 interface UseSummaryOptions {
   limit?: number
@@ -13,7 +16,7 @@ const SUPPORTED_SSE_WINDOWS = new Set(['all', '30m', '1h', '1d', '1mo'])
 const CALENDAR_SUMMARY_WINDOWS = new Set(['today', 'yesterday', 'thisWeek', 'thisMonth', 'previous7d'])
 const DAY_BOUNDARY_SUMMARY_WINDOWS = new Set(['today', 'yesterday', 'previous7d'])
 export const UNSUPPORTED_SSE_REFRESH_INTERVAL_MS = 60_000
-export const CALENDAR_SUMMARY_RECORDS_REFRESH_THROTTLE_MS = 1_000
+export const CALENDAR_SUMMARY_RECORDS_REFRESH_THROTTLE_MS = 5_000
 export const CURRENT_SUMMARY_RECORDS_REFRESH_THROTTLE_MS = 600
 export const CURRENT_SUMMARY_OPEN_RESYNC_COOLDOWN_MS = 3_000
 export const CURRENT_SUMMARY_REQUEST_TIMEOUT_MS = 10_000
@@ -516,6 +519,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
         if (payload.window === window) {
           setStats(payload.summary)
           writeSummaryRemountCache(window, options?.limit, payload.summary)
+          recordTodaySummarySseCommit(window)
           lastNaturalDayLoadStartEpochRef.current =
             isDayBoundarySummaryWindow(window)
               ? getLocalDayStartEpoch()
@@ -542,7 +546,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
               (window === 'yesterday' &&
                 shouldRefreshYesterdaySummaryOnRecords(scopedRecords))
         ) {
-          // calendar windows 依旧通过 HTTP 计算，但 records 到达时以 1s 节流静默补拉。
+          // calendar windows keep SSE summary as the fast path and use HTTP as a 5s reconcile.
           void runCalendarSummaryRefresh(calendarRefreshRef.current, Date.now(), () => load({ silent: true }))
         }
       }

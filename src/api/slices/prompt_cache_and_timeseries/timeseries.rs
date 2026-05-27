@@ -503,10 +503,64 @@ fn build_timeseries_response(
     }))
 }
 
+#[cfg(test)]
 pub(crate) async fn fetch_parallel_work_stats(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ParallelWorkStatsQuery>,
 ) -> Result<Json<ParallelWorkStatsResponse>, ApiError> {
+    load_parallel_work_stats_response(&state, params).await.map(Json)
+}
+
+pub(crate) async fn fetch_parallel_work_stats_cached(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(params): Query<ParallelWorkStatsQuery>,
+) -> Result<Response, ApiError> {
+    let response = load_parallel_work_stats_response(&state, params).await?;
+    let body = serde_json::to_vec(&response)
+        .map_err(|err| ApiError::from(anyhow!("failed to serialize parallel-work stats: {err}")))?;
+    let etag = parallel_work_stats_etag(&body);
+    let mut response = if request_etag_matches(&headers, &etag) {
+        StatusCode::NOT_MODIFIED.into_response()
+    } else {
+        (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            body,
+        )
+            .into_response()
+    };
+    let etag_value = HeaderValue::from_str(&etag)
+        .map_err(|err| ApiError::from(anyhow!("invalid parallel-work etag: {err}")))?;
+    response.headers_mut().insert(axum::http::header::ETAG, etag_value);
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        HeaderValue::from_static("no-cache"),
+    );
+    Ok(response)
+}
+
+fn parallel_work_stats_etag(body: &[u8]) -> String {
+    let digest = Sha256::digest(body);
+    format!("\"parallel-work-{digest:x}\"")
+}
+
+fn request_etag_matches(headers: &HeaderMap, etag: &str) -> bool {
+    headers
+        .get(axum::http::header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .any(|candidate| candidate == "*" || candidate == etag)
+        })
+        .unwrap_or(false)
+}
+
+async fn load_parallel_work_stats_response(
+    state: &Arc<AppState>,
+    params: ParallelWorkStatsQuery,
+) -> Result<ParallelWorkStatsResponse, ApiError> {
     let requested_reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let requested_range_window = resolve_range_window(&params.range, requested_reporting_tz)?;
@@ -644,12 +698,12 @@ pub(crate) async fn fetch_parallel_work_stats(
         conversations,
     )?;
 
-    Ok(Json(ParallelWorkStatsResponse {
+    Ok(ParallelWorkStatsResponse {
         current: current.clone(),
         minute7d: current.clone(),
         hour30d: current.clone(),
         day_all: current,
-    }))
+    })
 }
 
 async fn query_parallel_work_conversation_spans(
