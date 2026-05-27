@@ -978,7 +978,7 @@ async fn pool_route_http_4xx_does_not_create_sticky_route() {
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
             .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
-    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -1033,6 +1033,22 @@ async fn pool_route_http_4xx_does_not_create_sticky_route() {
             .is_some_and(|message| !message.is_empty()),
         "4xx attempt should preserve error information: {attempt_rows:?}",
     );
+    let account_route_state =
+        sqlx::query_as::<_, (String, Option<String>, Option<String>, i64)>(
+            r#"
+            SELECT status, last_route_failure_at, cooldown_until, consecutive_route_failures
+            FROM pool_upstream_accounts
+            WHERE id = ?1
+            "#,
+        )
+        .bind(primary_id)
+        .fetch_one(&state.pool)
+        .await
+        .expect("load account route state after 4xx");
+    assert_eq!(account_route_state.0, "active");
+    assert_eq!(account_route_state.1, None);
+    assert_eq!(account_route_state.2, None);
+    assert_eq!(account_route_state.3, 0);
 
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));

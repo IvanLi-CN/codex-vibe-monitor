@@ -16,6 +16,10 @@ fn pool_route_response_status_is_success(status: StatusCode) -> bool {
     status.is_success() || status.is_redirection()
 }
 
+fn pool_route_response_status_is_neutral_client_error(status: StatusCode) -> bool {
+    status.is_client_error() && status != StatusCode::TOO_MANY_REQUESTS
+}
+
 pub(crate) async fn request_matches_pool_route(
     state: &AppState,
     headers: &HeaderMap,
@@ -2416,22 +2420,25 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                 state.as_ref(),
                                 &pool_routing_reservation_key,
                             );
-                            if let Err(route_err) = record_pool_route_http_failure(
-                                &state.pool,
-                                account.account_id,
-                                &account.kind,
-                                account.single_account_rotation_enabled
-                                    && account.effective_upstream_429_max_retries() == 0,
-                                live_body_sticky_key.as_deref(),
-                                upstream_status,
-                                route_http_failure_message
-                                    .as_deref()
-                                    .unwrap_or("upstream request failed"),
-                                upstream_invoke_id.as_deref(),
-                            )
-                            .await
+                            if !pool_route_response_status_is_neutral_client_error(upstream_status)
                             {
-                                warn!(account_id = account.account_id, error = %route_err, "failed to record pool route HTTP failure");
+                                if let Err(route_err) = record_pool_route_http_failure(
+                                    &state.pool,
+                                    account.account_id,
+                                    &account.kind,
+                                    account.single_account_rotation_enabled
+                                        && account.effective_upstream_429_max_retries() == 0,
+                                    live_body_sticky_key.as_deref(),
+                                    upstream_status,
+                                    route_http_failure_message
+                                        .as_deref()
+                                        .unwrap_or("upstream request failed"),
+                                    upstream_invoke_id.as_deref(),
+                                )
+                                .await
+                                {
+                                    warn!(account_id = account.account_id, error = %route_err, "failed to record pool route HTTP failure");
+                                }
                             }
                         }
                         return response_builder.body(Body::empty()).map_err(|err| {
@@ -2538,20 +2545,23 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                 state_for_record.as_ref(),
                                 &reservation_key_for_record,
                             );
-                            if let Err(route_err) = record_pool_route_http_failure(
-                                &state_for_record.pool,
-                                account.account_id,
-                                &account.kind,
-                                account.single_account_rotation_enabled
-                                    && account.effective_upstream_429_max_retries() == 0,
-                                sticky_key_for_record.as_deref(),
-                                upstream_status,
-                                &route_http_failure_message,
-                                invoke_id_for_record.as_deref(),
-                            )
-                            .await
+                            if !pool_route_response_status_is_neutral_client_error(upstream_status)
                             {
-                                warn!(account_id = account.account_id, error = %route_err, "failed to record pool route HTTP failure");
+                                if let Err(route_err) = record_pool_route_http_failure(
+                                    &state_for_record.pool,
+                                    account.account_id,
+                                    &account.kind,
+                                    account.single_account_rotation_enabled
+                                        && account.effective_upstream_429_max_retries() == 0,
+                                    sticky_key_for_record.as_deref(),
+                                    upstream_status,
+                                    &route_http_failure_message,
+                                    invoke_id_for_record.as_deref(),
+                                )
+                                .await
+                                {
+                                    warn!(account_id = account.account_id, error = %route_err, "failed to record pool route HTTP failure");
+                                }
                             }
                         }
                         finalize_tracked_pool_attempt(
@@ -2840,22 +2850,24 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             }
         } else {
             release_pool_routing_reservation(state.as_ref(), &pool_routing_reservation_key);
-            if let Err(route_err) = record_pool_route_http_failure(
-                &state.pool,
-                account.account_id,
-                &account.kind,
-                account.single_account_rotation_enabled
-                    && account.effective_upstream_429_max_retries() == 0,
-                sticky_key.as_deref(),
-                upstream_status,
-                route_http_failure_message
-                    .as_deref()
-                    .unwrap_or("upstream request failed"),
-                upstream_invoke_id.as_deref(),
-            )
-            .await
-            {
-                warn!(account_id = account.account_id, error = %route_err, "failed to record pool route HTTP failure");
+            if !pool_route_response_status_is_neutral_client_error(upstream_status) {
+                if let Err(route_err) = record_pool_route_http_failure(
+                    &state.pool,
+                    account.account_id,
+                    &account.kind,
+                    account.single_account_rotation_enabled
+                        && account.effective_upstream_429_max_retries() == 0,
+                    sticky_key.as_deref(),
+                    upstream_status,
+                    route_http_failure_message
+                        .as_deref()
+                        .unwrap_or("upstream request failed"),
+                    upstream_invoke_id.as_deref(),
+                )
+                .await
+                {
+                    warn!(account_id = account.account_id, error = %route_err, "failed to record pool route HTTP failure");
+                }
             }
         }
         return response_builder.body(Body::empty()).map_err(|err| {
@@ -2961,20 +2973,22 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 state_for_record.as_ref(),
                 &reservation_key_for_record,
             );
-            if let Err(route_err) = record_pool_route_http_failure(
-                &state_for_record.pool,
-                account.account_id,
-                &account.kind,
-                account.single_account_rotation_enabled
-                    && account.effective_upstream_429_max_retries() == 0,
-                sticky_key_for_record.as_deref(),
-                upstream_status,
-                &route_http_failure_message,
-                invoke_id_for_record.as_deref(),
-            )
-            .await
-            {
-                warn!(account_id = account.account_id, error = %route_err, "failed to record pool route HTTP failure");
+            if !pool_route_response_status_is_neutral_client_error(upstream_status) {
+                if let Err(route_err) = record_pool_route_http_failure(
+                    &state_for_record.pool,
+                    account.account_id,
+                    &account.kind,
+                    account.single_account_rotation_enabled
+                        && account.effective_upstream_429_max_retries() == 0,
+                    sticky_key_for_record.as_deref(),
+                    upstream_status,
+                    &route_http_failure_message,
+                    invoke_id_for_record.as_deref(),
+                )
+                .await
+                {
+                    warn!(account_id = account.account_id, error = %route_err, "failed to record pool route HTTP failure");
+                }
             }
         }
         finalize_tracked_pool_attempt(
