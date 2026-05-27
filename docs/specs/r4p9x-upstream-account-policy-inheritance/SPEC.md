@@ -82,7 +82,7 @@ Visual evidence is captured from stable Storybook scenarios for:
 - tag policy dialog with the hard block-new-conversations switch
 - group routing policy editor using the same hard switch
 - account routing policy editor using the same hard switch
-- effective routing rule card showing block-new-conversations and field-level source
+- effective routing rule card showing block-new-conversations and field-level source on desktop and narrow mobile widths
 
 PR: include
 ![Block new conversations tag dialog](./assets/block-new-conversations-tag-dialog.png)
@@ -95,3 +95,6 @@ PR: include
 
 PR: include
 ![Block new conversations effective rule card](./assets/block-new-conversations-effective-card.png)
+
+PR: include
+![Block new conversations effective rule card mobile](./assets/block-new-conversations-effective-card-mobile.png)
