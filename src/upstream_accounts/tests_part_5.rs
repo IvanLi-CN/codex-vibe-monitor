@@ -178,6 +178,287 @@ async fn resolver_applies_prompt_cache_account_binding_over_sticky_route() {
     assert_eq!(account.routing_source, PoolRoutingSelectionSource::FreshAssignment);
 }
 
+#[tokio::test]
+async fn resolver_forced_prompt_cache_account_binding_bypasses_target_cut_in_policy() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let sticky = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Sticky Cut In Source",
+        "sk-prompt-cache-sticky-cut-in-source",
+        Some(test_required_group_name()),
+        Some("https://sticky-cut-in-source.example.com/backend-api/codex"),
+    )
+    .await;
+    let bound = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Forced No Cut In",
+        "sk-prompt-cache-forced-no-cut-in",
+        Some(test_required_group_name()),
+        Some("https://forced-no-cut-in.example.com/backend-api/codex"),
+    )
+    .await;
+    let no_cut_in_tag = insert_tag(
+        &state.pool,
+        "prompt-cache-forced-no-cut-in",
+        &TagRoutingRule {
+            guard_enabled: false,
+            lookback_hours: None,
+            max_conversations: None,
+            allow_cut_out: true,
+            allow_cut_in: false,
+            priority_tier: TagPriorityTier::Normal,
+            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+            concurrency_limit: 0,
+            upstream_429_retry_enabled: false,
+            upstream_429_max_retries: 0,
+        },
+    )
+    .await
+    .expect("insert no cut-in tag");
+    sync_account_tag_links(&state.pool, bound, &[no_cut_in_tag.summary.id])
+        .await
+        .expect("attach no cut-in tag");
+    let now_iso = format_utc_iso(Utc::now());
+    insert_limit_sample_with_usage(&state.pool, sticky, &now_iso, Some(1.0), Some(1.0)).await;
+    insert_limit_sample_with_usage(&state.pool, bound, &now_iso, Some(20.0), Some(20.0)).await;
+    upsert_sticky_route(&state.pool, "prompt-cache-forced-no-cut-in-key", sticky, &now_iso)
+        .await
+        .expect("upsert sticky source");
+
+    let resolution = resolve_pool_account_for_request_with_binding_constraint(
+        &state,
+        Some("prompt-cache-forced-no-cut-in-key"),
+        &[],
+        &HashSet::new(),
+        Some(&PromptCacheConversationBindingConstraint::UpstreamAccount(bound)),
+    )
+    .await
+    .expect("resolve forced account-bound pool account");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("expected forced account-bound account");
+    };
+    assert_eq!(account.account_id, bound);
+}
+
+#[tokio::test]
+async fn resolver_forced_prompt_cache_account_binding_bypasses_source_cut_out_policy() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let sticky = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache No Cut Out Source",
+        "sk-prompt-cache-no-cut-out-source",
+        Some(test_required_group_name()),
+        Some("https://no-cut-out-source.example.com/backend-api/codex"),
+    )
+    .await;
+    let bound = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Forced Cut Out Target",
+        "sk-prompt-cache-forced-cut-out-target",
+        Some(test_required_group_name()),
+        Some("https://forced-cut-out-target.example.com/backend-api/codex"),
+    )
+    .await;
+    let no_cut_out_tag = insert_tag(
+        &state.pool,
+        "prompt-cache-source-no-cut-out",
+        &TagRoutingRule {
+            guard_enabled: false,
+            lookback_hours: None,
+            max_conversations: None,
+            allow_cut_out: false,
+            allow_cut_in: true,
+            priority_tier: TagPriorityTier::Normal,
+            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+            concurrency_limit: 0,
+            upstream_429_retry_enabled: false,
+            upstream_429_max_retries: 0,
+        },
+    )
+    .await
+    .expect("insert no cut-out tag");
+    sync_account_tag_links(&state.pool, sticky, &[no_cut_out_tag.summary.id])
+        .await
+        .expect("attach no cut-out tag");
+    let now_iso = format_utc_iso(Utc::now());
+    insert_limit_sample_with_usage(&state.pool, sticky, &now_iso, Some(1.0), Some(1.0)).await;
+    insert_limit_sample_with_usage(&state.pool, bound, &now_iso, Some(20.0), Some(20.0)).await;
+    upsert_sticky_route(&state.pool, "prompt-cache-forced-cut-out-key", sticky, &now_iso)
+        .await
+        .expect("upsert sticky source");
+
+    let resolution = resolve_pool_account_for_request_with_binding_constraint(
+        &state,
+        Some("prompt-cache-forced-cut-out-key"),
+        &[],
+        &HashSet::new(),
+        Some(&PromptCacheConversationBindingConstraint::UpstreamAccount(bound)),
+    )
+    .await
+    .expect("resolve forced account-bound pool account");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("expected forced account-bound account");
+    };
+    assert_eq!(account.account_id, bound);
+}
+
+#[tokio::test]
+async fn resolver_forced_prompt_cache_account_binding_keeps_concurrency_limit() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let sticky = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Concurrency Source",
+        "sk-prompt-cache-concurrency-source",
+        Some(test_required_group_name()),
+        Some("https://concurrency-source.example.com/backend-api/codex"),
+    )
+    .await;
+    let bound = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Forced Concurrency Target",
+        "sk-prompt-cache-forced-concurrency-target",
+        Some(test_required_group_name()),
+        Some("https://forced-concurrency-target.example.com/backend-api/codex"),
+    )
+    .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET policy_concurrency_limit = 1 WHERE id = ?1")
+        .bind(bound)
+        .execute(&state.pool)
+        .await
+        .expect("set account concurrency limit");
+    let now_iso = format_utc_iso(Utc::now());
+    insert_limit_sample_with_usage(&state.pool, sticky, &now_iso, Some(1.0), Some(1.0)).await;
+    insert_limit_sample_with_usage(&state.pool, bound, &now_iso, Some(20.0), Some(20.0)).await;
+    upsert_sticky_route(&state.pool, "prompt-cache-concurrency-source-key", sticky, &now_iso)
+        .await
+        .expect("upsert sticky source");
+    upsert_sticky_route(&state.pool, "prompt-cache-concurrency-active-key", bound, &now_iso)
+        .await
+        .expect("upsert active target sticky");
+
+    let resolution = resolve_pool_account_for_request_with_binding_constraint(
+        &state,
+        Some("prompt-cache-concurrency-source-key"),
+        &[],
+        &HashSet::new(),
+        Some(&PromptCacheConversationBindingConstraint::UpstreamAccount(bound)),
+    )
+    .await
+    .expect("resolve forced account-bound pool account");
+    assert!(matches!(resolution, PoolAccountResolution::Unavailable));
+}
+
+#[tokio::test]
+async fn resolver_forced_prompt_cache_account_binding_keeps_concurrency_limit_after_sticky_upsert()
+{
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let bound = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Forced Sticky Concurrency Target",
+        "sk-prompt-cache-forced-sticky-concurrency-target",
+        Some(test_required_group_name()),
+        Some("https://forced-sticky-concurrency-target.example.com/backend-api/codex"),
+    )
+    .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET policy_concurrency_limit = 1 WHERE id = ?1")
+        .bind(bound)
+        .execute(&state.pool)
+        .await
+        .expect("set account concurrency limit");
+    let now_iso = format_utc_iso(Utc::now());
+    insert_limit_sample_with_usage(&state.pool, bound, &now_iso, Some(20.0), Some(20.0)).await;
+    upsert_sticky_route(
+        &state.pool,
+        "prompt-cache-forced-sticky-concurrency-key",
+        bound,
+        &now_iso,
+    )
+    .await
+    .expect("upsert forced binding sticky");
+    upsert_sticky_route(
+        &state.pool,
+        "prompt-cache-forced-sticky-concurrency-other-key",
+        bound,
+        &now_iso,
+    )
+    .await
+    .expect("upsert other active target sticky");
+
+    let resolution = resolve_pool_account_for_request_with_binding_constraint(
+        &state,
+        Some("prompt-cache-forced-sticky-concurrency-key"),
+        &[],
+        &HashSet::new(),
+        Some(&PromptCacheConversationBindingConstraint::UpstreamAccount(bound)),
+    )
+    .await
+    .expect("resolve forced account-bound pool account");
+    assert!(matches!(resolution, PoolAccountResolution::Unavailable));
+}
+
+#[tokio::test]
+async fn resolver_prompt_cache_group_binding_does_not_bypass_cut_in_policy() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let sticky_group = "prompt-cache-group-cut-in-source";
+    let bound_group = "prompt-cache-group-cut-in-bound";
+    let sticky = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Group Sticky Source",
+        "sk-prompt-cache-group-sticky-source",
+        Some(sticky_group),
+        Some("https://group-sticky-source.example.com/backend-api/codex"),
+    )
+    .await;
+    let bound = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Group No Cut In",
+        "sk-prompt-cache-group-no-cut-in",
+        Some(bound_group),
+        Some("https://group-no-cut-in.example.com/backend-api/codex"),
+    )
+    .await;
+    let no_cut_in_tag = insert_tag(
+        &state.pool,
+        "prompt-cache-group-no-cut-in",
+        &TagRoutingRule {
+            guard_enabled: false,
+            lookback_hours: None,
+            max_conversations: None,
+            allow_cut_out: true,
+            allow_cut_in: false,
+            priority_tier: TagPriorityTier::Normal,
+            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+            concurrency_limit: 0,
+            upstream_429_retry_enabled: false,
+            upstream_429_max_retries: 0,
+        },
+    )
+    .await
+    .expect("insert no cut-in tag");
+    sync_account_tag_links(&state.pool, bound, &[no_cut_in_tag.summary.id])
+        .await
+        .expect("attach no cut-in tag");
+    let now_iso = format_utc_iso(Utc::now());
+    insert_limit_sample_with_usage(&state.pool, sticky, &now_iso, Some(1.0), Some(1.0)).await;
+    insert_limit_sample_with_usage(&state.pool, bound, &now_iso, Some(20.0), Some(20.0)).await;
+    upsert_sticky_route(&state.pool, "prompt-cache-group-cut-in-key", sticky, &now_iso)
+        .await
+        .expect("upsert sticky source");
+
+    let resolution = resolve_pool_account_for_request_with_binding_constraint(
+        &state,
+        Some("prompt-cache-group-cut-in-key"),
+        &[],
+        &HashSet::new(),
+        Some(&PromptCacheConversationBindingConstraint::Group(
+            bound_group.to_string(),
+        )),
+    )
+    .await
+    .expect("resolve group-bound pool account");
+    assert!(matches!(resolution, PoolAccountResolution::Unavailable));
+}
+
 async fn seed_route_binding_attempt(
     pool: &SqlitePool,
     invoke_id: &str,

@@ -97,6 +97,7 @@ pub(crate) async fn account_accepts_sticky_assignment(
     sticky_key: Option<&str>,
     source_account_id: Option<i64>,
     rule: &EffectiveRoutingRule,
+    bypass_transfer_policy: bool,
 ) -> Result<bool> {
     let Some(_) = sticky_key else {
         return Ok(true);
@@ -106,12 +107,17 @@ pub(crate) async fn account_accepts_sticky_assignment(
     if !is_transfer && !is_new_assignment {
         return Ok(true);
     }
-    if is_transfer && !rule.allow_cut_in {
+    if is_transfer && !bypass_transfer_policy && !rule.allow_cut_in {
         return Ok(false);
     }
     for guard in &rule.guard_rules {
-        let current =
-            count_recent_account_conversations(pool, account_id, guard.lookback_hours).await?;
+        let current = count_recent_account_conversations(
+            pool,
+            account_id,
+            guard.lookback_hours,
+            if is_new_assignment { sticky_key } else { None },
+        )
+        .await?;
         if current >= guard.max_conversations {
             return Ok(false);
         }

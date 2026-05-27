@@ -301,6 +301,9 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
             .bind(upstream_account_id)
             .execute(&state.pool)
             .await?;
+            let now_iso = format_utc_iso(Utc::now());
+            upsert_sticky_route(&state.pool, &prompt_cache_key, upstream_account_id, &now_iso)
+                .await?;
             Ok(Json(binding_response_from_row(
                 load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key)
                     .await?
