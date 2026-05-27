@@ -390,6 +390,50 @@ async fn resolver_forced_prompt_cache_account_binding_bypasses_source_cut_out_po
 }
 
 #[tokio::test]
+async fn resolver_forced_prompt_cache_account_binding_reuses_blocked_sticky_owner() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let bound = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Forced Blocked Sticky Owner",
+        "sk-prompt-cache-forced-blocked-sticky-owner",
+        Some(test_required_group_name()),
+        Some("https://forced-blocked-sticky-owner.example.com/backend-api/codex"),
+    )
+    .await;
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_block_new_conversations = 1 WHERE id = ?1",
+    )
+    .bind(bound)
+    .execute(&state.pool)
+    .await
+    .expect("set block new conversations");
+    let now_iso = format_utc_iso(Utc::now());
+    insert_limit_sample_with_usage(&state.pool, bound, &now_iso, Some(20.0), Some(20.0)).await;
+    upsert_sticky_route(
+        &state.pool,
+        "prompt-cache-forced-blocked-sticky-owner-key",
+        bound,
+        &now_iso,
+    )
+    .await
+    .expect("upsert forced binding sticky owner");
+
+    let resolution = resolve_pool_account_for_request_with_binding_constraint(
+        &state,
+        Some("prompt-cache-forced-blocked-sticky-owner-key"),
+        &[],
+        &HashSet::new(),
+        Some(&PromptCacheConversationBindingConstraint::UpstreamAccount(bound)),
+    )
+    .await
+    .expect("resolve forced blocked sticky owner");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("expected forced blocked sticky owner reuse");
+    };
+    assert_eq!(account.account_id, bound);
+}
+
+#[tokio::test]
 async fn resolver_forced_prompt_cache_account_binding_keeps_concurrency_limit() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let sticky = insert_test_pool_api_key_account_with_options(
