@@ -77,9 +77,7 @@
             duplicate_info: None,
             tags: vec![],
             effective_routing_rule: EffectiveRoutingRule {
-                guard_enabled: false,
-                lookback_hours: None,
-                max_conversations: None,
+                block_new_conversations: false,
                 allow_cut_out: true,
                 allow_cut_in: true,
                 priority_tier: TagPriorityTier::Normal,
@@ -89,9 +87,8 @@
                 upstream_429_max_retries: 0,
                 source_tag_ids: vec![],
                 source_tag_names: vec![],
-                guard_rules: vec![],
                 field_sources: EffectiveRoutingRuleFieldSources {
-                    guard: "root".to_string(),
+                block_new_conversations: "root".to_string(),
                     allow_cut_out: "root".to_string(),
                     allow_cut_in: "root".to_string(),
                     priority_tier: "root".to_string(),
@@ -2403,47 +2400,6 @@
     }
 
     #[tokio::test]
-    async fn update_upstream_account_group_rejects_enabled_guard_without_window() {
-        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-
-        let err = update_upstream_account_group(
-            State(state),
-            HeaderMap::new(),
-            AxumPath("guard-window".to_string()),
-            Json(UpdateUpstreamAccountGroupRequest {
-                note: None,
-                bound_proxy_keys: None,
-                node_shunt_enabled: None,
-                single_account_rotation_enabled: None,
-                upstream_429_retry_enabled: None,
-                upstream_429_max_retries: None,
-                concurrency_limit: None,
-                routing_rule: Some(UpdateTagRequest {
-                    name: None,
-                    guard_enabled: Some(true),
-                    lookback_hours: None,
-                    max_conversations: None,
-                    allow_cut_out: None,
-                    allow_cut_in: None,
-                    priority_tier: None,
-                    fast_mode_rewrite_mode: None,
-                    concurrency_limit: None,
-                    upstream_429_retry_enabled: None,
-                    upstream_429_max_retries: None,
-                }),
-            }),
-        )
-        .await
-        .expect_err("enabled guard without window should be rejected");
-
-        assert_eq!(err.0, StatusCode::BAD_REQUEST);
-        assert_eq!(
-            err.1,
-            "lookbackHours and maxConversations are required when guardEnabled is true"
-        );
-    }
-
-    #[tokio::test]
     async fn update_upstream_account_group_rejects_invalid_routing_policy_enums() {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
 
@@ -2461,9 +2417,7 @@
                 concurrency_limit: None,
                 routing_rule: Some(UpdateTagRequest {
                     name: None,
-                    guard_enabled: None,
-                    lookback_hours: None,
-                    max_conversations: None,
+                    block_new_conversations: None,
                     allow_cut_out: None,
                     allow_cut_in: None,
                     priority_tier: Some("urgent".to_string()),
@@ -3015,9 +2969,7 @@
                 local_primary_limit: None,
                 local_secondary_limit: None,
                 local_limit_unit: None,
-                policy_guard_enabled: None,
-                policy_lookback_hours: None,
-                policy_max_conversations: None,
+                policy_block_new_conversations: None,
                 policy_allow_cut_out: None,
                 policy_allow_cut_in: None,
                 policy_priority_tier: None,

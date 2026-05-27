@@ -18,9 +18,7 @@ export type TagRuleDialogMode = 'create' | 'edit'
 
 type TagRuleDraft = {
   name: string
-  guardEnabled: boolean
-  lookbackHours: string
-  maxConversations: string
+  blockNewConversations: boolean
   allowCutOut: boolean
   allowCutIn: boolean
   priorityTier: TagPriorityTier
@@ -33,9 +31,7 @@ type TagRuleDraft = {
 function buildDraft(tag?: TagSummary | null, draftName = ''): TagRuleDraft {
   return {
     name: tag?.name ?? draftName,
-    guardEnabled: tag?.routingRule?.guardEnabled ?? false,
-    lookbackHours: tag?.routingRule?.lookbackHours == null ? '' : String(tag.routingRule.lookbackHours),
-    maxConversations: tag?.routingRule?.maxConversations == null ? '' : String(tag.routingRule.maxConversations),
+    blockNewConversations: tag?.routingRule?.blockNewConversations ?? false,
     allowCutOut: tag?.routingRule?.allowCutOut ?? true,
     allowCutIn: tag?.routingRule?.allowCutIn ?? true,
     priorityTier: tag?.routingRule?.priorityTier ?? 'normal',
@@ -51,14 +47,6 @@ function buildDraftResetKey(tag?: TagSummary | null, draftName = ''): string {
   return `new:${draftName}`
 }
 
-function normalizePositiveInt(value: string): number | null {
-  const trimmed = value.trim()
-  if (!trimmed) return null
-  const parsed = Number(trimmed)
-  if (!Number.isInteger(parsed) || parsed <= 0) return null
-  return parsed
-}
-
 function normalizeRetryCount(value?: number | null): number {
   if (!Number.isFinite(value ?? NaN)) return 0
   return Math.max(0, Math.min(5, Math.trunc(value ?? 0)))
@@ -72,13 +60,8 @@ function buildPayload(
     baseDraft?: TagRuleDraft
   },
 ): CreateTagPayload | UpdateTagPayload | null {
-  const lookbackHours = normalizePositiveInt(draft.lookbackHours)
-  const maxConversations = normalizePositiveInt(draft.maxConversations)
-  if (draft.guardEnabled && (lookbackHours == null || maxConversations == null)) return null
   const payload: UpdateTagPayload = {
-    guardEnabled: draft.guardEnabled,
-    lookbackHours: draft.guardEnabled ? lookbackHours : undefined,
-    maxConversations: draft.guardEnabled ? maxConversations : undefined,
+    blockNewConversations: draft.blockNewConversations,
     allowCutOut: draft.allowCutOut,
     allowCutIn: draft.allowCutIn,
     priorityTier: draft.priorityTier,
@@ -98,16 +81,8 @@ function buildPayload(
   if (options?.changedFieldsOnly && options.baseDraft) {
     const base = options.baseDraft
     const changedPayload: UpdateTagPayload = {}
-    if (
-      draft.guardEnabled !== base.guardEnabled ||
-      draft.lookbackHours !== base.lookbackHours ||
-      draft.maxConversations !== base.maxConversations
-    ) {
-      changedPayload.guardEnabled = payload.guardEnabled
-      if (payload.guardEnabled) {
-        changedPayload.lookbackHours = payload.lookbackHours
-        changedPayload.maxConversations = payload.maxConversations
-      }
+    if (draft.blockNewConversations !== base.blockNewConversations) {
+      changedPayload.blockNewConversations = payload.blockNewConversations
     }
     if (draft.allowCutOut !== base.allowCutOut) {
       changedPayload.allowCutOut = payload.allowCutOut
@@ -156,10 +131,8 @@ interface TagRuleDialogProps {
     description: string
     name: string
     namePlaceholder: string
-    guardEnabled: string
+    blockNewConversations: string
     forbidNewConversation?: string
-    lookbackHours: string
-    maxConversations: string
     allowCutOut: string
     allowCutIn: string
     forbidCutOut?: string
@@ -301,32 +274,10 @@ export function TagRuleDialog({
             <div className="flex items-center justify-between gap-4">
               <div>
                 <p className="font-medium text-base-content">
-                  {labels.forbidNewConversation ?? labels.guardEnabled}
+                  {labels.forbidNewConversation ?? labels.blockNewConversations}
                 </p>
               </div>
-              <Switch checked={draft.guardEnabled} onCheckedChange={(checked) => setDraft((current) => ({ ...current, guardEnabled: checked }))} />
-            </div>
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <label className="field">
-                <span className="field-label">{labels.lookbackHours}</span>
-                <Input
-                  name="tagLookbackHours"
-                  value={draft.lookbackHours}
-                  inputMode="numeric"
-                  disabled={!draft.guardEnabled}
-                  onChange={(event) => setDraft((current) => ({ ...current, lookbackHours: event.target.value }))}
-                />
-              </label>
-              <label className="field">
-                <span className="field-label">{labels.maxConversations}</span>
-                <Input
-                  name="tagMaxConversations"
-                  value={draft.maxConversations}
-                  inputMode="numeric"
-                  disabled={!draft.guardEnabled}
-                  onChange={(event) => setDraft((current) => ({ ...current, maxConversations: event.target.value }))}
-                />
-              </label>
+              <Switch checked={draft.blockNewConversations} onCheckedChange={(checked) => setDraft((current) => ({ ...current, blockNewConversations: checked }))} />
             </div>
           </div>
 
@@ -407,7 +358,7 @@ export function TagRuleDialog({
           </div>
 
           {error ? <p className="text-sm text-error">{error}</p> : null}
-          {!payload && draft.guardEnabled ? <p className="text-sm text-warning">{labels.validation}</p> : null}
+          {!payload ? <p className="text-sm text-warning">{labels.validation}</p> : null}
         </div>
         <div className="border-t border-base-300/80 px-6 py-4">
           <DialogFooter>

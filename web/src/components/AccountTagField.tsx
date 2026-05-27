@@ -24,10 +24,8 @@ interface AccountTagFieldLabels {
   dialogDescription: string
   name: string
   namePlaceholder: string
-  guardEnabled: string
+  blockNewConversations: string
   forbidNewConversation?: string
-  lookbackHours: string
-  maxConversations: string
   allowCutOut: string
   allowCutIn: string
   forbidCutOut?: string
@@ -287,10 +285,8 @@ export function AccountTagField({
           description: labels.dialogDescription,
           name: labels.name,
           namePlaceholder: labels.namePlaceholder,
-          guardEnabled: labels.guardEnabled,
+          blockNewConversations: labels.blockNewConversations,
           forbidNewConversation: labels.forbidNewConversation,
-          lookbackHours: labels.lookbackHours,
-          maxConversations: labels.maxConversations,
           allowCutOut: labels.allowCutOut,
           allowCutIn: labels.allowCutIn,
           forbidCutOut: labels.forbidCutOut,

@@ -2800,7 +2800,7 @@ async fn failover_preserves_assigned_account_when_sticky_owner_is_preflight_bloc
         .expect("mark sticky account missing binding");
     let tag_payload = serde_json::from_value::<CreateTagRequest>(json!({
         "name": "sticky-preflight-lock",
-        "guardEnabled": false,
+        "blockNewConversations": false,
         "allowCutOut": false,
         "allowCutIn": true,
         "priorityTier": "normal",

@@ -46,9 +46,7 @@ export type UpstreamAccountGroupSettingsSnapshot = {
 };
 
 const defaultRoutingRule: TagRoutingRule = {
-  guardEnabled: false,
-  lookbackHours: null,
-  maxConversations: null,
+  blockNewConversations: false,
   allowCutOut: true,
   allowCutIn: true,
   priorityTier: "normal",
@@ -499,9 +497,7 @@ export function useUpstreamAccountGroupSettingsDialog(
             policyEditorOpen: false,
             routingRuleDirty: true,
             routingRule: {
-              guardEnabled: payload.guardEnabled ?? false,
-              lookbackHours: payload.lookbackHours ?? null,
-              maxConversations: payload.maxConversations ?? null,
+              blockNewConversations: payload.blockNewConversations ?? false,
               allowCutOut: payload.allowCutOut ?? true,
               allowCutIn: payload.allowCutIn ?? true,
               priorityTier: payload.priorityTier ?? "normal",
@@ -520,10 +516,8 @@ export function useUpstreamAccountGroupSettingsDialog(
           description: t("accountPool.tags.dialog.description"),
           name: t("accountPool.tags.dialog.name"),
           namePlaceholder: t("accountPool.tags.dialog.namePlaceholder"),
-          guardEnabled: t("accountPool.tags.dialog.guardEnabled"),
+          blockNewConversations: t("accountPool.tags.dialog.blockNewConversations"),
           forbidNewConversation: t("accountPool.tags.dialog.forbidNewConversation"),
-          lookbackHours: t("accountPool.tags.dialog.lookbackHours"),
-          maxConversations: t("accountPool.tags.dialog.maxConversations"),
           allowCutOut: t("accountPool.tags.dialog.allowCutOut"),
           allowCutIn: t("accountPool.tags.dialog.allowCutIn"),
           forbidCutOut: t("accountPool.tags.dialog.forbidCutOut"),

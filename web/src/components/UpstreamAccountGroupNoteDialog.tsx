@@ -601,7 +601,7 @@ export function UpstreamAccountGroupNoteDialog({
                   </h3>
                   <p className="text-xs leading-5 text-base-content/68">
                     {routingPolicyHint ??
-                      "Customize priority, FAST mode, guard, cut-in/cut-out, concurrency, and upstream 429 retry for this group."}
+                      "Customize priority, FAST mode, block-new-conversations, cut-in/cut-out, concurrency, and upstream 429 retry for this group."}
                   </p>
                 </div>
                 <Button

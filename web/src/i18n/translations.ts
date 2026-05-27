@@ -111,8 +111,6 @@ const baseTranslations = {
     "accountPool.policyBadges.forbidNew": "No new",
     "accountPool.policyBadges.concurrency": "Conc {{count}}",
     "accountPool.policyBadges.retry": "Retry {{count}}",
-    "accountPool.policyBadges.guardTitle":
-      "Blocks new conversations after {{count}} conversations in {{hours}} hour(s)",
     "accountPool.upstreamAccounts.title": "Upstream accounts",
     "accountPool.upstreamAccounts.description":
       "Add single OAuth, batch OAuth, and API key accounts, then keep their login state and quota snapshots healthy.",
@@ -625,7 +623,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.label":
       "Routing policy",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.hint":
-      "Customize priority, FAST mode, rolling guard, cut-in/cut-out, concurrency, and upstream 429 retry for this group.",
+      "Customize priority, FAST mode, block-new-conversations, cut-in/cut-out, concurrency, and upstream 429 retry for this group.",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.edit":
       "Edit policy",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.title":
@@ -773,9 +771,9 @@ const baseTranslations = {
       "This is the merged policy currently applied to the account after all selected tags are combined.",
     "accountPool.upstreamAccounts.effectiveRule.noTags":
       "No tag is attached, so the account keeps the default pool routing behavior.",
-    "accountPool.upstreamAccounts.effectiveRule.guardEnabled":
+    "accountPool.upstreamAccounts.effectiveRule.blockNewConversations":
       "Block new conversations",
-    "accountPool.upstreamAccounts.effectiveRule.guardDisabled":
+    "accountPool.upstreamAccounts.effectiveRule.allowNewConversations":
       "New conversations are not blocked",
     "accountPool.upstreamAccounts.effectiveRule.allowCutOut":
       "Cut out is not blocked",
@@ -795,13 +793,9 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.fastModeForceRemove":
       "Force remove",
     "accountPool.upstreamAccounts.effectiveRule.sourceTags": "Rule source tags",
-    "accountPool.upstreamAccounts.effectiveRule.guardRule":
-      "Max {{count}} conversations within {{hours}} hour(s)",
-    "accountPool.upstreamAccounts.effectiveRule.allGuardsApply":
-      "All active guards must pass",
     "accountPool.upstreamAccounts.effectiveRule.sourceBreakdownTitle":
       "Field source breakdown",
-    "accountPool.upstreamAccounts.effectiveRule.fieldGuard":
+    "accountPool.upstreamAccounts.effectiveRule.fieldBlockNewConversations":
       "Block new conversations",
     "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutOut":
       "Block cut out",
@@ -983,14 +977,14 @@ const baseTranslations = {
     "accountPool.tags.filters.search": "Search",
     "accountPool.tags.filters.searchPlaceholder": "Search tags by name",
     "accountPool.tags.filters.hasAccounts": "Account links",
-    "accountPool.tags.filters.guardEnabled": "Conversation guard",
+    "accountPool.tags.filters.blockNewConversations": "Block new conversations",
     "accountPool.tags.filters.cutOutBlocked": "Cut-out",
     "accountPool.tags.filters.cutInBlocked": "Cut-in",
     "accountPool.tags.filters.option.all": "All",
     "accountPool.tags.filters.option.linked": "Linked only",
     "accountPool.tags.filters.option.unlinked": "Unlinked only",
-    "accountPool.tags.filters.option.guardOn": "Guard on",
-    "accountPool.tags.filters.option.guardOff": "Guard off",
+    "accountPool.tags.filters.option.blockNewConversationsOn": "Blocked",
+    "accountPool.tags.filters.option.blockNewConversationsOff": "Not blocked",
     "accountPool.tags.filters.option.allowed": "Not blocked",
     "accountPool.tags.filters.option.blocked": "Blocked",
     "accountPool.tags.table.name": "Tag",
@@ -998,8 +992,7 @@ const baseTranslations = {
     "accountPool.tags.table.accounts": "Accounts",
     "accountPool.tags.table.groups": "Groups",
     "accountPool.tags.table.updatedAt": "Updated",
-    "accountPool.tags.rule.guard": "Max {{count}} conversations / {{hours}}h",
-    "accountPool.tags.rule.guardOff": "Guard off",
+    "accountPool.tags.rule.blockNewConversations": "Block new conversations",
     "accountPool.tags.rule.cutOutOn": "Cut-out not blocked",
     "accountPool.tags.rule.cutOutOff": "Cut-out blocked",
     "accountPool.tags.rule.cutInOn": "Cut-in not blocked",
@@ -1030,12 +1023,10 @@ const baseTranslations = {
     "accountPool.tags.dialog.name": "Tag name",
     "accountPool.tags.dialog.namePlaceholder":
       "For example: vip, night-shift, warm-standby",
-    "accountPool.tags.dialog.guardEnabled":
-      "Limit conversations within a rolling time window",
+    "accountPool.tags.dialog.blockNewConversations":
+      "Block new conversations",
     "accountPool.tags.dialog.forbidNewConversation":
       "Block new conversations",
-    "accountPool.tags.dialog.lookbackHours": "Lookback hours",
-    "accountPool.tags.dialog.maxConversations": "Max conversations",
     "accountPool.tags.dialog.allowCutOut":
       "Do not block moving conversations out of this account",
     "accountPool.tags.dialog.allowCutIn":
@@ -2317,8 +2308,6 @@ const baseTranslations = {
     "accountPool.policyBadges.forbidNew": "禁新",
     "accountPool.policyBadges.concurrency": "并发{{count}}",
     "accountPool.policyBadges.retry": "重试{{count}}",
-    "accountPool.policyBadges.guardTitle":
-      "{{hours}} 小时内达到 {{count}} 个对话后禁止新对话",
     "accountPool.upstreamAccounts.title": "上游账号",
     "accountPool.upstreamAccounts.description":
       "新增单个 OAuth、批量 OAuth 与 API Key 账号，并持续维护登录状态和额度快照。",
@@ -2926,8 +2915,8 @@ const baseTranslations = {
       "这里展示的是当前账号在所有已关联 tag 合并后，真正参与路由判定的规则。",
     "accountPool.upstreamAccounts.effectiveRule.noTags":
       "当前没有关联 tag，所以这个账号仍使用号池默认路由行为。",
-    "accountPool.upstreamAccounts.effectiveRule.guardEnabled": "禁止新对话",
-    "accountPool.upstreamAccounts.effectiveRule.guardDisabled":
+    "accountPool.upstreamAccounts.effectiveRule.blockNewConversations": "禁止新对话",
+    "accountPool.upstreamAccounts.effectiveRule.allowNewConversations":
       "未禁止新对话",
     "accountPool.upstreamAccounts.effectiveRule.allowCutOut": "未禁止切出",
     "accountPool.upstreamAccounts.effectiveRule.denyCutOut": "禁止切出",
@@ -2944,13 +2933,9 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.fastModeForceRemove":
       "强制去掉",
     "accountPool.upstreamAccounts.effectiveRule.sourceTags": "规则来源 tag",
-    "accountPool.upstreamAccounts.effectiveRule.guardRule":
-      "{{hours}} 小时内最多 {{count}} 个对话",
-    "accountPool.upstreamAccounts.effectiveRule.allGuardsApply":
-      "所有已开启的上限规则都会同时生效",
     "accountPool.upstreamAccounts.effectiveRule.sourceBreakdownTitle":
       "字段来源明细",
-    "accountPool.upstreamAccounts.effectiveRule.fieldGuard": "禁止新对话",
+    "accountPool.upstreamAccounts.effectiveRule.fieldBlockNewConversations": "禁止新对话",
     "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutOut": "禁止切出",
     "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutIn": "禁止切入",
     "accountPool.upstreamAccounts.effectiveRule.fieldPriority": "优先级",
@@ -3120,14 +3105,14 @@ const baseTranslations = {
     "accountPool.tags.filters.search": "搜索",
     "accountPool.tags.filters.searchPlaceholder": "按 tag 名称搜索",
     "accountPool.tags.filters.hasAccounts": "账号关联",
-    "accountPool.tags.filters.guardEnabled": "会话上限",
+    "accountPool.tags.filters.blockNewConversations": "禁止新对话",
     "accountPool.tags.filters.cutOutBlocked": "切出能力",
     "accountPool.tags.filters.cutInBlocked": "切入能力",
     "accountPool.tags.filters.option.all": "全部",
     "accountPool.tags.filters.option.linked": "仅已关联",
     "accountPool.tags.filters.option.unlinked": "仅未关联",
-    "accountPool.tags.filters.option.guardOn": "仅已开启",
-    "accountPool.tags.filters.option.guardOff": "仅未开启",
+    "accountPool.tags.filters.option.blockNewConversationsOn": "仅禁止",
+    "accountPool.tags.filters.option.blockNewConversationsOff": "仅未禁止",
     "accountPool.tags.filters.option.allowed": "仅未禁止",
     "accountPool.tags.filters.option.blocked": "仅禁止",
     "accountPool.tags.table.name": "Tag",
@@ -3135,8 +3120,7 @@ const baseTranslations = {
     "accountPool.tags.table.accounts": "账号数",
     "accountPool.tags.table.groups": "分组数",
     "accountPool.tags.table.updatedAt": "更新时间",
-    "accountPool.tags.rule.guard": "{{hours}} 小时 / {{count}} 个对话",
-    "accountPool.tags.rule.guardOff": "未开启会话上限",
+    "accountPool.tags.rule.blockNewConversations": "禁止新对话",
     "accountPool.tags.rule.cutOutOn": "未禁止切出",
     "accountPool.tags.rule.cutOutOff": "禁止切出",
     "accountPool.tags.rule.cutInOn": "未禁止切入",
@@ -3167,10 +3151,8 @@ const baseTranslations = {
     "accountPool.tags.dialog.name": "Tag 名称",
     "accountPool.tags.dialog.namePlaceholder":
       "例如：vip、night-shift、warm-standby",
-    "accountPool.tags.dialog.guardEnabled": "限制滚动时间窗内的对话数量",
+    "accountPool.tags.dialog.blockNewConversations": "禁止新对话",
     "accountPool.tags.dialog.forbidNewConversation": "禁止新对话",
-    "accountPool.tags.dialog.lookbackHours": "回看小时数",
-    "accountPool.tags.dialog.maxConversations": "最大对话数",
     "accountPool.tags.dialog.allowCutOut": "未禁止把对话切出到其他账号",
     "accountPool.tags.dialog.allowCutIn": "未禁止把对话切入到当前账号",
     "accountPool.tags.dialog.forbidCutOut": "禁止切出",

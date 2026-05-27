@@ -115,8 +115,6 @@ export default function GroupsPage() {
       policyConcurrency: (count) =>
         t("accountPool.policyBadges.concurrency", { count }),
       policyRetry: (count) => t("accountPool.policyBadges.retry", { count }),
-      policyGuardTitle: (hours, count) =>
-        t("accountPool.policyBadges.guardTitle", { hours, count }),
     }),
     [t],
   );

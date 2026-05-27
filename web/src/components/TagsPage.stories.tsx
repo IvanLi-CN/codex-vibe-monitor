@@ -12,9 +12,7 @@ const baseTags: TagSummary[] = [
     id: 1,
     name: 'vip-routing',
     routingRule: {
-      guardEnabled: true,
-      lookbackHours: 6,
-      maxConversations: 4,
+      blockNewConversations: true,
       allowCutOut: true,
       allowCutIn: false,
       priorityTier: 'primary',
@@ -28,9 +26,7 @@ const baseTags: TagSummary[] = [
     id: 2,
     name: 'handoff-blocked',
     routingRule: {
-      guardEnabled: false,
-      lookbackHours: null,
-      maxConversations: null,
+      blockNewConversations: false,
       allowCutOut: false,
       allowCutIn: false,
       priorityTier: 'fallback',
@@ -44,9 +40,7 @@ const baseTags: TagSummary[] = [
     id: 3,
     name: 'warm-standby',
     routingRule: {
-      guardEnabled: true,
-      lookbackHours: 2,
-      maxConversations: 2,
+      blockNewConversations: true,
       allowCutOut: true,
       allowCutIn: true,
       priorityTier: 'normal',
@@ -93,13 +87,13 @@ function parseBody<T>(raw: BodyInit | null | undefined, fallback: T): T {
 function applyFilters(tags: TagSummary[], url: URL) {
   const search = (url.searchParams.get('search') || '').trim().toLowerCase()
   const hasAccounts = url.searchParams.get('hasAccounts')
-  const guardEnabled = url.searchParams.get('guardEnabled')
+  const blockNewConversations = url.searchParams.get('blockNewConversations')
   const allowCutOut = url.searchParams.get('allowCutOut')
   const allowCutIn = url.searchParams.get('allowCutIn')
   return tags.filter((tag) => {
     if (search && !tag.name.toLowerCase().includes(search)) return false
     if (hasAccounts === 'true' && tag.accountCount <= 0) return false
-    if (guardEnabled === 'true' && !tag.routingRule.guardEnabled) return false
+    if (blockNewConversations === 'true' && !tag.routingRule.blockNewConversations) return false
     if (allowCutOut === 'false' && tag.routingRule.allowCutOut !== false) return false
     if (allowCutIn === 'false' && tag.routingRule.allowCutIn !== false) return false
     return true
@@ -137,7 +131,7 @@ function StorybookTagsMock({ children }: { children: ReactNode }) {
       if (path === '/api/pool/tags' && method === 'POST') {
         const body = parseBody<CreateTagPayload>(init?.body, {
           name: '',
-          guardEnabled: false,
+          blockNewConversations: false,
           allowCutIn: true,
           allowCutOut: true,
           priorityTier: 'normal',
@@ -147,9 +141,7 @@ function StorybookTagsMock({ children }: { children: ReactNode }) {
           id: store.nextId++,
           name: body.name,
           routingRule: {
-            guardEnabled: body.guardEnabled,
-            lookbackHours: body.lookbackHours ?? null,
-            maxConversations: body.maxConversations ?? null,
+            blockNewConversations: body.blockNewConversations,
             allowCutOut: body.allowCutOut,
             allowCutIn: body.allowCutIn,
             priorityTier: body.priorityTier ?? 'normal',
@@ -174,9 +166,7 @@ function StorybookTagsMock({ children }: { children: ReactNode }) {
             ...tag,
             name: body.name ?? tag.name,
             routingRule: {
-              guardEnabled: body.guardEnabled ?? tag.routingRule.guardEnabled,
-              lookbackHours: body.lookbackHours ?? tag.routingRule.lookbackHours ?? null,
-              maxConversations: body.maxConversations ?? tag.routingRule.maxConversations ?? null,
+              blockNewConversations: body.blockNewConversations ?? tag.routingRule.blockNewConversations,
               allowCutOut: body.allowCutOut ?? tag.routingRule.allowCutOut,
               allowCutIn: body.allowCutIn ?? tag.routingRule.allowCutIn,
               priorityTier: body.priorityTier ?? tag.routingRule.priorityTier ?? 'normal',
@@ -259,8 +249,8 @@ export const Default: Story = {
   },
 }
 
-export const GuardFilterEnabled: Story = {
-  render: () => <TagsPageRouter initialEntry="/account-pool/tags?guardEnabled=true" />,
+export const BlockNewConversationsFilterEnabled: Story = {
+  render: () => <TagsPageRouter initialEntry="/account-pool/tags?blockNewConversations=true" />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await expect(canvas.findByText('vip-routing')).resolves.toBeTruthy()

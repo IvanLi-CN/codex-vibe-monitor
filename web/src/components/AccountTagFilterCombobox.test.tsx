@@ -80,9 +80,7 @@ const tags: TagSummary[] = [
     id: 1,
     name: 'vip',
     routingRule: {
-      guardEnabled: false,
-      lookbackHours: null,
-      maxConversations: null,
+      blockNewConversations: false,
       allowCutOut: true,
       allowCutIn: true,
     },
@@ -94,9 +92,7 @@ const tags: TagSummary[] = [
     id: 2,
     name: 'burst-safe',
     routingRule: {
-      guardEnabled: false,
-      lookbackHours: null,
-      maxConversations: null,
+      blockNewConversations: false,
       allowCutOut: true,
       allowCutIn: true,
     },
@@ -108,9 +104,7 @@ const tags: TagSummary[] = [
     id: 3,
     name: 'prod-apac',
     routingRule: {
-      guardEnabled: false,
-      lookbackHours: null,
-      maxConversations: null,
+      blockNewConversations: false,
       allowCutOut: true,
       allowCutIn: true,
     },
@@ -122,9 +116,7 @@ const tags: TagSummary[] = [
     id: 4,
     name: 'sticky-pool',
     routingRule: {
-      guardEnabled: false,
-      lookbackHours: null,
-      maxConversations: null,
+      blockNewConversations: false,
       allowCutOut: true,
       allowCutIn: true,
     },

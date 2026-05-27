@@ -14,15 +14,13 @@ interface EffectiveRoutingRuleCardProps {
     title: string
     description: string
     noTags: string
-    guardEnabled: string
-    guardDisabled: string
+    blockNewConversations: string
+    allowNewConversations: string
     allowCutOut: string
     denyCutOut: string
     allowCutIn: string
     denyCutIn: string
     sourceTags: string
-    guardRule: (hours: number, count: number) => string
-    allGuardsApply: string
     priorityPrimary: string
     priorityNormal: string
     priorityFallback: string
@@ -35,7 +33,7 @@ interface EffectiveRoutingRuleCardProps {
     concurrencyLimit?: (count: number) => string
     concurrencyUnlimited?: string
     sourceBreakdownTitle?: string
-    fieldGuard?: string
+    fieldBlockNewConversations?: string
     fieldAllowCutOut?: string
     fieldAllowCutIn?: string
     fieldPriority?: string
@@ -51,21 +49,18 @@ interface EffectiveRoutingRuleCardProps {
 
 export function EffectiveRoutingRuleCard({ rule, labels }: EffectiveRoutingRuleCardProps) {
   const resolvedRule: EffectiveRoutingRule = rule ?? {
-    guardEnabled: false,
-    lookbackHours: null,
-    maxConversations: null,
+    blockNewConversations: false,
     allowCutOut: true,
     allowCutIn: true,
     priorityTier: 'normal',
     fastModeRewriteMode: 'keep_original',
     sourceTagIds: [],
     sourceTagNames: [],
-    guardRules: [],
     concurrencyLimit: 0,
     upstream429RetryEnabled: false,
     upstream429MaxRetries: 0,
     fieldSources: {
-      guard: 'root',
+      blockNewConversations: 'root',
       allowCutOut: 'root',
       allowCutIn: 'root',
       priorityTier: 'root',
@@ -75,7 +70,7 @@ export function EffectiveRoutingRuleCard({ rule, labels }: EffectiveRoutingRuleC
     },
   }
   const fieldSources = resolvedRule.fieldSources ?? {
-    guard: 'root',
+    blockNewConversations: 'root',
     allowCutOut: 'root',
     allowCutIn: 'root',
     priorityTier: 'root',
@@ -99,9 +94,9 @@ export function EffectiveRoutingRuleCard({ rule, labels }: EffectiveRoutingRuleC
   }
   const fieldRows = [
     {
-      label: labels.fieldGuard ?? 'Conversation guard',
-      value: resolvedRule.guardEnabled ? labels.guardEnabled : labels.guardDisabled,
-      source: fieldSources.guard,
+      label: labels.fieldBlockNewConversations ?? 'Block new conversations',
+      value: resolvedRule.blockNewConversations ? labels.blockNewConversations : labels.allowNewConversations,
+      source: fieldSources.blockNewConversations,
     },
     {
       label: labels.fieldAllowCutOut ?? 'Cut out',
@@ -153,7 +148,7 @@ export function EffectiveRoutingRuleCard({ rule, labels }: EffectiveRoutingRuleC
           <Badge variant={fastModeRewriteBadgeVariant(resolvedRule.fastModeRewriteMode)}>
             {fastModeRewriteBadgeLabel(resolvedRule.fastModeRewriteMode, labels)}
           </Badge>
-          {resolvedRule.guardEnabled ? <Badge variant="warning">{labels.guardEnabled}</Badge> : null}
+          {resolvedRule.blockNewConversations ? <Badge variant="warning">{labels.blockNewConversations}</Badge> : null}
           {!resolvedRule.allowCutOut ? <Badge variant="warning">{labels.denyCutOut}</Badge> : null}
           {!resolvedRule.allowCutIn ? <Badge variant="warning">{labels.denyCutIn}</Badge> : null}
           <Badge variant={resolvedRule.concurrencyLimit ? 'warning' : 'secondary'}>
@@ -197,23 +192,6 @@ export function EffectiveRoutingRuleCard({ rule, labels }: EffectiveRoutingRuleC
               ))
             )}
           </div>
-        </div>
-
-        <div className="rounded-[1.2rem] border border-base-300/70 bg-base-100/70 p-4">
-          <div className="flex items-center justify-between gap-3">
-            <p className="metric-label">{labels.allGuardsApply}</p>
-          </div>
-          {resolvedRule.guardRules.length === 0 ? (
-            <p className="mt-3 text-sm text-base-content/60">{labels.guardDisabled}</p>
-          ) : (
-            <div className="mt-3 flex flex-wrap gap-2">
-              {resolvedRule.guardRules.map((guard) => (
-                <Badge key={`${guard.tagId}-${guard.lookbackHours}-${guard.maxConversations}`} variant="default">
-                  {guard.tagName}: {labels.guardRule(guard.lookbackHours, guard.maxConversations)}
-                </Badge>
-              ))}
-            </div>
-          )}
         </div>
       </CardContent>
     </Card>

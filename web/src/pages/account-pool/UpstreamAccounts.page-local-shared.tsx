@@ -1784,10 +1784,8 @@ function SharedUpstreamAccountDetailDrawerInner({
     dialogDescription: t("accountPool.tags.dialog.description"),
     name: t("accountPool.tags.dialog.name"),
     namePlaceholder: t("accountPool.tags.dialog.namePlaceholder"),
-    guardEnabled: t("accountPool.tags.dialog.guardEnabled"),
+    blockNewConversations: t("accountPool.tags.dialog.blockNewConversations"),
     forbidNewConversation: t("accountPool.tags.dialog.forbidNewConversation"),
-    lookbackHours: t("accountPool.tags.dialog.lookbackHours"),
-    maxConversations: t("accountPool.tags.dialog.maxConversations"),
     allowCutOut: t("accountPool.tags.dialog.allowCutOut"),
     allowCutIn: t("accountPool.tags.dialog.allowCutIn"),
     forbidCutOut: t("accountPool.tags.dialog.forbidCutOut"),
@@ -3198,11 +3196,11 @@ function SharedUpstreamAccountDetailDrawerInner({
                       noTags: t(
                         "accountPool.upstreamAccounts.effectiveRule.noTags",
                       ),
-                      guardEnabled: t(
-                        "accountPool.upstreamAccounts.effectiveRule.guardEnabled",
+                      blockNewConversations: t(
+                        "accountPool.upstreamAccounts.effectiveRule.blockNewConversations",
                       ),
-                      guardDisabled: t(
-                        "accountPool.upstreamAccounts.effectiveRule.guardDisabled",
+                      allowNewConversations: t(
+                        "accountPool.upstreamAccounts.effectiveRule.allowNewConversations",
                       ),
                       allowCutOut: t(
                         "accountPool.upstreamAccounts.effectiveRule.allowCutOut",
@@ -3219,19 +3217,11 @@ function SharedUpstreamAccountDetailDrawerInner({
                       sourceTags: t(
                         "accountPool.upstreamAccounts.effectiveRule.sourceTags",
                       ),
-                      guardRule: (hours, count) =>
-                        t(
-                          "accountPool.upstreamAccounts.effectiveRule.guardRule",
-                          { hours, count },
-                        ),
-                      allGuardsApply: t(
-                        "accountPool.upstreamAccounts.effectiveRule.allGuardsApply",
-                      ),
                       sourceBreakdownTitle: t(
                         "accountPool.upstreamAccounts.effectiveRule.sourceBreakdownTitle",
                       ),
-                      fieldGuard: t(
-                        "accountPool.upstreamAccounts.effectiveRule.fieldGuard",
+                      fieldBlockNewConversations: t(
+                        "accountPool.upstreamAccounts.effectiveRule.fieldBlockNewConversations",
                       ),
                       fieldAllowCutOut: t(
                         "accountPool.upstreamAccounts.effectiveRule.fieldAllowCutOut",
@@ -3684,10 +3674,8 @@ function SharedUpstreamAccountDetailDrawerInner({
           description: t("accountPool.tags.dialog.description"),
           name: t("accountPool.tags.dialog.name"),
           namePlaceholder: t("accountPool.tags.dialog.namePlaceholder"),
-          guardEnabled: t("accountPool.tags.dialog.guardEnabled"),
+          blockNewConversations: t("accountPool.tags.dialog.blockNewConversations"),
           forbidNewConversation: t("accountPool.tags.dialog.forbidNewConversation"),
-          lookbackHours: t("accountPool.tags.dialog.lookbackHours"),
-          maxConversations: t("accountPool.tags.dialog.maxConversations"),
           allowCutOut: t("accountPool.tags.dialog.allowCutOut"),
           allowCutIn: t("accountPool.tags.dialog.allowCutIn"),
           forbidCutOut: t("accountPool.tags.dialog.forbidCutOut"),

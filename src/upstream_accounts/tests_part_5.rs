@@ -1,4 +1,95 @@
 #[tokio::test]
+async fn resolver_skips_block_new_conversations_for_fresh_routing_without_sticky_key() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let blocked = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Blocked Fresh Route",
+        "sk-blocked-fresh-route",
+        None,
+        Some("https://blocked-fresh.example.com/backend-api/codex"),
+    )
+    .await;
+    let fallback = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Allowed Fresh Route",
+        "sk-allowed-fresh-route",
+        None,
+        Some("https://allowed-fresh.example.com/backend-api/codex"),
+    )
+    .await;
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_block_new_conversations = 1 WHERE id = ?1",
+    )
+    .bind(blocked)
+    .execute(&state.pool)
+    .await
+    .expect("block fresh route");
+    let now_iso = format_utc_iso(Utc::now());
+    insert_limit_sample_with_usage(&state.pool, blocked, &now_iso, Some(1.0), Some(1.0)).await;
+    insert_limit_sample_with_usage(&state.pool, fallback, &now_iso, Some(80.0), Some(20.0)).await;
+
+    let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
+        .await
+        .expect("resolve pool account");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("expected allowed fallback account");
+    };
+    assert_eq!(account.account_id, fallback);
+}
+
+#[tokio::test]
+async fn resolver_allows_existing_sticky_reuse_for_block_new_conversations_account() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let blocked = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Blocked Sticky Reuse",
+        "sk-blocked-sticky-reuse",
+        None,
+        Some("https://blocked-sticky.example.com/backend-api/codex"),
+    )
+    .await;
+    let fallback = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Ignored Sticky Fallback",
+        "sk-ignored-sticky-fallback",
+        None,
+        Some("https://ignored-sticky.example.com/backend-api/codex"),
+    )
+    .await;
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_block_new_conversations = 1 WHERE id = ?1",
+    )
+    .bind(blocked)
+    .execute(&state.pool)
+    .await
+    .expect("block fresh route");
+    let now_iso = format_utc_iso(Utc::now());
+    insert_limit_sample_with_usage(&state.pool, blocked, &now_iso, Some(1.0), Some(1.0)).await;
+    insert_limit_sample_with_usage(&state.pool, fallback, &now_iso, Some(80.0), Some(20.0)).await;
+    upsert_sticky_route(
+        &state.pool,
+        "blocked-sticky-reuse",
+        blocked,
+        &now_iso,
+    )
+    .await
+    .expect("upsert sticky route");
+
+    let resolution = resolve_pool_account_for_request(
+        &state,
+        Some("blocked-sticky-reuse"),
+        &[],
+        &HashSet::new(),
+    )
+    .await
+    .expect("resolve pool account");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("expected existing sticky account");
+    };
+    assert_eq!(account.account_id, blocked);
+}
+
+#[tokio::test]
 async fn resolver_demotes_recent_timeout_for_same_upstream_route_and_proxy_binding() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let primary_route = "https://primary-timeout.example.com/backend-api/codex";
@@ -201,9 +292,7 @@ async fn resolver_forced_prompt_cache_account_binding_bypasses_target_cut_in_pol
         &state.pool,
         "prompt-cache-forced-no-cut-in",
         &TagRoutingRule {
-            guard_enabled: false,
-            lookback_hours: None,
-            max_conversations: None,
+            block_new_conversations: false,
             allow_cut_out: true,
             allow_cut_in: false,
             priority_tier: TagPriorityTier::Normal,
@@ -263,9 +352,7 @@ async fn resolver_forced_prompt_cache_account_binding_bypasses_source_cut_out_po
         &state.pool,
         "prompt-cache-source-no-cut-out",
         &TagRoutingRule {
-            guard_enabled: false,
-            lookback_hours: None,
-            max_conversations: None,
+            block_new_conversations: false,
             allow_cut_out: false,
             allow_cut_in: true,
             priority_tier: TagPriorityTier::Normal,
@@ -421,9 +508,7 @@ async fn resolver_prompt_cache_group_binding_does_not_bypass_cut_in_policy() {
         &state.pool,
         "prompt-cache-group-no-cut-in",
         &TagRoutingRule {
-            guard_enabled: false,
-            lookback_hours: None,
-            max_conversations: None,
+            block_new_conversations: false,
             allow_cut_out: true,
             allow_cut_in: false,
             priority_tier: TagPriorityTier::Normal,
@@ -747,9 +832,7 @@ async fn resolver_prefers_group_proxy_error_over_excluded_route_cut_in_rejects()
         &state.pool,
         "excluded-route-no-cut-in",
         &TagRoutingRule {
-            guard_enabled: false,
-            lookback_hours: None,
-            max_conversations: None,
+            block_new_conversations: false,
             allow_cut_out: true,
             allow_cut_in: false,
             priority_tier: TagPriorityTier::Normal,
@@ -1065,9 +1148,7 @@ async fn resolver_returns_group_proxy_error_for_sticky_account_when_cut_out_is_f
         &state.pool,
         "sticky-lock",
         &TagRoutingRule {
-            guard_enabled: false,
-            lookback_hours: None,
-            max_conversations: None,
+            block_new_conversations: false,
             allow_cut_out: false,
             allow_cut_in: true,
             priority_tier: TagPriorityTier::Normal,
@@ -1144,9 +1225,7 @@ async fn resolver_returns_ungrouped_error_for_sticky_account_when_cut_out_is_for
         &state.pool,
         "sticky-ungrouped-lock",
         &TagRoutingRule {
-            guard_enabled: false,
-            lookback_hours: None,
-            max_conversations: None,
+            block_new_conversations: false,
             allow_cut_out: false,
             allow_cut_in: true,
             priority_tier: TagPriorityTier::Normal,
@@ -1232,9 +1311,7 @@ async fn resolver_preserves_sticky_account_when_cut_out_is_forbidden_by_tag_poli
         &state.pool,
         "sticky-cut-out-forbidden",
         &TagRoutingRule {
-            guard_enabled: false,
-            lookback_hours: None,
-            max_conversations: None,
+            block_new_conversations: false,
             allow_cut_out: false,
             allow_cut_in: true,
             priority_tier: TagPriorityTier::Normal,
@@ -1377,9 +1454,7 @@ async fn resolver_prefers_sticky_cut_in_policy_over_group_proxy_error() {
         &state.pool,
         "sticky-no-cut-in",
         &TagRoutingRule {
-            guard_enabled: false,
-            lookback_hours: None,
-            max_conversations: None,
+            block_new_conversations: false,
             allow_cut_out: true,
             allow_cut_in: false,
             priority_tier: TagPriorityTier::Normal,

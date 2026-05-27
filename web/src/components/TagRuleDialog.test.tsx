@@ -47,10 +47,8 @@ const labels = {
   description: 'Configure routing rules.',
   name: 'Name',
   namePlaceholder: 'vip',
-  guardEnabled: 'Guard',
+  blockNewConversations: 'Guard',
   forbidNewConversation: 'Block new conversations',
-  lookbackHours: 'Lookback',
-  maxConversations: 'Max conversations',
   allowCutOut: 'Cut out is not blocked',
   allowCutIn: 'Cut in is not blocked',
   forbidCutOut: 'Block cut out',
@@ -71,7 +69,7 @@ const labels = {
   cancel: 'Cancel',
   save: 'Save',
   create: 'Create',
-  validation: 'Guard inputs must be positive integers.',
+  validation: 'Review the routing policy before saving.',
 }
 
 describe('TagRuleDialog', () => {
@@ -113,9 +111,7 @@ describe('TagRuleDialog', () => {
       id: 11,
       name: 'lane',
       routingRule: {
-        guardEnabled: false,
-        lookbackHours: null,
-        maxConversations: null,
+        blockNewConversations: false,
         allowCutOut: true,
         allowCutIn: true,
         priorityTier: 'primary',
@@ -200,9 +196,7 @@ describe('TagRuleDialog', () => {
       id: 42,
       name: 'account@example.com',
       routingRule: {
-        guardEnabled: true,
-        lookbackHours: 5,
-        maxConversations: 2,
+        blockNewConversations: true,
         allowCutOut: true,
         allowCutIn: false,
         priorityTier: 'fallback',
@@ -253,9 +247,7 @@ describe('TagRuleDialog', () => {
       id: 42,
       name: 'account@example.com',
       routingRule: {
-        guardEnabled: false,
-        lookbackHours: null,
-        maxConversations: null,
+        blockNewConversations: false,
         allowCutOut: true,
         allowCutIn: true,
         priorityTier: 'normal',
@@ -330,9 +322,7 @@ describe('TagRuleDialog', () => {
       id: 42,
       name: 'first@example.com',
       routingRule: {
-        guardEnabled: false,
-        lookbackHours: null,
-        maxConversations: null,
+        blockNewConversations: false,
         allowCutOut: true,
         allowCutIn: true,
         priorityTier: 'normal',
