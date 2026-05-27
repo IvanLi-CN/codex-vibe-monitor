@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ApiRequestError,
-  fetchParallelWorkStats,
+  fetchParallelWorkStatsConditional,
   type ParallelWorkStatsResponse,
 } from '../lib/api'
 import { subscribeToSse, subscribeToSseOpen } from '../lib/sse'
+import { recordParallelWorkFetch } from '../lib/dashboardPerformanceDiagnostics'
 
 interface LoadOptions {
   silent?: boolean
@@ -21,8 +22,8 @@ interface UseParallelWorkStatsOptions {
   enabled?: boolean
 }
 
-export const PARALLEL_WORK_REFRESH_THROTTLE_MS = 60_000
-export const PARALLEL_WORK_OPEN_RESYNC_COOLDOWN_MS = 60_000
+export const PARALLEL_WORK_REFRESH_THROTTLE_MS = 5_000
+export const PARALLEL_WORK_OPEN_RESYNC_COOLDOWN_MS = 5_000
 
 export function shouldRetryParallelWorkError(error: unknown) {
   if (!error) return false
@@ -67,6 +68,7 @@ export function useParallelWorkStats({ range, bucket, enabled = true }: UseParal
   const lastRecordsRefreshAtRef = useRef(0)
   const lastOpenResyncAtRef = useRef(0)
   const lastErrorRef = useRef<unknown>(null)
+  const etagRef = useRef<string | null>(null)
 
   const clearPendingRefreshTimer = useCallback(() => {
     if (!refreshTimerRef.current) return
@@ -86,11 +88,24 @@ export function useParallelWorkStats({ range, bucket, enabled = true }: UseParal
     }
 
     try {
-      const response = await fetchParallelWorkStats({ range, bucket, signal: controller.signal })
+      const response = await fetchParallelWorkStatsConditional({
+        range,
+        bucket,
+        signal: controller.signal,
+        etag: etagRef.current,
+      })
       if (requestSeq !== requestSeqRef.current) {
         return
       }
-      setData(response)
+      if (response.etag != null) {
+        etagRef.current = response.etag
+      }
+      if (response.notModified) {
+        recordParallelWorkFetch('notModified')
+      } else if (response.data) {
+        setData(response.data)
+        recordParallelWorkFetch('full')
+      }
       setError(null)
       lastErrorRef.current = null
       hasHydratedRef.current = true
@@ -201,6 +216,7 @@ export function useParallelWorkStats({ range, bucket, enabled = true }: UseParal
       lastRecordsRefreshAtRef.current = 0
       lastOpenResyncAtRef.current = 0
       lastErrorRef.current = null
+      etagRef.current = null
       clearPendingRefreshTimer()
       setData(null)
       setError(null)
@@ -216,6 +232,7 @@ export function useParallelWorkStats({ range, bucket, enabled = true }: UseParal
     lastRecordsRefreshAtRef.current = 0
     lastOpenResyncAtRef.current = 0
     lastErrorRef.current = null
+    etagRef.current = null
     clearPendingRefreshTimer()
     void load({ force: true })
   }, [clearPendingRefreshTimer, enabled, load])
@@ -264,6 +281,7 @@ export function useParallelWorkStats({ range, bucket, enabled = true }: UseParal
       pendingLoadRef.current = null
       pendingOpenResyncRef.current = false
       lastErrorRef.current = null
+      etagRef.current = null
       clearPendingRefreshTimer()
     },
     [clearPendingRefreshTimer],

@@ -30,6 +30,7 @@ export {
   fetchPromptCacheConversationsPage,
   fetchTimeseries,
   fetchParallelWorkStats,
+  fetchParallelWorkStatsConditional,
   fetchErrorDistribution,
   fetchFailureSummary,
   fetchPerfStats,

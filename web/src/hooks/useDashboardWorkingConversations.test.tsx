@@ -22,7 +22,11 @@ import {
   getDashboardPerformanceDiagnosticsSnapshot,
   resetDashboardPerformanceDiagnostics,
 } from "../lib/dashboardPerformanceDiagnostics";
-import { useDashboardWorkingConversations } from "./useDashboardWorkingConversations";
+import {
+  DASHBOARD_WORKING_CONVERSATIONS_REFRESH_THROTTLE_MS,
+  DASHBOARD_WORKING_CONVERSATIONS_VISIBLE_PATCH_BATCH_MS,
+  useDashboardWorkingConversations,
+} from "./useDashboardWorkingConversations";
 
 const apiMocks = vi.hoisted(() => ({
   fetchPromptCacheConversationsPage: vi.fn<
@@ -101,6 +105,7 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   Date.now = () => fixedNowMs;
 });
 
@@ -320,8 +325,11 @@ function createRecord(
 }
 
 function emitRecords(records: ApiInvocation[]) {
-  sseMocks.listeners.forEach((listener) => {
-    listener({ type: "records", records });
+  act(() => {
+    sseMocks.listeners.forEach((listener) => {
+      listener({ type: "records", records });
+    });
+    vi.advanceTimersByTime(DASHBOARD_WORKING_CONVERSATIONS_VISIBLE_PATCH_BATCH_MS);
   });
 }
 
@@ -1639,7 +1647,11 @@ describe("useDashboardWorkingConversations", () => {
     expect(apiMocks.fetchPromptCacheConversationsPage).toHaveBeenCalledTimes(2);
 
     act(() => {
-      vi.advanceTimersByTime(1_499);
+      vi.advanceTimersByTime(
+        DASHBOARD_WORKING_CONVERSATIONS_REFRESH_THROTTLE_MS -
+          DASHBOARD_WORKING_CONVERSATIONS_VISIBLE_PATCH_BATCH_MS -
+          1,
+      );
     });
     expect(apiMocks.fetchPromptCacheConversationsPage).toHaveBeenCalledTimes(2);
 
