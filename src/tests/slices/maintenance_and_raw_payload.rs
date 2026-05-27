@@ -1385,6 +1385,34 @@ async fn upstream_account_schema_normalizes_blank_group_names_to_default_group()
             .await
             .expect("load normalized group");
     assert_eq!(group_name.as_deref(), Some(DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME));
+
+    let Json(ungrouped_filtered) = list_upstream_accounts(
+        State(state),
+        Query(ListUpstreamAccountsQuery {
+            group_exact: Vec::new(),
+            group_search: None,
+            group_ungrouped: Some(true),
+            status: None,
+            work_status: Vec::new(),
+            enable_status: Vec::new(),
+            health_status: Vec::new(),
+            page: None,
+            page_size: None,
+            include_all: None,
+            tag_ids: Vec::new(),
+        }),
+    )
+    .await
+    .expect("list legacy ungrouped compatibility after normalization");
+    let ungrouped_filtered_json = serde_json::to_value(ungrouped_filtered)
+        .expect("serialize normalized ungrouped roster");
+    let ungrouped_filtered_names = ungrouped_filtered_json["items"]
+        .as_array()
+        .expect("normalized ungrouped items array")
+        .iter()
+        .filter_map(|item| item.get("displayName").and_then(serde_json::Value::as_str))
+        .collect::<Vec<_>>();
+    assert_eq!(ungrouped_filtered_names, vec!["Legacy Blank Group"]);
 }
 
 #[tokio::test]

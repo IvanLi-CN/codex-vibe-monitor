@@ -73,7 +73,7 @@
 
 - 空 `groupExact`、空白 `groupExact` 和重复分组名在后端归一化后忽略或去重。
 - 如果数据库里仍存在空白 `group_name`，下一次 schema 维护必须把它们归到 `未分组`。
-- 若请求同时提供 `groupUngrouped=true` 和 `groupExact`，兼容语义仍以 `groupUngrouped` 优先，不影响新 UI。
+- 若请求同时提供 `groupUngrouped=true` 和 `groupExact`，兼容语义仍以 `groupUngrouped` 优先，并同时匹配历史空白分组与归一化后的真实 `未分组`。
 
 ## 接口契约（Interfaces & Contracts）
 

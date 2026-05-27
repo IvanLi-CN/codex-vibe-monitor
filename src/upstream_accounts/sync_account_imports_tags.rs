@@ -2290,7 +2290,10 @@ async fn load_upstream_account_summaries_for_query(
     query.push(" WHERE 1 = 1");
 
     if params.group_ungrouped.unwrap_or(false) {
-        query.push(" AND NULLIF(TRIM(COALESCE(group_name, '')), '') IS NULL");
+        query.push(" AND (NULLIF(TRIM(COALESCE(group_name, '')), '') IS NULL");
+        query.push(" OR TRIM(COALESCE(group_name, '')) = ");
+        query.push_bind(DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME);
+        query.push(")");
     } else if !normalized_group_exact.is_empty() {
         query.push(" AND TRIM(COALESCE(group_name, '')) IN (");
         {
