@@ -14,6 +14,7 @@ import { MotherAccountToggle } from "../../components/MotherAccountToggle";
 import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
 import {
   DuplicateWarningPopover,
+  OAuthIdentityConfirmationAlert,
   resolveBatchOauthMailboxAddress,
 } from "./UpstreamAccountCreate.shared";
 import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.controller-context";
@@ -49,6 +50,7 @@ export function UpstreamAccountCreateBatchOauthSection() {
     handleBatchCopyOauthUrl,
     handleBatchGenerateMailbox,
     handleBatchGenerateOauthUrl,
+    handleBatchConfirmOauthIdentityOverwrite,
     handleBatchGroupValueChange,
     handleBatchRowGroupCreateRequest,
     handleBatchMailboxEditorValueChange,
@@ -157,6 +159,8 @@ export function UpstreamAccountCreateBatchOauthSection() {
             const isRecoveredNeedsRefresh =
               status === "completedNeedsRefresh";
             const isPending = status === "pending";
+            const needsIdentityConfirmation =
+              status === "needs_identity_confirmation";
             const isBusy = row.busyAction != null;
             const isMailboxBusy = row.mailboxBusyAction != null;
             const metadataLocked =
@@ -990,6 +994,24 @@ export function UpstreamAccountCreateBatchOauthSection() {
                           </div>
                         </div>
                       </Alert>
+                    ) : null}
+                    {needsIdentityConfirmation &&
+                    row.session?.identityConfirmation ? (
+                      <OAuthIdentityConfirmationAlert
+                        identityConfirmation={
+                          row.session.identityConfirmation
+                        }
+                        fallbackDisplayName={row.displayName}
+                        confirmBusy={row.busyAction === "confirm"}
+                        confirmDisabled={!writesEnabled || isBusy}
+                        onConfirm={() =>
+                          void handleBatchConfirmOauthIdentityOverwrite(
+                            row.id,
+                          )
+                        }
+                        t={t}
+                        compact
+                      />
                     ) : null}
                     <p
                       className={cn(

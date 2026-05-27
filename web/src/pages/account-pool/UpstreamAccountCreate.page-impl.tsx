@@ -14,7 +14,10 @@ import type {
   UpstreamAccountDuplicateInfo,
   UpstreamAccountSummary,
 } from "../../lib/api";
-import { fetchUpstreamAccountDetail, updateOauthLoginSessionKeepalive } from "../../lib/api";
+import {
+  fetchUpstreamAccountDetail,
+  updateOauthLoginSessionKeepalive,
+} from "../../lib/api";
 import { copyText, selectAllReadonlyText } from "../../lib/clipboard";
 import { emitUpstreamAccountsChanged } from "../../lib/upstreamAccountsEvents";
 import { apiConcurrencyLimitToSliderValue } from "../../lib/concurrencyLimit";
@@ -125,6 +128,7 @@ export default function UpstreamAccountCreatePage() {
     getOauthMailboxStatuses,
     removeOauthMailboxSession,
     completeOauthLogin,
+    confirmOauthOverwrite,
     createApiKeyAccount,
     startImportedOauthValidationJob,
     stopImportedOauthValidationJob,
@@ -2048,6 +2052,7 @@ export default function UpstreamAccountCreatePage() {
     handleGenerateOauthUrl,
     handleCopyOauthUrl,
     handleCompleteOauth,
+    handleConfirmOauthIdentityOverwrite,
     handleResolveOauthEmailChoice,
     handleBatchGenerateMailbox,
     handleBatchStartMailboxEdit,
@@ -2059,6 +2064,7 @@ export default function UpstreamAccountCreatePage() {
     handleBatchGenerateOauthUrl,
     handleBatchCopyOauthUrl,
     handleBatchCompleteOauth,
+    handleBatchConfirmOauthIdentityOverwrite,
     handleResolveBatchOauthEmailChoice,
     handleCreateApiKey,
   } = useUpstreamAccountCreateActions({
@@ -2089,6 +2095,7 @@ export default function UpstreamAccountCreatePage() {
     buildOauthLoginSessionUpdatePayload,
     buildPendingOauthSessionSnapshot,
     completeOauthLogin,
+    confirmOauthOverwrite,
     copyText,
     createApiKeyAccount,
     createdPendingOauthSessionSignaturesRef,
@@ -2284,6 +2291,7 @@ export default function UpstreamAccountCreatePage() {
     handleBatchAttachMailbox,
     handleBatchCancelMailboxEdit,
     handleBatchCompleteOauth,
+    handleBatchConfirmOauthIdentityOverwrite,
     handleBatchCompletedTextFieldBlur,
     handleBatchCompletedTextFieldKeyDown,
     handleBatchCopyMailbox,
@@ -2304,6 +2312,7 @@ export default function UpstreamAccountCreatePage() {
     handleClearImportSelection,
     handleCloseImportedOauthValidationDialog,
     handleCompleteOauth,
+    handleConfirmOauthIdentityOverwrite,
     handleCopyOauthUrl,
     handleCopySingleInvite,
     handleCopySingleMailbox,

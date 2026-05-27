@@ -870,6 +870,9 @@ function mockUpstreamAccounts(
     completeOauthLogin: vi
       .fn()
       .mockResolvedValue({ id: 41, displayName: "Row One" }),
+    confirmOauthOverwrite: vi
+      .fn()
+      .mockResolvedValue({ id: 41, displayName: "Row One" }),
     beginOauthMailboxSession: vi.fn().mockResolvedValue({
       supported: true,
       sessionId: "mailbox-1",

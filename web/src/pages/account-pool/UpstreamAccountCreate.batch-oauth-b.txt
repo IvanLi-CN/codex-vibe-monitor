@@ -517,6 +517,90 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     expect(pageTextContent()).toContain("Display name must be unique.");
   });
 
+  it("renders and confirms batch OAuth identity overwrite state", async () => {
+    const confirmOauthOverwrite = vi.fn().mockResolvedValue({
+      id: 77,
+      displayName: "Existing Relogin",
+      email: "kept@example.com",
+      verifiedEmail: "incoming@example.com",
+      planType: "team",
+      groupName: "prod",
+      note: "keep note",
+      isMother: false,
+      tags: [],
+    });
+    mockUpstreamAccounts({ confirmOauthOverwrite });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              {
+                id: "row-identity-confirm",
+                displayName: "Existing Relogin",
+                email: "kept@example.com",
+                groupName: "prod",
+                session: {
+                  loginId: "login-confirm",
+                  status: "needs_identity_confirmation",
+                  authUrl: null,
+                  redirectUri: null,
+                  expiresAt: "2026-03-13T10:00:00.000Z",
+                  accountId: 77,
+                  email: "kept@example.com",
+                  error: "OAuth identity differs from the existing account. Confirm overwrite to continue.",
+                  identityConfirmation: {
+                    current: {
+                      accountId: 77,
+                      displayName: "Existing Relogin",
+                      email: "kept@example.com",
+                    },
+                    incoming: {
+                      accountId: 77,
+                      email: "incoming@example.com",
+                      verifiedEmail: "incoming@example.com",
+                      chatgptAccountId: "acct_new",
+                      chatgptUserId: "user_new",
+                      planType: "team",
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(pageTextContent()).toContain("Identity overwrite confirmation required");
+    expect(pageTextContent()).toContain("kept@example.com");
+    expect(pageTextContent()).toContain("incoming@example.com");
+    expect(pageTextContent()).toContain("Will update:");
+    expect(pageTextContent()).toContain("Will keep:");
+
+    const confirmButton = Array.from(host?.querySelectorAll("button") ?? []).find(
+      (button) =>
+        /Confirm identity overwrite/.test(
+          button.textContent ||
+            button.getAttribute("aria-label") ||
+            button.getAttribute("title") ||
+            "",
+        ),
+    );
+    expect(confirmButton).toBeTruthy();
+    act(() => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    expect(confirmOauthOverwrite).toHaveBeenCalledWith("login-confirm");
+    expect(pageTextContent()).toContain(
+      "Existing Relogin is ready. Continue with the remaining rows when you are done here.",
+    );
+  });
+
   it("attaches a supported mailbox from the batch popover editor", async () => {
     const beginOauthMailboxSessionForAddress = vi.fn().mockResolvedValue({
       supported: true,

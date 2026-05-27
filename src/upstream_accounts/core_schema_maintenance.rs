@@ -494,6 +494,13 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             status TEXT NOT NULL,
             auth_url TEXT NOT NULL,
             error_message TEXT,
+            pending_encrypted_credentials TEXT,
+            pending_token_expires_at TEXT,
+            pending_verified_email TEXT,
+            pending_chatgpt_account_id TEXT,
+            pending_chatgpt_user_id TEXT,
+            pending_plan_type TEXT,
+            pending_has_refresh_token INTEGER,
             expires_at TEXT NOT NULL,
             consumed_at TEXT,
             created_at TEXT NOT NULL,
@@ -602,6 +609,31 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure pool_oauth_login_sessions.group_concurrency_limit")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_oauth_login_sessions",
+        "pending_encrypted_credentials",
+    )
+    .await
+    .context("failed to ensure pool_oauth_login_sessions.pending_encrypted_credentials")?;
+    ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "pending_token_expires_at")
+        .await
+        .context("failed to ensure pool_oauth_login_sessions.pending_token_expires_at")?;
+    ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "pending_verified_email")
+        .await
+        .context("failed to ensure pool_oauth_login_sessions.pending_verified_email")?;
+    ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "pending_chatgpt_account_id")
+        .await
+        .context("failed to ensure pool_oauth_login_sessions.pending_chatgpt_account_id")?;
+    ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "pending_chatgpt_user_id")
+        .await
+        .context("failed to ensure pool_oauth_login_sessions.pending_chatgpt_user_id")?;
+    ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "pending_plan_type")
+        .await
+        .context("failed to ensure pool_oauth_login_sessions.pending_plan_type")?;
+    ensure_nullable_integer_column(pool, "pool_oauth_login_sessions", "pending_has_refresh_token")
+        .await
+        .context("failed to ensure pool_oauth_login_sessions.pending_has_refresh_token")?;
 
     sqlx::query(
         r#"

@@ -8,6 +8,7 @@ import {
   createImportedOauthValidationJob,
   createOauthMailboxSession,
   completeOauthLoginSession,
+  confirmOauthIdentityOverwrite,
   createOauthLoginSession,
   fetchBulkUpstreamAccountSyncJob,
   deleteOauthMailboxSession,
@@ -833,6 +834,21 @@ export function useUpstreamAccounts(
     [clearDetailError, invalidateDetailRequest, invalidateListRequest, loadList, setSelectedAccount],
   )
 
+  const confirmOauthOverwrite = useCallback(
+    async (loginId: string) => {
+      const response = await confirmOauthIdentityOverwrite(loginId)
+      invalidateListRequest()
+      await loadList(response.id)
+      invalidateDetailRequest()
+      setDetail(response)
+      setSelectedAccount(response.id)
+      clearDetailError(response.id)
+      emitUpstreamAccountsChanged()
+      return response
+    },
+    [clearDetailError, invalidateDetailRequest, invalidateListRequest, loadList, setSelectedAccount],
+  )
+
   const createApiKeyAccount = useCallback(
     async (payload: CreateApiKeyAccountPayload) => {
       const response = await createApiKeyUpstreamAccount(payload)
@@ -1149,6 +1165,7 @@ export function useUpstreamAccounts(
     getOauthMailboxStatuses,
     removeOauthMailboxSession,
     completeOauthLogin,
+    confirmOauthOverwrite,
     createApiKeyAccount,
     runImportedOauthValidation,
     startImportedOauthValidationJob,

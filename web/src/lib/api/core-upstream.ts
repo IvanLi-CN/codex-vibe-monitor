@@ -429,7 +429,7 @@ export interface BulkUpstreamAccountSyncFailedEventPayload {
 
 export interface LoginSessionStatusResponse {
   loginId: string;
-  status: "pending" | "completed" | "failed" | "expired" | string;
+  status: "pending" | "completed" | "failed" | "expired" | "needs_identity_confirmation" | string;
   authUrl?: string | null;
   redirectUri?: string | null;
   expiresAt: string;
@@ -438,6 +438,22 @@ export interface LoginSessionStatusResponse {
   email?: string | null;
   error?: string | null;
   syncApplied?: boolean | null;
+  identityConfirmation?: OauthIdentityConfirmation | null;
+}
+
+export interface OauthIdentityConfirmation {
+  current: OauthIdentitySummary;
+  incoming: OauthIdentitySummary;
+}
+
+export interface OauthIdentitySummary {
+  accountId?: number | null;
+  displayName?: string | null;
+  email?: string | null;
+  verifiedEmail?: string | null;
+  chatgptAccountId?: string | null;
+  chatgptUserId?: string | null;
+  planType?: string | null;
 }
 
 export type OauthMailboxSession =
@@ -1382,6 +1398,41 @@ function normalizeLoginSessionStatusResponse(
     error: typeof payload.error === "string" ? payload.error : null,
     syncApplied:
       typeof payload.syncApplied === "boolean" ? payload.syncApplied : null,
+    identityConfirmation: normalizeOauthIdentityConfirmation(
+      payload.identityConfirmation,
+    ),
+  };
+}
+
+function normalizeOauthIdentityConfirmation(
+  raw: unknown,
+): OauthIdentityConfirmation | null {
+  const payload = raw as Record<string, unknown> | null | undefined;
+  if (!payload || typeof payload !== "object") return null;
+  return {
+    current: normalizeOauthIdentitySummary(payload.current),
+    incoming: normalizeOauthIdentitySummary(payload.incoming),
+  };
+}
+
+function normalizeOauthIdentitySummary(raw: unknown): OauthIdentitySummary {
+  const payload = raw as Record<string, unknown> | null | undefined;
+  if (!payload || typeof payload !== "object") return {};
+  const accountId = normalizeFiniteNumber(payload.accountId);
+  return {
+    accountId: accountId == null ? null : accountId,
+    displayName:
+      typeof payload.displayName === "string" ? payload.displayName : null,
+    email: typeof payload.email === "string" ? payload.email : null,
+    verifiedEmail:
+      typeof payload.verifiedEmail === "string" ? payload.verifiedEmail : null,
+    chatgptAccountId:
+      typeof payload.chatgptAccountId === "string"
+        ? payload.chatgptAccountId
+        : null,
+    chatgptUserId:
+      typeof payload.chatgptUserId === "string" ? payload.chatgptUserId : null,
+    planType: typeof payload.planType === "string" ? payload.planType : null,
   };
 }
 
@@ -2163,6 +2214,18 @@ export async function completeOauthLoginSession(
     {
       method: "POST",
       body: JSON.stringify(payload),
+    },
+  );
+  return normalizeUpstreamAccountDetail(response);
+}
+
+export async function confirmOauthIdentityOverwrite(
+  loginId: string,
+): Promise<UpstreamAccountDetail> {
+  const response = await fetchJson<unknown>(
+    `/api/pool/upstream-accounts/oauth/login-sessions/${encodeURIComponent(loginId)}/confirm-identity-overwrite`,
+    {
+      method: "POST",
     },
   );
   return normalizeUpstreamAccountDetail(response);
