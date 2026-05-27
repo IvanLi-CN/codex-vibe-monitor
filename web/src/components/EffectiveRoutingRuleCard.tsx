@@ -3,9 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/
 import type { EffectiveRoutingRule } from '../lib/api'
 import {
   fastModeRewriteBadgeLabel,
-  fastModeRewriteBadgeVariant,
   priorityTierBadgeLabel,
-  priorityTierBadgeVariant,
 } from '../lib/tagRoutingRule'
 
 interface EffectiveRoutingRuleCardProps {
@@ -133,6 +131,11 @@ export function EffectiveRoutingRuleCard({ rule, labels }: EffectiveRoutingRuleC
       source: fieldSources.upstream429Retry,
     },
   ]
+  const blockingBadges = [
+    resolvedRule.blockNewConversations ? labels.blockNewConversations : null,
+    !resolvedRule.allowCutOut ? labels.denyCutOut : null,
+    !resolvedRule.allowCutIn ? labels.denyCutIn : null,
+  ].filter((value): value is string => value != null)
 
   return (
     <Card className="border-base-300/80 bg-base-100/72">
@@ -140,40 +143,31 @@ export function EffectiveRoutingRuleCard({ rule, labels }: EffectiveRoutingRuleC
         <CardTitle>{labels.title}</CardTitle>
         <CardDescription>{labels.description}</CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="flex flex-wrap gap-2">
-          <Badge variant={priorityTierBadgeVariant(resolvedRule.priorityTier)}>
-            {priorityTierBadgeLabel(resolvedRule.priorityTier, labels)}
-          </Badge>
-          <Badge variant={fastModeRewriteBadgeVariant(resolvedRule.fastModeRewriteMode)}>
-            {fastModeRewriteBadgeLabel(resolvedRule.fastModeRewriteMode, labels)}
-          </Badge>
-          {resolvedRule.blockNewConversations ? <Badge variant="warning">{labels.blockNewConversations}</Badge> : null}
-          {!resolvedRule.allowCutOut ? <Badge variant="warning">{labels.denyCutOut}</Badge> : null}
-          {!resolvedRule.allowCutIn ? <Badge variant="warning">{labels.denyCutIn}</Badge> : null}
-          <Badge variant={resolvedRule.concurrencyLimit ? 'warning' : 'secondary'}>
-            {resolvedRule.concurrencyLimit
-              ? labels.concurrencyLimit?.(resolvedRule.concurrencyLimit) ?? `Concurrency ${resolvedRule.concurrencyLimit}`
-              : labels.concurrencyUnlimited ?? 'Concurrency unlimited'}
-          </Badge>
-          <Badge variant={resolvedRule.upstream429RetryEnabled ? 'warning' : 'secondary'}>
-            {resolvedRule.upstream429RetryEnabled
-              ? labels.upstream429Retry ?? `429 retry x${resolvedRule.upstream429MaxRetries ?? 1}`
-              : labels.upstream429RetryOff ?? '429 retry off'}
-          </Badge>
-        </div>
+      <CardContent className="space-y-3">
+        {blockingBadges.length > 0 ? (
+          <div className="flex flex-wrap gap-2">
+            {blockingBadges.map((label) => (
+              <Badge key={label} variant="warning">
+                {label}
+              </Badge>
+            ))}
+          </div>
+        ) : null}
 
-        <div className="rounded-[1.2rem] border border-base-300/70 bg-base-100/70 p-4">
+        <div className="rounded-xl border border-base-300/70 bg-base-200/35 p-3">
           <p className="metric-label">{labels.sourceBreakdownTitle ?? 'Field source breakdown'}</p>
           <div className="mt-3 overflow-hidden rounded-xl border border-base-300/70">
             {fieldRows.map((row) => (
               <div
                 key={row.label}
-                className="grid grid-cols-[minmax(7rem,1fr)_minmax(8rem,1.2fr)_minmax(5rem,auto)] items-center gap-3 border-b border-base-300/60 px-3 py-2 text-sm last:border-b-0"
+                className="grid grid-cols-1 gap-1 border-b border-base-300/60 px-3 py-2.5 text-sm last:border-b-0 sm:grid-cols-[minmax(7rem,1fr)_minmax(8rem,1.2fr)_minmax(5rem,auto)] sm:items-center sm:gap-3"
               >
                 <span className="font-medium text-base-content/80">{row.label}</span>
                 <span className="text-base-content">{row.value}</span>
-                <Badge variant={row.source === 'account' ? 'default' : row.source === 'tag' ? 'accent' : row.source === 'group' ? 'info' : 'secondary'}>
+                <Badge
+                  className="w-fit sm:justify-self-end"
+                  variant={row.source === 'account' ? 'default' : row.source === 'tag' ? 'accent' : row.source === 'group' ? 'info' : 'secondary'}
+                >
                   {sourceLabel(row.source)}
                 </Badge>
               </div>
@@ -181,7 +175,7 @@ export function EffectiveRoutingRuleCard({ rule, labels }: EffectiveRoutingRuleC
           </div>
         </div>
 
-        <div className="rounded-[1.2rem] border border-base-300/70 bg-base-100/70 p-4">
+        <div className="rounded-xl border border-base-300/70 bg-base-200/35 p-3">
           <p className="metric-label">{labels.sourceTags}</p>
           <div className="mt-3 flex flex-wrap gap-2">
             {resolvedRule.sourceTagNames.length === 0 ? (
