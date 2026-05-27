@@ -8,9 +8,7 @@ const baseTags: TagSummary[] = [
     id: 1,
     name: 'vip-routing',
     routingRule: {
-      guardEnabled: false,
-      lookbackHours: null,
-      maxConversations: null,
+      blockNewConversations: false,
       allowCutOut: true,
       allowCutIn: true,
       priorityTier: 'normal',
@@ -24,9 +22,7 @@ const baseTags: TagSummary[] = [
     id: 2,
     name: 'handoff-blocked',
     routingRule: {
-      guardEnabled: true,
-      lookbackHours: 4,
-      maxConversations: 8,
+      blockNewConversations: true,
       allowCutOut: false,
       allowCutIn: true,
       priorityTier: 'fallback',
@@ -54,10 +50,8 @@ const labels = {
   dialogDescription: 'Configure the routing policy bound to this tag.',
   name: 'Name',
   namePlaceholder: 'vip-routing',
-  guardEnabled: 'Conversation guard',
+  blockNewConversations: 'Block new conversations',
   forbidNewConversation: 'Block new conversations',
-  lookbackHours: 'Lookback hours',
-  maxConversations: 'Max conversations',
   allowCutOut: 'Cut out is not blocked',
   allowCutIn: 'Cut in is not blocked',
   forbidCutOut: 'Block cut out',
@@ -74,7 +68,7 @@ const labels = {
   cancel: 'Cancel',
   save: 'Save',
   createAction: 'Create',
-  validation: 'Use positive integers for the guard values.',
+  validation: 'Review the routing policy before saving.',
 }
 
 function StorySurface({ children }: { children: React.ReactNode }) {
@@ -121,9 +115,7 @@ function FieldHarness({
       id: Math.max(...tags.map((item) => item.id)) + 1,
       name: payload.name,
         routingRule: {
-          guardEnabled: payload.guardEnabled,
-          lookbackHours: payload.lookbackHours ?? null,
-          maxConversations: payload.maxConversations ?? null,
+          blockNewConversations: payload.blockNewConversations,
           allowCutOut: payload.allowCutOut,
           allowCutIn: payload.allowCutIn,
           priorityTier: payload.priorityTier ?? 'normal',
@@ -146,9 +138,7 @@ function FieldHarness({
           ...item,
           name: payload.name ?? item.name,
           routingRule: {
-            guardEnabled: payload.guardEnabled ?? item.routingRule.guardEnabled,
-            lookbackHours: payload.lookbackHours ?? null,
-            maxConversations: payload.maxConversations ?? null,
+            blockNewConversations: payload.blockNewConversations ?? item.routingRule.blockNewConversations,
             allowCutOut: payload.allowCutOut ?? item.routingRule.allowCutOut,
             allowCutIn: payload.allowCutIn ?? item.routingRule.allowCutIn,
             priorityTier: payload.priorityTier ?? item.routingRule.priorityTier ?? 'normal',

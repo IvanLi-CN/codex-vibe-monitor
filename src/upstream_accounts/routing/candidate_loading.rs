@@ -92,35 +92,26 @@ pub(crate) fn account_accepts_concurrency_limit(
 }
 
 pub(crate) async fn account_accepts_sticky_assignment(
-    pool: &Pool<Sqlite>,
+    _pool: &Pool<Sqlite>,
     account_id: i64,
     sticky_key: Option<&str>,
     source_account_id: Option<i64>,
     rule: &EffectiveRoutingRule,
     bypass_transfer_policy: bool,
 ) -> Result<bool> {
+    let is_transfer = source_account_id.is_some_and(|source_id| source_id != account_id);
+    let is_new_assignment = source_account_id.is_none();
+    if is_new_assignment && rule.block_new_conversations {
+        return Ok(false);
+    }
     let Some(_) = sticky_key else {
         return Ok(true);
     };
-    let is_transfer = source_account_id.is_some_and(|source_id| source_id != account_id);
-    let is_new_assignment = source_account_id.is_none();
     if !is_transfer && !is_new_assignment {
         return Ok(true);
     }
     if is_transfer && !bypass_transfer_policy && !rule.allow_cut_in {
         return Ok(false);
-    }
-    for guard in &rule.guard_rules {
-        let current = count_recent_account_conversations(
-            pool,
-            account_id,
-            guard.lookback_hours,
-            if is_new_assignment { sticky_key } else { None },
-        )
-        .await?;
-        if current >= guard.max_conversations {
-            return Ok(false);
-        }
     }
     Ok(true)
 }

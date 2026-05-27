@@ -91,7 +91,6 @@ export interface UpstreamAccountsTableProps {
     policyForbidNewConversation?: string
     policyConcurrency?: (count: number) => string
     policyRetry?: (count: number) => string
-    policyGuardTitle?: (hours: number, count: number) => string
   }
 }
 

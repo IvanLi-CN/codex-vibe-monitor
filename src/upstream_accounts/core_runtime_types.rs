@@ -1054,17 +1054,8 @@ pub(crate) struct AccountTagSummary {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct EffectiveConversationGuard {
-    tag_id: i64,
-    tag_name: String,
-    lookback_hours: i64,
-    max_conversations: i64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub(crate) struct EffectiveRoutingRuleFieldSources {
-    guard: String,
+    block_new_conversations: String,
     allow_cut_out: String,
     allow_cut_in: String,
     priority_tier: String,
@@ -1076,9 +1067,7 @@ pub(crate) struct EffectiveRoutingRuleFieldSources {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EffectiveRoutingRule {
-    guard_enabled: bool,
-    lookback_hours: Option<i64>,
-    max_conversations: Option<i64>,
+    block_new_conversations: bool,
     allow_cut_out: bool,
     allow_cut_in: bool,
     priority_tier: TagPriorityTier,
@@ -1088,16 +1077,13 @@ pub(crate) struct EffectiveRoutingRule {
     upstream_429_max_retries: u8,
     source_tag_ids: Vec<i64>,
     source_tag_names: Vec<String>,
-    guard_rules: Vec<EffectiveConversationGuard>,
     field_sources: EffectiveRoutingRuleFieldSources,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TagRoutingRule {
-    guard_enabled: bool,
-    lookback_hours: Option<i64>,
-    max_conversations: Option<i64>,
+    block_new_conversations: bool,
     allow_cut_out: bool,
     allow_cut_in: bool,
     priority_tier: TagPriorityTier,
@@ -2139,9 +2125,7 @@ pub(crate) struct ExternalUpstreamAccountReloginRequest {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateTagRequest {
     name: String,
-    guard_enabled: bool,
-    lookback_hours: Option<i64>,
-    max_conversations: Option<i64>,
+    block_new_conversations: bool,
     allow_cut_out: bool,
     allow_cut_in: bool,
     priority_tier: Option<String>,
@@ -2155,9 +2139,7 @@ pub(crate) struct CreateTagRequest {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpdateTagRequest {
     name: Option<String>,
-    guard_enabled: Option<bool>,
-    lookback_hours: Option<i64>,
-    max_conversations: Option<i64>,
+    block_new_conversations: Option<bool>,
     allow_cut_out: Option<bool>,
     allow_cut_in: Option<bool>,
     priority_tier: Option<String>,
@@ -2172,7 +2154,7 @@ pub(crate) struct UpdateTagRequest {
 pub(crate) struct ListTagsQuery {
     search: Option<String>,
     has_accounts: Option<bool>,
-    guard_enabled: Option<bool>,
+    block_new_conversations: Option<bool>,
     allow_cut_in: Option<bool>,
     allow_cut_out: Option<bool>,
 }

@@ -483,9 +483,9 @@ async fn pool_route_returns_ungrouped_error_for_sticky_account_when_cut_out_is_f
     let disallow_cut_out_tag_id: i64 = sqlx::query_scalar(
         r#"
         INSERT INTO pool_tags (
-            name, guard_enabled, lookback_hours, max_conversations,
+            name, block_new_conversations,
             allow_cut_out, allow_cut_in, created_at, updated_at
-        ) VALUES (?1, 0, NULL, NULL, 0, 1, ?2, ?2)
+        ) VALUES (?1, 0, 0, 1, ?2, ?2)
         RETURNING id
         "#,
     )
@@ -1511,7 +1511,7 @@ async fn pool_openai_v1_responses_failover_reapplies_account_fast_mode_from_orig
 
     let force_remove_tag_payload = serde_json::from_value::<CreateTagRequest>(json!({
         "name": "force-remove-primary",
-        "guardEnabled": false,
+        "blockNewConversations": false,
         "allowCutOut": true,
         "allowCutIn": true,
         "priorityTier": "primary",
@@ -1532,7 +1532,7 @@ async fn pool_openai_v1_responses_failover_reapplies_account_fast_mode_from_orig
         .expect("load force-remove tag id");
     let fill_missing_tag_payload = serde_json::from_value::<CreateTagRequest>(json!({
         "name": "fill-missing-normal",
-        "guardEnabled": false,
+        "blockNewConversations": false,
         "allowCutOut": true,
         "allowCutIn": true,
         "priorityTier": "normal",

@@ -46,9 +46,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             local_primary_limit REAL,
             local_secondary_limit REAL,
             local_limit_unit TEXT,
-            policy_guard_enabled INTEGER,
-            policy_lookback_hours INTEGER,
-            policy_max_conversations INTEGER,
+            policy_block_new_conversations INTEGER,
             policy_allow_cut_out INTEGER,
             policy_allow_cut_in INTEGER,
             policy_priority_tier TEXT,
@@ -106,15 +104,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "upstream_base_url")
         .await
         .context("failed to ensure pool_upstream_accounts.upstream_base_url")?;
-    ensure_nullable_integer_column(pool, "pool_upstream_accounts", "policy_guard_enabled")
+    ensure_nullable_integer_column(pool, "pool_upstream_accounts", "policy_block_new_conversations")
         .await
-        .context("failed to ensure pool_upstream_accounts.policy_guard_enabled")?;
-    ensure_nullable_integer_column(pool, "pool_upstream_accounts", "policy_lookback_hours")
-        .await
-        .context("failed to ensure pool_upstream_accounts.policy_lookback_hours")?;
-    ensure_nullable_integer_column(pool, "pool_upstream_accounts", "policy_max_conversations")
-        .await
-        .context("failed to ensure pool_upstream_accounts.policy_max_conversations")?;
+        .context("failed to ensure pool_upstream_accounts.policy_block_new_conversations")?;
     ensure_nullable_integer_column(pool, "pool_upstream_accounts", "policy_allow_cut_out")
         .await
         .context("failed to ensure pool_upstream_accounts.policy_allow_cut_out")?;
@@ -650,9 +642,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
         CREATE TABLE IF NOT EXISTS pool_tags (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE,
-            guard_enabled INTEGER NOT NULL DEFAULT 0,
-            lookback_hours INTEGER,
-            max_conversations INTEGER,
+            block_new_conversations INTEGER NOT NULL DEFAULT 0,
             allow_cut_out INTEGER NOT NULL DEFAULT 1,
             allow_cut_in INTEGER NOT NULL DEFAULT 1,
             priority_tier TEXT NOT NULL DEFAULT 'normal',
@@ -668,6 +658,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure pool_tags table existence")?;
+    ensure_integer_column_with_default(pool, "pool_tags", "block_new_conversations", "0")
+        .await
+        .context("failed to ensure pool_tags.block_new_conversations")?;
     ensure_text_column_with_default(pool, "pool_tags", "priority_tier", "'normal'")
         .await
         .context("failed to ensure pool_tags.priority_tier")?;
@@ -789,9 +782,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             upstream_429_retry_enabled INTEGER NOT NULL DEFAULT 0,
             upstream_429_max_retries INTEGER NOT NULL DEFAULT 0,
             concurrency_limit INTEGER NOT NULL DEFAULT 0,
-            policy_guard_enabled INTEGER,
-            policy_lookback_hours INTEGER,
-            policy_max_conversations INTEGER,
+            policy_block_new_conversations INTEGER,
             policy_allow_cut_out INTEGER,
             policy_allow_cut_in INTEGER,
             policy_priority_tier TEXT,
@@ -875,9 +866,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .await
     .context("failed to ensure pool_upstream_account_group_notes.concurrency_limit")?;
     for column in [
-        "policy_guard_enabled",
-        "policy_lookback_hours",
-        "policy_max_conversations",
+        "policy_block_new_conversations",
         "policy_allow_cut_out",
         "policy_allow_cut_in",
         "policy_concurrency_limit",

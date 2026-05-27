@@ -903,9 +903,9 @@ export function StorybookUpstreamAccountsMock({
               ...detail.effectiveRoutingRule,
               ...body.routingRule,
               fieldSources: {
-                guard:
-                  body.routingRule.guardEnabled == null
-                    ? detail.effectiveRoutingRule.fieldSources?.guard ?? 'root'
+                blockNewConversations:
+                  body.routingRule.blockNewConversations == null
+                    ? detail.effectiveRoutingRule.fieldSources?.blockNewConversations ?? 'root'
                     : 'account',
                 allowCutOut:
                   body.routingRule.allowCutOut == null

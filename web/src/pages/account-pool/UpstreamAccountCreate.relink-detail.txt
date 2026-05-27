@@ -19,20 +19,19 @@ describe("UpstreamAccountCreatePage relink detail hydration", () => {
           id: 1,
           name: "vip",
           routingRule: {
-            guardEnabled: false,
+            blockNewConversations: false,
             allowCutOut: true,
             allowCutIn: true,
           },
         },
       ],
       effectiveRoutingRule: {
-        guardEnabled: false,
+        blockNewConversations: false,
         allowCutOut: true,
         allowCutIn: true,
         sourceTagIds: [],
         sourceTagNames: [],
-        guardRules: [],
-      },
+              },
     });
 
     render({

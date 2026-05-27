@@ -154,14 +154,11 @@ function createUpstreamAccountSummary(
     maskedApiKey: "sk-***",
     tags: [],
     effectiveRoutingRule: {
-      guardEnabled: false,
-      lookbackHours: null,
-      maxConversations: null,
+      blockNewConversations: false,
       allowCutOut: true,
       allowCutIn: true,
       sourceTagIds: [],
       sourceTagNames: [],
-      guardRules: [],
     },
     ...overrides,
   };

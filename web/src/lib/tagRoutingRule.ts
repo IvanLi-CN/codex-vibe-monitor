@@ -71,7 +71,6 @@ export type ActiveRoutingPolicyBadgeLabels = {
   policyForbidNewConversation?: string;
   policyConcurrency?: (count: number) => string;
   policyRetry?: (count: number) => string;
-  policyGuardTitle?: (hours: number, count: number) => string;
 };
 
 export type ActiveRoutingPolicyBadge = {
@@ -122,16 +121,10 @@ export function resolveActiveRoutingPolicyBadges(
     });
   }
 
-  if (rule.guardEnabled) {
-    const hours = rule.lookbackHours ?? 0;
-    const count = rule.maxConversations ?? 0;
+  if (rule.blockNewConversations) {
     badges.push({
       key: "forbid-new",
       label: labels.policyForbidNewConversation ?? "禁新",
-      title:
-        hours > 0 && count > 0
-          ? labels.policyGuardTitle?.(hours, count)
-          : undefined,
       variant: "warning",
     });
   }

@@ -84,7 +84,6 @@ export type {
   UpstreamAccountHistoryPoint,
   UpstreamAccountDuplicateInfo,
   TagRoutingRule,
-  EffectiveConversationGuard,
   EffectiveRoutingRule,
   AccountTagSummary,
   TagSummary,

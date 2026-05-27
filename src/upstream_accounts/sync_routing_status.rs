@@ -1,7 +1,7 @@
 fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingRule {
     let mut source_tag_ids = Vec::with_capacity(tags.len());
     let mut source_tag_names = Vec::with_capacity(tags.len());
-    let mut guard_rules = Vec::new();
+    let mut block_new_conversations = false;
     let mut allow_cut_out = true;
     let mut allow_cut_in = true;
     let mut priority_tier = if tags.is_empty() {
@@ -13,11 +13,11 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
     let mut concurrency_limit = 0;
     let mut upstream_429_retry_enabled = false;
     let mut upstream_429_max_retries = 0_u8;
-    let mut representative_guard: Option<(i64, i64)> = None;
 
     for tag in tags {
         source_tag_ids.push(tag.id);
         source_tag_names.push(tag.name.clone());
+        block_new_conversations |= tag.routing_rule.block_new_conversations;
         allow_cut_out &= tag.routing_rule.allow_cut_out;
         allow_cut_in &= tag.routing_rule.allow_cut_in;
         priority_tier = priority_tier.min(tag.routing_rule.priority_tier);
@@ -33,36 +33,11 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
             upstream_429_max_retries =
                 upstream_429_max_retries.max(tag.routing_rule.upstream_429_max_retries);
         }
-        if tag.routing_rule.guard_enabled
-            && let (Some(lookback_hours), Some(max_conversations)) = (
-                tag.routing_rule.lookback_hours,
-                tag.routing_rule.max_conversations,
-            )
-        {
-            guard_rules.push(EffectiveConversationGuard {
-                tag_id: tag.id,
-                tag_name: tag.name.clone(),
-                lookback_hours,
-                max_conversations,
-            });
-            representative_guard = match representative_guard {
-                Some((current_hours, current_max))
-                    if current_max < max_conversations
-                        || (current_max == max_conversations
-                            && current_hours >= lookback_hours) =>
-                {
-                    Some((current_hours, current_max))
-                }
-                _ => Some((lookback_hours, max_conversations)),
-            };
-        }
     }
 
     let field_source = if tags.is_empty() { "root" } else { "tag" }.to_string();
     EffectiveRoutingRule {
-        guard_enabled: !guard_rules.is_empty(),
-        lookback_hours: representative_guard.map(|(hours, _)| hours),
-        max_conversations: representative_guard.map(|(_, max)| max),
+        block_new_conversations,
         allow_cut_out,
         allow_cut_in,
         priority_tier,
@@ -75,9 +50,8 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
         ),
         source_tag_ids,
         source_tag_names,
-        guard_rules,
         field_sources: EffectiveRoutingRuleFieldSources {
-            guard: field_source.clone(),
+            block_new_conversations: field_source.clone(),
             allow_cut_out: field_source.clone(),
             allow_cut_in: field_source.clone(),
             priority_tier: field_source.clone(),
@@ -91,9 +65,7 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
 #[derive(Debug, Clone, FromRow)]
 struct RoutingPolicyOverrideRow {
     id: i64,
-    policy_guard_enabled: Option<i64>,
-    policy_lookback_hours: Option<i64>,
-    policy_max_conversations: Option<i64>,
+    policy_block_new_conversations: Option<i64>,
     policy_allow_cut_out: Option<i64>,
     policy_allow_cut_in: Option<i64>,
     policy_priority_tier: Option<String>,
@@ -109,9 +81,7 @@ struct GroupRoutingPolicyOverrideRow {
     concurrency_limit: i64,
     upstream_429_retry_enabled: i64,
     upstream_429_max_retries: i64,
-    policy_guard_enabled: Option<i64>,
-    policy_lookback_hours: Option<i64>,
-    policy_max_conversations: Option<i64>,
+    policy_block_new_conversations: Option<i64>,
     policy_allow_cut_out: Option<i64>,
     policy_allow_cut_in: Option<i64>,
     policy_priority_tier: Option<String>,
@@ -124,9 +94,7 @@ struct GroupRoutingPolicyOverrideRow {
 fn apply_routing_policy_override(
     rule: &mut EffectiveRoutingRule,
     source: &str,
-    guard_enabled: Option<i64>,
-    lookback_hours: Option<i64>,
-    max_conversations: Option<i64>,
+    block_new_conversations: Option<i64>,
     allow_cut_out: Option<i64>,
     allow_cut_in: Option<i64>,
     priority_tier: Option<&str>,
@@ -135,26 +103,10 @@ fn apply_routing_policy_override(
     upstream_429_retry_enabled: Option<i64>,
     upstream_429_max_retries: Option<i64>,
 ) {
-    if let Some(guard_enabled) = guard_enabled {
-        rule.field_sources.guard = source.to_string();
-        rule.guard_enabled = guard_enabled != 0;
-        rule.guard_rules.clear();
-        if rule.guard_enabled {
-            rule.lookback_hours = lookback_hours;
-            rule.max_conversations = max_conversations;
-            if let (Some(lookback_hours), Some(max_conversations)) =
-                (lookback_hours, max_conversations)
-            {
-                rule.guard_rules.push(EffectiveConversationGuard {
-                    tag_id: 0,
-                    tag_name: "override".to_string(),
-                    lookback_hours,
-                    max_conversations,
-                });
-            }
-        } else {
-            rule.lookback_hours = None;
-            rule.max_conversations = None;
+    if let Some(block_new_conversations) = block_new_conversations {
+        if block_new_conversations != 0 {
+            rule.field_sources.block_new_conversations = source.to_string();
+            rule.block_new_conversations = true;
         }
     }
     if let Some(allow_cut_out) = allow_cut_out {
@@ -212,9 +164,7 @@ async fn load_group_routing_policy_override_map(
             concurrency_limit,
             upstream_429_retry_enabled,
             upstream_429_max_retries,
-            policy_guard_enabled,
-            policy_lookback_hours,
-            policy_max_conversations,
+            policy_block_new_conversations,
             policy_allow_cut_out,
             policy_allow_cut_in,
             policy_priority_tier,
@@ -254,9 +204,7 @@ async fn load_account_routing_policy_override_map(
         r#"
         SELECT
             id,
-            policy_guard_enabled,
-            policy_lookback_hours,
-            policy_max_conversations,
+            policy_block_new_conversations,
             policy_allow_cut_out,
             policy_allow_cut_in,
             policy_priority_tier,
@@ -289,9 +237,7 @@ fn apply_group_routing_policy_override(
     apply_routing_policy_override(
         rule,
         "group",
-        row.policy_guard_enabled,
-        row.policy_lookback_hours,
-        row.policy_max_conversations,
+        row.policy_block_new_conversations,
         row.policy_allow_cut_out,
         row.policy_allow_cut_in,
         row.policy_priority_tier.as_deref(),
@@ -317,9 +263,9 @@ fn apply_group_routing_policy_override(
 }
 
 fn apply_tag_layer_routing_policy(rule: &mut EffectiveRoutingRule, tag_rule: &EffectiveRoutingRule) {
-    rule.guard_enabled = tag_rule.guard_enabled;
-    rule.lookback_hours = tag_rule.lookback_hours;
-    rule.max_conversations = tag_rule.max_conversations;
+    let inherited_block_new_conversations = rule.block_new_conversations;
+    let inherited_block_source = rule.field_sources.block_new_conversations.clone();
+    rule.block_new_conversations |= tag_rule.block_new_conversations;
     rule.allow_cut_out = tag_rule.allow_cut_out;
     rule.allow_cut_in = tag_rule.allow_cut_in;
     rule.priority_tier = tag_rule.priority_tier;
@@ -333,8 +279,10 @@ fn apply_tag_layer_routing_policy(rule: &mut EffectiveRoutingRule, tag_rule: &Ef
     };
     rule.source_tag_ids = tag_rule.source_tag_ids.clone();
     rule.source_tag_names = tag_rule.source_tag_names.clone();
-    rule.guard_rules = tag_rule.guard_rules.clone();
     rule.field_sources = tag_rule.field_sources.clone();
+    if inherited_block_new_conversations {
+        rule.field_sources.block_new_conversations = inherited_block_source;
+    }
 }
 
 fn apply_account_routing_policy_override(
@@ -344,9 +292,7 @@ fn apply_account_routing_policy_override(
     apply_routing_policy_override(
         rule,
         "account",
-        row.policy_guard_enabled,
-        row.policy_lookback_hours,
-        row.policy_max_conversations,
+        row.policy_block_new_conversations,
         row.policy_allow_cut_out,
         row.policy_allow_cut_in,
         row.policy_priority_tier.as_deref(),

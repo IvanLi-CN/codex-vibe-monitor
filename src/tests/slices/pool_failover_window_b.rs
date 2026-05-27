@@ -809,9 +809,9 @@ async fn proxy_openai_v1_header_sticky_stream_waits_for_blocked_policy_header_er
     let disallow_cut_out_tag_id: i64 = sqlx::query_scalar(
         r#"
         INSERT INTO pool_tags (
-            name, guard_enabled, lookback_hours, max_conversations,
+            name, block_new_conversations,
             allow_cut_out, allow_cut_in, created_at, updated_at
-        ) VALUES (?1, 0, NULL, NULL, 0, 1, ?2, ?2)
+        ) VALUES (?1, 0, 0, 1, ?2, ?2)
         RETURNING id
         "#,
     )
@@ -952,9 +952,9 @@ async fn proxy_openai_v1_header_sticky_stream_same_value_short_circuits_blocked_
     let disallow_cut_out_tag_id: i64 = sqlx::query_scalar(
         r#"
         INSERT INTO pool_tags (
-            name, guard_enabled, lookback_hours, max_conversations,
+            name, block_new_conversations,
             allow_cut_out, allow_cut_in, created_at, updated_at
-        ) VALUES (?1, 0, NULL, NULL, 0, 1, ?2, ?2)
+        ) VALUES (?1, 0, 0, 1, ?2, ?2)
         RETURNING id
         "#,
     )
@@ -1995,9 +1995,9 @@ async fn proxy_openai_v1_header_sticky_stream_body_override_beats_blocked_policy
     let disallow_cut_out_tag_id: i64 = sqlx::query_scalar(
         r#"
         INSERT INTO pool_tags (
-            name, guard_enabled, lookback_hours, max_conversations,
+            name, block_new_conversations,
             allow_cut_out, allow_cut_in, created_at, updated_at
-        ) VALUES (?1, 0, NULL, NULL, 0, 1, ?2, ?2)
+        ) VALUES (?1, 0, 0, 1, ?2, ?2)
         RETURNING id
         "#,
     )

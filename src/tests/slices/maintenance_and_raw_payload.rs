@@ -660,7 +660,7 @@ async fn create_test_fast_mode_tag(
 ) -> i64 {
     let payload = serde_json::from_value::<CreateTagRequest>(json!({
         "name": name,
-        "guardEnabled": false,
+        "blockNewConversations": false,
         "allowCutOut": true,
         "allowCutIn": true,
         "priorityTier": priority_tier,
@@ -1187,9 +1187,9 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
     let vip_tag_id: i64 = sqlx::query_scalar(
         r#"
         INSERT INTO pool_tags (
-            name, guard_enabled, lookback_hours, max_conversations,
+            name, block_new_conversations,
             allow_cut_out, allow_cut_in, created_at, updated_at
-        ) VALUES (?1, 0, NULL, NULL, 1, 1, ?2, ?2)
+        ) VALUES (?1, 0, 1, 1, ?2, ?2)
         RETURNING id
         "#,
     )
@@ -1201,9 +1201,9 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
     let burst_safe_tag_id: i64 = sqlx::query_scalar(
         r#"
         INSERT INTO pool_tags (
-            name, guard_enabled, lookback_hours, max_conversations,
+            name, block_new_conversations,
             allow_cut_out, allow_cut_in, created_at, updated_at
-        ) VALUES (?1, 0, NULL, NULL, 1, 1, ?2, ?2)
+        ) VALUES (?1, 0, 1, 1, ?2, ?2)
         RETURNING id
         "#,
     )
@@ -1989,9 +1989,9 @@ async fn delete_upstream_account_keeps_persisted_group_catalog_rows_after_last_m
     let tag_id: i64 = sqlx::query_scalar(
         r#"
         INSERT INTO pool_tags (
-            name, guard_enabled, lookback_hours, max_conversations,
+            name, block_new_conversations,
             allow_cut_out, allow_cut_in, created_at, updated_at
-        ) VALUES (?1, 0, NULL, NULL, 1, 1, ?2, ?2)
+        ) VALUES (?1, 0, 1, 1, ?2, ?2)
         RETURNING id
         "#,
     )

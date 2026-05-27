@@ -7,9 +7,13 @@ type DialogHarnessProps = {
   mode: 'create' | 'edit'
   tag?: TagSummary | null
   draftName?: string
+  policyOnly?: boolean
+  title?: string
+  description?: string
+  saveLabel?: string
 }
 
-function DialogHarness({ tag = null, draftName, mode }: DialogHarnessProps) {
+function DialogHarness({ tag = null, draftName, mode, policyOnly = false, title, description, saveLabel }: DialogHarnessProps) {
   const [open, setOpen] = useState(true)
 
   return (
@@ -29,6 +33,9 @@ function DialogHarness({ tag = null, draftName, mode }: DialogHarnessProps) {
           mode={mode}
           tag={tag}
           draftName={draftName}
+          policyOnly={policyOnly}
+          title={title}
+          description={description}
           onClose={() => setOpen(false)}
           onSubmit={() => undefined}
           labels={{
@@ -37,10 +44,8 @@ function DialogHarness({ tag = null, draftName, mode }: DialogHarnessProps) {
             description: 'Adjust the routing rules that accounts under this tag must follow.',
             name: 'Tag name',
             namePlaceholder: 'vip, night-shift, warm-standby',
-            guardEnabled: 'Conversation guard',
+            blockNewConversations: 'Block new conversations',
             forbidNewConversation: 'Block new conversations',
-            lookbackHours: 'Lookback hours',
-            maxConversations: 'Max conversations',
             allowCutOut: 'Cut out is not blocked',
             allowCutIn: 'Cut in is not blocked',
             forbidCutOut: 'Block cut out',
@@ -65,9 +70,9 @@ function DialogHarness({ tag = null, draftName, mode }: DialogHarnessProps) {
             upstream429RetryCountOnce: '1 retry',
             upstream429RetryCountMany: (count) => `${count} retries`,
             cancel: 'Cancel',
-            save: 'Save tag',
+            save: saveLabel ?? 'Save tag',
             create: 'Create tag',
-            validation: 'When the guard is enabled, both guard values must be positive integers.',
+            validation: 'Review the routing policy before saving.',
           }}
         />
       </div>
@@ -79,9 +84,7 @@ const finiteTag: TagSummary = {
   id: 7,
   name: 'priority-lane',
   routingRule: {
-    guardEnabled: true,
-    lookbackHours: 6,
-    maxConversations: 10,
+    blockNewConversations: true,
     allowCutOut: true,
     allowCutIn: false,
     priorityTier: 'primary',
@@ -99,9 +102,7 @@ const unlimitedTag: TagSummary = {
   id: 8,
   name: 'overflow',
   routingRule: {
-    guardEnabled: false,
-    lookbackHours: null,
-    maxConversations: null,
+    blockNewConversations: false,
     allowCutOut: false,
     allowCutIn: true,
     priorityTier: 'fallback',
@@ -155,5 +156,27 @@ export const ForceRemoveMode: Story = {
   args: {
     mode: 'edit',
     tag: unlimitedTag,
+  },
+}
+
+export const GroupPolicyEditor: Story = {
+  args: {
+    mode: 'edit',
+    tag: finiteTag,
+    policyOnly: true,
+    title: 'Edit group routing policy',
+    description: 'Routing policy inherited by accounts in this group.',
+    saveLabel: 'Save group policy',
+  },
+}
+
+export const AccountPolicyEditor: Story = {
+  args: {
+    mode: 'edit',
+    tag: finiteTag,
+    policyOnly: true,
+    title: 'Edit account routing policy',
+    description: 'Account-level overrides for fresh routing and sticky movement.',
+    saveLabel: 'Save account policy',
   },
 }

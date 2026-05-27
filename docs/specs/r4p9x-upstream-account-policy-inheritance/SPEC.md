@@ -18,7 +18,7 @@ The inherited policy covers:
 
 - priority tier
 - FAST mode rewrite mode
-- rolling conversation guard
+- block new conversations
 - allow cut-out
 - allow cut-in
 - concurrency limit
@@ -29,7 +29,7 @@ Root defaults preserve existing behavior:
 
 - priority tier: normal
 - FAST mode rewrite mode: keep original
-- conversation guard: disabled
+- block new conversations: disabled
 - allow cut-out: enabled
 - allow cut-in: enabled
 - concurrency limit: unlimited
@@ -50,7 +50,7 @@ When an account has multiple tags, the tag layer keeps the existing conservative
 - stricter priority wins toward fallback
 - stricter FAST rewrite wins toward force remove
 - cut-in and cut-out are allowed only if every tag allows them
-- all guard rules remain active
+- block new conversations is enabled if any group, tag, or account layer enables it
 - the smallest non-zero concurrency limit wins
 - upstream 429 retry is enabled if any tag enables it, with the highest retry count
 
@@ -61,6 +61,10 @@ When an account has multiple tags, the tag layer keeps the existing conservative
 The only supported exception is an explicit Prompt Cache conversation binding written by an operator. A manual upstream-account or group binding may move the conversation out of a no-cut-out sticky source; the target side still honors the binding contract and its existing target eligibility rules.
 
 HTTP 4xx responses are not route-health successes for sticky routing. They remain recorded as failed invocations and upstream attempts with the real account, status, and error details, but they must not update `pool_sticky_routes`.
+
+`blockNewConversations` / `block_new_conversations` is a hard fresh-routing gate. If a group, tag, or account layer sets it to true, the final effective rule is true and lower layers cannot clear the inherited block. It only excludes the account from new routing candidates, including requests without a sticky key. Existing sticky reuse can still resolve to that account, and sticky migration continues to be controlled by `allowCutIn`.
+
+Legacy rolling guard fields (`guardEnabled`, `lookbackHours`, `maxConversations`, and `guardRules`) are not part of the policy surface. Existing stored rolling guard data is ignored rather than migrated into the hard block.
 
 ## API Contract
 
@@ -83,32 +87,22 @@ Effective account responses expose field-level sources so the UI can show whethe
 
 Visual evidence is captured from stable Storybook scenarios for:
 
-- active account card policy badges
-- active group policy badges
-- tag policy dialog with forbid-style switches
-- tag policy dialog
-- group policy settings with routing policy editor entry
-- account detail routing tab with field-level source breakdown
-- account routing policy editor
-- account routing policy editor retaining a local draft through background refresh
+- tag policy dialog with the hard block-new-conversations switch
+- group routing policy editor using the same hard switch
+- account routing policy editor using the same hard switch
+- effective routing rule card showing block-new-conversations and field-level source on desktop and narrow mobile widths
 
 PR: include
-![Active account policy badges](visual-evidence/active-policy-account-badges.png)
+![Block new conversations tag dialog](./assets/block-new-conversations-tag-dialog.png)
 
 PR: include
-![Active group policy badges](visual-evidence/active-policy-group-badges.png)
+![Block new conversations group policy dialog](./assets/block-new-conversations-group-policy-dialog.png)
 
 PR: include
-![Forbid-style tag policy dialog](visual-evidence/forbid-policy-dialog.png)
+![Block new conversations account policy dialog](./assets/block-new-conversations-account-policy-dialog.png)
 
-![Tag policy dialog](visual-evidence/tag-rule-dialog.png)
+PR: include
+![Block new conversations effective rule card](./assets/block-new-conversations-effective-card.png)
 
-![Group policy settings](visual-evidence/group-settings-dialog.png)
-
-![Effective account routing card](visual-evidence/effective-routing-card.png)
-
-![Account detail routing tab](visual-evidence/account-detail-routing-tab.png)
-
-![Account routing policy dialog](visual-evidence/account-policy-dialog.png)
-
-![Account policy draft survives background refresh](./assets/account-policy-draft-refresh.png)
+PR: include
+![Block new conversations effective rule card mobile](./assets/block-new-conversations-effective-card-mobile.png)
