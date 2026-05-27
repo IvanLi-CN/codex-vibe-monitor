@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.67.2",
+  "base_stable_version": "1.67.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-05-27T11:59:29Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.67.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "1699ab94a5e5522e0ba91e0f4038f68288dd9828",
+  "pr_number": 440,
+  "pr_title": "fix(proxy): force account bindings over sticky gates",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.67.2",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.67.2",
+  "target_sha": "c4eb731c8e3822ecbc9ae6f0cc0028b260d12ecc",
+  "type_label": "type:patch"
+}
