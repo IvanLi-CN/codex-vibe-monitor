@@ -2,11 +2,12 @@
     async fn update_oauth_login_session_rejects_completed_relogin_repairs() {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
         let account_id = insert_oauth_account(&state.pool, "Relogin Target").await;
+        let _sibling_id = insert_oauth_account(&state.pool, "Edited Relogin").await;
         let relogin = create_oauth_login_session(
             State(state.clone()),
             HeaderMap::new(),
             Json(CreateOauthLoginSessionRequest {
-                display_name: None,
+                display_name: Some("Edited Relogin".to_string()),
                 email: None,
                 group_name: None,
                 group_bound_proxy_keys: None,
@@ -53,7 +54,7 @@
         let completed_account_id = persist_oauth_callback_inner(
             state.as_ref(),
             PersistOauthCallbackInput {
-                display_name: "Relogin Target".to_string(),
+                display_name: "Edited Relogin".to_string(),
                 chosen_email: None,
                 verified_email: None,
                 session: pending_session,

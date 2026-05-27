@@ -2202,7 +2202,7 @@ pub(crate) async fn persist_oauth_callback_inner(
             "This login session has already been consumed.".to_string(),
         ));
     }
-    if let Some(account_id) = session.account_id {
+    let existing_account = if let Some(account_id) = session.account_id {
         let account = load_upstream_account_row_conn(tx.as_mut(), account_id)
             .await
             .map_err(internal_error_tuple)?
@@ -2219,6 +2219,7 @@ pub(crate) async fn persist_oauth_callback_inner(
                 "OAuth identity confirmation required".to_string(),
             ));
         }
+        Some(account)
     } else {
         let current_plan_type = normalize_plan_type(input.claims.chatgpt_plan_type.as_deref());
         if let Err((status, message)) = ensure_display_name_available_for_oauth_identity(
@@ -2240,19 +2241,37 @@ pub(crate) async fn persist_oauth_callback_inner(
             }
             return Err((status, message));
         }
-    }
-    let account_id = upsert_oauth_account(
-        &mut tx,
-        OauthAccountUpsert {
-            account_id: session.account_id,
-            display_name: &input.display_name,
-            chosen_email: input.chosen_email.clone(),
-            verified_email: input.verified_email.clone(),
-            group_name: session.group_name.clone(),
-            is_mother: session.is_mother != 0,
-            note: session.note.clone(),
-            tag_ids: parse_tag_ids_json(session.tag_ids_json.as_deref()),
-            requested_group_metadata_changes: build_requested_group_metadata_changes(
+        None
+    };
+    let (
+        effective_display_name,
+        effective_chosen_email,
+        effective_group_name,
+        effective_is_mother,
+        effective_note,
+        effective_tag_ids,
+        effective_group_metadata_changes,
+    ) = if let Some(account) = existing_account {
+        (
+            account.display_name,
+            account.email,
+            account.group_name,
+            account.is_mother != 0,
+            account.note,
+            current_account_tag_ids_with_executor(tx.as_mut(), account.id)
+                .await
+                .map_err(internal_error_tuple)?,
+            RequestedGroupMetadataChanges::default(),
+        )
+    } else {
+        (
+            input.display_name.clone(),
+            input.chosen_email.clone(),
+            session.group_name.clone(),
+            session.is_mother != 0,
+            session.note.clone(),
+            parse_tag_ids_json(session.tag_ids_json.as_deref()),
+            build_requested_group_metadata_changes(
                 session.group_note.clone(),
                 true,
                 Some(decode_group_bound_proxy_keys_json(
@@ -2272,6 +2291,20 @@ pub(crate) async fn persist_oauth_callback_inner(
                     session.group_single_account_rotation_enabled_requested,
                 ),
             ),
+        )
+    };
+    let account_id = upsert_oauth_account(
+        &mut tx,
+        OauthAccountUpsert {
+            account_id: session.account_id,
+            display_name: &effective_display_name,
+            chosen_email: effective_chosen_email,
+            verified_email: input.verified_email.clone(),
+            group_name: effective_group_name,
+            is_mother: effective_is_mother,
+            note: effective_note,
+            tag_ids: effective_tag_ids,
+            requested_group_metadata_changes: effective_group_metadata_changes,
             claims: &input.claims,
             encrypted_credentials: input.encrypted_credentials,
             has_refresh_token: input.has_refresh_token,
