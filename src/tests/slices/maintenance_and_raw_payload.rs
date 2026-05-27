@@ -1239,7 +1239,7 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
     let Json(group_filtered) = list_upstream_accounts(
         State(state.clone()),
         Query(ListUpstreamAccountsQuery {
-            group_exact: None,
+            group_exact: Vec::new(),
             group_search: Some("prod".to_string()),
             group_ungrouped: None,
             status: None,
@@ -1271,7 +1271,7 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
     let Json(exact_group_filtered) = list_upstream_accounts(
         State(state.clone()),
         Query(ListUpstreamAccountsQuery {
-            group_exact: Some("Prod".to_string()),
+            group_exact: vec!["Prod".to_string()],
             group_search: None,
             group_ungrouped: None,
             status: None,
@@ -1296,10 +1296,38 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
         .collect::<Vec<_>>();
     assert_eq!(exact_group_filtered_names, vec!["Delta"]);
 
+    let Json(multi_group_filtered) = list_upstream_accounts(
+        State(state.clone()),
+        Query(ListUpstreamAccountsQuery {
+            group_exact: vec!["Prod".to_string(), "prod".to_string()],
+            group_search: None,
+            group_ungrouped: None,
+            status: None,
+            work_status: Vec::new(),
+            enable_status: Vec::new(),
+            health_status: Vec::new(),
+            page: None,
+            page_size: None,
+            include_all: None,
+            tag_ids: vec![vip_tag_id],
+        }),
+    )
+    .await
+    .expect("list multi exact-group filtered upstream accounts");
+    let multi_group_filtered_json =
+        serde_json::to_value(multi_group_filtered).expect("serialize multi exact-group roster");
+    let multi_group_filtered_names = multi_group_filtered_json["items"]
+        .as_array()
+        .expect("multi exact-group filtered items array")
+        .iter()
+        .filter_map(|item| item.get("displayName").and_then(serde_json::Value::as_str))
+        .collect::<Vec<_>>();
+    assert_eq!(multi_group_filtered_names, vec!["Delta", "Alpha"]);
+
     let Json(ungrouped_filtered) = list_upstream_accounts(
         State(state),
         Query(ListUpstreamAccountsQuery {
-            group_exact: None,
+            group_exact: Vec::new(),
             group_search: None,
             group_ungrouped: Some(true),
             status: None,
@@ -1323,6 +1351,40 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
         .filter_map(|item| item.get("displayName").and_then(serde_json::Value::as_str))
         .collect::<Vec<_>>();
     assert_eq!(ungrouped_filtered_names, vec!["Gamma"]);
+}
+
+#[tokio::test]
+async fn upstream_account_schema_normalizes_blank_group_names_to_default_group() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Legacy Blank Group",
+        "upstream-legacy-blank-group",
+        None,
+        Some(false),
+        None,
+    )
+    .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET group_name = '   ' WHERE id = ?1")
+        .bind(account_id)
+        .execute(&state.pool)
+        .await
+        .expect("write legacy blank group");
+
+    ensure_upstream_accounts_schema(&state.pool)
+        .await
+        .expect("normalize upstream account schema");
+
+    let group_name: Option<String> =
+        sqlx::query_scalar("SELECT group_name FROM pool_upstream_accounts WHERE id = ?1")
+            .bind(account_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load normalized group");
+    assert_eq!(group_name.as_deref(), Some(DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME));
 }
 
 #[tokio::test]
@@ -1371,7 +1433,7 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
     let Json(active_page_two) = list_upstream_accounts(
         State(state.clone()),
         Query(ListUpstreamAccountsQuery {
-            group_exact: None,
+            group_exact: Vec::new(),
             group_search: None,
             group_ungrouped: None,
             status: Some("active".to_string()),
@@ -1408,7 +1470,7 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
     let Json(disabled_only) = list_upstream_accounts(
         State(state.clone()),
         Query(ListUpstreamAccountsQuery {
-            group_exact: None,
+            group_exact: Vec::new(),
             group_search: None,
             group_ungrouped: None,
             status: Some("disabled".to_string()),
@@ -1459,7 +1521,7 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
     let Json(split_status_filtered) = list_upstream_accounts(
         State(state),
         Query(ListUpstreamAccountsQuery {
-            group_exact: None,
+            group_exact: Vec::new(),
             group_search: None,
             group_ungrouped: None,
             status: None,
@@ -1569,7 +1631,7 @@ async fn list_upstream_accounts_clamps_work_status_for_abnormal_or_syncing_accou
     let Json(response) = list_upstream_accounts(
         State(state),
         Query(ListUpstreamAccountsQuery {
-            group_exact: None,
+            group_exact: Vec::new(),
             group_search: None,
             group_ungrouped: None,
             status: None,
@@ -1773,7 +1835,7 @@ async fn list_upstream_accounts_keeps_generic_retry_cooldown_idle() {
     let Json(response) = list_upstream_accounts(
         State(state),
         Query(ListUpstreamAccountsQuery {
-            group_exact: None,
+            group_exact: Vec::new(),
             group_search: None,
             group_ungrouped: None,
             status: None,

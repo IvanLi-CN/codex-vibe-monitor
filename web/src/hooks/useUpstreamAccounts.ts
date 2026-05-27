@@ -164,7 +164,7 @@ export function buildUpstreamAccountsListQueryKey(query?: FetchUpstreamAccountsQ
   if (query == null) return null
 
   return JSON.stringify({
-    groupExact: query.groupExact?.trim() || undefined,
+    groupExact: normalizeQueryStringArray(query.groupExact),
     groupSearch: query.groupSearch?.trim() || undefined,
     groupUngrouped: query.groupUngrouped === true ? true : undefined,
     status: query.status?.trim() || undefined,

@@ -1424,9 +1424,13 @@ function withDerivedStatusFields<T extends UpstreamAccountDetail>(
 
 export function listGroupSummaries(store: StoryStore) {
   const names = new Set<string>()
+  const accountCounts = new Map<string, number>()
   for (const account of store.accounts) {
     const groupName = normalizeGroupName(account.groupName)
-    if (groupName) names.add(groupName)
+    if (groupName) {
+      names.add(groupName)
+      accountCounts.set(groupName, (accountCounts.get(groupName) ?? 0) + 1)
+    }
   }
   for (const groupName of Object.keys(store.groupNotes)) {
     const normalized = normalizeGroupName(groupName)
@@ -1440,6 +1444,7 @@ export function listGroupSummaries(store: StoryStore) {
     .sort((left, right) => left.localeCompare(right))
     .map((groupName) => ({
       groupName,
+      accountCount: accountCounts.get(groupName) ?? 0,
       note: store.groupNotes[groupName] ?? null,
       boundProxyKeys: [...(store.groupBoundProxyKeys[groupName] ?? [])],
     }))
@@ -1484,7 +1489,10 @@ export function listTagSummaries(store: StoryStore): TagSummary[] {
 }
 
 export function filterAccountsForQuery(store: StoryStore, url: URL) {
-  const groupExact = (url.searchParams.get('groupExact') || '').trim()
+  const groupExact = url.searchParams
+    .getAll('groupExact')
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0)
   const groupSearch = (url.searchParams.get('groupSearch') || '')
     .trim()
     .toLowerCase()
@@ -1518,8 +1526,8 @@ export function filterAccountsForQuery(store: StoryStore, url: URL) {
     )
     const matchesGroup = groupUngrouped
       ? !normalizedGroup
-      : groupExact
-        ? normalizedGroup === groupExact
+      : groupExact.length > 0
+        ? groupExact.includes(normalizedGroup)
       : groupSearch
         ? normalizedGroupLower.includes(groupSearch)
         : true

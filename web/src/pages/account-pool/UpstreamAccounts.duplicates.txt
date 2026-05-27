@@ -526,8 +526,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     clickCommandItem(/^burst-safe$/i);
 
     expect(hookMocks.useUpstreamAccounts).toHaveBeenLastCalledWith({
-      groupSearch: undefined,
-      groupUngrouped: undefined,
+      groupExact: undefined,
       workStatus: undefined,
       enableStatus: undefined,
       healthStatus: undefined,
@@ -537,19 +536,18 @@ describe("UpstreamAccountsPage duplicates", () => {
     });
   });
 
-  it("passes ungrouped and tag filters to the roster hook together", () => {
+  it("passes group and tag filters to the roster hook together", () => {
     mockAccountsPage();
     render("/account-pool/upstream-accounts");
 
     clickCombobox(/account groups/i);
-    clickCommandItem(/^ungrouped$/i);
+    clickCommandItem(/^prod\s*x2$/i);
     clickCombobox(/filter accounts by tags/i);
     clickCommandItem(/^vip$/i);
     clickCommandItem(/^burst-safe$/i);
 
     expect(hookMocks.useUpstreamAccounts).toHaveBeenLastCalledWith({
-      groupSearch: undefined,
-      groupUngrouped: true,
+      groupExact: ["prod"],
       workStatus: undefined,
       enableStatus: undefined,
       healthStatus: undefined,
@@ -575,8 +573,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     clickCommandItem(/^normal$/i);
 
     expect(hookMocks.useUpstreamAccounts).toHaveBeenLastCalledWith({
-      groupSearch: undefined,
-      groupUngrouped: undefined,
+      groupExact: undefined,
       workStatus: ["degraded", "unavailable", "rate_limited", "working"],
       enableStatus: ["enabled"],
       healthStatus: ["needs_reauth", "normal"],
@@ -602,8 +599,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     render("/account-pool/upstream-accounts");
 
     expectRosterHookQuery({
-      groupSearch: "prod",
-      groupUngrouped: undefined,
+      groupExact: ["prod"],
       workStatus: ["unavailable", "working"],
       enableStatus: ["enabled"],
       healthStatus: ["needs_reauth", "normal"],
@@ -621,7 +617,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     clickCommandItem(/^degraded$/i);
     clickCommandItem(/^unavailable$/i);
     clickCombobox(/group/i);
-    clickCommandItem(/^ungrouped$/i);
+    clickCommandItem(/^prod\s*x2$/i);
     clickCombobox(/filter accounts by tags/i);
     clickCommandItem(/^vip$/i);
 
@@ -634,10 +630,7 @@ describe("UpstreamAccountsPage duplicates", () => {
       enableStatus: [],
       healthStatus: [],
       tagIds: [1],
-      groupFilter: {
-        mode: "ungrouped",
-        query: "",
-      },
+      groupFilters: ["prod"],
     });
   });
 
@@ -681,8 +674,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     render("/account-pool/upstream-accounts");
 
     expectRosterHookQuery({
-      groupSearch: undefined,
-      groupUngrouped: undefined,
+      groupExact: undefined,
       workStatus: undefined,
       enableStatus: undefined,
       healthStatus: undefined,
@@ -692,7 +684,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     });
   });
 
-  it("restores the ungrouped group filter across locale changes", () => {
+  it("migrates the legacy ungrouped group filter across locale changes", () => {
     mockAccountsPage();
     writeStoredUpstreamFilters({
       workStatus: [],
@@ -707,10 +699,8 @@ describe("UpstreamAccountsPage duplicates", () => {
 
     render("/account-pool/upstream-accounts");
 
-    expect(document.body.textContent).toContain("未分组");
     expectRosterHookQuery({
-      groupSearch: undefined,
-      groupUngrouped: true,
+      groupExact: ["未分组"],
       workStatus: undefined,
       enableStatus: undefined,
       healthStatus: undefined,
@@ -722,10 +712,8 @@ describe("UpstreamAccountsPage duplicates", () => {
     storage.set(LOCALE_STORAGE_KEY, "en");
     remount("/account-pool/upstream-accounts");
 
-    expect(document.body.textContent).toContain("Ungrouped");
     expectRosterHookQuery({
-      groupSearch: undefined,
-      groupUngrouped: true,
+      groupExact: ["未分组"],
       workStatus: undefined,
       enableStatus: undefined,
       healthStatus: undefined,
@@ -785,18 +773,14 @@ describe("UpstreamAccountsPage duplicates", () => {
       enableStatus: [],
       healthStatus: [],
       tagIds: [1, 999],
-      groupFilter: {
-        mode: "all",
-        query: "",
-      },
+      groupFilters: [],
     });
 
     poolTagsState = loadedPoolTagsState;
     rerender("/account-pool/upstream-accounts");
 
     expectRosterHookQuery({
-      groupSearch: undefined,
-      groupUngrouped: undefined,
+      groupExact: undefined,
       workStatus: undefined,
       enableStatus: undefined,
       healthStatus: undefined,
@@ -809,10 +793,7 @@ describe("UpstreamAccountsPage duplicates", () => {
       enableStatus: [],
       healthStatus: [],
       tagIds: [1],
-      groupFilter: {
-        mode: "all",
-        query: "",
-      },
+      groupFilters: [],
     });
   });
 
@@ -843,8 +824,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     render("/account-pool/upstream-accounts");
 
     expectRosterHookQuery({
-      groupSearch: undefined,
-      groupUngrouped: undefined,
+      groupExact: undefined,
       workStatus: undefined,
       enableStatus: undefined,
       healthStatus: undefined,
@@ -858,10 +838,7 @@ describe("UpstreamAccountsPage duplicates", () => {
       enableStatus: [],
       healthStatus: [],
       tagIds: [1],
-      groupFilter: {
-        mode: "all",
-        query: "",
-      },
+      groupFilters: [],
     });
   });
 
@@ -880,8 +857,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     render("/account-pool/upstream-accounts");
 
     expectRosterHookQuery({
-      groupSearch: undefined,
-      groupUngrouped: undefined,
+      groupExact: undefined,
       workStatus: undefined,
       enableStatus: undefined,
       healthStatus: undefined,
@@ -894,10 +870,7 @@ describe("UpstreamAccountsPage duplicates", () => {
       enableStatus: [],
       healthStatus: [],
       tagIds: [1],
-      groupFilter: {
-        mode: "all",
-        query: "",
-      },
+      groupFilters: [],
     });
   });
 

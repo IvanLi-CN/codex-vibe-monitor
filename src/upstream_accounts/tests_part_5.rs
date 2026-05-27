@@ -1766,7 +1766,7 @@ async fn update_oauth_login_session_clears_omitted_group_note_when_group_changes
 }
 
 #[tokio::test]
-async fn update_oauth_login_session_rejects_group_removal() {
+async fn update_oauth_login_session_normalizes_blank_group_to_default_group() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let created = create_oauth_login_session(
         State(state.clone()),
@@ -1792,7 +1792,7 @@ async fn update_oauth_login_session_rejects_group_removal() {
     .expect("create oauth login session")
     .0;
 
-    let updated = update_oauth_login_session(
+    let _updated = update_oauth_login_session(
         State(state.clone()),
         HeaderMap::new(),
         AxumPath(created.login_id.clone()),
@@ -1800,7 +1800,7 @@ async fn update_oauth_login_session_rejects_group_removal() {
             display_name: OptionalField::Missing,
             email: OptionalField::Missing,
             group_name: OptionalField::Value(String::new()),
-            group_bound_proxy_keys: OptionalField::Value(vec![]),
+            group_bound_proxy_keys: OptionalField::Value(test_required_group_bound_proxy_keys()),
             group_node_shunt_enabled: OptionalField::Missing,
             group_single_account_rotation_enabled: OptionalField::Missing,
             note: OptionalField::Missing,
@@ -1813,16 +1813,15 @@ async fn update_oauth_login_session_rejects_group_removal() {
         }),
     )
     .await
-    .expect_err("group removal should be rejected");
-    assert_eq!(updated.0, StatusCode::BAD_REQUEST);
-    assert_eq!(updated.1, "groupName is required for upstream accounts");
+    .expect("blank group should normalize to default group")
+    .0;
 
     let stored = load_login_session_by_login_id(&state.pool, &created.login_id)
         .await
         .expect("load stored login session")
         .expect("stored login session should exist");
-    assert_eq!(stored.group_name.as_deref(), Some("draft-group"));
-    assert_eq!(stored.group_note.as_deref(), Some("draft group note"));
+    assert_eq!(stored.group_name.as_deref(), Some(DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME));
+    assert_eq!(stored.group_note, None);
     assert_eq!(stored.note.as_deref(), Some("before clearing group"));
 }
 

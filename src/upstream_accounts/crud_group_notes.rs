@@ -364,7 +364,6 @@ pub(crate) fn parse_list_upstream_accounts_query(
         .map_err(|err| err.body_text())?
         .0;
     let mut params = ListUpstreamAccountsQuery {
-        group_exact: base.group_exact,
         group_search: base.group_search,
         group_ungrouped: base.group_ungrouped,
         status: base.status,
@@ -375,6 +374,7 @@ pub(crate) fn parse_list_upstream_accounts_query(
 
     for (key, value) in url::form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes()) {
         match key.as_ref() {
+            "groupExact" => params.group_exact.push(value.into_owned()),
             "workStatus" => params.work_status.push(value.into_owned()),
             "enableStatus" => params.enable_status.push(value.into_owned()),
             "healthStatus" => params.health_status.push(value.into_owned()),

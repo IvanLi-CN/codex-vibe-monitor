@@ -1871,7 +1871,7 @@ describe("account pool frontend API helpers", () => {
   it("serializes exact upstream account group filters into the query string", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL) => {
       expect(String(_input)).toContain(
-        "/api/pool/upstream-accounts?groupExact=production",
+        "/api/pool/upstream-accounts?groupExact=production&groupExact=staging",
       );
       return new Response(
         JSON.stringify({
@@ -1890,7 +1890,7 @@ describe("account pool frontend API helpers", () => {
     vi.stubGlobal("fetch", fetchMock as typeof fetch);
 
     await fetchUpstreamAccounts({
-      groupExact: "production",
+      groupExact: ["production", "staging"],
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);

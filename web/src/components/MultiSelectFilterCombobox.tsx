@@ -9,6 +9,7 @@ import { cn } from '../lib/utils'
 export interface MultiSelectFilterOption {
   value: string
   label: string
+  trailingLabel?: string
   disabled?: boolean
 }
 
@@ -174,7 +175,12 @@ export function MultiSelectFilterCombobox({
                           )}
                           aria-hidden
                         />
-                        <span className="truncate">{option.label}</span>
+                        <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                        {option.trailingLabel ? (
+                          <span className="ml-3 shrink-0 font-mono text-xs tabular-nums text-base-content/45">
+                            {option.trailingLabel}
+                          </span>
+                        ) : null}
                       </CommandItem>
                     )
                   })}

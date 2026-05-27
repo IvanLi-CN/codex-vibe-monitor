@@ -707,7 +707,23 @@
         )
         .expect("deserialize exact group filter");
 
-        assert_eq!(query.group_exact.as_deref(), Some("production"));
+        assert_eq!(query.group_exact, vec!["production".to_string()]);
+        assert_eq!(query.group_search, None);
+    }
+
+    #[test]
+    fn list_query_parses_repeated_exact_group_filters() {
+        let query = parse_list_upstream_accounts_query(
+            &"/api/pool/upstream-accounts?groupExact=production&groupExact=staging"
+                .parse()
+                .expect("parse uri"),
+        )
+        .expect("deserialize repeated exact group filters");
+
+        assert_eq!(
+            query.group_exact,
+            vec!["production".to_string(), "staging".to_string()]
+        );
         assert_eq!(query.group_search, None);
     }
 
