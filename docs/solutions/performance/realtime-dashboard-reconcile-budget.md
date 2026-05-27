@@ -1,0 +1,61 @@
+---
+title: Realtime dashboard reconcile budget
+module: web-dashboard
+problem_type: performance
+component: React dashboard hooks
+tags:
+  - dashboard
+  - sse
+  - throttle
+  - conditional-http
+status: active
+related_specs:
+  - docs/specs/5932d-sse-proxy-live-sync/SPEC.md
+---
+
+# Realtime dashboard reconcile budget
+
+## Context
+
+Dashboard surfaces often consume the same SSE `records` stream for several different jobs: KPI counters, dense charts, working conversation cards, and heavier aggregate sections. Treating every SSE record as permission to refetch and rerender every surface creates avoidable CPU and network load.
+
+## Symptoms
+
+- KPI numbers need to feel live, but charts and aggregate sections churn on every record.
+- Working conversation cards repaint repeatedly while a burst of records belongs to the same visible conversation.
+- Large aggregate payloads such as `parallel-work` are requested frequently even when the response body is unchanged.
+
+## Root Cause
+
+The stream mixes three update classes with different budgets:
+
+- visible lightweight state that can be patched locally,
+- authoritative HTTP reconcile that can lag by a few seconds,
+- large aggregate payloads that often do not change between adjacent reconciles.
+
+Using one cadence for all three overfits the most urgent surface and overloads the rest.
+
+## Resolution
+
+- Let SSE summary payloads drive KPI-style counters directly when the payload already contains the authoritative window.
+- Batch visible local patches separately from head/snapshot reconcile. A 1 second visible patch batch is responsive enough for card updates while avoiding per-record rerenders.
+- Put expensive HTTP reconcile and dense chart data commits behind a separate 5 second budget.
+- For large aggregate endpoints that must keep their JSON shape, add conditional HTTP (`ETag` and `304 Not Modified`) instead of trimming fields.
+- Add lightweight diagnostics counters for each path: visible patch count, head fetch count, SSE summary commit count, HTTP reconcile count, chart data commit count, and conditional fetch hit count.
+
+## Guardrails / Reuse Notes
+
+- Do not delay KPI counters if the SSE payload is already authoritative for the selected window.
+- Do not simplify chart visuals to solve render pressure; throttle the data commit feeding the chart instead.
+- Keep timer constants exported when tests need to assert cadence without duplicating magic numbers.
+- `304` handling must preserve the previous UI data and clear transient errors; it is a successful no-body response, not a failed fetch.
+- Closed historical windows can commit immediately because they do not receive live churn.
+
+## References
+
+- `docs/specs/5932d-sse-proxy-live-sync/SPEC.md`
+- `web/src/hooks/useStats.ts`
+- `web/src/hooks/useDashboardWorkingConversations.ts`
+- `web/src/hooks/useParallelWorkStats.ts`
+- `web/src/components/DashboardActivityOverview.tsx`
+- `src/api/slices/prompt_cache_and_timeseries/timeseries.rs`

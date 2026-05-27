@@ -19,9 +19,13 @@ import {
 } from "../lib/dashboardWorkingConversations";
 import { buildPromptCachePreviewFromInvocation } from "../lib/promptCacheLive";
 import { subscribeToSse, subscribeToSseOpen } from "../lib/sse";
-import { publishWorkingConversationPatchMetrics } from "../lib/dashboardPerformanceDiagnostics";
+import {
+  publishWorkingConversationPatchMetrics,
+  recordWorkingConversationHeadFetch,
+} from "../lib/dashboardPerformanceDiagnostics";
 
-const DASHBOARD_WORKING_CONVERSATIONS_REFRESH_THROTTLE_MS = 1_500;
+export const DASHBOARD_WORKING_CONVERSATIONS_VISIBLE_PATCH_BATCH_MS = 1_000;
+export const DASHBOARD_WORKING_CONVERSATIONS_REFRESH_THROTTLE_MS = 5_000;
 const DASHBOARD_WORKING_CONVERSATIONS_POLL_INTERVAL_MS = 15_000;
 const DASHBOARD_WORKING_CONVERSATIONS_OPEN_RESYNC_COOLDOWN_MS = 3_000;
 const DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_LIMIT = 2;
@@ -569,6 +573,10 @@ export function useDashboardWorkingConversations() {
   const requestSeqRef = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const visiblePatchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const pendingVisiblePatchRecordsRef = useRef<ApiInvocation[]>([]);
   const runHeadLoadRef = useRef<((silent?: boolean) => Promise<void>) | null>(
     null,
   );
@@ -587,6 +595,12 @@ export function useDashboardWorkingConversations() {
     if (!refreshTimerRef.current) return;
     clearTimeout(refreshTimerRef.current);
     refreshTimerRef.current = null;
+  }, []);
+
+  const clearPendingVisiblePatchTimer = useCallback(() => {
+    if (!visiblePatchTimerRef.current) return;
+    clearTimeout(visiblePatchTimerRef.current);
+    visiblePatchTimerRef.current = null;
   }, []);
 
   const runNextPendingAction = useCallback(() => {
@@ -622,6 +636,7 @@ export function useDashboardWorkingConversations() {
           },
         );
         if (requestSeq !== requestSeqRef.current) return;
+        recordWorkingConversationHeadFetch();
         const nowMs = Date.now();
         const { response: mergedResponse } = mergeHeadPage(
           responseRef.current,
@@ -841,6 +856,98 @@ export function useDashboardWorkingConversations() {
     [clearPendingRefreshTimer, refreshHead],
   );
 
+  const flushPendingVisiblePatches = useCallback(() => {
+    visiblePatchTimerRef.current = null;
+    const current = responseRef.current;
+    const records = pendingVisiblePatchRecordsRef.current;
+    pendingVisiblePatchRecordsRef.current = [];
+    if (!current || records.length === 0) return;
+
+    let shouldRefreshHead = false;
+    let didPatchLoaded = false;
+    const loadedKeys = new Set(
+      current.conversations.map(
+        (conversation) => conversation.promptCacheKey,
+      ),
+    );
+    const nextConversations = current.conversations.map((conversation) => {
+      let nextConversation = conversation;
+      for (const record of records) {
+        const promptCacheKey = record.promptCacheKey?.trim();
+        if (!promptCacheKey) continue;
+        if (!loadedKeys.has(promptCacheKey)) {
+          shouldRefreshHead = true;
+          continue;
+        }
+        if (promptCacheKey !== conversation.promptCacheKey) continue;
+        const patchedPostSnapshotInvocations =
+          getOrCreatePatchedConversationInvocations(
+            patchedPostSnapshotInvocationsRef,
+            conversation.promptCacheKey,
+          );
+        const patchResult = patchConversationWithRecord(
+          nextConversation,
+          record,
+          current.snapshotAt,
+          patchedPostSnapshotInvocations,
+        );
+        nextConversation = patchResult.conversation;
+        if (patchResult.didPatchVisible) {
+          didPatchLoaded = true;
+        }
+        if (patchResult.shouldRefreshHead) {
+          shouldRefreshHead = true;
+        }
+      }
+      return nextConversation;
+    });
+
+    if (didPatchLoaded) {
+      const referenceMs = resolveWorkingSetReferenceMs(
+        current.snapshotAt,
+        Date.now(),
+      );
+      const patched = {
+        ...current,
+        conversations: pruneExpiredWorkingConversations(
+          dedupeAndSortConversations(nextConversations),
+          referenceMs,
+        ),
+      } satisfies PromptCacheConversationsResponse;
+      patched.hasMore = current.hasMore ?? false;
+      patched.nextCursor = patched.hasMore
+        ? (current.nextCursor ?? null)
+        : null;
+      responseRef.current = patched;
+      setResponse(patched);
+      prunePatchedPostSnapshotInvocations(
+        patchedPostSnapshotInvocationsRef.current,
+        {
+          retainedKeys: new Set(
+            patched.conversations.map((conversation) => conversation.promptCacheKey),
+          ),
+        },
+      );
+    }
+
+    if (shouldRefreshHead) {
+      triggerThrottledHeadRefresh();
+    }
+  }, [triggerThrottledHeadRefresh]);
+
+  const enqueueVisiblePatchRecords = useCallback(
+    (records: ApiInvocation[]) => {
+      if (records.length === 0) return;
+      pendingVisiblePatchRecordsRef.current.push(...records);
+      if (visiblePatchTimerRef.current) return;
+      visiblePatchTimerRef.current = setTimeout(
+        flushPendingVisiblePatches,
+        DASHBOARD_WORKING_CONVERSATIONS_VISIBLE_PATCH_BATCH_MS,
+      );
+    },
+    [flushPendingVisiblePatches],
+  );
+
   const refresh = useCallback(() => {
     clearPendingRefreshTimer();
     lastHeadRefreshAtRef.current = Date.now();
@@ -866,88 +973,21 @@ export function useDashboardWorkingConversations() {
     lastHeadRefreshAtRef.current = 0;
     lastOpenResyncAtRef.current = 0;
     clearPendingRefreshTimer();
+    clearPendingVisiblePatchTimer();
+    pendingVisiblePatchRecordsRef.current = [];
     setResponse(null);
     setError(null);
     setIsLoadingMore(false);
     void runHeadLoad(false);
-  }, [clearPendingRefreshTimer, runHeadLoad]);
+  }, [clearPendingRefreshTimer, clearPendingVisiblePatchTimer, runHeadLoad]);
 
   useEffect(() => {
     const unsubscribe = subscribeToSse((payload) => {
       if (payload.type !== "records") return;
-      const current = responseRef.current;
-      if (!current) return;
-      let shouldRefreshHead = false;
-      let didPatchLoaded = false;
-      const loadedKeys = new Set(
-        current.conversations.map(
-          (conversation) => conversation.promptCacheKey,
-        ),
-      );
-      const nextConversations = current.conversations.map((conversation) => {
-        let nextConversation = conversation;
-        for (const record of payload.records) {
-          const promptCacheKey = record.promptCacheKey?.trim();
-          if (!promptCacheKey) continue;
-          if (!loadedKeys.has(promptCacheKey)) {
-            shouldRefreshHead = true;
-            continue;
-          }
-          if (promptCacheKey !== conversation.promptCacheKey) continue;
-          const patchedPostSnapshotInvocations =
-            getOrCreatePatchedConversationInvocations(
-              patchedPostSnapshotInvocationsRef,
-              conversation.promptCacheKey,
-            );
-          const patchResult = patchConversationWithRecord(
-            nextConversation,
-            record,
-            current.snapshotAt,
-            patchedPostSnapshotInvocations,
-          );
-          nextConversation = patchResult.conversation;
-          if (patchResult.didPatchVisible) {
-            didPatchLoaded = true;
-          }
-          if (patchResult.shouldRefreshHead) {
-            shouldRefreshHead = true;
-          }
-        }
-        return nextConversation;
-      });
-      if (didPatchLoaded) {
-        const referenceMs = resolveWorkingSetReferenceMs(
-          current.snapshotAt,
-          Date.now(),
-        );
-        const patched = {
-          ...current,
-          conversations: pruneExpiredWorkingConversations(
-            dedupeAndSortConversations(nextConversations),
-            referenceMs,
-          ),
-        } satisfies PromptCacheConversationsResponse;
-        patched.hasMore = current.hasMore ?? false;
-        patched.nextCursor = patched.hasMore
-          ? (current.nextCursor ?? null)
-          : null;
-        responseRef.current = patched;
-        setResponse(patched);
-        prunePatchedPostSnapshotInvocations(
-          patchedPostSnapshotInvocationsRef.current,
-          {
-            retainedKeys: new Set(
-              patched.conversations.map((conversation) => conversation.promptCacheKey),
-            ),
-          },
-        );
-      }
-      if (shouldRefreshHead) {
-        triggerThrottledHeadRefresh();
-      }
+      enqueueVisiblePatchRecords(payload.records);
     });
     return unsubscribe;
-  }, [triggerThrottledHeadRefresh]);
+  }, [enqueueVisiblePatchRecords]);
 
   useEffect(() => {
     const unsubscribe = subscribeToSseOpen(() => {
@@ -998,8 +1038,10 @@ export function useDashboardWorkingConversations() {
       pendingLoadMoreRef.current = false;
       inFlightRef.current = false;
       clearPendingRefreshTimer();
+      clearPendingVisiblePatchTimer();
+      pendingVisiblePatchRecordsRef.current = [];
     },
-    [clearPendingRefreshTimer],
+    [clearPendingRefreshTimer, clearPendingVisiblePatchTimer],
   );
 
   const cards = useMemo(

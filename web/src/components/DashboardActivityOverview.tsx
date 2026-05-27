@@ -1,9 +1,10 @@
-import { memo, useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { useSummary } from '../hooks/useStats'
 import { useTimeseries } from '../hooks/useTimeseries'
 import { useParallelWorkStats } from '../hooks/useParallelWorkStats'
 import { useTranslation } from '../i18n'
 import { metricAccent } from '../lib/chartTheme'
+import { recordTodayChartDataCommit } from '../lib/dashboardPerformanceDiagnostics'
 import { useTheme } from '../theme'
 import { DashboardTodayActivityChart } from './DashboardTodayActivityChart'
 import { Last24hTenMinuteHeatmap, type MetricKey } from './Last24hTenMinuteHeatmap'
@@ -22,6 +23,7 @@ export const ACCOUNT_ACTIVITY_RANGE_STORAGE_KEY_PREFIX = 'account.activityOvervi
 
 const DEFAULT_RANGE: RangeKey = 'today'
 const LIVE_RATE_REFRESH_MS = 15_000
+export const DASHBOARD_TOP_CHART_DATA_COMMIT_INTERVAL_MS = 5_000
 const RANGE_OPTIONS: Array<{ key: RangeKey; labelKey: string }> = [
   { key: 'today', labelKey: 'dashboard.activityOverview.rangeToday' },
   { key: 'yesterday', labelKey: 'dashboard.activityOverview.rangeYesterday' },
@@ -70,6 +72,80 @@ function useScopedSummary(window: string, upstreamAccountId?: number) {
   )
 }
 
+function useDashboardTopChartCommittedResponse(
+  response: ReturnType<typeof useTimeseries>['data'],
+  {
+    summaryWindow,
+    closedNaturalDay,
+  }: {
+    summaryWindow: 'today' | 'yesterday'
+    closedNaturalDay: boolean
+  },
+) {
+  const [committedResponse, setCommittedResponse] = useState(response)
+  const committedResponseRef = useRef(response)
+  const latestResponseRef = useRef(response)
+  const commitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastCommitAtRef = useRef(response == null ? 0 : Date.now())
+
+  useEffect(() => {
+    committedResponseRef.current = committedResponse
+  }, [committedResponse])
+
+  useEffect(() => {
+    latestResponseRef.current = response
+
+    const clearTimer = () => {
+      if (!commitTimerRef.current) return
+      clearTimeout(commitTimerRef.current)
+      commitTimerRef.current = null
+    }
+    const commit = (nextResponse: typeof response) => {
+      clearTimer()
+      committedResponseRef.current = nextResponse
+      lastCommitAtRef.current = Date.now()
+      setCommittedResponse(nextResponse)
+      if (nextResponse != null) {
+        recordTodayChartDataCommit(summaryWindow)
+      }
+    }
+
+    if (closedNaturalDay || committedResponseRef.current == null) {
+      commit(response)
+      return clearTimer
+    }
+
+    const delay = Math.max(
+      0,
+      DASHBOARD_TOP_CHART_DATA_COMMIT_INTERVAL_MS -
+        (Date.now() - lastCommitAtRef.current),
+    )
+    if (delay === 0) {
+      commit(response)
+      return clearTimer
+    }
+    if (!commitTimerRef.current) {
+      commitTimerRef.current = setTimeout(() => {
+        commitTimerRef.current = null
+        commit(latestResponseRef.current)
+      }, delay)
+    }
+
+    return clearTimer
+  }, [closedNaturalDay, response, summaryWindow])
+
+  useEffect(
+    () => () => {
+      if (commitTimerRef.current) {
+        clearTimeout(commitTimerRef.current)
+      }
+    },
+    [],
+  )
+
+  return committedResponse
+}
+
 function DashboardNaturalDayRangePanel({
   metric,
   summaryWindow,
@@ -87,6 +163,10 @@ function DashboardNaturalDayRangePanel({
     timeseriesRange,
     upstreamAccountId == null ? { bucket: '1m' } : { bucket: '1m', upstreamAccountId },
   )
+  const chartResponse = useDashboardTopChartCommittedResponse(data, {
+    summaryWindow,
+    closedNaturalDay: timeseriesRange === 'yesterday',
+  })
 
   return (
     <div
@@ -103,8 +183,8 @@ function DashboardNaturalDayRangePanel({
         upstreamAccountId={upstreamAccountId}
       />
       <DashboardNaturalDayChartSection
-        response={data}
-        loading={isLoading}
+        response={chartResponse}
+        loading={isLoading && chartResponse == null}
         error={error}
         metric={metric}
         closedNaturalDay={timeseriesRange === 'yesterday'}

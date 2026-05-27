@@ -8,10 +8,19 @@ export interface DashboardPerformanceDiagnosticsSnapshot {
   workingConversationPatchBucketCount: number;
   workingConversationPatchEntryCount: number;
   workingConversationPatchLastUpdatedAt: string | null;
+  workingConversationHeadFetchCount: number;
+  workingConversationHeadFetchLastUpdatedAt: string | null;
   todaySummaryRefreshCount: number;
   todaySummaryLastUpdatedAt: string | null;
+  todaySummarySseCommitCount: number;
+  todaySummarySseCommitLastUpdatedAt: string | null;
+  todayChartDataCommitCount: number;
+  todayChartDataCommitLastUpdatedAt: string | null;
   todayChartRenderCount: number;
   todayChartLastRenderedAt: string | null;
+  parallelWorkFullFetchCount: number;
+  parallelWorkNotModifiedCount: number;
+  parallelWorkLastUpdatedAt: string | null;
 }
 
 type DashboardPatchMetrics = Map<
@@ -23,10 +32,19 @@ interface DashboardPerformanceDiagnosticsMetrics {
   workingConversationPatchBucketCount: number;
   workingConversationPatchEntryCount: number;
   workingConversationPatchLastUpdatedAt: string | null;
+  workingConversationHeadFetchCount: number;
+  workingConversationHeadFetchLastUpdatedAt: string | null;
   todaySummaryRefreshCount: number;
   todaySummaryLastUpdatedAt: string | null;
+  todaySummarySseCommitCount: number;
+  todaySummarySseCommitLastUpdatedAt: string | null;
+  todayChartDataCommitCount: number;
+  todayChartDataCommitLastUpdatedAt: string | null;
   todayChartRenderCount: number;
   todayChartLastRenderedAt: string | null;
+  parallelWorkFullFetchCount: number;
+  parallelWorkNotModifiedCount: number;
+  parallelWorkLastUpdatedAt: string | null;
 }
 
 declare global {
@@ -62,10 +80,19 @@ function createEmptyMetrics(): DashboardPerformanceDiagnosticsMetrics {
     workingConversationPatchBucketCount: 0,
     workingConversationPatchEntryCount: 0,
     workingConversationPatchLastUpdatedAt: null,
+    workingConversationHeadFetchCount: 0,
+    workingConversationHeadFetchLastUpdatedAt: null,
     todaySummaryRefreshCount: 0,
     todaySummaryLastUpdatedAt: null,
+    todaySummarySseCommitCount: 0,
+    todaySummarySseCommitLastUpdatedAt: null,
+    todayChartDataCommitCount: 0,
+    todayChartDataCommitLastUpdatedAt: null,
     todayChartRenderCount: 0,
     todayChartLastRenderedAt: null,
+    parallelWorkFullFetchCount: 0,
+    parallelWorkNotModifiedCount: 0,
+    parallelWorkLastUpdatedAt: null,
   };
 }
 
@@ -159,6 +186,24 @@ export function recordTodaySummaryRefresh(window: string) {
   }));
 }
 
+export function recordTodaySummarySseCommit(window: string) {
+  if (window !== "today") return;
+  updateMetricsSnapshot((current, timestamp) => ({
+    ...current,
+    todaySummarySseCommitCount: current.todaySummarySseCommitCount + 1,
+    todaySummarySseCommitLastUpdatedAt: timestamp,
+  }));
+}
+
+export function recordTodayChartDataCommit(window: string) {
+  if (window !== "today") return;
+  updateMetricsSnapshot((current, timestamp) => ({
+    ...current,
+    todayChartDataCommitCount: current.todayChartDataCommitCount + 1,
+    todayChartDataCommitLastUpdatedAt: timestamp,
+  }));
+}
+
 export function recordTodayChartRender(signature?: string | null) {
   updateMetricsSnapshot((current, timestamp) => {
     if (signature != null && signature === lastTodayChartRenderSignature) {
@@ -171,6 +216,26 @@ export function recordTodayChartRender(signature?: string | null) {
       todayChartLastRenderedAt: timestamp,
     };
   });
+}
+
+export function recordWorkingConversationHeadFetch() {
+  updateMetricsSnapshot((current, timestamp) => ({
+    ...current,
+    workingConversationHeadFetchCount:
+      current.workingConversationHeadFetchCount + 1,
+    workingConversationHeadFetchLastUpdatedAt: timestamp,
+  }));
+}
+
+export function recordParallelWorkFetch(kind: "full" | "notModified") {
+  updateMetricsSnapshot((current, timestamp) => ({
+    ...current,
+    parallelWorkFullFetchCount:
+      current.parallelWorkFullFetchCount + (kind === "full" ? 1 : 0),
+    parallelWorkNotModifiedCount:
+      current.parallelWorkNotModifiedCount + (kind === "notModified" ? 1 : 0),
+    parallelWorkLastUpdatedAt: timestamp,
+  }));
 }
 
 function ensureDashboardDiagnosticsStorageBridge() {
