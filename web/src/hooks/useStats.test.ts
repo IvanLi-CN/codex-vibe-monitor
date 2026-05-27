@@ -99,7 +99,7 @@ describe('useSummary unsupported window fallback', () => {
     expect(isCalendarSummaryWindow('1d')).toBe(false)
   })
 
-  it('throttles calendar-window records refreshes to 1 second', async () => {
+  it('throttles calendar-window records reconciles to 5 seconds', async () => {
     const gate = createUnsupportedRefreshGate()
     const refresh = vi.fn().mockResolvedValue(undefined)
     const base = CALENDAR_SUMMARY_RECORDS_REFRESH_THROTTLE_MS

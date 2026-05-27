@@ -2681,15 +2681,60 @@ export async function fetchParallelWorkStats(params?: {
   timeZone?: string;
   signal?: AbortSignal;
 }) {
+  const response = await fetchParallelWorkStatsConditional(params);
+  if (!response.data) {
+    throw new ApiRequestError(304, "Request failed: 304 parallel-work payload not modified");
+  }
+  return response.data;
+}
+
+export async function fetchParallelWorkStatsConditional(params?: {
+  range?: string;
+  bucket?: string;
+  timeZone?: string;
+  signal?: AbortSignal;
+  etag?: string | null;
+}): Promise<{
+  data: ParallelWorkStatsResponse | null;
+  etag: string | null;
+  notModified: boolean;
+}> {
   const search = new URLSearchParams();
   if (params?.range) search.set("range", params.range);
   if (params?.bucket) search.set("bucket", params.bucket);
   search.set("timeZone", params?.timeZone ?? getBrowserTimeZone());
-  const response = await fetchJson<unknown>(
-    `/api/stats/parallel-work?${search.toString()}`,
-    { signal: params?.signal },
+  const headers: HeadersInit = {
+    "Content-Type": "application/json",
+  };
+  if (params?.etag) {
+    headers["If-None-Match"] = params.etag;
+  }
+  const response = await fetch(
+    withBase(`/api/stats/parallel-work?${search.toString()}`),
+    { headers, signal: params?.signal },
   );
-  return normalizeParallelWorkStatsResponse(response);
+  const etag = response.headers.get("ETag");
+
+  if (response.status === 304) {
+    return {
+      data: null,
+      etag,
+      notModified: true,
+    };
+  }
+
+  if (!response.ok) {
+    const rawText = await response.text();
+    throw buildRequestError(response, rawText);
+  }
+
+  const rawText = await response.text();
+  const payload = rawText.trim() ? JSON.parse(rawText) : undefined;
+  return {
+    data: normalizeParallelWorkStatsResponse(payload),
+    etag,
+    notModified: false,
+  };
 }
 
 export async function fetchErrorDistribution(

@@ -4,6 +4,7 @@
 
 - Canonical spec: `docs/specs/5932d-sse-proxy-live-sync/SPEC.md`
 - Implementation summary: 已完成
+- Dashboard realtime consumption now separates SSE-fast KPI commits from 5s HTTP/chart reconcile budgets. Working conversations batch visible SSE patches for 1s and throttle head/snapshot reconcile to 5s. `/api/stats/parallel-work` keeps its response schema while supporting ETag / 304 conditional fetches.
 
 ## Migrated Implementation Notes
 
@@ -28,3 +29,4 @@
 - [x] M2: 替换代理链路 5 处落库调用点为统一 helper。
 - [x] M3: 前端 `useInvocationStream` 增加 SSE open 后静默回源补齐。
 - [x] M4: 完成验证、提交、PR、checks 与 review-loop 收敛（fast-track）。
+- [x] M5: Dashboard realtime consumers split visible patch, KPI, chart commit, head reconcile, and parallel-work conditional-fetch budgets.
