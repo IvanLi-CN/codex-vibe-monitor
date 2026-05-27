@@ -97,14 +97,18 @@ fn normalize_external_group_name(
     Some(normalize_upstream_account_group_name(group_name))
 }
 
-fn external_group_binding_name(
+pub(crate) fn external_group_binding_name(
     metadata: &ExternalUpstreamAccountMetadataRequest,
     existing_row: Option<&UpstreamAccountRow>,
 ) -> Option<String> {
     let normalized = normalize_external_group_name(metadata, existing_row)?;
-    let proxy_metadata_changed =
-        metadata.group_bound_proxy_keys.is_some() || metadata.group_node_shunt_enabled.is_some();
-    if normalized != DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME || proxy_metadata_changed {
+    let proxy_metadata_changed = metadata.group_bound_proxy_keys.is_some()
+        || metadata.group_node_shunt_enabled.is_some()
+        || metadata.group_single_account_rotation_enabled.is_some();
+    if normalized != DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME
+        || metadata.group_name.is_some()
+        || proxy_metadata_changed
+    {
         return Some(normalized);
     }
     None
