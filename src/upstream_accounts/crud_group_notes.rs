@@ -457,9 +457,7 @@ pub(crate) async fn create_tag(
     state.upstream_accounts.require_crypto_key()?;
     let name = normalize_tag_name(&payload.name)?;
     let rule = normalize_tag_rule(
-        payload.guard_enabled,
-        payload.lookback_hours,
-        payload.max_conversations,
+        payload.block_new_conversations,
         payload.allow_cut_out,
         payload.allow_cut_in,
         payload.priority_tier.as_deref(),
@@ -513,9 +511,9 @@ pub(crate) async fn update_tag(
         None => existing.name.clone(),
     };
     let rule = normalize_tag_rule(
-        payload.guard_enabled.unwrap_or(existing.guard_enabled != 0),
-        payload.lookback_hours.or(existing.lookback_hours),
-        payload.max_conversations.or(existing.max_conversations),
+        payload
+            .block_new_conversations
+            .unwrap_or(existing.block_new_conversations != 0),
         payload.allow_cut_out.unwrap_or(existing.allow_cut_out != 0),
         payload.allow_cut_in.unwrap_or(existing.allow_cut_in != 0),
         payload
@@ -678,15 +676,6 @@ pub(crate) async fn update_upstream_account_group(
     .await
     .map_err(internal_error_tuple)?;
     if let Some(routing_rule) = payload.routing_rule.as_ref() {
-        validate_routing_guard_window(
-            routing_rule.guard_enabled,
-            routing_rule.lookback_hours,
-            routing_rule.max_conversations,
-        )?;
-        let policy_lookback_hours =
-            normalize_positive_i64(routing_rule.lookback_hours, "lookbackHours")?;
-        let policy_max_conversations =
-            normalize_positive_i64(routing_rule.max_conversations, "maxConversations")?;
         let policy_concurrency_limit =
             normalize_concurrency_limit(routing_rule.concurrency_limit, "concurrencyLimit")?;
         let policy_priority_tier = routing_rule
@@ -704,27 +693,23 @@ pub(crate) async fn update_upstream_account_group(
         sqlx::query(
             r#"
             UPDATE pool_upstream_account_group_notes
-            SET policy_guard_enabled = COALESCE(?2, policy_guard_enabled),
-                policy_lookback_hours = COALESCE(?3, policy_lookback_hours),
-                policy_max_conversations = COALESCE(?4, policy_max_conversations),
-                policy_allow_cut_out = COALESCE(?5, policy_allow_cut_out),
-                policy_allow_cut_in = COALESCE(?6, policy_allow_cut_in),
-                policy_priority_tier = COALESCE(?7, policy_priority_tier),
-                policy_fast_mode_rewrite_mode = COALESCE(?8, policy_fast_mode_rewrite_mode),
-                policy_concurrency_limit = COALESCE(?9, policy_concurrency_limit),
-                policy_upstream_429_retry_enabled = COALESCE(?10, policy_upstream_429_retry_enabled),
-                policy_upstream_429_max_retries = COALESCE(?11, policy_upstream_429_max_retries)
+            SET policy_block_new_conversations = COALESCE(?2, policy_block_new_conversations),
+                policy_allow_cut_out = COALESCE(?3, policy_allow_cut_out),
+                policy_allow_cut_in = COALESCE(?4, policy_allow_cut_in),
+                policy_priority_tier = COALESCE(?5, policy_priority_tier),
+                policy_fast_mode_rewrite_mode = COALESCE(?6, policy_fast_mode_rewrite_mode),
+                policy_concurrency_limit = COALESCE(?7, policy_concurrency_limit),
+                policy_upstream_429_retry_enabled = COALESCE(?8, policy_upstream_429_retry_enabled),
+                policy_upstream_429_max_retries = COALESCE(?9, policy_upstream_429_max_retries)
             WHERE group_name = ?1
             "#,
         )
         .bind(&group_name)
         .bind(
             routing_rule
-                .guard_enabled
+                .block_new_conversations
                 .map(|value| if value { 1_i64 } else { 0_i64 }),
         )
-        .bind(policy_lookback_hours)
-        .bind(policy_max_conversations)
         .bind(
             routing_rule
                 .allow_cut_out

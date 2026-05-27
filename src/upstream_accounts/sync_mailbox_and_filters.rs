@@ -1188,33 +1188,6 @@ fn normalize_tag_name(value: &str) -> Result<String, (StatusCode, String)> {
     Ok(trimmed.to_string())
 }
 
-fn normalize_positive_i64(
-    value: Option<i64>,
-    field_name: &str,
-) -> Result<Option<i64>, (StatusCode, String)> {
-    match value {
-        Some(number) if number <= 0 => Err((
-            StatusCode::BAD_REQUEST,
-            format!("{field_name} must be a positive integer"),
-        )),
-        other => Ok(other),
-    }
-}
-
-fn validate_routing_guard_window(
-    guard_enabled: Option<bool>,
-    lookback_hours: Option<i64>,
-    max_conversations: Option<i64>,
-) -> Result<(), (StatusCode, String)> {
-    if guard_enabled == Some(true) && (lookback_hours.is_none() || max_conversations.is_none()) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "lookbackHours and maxConversations are required when guardEnabled is true".to_string(),
-        ));
-    }
-    Ok(())
-}
-
 fn normalize_bulk_upstream_account_ids(
     account_ids: &[i64],
 ) -> Result<Vec<i64>, (StatusCode, String)> {
@@ -1401,9 +1374,7 @@ fn normalize_bulk_upstream_account_action(value: &str) -> Result<String, (Status
 }
 
 fn normalize_tag_rule(
-    guard_enabled: bool,
-    lookback_hours: Option<i64>,
-    max_conversations: Option<i64>,
+    block_new_conversations: bool,
     allow_cut_out: bool,
     allow_cut_in: bool,
     priority_tier: Option<&str>,
@@ -1412,8 +1383,6 @@ fn normalize_tag_rule(
     upstream_429_retry_enabled: Option<bool>,
     upstream_429_max_retries: Option<u8>,
 ) -> Result<TagRoutingRule, (StatusCode, String)> {
-    let lookback_hours = normalize_positive_i64(lookback_hours, "lookbackHours")?;
-    let max_conversations = normalize_positive_i64(max_conversations, "maxConversations")?;
     let priority_tier = normalize_tag_priority_tier(priority_tier)?;
     let fast_mode_rewrite_mode = normalize_tag_fast_mode_rewrite_mode(fast_mode_rewrite_mode)?;
     let concurrency_limit = normalize_concurrency_limit(concurrency_limit, "concurrencyLimit")?;
@@ -1424,15 +1393,8 @@ fn normalize_tag_rule(
             .map(normalize_group_upstream_429_max_retries)
             .unwrap_or_default(),
     );
-    validate_routing_guard_window(Some(guard_enabled), lookback_hours, max_conversations)?;
     Ok(TagRoutingRule {
-        guard_enabled,
-        lookback_hours: if guard_enabled { lookback_hours } else { None },
-        max_conversations: if guard_enabled {
-            max_conversations
-        } else {
-            None
-        },
+        block_new_conversations,
         allow_cut_out,
         allow_cut_in,
         priority_tier,
@@ -1532,9 +1494,7 @@ fn account_tag_summary_from_row(row: &AccountTagRow) -> AccountTagSummary {
         id: row.tag_id,
         name: row.name.clone(),
         routing_rule: TagRoutingRule {
-            guard_enabled: row.guard_enabled != 0,
-            lookback_hours: row.lookback_hours,
-            max_conversations: row.max_conversations,
+            block_new_conversations: row.block_new_conversations != 0,
             allow_cut_out: row.allow_cut_out != 0,
             allow_cut_in: row.allow_cut_in != 0,
             priority_tier: decode_tag_priority_tier(&row.priority_tier),
@@ -1558,9 +1518,7 @@ fn tag_summary_from_row(row: &TagListRow) -> TagSummary {
         id: row.id,
         name: row.name.clone(),
         routing_rule: TagRoutingRule {
-            guard_enabled: row.guard_enabled != 0,
-            lookback_hours: row.lookback_hours,
-            max_conversations: row.max_conversations,
+            block_new_conversations: row.block_new_conversations != 0,
             allow_cut_out: row.allow_cut_out != 0,
             allow_cut_in: row.allow_cut_in != 0,
             priority_tier: decode_tag_priority_tier(&row.priority_tier),
@@ -1586,9 +1544,7 @@ fn group_routing_rule_from_columns(
     legacy_concurrency_limit: i64,
     legacy_upstream_429_retry_enabled: bool,
     legacy_upstream_429_max_retries: u8,
-    policy_guard_enabled: Option<i64>,
-    policy_lookback_hours: Option<i64>,
-    policy_max_conversations: Option<i64>,
+    policy_block_new_conversations: Option<i64>,
     policy_allow_cut_out: Option<i64>,
     policy_allow_cut_in: Option<i64>,
     policy_priority_tier: Option<&str>,
@@ -1597,18 +1553,12 @@ fn group_routing_rule_from_columns(
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
 ) -> TagRoutingRule {
-    let guard_enabled = policy_guard_enabled.is_some_and(|value| value != 0);
+    let block_new_conversations = policy_block_new_conversations.is_some_and(|value| value != 0);
     let upstream_429_retry_enabled = policy_upstream_429_retry_enabled
         .map(|value| value != 0)
         .unwrap_or(legacy_upstream_429_retry_enabled);
     TagRoutingRule {
-        guard_enabled,
-        lookback_hours: if guard_enabled { policy_lookback_hours } else { None },
-        max_conversations: if guard_enabled {
-            policy_max_conversations
-        } else {
-            None
-        },
+        block_new_conversations,
         allow_cut_out: policy_allow_cut_out.map(|value| value != 0).unwrap_or(true),
         allow_cut_in: policy_allow_cut_in.map(|value| value != 0).unwrap_or(true),
         priority_tier: decode_tag_priority_tier(policy_priority_tier.unwrap_or("normal")),
@@ -1636,8 +1586,6 @@ async fn load_group_routing_rule(pool: &Pool<Sqlite>, group_name: &str) -> Resul
             Option<i64>,
             Option<i64>,
             Option<i64>,
-            Option<i64>,
-            Option<i64>,
             Option<String>,
             Option<String>,
             Option<i64>,
@@ -1650,9 +1598,7 @@ async fn load_group_routing_rule(pool: &Pool<Sqlite>, group_name: &str) -> Resul
             concurrency_limit,
             upstream_429_retry_enabled,
             upstream_429_max_retries,
-            policy_guard_enabled,
-            policy_lookback_hours,
-            policy_max_conversations,
+            policy_block_new_conversations,
             policy_allow_cut_out,
             policy_allow_cut_in,
             policy_priority_tier,
@@ -1669,13 +1615,11 @@ async fn load_group_routing_rule(pool: &Pool<Sqlite>, group_name: &str) -> Resul
     .fetch_optional(pool)
     .await?;
     let Some((
-        concurrency_limit,
-        upstream_429_retry_enabled,
-        upstream_429_max_retries,
-        policy_guard_enabled,
-        policy_lookback_hours,
-        policy_max_conversations,
-        policy_allow_cut_out,
+            concurrency_limit,
+            upstream_429_retry_enabled,
+            upstream_429_max_retries,
+            policy_block_new_conversations,
+            policy_allow_cut_out,
         policy_allow_cut_in,
         policy_priority_tier,
         policy_fast_mode_rewrite_mode,
@@ -1685,7 +1629,7 @@ async fn load_group_routing_rule(pool: &Pool<Sqlite>, group_name: &str) -> Resul
     )) = row
     else {
         return Ok(group_routing_rule_from_columns(
-            0, false, 0, None, None, None, None, None, None, None, None, None, None,
+            0, false, 0, None, None, None, None, None, None, None, None,
         ));
     };
     let upstream_429_retry_enabled =
@@ -1698,9 +1642,7 @@ async fn load_group_routing_rule(pool: &Pool<Sqlite>, group_name: &str) -> Resul
         concurrency_limit.unwrap_or_default(),
         upstream_429_retry_enabled,
         upstream_429_max_retries,
-        policy_guard_enabled,
-        policy_lookback_hours,
-        policy_max_conversations,
+        policy_block_new_conversations,
         policy_allow_cut_out,
         policy_allow_cut_in,
         policy_priority_tier.as_deref(),

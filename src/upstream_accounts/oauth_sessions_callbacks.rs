@@ -1479,13 +1479,6 @@ pub(crate) async fn update_upstream_account_inner(
         && route_failure_kind_requires_manual_api_key_recovery(
             row.last_route_failure_kind.as_deref(),
         );
-    if let Some(routing_rule) = payload.routing_rule.as_ref() {
-        validate_routing_guard_window(
-            routing_rule.guard_enabled,
-            routing_rule.lookback_hours,
-            routing_rule.max_conversations,
-        )?;
-    }
     let policy_priority_tier = payload
         .routing_rule
         .as_ref()
@@ -1656,17 +1649,15 @@ pub(crate) async fn update_upstream_account_inner(
             local_secondary_limit = ?11,
             local_limit_unit = ?12,
             upstream_base_url = ?13,
-            policy_guard_enabled = ?14,
-            policy_lookback_hours = ?15,
-            policy_max_conversations = ?16,
-            policy_allow_cut_out = ?17,
-            policy_allow_cut_in = ?18,
-            policy_priority_tier = ?19,
-            policy_fast_mode_rewrite_mode = ?20,
-            policy_concurrency_limit = ?21,
-            policy_upstream_429_retry_enabled = ?22,
-            policy_upstream_429_max_retries = ?23,
-            updated_at = ?24
+            policy_block_new_conversations = ?14,
+            policy_allow_cut_out = ?15,
+            policy_allow_cut_in = ?16,
+            policy_priority_tier = ?17,
+            policy_fast_mode_rewrite_mode = ?18,
+            policy_concurrency_limit = ?19,
+            policy_upstream_429_retry_enabled = ?20,
+            policy_upstream_429_max_retries = ?21,
+            updated_at = ?22
         WHERE id = ?1
         "#,
     )
@@ -1685,20 +1676,10 @@ pub(crate) async fn update_upstream_account_inner(
     .bind(&row.upstream_base_url)
     .bind(match payload.routing_rule.as_ref() {
         Some(rule) => rule
-            .guard_enabled
+            .block_new_conversations
             .map(|value| if value { 1_i64 } else { 0_i64 })
-            .or(row.policy_guard_enabled),
-        None => row.policy_guard_enabled,
-    })
-    .bind(match payload.routing_rule.as_ref() {
-        Some(rule) => normalize_positive_i64(rule.lookback_hours, "lookbackHours")?
-            .or(row.policy_lookback_hours),
-        None => row.policy_lookback_hours,
-    })
-    .bind(match payload.routing_rule.as_ref() {
-        Some(rule) => normalize_positive_i64(rule.max_conversations, "maxConversations")?
-            .or(row.policy_max_conversations),
-        None => row.policy_max_conversations,
+            .or(row.policy_block_new_conversations),
+        None => row.policy_block_new_conversations,
     })
     .bind(match payload.routing_rule.as_ref() {
         Some(rule) => rule

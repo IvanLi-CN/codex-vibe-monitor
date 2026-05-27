@@ -74,9 +74,7 @@ export type TagFastModeRewriteMode =
   | "force_add";
 
 export interface TagRoutingRule {
-  guardEnabled: boolean;
-  lookbackHours?: number | null;
-  maxConversations?: number | null;
+  blockNewConversations: boolean;
   allowCutOut: boolean;
   allowCutIn: boolean;
   priorityTier?: TagPriorityTier;
@@ -86,17 +84,10 @@ export interface TagRoutingRule {
   upstream429MaxRetries?: number;
 }
 
-export interface EffectiveConversationGuard {
-  tagId: number;
-  tagName: string;
-  lookbackHours: number;
-  maxConversations: number;
-}
-
 export type EffectiveRoutingRuleSource = "root" | "group" | "tag" | "account" | string;
 
 export interface EffectiveRoutingRuleFieldSources {
-  guard: EffectiveRoutingRuleSource;
+  blockNewConversations: EffectiveRoutingRuleSource;
   allowCutOut: EffectiveRoutingRuleSource;
   allowCutIn: EffectiveRoutingRuleSource;
   priorityTier: EffectiveRoutingRuleSource;
@@ -108,7 +99,6 @@ export interface EffectiveRoutingRuleFieldSources {
 export interface EffectiveRoutingRule extends TagRoutingRule {
   sourceTagIds: number[];
   sourceTagNames: string[];
-  guardRules: EffectiveConversationGuard[];
   fieldSources?: EffectiveRoutingRuleFieldSources;
 }
 
@@ -731,7 +721,7 @@ export type UpdateTagPayload = Partial<CreateTagPayload>;
 export interface FetchTagsQuery {
   search?: string;
   hasAccounts?: boolean;
-  guardEnabled?: boolean;
+  blockNewConversations?: boolean;
   allowCutIn?: boolean;
   allowCutOut?: boolean;
 }
@@ -835,9 +825,7 @@ function normalizeTagRoutingRule(raw: unknown): TagRoutingRule {
     payload.upstream429MaxRetries,
   );
   return {
-    guardEnabled: payload.guardEnabled === true,
-    lookbackHours: normalizeFiniteNumber(payload.lookbackHours) ?? null,
-    maxConversations: normalizeFiniteNumber(payload.maxConversations) ?? null,
+    blockNewConversations: payload.blockNewConversations === true,
     allowCutOut: payload.allowCutOut !== false,
     allowCutIn: payload.allowCutIn !== false,
     priorityTier:
@@ -857,24 +845,6 @@ function normalizeTagRoutingRule(raw: unknown): TagRoutingRule {
     upstream429RetryEnabled: payload.upstream429RetryEnabled === true,
     upstream429MaxRetries,
   };
-}
-
-function normalizeEffectiveConversationGuard(
-  raw: unknown,
-): EffectiveConversationGuard | null {
-  const payload = (raw ?? {}) as Record<string, unknown>;
-  const tagId = normalizeFiniteNumber(payload.tagId);
-  const tagName = typeof payload.tagName === "string" ? payload.tagName : "";
-  const lookbackHours = normalizeFiniteNumber(payload.lookbackHours);
-  const maxConversations = normalizeFiniteNumber(payload.maxConversations);
-  if (
-    tagId == null ||
-    !tagName ||
-    lookbackHours == null ||
-    maxConversations == null
-  )
-    return null;
-  return { tagId, tagName, lookbackHours, maxConversations };
 }
 
 function normalizeAccountTagSummary(raw: unknown): AccountTagSummary | null {
@@ -906,18 +876,12 @@ function normalizeEffectiveRoutingRule(raw: unknown): EffectiveRoutingRule {
         (value): value is string => typeof value === "string",
       )
     : [];
-  const guardRules = Array.isArray(payload.guardRules)
-    ? payload.guardRules
-        .map(normalizeEffectiveConversationGuard)
-        .filter((value): value is EffectiveConversationGuard => value != null)
-    : [];
   return {
     ...normalizeTagRoutingRule(payload),
     sourceTagIds,
     sourceTagNames,
-    guardRules,
     fieldSources: {
-      guard: normalizeSource(rawSources.guard),
+      blockNewConversations: normalizeSource(rawSources.blockNewConversations),
       allowCutOut: normalizeSource(rawSources.allowCutOut),
       allowCutIn: normalizeSource(rawSources.allowCutIn),
       priorityTier: normalizeSource(rawSources.priorityTier),
@@ -2007,8 +1971,8 @@ export async function fetchTags(
   if (query?.search) search.set("search", query.search);
   if (query?.hasAccounts != null)
     search.set("hasAccounts", String(query.hasAccounts));
-  if (query?.guardEnabled != null)
-    search.set("guardEnabled", String(query.guardEnabled));
+  if (query?.blockNewConversations != null)
+    search.set("blockNewConversations", String(query.blockNewConversations));
   if (query?.allowCutIn != null)
     search.set("allowCutIn", String(query.allowCutIn));
   if (query?.allowCutOut != null)

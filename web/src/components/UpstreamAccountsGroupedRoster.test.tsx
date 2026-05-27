@@ -93,14 +93,11 @@ function outerVirtualizerMetrics() {
 }
 
 const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
-  guardEnabled: false,
-  lookbackHours: null,
-  maxConversations: null,
+  blockNewConversations: false,
   allowCutOut: true,
   allowCutIn: true,
   sourceTagIds: [],
   sourceTagNames: [],
-  guardRules: [],
 }
 
 const tags: AccountTagSummary[] = [
@@ -404,9 +401,7 @@ describe('UpstreamAccountsGroupedRoster', () => {
         ],
         {
           routingRule: {
-            guardEnabled: true,
-            lookbackHours: 5,
-            maxConversations: 10,
+            blockNewConversations: true,
             allowCutOut: false,
             allowCutIn: true,
             priorityTier: 'fallback',

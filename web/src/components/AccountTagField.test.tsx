@@ -91,10 +91,8 @@ const labels = {
   dialogDescription: 'Configure the routing policy bound to this tag.',
   name: 'Name',
   namePlaceholder: 'vip-routing',
-  guardEnabled: 'Conversation guard',
+  blockNewConversations: 'Block new conversations',
   forbidNewConversation: 'Block new conversations',
-  lookbackHours: 'Lookback hours',
-  maxConversations: 'Max conversations',
   allowCutOut: 'Cut out is not blocked',
   allowCutIn: 'Cut in is not blocked',
   forbidCutOut: 'Block cut out',
@@ -111,7 +109,7 @@ const labels = {
   cancel: 'Cancel',
   save: 'Save',
   createAction: 'Create',
-  validation: 'Use positive integers for the guard values.',
+  validation: 'Review the routing policy before saving.',
 }
 
 const tags: TagSummary[] = [
@@ -119,9 +117,7 @@ const tags: TagSummary[] = [
     id: 1,
     name: 'vip-routing',
     routingRule: {
-      guardEnabled: false,
-      lookbackHours: null,
-      maxConversations: null,
+      blockNewConversations: false,
       allowCutOut: true,
       allowCutIn: true,
       priorityTier: 'normal',
@@ -135,9 +131,7 @@ const tags: TagSummary[] = [
     id: 2,
     name: 'handoff-blocked',
     routingRule: {
-      guardEnabled: true,
-      lookbackHours: 4,
-      maxConversations: 8,
+      blockNewConversations: true,
       allowCutOut: false,
       allowCutIn: true,
       priorityTier: 'fallback',
@@ -187,9 +181,7 @@ function createHarness(options?: {
         id: 99,
         name: payload.name,
         routingRule: {
-          guardEnabled: payload.guardEnabled,
-          lookbackHours: payload.lookbackHours ?? null,
-          maxConversations: payload.maxConversations ?? null,
+          blockNewConversations: payload.blockNewConversations,
           allowCutOut: payload.allowCutOut,
           allowCutIn: payload.allowCutIn,
           priorityTier: payload.priorityTier ?? 'normal',
@@ -210,9 +202,7 @@ function createHarness(options?: {
         ...current,
         name: payload.name ?? current.name,
         routingRule: {
-          guardEnabled: payload.guardEnabled ?? current.routingRule.guardEnabled,
-          lookbackHours: payload.lookbackHours ?? current.routingRule.lookbackHours,
-          maxConversations: payload.maxConversations ?? current.routingRule.maxConversations,
+          blockNewConversations: payload.blockNewConversations ?? current.routingRule.blockNewConversations,
           allowCutOut: payload.allowCutOut ?? current.routingRule.allowCutOut,
           allowCutIn: payload.allowCutIn ?? current.routingRule.allowCutIn,
           priorityTier: payload.priorityTier ?? current.routingRule.priorityTier ?? 'normal',

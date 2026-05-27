@@ -37,9 +37,7 @@ function groupPlanBadgeRecipe(planKey: string) {
 function resolveGroupRoutingRule(group: AccountPoolGroupSummaryData): TagRoutingRule {
   const routingRule = group.routingRule;
   return {
-    guardEnabled: routingRule?.guardEnabled ?? false,
-    lookbackHours: routingRule?.lookbackHours ?? null,
-    maxConversations: routingRule?.maxConversations ?? null,
+    blockNewConversations: routingRule?.blockNewConversations ?? false,
     allowCutOut: routingRule?.allowCutOut ?? true,
     allowCutIn: routingRule?.allowCutIn ?? true,
     priorityTier: routingRule?.priorityTier ?? "normal",

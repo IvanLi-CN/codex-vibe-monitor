@@ -207,14 +207,11 @@ function createSummary(
     enabled: true,
     tags: [],
     effectiveRoutingRule: {
-      guardEnabled: false,
-      lookbackHours: null,
-      maxConversations: null,
+      blockNewConversations: false,
       allowCutOut: false,
       allowCutIn: false,
       sourceTagIds: [],
       sourceTagNames: [],
-      guardRules: [],
     },
   };
 }
@@ -931,7 +928,7 @@ describe("useUpstreamAccounts", () => {
     apiMocks.updateUpstreamAccountGroup.mockResolvedValueOnce(
       createGroupSummary("prod", {
         routingRule: {
-          guardEnabled: false,
+          blockNewConversations: false,
           allowCutOut: false,
           allowCutIn: false,
           priorityTier: "fallback",

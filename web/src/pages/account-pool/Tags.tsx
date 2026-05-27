@@ -42,7 +42,7 @@ export default function TagsPage() {
   const { t } = useTranslation()
   const [search, setSearch] = useState('')
   const [hasAccountsFilter, setHasAccountsFilter] = useState<TernaryFilter>('all')
-  const [guardEnabledFilter, setGuardEnabledFilter] = useState<TernaryFilter>('all')
+  const [blockNewConversationsFilter, setBlockNewConversationsFilter] = useState<TernaryFilter>('all')
   const [cutOutFilter, setCutOutFilter] = useState<TernaryFilter>('all')
   const [cutInFilter, setCutInFilter] = useState<TernaryFilter>('all')
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -55,11 +55,11 @@ export default function TagsPage() {
     () => ({
       search,
       hasAccounts: toBooleanQuery(hasAccountsFilter),
-      guardEnabled: toBooleanQuery(guardEnabledFilter),
+      blockNewConversations: toBooleanQuery(blockNewConversationsFilter),
       allowCutOut: cutOutFilter === 'all' ? undefined : cutOutFilter === 'true',
       allowCutIn: cutInFilter === 'all' ? undefined : cutInFilter === 'true',
     }),
-    [cutInFilter, cutOutFilter, guardEnabledFilter, hasAccountsFilter, search],
+    [cutInFilter, cutOutFilter, blockNewConversationsFilter, hasAccountsFilter, search],
   )
 
   const { items, writesEnabled, isLoading, error, updateQuery, createTag, updateTag, deleteTag } = usePoolTags(query)
@@ -154,18 +154,18 @@ export default function TagsPage() {
             />
             <SelectField
               className="field"
-              label={t('accountPool.tags.filters.guardEnabled')}
-              name="tagGuardFilter"
-              value={guardEnabledFilter}
+              label={t('accountPool.tags.filters.blockNewConversations')}
+              name="tagBlockNewConversationsFilter"
+              value={blockNewConversationsFilter}
               options={[
                 { value: 'all', label: t('accountPool.tags.filters.option.all') },
-                { value: 'true', label: t('accountPool.tags.filters.option.guardOn') },
-                { value: 'false', label: t('accountPool.tags.filters.option.guardOff') },
+                { value: 'true', label: t('accountPool.tags.filters.option.blockNewConversationsOn') },
+                { value: 'false', label: t('accountPool.tags.filters.option.blockNewConversationsOff') },
               ]}
               onValueChange={(value) => {
                 const nextValue = value as TernaryFilter
-                setGuardEnabledFilter(nextValue)
-                updateQuery({ ...query, guardEnabled: toBooleanQuery(nextValue) })
+                setBlockNewConversationsFilter(nextValue)
+                updateQuery({ ...query, blockNewConversations: toBooleanQuery(nextValue) })
               }}
             />
             <SelectField
@@ -250,13 +250,10 @@ export default function TagsPage() {
                               fastModeForceRemove: t('accountPool.tags.rule.fastModeForceRemove'),
                             })}
                           />
-                          {tag.routingRule.guardEnabled ? (
+                          {tag.routingRule.blockNewConversations ? (
                             <RuleBadge
                               variant="default"
-                              label={t('accountPool.tags.rule.guard', {
-                                hours: tag.routingRule.lookbackHours ?? 0,
-                                count: tag.routingRule.maxConversations ?? 0,
-                              })}
+                              label={t('accountPool.tags.rule.blockNewConversations')}
                             />
                           ) : null}
                           {!tag.routingRule.allowCutOut ? (
@@ -328,10 +325,8 @@ export default function TagsPage() {
           description: t('accountPool.tags.dialog.description'),
           name: t('accountPool.tags.dialog.name'),
           namePlaceholder: t('accountPool.tags.dialog.namePlaceholder'),
-          guardEnabled: t('accountPool.tags.dialog.guardEnabled'),
+          blockNewConversations: t('accountPool.tags.dialog.blockNewConversations'),
           forbidNewConversation: t('accountPool.tags.dialog.forbidNewConversation'),
-          lookbackHours: t('accountPool.tags.dialog.lookbackHours'),
-          maxConversations: t('accountPool.tags.dialog.maxConversations'),
           allowCutOut: t('accountPool.tags.dialog.allowCutOut'),
           allowCutIn: t('accountPool.tags.dialog.allowCutIn'),
           forbidCutOut: t('accountPool.tags.dialog.forbidCutOut'),

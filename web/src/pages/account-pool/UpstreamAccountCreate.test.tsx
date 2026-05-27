@@ -691,7 +691,7 @@ function mockUpstreamAccounts(
     id: tagId,
     name,
     routingRule: {
-      guardEnabled: false,
+      blockNewConversations: false,
       allowCutOut: true,
       allowCutIn: true,
     },
@@ -712,12 +712,11 @@ function mockUpstreamAccounts(
     note: null,
     tags: [],
     effectiveRoutingRule: {
-      guardEnabled: false,
+      blockNewConversations: false,
       allowCutOut: true,
       allowCutIn: true,
       sourceTagIds: [],
       sourceTagNames: [],
-      guardRules: [],
     },
     ...overrides,
   });

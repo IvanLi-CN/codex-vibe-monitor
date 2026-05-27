@@ -849,11 +849,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
             &state.pool,
             row.id,
             sticky_key,
-            if forced_binding_account_id == Some(row.id) && sticky_source_id == Some(row.id) {
-                None
-            } else {
-                sticky_source_id
-            },
+            sticky_source_id,
             effective_rule,
             forced_binding_account_id == Some(row.id),
         )
