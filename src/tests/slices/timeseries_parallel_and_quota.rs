@@ -2245,7 +2245,7 @@ async fn resolve_pool_account_for_request_falls_back_after_soft_bucket_candidate
 }
 
 #[tokio::test]
-async fn resolve_pool_account_for_request_allows_timeout_failover_past_cut_out_rule() {
+async fn resolve_pool_account_for_request_blocks_timeout_failover_past_cut_out_rule() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -2259,7 +2259,7 @@ async fn resolve_pool_account_for_request_allows_timeout_failover_past_cut_out_r
         Some("https://route-a.example.com/backend-api/"),
     )
     .await;
-    let alternate_id = insert_test_pool_api_key_account_with_options(
+    let _alternate_id = insert_test_pool_api_key_account_with_options(
         &state,
         "Alternate",
         "upstream-alternate",
@@ -2314,7 +2314,7 @@ async fn resolve_pool_account_for_request_allows_timeout_failover_past_cut_out_r
         ),
     );
 
-    let account = match resolve_pool_account_for_request(
+    let blocked = match resolve_pool_account_for_request(
         state.as_ref(),
         Some("sticky-timeout-cut-out"),
         &[],
@@ -2323,16 +2323,20 @@ async fn resolve_pool_account_for_request_allows_timeout_failover_past_cut_out_r
     .await
     .expect("resolve pool account")
     {
-        PoolAccountResolution::Resolved(account) => account,
-        other => panic!("pool account should resolve after timeout route exclusion, got {other:?}"),
+        PoolAccountResolution::AssignedBlocked(blocked) => blocked,
+        other => panic!("pool account should block after timeout route exclusion, got {other:?}"),
     };
 
-    assert_eq!(account.account_id, alternate_id);
-    assert_ne!(account.account_id, source_id);
+    assert_eq!(blocked.account.account_id, source_id);
+    assert!(
+        blocked.message.contains("routing policy forbids it"),
+        "unexpected blocked message: {}",
+        blocked.message
+    );
 }
 
 #[tokio::test]
-async fn resolve_pool_account_for_request_allows_timeout_failover_past_cut_out_rule_with_invalid_sticky_group()
+async fn resolve_pool_account_for_request_blocks_timeout_failover_past_cut_out_rule_with_invalid_sticky_group()
  {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -2347,7 +2351,7 @@ async fn resolve_pool_account_for_request_allows_timeout_failover_past_cut_out_r
         Some("https://route-a.example.com/backend-api/"),
     )
     .await;
-    let alternate_id = insert_test_pool_api_key_account_with_options(
+    let _alternate_id = insert_test_pool_api_key_account_with_options(
         &state,
         "Healthy Alternate",
         "upstream-healthy-alternate",
@@ -2408,7 +2412,7 @@ async fn resolve_pool_account_for_request_allows_timeout_failover_past_cut_out_r
         ),
     );
 
-    let account = match resolve_pool_account_for_request(
+    let blocked = match resolve_pool_account_for_request(
         state.as_ref(),
         Some("sticky-timeout-invalid-group"),
         &[],
@@ -2417,14 +2421,18 @@ async fn resolve_pool_account_for_request_allows_timeout_failover_past_cut_out_r
     .await
     .expect("resolve pool account")
     {
-        PoolAccountResolution::Resolved(account) => account,
+        PoolAccountResolution::AssignedBlocked(blocked) => blocked,
         other => {
-            panic!("pool account should resolve after excluding broken sticky route, got {other:?}")
+            panic!("pool account should block after excluding no-cut-out sticky route, got {other:?}")
         }
     };
 
-    assert_eq!(account.account_id, alternate_id);
-    assert_ne!(account.account_id, source_id);
+    assert_eq!(blocked.account.account_id, source_id);
+    assert!(
+        blocked.message.contains("routing policy forbids it"),
+        "unexpected blocked message: {}",
+        blocked.message
+    );
 }
 
 #[tokio::test]
