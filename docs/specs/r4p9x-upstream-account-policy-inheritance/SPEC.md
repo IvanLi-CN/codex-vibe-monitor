@@ -54,6 +54,14 @@ When an account has multiple tags, the tag layer keeps the existing conservative
 - the smallest non-zero concurrency limit wins
 - upstream 429 retry is enabled if any tag enables it, with the highest retry count
 
+## Sticky Transfer Policy
+
+`allow cut-out` is an automatic-routing boundary for the sticky source account. When the effective source policy forbids cut-out, the resolver must keep the conversation assigned to that account and fail there rather than automatically selecting another account, even when the sticky account has a transport failure, first-byte timeout, temporary route-key exclusion, cooldown, or other failover pressure.
+
+The only supported exception is an explicit Prompt Cache conversation binding written by an operator. A manual upstream-account or group binding may move the conversation out of a no-cut-out sticky source; the target side still honors the binding contract and its existing target eligibility rules.
+
+HTTP 4xx responses are not route-health successes for sticky routing. They remain recorded as failed invocations and upstream attempts with the real account, status, and error details, but they must not update `pool_sticky_routes`.
+
 ## API Contract
 
 Group summaries expose `routingRule`. Group update payloads accept `routingRule`.

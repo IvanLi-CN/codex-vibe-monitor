@@ -6,6 +6,10 @@ SQLite schema adds nullable account and group `policy_*` columns for policy over
 
 Runtime policy resolution now builds one effective `EffectiveRoutingRule` per account, records field-level sources for the final values, and feeds the effective rule to routing selection, sticky behavior, FAST rewriting, concurrency limiting, and upstream 429 retry.
 
+Sticky routing enforces `allow_cut_out=false` before automatic failover can select a different account. Route-key exclusion from handshake or first-byte timeout does not relax the source cut-out boundary. Explicit Prompt Cache bindings are passed as operator constraints and remain the only supported cut-out override.
+
+Pool route success recording only updates sticky routes for actual successful upstream responses. HTTP 4xx responses continue through the HTTP failure recording path, preserving invocation and attempt detail without rebinding `pool_sticky_routes`.
+
 ## Frontend
 
 The API client normalizes the expanded routing policy surface on tags, groups, and effective account rules.

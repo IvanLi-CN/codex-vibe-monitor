@@ -303,6 +303,124 @@ async fn resolver_forced_prompt_cache_account_binding_bypasses_source_cut_out_po
 }
 
 #[tokio::test]
+async fn resolver_prompt_cache_group_binding_bypasses_source_cut_out_policy() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let sticky_group = "prompt-cache-no-cut-out-sticky-group";
+    let bound_group = "prompt-cache-cut-out-bound-group";
+    let sticky = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Group No Cut Out Source",
+        "sk-prompt-cache-group-no-cut-out-source",
+        Some(sticky_group),
+        Some("https://group-no-cut-out-source.example.com/backend-api/codex"),
+    )
+    .await;
+    let bound = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Bound Group Cut Out Target",
+        "sk-prompt-cache-bound-group-cut-out-target",
+        Some(bound_group),
+        Some("https://bound-group-cut-out-target.example.com/backend-api/codex"),
+    )
+    .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET policy_allow_cut_out = 0 WHERE id = ?1")
+        .bind(sticky)
+        .execute(&state.pool)
+        .await
+        .expect("set source no cut-out policy");
+    let now_iso = format_utc_iso(Utc::now());
+    insert_limit_sample_with_usage(&state.pool, sticky, &now_iso, Some(1.0), Some(1.0)).await;
+    insert_limit_sample_with_usage(&state.pool, bound, &now_iso, Some(20.0), Some(20.0)).await;
+    upsert_sticky_route(
+        &state.pool,
+        "prompt-cache-group-source-cut-out-key",
+        sticky,
+        &now_iso,
+    )
+    .await
+    .expect("upsert sticky source");
+
+    let resolution = resolve_pool_account_for_request_with_binding_constraint(
+        &state,
+        Some("prompt-cache-group-source-cut-out-key"),
+        &[],
+        &HashSet::new(),
+        Some(&PromptCacheConversationBindingConstraint::Group(
+            bound_group.to_string(),
+        )),
+    )
+    .await
+    .expect("resolve group-bound cut-out pool account");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("expected group-bound account to cut out from sticky source");
+    };
+    assert_eq!(account.account_id, bound);
+    assert_eq!(account.group_name.as_deref(), Some(bound_group));
+}
+
+#[tokio::test]
+async fn resolver_blocks_cut_out_when_sticky_route_key_is_excluded_by_failover() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let sticky_route = "https://sticky-excluded-no-cut-out.example.com/backend-api/codex";
+    let fallback_route = "https://fallback-excluded-no-cut-out.example.com/backend-api/codex";
+    let sticky = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Sticky Excluded No Cut Out Source",
+        "sk-sticky-excluded-no-cut-out-source",
+        Some(test_required_group_name()),
+        Some(sticky_route),
+    )
+    .await;
+    let fallback = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Fallback Excluded No Cut Out Target",
+        "sk-fallback-excluded-no-cut-out-target",
+        Some(test_required_group_name()),
+        Some(fallback_route),
+    )
+    .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET policy_allow_cut_out = 0 WHERE id = ?1")
+        .bind(sticky)
+        .execute(&state.pool)
+        .await
+        .expect("set sticky source no cut-out policy");
+    let now_iso = format_utc_iso(Utc::now());
+    insert_limit_sample_with_usage(&state.pool, sticky, &now_iso, Some(1.0), Some(1.0)).await;
+    insert_limit_sample_with_usage(&state.pool, fallback, &now_iso, Some(20.0), Some(20.0)).await;
+    upsert_sticky_route(
+        &state.pool,
+        "sticky-excluded-no-cut-out-key",
+        sticky,
+        &now_iso,
+    )
+    .await
+    .expect("upsert sticky route");
+    let excluded_upstream_route_keys = HashSet::from([canonical_pool_upstream_route_key(
+        &Url::parse(sticky_route).expect("valid sticky route"),
+    )]);
+
+    let resolution = resolve_pool_account_for_request(
+        &state,
+        Some("sticky-excluded-no-cut-out-key"),
+        &[],
+        &excluded_upstream_route_keys,
+    )
+    .await
+    .expect("resolve excluded sticky pool account");
+    let PoolAccountResolution::AssignedBlocked(blocked) = resolution else {
+        panic!("expected excluded no-cut-out sticky source to block automatic cut-out");
+    };
+    assert_eq!(blocked.account.account_id, sticky);
+    assert!(
+        blocked
+            .message
+            .contains("routing policy forbids it"),
+        "unexpected blocked message: {}",
+        blocked.message
+    );
+}
+
+#[tokio::test]
 async fn resolver_forced_prompt_cache_account_binding_keeps_concurrency_limit() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let sticky = insert_test_pool_api_key_account_with_options(
@@ -1276,7 +1394,7 @@ async fn resolver_preserves_sticky_account_when_cut_out_is_forbidden_by_tag_poli
     );
     assert_eq!(
         blocked.message,
-        "sticky conversation cannot cut out of the current account because a tag rule forbids it"
+        "sticky conversation cannot cut out of the current account because routing policy forbids it"
     );
 }
 
