@@ -421,6 +421,76 @@ async fn resolver_blocks_cut_out_when_sticky_route_key_is_excluded_by_failover()
 }
 
 #[tokio::test]
+async fn resolver_blocks_cut_out_when_sticky_source_is_hard_blocked() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let sticky = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Sticky Hard Blocked No Cut Out Source",
+        "sk-sticky-hard-blocked-no-cut-out-source",
+        Some(test_required_group_name()),
+        Some("https://sticky-hard-blocked-no-cut-out.example.com/backend-api/codex"),
+    )
+    .await;
+    let fallback = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Fallback Hard Blocked No Cut Out Target",
+        "sk-fallback-hard-blocked-no-cut-out-target",
+        Some(test_required_group_name()),
+        Some("https://fallback-hard-blocked-no-cut-out.example.com/backend-api/codex"),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET policy_allow_cut_out = 0,
+            status = 'error'
+        WHERE id = ?1
+        "#,
+    )
+    .bind(sticky)
+    .execute(&state.pool)
+    .await
+    .expect("set sticky source no cut-out hard block");
+    let now_iso = format_utc_iso(Utc::now());
+    insert_limit_sample_with_usage(&state.pool, fallback, &now_iso, Some(20.0), Some(20.0)).await;
+    upsert_sticky_route(
+        &state.pool,
+        "sticky-hard-blocked-no-cut-out-key",
+        sticky,
+        &now_iso,
+    )
+    .await
+    .expect("upsert hard-blocked sticky route");
+
+    let resolution = resolve_pool_account_for_request(
+        &state,
+        Some("sticky-hard-blocked-no-cut-out-key"),
+        &[],
+        &HashSet::new(),
+    )
+    .await
+    .expect("resolve hard-blocked sticky pool account");
+    let message = match resolution {
+        PoolAccountResolution::AssignedBlocked(blocked) => {
+            assert_eq!(blocked.account.account_id, sticky);
+            blocked.message
+        }
+        PoolAccountResolution::BlockedByPolicy(message) => message,
+        PoolAccountResolution::Resolved(account) => {
+            panic!(
+                "hard-blocked no-cut-out sticky source cut out to account {}",
+                account.account_id
+            )
+        }
+        other => panic!("expected no-cut-out sticky source to block, got {other:?}"),
+    };
+    assert!(
+        message.contains("routing policy forbids it"),
+        "unexpected blocked message: {message}",
+    );
+}
+
+#[tokio::test]
 async fn resolver_forced_prompt_cache_account_binding_keeps_concurrency_limit() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let sticky = insert_test_pool_api_key_account_with_options(

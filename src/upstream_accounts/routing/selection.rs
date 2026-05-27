@@ -552,32 +552,11 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
             && sticky_source_rule
                 .as_ref()
                 .is_some_and(|rule| !rule.allow_cut_out)
-            && let Some(row) = load_upstream_account_row(&state.pool, route.account_id).await?
+            && load_upstream_account_row(&state.pool, route.account_id)
+                .await?
+                .is_some()
         {
-            let sticky_candidate =
-                load_account_routing_candidate(&state.pool, route.account_id).await?;
-            let sticky_snapshot_exhausted = sticky_candidate
-                .as_ref()
-                .is_some_and(routing_candidate_snapshot_is_exhausted);
-            let sticky_route_key = resolve_pool_account_upstream_base_url(
-                &row,
-                &state.config.openai_upstream_base_url,
-            )
-            .ok()
-            .map(|url| canonical_pool_upstream_route_key(&url));
-            let sticky_route_matches_required =
-                required_upstream_route_key.is_none_or(|required| {
-                    sticky_route_key
-                        .as_deref()
-                        .is_some_and(|route_key| route_key == required)
-                });
-            if sticky_route_matches_required
-                && (is_account_rate_limited_for_routing(&row, sticky_snapshot_exhausted)
-                    || is_account_degraded_for_routing(&row, sticky_snapshot_exhausted, now)
-                    || is_routing_eligible_account(&row))
-            {
-                sticky_source_cut_out_guard_applies = true;
-            }
+            sticky_source_cut_out_guard_applies = true;
         }
         if !sticky_route_is_forced_binding_target
             && !tried.contains(&route.account_id)
@@ -604,14 +583,9 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
                         .is_some_and(|route_key| route_key == required)
                 });
             if binding_constraint.is_none()
-                && sticky_route_matches_binding
-                && sticky_route_matches_required
                 && sticky_source_rule
                     .as_ref()
                     .is_some_and(|rule| !rule.allow_cut_out)
-                && (is_account_rate_limited_for_routing(&row, sticky_snapshot_exhausted)
-                    || is_account_degraded_for_routing(&row, sticky_snapshot_exhausted, now)
-                    || is_routing_eligible_account(&row))
             {
                 sticky_source_cut_out_guard_applies = true;
             }
