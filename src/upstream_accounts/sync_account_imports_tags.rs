@@ -1208,13 +1208,13 @@ fn same_real_upstream_identity_for_display_name(
     let current_member = UpstreamAccountIdentityClusterMember {
         id: -1,
         chatgpt_user_id: normalize_optional_text(current_chatgpt_user_id.map(str::to_string)),
-        group_name: normalize_optional_text(current_group_name.map(str::to_string)),
+        group_name: normalize_legacy_ungrouped_group_name(current_group_name.map(str::to_string)),
         plan_type: normalize_plan_type(current_plan_type),
     };
     let peer_member = UpstreamAccountIdentityClusterMember {
         id: peer.id,
         chatgpt_user_id: normalize_optional_text(peer.chatgpt_user_id.clone()),
-        group_name: normalize_optional_text(peer.group_name.clone()),
+        group_name: normalize_legacy_ungrouped_group_name(peer.group_name.clone()),
         plan_type: normalize_plan_type(peer.plan_type.as_deref()),
     };
     !is_team_shared_org_peer_pair(&current_member, &peer_member)
@@ -1617,7 +1617,7 @@ async fn load_duplicate_info_map(
                 UpstreamAccountIdentityClusterMember {
                     id: row.id,
                     chatgpt_user_id: normalize_optional_text(row.chatgpt_user_id.clone()),
-                    group_name: normalize_optional_text(row.group_name.clone()),
+                    group_name: normalize_legacy_ungrouped_group_name(row.group_name.clone()),
                     plan_type: normalize_plan_type(row.plan_type.as_deref()),
                 },
             );
@@ -1627,7 +1627,7 @@ async fn load_duplicate_info_map(
                 UpstreamAccountIdentityClusterMember {
                     id: row.id,
                     chatgpt_user_id: normalize_optional_text(row.chatgpt_user_id.clone()),
-                    group_name: normalize_optional_text(row.group_name.clone()),
+                    group_name: normalize_legacy_ungrouped_group_name(row.group_name.clone()),
                     plan_type: normalize_plan_type(row.plan_type.as_deref()),
                 },
             );
@@ -1639,7 +1639,7 @@ async fn load_duplicate_info_map(
         let current_member = UpstreamAccountIdentityClusterMember {
             id: row.id,
             chatgpt_user_id: normalize_optional_text(row.chatgpt_user_id.clone()),
-            group_name: normalize_optional_text(row.group_name.clone()),
+            group_name: normalize_legacy_ungrouped_group_name(row.group_name.clone()),
             plan_type: normalize_plan_type(row.plan_type.as_deref()),
         };
         let mut peer_ids = std::collections::BTreeSet::new();

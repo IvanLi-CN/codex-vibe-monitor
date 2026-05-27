@@ -97,6 +97,19 @@ fn normalize_external_group_name(
     Some(normalize_upstream_account_group_name(group_name))
 }
 
+fn external_group_binding_name(
+    metadata: &ExternalUpstreamAccountMetadataRequest,
+    existing_row: Option<&UpstreamAccountRow>,
+) -> Option<String> {
+    let normalized = normalize_external_group_name(metadata, existing_row)?;
+    let proxy_metadata_changed =
+        metadata.group_bound_proxy_keys.is_some() || metadata.group_node_shunt_enabled.is_some();
+    if normalized != DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME || proxy_metadata_changed {
+        return Some(normalized);
+    }
+    None
+}
+
 async fn load_external_account_tag_ids(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -116,12 +129,13 @@ async fn resolve_external_group_binding(
     metadata: &ExternalUpstreamAccountMetadataRequest,
     existing_row: Option<&UpstreamAccountRow>,
 ) -> Result<Option<ResolvedRequiredGroupProxyBinding>, (StatusCode, String)> {
-    let target_group_name = normalize_external_group_name(metadata, existing_row);
+    let target_group_name = external_group_binding_name(metadata, existing_row);
 
-    if metadata.group_name.is_some()
-        || metadata.group_bound_proxy_keys.is_some()
-        || metadata.group_node_shunt_enabled.is_some()
-        || metadata.group_single_account_rotation_enabled.is_some()
+    if target_group_name.is_some()
+        && (metadata.group_name.is_some()
+            || metadata.group_bound_proxy_keys.is_some()
+            || metadata.group_node_shunt_enabled.is_some()
+            || metadata.group_single_account_rotation_enabled.is_some())
     {
         return resolve_required_group_proxy_binding_for_write(
             state,

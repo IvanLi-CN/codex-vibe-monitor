@@ -587,6 +587,10 @@
         .expect("disabled external account should exist");
         assert_eq!(persisted.enabled, 0);
         assert_eq!(persisted.note.as_deref(), Some("created disabled"));
+        assert_eq!(
+            persisted.group_name.as_deref(),
+            Some(DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME)
+        );
 
         server.abort();
     }
