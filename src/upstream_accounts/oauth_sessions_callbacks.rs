@@ -632,6 +632,7 @@ pub(crate) async fn create_oauth_login_session(
         email,
         error: None,
         sync_applied: None,
+        identity_confirmation: None,
     }))
 }
 
@@ -1204,6 +1205,38 @@ pub(crate) async fn complete_oauth_login_session(
             (
                 StatusCode::NOT_FOUND,
                 "account not found after oauth completion".to_string(),
+            )
+        })?;
+    Ok(Json(detail))
+}
+
+pub(crate) async fn confirm_oauth_login_session_identity_overwrite(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(login_id): AxumPath<String>,
+) -> Result<Json<UpstreamAccountDetail>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    state.upstream_accounts.require_crypto_key()?;
+    expire_pending_login_sessions(&state.pool)
+        .await
+        .map_err(internal_error_tuple)?;
+    let account_id = state
+        .upstream_accounts
+        .account_ops
+        .run_confirm_oauth_identity_overwrite(state.clone(), login_id)
+        .await?;
+    let detail = load_upstream_account_detail_with_actual_usage(state.as_ref(), account_id)
+        .await
+        .map_err(internal_error_tuple)?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                "account not found after oauth confirmation".to_string(),
             )
         })?;
     Ok(Json(detail))
@@ -2169,54 +2202,76 @@ pub(crate) async fn persist_oauth_callback_inner(
             "This login session has already been consumed.".to_string(),
         ));
     }
-    let current_plan_type = if let Some(account_id) = session.account_id {
-        let existing_plan_type = load_upstream_account_row_conn(tx.as_mut(), account_id)
+    let existing_account = if let Some(account_id) = session.account_id {
+        let account = load_upstream_account_row_conn(tx.as_mut(), account_id)
             .await
             .map_err(internal_error_tuple)?
-            .and_then(|row| row.plan_type);
-        normalize_plan_type(input.claims.chatgpt_plan_type.as_deref()).or(
-            resolve_effective_plan_type_for_account(
-                tx.as_mut(),
-                account_id,
-                existing_plan_type.as_deref(),
+            .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
+        if oauth_identity_requires_confirmation(&account, &input) {
+            mark_login_session_needs_identity_confirmation_with_executor(
+                &mut *tx, &session, &input,
             )
             .await
-            .map_err(internal_error_tuple)?,
+            .map_err(internal_error_tuple)?;
+            tx.commit().await.map_err(internal_error_tuple)?;
+            return Err((
+                StatusCode::CONFLICT,
+                "OAuth identity confirmation required".to_string(),
+            ));
+        }
+        Some(account)
+    } else {
+        let current_plan_type = normalize_plan_type(input.claims.chatgpt_plan_type.as_deref());
+        if let Err((status, message)) = ensure_display_name_available_for_oauth_identity(
+            &mut *tx,
+            &input.display_name,
+            None,
+            input.claims.chatgpt_account_id.as_deref(),
+            input.claims.chatgpt_user_id.as_deref(),
+            session.group_name.as_deref(),
+            current_plan_type.as_deref(),
+        )
+        .await
+        {
+            if status == StatusCode::CONFLICT {
+                fail_login_session_with_executor(&mut *tx, &session.login_id, &message)
+                    .await
+                    .map_err(internal_error_tuple)?;
+                tx.commit().await.map_err(internal_error_tuple)?;
+            }
+            return Err((status, message));
+        }
+        None
+    };
+    let (
+        effective_display_name,
+        effective_chosen_email,
+        effective_group_name,
+        effective_is_mother,
+        effective_note,
+        effective_tag_ids,
+        effective_group_metadata_changes,
+    ) = if let Some(account) = existing_account {
+        (
+            account.display_name,
+            account.email,
+            account.group_name,
+            account.is_mother != 0,
+            account.note,
+            current_account_tag_ids_with_executor(tx.as_mut(), account.id)
+                .await
+                .map_err(internal_error_tuple)?,
+            RequestedGroupMetadataChanges::default(),
         )
     } else {
-        normalize_plan_type(input.claims.chatgpt_plan_type.as_deref())
-    };
-    if let Err((status, message)) = ensure_display_name_available_for_oauth_identity(
-        &mut *tx,
-        &input.display_name,
-        session.account_id,
-        input.claims.chatgpt_account_id.as_deref(),
-        input.claims.chatgpt_user_id.as_deref(),
-        session.group_name.as_deref(),
-        current_plan_type.as_deref(),
-    )
-    .await
-    {
-        if status == StatusCode::CONFLICT {
-            fail_login_session_with_executor(&mut *tx, &session.login_id, &message)
-                .await
-                .map_err(internal_error_tuple)?;
-            tx.commit().await.map_err(internal_error_tuple)?;
-        }
-        return Err((status, message));
-    }
-    let account_id = upsert_oauth_account(
-        &mut tx,
-        OauthAccountUpsert {
-            account_id: session.account_id,
-            display_name: &input.display_name,
-            chosen_email: input.chosen_email.clone(),
-            verified_email: input.verified_email.clone(),
-            group_name: session.group_name.clone(),
-            is_mother: session.is_mother != 0,
-            note: session.note.clone(),
-            tag_ids: parse_tag_ids_json(session.tag_ids_json.as_deref()),
-            requested_group_metadata_changes: build_requested_group_metadata_changes(
+        (
+            input.display_name.clone(),
+            input.chosen_email.clone(),
+            session.group_name.clone(),
+            session.is_mother != 0,
+            session.note.clone(),
+            parse_tag_ids_json(session.tag_ids_json.as_deref()),
+            build_requested_group_metadata_changes(
                 session.group_note.clone(),
                 true,
                 Some(decode_group_bound_proxy_keys_json(
@@ -2236,6 +2291,20 @@ pub(crate) async fn persist_oauth_callback_inner(
                     session.group_single_account_rotation_enabled_requested,
                 ),
             ),
+        )
+    };
+    let account_id = upsert_oauth_account(
+        &mut tx,
+        OauthAccountUpsert {
+            account_id: session.account_id,
+            display_name: &effective_display_name,
+            chosen_email: effective_chosen_email,
+            verified_email: input.verified_email.clone(),
+            group_name: effective_group_name,
+            is_mother: effective_is_mother,
+            note: effective_note,
+            tag_ids: effective_tag_ids,
+            requested_group_metadata_changes: effective_group_metadata_changes,
             claims: &input.claims,
             encrypted_credentials: input.encrypted_credentials,
             has_refresh_token: input.has_refresh_token,
@@ -2266,6 +2335,216 @@ pub(crate) async fn persist_oauth_callback_inner(
     .map_err(internal_error_tuple)?;
     tx.commit().await.map_err(internal_error_tuple)?;
     Ok(account_id)
+}
+
+pub(crate) async fn confirm_oauth_identity_overwrite_inner(
+    state: &AppState,
+    login_id: &str,
+) -> Result<i64, (StatusCode, String)> {
+    let mut tx = state
+        .pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(internal_error_tuple)?;
+    let session = load_login_session_by_login_id_with_executor(&mut *tx, login_id)
+        .await
+        .map_err(internal_error_tuple)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "login session not found".to_string()))?;
+    if session.status != LOGIN_SESSION_STATUS_NEEDS_IDENTITY_CONFIRMATION {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "This login session is not waiting for identity confirmation.".to_string(),
+        ));
+    }
+    let account_id = session.account_id.ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            "login session is missing its target account".to_string(),
+        )
+    })?;
+    let account = load_upstream_account_row_conn(tx.as_mut(), account_id)
+        .await
+        .map_err(internal_error_tuple)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
+    let encrypted_credentials = session
+        .pending_encrypted_credentials
+        .clone()
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "login session is missing pending credentials".to_string(),
+            )
+        })?;
+    let token_expires_at = session.pending_token_expires_at.clone().ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            "login session is missing pending token expiry".to_string(),
+        )
+    })?;
+    let claims = ChatgptJwtClaims {
+        email: session.pending_verified_email.clone(),
+        chatgpt_plan_type: session.pending_plan_type.clone(),
+        chatgpt_user_id: session.pending_chatgpt_user_id.clone(),
+        chatgpt_account_id: session.pending_chatgpt_account_id.clone(),
+    };
+    let tag_ids = current_account_tag_ids_with_executor(tx.as_mut(), account_id)
+        .await
+        .map_err(internal_error_tuple)?;
+    let resolved_account_id = upsert_oauth_account(
+        &mut tx,
+        OauthAccountUpsert {
+            account_id: Some(account_id),
+            display_name: &account.display_name,
+            chosen_email: account.email.clone(),
+            verified_email: session.pending_verified_email.clone(),
+            group_name: account.group_name.clone(),
+            is_mother: account.is_mother != 0,
+            note: account.note.clone(),
+            tag_ids,
+            requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
+            claims: &claims,
+            encrypted_credentials,
+            has_refresh_token: session.pending_has_refresh_token.unwrap_or(0) != 0,
+            token_expires_at: &token_expires_at,
+            external_identity: None,
+        },
+    )
+    .await
+    .map_err(internal_error_tuple)?;
+    let completed_group_metadata_snapshot = load_group_metadata_snapshot_conn_with_limit(
+        tx.as_mut(),
+        account.group_name.as_deref(),
+        session.group_note.as_deref(),
+        session.group_concurrency_limit,
+    )
+    .await
+    .map_err(internal_error_tuple)?;
+    complete_login_session_with_executor(
+        &mut *tx,
+        &session.login_id,
+        resolved_account_id,
+        completed_group_metadata_snapshot.note,
+        completed_group_metadata_snapshot.concurrency_limit,
+        &session.updated_at,
+        false,
+    )
+    .await
+    .map_err(internal_error_tuple)?;
+    tx.commit().await.map_err(internal_error_tuple)?;
+    if let Err(err) = sync_upstream_account_by_id(state, account_id, SyncCause::PostCreate).await {
+        warn!(account_id, error = %err, "OAuth identity overwrite confirmed but initial sync failed");
+    }
+    Ok(account_id)
+}
+
+fn oauth_identity_requires_confirmation(
+    account: &UpstreamAccountRow,
+    input: &PersistOauthCallbackInput,
+) -> bool {
+    let Some(existing) = comparable_oauth_identity(
+        account.chatgpt_account_id.as_deref(),
+        account.chatgpt_user_id.as_deref(),
+        account
+            .verified_email
+            .as_deref()
+            .or(account.email.as_deref()),
+    ) else {
+        return false;
+    };
+    let Some(incoming) = comparable_oauth_identity(
+        input.claims.chatgpt_account_id.as_deref(),
+        input.claims.chatgpt_user_id.as_deref(),
+        input
+            .verified_email
+            .as_deref()
+            .or(input.chosen_email.as_deref()),
+    ) else {
+        return false;
+    };
+    existing != incoming
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ComparableOauthIdentity {
+    AccountAndUser { account_id: String, user_id: String },
+    AccountAndEmail { account_id: String, email: String },
+}
+
+fn comparable_oauth_identity(
+    chatgpt_account_id: Option<&str>,
+    chatgpt_user_id: Option<&str>,
+    email: Option<&str>,
+) -> Option<ComparableOauthIdentity> {
+    let account_id = normalize_display_name_or_email_key(chatgpt_account_id)?;
+    if let Some(user_id) = normalize_display_name_or_email_key(chatgpt_user_id) {
+        return Some(ComparableOauthIdentity::AccountAndUser {
+            account_id,
+            user_id,
+        });
+    }
+    normalize_email_value(email.map(str::to_string))
+        .map(|email| ComparableOauthIdentity::AccountAndEmail { account_id, email })
+}
+
+async fn mark_login_session_needs_identity_confirmation_with_executor(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    session: &OauthLoginSessionRow,
+    input: &PersistOauthCallbackInput,
+) -> Result<()> {
+    let updated_at = next_login_session_updated_at(Some(&session.updated_at));
+    sqlx::query(
+        r#"
+        UPDATE pool_oauth_login_sessions
+        SET status = ?2,
+            error_message = ?3,
+            pending_encrypted_credentials = ?4,
+            pending_token_expires_at = ?5,
+            pending_verified_email = ?6,
+            pending_chatgpt_account_id = ?7,
+            pending_chatgpt_user_id = ?8,
+            pending_plan_type = ?9,
+            pending_has_refresh_token = ?10,
+            updated_at = ?11,
+            consumed_at = NULL
+        WHERE login_id = ?1
+        "#,
+    )
+    .bind(&session.login_id)
+    .bind(LOGIN_SESSION_STATUS_NEEDS_IDENTITY_CONFIRMATION)
+    .bind("OAuth identity differs from the existing account. Confirm overwrite to continue.")
+    .bind(&input.encrypted_credentials)
+    .bind(&input.token_expires_at)
+    .bind(&input.verified_email)
+    .bind(&input.claims.chatgpt_account_id)
+    .bind(&input.claims.chatgpt_user_id)
+    .bind(&input.claims.chatgpt_plan_type)
+    .bind(if input.has_refresh_token {
+        1_i64
+    } else {
+        0_i64
+    })
+    .bind(&updated_at)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+async fn current_account_tag_ids_with_executor(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    account_id: i64,
+) -> Result<Vec<i64>> {
+    sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT tag_id
+        FROM pool_upstream_account_tags
+        WHERE account_id = ?1
+        ORDER BY tag_id ASC
+        "#,
+    )
+    .bind(account_id)
+    .fetch_all(executor)
+    .await
+    .map_err(Into::into)
 }
 
 pub(crate) fn parse_manual_oauth_callback(

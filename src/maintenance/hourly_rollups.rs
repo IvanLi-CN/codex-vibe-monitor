@@ -1730,6 +1730,10 @@ fn build_pool_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
             post(complete_oauth_login_session),
         )
         .route(
+            "/api/pool/upstream-accounts/oauth/login-sessions/:loginId/confirm-identity-overwrite",
+            post(confirm_oauth_login_session_identity_overwrite),
+        )
+        .route(
             "/api/pool/upstream-accounts/oauth/callback",
             get(oauth_callback),
         )

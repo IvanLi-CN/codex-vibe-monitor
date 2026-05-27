@@ -139,6 +139,7 @@ const LOGIN_SESSION_STATUS_PENDING: &str = "pending";
 const LOGIN_SESSION_STATUS_COMPLETED: &str = "completed";
 const LOGIN_SESSION_STATUS_FAILED: &str = "failed";
 const LOGIN_SESSION_STATUS_EXPIRED: &str = "expired";
+const LOGIN_SESSION_STATUS_NEEDS_IDENTITY_CONFIRMATION: &str = "needs_identity_confirmation";
 const LOGIN_SESSION_BASE_UPDATED_AT_HEADER: &str = "x-codex-login-session-base-updated-at";
 const IMPORT_VALIDATION_STATUS_OK: &str = "ok";
 const IMPORT_VALIDATION_STATUS_OK_EXHAUSTED: &str = "ok_exhausted";
@@ -188,6 +189,7 @@ enum AccountCommand {
     MaintenanceSync,
     PersistOauthCallback,
     PersistImportedOauth,
+    ConfirmOauthIdentityOverwrite,
     PostCreateSync,
 }
 
@@ -725,6 +727,30 @@ impl AccountOpCoordinator {
         .await
         .map_err(map_account_dispatch_http)?
         .expect_completed(AccountCommand::PersistImportedOauth)
+    }
+
+    async fn run_confirm_oauth_identity_overwrite(
+        &self,
+        state: Arc<AppState>,
+        login_id: String,
+    ) -> Result<i64, (StatusCode, String)> {
+        let account_id = load_login_session_by_login_id(&state.pool, &login_id)
+            .await
+            .map_err(internal_error_tuple)?
+            .and_then(|session| session.account_id)
+            .ok_or_else(|| (StatusCode::NOT_FOUND, "login session not found".to_string()))?;
+        self.submit_command(
+            state,
+            account_id,
+            AccountCommand::ConfirmOauthIdentityOverwrite,
+            false,
+            move |state, _| async move {
+                confirm_oauth_identity_overwrite_inner(state.as_ref(), &login_id).await
+            },
+        )
+        .await
+        .map_err(map_account_dispatch_http)?
+        .expect_completed(AccountCommand::ConfirmOauthIdentityOverwrite)
     }
 
     fn dispatch_maintenance_sync(
@@ -1526,6 +1552,27 @@ pub(crate) struct LoginSessionStatusResponse {
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     sync_applied: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    identity_confirmation: Option<OauthIdentityConfirmationResponse>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OauthIdentityConfirmationResponse {
+    current: OauthIdentitySummaryResponse,
+    incoming: OauthIdentitySummaryResponse,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OauthIdentitySummaryResponse {
+    account_id: Option<i64>,
+    display_name: Option<String>,
+    email: Option<String>,
+    verified_email: Option<String>,
+    chatgpt_account_id: Option<String>,
+    chatgpt_user_id: Option<String>,
+    plan_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -55,6 +55,7 @@ export {
   updateOauthLoginSessionKeepalive,
   reloginUpstreamAccount,
   completeOauthLoginSession,
+  confirmOauthIdentityOverwrite,
   validateImportedOauthAccounts,
   createImportedOauthValidationJob,
   cancelImportedOauthValidationJob,

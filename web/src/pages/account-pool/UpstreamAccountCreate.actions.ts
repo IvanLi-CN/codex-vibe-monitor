@@ -42,6 +42,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
     buildOauthLoginSessionUpdatePayload,
     buildPendingOauthSessionSnapshot,
     completeOauthLogin,
+    confirmOauthOverwrite,
     copyText,
     createApiKeyAccount,
     createdPendingOauthSessionSignaturesRef,
@@ -526,6 +527,62 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         setOauthCompletedDetail(null);
         setSessionHint(latestSession.error ?? message);
         setOauthDuplicateWarning(null);
+      }
+      if (latestSession?.status === "needs_identity_confirmation") {
+        setActionError(null);
+        setSessionHint(
+          t(
+            "accountPool.upstreamAccounts.batchOauth.identityConfirmation.required",
+          ),
+        );
+        return;
+      }
+      setActionError(message);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleConfirmOauthIdentityOverwrite = async () => {
+    if (!session || session.status !== "needs_identity_confirmation") return;
+    setActionError(null);
+    setBusyAction("oauth-confirm-identity");
+    try {
+      const detail = await confirmOauthOverwrite(session.loginId);
+      notifyMotherChange(detail);
+      emitUpstreamAccountsChanged();
+      setSession({
+        ...session,
+        status: "completed",
+        accountId: detail.id,
+        authUrl: null,
+        redirectUri: null,
+        email: detail.email ?? session.email ?? null,
+        error: null,
+        identityConfirmation: null,
+      });
+      setOauthCallbackUrl("");
+      setSessionHint(
+        t("accountPool.upstreamAccounts.batchOauth.completed", {
+          name: detail.displayName || `#${detail.id}`,
+        }),
+      );
+      maybePromptSingleOauthEmailResolution(detail);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      let latestSession: LoginSessionStatusResponse | null = null;
+      try {
+        latestSession = await getLoginSession(session.loginId);
+      } catch {
+        latestSession = null;
+      }
+      setSession((current: LoginSessionStatusResponse | null) => latestSession ?? current);
+      if (
+        latestSession?.status === "failed" ||
+        latestSession?.status === "expired"
+      ) {
+        setSessionHint(latestSession.error ?? message);
+        setOauthCallbackUrl("");
       }
       setActionError(message);
     } finally {
@@ -1142,6 +1199,21 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         }
         return;
       }
+      if (latestSession?.status === "needs_identity_confirmation") {
+        updateBatchRow(rowId, (current: BatchOauthRow) => ({
+          ...current,
+          busyAction: null,
+          session: latestSession,
+          callbackUrl: "",
+          sessionHint: t(
+            "accountPool.upstreamAccounts.batchOauth.identityConfirmation.required",
+          ),
+          duplicateWarning: current.duplicateWarning,
+          needsRefresh: false,
+          actionError: null,
+        }));
+        return;
+      }
 
       updateBatchRow(rowId, (current: BatchOauthRow) => ({
         ...current,
@@ -1164,6 +1236,89 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
             : current.duplicateWarning,
         needsRefresh: false,
         actionError: message,
+      }));
+    }
+  };
+
+  const handleBatchConfirmOauthIdentityOverwrite = async (rowId: string) => {
+    const row = batchRows.find((item: BatchOauthRow) => item.id === rowId);
+    if (!row?.session || row.session.status !== "needs_identity_confirmation")
+      return;
+
+    updateBatchRow(rowId, (current: BatchOauthRow) => ({
+      ...current,
+      busyAction: "confirm",
+      actionError: null,
+    }));
+
+    try {
+      const detail = await confirmOauthOverwrite(row.session.loginId);
+      notifyMotherChange(detail);
+      updateBatchRow(rowId, (current: BatchOauthRow) => {
+        const baseSession = (current.session ??
+          row.session) as LoginSessionStatusResponse;
+        return {
+          ...current,
+          busyAction: null,
+          session: {
+            loginId: baseSession.loginId,
+            status: "completed",
+            authUrl: null,
+            redirectUri: null,
+            expiresAt: baseSession.expiresAt,
+            accountId: detail.id,
+            email: detail.email ?? baseSession.email ?? null,
+            error: null,
+          },
+          callbackUrl: "",
+          email: detail.email ?? current.email,
+          verifiedEmail: detail.verifiedEmail ?? null,
+          planType: detail.planType ?? null,
+          sessionHint: t("accountPool.upstreamAccounts.batchOauth.completed", {
+            name: detail.displayName || current.displayName || `#${detail.id}`,
+          }),
+          duplicateWarning: detail.duplicateInfo
+            ? {
+                accountId: detail.id,
+                displayName: detail.displayName,
+                peerAccountIds: detail.duplicateInfo.peerAccountIds,
+                reasons: detail.duplicateInfo.reasons,
+              }
+            : null,
+          needsRefresh: false,
+          actionError: null,
+          metadataError: null,
+          metadataPersisted: buildBatchOauthPersistedMetadata(
+            {
+              displayName: detail.displayName,
+              groupName: detail.groupName ?? "",
+              note: detail.note ?? "",
+              isMother: detail.isMother === true,
+            },
+            (detail.tags ?? []).map((tag: { id: number }) => tag.id),
+          ),
+          pendingSharedTagIds: null,
+          sharedTagSyncAttempts: 0,
+          isMother: detail.isMother === true,
+          emailResolution: shouldPromptOauthEmailChoice(
+            detail.verifiedEmail,
+            detail.email,
+          )
+            ? {
+                accountId: detail.id,
+                verifiedEmail: detail.verifiedEmail?.trim() ?? "",
+                chosenEmail: detail.email?.trim() ?? "",
+                displayName: detail.displayName,
+                planType: detail.planType ?? null,
+              }
+            : null,
+        };
+      });
+    } catch (err) {
+      updateBatchRow(rowId, (current: BatchOauthRow) => ({
+        ...current,
+        busyAction: null,
+        actionError: err instanceof Error ? err.message : String(err),
       }));
     }
   };
@@ -1294,6 +1449,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
     handleGenerateOauthUrl,
     handleCopyOauthUrl,
     handleCompleteOauth,
+    handleConfirmOauthIdentityOverwrite,
     handleResolveOauthEmailChoice,
     handleBatchGenerateMailbox,
     handleBatchStartMailboxEdit,
@@ -1307,6 +1463,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
     handleBatchGenerateOauthUrl,
     handleBatchCopyOauthUrl,
     handleBatchCompleteOauth,
+    handleBatchConfirmOauthIdentityOverwrite,
     handleResolveBatchOauthEmailChoice,
     handleCreateApiKey
   };

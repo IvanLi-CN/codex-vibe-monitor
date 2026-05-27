@@ -19,6 +19,7 @@ import { MotherAccountToggle } from "../../components/MotherAccountToggle";
 import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
 import {
   DuplicateWarningPopover,
+  OAuthIdentityConfirmationAlert,
   resolveDisplayNameAfterEmailChange,
 } from "./UpstreamAccountCreate.shared";
 import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.controller-context";
@@ -45,6 +46,7 @@ export function UpstreamAccountCreateOauthSection() {
     handleDeleteTag,
     handleGenerateOauthMailbox,
     handleGenerateOauthUrl,
+    handleConfirmOauthIdentityOverwrite,
     handleOauthGroupCreateRequest,
     hasGroupSettings,
     invalidateRelinkPendingOauthSessionForMailboxChange,
@@ -101,6 +103,9 @@ export function UpstreamAccountCreateOauthSection() {
   const oauthResolutionPlanBadge = upstreamPlanBadgeRecipe(
     oauthEmailResolution?.detail.planType ?? null,
   );
+  const oauthNeedsIdentityConfirmation =
+    session?.status === "needs_identity_confirmation";
+  const oauthIdentityConfirmation = session?.identityConfirmation ?? null;
 
   return (
 <>
@@ -733,6 +738,19 @@ export function UpstreamAccountCreateOauthSection() {
     </div>
   </div>
 
+  {oauthNeedsIdentityConfirmation && oauthIdentityConfirmation ? (
+    <OAuthIdentityConfirmationAlert
+      identityConfirmation={oauthIdentityConfirmation}
+      fallbackDisplayName={oauthDisplayName}
+      confirmBusy={busyAction === "oauth-confirm-identity"}
+      confirmDisabled={
+        busyAction === "oauth-confirm-identity" || !writesEnabled
+      }
+      onConfirm={() => void handleConfirmOauthIdentityOverwrite()}
+      t={t}
+    />
+  ) : null}
+
   {oauthEmailResolution ? (
     <Alert variant="warning">
       <AppIcon
@@ -787,31 +805,33 @@ export function UpstreamAccountCreateOauthSection() {
         {t("accountPool.upstreamAccounts.actions.cancel")}
       </Link>
     </Button>
-    <Button
-      type="button"
-      onClick={() => void handleCompleteOauth()}
-      disabled={
-        !oauthSessionActive ||
-        !oauthCallbackUrl.trim() ||
-        busyAction === "oauth-complete" ||
-        !writesEnabled
-      }
-    >
-      {busyAction === "oauth-complete" ? (
-        <AppIcon
-          name="loading"
-          className="mr-2 h-4 w-4 animate-spin"
-          aria-hidden
-        />
-      ) : (
-        <AppIcon
-          name="check-decagram-outline"
-          className="mr-2 h-4 w-4"
-          aria-hidden
-        />
-      )}
-      {t("accountPool.upstreamAccounts.actions.completeOauth")}
-    </Button>
+    {!oauthNeedsIdentityConfirmation ? (
+      <Button
+        type="button"
+        onClick={() => void handleCompleteOauth()}
+        disabled={
+          !oauthSessionActive ||
+          !oauthCallbackUrl.trim() ||
+          busyAction === "oauth-complete" ||
+          !writesEnabled
+        }
+      >
+        {busyAction === "oauth-complete" ? (
+          <AppIcon
+            name="loading"
+            className="mr-2 h-4 w-4 animate-spin"
+            aria-hidden
+          />
+        ) : (
+          <AppIcon
+            name="check-decagram-outline"
+            className="mr-2 h-4 w-4"
+            aria-hidden
+          />
+        )}
+        {t("accountPool.upstreamAccounts.actions.completeOauth")}
+      </Button>
+    ) : null}
     {oauthDuplicateWarning ? (
       <DuplicateWarningPopover
         duplicateWarning={oauthDuplicateWarning}

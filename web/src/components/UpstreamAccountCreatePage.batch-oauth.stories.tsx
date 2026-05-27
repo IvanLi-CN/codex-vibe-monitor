@@ -111,6 +111,70 @@ export const CompletedWithPlanBadge: Story = {
   },
 }
 
+export const NeedsIdentityConfirmation: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts/new',
+        search: '?mode=batchOauth',
+        state: {
+          draft: {
+            batchOauth: {
+              rows: [
+                {
+                  id: 'row-confirm',
+                  displayName: 'Ops Team Existing',
+                  email: 'ops-current@storybook.example.com',
+                  groupName: 'production',
+                  note: 'Existing account should keep its metadata.',
+                  session: {
+                    loginId: 'story-confirm-login',
+                    status: 'needs_identity_confirmation',
+                    authUrl: null,
+                    redirectUri: null,
+                    expiresAt: '2027-03-11T13:30:00.000Z',
+                    accountId: 42,
+                    email: 'ops-current@storybook.example.com',
+                    error:
+                      'OAuth identity differs from the existing account. Confirm overwrite to continue.',
+                    identityConfirmation: {
+                      current: {
+                        accountId: 42,
+                        displayName: 'Ops Team Existing',
+                        email: 'ops-current@storybook.example.com',
+                        planType: 'team',
+                      },
+                      incoming: {
+                        accountId: 42,
+                        email: 'ops-new@storybook.example.com',
+                        verifiedEmail: 'ops-new@storybook.example.com',
+                        chatgptAccountId: 'acct_new_story',
+                        chatgptUserId: 'user_new_story',
+                        planType: 'team',
+                      },
+                    },
+                  },
+                  sessionHint:
+                    'OAuth returned a different ChatGPT identity. Confirm overwrite to update credentials.',
+                },
+              ],
+            },
+          },
+        },
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText(/identity overwrite confirmation required|需要确认身份覆盖/i)).toBeInTheDocument()
+    await expect(canvas.getByText(/ops-current@storybook\.example\.com/i)).toBeInTheDocument()
+    await expect(canvas.getByText(/ops-new@storybook\.example\.com/i)).toBeInTheDocument()
+    await expect(canvas.getByText(/will update|将更新/i)).toBeInTheDocument()
+    await expect(canvas.getByText(/will keep|将保留/i)).toBeInTheDocument()
+    await expect(canvas.getByRole('button', { name: /confirm identity overwrite|确认身份覆盖/i })).toBeEnabled()
+  },
+}
+
 export const Ready: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=batchOauth" />,
   play: async ({ canvasElement }) => {

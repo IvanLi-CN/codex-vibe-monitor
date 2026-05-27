@@ -665,6 +665,30 @@ const baseTranslations = {
       "Submit callback",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeBody":
       "After login succeeds in the browser, paste the callback URL into the field above, then submit this row to finish account creation.",
+    "accountPool.upstreamAccounts.batchOauth.tooltip.confirmIdentityTitle":
+      "Confirm identity overwrite",
+    "accountPool.upstreamAccounts.batchOauth.tooltip.confirmIdentityBody":
+      "The OAuth callback belongs to a different ChatGPT identity. Confirm only if this existing account should use the new OAuth credentials.",
+    "accountPool.upstreamAccounts.batchOauth.actions.confirmIdentityOverwrite":
+      "Confirm identity overwrite",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.required":
+      "OAuth returned a different ChatGPT identity. Confirm overwrite to update credentials.",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.title":
+      "Identity overwrite confirmation required",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.body":
+      "Account display fields stay unchanged until you confirm. Closing this row does not update the account.",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.current":
+      "Current account",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.incoming":
+      "Incoming OAuth identity",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willUpdate":
+      "Will update:",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willUpdateDetail":
+      "OAuth credentials, verified email, ChatGPT identity, plan, and token metadata.",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willKeep":
+      "Will keep:",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willKeepDetail":
+      "Display name, manually entered email, group, tags, note, and mother account flag.",
     "accountPool.upstreamAccounts.batchOauth.tooltip.motherTitle":
       "Toggle mother account",
     "accountPool.upstreamAccounts.batchOauth.tooltip.motherBody":
@@ -685,6 +709,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.batchOauth.status.completed": "Completed",
     "accountPool.upstreamAccounts.batchOauth.status.completedNeedsRefresh":
       "Needs refresh",
+    "accountPool.upstreamAccounts.batchOauth.status.needs_identity_confirmation":
+      "Confirm identity",
     "accountPool.upstreamAccounts.batchOauth.status.failed": "Failed",
     "accountPool.upstreamAccounts.batchOauth.status.expired": "Expired",
     "accountPool.upstreamAccounts.batchOauth.statusDetail.draft":
@@ -2797,6 +2823,30 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeTitle": "提交回调",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeBody":
       "浏览器登录成功后，把上方回调链接粘贴完整，再点击这里完成这一行账号的入池。",
+    "accountPool.upstreamAccounts.batchOauth.tooltip.confirmIdentityTitle":
+      "确认身份覆盖",
+    "accountPool.upstreamAccounts.batchOauth.tooltip.confirmIdentityBody":
+      "这次 OAuth 回调属于另一个 ChatGPT 身份。只有确认该账号应改用新 OAuth 凭据时才继续。",
+    "accountPool.upstreamAccounts.batchOauth.actions.confirmIdentityOverwrite":
+      "确认身份覆盖",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.required":
+      "OAuth 返回了不同的 ChatGPT 身份，需要确认覆盖后才会更新凭据。",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.title":
+      "需要确认身份覆盖",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.body":
+      "确认前不会改写账号；关闭或移除这一行不会更新原账号。",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.current":
+      "当前账号",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.incoming":
+      "新 OAuth 身份",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willUpdate":
+      "将更新：",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willUpdateDetail":
+      "OAuth 凭据、可信邮箱、ChatGPT 身份、套餐和 token 元数据。",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willKeep":
+      "将保留：",
+    "accountPool.upstreamAccounts.batchOauth.identityConfirmation.willKeepDetail":
+      "显示名称、手工邮箱、分组、标签、备注和母号标记。",
     "accountPool.upstreamAccounts.batchOauth.tooltip.motherTitle": "切换母号",
     "accountPool.upstreamAccounts.batchOauth.tooltip.motherBody":
       "把这一行设为所在分组的母号；同组其他草稿行会立刻让出皇冠标记。",
@@ -2816,6 +2866,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.batchOauth.status.completed": "已完成",
     "accountPool.upstreamAccounts.batchOauth.status.completedNeedsRefresh":
       "待刷新",
+    "accountPool.upstreamAccounts.batchOauth.status.needs_identity_confirmation":
+      "待确认身份",
     "accountPool.upstreamAccounts.batchOauth.status.failed": "失败",
     "accountPool.upstreamAccounts.batchOauth.status.expired": "已过期",
     "accountPool.upstreamAccounts.batchOauth.statusDetail.draft":

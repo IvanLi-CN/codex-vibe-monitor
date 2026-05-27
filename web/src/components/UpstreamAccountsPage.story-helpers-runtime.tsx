@@ -665,6 +665,47 @@ export function StorybookUpstreamAccountsMock({
       const completeLoginSessionMatch = path.match(
         /^\/api\/pool\/upstream-accounts\/oauth\/login-sessions\/([^/]+)\/complete$/,
       )
+      const confirmIdentityMatch = path.match(
+        /^\/api\/pool\/upstream-accounts\/oauth\/login-sessions\/([^/]+)\/confirm-identity-overwrite$/,
+      )
+      if (confirmIdentityMatch && method === 'POST') {
+        const loginId = decodeURIComponent(confirmIdentityMatch[1])
+        const session = store.sessions[loginId]
+        if (!session)
+          return jsonResponse({ message: 'missing mock session' }, 404)
+        if (session.status !== 'needs_identity_confirmation') {
+          return jsonResponse(
+            { message: 'session is not waiting for identity confirmation' },
+            400,
+          )
+        }
+        const nextId = session.accountId ?? store.nextId++
+        const existing = store.details[nextId]
+        const incoming = session.identityConfirmation?.incoming
+        const detail = createOauthAccount(nextId, {
+          displayName:
+            existing?.displayName ?? session.displayName ?? 'Relogin target',
+          email: existing?.email ?? session.email ?? 'kept@example.com',
+          verifiedEmail:
+            incoming?.verifiedEmail ?? incoming?.email ?? 'incoming@example.com',
+          groupName: existing?.groupName ?? session.groupName ?? 'default',
+          isMother: existing?.isMother ?? session.isMother ?? false,
+          note: existing?.note ?? session.note ?? null,
+          planType: incoming?.planType ?? existing?.planType ?? 'team',
+        })
+        store.details[nextId] = detail
+        store.accounts = [
+          toSummary(detail),
+          ...store.accounts.filter((item) => item.id !== nextId),
+        ]
+        session.accountId = nextId
+        session.status = 'completed'
+        session.authUrl = null
+        session.redirectUri = null
+        session.error = null
+        session.identityConfirmation = null
+        return jsonResponse(clone(detail))
+      }
       if (completeLoginSessionMatch && method === 'POST') {
         const loginId = decodeURIComponent(completeLoginSessionMatch[1])
         const session = store.sessions[loginId]
