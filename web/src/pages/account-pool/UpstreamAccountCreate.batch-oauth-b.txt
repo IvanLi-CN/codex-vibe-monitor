@@ -33,20 +33,19 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
                   id: Number(tagId),
                   name: tagId === 1 ? "vip" : `tag-${tagId}`,
                   routingRule: {
-                    guardEnabled: false,
+                    blockNewConversations: false,
                     allowCutOut: true,
                     allowCutIn: true,
                   },
                 }))
               : [],
             effectiveRoutingRule: {
-              guardEnabled: false,
+              blockNewConversations: false,
               allowCutOut: true,
               allowCutIn: true,
               sourceTagIds: [],
               sourceTagNames: [],
-              guardRules: [],
-            },
+                          },
           };
         },
       );
@@ -139,20 +138,19 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
                   id: Number(tagId),
                   name: tagId === 1 ? "vip" : `tag-${tagId}`,
                   routingRule: {
-                    guardEnabled: false,
+                    blockNewConversations: false,
                     allowCutOut: true,
                     allowCutIn: true,
                   },
                 }))
               : [],
             effectiveRoutingRule: {
-              guardEnabled: false,
+              blockNewConversations: false,
               allowCutOut: true,
               allowCutIn: true,
               sourceTagIds: [],
               sourceTagNames: [],
-              guardRules: [],
-            },
+                          },
           };
         },
       );
@@ -283,13 +281,12 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
             note: null,
             tags: [],
             effectiveRoutingRule: {
-              guardEnabled: false,
+              blockNewConversations: false,
               allowCutOut: true,
               allowCutIn: true,
               sourceTagIds: [],
               sourceTagNames: [],
-              guardRules: [],
-            },
+                          },
           };
         },
       );

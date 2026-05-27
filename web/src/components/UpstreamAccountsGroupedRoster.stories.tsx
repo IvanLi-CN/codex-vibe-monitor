@@ -5,14 +5,11 @@ import type { AccountTagSummary, EffectiveRoutingRule, UpstreamAccountSummary } 
 import { UpstreamAccountsGroupedRoster, type UpstreamAccountsGroupedRosterGroup } from './UpstreamAccountsGroupedRoster'
 
 const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
-  guardEnabled: false,
-  lookbackHours: null,
-  maxConversations: null,
+  blockNewConversations: false,
   allowCutOut: true,
   allowCutIn: true,
   sourceTagIds: [],
   sourceTagNames: [],
-  guardRules: [],
 }
 
 const labels = {

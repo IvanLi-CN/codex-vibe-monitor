@@ -6,15 +6,13 @@ const labels = {
   title: 'Effective routing rule',
   description: 'Merged routing constraints applied to the selected upstream account.',
   noTags: 'No tags linked',
-  guardEnabled: 'Block new conversations',
-  guardDisabled: 'New conversations are not blocked',
+  blockNewConversations: 'Block new conversations',
+  allowNewConversations: 'New conversations are not blocked',
   allowCutOut: 'Cut-out not blocked',
   denyCutOut: 'Cut-out blocked',
   allowCutIn: 'Cut-in not blocked',
   denyCutIn: 'Cut-in blocked',
   sourceTags: 'Source tags',
-  guardRule: (hours: number, count: number) => `${hours}h / ${count} conversations`,
-  allGuardsApply: 'All guard rules apply together',
   priorityPrimary: 'Primary',
   priorityNormal: 'Normal',
   priorityFallback: 'Fallback only',
@@ -27,7 +25,7 @@ const labels = {
   concurrencyLimit: (count: number) => `Concurrency ${count}`,
   concurrencyUnlimited: 'Concurrency unlimited',
   sourceBreakdownTitle: 'Field source breakdown',
-  fieldGuard: 'Conversation guard',
+  fieldBlockNewConversations: 'Block new conversations',
   fieldAllowCutOut: 'Cut out',
   fieldAllowCutIn: 'Cut in',
   fieldPriority: 'Priority',
@@ -41,9 +39,7 @@ const labels = {
 }
 
 const relaxedRule: EffectiveRoutingRule = {
-  guardEnabled: false,
-  lookbackHours: null,
-  maxConversations: null,
+  blockNewConversations: false,
   allowCutOut: true,
   allowCutIn: true,
   priorityTier: 'normal',
@@ -53,9 +49,8 @@ const relaxedRule: EffectiveRoutingRule = {
   upstream429MaxRetries: 0,
   sourceTagIds: [],
   sourceTagNames: [],
-  guardRules: [],
   fieldSources: {
-    guard: 'root',
+    blockNewConversations: 'root',
     allowCutOut: 'root',
     allowCutIn: 'root',
     priorityTier: 'root',
@@ -66,9 +61,7 @@ const relaxedRule: EffectiveRoutingRule = {
 }
 
 const strictRule: EffectiveRoutingRule = {
-  guardEnabled: true,
-  lookbackHours: 6,
-  maxConversations: 4,
+  blockNewConversations: true,
   allowCutOut: false,
   allowCutIn: false,
   priorityTier: 'fallback',
@@ -78,12 +71,8 @@ const strictRule: EffectiveRoutingRule = {
   upstream429MaxRetries: 4,
   sourceTagIds: [1, 2],
   sourceTagNames: ['vip-routing', 'handoff-blocked'],
-  guardRules: [
-    { tagId: 1, tagName: 'vip-routing', lookbackHours: 6, maxConversations: 4 },
-    { tagId: 2, tagName: 'handoff-blocked', lookbackHours: 2, maxConversations: 2 },
-  ],
   fieldSources: {
-    guard: 'group',
+    blockNewConversations: 'group',
     allowCutOut: 'tag',
     allowCutIn: 'account',
     priorityTier: 'tag',

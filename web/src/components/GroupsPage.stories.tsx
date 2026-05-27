@@ -17,14 +17,11 @@ import GroupsPage from "../pages/account-pool/Groups";
 type StoryScenario = "default" | "ungrouped-only" | "empty";
 
 const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
-  guardEnabled: false,
-  lookbackHours: null,
-  maxConversations: null,
+  blockNewConversations: false,
   allowCutOut: true,
   allowCutIn: true,
   sourceTagIds: [],
   sourceTagNames: [],
-  guardRules: [],
 };
 
 function buildAccount(
@@ -80,9 +77,7 @@ function buildScenarioPayload(
       upstream429RetryEnabled: true,
       upstream429MaxRetries: 2,
       routingRule: {
-        guardEnabled: true,
-        lookbackHours: 5,
-        maxConversations: 20,
+        blockNewConversations: true,
         allowCutOut: false,
         allowCutIn: true,
         priorityTier: "primary",

@@ -15,14 +15,11 @@ import {
 } from './UpstreamAccountsTable'
 
 const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
-  guardEnabled: false,
-  lookbackHours: null,
-  maxConversations: null,
+  blockNewConversations: false,
   allowCutOut: true,
   allowCutIn: true,
   sourceTagIds: [],
   sourceTagNames: [],
-  guardRules: [],
 }
 
 const tags: AccountTagSummary[] = [
@@ -160,8 +157,6 @@ const labels = {
   policyForbidNewConversation: 'No new',
   policyConcurrency: (count: number) => `Conc ${count}`,
   policyRetry: (count: number) => `Retry ${count}`,
-  policyGuardTitle: (hours: number, count: number) =>
-    `Block new conversations after ${count} in ${hours}h`,
 }
 
 function renderTable(items: UpstreamAccountSummary[]) {
@@ -345,9 +340,7 @@ describe('UpstreamAccountsTable', () => {
         tags: [],
         effectiveRoutingRule: {
           ...defaultEffectiveRoutingRule,
-          guardEnabled: true,
-          lookbackHours: 5,
-          maxConversations: 20,
+          blockNewConversations: true,
           allowCutOut: false,
           allowCutIn: false,
           priorityTier: 'primary',

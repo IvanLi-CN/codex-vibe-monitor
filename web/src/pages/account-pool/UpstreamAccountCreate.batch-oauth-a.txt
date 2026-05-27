@@ -173,19 +173,18 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
               id: Number(tagId),
               name: `tag-${tagId}`,
               routingRule: {
-                guardEnabled: false,
+                blockNewConversations: false,
                 allowCutOut: true,
                 allowCutIn: true,
               },
             })),
             effectiveRoutingRule: {
-              guardEnabled: false,
+              blockNewConversations: false,
               allowCutOut: true,
               allowCutIn: true,
               sourceTagIds: [],
               sourceTagNames: [],
-              guardRules: [],
-            },
+                          },
           };
         },
       );
@@ -315,13 +314,12 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
           note: null,
           tags: [],
           effectiveRoutingRule: {
-            guardEnabled: false,
+            blockNewConversations: false,
             allowCutOut: true,
             allowCutIn: true,
             sourceTagIds: [],
             sourceTagNames: [],
-            guardRules: [],
-          },
+                      },
         }),
       );
     mockUpstreamAccounts({
@@ -435,13 +433,12 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
           note: "Seed note",
           tags: [],
           effectiveRoutingRule: {
-            guardEnabled: false,
+            blockNewConversations: false,
             allowCutOut: true,
             allowCutIn: true,
             sourceTagIds: [],
             sourceTagNames: [],
-            guardRules: [],
-          },
+                      },
         }),
       );
     mockUpstreamAccounts({ saveAccount });
@@ -519,13 +516,12 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
             note: "Seed note",
             tags: [],
             effectiveRoutingRule: {
-              guardEnabled: false,
+              blockNewConversations: false,
               allowCutOut: true,
               allowCutIn: true,
               sourceTagIds: [],
               sourceTagNames: [],
-              guardRules: [],
-            },
+                          },
           };
         },
       );
@@ -622,13 +618,12 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
             note: current.note,
             tags: [],
             effectiveRoutingRule: {
-              guardEnabled: false,
+              blockNewConversations: false,
               allowCutOut: true,
               allowCutIn: true,
               sourceTagIds: [],
               sourceTagNames: [],
-              guardRules: [],
-            },
+                          },
           };
         },
       );
@@ -746,19 +741,18 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
               id: Number(tagId),
               name: tagId === 2 ? "burst-safe" : `tag-${tagId}`,
               routingRule: {
-                guardEnabled: false,
+                blockNewConversations: false,
                 allowCutOut: true,
                 allowCutIn: true,
               },
             })),
             effectiveRoutingRule: {
-              guardEnabled: false,
+              blockNewConversations: false,
               allowCutOut: true,
               allowCutIn: true,
               sourceTagIds: [],
               sourceTagNames: [],
-              guardRules: [],
-            },
+                          },
           };
         },
       );
@@ -779,20 +773,19 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
               id: 2,
               name: "burst-safe",
               routingRule: {
-                guardEnabled: false,
+                blockNewConversations: false,
                 allowCutOut: true,
                 allowCutIn: true,
               },
             },
           ],
           effectiveRoutingRule: {
-            guardEnabled: false,
+            blockNewConversations: false,
             allowCutOut: true,
             allowCutIn: true,
             sourceTagIds: [],
             sourceTagNames: [],
-            guardRules: [],
-          },
+                      },
         },
       ],
     });
@@ -856,13 +849,12 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
           note: "Seed note",
           tags: [],
           effectiveRoutingRule: {
-            guardEnabled: false,
+            blockNewConversations: false,
             allowCutOut: true,
             allowCutIn: true,
             sourceTagIds: [],
             sourceTagNames: [],
-            guardRules: [],
-          },
+                      },
         }),
       );
     mockUpstreamAccounts({
@@ -879,13 +871,12 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
           enabled: true,
           tags: [],
           effectiveRoutingRule: {
-            guardEnabled: false,
+            blockNewConversations: false,
             allowCutOut: true,
             allowCutIn: true,
             sourceTagIds: [],
             sourceTagNames: [],
-            guardRules: [],
-          },
+                      },
         },
       ],
     });
@@ -940,20 +931,19 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
                 id: Number(tagId),
                 name: tagId === 1 ? "vip" : `tag-${tagId}`,
                 routingRule: {
-                  guardEnabled: false,
+                  blockNewConversations: false,
                   allowCutOut: true,
                   allowCutIn: true,
                 },
               }))
             : [],
           effectiveRoutingRule: {
-            guardEnabled: false,
+            blockNewConversations: false,
             allowCutOut: true,
             allowCutIn: true,
             sourceTagIds: [],
             sourceTagNames: [],
-            guardRules: [],
-          },
+                      },
         }),
       );
     mockUpstreamAccounts({ saveAccount });
@@ -1004,20 +994,19 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
                 id: Number(tagId),
                 name: tagId === 1 ? "vip" : `tag-${tagId}`,
                 routingRule: {
-                  guardEnabled: false,
+                  blockNewConversations: false,
                   allowCutOut: true,
                   allowCutIn: true,
                 },
               }))
             : [],
           effectiveRoutingRule: {
-            guardEnabled: false,
+            blockNewConversations: false,
             allowCutOut: true,
             allowCutIn: true,
             sourceTagIds: [],
             sourceTagNames: [],
-            guardRules: [],
-          },
+                      },
         }),
       );
     mockUpstreamAccounts({
@@ -1037,20 +1026,19 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
               id: 2,
               name: "burst-safe",
               routingRule: {
-                guardEnabled: false,
+                blockNewConversations: false,
                 allowCutOut: true,
                 allowCutIn: true,
               },
             },
           ],
           effectiveRoutingRule: {
-            guardEnabled: false,
+            blockNewConversations: false,
             allowCutOut: true,
             allowCutIn: true,
             sourceTagIds: [],
             sourceTagNames: [],
-            guardRules: [],
-          },
+                      },
         },
       ],
     });
@@ -1096,20 +1084,19 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
                 id: Number(tagId),
                 name: tagId === 1 ? "vip" : `tag-${tagId}`,
                 routingRule: {
-                  guardEnabled: false,
+                  blockNewConversations: false,
                   allowCutOut: true,
                   allowCutIn: true,
                 },
               }))
             : [],
           effectiveRoutingRule: {
-            guardEnabled: false,
+            blockNewConversations: false,
             allowCutOut: true,
             allowCutIn: true,
             sourceTagIds: [],
             sourceTagNames: [],
-            guardRules: [],
-          },
+                      },
         }),
       );
     mockUpstreamAccounts({ saveAccount });

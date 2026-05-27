@@ -251,9 +251,7 @@
 
     fn test_tag_routing_rule() -> TagRoutingRule {
         TagRoutingRule {
-            guard_enabled: false,
-            lookback_hours: None,
-            max_conversations: None,
+            block_new_conversations: false,
             allow_cut_out: true,
             allow_cut_in: true,
             priority_tier: TagPriorityTier::Normal,
@@ -278,9 +276,7 @@
 
     fn test_effective_routing_rule(concurrency_limit: i64) -> EffectiveRoutingRule {
         EffectiveRoutingRule {
-            guard_enabled: false,
-            lookback_hours: None,
-            max_conversations: None,
+            block_new_conversations: false,
             allow_cut_out: true,
             allow_cut_in: true,
             priority_tier: TagPriorityTier::Normal,
@@ -290,9 +286,8 @@
             upstream_429_max_retries: 0,
             source_tag_ids: vec![],
             source_tag_names: vec![],
-            guard_rules: vec![],
             field_sources: EffectiveRoutingRuleFieldSources {
-                guard: "root".to_string(),
+                block_new_conversations: "root".to_string(),
                 allow_cut_out: "root".to_string(),
                 allow_cut_in: "root".to_string(),
                 priority_tier: "root".to_string(),
@@ -3582,44 +3577,50 @@
     }
 
     #[tokio::test]
-    async fn load_effective_routing_rule_for_account_replaces_inherited_guard_rules() {
+    async fn load_effective_routing_rule_for_account_or_merges_block_new_conversations() {
         let pool = test_pool().await;
-        let account_id = insert_api_key_account(&pool, "Account Guard Override").await;
-        let mut tag_rule = test_tag_routing_rule();
-        tag_rule.guard_enabled = true;
-        tag_rule.lookback_hours = Some(24);
-        tag_rule.max_conversations = Some(1);
-        let tag = insert_tag(&pool, "guard-tag", &tag_rule)
-            .await
-            .expect("insert guard tag");
-        sync_account_tag_links(&pool, account_id, &[tag.summary.id])
-            .await
-            .expect("attach guard tag");
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_account_group_notes (
+                group_name,
+                note,
+                policy_block_new_conversations,
+                created_at,
+                updated_at
+            ) VALUES ('blocked-group', '', 1, '2026-03-15T00:00:00Z', '2026-03-15T00:00:00Z')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("save group block policy");
+        let account_id = insert_api_key_account(&pool, "Account Block Override").await;
         sqlx::query(
             r#"
             UPDATE pool_upstream_accounts
-            SET policy_guard_enabled = 1,
-                policy_lookback_hours = 5,
-                policy_max_conversations = 3
+            SET group_name = 'blocked-group',
+                policy_block_new_conversations = 0
             WHERE id = ?1
             "#,
         )
         .bind(account_id)
         .execute(&pool)
         .await
-        .expect("save account guard policy");
+        .expect("save account routing policy");
+        let mut tag_rule = test_tag_routing_rule();
+        tag_rule.block_new_conversations = false;
+        let tag = insert_tag(&pool, "block-tag", &tag_rule)
+            .await
+            .expect("insert block tag");
+        sync_account_tag_links(&pool, account_id, &[tag.summary.id])
+            .await
+            .expect("attach block tag");
 
         let rule = load_effective_routing_rule_for_account(&pool, account_id)
             .await
             .expect("load effective routing rule");
 
-        assert_eq!(rule.field_sources.guard, "account");
-        assert_eq!(rule.lookback_hours, Some(5));
-        assert_eq!(rule.max_conversations, Some(3));
-        assert_eq!(rule.guard_rules.len(), 1);
-        assert_eq!(rule.guard_rules[0].tag_name, "override");
-        assert_eq!(rule.guard_rules[0].lookback_hours, 5);
-        assert_eq!(rule.guard_rules[0].max_conversations, 3);
+        assert!(rule.block_new_conversations);
+        assert_eq!(rule.field_sources.block_new_conversations, "group");
     }
 
     #[tokio::test]
@@ -3730,9 +3731,7 @@
                     tag_ids: None,
                     routing_rule: Some(UpdateTagRequest {
                         name: None,
-                        guard_enabled: None,
-                        lookback_hours: None,
-                        max_conversations: None,
+                        block_new_conversations: None,
                         allow_cut_out: None,
                         allow_cut_in: None,
                         priority_tier: Some("normal".to_string()),
@@ -3915,9 +3914,7 @@
             HeaderMap::new(),
             Json(CreateTagRequest {
                 name: "fast-mode-round-trip".to_string(),
-                guard_enabled: false,
-                lookback_hours: None,
-                max_conversations: None,
+                block_new_conversations: false,
                 allow_cut_out: true,
                 allow_cut_in: true,
                 priority_tier: None,
@@ -3940,9 +3937,7 @@
             AxumPath(created.summary.id),
             Json(UpdateTagRequest {
                 name: None,
-                guard_enabled: None,
-                lookback_hours: None,
-                max_conversations: None,
+                block_new_conversations: None,
                 allow_cut_out: None,
                 allow_cut_in: None,
                 priority_tier: None,
@@ -3972,7 +3967,7 @@
             Query(ListTagsQuery {
                 search: None,
                 has_accounts: None,
-                guard_enabled: None,
+                block_new_conversations: None,
                 allow_cut_in: None,
                 allow_cut_out: None,
             }),

@@ -1090,8 +1090,6 @@ export default function UpstreamAccountsPage() {
       policyConcurrency: (count) =>
         t("accountPool.policyBadges.concurrency", { count }),
       policyRetry: (count) => t("accountPool.policyBadges.retry", { count }),
-      policyGuardTitle: (hours, count) =>
-        t("accountPool.policyBadges.guardTitle", { hours, count }),
     }),
     [
       accountActionLabel,
@@ -2375,8 +2373,6 @@ export default function UpstreamAccountsPage() {
                       t("accountPool.policyBadges.concurrency", { count }),
                     policyRetry: (count) =>
                       t("accountPool.policyBadges.retry", { count }),
-                    policyGuardTitle: (hours, count) =>
-                      t("accountPool.policyBadges.guardTitle", { hours, count }),
                   }}
                 />
               )}
