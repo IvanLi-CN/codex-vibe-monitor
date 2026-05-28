@@ -50,6 +50,8 @@ Using one cadence for all three overfits the most urgent surface and overloads t
 - Keep timer constants exported when tests need to assert cadence without duplicating magic numbers.
 - `304` handling must preserve the previous UI data and clear transient errors; it is a successful no-body response, not a failed fetch.
 - Closed historical windows can commit immediately because they do not receive live churn.
+- Large retained-history drawers need a separate history budget: load the first visible page only, fetch additional pages from the drawer scroll threshold, and let SSE refresh merge the already loaded range rather than replaying from page 1 to `total`.
+- Virtualize dense invocation surfaces at the shared table component, and render only the active responsive layout. Hidden desktop/mobile duplicates still contribute DOM and event-handler pressure.
 
 ## References
 
@@ -58,4 +60,6 @@ Using one cadence for all three overfits the most urgent surface and overloads t
 - `web/src/hooks/useDashboardWorkingConversations.ts`
 - `web/src/hooks/useParallelWorkStats.ts`
 - `web/src/components/DashboardActivityOverview.tsx`
+- `web/src/components/PromptCacheConversationTable.tsx`
+- `web/src/components/InvocationTable.tsx`
 - `src/api/slices/prompt_cache_and_timeseries/timeseries.rs`

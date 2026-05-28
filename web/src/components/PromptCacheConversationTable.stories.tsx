@@ -1,6 +1,6 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, waitFor, within } from "storybook/test";
+import { expect, fireEvent, userEvent, waitFor, within } from "storybook/test";
 import { MemoryRouter } from "react-router-dom";
 import { I18nProvider } from "../i18n";
 import type {
@@ -43,6 +43,7 @@ type StoryPromptCacheConversationPreview =
 const CONVERSATION_ONE_KEY = "019d2b8f-f8d0-72c3-bb67-a3f0d24a01f1";
 const CONVERSATION_TWO_KEY = "019d2b8a-2df4-7580-bffc-6b4b1d8207c2";
 const CONVERSATION_SHORT_KEY = "019e239a-038c-7860-a185-46a9d45553f7";
+const CONVERSATION_LARGE_HISTORY_KEY = "019f0d8c-91f2-7f25-b2b7-large-history";
 
 class MockEventSource implements EventTarget {
   static CONNECTING = 0;
@@ -266,6 +267,17 @@ const bindingByPromptCacheKey = new Map<string, unknown>([
       upstreamAccountId: 21,
       upstreamAccountName: "growth.6vv4@relay.example",
       updatedAt: "2026-05-13T23:42:00.000Z",
+    },
+  ],
+  [
+    CONVERSATION_LARGE_HISTORY_KEY,
+    {
+      promptCacheKey: CONVERSATION_LARGE_HISTORY_KEY,
+      bindingKind: "upstreamAccount",
+      groupName: null,
+      upstreamAccountId: 11,
+      upstreamAccountName: "growth.6vv4@relay.example",
+      updatedAt: "2026-05-28T04:10:00.000Z",
     },
   ],
 ] as const);
@@ -696,6 +708,36 @@ const conversationTwoPreviews = conversationTwoHistory
 const shortSameDayPreviews = shortSameDayHistory
   .slice(0, 4)
   .map(buildPreviewFromRecord);
+const largeHistory = Array.from({ length: 15_000 }, (_, index) => {
+  const isFailure = index % 41 === 0;
+  const account = index % 3 === 0 ? accountSummaries[1] : accountSummaries[0];
+  const occurredAt = new Date(
+    Date.parse("2026-05-28T04:10:00.000Z") - index * 45_000,
+  ).toISOString();
+  return buildInvocationRecord({
+    id: 20_000 - index,
+    invokeId: `invoke-large-history-${String(index + 1).padStart(5, "0")}`,
+    promptCacheKey: CONVERSATION_LARGE_HISTORY_KEY,
+    occurredAt,
+    upstreamAccountId: account?.id ?? 11,
+    upstreamAccountName: account?.displayName ?? "growth.6vv4@relay.example",
+    proxyDisplayName: index % 2 === 0 ? "tokyo-edge-large-01" : "osaka-edge-large-02",
+    status: isFailure ? "http_502" : "completed",
+    failureClass: isFailure ? "service_failure" : "none",
+    errorMessage: isFailure ? "[upstream_response_failed] gateway timeout" : undefined,
+    isActionable: isFailure,
+    totalTokens: 180_000 + (index % 700) * 37,
+    inputTokens: 172_000 + (index % 500) * 29,
+    cacheInputTokens: 168_000 + (index % 300) * 17,
+    outputTokens: isFailure ? 0 : 300 + (index % 900),
+    reasoningTokens: isFailure ? 0 : index % 5 === 0 ? 448 : 117,
+    reasoningEffort: index % 4 === 0 ? "high" : "medium",
+    cost: Number((0.11 + (index % 23) * 0.0047).toFixed(4)),
+    responseContentEncoding: isFailure ? "identity" : "gzip",
+    tTotalMs: isFailure ? 300_000 : 6_000 + (index % 70) * 200,
+  });
+});
+const largeHistoryPreviews = largeHistory.slice(0, 5).map(buildPreviewFromRecord);
 
 const historyRecordsByKey = new Map<string, ApiInvocation[]>([
   [
@@ -709,6 +751,10 @@ const historyRecordsByKey = new Map<string, ApiInvocation[]>([
   [
     CONVERSATION_SHORT_KEY,
     shortSameDayHistory,
+  ],
+  [
+    CONVERSATION_LARGE_HISTORY_KEY,
+    largeHistory,
   ],
 ]);
 
@@ -890,6 +936,11 @@ function StorybookPromptCacheAccountMock({
       if (parsedUrl.pathname === "/api/invocations" && method === "GET") {
         const promptCacheKey = parsedUrl.searchParams.get("promptCacheKey");
         if (promptCacheKey) {
+          const storyWindow = window as typeof window & {
+            __promptCacheInvocationRequests?: string[];
+          };
+          storyWindow.__promptCacheInvocationRequests ??= [];
+          storyWindow.__promptCacheInvocationRequests.push(parsedUrl.search);
           const page = Number(parsedUrl.searchParams.get("page") ?? "1");
           const pageSize = Number(parsedUrl.searchParams.get("pageSize") ?? "20");
           const snapshotId = Number(
@@ -1261,6 +1312,59 @@ const shortSameDayStats: PromptCacheConversationsResponse = {
   ],
 };
 
+const largeHistoryStats: PromptCacheConversationsResponse = {
+  rangeStart: largeHistory.at(-1)?.occurredAt ?? "",
+  rangeEnd: largeHistory[0]?.occurredAt ?? "",
+  selectionMode: "count",
+  selectedLimit: 50,
+  selectedActivityHours: null,
+  implicitFilter: { kind: null, filteredCount: 0 },
+  conversations: [
+    {
+      promptCacheKey: CONVERSATION_LARGE_HISTORY_KEY,
+      requestCount: largeHistory.length,
+      totalTokens: largeHistory.reduce(
+        (sum, record) => sum + (record.totalTokens ?? 0),
+        0,
+      ),
+      totalCost: largeHistory.reduce((sum, record) => sum + (record.cost ?? 0), 0),
+      createdAt: largeHistory.at(-1)?.occurredAt ?? "",
+      lastActivityAt: largeHistory[0]?.occurredAt ?? "",
+      upstreamAccounts: [
+        {
+          upstreamAccountId: 11,
+          upstreamAccountName: "growth.6vv4@relay.example",
+          requestCount: Math.ceil(largeHistory.length / 2),
+          totalTokens: 1_384_000_000,
+          totalCost: 910.24,
+          lastActivityAt: largeHistory[0]?.occurredAt ?? "",
+        },
+        {
+          upstreamAccountId: 12,
+          upstreamAccountName: "backup.f3x2@ops.example",
+          requestCount: Math.floor(largeHistory.length / 2),
+          totalTokens: 1_216_000_000,
+          totalCost: 801.18,
+          lastActivityAt: largeHistory[1]?.occurredAt ?? "",
+        },
+      ],
+      recentInvocations: largeHistoryPreviews,
+      last24hRequests: largeHistory
+        .slice(0, 120)
+        .reverse()
+        .map((record, index, records) => ({
+          occurredAt: record.occurredAt,
+          status: record.status ?? "completed",
+          isSuccess: record.failureClass === "none",
+          requestTokens: record.totalTokens ?? 0,
+          cumulativeTokens: records
+            .slice(0, index + 1)
+            .reduce((sum, item) => sum + (item.totalTokens ?? 0), 0),
+        })),
+    },
+  ],
+};
+
 const meta = {
   title: "Monitoring/PromptCacheConversationTable",
   component: PromptCacheConversationTable,
@@ -1575,5 +1679,53 @@ export const DrawerBindingControls: Story = {
     await expect(bindingOptions).toHaveTextContent(/清空|Clear/i);
     await expect(bindingOptions).toHaveTextContent(/分组|Group/i);
     await expect(bindingOptions).toHaveTextContent(/上游账号|Account/i);
+  },
+};
+
+export const LargeHistoryVirtualizedDrawer: Story = {
+  args: {
+    stats: largeHistoryStats,
+    isLoading: false,
+    error: null,
+  },
+  globals: {
+    themeMode: "dark",
+    viewport: { value: "desktop1280", isRotated: false },
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Large retained conversation history with 15,000 total rows; the drawer loads 50 rows first and relies on virtualized visible rows while preserving route-binding controls.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body);
+    const historyButton = documentScope.getAllByRole("button", {
+      name: /打开全部调用记录|open full call history/i,
+    })[0];
+
+    await userEvent.click(historyButton);
+    await expect(
+      await documentScope.findByText(/路由绑定|Route binding/i),
+    ).toBeInTheDocument();
+    await expect(
+      await documentScope.findByText(/已加载 50 \/ 15,?000 条保留调用记录|Loaded 50 \/ 15,?000 retained record\(s\)/i),
+    ).toBeInTheDocument();
+    expect(
+      canvasElement.ownerDocument.body.querySelectorAll("tbody tr").length,
+    ).toBeLessThan(90);
+
+    const drawerBody = canvasElement.ownerDocument.body.querySelector(".drawer-body");
+    expect(drawerBody).toBeTruthy();
+    if (drawerBody instanceof HTMLElement) {
+      drawerBody.scrollTop = drawerBody.scrollHeight;
+      fireEvent.scroll(drawerBody);
+    }
+
+    await expect(
+      await documentScope.findByText(/已加载 100 \/ 15,?000 条保留调用记录|Loaded 100 \/ 15,?000 retained record\(s\)/i),
+    ).toBeInTheDocument();
   },
 };

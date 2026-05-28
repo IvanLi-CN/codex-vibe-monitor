@@ -91,7 +91,7 @@ type ConversationHistoryRecordMatcher = NonNullable<
 
 const PROMPT_CACHE_NOW_TICK_MS = 30_000;
 const PROMPT_CACHE_CHART_MAX_WINDOW_MS = 24 * 3_600_000;
-const PROMPT_CACHE_HISTORY_PAGE_SIZE = 200;
+const PROMPT_CACHE_HISTORY_PAGE_SIZE = 50;
 const PROMPT_CACHE_ACTIVITY_PAGE_SIZE = 200;
 const PROMPT_CACHE_ACTIVITY_MAX_CHART_RECORDS = 1_000;
 const PROMPT_CACHE_HISTORY_RESYNC_THROTTLE_MS = 1_000;
@@ -337,12 +337,14 @@ function PromptCacheConversationInvocationTable({
   error,
   emptyLabel,
   onOpenUpstreamAccount,
+  scrollElement,
 }: {
   records: ApiInvocation[];
   isLoading: boolean;
   error?: string | null;
   emptyLabel: string;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+  scrollElement?: HTMLElement | null;
 }) {
   const hasLoadedRecords = records.length > 0;
 
@@ -360,6 +362,7 @@ function PromptCacheConversationInvocationTable({
           error={null}
           emptyLabel={emptyLabel}
           onOpenUpstreamAccount={onOpenUpstreamAccount}
+          scrollElement={scrollElement}
         />
       </div>
     );
@@ -372,6 +375,7 @@ function PromptCacheConversationInvocationTable({
       error={error}
       emptyLabel={emptyLabel}
       onOpenUpstreamAccount={onOpenUpstreamAccount}
+      scrollElement={scrollElement}
     />
   );
 }
@@ -1886,14 +1890,21 @@ export function PromptCacheConversationHistoryDrawer({
   const requestSeqRef = useRef(0);
   const hasHydratedRef = useRef(false);
   const inFlightRef = useRef(false);
-  const pendingLoadRef = useRef<{ silent?: boolean } | null>(null);
+  const pendingLoadRef = useRef<{ silent?: boolean; append?: boolean } | null>(null);
   const pendingOpenResyncRef = useRef(false);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastRefreshAtRef = useRef(0);
+  const activeLoadControllerRef = useRef<AbortController | null>(null);
+  const historySnapshotIdRef = useRef<number | undefined>(undefined);
+  const historyNextPageRef = useRef(1);
+  const historyHasMoreRef = useRef(false);
+  const recordsRef = useRef<ApiInvocation[]>([]);
+  const [drawerBodyElement, setDrawerBodyElement] = useState<HTMLDivElement | null>(null);
   const [records, setRecords] = useState<ApiInvocation[]>([]);
   const [liveRecords, setLiveRecords] = useState<ApiInvocation[]>([]);
   const [total, setTotal] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [binding, setBinding] =
     useState<PromptCacheConversationBindingResponse | null>(null);
@@ -1915,48 +1926,90 @@ export function PromptCacheConversationHistoryDrawer({
     refreshTimerRef.current = null;
   }, []);
 
+  useEffect(() => {
+    recordsRef.current = records;
+  }, [records]);
+
   const runLoad = useCallback(
-    async ({ silent = false }: { silent?: boolean } = {}) => {
+    async ({
+      silent = false,
+      append = false,
+    }: { silent?: boolean; append?: boolean } = {}) => {
       if (!open || !conversationKey) return;
+      if (append && !historyHasMoreRef.current) return;
 
       inFlightRef.current = true;
       const requestSeq = requestSeqRef.current + 1;
       requestSeqRef.current = requestSeq;
-      const shouldShowLoading = !(silent && hasHydratedRef.current);
+      activeLoadControllerRef.current?.abort();
+      const controller = new AbortController();
+      activeLoadControllerRef.current = controller;
+      const shouldShowLoading = !append && !(silent && hasHydratedRef.current);
       if (shouldShowLoading) setIsLoading(true);
+      if (append) setIsLoadingMore(true);
       try {
-        let page = 1;
-        let snapshotId: number | undefined;
-        let loaded: ApiInvocation[] = [];
-        let totalRecords = 0;
+        const historyFilters = historyQueryForConversationKey?.(
+          conversationKey,
+        ) ?? {
+          promptCacheKey: conversationKey,
+        };
+        const page = append ? historyNextPageRef.current : 1;
+        const response = await fetchInvocationRecords({
+          ...historyFilters,
+          page,
+          pageSize: PROMPT_CACHE_HISTORY_PAGE_SIZE,
+          sortBy: "occurredAt",
+          sortOrder: "desc",
+          ...(append && historySnapshotIdRef.current != null
+            ? { snapshotId: historySnapshotIdRef.current }
+            : {}),
+          signal: controller.signal,
+        });
+        if (requestSeq !== requestSeqRef.current) return;
 
-        while (true) {
-          const historyFilters = historyQueryForConversationKey?.(
-            conversationKey,
-          ) ?? {
-            promptCacheKey: conversationKey,
-          };
-          const response = await fetchInvocationRecords({
-            ...historyFilters,
-            page,
-            pageSize: PROMPT_CACHE_HISTORY_PAGE_SIZE,
-            sortBy: "occurredAt",
-            sortOrder: "desc",
-            ...(snapshotId != null ? { snapshotId } : {}),
-          });
-          if (requestSeq !== requestSeqRef.current) return;
-
-          snapshotId = response.snapshotId;
-          totalRecords = response.total;
-          loaded = [...loaded, ...response.records];
-          setRecords(loaded);
-          setTotal(totalRecords);
-
-          if (loaded.length >= totalRecords || response.records.length === 0) {
-            break;
-          }
-          page += 1;
-        }
+        const previousSnapshotId = historySnapshotIdRef.current;
+        const previousNextPage = historyNextPageRef.current;
+        const snapshotChanged =
+          silent &&
+          hasHydratedRef.current &&
+          previousSnapshotId != null &&
+          response.snapshotId !== previousSnapshotId;
+        historySnapshotIdRef.current = response.snapshotId;
+        const loaded =
+          snapshotChanged
+            ? mergeInvocationRecordCollections(
+                response.records,
+                recordsRef.current,
+              ).slice(
+                0,
+                recordsRef.current.length + PROMPT_CACHE_HISTORY_PAGE_SIZE,
+              )
+            : append
+            ? mergeInvocationRecordCollections(recordsRef.current, response.records)
+            : silent && hasHydratedRef.current
+              ? mergeInvocationRecordCollections(
+                  response.records,
+                  recordsRef.current,
+                ).slice(
+                  0,
+                  Math.max(recordsRef.current.length, response.records.length),
+                )
+              : response.records;
+        recordsRef.current = loaded;
+        historyNextPageRef.current =
+          snapshotChanged
+            ? 2
+            : append || !silent || !hasHydratedRef.current
+            ? page + 1
+            : Math.max(
+                previousNextPage,
+                Math.floor(loaded.length / PROMPT_CACHE_HISTORY_PAGE_SIZE) + 1,
+              );
+        historyHasMoreRef.current =
+          loaded.length < response.total &&
+          (append ? response.records.length > 0 : loaded.length > 0);
+        setRecords(loaded);
+        setTotal(response.total);
 
         if (requestSeq !== requestSeqRef.current) return;
         hasHydratedRef.current = true;
@@ -1974,10 +2027,19 @@ export function PromptCacheConversationHistoryDrawer({
         }
       } catch (err) {
         if (requestSeq !== requestSeqRef.current) return;
+        if (
+          (err instanceof DOMException && err.name === "AbortError") ||
+          (err instanceof Error && err.name === "AbortError")
+        ) {
+          return;
+        }
         setError(err instanceof Error ? err.message : String(err));
       } finally {
         if (requestSeq === requestSeqRef.current && shouldShowLoading) {
           setIsLoading(false);
+        }
+        if (requestSeq === requestSeqRef.current && append) {
+          setIsLoadingMore(false);
         }
         if (requestSeq === requestSeqRef.current) {
           inFlightRef.current = false;
@@ -1993,14 +2055,18 @@ export function PromptCacheConversationHistoryDrawer({
   );
 
   const load = useCallback(
-    async (options: { silent?: boolean } = {}) => {
+    async (options: { silent?: boolean; append?: boolean } = {}) => {
       const silent = options.silent ?? false;
+      const append = options.append ?? false;
       if (inFlightRef.current) {
         const pendingSilent = pendingLoadRef.current?.silent ?? true;
-        pendingLoadRef.current = { silent: pendingSilent && silent };
+        pendingLoadRef.current = {
+          silent: pendingSilent && silent,
+          append: pendingLoadRef.current?.append || append,
+        };
         return;
       }
-      await runLoad({ silent });
+      await runLoad({ silent, append });
     },
     [runLoad],
   );
@@ -2052,6 +2118,12 @@ export function PromptCacheConversationHistoryDrawer({
     pendingLoadRef.current = null;
     pendingOpenResyncRef.current = false;
     lastRefreshAtRef.current = 0;
+    activeLoadControllerRef.current?.abort();
+    activeLoadControllerRef.current = null;
+    historySnapshotIdRef.current = undefined;
+    historyNextPageRef.current = 1;
+    historyHasMoreRef.current = false;
+    recordsRef.current = [];
     clearPendingRefreshTimer();
 
     if (!open || !conversationKey) {
@@ -2059,6 +2131,7 @@ export function PromptCacheConversationHistoryDrawer({
       setLiveRecords([]);
       setTotal(0);
       setIsLoading(false);
+      setIsLoadingMore(false);
       setError(null);
       return;
     }
@@ -2067,6 +2140,7 @@ export function PromptCacheConversationHistoryDrawer({
     setLiveRecords([]);
     setTotal(0);
     setIsLoading(false);
+    setIsLoadingMore(false);
     setError(null);
     void load();
   }, [clearPendingRefreshTimer, conversationKey, load, open]);
@@ -2168,12 +2242,40 @@ export function PromptCacheConversationHistoryDrawer({
 
   useEffect(
     () => () => {
+      activeLoadControllerRef.current?.abort();
       clearPendingRefreshTimer();
       pendingLoadRef.current = null;
       pendingOpenResyncRef.current = false;
     },
     [clearPendingRefreshTimer],
   );
+
+  useEffect(() => {
+    if (!open || !drawerBodyElement) return;
+    const maybeLoadMore = () => {
+      if (
+        isLoading ||
+        isLoadingMore ||
+        inFlightRef.current ||
+        !historyHasMoreRef.current
+      ) {
+        return;
+      }
+      const remaining =
+        drawerBodyElement.scrollHeight -
+        drawerBodyElement.scrollTop -
+        drawerBodyElement.clientHeight;
+      if (remaining <= 420) {
+        void load({ append: true, silent: true });
+      }
+    };
+    drawerBodyElement.addEventListener("scroll", maybeLoadMore, {
+      passive: true,
+    });
+    return () => {
+      drawerBodyElement.removeEventListener("scroll", maybeLoadMore);
+    };
+  }, [drawerBodyElement, isLoading, isLoadingMore, load, open, records.length]);
 
   const visibleRecords = useMemo(
     () => mergeInvocationRecordCollections(liveRecords, records),
@@ -2265,6 +2367,7 @@ export function PromptCacheConversationHistoryDrawer({
       labelledBy={titleId}
       closeLabel={t("live.conversations.drawer.close")}
       onClose={onClose}
+      onBodyElementChange={setDrawerBodyElement}
       shellClassName="max-w-[78rem]"
       header={
         <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(25rem,30rem)]">
@@ -2386,8 +2489,9 @@ export function PromptCacheConversationHistoryDrawer({
           error={error}
           emptyLabel={t("live.conversations.drawer.empty")}
           onOpenUpstreamAccount={onOpenUpstreamAccount}
+          scrollElement={drawerBodyElement}
         />
-        {isLoading && visibleRecords.length > 0 ? (
+        {isLoadingMore ? (
           <div className="flex items-center justify-center gap-2 py-2 text-sm text-base-content/60">
             <Spinner size="sm" aria-label={t("chart.loadingDetailed")} />
             <span>{t("live.conversations.drawer.loadingMore")}</span>

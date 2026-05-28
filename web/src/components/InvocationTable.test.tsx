@@ -94,6 +94,11 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  Object.defineProperty(window, "innerWidth", {
+    configurable: true,
+    writable: true,
+    value: 1024,
+  });
   apiMocks.fetchUpstreamAccountDetail.mockReset();
   apiMocks.fetchInvocationPoolAttempts.mockReset();
   apiMocks.fetchForwardProxyBindingNodes.mockReset();
@@ -123,6 +128,29 @@ function renderTable(records: ApiInvocation[]) {
       <InvocationTable records={records} isLoading={false} error={null} />
     </I18nProvider>,
   );
+}
+
+function createInvocationRecord(index: number): ApiInvocation {
+  const occurredAt = new Date(
+    Date.parse("2026-03-07T03:13:51Z") - index * 1_000,
+  ).toISOString();
+  return {
+    id: index + 1,
+    invokeId: `virtual-row-${index + 1}`,
+    occurredAt,
+    createdAt: occurredAt,
+    source: "proxy",
+    proxyDisplayName: `virtual-proxy-${index + 1}`,
+    endpoint: "/v1/responses",
+    model: "gpt-5.5",
+    status: "completed",
+    inputTokens: 1024 + index,
+    cacheInputTokens: 512,
+    outputTokens: 128,
+    totalTokens: 1152 + index,
+    cost: 0.001 + index * 0.0001,
+    tTotalMs: 1_200 + index,
+  };
 }
 
 async function renderInteractiveTable(
@@ -347,6 +375,36 @@ describe("getReasoningEffortTone", () => {
 });
 
 describe("InvocationTable", () => {
+  it("virtualizes large desktop datasets without mounting every row", async () => {
+    await renderInteractiveTable(
+      Array.from({ length: 1_000 }, (_, index) => createInvocationRecord(index)),
+    );
+
+    expect(document.querySelectorAll("tbody tr").length).toBeLessThan(80);
+    expect(document.body.textContent).toContain("virtual-proxy-1");
+    expect(document.body.textContent).not.toContain("virtual-proxy-1000");
+    expect(document.querySelector('[data-testid="invocation-table-scroll"]')).toBeTruthy();
+    expect(document.querySelector('[data-testid="invocation-list"]')).toBeNull();
+  });
+
+  it("mounts only the mobile card layout below the md breakpoint", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      writable: true,
+      value: 500,
+    });
+
+    await renderInteractiveTable(
+      Array.from({ length: 20 }, (_, index) => createInvocationRecord(index)),
+    );
+
+    expect(document.querySelector('[data-testid="invocation-list"]')).toBeTruthy();
+    expect(
+      document.querySelectorAll('[data-testid="invocation-list-item"]').length,
+    ).toBeGreaterThan(0);
+    expect(document.querySelector('[data-testid="invocation-table-scroll"]')).toBeNull();
+  });
+
   it("renders the WS transport badge for websocket records", () => {
     const websocketHtml = renderTable([
       {
@@ -1993,14 +2051,14 @@ describe("InvocationTable", () => {
 
     expect(
       html.match(/data-testid="invocation-endpoint-badge"/g)?.length ?? 0,
-    ).toBe(6);
+    ).toBe(3);
     expect(
       html.match(/data-testid="invocation-endpoint-path"/g)?.length ?? 0,
-    ).toBe(2);
-    expect(html.match(/data-endpoint-kind="responses"/g)?.length ?? 0).toBe(2);
-    expect(html.match(/data-endpoint-kind="chat"/g)?.length ?? 0).toBe(2);
-    expect(html.match(/data-endpoint-kind="compact"/g)?.length ?? 0).toBe(2);
-    expect(html.match(/data-endpoint-kind="raw"/g)?.length ?? 0).toBe(2);
+    ).toBe(1);
+    expect(html.match(/data-endpoint-kind="responses"/g)?.length ?? 0).toBe(1);
+    expect(html.match(/data-endpoint-kind="chat"/g)?.length ?? 0).toBe(1);
+    expect(html.match(/data-endpoint-kind="compact"/g)?.length ?? 0).toBe(1);
+    expect(html.match(/data-endpoint-kind="raw"/g)?.length ?? 0).toBe(1);
     expect(html).toContain("Responses");
     expect(html).toContain("Chat");
     expect(html).toContain("远程压缩");
@@ -2027,7 +2085,7 @@ describe("InvocationTable", () => {
 
     expect(
       html.match(/data-testid="invocation-proxy-name"/g)?.length ?? 0,
-    ).toBe(2);
+    ).toBe(1);
     expect(
       html.match(/data-testid="invocation-proxy-badge"/g)?.length ?? 0,
     ).toBe(1);
@@ -2138,9 +2196,9 @@ describe("InvocationTable", () => {
       },
     ]);
 
-    expect(html.match(/data-fast-state="effective"/g)?.length ?? 0).toBe(6);
+    expect(html.match(/data-fast-state="effective"/g)?.length ?? 0).toBe(3);
     expect(html.match(/data-fast-state="requested_only"/g)?.length ?? 0).toBe(
-      2,
+      1,
     );
     expect(html).toContain("Fast 模式（Priority processing）");
     expect(html).toContain("请求想要 Fast，但实际未命中 Priority processing");
@@ -2217,7 +2275,7 @@ describe("InvocationTable", () => {
       },
     ]);
 
-    expect(document.body.textContent).toContain("首字总 9.36 s");
+    expect(document.body.textContent).toContain("9.36 s ·");
 
     const trigger = Array.from(document.querySelectorAll("button")).find(
       (button) => {

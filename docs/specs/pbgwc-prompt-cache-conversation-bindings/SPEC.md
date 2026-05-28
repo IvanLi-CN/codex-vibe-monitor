@@ -31,6 +31,8 @@ Prompt Cache conversation detail currently explains retained invocations for a p
 - Runtime routing treats an observed binding as a hard constraint; if the bound target is unavailable, routing must fail through the existing no-selectable-account error path rather than falling back to the global pool.
 - Binding lookup does not change the existing live-first request-body streaming strategy; large or chunked requests whose body key is not visible before account selection keep the normal account-pool routing behavior.
 - Binding changes affect future requests only; in-flight requests are not rerouted.
+- Conversation detail history is loaded incrementally: the drawer requests an initial 50 retained invocation records and fetches later 50-record pages only when the drawer body scrolls near the bottom.
+- Conversation detail history tables must stay virtualized so the retained-record `total` does not linearly increase mounted DOM rows or block the binding controls.
 
 ## Interface Contract
 
@@ -86,9 +88,14 @@ The key segment is URL-encoded with normal component encoding; the server accept
 - Given a PATCH payload containing both `groupName` and `upstreamAccountId`, the API rejects it.
 - Given a bound target that is disabled or unavailable, the request fails through the existing no-selectable-account path without fallback.
 - Given the conversation detail drawer is open, the operator can see the current binding, change it, and clear it.
+- Given a conversation has thousands of retained records, opening the detail drawer loads only the first 50 records, keeps the binding controls interactive, and loads the next 50 records only after drawer scrolling reaches the load threshold.
 
 ## Visual Evidence
 
 ![Prompt Cache binding panel with Select listbox options](./assets/drawer-binding-select-listbox.png)
 
 The Storybook `DrawerBindingControls` scenario renders the Prompt Cache conversation detail drawer with the binding panel preloaded in upstream-account mode. The evidence image is a readable browser screenshot of the mock-only Storybook iframe viewport with the route binding panel and opened UI-library Select/Radix options (`Clear`, `Group`, `Account`) visible in business context. The unit coverage also asserts that the binding panel no longer renders native `<select>` elements and instead exposes `combobox` controls.
+
+![Large Prompt Cache history drawer with virtualized rows](./assets/large-history-virtualized-drawer.png)
+
+The Storybook `LargeHistoryVirtualizedDrawer` scenario renders a 15,000-record retained-history drawer. The evidence image shows the binding controls, summary chart, opened account binding target listbox, and virtualized invocation table after loading the second 50-record page (`已加载 100 / 15000 条保留调用记录`). Browser verification observed 28 mounted table rows and 4,248 total DOM elements, rather than mounting rows proportional to the 15,000-record total.
