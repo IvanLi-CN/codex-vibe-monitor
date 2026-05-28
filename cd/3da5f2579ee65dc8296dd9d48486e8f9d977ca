@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.69.1",
+  "base_stable_version": "1.69.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-05-28T06:53:31Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.69.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "21e95bb7ccf34a50816040f1173fdc919b817e5c",
+  "pr_number": 445,
+  "pr_title": "fix(web): virtualize prompt cache history drawer",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.69.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.69.1",
+  "target_sha": "cd3da5f2579ee65dc8296dd9d48486e8f9d977ca",
+  "type_label": "type:patch"
+}
