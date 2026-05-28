@@ -144,4 +144,32 @@ describe('MultiSelectFilterCombobox', () => {
     expect(onValueChangeSpy).toHaveBeenLastCalledWith([])
     expect(trigger.textContent).toContain('All work statuses')
   })
+
+  it('renders optional trailing labels at the end of command options', () => {
+    const onValueChangeSpy = vi.fn()
+    render(
+      <MultiSelectFilterCombobox
+        options={[
+          { value: 'production-apac', label: 'production-apac', trailingLabel: 'x4' },
+        ]}
+        value={[]}
+        placeholder="All groups"
+        searchPlaceholder="Search groups"
+        emptyLabel="No groups"
+        clearLabel="Clear group filters"
+        ariaLabel="Account groups"
+        onValueChange={onValueChangeSpy}
+      />,
+    )
+
+    const trigger = document.querySelector('button[role="combobox"]') as HTMLButtonElement
+    act(() => {
+      trigger.click()
+    })
+
+    const item = document.querySelector('[cmdk-item]') as HTMLElement
+    expect(item).toBeInstanceOf(HTMLElement)
+    expect(item.textContent).toContain('production-apac')
+    expect(item.textContent).toContain('x4')
+  })
 })

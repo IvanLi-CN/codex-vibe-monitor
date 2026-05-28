@@ -10,6 +10,8 @@ import {
 const UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY =
   "codex-vibe-monitor.account-pool.upstream-accounts.filters";
 
+export const DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME = "未分组";
+
 const WORK_STATUS_FILTER_VALUES = [
   "working",
   "degraded",
@@ -81,6 +83,29 @@ function sanitizeGroupFilterState(value: unknown): GroupFilterState {
   return DEFAULT_GROUP_FILTER_STATE;
 }
 
+function sanitizeGroupFilters(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const next: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const normalized = item.trim();
+    if (!normalized || next.includes(normalized)) continue;
+    next.push(normalized);
+  }
+  return next;
+}
+
+function migrateLegacyGroupFilter(value: unknown): string[] {
+  const legacy = sanitizeGroupFilterState(value);
+  if (legacy.mode === "ungrouped") {
+    return [DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME];
+  }
+  if ((legacy.mode === "exact" || legacy.mode === "search") && legacy.query) {
+    return [legacy.query];
+  }
+  return [];
+}
+
 export function readPersistedUpstreamAccountFilters(): PersistedUpstreamAccountsFilters {
   if (typeof window === "undefined") {
     return DEFAULT_PERSISTED_UPSTREAM_ACCOUNT_FILTERS;
@@ -96,6 +121,7 @@ export function readPersistedUpstreamAccountFilters(): PersistedUpstreamAccounts
     if (!isPlainObject(parsed)) {
       return DEFAULT_PERSISTED_UPSTREAM_ACCOUNT_FILTERS;
     }
+    const groupFilters = sanitizeGroupFilters(parsed.groupFilters);
     return {
       workStatus: sanitizeFilterValues(
         parsed.workStatus,
@@ -110,7 +136,10 @@ export function readPersistedUpstreamAccountFilters(): PersistedUpstreamAccounts
         HEALTH_STATUS_FILTER_VALUES,
       ),
       tagIds: sanitizeTagIds(parsed.tagIds),
-      groupFilter: sanitizeGroupFilterState(parsed.groupFilter),
+      groupFilters:
+        groupFilters.length > 0
+          ? groupFilters
+          : migrateLegacyGroupFilter(parsed.groupFilter),
     };
   } catch {
     return DEFAULT_PERSISTED_UPSTREAM_ACCOUNT_FILTERS;

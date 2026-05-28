@@ -1913,23 +1913,20 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
 
     expect(hookMocks.useUpstreamAccounts.mock.calls[0]?.[0]).toEqual({
       includeAll: true,
-      groupExact: 'prod',
+      groupExact: ['prod'],
     })
     expectRosterHookQuery({
       includeAll: true,
-      groupExact: 'prod',
+      groupExact: ['prod'],
     })
     expect(hookMocks.useUpstreamAccounts.mock.calls).not.toContainEqual([
       {
         page: 1,
         pageSize: 20,
-        groupSearch: 'stale-group',
+        groupExact: ['stale-group'],
       },
     ])
-    expect(readStoredUpstreamFilters()?.groupFilter).toEqual({
-      mode: 'search',
-      query: 'stale-group',
-    })
+    expect(readStoredUpstreamFilters()?.groupFilters).toEqual(['stale-group'])
     expect(navigateMock).toHaveBeenCalledWith(
       {
         pathname: '/account-pool/upstream-accounts',
@@ -1969,12 +1966,9 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
 
     expectRosterHookQuery({
       includeAll: true,
-      groupUngrouped: true,
+      groupExact: ['未分组'],
     })
-    expect(readStoredUpstreamFilters()?.groupFilter).toEqual({
-      mode: 'search',
-      query: 'stale-group',
-    })
+    expect(readStoredUpstreamFilters()?.groupFilters).toEqual(['stale-group'])
     expect(navigateMock).toHaveBeenCalledWith(
       {
         pathname: '/account-pool/upstream-accounts',

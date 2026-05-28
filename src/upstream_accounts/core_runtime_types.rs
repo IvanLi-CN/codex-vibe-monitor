@@ -64,6 +64,7 @@ const OAUTH_MAILBOX_SOURCE_ATTACHED: &str = "attached";
 const UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX: &str = "oauth_codex";
 const UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX: &str = "api_key_codex";
 const UPSTREAM_ACCOUNT_PROVIDER_CODEX: &str = "codex";
+pub(crate) const DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME: &str = "未分组";
 const UPSTREAM_ACCOUNT_STATUS_ACTIVE: &str = "active";
 const UPSTREAM_ACCOUNT_STATUS_SYNCING: &str = "syncing";
 const UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH: &str = "needs_reauth";
@@ -938,7 +939,8 @@ pub(crate) struct ListUpstreamAccountActionEventsQuery {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ListUpstreamAccountsQuery {
-    pub(crate) group_exact: Option<String>,
+    #[serde(default)]
+    pub(crate) group_exact: Vec<String>,
     pub(crate) group_search: Option<String>,
     pub(crate) group_ungrouped: Option<bool>,
     pub(crate) status: Option<String>,
@@ -958,7 +960,6 @@ pub(crate) struct ListUpstreamAccountsQuery {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ListUpstreamAccountsBaseQuery {
-    group_exact: Option<String>,
     group_search: Option<String>,
     group_ungrouped: Option<bool>,
     status: Option<String>,

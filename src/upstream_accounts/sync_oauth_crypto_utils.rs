@@ -934,6 +934,14 @@ fn normalize_optional_text(value: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn normalize_upstream_account_group_name(value: Option<String>) -> String {
+    normalize_optional_text(value).unwrap_or_else(|| DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME.to_string())
+}
+
+fn normalize_legacy_ungrouped_group_name(value: Option<String>) -> Option<String> {
+    normalize_optional_text(value).filter(|value| value != DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME)
+}
+
 fn normalize_optional_upstream_base_url(
     value: Option<String>,
 ) -> Result<Option<String>, (StatusCode, String)> {

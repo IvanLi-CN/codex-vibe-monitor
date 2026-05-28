@@ -311,7 +311,7 @@ export interface UpstreamAccountWindowUsageResponse {
 }
 
 export interface FetchUpstreamAccountsQuery {
-  groupExact?: string;
+  groupExact?: string[];
   groupSearch?: string;
   groupUngrouped?: boolean;
   status?: string;
@@ -1866,7 +1866,9 @@ export async function fetchUpstreamAccounts(
   query?: FetchUpstreamAccountsQuery,
 ): Promise<UpstreamAccountListResponse> {
   const search = new URLSearchParams();
-  if (query?.groupExact) search.set("groupExact", query.groupExact);
+  for (const groupExact of query?.groupExact ?? []) {
+    if (groupExact) search.append("groupExact", groupExact);
+  }
   if (query?.groupSearch) search.set("groupSearch", query.groupSearch);
   if (query?.groupUngrouped != null)
     search.set("groupUngrouped", String(query.groupUngrouped));

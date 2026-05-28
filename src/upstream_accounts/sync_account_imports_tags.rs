@@ -1208,13 +1208,13 @@ fn same_real_upstream_identity_for_display_name(
     let current_member = UpstreamAccountIdentityClusterMember {
         id: -1,
         chatgpt_user_id: normalize_optional_text(current_chatgpt_user_id.map(str::to_string)),
-        group_name: normalize_optional_text(current_group_name.map(str::to_string)),
+        group_name: normalize_legacy_ungrouped_group_name(current_group_name.map(str::to_string)),
         plan_type: normalize_plan_type(current_plan_type),
     };
     let peer_member = UpstreamAccountIdentityClusterMember {
         id: peer.id,
         chatgpt_user_id: normalize_optional_text(peer.chatgpt_user_id.clone()),
-        group_name: normalize_optional_text(peer.group_name.clone()),
+        group_name: normalize_legacy_ungrouped_group_name(peer.group_name.clone()),
         plan_type: normalize_plan_type(peer.plan_type.as_deref()),
     };
     !is_team_shared_org_peer_pair(&current_member, &peer_member)
@@ -1308,6 +1308,7 @@ async fn upsert_oauth_account(
         token_expires_at,
         external_identity,
     } = payload;
+    let group_name = Some(normalize_upstream_account_group_name(group_name));
     let target_group_name = group_name.clone();
     let now_iso = format_utc_iso(Utc::now());
     let resolved_account_id = account_id;
@@ -1616,7 +1617,7 @@ async fn load_duplicate_info_map(
                 UpstreamAccountIdentityClusterMember {
                     id: row.id,
                     chatgpt_user_id: normalize_optional_text(row.chatgpt_user_id.clone()),
-                    group_name: normalize_optional_text(row.group_name.clone()),
+                    group_name: normalize_legacy_ungrouped_group_name(row.group_name.clone()),
                     plan_type: normalize_plan_type(row.plan_type.as_deref()),
                 },
             );
@@ -1626,7 +1627,7 @@ async fn load_duplicate_info_map(
                 UpstreamAccountIdentityClusterMember {
                     id: row.id,
                     chatgpt_user_id: normalize_optional_text(row.chatgpt_user_id.clone()),
-                    group_name: normalize_optional_text(row.group_name.clone()),
+                    group_name: normalize_legacy_ungrouped_group_name(row.group_name.clone()),
                     plan_type: normalize_plan_type(row.plan_type.as_deref()),
                 },
             );
@@ -1638,7 +1639,7 @@ async fn load_duplicate_info_map(
         let current_member = UpstreamAccountIdentityClusterMember {
             id: row.id,
             chatgpt_user_id: normalize_optional_text(row.chatgpt_user_id.clone()),
-            group_name: normalize_optional_text(row.group_name.clone()),
+            group_name: normalize_legacy_ungrouped_group_name(row.group_name.clone()),
             plan_type: normalize_plan_type(row.plan_type.as_deref()),
         };
         let mut peer_ids = std::collections::BTreeSet::new();
@@ -2234,22 +2235,32 @@ async fn load_upstream_account_summaries_for_query(
         .collect::<Vec<_>>();
     normalized_tag_ids.sort_unstable();
     normalized_tag_ids.dedup();
+    let mut normalized_group_exact = params
+        .group_exact
+        .iter()
+        .filter_map(|value| normalize_optional_text(Some(value.clone())))
+        .collect::<Vec<_>>();
+    normalized_group_exact.sort();
+    normalized_group_exact.dedup();
     let mut query = QueryBuilder::<Sqlite>::new(format!(
         "SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS} FROM pool_upstream_accounts"
     ));
     query.push(" WHERE 1 = 1");
 
     if params.group_ungrouped.unwrap_or(false) {
-        query.push(" AND NULLIF(TRIM(COALESCE(group_name, '')), '') IS NULL");
-    } else if let Some(group_exact) = params
-        .group_exact
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        query
-            .push(" AND TRIM(COALESCE(group_name, '')) = ")
-            .push_bind(group_exact.to_string());
+        query.push(" AND (NULLIF(TRIM(COALESCE(group_name, '')), '') IS NULL");
+        query.push(" OR TRIM(COALESCE(group_name, '')) = ");
+        query.push_bind(DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME);
+        query.push(")");
+    } else if !normalized_group_exact.is_empty() {
+        query.push(" AND TRIM(COALESCE(group_name, '')) IN (");
+        {
+            let mut separated = query.separated(", ");
+            for group_exact in &normalized_group_exact {
+                separated.push_bind(group_exact);
+            }
+        }
+        query.push(")");
     } else if let Some(group_search) = params
         .group_search
         .as_deref()
