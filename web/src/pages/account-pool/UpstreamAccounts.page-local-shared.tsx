@@ -869,6 +869,8 @@ function SharedUpstreamAccountDetailDrawerInner({
   const [accountRecordsError, setAccountRecordsError] = useState<string | null>(
     null,
   );
+  const [detailDrawerBodyElement, setDetailDrawerBodyElement] =
+    useState<HTMLDivElement | null>(null);
   const [groupDraftNotes, setGroupDraftNotes] = useState<
     Record<string, string>
   >({});
@@ -2247,6 +2249,7 @@ function SharedUpstreamAccountDetailDrawerInner({
           closeDisabled={isBusyAction(busyAction, "delete", accountId)}
           autoFocusCloseButton={!isDeleteConfirmOpen}
           onPortalContainerChange={setDetailDrawerPortalContainer}
+          onBodyElementChange={setDetailDrawerBodyElement}
           onClose={handleDetailDrawerClose}
           shellClassName="max-w-[60rem]"
           header={
@@ -2809,6 +2812,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                           "accountPool.upstreamAccounts.records.empty",
                         )}
                         onOpenUpstreamAccount={handleOpenRelatedUpstreamAccount}
+                        scrollElement={detailDrawerBodyElement}
                       />
                     </CardContent>
                   </Card>
