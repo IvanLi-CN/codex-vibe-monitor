@@ -279,6 +279,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupFilterSearchPlaceholder":
       "Search groups...",
     "accountPool.upstreamAccounts.groupFilterEmpty": "No matching groups.",
+    "accountPool.upstreamAccounts.groupFilterClear": "Clear group filters",
     "accountPool.upstreamAccounts.groupFilterUseValue": 'Filter by "{{value}}"',
     "accountPool.upstreamAccounts.groupOptionCount": "{{count}} accounts",
     "accountPool.upstreamAccounts.statusFilterLabel": "Account status",
@@ -2463,6 +2464,7 @@ const baseTranslations = {
       "全部分组或搜索分组名",
     "accountPool.upstreamAccounts.groupFilterSearchPlaceholder": "搜索分组...",
     "accountPool.upstreamAccounts.groupFilterEmpty": "没有匹配的分组。",
+    "accountPool.upstreamAccounts.groupFilterClear": "清空分组筛选",
     "accountPool.upstreamAccounts.groupFilterUseValue": "按“{{value}}”筛选",
     "accountPool.upstreamAccounts.groupOptionCount": "{{count}} 个账号",
     "accountPool.upstreamAccounts.statusFilterLabel": "账号状态",

@@ -151,6 +151,30 @@
         }
     }
 
+    #[test]
+    fn external_group_binding_name_preserves_omitted_default_as_legacy_ungrouped() {
+        let omitted = ExternalUpstreamAccountMetadataRequest::default();
+        assert_eq!(external_group_binding_name(&omitted, None), None);
+
+        let explicit_blank = ExternalUpstreamAccountMetadataRequest {
+            group_name: Some("   ".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            external_group_binding_name(&explicit_blank, None).as_deref(),
+            Some(DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME)
+        );
+
+        let default_metadata = ExternalUpstreamAccountMetadataRequest {
+            group_single_account_rotation_enabled: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(
+            external_group_binding_name(&default_metadata, None).as_deref(),
+            Some(DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME)
+        );
+    }
+
     #[tokio::test]
     async fn external_api_keys_support_rotate_disable_and_bearer_auth() {
         let (usage_base_url, server) = spawn_usage_snapshot_server(
@@ -587,6 +611,10 @@
         .expect("disabled external account should exist");
         assert_eq!(persisted.enabled, 0);
         assert_eq!(persisted.note.as_deref(), Some("created disabled"));
+        assert_eq!(
+            persisted.group_name.as_deref(),
+            Some(DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME)
+        );
 
         server.abort();
     }

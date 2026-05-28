@@ -108,6 +108,7 @@ import {
   UPSTREAM_ACCOUNTS_QUERY_STALE_GRACE_MS,
 } from "./UpstreamAccounts.shared-types";
 import {
+  DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME,
   formatGroupFilterValue,
   parseGroupFilterValue,
   persistUpstreamAccountFilters,
@@ -136,6 +137,7 @@ import {
 export {
   DEFAULT_ROUTING_TIMEOUTS,
   UPSTREAM_ACCOUNTS_QUERY_STALE_GRACE_MS,
+  DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME,
   formatGroupFilterValue,
   parseGroupFilterValue,
   persistUpstreamAccountFilters,

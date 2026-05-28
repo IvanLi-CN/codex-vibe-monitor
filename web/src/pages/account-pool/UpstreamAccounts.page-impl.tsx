@@ -68,6 +68,7 @@ import { cn } from "../../lib/utils";
 import { useTranslation } from "../../i18n";
 import {
   DEFAULT_ROUTING_TIMEOUTS,
+  DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME,
   UPSTREAM_ACCOUNTS_QUERY_STALE_GRACE_MS,
   type GroupFilterState,
   type UpstreamAccountsLocationState,
@@ -75,8 +76,6 @@ import {
   type BusyActionState,
   readPersistedUpstreamAccountFilters,
   persistUpstreamAccountFilters,
-  formatGroupFilterValue,
-  parseGroupFilterValue,
   isBusyAction,
   resolveRoutingMaintenance,
   buildRoutingDraft,
@@ -135,11 +134,18 @@ function sanitizePresetGroupFilter(
   return null;
 }
 
-function areGroupFiltersEqual(
-  left: GroupFilterState,
-  right: GroupFilterState,
-): boolean {
-  return left.mode === right.mode && left.query === right.query;
+function groupFilterStateToGroupFilters(
+  value?: GroupFilterState | null,
+): string[] {
+  const preset = sanitizePresetGroupFilter(value);
+  if (!preset) return [];
+  if (preset.mode === "ungrouped") return [DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME];
+  return [preset.query];
+}
+
+function areGroupFilterValuesEqual(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => value === right[index]);
 }
 
 export default function UpstreamAccountsPage() {
@@ -152,16 +158,17 @@ export default function UpstreamAccountsPage() {
   const [initialFilters] = useState(() =>
     readPersistedUpstreamAccountFilters(),
   );
-  const initialGroupFilter = useMemo(
+  const initialGroupFilters = useMemo(
     () =>
-      sanitizePresetGroupFilter(locationState?.presetGroupFilter) ??
-      initialFilters.groupFilter,
-    [initialFilters.groupFilter, locationState?.presetGroupFilter],
+      groupFilterStateToGroupFilters(locationState?.presetGroupFilter).length > 0
+        ? groupFilterStateToGroupFilters(locationState?.presetGroupFilter)
+        : initialFilters.groupFilters,
+    [initialFilters.groupFilters, locationState?.presetGroupFilter],
   );
   const [hasTransientPresetGroupFilter, setHasTransientPresetGroupFilter] =
     useState(() => sanitizePresetGroupFilter(locationState?.presetGroupFilter) != null);
-  const [groupFilter, setGroupFilter] = useState<GroupFilterState>(
-    () => initialGroupFilter,
+  const [groupFilters, setGroupFilters] = useState<string[]>(
+    () => initialGroupFilters,
   );
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>(
     () => initialFilters.tagIds,
@@ -183,23 +190,12 @@ export default function UpstreamAccountsPage() {
   const [selectedAccountSummaries, setSelectedAccountSummaries] = useState<
     Record<number, UpstreamAccountSummary>
   >({});
-  const persistedGroupFilterRef = useRef(initialFilters.groupFilter);
+  const persistedGroupFiltersRef = useRef(initialFilters.groupFilters);
   const {
     items: tagItems,
     isLoading: isTagCatalogLoading,
     error: tagCatalogError,
   } = usePoolTags();
-  const groupFilterLabels = useMemo(
-    () => ({
-      all: t("accountPool.upstreamAccounts.groupFilter.all"),
-      ungrouped: t("accountPool.upstreamAccounts.groupFilter.ungrouped"),
-    }),
-    [t],
-  );
-  const groupFilterQuery = useMemo(
-    () => formatGroupFilterValue(groupFilter, groupFilterLabels),
-    [groupFilter, groupFilterLabels],
-  );
   const validTagIds = useMemo(
     () => new Set(tagItems.map((tag) => tag.id)),
     [tagItems],
@@ -233,11 +229,7 @@ export default function UpstreamAccountsPage() {
       return null;
     }
     return {
-      groupExact:
-        groupFilter.mode === "exact" ? groupFilter.query : undefined,
-      groupSearch:
-        groupFilter.mode === "search" ? groupFilter.query : undefined,
-      groupUngrouped: groupFilter.mode === "ungrouped" ? true : undefined,
+      groupExact: groupFilters.length > 0 ? groupFilters : undefined,
       workStatus: workStatusFilter.length > 0 ? workStatusFilter : undefined,
       enableStatus:
         enableStatusFilter.length > 0 ? enableStatusFilter : undefined,
@@ -252,7 +244,7 @@ export default function UpstreamAccountsPage() {
   }, [
     appliedSelectedTagIds,
     enableStatusFilter,
-    groupFilter,
+    groupFilters,
     healthStatusFilter,
     page,
     pageSize,
@@ -501,13 +493,13 @@ export default function UpstreamAccountsPage() {
     setBulkDeleteDialogOpen(false);
   }, []);
   const handleGroupFilterChange = useCallback(
-    (value: string) => {
+    (value: string[]) => {
       setHasTransientPresetGroupFilter(false);
-      setGroupFilter(parseGroupFilterValue(value, groupFilterLabels));
+      setGroupFilters(value);
       setPage(1);
       clearBulkSelection();
     },
-    [clearBulkSelection, groupFilterLabels],
+    [clearBulkSelection],
   );
   const handleTagFilterChange = useCallback(
     (value: number[]) => {
@@ -660,22 +652,22 @@ export default function UpstreamAccountsPage() {
   }, [canSanitizeSelectedTagIds, validTagIds]);
 
   useEffect(() => {
-    const persistedGroupFilter = hasTransientPresetGroupFilter
-      ? persistedGroupFilterRef.current
-      : groupFilter;
+    const persistedGroupFilters = hasTransientPresetGroupFilter
+      ? persistedGroupFiltersRef.current
+      : groupFilters;
     if (!hasTransientPresetGroupFilter) {
-      persistedGroupFilterRef.current = groupFilter;
+      persistedGroupFiltersRef.current = groupFilters;
     }
     persistUpstreamAccountFilters({
       workStatus: workStatusFilter,
       enableStatus: enableStatusFilter,
       healthStatus: healthStatusFilter,
       tagIds: persistedSelectedTagIds,
-      groupFilter: persistedGroupFilter,
+      groupFilters: persistedGroupFilters,
     });
   }, [
     enableStatusFilter,
-    groupFilter,
+    groupFilters,
     hasTransientPresetGroupFilter,
     healthStatusFilter,
     persistedSelectedTagIds,
@@ -740,15 +732,13 @@ export default function UpstreamAccountsPage() {
     if (!state) return;
 
     const nextSearchParams = new URLSearchParams(location.search);
-    const presetGroupFilter = sanitizePresetGroupFilter(
-      state.presetGroupFilter,
-    );
+    const presetGroupFilters = groupFilterStateToGroupFilters(state.presetGroupFilter);
     if (
-      presetGroupFilter &&
-      !areGroupFiltersEqual(groupFilter, presetGroupFilter)
+      presetGroupFilters.length > 0 &&
+      !areGroupFilterValuesEqual(groupFilters, presetGroupFilters)
     ) {
       setHasTransientPresetGroupFilter(true);
-      setGroupFilter(presetGroupFilter);
+      setGroupFilters(presetGroupFilters);
       setPage(1);
       clearBulkSelection();
     }
@@ -774,7 +764,7 @@ export default function UpstreamAccountsPage() {
       { replace: true, state: null },
     );
   }, [
-    groupFilter,
+    groupFilters,
     location.pathname,
     location.search,
     locationState,
@@ -843,22 +833,41 @@ export default function UpstreamAccountsPage() {
       hasUngrouped: hasUngroupedAccounts,
     };
   }, [groups, hasUngroupedAccounts, visibleRosterItems]);
+  const groupFilterOptions = useMemo(() => {
+    const optionMap = new Map<
+      string,
+      { value: string; label: string; trailingLabel: string }
+    >();
+    for (const group of groups) {
+      const groupName = normalizeRosterGroupName(group.groupName);
+      const accountCount = Math.max(0, Math.trunc(group.accountCount ?? 0));
+      if (!groupName || accountCount <= 0) {
+        continue;
+      }
+      optionMap.set(groupName, {
+        value: groupName,
+        label: groupName,
+        trailingLabel: `x${accountCount}`,
+      });
+    }
+    for (const groupName of groupFilters) {
+      const normalized = normalizeRosterGroupName(groupName);
+      if (!normalized || optionMap.has(normalized)) continue;
+      optionMap.set(normalized, {
+        value: normalized,
+        label: normalized,
+        trailingLabel: "x0",
+      });
+    }
+    return Array.from(optionMap.values()).sort((left, right) =>
+      left.label.localeCompare(right.label),
+    );
+  }, [groupFilters, groups]);
   const formatGroupAccountCountLabel = useCallback(
     (count: number) =>
       t("accountPool.upstreamAccounts.groupOptionCount", { count }),
     [t],
   );
-
-  const groupFilterSuggestions = useMemo(() => {
-    const suggestions = [
-      t("accountPool.upstreamAccounts.groupFilter.all"),
-      ...availableGroups.names,
-    ];
-    if (availableGroups.hasUngrouped) {
-      suggestions.push(t("accountPool.upstreamAccounts.groupFilter.ungrouped"));
-    }
-    return suggestions;
-  }, [availableGroups, t]);
 
   const visibleRoutingError = actionError.routing;
   const resolvedRoutingMaintenance = useMemo(
@@ -2052,10 +2061,10 @@ export default function UpstreamAccountsPage() {
                   <span className="field-label">
                     {t("accountPool.upstreamAccounts.groupFilterLabel")}
                   </span>
-                  <UpstreamAccountGroupCombobox
+                  <MultiSelectFilterCombobox
                     size="filter"
-                    value={groupFilterQuery}
-                    suggestions={groupFilterSuggestions}
+                    options={groupFilterOptions}
+                    value={groupFilters}
                     placeholder={t(
                       "accountPool.upstreamAccounts.groupFilterPlaceholder",
                     )}
@@ -2065,11 +2074,9 @@ export default function UpstreamAccountsPage() {
                     emptyLabel={t(
                       "accountPool.upstreamAccounts.groupFilterEmpty",
                     )}
-                    createLabel={(value) =>
-                      t("accountPool.upstreamAccounts.groupFilterUseValue", {
-                        value,
-                      })
-                    }
+                    clearLabel={t(
+                      "accountPool.upstreamAccounts.groupFilterClear",
+                    )}
                     ariaLabel={t(
                       "accountPool.upstreamAccounts.groupFilterLabel",
                     )}

@@ -33,7 +33,7 @@ export type PersistedUpstreamAccountsFilters = {
   enableStatus: string[];
   healthStatus: string[];
   tagIds: number[];
-  groupFilter: GroupFilterState;
+  groupFilters: string[];
 };
 
 export type UpstreamAccountsLocationState = {
@@ -78,5 +78,5 @@ export const DEFAULT_PERSISTED_UPSTREAM_ACCOUNT_FILTERS: PersistedUpstreamAccoun
     enableStatus: [],
     healthStatus: [],
     tagIds: [],
-    groupFilter: DEFAULT_GROUP_FILTER_STATE,
+    groupFilters: [],
   };

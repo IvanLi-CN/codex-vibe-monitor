@@ -287,6 +287,18 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
 
     sqlx::query(
         r#"
+        UPDATE pool_upstream_accounts
+        SET group_name = ?1
+        WHERE NULLIF(TRIM(COALESCE(group_name, '')), '') IS NULL
+        "#,
+    )
+    .bind(DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME)
+    .execute(pool)
+    .await
+    .context("failed to normalize blank pool_upstream_accounts.group_name")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS external_api_keys (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             client_id TEXT NOT NULL,

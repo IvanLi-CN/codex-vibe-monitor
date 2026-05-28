@@ -48,10 +48,7 @@ function PersistedFiltersStoryRouter() {
         enableStatus: ['enabled'],
         healthStatus: ['normal'],
         tagIds: [],
-        groupFilter: {
-          mode: 'search',
-          query: 'prod',
-        },
+        groupFilters: ['production-apac'],
       }),
     )
     restoreRef.current = () => {
@@ -299,7 +296,9 @@ async function chooseCommandOptions(
   })
   await userEvent.click(trigger)
   for (const optionMatcher of optionMatchers) {
-    const option = await documentScope.findByText(optionMatcher)
+    const option = await documentScope.findByRole('option', {
+      name: optionMatcher,
+    })
     await userEvent.click(option)
   }
 }
@@ -695,6 +694,84 @@ export const TagFilterAllMatch: Story = {
   },
 }
 
+export const GroupFilterMultiSelectCatalog: Story = {
+  name: 'Group Filter Multi Select Catalog',
+  tags: ['test'],
+  parameters: {
+    a11y: {
+      test: 'off',
+    },
+  },
+  render: () => (
+    <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
+  ),
+  play: async ({ canvasElement, step }) => {
+    const canvas = within(canvasElement)
+    const documentScope = within(canvasElement.ownerDocument.body)
+
+    await step('keeps account-backed group options available after other filters narrow the roster', async () => {
+      await chooseCommandOptions(
+        canvasElement,
+        /工作状态|work status/i,
+        [/限流|rate limited/i],
+      )
+
+      await expect(
+        await canvas.findByText(/Team key - analytics/i),
+      ).toBeInTheDocument()
+      await waitFor(() => {
+        expect(canvas.queryByText(/Codex Pro - Seoul/i)).not.toBeInTheDocument()
+      })
+
+      const groupTrigger = await canvas.findByRole('combobox', {
+        name: /账号分组|account groups/i,
+      })
+      await userEvent.click(groupTrigger)
+
+      await expect(
+        await documentScope.findByRole('option', { name: /production-apac\s*x4/i }),
+      ).toBeInTheDocument()
+      await expect(
+        await documentScope.findByRole('option', { name: /analytics\s*x2/i }),
+      ).toBeInTheDocument()
+      await expect(
+        documentScope.queryByRole('option', { name: /^experiments$/i }),
+      ).not.toBeInTheDocument()
+    })
+
+    await step('matches accounts from any selected group', async () => {
+      await userEvent.click(
+        await documentScope.findByRole('option', { name: /production-apac\s*x4/i }),
+      )
+      await userEvent.click(
+        await documentScope.findByRole('option', { name: /analytics\s*x2/i }),
+      )
+      await expect(
+        await canvas.findByRole('combobox', {
+          name: /账号分组|account groups/i,
+        }),
+      ).toHaveTextContent(/production-apac.*analytics|analytics.*production-apac/i)
+
+      await userEvent.keyboard('{Escape}')
+      await chooseCommandOptions(
+        canvasElement,
+        /工作状态|work status/i,
+        [/限流|rate limited/i],
+      )
+
+      await expect(
+        await canvas.findByText(/Codex Pro - Seoul/i),
+      ).toBeInTheDocument()
+      await expect(
+        await canvas.findByText(/Team key - analytics/i),
+      ).toBeInTheDocument()
+      await expect(
+        canvas.queryByText(/Codex Pro - Berlin/i),
+      ).not.toBeInTheDocument()
+    })
+  },
+}
+
 export const PersistedRosterFilters: Story = {
   render: () => <PersistedFiltersStoryRouter />,
   play: async ({ canvasElement }) => {
@@ -725,7 +802,7 @@ export const PersistedRosterFilters: Story = {
       await canvas.findByRole('button', {
         name: /group/i,
       }),
-    ).toHaveTextContent(/prod/i)
+    ).toHaveTextContent(/production-apac/i)
   },
 }
 

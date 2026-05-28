@@ -504,7 +504,9 @@ pub(crate) async fn create_oauth_login_session(
         preserved_email.as_deref(),
         email.as_deref(),
     );
-    let group_name = normalize_optional_text(payload.group_name).or(preserved_group_name);
+    let group_name = Some(normalize_upstream_account_group_name(
+        normalize_optional_text(payload.group_name).or(preserved_group_name),
+    ));
     let note = normalize_optional_text(payload.note).or(preserved_note);
     let requested_group_concurrency_limit =
         normalize_concurrency_limit(payload.concurrency_limit, "concurrencyLimit")?;
@@ -812,8 +814,8 @@ pub(crate) async fn update_oauth_login_session(
     };
     let group_name = match requested_group_name {
         OptionalField::Missing => session.group_name.clone(),
-        OptionalField::Null => None,
-        OptionalField::Value(value) => normalize_optional_text(Some(value)),
+        OptionalField::Null => Some(DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME.to_string()),
+        OptionalField::Value(value) => Some(normalize_upstream_account_group_name(Some(value))),
     };
     let note = match requested_note {
         OptionalField::Missing => session.note.clone(),
@@ -1336,7 +1338,7 @@ pub(crate) async fn create_api_key_account_inner(
     let api_key = normalize_required_secret(&payload.api_key, "apiKey")?;
     let email = normalize_optional_email(payload.email, "email")?;
     let tag_ids = validate_tag_ids(&state.pool, &payload.tag_ids).await?;
-    let group_name = normalize_optional_text(payload.group_name);
+    let group_name = Some(normalize_upstream_account_group_name(payload.group_name));
     let note = normalize_optional_text(payload.note);
     let has_group_note = payload.group_note.is_some();
     let group_note = normalize_optional_text(payload.group_note);
@@ -1538,7 +1540,10 @@ pub(crate) async fn update_upstream_account_inner(
     )
     .unwrap_or(previous_display_name);
     if let Some(group_name) = payload.group_name.clone() {
-        row.group_name = normalize_optional_text(Some(group_name));
+        row.group_name = Some(normalize_upstream_account_group_name(Some(group_name)));
+    }
+    if row.group_name.is_none() {
+        row.group_name = Some(DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME.to_string());
     }
     if let Some(note) = payload.note {
         row.note = normalize_optional_text(Some(note));
