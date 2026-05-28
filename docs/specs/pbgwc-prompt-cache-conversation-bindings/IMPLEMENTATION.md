@@ -14,6 +14,8 @@
 - [x] Manual group binding bypasses sticky source cut-out policy while preserving target cut-in and target account eligibility.
 - [x] Upstream account binding writes the corresponding sticky route immediately.
 - [x] Prompt Cache conversation detail drawer controls.
+- [x] Prompt Cache conversation history drawer loads retained invocation records in 50-row scroll pages instead of hydrating all pages on open.
+- [x] `InvocationTable` virtualizes desktop table rows and mobile cards, mounting only the active breakpoint layout.
 - [x] Unit, integration, Storybook, and visual evidence coverage.
 
 ## Verification
@@ -25,3 +27,5 @@
 - `cargo test resolver_prompt_cache_group_binding_does_not_bypass_cut_in_policy -- --nocapture`
 - `cd web && bunx vitest run src/lib/api.test.ts src/components/PromptCacheConversationTable.test.tsx`
 - `cd web && bun run build`
+- `cd web && bunx vitest run src/components/InvocationTable.test.tsx src/components/PromptCacheConversationTable.test.tsx`
+- Storybook `LargeHistoryVirtualizedDrawer` browser evidence: 15,000 total retained records, 50 initial drawer records, 100 after one scroll-triggered page, 28 mounted table rows, first page still visible at the nested table offset, account-binding combobox opened in about 169 ms.

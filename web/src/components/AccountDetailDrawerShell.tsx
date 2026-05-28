@@ -15,6 +15,7 @@ interface AccountDetailDrawerShellProps {
   closeDisabled?: boolean
   autoFocusCloseButton?: boolean
   onPortalContainerChange?: (node: HTMLElement | null) => void
+  onBodyElementChange?: (node: HTMLDivElement | null) => void
   shellClassName?: string
   bodyClassName?: string
 }
@@ -29,6 +30,7 @@ export function AccountDetailDrawerShell({
   closeDisabled = false,
   autoFocusCloseButton = true,
   onPortalContainerChange,
+  onBodyElementChange,
   shellClassName,
   bodyClassName,
 }: AccountDetailDrawerShellProps) {
@@ -52,6 +54,13 @@ export function AccountDetailDrawerShell({
       onPortalContainerChange?.(node)
     },
     [onPortalContainerChange],
+  )
+
+  const handleBodyRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      onBodyElementChange?.(node)
+    },
+    [onBodyElementChange],
   )
 
   useEffect(() => {
@@ -132,6 +141,7 @@ export function AccountDetailDrawerShell({
               </div>
             </div>
             <div
+              ref={handleBodyRef}
               className={cn(
                 'drawer-body min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-6 sm:py-6',
                 bodyClassName,

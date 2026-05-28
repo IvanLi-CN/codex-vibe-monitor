@@ -3,9 +3,12 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
+import { useVirtualizer, useWindowVirtualizer } from "@tanstack/react-virtual";
 import { AppIcon } from "./AppIcon";
 import type { ApiInvocation } from "../lib/api";
 import {
@@ -38,6 +41,7 @@ interface InvocationTableProps {
   error?: string | null;
   emptyLabel?: string;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+  scrollElement?: HTMLElement | null;
 }
 
 type StatusMeta = {
@@ -129,6 +133,7 @@ export function InvocationTable({
   error,
   emptyLabel,
   onOpenUpstreamAccount,
+  scrollElement,
 }: InvocationTableProps) {
   const { t, locale } = useTranslation();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
@@ -142,6 +147,20 @@ export function InvocationTable({
       return false;
     return window.matchMedia("(min-width: 1280px)").matches;
   });
+  const [isMdUp, setIsMdUp] = useState(() => {
+    if (typeof window === "undefined") return false;
+    if (typeof window.matchMedia === "function") {
+      return (
+        window.matchMedia("(min-width: 768px)").matches ||
+        window.innerWidth >= 768
+      );
+    }
+    return window.innerWidth >= 768;
+  });
+  const [containerElement, setContainerElement] =
+    useState<HTMLDivElement | null>(null);
+  const [scrollMargin, setScrollMargin] = useState(0);
+  const measureRefs = useRef(new Map<number, HTMLElement>());
 
   const toggleLabels = useMemo(() => {
     if (locale === "zh") {
@@ -162,13 +181,13 @@ export function InvocationTable({
     };
   }, [locale]);
 
-  const openAccountDrawer = useCallback((
-    accountId: number | null,
-    accountLabel: string,
-  ) => {
-    if (accountId == null) return;
-    onOpenUpstreamAccount?.(accountId, accountLabel);
-  }, [onOpenUpstreamAccount]);
+  const openAccountDrawer = useCallback(
+    (accountId: number | null, accountLabel: string) => {
+      if (accountId == null) return;
+      onOpenUpstreamAccount?.(accountId, accountLabel);
+    },
+    [onOpenUpstreamAccount],
+  );
 
   const renderAccountValue = useCallback(
     (
@@ -239,6 +258,38 @@ export function InvocationTable({
     mediaQuery.addListener(sync);
     return () => {
       mediaQuery.removeListener(sync);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mediaQuery =
+      typeof window.matchMedia === "function"
+        ? window.matchMedia("(min-width: 768px)")
+        : null;
+    const sync = () => {
+      setIsMdUp((mediaQuery?.matches ?? false) || window.innerWidth >= 768);
+    };
+
+    sync();
+    if (!mediaQuery) {
+      window.addEventListener("resize", sync);
+      return () => window.removeEventListener("resize", sync);
+    }
+    if (typeof mediaQuery.addEventListener === "function") {
+      mediaQuery.addEventListener("change", sync);
+      window.addEventListener("resize", sync);
+      return () => {
+        mediaQuery.removeEventListener("change", sync);
+        window.removeEventListener("resize", sync);
+      };
+    }
+
+    mediaQuery.addListener(sync);
+    window.addEventListener("resize", sync);
+    return () => {
+      mediaQuery.removeListener(sync);
+      window.removeEventListener("resize", sync);
     };
   }, []);
 
@@ -343,6 +394,140 @@ export function InvocationTable({
     [expandedId, rows],
   );
   const poolAttemptsState = useInvocationPoolAttempts(expandedRecord);
+  const estimateRowSize = useCallback(
+    (index: number) =>
+      expandedId === rows[index]?.rowKey
+        ? isMdUp
+          ? 320
+          : 430
+        : isMdUp
+          ? 74
+          : 285,
+    [expandedId, isMdUp, rows],
+  );
+  const measureVirtualItemElement = useCallback(
+    (element: HTMLElement) => {
+      const baseHeight = element.getBoundingClientRect().height;
+      if (!isMdUp || element.tagName !== "TR") {
+        return baseHeight;
+      }
+
+      const rowIndex = Number(element.dataset.index);
+      if (!Number.isFinite(rowIndex)) {
+        return baseHeight;
+      }
+
+      const row = rows[rowIndex];
+      if (!row || expandedId !== row.rowKey) {
+        return baseHeight;
+      }
+
+      const detailRow = element.nextElementSibling;
+      if (detailRow?.tagName !== "TR") {
+        return baseHeight;
+      }
+
+      return baseHeight + detailRow.getBoundingClientRect().height;
+    },
+    [expandedId, isMdUp, rows],
+  );
+  const elementVirtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scrollElement ?? null,
+    estimateSize: estimateRowSize,
+    measureElement: measureVirtualItemElement,
+    overscan: 8,
+    scrollMargin,
+  });
+  const windowVirtualizer = useWindowVirtualizer({
+    count: rows.length,
+    estimateSize: estimateRowSize,
+    measureElement: measureVirtualItemElement,
+    overscan: 8,
+    scrollMargin,
+  });
+  const rowVirtualizer = scrollElement ? elementVirtualizer : windowVirtualizer;
+  const scheduleMeasureElement = useCallback(
+    (element: HTMLElement) => {
+      if (typeof window === "undefined") {
+        rowVirtualizer.measureElement(element);
+        return;
+      }
+      window.requestAnimationFrame(() => {
+        rowVirtualizer.measureElement(element);
+      });
+    },
+    [rowVirtualizer],
+  );
+  const virtualRows = rowVirtualizer.getVirtualItems();
+  const fallbackVirtualRows =
+    virtualRows.length > 0
+      ? virtualRows
+      : rows.slice(0, Math.min(rows.length, 20)).map((_, index) => ({
+          key: index,
+          index,
+          start: index * estimateRowSize(index),
+          size: estimateRowSize(index),
+          end: (index + 1) * estimateRowSize(index),
+          lane: 0,
+        }));
+  const totalVirtualSize =
+    virtualRows.length > 0
+      ? rowVirtualizer.getTotalSize()
+      : rows.reduce((sum, _, index) => sum + estimateRowSize(index), 0);
+
+  useLayoutEffect(() => {
+    const updateScrollMargin = () => {
+      if (!containerElement || typeof window === "undefined") {
+        setScrollMargin(0);
+        return;
+      }
+      const containerRect = containerElement.getBoundingClientRect();
+      const nextScrollMargin = scrollElement
+        ? containerRect.top -
+          scrollElement.getBoundingClientRect().top +
+          scrollElement.scrollTop
+        : containerRect.top + window.scrollY;
+      setScrollMargin((current) =>
+        Math.abs(current - nextScrollMargin) > 0.5
+          ? nextScrollMargin
+          : current,
+      );
+    };
+
+    updateScrollMargin();
+    if (!containerElement || typeof window === "undefined") {
+      return;
+    }
+    window.addEventListener("resize", updateScrollMargin);
+    const scrollTarget = scrollElement ?? window;
+    scrollTarget.addEventListener("scroll", updateScrollMargin, {
+      passive: true,
+    });
+    if (typeof ResizeObserver === "undefined") {
+      return () => {
+        window.removeEventListener("resize", updateScrollMargin);
+        scrollTarget.removeEventListener("scroll", updateScrollMargin);
+      };
+    }
+    const observer = new ResizeObserver(updateScrollMargin);
+    observer.observe(containerElement);
+    if (scrollElement) observer.observe(scrollElement);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updateScrollMargin);
+      scrollTarget.removeEventListener("scroll", updateScrollMargin);
+    };
+  }, [containerElement, scrollElement]);
+
+  useLayoutEffect(() => {
+    const element = expandedId
+      ? measureRefs.current.get(
+          rows.findIndex((row) => row.rowKey === expandedId),
+        )
+      : null;
+    if (element) rowVirtualizer.measureElement(element);
+  }, [expandedId, rowVirtualizer, rows]);
 
   useEffect(() => {
     if (!hasInFlightRows) return;
@@ -373,24 +558,51 @@ export function InvocationTable({
     return <Alert>{emptyLabel ?? t("table.noRecords")}</Alert>;
   }
 
-  return (
-    <div className="space-y-3">
-      <div className="space-y-3 md:hidden" data-testid="invocation-list">
-        {rows.map((row, rowIndex) => {
-          const listDetailId = `invocation-list-details-${invocationStableDomKey(row.rowKey)}`;
-          const isExpanded = expandedId === row.rowKey;
-          const handleToggle = () => {
-            setExpandedId((current) =>
-              current === row.rowKey ? null : row.rowKey,
-            );
-          };
+  const firstVirtualRow = fallbackVirtualRows[0] ?? null;
+  const lastVirtualRow =
+    fallbackVirtualRows[fallbackVirtualRows.length - 1] ?? null;
+  const paddingTop = firstVirtualRow
+    ? Math.max(0, firstVirtualRow.start - scrollMargin)
+    : 0;
+  const paddingBottom = lastVirtualRow
+    ? Math.max(0, totalVirtualSize - (lastVirtualRow.end - scrollMargin))
+    : 0;
 
-          return (
-            <article
-              key={`mobile-${row.rowKey}`}
-              data-testid="invocation-list-item"
-              className={`rounded-xl border border-base-300/70 px-3 py-3 ${rowIndex % 2 === 0 ? "bg-base-100/40" : "bg-base-200/24"}`}
-            >
+  if (!isMdUp) {
+    return (
+      <div className="space-y-3" ref={setContainerElement}>
+        <div className="space-y-3" data-testid="invocation-list">
+          {paddingTop > 0 ? (
+            <div aria-hidden="true" style={{ height: paddingTop }} />
+          ) : null}
+          {fallbackVirtualRows.map((virtualRow) => {
+            const row = rows[virtualRow.index];
+            if (!row) return null;
+            const listDetailId = `invocation-list-details-${invocationStableDomKey(row.rowKey)}`;
+            const isExpanded = expandedId === row.rowKey;
+            const handleToggle = () => {
+              setExpandedId((current) =>
+                current === row.rowKey ? null : row.rowKey,
+              );
+            };
+
+            return (
+              <article
+                key={`mobile-${row.rowKey}`}
+                ref={(node) => {
+                  if (node) {
+                    if (measureRefs.current.get(virtualRow.index) !== node) {
+                      measureRefs.current.set(virtualRow.index, node);
+                      scheduleMeasureElement(node);
+                    }
+                  } else {
+                    measureRefs.current.delete(virtualRow.index);
+                  }
+                }}
+                data-index={virtualRow.index}
+                data-testid="invocation-list-item"
+                className={`rounded-xl border border-base-300/70 px-3 py-3 ${virtualRow.index % 2 === 0 ? "bg-base-100/40" : "bg-base-200/24"}`}
+              >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-semibold">
@@ -548,12 +760,20 @@ export function InvocationTable({
                   />
                 </div>
               )}
-            </article>
-          );
-        })}
+              </article>
+            );
+          })}
+          {paddingBottom > 0 ? (
+            <div aria-hidden="true" style={{ height: paddingBottom }} />
+          ) : null}
+        </div>
       </div>
+    );
+  }
 
-      <div className="hidden md:block">
+  return (
+    <div className="space-y-3" ref={setContainerElement}>
+      <div>
         <div
           className="overflow-x-hidden rounded-xl border border-base-300/70 bg-base-100/52 backdrop-blur"
           data-testid="invocation-table-scroll"
@@ -626,7 +846,14 @@ export function InvocationTable({
               </tr>
             </thead>
             <tbody className="divide-y divide-base-300/65">
-              {rows.map((row, rowIndex) => {
+              {paddingTop > 0 ? (
+                <tr aria-hidden="true">
+                  <td colSpan={isXlUp ? 9 : 8} style={{ height: paddingTop, padding: 0 }} />
+                </tr>
+              ) : null}
+              {fallbackVirtualRows.map((virtualRow) => {
+                const row = rows[virtualRow.index];
+                if (!row) return null;
                 const tableDetailId = `invocation-table-details-${invocationStableDomKey(row.rowKey)}`;
                 const isExpanded = expandedId === row.rowKey;
                 const handleToggle = () => {
@@ -638,7 +865,18 @@ export function InvocationTable({
                 return (
                   <Fragment key={row.rowKey}>
                     <tr
-                      className={`${rowIndex % 2 === 0 ? "bg-base-100/38" : "bg-base-200/22"} hover:bg-primary/6`}
+                      ref={(node) => {
+                        if (node) {
+                          if (measureRefs.current.get(virtualRow.index) !== node) {
+                            measureRefs.current.set(virtualRow.index, node);
+                            scheduleMeasureElement(node);
+                          }
+                        } else {
+                          measureRefs.current.delete(virtualRow.index);
+                        }
+                      }}
+                      data-index={virtualRow.index}
+                      className={`${virtualRow.index % 2 === 0 ? "bg-base-100/38" : "bg-base-200/22"} hover:bg-primary/6`}
                     >
                       <td className="min-w-0 border-t border-base-300/65 px-2 py-2.5 align-middle xl:px-3">
                         <div className="flex min-w-0 flex-col justify-center gap-1 leading-tight">
@@ -804,6 +1042,11 @@ export function InvocationTable({
                   </Fragment>
                 );
               })}
+              {paddingBottom > 0 ? (
+                <tr aria-hidden="true">
+                  <td colSpan={isXlUp ? 9 : 8} style={{ height: paddingBottom, padding: 0 }} />
+                </tr>
+              ) : null}
             </tbody>
           </table>
         </div>

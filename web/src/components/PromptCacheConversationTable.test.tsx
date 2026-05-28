@@ -1017,9 +1017,10 @@ describe("PromptCacheConversationTable", () => {
       page?: number;
       snapshotId?: number;
       sortOrder?: string;
+      pageSize?: number;
       signal?: AbortSignal;
     }) => {
-      if (query.signal) {
+      if (query.pageSize === 200) {
         return {
           snapshotId: 900,
           total: 0,
@@ -1102,17 +1103,39 @@ describe("PromptCacheConversationTable", () => {
     expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledWith({
       promptCacheKey: "pck-history",
       page: 1,
-      pageSize: 200,
+      pageSize: 50,
       sortBy: "occurredAt",
       sortOrder: "desc",
+      signal: expect.any(AbortSignal),
     });
+    expect(apiMocks.fetchInvocationRecords).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        promptCacheKey: "pck-history",
+        page: 2,
+        pageSize: 50,
+      }),
+    );
+
+    const drawerBody = document.querySelector(".drawer-body");
+    expect(drawerBody).toBeTruthy();
+    Object.defineProperties(drawerBody as HTMLElement, {
+      scrollHeight: { configurable: true, value: 1_000 },
+      clientHeight: { configurable: true, value: 500 },
+      scrollTop: { configurable: true, value: 500 },
+    });
+    await act(async () => {
+      drawerBody?.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await flushInteractive();
+
     expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledWith({
       promptCacheKey: "pck-history",
       page: 2,
-      pageSize: 200,
+      pageSize: 50,
       sortBy: "occurredAt",
       sortOrder: "desc",
       snapshotId: 901,
+      signal: expect.any(AbortSignal),
     });
     expect(document.body.textContent).toContain("全部保留调用记录");
     expect(document.body.textContent).toContain("对话调用总览");
@@ -1910,9 +1933,10 @@ describe("PromptCacheConversationTable", () => {
       page?: number;
       snapshotId?: number;
       sortOrder?: string;
+      pageSize?: number;
       signal?: AbortSignal;
     }) => {
-      if (query.signal) {
+      if (query.pageSize === 200) {
         return {
           snapshotId: 900,
           total: 0,
@@ -2023,11 +2047,11 @@ describe("PromptCacheConversationTable", () => {
     expect(document.body.textContent).not.toContain("Proxy Running");
 
     await act(async () => {
-      resolveRefresh({
-        snapshotId: 903,
-        total: 2,
-        page: 1,
-        pageSize: 200,
+            resolveRefresh({
+              snapshotId: 903,
+              total: 2,
+              page: 1,
+        pageSize: 50,
         records: [
           {
             id: 62,
@@ -2068,11 +2092,178 @@ describe("PromptCacheConversationTable", () => {
     expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledWith({
       promptCacheKey: "pck-history-live",
       page: 1,
-      pageSize: 200,
+      pageSize: 50,
       sortBy: "occurredAt",
       sortOrder: "desc",
+      signal: expect.any(AbortSignal),
     });
     expect(document.body.textContent).toContain("Proxy Final");
     expect(document.body.textContent).not.toContain("Proxy Running");
+  });
+
+  it("continues from page 2 after a silent refresh adopts a new history snapshot", async () => {
+    let pageOneRequests = 0;
+    apiMocks.fetchInvocationRecords.mockImplementation(async (query: {
+      page?: number;
+      snapshotId?: number;
+      pageSize?: number;
+    }) => {
+      if (query.pageSize === 200) {
+        return {
+          snapshotId: 900,
+          total: 0,
+          page: 1,
+          pageSize: 200,
+          records: [],
+        };
+      }
+      if (query.page === 1 && query.snapshotId == null) {
+        pageOneRequests += 1;
+        const snapshotId = pageOneRequests === 1 ? 902 : 903;
+        return {
+          snapshotId,
+          total: 120,
+          page: 1,
+          pageSize: 50,
+          records: [
+            {
+              id: snapshotId,
+              invokeId: `history-snapshot-${snapshotId}`,
+              occurredAt: "2026-03-02T12:35:00Z",
+              status: "completed",
+              promptCacheKey: "pck-history-snapshot",
+              totalTokens: 1500,
+              cost: 0.31,
+              proxyDisplayName: `Proxy Snapshot ${snapshotId}`,
+              createdAt: "2026-03-02T12:35:00Z",
+            },
+          ],
+        };
+      }
+      if (query.page === 2) {
+        const snapshotId = query.snapshotId ?? 903;
+        return {
+          snapshotId,
+          total: 120,
+          page: 2,
+          pageSize: 50,
+          records: [
+            {
+              id: 51,
+              invokeId: "history-snapshot-page-2",
+              occurredAt: "2026-03-02T12:10:00Z",
+              status: "completed",
+              promptCacheKey: "pck-history-snapshot",
+              totalTokens: 900,
+              cost: 0.2,
+              proxyDisplayName: `Proxy Snapshot Page 2 ${snapshotId}`,
+              createdAt: "2026-03-02T12:10:00Z",
+            },
+          ],
+        };
+      }
+      throw new Error(`unexpected page ${query.page}`);
+    });
+
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-history-snapshot",
+          requestCount: 120,
+          totalTokens: 2400,
+          totalCost: 0.51,
+          createdAt: "2026-03-02T10:00:00Z",
+          lastActivityAt: "2026-03-02T12:35:00Z",
+          last24hRequests: [],
+        }),
+      ],
+    });
+
+    const historyButton = findButtonByAriaLabel("打开全部调用记录");
+    expect(historyButton).toBeTruthy();
+
+    await act(async () => {
+      historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+    await flushInteractive();
+
+    expect(document.body.textContent).toContain("Proxy Snapshot 902");
+
+    const drawerBody = document.querySelector(".drawer-body");
+    expect(drawerBody).toBeTruthy();
+    Object.defineProperties(drawerBody as HTMLElement, {
+      scrollHeight: { configurable: true, value: 1_000 },
+      clientHeight: { configurable: true, value: 500 },
+      scrollTop: { configurable: true, value: 500 },
+    });
+    await act(async () => {
+      drawerBody?.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await flushInteractive();
+
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledWith({
+      promptCacheKey: "pck-history-snapshot",
+      page: 2,
+      pageSize: 50,
+      sortBy: "occurredAt",
+      sortOrder: "desc",
+      snapshotId: 902,
+      signal: expect.any(AbortSignal),
+    });
+    await flushInteractive();
+    expect(document.body.textContent).toContain("已加载 2 / 120");
+
+    emitSseRecords({
+      type: "records",
+      records: [
+        {
+          id: 121,
+          invokeId: "history-snapshot-live",
+          occurredAt: "2026-03-02T12:40:00Z",
+          createdAt: "2026-03-02T12:40:00Z",
+          status: "completed",
+          promptCacheKey: "pck-history-snapshot",
+          totalTokens: 0,
+          cost: 0,
+          proxyDisplayName: "Proxy Snapshot Live",
+        },
+      ],
+    });
+    await flushInteractive();
+
+    expect(document.body.textContent).toContain("Proxy Snapshot 903");
+    expect(document.body.textContent).toContain("已加载 4 / 121");
+
+    await act(async () => {
+      drawerBody?.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await flushInteractive();
+
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledWith({
+      promptCacheKey: "pck-history-snapshot",
+      page: 2,
+      pageSize: 50,
+      sortBy: "occurredAt",
+      sortOrder: "desc",
+      snapshotId: 903,
+      signal: expect.any(AbortSignal),
+    });
+    expect(apiMocks.fetchInvocationRecords).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        promptCacheKey: "pck-history-snapshot",
+        page: 3,
+        pageSize: 50,
+        snapshotId: 903,
+      }),
+    );
+    await flushInteractive();
+    expect(document.body.textContent).toContain("已加载 4 / 121");
   });
 });

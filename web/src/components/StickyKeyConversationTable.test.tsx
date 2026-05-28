@@ -228,70 +228,27 @@ describe('StickyKeyConversationTable', () => {
   })
 
   it('loads sticky history with the shared live drawer and sticky filters', async () => {
-    apiMocks.fetchInvocationRecords
-      .mockResolvedValueOnce({
-        snapshotId: 1,
-        total: 3,
-        page: 1,
-        pageSize: 200,
-        records: [
-          {
-            id: 99,
-            invokeId: 'sticky-history-001',
-            occurredAt: '2026-03-02T12:00:00Z',
-            status: 'completed',
-            model: 'gpt-5.4',
-            totalTokens: 512,
-            cost: 0.12,
-            promptCacheKey: 'sticky-chat-001',
-            upstreamAccountId: 101,
-            upstreamAccountName: 'Codex Pro - Tokyo',
-            createdAt: '2026-03-02T12:00:00Z',
-          },
-        ],
-      })
-      .mockResolvedValueOnce({
-        snapshotId: 1,
-        total: 3,
-        page: 2,
-        pageSize: 200,
-        records: [
-          {
-            id: 100,
-            invokeId: 'sticky-history-002',
-            occurredAt: '2026-03-02T11:00:00Z',
-            status: 'completed',
-            model: 'gpt-5.4',
-            totalTokens: 256,
-            cost: 0.08,
-            promptCacheKey: 'sticky-chat-001',
-            upstreamAccountId: 101,
-            upstreamAccountName: 'Codex Pro - Tokyo',
-            createdAt: '2026-03-02T11:00:00Z',
-          },
-        ],
-      })
-      .mockResolvedValueOnce({
-        snapshotId: 1,
-        total: 3,
-        page: 3,
-        pageSize: 200,
-        records: [
-          {
-            id: 101,
-            invokeId: 'sticky-history-003',
-            occurredAt: '2026-03-02T10:00:00Z',
-            status: 'completed',
-            model: 'gpt-5.4',
-            totalTokens: 128,
-            cost: 0.04,
-            promptCacheKey: 'sticky-chat-001',
-            upstreamAccountId: 101,
-            upstreamAccountName: 'Codex Pro - Tokyo',
-            createdAt: '2026-03-02T10:00:00Z',
-          },
-        ],
-      })
+    apiMocks.fetchInvocationRecords.mockResolvedValueOnce({
+      snapshotId: 1,
+      total: 1,
+      page: 1,
+      pageSize: 50,
+      records: [
+        {
+          id: 99,
+          invokeId: 'sticky-history-001',
+          occurredAt: '2026-03-02T12:00:00Z',
+          status: 'completed',
+          model: 'gpt-5.4',
+          totalTokens: 512,
+          cost: 0.12,
+          promptCacheKey: 'sticky-chat-001',
+          upstreamAccountId: 101,
+          upstreamAccountName: 'Codex Pro - Tokyo',
+          createdAt: '2026-03-02T12:00:00Z',
+        },
+      ],
+    })
 
     renderInteractive(createStats())
 
@@ -307,31 +264,12 @@ describe('StickyKeyConversationTable', () => {
       stickyKey: 'sticky-chat-001',
       upstreamAccountId: 101,
       page: 1,
-      pageSize: 200,
+      pageSize: 50,
       sortBy: 'occurredAt',
       sortOrder: 'desc',
+      signal: expect.any(AbortSignal),
     })
-
-    expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(2, {
-      stickyKey: 'sticky-chat-001',
-      upstreamAccountId: 101,
-      page: 2,
-      pageSize: 200,
-      sortBy: 'occurredAt',
-      sortOrder: 'desc',
-      snapshotId: 1,
-    })
-
-    expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(3, {
-      stickyKey: 'sticky-chat-001',
-      upstreamAccountId: 101,
-      page: 3,
-      pageSize: 200,
-      sortBy: 'occurredAt',
-      sortOrder: 'desc',
-      snapshotId: 1,
-    })
-    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(3)
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1)
 
     expect(document.body.textContent).toContain('sticky-chat-001')
     expect(document.body.textContent).toContain('gpt-5.4')
