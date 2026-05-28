@@ -2498,6 +2498,140 @@ async fn capture_target_pool_route_timeout_switches_to_alternate_upstream_route(
     fast_upstream_handle.abort();
 }
 
+#[tokio::test]
+async fn capture_target_pool_route_timeout_does_not_cut_out_from_no_cut_out_sticky_owner() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRouteRow {
+        upstream_account_id: Option<i64>,
+        attempt_index: i64,
+        distinct_account_index: i64,
+        same_account_retry_index: i64,
+        status: String,
+        failure_kind: Option<String>,
+    }
+
+    let (slow_upstream_base, slow_upstream_handle) =
+        spawn_pool_delayed_first_chunk_upstream(Duration::from_millis(750)).await;
+    let (fast_upstream_base, attempts, fast_upstream_handle) =
+        spawn_pool_retry_upstream(&[("Bearer route-fast-no-cut-out", 0)]).await;
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.pool_upstream_responses_attempt_timeout = Duration::from_millis(250);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let slow_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Slow No Cut Out Route",
+        "route-slow-no-cut-out",
+        None,
+        None,
+        Some(slow_upstream_base.as_str()),
+    )
+    .await;
+    let fast_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Fast Route Behind No Cut Out",
+        "route-fast-no-cut-out",
+        None,
+        None,
+        Some(fast_upstream_base.as_str()),
+    )
+    .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET policy_allow_cut_out = 0 WHERE id = ?1")
+        .bind(slow_id)
+        .execute(&state.pool)
+        .await
+        .expect("set source no cut-out policy");
+
+    let sticky_key = "sticky-timeout-no-cut-out-owner";
+    let sticky_seen_at = format_test_recent_active_timestamp(Utc::now());
+    upsert_test_sticky_route_at(&state.pool, sticky_key, slow_id, &sticky_seen_at).await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            format!(r#"{{"model":"gpt-5","input":"hello","stickyKey":"{sticky_key}"}}"#)
+                .into_bytes(),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read no-cut-out timeout failure body");
+    let response_payload: Value =
+        serde_json::from_slice(&body).expect("decode no-cut-out timeout failure body");
+    assert!(
+        response_payload["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("upstream")),
+        "unexpected no-cut-out timeout payload: {response_payload}",
+    );
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 2).await;
+
+    let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
+        r#"
+        SELECT
+            upstream_account_id,
+            attempt_index,
+            distinct_account_index,
+            same_account_retry_index,
+            status,
+            failure_kind
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load no-cut-out timeout attempt rows");
+    assert_eq!(attempt_rows.len(), 2);
+    assert_eq!(attempt_rows[0].upstream_account_id, Some(slow_id));
+    assert_eq!(attempt_rows[0].attempt_index, 1);
+    assert_eq!(attempt_rows[0].distinct_account_index, 1);
+    assert_eq!(attempt_rows[0].same_account_retry_index, 1);
+    assert_eq!(
+        attempt_rows[0].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+    );
+    assert_eq!(attempt_rows[1].upstream_account_id, Some(slow_id));
+    assert_eq!(attempt_rows[1].attempt_index, 2);
+    assert_eq!(attempt_rows[1].distinct_account_index, 1);
+    assert_eq!(attempt_rows[1].same_account_retry_index, 0);
+    assert_eq!(
+        attempt_rows[1].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
+    );
+    assert_eq!(
+        attempt_rows[1].failure_kind.as_deref(),
+        Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
+    );
+
+    let attempts = attempts.lock().expect("lock fast attempts");
+    assert_eq!(attempts.get("Bearer route-fast-no-cut-out").copied(), None);
+    drop(attempts);
+    assert_eq!(
+        load_test_sticky_route_account_id(&state.pool, sticky_key).await,
+        Some(slow_id)
+    );
+    assert_ne!(
+        load_test_sticky_route_account_id(&state.pool, sticky_key).await,
+        Some(fast_id)
+    );
+
+    slow_upstream_handle.abort();
+    fast_upstream_handle.abort();
+}
+
 #[test]
 fn canonical_pool_upstream_route_key_collapses_trailing_slashes() {
     let without_trailing_slash =

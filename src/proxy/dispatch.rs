@@ -1512,11 +1512,12 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             }
         } else {
             if let Some(account) = pool_account_for_task.as_ref() {
-                let pool_route_success = proxy_capture_response_status_is_success(
-                    upstream_status,
-                    had_stream_error,
-                    had_logical_stream_failure,
-                );
+                let pool_route_success = !upstream_status.is_client_error()
+                    && proxy_capture_response_status_is_success(
+                        upstream_status,
+                        had_stream_error,
+                        had_logical_stream_failure,
+                    );
                 let route_result = if pool_route_success || pure_downstream_closed {
                     consume_pool_routing_reservation(
                         state_for_task.as_ref(),
@@ -1556,8 +1557,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         state_for_task.as_ref(),
                         &reservation_key_for_task,
                     );
-                    if response_info_is_retryable_server_overloaded(upstream_status, &response_info)
-                    {
+                    if response_info_is_retryable_server_overloaded(
+                        upstream_status,
+                        &response_info,
+                    ) {
                         record_pool_route_retryable_overload_failure(
                             &state_for_task.pool,
                             account.account_id,
