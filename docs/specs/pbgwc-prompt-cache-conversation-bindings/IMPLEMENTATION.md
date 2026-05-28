@@ -11,6 +11,7 @@
 - [x] HTTP binding API with validation.
 - [x] Account-pool runtime routing constraints.
 - [x] Forced upstream account binding bypasses sticky cut-in/cut-out policy while preserving health, quota, guard, concurrency, route-key, and forward-proxy checks.
+- [x] Manual group binding bypasses sticky source cut-out policy while preserving target cut-in and target account eligibility.
 - [x] Upstream account binding writes the corresponding sticky route immediately.
 - [x] Prompt Cache conversation detail drawer controls.
 - [x] Unit, integration, Storybook, and visual evidence coverage.

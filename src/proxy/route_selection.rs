@@ -12,6 +12,10 @@ pub(crate) fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
     }
 }
 
+fn pool_route_response_status_is_success(status: StatusCode) -> bool {
+    status.is_success() || status.is_redirection()
+}
+
 pub(crate) async fn request_matches_pool_route(
     state: &AppState,
     headers: &HeaderMap,
@@ -2363,15 +2367,24 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             "pool upstream response first chunk ready"
                         );
                     } else {
+                        let pool_route_success =
+                            pool_route_response_status_is_success(upstream_status);
+                        let route_http_failure_message = (!pool_route_success).then(|| {
+                            format!("pool upstream responded with {}", upstream_status.as_u16())
+                        });
                         finalize_tracked_pool_attempt(
                             state.as_ref(),
                             pending_pool_attempt_record.as_ref(),
-                            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+                            if pool_route_success {
+                                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
+                            } else {
+                                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
+                            },
                             Some(upstream_status),
                             None,
                             None,
                             None,
-                            None,
+                            route_http_failure_message.as_deref(),
                             Some(t_upstream_connect_ms),
                             Some(t_upstream_ttfb_ms),
                             Some(0.0),
@@ -2382,20 +2395,44 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         complete_deferred_pool_early_phase_cleanup_guard(
                             &mut deferred_pool_early_phase_cleanup_guard,
                         );
-                        consume_pool_routing_reservation(
-                            state.as_ref(),
-                            &pool_routing_reservation_key,
-                        );
-                        if let Err(route_err) = record_pool_route_success(
-                            &state.pool,
-                            account.account_id,
-                            upstream_attempt_started_at_utc,
-                            live_body_sticky_key.as_deref(),
-                            upstream_invoke_id.as_deref(),
-                        )
-                        .await
-                        {
-                            warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
+                        if pool_route_success {
+                            consume_pool_routing_reservation(
+                                state.as_ref(),
+                                &pool_routing_reservation_key,
+                            );
+                            if let Err(route_err) = record_pool_route_success(
+                                &state.pool,
+                                account.account_id,
+                                upstream_attempt_started_at_utc,
+                                live_body_sticky_key.as_deref(),
+                                upstream_invoke_id.as_deref(),
+                            )
+                            .await
+                            {
+                                warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
+                            }
+                        } else {
+                            release_pool_routing_reservation(
+                                state.as_ref(),
+                                &pool_routing_reservation_key,
+                            );
+                            if let Err(route_err) = record_pool_route_http_failure(
+                                &state.pool,
+                                account.account_id,
+                                &account.kind,
+                                account.single_account_rotation_enabled
+                                    && account.effective_upstream_429_max_retries() == 0,
+                                live_body_sticky_key.as_deref(),
+                                upstream_status,
+                                route_http_failure_message
+                                    .as_deref()
+                                    .unwrap_or("upstream request failed"),
+                                upstream_invoke_id.as_deref(),
+                            )
+                            .await
+                            {
+                                warn!(account_id = account.account_id, error = %route_err, "failed to record pool route HTTP failure");
+                            }
                         }
                         return response_builder.body(Body::empty()).map_err(|err| {
                             (
@@ -2478,7 +2515,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             {
                                 warn!(account_id = account.account_id, error = %route_err, "failed to record pool stream error");
                             }
-                        } else {
+                        } else if pool_route_response_status_is_success(upstream_status) {
                             consume_pool_routing_reservation(
                                 state_for_record.as_ref(),
                                 &reservation_key_for_record,
@@ -2494,12 +2531,36 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             {
                                 warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
                             }
+                        } else {
+                            let route_http_failure_message =
+                                format!("pool upstream responded with {}", upstream_status.as_u16());
+                            release_pool_routing_reservation(
+                                state_for_record.as_ref(),
+                                &reservation_key_for_record,
+                            );
+                            if let Err(route_err) = record_pool_route_http_failure(
+                                &state_for_record.pool,
+                                account.account_id,
+                                &account.kind,
+                                account.single_account_rotation_enabled
+                                    && account.effective_upstream_429_max_retries() == 0,
+                                sticky_key_for_record.as_deref(),
+                                upstream_status,
+                                &route_http_failure_message,
+                                invoke_id_for_record.as_deref(),
+                            )
+                            .await
+                            {
+                                warn!(account_id = account.account_id, error = %route_err, "failed to record pool route HTTP failure");
+                            }
                         }
                         finalize_tracked_pool_attempt(
                             state_for_record.as_ref(),
                             pending_pool_attempt_record_for_task.as_ref(),
                             if stream_error_message.is_some() {
                                 POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
+                            } else if !pool_route_response_status_is_success(upstream_status) {
+                                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
                             } else {
                                 POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
                             },
@@ -2512,7 +2573,12 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             stream_error_message
                                 .as_ref()
                                 .map(|_| PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
-                            stream_error_message.as_deref(),
+                            stream_error_message
+                                .as_deref()
+                                .or_else(|| {
+                                    (!pool_route_response_status_is_success(upstream_status))
+                                        .then_some("upstream HTTP failure")
+                                }),
                             None,
                             Some(t_upstream_connect_ms),
                             Some(t_upstream_ttfb_ms),
@@ -2733,15 +2799,22 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             "pool upstream response first chunk ready"
         );
     } else {
+        let pool_route_success = pool_route_response_status_is_success(upstream_status);
+        let route_http_failure_message = (!pool_route_success)
+            .then(|| format!("pool upstream responded with {}", upstream_status.as_u16()));
         finalize_tracked_pool_attempt(
             state.as_ref(),
             pending_pool_attempt_record.as_ref(),
-            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+            if pool_route_success {
+                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
+            } else {
+                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
+            },
             Some(upstream_status),
             None,
             None,
             None,
-            None,
+            route_http_failure_message.as_deref(),
             Some(t_upstream_connect_ms),
             Some(t_upstream_ttfb_ms),
             Some(0.0),
@@ -2752,17 +2825,38 @@ pub(crate) async fn proxy_openai_v1_via_pool(
         complete_deferred_pool_early_phase_cleanup_guard(
             &mut deferred_pool_early_phase_cleanup_guard,
         );
-        consume_pool_routing_reservation(state.as_ref(), &pool_routing_reservation_key);
-        if let Err(route_err) = record_pool_route_success(
-            &state.pool,
-            account.account_id,
-            upstream_attempt_started_at_utc,
-            sticky_key.as_deref(),
-            upstream_invoke_id.as_deref(),
-        )
-        .await
-        {
-            warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
+        if pool_route_success {
+            consume_pool_routing_reservation(state.as_ref(), &pool_routing_reservation_key);
+            if let Err(route_err) = record_pool_route_success(
+                &state.pool,
+                account.account_id,
+                upstream_attempt_started_at_utc,
+                sticky_key.as_deref(),
+                upstream_invoke_id.as_deref(),
+            )
+            .await
+            {
+                warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
+            }
+        } else {
+            release_pool_routing_reservation(state.as_ref(), &pool_routing_reservation_key);
+            if let Err(route_err) = record_pool_route_http_failure(
+                &state.pool,
+                account.account_id,
+                &account.kind,
+                account.single_account_rotation_enabled
+                    && account.effective_upstream_429_max_retries() == 0,
+                sticky_key.as_deref(),
+                upstream_status,
+                route_http_failure_message
+                    .as_deref()
+                    .unwrap_or("upstream request failed"),
+                upstream_invoke_id.as_deref(),
+            )
+            .await
+            {
+                warn!(account_id = account.account_id, error = %route_err, "failed to record pool route HTTP failure");
+            }
         }
         return response_builder.body(Body::empty()).map_err(|err| {
             (
@@ -2844,7 +2938,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             {
                 warn!(account_id = account.account_id, error = %route_err, "failed to record pool stream error");
             }
-        } else {
+        } else if pool_route_response_status_is_success(upstream_status) {
             consume_pool_routing_reservation(
                 state_for_record.as_ref(),
                 &reservation_key_for_record,
@@ -2860,12 +2954,36 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             {
                 warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
             }
+        } else {
+            let route_http_failure_message =
+                format!("pool upstream responded with {}", upstream_status.as_u16());
+            release_pool_routing_reservation(
+                state_for_record.as_ref(),
+                &reservation_key_for_record,
+            );
+            if let Err(route_err) = record_pool_route_http_failure(
+                &state_for_record.pool,
+                account.account_id,
+                &account.kind,
+                account.single_account_rotation_enabled
+                    && account.effective_upstream_429_max_retries() == 0,
+                sticky_key_for_record.as_deref(),
+                upstream_status,
+                &route_http_failure_message,
+                invoke_id_for_record.as_deref(),
+            )
+            .await
+            {
+                warn!(account_id = account.account_id, error = %route_err, "failed to record pool route HTTP failure");
+            }
         }
         finalize_tracked_pool_attempt(
             state_for_record.as_ref(),
             pending_pool_attempt_record_for_task.as_ref(),
             if stream_error_message.is_some() {
                 POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
+            } else if !pool_route_response_status_is_success(upstream_status) {
+                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
             } else {
                 POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
             },
@@ -2878,7 +2996,12 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             stream_error_message
                 .as_ref()
                 .map(|_| PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
-            stream_error_message.as_deref(),
+            stream_error_message
+                .as_deref()
+                .or_else(|| {
+                    (!pool_route_response_status_is_success(upstream_status))
+                        .then_some("upstream HTTP failure")
+                }),
             None,
             Some(t_upstream_connect_ms),
             Some(t_upstream_ttfb_ms),

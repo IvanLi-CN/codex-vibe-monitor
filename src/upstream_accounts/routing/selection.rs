@@ -516,6 +516,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
     let mut saw_non_routing_candidate = false;
     let mut sticky_route_excluded_by_route_key = false;
     let mut sticky_route_still_reusable = false;
+    let mut sticky_source_cut_out_guard_applies = false;
     let mut sticky_route_group_proxy_blocked_message = None;
     let mut sticky_assigned_blocked = None;
     let mut group_proxy_blocked_messages = Vec::new();
@@ -546,6 +547,18 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
         let sticky_route_is_forced_binding_target =
             forced_binding_account_id == Some(route.account_id);
         if !sticky_route_is_forced_binding_target
+            && binding_constraint.is_none()
+            && tried.contains(&route.account_id)
+            && sticky_source_rule
+                .as_ref()
+                .is_some_and(|rule| !rule.allow_cut_out)
+            && load_upstream_account_row(&state.pool, route.account_id)
+                .await?
+                .is_some()
+        {
+            sticky_source_cut_out_guard_applies = true;
+        }
+        if !sticky_route_is_forced_binding_target
             && !tried.contains(&route.account_id)
             && let Some(row) = load_upstream_account_row(&state.pool, route.account_id).await?
         {
@@ -569,6 +582,13 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
                         .as_deref()
                         .is_some_and(|route_key| route_key == required)
                 });
+            if binding_constraint.is_none()
+                && sticky_source_rule
+                    .as_ref()
+                    .is_some_and(|rule| !rule.allow_cut_out)
+            {
+                sticky_source_cut_out_guard_applies = true;
+            }
             let sticky_route_is_excluded_by_route_key = sticky_route_key
                 .as_deref()
                 .is_some_and(|route_key| excluded_upstream_route_keys.contains(route_key));
@@ -726,12 +746,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
                 saw_non_routing_candidate = true;
             }
         }
-        if sticky_source_rule
-            .as_ref()
-            .is_some_and(|rule| !rule.allow_cut_out)
-            && sticky_route_still_reusable
-            && !sticky_route_excluded_by_route_key
-        {
+        if sticky_source_cut_out_guard_applies {
             if let Some(assigned_blocked) = sticky_assigned_blocked {
                 return Ok(PoolAccountResolution::AssignedBlocked(assigned_blocked));
             }
@@ -739,7 +754,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
                 return Ok(PoolAccountResolution::BlockedByPolicy(message));
             }
             let message =
-                "sticky conversation cannot cut out of the current account because a tag rule forbids it"
+                "sticky conversation cannot cut out of the current account because routing policy forbids it"
                     .to_string();
             if let Some(row) = load_upstream_account_row(&state.pool, route.account_id).await?
                 && let Some(assigned_blocked) = build_assigned_blocked_account(

@@ -962,6 +962,100 @@ async fn pool_route_switches_accounts_immediately_after_upstream_402() {
 }
 
 #[tokio::test]
+async fn pool_route_http_4xx_does_not_create_sticky_route() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRow {
+        status: String,
+        http_status: Option<i64>,
+        error_message: Option<String>,
+    }
+
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_static_failure_responses_upstream(
+        &[("Bearer upstream-primary", StatusCode::BAD_REQUEST)],
+    )
+    .await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-400-no-route-success"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+    wait_for_pool_attempt_status(
+        &state.pool,
+        1,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+    )
+    .await;
+    assert_eq!(
+        load_test_sticky_route_account_id(&state.pool, "sticky-400-no-route-success").await,
+        None,
+        "HTTP 4xx must not be treated as pool route success for sticky upsert",
+    );
+
+    let attempt_rows = sqlx::query_as::<_, AttemptRow>(
+        r#"
+        SELECT status, http_status, error_message
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load 4xx attempt rows");
+    assert_eq!(attempt_rows.len(), 1);
+    assert_eq!(
+        attempt_rows[0].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
+    );
+    assert_eq!(attempt_rows[0].http_status, Some(400));
+    assert!(
+        attempt_rows[0]
+            .error_message
+            .as_deref()
+            .is_some_and(|message| !message.is_empty()),
+        "4xx attempt should preserve error information: {attempt_rows:?}",
+    );
+    let account_route_state =
+        sqlx::query_as::<_, (String, Option<String>, Option<String>, i64)>(
+            r#"
+            SELECT status, last_route_failure_at, cooldown_until, consecutive_route_failures
+            FROM pool_upstream_accounts
+            WHERE id = ?1
+            "#,
+        )
+        .bind(primary_id)
+        .fetch_one(&state.pool)
+        .await
+        .expect("load account route state after 4xx");
+    assert_eq!(account_route_state.0, "active");
+    assert!(account_route_state.1.is_some());
+    assert_eq!(account_route_state.3, 1);
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn pool_route_live_request_switches_accounts_immediately_after_upstream_429() {
     let (upstream_base, attempts, upstream_handle) =
         spawn_pool_rate_limit_echo_upstream(&[("Bearer upstream-primary", 99)]).await;
