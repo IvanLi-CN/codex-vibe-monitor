@@ -309,6 +309,29 @@ function emptyForwardProxyNodeStats(): ForwardProxyNodeStats {
   }
 }
 
+const forwardProxyWindowColumns = [
+  {
+    labelKey: 'settings.forwardProxy.table.sevenDays',
+    selectStats: (stats: ForwardProxyNodeStats) => stats.sevenDays,
+  },
+  {
+    labelKey: 'settings.forwardProxy.table.oneDay',
+    selectStats: (stats: ForwardProxyNodeStats) => stats.oneDay,
+  },
+  {
+    labelKey: 'settings.forwardProxy.table.oneHour',
+    selectStats: (stats: ForwardProxyNodeStats) => stats.oneHour,
+  },
+  {
+    labelKey: 'settings.forwardProxy.table.fifteenMinutes',
+    selectStats: (stats: ForwardProxyNodeStats) => stats.fifteenMinutes,
+  },
+  {
+    labelKey: 'settings.forwardProxy.table.oneMinute',
+    selectStats: (stats: ForwardProxyNodeStats) => stats.oneMinute,
+  },
+] as const
+
 export default function SettingsPage() {
   const { t } = useTranslation()
   const {
@@ -1833,13 +1856,10 @@ export default function SettingsPage() {
 
           <div className="space-y-3 md:hidden">
             {forwardProxyTableNodes.map((node) => {
-              const windows = [
-                { label: t('settings.forwardProxy.table.oneMinute'), stats: node.stats.oneMinute },
-                { label: t('settings.forwardProxy.table.fifteenMinutes'), stats: node.stats.fifteenMinutes },
-                { label: t('settings.forwardProxy.table.oneHour'), stats: node.stats.oneHour },
-                { label: t('settings.forwardProxy.table.oneDay'), stats: node.stats.oneDay },
-                { label: t('settings.forwardProxy.table.sevenDays'), stats: node.stats.sevenDays },
-              ]
+              const windows = forwardProxyWindowColumns.map((column) => ({
+                label: t(column.labelKey),
+                stats: column.selectStats(node.stats),
+              }))
               return (
                 <article
                   key={`mobile-${node.key}`}
@@ -1869,7 +1889,7 @@ export default function SettingsPage() {
                       </div>
                     </div>
                   </div>
-                  <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3" data-testid="settings-forward-proxy-mobile-windows">
                     {windows.map((window) => (
                       <div key={`${node.key}-${window.label}`} className="rounded-lg border border-base-300/70 bg-base-100/75 p-2">
                         <div className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">{window.label}</div>
@@ -1891,30 +1911,22 @@ export default function SettingsPage() {
           </div>
 
           <div className="hidden overflow-hidden rounded-xl border border-base-300/80 bg-base-100/72 md:block">
-            <table className="w-full table-fixed text-xs">
+            <table className="w-full table-fixed text-xs" data-testid="settings-forward-proxy-desktop-table">
               <thead className="bg-base-200/70 uppercase tracking-[0.08em] text-base-content/65">
                 <tr>
                   <th className={cn('box-border w-[24%]', pricingTableHeaderCellClass)}>{t('settings.forwardProxy.table.proxy')}</th>
                   <th className={cn('box-border w-[10%] text-center', pricingTableHeaderCellClass)}>{t('settings.forwardProxy.table.latency')}</th>
-                  <th className={cn('box-border w-[11%] text-center', pricingTableHeaderCellClass)}>{t('settings.forwardProxy.table.oneMinute')}</th>
-                  <th className={cn('box-border w-[11%] text-center', pricingTableHeaderCellClass)}>
-                    {t('settings.forwardProxy.table.fifteenMinutes')}
-                  </th>
-                  <th className={cn('box-border w-[11%] text-center', pricingTableHeaderCellClass)}>{t('settings.forwardProxy.table.oneHour')}</th>
-                  <th className={cn('box-border w-[11%] text-center', pricingTableHeaderCellClass)}>{t('settings.forwardProxy.table.oneDay')}</th>
-                  <th className={cn('box-border w-[11%] text-center', pricingTableHeaderCellClass)}>{t('settings.forwardProxy.table.sevenDays')}</th>
+                  {forwardProxyWindowColumns.map((column) => (
+                    <th key={column.labelKey} className={cn('box-border w-[11%] text-center', pricingTableHeaderCellClass)}>
+                      {t(column.labelKey)}
+                    </th>
+                  ))}
                   <th className={cn('box-border w-[11%] text-right', pricingTableHeaderCellClass)}>{t('settings.forwardProxy.table.weight')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-base-300/65">
                 {forwardProxyTableNodes.map((node) => {
-                  const windows = [
-                    node.stats.oneMinute,
-                    node.stats.fifteenMinutes,
-                    node.stats.oneHour,
-                    node.stats.oneDay,
-                    node.stats.sevenDays,
-                  ]
+                  const windows = forwardProxyWindowColumns.map((column) => column.selectStats(node.stats))
                   return (
                     <tr key={node.key} className={cn('transition-colors hover:bg-primary/6', node.penalized ? 'bg-warning/8' : '')}>
                       <td className={cn(pricingTableBodyCellClass, 'box-border max-w-0 overflow-hidden px-3')}>

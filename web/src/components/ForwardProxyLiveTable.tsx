@@ -160,6 +160,37 @@ function WindowCell({ value }: { value: ForwardProxyWindowStats }) {
   )
 }
 
+const forwardProxyWindowColumns = [
+  {
+    labelKey: 'live.proxy.table.sevenDays',
+    selectStats: (stats: ForwardProxyLiveNode['stats']) => stats.sevenDays,
+  },
+  {
+    labelKey: 'live.proxy.table.oneDay',
+    selectStats: (stats: ForwardProxyLiveNode['stats']) => stats.oneDay,
+  },
+  {
+    labelKey: 'live.proxy.table.oneHour',
+    selectStats: (stats: ForwardProxyLiveNode['stats']) => stats.oneHour,
+  },
+  {
+    labelKey: 'live.proxy.table.fifteenMinutes',
+    selectStats: (stats: ForwardProxyLiveNode['stats']) => stats.fifteenMinutes,
+  },
+  {
+    labelKey: 'live.proxy.table.oneMinute',
+    selectStats: (stats: ForwardProxyLiveNode['stats']) => stats.oneMinute,
+  },
+] as const
+
+const forwardProxyWindowHeaderClassNames = [
+  'w-[18%] px-1 py-2 text-center font-semibold sm:w-[13%] sm:px-2 sm:py-3 md:w-[8%] lg:w-[8%]',
+  'hidden px-2 py-3 text-center font-semibold md:table-cell md:w-[8%] lg:w-[8%]',
+  'hidden px-2 py-3 text-center font-semibold md:table-cell md:w-[8%] lg:w-[8%]',
+  'hidden px-2 py-3 text-center font-semibold lg:table-cell lg:w-[8%]',
+  'hidden px-2 py-3 text-center font-semibold lg:table-cell lg:w-[8%]',
+] as const
+
 function resolveLinkedActiveIndex<T extends { bucketStart: string }>(buckets: T[], activeBucketStart: string | null) {
   if (!activeBucketStart) return null
   const index = buckets.findIndex((bucket) => bucket.bucketStart === activeBucketStart)
@@ -448,7 +479,7 @@ export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyL
       const weightBuckets = resolveWeightBuckets(node)
       return {
         node,
-        windows: [node.stats.oneMinute, node.stats.fifteenMinutes, node.stats.oneHour, node.stats.oneDay, node.stats.sevenDays],
+        windows: forwardProxyWindowColumns.map((column) => column.selectStats(node.stats)),
         total24h: sumLast24h(node),
         weightBuckets,
       }
@@ -498,21 +529,11 @@ export function ForwardProxyLiveTable({ stats, isLoading, error }: ForwardProxyL
             <th className="w-[18%] px-2 py-2 text-left font-semibold sm:w-[30%] sm:px-3 sm:py-3 md:w-[18%] lg:w-[21%]">
               {t('live.proxy.table.proxy')}
             </th>
-            <th className="w-[18%] px-1 py-2 text-center font-semibold sm:w-[13%] sm:px-2 sm:py-3 md:w-[8%] lg:w-[8%]">
-              {t('live.proxy.table.oneMinute')}
-            </th>
-            <th className="hidden px-2 py-3 text-center font-semibold md:table-cell md:w-[8%] lg:w-[8%]">
-              {t('live.proxy.table.fifteenMinutes')}
-            </th>
-            <th className="hidden px-2 py-3 text-center font-semibold md:table-cell md:w-[8%] lg:w-[8%]">
-              {t('live.proxy.table.oneHour')}
-            </th>
-            <th className="hidden px-2 py-3 text-center font-semibold lg:table-cell lg:w-[8%]">
-              {t('live.proxy.table.oneDay')}
-            </th>
-            <th className="hidden px-2 py-3 text-center font-semibold lg:table-cell lg:w-[8%]">
-              {t('live.proxy.table.sevenDays')}
-            </th>
+            {forwardProxyWindowColumns.map((column, index) => (
+              <th key={column.labelKey} className={forwardProxyWindowHeaderClassNames[index]}>
+                {t(column.labelKey)}
+              </th>
+            ))}
             <th className="w-[24%] px-2 py-2 text-left font-semibold sm:w-[29%] sm:px-3 sm:py-3 md:w-[31%] lg:w-[21%]">
               {t('live.proxy.table.trend24h')}
             </th>

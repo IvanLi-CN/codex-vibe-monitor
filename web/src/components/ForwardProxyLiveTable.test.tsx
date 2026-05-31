@@ -16,7 +16,47 @@ function countOccurrences(content: string, target: string) {
   return content.split(target).length - 1
 }
 
+function expectInOrder(content: string, values: string[]) {
+  let previousIndex = -1
+  for (const value of values) {
+    const nextIndex = content.indexOf(value, previousIndex + 1)
+    expect(nextIndex, `${value} should appear after index ${previousIndex}`).toBeGreaterThan(previousIndex)
+    previousIndex = nextIndex
+  }
+}
+
 describe('ForwardProxyLiveTable', () => {
+  it('renders forward proxy window columns from longest to shortest window', () => {
+    const stats: ForwardProxyLiveStatsResponse = {
+      rangeStart: '2026-03-01T00:00:00Z',
+      rangeEnd: '2026-03-02T00:00:00Z',
+      bucketSeconds: 3600,
+      nodes: [
+        {
+          key: 'proxy-order',
+          source: 'manual',
+          displayName: 'Proxy Order',
+          weight: 0.75,
+          penalized: false,
+          stats: {
+            oneMinute: { attempts: 1, successRate: 0.11, avgLatencyMs: 101 },
+            fifteenMinutes: { attempts: 2, successRate: 0.22, avgLatencyMs: 202 },
+            oneHour: { attempts: 3, successRate: 0.33, avgLatencyMs: 303 },
+            oneDay: { attempts: 4, successRate: 0.44, avgLatencyMs: 404 },
+            sevenDays: { attempts: 5, successRate: 0.55, avgLatencyMs: 505 },
+          },
+          last24h: [],
+          weight24h: [],
+        },
+      ],
+    }
+
+    const html = renderTable(stats)
+
+    expectInOrder(html, ['7 天统计', '1 天统计', '1 小时统计', '15 分钟统计', '1 分钟统计'])
+    expectInOrder(html, ['55.0%', '505 ms', '44.0%', '404 ms', '33.0%', '303 ms', '22.0%', '202 ms', '11.0%', '101 ms'])
+  })
+
   it('renders unified request and weight chart surfaces with node-level summary text', () => {
     const stats: ForwardProxyLiveStatsResponse = {
       rangeStart: '2026-03-01T00:00:00Z',

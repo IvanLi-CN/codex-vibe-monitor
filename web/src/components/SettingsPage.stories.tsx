@@ -770,6 +770,12 @@ export const ForwardProxyLatencyAndRefresh: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await expect(canvas.getByText('正向代理路由')).toBeVisible()
+    const desktopTable = canvasElement.querySelector('[data-testid="settings-forward-proxy-desktop-table"]')
+    if (!(desktopTable instanceof HTMLTableElement)) {
+      throw new Error('Missing forward proxy desktop table')
+    }
+    const headers = Array.from(desktopTable.querySelectorAll('thead th')).map((header) => header.textContent ?? '')
+    await expect(headers.slice(2, 7)).toEqual(['7 天', '1 天', '1 小时', '15 分钟', '1 分钟'])
     await userEvent.click(canvas.getByRole('button', { name: '测试全部' }))
     await expect(await canvas.findByText(/ms$/)).toBeVisible()
     const failedLatencyButton = await canvas.findByTitle(/failed targets: codexResponses/)
