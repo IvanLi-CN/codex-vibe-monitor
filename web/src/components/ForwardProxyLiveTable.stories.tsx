@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { expect, within } from 'storybook/test'
 import { I18nProvider } from '../i18n'
 import type { ForwardProxyHourlyBucket, ForwardProxyLiveStatsResponse, ForwardProxyWeightBucket } from '../lib/api'
 import { ForwardProxyLiveTable } from './ForwardProxyLiveTable'
@@ -206,6 +207,11 @@ export const Populated: Story = {
     stats,
     isLoading: false,
     error: null,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const headers = canvas.getAllByRole('columnheader').map((header) => header.textContent ?? '')
+    expect(headers.slice(1, 6)).toEqual(['7 天统计', '1 天统计', '1 小时统计', '15 分钟统计', '1 分钟统计'])
   },
 }
 

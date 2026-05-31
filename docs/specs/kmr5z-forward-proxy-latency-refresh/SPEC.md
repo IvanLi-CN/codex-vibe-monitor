@@ -150,6 +150,42 @@
 
 ![Forward proxy latency tooltip evidence](./assets/settings-forward-proxy-latency-tooltip-evidence.png)
 
+- source_type: storybook_canvas
+  story_id_or_title: Monitoring/ForwardProxyLiveTable/Populated
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 1660x960
+  viewport_strategy: devtools-emulate
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  evidence_note: 验证 Live 页代理运行态的五个窗口统计列已按 `7 天 / 1 天 / 1 小时 / 15 分钟 / 1 分钟` 展示。
+
+![Live forward proxy window order](./assets/forward-proxy-live-window-order.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Settings/SettingsPage/Forward Proxy Latency And Refresh
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 1660x960
+  viewport_strategy: devtools-emulate
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  evidence_note: 验证 Settings 页 forward proxy 桌面表格的五个窗口统计列已按 `7 天 / 1 天 / 1 小时 / 15 分钟 / 1 分钟` 展示。
+
+![Settings forward proxy desktop window order](./assets/settings-forward-proxy-window-order.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Settings/SettingsPage/Forward Proxy Latency And Refresh
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 430x932
+  viewport_strategy: devtools-emulate
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  evidence_note: 验证 Settings 页 forward proxy 移动卡片的窗口小格已按 `7 天 / 1 天 / 1 小时 / 15 分钟 / 1 分钟` 展示。
+
+![Settings forward proxy mobile window order](./assets/settings-forward-proxy-window-order-mobile.png)
+
 ## Related PRs
 
 - None
