@@ -664,6 +664,9 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
                                     )
                                     .await;
                                 if route_binding_failure_penalty > 0 {
+                                    if sticky_source_cut_out_guard_applies {
+                                        return Ok(PoolAccountResolution::Resolved(account));
+                                    }
                                     evaluation.score.route_binding_failure_penalty =
                                         route_binding_failure_penalty;
                                     evaluation.resolved_account = Some(account);
