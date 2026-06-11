@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.69.3",
+  "base_stable_version": "1.69.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-06-11T17:38:07Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.69.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "15e4bfb8870694044411ca57d39fe646b8667256",
+  "pr_number": 447,
+  "pr_title": "fix: keep sticky owner after route-binding penalty",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.69.3",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.69.3",
+  "target_sha": "03a56e7452892347ef8d866858e3c9552e4cdd84",
+  "type_label": "type:patch"
+}
