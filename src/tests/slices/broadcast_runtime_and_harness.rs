@@ -2130,7 +2130,7 @@ async fn forward_proxy_timeseries_preserves_materialized_history_when_same_month
     };
 
     let archive_month_prefix = (Utc::now().with_timezone(&Shanghai).naive_local()
-        - ChronoDuration::days(75))
+        - ChronoDuration::days(45))
     .format("%Y-%m")
     .to_string();
     let first_attempt_at = parse_to_utc_datetime(&format!("{archive_month_prefix}-12 09:30:00"))
