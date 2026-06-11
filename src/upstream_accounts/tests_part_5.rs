@@ -185,6 +185,172 @@ async fn resolver_does_not_demote_successful_or_non_timeout_route_proxy_history(
 }
 
 #[tokio::test]
+async fn resolver_reuses_sticky_account_when_cut_out_is_forbidden_despite_recent_route_binding_penalty(
+) {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let sticky_route = "https://sticky-penalized.example.com/backend-api/codex";
+    let fallback_route = "https://sticky-fallback.example.com/backend-api/codex";
+    let sticky_account = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Sticky Penalized Owner",
+        "sk-sticky-penalized-owner",
+        None,
+        Some(sticky_route),
+    )
+    .await;
+    let fallback_account = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Sticky Penalized Fallback",
+        "sk-sticky-penalized-fallback",
+        None,
+        Some(fallback_route),
+    )
+    .await;
+    let now_iso = format_utc_iso(Utc::now());
+    insert_limit_sample_with_usage(&state.pool, sticky_account, &now_iso, Some(30.0), Some(30.0))
+        .await;
+    insert_limit_sample_with_usage(
+        &state.pool,
+        fallback_account,
+        &now_iso,
+        Some(1.0),
+        Some(1.0),
+    )
+    .await;
+    let lock_tag = insert_tag(
+        &state.pool,
+        "sticky-penalty-lock",
+        &TagRoutingRule {
+            block_new_conversations: false,
+            allow_cut_out: false,
+            allow_cut_in: true,
+            priority_tier: TagPriorityTier::Normal,
+            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+            concurrency_limit: 0,
+            upstream_429_retry_enabled: false,
+            upstream_429_max_retries: 0,
+        },
+    )
+    .await
+    .expect("insert lock tag");
+    sync_account_tag_links(&state.pool, sticky_account, &[lock_tag.summary.id])
+        .await
+        .expect("attach lock tag");
+    upsert_sticky_route(
+        &state.pool,
+        "sticky-penalty-cut-out-forbidden",
+        sticky_account,
+        &now_iso,
+    )
+    .await
+    .expect("upsert sticky route");
+    seed_route_binding_attempt(
+        &state.pool,
+        "sticky-penalty-cut-out-forbidden-attempt",
+        sticky_route,
+        FORWARD_PROXY_DIRECT_KEY,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+        Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT),
+    )
+    .await;
+
+    let resolution = resolve_pool_account_for_request(
+        &state,
+        Some("sticky-penalty-cut-out-forbidden"),
+        &[],
+        &HashSet::new(),
+    )
+    .await
+    .expect("resolve pool account");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("expected sticky owner to stay live when cut out is forbidden");
+    };
+    assert_eq!(account.account_id, sticky_account);
+}
+
+#[tokio::test]
+async fn resolver_preserves_sticky_hard_block_when_cut_out_is_forbidden_despite_recent_route_binding_penalty(
+) {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let sticky_route = "https://sticky-hard-block.example.com/backend-api/codex";
+    let sticky_account = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Sticky Hard Block Owner",
+        "sk-sticky-hard-block-owner",
+        None,
+        Some(sticky_route),
+    )
+    .await;
+    let _fallback_account = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Sticky Hard Block Fallback",
+        "sk-sticky-hard-block-fallback",
+        None,
+        Some("https://sticky-hard-block-fallback.example.com/backend-api/codex"),
+    )
+    .await;
+    set_test_account_group_name(&state.pool, sticky_account, Some("sticky-penalty-missing")).await;
+    let now_iso = format_utc_iso(Utc::now());
+    let lock_tag = insert_tag(
+        &state.pool,
+        "sticky-hard-block-lock",
+        &TagRoutingRule {
+            block_new_conversations: false,
+            allow_cut_out: false,
+            allow_cut_in: true,
+            priority_tier: TagPriorityTier::Normal,
+            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+            concurrency_limit: 0,
+            upstream_429_retry_enabled: false,
+            upstream_429_max_retries: 0,
+        },
+    )
+    .await
+    .expect("insert lock tag");
+    sync_account_tag_links(&state.pool, sticky_account, &[lock_tag.summary.id])
+        .await
+        .expect("attach lock tag");
+    upsert_sticky_route(
+        &state.pool,
+        "sticky-hard-block-cut-out-forbidden",
+        sticky_account,
+        &now_iso,
+    )
+    .await
+    .expect("upsert sticky route");
+    seed_route_binding_attempt(
+        &state.pool,
+        "sticky-hard-block-cut-out-forbidden-attempt",
+        sticky_route,
+        FORWARD_PROXY_DIRECT_KEY,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+        Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT),
+    )
+    .await;
+
+    let resolution = resolve_pool_account_for_request(
+        &state,
+        Some("sticky-hard-block-cut-out-forbidden"),
+        &[],
+        &HashSet::new(),
+    )
+    .await
+    .expect("resolve pool account");
+    let PoolAccountResolution::AssignedBlocked(blocked) = resolution else {
+        panic!("expected sticky hard block to preserve the assigned account");
+    };
+    assert_eq!(blocked.account.account_id, sticky_account);
+    assert_eq!(
+        blocked.failure_kind,
+        PROXY_FAILURE_POOL_ASSIGNED_ACCOUNT_BLOCKED
+    );
+    assert_eq!(
+        blocked.message,
+        "upstream account group \"sticky-penalty-missing\" has no bound forward proxy nodes; bind at least one proxy node to the group"
+    );
+}
+
+#[tokio::test]
 async fn resolver_applies_prompt_cache_group_binding_as_hard_constraint() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let preferred_group = "prompt-cache-bound-group";
