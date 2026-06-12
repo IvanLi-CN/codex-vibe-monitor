@@ -1764,7 +1764,8 @@ async fn load_account_tag_map(
             tag.fast_mode_rewrite_mode,
             tag.concurrency_limit,
             tag.upstream_429_retry_enabled,
-            tag.upstream_429_max_retries
+            tag.upstream_429_max_retries,
+            tag.available_models_json
         FROM pool_upstream_account_tags link
         INNER JOIN pool_tags tag ON tag.id = link.tag_id
         WHERE link.account_id IN (

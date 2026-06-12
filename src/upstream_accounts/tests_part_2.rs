@@ -3588,6 +3588,31 @@
     }
 
     #[tokio::test]
+    async fn load_effective_routing_rule_for_account_reads_tag_available_models_from_db() {
+        let pool = test_pool().await;
+        let account_id = insert_api_key_account(&pool, "Tag Model Constraint").await;
+
+        let mut tag_rule = test_tag_routing_rule();
+        tag_rule.available_models = vec!["gpt-5.5".to_string()];
+        let tag = insert_tag(&pool, "tag-model-constraint", &tag_rule)
+            .await
+            .expect("insert model tag");
+        sync_account_tag_links(&pool, account_id, &[tag.summary.id])
+            .await
+            .expect("attach model tag");
+
+        let rule = load_effective_routing_rule_for_account(&pool, account_id)
+            .await
+            .expect("load effective routing rule");
+
+        assert_eq!(rule.available_models, vec!["gpt-5.5".to_string()]);
+        assert!(rule.available_models_defined);
+        assert_eq!(rule.field_sources.available_models, "tag");
+        assert!(account_accepts_requested_model(Some("gpt-5.5"), &rule));
+        assert!(!account_accepts_requested_model(Some("gpt-4.1"), &rule));
+    }
+
+    #[tokio::test]
     async fn ensure_account_has_unsupported_model_tag_creates_generic_system_deny_tag() {
         let pool = test_pool().await;
         let account_id = insert_api_key_account(&pool, "Unsupported Model Learn").await;
