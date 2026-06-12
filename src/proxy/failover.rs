@@ -1843,7 +1843,8 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
 
             let connect_latency_ms = elapsed_ms(connect_started);
             let status = response.status();
-            if status == StatusCode::TOO_MANY_REQUESTS
+            if status == StatusCode::BAD_REQUEST
+                || status == StatusCode::TOO_MANY_REQUESTS
                 || status == StatusCode::PAYLOAD_TOO_LARGE
                 || status.is_server_error()
                 || matches!(
@@ -1917,6 +1918,191 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 let route_error_message = upstream_error_code
                     .as_deref()
                     .map_or_else(|| message.clone(), |code| format!("{code}: {message}"));
+                let unsupported_model_bad_request =
+                    extract_unsupported_model_from_route_error(status, &route_error_message)
+                        .is_some();
+                if status == StatusCode::BAD_REQUEST && !unsupported_model_bad_request {
+                    let first_byte_latency_ms = connect_latency_ms;
+                    if let Some(guard) = early_phase_cleanup_guard.as_mut() {
+                        guard.mark_first_byte_observed(first_byte_latency_ms);
+                    }
+                    if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                        && let Err(err) = persist_pool_upstream_request_attempt_first_byte_progress(
+                            &state.pool,
+                            pending_attempt_record,
+                            connect_latency_ms,
+                            first_byte_latency_ms,
+                        )
+                        .await
+                    {
+                        warn!(
+                            invoke_id = %pending_attempt_record.invoke_id,
+                            error = %err,
+                            "failed to persist pool first-byte progress for passthrough bad request"
+                        );
+                    }
+                    let proxy_binding_key_snapshot = if let Some((_, selected_proxy)) =
+                        forward_proxy_selection.as_ref()
+                    {
+                        canonical_pool_attempt_proxy_binding_key(
+                            state.as_ref(),
+                            selected_proxy.key.as_str(),
+                        )
+                        .await
+                    } else {
+                        None
+                    };
+
+                    let mut response_builder = Response::builder().status(status);
+                    let connection_scoped = connection_scoped_header_names(&response_headers);
+                    for (name, value) in &response_headers {
+                        if should_forward_proxy_header(name, &connection_scoped) {
+                            response_builder = response_builder.header(name, value);
+                        }
+                    }
+                    let response = response_builder
+                        .body(Body::empty())
+                        .map_err(|err| PoolUpstreamError {
+                        account: Some(account.clone()),
+                        status: StatusCode::INTERNAL_SERVER_ERROR,
+                        message: format!("failed to build proxy response: {err}"),
+                        canonical_error_message: None,
+                        failure_kind: PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
+                        connect_latency_ms,
+                        upstream_error_code: None,
+                        upstream_error_message: None,
+                        downstream_error_message: None,
+                        upstream_request_id: upstream_request_id.clone(),
+                        proxy_binding_key_snapshot: proxy_binding_key_snapshot.clone(),
+                        oauth_responses_debug: oauth_responses_debug.clone(),
+                        attempt_summary: PoolAttemptSummary::default(),
+                        requested_service_tier: attempted_requested_service_tier.clone(),
+                        request_body_for_capture: attempted_request_body_for_capture.clone(),
+                    })?;
+                    let first_chunk = error_body_bytes.filter(|bytes| !bytes.is_empty());
+
+                    let mut deferred_early_phase_cleanup_guard = None;
+                    if let Some(pending_attempt_record) = pending_attempt_record.as_ref() {
+                        if pending_attempt_record.attempt_id.is_none() {
+                            deferred_early_phase_cleanup_guard = early_phase_cleanup_guard.take();
+                        }
+                        match update_pool_upstream_request_attempt_phase(
+                            &state.pool,
+                            pending_attempt_record,
+                            POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE,
+                        )
+                        .await
+                        {
+                            Ok(phase_persisted) => {
+                                if phase_persisted
+                                    && let Err(err) = broadcast_pool_upstream_attempts_snapshot(
+                                        state.as_ref(),
+                                        &pending_attempt_record.invoke_id,
+                                    )
+                                    .await
+                                {
+                                    warn!(
+                                        invoke_id = %pending_attempt_record.invoke_id,
+                                        error = %err,
+                                        "failed to broadcast pool attempt streaming phase snapshot"
+                                    );
+                                }
+                                if !phase_persisted {
+                                    info!(
+                                        invoke_id = %pending_attempt_record.invoke_id,
+                                        attempt_id = pending_attempt_record.attempt_id,
+                                        "streaming phase was not persisted; relying on invocation cleanup guards for post-first-byte recovery"
+                                    );
+                                    if pending_attempt_record.attempt_id.is_some() {
+                                        deferred_early_phase_cleanup_guard =
+                                            early_phase_cleanup_guard.take();
+                                    }
+                                }
+                                if phase_persisted && pending_attempt_record.attempt_id.is_some() {
+                                    disarm_pool_early_phase_cleanup_guard(
+                                        &mut early_phase_cleanup_guard,
+                                    );
+                                }
+                            }
+                            Err(err) => {
+                                warn!(
+                                    invoke_id = %pending_attempt_record.invoke_id,
+                                    error = %err,
+                                    "failed to persist pool attempt streaming phase; relying on invocation cleanup guards for post-first-byte recovery"
+                                );
+                                if pending_attempt_record.attempt_id.is_some() {
+                                    deferred_early_phase_cleanup_guard =
+                                        early_phase_cleanup_guard.take();
+                                }
+                            }
+                        }
+                    } else {
+                        disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
+                    }
+
+                    let compact_support_observation = classify_compact_support_observation(
+                        original_uri,
+                        Some(status),
+                        Some(route_error_message.as_str()),
+                    );
+                    if let Some(observation) = compact_support_observation.as_ref()
+                        && let Err(observation_err) = record_compact_support_observation(
+                            &state.pool,
+                            account.account_id,
+                            observation.status,
+                            observation.reason.as_deref(),
+                        )
+                        .await
+                    {
+                        warn!(
+                            account_id = account.account_id,
+                            error = %observation_err,
+                            "failed to record compact support observation"
+                        );
+                    }
+
+                    if let Some((forward_proxy_scope, selected_proxy)) =
+                        forward_proxy_selection.as_ref()
+                    {
+                        record_pool_account_forward_proxy_result(
+                            state.as_ref(),
+                            forward_proxy_scope,
+                            selected_proxy,
+                            ForwardProxyRouteResultKind::CompletedRequest,
+                        )
+                        .await;
+                    }
+                    reservation_guard.disarm();
+                    return Ok(PoolUpstreamResponse {
+                        account: account.clone(),
+                        response: ProxyUpstreamResponseBody::Axum(response),
+                        oauth_responses_debug,
+                        connect_latency_ms,
+                        attempt_started_at_utc,
+                        first_byte_latency_ms,
+                        first_chunk,
+                        pending_attempt_record: pending_attempt_record.map(|mut pending| {
+                            pending.connect_latency_ms = connect_latency_ms;
+                            pending.first_byte_latency_ms = first_byte_latency_ms;
+                            pending.compact_support_status = compact_support_observation
+                                .as_ref()
+                                .map(|value| value.status.to_string());
+                            pending.compact_support_reason = compact_support_observation
+                                .as_ref()
+                                .and_then(|value| value.reason.clone());
+                            pending
+                        }),
+                        deferred_early_phase_cleanup_guard,
+                        live_attempt_activity_lease,
+                        attempt_summary: pool_attempt_summary(
+                            attempt_count,
+                            distinct_account_count,
+                            None,
+                        ),
+                        requested_service_tier: attempted_requested_service_tier,
+                        request_body_for_capture: attempted_request_body_for_capture,
+                    });
+                }
                 let http_failure_classification =
                     classify_pool_account_http_failure(&account.kind, status, &route_error_message);
                 let failure_kind = oauth_transport_failure_kind
