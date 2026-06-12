@@ -698,6 +698,18 @@ pub(crate) async fn update_upstream_account_group(
                 normalize_tag_fast_mode_rewrite_mode(Some(value)).map(|mode| mode.as_str())
             })
             .transpose()?;
+        let preserve_available_models =
+            matches!(&routing_rule.available_models, OptionalField::Missing);
+        let available_models_json = match &routing_rule.available_models {
+            OptionalField::Missing | OptionalField::Null => None,
+            OptionalField::Value(value) => Some(
+                encode_string_array_json(&normalize_available_models(
+                    Some(value.clone()),
+                    "availableModels",
+                )?)
+                .map_err(internal_error_tuple)?,
+            ),
+        };
         sqlx::query(
             r#"
             UPDATE pool_upstream_account_group_notes
@@ -709,7 +721,10 @@ pub(crate) async fn update_upstream_account_group(
                 policy_concurrency_limit = COALESCE(?7, policy_concurrency_limit),
                 policy_upstream_429_retry_enabled = COALESCE(?8, policy_upstream_429_retry_enabled),
                 policy_upstream_429_max_retries = COALESCE(?9, policy_upstream_429_max_retries),
-                policy_available_models_json = COALESCE(?10, policy_available_models_json)
+                policy_available_models_json = CASE
+                    WHEN ?10 != 0 THEN policy_available_models_json
+                    ELSE ?11
+                END
             WHERE group_name = ?1
             "#,
         )
@@ -743,17 +758,12 @@ pub(crate) async fn update_upstream_account_group(
                 .map(normalize_group_upstream_429_max_retries)
                 .map(i64::from),
         )
-        .bind(match &routing_rule.available_models {
-            OptionalField::Missing => None,
-            OptionalField::Null => Some("[]".to_string()),
-            OptionalField::Value(value) => Some(
-                encode_string_array_json(&normalize_available_models(
-                    Some(value.clone()),
-                    "availableModels",
-                )?)
-                .map_err(internal_error_tuple)?,
-            ),
+        .bind(if preserve_available_models {
+            1_i64
+        } else {
+            0_i64
         })
+        .bind(available_models_json)
         .execute(tx.as_mut())
         .await
         .map_err(internal_error_tuple)?;

@@ -286,6 +286,7 @@
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
             available_models: vec![],
+            available_models_defined: false,
             system_denied_models: vec![],
             source_tag_ids: vec![],
             source_tag_names: vec![],
@@ -3363,9 +3364,25 @@
         let rule = build_effective_routing_rule(&[first, second]);
 
         assert_eq!(rule.available_models, vec!["gpt-5.4-mini".to_string()]);
+        assert!(rule.available_models_defined);
         assert_eq!(rule.field_sources.available_models, "tag");
         assert_eq!(rule.system_denied_models, vec!["gpt-5.5".to_string()]);
         assert_eq!(rule.field_sources.system_denied_models, "system");
+    }
+
+    #[test]
+    fn build_effective_routing_rule_keeps_disjoint_tag_model_intersection_as_deny_all() {
+        let mut first = test_account_tag_summary(1, "first", 0);
+        first.routing_rule.available_models = vec!["gpt-4o".to_string()];
+        let mut second = test_account_tag_summary(2, "second", 0);
+        second.routing_rule.available_models = vec!["o3".to_string()];
+
+        let rule = build_effective_routing_rule(&[first, second]);
+
+        assert!(rule.available_models_defined);
+        assert!(rule.available_models.is_empty());
+        assert!(!account_accepts_requested_model(Some("gpt-4o"), &rule));
+        assert!(!account_accepts_requested_model(Some("o3"), &rule));
     }
 
     #[test]
@@ -3387,6 +3404,7 @@
     fn account_accepts_requested_model_supports_exact_alias_and_system_deny() {
         let mut rule = test_effective_routing_rule(0);
         rule.available_models = vec!["gpt-5.5-2026-01-15".to_string()];
+        rule.available_models_defined = true;
         assert!(account_accepts_requested_model(Some("gpt-5.5"), &rule));
         assert!(account_accepts_requested_model(
             Some("gpt-5.5-2026-01-15"),

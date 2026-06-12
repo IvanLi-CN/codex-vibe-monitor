@@ -83,6 +83,7 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
             upstream_429_max_retries,
         ),
         available_models: available_models.unwrap_or_default(),
+        available_models_defined: tag_available_models_defined,
         system_denied_models: system_denied_models.into_iter().collect(),
         source_tag_ids,
         source_tag_names,
@@ -194,6 +195,7 @@ fn apply_routing_policy_override(
         if !available_models.is_empty() {
             rule.field_sources.available_models = source.to_string();
             rule.available_models = available_models;
+            rule.available_models_defined = true;
         }
     }
 }
@@ -317,6 +319,7 @@ fn apply_tag_layer_routing_policy(rule: &mut EffectiveRoutingRule, tag_rule: &Ef
     let inherited_block_new_conversations = rule.block_new_conversations;
     let inherited_block_source = rule.field_sources.block_new_conversations.clone();
     let inherited_available_models = rule.available_models.clone();
+    let inherited_available_models_defined = rule.available_models_defined;
     let inherited_available_models_source = rule.field_sources.available_models.clone();
     rule.block_new_conversations |= tag_rule.block_new_conversations;
     rule.allow_cut_out = tag_rule.allow_cut_out;
@@ -331,6 +334,7 @@ fn apply_tag_layer_routing_policy(rule: &mut EffectiveRoutingRule, tag_rule: &Ef
         0
     };
     rule.available_models = tag_rule.available_models.clone();
+    rule.available_models_defined = tag_rule.available_models_defined;
     rule.system_denied_models = tag_rule.system_denied_models.clone();
     rule.source_tag_ids = tag_rule.source_tag_ids.clone();
     rule.source_tag_names = tag_rule.source_tag_names.clone();
@@ -340,6 +344,7 @@ fn apply_tag_layer_routing_policy(rule: &mut EffectiveRoutingRule, tag_rule: &Ef
     }
     if tag_rule.field_sources.available_models != "tag" {
         rule.available_models = inherited_available_models;
+        rule.available_models_defined = inherited_available_models_defined;
         rule.field_sources.available_models = inherited_available_models_source;
     }
 }

@@ -814,6 +814,8 @@ const baseTranslations = {
       "System denied models",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsInherited":
       "Inherited / unrestricted",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsNoneAllowed":
+      "No models allowed",
     "accountPool.upstreamAccounts.effectiveRule.systemDeniedModelsEmpty": "None",
     "accountPool.upstreamAccounts.effectiveRule.sourceRoot": "Root default",
     "accountPool.upstreamAccounts.effectiveRule.sourceGroup": "Group",
@@ -2969,6 +2971,8 @@ const baseTranslations = {
       "系统拒绝模型",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsInherited":
       "继承 / 不限",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsNoneAllowed":
+      "无可用模型",
     "accountPool.upstreamAccounts.effectiveRule.systemDeniedModelsEmpty": "无",
     "accountPool.upstreamAccounts.effectiveRule.sourceRoot": "根默认",
     "accountPool.upstreamAccounts.effectiveRule.sourceGroup": "分组",

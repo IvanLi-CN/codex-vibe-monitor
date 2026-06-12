@@ -3269,6 +3269,9 @@ function SharedUpstreamAccountDetailDrawerInner({
                       availableModelsInherited: t(
                         "accountPool.upstreamAccounts.effectiveRule.availableModelsInherited",
                       ),
+                      availableModelsNoneAllowed: t(
+                        "accountPool.upstreamAccounts.effectiveRule.availableModelsNoneAllowed",
+                      ),
                       systemDeniedModelsEmpty: t(
                         "accountPool.upstreamAccounts.effectiveRule.systemDeniedModelsEmpty",
                       ),

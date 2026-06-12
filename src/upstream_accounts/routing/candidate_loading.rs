@@ -22,7 +22,7 @@ pub(crate) fn account_accepts_requested_model(
     else {
         return true;
     };
-    if !rule.available_models.is_empty()
+    if rule.available_models_defined
         && !rule
             .available_models
             .iter()

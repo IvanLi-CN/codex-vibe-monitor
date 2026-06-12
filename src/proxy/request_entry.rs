@@ -1388,7 +1388,7 @@ pub(crate) fn extract_unsupported_model_from_route_error(
 ) -> Option<String> {
     static UNSUPPORTED_MODEL_CONTEXT_REGEX: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?i)(?:unsupported model|model(?:\s+id)?)\s*[:=]?\s*['"`]?([a-z0-9][a-z0-9._-]{0,127})['"`]?(?:\s+is not supported\b)?"#,
+            r#"(?i)(?:unsupported model\s*[:=]\s*['"`]?|model(?:\s+id)?\s+['"`])([a-z0-9][a-z0-9._-]{0,127})['"`]?(?:\s+is not supported\b)?"#,
         )
         .expect("valid unsupported model context regex")
     });
@@ -2316,6 +2316,13 @@ mod tests {
             extract_unsupported_model_from_route_error(
                 StatusCode::TOO_MANY_REQUESTS,
                 "unsupported model: gpt-5.5",
+            ),
+            None
+        );
+        assert_eq!(
+            extract_unsupported_model_from_route_error(
+                StatusCode::BAD_REQUEST,
+                "model is not supported",
             ),
             None
         );

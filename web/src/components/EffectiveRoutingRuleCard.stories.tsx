@@ -23,6 +23,7 @@ const labels = {
   upstream429Retry: '429 retry enabled',
   upstream429RetryOff: '429 retry off',
   availableModelsInherited: 'Inherited / unrestricted',
+  availableModelsNoneAllowed: 'No models allowed',
   systemDeniedModelsEmpty: 'None',
   concurrencyLimit: (count: number) => `Concurrency ${count}`,
   concurrencyUnlimited: 'Concurrency unlimited',
@@ -95,6 +96,31 @@ const strictRule: EffectiveRoutingRule = {
   },
 }
 
+const strictFieldSources = {
+  blockNewConversations: 'group',
+  allowCutOut: 'tag',
+  allowCutIn: 'account',
+  priorityTier: 'tag',
+  fastModeRewriteMode: 'account',
+  concurrencyLimit: 'tag',
+  upstream429Retry: 'account',
+  availableModels: 'account',
+  systemDeniedModels: 'system',
+} as const
+
+const denyAllTagIntersectionRule: EffectiveRoutingRule = {
+  ...strictRule,
+  availableModels: [],
+  systemDeniedModels: [],
+  sourceTagIds: [1, 2],
+  sourceTagNames: ['allow-gpt-4o', 'allow-o3'],
+  fieldSources: {
+    ...strictFieldSources,
+    availableModels: 'tag',
+    systemDeniedModels: 'root',
+  },
+}
+
 const meta = {
   title: 'Account Pool/Components/Effective Routing Rule Card',
   component: EffectiveRoutingRuleCard,
@@ -132,6 +158,12 @@ export const Default: Story = {}
 export const StrictMergedRule: Story = {
   args: {
     rule: strictRule,
+  },
+}
+
+export const DenyAllTagIntersection: Story = {
+  args: {
+    rule: denyAllTagIntersectionRule,
   },
 }
 

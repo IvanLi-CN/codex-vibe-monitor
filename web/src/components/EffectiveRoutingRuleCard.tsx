@@ -29,6 +29,7 @@ interface EffectiveRoutingRuleCardProps {
     upstream429Retry?: string
     upstream429RetryOff?: string
     availableModelsInherited?: string
+    availableModelsNoneAllowed?: string
     availableModelsField?: string
     systemDeniedModelsField?: string
     systemDeniedModelsEmpty?: string
@@ -141,9 +142,12 @@ export function EffectiveRoutingRuleCard({ rule, labels }: EffectiveRoutingRuleC
     },
     {
       label: labels.fieldAvailableModels ?? 'Available models',
-      value: resolvedRule.availableModels && resolvedRule.availableModels.length > 0
-        ? resolvedRule.availableModels.join(', ')
-        : labels.availableModelsInherited ?? 'Inherited / unrestricted',
+      value:
+        resolvedRule.availableModels && resolvedRule.availableModels.length > 0
+          ? resolvedRule.availableModels.join(', ')
+          : fieldSources.availableModels === 'tag'
+            ? labels.availableModelsNoneAllowed ?? 'No models allowed'
+            : labels.availableModelsInherited ?? 'Inherited / unrestricted',
       source: fieldSources.availableModels ?? 'root',
     },
     {

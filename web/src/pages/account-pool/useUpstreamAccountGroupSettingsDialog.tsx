@@ -55,6 +55,7 @@ const defaultRoutingRule: TagRoutingRule = {
   concurrencyLimit: 0,
   upstream429RetryEnabled: false,
   upstream429MaxRetries: 0,
+  availableModels: [],
 };
 
 function createInitialEditorState(): GroupSettingsEditorState {
@@ -518,6 +519,7 @@ export function useUpstreamAccountGroupSettingsDialog(
               upstream429RetryEnabled:
                 payload.upstream429RetryEnabled === true,
               upstream429MaxRetries: payload.upstream429MaxRetries ?? 0,
+              availableModels: payload.availableModels ?? [],
             },
           }));
         }}

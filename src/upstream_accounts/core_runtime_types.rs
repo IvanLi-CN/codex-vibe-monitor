@@ -1079,6 +1079,8 @@ pub(crate) struct EffectiveRoutingRule {
     upstream_429_retry_enabled: bool,
     upstream_429_max_retries: u8,
     available_models: Vec<String>,
+    #[serde(skip)]
+    pub(crate) available_models_defined: bool,
     system_denied_models: Vec<String>,
     source_tag_ids: Vec<i64>,
     source_tag_names: Vec<String>,

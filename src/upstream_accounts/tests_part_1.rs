@@ -86,6 +86,7 @@
                 upstream_429_retry_enabled: false,
                 upstream_429_max_retries: 0,
                 available_models: vec![],
+                available_models_defined: false,
                 system_denied_models: vec![],
                 source_tag_ids: vec![],
                 source_tag_names: vec![],
@@ -2457,6 +2458,157 @@
             err.1,
             "priorityTier must be one of: primary, normal, fallback"
         );
+    }
+
+    #[tokio::test]
+    async fn update_upstream_account_group_clears_available_models_when_policy_submits_inherit()
+    {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "clear-model-group",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: vec![],
+                node_shunt_enabled: false,
+                single_account_rotation_enabled: false,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 0,
+            },
+        )
+        .await
+        .expect("save group metadata");
+        drop(conn);
+
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_account_group_notes
+            SET policy_available_models_json = '["gpt-5.5"]'
+            WHERE group_name = 'clear-model-group'
+            "#,
+        )
+        .execute(&state.pool)
+        .await
+        .expect("seed group available models");
+
+        let _ = update_upstream_account_group(
+            State(state.clone()),
+            HeaderMap::new(),
+            AxumPath("clear-model-group".to_string()),
+            Json(UpdateUpstreamAccountGroupRequest {
+                note: None,
+                bound_proxy_keys: None,
+                node_shunt_enabled: None,
+                single_account_rotation_enabled: None,
+                upstream_429_retry_enabled: None,
+                upstream_429_max_retries: None,
+                concurrency_limit: None,
+                routing_rule: Some(UpdateTagRequest {
+                    name: None,
+                    block_new_conversations: None,
+                    allow_cut_out: None,
+                    allow_cut_in: None,
+                    priority_tier: None,
+                    fast_mode_rewrite_mode: None,
+                    concurrency_limit: None,
+                    upstream_429_retry_enabled: None,
+                    upstream_429_max_retries: None,
+                    available_models: OptionalField::Null,
+                }),
+            }),
+        )
+        .await
+        .expect("clear group available models");
+
+        let stored = sqlx::query_scalar::<_, Option<String>>(
+            r#"
+            SELECT policy_available_models_json
+            FROM pool_upstream_account_group_notes
+            WHERE group_name = 'clear-model-group'
+            "#,
+        )
+        .fetch_one(&state.pool)
+        .await
+        .expect("load cleared group policy");
+        assert_eq!(stored, None);
+    }
+
+    #[tokio::test]
+    async fn update_upstream_account_group_preserves_available_models_when_field_is_omitted() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "preserve-model-group",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: vec![],
+                node_shunt_enabled: false,
+                single_account_rotation_enabled: false,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 0,
+            },
+        )
+        .await
+        .expect("save group metadata");
+        drop(conn);
+
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_account_group_notes
+            SET policy_available_models_json = '["gpt-5.5"]'
+            WHERE group_name = 'preserve-model-group'
+            "#,
+        )
+        .execute(&state.pool)
+        .await
+        .expect("seed group available models");
+
+        let _ = update_upstream_account_group(
+            State(state.clone()),
+            HeaderMap::new(),
+            AxumPath("preserve-model-group".to_string()),
+            Json(UpdateUpstreamAccountGroupRequest {
+                note: None,
+                bound_proxy_keys: None,
+                node_shunt_enabled: None,
+                single_account_rotation_enabled: None,
+                upstream_429_retry_enabled: None,
+                upstream_429_max_retries: None,
+                concurrency_limit: None,
+                routing_rule: Some(UpdateTagRequest {
+                    name: None,
+                    block_new_conversations: None,
+                    allow_cut_out: None,
+                    allow_cut_in: None,
+                    priority_tier: Some("primary".to_string()),
+                    fast_mode_rewrite_mode: None,
+                    concurrency_limit: None,
+                    upstream_429_retry_enabled: None,
+                    upstream_429_max_retries: None,
+                    available_models: OptionalField::Missing,
+                }),
+            }),
+        )
+        .await
+        .expect("preserve omitted group available models");
+
+        let stored = sqlx::query_scalar::<_, Option<String>>(
+            r#"
+            SELECT policy_available_models_json
+            FROM pool_upstream_account_group_notes
+            WHERE group_name = 'preserve-model-group'
+            "#,
+        )
+        .fetch_one(&state.pool)
+        .await
+        .expect("load preserved group policy");
+        assert_eq!(stored.as_deref(), Some("[\"gpt-5.5\"]"));
     }
 
     #[tokio::test]
