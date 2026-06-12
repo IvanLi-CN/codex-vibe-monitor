@@ -330,6 +330,29 @@ async fn unwrap_via_pool_initial_account(
     Ok((initial_account, no_available_wait_deadline))
 }
 
+async fn header_sticky_account_matches_requested_model(
+    state: &AppState,
+    account: &PoolResolvedAccount,
+    requested_model: Option<&str>,
+) -> Result<bool, (StatusCode, String)> {
+    let Some(requested_model) = requested_model.map(str::trim).filter(|value| !value.is_empty())
+    else {
+        return Ok(true);
+    };
+    let effective_rule = load_effective_routing_rule_for_account(&state.pool, account.account_id)
+        .await
+        .map_err(|err| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("failed to load effective routing rule for sticky account: {err}"),
+            )
+        })?;
+    Ok(account_accepts_requested_model(
+        Some(requested_model),
+        &effective_rule,
+    ))
+}
+
 async fn finalize_tracked_live_first_pool_attempt(
     state: &AppState,
     pending_attempt_record: Option<&PendingPoolAttemptRecord>,
@@ -2158,7 +2181,43 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     initial_account
                 } else if body_sticky_key.as_deref() == Some(sticky_key.as_str()) {
                     if let Some(account) = resolved_header_sticky_account {
-                        account
+                        if header_sticky_account_matches_requested_model(
+                            state.as_ref(),
+                            &account,
+                            requested_model.as_deref(),
+                        )
+                        .await?
+                        {
+                            account
+                        } else {
+                            let resolution = resolve_pool_account_for_request_with_wait(
+                                state.as_ref(),
+                                body_sticky_key.as_deref(),
+                                requested_model.as_deref(),
+                                &[],
+                                &HashSet::new(),
+                                None,
+                                true,
+                                &mut no_available_wait_deadline,
+                                pre_attempt_total_timeout_deadline,
+                            )
+                            .await;
+                            let (initial_account, updated_no_available_wait_deadline) =
+                                unwrap_via_pool_initial_account(
+                                    state.as_ref(),
+                                    Some(&build_via_pool_attempt_trace_context(
+                                        proxy_request_id,
+                                        original_uri.path(),
+                                        body_sticky_key.clone(),
+                                    )),
+                                    resolution,
+                                    no_available_wait_deadline,
+                                    responses_total_timeout,
+                                )
+                                .await?;
+                            no_available_wait_deadline = updated_no_available_wait_deadline;
+                            initial_account
+                        }
                     } else {
                         let resolution = resolve_pool_account_for_request_with_wait(
                             state.as_ref(),

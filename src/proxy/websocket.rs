@@ -70,6 +70,16 @@ pub(crate) fn is_websocket_upgrade_request(headers: &HeaderMap) -> bool {
         .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
 }
 
+fn extract_requested_model_from_websocket_uri(original_uri: &Uri) -> Option<String> {
+    let raw_query = original_uri.query()?;
+    url::form_urlencoded::parse(raw_query.as_bytes()).find_map(|(key, value)| {
+        (key == "model")
+            .then(|| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
+
 pub(crate) async fn proxy_openai_v1_ws_common(
     state: Arc<AppState>,
     peer_ip: Option<IpAddr>,
@@ -258,6 +268,7 @@ async fn prepare_upstream_websocket(
     let mut excluded_upstream_route_keys = HashSet::new();
     let mut ws_retry_account_ids = HashSet::new();
     let mut last_failure: Option<WsAttemptFailure> = None;
+    let requested_model = extract_requested_model_from_websocket_uri(original_uri);
 
     let upstream_websocket_default_enabled = state
         .proxy_model_settings
@@ -289,7 +300,7 @@ async fn prepare_upstream_websocket(
         let account = match resolve_pool_account_for_request(
             state.as_ref(),
             sticky_key,
-            None,
+            requested_model.as_deref(),
             &excluded_account_ids,
             &excluded_upstream_route_keys,
         )
@@ -1721,6 +1732,25 @@ mod websocket_tests {
         let target = build_websocket_upstream_url(&base, &uri).expect("ws url");
 
         assert_eq!(target.as_str(), "ws://127.0.0.1:9000/v1/realtime");
+    }
+
+    #[test]
+    fn websocket_requested_model_extraction_reads_query_parameter() {
+        let uri = "/v1/realtime?foo=1&model=gpt-5.5-preview&empty="
+            .parse::<Uri>()
+            .expect("valid uri");
+
+        assert_eq!(
+            extract_requested_model_from_websocket_uri(&uri).as_deref(),
+            Some("gpt-5.5-preview")
+        );
+    }
+
+    #[test]
+    fn websocket_requested_model_extraction_ignores_blank_values() {
+        let uri = "/v1/realtime?model=%20%20".parse::<Uri>().expect("valid uri");
+
+        assert_eq!(extract_requested_model_from_websocket_uri(&uri), None);
     }
 
     #[test]

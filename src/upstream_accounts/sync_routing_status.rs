@@ -333,8 +333,17 @@ fn apply_tag_layer_routing_policy(rule: &mut EffectiveRoutingRule, tag_rule: &Ef
     } else {
         0
     };
-    rule.available_models = tag_rule.available_models.clone();
-    rule.available_models_defined = tag_rule.available_models_defined;
+    rule.available_models = if tag_rule.available_models_defined && inherited_available_models_defined {
+        inherited_available_models
+            .iter()
+            .filter(|model| tag_rule.available_models.contains(*model))
+            .cloned()
+            .collect()
+    } else {
+        tag_rule.available_models.clone()
+    };
+    rule.available_models_defined =
+        inherited_available_models_defined || tag_rule.available_models_defined;
     rule.system_denied_models = tag_rule.system_denied_models.clone();
     rule.source_tag_ids = tag_rule.source_tag_ids.clone();
     rule.source_tag_names = tag_rule.source_tag_names.clone();
@@ -345,6 +354,8 @@ fn apply_tag_layer_routing_policy(rule: &mut EffectiveRoutingRule, tag_rule: &Ef
     if tag_rule.field_sources.available_models != "tag" {
         rule.available_models = inherited_available_models;
         rule.available_models_defined = inherited_available_models_defined;
+        rule.field_sources.available_models = inherited_available_models_source;
+    } else if !tag_rule.available_models_defined && inherited_available_models_defined {
         rule.field_sources.available_models = inherited_available_models_source;
     }
 }

@@ -547,6 +547,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
         }
         _ => None,
     };
+    let bypass_requested_model_filter = binding_constraint.is_some();
 
     if let Some(route) = sticky_route.as_ref() {
         let sticky_route_is_forced_binding_target =
@@ -618,7 +619,10 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
             } else if is_account_selectable_for_sticky_reuse(&row, sticky_snapshot_exhausted, now) {
                 if sticky_source_rule
                     .as_ref()
-                    .is_none_or(|rule| account_accepts_requested_model(requested_model, rule))
+                    .is_none_or(|rule| {
+                        bypass_requested_model_filter
+                            || account_accepts_requested_model(requested_model, rule)
+                    })
                 {
                     sticky_route_still_reusable = true;
                     let mut sticky_route_was_excluded = false;
@@ -868,7 +872,9 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
         let Some(effective_rule) = candidate_effective_rules.get(&row.id) else {
             continue;
         };
-        if !account_accepts_requested_model(requested_model, effective_rule) {
+        if !bypass_requested_model_filter
+            && !account_accepts_requested_model(requested_model, effective_rule)
+        {
             saw_other_non_rate_limited_routing_candidate = true;
             continue;
         }

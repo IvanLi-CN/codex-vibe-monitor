@@ -3390,6 +3390,7 @@
     {
         let mut inherited = test_effective_routing_rule(0);
         inherited.available_models = vec!["gpt-5.5".to_string()];
+        inherited.available_models_defined = true;
         inherited.field_sources.available_models = "group".to_string();
 
         let tag_rule = build_effective_routing_rule(&[test_account_tag_summary(1, "tag", 0)]);
@@ -3397,7 +3398,46 @@
         apply_tag_layer_routing_policy(&mut inherited, &tag_rule);
 
         assert_eq!(inherited.available_models, vec!["gpt-5.5".to_string()]);
+        assert!(inherited.available_models_defined);
         assert_eq!(inherited.field_sources.available_models, "group");
+    }
+
+    #[test]
+    fn apply_tag_layer_routing_policy_intersects_tag_models_with_inherited_group_models() {
+        let mut inherited = test_effective_routing_rule(0);
+        inherited.available_models = vec!["gpt-4o".to_string(), "gpt-5.5".to_string()];
+        inherited.available_models_defined = true;
+        inherited.field_sources.available_models = "group".to_string();
+
+        let mut tag = test_account_tag_summary(1, "tag", 0);
+        tag.routing_rule.available_models = vec!["gpt-5.5".to_string(), "o3".to_string()];
+        let tag_rule = build_effective_routing_rule(&[tag]);
+
+        apply_tag_layer_routing_policy(&mut inherited, &tag_rule);
+
+        assert_eq!(inherited.available_models, vec!["gpt-5.5".to_string()]);
+        assert!(inherited.available_models_defined);
+        assert_eq!(inherited.field_sources.available_models, "tag");
+    }
+
+    #[test]
+    fn apply_tag_layer_routing_policy_keeps_group_tag_disjoint_models_as_deny_all() {
+        let mut inherited = test_effective_routing_rule(0);
+        inherited.available_models = vec!["gpt-4o".to_string()];
+        inherited.available_models_defined = true;
+        inherited.field_sources.available_models = "group".to_string();
+
+        let mut tag = test_account_tag_summary(1, "tag", 0);
+        tag.routing_rule.available_models = vec!["gpt-5.5".to_string()];
+        let tag_rule = build_effective_routing_rule(&[tag]);
+
+        apply_tag_layer_routing_policy(&mut inherited, &tag_rule);
+
+        assert!(inherited.available_models_defined);
+        assert!(inherited.available_models.is_empty());
+        assert!(!account_accepts_requested_model(Some("gpt-4o"), &inherited));
+        assert!(!account_accepts_requested_model(Some("gpt-5.5"), &inherited));
+        assert_eq!(inherited.field_sources.available_models, "tag");
     }
 
     #[test]

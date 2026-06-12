@@ -1973,6 +1973,95 @@ async fn proxy_openai_v1_header_prompt_cache_binding_beats_rate_limited_sticky_t
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_header_sticky_rechecks_model_before_reusing_header_resolution() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(20),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let sticky_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Header Sticky Only GPT-4.1",
+        "upstream-sticky-only",
+        None,
+        None,
+        None,
+    )
+    .await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Fallback GPT-5.5",
+        "upstream-fallback",
+        None,
+        None,
+        None,
+    )
+    .await;
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_available_models_json = ?2 WHERE id = ?1",
+    )
+    .bind(sticky_account_id)
+    .bind(r#"["gpt-4.1"]"#)
+    .execute(&state.pool)
+    .await
+    .expect("restrict sticky account model policy");
+
+    let sticky_seen_at = format_utc_iso(Utc::now());
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "header-model-sensitive-sticky",
+        sticky_account_id,
+        &sticky_seen_at,
+    )
+    .await;
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6247,
+        &"/v1/chat/completions".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-sticky-key"),
+                HeaderValue::from_static("header-model-sensitive-sticky"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(r#"{"model":"gpt-5.5","messages":[]}"#),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("via-pool request should succeed");
+
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read via-pool response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
+    assert_eq!(payload["authorization"], "Bearer upstream-fallback");
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-sticky-only").copied(), None);
+    assert_eq!(attempts.get("Bearer upstream-fallback").copied(), Some(1));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_header_sticky_stream_body_override_beats_blocked_policy_header() {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let state = test_state_with_openai_base_and_pool_no_available_wait(

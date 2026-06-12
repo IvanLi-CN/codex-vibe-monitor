@@ -947,6 +947,44 @@ async fn resolver_prompt_cache_group_binding_does_not_bypass_cut_in_policy() {
     assert!(matches!(resolution, PoolAccountResolution::Unavailable));
 }
 
+#[tokio::test]
+async fn resolver_prompt_cache_group_binding_bypasses_requested_model_filter() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let bound_group = "prompt-cache-group-model-bypass";
+    let bound = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Group Model Bypass",
+        "sk-prompt-cache-group-model-bypass",
+        Some(bound_group),
+        Some("https://group-model-bypass.example.com/backend-api/codex"),
+    )
+    .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET policy_available_models_json = '[\"gpt-4o\"]' WHERE id = ?1")
+        .bind(bound)
+        .execute(&state.pool)
+        .await
+        .expect("make bound account model-constrained");
+    let now_iso = format_utc_iso(Utc::now());
+    insert_limit_sample_with_usage(&state.pool, bound, &now_iso, Some(20.0), Some(20.0)).await;
+
+    let resolution = resolve_pool_account_for_request_with_binding_constraint_and_model(
+        &state,
+        Some("prompt-cache-group-model-bypass-key"),
+        Some("gpt-5.5"),
+        &[],
+        &HashSet::new(),
+        Some(&PromptCacheConversationBindingConstraint::Group(
+            bound_group.to_string(),
+        )),
+    )
+    .await
+    .expect("resolve group-bound pool account");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("expected explicit group binding to bypass requested model filter");
+    };
+    assert_eq!(account.account_id, bound);
+}
+
 async fn seed_route_binding_attempt(
     pool: &SqlitePool,
     invoke_id: &str,
