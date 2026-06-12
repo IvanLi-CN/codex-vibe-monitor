@@ -1388,48 +1388,46 @@ pub(crate) fn extract_unsupported_model_from_route_error(
 ) -> Option<String> {
     static UNSUPPORTED_MODEL_CONTEXT_REGEX: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?i)(?:unsupported model\s*[:=]\s*['"`]?|model(?:\s+id)?\s+['"`])([a-z0-9][a-z0-9._-]{0,127})['"`]?(?:\s+is not supported\b)?"#,
+            r#"(?xi)
+            unsupported[_\s]+model\s*[:=]\s*['"`]?([a-z0-9][a-z0-9._-]{0,127})['"`]?
+            |
+            model(?:\s+id)?\s+['"`]?([a-z0-9][a-z0-9._-]{0,127})['"`]?\s+is\s+not\s+supported\b
+            |
+            model\s+is\s+not\s+supported\s*[:=]\s*['"`]?([a-z0-9][a-z0-9._-]{0,127})['"`]?
+            "#,
         )
         .expect("valid unsupported model context regex")
-    });
-    static UNSUPPORTED_MODEL_FOR_MODEL_REGEX: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)\bfor model\s+['"`]?([a-z0-9][a-z0-9._-]{0,127})['"`]?"#)
-            .expect("valid unsupported model for-model regex")
-    });
-    static UNSUPPORTED_MODEL_BARE_REGEX: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)\b([a-z0-9][a-z0-9._-]{0,127})\b\s+is not supported\b"#)
-            .expect("valid unsupported model bare regex")
     });
     if status != StatusCode::BAD_REQUEST {
         return None;
     }
     let normalized = error_message.to_ascii_lowercase();
-    if !(normalized.contains("model is not supported")
+    if !(normalized.contains("unsupported_model")
+        || normalized.contains("unsupported model")
+        || normalized.contains("model is not supported")
         || normalized.contains("is not supported")
         || normalized.contains("unsupported model"))
     {
         return None;
     }
+    if normalized.contains("for model")
+        && !normalized.contains("model is not supported")
+        && !normalized.contains("unsupported model")
+    {
+        return None;
+    }
     UNSUPPORTED_MODEL_CONTEXT_REGEX
-        .captures(error_message)
-        .and_then(|captures| captures.get(1))
-        .or_else(|| {
-            UNSUPPORTED_MODEL_FOR_MODEL_REGEX
-                .captures(error_message)
-                .and_then(|captures| captures.get(1))
+        .captures_iter(error_message)
+        .filter_map(|captures| (1..=3).find_map(|index| captures.get(index)))
+        .map(|value| value.as_str().trim().to_string())
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 128
+                && value
+                    .bytes()
+                    .any(|byte| byte.is_ascii_digit() || matches!(byte, b'-' | b'.'))
         })
-        .or_else(|| {
-            UNSUPPORTED_MODEL_BARE_REGEX
-                .captures(error_message)
-                .and_then(|captures| captures.get(1))
-                .filter(|value| {
-                    value
-                        .as_str()
-                        .bytes()
-                        .any(|byte| byte.is_ascii_digit() || matches!(byte, b'-' | b'.' | b'_'))
-                })
-        })
-        .map(|value| value.as_str().to_string())
+        .last()
 }
 
 pub(crate) fn classify_pool_account_http_failure(
@@ -2301,6 +2299,14 @@ mod tests {
             .as_deref(),
             Some("computer-use-preview")
         );
+        assert_eq!(
+            extract_unsupported_model_from_route_error(
+                StatusCode::BAD_REQUEST,
+                "unsupported_model: pool upstream responded with 400: unsupported model: gpt-5.5",
+            )
+            .as_deref(),
+            Some("gpt-5.5")
+        );
     }
 
     #[test]
@@ -2323,6 +2329,27 @@ mod tests {
             extract_unsupported_model_from_route_error(
                 StatusCode::BAD_REQUEST,
                 "model is not supported",
+            ),
+            None
+        );
+        assert_eq!(
+            extract_unsupported_model_from_route_error(
+                StatusCode::BAD_REQUEST,
+                "response_format is not supported for model gpt-4o",
+            ),
+            None
+        );
+        assert_eq!(
+            extract_unsupported_model_from_route_error(
+                StatusCode::BAD_REQUEST,
+                "unsupported_model: pool",
+            ),
+            None
+        );
+        assert_eq!(
+            extract_unsupported_model_from_route_error(
+                StatusCode::BAD_REQUEST,
+                "unsupported_model: response_format is not supported for model gpt-4o",
             ),
             None
         );

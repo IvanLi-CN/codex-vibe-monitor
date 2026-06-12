@@ -1,4 +1,7 @@
-fn requested_model_matches_constraint(requested_model: &str, candidate_model: &str) -> bool {
+pub(crate) fn requested_model_matches_constraint(
+    requested_model: &str,
+    candidate_model: &str,
+) -> bool {
     let requested_model = requested_model.trim();
     let candidate_model = candidate_model.trim();
     if requested_model.is_empty() || candidate_model.is_empty() {

@@ -1,3 +1,16 @@
+fn intersect_available_models(
+    current: impl IntoIterator<Item = String>,
+    next: &[String],
+) -> Vec<String> {
+    current
+        .into_iter()
+        .filter(|model| {
+            next.iter()
+                .any(|candidate| requested_model_matches_constraint(model, candidate))
+        })
+        .collect()
+}
+
 fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingRule {
     let mut source_tag_ids = Vec::with_capacity(tags.len());
     let mut source_tag_names = Vec::with_capacity(tags.len());
@@ -39,10 +52,9 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
         if !tag.routing_rule.available_models.is_empty() {
             tag_available_models_defined = true;
             available_models = Some(match available_models.take() {
-                Some(current) => current
-                    .into_iter()
-                    .filter(|model| tag.routing_rule.available_models.contains(model))
-                    .collect(),
+                Some(current) => {
+                    intersect_available_models(current, &tag.routing_rule.available_models)
+                }
                 None => tag.routing_rule.available_models.clone(),
             });
         }
@@ -334,11 +346,7 @@ fn apply_tag_layer_routing_policy(rule: &mut EffectiveRoutingRule, tag_rule: &Ef
         0
     };
     rule.available_models = if tag_rule.available_models_defined && inherited_available_models_defined {
-        inherited_available_models
-            .iter()
-            .filter(|model| tag_rule.available_models.contains(*model))
-            .cloned()
-            .collect()
+        intersect_available_models(inherited_available_models.clone(), &tag_rule.available_models)
     } else {
         tag_rule.available_models.clone()
     };

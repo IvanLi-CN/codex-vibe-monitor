@@ -3371,6 +3371,23 @@
     }
 
     #[test]
+    fn build_effective_routing_rule_intersects_available_models_by_alias() {
+        let mut first = test_account_tag_summary(1, "first", 0);
+        first.routing_rule.available_models = vec!["gpt-5.5-2026-01-15".to_string()];
+        let mut second = test_account_tag_summary(2, "second", 0);
+        second.routing_rule.available_models = vec!["gpt-5.5".to_string()];
+
+        let rule = build_effective_routing_rule(&[first, second]);
+
+        assert_eq!(
+            rule.available_models,
+            vec!["gpt-5.5-2026-01-15".to_string()]
+        );
+        assert!(rule.available_models_defined);
+        assert!(account_accepts_requested_model(Some("gpt-5.5"), &rule));
+    }
+
+    #[test]
     fn build_effective_routing_rule_keeps_disjoint_tag_model_intersection_as_deny_all() {
         let mut first = test_account_tag_summary(1, "first", 0);
         first.routing_rule.available_models = vec!["gpt-4o".to_string()];
@@ -3418,6 +3435,28 @@
         assert_eq!(inherited.available_models, vec!["gpt-5.5".to_string()]);
         assert!(inherited.available_models_defined);
         assert_eq!(inherited.field_sources.available_models, "tag");
+    }
+
+    #[test]
+    fn apply_tag_layer_routing_policy_intersects_inherited_models_by_alias() {
+        let mut inherited = test_effective_routing_rule(0);
+        inherited.available_models = vec!["gpt-5.5-2026-01-15".to_string()];
+        inherited.available_models_defined = true;
+        inherited.field_sources.available_models = "group".to_string();
+
+        let mut tag = test_account_tag_summary(1, "tag", 0);
+        tag.routing_rule.available_models = vec!["gpt-5.5".to_string(), "o3".to_string()];
+        let tag_rule = build_effective_routing_rule(&[tag]);
+
+        apply_tag_layer_routing_policy(&mut inherited, &tag_rule);
+
+        assert_eq!(
+            inherited.available_models,
+            vec!["gpt-5.5-2026-01-15".to_string()]
+        );
+        assert!(inherited.available_models_defined);
+        assert_eq!(inherited.field_sources.available_models, "tag");
+        assert!(account_accepts_requested_model(Some("gpt-5.5"), &inherited));
     }
 
     #[test]
