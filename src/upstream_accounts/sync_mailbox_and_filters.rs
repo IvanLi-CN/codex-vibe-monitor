@@ -1382,6 +1382,7 @@ fn normalize_tag_rule(
     concurrency_limit: Option<i64>,
     upstream_429_retry_enabled: Option<bool>,
     upstream_429_max_retries: Option<u8>,
+    available_models: Option<Vec<String>>,
 ) -> Result<TagRoutingRule, (StatusCode, String)> {
     let priority_tier = normalize_tag_priority_tier(priority_tier)?;
     let fast_mode_rewrite_mode = normalize_tag_fast_mode_rewrite_mode(fast_mode_rewrite_mode)?;
@@ -1402,7 +1403,29 @@ fn normalize_tag_rule(
         concurrency_limit,
         upstream_429_retry_enabled,
         upstream_429_max_retries,
+        available_models: normalize_available_models(available_models, "availableModels")?,
     })
+}
+
+fn normalize_available_models(
+    value: Option<Vec<String>>,
+    field_name: &str,
+) -> Result<Vec<String>, (StatusCode, String)> {
+    let mut normalized = Vec::new();
+    let mut seen = HashSet::new();
+    for model in value.unwrap_or_default() {
+        let model = model.trim();
+        if model.is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("{field_name} entries must be non-empty"),
+            ));
+        }
+        if seen.insert(model.to_string()) {
+            normalized.push(model.to_string());
+        }
+    }
+    Ok(normalized)
 }
 
 fn normalize_tag_priority_tier(
@@ -1489,6 +1512,21 @@ fn encode_tag_ids_json(tag_ids: &[i64]) -> Result<String> {
     serde_json::to_string(tag_ids).context("failed to encode tag ids")
 }
 
+fn parse_string_array_json(raw: Option<&str>) -> Vec<String> {
+    let Some(raw) = raw else {
+        return Vec::new();
+    };
+    serde_json::from_str::<Vec<String>>(raw)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|value| normalize_optional_text(Some(value)))
+        .collect()
+}
+
+fn encode_string_array_json(values: &[String]) -> Result<String> {
+    serde_json::to_string(values).context("failed to encode string array")
+}
+
 fn account_tag_summary_from_row(row: &AccountTagRow) -> AccountTagSummary {
     AccountTagSummary {
         id: row.tag_id,
@@ -1507,6 +1545,7 @@ fn account_tag_summary_from_row(row: &AccountTagRow) -> AccountTagSummary {
                 decode_group_upstream_429_retry_enabled(row.upstream_429_retry_enabled),
                 decode_group_upstream_429_max_retries(row.upstream_429_max_retries),
             ),
+            available_models: parse_string_array_json(row.available_models_json.as_deref()),
         },
         system_key: row.system_key.clone(),
         protected: row.protected != 0,
@@ -1531,6 +1570,7 @@ fn tag_summary_from_row(row: &TagListRow) -> TagSummary {
                 decode_group_upstream_429_retry_enabled(row.upstream_429_retry_enabled),
                 decode_group_upstream_429_max_retries(row.upstream_429_max_retries),
             ),
+            available_models: parse_string_array_json(row.available_models_json.as_deref()),
         },
         account_count: row.account_count,
         group_count: row.group_count,
@@ -1552,6 +1592,7 @@ fn group_routing_rule_from_columns(
     policy_concurrency_limit: Option<i64>,
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
+    policy_available_models_json: Option<&str>,
 ) -> TagRoutingRule {
     let block_new_conversations = policy_block_new_conversations.is_some_and(|value| value != 0);
     let upstream_429_retry_enabled = policy_upstream_429_retry_enabled
@@ -1573,6 +1614,7 @@ fn group_routing_rule_from_columns(
                 .map(decode_group_upstream_429_max_retries)
                 .unwrap_or(legacy_upstream_429_max_retries),
         ),
+        available_models: parse_string_array_json(policy_available_models_json),
     }
 }
 
@@ -1591,6 +1633,7 @@ async fn load_group_routing_rule(pool: &Pool<Sqlite>, group_name: &str) -> Resul
             Option<i64>,
             Option<i64>,
             Option<i64>,
+            Option<String>,
         ),
     >(
         r#"
@@ -1605,7 +1648,8 @@ async fn load_group_routing_rule(pool: &Pool<Sqlite>, group_name: &str) -> Resul
             policy_fast_mode_rewrite_mode,
             policy_concurrency_limit,
             policy_upstream_429_retry_enabled,
-            policy_upstream_429_max_retries
+            policy_upstream_429_max_retries,
+            policy_available_models_json
         FROM pool_upstream_account_group_notes
         WHERE group_name = ?1
         LIMIT 1
@@ -1626,10 +1670,11 @@ async fn load_group_routing_rule(pool: &Pool<Sqlite>, group_name: &str) -> Resul
         policy_concurrency_limit,
         policy_upstream_429_retry_enabled,
         policy_upstream_429_max_retries,
+        policy_available_models_json,
     )) = row
     else {
         return Ok(group_routing_rule_from_columns(
-            0, false, 0, None, None, None, None, None, None, None, None,
+            0, false, 0, None, None, None, None, None, None, None, None, None,
         ));
     };
     let upstream_429_retry_enabled =
@@ -1650,5 +1695,6 @@ async fn load_group_routing_rule(pool: &Pool<Sqlite>, group_name: &str) -> Resul
         policy_concurrency_limit,
         policy_upstream_429_retry_enabled,
         policy_upstream_429_max_retries,
+        policy_available_models_json.as_deref(),
     ))
 }

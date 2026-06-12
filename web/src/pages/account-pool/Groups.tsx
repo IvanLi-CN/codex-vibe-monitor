@@ -9,6 +9,7 @@ import { Alert } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
 import { Spinner } from "../../components/ui/spinner";
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
+import { useAvailableModelOptions } from "../../hooks/useAvailableModelOptions";
 import { useTranslation } from "../../i18n";
 import {
   buildAccountPoolGroupSummaries,
@@ -46,6 +47,7 @@ export default function GroupsPage() {
   } = useUpstreamAccounts(accountListQuery, {
     fallbackToFirstItem: false,
   });
+  const availableModelOptions = useAvailableModelOptions(writesEnabled);
 
   const groupedPlanLabel = useCallback(
     (planType?: string | null) => {
@@ -124,6 +126,7 @@ export default function GroupsPage() {
     dialog: groupSettingsDialog,
   } = useUpstreamAccountGroupSettingsDialog({
     writesEnabled,
+    availableModelOptions,
     resolveGroupState: useCallback(
       (groupName) => {
         const normalizedGroupName = normalizeAccountPoolGroupName(groupName);

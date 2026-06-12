@@ -1063,6 +1063,8 @@ pub(crate) struct EffectiveRoutingRuleFieldSources {
     fast_mode_rewrite_mode: String,
     concurrency_limit: String,
     upstream_429_retry: String,
+    available_models: String,
+    system_denied_models: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1076,6 +1078,8 @@ pub(crate) struct EffectiveRoutingRule {
     concurrency_limit: i64,
     upstream_429_retry_enabled: bool,
     upstream_429_max_retries: u8,
+    available_models: Vec<String>,
+    system_denied_models: Vec<String>,
     source_tag_ids: Vec<i64>,
     source_tag_names: Vec<String>,
     field_sources: EffectiveRoutingRuleFieldSources,
@@ -1092,6 +1096,8 @@ pub(crate) struct TagRoutingRule {
     concurrency_limit: i64,
     upstream_429_retry_enabled: bool,
     upstream_429_max_retries: u8,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    available_models: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2134,6 +2140,8 @@ pub(crate) struct CreateTagRequest {
     concurrency_limit: Option<i64>,
     upstream_429_retry_enabled: Option<bool>,
     upstream_429_max_retries: Option<u8>,
+    #[serde(default)]
+    available_models: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2148,6 +2156,8 @@ pub(crate) struct UpdateTagRequest {
     concurrency_limit: Option<i64>,
     upstream_429_retry_enabled: Option<bool>,
     upstream_429_max_retries: Option<u8>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    available_models: OptionalField<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]

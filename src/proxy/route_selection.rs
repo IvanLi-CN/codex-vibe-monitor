@@ -125,6 +125,29 @@ pub(crate) async fn extract_prompt_cache_key_from_replay_snapshot(
     }
 }
 
+pub(crate) async fn extract_model_from_replay_snapshot(
+    snapshot: &PoolReplayBodySnapshot,
+) -> Option<String> {
+    match snapshot {
+        PoolReplayBodySnapshot::Empty => None,
+        PoolReplayBodySnapshot::Memory(bytes) => serde_json::from_slice::<Value>(bytes.as_ref())
+            .ok()
+            .and_then(|value| extract_model_from_payload(&value)),
+        PoolReplayBodySnapshot::File { temp_file, .. } => {
+            let path = temp_file.path.clone();
+            tokio::task::spawn_blocking(move || {
+                let file = std::fs::File::open(path).ok()?;
+                serde_json::from_reader::<_, Value>(std::io::BufReader::new(file))
+                    .ok()
+                    .and_then(|value| extract_model_from_payload(&value))
+            })
+            .await
+            .ok()
+            .flatten()
+        }
+    }
+}
+
 async fn load_via_pool_prompt_cache_binding_constraint(
     state: &AppState,
     prompt_cache_key: Option<&str>,
@@ -1560,6 +1583,9 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             }
             let request_body_bytes = Bytes::from(request_body_bytes);
             let parsed_request_body = serde_json::from_slice::<Value>(&request_body_bytes).ok();
+            let requested_model = parsed_request_body
+                .as_ref()
+                .and_then(extract_model_from_payload);
             let body_sticky_key = parsed_request_body
                 .as_ref()
                 .and_then(extract_sticky_key_from_request_body);
@@ -1589,7 +1615,18 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     Some(PoolReplayBodySnapshot::Memory(request_body_bytes)),
                     handshake_timeout,
                     Some(pool_attempt_trace_context),
-                    None,
+                    Some(PoolAttemptRuntimeSnapshotContext {
+                        capture_target: ProxyCaptureTarget::Responses,
+                        request_info: RequestCaptureInfo {
+                            model: requested_model,
+                            ..RequestCaptureInfo::default()
+                        },
+                        prompt_cache_key: body_prompt_cache_key
+                            .clone()
+                            .or(header_prompt_cache_key.clone()),
+                        t_req_read_ms: 0.0,
+                        t_req_parse_ms: 0.0,
+                    }),
                     body_sticky_key.as_deref(),
                     prompt_cache_binding_constraint,
                     None,
@@ -1615,6 +1652,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 let initial_header_sticky_resolution = resolve_pool_account_for_request(
                     state.as_ref(),
                     Some(sticky_key.as_str()),
+                    None,
                     &[],
                     &HashSet::new(),
                 )
@@ -1643,6 +1681,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         let resolution = resolve_pool_account_for_request(
                             state_for_wait.as_ref(),
                             Some(wait_task_sticky_key.as_str()),
+                            None,
                             &excluded_ids,
                             &excluded_upstream_route_keys,
                         )
@@ -2068,6 +2107,8 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             .or(header_prompt_cache_key.as_deref()),
                     )
                     .await?;
+                let requested_model =
+                    extract_model_from_replay_snapshot(&request_body_snapshot).await;
                 if prompt_cache_binding_constraint.is_none()
                     && body_sticky_key.as_deref() == Some(sticky_key.as_str())
                     && let Some(terminal_error) = pending_header_sticky_terminal_error
@@ -2090,6 +2131,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint(
                         state.as_ref(),
                         body_sticky_key.as_deref(),
+                        requested_model.as_deref(),
                         &[],
                         &HashSet::new(),
                         None,
@@ -2121,6 +2163,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         let resolution = resolve_pool_account_for_request_with_wait(
                             state.as_ref(),
                             body_sticky_key.as_deref(),
+                            requested_model.as_deref(),
                             &[],
                             &HashSet::new(),
                             None,
@@ -2149,6 +2192,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     let resolution = resolve_pool_account_for_request_with_wait(
                         state.as_ref(),
                         body_sticky_key.as_deref(),
+                        requested_model.as_deref(),
                         &[],
                         &HashSet::new(),
                         None,
@@ -2216,6 +2260,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 let live_prompt_cache_key = live_body_key_probe
                     .prompt_cache_key
                     .or_else(|| header_prompt_cache_key.clone());
+                let live_requested_model = live_body_key_probe.model;
                 let prompt_cache_binding_constraint = load_via_pool_prompt_cache_binding_constraint(
                     state.as_ref(),
                     live_prompt_cache_key.as_deref(),
@@ -2226,6 +2271,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     resolve_pool_account_for_request_with_wait_and_binding_constraint(
                         state.as_ref(),
                         live_body_sticky_key.as_deref(),
+                        live_requested_model.as_deref(),
                         &[],
                         &HashSet::new(),
                         None,
@@ -2239,6 +2285,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     resolve_pool_account_for_request_with_wait(
                         state.as_ref(),
                         live_body_sticky_key.as_deref(),
+                        live_requested_model.as_deref(),
                         &[],
                         &HashSet::new(),
                         None,
@@ -2628,6 +2675,9 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         .or(live_body_sticky_key);
                 let body_prompt_cache_key =
                     extract_prompt_cache_key_from_replay_snapshot(&request_body_snapshot).await;
+                let requested_model = extract_model_from_replay_snapshot(&request_body_snapshot)
+                    .await
+                    .or(live_requested_model);
                 let prompt_cache_binding_constraint =
                     load_via_pool_prompt_cache_binding_constraint(
                         state.as_ref(),
@@ -2640,6 +2690,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint(
                     state.as_ref(),
                     body_sticky_key.as_deref(),
+                    requested_model.as_deref(),
                     &[],
                     &HashSet::new(),
                     None,

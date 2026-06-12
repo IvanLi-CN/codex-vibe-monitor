@@ -8,6 +8,7 @@ import { apiConcurrencyLimitToSliderValue, sliderConcurrencyLimitToApiValue } fr
 import { normalizeGroupName } from "../../lib/upstreamAccountGroups";
 import { useTranslation } from "../../i18n";
 import { useForwardProxyBindingNodes } from "../../hooks/useForwardProxyBindingNodes";
+import { useAvailableModelOptions } from "../../hooks/useAvailableModelOptions";
 import { UpstreamAccountGroupNoteDialog } from "../../components/UpstreamAccountGroupNoteDialog";
 import { TagRuleDialog } from "../../components/TagRuleDialog";
 import { useGroupNoteCatalogAutoRefresh } from "./useGroupNoteCatalogAutoRefresh";
@@ -97,6 +98,7 @@ function normalizeEnabledUpstream429MaxRetries(value?: number | null) {
 
 interface UseUpstreamAccountGroupSettingsDialogOptions {
   writesEnabled: boolean;
+  availableModelOptions?: string[];
   container?: HTMLElement | null;
   resolveGroupState: (
     groupName: string,
@@ -127,6 +129,7 @@ export function useUpstreamAccountGroupSettingsDialog(
   const { t, locale } = useTranslation();
   const {
     container,
+    availableModelOptions: injectedAvailableModelOptions = [],
     resolveGroupState,
     saveGroupSettings,
     deleteGroupSettings,
@@ -138,6 +141,13 @@ export function useUpstreamAccountGroupSettingsDialog(
   );
   const [busyAction, setBusyAction] = useState<"save" | "delete" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const fetchedAvailableModelOptions = useAvailableModelOptions(
+    writesEnabled && injectedAvailableModelOptions.length === 0,
+  );
+  const availableModelOptions =
+    injectedAvailableModelOptions.length > 0
+      ? injectedAvailableModelOptions
+      : fetchedAvailableModelOptions;
   const {
     nodes: forwardProxyNodes,
     catalogState: forwardProxyCatalogState,
@@ -472,6 +482,7 @@ export function useUpstreamAccountGroupSettingsDialog(
         open={editor.open && editor.policyEditorOpen}
         mode="edit"
         policyOnly
+        availableModelOptions={availableModelOptions}
         title={t("accountPool.upstreamAccounts.groupNotes.routingPolicy.title")}
         description={t(
           "accountPool.upstreamAccounts.groupNotes.routingPolicy.description",
@@ -535,6 +546,16 @@ export function useUpstreamAccountGroupSettingsDialog(
           concurrencyHint: t("accountPool.tags.dialog.concurrencyHint"),
           currentValue: t("accountPool.tags.dialog.currentValue"),
           unlimited: t("accountPool.tags.dialog.unlimited"),
+          availableModels: t("accountPool.tags.dialog.availableModels"),
+          availableModelsHint: t("accountPool.tags.dialog.availableModelsHint"),
+          availableModelsSearchPlaceholder: t("accountPool.tags.dialog.availableModelsSearchPlaceholder"),
+          availableModelsEmpty: t("accountPool.tags.dialog.availableModelsEmpty"),
+          availableModelsAll: t("accountPool.tags.dialog.availableModelsAll"),
+          availableModelsCustomLabel: (value) =>
+            t("accountPool.tags.dialog.availableModelsCustomLabel", { value }),
+          availableModelsAddCustom: t("accountPool.tags.dialog.availableModelsAddCustom"),
+          availableModelsInherited: t("accountPool.tags.dialog.availableModelsInherited"),
+          availableModelsRemove: t("accountPool.tags.dialog.availableModelsRemove"),
           cancel: t("accountPool.tags.dialog.cancel"),
           save: t("accountPool.tags.dialog.save"),
           create: t("accountPool.tags.dialog.createAction"),
@@ -545,6 +566,7 @@ export function useUpstreamAccountGroupSettingsDialog(
     ),
     [
       busyAction,
+      availableModelOptions,
       closeEditor,
       container,
       deleteGroupSettings,

@@ -1198,6 +1198,7 @@ pub(crate) enum PoolReplayBodyStickyKeyProbeStatus {
 pub(crate) struct PoolReplayBodyKeyProbe {
     pub(crate) sticky_key: Option<String>,
     pub(crate) prompt_cache_key: Option<String>,
+    pub(crate) model: Option<String>,
 }
 
 pub(crate) struct PoolReplayBodyBuffer {
@@ -1381,15 +1382,31 @@ pub(crate) fn response_info_is_retryable_server_overloaded(
         && upstream_error_code_is_server_overloaded(response_info.upstream_error_code.as_deref())
 }
 
-pub(crate) fn route_error_is_gpt55_unsupported(status: StatusCode, error_message: &str) -> bool {
+pub(crate) fn extract_unsupported_model_from_route_error(
+    status: StatusCode,
+    error_message: &str,
+) -> Option<String> {
     if status != StatusCode::BAD_REQUEST {
-        return false;
+        return None;
     }
     let normalized = error_message.to_ascii_lowercase();
-    normalized.contains("gpt-5.5")
-        && (normalized.contains("model is not supported")
-            || normalized.contains("is not supported")
-            || normalized.contains("unsupported model"))
+    if !(normalized.contains("model is not supported")
+        || normalized.contains("is not supported")
+        || normalized.contains("unsupported model"))
+    {
+        return None;
+    }
+    let regex =
+        Regex::new(r#"(?i)\b([a-z0-9][a-z0-9._-]*-[0-9][a-z0-9._-]*)\b"#).ok()?;
+    regex
+        .captures(error_message)
+        .and_then(|captures| captures.get(1))
+        .map(|value| value.as_str().to_string())
+}
+
+pub(crate) fn route_error_is_gpt55_unsupported(status: StatusCode, error_message: &str) -> bool {
+    extract_unsupported_model_from_route_error(status, error_message)
+        .is_some_and(|model| model.eq_ignore_ascii_case("gpt-5.5"))
 }
 
 pub(crate) fn classify_pool_account_http_failure(
@@ -1997,6 +2014,7 @@ pub(crate) fn spawn_pool_replayable_request_body(
                                 best_effort_extract_prompt_cache_key_from_request_body_prefix(
                                     &sticky_key_probe,
                                 ),
+                            model: extract_partial_json_model(&sticky_key_probe),
                         },
                     ));
                 }
@@ -2076,6 +2094,7 @@ pub(crate) fn spawn_pool_replayable_request_body(
                     prompt_cache_key: best_effort_extract_prompt_cache_key_from_request_body_prefix(
                         &sticky_key_probe,
                     ),
+                    model: extract_partial_json_model(&sticky_key_probe),
                 };
                 if key_probe.sticky_key.is_some()
                     || key_probe.prompt_cache_key.is_some()

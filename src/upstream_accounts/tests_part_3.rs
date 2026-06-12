@@ -56,7 +56,12 @@
             .expect("seed active sticky route");
 
         let resolution =
-            resolve_pool_account_for_request(&state, None, &[], &std::collections::HashSet::new())
+            resolve_pool_account_for_request(
+                &state,
+                None,
+                &[],
+                &std::collections::HashSet::new(),
+            )
                 .await
                 .expect("resolve pool account");
 
@@ -1496,7 +1501,12 @@
         .expect("seed stale sticky route");
 
         let resolution =
-            resolve_pool_account_for_request(&state, None, &[], &std::collections::HashSet::new())
+            resolve_pool_account_for_request(
+                &state,
+                None,
+                &[],
+                &std::collections::HashSet::new(),
+            )
                 .await
                 .expect("resolve pool account");
 

@@ -229,6 +229,7 @@ async fn resolver_reuses_sticky_account_when_cut_out_is_forbidden_despite_recent
             concurrency_limit: 0,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
+            available_models: vec![],
         },
     )
     .await
@@ -303,6 +304,7 @@ async fn resolver_preserves_sticky_hard_block_when_cut_out_is_forbidden_despite_
             concurrency_limit: 0,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
+            available_models: vec![],
         },
     )
     .await
@@ -466,6 +468,7 @@ async fn resolver_forced_prompt_cache_account_binding_bypasses_target_cut_in_pol
             concurrency_limit: 0,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
+            available_models: vec![],
         },
     )
     .await
@@ -526,6 +529,7 @@ async fn resolver_forced_prompt_cache_account_binding_bypasses_source_cut_out_po
             concurrency_limit: 0,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
+            available_models: vec![],
         },
     )
     .await
@@ -914,6 +918,7 @@ async fn resolver_prompt_cache_group_binding_does_not_bypass_cut_in_policy() {
             concurrency_limit: 0,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
+            available_models: vec![],
         },
     )
     .await
@@ -1238,6 +1243,7 @@ async fn resolver_prefers_group_proxy_error_over_excluded_route_cut_in_rejects()
             concurrency_limit: 0,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
+            available_models: vec![],
         },
     )
     .await
@@ -1554,6 +1560,7 @@ async fn resolver_returns_group_proxy_error_for_sticky_account_when_cut_out_is_f
             concurrency_limit: 0,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
+            available_models: vec![],
         },
     )
     .await
@@ -1631,6 +1638,7 @@ async fn resolver_returns_ungrouped_error_for_sticky_account_when_cut_out_is_for
             concurrency_limit: 0,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
+            available_models: vec![],
         },
     )
     .await
@@ -1717,6 +1725,7 @@ async fn resolver_preserves_sticky_account_when_cut_out_is_forbidden_by_tag_poli
             concurrency_limit: 0,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
+            available_models: vec![],
         },
     )
     .await
@@ -1860,6 +1869,7 @@ async fn resolver_prefers_sticky_cut_in_policy_over_group_proxy_error() {
             concurrency_limit: 0,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
+            available_models: vec![],
         },
     )
     .await

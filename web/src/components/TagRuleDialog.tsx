@@ -4,7 +4,10 @@ import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { SelectField } from './ui/select-field'
 import { Switch } from './ui/switch'
+import { Badge } from './ui/badge'
+import { AppIcon } from './AppIcon'
 import { ConcurrencyLimitSlider } from './ConcurrencyLimitSlider'
+import { MultiSelectFilterCombobox, type MultiSelectFilterOption } from './MultiSelectFilterCombobox'
 import type {
   CreateTagPayload,
   TagFastModeRewriteMode,
@@ -26,6 +29,8 @@ type TagRuleDraft = {
   concurrencyLimit: number
   upstream429RetryEnabled: boolean
   upstream429MaxRetries: number
+  availableModels: string[]
+  availableModelInput: string
 }
 
 function buildDraft(tag?: TagSummary | null, draftName = ''): TagRuleDraft {
@@ -39,6 +44,8 @@ function buildDraft(tag?: TagSummary | null, draftName = ''): TagRuleDraft {
     concurrencyLimit: apiConcurrencyLimitToSliderValue(tag?.routingRule?.concurrencyLimit),
     upstream429RetryEnabled: tag?.routingRule?.upstream429RetryEnabled === true,
     upstream429MaxRetries: normalizeRetryCount(tag?.routingRule?.upstream429MaxRetries),
+    availableModels: normalizeModelIds(tag?.routingRule?.availableModels ?? []),
+    availableModelInput: '',
   }
 }
 
@@ -50,6 +57,18 @@ function buildDraftResetKey(tag?: TagSummary | null, draftName = ''): string {
 function normalizeRetryCount(value?: number | null): number {
   if (!Number.isFinite(value ?? NaN)) return 0
   return Math.max(0, Math.min(5, Math.trunc(value ?? 0)))
+}
+
+function normalizeModelIds(values: string[]) {
+  const seen = new Set<string>()
+  const normalized: string[] = []
+  for (const value of values) {
+    const trimmed = value.trim()
+    if (!trimmed || seen.has(trimmed)) continue
+    seen.add(trimmed)
+    normalized.push(trimmed)
+  }
+  return normalized
 }
 
 function buildPayload(
@@ -71,6 +90,7 @@ function buildPayload(
     upstream429MaxRetries: draft.upstream429RetryEnabled
       ? Math.max(1, normalizeRetryCount(draft.upstream429MaxRetries) || 1)
       : 0,
+    availableModels: normalizeModelIds(draft.availableModels),
   }
   if (options?.includeName !== false) {
     return {
@@ -105,6 +125,9 @@ function buildPayload(
     ) {
       changedPayload.upstream429RetryEnabled = payload.upstream429RetryEnabled
       changedPayload.upstream429MaxRetries = payload.upstream429MaxRetries
+    }
+    if (JSON.stringify(payload.availableModels ?? []) !== JSON.stringify(base.availableModels ?? [])) {
+      changedPayload.availableModels = payload.availableModels
     }
     return changedPayload
   }
@@ -156,11 +179,21 @@ interface TagRuleDialogProps {
     upstream429RetryCount?: string
     upstream429RetryCountOnce?: string
     upstream429RetryCountMany?: (count: number) => string
+    availableModels?: string
+    availableModelsHint?: string
+    availableModelsSearchPlaceholder?: string
+    availableModelsEmpty?: string
+    availableModelsAll?: string
+    availableModelsCustomLabel?: (value: string) => string
+    availableModelsAddCustom?: string
+    availableModelsInherited?: string
+    availableModelsRemove?: string
     cancel: string
     save: string
     create: string
     validation: string
   }
+  availableModelOptions?: string[]
 }
 
 export function TagRuleDialog({
@@ -178,6 +211,7 @@ export function TagRuleDialog({
   onClose,
   onSubmit,
   labels,
+  availableModelOptions = [],
 }: TagRuleDialogProps) {
   const [draft, setDraft] = useState<TagRuleDraft>(() => buildDraft(tag, draftName))
   const [baseDraft, setBaseDraft] = useState<TagRuleDraft>(() => buildDraft(tag, draftName))
@@ -214,6 +248,34 @@ export function TagRuleDialog({
     [baseDraft, changedFieldsOnly, draft, policyOnly],
   )
   const disabled = !payload || (!policyOnly && !draft.name.trim()) || busy
+  const availableModelComboboxOptions = useMemo<MultiSelectFilterOption[]>(
+    () => {
+      const values = normalizeModelIds([
+        ...availableModelOptions,
+        ...draft.availableModels,
+      ])
+      return values.map((value) => ({
+        value,
+        label: labels.availableModelsCustomLabel?.(value) ?? value,
+      }))
+    },
+    [availableModelOptions, draft.availableModels, labels],
+  )
+  const trimmedModelInput = draft.availableModelInput.trim()
+  const canAddCustomModel =
+    trimmedModelInput.length > 0 && !draft.availableModels.includes(trimmedModelInput)
+  const appendAvailableModel = (model: string) => {
+    const normalizedModel = model.trim()
+    if (!normalizedModel) return
+    setDraft((current) => ({
+      ...current,
+      availableModels: normalizeModelIds([
+        ...current.availableModels,
+        normalizedModel,
+      ]),
+      availableModelInput: '',
+    }))
+  }
 
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => (!busy && !nextOpen ? onClose() : undefined)}>
@@ -317,6 +379,80 @@ export function TagRuleDialog({
             unlimitedLabel={labels.unlimited ?? 'Unlimited'}
             onChange={(value) => setDraft((current) => ({ ...current, concurrencyLimit: value }))}
           />
+
+          <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">
+            <div className="space-y-1">
+              <p className="font-medium text-base-content">{labels.availableModels ?? 'Available models'}</p>
+              <p className="text-xs leading-5 text-base-content/65">
+                {labels.availableModelsHint ?? 'Leave empty to inherit. Automatic and sticky routing only consider matching accounts.'}
+              </p>
+            </div>
+            <div className="mt-4 grid gap-3">
+              <MultiSelectFilterCombobox
+                options={availableModelComboboxOptions}
+                value={draft.availableModels}
+                onValueChange={(value) =>
+                  setDraft((current) => ({
+                    ...current,
+                    availableModels: normalizeModelIds(value),
+                  }))}
+                disabled={busy}
+                placeholder={labels.availableModelsAll ?? 'Inherited / unrestricted'}
+                searchPlaceholder={labels.availableModelsSearchPlaceholder ?? 'Search models'}
+                emptyLabel={labels.availableModelsEmpty ?? 'No matching models'}
+                clearLabel={labels.availableModelsInherited ?? 'Clear and inherit'}
+                ariaLabel={labels.availableModels ?? 'Available models'}
+              />
+              <div className="flex gap-2">
+                <Input
+                  name="availableModelInput"
+                  value={draft.availableModelInput}
+                  placeholder={labels.availableModelsAddCustom ?? 'Add custom model id'}
+                  disabled={busy}
+                  onChange={(event) =>
+                    setDraft((current) => ({
+                      ...current,
+                      availableModelInput: event.target.value,
+                    }))}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter' || !canAddCustomModel) return
+                    event.preventDefault()
+                    appendAvailableModel(trimmedModelInput)
+                  }}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={busy || !canAddCustomModel}
+                  onClick={() => appendAvailableModel(trimmedModelInput)}
+                >
+                  <AppIcon name="plus" className="mr-2 h-4 w-4" aria-hidden />
+                  {labels.availableModelsAddCustom ?? 'Add custom model id'}
+                </Button>
+              </div>
+              {draft.availableModels.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {draft.availableModels.map((model) => (
+                    <Badge key={model} variant="secondary" className="gap-1 pr-1">
+                      <span>{labels.availableModelsCustomLabel?.(model) ?? model}</span>
+                      <button
+                        type="button"
+                        className="rounded-full p-0.5 text-base-content/55 transition hover:bg-base-300/70 hover:text-base-content"
+                        aria-label={`${labels.availableModelsRemove ?? 'Remove model'} ${model}`}
+                        onClick={() =>
+                          setDraft((current) => ({
+                            ...current,
+                            availableModels: current.availableModels.filter((value) => value !== model),
+                          }))}
+                      >
+                        <AppIcon name="close" className="h-3 w-3" aria-hidden />
+                      </button>
+                    </Badge>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          </div>
 
           <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">
             <div className="flex items-start justify-between gap-4">

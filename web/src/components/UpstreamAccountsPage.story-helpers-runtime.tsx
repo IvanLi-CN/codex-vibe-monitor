@@ -206,6 +206,49 @@ export function StorybookUpstreamAccountsMock({
         return jsonResponse(buildStoryAccountActivityTimeseries(accountId, parsedUrl, storyId))
       }
 
+      if (path === '/api/settings' && method === 'GET') {
+        return jsonResponse({
+          proxy: {
+            hijackEnabled: true,
+            mergeUpstreamEnabled: true,
+            fastModeRewriteMode: 'disabled',
+            upstream429MaxRetries: 3,
+            websocketEnabled: true,
+            upstreamWebsocketDefaultEnabled: true,
+            defaultHijackEnabled: true,
+            models: ['gpt-5.5', 'gpt-5.5-2026-05-01', 'gpt-5.4-mini', 'o3'],
+            enabledModels: ['gpt-5.5', 'gpt-5.4-mini', 'o3'],
+          },
+          forwardProxy: {
+            enabled: false,
+            proxies: [],
+            subscriptions: [],
+            defaultProxyKey: null,
+          },
+          pricing: {
+            catalogVersion: 'storybook-routing-models',
+            entries: [
+              {
+                model: 'gpt-5.5',
+                inputPer1m: 10,
+                outputPer1m: 30,
+                cacheInputPer1m: 1,
+                reasoningPer1m: 0,
+                source: 'storybook',
+              },
+              {
+                model: 'gpt-5.4-mini',
+                inputPer1m: 1,
+                outputPer1m: 4,
+                cacheInputPer1m: 0.2,
+                reasoningPer1m: 0,
+                source: 'storybook',
+              },
+            ],
+          },
+        })
+      }
+
       if (path === '/api/pool/upstream-accounts' && method === 'GET') {
         if (isDynamicRosterStoryId(storyId)) {
           store.rosterFetchCount += 1
@@ -931,6 +974,12 @@ export function StorybookUpstreamAccountsMock({
                   body.routingRule.upstream429RetryEnabled == null
                     ? detail.effectiveRoutingRule.fieldSources?.upstream429Retry ?? 'root'
                     : 'account',
+                availableModels:
+                  body.routingRule.availableModels == null
+                    ? detail.effectiveRoutingRule.fieldSources?.availableModels ?? 'root'
+                    : 'account',
+                systemDeniedModels:
+                  detail.effectiveRoutingRule.fieldSources?.systemDeniedModels ?? 'root',
               },
             }
           : detail.effectiveRoutingRule

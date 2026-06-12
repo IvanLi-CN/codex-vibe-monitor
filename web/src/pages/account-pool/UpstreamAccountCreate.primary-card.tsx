@@ -24,6 +24,7 @@ export function UpstreamAccountCreatePrimaryCard() {
     batchDefaultGroupName,
     batchSharedTagSyncEnabledRef,
     batchTagIds,
+    availableModelOptions,
     buildActionTooltip,
     cn,
     formatGroupAccountCountLabel,
@@ -144,6 +145,7 @@ export function UpstreamAccountCreatePrimaryCard() {
                   selectedTagIds={batchTagIds}
                   writesEnabled={writesEnabled && !hasBatchMetadataBusy}
                   pageCreatedTagIds={pageCreatedTagIds}
+                  availableModelOptions={availableModelOptions}
                   hideLabel
                   labels={tagFieldLabels}
                   onChange={(nextTagIds) => {

@@ -36,6 +36,7 @@ export function UpstreamAccountCreateImportSection() {
     importSelectionFeedback,
     importSelectionLabel,
     importTagIds,
+    availableModelOptions,
     normalizeGroupName,
     openGroupNoteEditor,
     pageCreatedTagIds,
@@ -277,6 +278,7 @@ export function UpstreamAccountCreateImportSection() {
       selectedTagIds={importTagIds}
       writesEnabled={writesEnabled}
       pageCreatedTagIds={pageCreatedTagIds}
+      availableModelOptions={availableModelOptions}
       labels={tagFieldLabels}
       onChange={setImportTagIds}
       onCreateTag={handleCreateTag}

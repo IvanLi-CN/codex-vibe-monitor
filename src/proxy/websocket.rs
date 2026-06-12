@@ -289,6 +289,7 @@ async fn prepare_upstream_websocket(
         let account = match resolve_pool_account_for_request(
             state.as_ref(),
             sticky_key,
+            None,
             &excluded_account_ids,
             &excluded_upstream_route_keys,
         )

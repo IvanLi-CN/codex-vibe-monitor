@@ -1,3 +1,41 @@
+fn requested_model_matches_constraint(requested_model: &str, candidate_model: &str) -> bool {
+    let requested_model = requested_model.trim();
+    let candidate_model = candidate_model.trim();
+    if requested_model.is_empty() || candidate_model.is_empty() {
+        return false;
+    }
+    if requested_model.eq_ignore_ascii_case(candidate_model) {
+        return true;
+    }
+    let requested_alias = dated_model_alias_base(requested_model).unwrap_or(requested_model);
+    let candidate_alias = dated_model_alias_base(candidate_model).unwrap_or(candidate_model);
+    requested_alias.eq_ignore_ascii_case(candidate_alias)
+}
+
+pub(crate) fn account_accepts_requested_model(
+    requested_model: Option<&str>,
+    rule: &EffectiveRoutingRule,
+) -> bool {
+    let Some(requested_model) = requested_model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return true;
+    };
+    if !rule.available_models.is_empty()
+        && !rule
+            .available_models
+            .iter()
+            .any(|candidate| requested_model_matches_constraint(requested_model, candidate))
+    {
+        return false;
+    }
+    !rule
+        .system_denied_models
+        .iter()
+        .any(|candidate| requested_model_matches_constraint(requested_model, candidate))
+}
+
 pub(crate) async fn load_account_group_name_map(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],

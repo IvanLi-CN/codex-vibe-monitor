@@ -7,6 +7,7 @@ import { Input } from '../../components/ui/input'
 import { SelectField } from '../../components/ui/select-field'
 import { Spinner } from '../../components/ui/spinner'
 import { TagRuleDialog } from '../../components/TagRuleDialog'
+import { useAvailableModelOptions } from '../../hooks/useAvailableModelOptions'
 import { usePoolTags } from '../../hooks/usePoolTags'
 import type { CreateTagPayload, TagSummary, UpdateTagPayload } from '../../lib/api'
 import {
@@ -63,6 +64,7 @@ export default function TagsPage() {
   )
 
   const { items, writesEnabled, isLoading, error, updateQuery, createTag, updateTag, deleteTag } = usePoolTags(query)
+  const availableModelOptions = useAvailableModelOptions(writesEnabled)
 
   const openCreate = () => {
     setDialogMode('create')
@@ -310,6 +312,7 @@ export default function TagsPage() {
         open={dialogOpen}
         mode={dialogMode}
         tag={activeTag}
+        availableModelOptions={availableModelOptions}
         busy={busy}
         error={dialogError}
         onClose={() => {
@@ -344,6 +347,16 @@ export default function TagsPage() {
           concurrencyHint: t('accountPool.tags.dialog.concurrencyHint'),
           currentValue: t('accountPool.tags.dialog.currentValue'),
           unlimited: t('accountPool.tags.dialog.unlimited'),
+          availableModels: t('accountPool.tags.dialog.availableModels'),
+          availableModelsHint: t('accountPool.tags.dialog.availableModelsHint'),
+          availableModelsSearchPlaceholder: t('accountPool.tags.dialog.availableModelsSearchPlaceholder'),
+          availableModelsEmpty: t('accountPool.tags.dialog.availableModelsEmpty'),
+          availableModelsAll: t('accountPool.tags.dialog.availableModelsAll'),
+          availableModelsCustomLabel: (value) =>
+            t('accountPool.tags.dialog.availableModelsCustomLabel', { value }),
+          availableModelsAddCustom: t('accountPool.tags.dialog.availableModelsAddCustom'),
+          availableModelsInherited: t('accountPool.tags.dialog.availableModelsInherited'),
+          availableModelsRemove: t('accountPool.tags.dialog.availableModelsRemove'),
           cancel: t('accountPool.tags.dialog.cancel'),
           save: t('accountPool.tags.dialog.save'),
           create: t('accountPool.tags.dialog.createAction'),

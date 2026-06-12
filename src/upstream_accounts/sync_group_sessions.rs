@@ -1245,24 +1245,13 @@ async fn load_upstream_account_rows_for_groups(
         return Ok(Vec::new());
     }
 
-    let mut query = QueryBuilder::<Sqlite>::new(
+    let mut query = QueryBuilder::<Sqlite>::new(format!(
         r#"
-        SELECT
-            id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
-            chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
-            encrypted_credentials, has_refresh_token, token_expires_at, last_refreshed_at,
-            last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
-            last_action, last_action_source, last_action_reason_code, last_action_reason_message,
-            last_action_http_status, last_action_invoke_id, last_action_at,
-            last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
-            consecutive_route_failures, temporary_route_failure_streak_started_at,
-            compact_support_status, compact_support_observed_at,
-            compact_support_reason, local_primary_limit, local_secondary_limit,
-            local_limit_unit, upstream_base_url, created_at, updated_at
+        SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS}
         FROM pool_upstream_accounts
         WHERE group_name IN (
-        "#,
-    );
+        "#
+    ));
     {
         let mut separated = query.separated(", ");
         for group_name in group_names {
