@@ -1386,6 +1386,20 @@ pub(crate) fn extract_unsupported_model_from_route_error(
     status: StatusCode,
     error_message: &str,
 ) -> Option<String> {
+    static UNSUPPORTED_MODEL_CONTEXT_REGEX: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?i)(?:unsupported model|model(?:\s+id)?)\s*[:=]?\s*['"`]?([a-z0-9][a-z0-9._-]{0,127})['"`]?(?:\s+is not supported\b)?"#,
+        )
+        .expect("valid unsupported model context regex")
+    });
+    static UNSUPPORTED_MODEL_FOR_MODEL_REGEX: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)\bfor model\s+['"`]?([a-z0-9][a-z0-9._-]{0,127})['"`]?"#)
+            .expect("valid unsupported model for-model regex")
+    });
+    static UNSUPPORTED_MODEL_BARE_REGEX: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?i)\b([a-z0-9][a-z0-9._-]{0,127})\b\s+is not supported\b"#)
+            .expect("valid unsupported model bare regex")
+    });
     if status != StatusCode::BAD_REQUEST {
         return None;
     }
@@ -1396,17 +1410,26 @@ pub(crate) fn extract_unsupported_model_from_route_error(
     {
         return None;
     }
-    let regex =
-        Regex::new(r#"(?i)\b([a-z0-9][a-z0-9._-]*-[0-9][a-z0-9._-]*)\b"#).ok()?;
-    regex
+    UNSUPPORTED_MODEL_CONTEXT_REGEX
         .captures(error_message)
         .and_then(|captures| captures.get(1))
+        .or_else(|| {
+            UNSUPPORTED_MODEL_FOR_MODEL_REGEX
+                .captures(error_message)
+                .and_then(|captures| captures.get(1))
+        })
+        .or_else(|| {
+            UNSUPPORTED_MODEL_BARE_REGEX
+                .captures(error_message)
+                .and_then(|captures| captures.get(1))
+                .filter(|value| {
+                    value
+                        .as_str()
+                        .bytes()
+                        .any(|byte| byte.is_ascii_digit() || matches!(byte, b'-' | b'.' | b'_'))
+                })
+        })
         .map(|value| value.as_str().to_string())
-}
-
-pub(crate) fn route_error_is_gpt55_unsupported(status: StatusCode, error_message: &str) -> bool {
-    extract_unsupported_model_from_route_error(status, error_message)
-        .is_some_and(|model| model.eq_ignore_ascii_case("gpt-5.5"))
 }
 
 pub(crate) fn classify_pool_account_http_failure(
@@ -2245,5 +2268,56 @@ pub(crate) async fn wait_for_replay_body_snapshot(
             StatusCode::BAD_GATEWAY,
             "failed to cache replayable request body".to_string(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_unsupported_model_from_route_error_supports_short_and_hyphenated_ids() {
+        assert_eq!(
+            extract_unsupported_model_from_route_error(
+                StatusCode::BAD_REQUEST,
+                "model o3 is not supported by this account",
+            )
+            .as_deref(),
+            Some("o3")
+        );
+        assert_eq!(
+            extract_unsupported_model_from_route_error(
+                StatusCode::BAD_REQUEST,
+                "unsupported model: 'o4-mini'",
+            )
+            .as_deref(),
+            Some("o4-mini")
+        );
+        assert_eq!(
+            extract_unsupported_model_from_route_error(
+                StatusCode::BAD_REQUEST,
+                "model id `computer-use-preview` is not supported",
+            )
+            .as_deref(),
+            Some("computer-use-preview")
+        );
+    }
+
+    #[test]
+    fn extract_unsupported_model_from_route_error_ignores_non_model_bad_requests() {
+        assert_eq!(
+            extract_unsupported_model_from_route_error(
+                StatusCode::BAD_REQUEST,
+                "request body is not supported for this endpoint",
+            ),
+            None
+        );
+        assert_eq!(
+            extract_unsupported_model_from_route_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "unsupported model: gpt-5.5",
+            ),
+            None
+        );
     }
 }
