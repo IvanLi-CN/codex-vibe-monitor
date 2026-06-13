@@ -114,6 +114,24 @@ function findGroupSettingsDialog() {
   ) as HTMLElement | undefined
 }
 
+function findDialogByHeading(pattern: RegExp) {
+  return Array.from(document.body.querySelectorAll('[role="dialog"]')).find(
+    (dialog) =>
+      Array.from(dialog.querySelectorAll('h1, h2, h3, [role="heading"]')).some(
+        (candidate) => pattern.test(candidate.textContent?.trim() ?? ''),
+      ),
+  ) as HTMLElement | undefined
+}
+
+function findButtonByPattern(
+  pattern: RegExp,
+  root: ParentNode = document.body,
+) {
+  return Array.from(root.querySelectorAll('button')).find((candidate) =>
+    pattern.test(candidate.textContent ?? ''),
+  ) as HTMLButtonElement | undefined
+}
+
 function deleteButtonFromOpenDialog() {
   const dialog = findGroupSettingsDialog()
   expect(dialog).toBeTruthy()
@@ -144,11 +162,22 @@ function createGroupState(groupName: string) {
     existing: true,
     accountCount: 0,
     note: 'prod note',
-    boundProxyKeys: ['jp-edge-01'],
+    boundProxyKeys: [],
     nodeShuntEnabled: false,
     upstream429RetryEnabled: false,
     upstream429MaxRetries: 0,
     concurrencyLimit: 0,
+    routingRule: {
+      blockNewConversations: false,
+      allowCutOut: true,
+      allowCutIn: true,
+      priorityTier: 'normal',
+      fastModeRewriteMode: 'keep_original',
+      concurrencyLimit: 0,
+      upstream429RetryEnabled: false,
+      upstream429MaxRetries: 0,
+      availableModels: ['gpt-5.5'],
+    },
   }
 }
 
@@ -254,5 +283,90 @@ describe('useUpstreamAccountGroupSettingsDialog regression', () => {
 
     expect(deleteGroupNote).toHaveBeenCalledWith('prod')
     expect(readValue('bulk-group')).toBe('')
+  })
+
+  it('preserves cleared availableModels in the group routing policy payload', async () => {
+    const saveGroupSettings = vi.fn().mockResolvedValue(undefined)
+
+    function Harness() {
+      const { openEditor, dialog } = useUpstreamAccountGroupSettingsDialog({
+        writesEnabled: true,
+        resolveGroupState: (groupName) => createGroupState(groupName),
+        saveGroupSettings,
+      })
+
+      return (
+        <>
+          <button type="button" onClick={() => openEditor('prod')}>
+            Open group settings
+          </button>
+          {dialog}
+        </>
+      )
+    }
+
+    render(<Harness />)
+    pressButton(openButtonByLabel('Open group settings'))
+    await flushAsync()
+
+    const groupDialog = findGroupSettingsDialog()
+    expect(groupDialog).toBeTruthy()
+    const editRoutingPolicy = findButtonByPattern(
+      /edit policy|编辑策略/i,
+      groupDialog!,
+    )
+    expect(editRoutingPolicy).toBeTruthy()
+    pressButton(editRoutingPolicy!)
+    await flushAsync()
+
+    const routingPolicyDialog = findDialogByHeading(
+      /group routing policy|分组路由策略/i,
+    )
+    expect(routingPolicyDialog).toBeTruthy()
+    const availableModelsTrigger = routingPolicyDialog?.querySelector(
+      'button[role="combobox"][aria-label="Available models"], button[role="combobox"][aria-label="可用模型"]',
+    ) as HTMLButtonElement | null
+    expect(availableModelsTrigger).toBeTruthy()
+    pressButton(availableModelsTrigger!)
+    await flushAsync()
+
+    const clearAndInherit = Array.from(
+      document.querySelectorAll('[role="option"], [cmdk-item], button'),
+    ).find((candidate) =>
+      /clear and inherit|清空并继承/i.test(candidate.textContent ?? ''),
+    ) as HTMLElement | undefined
+    expect(clearAndInherit).toBeTruthy()
+    act(() => {
+      clearAndInherit?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flushAsync()
+
+    const savePolicy = findButtonByPattern(
+      /apply group policy|应用分组策略/i,
+      routingPolicyDialog!,
+    )
+    expect(savePolicy).toBeTruthy()
+    pressButton(savePolicy!)
+    await flushAsync()
+
+    const refreshedGroupDialog = findGroupSettingsDialog()
+    expect(refreshedGroupDialog).toBeTruthy()
+    const saveGroup = findButtonByPattern(
+      /save changes|保存修改/i,
+      refreshedGroupDialog!,
+    )
+    expect(saveGroup).toBeTruthy()
+    pressButton(saveGroup!)
+    await flushAsync()
+
+    expect(saveGroupSettings).toHaveBeenCalledWith(
+      'prod',
+      expect.objectContaining({
+        routingRule: expect.objectContaining({
+          availableModels: [],
+        }),
+      }),
+      { existing: true },
+    )
   })
 })

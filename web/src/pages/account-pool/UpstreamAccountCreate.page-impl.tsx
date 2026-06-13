@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useMotherSwitchNotifications } from "../../hooks/useMotherSwitchNotifications";
+import { useAvailableModelOptions } from "../../hooks/useAvailableModelOptions";
 import { useForwardProxyBindingNodes } from "../../hooks/useForwardProxyBindingNodes";
 import { usePoolTags } from "../../hooks/usePoolTags";
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
@@ -139,6 +140,7 @@ export default function UpstreamAccountCreatePage() {
     deleteGroupNote,
   } = useUpstreamAccounts();
   const { items: tagItems, createTag, updateTag, deleteTag } = usePoolTags();
+  const availableModelOptions = useAvailableModelOptions(writesEnabled);
   const notifyMotherSwitches = useMotherSwitchNotifications();
 
   const relinkAccountId = useMemo(
@@ -2221,6 +2223,16 @@ export default function UpstreamAccountCreatePage() {
     concurrencyHint: t("accountPool.tags.dialog.concurrencyHint"),
     currentValue: t("accountPool.tags.dialog.currentValue"),
     unlimited: t("accountPool.tags.dialog.unlimited"),
+    availableModels: t("accountPool.tags.dialog.availableModels"),
+    availableModelsHint: t("accountPool.tags.dialog.availableModelsHint"),
+    availableModelsSearchPlaceholder: t("accountPool.tags.dialog.availableModelsSearchPlaceholder"),
+    availableModelsEmpty: t("accountPool.tags.dialog.availableModelsEmpty"),
+    availableModelsAll: t("accountPool.tags.dialog.availableModelsAll"),
+    availableModelsCustomLabel: (value: string) =>
+      t("accountPool.tags.dialog.availableModelsCustomLabel", { value }),
+    availableModelsAddCustom: t("accountPool.tags.dialog.availableModelsAddCustom"),
+    availableModelsInherited: t("accountPool.tags.dialog.availableModelsInherited"),
+    availableModelsRemove: t("accountPool.tags.dialog.availableModelsRemove"),
     cancel: t("accountPool.tags.dialog.cancel"),
     save: t("accountPool.tags.dialog.save"),
     createAction: t("accountPool.tags.dialog.createAction"),
@@ -2233,6 +2245,7 @@ export default function UpstreamAccountCreatePage() {
     accountStatusLabel,
     actionError,
     activeOauthMailboxSession,
+    availableModelOptions,
     activeTab,
     apiKeyDisplayName,
     apiKeyDisplayNameConflict,

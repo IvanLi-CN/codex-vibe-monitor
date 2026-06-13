@@ -63,6 +63,8 @@ pub(crate) struct UpstreamAccountRow {
     policy_upstream_429_retry_enabled: Option<i64>,
     #[sqlx(default)]
     policy_upstream_429_max_retries: Option<i64>,
+    #[sqlx(default)]
+    policy_available_models_json: Option<String>,
     upstream_base_url: Option<String>,
     #[sqlx(default)]
     external_client_id: Option<String>,
@@ -408,6 +410,8 @@ struct TagRow {
     upstream_429_retry_enabled: i64,
     #[sqlx(default)]
     upstream_429_max_retries: i64,
+    #[sqlx(default)]
+    available_models_json: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -429,6 +433,8 @@ struct AccountTagRow {
     upstream_429_retry_enabled: i64,
     #[sqlx(default)]
     upstream_429_max_retries: i64,
+    #[sqlx(default)]
+    available_models_json: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -449,6 +455,8 @@ struct TagListRow {
     upstream_429_retry_enabled: i64,
     #[sqlx(default)]
     upstream_429_max_retries: i64,
+    #[sqlx(default)]
+    available_models_json: Option<String>,
     updated_at: String,
     account_count: i64,
     group_count: i64,
@@ -473,6 +481,7 @@ struct UpstreamAccountGroupListRow {
     policy_concurrency_limit: Option<i64>,
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
+    policy_available_models_json: Option<String>,
 }
 
 #[derive(Debug, FromRow)]

@@ -24,6 +24,8 @@ The inherited policy covers:
 - concurrency limit
 - upstream 429 retry enabled
 - upstream 429 max retries
+- available models
+- system denied models
 
 Root defaults preserve existing behavior:
 
@@ -35,6 +37,8 @@ Root defaults preserve existing behavior:
 - concurrency limit: unlimited
 - upstream 429 retry: disabled
 - upstream 429 max retries: 0
+- available models: unrestricted
+- system denied models: none
 
 ## Resolution
 
@@ -53,6 +57,20 @@ When an account has multiple tags, the tag layer keeps the existing conservative
 - block new conversations is enabled if any group, tag, or account layer enables it
 - the smallest non-zero concurrency limit wins
 - upstream 429 retry is enabled if any tag enables it, with the highest retry count
+- available models intersect across every tag that defines a non-empty list
+
+`availableModels` follows inheritance semantics across group, tag, and account policy:
+
+- missing or empty means inherit the upstream layer
+- there is no fourth state for “explicitly clear to unrestricted”
+- a tag without `availableModels` does not widen a sibling tag’s constraint
+- account policy may replace the inherited/tag-intersected model set with its own non-empty list
+
+System deny tags are merged into the same effective model policy but remain non-editable:
+
+- tags with `system_key=unsupported_model:<model>` append `<model>` to `systemDeniedModels`
+- `systemDeniedModels` always behave as a deny layer, regardless of group/tag/account allowlists
+- system-discovered deny state is shown in effective policy sources as `system`, but is not written back into editable `availableModels`
 
 ## Sticky Transfer Policy
 
@@ -74,7 +92,16 @@ Tag create/update payloads accept the full policy surface.
 
 Account update payloads accept `routingRule`. Missing `routingRule` preserves account-level overrides; present fields override the inherited effective policy for that account.
 
-Effective account responses expose field-level sources so the UI can show whether each final value came from the root default, group, merged tag layer, or account override.
+Effective account responses expose field-level sources so the UI can show whether each final value came from the root default, group, merged tag layer, account override, or system deny.
+
+Automatic candidate selection and sticky reuse must filter by the final model policy before scoring candidates:
+
+- explicit account or group bindings still bypass automatic candidate filtering as they do today
+- unconstrained routing first checks exact model ID matches
+- if exact match fails, dated aliases may fall back to the existing base-model alias rule
+- accounts denied for the requested model must be excluded from automatic and sticky migration candidates before retry/failover scoring
+
+Legacy `unsupported_model:gpt-5.5` handling is treated as one instance of the generic system deny rule rather than a special-case routing branch.
 
 ## Non-Goals
 
@@ -87,22 +114,22 @@ Effective account responses expose field-level sources so the UI can show whethe
 
 Visual evidence is captured from stable Storybook scenarios for:
 
-- tag policy dialog with the hard block-new-conversations switch
-- group routing policy editor using the same hard switch
-- account routing policy editor using the same hard switch
-- effective routing rule card showing block-new-conversations and field-level source on desktop and narrow mobile widths
+- tag policy dialog with shared available-model editing and custom model chips
+- group routing policy editor reusing the same available-model editor
+- account routing policy editor reusing the same available-model editor
+- effective routing rule card showing available-model source and system deny state on desktop and narrow mobile widths
 
 PR: include
-![Block new conversations tag dialog](./assets/block-new-conversations-tag-dialog.png)
+![Available models tag dialog](./assets/available-models-tag-dialog.png)
 
 PR: include
-![Block new conversations group policy dialog](./assets/block-new-conversations-group-policy-dialog.png)
+![Available models group policy dialog](./assets/available-models-group-policy-dialog.png)
 
 PR: include
-![Block new conversations account policy dialog](./assets/block-new-conversations-account-policy-dialog.png)
+![Available models account policy dialog](./assets/available-models-account-policy-dialog.png)
 
 PR: include
-![Block new conversations effective rule card](./assets/block-new-conversations-effective-card.png)
+![Available models effective rule card](./assets/available-models-effective-card.png)
 
 PR: include
-![Block new conversations effective rule card mobile](./assets/block-new-conversations-effective-card-mobile.png)
+![Available models effective rule card mobile](./assets/available-models-effective-card-mobile.png)

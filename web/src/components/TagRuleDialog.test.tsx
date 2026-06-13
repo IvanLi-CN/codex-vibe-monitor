@@ -6,11 +6,51 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { TagRuleDialog } from './TagRuleDialog'
 import type { TagSummary } from '../lib/api'
 
+class MockPointerEvent extends MouseEvent {
+  pointerType: string
+
+  constructor(type: string, init: MouseEventInit & { pointerType?: string } = {}) {
+    super(type, init)
+    this.pointerType = init.pointerType ?? 'mouse'
+  }
+}
+
+class MockResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
 beforeAll(() => {
   Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
     configurable: true,
     writable: true,
     value: true,
+  })
+  Object.defineProperty(window, 'PointerEvent', {
+    configurable: true,
+    writable: true,
+    value: MockPointerEvent,
+  })
+  Object.defineProperty(globalThis, 'PointerEvent', {
+    configurable: true,
+    writable: true,
+    value: MockPointerEvent,
+  })
+  Object.defineProperty(window, 'ResizeObserver', {
+    configurable: true,
+    writable: true,
+    value: MockResizeObserver,
+  })
+  Object.defineProperty(globalThis, 'ResizeObserver', {
+    configurable: true,
+    writable: true,
+    value: MockResizeObserver,
+  })
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+    configurable: true,
+    writable: true,
+    value: () => undefined,
   })
 })
 
@@ -41,6 +81,18 @@ function rerender(ui: React.ReactNode) {
   })
 }
 
+function findButtonByText(text: string) {
+  return Array.from(document.querySelectorAll('button')).find(
+    (button) => button.textContent?.trim() === text,
+  ) as HTMLButtonElement | undefined
+}
+
+function findComboboxByLabel(label: string) {
+  return Array.from(document.querySelectorAll('button[role="combobox"]')).find(
+    (button) => button.getAttribute('aria-label') === label,
+  ) as HTMLButtonElement | undefined
+}
+
 const labels = {
   createTitle: 'Create tag',
   editTitle: 'Edit tag',
@@ -66,6 +118,15 @@ const labels = {
   concurrencyHint: 'Use 1-30. The last step means unlimited.',
   currentValue: 'Current',
   unlimited: 'Unlimited',
+  availableModels: 'Available models',
+  availableModelsHint: 'Leave empty to inherit.',
+  availableModelsSearchPlaceholder: 'Search models',
+  availableModelsEmpty: 'No matching models',
+  availableModelsAll: 'Inherited / unrestricted',
+  availableModelsCustomLabel: (value: string) => value,
+  availableModelsAddCustom: 'Add custom model id',
+  availableModelsInherited: 'Clear and inherit',
+  availableModelsRemove: 'Remove model',
   cancel: 'Cancel',
   save: 'Save',
   create: 'Create',
@@ -387,5 +448,119 @@ describe('TagRuleDialog', () => {
     })
 
     expect(onSubmit).toHaveBeenCalledWith({})
+  })
+
+  it('serializes available models with dedupe when adding a custom model', async () => {
+    const onSubmit = vi.fn()
+    render(
+      <TagRuleDialog
+        open
+        mode="create"
+        draftName="vip"
+        availableModelOptions={['gpt-5.5', 'gpt-5.4-mini']}
+        onClose={() => undefined}
+        onSubmit={onSubmit}
+        labels={labels}
+      />,
+    )
+
+    const input = document.querySelector('input[name="availableModelInput"]') as HTMLInputElement | null
+    expect(input).not.toBeNull()
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      'value',
+    )?.set
+    act(() => {
+      valueSetter?.call(input, 'gpt-5.5')
+      input!.dispatchEvent(new Event('input', { bubbles: true }))
+      input!.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+
+    const addButton = findButtonByText('Add custom model id')
+    expect(addButton).not.toBeNull()
+    act(() => {
+      addButton!.click()
+    })
+    act(() => {
+      valueSetter?.call(input, 'gpt-5.5')
+      input!.dispatchEvent(new Event('input', { bubbles: true }))
+      input!.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    act(() => {
+      addButton!.click()
+    })
+
+    const submit = findButtonByText('Create')
+    act(() => {
+      submit!.click()
+    })
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'vip',
+        availableModels: ['gpt-5.5'],
+      }),
+    )
+  })
+
+  it('submits an empty availableModels list when changed-fields-only clears inheritance', async () => {
+    const onSubmit = vi.fn()
+    const tag: TagSummary = {
+      id: 91,
+      name: 'account@example.com',
+      routingRule: {
+        blockNewConversations: false,
+        allowCutOut: true,
+        allowCutIn: true,
+        priorityTier: 'normal',
+        fastModeRewriteMode: 'keep_original',
+        concurrencyLimit: 0,
+        upstream429RetryEnabled: false,
+        upstream429MaxRetries: 0,
+        availableModels: ['gpt-5.5'],
+      },
+      accountCount: 1,
+      groupCount: 0,
+      updatedAt: '2026-04-01T00:00:00.000Z',
+    }
+    render(
+      <TagRuleDialog
+        open
+        mode="edit"
+        policyOnly
+        changedFieldsOnly
+        title="Account routing policy"
+        submitLabel="Save account policy"
+        tag={tag}
+        onClose={() => undefined}
+        onSubmit={onSubmit}
+        labels={labels}
+      />,
+    )
+
+    const trigger = findComboboxByLabel('Available models')
+    expect(trigger).toBeTruthy()
+    act(() => {
+      trigger!.click()
+    })
+
+    const clearAfterOpen = Array.from(document.querySelectorAll('[role="option"], [cmdk-item], button')).find(
+      (element) => element.textContent?.trim() === 'Clear and inherit',
+    ) as HTMLElement | undefined
+    expect(clearAfterOpen).toBeTruthy()
+    act(() => {
+      clearAfterOpen!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    const submit = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Save account policy',
+    )
+    act(() => {
+      submit!.click()
+    })
+
+    expect(onSubmit).toHaveBeenCalledWith({
+      availableModels: [],
+    })
   })
 })

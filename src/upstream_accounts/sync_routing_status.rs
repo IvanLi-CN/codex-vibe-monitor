@@ -1,3 +1,16 @@
+fn intersect_available_models(
+    current: impl IntoIterator<Item = String>,
+    next: &[String],
+) -> Vec<String> {
+    current
+        .into_iter()
+        .filter(|model| {
+            next.iter()
+                .any(|candidate| requested_model_matches_constraint(model, candidate))
+        })
+        .collect()
+}
+
 fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingRule {
     let mut source_tag_ids = Vec::with_capacity(tags.len());
     let mut source_tag_names = Vec::with_capacity(tags.len());
@@ -13,6 +26,9 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
     let mut concurrency_limit = 0;
     let mut upstream_429_retry_enabled = false;
     let mut upstream_429_max_retries = 0_u8;
+    let mut available_models: Option<Vec<String>> = None;
+    let mut tag_available_models_defined = false;
+    let mut system_denied_models = BTreeSet::new();
 
     for tag in tags {
         source_tag_ids.push(tag.id);
@@ -33,9 +49,39 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
             upstream_429_max_retries =
                 upstream_429_max_retries.max(tag.routing_rule.upstream_429_max_retries);
         }
+        if !tag.routing_rule.available_models.is_empty() {
+            tag_available_models_defined = true;
+            available_models = Some(match available_models.take() {
+                Some(current) => {
+                    intersect_available_models(current, &tag.routing_rule.available_models)
+                }
+                None => tag.routing_rule.available_models.clone(),
+            });
+        }
+        if let Some(model) = tag
+            .system_key
+            .as_deref()
+            .and_then(|value| value.strip_prefix("unsupported_model:"))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            system_denied_models.insert(model.to_string());
+        }
     }
 
     let field_source = if tags.is_empty() { "root" } else { "tag" }.to_string();
+    let available_models_source = if tag_available_models_defined {
+        "tag"
+    } else {
+        "root"
+    }
+    .to_string();
+    let system_denied_models_source = if system_denied_models.is_empty() {
+        "root"
+    } else {
+        "system"
+    }
+    .to_string();
     EffectiveRoutingRule {
         block_new_conversations,
         allow_cut_out,
@@ -48,6 +94,9 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
             upstream_429_retry_enabled,
             upstream_429_max_retries,
         ),
+        available_models: available_models.unwrap_or_default(),
+        available_models_defined: tag_available_models_defined,
+        system_denied_models: system_denied_models.into_iter().collect(),
         source_tag_ids,
         source_tag_names,
         field_sources: EffectiveRoutingRuleFieldSources {
@@ -57,7 +106,9 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
             priority_tier: field_source.clone(),
             fast_mode_rewrite_mode: field_source.clone(),
             concurrency_limit: field_source.clone(),
-            upstream_429_retry: field_source,
+            upstream_429_retry: field_source.clone(),
+            available_models: available_models_source,
+            system_denied_models: system_denied_models_source,
         },
     }
 }
@@ -73,6 +124,7 @@ struct RoutingPolicyOverrideRow {
     policy_concurrency_limit: Option<i64>,
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
+    policy_available_models_json: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -89,6 +141,7 @@ struct GroupRoutingPolicyOverrideRow {
     policy_concurrency_limit: Option<i64>,
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
+    policy_available_models_json: Option<String>,
 }
 
 fn apply_routing_policy_override(
@@ -102,6 +155,7 @@ fn apply_routing_policy_override(
     concurrency_limit: Option<i64>,
     upstream_429_retry_enabled: Option<i64>,
     upstream_429_max_retries: Option<i64>,
+    available_models_json: Option<&str>,
 ) {
     if let Some(block_new_conversations) = block_new_conversations {
         if block_new_conversations != 0 {
@@ -148,6 +202,14 @@ fn apply_routing_policy_override(
                 .unwrap_or_default(),
         );
     }
+    if let Some(available_models_json) = available_models_json {
+        let available_models = parse_string_array_json(Some(available_models_json));
+        if !available_models.is_empty() {
+            rule.field_sources.available_models = source.to_string();
+            rule.available_models = available_models;
+            rule.available_models_defined = true;
+        }
+    }
 }
 
 async fn load_group_routing_policy_override_map(
@@ -171,7 +233,8 @@ async fn load_group_routing_policy_override_map(
             policy_fast_mode_rewrite_mode,
             policy_concurrency_limit,
             policy_upstream_429_retry_enabled,
-            policy_upstream_429_max_retries
+            policy_upstream_429_max_retries,
+            policy_available_models_json
         FROM pool_upstream_account_group_notes
         WHERE group_name IN (
         "#,
@@ -211,7 +274,8 @@ async fn load_account_routing_policy_override_map(
             policy_fast_mode_rewrite_mode,
             policy_concurrency_limit,
             policy_upstream_429_retry_enabled,
-            policy_upstream_429_max_retries
+            policy_upstream_429_max_retries,
+            policy_available_models_json
         FROM pool_upstream_accounts
         WHERE id IN (
         "#,
@@ -245,6 +309,7 @@ fn apply_group_routing_policy_override(
         row.policy_concurrency_limit,
         row.policy_upstream_429_retry_enabled,
         row.policy_upstream_429_max_retries,
+        row.policy_available_models_json.as_deref(),
     );
     if row.policy_concurrency_limit.is_none() && row.concurrency_limit > 0 {
         rule.field_sources.concurrency_limit = "group".to_string();
@@ -265,6 +330,9 @@ fn apply_group_routing_policy_override(
 fn apply_tag_layer_routing_policy(rule: &mut EffectiveRoutingRule, tag_rule: &EffectiveRoutingRule) {
     let inherited_block_new_conversations = rule.block_new_conversations;
     let inherited_block_source = rule.field_sources.block_new_conversations.clone();
+    let inherited_available_models = rule.available_models.clone();
+    let inherited_available_models_defined = rule.available_models_defined;
+    let inherited_available_models_source = rule.field_sources.available_models.clone();
     rule.block_new_conversations |= tag_rule.block_new_conversations;
     rule.allow_cut_out = tag_rule.allow_cut_out;
     rule.allow_cut_in = tag_rule.allow_cut_in;
@@ -277,11 +345,26 @@ fn apply_tag_layer_routing_policy(rule: &mut EffectiveRoutingRule, tag_rule: &Ef
     } else {
         0
     };
+    rule.available_models = if tag_rule.available_models_defined && inherited_available_models_defined {
+        intersect_available_models(inherited_available_models.clone(), &tag_rule.available_models)
+    } else {
+        tag_rule.available_models.clone()
+    };
+    rule.available_models_defined =
+        inherited_available_models_defined || tag_rule.available_models_defined;
+    rule.system_denied_models = tag_rule.system_denied_models.clone();
     rule.source_tag_ids = tag_rule.source_tag_ids.clone();
     rule.source_tag_names = tag_rule.source_tag_names.clone();
     rule.field_sources = tag_rule.field_sources.clone();
     if inherited_block_new_conversations {
         rule.field_sources.block_new_conversations = inherited_block_source;
+    }
+    if tag_rule.field_sources.available_models != "tag" {
+        rule.available_models = inherited_available_models;
+        rule.available_models_defined = inherited_available_models_defined;
+        rule.field_sources.available_models = inherited_available_models_source;
+    } else if !tag_rule.available_models_defined && inherited_available_models_defined {
+        rule.field_sources.available_models = inherited_available_models_source;
     }
 }
 
@@ -300,6 +383,7 @@ fn apply_account_routing_policy_override(
         row.policy_concurrency_limit,
         row.policy_upstream_429_retry_enabled,
         row.policy_upstream_429_max_retries,
+        row.policy_available_models_json.as_deref(),
     );
 }
 

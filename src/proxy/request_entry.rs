@@ -1198,6 +1198,7 @@ pub(crate) enum PoolReplayBodyStickyKeyProbeStatus {
 pub(crate) struct PoolReplayBodyKeyProbe {
     pub(crate) sticky_key: Option<String>,
     pub(crate) prompt_cache_key: Option<String>,
+    pub(crate) model: Option<String>,
 }
 
 pub(crate) struct PoolReplayBodyBuffer {
@@ -1381,15 +1382,52 @@ pub(crate) fn response_info_is_retryable_server_overloaded(
         && upstream_error_code_is_server_overloaded(response_info.upstream_error_code.as_deref())
 }
 
-pub(crate) fn route_error_is_gpt55_unsupported(status: StatusCode, error_message: &str) -> bool {
+pub(crate) fn extract_unsupported_model_from_route_error(
+    status: StatusCode,
+    error_message: &str,
+) -> Option<String> {
+    static UNSUPPORTED_MODEL_CONTEXT_REGEX: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?xi)
+            unsupported[_\s]+model\s*[:=]\s*['"`]?([a-z0-9][a-z0-9._-]{0,127})['"`]?
+            |
+            model(?:\s+id)?\s+['"`]?([a-z0-9][a-z0-9._-]{0,127})['"`]?\s+is\s+not\s+supported\b
+            |
+            model\s+is\s+not\s+supported\s*[:=]\s*['"`]?([a-z0-9][a-z0-9._-]{0,127})['"`]?
+            "#,
+        )
+        .expect("valid unsupported model context regex")
+    });
     if status != StatusCode::BAD_REQUEST {
-        return false;
+        return None;
     }
     let normalized = error_message.to_ascii_lowercase();
-    normalized.contains("gpt-5.5")
-        && (normalized.contains("model is not supported")
-            || normalized.contains("is not supported")
-            || normalized.contains("unsupported model"))
+    if !(normalized.contains("unsupported_model")
+        || normalized.contains("unsupported model")
+        || normalized.contains("model is not supported")
+        || normalized.contains("is not supported")
+        || normalized.contains("unsupported model"))
+    {
+        return None;
+    }
+    if normalized.contains("for model")
+        && !normalized.contains("model is not supported")
+        && !normalized.contains("unsupported model")
+    {
+        return None;
+    }
+    UNSUPPORTED_MODEL_CONTEXT_REGEX
+        .captures_iter(error_message)
+        .filter_map(|captures| (1..=3).find_map(|index| captures.get(index)))
+        .map(|value| value.as_str().trim().to_string())
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 128
+                && value
+                    .bytes()
+                    .any(|byte| byte.is_ascii_digit() || matches!(byte, b'-' | b'.'))
+        })
+        .last()
 }
 
 pub(crate) fn classify_pool_account_http_failure(
@@ -1997,6 +2035,9 @@ pub(crate) fn spawn_pool_replayable_request_body(
                                 best_effort_extract_prompt_cache_key_from_request_body_prefix(
                                     &sticky_key_probe,
                                 ),
+                            model: best_effort_extract_model_from_request_body_prefix(
+                                &sticky_key_probe,
+                            ),
                         },
                     ));
                 }
@@ -2076,6 +2117,7 @@ pub(crate) fn spawn_pool_replayable_request_body(
                     prompt_cache_key: best_effort_extract_prompt_cache_key_from_request_body_prefix(
                         &sticky_key_probe,
                     ),
+                    model: best_effort_extract_model_from_request_body_prefix(&sticky_key_probe),
                 };
                 if key_probe.sticky_key.is_some()
                     || key_probe.prompt_cache_key.is_some()
@@ -2226,5 +2268,92 @@ pub(crate) async fn wait_for_replay_body_snapshot(
             StatusCode::BAD_GATEWAY,
             "failed to cache replayable request body".to_string(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_unsupported_model_from_route_error_supports_short_and_hyphenated_ids() {
+        assert_eq!(
+            extract_unsupported_model_from_route_error(
+                StatusCode::BAD_REQUEST,
+                "model o3 is not supported by this account",
+            )
+            .as_deref(),
+            Some("o3")
+        );
+        assert_eq!(
+            extract_unsupported_model_from_route_error(
+                StatusCode::BAD_REQUEST,
+                "unsupported model: 'o4-mini'",
+            )
+            .as_deref(),
+            Some("o4-mini")
+        );
+        assert_eq!(
+            extract_unsupported_model_from_route_error(
+                StatusCode::BAD_REQUEST,
+                "model id `computer-use-preview` is not supported",
+            )
+            .as_deref(),
+            Some("computer-use-preview")
+        );
+        assert_eq!(
+            extract_unsupported_model_from_route_error(
+                StatusCode::BAD_REQUEST,
+                "unsupported_model: pool upstream responded with 400: unsupported model: gpt-5.5",
+            )
+            .as_deref(),
+            Some("gpt-5.5")
+        );
+    }
+
+    #[test]
+    fn extract_unsupported_model_from_route_error_ignores_non_model_bad_requests() {
+        assert_eq!(
+            extract_unsupported_model_from_route_error(
+                StatusCode::BAD_REQUEST,
+                "request body is not supported for this endpoint",
+            ),
+            None
+        );
+        assert_eq!(
+            extract_unsupported_model_from_route_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "unsupported model: gpt-5.5",
+            ),
+            None
+        );
+        assert_eq!(
+            extract_unsupported_model_from_route_error(
+                StatusCode::BAD_REQUEST,
+                "model is not supported",
+            ),
+            None
+        );
+        assert_eq!(
+            extract_unsupported_model_from_route_error(
+                StatusCode::BAD_REQUEST,
+                "response_format is not supported for model gpt-4o",
+            ),
+            None
+        );
+        assert_eq!(
+            extract_unsupported_model_from_route_error(
+                StatusCode::BAD_REQUEST,
+                "unsupported_model: pool",
+            ),
+            None
+        );
+        assert_eq!(
+            extract_unsupported_model_from_route_error(
+                StatusCode::BAD_REQUEST,
+                "unsupported_model: response_format is not supported for model gpt-4o",
+            ),
+            None
+        );
     }
 }

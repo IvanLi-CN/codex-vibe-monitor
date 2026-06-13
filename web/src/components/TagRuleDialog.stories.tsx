@@ -15,6 +15,7 @@ type DialogHarnessProps = {
 
 function DialogHarness({ tag = null, draftName, mode, policyOnly = false, title, description, saveLabel }: DialogHarnessProps) {
   const [open, setOpen] = useState(true)
+  const availableModelOptions = ['gpt-5.5', 'gpt-5.5-2026-05-01', 'gpt-5.4-mini', 'o3']
 
   return (
     <div className="min-h-screen bg-base-200 px-6 py-10 text-base-content">
@@ -38,6 +39,7 @@ function DialogHarness({ tag = null, draftName, mode, policyOnly = false, title,
           description={description}
           onClose={() => setOpen(false)}
           onSubmit={() => undefined}
+          availableModelOptions={availableModelOptions}
           labels={{
             createTitle: 'Create tag',
             editTitle: 'Edit tag',
@@ -63,6 +65,16 @@ function DialogHarness({ tag = null, draftName, mode, policyOnly = false, title,
             concurrencyHint: 'Use 1-30 to cap fresh assignments. The last slider step means unlimited.',
             currentValue: 'Current',
             unlimited: 'Unlimited',
+            availableModels: 'Available models',
+            availableModelsHint:
+              'Leave empty to inherit. Automatic and sticky routing only consider matching accounts.',
+            availableModelsSearchPlaceholder: 'Search models',
+            availableModelsEmpty: 'No matching models',
+            availableModelsAll: 'Inherited / unrestricted',
+            availableModelsCustomLabel: (value) => value,
+            availableModelsAddCustom: 'Add custom model id',
+            availableModelsInherited: 'Clear and inherit',
+            availableModelsRemove: 'Remove model',
             upstream429Retry: 'Upstream 429 retry',
             upstream429RetryHint: 'Retry this account before cooldown and failover when upstream returns 429.',
             upstream429RetryToggle: 'Retry after upstream 429',
@@ -92,6 +104,7 @@ const finiteTag: TagSummary = {
     concurrencyLimit: 6,
     upstream429RetryEnabled: true,
     upstream429MaxRetries: 3,
+    availableModels: ['gpt-5.5', 'gpt-5.4-mini'],
   },
   accountCount: 4,
   groupCount: 2,
@@ -110,6 +123,7 @@ const unlimitedTag: TagSummary = {
     concurrencyLimit: 0,
     upstream429RetryEnabled: false,
     upstream429MaxRetries: 0,
+    availableModels: [],
   },
   accountCount: 2,
   groupCount: 1,

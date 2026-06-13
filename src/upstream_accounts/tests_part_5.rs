@@ -229,6 +229,7 @@ async fn resolver_reuses_sticky_account_when_cut_out_is_forbidden_despite_recent
             concurrency_limit: 0,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
+            available_models: vec![],
         },
     )
     .await
@@ -303,6 +304,7 @@ async fn resolver_preserves_sticky_hard_block_when_cut_out_is_forbidden_despite_
             concurrency_limit: 0,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
+            available_models: vec![],
         },
     )
     .await
@@ -466,6 +468,7 @@ async fn resolver_forced_prompt_cache_account_binding_bypasses_target_cut_in_pol
             concurrency_limit: 0,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
+            available_models: vec![],
         },
     )
     .await
@@ -526,6 +529,7 @@ async fn resolver_forced_prompt_cache_account_binding_bypasses_source_cut_out_po
             concurrency_limit: 0,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
+            available_models: vec![],
         },
     )
     .await
@@ -914,6 +918,7 @@ async fn resolver_prompt_cache_group_binding_does_not_bypass_cut_in_policy() {
             concurrency_limit: 0,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
+            available_models: vec![],
         },
     )
     .await
@@ -940,6 +945,44 @@ async fn resolver_prompt_cache_group_binding_does_not_bypass_cut_in_policy() {
     .await
     .expect("resolve group-bound pool account");
     assert!(matches!(resolution, PoolAccountResolution::Unavailable));
+}
+
+#[tokio::test]
+async fn resolver_prompt_cache_group_binding_bypasses_requested_model_filter() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let bound_group = "prompt-cache-group-model-bypass";
+    let bound = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Group Model Bypass",
+        "sk-prompt-cache-group-model-bypass",
+        Some(bound_group),
+        Some("https://group-model-bypass.example.com/backend-api/codex"),
+    )
+    .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET policy_available_models_json = '[\"gpt-4o\"]' WHERE id = ?1")
+        .bind(bound)
+        .execute(&state.pool)
+        .await
+        .expect("make bound account model-constrained");
+    let now_iso = format_utc_iso(Utc::now());
+    insert_limit_sample_with_usage(&state.pool, bound, &now_iso, Some(20.0), Some(20.0)).await;
+
+    let resolution = resolve_pool_account_for_request_with_binding_constraint_and_model(
+        &state,
+        Some("prompt-cache-group-model-bypass-key"),
+        Some("gpt-5.5"),
+        &[],
+        &HashSet::new(),
+        Some(&PromptCacheConversationBindingConstraint::Group(
+            bound_group.to_string(),
+        )),
+    )
+    .await
+    .expect("resolve group-bound pool account");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("expected explicit group binding to bypass requested model filter");
+    };
+    assert_eq!(account.account_id, bound);
 }
 
 async fn seed_route_binding_attempt(
@@ -1238,6 +1281,7 @@ async fn resolver_prefers_group_proxy_error_over_excluded_route_cut_in_rejects()
             concurrency_limit: 0,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
+            available_models: vec![],
         },
     )
     .await
@@ -1554,6 +1598,7 @@ async fn resolver_returns_group_proxy_error_for_sticky_account_when_cut_out_is_f
             concurrency_limit: 0,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
+            available_models: vec![],
         },
     )
     .await
@@ -1631,6 +1676,7 @@ async fn resolver_returns_ungrouped_error_for_sticky_account_when_cut_out_is_for
             concurrency_limit: 0,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
+            available_models: vec![],
         },
     )
     .await
@@ -1717,6 +1763,7 @@ async fn resolver_preserves_sticky_account_when_cut_out_is_forbidden_by_tag_poli
             concurrency_limit: 0,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
+            available_models: vec![],
         },
     )
     .await
@@ -1860,6 +1907,7 @@ async fn resolver_prefers_sticky_cut_in_policy_over_group_proxy_error() {
             concurrency_limit: 0,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
+            available_models: vec![],
         },
     )
     .await

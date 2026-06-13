@@ -82,6 +82,7 @@ export interface TagRoutingRule {
   concurrencyLimit?: number | null;
   upstream429RetryEnabled?: boolean;
   upstream429MaxRetries?: number;
+  availableModels?: string[];
 }
 
 export type EffectiveRoutingRuleSource = "root" | "group" | "tag" | "account" | string;
@@ -94,9 +95,12 @@ export interface EffectiveRoutingRuleFieldSources {
   fastModeRewriteMode: EffectiveRoutingRuleSource;
   concurrencyLimit: EffectiveRoutingRuleSource;
   upstream429Retry: EffectiveRoutingRuleSource;
+  availableModels?: EffectiveRoutingRuleSource;
+  systemDeniedModels?: EffectiveRoutingRuleSource;
 }
 
 export interface EffectiveRoutingRule extends TagRoutingRule {
+  systemDeniedModels?: string[];
   sourceTagIds: number[];
   sourceTagNames: string[];
   fieldSources?: EffectiveRoutingRuleFieldSources;
@@ -844,6 +848,9 @@ function normalizeTagRoutingRule(raw: unknown): TagRoutingRule {
         : 0,
     upstream429RetryEnabled: payload.upstream429RetryEnabled === true,
     upstream429MaxRetries,
+    availableModels: normalizeStringArray(payload.availableModels)
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0),
   };
 }
 
@@ -878,6 +885,9 @@ function normalizeEffectiveRoutingRule(raw: unknown): EffectiveRoutingRule {
     : [];
   return {
     ...normalizeTagRoutingRule(payload),
+    systemDeniedModels: normalizeStringArray(payload.systemDeniedModels)
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0),
     sourceTagIds,
     sourceTagNames,
     fieldSources: {
@@ -888,6 +898,8 @@ function normalizeEffectiveRoutingRule(raw: unknown): EffectiveRoutingRule {
       fastModeRewriteMode: normalizeSource(rawSources.fastModeRewriteMode),
       concurrencyLimit: normalizeSource(rawSources.concurrencyLimit),
       upstream429Retry: normalizeSource(rawSources.upstream429Retry),
+      availableModels: normalizeSource(rawSources.availableModels),
+      systemDeniedModels: normalizeSource(rawSources.systemDeniedModels),
     },
   };
 }

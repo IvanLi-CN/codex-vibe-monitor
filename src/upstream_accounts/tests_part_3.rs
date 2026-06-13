@@ -56,7 +56,12 @@
             .expect("seed active sticky route");
 
         let resolution =
-            resolve_pool_account_for_request(&state, None, &[], &std::collections::HashSet::new())
+            resolve_pool_account_for_request(
+                &state,
+                None,
+                &[],
+                &std::collections::HashSet::new(),
+            )
                 .await
                 .expect("resolve pool account");
 
@@ -1496,7 +1501,12 @@
         .expect("seed stale sticky route");
 
         let resolution =
-            resolve_pool_account_for_request(&state, None, &[], &std::collections::HashSet::new())
+            resolve_pool_account_for_request(
+                &state,
+                None,
+                &[],
+                &std::collections::HashSet::new(),
+            )
                 .await
                 .expect("resolve pool account");
 
@@ -1928,6 +1938,47 @@
                 .expect("load sticky route")
                 .is_some(),
             "legacy groups keep existing sticky route behavior",
+        );
+    }
+
+    #[tokio::test]
+    async fn record_pool_route_http_failure_does_not_learn_feature_level_model_error_as_system_deny()
+    {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Feature Unsupported OAuth").await;
+
+        record_pool_route_http_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            false,
+            Some("sticky-feature-unsupported"),
+            StatusCode::BAD_REQUEST,
+            "unsupported_model: response_format is not supported for model gpt-4o",
+            Some("invk_feature_unsupported"),
+        )
+        .await
+        .expect("record feature-scoped bad request");
+
+        let learned_tags = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT tag.system_key
+            FROM pool_upstream_account_tags account_tag
+            JOIN pool_tags tag ON tag.id = account_tag.tag_id
+            WHERE account_tag.account_id = ?1
+              AND tag.system_key IS NOT NULL
+            ORDER BY tag.system_key ASC
+            "#,
+        )
+        .bind(account_id)
+        .fetch_all(&pool)
+        .await
+        .expect("load learned system tags");
+        assert!(
+            !learned_tags
+                .iter()
+                .any(|tag| tag == "unsupported_model:gpt-4o"),
+            "feature-scoped bad request should not poison model availability: {learned_tags:?}",
         );
     }
 

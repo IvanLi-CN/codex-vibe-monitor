@@ -19,9 +19,22 @@ const UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS: &str = r#"
     policy_allow_cut_out, policy_allow_cut_in, policy_priority_tier,
     policy_fast_mode_rewrite_mode, policy_concurrency_limit,
     policy_upstream_429_retry_enabled, policy_upstream_429_max_retries,
+    policy_available_models_json,
     upstream_base_url, external_client_id, external_source_account_id,
     created_at, updated_at
 "#;
+
+pub(crate) fn unsupported_model_system_tag_key(model: &str) -> Option<String> {
+    let normalized = model.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+    Some(format!("unsupported_model:{normalized}"))
+}
+
+fn unsupported_model_system_tag_name(model: &str) -> String {
+    format!("不支持 {model}")
+}
 
 async fn ensure_protected_system_tag(pool: &Pool<Sqlite>, name: &str, system_key: &str) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
@@ -96,11 +109,20 @@ async fn ensure_websocket_unsupported_system_tag(pool: &Pool<Sqlite>) -> Result<
     .await
 }
 
-pub(crate) async fn ensure_account_has_gpt55_unsupported_tag(
+pub(crate) async fn ensure_account_has_unsupported_model_tag(
     pool: &Pool<Sqlite>,
     account_id: i64,
+    model: &str,
 ) -> Result<()> {
-    ensure_gpt55_unsupported_system_tag(pool).await?;
+    let Some(system_key) = unsupported_model_system_tag_key(model) else {
+        return Ok(());
+    };
+    ensure_protected_system_tag(
+        pool,
+        &unsupported_model_system_tag_name(model.trim()),
+        &system_key,
+    )
+    .await?;
     let now_iso = format_utc_iso(Utc::now());
     sqlx::query(
         r#"
@@ -111,11 +133,18 @@ pub(crate) async fn ensure_account_has_gpt55_unsupported_tag(
         "#,
     )
     .bind(account_id)
-    .bind(GPT55_UNSUPPORTED_SYSTEM_TAG_KEY)
+    .bind(system_key)
     .bind(&now_iso)
     .execute(pool)
     .await?;
     Ok(())
+}
+
+pub(crate) async fn ensure_account_has_gpt55_unsupported_tag(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+) -> Result<()> {
+    ensure_account_has_unsupported_model_tag(pool, account_id, "gpt-5.5").await
 }
 
 pub(crate) async fn ensure_account_has_websocket_unsupported_tag(
@@ -1735,7 +1764,8 @@ async fn load_account_tag_map(
             tag.fast_mode_rewrite_mode,
             tag.concurrency_limit,
             tag.upstream_429_retry_enabled,
-            tag.upstream_429_max_retries
+            tag.upstream_429_max_retries,
+            tag.available_models_json
         FROM pool_upstream_account_tags link
         INNER JOIN pool_tags tag ON tag.id = link.tag_id
         WHERE link.account_id IN (
@@ -1861,6 +1891,7 @@ async fn load_tag_summaries(
             tag.concurrency_limit,
             tag.upstream_429_retry_enabled,
             tag.upstream_429_max_retries,
+            tag.available_models_json,
             tag.updated_at,
             COUNT(DISTINCT link.account_id) AS account_count,
             COUNT(DISTINCT NULLIF(TRIM(account.group_name), '')) AS group_count
@@ -1895,7 +1926,7 @@ async fn load_tag_summaries(
             .push_bind(if allow_cut_out { 1 } else { 0 });
     }
     query.push(
-        " GROUP BY tag.id, tag.name, tag.system_key, tag.protected, tag.block_new_conversations, tag.allow_cut_out, tag.allow_cut_in, tag.priority_tier, tag.fast_mode_rewrite_mode, tag.concurrency_limit, tag.upstream_429_retry_enabled, tag.upstream_429_max_retries, tag.updated_at",
+        " GROUP BY tag.id, tag.name, tag.system_key, tag.protected, tag.block_new_conversations, tag.allow_cut_out, tag.allow_cut_in, tag.priority_tier, tag.fast_mode_rewrite_mode, tag.concurrency_limit, tag.upstream_429_retry_enabled, tag.upstream_429_max_retries, tag.available_models_json, tag.updated_at",
     );
     if let Some(has_accounts) = params.has_accounts {
         query.push(if has_accounts {
@@ -1922,8 +1953,8 @@ async fn insert_tag(pool: &Pool<Sqlite>, name: &str, rule: &TagRoutingRule) -> R
         INSERT INTO pool_tags (
             name, block_new_conversations, allow_cut_out, allow_cut_in,
             priority_tier, fast_mode_rewrite_mode, concurrency_limit, upstream_429_retry_enabled,
-            upstream_429_max_retries, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
+            upstream_429_max_retries, available_models_json, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
         RETURNING id
         "#,
     )
@@ -1940,6 +1971,7 @@ async fn insert_tag(pool: &Pool<Sqlite>, name: &str, rule: &TagRoutingRule) -> R
         0_i64
     })
     .bind(i64::from(rule.upstream_429_max_retries))
+    .bind(encode_string_array_json(&rule.available_models)?)
     .bind(&now_iso)
     .fetch_one(pool)
     .await?;
@@ -1967,7 +1999,8 @@ async fn persist_tag_update(
             concurrency_limit = ?8,
             upstream_429_retry_enabled = ?9,
             upstream_429_max_retries = ?10,
-            updated_at = ?11
+            available_models_json = ?11,
+            updated_at = ?12
         WHERE id = ?1
         "#,
     )
@@ -1985,6 +2018,7 @@ async fn persist_tag_update(
         0_i64
     })
     .bind(i64::from(rule.upstream_429_max_retries))
+    .bind(encode_string_array_json(&rule.available_models)?)
     .bind(&now_iso)
     .execute(pool)
     .await?;
@@ -2157,7 +2191,8 @@ async fn load_upstream_account_groups(
             notes.policy_fast_mode_rewrite_mode,
             notes.policy_concurrency_limit,
             notes.policy_upstream_429_retry_enabled,
-            notes.policy_upstream_429_max_retries
+            notes.policy_upstream_429_max_retries,
+            notes.policy_available_models_json
         FROM catalog_groups
         LEFT JOIN account_groups
             ON account_groups.group_name = catalog_groups.group_name
@@ -2211,6 +2246,7 @@ async fn load_upstream_account_groups(
                         row.policy_concurrency_limit,
                         row.policy_upstream_429_retry_enabled,
                         row.policy_upstream_429_max_retries,
+                        row.policy_available_models_json.as_deref(),
                     ),
                 }
             })

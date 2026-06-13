@@ -26,6 +26,7 @@ export function UpstreamAccountCreateApiKeySection() {
     apiKeyUpstreamBaseUrl,
     apiKeyUpstreamBaseUrlError,
     apiKeyValue,
+    availableModelOptions,
     busyAction,
     cn,
     formatGroupAccountCountLabel,
@@ -271,6 +272,7 @@ export function UpstreamAccountCreateApiKeySection() {
       selectedTagIds={apiKeyTagIds}
       writesEnabled={writesEnabled}
       pageCreatedTagIds={pageCreatedTagIds}
+      availableModelOptions={availableModelOptions}
       labels={tagFieldLabels}
       onChange={setApiKeyTagIds}
       onCreateTag={handleCreateTag}

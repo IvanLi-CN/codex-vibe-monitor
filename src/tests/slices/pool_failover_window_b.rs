@@ -322,6 +322,183 @@ async fn proxy_openai_v1_responses_live_first_failover_restores_full_retry_budge
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_live_first_unsupported_model_bad_request_fails_over() {
+    async fn unsupported_model_live_first_upstream(
+        attempts: Arc<StdMutex<HashMap<String, usize>>>,
+        headers: HeaderMap,
+    ) -> Response {
+        let authorization = headers
+            .get(http_header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        let attempt = {
+            let mut attempts = attempts
+                .lock()
+                .expect("lock live-first unsupported-model attempts");
+            let entry = attempts.entry(authorization.clone()).or_insert(0);
+            *entry += 1;
+            *entry
+        };
+        if authorization == "Bearer upstream-primary" {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": {
+                        "code": "unsupported_model",
+                        "message": "unsupported model: gpt-5.5",
+                    },
+                    "attempt": attempt,
+                })),
+            )
+                .into_response();
+        }
+        (
+            StatusCode::OK,
+            Json(json!({
+                "ok": true,
+                "authorization": authorization,
+                "attempt": attempt,
+            })),
+        )
+            .into_response()
+    }
+
+    let attempts = Arc::new(StdMutex::new(HashMap::new()));
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post({
+            let attempts = attempts.clone();
+            move |headers| unsupported_model_live_first_upstream(attempts.clone(), headers)
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind live-first unsupported-model upstream");
+    let addr = listener
+        .local_addr()
+        .expect("live-first unsupported-model upstream addr");
+    let upstream_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("live-first unsupported-model upstream should run");
+    });
+    let mut config = test_config();
+    config.openai_proxy_request_read_timeout = Duration::from_millis(260);
+    config.openai_upstream_base_url =
+        Url::parse(&format!("http://{addr}")).expect("valid upstream base url");
+
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(80),
+            poll_interval: Duration::from_millis(10),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id =
+        insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let secondary_id =
+        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    let first_chunk = format!(
+        "{{\"model\":\"gpt-5.5\",\"input\":\"{}",
+        "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 256)
+    );
+    tokio::spawn(async move {
+        let _ = tx.send(Ok(Bytes::from(first_chunk))).await;
+        tokio::time::sleep(Duration::from_millis(130)).await;
+        let _ = tx.send(Ok(Bytes::from_static(b"\"}"))).await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6343,
+        &"/v1/chat/completions".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("live-first unsupported-model request should fail over");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read live-first unsupported-model response");
+    let payload: Value =
+        serde_json::from_slice(&body).expect("decode live-first unsupported-model response");
+    assert_eq!(payload["authorization"], "Bearer upstream-secondary");
+
+    wait_for_pool_upstream_request_attempts(&state.pool, 2).await;
+    wait_for_pool_attempt_status(
+        &state.pool,
+        1,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+    )
+    .await;
+    wait_for_pool_attempt_status(
+        &state.pool,
+        2,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+    )
+    .await;
+
+    let attempts = attempts
+        .lock()
+        .expect("lock live-first unsupported-model attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
+    drop(attempts);
+
+    let primary_tags = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT tag.system_key
+        FROM pool_tags tag
+        JOIN pool_upstream_account_tags link ON link.tag_id = tag.id
+        WHERE link.account_id = ?1
+          AND tag.system_key IS NOT NULL
+        ORDER BY tag.system_key ASC
+        "#,
+    )
+    .bind(primary_id)
+    .fetch_all(&state.pool)
+    .await
+    .expect("load live-first primary system tags");
+    assert!(
+        primary_tags
+            .iter()
+            .any(|tag| tag == "unsupported_model:gpt-5.5"),
+        "primary account should learn unsupported model tag: {primary_tags:?}",
+    );
+    assert_eq!(
+        load_test_sticky_route_account_id(&state.pool, "sticky-unsupported-model-failover").await,
+        None,
+    );
+    assert_ne!(primary_id, secondary_id);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_responses_live_first_failover_preserves_prompt_cache_group_binding() {
     let (upstream_base, attempts, upstream_handle) =
         spawn_pool_retry_upstream(&[("Bearer upstream-primary", 99)]).await;
@@ -1968,6 +2145,273 @@ async fn proxy_openai_v1_header_prompt_cache_binding_beats_rate_limited_sticky_t
         attempts.get("Bearer upstream-replacement").copied(),
         Some(1)
     );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_header_sticky_rechecks_model_before_reusing_header_resolution() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(20),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let sticky_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Header Sticky Only GPT-4.1",
+        "upstream-sticky-only",
+        None,
+        None,
+        None,
+    )
+    .await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Fallback GPT-5.5",
+        "upstream-fallback",
+        None,
+        None,
+        None,
+    )
+    .await;
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_available_models_json = ?2 WHERE id = ?1",
+    )
+    .bind(sticky_account_id)
+    .bind(r#"["gpt-4.1"]"#)
+    .execute(&state.pool)
+    .await
+    .expect("restrict sticky account model policy");
+
+    let sticky_seen_at = format_utc_iso(Utc::now());
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "header-model-sensitive-sticky",
+        sticky_account_id,
+        &sticky_seen_at,
+    )
+    .await;
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6247,
+        &"/v1/chat/completions".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-sticky-key"),
+                HeaderValue::from_static("header-model-sensitive-sticky"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(r#"{"model":"gpt-5.5","messages":[]}"#),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("via-pool request should succeed");
+
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read via-pool response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
+    assert_eq!(payload["authorization"], "Bearer upstream-fallback");
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-sticky-only").copied(), None);
+    assert_eq!(attempts.get("Bearer upstream-fallback").copied(), Some(1));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_live_first_waits_for_full_model_before_filtered_resolution() {
+    let mut config = test_config();
+    config.openai_proxy_request_read_timeout = Duration::from_millis(260);
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(120),
+            poll_interval: Duration::from_millis(10),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id =
+        insert_test_pool_api_key_account(&state, "Primary GPT-4.1 only", "upstream-primary").await;
+    insert_test_pool_api_key_account(&state, "Fallback GPT-5.5", "upstream-fallback").await;
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_available_models_json = ?2 WHERE id = ?1",
+    )
+    .bind(primary_id)
+    .bind(r#"["gpt-4.1"]"#)
+    .execute(&state.pool)
+    .await
+    .expect("restrict primary account model policy");
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    let first_chunk = format!(
+        "{{\"input\":\"{}",
+        "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 256)
+    );
+    tokio::spawn(async move {
+        let _ = tx.send(Ok(Bytes::from(first_chunk))).await;
+        tokio::time::sleep(Duration::from_millis(130)).await;
+        let _ = tx
+            .send(Ok(Bytes::from_static(b"\",\"model\":\"gpt-5.5\"}")))
+            .await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let started = Instant::now();
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6342,
+        &"/v1/chat/completions".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("via-pool request should succeed after reading the full model");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed >= Duration::from_millis(100),
+        "model-constrained request should wait for the delayed model field, elapsed={elapsed:?}"
+    );
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read via-pool response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
+    assert_eq!(payload["authorization"], "Bearer upstream-fallback");
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), None);
+    assert_eq!(attempts.get("Bearer upstream-fallback").copied(), Some(1));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_live_first_ignores_nested_prefix_model_before_top_level_model() {
+    let mut config = test_config();
+    config.openai_proxy_request_read_timeout = Duration::from_millis(260);
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(120),
+            poll_interval: Duration::from_millis(10),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id =
+        insert_test_pool_api_key_account(&state, "Primary GPT-4.1 only", "upstream-primary").await;
+    insert_test_pool_api_key_account(&state, "Fallback GPT-5.5", "upstream-fallback").await;
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_available_models_json = ?2 WHERE id = ?1",
+    )
+    .bind(primary_id)
+    .bind(r#"["gpt-4.1"]"#)
+    .execute(&state.pool)
+    .await
+    .expect("restrict primary account model policy");
+
+    let nested_prefix = format!(
+        "{{\"input\":\"{{\\\"model\\\":\\\"gpt-4o\\\"}}{}",
+        "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 256)
+    );
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx.send(Ok(Bytes::from(nested_prefix))).await;
+        tokio::time::sleep(Duration::from_millis(130)).await;
+        let _ = tx
+            .send(Ok(Bytes::from_static(b"\",\"model\":\"gpt-5.5\"}")))
+            .await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let started = Instant::now();
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6344,
+        &"/v1/chat/completions".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("via-pool request should wait for the top-level model");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed >= Duration::from_millis(100),
+        "nested prefix model should not trigger early routing, elapsed={elapsed:?}"
+    );
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read via-pool response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
+    assert_eq!(payload["authorization"], "Bearer upstream-fallback");
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), None);
+    assert_eq!(attempts.get("Bearer upstream-fallback").copied(), Some(1));
 
     upstream_handle.abort();
 }

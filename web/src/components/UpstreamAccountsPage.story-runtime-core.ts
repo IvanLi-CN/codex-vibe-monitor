@@ -53,6 +53,8 @@ const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
   blockNewConversations: false,
   allowCutOut: true,
   allowCutIn: true,
+  availableModels: [],
+  systemDeniedModels: [],
   sourceTagIds: [],
   sourceTagNames: [],
   fieldSources: {
@@ -63,6 +65,8 @@ const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
     fastModeRewriteMode: 'root',
     concurrencyLimit: 'root',
     upstream429Retry: 'root',
+    availableModels: 'root',
+    systemDeniedModels: 'root',
   },
 }
 
@@ -270,6 +274,8 @@ const detailRichRoutingRule: EffectiveRoutingRule = {
   blockNewConversations: true,
   allowCutOut: false,
   allowCutIn: false,
+  availableModels: ['gpt-5.5', 'gpt-5.4-mini'],
+  systemDeniedModels: ['gpt-5.5'],
   sourceTagIds: [1, 4, 20],
   sourceTagNames: ['vip', 'sticky-pool', 'priority-route'],
   priorityTier: 'fallback',
@@ -285,6 +291,8 @@ const detailRichRoutingRule: EffectiveRoutingRule = {
     fastModeRewriteMode: 'account',
     concurrencyLimit: 'tag',
     upstream429Retry: 'account',
+    availableModels: 'account',
+    systemDeniedModels: 'system',
   },
 }
 
@@ -763,6 +771,8 @@ function buildOperationalRosterAccounts(replicaCount = 1) {
                 fastModeRewriteMode: 'account',
                 concurrencyLimit: 'group',
                 upstream429Retry: 'account',
+                availableModels: 'account',
+                systemDeniedModels: 'system',
               },
             }
           : undefined,

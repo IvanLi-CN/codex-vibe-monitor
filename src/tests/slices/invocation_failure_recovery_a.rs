@@ -997,6 +997,16 @@ async fn pool_route_http_4xx_does_not_create_sticky_route() {
     .await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read passthrough 4xx response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode passthrough 4xx body");
+    assert_eq!(payload["error"]["code"], "server_error");
+    assert!(
+        payload["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("upstream failure for Bearer upstream-primary"))
+    );
     wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
     wait_for_pool_attempt_status(
         &state.pool,

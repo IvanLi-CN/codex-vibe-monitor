@@ -54,6 +54,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             policy_concurrency_limit INTEGER,
             policy_upstream_429_retry_enabled INTEGER,
             policy_upstream_429_max_retries INTEGER,
+            policy_available_models_json TEXT,
             upstream_base_url TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
@@ -136,6 +137,13 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure pool_upstream_accounts.policy_upstream_429_max_retries")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_accounts",
+        "policy_available_models_json",
+    )
+    .await
+    .context("failed to ensure pool_upstream_accounts.policy_available_models_json")?;
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "external_client_id")
         .await
         .context("failed to ensure pool_upstream_accounts.external_client_id")?;
@@ -662,6 +670,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             concurrency_limit INTEGER NOT NULL DEFAULT 0,
             upstream_429_retry_enabled INTEGER NOT NULL DEFAULT 0,
             upstream_429_max_retries INTEGER NOT NULL DEFAULT 0,
+            available_models_json TEXT NOT NULL DEFAULT '[]',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -693,6 +702,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_integer_column_with_default(pool, "pool_tags", "upstream_429_max_retries", "0")
         .await
         .context("failed to ensure pool_tags.upstream_429_max_retries")?;
+    ensure_text_column_with_default(pool, "pool_tags", "available_models_json", "'[]'")
+        .await
+        .context("failed to ensure pool_tags.available_models_json")?;
     ensure_nullable_text_column(pool, "pool_tags", "system_key")
         .await
         .context("failed to ensure pool_tags.system_key")?;
@@ -802,6 +814,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             policy_concurrency_limit INTEGER,
             policy_upstream_429_retry_enabled INTEGER,
             policy_upstream_429_max_retries INTEGER,
+            policy_available_models_json TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -903,6 +916,13 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure pool_upstream_account_group_notes.policy_fast_mode_rewrite_mode")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_account_group_notes",
+        "policy_available_models_json",
+    )
+    .await
+    .context("failed to ensure pool_upstream_account_group_notes.policy_available_models_json")?;
 
     sqlx::query(
         r#"

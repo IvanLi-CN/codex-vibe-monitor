@@ -22,6 +22,9 @@ const labels = {
   fastModeForceRemove: 'Force remove',
   upstream429Retry: '429 retry enabled',
   upstream429RetryOff: '429 retry off',
+  availableModelsInherited: 'Inherited / unrestricted',
+  availableModelsNoneAllowed: 'No models allowed',
+  systemDeniedModelsEmpty: 'None',
   concurrencyLimit: (count: number) => `Concurrency ${count}`,
   concurrencyUnlimited: 'Concurrency unlimited',
   sourceBreakdownTitle: 'Field source breakdown',
@@ -32,10 +35,13 @@ const labels = {
   fieldFastMode: 'FAST mode',
   fieldConcurrency: 'Concurrency',
   fieldUpstream429: 'Upstream 429 retry',
+  fieldAvailableModels: 'Available models',
+  fieldSystemDeniedModels: 'System denied models',
   sourceRoot: 'Root default',
   sourceGroup: 'Group',
   sourceTag: 'Tag',
   sourceAccount: 'Account',
+  sourceSystem: 'System',
 }
 
 const relaxedRule: EffectiveRoutingRule = {
@@ -47,6 +53,8 @@ const relaxedRule: EffectiveRoutingRule = {
   concurrencyLimit: 0,
   upstream429RetryEnabled: false,
   upstream429MaxRetries: 0,
+  availableModels: [],
+  systemDeniedModels: [],
   sourceTagIds: [],
   sourceTagNames: [],
   fieldSources: {
@@ -57,6 +65,8 @@ const relaxedRule: EffectiveRoutingRule = {
     fastModeRewriteMode: 'root',
     concurrencyLimit: 'root',
     upstream429Retry: 'root',
+    availableModels: 'root',
+    systemDeniedModels: 'root',
   },
 }
 
@@ -69,6 +79,8 @@ const strictRule: EffectiveRoutingRule = {
   concurrencyLimit: 2,
   upstream429RetryEnabled: true,
   upstream429MaxRetries: 4,
+  availableModels: ['gpt-5.5', 'gpt-5.4-mini'],
+  systemDeniedModels: ['gpt-5.5'],
   sourceTagIds: [1, 2],
   sourceTagNames: ['vip-routing', 'handoff-blocked'],
   fieldSources: {
@@ -79,6 +91,33 @@ const strictRule: EffectiveRoutingRule = {
     fastModeRewriteMode: 'account',
     concurrencyLimit: 'tag',
     upstream429Retry: 'account',
+    availableModels: 'account',
+    systemDeniedModels: 'system',
+  },
+}
+
+const strictFieldSources = {
+  blockNewConversations: 'group',
+  allowCutOut: 'tag',
+  allowCutIn: 'account',
+  priorityTier: 'tag',
+  fastModeRewriteMode: 'account',
+  concurrencyLimit: 'tag',
+  upstream429Retry: 'account',
+  availableModels: 'account',
+  systemDeniedModels: 'system',
+} as const
+
+const denyAllTagIntersectionRule: EffectiveRoutingRule = {
+  ...strictRule,
+  availableModels: [],
+  systemDeniedModels: [],
+  sourceTagIds: [1, 2],
+  sourceTagNames: ['allow-gpt-4o', 'allow-o3'],
+  fieldSources: {
+    ...strictFieldSources,
+    availableModels: 'tag',
+    systemDeniedModels: 'root',
   },
 }
 
@@ -119,6 +158,12 @@ export const Default: Story = {}
 export const StrictMergedRule: Story = {
   args: {
     rule: strictRule,
+  },
+}
+
+export const DenyAllTagIntersection: Story = {
+  args: {
+    rule: denyAllTagIntersectionRule,
   },
 }
 

@@ -2344,6 +2344,163 @@ async fn capture_target_pool_route_preserves_auth_failure_terminal_reason() {
 }
 
 #[tokio::test]
+async fn pool_route_fails_over_on_unsupported_model_bad_request() {
+    async fn unsupported_model_failover_upstream(
+        attempts: Arc<StdMutex<HashMap<String, usize>>>,
+        headers: HeaderMap,
+    ) -> Response {
+        let authorization = headers
+            .get(http_header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        let attempt = {
+            let mut attempts = attempts.lock().expect("lock unsupported-model attempts");
+            let entry = attempts.entry(authorization.clone()).or_insert(0);
+            *entry += 1;
+            *entry
+        };
+        if authorization == "Bearer upstream-primary" {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": {
+                        "code": "unsupported_model",
+                        "message": "unsupported model: gpt-5.5",
+                    },
+                    "attempt": attempt,
+                })),
+            )
+                .into_response();
+        }
+        (
+            StatusCode::OK,
+            Json(json!({
+                "ok": true,
+                "authorization": authorization,
+                "attempt": attempt,
+            })),
+        )
+            .into_response()
+    }
+
+    let attempts = Arc::new(StdMutex::new(HashMap::new()));
+    let app = Router::new()
+        .route(
+            "/v1/responses",
+            post({
+                let attempts = attempts.clone();
+                move |headers| unsupported_model_failover_upstream(attempts.clone(), headers)
+            }),
+        );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind unsupported-model failover upstream");
+    let addr = listener
+        .local_addr()
+        .expect("unsupported-model failover upstream addr");
+    let upstream_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("unsupported-model failover upstream should run");
+    });
+    let upstream_base = format!("http://{addr}");
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let secondary_id =
+        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5.5","input":"hello","stickyKey":"sticky-unsupported-model-failover"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read failover success body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode failover success body");
+    assert_eq!(payload["authorization"], "Bearer upstream-secondary");
+
+    wait_for_pool_upstream_request_attempts(&state.pool, 2).await;
+    wait_for_pool_attempt_status(
+        &state.pool,
+        1,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+    )
+    .await;
+    wait_for_pool_attempt_status(
+        &state.pool,
+        2,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+    )
+    .await;
+    let attempt_rows = sqlx::query_as::<_, (i64, Option<i64>, Option<String>)>(
+        r#"
+        SELECT attempt_index, http_status, failure_kind
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load unsupported-model attempt rows");
+    assert_eq!(attempt_rows.len(), 2);
+    assert_eq!(attempt_rows[0].0, 1);
+    assert_eq!(attempt_rows[0].1, Some(400));
+    assert!(attempt_rows[0].2.is_some());
+    assert_eq!(attempt_rows[1].0, 2);
+    assert_eq!(attempt_rows[1].1, Some(200));
+    assert_eq!(attempt_rows[1].2, None);
+
+    let attempts = attempts.lock().expect("lock unsupported-model attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
+    drop(attempts);
+
+    let primary_tags = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT tag.system_key
+        FROM pool_tags tag
+        JOIN pool_upstream_account_tags link ON link.tag_id = tag.id
+        WHERE link.account_id = ?1
+          AND tag.system_key IS NOT NULL
+        ORDER BY tag.system_key ASC
+        "#,
+    )
+    .bind(primary_id)
+    .fetch_all(&state.pool)
+    .await
+    .expect("load primary account system tags");
+    assert!(
+        primary_tags
+            .iter()
+            .any(|tag| tag == "unsupported_model:gpt-5.5"),
+        "primary account should learn unsupported model tag: {primary_tags:?}",
+    );
+    assert_eq!(
+        load_test_sticky_route_account_id(&state.pool, "sticky-unsupported-model-failover").await,
+        Some(secondary_id)
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn capture_target_pool_route_timeout_switches_to_alternate_upstream_route() {
     #[derive(Debug, sqlx::FromRow)]
     struct AttemptRouteRow {

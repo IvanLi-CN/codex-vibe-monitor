@@ -466,12 +466,14 @@ async fn evaluate_live_pool_candidate(
 pub(crate) async fn resolve_pool_account_for_request(
     state: &AppState,
     sticky_key: Option<&str>,
+    requested_model: Option<&str>,
     excluded_ids: &[i64],
     excluded_upstream_route_keys: &HashSet<String>,
 ) -> Result<PoolAccountResolution> {
     resolve_pool_account_for_request_with_route_requirement(
         state,
         sticky_key,
+        requested_model,
         excluded_ids,
         excluded_upstream_route_keys,
         None,
@@ -483,6 +485,7 @@ pub(crate) async fn resolve_pool_account_for_request(
 pub(crate) async fn resolve_pool_account_for_request_with_binding_constraint(
     state: &AppState,
     sticky_key: Option<&str>,
+    requested_model: Option<&str>,
     excluded_ids: &[i64],
     excluded_upstream_route_keys: &HashSet<String>,
     binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
@@ -490,6 +493,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_binding_constraint(
     resolve_pool_account_for_request_with_route_requirement(
         state,
         sticky_key,
+        requested_model,
         excluded_ids,
         excluded_upstream_route_keys,
         None,
@@ -501,6 +505,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_binding_constraint(
 pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
     state: &AppState,
     sticky_key: Option<&str>,
+    requested_model: Option<&str>,
     excluded_ids: &[i64],
     excluded_upstream_route_keys: &HashSet<String>,
     required_upstream_route_key: Option<&str>,
@@ -542,6 +547,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
         }
         _ => None,
     };
+    let bypass_requested_model_filter = binding_constraint.is_some();
 
     if let Some(route) = sticky_route.as_ref() {
         let sticky_route_is_forced_binding_target =
@@ -611,127 +617,138 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
                     saw_non_routing_candidate = true;
                 }
             } else if is_account_selectable_for_sticky_reuse(&row, sticky_snapshot_exhausted, now) {
-                sticky_route_still_reusable = true;
-                let mut sticky_route_was_excluded = false;
-                match resolve_pool_account_group_proxy_routing_readiness(
-                    state,
-                    row.group_name.as_deref(),
-                )
-                .await?
+                if sticky_source_rule
+                    .as_ref()
+                    .is_none_or(|rule| {
+                        bypass_requested_model_filter
+                            || account_accepts_requested_model(requested_model, rule)
+                    })
                 {
-                    PoolAccountGroupProxyRoutingReadiness::Ready(group_metadata) => {
-                        let mut evaluation = evaluate_live_pool_candidate(
-                            state,
-                            &row,
-                            sticky_candidate
-                                .as_ref()
-                                .unwrap_or(&AccountRoutingCandidateRow {
-                                    id: row.id,
-                                    plan_type: None,
-                                    secondary_used_percent: None,
-                                    secondary_window_minutes: None,
-                                    secondary_resets_at: None,
-                                    primary_used_percent: None,
-                                    primary_window_minutes: None,
-                                    primary_resets_at: None,
-                                    local_primary_limit: None,
-                                    local_secondary_limit: None,
-                                    credits_has_credits: None,
-                                    credits_unlimited: None,
-                                    credits_balance: None,
-                                    last_selected_at: row.last_selected_at.clone(),
-                                    active_sticky_conversations: 0,
-                                    in_flight_reservations: 0,
-                                }),
-                            sticky_source_rule
-                                .as_ref()
-                                .expect("sticky source rule should be loaded"),
-                            &group_metadata,
-                            &mut node_shunt_assignments,
-                            PoolRoutingSelectionSource::StickyReuse,
-                            now,
-                        )
-                        .await?;
-                        if let Some(mut account) = evaluation.resolved_account.take() {
-                            account.routing_source = PoolRoutingSelectionSource::StickyReuse;
-                            if !excluded_upstream_route_keys.contains(&account.upstream_route_key())
-                            {
-                                let route_binding_failure_penalty =
-                                    route_binding_failure_penalty_for_account(
-                                        state,
-                                        &account,
-                                        &route_binding_failure_penalties,
-                                    )
-                                    .await;
-                                if route_binding_failure_penalty > 0 {
-                                    if sticky_source_cut_out_guard_applies {
-                                        return Ok(PoolAccountResolution::Resolved(account));
-                                    }
-                                    evaluation.score.route_binding_failure_penalty =
-                                        route_binding_failure_penalty;
-                                    evaluation.resolved_account = Some(account);
-                                    resolved_candidates.push(evaluation);
-                                    sticky_route_was_excluded = true;
-                                    saw_other_non_rate_limited_routing_candidate = true;
-                                } else {
-                                    return Ok(PoolAccountResolution::Resolved(account));
-                                }
-                            } else {
-                                sticky_route_excluded_by_route_key = true;
-                                sticky_route_was_excluded = true;
-                                if is_account_degraded_for_routing(
-                                    &row,
-                                    sticky_snapshot_exhausted,
-                                    now,
-                                ) {
-                                    saw_degraded_candidate = true;
-                                } else {
-                                    saw_excluded_route_candidate = true;
-                                }
-                            }
-                        } else if sticky_route_is_excluded_by_route_key {
-                            sticky_route_excluded_by_route_key = true;
-                            sticky_route_was_excluded = true;
-                            saw_excluded_route_candidate = true;
-                        } else {
-                            if let Some(assigned_blocked) = evaluation.assigned_blocked {
-                                sticky_assigned_blocked = Some(assigned_blocked.clone());
-                            }
-                            if let Some(message) = evaluation.blocked_message {
-                                sticky_route_group_proxy_blocked_message = Some(message.clone());
-                                group_proxy_blocked_messages.push(message);
-                            }
-                        }
-                    }
-                    PoolAccountGroupProxyRoutingReadiness::Blocked(message) => {
-                        if sticky_route_is_excluded_by_route_key {
-                            sticky_route_excluded_by_route_key = true;
-                            sticky_route_was_excluded = true;
-                            saw_excluded_route_candidate = true;
-                        } else {
-                            sticky_route_group_proxy_blocked_message = Some(message.clone());
-                            group_proxy_blocked_messages.push(message.clone());
-                            sticky_assigned_blocked = build_assigned_blocked_account(
+                    sticky_route_still_reusable = true;
+                    let mut sticky_route_was_excluded = false;
+                    match resolve_pool_account_group_proxy_routing_readiness(
+                        state,
+                        row.group_name.as_deref(),
+                    )
+                    .await?
+                    {
+                        PoolAccountGroupProxyRoutingReadiness::Ready(group_metadata) => {
+                            let mut evaluation = evaluate_live_pool_candidate(
                                 state,
                                 &row,
+                                sticky_candidate
+                                    .as_ref()
+                                    .unwrap_or(&AccountRoutingCandidateRow {
+                                        id: row.id,
+                                        plan_type: None,
+                                        secondary_used_percent: None,
+                                        secondary_window_minutes: None,
+                                        secondary_resets_at: None,
+                                        primary_used_percent: None,
+                                        primary_window_minutes: None,
+                                        primary_resets_at: None,
+                                        local_primary_limit: None,
+                                        local_secondary_limit: None,
+                                        credits_has_credits: None,
+                                        credits_unlimited: None,
+                                        credits_balance: None,
+                                        last_selected_at: row.last_selected_at.clone(),
+                                        active_sticky_conversations: 0,
+                                        in_flight_reservations: 0,
+                                    }),
                                 sticky_source_rule
                                     .as_ref()
                                     .expect("sticky source rule should be loaded"),
-                                UpstreamAccountGroupMetadata::default(),
+                                &group_metadata,
+                                &mut node_shunt_assignments,
                                 PoolRoutingSelectionSource::StickyReuse,
-                                message,
+                                now,
                             )
                             .await?;
+                            if let Some(mut account) = evaluation.resolved_account.take() {
+                                account.routing_source = PoolRoutingSelectionSource::StickyReuse;
+                                if !excluded_upstream_route_keys
+                                    .contains(&account.upstream_route_key())
+                                {
+                                    let route_binding_failure_penalty =
+                                        route_binding_failure_penalty_for_account(
+                                            state,
+                                            &account,
+                                            &route_binding_failure_penalties,
+                                        )
+                                        .await;
+                                    if route_binding_failure_penalty > 0 {
+                                        if sticky_source_cut_out_guard_applies {
+                                            return Ok(PoolAccountResolution::Resolved(account));
+                                        }
+                                        evaluation.score.route_binding_failure_penalty =
+                                            route_binding_failure_penalty;
+                                        evaluation.resolved_account = Some(account);
+                                        resolved_candidates.push(evaluation);
+                                        sticky_route_was_excluded = true;
+                                        saw_other_non_rate_limited_routing_candidate = true;
+                                    } else {
+                                        return Ok(PoolAccountResolution::Resolved(account));
+                                    }
+                                } else {
+                                    sticky_route_excluded_by_route_key = true;
+                                    sticky_route_was_excluded = true;
+                                    if is_account_degraded_for_routing(
+                                        &row,
+                                        sticky_snapshot_exhausted,
+                                        now,
+                                    ) {
+                                        saw_degraded_candidate = true;
+                                    } else {
+                                        saw_excluded_route_candidate = true;
+                                    }
+                                }
+                            } else if sticky_route_is_excluded_by_route_key {
+                                sticky_route_excluded_by_route_key = true;
+                                sticky_route_was_excluded = true;
+                                saw_excluded_route_candidate = true;
+                            } else {
+                                if let Some(assigned_blocked) = evaluation.assigned_blocked {
+                                    sticky_assigned_blocked = Some(assigned_blocked.clone());
+                                }
+                                if let Some(message) = evaluation.blocked_message {
+                                    sticky_route_group_proxy_blocked_message = Some(message.clone());
+                                    group_proxy_blocked_messages.push(message);
+                                }
+                            }
+                        }
+                        PoolAccountGroupProxyRoutingReadiness::Blocked(message) => {
+                            if sticky_route_is_excluded_by_route_key {
+                                sticky_route_excluded_by_route_key = true;
+                                sticky_route_was_excluded = true;
+                                saw_excluded_route_candidate = true;
+                            } else {
+                                sticky_route_group_proxy_blocked_message = Some(message.clone());
+                                group_proxy_blocked_messages.push(message.clone());
+                                sticky_assigned_blocked = build_assigned_blocked_account(
+                                    state,
+                                    &row,
+                                    sticky_source_rule
+                                        .as_ref()
+                                        .expect("sticky source rule should be loaded"),
+                                    UpstreamAccountGroupMetadata::default(),
+                                    PoolRoutingSelectionSource::StickyReuse,
+                                    message,
+                                )
+                                .await?;
+                            }
                         }
                     }
-                }
-                if !sticky_route_was_excluded && sticky_route_group_proxy_blocked_message.is_none()
-                {
-                    if is_account_degraded_for_routing(&row, sticky_snapshot_exhausted, now) {
-                        saw_degraded_candidate = true;
-                    } else {
-                        saw_other_non_rate_limited_routing_candidate = true;
+                    if !sticky_route_was_excluded && sticky_route_group_proxy_blocked_message.is_none()
+                    {
+                        if is_account_degraded_for_routing(&row, sticky_snapshot_exhausted, now) {
+                            saw_degraded_candidate = true;
+                        } else {
+                            saw_other_non_rate_limited_routing_candidate = true;
+                        }
                     }
+                } else {
+                    saw_other_non_rate_limited_routing_candidate = true;
                 }
             } else if sticky_route_is_excluded_by_route_key
                 && (is_account_rate_limited_for_routing(&row, sticky_snapshot_exhausted)
@@ -855,6 +872,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
         let Some(effective_rule) = candidate_effective_rules.get(&row.id) else {
             continue;
         };
+        if !bypass_requested_model_filter
+            && !account_accepts_requested_model(requested_model, effective_rule)
+        {
+            saw_other_non_rate_limited_routing_candidate = true;
+            continue;
+        }
         if !account_accepts_concurrency_limit(
             candidate.effective_load(),
             PoolRoutingSelectionSource::FreshAssignment,

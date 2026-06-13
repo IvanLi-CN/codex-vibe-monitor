@@ -465,6 +465,7 @@ pub(crate) async fn create_tag(
         payload.concurrency_limit,
         payload.upstream_429_retry_enabled,
         payload.upstream_429_max_retries,
+        Some(payload.available_models),
     )?;
     let detail = insert_tag(&state.pool, &name, &rule)
         .await
@@ -535,6 +536,13 @@ pub(crate) async fn update_tag(
             .or(Some(decode_group_upstream_429_max_retries(
                 existing.upstream_429_max_retries,
             ))),
+        Some(match payload.available_models {
+            OptionalField::Missing => {
+                parse_string_array_json(existing.available_models_json.as_deref())
+            }
+            OptionalField::Null => Vec::new(),
+            OptionalField::Value(value) => value,
+        }),
     )?;
     let detail = persist_tag_update(&state.pool, id, &name, &rule)
         .await
@@ -690,6 +698,18 @@ pub(crate) async fn update_upstream_account_group(
                 normalize_tag_fast_mode_rewrite_mode(Some(value)).map(|mode| mode.as_str())
             })
             .transpose()?;
+        let preserve_available_models =
+            matches!(&routing_rule.available_models, OptionalField::Missing);
+        let available_models_json = match &routing_rule.available_models {
+            OptionalField::Missing | OptionalField::Null => None,
+            OptionalField::Value(value) => Some(
+                encode_string_array_json(&normalize_available_models(
+                    Some(value.clone()),
+                    "availableModels",
+                )?)
+                .map_err(internal_error_tuple)?,
+            ),
+        };
         sqlx::query(
             r#"
             UPDATE pool_upstream_account_group_notes
@@ -700,7 +720,11 @@ pub(crate) async fn update_upstream_account_group(
                 policy_fast_mode_rewrite_mode = COALESCE(?6, policy_fast_mode_rewrite_mode),
                 policy_concurrency_limit = COALESCE(?7, policy_concurrency_limit),
                 policy_upstream_429_retry_enabled = COALESCE(?8, policy_upstream_429_retry_enabled),
-                policy_upstream_429_max_retries = COALESCE(?9, policy_upstream_429_max_retries)
+                policy_upstream_429_max_retries = COALESCE(?9, policy_upstream_429_max_retries),
+                policy_available_models_json = CASE
+                    WHEN ?10 != 0 THEN policy_available_models_json
+                    ELSE ?11
+                END
             WHERE group_name = ?1
             "#,
         )
@@ -734,6 +758,12 @@ pub(crate) async fn update_upstream_account_group(
                 .map(normalize_group_upstream_429_max_retries)
                 .map(i64::from),
         )
+        .bind(if preserve_available_models {
+            1_i64
+        } else {
+            0_i64
+        })
+        .bind(available_models_json)
         .execute(tx.as_mut())
         .await
         .map_err(internal_error_tuple)?;

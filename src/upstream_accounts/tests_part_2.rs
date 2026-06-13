@@ -259,6 +259,7 @@
             concurrency_limit: 0,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
+            available_models: vec![],
         }
     }
 
@@ -284,6 +285,9 @@
             concurrency_limit,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
+            available_models: vec![],
+            available_models_defined: false,
+            system_denied_models: vec![],
             source_tag_ids: vec![],
             source_tag_names: vec![],
             field_sources: EffectiveRoutingRuleFieldSources {
@@ -294,6 +298,8 @@
                 fast_mode_rewrite_mode: "root".to_string(),
                 concurrency_limit: "root".to_string(),
                 upstream_429_retry: "root".to_string(),
+                available_models: "root".to_string(),
+                system_denied_models: "root".to_string(),
             },
         }
     }
@@ -3346,6 +3352,154 @@
     }
 
     #[test]
+    fn build_effective_routing_rule_intersects_available_models_and_collects_system_denies() {
+        let mut first = test_account_tag_summary(1, "first", 0);
+        first.routing_rule.available_models =
+            vec!["gpt-5.5".to_string(), "gpt-5.4-mini".to_string()];
+        let mut second = test_account_tag_summary(2, "second", 0);
+        second.routing_rule.available_models =
+            vec!["gpt-5.4-mini".to_string(), "gpt-4.1".to_string()];
+        second.system_key = Some("unsupported_model:gpt-5.5".to_string());
+
+        let rule = build_effective_routing_rule(&[first, second]);
+
+        assert_eq!(rule.available_models, vec!["gpt-5.4-mini".to_string()]);
+        assert!(rule.available_models_defined);
+        assert_eq!(rule.field_sources.available_models, "tag");
+        assert_eq!(rule.system_denied_models, vec!["gpt-5.5".to_string()]);
+        assert_eq!(rule.field_sources.system_denied_models, "system");
+    }
+
+    #[test]
+    fn build_effective_routing_rule_intersects_available_models_by_alias() {
+        let mut first = test_account_tag_summary(1, "first", 0);
+        first.routing_rule.available_models = vec!["gpt-5.5-2026-01-15".to_string()];
+        let mut second = test_account_tag_summary(2, "second", 0);
+        second.routing_rule.available_models = vec!["gpt-5.5".to_string()];
+
+        let rule = build_effective_routing_rule(&[first, second]);
+
+        assert_eq!(
+            rule.available_models,
+            vec!["gpt-5.5-2026-01-15".to_string()]
+        );
+        assert!(rule.available_models_defined);
+        assert!(account_accepts_requested_model(Some("gpt-5.5"), &rule));
+    }
+
+    #[test]
+    fn build_effective_routing_rule_keeps_disjoint_tag_model_intersection_as_deny_all() {
+        let mut first = test_account_tag_summary(1, "first", 0);
+        first.routing_rule.available_models = vec!["gpt-4o".to_string()];
+        let mut second = test_account_tag_summary(2, "second", 0);
+        second.routing_rule.available_models = vec!["o3".to_string()];
+
+        let rule = build_effective_routing_rule(&[first, second]);
+
+        assert!(rule.available_models_defined);
+        assert!(rule.available_models.is_empty());
+        assert!(!account_accepts_requested_model(Some("gpt-4o"), &rule));
+        assert!(!account_accepts_requested_model(Some("o3"), &rule));
+    }
+
+    #[test]
+    fn apply_tag_layer_routing_policy_preserves_inherited_available_models_when_tags_do_not_define_them()
+    {
+        let mut inherited = test_effective_routing_rule(0);
+        inherited.available_models = vec!["gpt-5.5".to_string()];
+        inherited.available_models_defined = true;
+        inherited.field_sources.available_models = "group".to_string();
+
+        let tag_rule = build_effective_routing_rule(&[test_account_tag_summary(1, "tag", 0)]);
+
+        apply_tag_layer_routing_policy(&mut inherited, &tag_rule);
+
+        assert_eq!(inherited.available_models, vec!["gpt-5.5".to_string()]);
+        assert!(inherited.available_models_defined);
+        assert_eq!(inherited.field_sources.available_models, "group");
+    }
+
+    #[test]
+    fn apply_tag_layer_routing_policy_intersects_tag_models_with_inherited_group_models() {
+        let mut inherited = test_effective_routing_rule(0);
+        inherited.available_models = vec!["gpt-4o".to_string(), "gpt-5.5".to_string()];
+        inherited.available_models_defined = true;
+        inherited.field_sources.available_models = "group".to_string();
+
+        let mut tag = test_account_tag_summary(1, "tag", 0);
+        tag.routing_rule.available_models = vec!["gpt-5.5".to_string(), "o3".to_string()];
+        let tag_rule = build_effective_routing_rule(&[tag]);
+
+        apply_tag_layer_routing_policy(&mut inherited, &tag_rule);
+
+        assert_eq!(inherited.available_models, vec!["gpt-5.5".to_string()]);
+        assert!(inherited.available_models_defined);
+        assert_eq!(inherited.field_sources.available_models, "tag");
+    }
+
+    #[test]
+    fn apply_tag_layer_routing_policy_intersects_inherited_models_by_alias() {
+        let mut inherited = test_effective_routing_rule(0);
+        inherited.available_models = vec!["gpt-5.5-2026-01-15".to_string()];
+        inherited.available_models_defined = true;
+        inherited.field_sources.available_models = "group".to_string();
+
+        let mut tag = test_account_tag_summary(1, "tag", 0);
+        tag.routing_rule.available_models = vec!["gpt-5.5".to_string(), "o3".to_string()];
+        let tag_rule = build_effective_routing_rule(&[tag]);
+
+        apply_tag_layer_routing_policy(&mut inherited, &tag_rule);
+
+        assert_eq!(
+            inherited.available_models,
+            vec!["gpt-5.5-2026-01-15".to_string()]
+        );
+        assert!(inherited.available_models_defined);
+        assert_eq!(inherited.field_sources.available_models, "tag");
+        assert!(account_accepts_requested_model(Some("gpt-5.5"), &inherited));
+    }
+
+    #[test]
+    fn apply_tag_layer_routing_policy_keeps_group_tag_disjoint_models_as_deny_all() {
+        let mut inherited = test_effective_routing_rule(0);
+        inherited.available_models = vec!["gpt-4o".to_string()];
+        inherited.available_models_defined = true;
+        inherited.field_sources.available_models = "group".to_string();
+
+        let mut tag = test_account_tag_summary(1, "tag", 0);
+        tag.routing_rule.available_models = vec!["gpt-5.5".to_string()];
+        let tag_rule = build_effective_routing_rule(&[tag]);
+
+        apply_tag_layer_routing_policy(&mut inherited, &tag_rule);
+
+        assert!(inherited.available_models_defined);
+        assert!(inherited.available_models.is_empty());
+        assert!(!account_accepts_requested_model(Some("gpt-4o"), &inherited));
+        assert!(!account_accepts_requested_model(Some("gpt-5.5"), &inherited));
+        assert_eq!(inherited.field_sources.available_models, "tag");
+    }
+
+    #[test]
+    fn account_accepts_requested_model_supports_exact_alias_and_system_deny() {
+        let mut rule = test_effective_routing_rule(0);
+        rule.available_models = vec!["gpt-5.5-2026-01-15".to_string()];
+        rule.available_models_defined = true;
+        assert!(account_accepts_requested_model(Some("gpt-5.5"), &rule));
+        assert!(account_accepts_requested_model(
+            Some("gpt-5.5-2026-01-15"),
+            &rule
+        ));
+        assert!(!account_accepts_requested_model(Some("gpt-4.1"), &rule));
+
+        rule.system_denied_models = vec!["gpt-5.5".to_string()];
+        assert!(!account_accepts_requested_model(
+            Some("gpt-5.5-2026-01-15"),
+            &rule
+        ));
+        assert!(account_accepts_requested_model(None, &rule));
+    }
+
+    #[test]
     fn account_accepts_concurrency_limit_treats_zero_as_unlimited_and_allows_sticky_reuse() {
         let unlimited = test_effective_routing_rule(0);
         let limited = test_effective_routing_rule(2);
@@ -3431,6 +3585,57 @@
             rule.source_tag_ids,
             vec![relaxed_tag.summary.id, strict_tag.summary.id]
         );
+    }
+
+    #[tokio::test]
+    async fn load_effective_routing_rule_for_account_reads_tag_available_models_from_db() {
+        let pool = test_pool().await;
+        let account_id = insert_api_key_account(&pool, "Tag Model Constraint").await;
+
+        let mut tag_rule = test_tag_routing_rule();
+        tag_rule.available_models = vec!["gpt-5.5".to_string()];
+        let tag = insert_tag(&pool, "tag-model-constraint", &tag_rule)
+            .await
+            .expect("insert model tag");
+        sync_account_tag_links(&pool, account_id, &[tag.summary.id])
+            .await
+            .expect("attach model tag");
+
+        let rule = load_effective_routing_rule_for_account(&pool, account_id)
+            .await
+            .expect("load effective routing rule");
+
+        assert_eq!(rule.available_models, vec!["gpt-5.5".to_string()]);
+        assert!(rule.available_models_defined);
+        assert_eq!(rule.field_sources.available_models, "tag");
+        assert!(account_accepts_requested_model(Some("gpt-5.5"), &rule));
+        assert!(!account_accepts_requested_model(Some("gpt-4.1"), &rule));
+    }
+
+    #[tokio::test]
+    async fn ensure_account_has_unsupported_model_tag_creates_generic_system_deny_tag() {
+        let pool = test_pool().await;
+        let account_id = insert_api_key_account(&pool, "Unsupported Model Learn").await;
+
+        ensure_account_has_unsupported_model_tag(&pool, account_id, "gpt-5.4-mini")
+            .await
+            .expect("learn unsupported model deny");
+
+        let row: (Option<String>, i64) = sqlx::query_as(
+            r#"
+            SELECT tag.system_key, tag.protected
+            FROM pool_upstream_account_tags link
+            INNER JOIN pool_tags tag ON tag.id = link.tag_id
+            WHERE link.account_id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load linked deny tag");
+
+        assert_eq!(row.0.as_deref(), Some("unsupported_model:gpt-5.4-mini"));
+        assert_eq!(row.1, 1);
     }
 
     #[tokio::test]
@@ -3739,6 +3944,7 @@
                         concurrency_limit: None,
                         upstream_429_retry_enabled: None,
                         upstream_429_max_retries: None,
+                        available_models: OptionalField::Missing,
                     }),
                 },
             )
@@ -3922,6 +4128,7 @@
                 concurrency_limit: None,
                 upstream_429_retry_enabled: None,
                 upstream_429_max_retries: None,
+                available_models: vec![],
             }),
         )
         .await
@@ -3945,6 +4152,7 @@
                 concurrency_limit: None,
                 upstream_429_retry_enabled: None,
                 upstream_429_max_retries: None,
+                available_models: OptionalField::Missing,
             }),
         )
         .await

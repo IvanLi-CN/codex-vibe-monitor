@@ -1,13 +1,9 @@
 pub(crate) const HEADER_STICKY_EARLY_STICKY_SCAN_BYTES: usize = 64 * 1024;
 
-fn best_effort_extract_json_string_for_patterns(bytes: &[u8], patterns: &[&[u8]]) -> Option<String> {
-    fn find_subslice(haystack: &[u8], needle: &[u8], start: usize) -> Option<usize> {
-        haystack[start..]
-            .windows(needle.len())
-            .position(|window| window == needle)
-            .map(|offset| start + offset)
-    }
-
+fn best_effort_extract_json_string_for_patterns(
+    bytes: &[u8],
+    patterns: &[&[u8]],
+) -> Option<String> {
     fn skip_ascii_whitespace(bytes: &[u8], mut index: usize) -> usize {
         while index < bytes.len() && bytes[index].is_ascii_whitespace() {
             index += 1;
@@ -49,27 +45,121 @@ fn best_effort_extract_json_string_for_patterns(bytes: &[u8], patterns: &[&[u8]]
         None
     }
 
-    for pattern in patterns {
-        let mut cursor = 0usize;
-        while let Some(key_start) = find_subslice(bytes, pattern, cursor) {
-            let mut value_start = skip_ascii_whitespace(bytes, key_start + pattern.len());
-            if bytes.get(value_start) != Some(&b':') {
-                cursor = key_start + pattern.len();
-                continue;
+    fn key_matches_pattern(key: &str, pattern: &[u8]) -> bool {
+        pattern.len() >= 2
+            && pattern.first() == Some(&b'"')
+            && pattern.last() == Some(&b'"')
+            && key.as_bytes() == &pattern[1..pattern.len() - 1]
+    }
+
+    fn skip_json_value(bytes: &[u8], index: usize) -> Option<usize> {
+        match bytes.get(index)? {
+            b'"' => parse_json_string(bytes, index).map(|(_, next_index)| next_index),
+            b'{' | b'[' => {
+                let mut stack = vec![bytes[index]];
+                let mut cursor = index + 1;
+                let mut in_string = false;
+                let mut escaped = false;
+                while cursor < bytes.len() {
+                    let byte = bytes[cursor];
+                    if in_string {
+                        if escaped {
+                            escaped = false;
+                        } else if byte == b'\\' {
+                            escaped = true;
+                        } else if byte == b'"' {
+                            in_string = false;
+                        }
+                        cursor += 1;
+                        continue;
+                    }
+                    match byte {
+                        b'"' => in_string = true,
+                        b'{' | b'[' => stack.push(byte),
+                        b'}' => {
+                            if stack.pop() != Some(b'{') {
+                                return None;
+                            }
+                            if stack.is_empty() {
+                                return Some(cursor + 1);
+                            }
+                        }
+                        b']' => {
+                            if stack.pop() != Some(b'[') {
+                                return None;
+                            }
+                            if stack.is_empty() {
+                                return Some(cursor + 1);
+                            }
+                        }
+                        _ => {}
+                    }
+                    cursor += 1;
+                }
+                None
             }
-            value_start = skip_ascii_whitespace(bytes, value_start + 1);
-            let Some((value, next_index)) = parse_json_string(bytes, value_start) else {
-                cursor = key_start + pattern.len();
-                continue;
-            };
-            let normalized = value.trim();
-            if !normalized.is_empty() {
-                return Some(normalized.to_string());
+            _ => {
+                let mut cursor = index;
+                while cursor < bytes.len() {
+                    match bytes[cursor] {
+                        b',' | b'}' | b']' => return Some(cursor),
+                        _ => cursor += 1,
+                    }
+                }
+                Some(cursor)
             }
-            cursor = next_index;
         }
     }
-    None
+
+    let mut cursor = skip_ascii_whitespace(bytes, 0);
+    if bytes.get(cursor) != Some(&b'{') {
+        return None;
+    }
+    cursor += 1;
+
+    loop {
+        cursor = skip_ascii_whitespace(bytes, cursor);
+        match bytes.get(cursor) {
+            Some(b'}') | None => return None,
+            Some(b',') => {
+                cursor += 1;
+                continue;
+            }
+            Some(b'"') => {}
+            Some(_) => return None,
+        }
+
+        let Some((key, next_index)) = parse_json_string(bytes, cursor) else {
+            return None;
+        };
+        let matches_pattern = patterns
+            .iter()
+            .any(|pattern| key_matches_pattern(&key, pattern));
+
+        cursor = skip_ascii_whitespace(bytes, next_index);
+        if bytes.get(cursor) != Some(&b':') {
+            return None;
+        }
+        cursor = skip_ascii_whitespace(bytes, cursor + 1);
+
+        cursor = if matches_pattern {
+            if let Some((value, next_value_index)) = parse_json_string(bytes, cursor) {
+                let normalized = value.trim();
+                if !normalized.is_empty() {
+                    return Some(normalized.to_string());
+                }
+                next_value_index
+            } else {
+                skip_json_value(bytes, cursor)?
+            }
+        } else {
+            skip_json_value(bytes, cursor)?
+        };
+    }
+}
+
+pub(crate) fn best_effort_extract_model_from_request_body_prefix(bytes: &[u8]) -> Option<String> {
+    best_effort_extract_json_string_for_patterns(bytes, &[br#""model""#])
 }
 
 pub(crate) fn best_effort_extract_sticky_key_from_request_body_prefix(
@@ -93,6 +183,62 @@ pub(crate) fn best_effort_extract_prompt_cache_key_from_request_body_prefix(
         bytes,
         &[br#""prompt_cache_key""#, br#""promptCacheKey""#],
     )
+}
+
+#[cfg(test)]
+mod request_prefix_tests {
+    use super::*;
+
+    #[test]
+    fn prefix_model_extractor_reads_top_level_model() {
+        let payload = br#"{"model":"gpt-5.5","input":"hello"}"#;
+        assert_eq!(
+            best_effort_extract_model_from_request_body_prefix(payload).as_deref(),
+            Some("gpt-5.5")
+        );
+    }
+
+    #[test]
+    fn prefix_model_extractor_prefers_top_level_model_over_nested_content() {
+        let payload = br#"{"input":"{\"model\":\"gpt-4o\"}","model":"gpt-5.5"}"#;
+        assert_eq!(
+            best_effort_extract_model_from_request_body_prefix(payload).as_deref(),
+            Some("gpt-5.5")
+        );
+    }
+
+    #[test]
+    fn prefix_model_extractor_ignores_nested_model_without_top_level_field() {
+        let payload = br#"{"input":"{\"model\":\"gpt-4o\"}"}"#;
+        assert_eq!(best_effort_extract_model_from_request_body_prefix(payload), None);
+    }
+
+    #[test]
+    fn prefix_key_extractors_read_top_level_fields() {
+        let payload = br#"{"stickyKey":"sticky-1","promptCacheKey":"cache-1"}"#;
+        assert_eq!(
+            best_effort_extract_sticky_key_from_request_body_prefix(payload).as_deref(),
+            Some("sticky-1")
+        );
+        assert_eq!(
+            best_effort_extract_prompt_cache_key_from_request_body_prefix(payload).as_deref(),
+            Some("cache-1")
+        );
+    }
+
+    #[test]
+    fn prefix_key_extractors_ignore_nested_fields() {
+        let payload =
+            br#"{"input":"{\"stickyKey\":\"nested\",\"promptCacheKey\":\"nested-cache\"}"}"#;
+        assert_eq!(
+            best_effort_extract_sticky_key_from_request_body_prefix(payload),
+            None
+        );
+        assert_eq!(
+            best_effort_extract_prompt_cache_key_from_request_body_prefix(payload),
+            None
+        );
+    }
 }
 
 pub(crate) fn prepare_target_request_body(

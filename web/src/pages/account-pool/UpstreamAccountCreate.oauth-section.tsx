@@ -27,6 +27,7 @@ import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.con
 export function UpstreamAccountCreateOauthSection() {
   const {
     activeOauthMailboxSession,
+    availableModelOptions,
     buildActionTooltip,
     busyAction,
     clearOauthMailboxSession,
@@ -429,6 +430,7 @@ export function UpstreamAccountCreateOauthSection() {
     selectedTagIds={oauthTagIds}
     writesEnabled={writesEnabled}
     pageCreatedTagIds={pageCreatedTagIds}
+    availableModelOptions={availableModelOptions}
     labels={tagFieldLabels}
     onChange={(nextTagIds) => {
       markRelinkMetadataDirty();

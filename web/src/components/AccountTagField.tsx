@@ -43,6 +43,15 @@ interface AccountTagFieldLabels {
   concurrencyHint?: string
   currentValue?: string
   unlimited?: string
+  availableModels?: string
+  availableModelsHint?: string
+  availableModelsSearchPlaceholder?: string
+  availableModelsEmpty?: string
+  availableModelsAll?: string
+  availableModelsCustomLabel?: (value: string) => string
+  availableModelsAddCustom?: string
+  availableModelsInherited?: string
+  availableModelsRemove?: string
   cancel: string
   save: string
   createAction: string
@@ -60,6 +69,7 @@ interface AccountTagFieldProps {
   onCreateTag: (payload: CreateTagPayload) => Promise<TagDetail>
   onUpdateTag: (tagId: number, payload: UpdateTagPayload) => Promise<TagDetail>
   onDeleteTag: (tagId: number) => Promise<void>
+  availableModelOptions?: string[]
 }
 
 export function AccountTagField({
@@ -73,6 +83,7 @@ export function AccountTagField({
   onCreateTag,
   onUpdateTag,
   onDeleteTag,
+  availableModelOptions = [],
 }: AccountTagFieldProps) {
   const [search, setSearch] = useState('')
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -277,6 +288,7 @@ export function AccountTagField({
         draftName={dialogMode === 'create' ? createNameSeed : undefined}
         busy={busy}
         error={dialogError}
+        availableModelOptions={availableModelOptions}
         onClose={closeDialog}
         onSubmit={handleSubmit}
         labels={{
@@ -304,6 +316,15 @@ export function AccountTagField({
           concurrencyHint: labels.concurrencyHint,
           currentValue: labels.currentValue,
           unlimited: labels.unlimited,
+          availableModels: labels.availableModels,
+          availableModelsHint: labels.availableModelsHint,
+          availableModelsSearchPlaceholder: labels.availableModelsSearchPlaceholder,
+          availableModelsEmpty: labels.availableModelsEmpty,
+          availableModelsAll: labels.availableModelsAll,
+          availableModelsCustomLabel: labels.availableModelsCustomLabel,
+          availableModelsAddCustom: labels.availableModelsAddCustom,
+          availableModelsInherited: labels.availableModelsInherited,
+          availableModelsRemove: labels.availableModelsRemove,
           cancel: labels.cancel,
           save: labels.save,
           create: labels.createAction,

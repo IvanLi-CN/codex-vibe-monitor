@@ -28,6 +28,11 @@ interface EffectiveRoutingRuleCardProps {
     fastModeForceRemove: string
     upstream429Retry?: string
     upstream429RetryOff?: string
+    availableModelsInherited?: string
+    availableModelsNoneAllowed?: string
+    availableModelsField?: string
+    systemDeniedModelsField?: string
+    systemDeniedModelsEmpty?: string
     concurrencyLimit?: (count: number) => string
     concurrencyUnlimited?: string
     sourceBreakdownTitle?: string
@@ -38,10 +43,13 @@ interface EffectiveRoutingRuleCardProps {
     fieldFastMode?: string
     fieldConcurrency?: string
     fieldUpstream429?: string
+    fieldAvailableModels?: string
+    fieldSystemDeniedModels?: string
     sourceRoot?: string
     sourceGroup?: string
     sourceTag?: string
     sourceAccount?: string
+    sourceSystem?: string
   }
 }
 
@@ -86,6 +94,8 @@ export function EffectiveRoutingRuleCard({ rule, labels }: EffectiveRoutingRuleC
         return labels.sourceTag ?? 'Tag'
       case 'account':
         return labels.sourceAccount ?? 'Account'
+      case 'system':
+        return labels.sourceSystem ?? 'System'
       default:
         return source
     }
@@ -129,6 +139,23 @@ export function EffectiveRoutingRuleCard({ rule, labels }: EffectiveRoutingRuleC
         ? labels.upstream429Retry ?? `429 retry x${resolvedRule.upstream429MaxRetries ?? 1}`
         : labels.upstream429RetryOff ?? '429 retry off',
       source: fieldSources.upstream429Retry,
+    },
+    {
+      label: labels.fieldAvailableModels ?? 'Available models',
+      value:
+        resolvedRule.availableModels && resolvedRule.availableModels.length > 0
+          ? resolvedRule.availableModels.join(', ')
+          : fieldSources.availableModels === 'tag'
+            ? labels.availableModelsNoneAllowed ?? 'No models allowed'
+            : labels.availableModelsInherited ?? 'Inherited / unrestricted',
+      source: fieldSources.availableModels ?? 'root',
+    },
+    {
+      label: labels.fieldSystemDeniedModels ?? 'System denied models',
+      value: resolvedRule.systemDeniedModels && resolvedRule.systemDeniedModels.length > 0
+        ? resolvedRule.systemDeniedModels.join(', ')
+        : labels.systemDeniedModelsEmpty ?? 'None',
+      source: fieldSources.systemDeniedModels ?? 'root',
     },
   ]
   const blockingBadges = [

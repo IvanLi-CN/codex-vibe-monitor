@@ -61,6 +61,7 @@ import { UpstreamAccountGroupCombobox } from "../../components/UpstreamAccountGr
 import { UpstreamAccountUsageCard } from "../../components/UpstreamAccountUsageCard";
 import { StickyKeyConversationTable } from "../../components/StickyKeyConversationTable";
 import { usePoolTags } from "../../hooks/usePoolTags";
+import { useAvailableModelOptions } from "../../hooks/useAvailableModelOptions";
 import { useMotherSwitchNotifications } from "../../hooks/useMotherSwitchNotifications";
 import { useUpstreamAccountDetailRoute } from "../../hooks/useUpstreamAccountDetailRoute";
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
@@ -842,6 +843,7 @@ function SharedUpstreamAccountDetailDrawerInner({
     fallbackToFirstItem: false,
   });
   const { items: tagItems, createTag, updateTag, deleteTag } = usePoolTags();
+  const availableModelOptions = useAvailableModelOptions(writesEnabled);
   const notifyMotherSwitches = useMotherSwitchNotifications();
   const [draft, setDraft] = useState<AccountDraft>(buildDraft(null));
   const [actionError, setActionError] = useState<ActionErrorState>(() => ({
@@ -1807,6 +1809,16 @@ function SharedUpstreamAccountDetailDrawerInner({
     concurrencyHint: t("accountPool.tags.dialog.concurrencyHint"),
     currentValue: t("accountPool.tags.dialog.currentValue"),
     unlimited: t("accountPool.tags.dialog.unlimited"),
+    availableModels: t("accountPool.tags.dialog.availableModels"),
+    availableModelsHint: t("accountPool.tags.dialog.availableModelsHint"),
+    availableModelsSearchPlaceholder: t("accountPool.tags.dialog.availableModelsSearchPlaceholder"),
+    availableModelsEmpty: t("accountPool.tags.dialog.availableModelsEmpty"),
+    availableModelsAll: t("accountPool.tags.dialog.availableModelsAll"),
+    availableModelsCustomLabel: (value: string) =>
+      t("accountPool.tags.dialog.availableModelsCustomLabel", { value }),
+    availableModelsAddCustom: t("accountPool.tags.dialog.availableModelsAddCustom"),
+    availableModelsInherited: t("accountPool.tags.dialog.availableModelsInherited"),
+    availableModelsRemove: t("accountPool.tags.dialog.availableModelsRemove"),
     cancel: t("accountPool.tags.dialog.cancel"),
     save: t("accountPool.tags.dialog.save"),
     createAction: t("accountPool.tags.dialog.createAction"),
@@ -3009,6 +3021,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                           selectedTagIds={draft.tagIds}
                           writesEnabled={writesEnabled}
                           pageCreatedTagIds={pageCreatedTagIds}
+                          availableModelOptions={availableModelOptions}
                           labels={tagFieldLabels}
                           onChange={(tagIds) =>
                             setDraft((current) => ({ ...current, tagIds }))
@@ -3247,6 +3260,21 @@ function SharedUpstreamAccountDetailDrawerInner({
                       fieldUpstream429: t(
                         "accountPool.upstreamAccounts.effectiveRule.fieldUpstream429",
                       ),
+                      fieldAvailableModels: t(
+                        "accountPool.upstreamAccounts.effectiveRule.fieldAvailableModels",
+                      ),
+                      fieldSystemDeniedModels: t(
+                        "accountPool.upstreamAccounts.effectiveRule.fieldSystemDeniedModels",
+                      ),
+                      availableModelsInherited: t(
+                        "accountPool.upstreamAccounts.effectiveRule.availableModelsInherited",
+                      ),
+                      availableModelsNoneAllowed: t(
+                        "accountPool.upstreamAccounts.effectiveRule.availableModelsNoneAllowed",
+                      ),
+                      systemDeniedModelsEmpty: t(
+                        "accountPool.upstreamAccounts.effectiveRule.systemDeniedModelsEmpty",
+                      ),
                       sourceRoot: t(
                         "accountPool.upstreamAccounts.effectiveRule.sourceRoot",
                       ),
@@ -3258,6 +3286,9 @@ function SharedUpstreamAccountDetailDrawerInner({
                       ),
                       sourceAccount: t(
                         "accountPool.upstreamAccounts.effectiveRule.sourceAccount",
+                      ),
+                      sourceSystem: t(
+                        "accountPool.upstreamAccounts.effectiveRule.sourceSystem",
                       ),
                       priorityPrimary: t(
                         "accountPool.upstreamAccounts.effectiveRule.priorityPrimary",
@@ -3641,6 +3672,7 @@ function SharedUpstreamAccountDetailDrawerInner({
         mode="edit"
         policyOnly
         changedFieldsOnly
+        availableModelOptions={availableModelOptions}
         title={t("accountPool.upstreamAccounts.policyDialog.accountTitle")}
         description={t(
           "accountPool.upstreamAccounts.policyDialog.accountDescription",
@@ -3699,6 +3731,16 @@ function SharedUpstreamAccountDetailDrawerInner({
           concurrencyHint: t("accountPool.tags.dialog.concurrencyHint"),
           currentValue: t("accountPool.tags.dialog.currentValue"),
           unlimited: t("accountPool.tags.dialog.unlimited"),
+          availableModels: t("accountPool.tags.dialog.availableModels"),
+          availableModelsHint: t("accountPool.tags.dialog.availableModelsHint"),
+          availableModelsSearchPlaceholder: t("accountPool.tags.dialog.availableModelsSearchPlaceholder"),
+          availableModelsEmpty: t("accountPool.tags.dialog.availableModelsEmpty"),
+          availableModelsAll: t("accountPool.tags.dialog.availableModelsAll"),
+          availableModelsCustomLabel: (value) =>
+            t("accountPool.tags.dialog.availableModelsCustomLabel", { value }),
+          availableModelsAddCustom: t("accountPool.tags.dialog.availableModelsAddCustom"),
+          availableModelsInherited: t("accountPool.tags.dialog.availableModelsInherited"),
+          availableModelsRemove: t("accountPool.tags.dialog.availableModelsRemove"),
           cancel: t("accountPool.tags.dialog.cancel"),
           save: t("accountPool.tags.dialog.save"),
           create: t("accountPool.tags.dialog.createAction"),

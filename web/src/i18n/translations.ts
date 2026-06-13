@@ -808,10 +808,20 @@ const baseTranslations = {
       "Concurrency",
     "accountPool.upstreamAccounts.effectiveRule.fieldUpstream429":
       "Upstream 429 retry",
+    "accountPool.upstreamAccounts.effectiveRule.fieldAvailableModels":
+      "Available models",
+    "accountPool.upstreamAccounts.effectiveRule.fieldSystemDeniedModels":
+      "System denied models",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsInherited":
+      "Inherited / unrestricted",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsNoneAllowed":
+      "No models allowed",
+    "accountPool.upstreamAccounts.effectiveRule.systemDeniedModelsEmpty": "None",
     "accountPool.upstreamAccounts.effectiveRule.sourceRoot": "Root default",
     "accountPool.upstreamAccounts.effectiveRule.sourceGroup": "Group",
     "accountPool.upstreamAccounts.effectiveRule.sourceTag": "Tag",
     "accountPool.upstreamAccounts.effectiveRule.sourceAccount": "Account",
+    "accountPool.upstreamAccounts.effectiveRule.sourceSystem": "System",
     "accountPool.upstreamAccounts.detailTitle": "Account details",
     "accountPool.upstreamAccounts.detailTabs.overview": "Overview",
     "accountPool.upstreamAccounts.detailTabs.records": "Records",
@@ -1050,6 +1060,17 @@ const baseTranslations = {
       "Use 1-30 to cap fresh assignments. The final slider step means unlimited.",
     "accountPool.tags.dialog.currentValue": "Current",
     "accountPool.tags.dialog.unlimited": "Unlimited",
+    "accountPool.tags.dialog.availableModels": "Available models",
+    "accountPool.tags.dialog.availableModelsHint":
+      "Leave empty to inherit. Automatic and sticky routing only consider matching accounts.",
+    "accountPool.tags.dialog.availableModelsSearchPlaceholder":
+      "Search models",
+    "accountPool.tags.dialog.availableModelsEmpty": "No matching models",
+    "accountPool.tags.dialog.availableModelsAll": "Inherited / unrestricted",
+    "accountPool.tags.dialog.availableModelsCustomLabel": "{{value}}",
+    "accountPool.tags.dialog.availableModelsAddCustom": "Add custom model id",
+    "accountPool.tags.dialog.availableModelsInherited": "Clear and inherit",
+    "accountPool.tags.dialog.availableModelsRemove": "Remove model",
     "accountPool.tags.dialog.cancel": "Cancel",
     "accountPool.tags.dialog.save": "Save tag",
     "accountPool.tags.dialog.createAction": "Create tag",
@@ -2945,10 +2966,19 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.fieldConcurrency": "并发限制",
     "accountPool.upstreamAccounts.effectiveRule.fieldUpstream429":
       "上游 429 重试",
+    "accountPool.upstreamAccounts.effectiveRule.fieldAvailableModels": "可用模型",
+    "accountPool.upstreamAccounts.effectiveRule.fieldSystemDeniedModels":
+      "系统拒绝模型",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsInherited":
+      "继承 / 不限",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsNoneAllowed":
+      "无可用模型",
+    "accountPool.upstreamAccounts.effectiveRule.systemDeniedModelsEmpty": "无",
     "accountPool.upstreamAccounts.effectiveRule.sourceRoot": "根默认",
     "accountPool.upstreamAccounts.effectiveRule.sourceGroup": "分组",
     "accountPool.upstreamAccounts.effectiveRule.sourceTag": "Tag",
     "accountPool.upstreamAccounts.effectiveRule.sourceAccount": "账号",
+    "accountPool.upstreamAccounts.effectiveRule.sourceSystem": "系统",
     "accountPool.upstreamAccounts.detailTitle": "账号详情",
     "accountPool.upstreamAccounts.detailTabs.overview": "概览",
     "accountPool.upstreamAccounts.detailTabs.records": "调用记录",
@@ -3173,6 +3203,16 @@ const baseTranslations = {
       "用 1-30 限制新分配并发，最后一档表示无限。",
     "accountPool.tags.dialog.currentValue": "当前",
     "accountPool.tags.dialog.unlimited": "无限",
+    "accountPool.tags.dialog.availableModels": "可用模型",
+    "accountPool.tags.dialog.availableModelsHint":
+      "留空表示继承。自动选路和 sticky 迁移只会考虑模型匹配的账号。",
+    "accountPool.tags.dialog.availableModelsSearchPlaceholder": "搜索模型",
+    "accountPool.tags.dialog.availableModelsEmpty": "没有匹配的模型",
+    "accountPool.tags.dialog.availableModelsAll": "继承 / 不限",
+    "accountPool.tags.dialog.availableModelsCustomLabel": "{{value}}",
+    "accountPool.tags.dialog.availableModelsAddCustom": "添加自定义模型 ID",
+    "accountPool.tags.dialog.availableModelsInherited": "清空并继承",
+    "accountPool.tags.dialog.availableModelsRemove": "移除模型",
     "accountPool.tags.dialog.cancel": "取消",
     "accountPool.tags.dialog.save": "保存 tag",
     "accountPool.tags.dialog.createAction": "创建 tag",

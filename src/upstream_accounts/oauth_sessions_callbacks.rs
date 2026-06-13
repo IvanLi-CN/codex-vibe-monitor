@@ -1657,7 +1657,8 @@ pub(crate) async fn update_upstream_account_inner(
             policy_concurrency_limit = ?19,
             policy_upstream_429_retry_enabled = ?20,
             policy_upstream_429_max_retries = ?21,
-            updated_at = ?22
+            policy_available_models_json = ?22,
+            updated_at = ?23
         WHERE id = ?1
         "#,
     )
@@ -1731,6 +1732,20 @@ pub(crate) async fn update_upstream_account_inner(
             .map(i64::from)
             .or(row.policy_upstream_429_max_retries),
         None => row.policy_upstream_429_max_retries,
+    })
+    .bind(match payload.routing_rule.as_ref() {
+        Some(rule) => match &rule.available_models {
+            OptionalField::Missing => row.policy_available_models_json.clone(),
+            OptionalField::Null => None,
+            OptionalField::Value(value) => Some(
+                encode_string_array_json(&normalize_available_models(
+                    Some(value.clone()),
+                    "availableModels",
+                )?)
+                .map_err(internal_error_tuple)?,
+            ),
+        },
+        None => row.policy_available_models_json.clone(),
     })
     .bind(&now_iso)
     .execute(tx.as_mut())
