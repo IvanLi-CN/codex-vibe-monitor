@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.70.0",
+  "base_stable_version": "1.69.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-06-13T06:30:00Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.70.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "3a39a99ea56c8ccc83129b1e12e8a6141c26198f",
+  "pr_number": 448,
+  "pr_title": "Add available-model routing policies for upstream accounts",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.70.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.70.0",
+  "target_sha": "80998f5bb145a01d0ee12a237e57ed173a683905",
+  "type_label": "type:minor"
+}
