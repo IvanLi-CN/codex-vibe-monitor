@@ -446,15 +446,15 @@ const PROMPT_CACHE_CONVERSATION_ACTIVITY_MODE_LIMIT: i64 = 50;
 const PROMPT_CACHE_CONVERSATION_CHART_MAX_HOURS: i64 = 24;
 const PROMPT_CACHE_CONVERSATION_CACHE_TTL_SECS: u64 = 5;
 const PROXY_PRESET_MODEL_IDS: &[&str] = &[
+    "gpt-5.5",
+    "gpt-5.5-pro",
+    "gpt-5.4",
+    "gpt-5.4-pro",
     "gpt-5.3-codex",
+    "gpt-5.2",
     "gpt-5.2-codex",
     "gpt-5.1-codex-max",
     "gpt-5.1-codex-mini",
-    "gpt-5.2",
-    "gpt-5.4",
-    "gpt-5.4-pro",
-    "gpt-5.5",
-    "gpt-5.5-pro",
 ];
 const PREVIOUS_PROXY_PRESET_MODEL_IDS: &[&str] = &[
     "gpt-5.3-codex",
