@@ -83,14 +83,18 @@ async fn ensure_proxy_enabled_models_contains_new_presets(pool: &Pool<Sqlite>) -
         return Ok(());
     }
 
-    let legacy_default = LEGACY_PROXY_PRESET_MODEL_IDS
-        .iter()
-        .map(|id| (*id).to_string())
-        .collect::<Vec<_>>();
-    let previous_default = PREVIOUS_PROXY_PRESET_MODEL_IDS
-        .iter()
-        .map(|id| (*id).to_string())
-        .collect::<Vec<_>>();
+    let legacy_default = normalize_enabled_preset_models(
+        LEGACY_PROXY_PRESET_MODEL_IDS
+            .iter()
+            .map(|id| (*id).to_string())
+            .collect::<Vec<_>>(),
+    );
+    let previous_default = normalize_enabled_preset_models(
+        PREVIOUS_PROXY_PRESET_MODEL_IDS
+            .iter()
+            .map(|id| (*id).to_string())
+            .collect::<Vec<_>>(),
+    );
     if settings.enabled_preset_models != legacy_default
         && settings.enabled_preset_models != previous_default
     {
@@ -117,6 +121,7 @@ async fn ensure_proxy_enabled_models_contains_new_presets(pool: &Pool<Sqlite>) -
         return Ok(());
     }
 
+    settings.enabled_preset_models = normalize_enabled_preset_models(settings.enabled_preset_models);
     save_proxy_model_settings(pool, settings).await?;
     mark_proxy_preset_models_migrated(pool).await
 }

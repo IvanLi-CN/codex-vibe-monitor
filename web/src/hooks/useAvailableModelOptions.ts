@@ -10,15 +10,12 @@ function dedupeModels(values: string[]) {
     seen.add(trimmed)
     normalized.push(trimmed)
   }
-  return normalized.sort((left, right) => left.localeCompare(right))
+  return normalized
 }
 
-function extractModelOptions(settings: SettingsPayload | null) {
+export function extractAvailableModelOptions(settings: SettingsPayload | null) {
   if (!settings) return []
-  return dedupeModels([
-    ...(settings.proxy.models ?? []),
-    ...(settings.pricing.entries ?? []).map((entry) => entry.model),
-  ])
+  return dedupeModels(settings.proxy.models ?? [])
 }
 
 export function useAvailableModelOptions(enabled = true) {
@@ -43,5 +40,5 @@ export function useAvailableModelOptions(enabled = true) {
     }
   }, [enabled])
 
-  return useMemo(() => extractModelOptions(settings), [settings])
+  return useMemo(() => extractAvailableModelOptions(settings), [settings])
 }

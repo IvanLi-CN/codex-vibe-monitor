@@ -1129,6 +1129,33 @@ async fn ensure_schema_appends_new_proxy_models_when_enabled_list_matches_legacy
 }
 
 #[tokio::test]
+async fn ensure_schema_orders_default_proxy_models_newest_first() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    ensure_schema(&pool).await.expect("ensure schema");
+
+    let settings = load_proxy_model_settings(&pool)
+        .await
+        .expect("load proxy model settings");
+
+    assert_eq!(
+        settings.enabled_preset_models,
+        vec![
+            "gpt-5.5".to_string(),
+            "gpt-5.5-pro".to_string(),
+            "gpt-5.4".to_string(),
+            "gpt-5.4-pro".to_string(),
+            "gpt-5.3-codex".to_string(),
+            "gpt-5.2".to_string(),
+            "gpt-5.2-codex".to_string(),
+            "gpt-5.1-codex-max".to_string(),
+            "gpt-5.1-codex-mini".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn ensure_schema_appends_latest_proxy_models_when_enabled_list_matches_previous_default() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
@@ -1281,7 +1308,16 @@ async fn ensure_schema_allows_opting_out_of_new_proxy_models_after_migration() {
     let settings = load_proxy_model_settings(&pool)
         .await
         .expect("load proxy model settings after opt-out");
-    assert_eq!(settings.enabled_preset_models, legacy_enabled);
+    assert_eq!(
+        settings.enabled_preset_models,
+        vec![
+            "gpt-5.3-codex".to_string(),
+            "gpt-5.2".to_string(),
+            "gpt-5.2-codex".to_string(),
+            "gpt-5.1-codex-max".to_string(),
+            "gpt-5.1-codex-mini".to_string(),
+        ]
+    );
 }
 
 #[tokio::test]

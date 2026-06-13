@@ -34,7 +34,7 @@ The shared routing policy dialog now edits available-model constraints alongside
 - group routing policy editing
 - account routing policy editing
 
-The editor reuses pricing-catalog-backed candidate options, allows custom model ID entry, and keeps selected custom IDs visible as chips so inherited clearing works consistently even when a model is not in the catalog.
+The editor reuses proxy preset model candidate options, allows custom model ID entry, and keeps selected custom IDs visible as chips so inherited clearing works consistently even when a model is not in the preset list.
 
 The effective routing card now displays both:
 
