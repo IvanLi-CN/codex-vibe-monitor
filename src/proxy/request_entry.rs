@@ -2035,7 +2035,9 @@ pub(crate) fn spawn_pool_replayable_request_body(
                                 best_effort_extract_prompt_cache_key_from_request_body_prefix(
                                     &sticky_key_probe,
                                 ),
-                            model: extract_partial_json_model(&sticky_key_probe),
+                            model: best_effort_extract_model_from_request_body_prefix(
+                                &sticky_key_probe,
+                            ),
                         },
                     ));
                 }
@@ -2115,7 +2117,7 @@ pub(crate) fn spawn_pool_replayable_request_body(
                     prompt_cache_key: best_effort_extract_prompt_cache_key_from_request_body_prefix(
                         &sticky_key_probe,
                     ),
-                    model: extract_partial_json_model(&sticky_key_probe),
+                    model: best_effort_extract_model_from_request_body_prefix(&sticky_key_probe),
                 };
                 if key_probe.sticky_key.is_some()
                     || key_probe.prompt_cache_key.is_some()
