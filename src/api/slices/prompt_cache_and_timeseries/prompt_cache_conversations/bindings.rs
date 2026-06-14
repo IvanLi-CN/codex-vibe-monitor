@@ -223,7 +223,13 @@ fn manual_binding_override_is_newer_than_owner(
     owner: &PromptCacheEncryptedSessionOwnerRow,
 ) -> bool {
     match binding_row.updated_at.as_str().cmp(owner.updated_at.as_str()) {
-        std::cmp::Ordering::Greater => true,
+        std::cmp::Ordering::Greater => match binding_row.binding_kind.as_str() {
+            PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT => {
+                binding_row.upstream_account_id != Some(owner.owner_upstream_account_id)
+            }
+            PROMPT_CACHE_BINDING_KIND_GROUP => true,
+            _ => true,
+        },
         std::cmp::Ordering::Less => false,
         std::cmp::Ordering::Equal => match binding_row.binding_kind.as_str() {
             PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT => {

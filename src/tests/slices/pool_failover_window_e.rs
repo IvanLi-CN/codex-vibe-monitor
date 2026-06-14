@@ -3469,6 +3469,77 @@ async fn prompt_cache_group_binding_promotes_to_account_after_encrypted_owner_lo
 }
 
 #[tokio::test]
+async fn prompt_cache_same_account_binding_newer_than_owner_keeps_owner_guard_active() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let owner_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Same Account Owner",
+        "sk-prompt-cache-same-account-owner",
+        None,
+        None,
+        None,
+    )
+    .await;
+    let prompt_cache_key = "prompt-cache-same-account-binding-newer-key";
+
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_encrypted_session_owners (
+            prompt_cache_key,
+            owner_upstream_account_id,
+            first_locked_at,
+            last_confirmed_at,
+            updated_at
+        )
+        VALUES (?1, ?2, '2026-06-14 12:00:00', '2026-06-14 12:00:00', '2026-06-14 12:00:00')
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .bind(owner_account_id)
+    .execute(&state.pool)
+    .await
+    .expect("seed encrypted owner row");
+
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversation_bindings (
+            prompt_cache_key,
+            binding_kind,
+            group_name,
+            upstream_account_id,
+            created_at,
+            updated_at
+        )
+        VALUES (?1, 'upstream_account', NULL, ?2, '2026-06-14 12:00:01', '2026-06-14 12:00:01')
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .bind(owner_account_id)
+    .execute(&state.pool)
+    .await
+    .expect("seed same-account binding with newer timestamp");
+
+    let (constraint, owner_auto_guard_active) = resolve_prompt_cache_effective_routing_constraint(
+        &state.pool,
+        Some(prompt_cache_key),
+        true,
+    )
+    .await
+    .expect("resolve same-account newer binding");
+
+    assert!(owner_auto_guard_active);
+    match constraint {
+        Some(PromptCacheConversationBindingConstraint::UpstreamAccount(bound_id)) => {
+            assert_eq!(bound_id, owner_account_id);
+        }
+        other => panic!("expected owner account constraint, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn prompt_cache_manual_override_wins_when_binding_and_owner_share_same_second() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

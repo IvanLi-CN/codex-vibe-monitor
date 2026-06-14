@@ -2657,13 +2657,15 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     .prompt_cache_key
                     .or_else(|| header_prompt_cache_key.clone());
                 let live_requested_model = live_body_key_probe.model;
+                let live_request_contains_encrypted_content =
+                    live_body_key_probe.contains_encrypted_content;
                 let live_responses_total_timeout_started_at =
                     responses_total_timeout_started_at_from_request;
                 let (prompt_cache_binding_constraint, owner_auto_guard_active) =
                     load_via_pool_effective_routing_constraint(
                         state.as_ref(),
                         live_prompt_cache_key.as_deref(),
-                        false,
+                        live_request_contains_encrypted_content,
                     )
                     .await?;
                 // Live-first routing only remains safe when we already know the requested model
@@ -2896,12 +2898,16 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         let state_for_record = state.clone();
                         let reservation_key_for_record = pool_routing_reservation_key.clone();
                         let sticky_key_for_record = live_body_sticky_key.clone();
+                        let prompt_cache_key_for_record = live_prompt_cache_key.clone();
                         let invoke_id_for_record = upstream_invoke_id.clone();
                         let pending_pool_attempt_record_for_task = pending_pool_attempt_record;
                         let upstream_request_id_for_task = upstream_request_id;
                         let upstream_attempt_started_at_utc_for_record =
                             upstream_attempt_started_at_utc;
+                        let request_contains_encrypted_content_for_task =
+                            live_request_contains_encrypted_content;
                         let proxy_request_permit_for_task = proxy_request_permit;
+                        let replay_status_rx_for_task = replay_status_rx.clone();
                         tokio::spawn(async move {
                             let mut deferred_pool_early_phase_cleanup_guard_for_task =
                                 deferred_pool_early_phase_cleanup_guard;
@@ -2984,6 +2990,55 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                 .await
                                 {
                                     warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
+                                }
+                                let replay_status_for_task =
+                                    { replay_status_rx_for_task.borrow().clone() };
+                                let replay_contains_encrypted_content = match replay_status_for_task
+                                {
+                                    PoolReplayBodyStatus::Complete(snapshot) => {
+                                        replay_snapshot_contains_encrypted_content(&snapshot).await
+                                    }
+                                    _ => false,
+                                };
+                                if let Some(prompt_cache_key) =
+                                    prompt_cache_key_for_record.as_deref()
+                                    && (request_contains_encrypted_content_for_task
+                                        || replay_contains_encrypted_content)
+                                {
+                                    match confirm_prompt_cache_encrypted_session_owner_success(
+                                        &state_for_record.pool,
+                                        prompt_cache_key,
+                                        account.account_id,
+                                    )
+                                    .await
+                                    {
+                                        Ok(true) => {
+                                            if let Err(err) =
+                                                promote_prompt_cache_group_binding_to_upstream_account(
+                                                    &state_for_record.pool,
+                                                    prompt_cache_key,
+                                                    account.account_id,
+                                                )
+                                                .await
+                                            {
+                                                warn!(
+                                                    prompt_cache_key,
+                                                    account_id = account.account_id,
+                                                    error = %err,
+                                                    "failed to promote prompt cache group binding after live-first encrypted session success"
+                                                );
+                                            }
+                                        }
+                                        Ok(false) => {}
+                                        Err(err) => {
+                                            warn!(
+                                                prompt_cache_key,
+                                                account_id = account.account_id,
+                                                error = %err,
+                                                "failed to persist live-first encrypted session owner"
+                                            );
+                                        }
+                                    }
                                 }
                             } else {
                                 let route_http_failure_message =

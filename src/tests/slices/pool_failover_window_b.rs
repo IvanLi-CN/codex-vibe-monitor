@@ -717,6 +717,98 @@ async fn proxy_openai_v1_responses_live_first_replay_reloads_encrypted_owner_gua
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_responses_live_first_success_persists_encrypted_owner() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(10),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let owner_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Live First Encrypted Owner",
+        "upstream-primary",
+        None,
+        None,
+        None,
+    )
+    .await;
+    let prompt_cache_key = "pck-live-first-success-owner";
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    let first_chunk = format!(
+        "{{\"model\":\"gpt-5\",\"promptCacheKey\":\"{prompt_cache_key}\",\"input\":[{{\"type\":\"encrypted_content\",\"encrypted_content\":\"opaque-owner-bound-content\"}}],\"tail\":\"{}",
+        "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 256)
+    );
+    tokio::spawn(async move {
+        let _ = tx.send(Ok(Bytes::from(first_chunk))).await;
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        let _ = tx.send(Ok(Bytes::from_static(b"\"}"))).await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        5345,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("live-first encrypted request should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read live-first encrypted response");
+    let payload: Value =
+        serde_json::from_slice(&body).expect("decode live-first encrypted response");
+    assert_eq!(payload["authorization"], "Bearer upstream-primary");
+
+    let mut persisted_owner_account_id = None;
+    for _ in 0..50 {
+        persisted_owner_account_id = sqlx::query_scalar(
+            r#"
+            SELECT owner_upstream_account_id
+            FROM prompt_cache_encrypted_session_owners
+            WHERE prompt_cache_key = ?1
+            "#,
+        )
+        .bind(prompt_cache_key)
+        .fetch_optional(&state.pool)
+        .await
+        .expect("query live-first encrypted owner row");
+        if persisted_owner_account_id.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    assert_eq!(persisted_owner_account_id, Some(owner_account_id));
+
+    let attempts = attempts.lock().expect("lock live-first encrypted attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_responses_header_prompt_cache_key_preserves_group_binding() {
     let (upstream_base, attempts, upstream_handle) =
         spawn_pool_retry_upstream(&[("Bearer upstream-primary", 99)]).await;
@@ -1086,6 +1178,132 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_rate_limited_owner_ret
     .fetch_one(&state.pool)
     .await
     .expect("load encrypted owner rate-limited terminal attempt");
+    assert_eq!(last_attempt.0, None);
+    assert_eq!(
+        last_attempt.1.as_deref(),
+        Some(PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE)
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_bodyless_header_prompt_cache_key_same_account_binding_newer_than_owner_still_returns_owner_unavailable()
+{
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(10),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let owner_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Encrypted Owner",
+        "upstream-owner",
+        None,
+        None,
+        None,
+    )
+    .await;
+    let _secondary_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Secondary",
+        "upstream-secondary",
+        None,
+        None,
+        None,
+    )
+    .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET policy_concurrency_limit = 1 WHERE id = ?1")
+        .bind(owner_account_id)
+        .execute(&state.pool)
+        .await
+        .expect("set encrypted owner account concurrency limit");
+    let now_iso = format_utc_iso(Utc::now());
+    insert_test_pool_limit_sample(&state, owner_account_id, Some(20.0), Some(20.0)).await;
+    upsert_sticky_route(
+        &state.pool,
+        "pck-bodyless-header-encrypted-owner-same-account-active",
+        owner_account_id,
+        &now_iso,
+    )
+    .await
+    .expect("seed active sticky route for same-account owner");
+    let prompt_cache_key = "pck-bodyless-header-encrypted-owner-same-account";
+    upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, owner_account_id)
+        .await
+        .expect("persist encrypted owner lock");
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversation_bindings (
+            prompt_cache_key,
+            binding_kind,
+            group_name,
+            upstream_account_id,
+            created_at,
+            updated_at
+        )
+        VALUES (?1, 'upstream_account', NULL, ?2, datetime('now', '+1 second'), datetime('now', '+1 second'))
+        ON CONFLICT(prompt_cache_key) DO UPDATE SET
+            binding_kind = excluded.binding_kind,
+            group_name = NULL,
+            upstream_account_id = excluded.upstream_account_id,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .bind(owner_account_id)
+    .execute(&state.pool)
+    .await
+    .expect("persist same-account binding newer than owner");
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        5349,
+        &"/v1/models".parse().expect("valid uri"),
+        Method::GET,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-prompt-cache-key"),
+                HeaderValue::from_static(prompt_cache_key),
+            ),
+        ]),
+        Body::empty(),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect_err("same-account newer binding should still keep encrypted owner guard");
+
+    assert_eq!(response.0, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.1, ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE);
+
+    let attempts = attempts
+        .lock()
+        .expect("lock same-account newer binding owner attempts");
+    assert_eq!(attempts.get("Bearer upstream-owner").copied(), None);
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+
+    let last_attempt = sqlx::query_as::<_, (Option<i64>, Option<String>)>(
+        r#"
+        SELECT upstream_account_id, failure_kind
+        FROM pool_upstream_request_attempts
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load same-account newer binding terminal attempt");
     assert_eq!(last_attempt.0, None);
     assert_eq!(
         last_attempt.1.as_deref(),

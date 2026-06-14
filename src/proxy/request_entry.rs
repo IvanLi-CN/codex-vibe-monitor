@@ -1235,6 +1235,7 @@ pub(crate) struct PoolReplayBodyKeyProbe {
     pub(crate) sticky_key: Option<String>,
     pub(crate) prompt_cache_key: Option<String>,
     pub(crate) model: Option<String>,
+    pub(crate) contains_encrypted_content: bool,
 }
 
 pub(crate) struct PoolReplayBodyBuffer {
@@ -2062,7 +2063,7 @@ pub(crate) fn spawn_pool_replayable_request_body(
 
             let Some(chunk) = next_chunk else {
                 if !sticky_key_probe_ready {
-                    let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
+                        let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
                         PoolReplayBodyKeyProbe {
                             sticky_key: best_effort_extract_sticky_key_from_request_body_prefix(
                                 &sticky_key_probe,
@@ -2074,6 +2075,10 @@ pub(crate) fn spawn_pool_replayable_request_body(
                             model: best_effort_extract_model_from_request_body_prefix(
                                 &sticky_key_probe,
                             ),
+                            contains_encrypted_content:
+                                best_effort_extract_encrypted_content_from_request_body_prefix(
+                                    &sticky_key_probe,
+                                ),
                         },
                     ));
                 }
@@ -2154,9 +2159,14 @@ pub(crate) fn spawn_pool_replayable_request_body(
                         &sticky_key_probe,
                     ),
                     model: best_effort_extract_model_from_request_body_prefix(&sticky_key_probe),
+                    contains_encrypted_content:
+                        best_effort_extract_encrypted_content_from_request_body_prefix(
+                            &sticky_key_probe,
+                        ),
                 };
                 if key_probe.sticky_key.is_some()
                     || key_probe.prompt_cache_key.is_some()
+                    || key_probe.contains_encrypted_content
                     || sticky_key_probe.len() >= HEADER_STICKY_EARLY_STICKY_SCAN_BYTES
                 {
                     sticky_key_probe_ready = true;
