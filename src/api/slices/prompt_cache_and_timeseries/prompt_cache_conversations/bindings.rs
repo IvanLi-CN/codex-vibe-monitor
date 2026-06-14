@@ -12,6 +12,24 @@ pub(crate) struct PromptCacheConversationBindingRow {
     pub(crate) updated_at: String,
 }
 
+#[derive(Debug, Clone, FromRow)]
+pub(crate) struct PromptCacheEncryptedSessionOwnerRow {
+    pub(crate) prompt_cache_key: String,
+    pub(crate) owner_upstream_account_id: i64,
+    pub(crate) owner_upstream_account_name: Option<String>,
+    pub(crate) owner_group_name: Option<String>,
+    pub(crate) first_locked_at: String,
+    pub(crate) last_confirmed_at: String,
+    pub(crate) updated_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PromptCacheEncryptedSessionRoutingContext {
+    pub(crate) owner: PromptCacheEncryptedSessionOwnerRow,
+    pub(crate) effective_constraint: PromptCacheConversationBindingConstraint,
+    pub(crate) manual_override_active: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PromptCacheConversationBindingResponse {
@@ -20,6 +38,10 @@ pub(crate) struct PromptCacheConversationBindingResponse {
     pub(crate) group_name: Option<String>,
     pub(crate) upstream_account_id: Option<i64>,
     pub(crate) upstream_account_name: Option<String>,
+    pub(crate) has_encrypted_session_owner: bool,
+    pub(crate) encrypted_owner_account_id: Option<i64>,
+    pub(crate) encrypted_owner_account_name: Option<String>,
+    pub(crate) encrypted_owner_group_name: Option<String>,
     pub(crate) updated_at: Option<String>,
 }
 
@@ -65,11 +87,18 @@ fn binding_response_for_none(prompt_cache_key: String) -> PromptCacheConversatio
         group_name: None,
         upstream_account_id: None,
         upstream_account_name: None,
+        has_encrypted_session_owner: false,
+        encrypted_owner_account_id: None,
+        encrypted_owner_account_name: None,
+        encrypted_owner_group_name: None,
         updated_at: None,
     }
 }
 
-fn binding_response_from_row(row: PromptCacheConversationBindingRow) -> PromptCacheConversationBindingResponse {
+fn binding_response_from_row(
+    row: PromptCacheConversationBindingRow,
+    owner: Option<&PromptCacheEncryptedSessionOwnerRow>,
+) -> PromptCacheConversationBindingResponse {
     PromptCacheConversationBindingResponse {
         prompt_cache_key: row.prompt_cache_key,
         binding_kind: match row.binding_kind.as_str() {
@@ -79,8 +108,26 @@ fn binding_response_from_row(row: PromptCacheConversationBindingRow) -> PromptCa
         group_name: row.group_name,
         upstream_account_id: row.upstream_account_id,
         upstream_account_name: row.upstream_account_name,
+        has_encrypted_session_owner: owner.is_some(),
+        encrypted_owner_account_id: owner.map(|value| value.owner_upstream_account_id),
+        encrypted_owner_account_name: owner
+            .and_then(|value| value.owner_upstream_account_name.clone()),
+        encrypted_owner_group_name: owner.and_then(|value| value.owner_group_name.clone()),
         updated_at: Some(row.updated_at),
     }
+}
+
+fn apply_owner_to_none_response(
+    mut response: PromptCacheConversationBindingResponse,
+    owner: Option<&PromptCacheEncryptedSessionOwnerRow>,
+) -> PromptCacheConversationBindingResponse {
+    if let Some(owner) = owner {
+        response.has_encrypted_session_owner = true;
+        response.encrypted_owner_account_id = Some(owner.owner_upstream_account_id);
+        response.encrypted_owner_account_name = owner.owner_upstream_account_name.clone();
+        response.encrypted_owner_group_name = owner.owner_group_name.clone();
+    }
+    response
 }
 
 pub(crate) async fn load_prompt_cache_conversation_binding_row(
@@ -107,6 +154,201 @@ pub(crate) async fn load_prompt_cache_conversation_binding_row(
     .fetch_optional(pool)
     .await
     .map_err(Into::into)
+}
+
+pub(crate) async fn load_prompt_cache_encrypted_session_owner_row(
+    pool: &Pool<Sqlite>,
+    prompt_cache_key: &str,
+) -> Result<Option<PromptCacheEncryptedSessionOwnerRow>> {
+    sqlx::query_as::<_, PromptCacheEncryptedSessionOwnerRow>(
+        r#"
+        SELECT
+            owner.prompt_cache_key,
+            owner.owner_upstream_account_id,
+            account.display_name AS owner_upstream_account_name,
+            account.group_name AS owner_group_name,
+            owner.first_locked_at,
+            owner.last_confirmed_at,
+            owner.updated_at
+        FROM prompt_cache_encrypted_session_owners AS owner
+        LEFT JOIN pool_upstream_accounts AS account
+          ON account.id = owner.owner_upstream_account_id
+        WHERE owner.prompt_cache_key = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
+}
+
+pub(crate) async fn load_prompt_cache_encrypted_session_owner_account_id(
+    pool: &Pool<Sqlite>,
+    prompt_cache_key: Option<&str>,
+) -> Result<Option<i64>> {
+    let Some(prompt_cache_key) = prompt_cache_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    Ok(load_prompt_cache_encrypted_session_owner_row(pool, prompt_cache_key)
+        .await?
+        .map(|row| row.owner_upstream_account_id))
+}
+
+fn manual_binding_override_is_newer_than_owner(
+    binding_row: &PromptCacheConversationBindingRow,
+    owner: &PromptCacheEncryptedSessionOwnerRow,
+) -> bool {
+    binding_row.updated_at.as_str() > owner.updated_at.as_str()
+}
+
+pub(crate) fn binding_constraint_accepts_upstream_account_id(
+    constraint: &PromptCacheConversationBindingConstraint,
+    account_id: i64,
+    account_group_name: Option<&str>,
+) -> bool {
+    match constraint {
+        PromptCacheConversationBindingConstraint::Group(group_name) => account_group_name
+            .map(str::trim)
+            .is_some_and(|value| value == group_name),
+        PromptCacheConversationBindingConstraint::UpstreamAccount(bound_id) => {
+            *bound_id == account_id
+        }
+    }
+}
+
+pub(crate) async fn resolve_prompt_cache_encrypted_session_routing_context(
+    pool: &Pool<Sqlite>,
+    prompt_cache_key: Option<&str>,
+    _request_contains_encrypted_content: bool,
+) -> Result<Option<PromptCacheEncryptedSessionRoutingContext>> {
+    let Some(prompt_cache_key) = prompt_cache_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+
+    let owner = load_prompt_cache_encrypted_session_owner_row(pool, prompt_cache_key).await?;
+    let binding_row = load_prompt_cache_conversation_binding_row(pool, prompt_cache_key).await?;
+
+    match owner {
+        Some(owner) => {
+            let override_constraint = if binding_row
+                .as_ref()
+                .is_some_and(|row| manual_binding_override_is_newer_than_owner(row, &owner))
+            {
+                load_prompt_cache_conversation_binding_constraint(pool, Some(prompt_cache_key))
+                    .await?
+            } else {
+                None
+            };
+            let manual_override_active = override_constraint.is_some();
+            let owner_account_id = owner.owner_upstream_account_id;
+            Ok(Some(PromptCacheEncryptedSessionRoutingContext {
+                owner,
+                effective_constraint: override_constraint.unwrap_or(
+                    PromptCacheConversationBindingConstraint::UpstreamAccount(owner_account_id),
+                ),
+                manual_override_active,
+            }))
+        }
+        None => Ok(None),
+    }
+}
+
+pub(crate) async fn upsert_prompt_cache_encrypted_session_owner(
+    pool: &Pool<Sqlite>,
+    prompt_cache_key: &str,
+    owner_upstream_account_id: i64,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_encrypted_session_owners (
+            prompt_cache_key,
+            owner_upstream_account_id,
+            first_locked_at,
+            last_confirmed_at,
+            updated_at
+        )
+        VALUES (?1, ?2, datetime('now'), datetime('now'), datetime('now'))
+        ON CONFLICT(prompt_cache_key) DO UPDATE SET
+            owner_upstream_account_id = excluded.owner_upstream_account_id,
+            last_confirmed_at = excluded.last_confirmed_at,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .bind(owner_upstream_account_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn promote_prompt_cache_group_binding_to_upstream_account(
+    pool: &Pool<Sqlite>,
+    prompt_cache_key: &str,
+    upstream_account_id: i64,
+) -> Result<()> {
+    let Some(current_binding) =
+        load_prompt_cache_conversation_binding_row(pool, prompt_cache_key).await?
+    else {
+        return Ok(());
+    };
+    if current_binding.binding_kind != PROMPT_CACHE_BINDING_KIND_GROUP {
+        return Ok(());
+    }
+
+    sqlx::query(
+        r#"
+        UPDATE prompt_cache_conversation_bindings
+        SET binding_kind = ?2,
+            group_name = NULL,
+            upstream_account_id = ?3,
+            updated_at = datetime('now')
+        WHERE prompt_cache_key = ?1
+          AND binding_kind = ?4
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .bind(PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT)
+    .bind(upstream_account_id)
+    .bind(PROMPT_CACHE_BINDING_KIND_GROUP)
+    .execute(pool)
+    .await?;
+
+    let now_iso = format_utc_iso(Utc::now());
+    upsert_sticky_route(pool, prompt_cache_key, upstream_account_id, &now_iso).await?;
+    Ok(())
+}
+
+pub(crate) async fn resolve_prompt_cache_effective_routing_constraint(
+    pool: &Pool<Sqlite>,
+    prompt_cache_key: Option<&str>,
+    request_contains_encrypted_content: bool,
+) -> Result<(Option<PromptCacheConversationBindingConstraint>, bool)> {
+    if let Some(context) = resolve_prompt_cache_encrypted_session_routing_context(
+        pool,
+        prompt_cache_key,
+        request_contains_encrypted_content,
+    )
+    .await?
+    {
+        // Clearing a manual binding only removes the dangerous override intent.
+        // Automatic routing still stays on the encrypted-session owner until a
+        // different target actually succeeds and becomes the new owner.
+        let owner_auto_guard_active =
+            context.owner.owner_upstream_account_id > 0 && !context.manual_override_active;
+        return Ok((Some(context.effective_constraint), owner_auto_guard_active));
+    }
+
+    Ok((
+        load_prompt_cache_conversation_binding_constraint(pool, prompt_cache_key).await?,
+        false,
+    ))
 }
 
 pub(crate) async fn load_prompt_cache_conversation_binding_constraint(
@@ -204,9 +446,11 @@ pub(crate) async fn get_prompt_cache_conversation_binding(
     AxumPath(encoded_prompt_cache_key): AxumPath<String>,
 ) -> Result<Json<PromptCacheConversationBindingResponse>, ApiError> {
     let prompt_cache_key = normalize_prompt_cache_conversation_key(&encoded_prompt_cache_key)?;
+    let owner =
+        load_prompt_cache_encrypted_session_owner_row(&state.pool, &prompt_cache_key).await?;
     let response = match load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key).await? {
-        Some(row) => binding_response_from_row(row),
-        None => binding_response_for_none(prompt_cache_key),
+        Some(row) => binding_response_from_row(row, owner.as_ref()),
+        None => apply_owner_to_none_response(binding_response_for_none(prompt_cache_key), owner.as_ref()),
     };
     Ok(Json(response))
 }
@@ -235,7 +479,13 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
                 .bind(&prompt_cache_key)
                 .execute(&state.pool)
                 .await?;
-            Ok(Json(binding_response_for_none(prompt_cache_key)))
+            let owner =
+                load_prompt_cache_encrypted_session_owner_row(&state.pool, &prompt_cache_key)
+                    .await?;
+            Ok(Json(apply_owner_to_none_response(
+                binding_response_for_none(prompt_cache_key),
+                owner.as_ref(),
+            )))
         }
         "group" => {
             let group_name = group_name.ok_or_else(|| {
@@ -265,10 +515,14 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
             .bind(&group_name)
             .execute(&state.pool)
             .await?;
+            let owner =
+                load_prompt_cache_encrypted_session_owner_row(&state.pool, &prompt_cache_key)
+                    .await?;
             Ok(Json(binding_response_from_row(
                 load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key)
                     .await?
                     .expect("saved prompt cache group binding should exist"),
+                owner.as_ref(),
             )))
         }
         "upstreamAccount" => {
@@ -304,10 +558,14 @@ pub(crate) async fn patch_prompt_cache_conversation_binding(
             let now_iso = format_utc_iso(Utc::now());
             upsert_sticky_route(&state.pool, &prompt_cache_key, upstream_account_id, &now_iso)
                 .await?;
+            let owner =
+                load_prompt_cache_encrypted_session_owner_row(&state.pool, &prompt_cache_key)
+                    .await?;
             Ok(Json(binding_response_from_row(
                 load_prompt_cache_conversation_binding_row(&state.pool, &prompt_cache_key)
                     .await?
                     .expect("saved prompt cache account binding should exist"),
+                owner.as_ref(),
             )))
         }
         _ => Err(ApiError::bad_request(anyhow!(

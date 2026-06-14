@@ -3295,3 +3295,175 @@ async fn prompt_cache_conversation_binding_route_accepts_encoded_key() {
 
     server.abort();
 }
+
+#[tokio::test]
+async fn prompt_cache_conversation_binding_reports_encrypted_owner_and_clear_keeps_owner_lock() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let group_name = "prompt-cache-owner-reporting-group";
+    ensure_test_group_binding(&state.pool, group_name, None).await;
+    let owner_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Owner Reporting",
+        "sk-prompt-cache-owner-reporting",
+        Some(group_name),
+        None,
+        None,
+    )
+    .await;
+    let prompt_cache_key = "prompt-cache-owner-reporting-key";
+
+    let group_payload: UpdatePromptCacheConversationBindingRequest =
+        serde_json::from_value(json!({
+            "bindingKind": "group",
+            "groupName": group_name,
+        }))
+        .expect("deserialize owner reporting group payload");
+    let Json(group_response) = patch_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        Json(group_payload),
+    )
+    .await
+    .expect("save group binding before owner lock");
+    assert_eq!(group_response.binding_kind, "group");
+    assert_eq!(group_response.group_name.as_deref(), Some(group_name));
+    assert!(!group_response.has_encrypted_session_owner);
+
+    upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, owner_account_id)
+        .await
+        .expect("persist encrypted session owner");
+
+    let Json(owner_response) = get_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+    )
+    .await
+    .expect("load binding with encrypted owner");
+    assert_eq!(owner_response.binding_kind, "group");
+    assert_eq!(owner_response.group_name.as_deref(), Some(group_name));
+    assert!(owner_response.has_encrypted_session_owner);
+    assert_eq!(
+        owner_response.encrypted_owner_account_id,
+        Some(owner_account_id)
+    );
+    assert_eq!(
+        owner_response.encrypted_owner_account_name.as_deref(),
+        Some("Prompt Cache Owner Reporting")
+    );
+    assert_eq!(
+        owner_response.encrypted_owner_group_name.as_deref(),
+        Some(group_name)
+    );
+
+    let clear_payload: UpdatePromptCacheConversationBindingRequest =
+        serde_json::from_value(json!({ "bindingKind": "none" }))
+            .expect("deserialize owner reporting clear payload");
+    let Json(clear_response) = patch_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        Json(clear_payload),
+    )
+    .await
+    .expect("clear manual binding while owner remains");
+    assert_eq!(clear_response.binding_kind, "none");
+    assert!(clear_response.has_encrypted_session_owner);
+    assert_eq!(
+        clear_response.encrypted_owner_account_id,
+        Some(owner_account_id)
+    );
+    assert_eq!(
+        clear_response.encrypted_owner_account_name.as_deref(),
+        Some("Prompt Cache Owner Reporting")
+    );
+    assert_eq!(
+        clear_response.encrypted_owner_group_name.as_deref(),
+        Some(group_name)
+    );
+}
+
+#[tokio::test]
+async fn prompt_cache_group_binding_promotes_to_account_after_encrypted_owner_lock() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let group_name = "prompt-cache-group-promote-owner";
+    ensure_test_group_binding(&state.pool, group_name, None).await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Promote Owner",
+        "sk-prompt-cache-promote-owner",
+        Some(group_name),
+        None,
+        None,
+    )
+    .await;
+    let prompt_cache_key = "prompt-cache-group-promote-owner-key";
+
+    let group_payload: UpdatePromptCacheConversationBindingRequest =
+        serde_json::from_value(json!({
+            "bindingKind": "group",
+            "groupName": group_name,
+        }))
+        .expect("deserialize promote group payload");
+    let Json(group_response) = patch_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        Json(group_payload),
+    )
+    .await
+    .expect("save promotable group binding");
+    assert_eq!(group_response.binding_kind, "group");
+
+    upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, account_id)
+        .await
+        .expect("persist owner before promotion");
+    promote_prompt_cache_group_binding_to_upstream_account(&state.pool, prompt_cache_key, account_id)
+        .await
+        .expect("promote group binding to account");
+
+    let Json(promoted_response) = get_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+    )
+    .await
+    .expect("load promoted prompt cache binding");
+    assert_eq!(promoted_response.binding_kind, "upstreamAccount");
+    assert_eq!(promoted_response.group_name, None);
+    assert_eq!(promoted_response.upstream_account_id, Some(account_id));
+    assert_eq!(
+        promoted_response.upstream_account_name.as_deref(),
+        Some("Prompt Cache Promote Owner")
+    );
+    assert!(promoted_response.has_encrypted_session_owner);
+    assert_eq!(
+        promoted_response.encrypted_owner_account_id,
+        Some(account_id)
+    );
+
+    let sticky_account_id: i64 =
+        sqlx::query_scalar("SELECT account_id FROM pool_sticky_routes WHERE sticky_key = ?1")
+            .bind(prompt_cache_key)
+            .fetch_one(&state.pool)
+            .await
+            .expect("promotion should align sticky route to promoted account");
+    assert_eq!(sticky_account_id, account_id);
+
+    let effective_constraint = resolve_prompt_cache_effective_routing_constraint(
+        &state.pool,
+        Some(prompt_cache_key),
+        true,
+    )
+    .await
+    .expect("resolve effective routing constraint after promotion");
+    assert!(effective_constraint.1);
+    match effective_constraint.0 {
+        Some(PromptCacheConversationBindingConstraint::UpstreamAccount(bound_id)) => {
+            assert_eq!(bound_id, account_id);
+        }
+        other => panic!("expected promoted account binding constraint, got {other:?}"),
+    }
+}

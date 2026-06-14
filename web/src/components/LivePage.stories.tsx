@@ -178,6 +178,10 @@ function createPreview(
 function createConversation(promptCacheKey: string, recentInvocations: PromptCacheConversationInvocationPreview[]): PromptCacheConversation {
   return {
     promptCacheKey,
+    hasEncryptedSessionOwner: false,
+    encryptedOwnerAccountId: null,
+    encryptedOwnerAccountName: null,
+    encryptedOwnerGroupName: null,
     requestCount: recentInvocations.length,
     totalTokens: recentInvocations.reduce((sum, invocation) => sum + invocation.totalTokens, 0),
     totalCost: Number(recentInvocations.reduce((sum, invocation) => sum + (invocation.cost ?? 0), 0).toFixed(4)),

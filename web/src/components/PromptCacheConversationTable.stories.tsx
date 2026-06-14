@@ -255,6 +255,10 @@ const bindingByPromptCacheKey = new Map<string, unknown>([
       groupName: "JOZ Team",
       upstreamAccountId: null,
       upstreamAccountName: null,
+      hasEncryptedSessionOwner: false,
+      encryptedOwnerAccountId: null,
+      encryptedOwnerAccountName: null,
+      encryptedOwnerGroupName: null,
       updatedAt: "2026-03-27T03:16:00.000Z",
     },
   ],
@@ -266,6 +270,10 @@ const bindingByPromptCacheKey = new Map<string, unknown>([
       groupName: null,
       upstreamAccountId: 21,
       upstreamAccountName: "growth.6vv4@relay.example",
+      hasEncryptedSessionOwner: true,
+      encryptedOwnerAccountId: 21,
+      encryptedOwnerAccountName: "growth.6vv4@relay.example",
+      encryptedOwnerGroupName: "CIII",
       updatedAt: "2026-05-13T23:42:00.000Z",
     },
   ],
@@ -277,6 +285,10 @@ const bindingByPromptCacheKey = new Map<string, unknown>([
       groupName: null,
       upstreamAccountId: 11,
       upstreamAccountName: "growth.6vv4@relay.example",
+      hasEncryptedSessionOwner: true,
+      encryptedOwnerAccountId: 11,
+      encryptedOwnerAccountName: "growth.6vv4@relay.example",
+      encryptedOwnerGroupName: "JOZ Team",
       updatedAt: "2026-05-28T04:10:00.000Z",
     },
   ],
@@ -857,6 +869,10 @@ function StorybookPromptCacheAccountMock({
             groupName: null,
             upstreamAccountId: null,
             upstreamAccountName: null,
+            hasEncryptedSessionOwner: false,
+            encryptedOwnerAccountId: null,
+            encryptedOwnerAccountName: null,
+            encryptedOwnerGroupName: null,
             updatedAt: null,
           },
         );
@@ -875,6 +891,10 @@ function StorybookPromptCacheAccountMock({
                   accountSummaries.find(
                     (account) => account.id === Number(payload.upstreamAccountId),
                   )?.displayName ?? null,
+                hasEncryptedSessionOwner: true,
+                encryptedOwnerAccountId: 21,
+                encryptedOwnerAccountName: "growth.6vv4@relay.example",
+                encryptedOwnerGroupName: "CIII",
                 updatedAt: new Date().toISOString(),
               }
             : payload.bindingKind === "group"
@@ -884,6 +904,10 @@ function StorybookPromptCacheAccountMock({
                   groupName: String(payload.groupName ?? ""),
                   upstreamAccountId: null,
                   upstreamAccountName: null,
+                  hasEncryptedSessionOwner: true,
+                  encryptedOwnerAccountId: 21,
+                  encryptedOwnerAccountName: "growth.6vv4@relay.example",
+                  encryptedOwnerGroupName: "CIII",
                   updatedAt: new Date().toISOString(),
                 }
               : {
@@ -892,6 +916,10 @@ function StorybookPromptCacheAccountMock({
                   groupName: null,
                   upstreamAccountId: null,
                   upstreamAccountName: null,
+                  hasEncryptedSessionOwner: true,
+                  encryptedOwnerAccountId: 21,
+                  encryptedOwnerAccountName: "growth.6vv4@relay.example",
+                  encryptedOwnerGroupName: "CIII",
                   updatedAt: null,
                 };
         return jsonResponse(response);
@@ -989,6 +1017,10 @@ const stats: PromptCacheConversationsResponse = {
   conversations: [
     {
       promptCacheKey: CONVERSATION_ONE_KEY,
+      hasEncryptedSessionOwner: false,
+      encryptedOwnerAccountId: null,
+      encryptedOwnerAccountName: null,
+      encryptedOwnerGroupName: null,
       requestCount: 15,
       totalTokens: 784054,
       totalCost: 0.403,
@@ -1061,6 +1093,10 @@ const stats: PromptCacheConversationsResponse = {
     },
     {
       promptCacheKey: CONVERSATION_TWO_KEY,
+      hasEncryptedSessionOwner: false,
+      encryptedOwnerAccountId: null,
+      encryptedOwnerAccountName: null,
+      encryptedOwnerGroupName: null,
       requestCount: 13,
       totalTokens: 774794,
       totalCost: 0.4501,
@@ -1129,6 +1165,10 @@ const sharedScaleStats: PromptCacheConversationsResponse = {
   conversations: [
     {
       promptCacheKey: "019d2b69-ca16-73f2-bf97-0e9b9a1f0c31",
+      hasEncryptedSessionOwner: false,
+      encryptedOwnerAccountId: null,
+      encryptedOwnerAccountName: null,
+      encryptedOwnerGroupName: null,
       requestCount: 3,
       totalTokens: 420,
       totalCost: 0.01,
@@ -1178,6 +1218,10 @@ const sharedScaleStats: PromptCacheConversationsResponse = {
     },
     {
       promptCacheKey: "019d2b77-b081-7180-80bd-5cc31df7f9b4",
+      hasEncryptedSessionOwner: false,
+      encryptedOwnerAccountId: null,
+      encryptedOwnerAccountName: null,
+      encryptedOwnerGroupName: null,
       requestCount: 8,
       totalTokens: 8600,
       totalCost: 0.21,
@@ -1252,6 +1296,10 @@ const shortSameDayStats: PromptCacheConversationsResponse = {
   conversations: [
     {
       promptCacheKey: CONVERSATION_SHORT_KEY,
+      hasEncryptedSessionOwner: true,
+      encryptedOwnerAccountId: 21,
+      encryptedOwnerAccountName: "growth.6vv4@relay.example",
+      encryptedOwnerGroupName: "CIII",
       requestCount: shortSameDayHistory.length,
       totalTokens: shortSameDayHistory.reduce(
         (sum, record) => sum + (record.totalTokens ?? 0),
@@ -1322,6 +1370,10 @@ const largeHistoryStats: PromptCacheConversationsResponse = {
   conversations: [
     {
       promptCacheKey: CONVERSATION_LARGE_HISTORY_KEY,
+      hasEncryptedSessionOwner: false,
+      encryptedOwnerAccountId: null,
+      encryptedOwnerAccountName: null,
+      encryptedOwnerGroupName: null,
       requestCount: largeHistory.length,
       totalTokens: largeHistory.reduce(
         (sum, record) => sum + (record.totalTokens ?? 0),
@@ -1669,6 +1721,11 @@ export const DrawerBindingControls: Story = {
     await expect(
       documentScope.getByText(/当前：账号 growth\.6vv4@relay\.example|Current: account growth\.6vv4@relay\.example/i),
     ).toBeInTheDocument();
+    await expect(
+      documentScope.getByText(
+        /加密会话 owner：growth\.6vv4@relay\.example · CIII|Encrypted session owner: growth\.6vv4@relay\.example · CIII/i,
+      ),
+    ).toBeInTheDocument();
     const bindingKindSelect = documentScope.getByRole("combobox", {
       name: /绑定类型|Binding type/i,
     });
@@ -1679,6 +1736,124 @@ export const DrawerBindingControls: Story = {
     await expect(bindingOptions).toHaveTextContent(/清空|Clear/i);
     await expect(bindingOptions).toHaveTextContent(/分组|Group/i);
     await expect(bindingOptions).toHaveTextContent(/上游账号|Account/i);
+  },
+};
+
+export const DrawerEncryptedOwnerDangerConfirm: Story = {
+  args: {
+    stats: shortSameDayStats,
+    isLoading: false,
+    error: null,
+  },
+  globals: {
+    themeMode: "dark",
+    viewport: { value: "desktop1280", isRotated: false },
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Encrypted-session owner warning flow that asks for confirmation before clearing a manually bound route.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body);
+    const historyButton = documentScope.getAllByRole("button", {
+      name: /打开全部调用记录|open full call history/i,
+    })[0];
+
+    const originalConfirm = window.confirm;
+    let confirmMessage = "";
+    window.confirm = (message?: string) => {
+      confirmMessage = String(message ?? "");
+      return false;
+    };
+
+    try {
+      await userEvent.click(historyButton);
+      await expect(
+        await documentScope.findByText(
+          /加密会话 owner：growth\.6vv4@relay\.example · CIII|Encrypted session owner: growth\.6vv4@relay\.example · CIII/i,
+        ),
+      ).toBeInTheDocument();
+
+      const bindingKindSelect = documentScope.getByRole("combobox", {
+        name: /绑定类型|Binding type/i,
+      });
+      await userEvent.click(bindingKindSelect);
+      await userEvent.click(
+        await documentScope.findByRole("option", { name: /清空|Clear/i }),
+      );
+
+      await userEvent.click(
+        documentScope.getByRole("button", { name: /保存|Save/i }),
+      );
+
+      await waitFor(() => {
+        expect(confirmMessage).toMatch(
+          /encrypted session owner growth\.6vv4@relay\.example · CIII/i,
+        );
+      });
+      await expect(
+        documentScope.getByText(
+          /当前：账号 growth\.6vv4@relay\.example|Current: account growth\.6vv4@relay\.example/i,
+        ),
+      ).toBeInTheDocument();
+    } finally {
+      window.confirm = originalConfirm;
+    }
+  },
+};
+
+export const DrawerOwnerLockWithoutManualBinding: Story = {
+  args: {
+    stats: shortSameDayStats,
+    isLoading: false,
+    error: null,
+  },
+  globals: {
+    themeMode: "dark",
+    viewport: { value: "desktop1280", isRotated: false },
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Expanded Prompt Cache drawer that shows the encrypted owner hint after manual binding has been cleared.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    bindingByPromptCacheKey.set(CONVERSATION_SHORT_KEY, {
+      promptCacheKey: CONVERSATION_SHORT_KEY,
+      bindingKind: "none",
+      groupName: null,
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      hasEncryptedSessionOwner: true,
+      encryptedOwnerAccountId: 21,
+      encryptedOwnerAccountName: "growth.6vv4@relay.example",
+      encryptedOwnerGroupName: "CIII",
+      updatedAt: null,
+    });
+    const documentScope = within(canvasElement.ownerDocument.body);
+    const historyButton = documentScope.getAllByRole("button", {
+      name: /打开全部调用记录|open full call history/i,
+    })[0];
+
+    await userEvent.click(historyButton);
+    await expect(
+      await documentScope.findByText(/路由绑定|Route binding/i),
+    ).toBeInTheDocument();
+    await expect(
+      documentScope.getByText(/当前：无手工绑定|Current: no manual binding/i),
+    ).toBeInTheDocument();
+    await expect(
+      documentScope.getByText(
+        /清空手工绑定不会清除加密会话 owner 锁|Clearing the manual binding does not remove the encrypted session owner lock/i,
+      ),
+    ).toBeInTheDocument();
   },
 };
 

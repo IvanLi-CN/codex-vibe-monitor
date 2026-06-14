@@ -2436,6 +2436,10 @@ describe("account pool frontend API helpers", () => {
             groupName: null,
             upstreamAccountId: 42,
             upstreamAccountName: "Pool Alpha",
+            hasEncryptedSessionOwner: true,
+            encryptedOwnerAccountId: 17,
+            encryptedOwnerAccountName: "Owner One",
+            encryptedOwnerGroupName: "prod",
             updatedAt: "2026-03-10T23:59:00Z",
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
@@ -2448,6 +2452,10 @@ describe("account pool frontend API helpers", () => {
           groupName: null,
           upstreamAccountId: null,
           upstreamAccountName: null,
+          hasEncryptedSessionOwner: false,
+          encryptedOwnerAccountId: null,
+          encryptedOwnerAccountName: null,
+          encryptedOwnerGroupName: null,
           updatedAt: null,
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
@@ -2462,8 +2470,10 @@ describe("account pool frontend API helpers", () => {
     });
 
     expect(initial.bindingKind).toBe("none");
+    expect(initial.hasEncryptedSessionOwner).toBe(false);
     expect(updated.bindingKind).toBe("upstreamAccount");
     expect(updated.upstreamAccountName).toBe("Pool Alpha");
+    expect(updated.encryptedOwnerAccountName).toBe("Owner One");
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

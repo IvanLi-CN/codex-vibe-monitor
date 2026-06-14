@@ -152,14 +152,34 @@ async fn load_via_pool_prompt_cache_binding_constraint(
     state: &AppState,
     prompt_cache_key: Option<&str>,
 ) -> Result<Option<PromptCacheConversationBindingConstraint>, (StatusCode, String)> {
-    load_prompt_cache_conversation_binding_constraint(&state.pool, prompt_cache_key)
+    resolve_prompt_cache_effective_routing_constraint(&state.pool, prompt_cache_key, false)
         .await
+        .map(|(constraint, _owner_auto_guard_active)| constraint)
         .map_err(|err| {
             (
                 StatusCode::BAD_GATEWAY,
                 format!("failed to resolve prompt cache conversation binding: {err}"),
             )
         })
+}
+
+async fn load_via_pool_effective_routing_constraint(
+    state: &AppState,
+    prompt_cache_key: Option<&str>,
+    request_contains_encrypted_content: bool,
+) -> Result<(Option<PromptCacheConversationBindingConstraint>, bool), (StatusCode, String)> {
+    resolve_prompt_cache_effective_routing_constraint(
+        &state.pool,
+        prompt_cache_key,
+        request_contains_encrypted_content,
+    )
+    .await
+    .map_err(|err| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("failed to resolve prompt cache conversation binding: {err}"),
+        )
+    })
 }
 
 pub(crate) fn pool_account_supports_live_request_body(
@@ -1759,12 +1779,16 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             let body_prompt_cache_key = parsed_request_body
                 .as_ref()
                 .and_then(extract_prompt_cache_key_from_request_body);
-            let prompt_cache_binding_constraint =
-                load_via_pool_prompt_cache_binding_constraint(
+            let request_contains_encrypted_content = parsed_request_body
+                .as_ref()
+                .is_some_and(value_contains_encrypted_content);
+            let (prompt_cache_binding_constraint, _owner_auto_guard_active) =
+                load_via_pool_effective_routing_constraint(
                     state.as_ref(),
                     body_prompt_cache_key
                         .as_deref()
                         .or(header_prompt_cache_key.as_deref()),
+                    request_contains_encrypted_content,
                 )
                 .await?;
             let pool_attempt_trace_context = build_via_pool_attempt_trace_context(
@@ -1786,6 +1810,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         capture_target: ProxyCaptureTarget::Responses,
                         request_info: RequestCaptureInfo {
                             model: requested_model,
+                            contains_encrypted_content: request_contains_encrypted_content,
                             ..RequestCaptureInfo::default()
                         },
                         prompt_cache_key: body_prompt_cache_key
@@ -2466,11 +2491,13 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 let live_requested_model = live_body_key_probe.model;
                 let live_responses_total_timeout_started_at =
                     responses_total_timeout_started_at_from_request;
-                let prompt_cache_binding_constraint = load_via_pool_prompt_cache_binding_constraint(
-                    state.as_ref(),
-                    live_prompt_cache_key.as_deref(),
-                )
-                .await?;
+                let (prompt_cache_binding_constraint, _owner_auto_guard_active) =
+                    load_via_pool_effective_routing_constraint(
+                        state.as_ref(),
+                        live_prompt_cache_key.as_deref(),
+                        false,
+                    )
+                    .await?;
                 // Live-first routing only remains safe when we already know the requested model
                 // or an explicit binding is allowed to bypass model filtering.
                 if live_requested_model.is_some() || prompt_cache_binding_constraint.is_some() {
@@ -2888,12 +2915,34 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 let requested_model = extract_model_from_replay_snapshot(&request_body_snapshot)
                     .await
                     .or(live_requested_model);
-                let prompt_cache_binding_constraint =
-                    load_via_pool_prompt_cache_binding_constraint(
+                let request_contains_encrypted_content = match &request_body_snapshot {
+                    PoolReplayBodySnapshot::Empty => false,
+                    PoolReplayBodySnapshot::Memory(bytes) => serde_json::from_slice::<Value>(
+                        bytes.as_ref(),
+                    )
+                    .ok()
+                    .is_some_and(|value| value_contains_encrypted_content(&value)),
+                    PoolReplayBodySnapshot::File { temp_file, .. } => {
+                        let path = temp_file.path.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let file = std::fs::File::open(path).ok()?;
+                            serde_json::from_reader::<_, Value>(std::io::BufReader::new(file))
+                                .ok()
+                                .map(|value| value_contains_encrypted_content(&value))
+                        })
+                        .await
+                        .ok()
+                        .flatten()
+                        .unwrap_or(false)
+                    }
+                };
+                let (prompt_cache_binding_constraint, _owner_auto_guard_active) =
+                    load_via_pool_effective_routing_constraint(
                         state.as_ref(),
                         body_prompt_cache_key
                             .as_deref()
                             .or(header_prompt_cache_key.as_deref()),
+                        request_contains_encrypted_content,
                     )
                     .await?;
                 let mut no_available_wait_deadline = None;

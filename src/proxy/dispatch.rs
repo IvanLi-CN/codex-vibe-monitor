@@ -250,6 +250,9 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     target: capture_target,
                     status: read_err.status,
                     is_stream: request_info.is_stream,
+                    request_contains_encrypted_content:
+                        request_info.contains_encrypted_content,
+                    response_contains_encrypted_content: false,
                     request_model: None,
                     requested_service_tier: request_info.requested_service_tier.as_deref(),
                     billing_service_tier: None,
@@ -375,24 +378,26 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             Instant::now(),
         );
     }
-    let prompt_cache_binding_constraint = if pool_route_active {
-        match load_prompt_cache_conversation_binding_constraint(
-            &state.pool,
-            prompt_cache_key.as_deref(),
-        )
-        .await
-        {
-            Ok(constraint) => constraint,
-            Err(err) => {
-                return Err((
-                    StatusCode::BAD_GATEWAY,
-                    format!("failed to resolve prompt cache conversation binding: {err}"),
-                ));
+    let (prompt_cache_binding_constraint, _encrypted_owner_auto_guard_active) =
+        if pool_route_active {
+            match resolve_prompt_cache_effective_routing_constraint(
+                &state.pool,
+                prompt_cache_key.as_deref(),
+                request_info.contains_encrypted_content,
+            )
+            .await
+            {
+                Ok(value) => value,
+                Err(err) => {
+                    return Err((
+                        StatusCode::BAD_GATEWAY,
+                        format!("failed to resolve prompt cache conversation binding: {err}"),
+                    ));
+                }
             }
-        }
-    } else {
-        None
-    };
+        } else {
+            (None, false)
+        };
     let pool_attempt_trace_context = pool_route_active.then(|| PoolUpstreamAttemptTraceContext {
         invoke_id: invoke_id.clone(),
         occurred_at: occurred_at.clone(),
@@ -576,6 +581,9 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         target: capture_target,
                         status: err.status,
                         is_stream: request_info.is_stream,
+                        request_contains_encrypted_content:
+                            request_info.contains_encrypted_content,
+                        response_contains_encrypted_content: false,
                         request_model: None,
                         requested_service_tier: request_info.requested_service_tier.as_deref(),
                         billing_service_tier: billing_service_tier.as_deref(),
@@ -790,6 +798,9 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         target: capture_target,
                         status: err.status,
                         is_stream: request_info.is_stream,
+                        request_contains_encrypted_content:
+                            request_info.contains_encrypted_content,
+                        response_contains_encrypted_content: false,
                         request_model: None,
                         requested_service_tier: request_info.requested_service_tier.as_deref(),
                         billing_service_tier: billing_service_tier.as_deref(),
@@ -941,6 +952,9 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     target: capture_target,
                     status: StatusCode::BAD_GATEWAY,
                     is_stream: request_info.is_stream,
+                    request_contains_encrypted_content:
+                        request_info.contains_encrypted_content,
+                    response_contains_encrypted_content: false,
                     request_model: None,
                     requested_service_tier: request_info.requested_service_tier.as_deref(),
                     billing_service_tier: billing_service_tier.as_deref(),
@@ -1649,6 +1663,49 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 );
             }
         }
+        let pool_capture_success = proxy_capture_response_status_is_success(
+            upstream_status,
+            had_stream_error,
+            had_logical_stream_failure,
+        );
+        if pool_capture_success
+            && let (Some(prompt_cache_key), Some(account)) = (
+                prompt_cache_key_for_task.as_deref(),
+                pool_account_for_task.as_ref(),
+            )
+            && (request_info_for_task.contains_encrypted_content
+                || response_info.contains_encrypted_content)
+        {
+            if let Err(err) = upsert_prompt_cache_encrypted_session_owner(
+                &state_for_task.pool,
+                prompt_cache_key,
+                account.account_id,
+            )
+            .await
+            {
+                warn!(
+                    invoke_id = %invoke_id_for_task,
+                    prompt_cache_key,
+                    account_id = account.account_id,
+                    error = %err,
+                    "failed to persist encrypted session owner"
+                );
+            } else if let Err(err) = promote_prompt_cache_group_binding_to_upstream_account(
+                &state_for_task.pool,
+                prompt_cache_key,
+                account.account_id,
+            )
+            .await
+            {
+                warn!(
+                    invoke_id = %invoke_id_for_task,
+                    prompt_cache_key,
+                    account_id = account.account_id,
+                    error = %err,
+                    "failed to promote prompt cache group binding after encrypted session success"
+                );
+            }
+        }
         let (billing_service_tier, pricing_mode) =
             resolve_proxy_billing_service_tier_and_pricing_mode_for_account(
                 None,
@@ -1668,6 +1725,9 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             target: capture_target,
             status: upstream_status,
             is_stream: request_info_for_task.is_stream,
+            request_contains_encrypted_content: request_info_for_task
+                .contains_encrypted_content,
+            response_contains_encrypted_content: response_info.contains_encrypted_content,
             request_model: request_info_for_task.model.as_deref(),
             requested_service_tier: request_info_for_task.requested_service_tier.as_deref(),
             billing_service_tier: billing_service_tier.as_deref(),

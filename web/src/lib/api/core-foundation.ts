@@ -1129,6 +1129,10 @@ export interface PromptCacheConversation {
   lastTerminalAt?: string | null;
   lastInFlightAt?: string | null;
   cursor?: string | null;
+  hasEncryptedSessionOwner: boolean;
+  encryptedOwnerAccountId?: number | null;
+  encryptedOwnerAccountName?: string | null;
+  encryptedOwnerGroupName?: string | null;
   upstreamAccounts: PromptCacheConversationUpstreamAccount[];
   recentInvocations: PromptCacheConversationInvocationPreview[];
   last24hRequests: PromptCacheConversationRequestPoint[];
@@ -1145,6 +1149,10 @@ export interface PromptCacheConversationBindingResponse {
   groupName: string | null;
   upstreamAccountId: number | null;
   upstreamAccountName: string | null;
+  hasEncryptedSessionOwner: boolean;
+  encryptedOwnerAccountId: number | null;
+  encryptedOwnerAccountName: string | null;
+  encryptedOwnerGroupName: string | null;
   updatedAt: string | null;
 }
 
@@ -2039,6 +2047,22 @@ function normalizePromptCacheConversation(
         ? payload.lastInFlightAt
         : null,
     cursor: typeof payload.cursor === "string" ? payload.cursor : null,
+    hasEncryptedSessionOwner:
+      typeof payload.hasEncryptedSessionOwner === "boolean"
+        ? payload.hasEncryptedSessionOwner
+        : false,
+    encryptedOwnerAccountId:
+      normalizeFiniteNumber(payload.encryptedOwnerAccountId) ?? null,
+    encryptedOwnerAccountName:
+      typeof payload.encryptedOwnerAccountName === "string" &&
+      payload.encryptedOwnerAccountName.trim()
+        ? payload.encryptedOwnerAccountName.trim()
+        : null,
+    encryptedOwnerGroupName:
+      typeof payload.encryptedOwnerGroupName === "string" &&
+      payload.encryptedOwnerGroupName.trim()
+        ? payload.encryptedOwnerGroupName.trim()
+        : null,
     upstreamAccounts: upstreamAccountsRaw
       .map(normalizePromptCacheConversationUpstreamAccount)
       .filter(
@@ -2592,12 +2616,46 @@ export async function fetchPromptCacheConversationBinding(
   promptCacheKey: string,
   signal?: AbortSignal,
 ): Promise<PromptCacheConversationBindingResponse> {
-  return fetchJson<PromptCacheConversationBindingResponse>(
+  const raw = await fetchJson<Record<string, unknown>>(
     `/api/stats/prompt-cache-conversation-bindings/${encodeURIComponent(
       promptCacheKey,
     )}`,
     { signal },
   );
+  return {
+    promptCacheKey:
+      typeof raw.promptCacheKey === "string" ? raw.promptCacheKey : promptCacheKey,
+    bindingKind:
+      raw.bindingKind === "group" || raw.bindingKind === "upstreamAccount"
+        ? raw.bindingKind
+        : "none",
+    groupName:
+      typeof raw.groupName === "string" && raw.groupName.trim()
+        ? raw.groupName.trim()
+        : null,
+    upstreamAccountId: normalizeFiniteNumber(raw.upstreamAccountId) ?? null,
+    upstreamAccountName:
+      typeof raw.upstreamAccountName === "string" && raw.upstreamAccountName.trim()
+        ? raw.upstreamAccountName.trim()
+        : null,
+    hasEncryptedSessionOwner:
+      typeof raw.hasEncryptedSessionOwner === "boolean"
+        ? raw.hasEncryptedSessionOwner
+        : false,
+    encryptedOwnerAccountId:
+      normalizeFiniteNumber(raw.encryptedOwnerAccountId) ?? null,
+    encryptedOwnerAccountName:
+      typeof raw.encryptedOwnerAccountName === "string" &&
+      raw.encryptedOwnerAccountName.trim()
+        ? raw.encryptedOwnerAccountName.trim()
+        : null,
+    encryptedOwnerGroupName:
+      typeof raw.encryptedOwnerGroupName === "string" &&
+      raw.encryptedOwnerGroupName.trim()
+        ? raw.encryptedOwnerGroupName.trim()
+        : null,
+    updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : null,
+  };
 }
 
 export async function updatePromptCacheConversationBinding(
@@ -2605,7 +2663,7 @@ export async function updatePromptCacheConversationBinding(
   payload: UpdatePromptCacheConversationBindingPayload,
   signal?: AbortSignal,
 ): Promise<PromptCacheConversationBindingResponse> {
-  return fetchJson<PromptCacheConversationBindingResponse>(
+  const raw = await fetchJson<Record<string, unknown>>(
     `/api/stats/prompt-cache-conversation-bindings/${encodeURIComponent(
       promptCacheKey,
     )}`,
@@ -2615,6 +2673,40 @@ export async function updatePromptCacheConversationBinding(
       signal,
     },
   );
+  return {
+    promptCacheKey:
+      typeof raw.promptCacheKey === "string" ? raw.promptCacheKey : promptCacheKey,
+    bindingKind:
+      raw.bindingKind === "group" || raw.bindingKind === "upstreamAccount"
+        ? raw.bindingKind
+        : "none",
+    groupName:
+      typeof raw.groupName === "string" && raw.groupName.trim()
+        ? raw.groupName.trim()
+        : null,
+    upstreamAccountId: normalizeFiniteNumber(raw.upstreamAccountId) ?? null,
+    upstreamAccountName:
+      typeof raw.upstreamAccountName === "string" && raw.upstreamAccountName.trim()
+        ? raw.upstreamAccountName.trim()
+        : null,
+    hasEncryptedSessionOwner:
+      typeof raw.hasEncryptedSessionOwner === "boolean"
+        ? raw.hasEncryptedSessionOwner
+        : false,
+    encryptedOwnerAccountId:
+      normalizeFiniteNumber(raw.encryptedOwnerAccountId) ?? null,
+    encryptedOwnerAccountName:
+      typeof raw.encryptedOwnerAccountName === "string" &&
+      raw.encryptedOwnerAccountName.trim()
+        ? raw.encryptedOwnerAccountName.trim()
+        : null,
+    encryptedOwnerGroupName:
+      typeof raw.encryptedOwnerGroupName === "string" &&
+      raw.encryptedOwnerGroupName.trim()
+        ? raw.encryptedOwnerGroupName.trim()
+        : null,
+    updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : null,
+  };
 }
 
 export async function fetchPromptCacheConversationsPage(

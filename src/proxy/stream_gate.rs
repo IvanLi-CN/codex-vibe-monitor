@@ -185,6 +185,30 @@ pub(crate) fn best_effort_extract_prompt_cache_key_from_request_body_prefix(
     )
 }
 
+pub(crate) fn best_effort_extract_encrypted_content_from_request_body_prefix(bytes: &[u8]) -> bool {
+    bytes
+        .windows(br#""encrypted_content""#.len())
+        .any(|window| window == br#""encrypted_content""#)
+        || bytes
+            .windows(br#""type":"encrypted_content""#.len())
+            .any(|window| window == br#""type":"encrypted_content""#)
+}
+
+pub(crate) fn value_contains_encrypted_content(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => {
+            map.contains_key("encrypted_content")
+                || map
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value == "encrypted_content")
+                || map.values().any(value_contains_encrypted_content)
+        }
+        Value::Array(items) => items.iter().any(value_contains_encrypted_content),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod request_prefix_tests {
     use super::*;
@@ -251,6 +275,7 @@ pub(crate) fn prepare_target_request_body(
         sticky_key: None,
         prompt_cache_key: None,
         prompt_cache_key_attribution_source: None,
+        contains_encrypted_content: false,
         requested_service_tier: None,
         reasoning_effort: None,
         is_stream: false,
@@ -279,6 +304,7 @@ pub(crate) fn prepare_target_request_body(
         info.prompt_cache_key_attribution_source = Some("request".to_string());
     }
     info.reasoning_effort = extract_reasoning_effort_from_request_body(target, &value);
+    info.contains_encrypted_content = value_contains_encrypted_content(&value);
     info.is_stream = value
         .get("stream")
         .and_then(|v| v.as_bool())
@@ -692,6 +718,7 @@ pub(crate) fn build_response_capture_info_from_bytes(
             model: None,
             usage: ParsedUsage::default(),
             usage_missing_reason: Some("empty_response".to_string()),
+            contains_encrypted_content: false,
             service_tier: None,
             stream_terminal_event: None,
             upstream_error_code: None,
@@ -721,6 +748,7 @@ pub(crate) fn build_response_capture_info_from_bytes(
                     model,
                     usage,
                     usage_missing_reason,
+                    contains_encrypted_content: value_contains_encrypted_content(&value),
                     service_tier,
                     stream_terminal_event: None,
                     upstream_error_code: extract_upstream_error_code(&value),
@@ -745,6 +773,7 @@ pub(crate) fn build_response_capture_info_from_bytes(
                     model,
                     usage: ParsedUsage::default(),
                     usage_missing_reason: Some("response_not_json".to_string()),
+                    contains_encrypted_content: best_effort_extract_encrypted_content_from_request_body_prefix(bytes),
                     service_tier,
                     stream_terminal_event: None,
                     upstream_error_code,
@@ -958,6 +987,7 @@ pub(crate) struct StreamResponsePayloadParser {
     usage: ParsedUsage,
     service_tier: Option<String>,
     service_tier_rank: u8,
+    contains_encrypted_content: bool,
     stream_terminal_event: Option<String>,
     upstream_error_code: Option<String>,
     upstream_error_message: Option<String>,
@@ -1007,6 +1037,9 @@ impl StreamResponsePayloadParser {
                     self.usage = parsed_usage;
                     self.usage_found = true;
                 }
+                if value_contains_encrypted_content(&value) {
+                    self.contains_encrypted_content = true;
+                }
                 if stream_payload_indicates_failure(event_name.as_deref(), &value) {
                     let candidate = event_name
                         .clone()
@@ -1048,6 +1081,7 @@ impl StreamResponsePayloadParser {
             model: self.model,
             usage: self.usage,
             usage_missing_reason,
+            contains_encrypted_content: self.contains_encrypted_content,
             service_tier: self.service_tier,
             stream_terminal_event: self.stream_terminal_event,
             upstream_error_code: self.upstream_error_code,
@@ -1367,6 +1401,7 @@ pub(crate) fn build_retryable_overload_gate_outcome(
 ) -> PoolInitialResponseGateOutcome {
     let response_info = ResponseCaptureInfo {
         model: None,
+        contains_encrypted_content: false,
         usage: ParsedUsage::default(),
         usage_missing_reason: Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED.to_string()),
         service_tier: None,

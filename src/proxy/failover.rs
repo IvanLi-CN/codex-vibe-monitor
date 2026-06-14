@@ -313,6 +313,28 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
         .as_ref()
         .and_then(|ctx| ctx.request_info.model.as_deref())
         .map(str::to_string);
+    let encrypted_session_owner_guard_active = if let Some(prompt_cache_key) =
+        runtime_snapshot_context
+            .as_ref()
+            .and_then(|ctx| ctx.prompt_cache_key.as_deref())
+    {
+        let request_contains_encrypted_content = runtime_snapshot_context
+            .as_ref()
+            .is_some_and(|ctx| ctx.request_info.contains_encrypted_content);
+        resolve_prompt_cache_encrypted_session_routing_context(
+            &state.pool,
+            Some(prompt_cache_key),
+            request_contains_encrypted_content,
+        )
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|context| {
+            context.owner.owner_upstream_account_id > 0 && !context.manual_override_active
+        })
+    } else {
+        false
+    };
 
     'account_loop: loop {
         let mut distinct_account_count = attempted_account_ids.len();
@@ -574,6 +596,25 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::Unavailable,
                 )) => {
+                    if encrypted_session_owner_guard_active {
+                        let err = build_encrypted_session_owner_unavailable_error(
+                            None,
+                            attempt_count,
+                            distinct_account_count,
+                        );
+                        if let Some(trace) = trace_context.as_ref() {
+                            let _ = insert_and_broadcast_pool_upstream_terminal_attempt(
+                                state.as_ref(),
+                                trace,
+                                &err,
+                                (attempt_count + 1) as i64,
+                                distinct_account_count as i64,
+                                PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE,
+                            )
+                            .await;
+                        }
+                        return Err(err);
+                    }
                     let terminal_failure_kind =
                         if uses_timeout_route_failover && timeout_route_failover_pending {
                             PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
@@ -662,6 +703,25 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::NoCandidate,
                 )) => {
+                    if encrypted_session_owner_guard_active {
+                        let err = build_encrypted_session_owner_unavailable_error(
+                            None,
+                            attempt_count,
+                            distinct_account_count,
+                        );
+                        if let Some(trace) = trace_context.as_ref() {
+                            let _ = insert_and_broadcast_pool_upstream_terminal_attempt(
+                                state.as_ref(),
+                                trace,
+                                &err,
+                                (attempt_count + 1) as i64,
+                                distinct_account_count as i64,
+                                PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE,
+                            )
+                            .await;
+                        }
+                        return Err(err);
+                    }
                     if uses_timeout_route_failover && timeout_route_failover_pending {
                         let mut err = last_error.unwrap_or(PoolUpstreamError {
                             account: None,

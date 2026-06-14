@@ -598,6 +598,13 @@ pub(crate) struct PromptCacheConversationResponse {
     pub(crate) last_in_flight_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) cursor: Option<String>,
+    pub(crate) has_encrypted_session_owner: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) encrypted_owner_account_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) encrypted_owner_account_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) encrypted_owner_group_name: Option<String>,
     pub(crate) upstream_accounts: Vec<PromptCacheConversationUpstreamAccountResponse>,
     pub(crate) recent_invocations: Vec<PromptCacheConversationInvocationPreviewResponse>,
     pub(crate) last24h_requests: Vec<PromptCacheConversationRequestPointResponse>,
@@ -793,6 +800,7 @@ pub(crate) struct RequestCaptureInfo {
     pub(crate) sticky_key: Option<String>,
     pub(crate) prompt_cache_key: Option<String>,
     pub(crate) prompt_cache_key_attribution_source: Option<String>,
+    pub(crate) contains_encrypted_content: bool,
     pub(crate) requested_service_tier: Option<String>,
     pub(crate) reasoning_effort: Option<String>,
     pub(crate) is_stream: bool,
@@ -802,6 +810,7 @@ pub(crate) struct RequestCaptureInfo {
 #[derive(Debug, Clone)]
 pub(crate) struct ResponseCaptureInfo {
     pub(crate) model: Option<String>,
+    pub(crate) contains_encrypted_content: bool,
     pub(crate) usage: ParsedUsage,
     pub(crate) usage_missing_reason: Option<String>,
     pub(crate) service_tier: Option<String>,

@@ -1044,6 +1044,8 @@ async fn persist_ws_usage_event(
         target: ProxyCaptureTarget::Responses,
         status: StatusCode::OK,
         is_stream: true,
+        request_contains_encrypted_content: false,
+        response_contains_encrypted_content: false,
         request_model: None,
         requested_service_tier: None,
         billing_service_tier: billing_service_tier.as_deref(),

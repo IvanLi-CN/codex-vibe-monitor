@@ -6406,3 +6406,112 @@ async fn recover_stale_pool_upstream_request_attempt_candidates_batches_large_ca
 
     assert_eq!(recovered_count as usize, selector_count);
 }
+
+#[tokio::test]
+async fn send_pool_request_with_failover_returns_owner_unavailable_for_encrypted_session_lock() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let owner_account_id = insert_test_pool_api_key_account(
+        &state,
+        "Encrypted Owner Unavailable",
+        "upstream-owner-unavailable",
+    )
+    .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET policy_concurrency_limit = 1 WHERE id = ?1")
+        .bind(owner_account_id)
+        .execute(&state.pool)
+        .await
+        .expect("set encrypted owner account concurrency limit");
+    let now_iso = format_utc_iso(Utc::now());
+    insert_test_pool_limit_sample(&state, owner_account_id, Some(20.0), Some(20.0)).await;
+    upsert_sticky_route(
+        &state.pool,
+        "encrypted-owner-unavailable-active-key",
+        owner_account_id,
+        &now_iso,
+    )
+    .await
+    .expect("seed active sticky route for owner account");
+    upsert_sticky_route(
+        &state.pool,
+        "encrypted-owner-unavailable-request-key",
+        owner_account_id,
+        &now_iso,
+    )
+    .await
+    .expect("seed request sticky route for owner account");
+    upsert_prompt_cache_encrypted_session_owner(
+        &state.pool,
+        "encrypted-owner-unavailable-prompt-cache-key",
+        owner_account_id,
+    )
+    .await
+    .expect("persist encrypted session owner");
+
+    let err = send_pool_request_with_failover(
+        state.clone(),
+        710001,
+        Method::POST,
+        &"/v1/responses".parse().expect("valid uri"),
+        &HeaderMap::from_iter([(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )]),
+        Some(PoolReplayBodySnapshot::Memory(Bytes::from(
+            serde_json::to_vec(&json!({
+                "model": "gpt-5.4",
+                "input": [{
+                    "type": "encrypted_content",
+                    "encrypted_content": "opaque-owner-bound-content"
+                }]
+            }))
+            .expect("serialize encrypted owner request body"),
+        ))),
+        Duration::from_secs(5),
+        Some(PoolUpstreamAttemptTraceContext {
+            invoke_id: "proxy-710001-encrypted-owner-unavailable".to_string(),
+            occurred_at: shanghai_now_string(),
+            endpoint: "/v1/responses".to_string(),
+            sticky_key: Some("encrypted-owner-unavailable-request-key".to_string()),
+            requester_ip: None,
+        }),
+        Some(PoolAttemptRuntimeSnapshotContext {
+            capture_target: ProxyCaptureTarget::Responses,
+            request_info: RequestCaptureInfo {
+                model: Some("gpt-5.4".to_string()),
+                contains_encrypted_content: true,
+                ..RequestCaptureInfo::default()
+            },
+            prompt_cache_key: Some("encrypted-owner-unavailable-prompt-cache-key".to_string()),
+            t_req_read_ms: 1.0,
+            t_req_parse_ms: 1.0,
+        }),
+        Some("encrypted-owner-unavailable-request-key"),
+        None,
+        PoolFailoverProgress::default(),
+        1,
+    )
+    .await
+    .expect_err("encrypted owner lock should fail before rerouting");
+
+    assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        err.failure_kind,
+        PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE
+    );
+    assert_eq!(
+        err.upstream_error_code.as_deref(),
+        Some(PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE)
+    );
+    assert_eq!(
+        err.upstream_error_message.as_deref(),
+        Some(ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE)
+    );
+    assert_eq!(
+        err.account.as_ref().map(|account| account.account_id),
+        None,
+        "owner-unavailable guard should stop before picking an alternate account",
+    );
+}
