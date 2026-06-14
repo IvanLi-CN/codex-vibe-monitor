@@ -256,7 +256,7 @@ async fn proxy_openai_v1_chunked_json_without_header_sticky_uses_live_first_atte
 
 #[tokio::test]
 async fn proxy_openai_v1_responses_live_first_failover_restores_full_retry_budget_for_follow_up_accounts()
-{
+ {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[
         ("Bearer upstream-primary", 99),
         ("Bearer upstream-secondary", 2),
@@ -409,8 +409,7 @@ async fn proxy_openai_v1_live_first_unsupported_model_bad_request_fails_over() {
         settings.upstream_websocket_default_enabled = true;
     }
     seed_pool_routing_api_key(&state, "pool-live-key").await;
-    let primary_id =
-        insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let secondary_id =
         insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
 
@@ -465,12 +464,8 @@ async fn proxy_openai_v1_live_first_unsupported_model_bad_request_fails_over() {
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
     )
     .await;
-    wait_for_pool_attempt_status(
-        &state.pool,
-        2,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
-    )
-    .await;
+    wait_for_pool_attempt_status(&state.pool, 2, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
+        .await;
 
     let attempts = attempts
         .lock()
@@ -888,7 +883,9 @@ async fn proxy_openai_v1_responses_prebuffered_success_persists_encrypted_owner(
 
     assert_eq!(persisted_owner_account_id, Some(owner_account_id));
 
-    let attempts = attempts.lock().expect("lock prebuffered encrypted attempts");
+    let attempts = attempts
+        .lock()
+        .expect("lock prebuffered encrypted attempts");
     assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
 
     upstream_handle.abort();
@@ -1172,7 +1169,7 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_preserves_encrypted_ow
 
 #[tokio::test]
 async fn proxy_openai_v1_bodyless_header_prompt_cache_key_rate_limited_owner_returns_owner_unavailable()
-{
+ {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse(&upstream_base).expect("valid upstream base url"),
@@ -1275,7 +1272,7 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_rate_limited_owner_ret
 
 #[tokio::test]
 async fn proxy_openai_v1_bodyless_header_prompt_cache_key_same_account_binding_newer_than_owner_still_returns_owner_unavailable()
-{
+ {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse(&upstream_base).expect("valid upstream base url"),
@@ -1403,8 +1400,7 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_same_account_binding_n
 async fn websocket_prepare_preserves_encrypted_owner_lock() {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let mut config = test_config();
-    config.openai_upstream_base_url =
-        Url::parse(&upstream_base).expect("valid upstream base url");
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
     config.openai_proxy_websocket_enabled = true;
     config.openai_proxy_upstream_websocket_default_enabled = true;
     let state = test_state_from_config_with_pool_no_available_wait(
@@ -1447,18 +1443,16 @@ async fn websocket_prepare_preserves_encrypted_owner_lock() {
         .await
         .expect("persist encrypted owner lock");
     let (binding_constraint, owner_auto_guard_active) =
-        load_via_pool_effective_routing_constraint(
-            state.as_ref(),
-            Some(prompt_cache_key),
-            false,
-        )
-        .await
-        .expect("load websocket effective routing constraint");
+        load_via_pool_effective_routing_constraint(state.as_ref(), Some(prompt_cache_key), false)
+            .await
+            .expect("load websocket effective routing constraint");
 
     let err = prepare_upstream_websocket(
         state.clone(),
         5351,
-        &"/v1/realtime?model=gpt-5-realtime".parse().expect("valid uri"),
+        &"/v1/realtime?model=gpt-5-realtime"
+            .parse()
+            .expect("valid uri"),
         &HeaderMap::from_iter([
             (
                 http_header::AUTHORIZATION,
@@ -1522,8 +1516,7 @@ async fn websocket_prepare_preserves_encrypted_owner_lock() {
 async fn websocket_prepare_rate_limited_owner_returns_owner_unavailable() {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let mut config = test_config();
-    config.openai_upstream_base_url =
-        Url::parse(&upstream_base).expect("valid upstream base url");
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
     config.openai_proxy_websocket_enabled = true;
     config.openai_proxy_upstream_websocket_default_enabled = true;
     let state = test_state_from_config_with_pool_no_available_wait(
@@ -1571,18 +1564,16 @@ async fn websocket_prepare_rate_limited_owner_returns_owner_unavailable() {
         .await
         .expect("persist encrypted owner lock");
     let (binding_constraint, owner_auto_guard_active) =
-        load_via_pool_effective_routing_constraint(
-            state.as_ref(),
-            Some(prompt_cache_key),
-            false,
-        )
-        .await
-        .expect("load websocket effective routing constraint");
+        load_via_pool_effective_routing_constraint(state.as_ref(), Some(prompt_cache_key), false)
+            .await
+            .expect("load websocket effective routing constraint");
 
     let err = prepare_upstream_websocket(
         state.clone(),
         5352,
-        &"/v1/realtime?model=gpt-5-realtime".parse().expect("valid uri"),
+        &"/v1/realtime?model=gpt-5-realtime"
+            .parse()
+            .expect("valid uri"),
         &HeaderMap::from_iter([
             (
                 http_header::AUTHORIZATION,
@@ -1640,6 +1631,59 @@ async fn websocket_prepare_rate_limited_owner_returns_owner_unavailable() {
     );
 
     upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_payload_owner_guard_blocks_mismatched_payload_owner() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let owner_account_id =
+        insert_test_pool_api_key_account(&state, "Owner", "upstream-owner").await;
+    let secondary_account_id =
+        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+    upsert_prompt_cache_encrypted_session_owner(
+        &state.pool,
+        "pck-websocket-payload-owner",
+        owner_account_id,
+    )
+    .await
+    .expect("persist websocket payload owner");
+
+    let secondary_account = PoolResolvedAccount {
+        account_id: secondary_account_id,
+        display_name: "Secondary".to_string(),
+        kind: "api_key".to_string(),
+        auth: PoolResolvedAuth::ApiKey {
+            authorization: "Bearer upstream-secondary".to_string(),
+        },
+        group_name: None,
+        bound_proxy_keys: Vec::new(),
+        forward_proxy_scope: ForwardProxyRouteScope::Automatic,
+        single_account_rotation_enabled: false,
+        upstream_429_retry_enabled: false,
+        upstream_429_max_retries: 0,
+        fast_mode_rewrite_mode: TagFastModeRewriteMode::default(),
+        upstream_base_url: Url::parse("https://api.example.test").expect("valid base url"),
+        routing_source: PoolRoutingSelectionSource::FreshAssignment,
+    };
+
+    let outcome = inspect_ws_request_payload_guard(
+        state.as_ref(),
+        &secondary_account,
+        None,
+        br#"{"type":"conversation.item.create","promptCacheKey":"pck-websocket-payload-owner","item":{"type":"message","content":[{"type":"encrypted_content","encrypted_content":"opaque"}]}}"#,
+    )
+    .await
+    .expect("inspect websocket payload guard");
+
+    assert_eq!(
+        outcome.prompt_cache_key.as_deref(),
+        Some("pck-websocket-payload-owner")
+    );
+    assert!(outcome.contains_encrypted_content);
+    assert!(outcome.owner_guard_blocked);
 }
 
 #[tokio::test]
@@ -1932,10 +1976,12 @@ async fn proxy_openai_v1_header_sticky_stream_waits_for_blocked_policy_header_er
         attempt_row.failure_kind.as_deref(),
         Some(PROXY_FAILURE_POOL_ASSIGNED_ACCOUNT_BLOCKED),
     );
-    assert!(attempt_row
-        .error_message
-        .as_deref()
-        .is_some_and(|value| value.contains("not assigned to a group")));
+    assert!(
+        attempt_row
+            .error_message
+            .as_deref()
+            .is_some_and(|value| value.contains("not assigned to a group"))
+    );
 }
 
 #[tokio::test]

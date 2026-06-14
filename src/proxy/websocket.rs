@@ -89,7 +89,10 @@ pub(crate) async fn proxy_openai_v1_ws_common(
     headers: HeaderMap,
 ) -> Response {
     let proxy_request_id = next_proxy_request_id();
-    let invoke_id = format!("proxy-ws-{proxy_request_id}-{}", Utc::now().timestamp_millis());
+    let invoke_id = format!(
+        "proxy-ws-{proxy_request_id}-{}",
+        Utc::now().timestamp_millis()
+    );
     let started_at = Instant::now();
 
     info!(
@@ -146,7 +149,8 @@ pub(crate) async fn proxy_openai_v1_ws_common(
     .await;
 
     let sticky_key = extract_sticky_key_from_headers(&headers);
-    let prompt_cache_key = extract_prompt_cache_key_from_headers(&headers).or_else(|| sticky_key.clone());
+    let prompt_cache_key =
+        extract_prompt_cache_key_from_headers(&headers).or_else(|| sticky_key.clone());
     let requested_model = extract_requested_model_from_websocket_uri(&original_uri);
     let requester_ip = extract_requester_ip(&headers, peer_ip);
     let trace = PoolUpstreamAttemptTraceContext {
@@ -345,7 +349,9 @@ pub(crate) async fn prepare_upstream_websocket(
         )
         .await
         {
-            Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Resolved(account))) => account,
+            Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Resolved(
+                account,
+            ))) => account,
             Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Unavailable))
             | Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::NoCandidate)) => {
                 if owner_auto_guard_active {
@@ -430,9 +436,9 @@ pub(crate) async fn prepare_upstream_websocket(
                     message: POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
                 });
             }
-            Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::AssignedBlocked(
-                blocked,
-            ))) => {
+            Ok(PoolAccountResolutionWithWait::Resolution(
+                PoolAccountResolution::AssignedBlocked(blocked),
+            )) => {
                 if owner_auto_guard_active {
                     let err = build_encrypted_session_owner_unavailable_error(
                         None,
@@ -454,7 +460,9 @@ pub(crate) async fn prepare_upstream_websocket(
                     });
                 }
                 let terminal = ViaPoolResolutionTerminalError::assigned_blocked(blocked);
-                terminal.persist_if_needed(state.as_ref(), Some(trace)).await;
+                terminal
+                    .persist_if_needed(state.as_ref(), Some(trace))
+                    .await;
                 return Err(WsPrepareError {
                     status: terminal.status,
                     message: terminal.message,
@@ -621,7 +629,8 @@ async fn prepare_single_upstream_websocket_attempt(
             }
         };
 
-    let upstream_url = match build_websocket_upstream_url(&account.upstream_base_url, original_uri) {
+    let upstream_url = match build_websocket_upstream_url(&account.upstream_base_url, original_uri)
+    {
         Ok(url) => url,
         Err(err) => {
             reservation_guard.release();
@@ -716,7 +725,8 @@ async fn prepare_single_upstream_websocket_attempt(
         }
         Ok(Err(err)) => {
             let message = format!("failed to contact websocket upstream: {err}");
-            let should_mark_ws_unsupported = websocket_upstream_error_marks_account_ws_unsupported(&err);
+            let should_mark_ws_unsupported =
+                websocket_upstream_error_marks_account_ws_unsupported(&err);
             finalize_ws_attempt(
                 state.as_ref(),
                 pending_attempt_record.as_ref(),
@@ -895,6 +905,7 @@ async fn proxy_websocket_tunnel(
     let (mut downstream_tx, mut downstream_rx) = downstream.split();
     let (mut upstream_tx, mut upstream_rx) = upstream.split();
     let mut failure: Option<String> = None;
+    let mut failure_kind_override: Option<&'static str> = None;
     let mut upstream_route_failure: Option<String> = None;
     let mut usage_tracker = WsUsageTracker::new(account, trace, prompt_cache_key);
     let mut saw_downstream_request = false;
@@ -909,18 +920,55 @@ async fn proxy_websocket_tunnel(
                         if matches!(message, AxumWsMessage::Text(_) | AxumWsMessage::Binary(_)) {
                             saw_downstream_request = true;
                         }
-                        match &message {
-                            AxumWsMessage::Text(text) => {
-                                if ws_request_payload_contains_encrypted_content(text.as_bytes()) {
-                                    usage_tracker.request_contains_encrypted_content = true;
+                        let request_payload_bytes = match &message {
+                            AxumWsMessage::Text(text) => Some(text.as_bytes()),
+                            AxumWsMessage::Binary(bytes) => Some(bytes.as_ref()),
+                            _ => None,
+                        };
+                        if let Some(payload_bytes) = request_payload_bytes {
+                            match inspect_ws_request_payload_guard(
+                                state.as_ref(),
+                                &usage_tracker.account,
+                                usage_tracker
+                                    .prompt_cache_key
+                                    .as_deref()
+                                    .or(usage_tracker.trace.sticky_key.as_deref()),
+                                payload_bytes,
+                            )
+                            .await
+                            {
+                                Ok(outcome) => {
+                                    if let Some(prompt_cache_key) = outcome.prompt_cache_key {
+                                        usage_tracker.prompt_cache_key = Some(prompt_cache_key);
+                                    }
+                                    if outcome.contains_encrypted_content {
+                                        usage_tracker.request_contains_encrypted_content = true;
+                                    }
+                                    if outcome.owner_guard_blocked {
+                                        failure_kind_override =
+                                            Some(PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE);
+                                        failure = Some(
+                                            ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE.to_string(),
+                                        );
+                                        let _ = downstream_tx
+                                            .send(AxumWsMessage::Close(Some(
+                                                axum::extract::ws::CloseFrame {
+                                                    code: axum::extract::ws::close_code::AGAIN,
+                                                    reason: "encrypted_session_owner_unavailable; retry"
+                                                        .into(),
+                                                },
+                                            )))
+                                            .await;
+                                        break;
+                                    }
+                                }
+                                Err(err) => {
+                                    failure = Some(format!(
+                                        "failed to inspect websocket payload routing constraint: {err}"
+                                    ));
+                                    break;
                                 }
                             }
-                            AxumWsMessage::Binary(bytes) => {
-                                if ws_request_payload_contains_encrypted_content(bytes.as_ref()) {
-                                    usage_tracker.request_contains_encrypted_content = true;
-                                }
-                            }
-                            _ => {}
                         }
                         match axum_to_tungstenite_message(message) {
                             Some(message) => {
@@ -1031,7 +1079,9 @@ async fn proxy_websocket_tunnel(
         state.as_ref(),
         pending_attempt_record.as_ref(),
         status,
-        failure.as_ref().map(|_| PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
+        failure
+            .as_ref()
+            .map(|_| failure_kind_override.unwrap_or(PROXY_FAILURE_UPSTREAM_STREAM_ERROR)),
         failure.as_deref(),
         Some(connect_latency_ms),
         None,
@@ -1119,6 +1169,17 @@ struct WsUsageEvent {
     contains_encrypted_content: bool,
 }
 
+struct WsRequestPayloadInspection {
+    prompt_cache_key: Option<String>,
+    contains_encrypted_content: bool,
+}
+
+pub(crate) struct WsRequestPayloadGuardOutcome {
+    pub(crate) prompt_cache_key: Option<String>,
+    pub(crate) contains_encrypted_content: bool,
+    pub(crate) owner_guard_blocked: bool,
+}
+
 fn parse_ws_usage_event(text: &str) -> Option<WsUsageEvent> {
     let value = serde_json::from_str::<Value>(text).ok()?;
     let event_type = value.get("type")?.as_str()?.trim().to_string();
@@ -1198,10 +1259,58 @@ fn ws_upstream_close_requires_retry(
     saw_downstream_request && !saw_terminal_upstream_event
 }
 
+fn inspect_ws_request_payload(bytes: &[u8]) -> Option<WsRequestPayloadInspection> {
+    let value = serde_json::from_slice::<Value>(bytes).ok()?;
+    Some(WsRequestPayloadInspection {
+        prompt_cache_key: extract_prompt_cache_key_from_request_body(&value),
+        contains_encrypted_content: value_contains_encrypted_content(&value),
+    })
+}
+
 fn ws_request_payload_contains_encrypted_content(bytes: &[u8]) -> bool {
-    serde_json::from_slice::<Value>(bytes)
-        .ok()
-        .is_some_and(|value| value_contains_encrypted_content(&value))
+    inspect_ws_request_payload(bytes).is_some_and(|value| value.contains_encrypted_content)
+}
+
+pub(crate) async fn inspect_ws_request_payload_guard(
+    state: &AppState,
+    account: &PoolResolvedAccount,
+    existing_prompt_cache_key: Option<&str>,
+    bytes: &[u8],
+) -> Result<WsRequestPayloadGuardOutcome> {
+    let inspection = inspect_ws_request_payload(bytes);
+    let prompt_cache_key = inspection
+        .as_ref()
+        .and_then(|value| value.prompt_cache_key.clone())
+        .or_else(|| existing_prompt_cache_key.map(str::to_string));
+    let contains_encrypted_content = inspection
+        .as_ref()
+        .is_some_and(|value| value.contains_encrypted_content);
+    let mut owner_guard_blocked = false;
+
+    if let Some(prompt_cache_key) = prompt_cache_key.as_deref() {
+        let (binding_constraint, owner_auto_guard_active) =
+            load_via_pool_effective_routing_constraint(
+                state,
+                Some(prompt_cache_key),
+                contains_encrypted_content,
+            )
+            .await
+            .map_err(|(_status, message)| anyhow!(message))?;
+        owner_guard_blocked = owner_auto_guard_active
+            && binding_constraint.as_ref().is_some_and(|constraint| {
+                !binding_constraint_accepts_upstream_account_id(
+                    constraint,
+                    account.account_id,
+                    account.group_name.as_deref(),
+                )
+            });
+    }
+
+    Ok(WsRequestPayloadGuardOutcome {
+        prompt_cache_key,
+        contains_encrypted_content,
+        owner_guard_blocked,
+    })
 }
 
 fn ws_usage_event_is_completed_success(event: &WsUsageEvent) -> bool {
@@ -1500,19 +1609,22 @@ async fn connect_upstream_websocket(
     request: TungsteniteRequest<()>,
     upstream_url: &Url,
     forward_proxy_url: Option<&Url>,
-) -> std::result::Result<(UpstreamWsStream, tungstenite::handshake::client::Response), tungstenite::Error>
-{
+) -> std::result::Result<
+    (UpstreamWsStream, tungstenite::handshake::client::Response),
+    tungstenite::Error,
+> {
     let Some(forward_proxy_url) = forward_proxy_url else {
         let stream = connect_tcp_target(upstream_url).await?;
-        return client_async_tls_with_config(request, Box::new(stream) as BoxedWsIo, None, None).await;
+        return client_async_tls_with_config(request, Box::new(stream) as BoxedWsIo, None, None)
+            .await;
     };
 
-    let proxy_host = forward_proxy_url
-        .host_str()
-        .ok_or_else(|| tungstenite::Error::Io(io::Error::new(
+    let proxy_host = forward_proxy_url.host_str().ok_or_else(|| {
+        tungstenite::Error::Io(io::Error::new(
             io::ErrorKind::InvalidInput,
             "forward proxy endpoint is missing host",
-        )))?;
+        ))
+    })?;
     let proxy_port = forward_proxy_url.port_or_known_default().ok_or_else(|| {
         tungstenite::Error::Io(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1553,14 +1665,15 @@ async fn connect_upstream_websocket(
     if !matches!(proxy_scheme, "http" | "https") {
         return Err(tungstenite::Error::Io(io::Error::new(
             io::ErrorKind::Unsupported,
-            format!("websocket proxy only supports HTTP CONNECT, HTTPS CONNECT, or SOCKS5 forward proxy endpoints, got {proxy_scheme}"),
+            format!(
+                "websocket proxy only supports HTTP CONNECT, HTTPS CONNECT, or SOCKS5 forward proxy endpoints, got {proxy_scheme}"
+            ),
         )));
     }
 
     let mut stream = connect_http_forward_proxy(forward_proxy_url, proxy_host, proxy_port).await?;
-    let mut connect_request = format!(
-        "CONNECT {target_authority} HTTP/1.1\r\nHost: {target_authority}\r\n"
-    );
+    let mut connect_request =
+        format!("CONNECT {target_authority} HTTP/1.1\r\nHost: {target_authority}\r\n");
     if let Some(credential) = forward_proxy_basic_auth_credential(forward_proxy_url) {
         let encoded = base64::engine::general_purpose::STANDARD.encode(credential);
         connect_request.push_str("Proxy-Authorization: Basic ");
@@ -1576,7 +1689,10 @@ async fn connect_upstream_websocket(
     let mut response = Vec::with_capacity(256);
     let mut buffer = [0_u8; 1024];
     loop {
-        let read = stream.read(&mut buffer).await.map_err(tungstenite::Error::Io)?;
+        let read = stream
+            .read(&mut buffer)
+            .await
+            .map_err(tungstenite::Error::Io)?;
         if read == 0 {
             return Err(tungstenite::Error::Io(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -1606,10 +1722,12 @@ async fn connect_upstream_websocket(
     let status_line_end = response
         .windows(2)
         .position(|window| window == b"\r\n")
-        .ok_or_else(|| tungstenite::Error::Io(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "forward proxy CONNECT response missing status line",
-        )))?;
+        .ok_or_else(|| {
+            tungstenite::Error::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "forward proxy CONNECT response missing status line",
+            ))
+        })?;
     let status_line = std::str::from_utf8(&response[..status_line_end]).map_err(|err| {
         tungstenite::Error::Io(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1629,7 +1747,9 @@ async fn connect_upstream_websocket(
     client_async_tls_with_config(request, stream, None, None).await
 }
 
-async fn connect_tcp_target(upstream_url: &Url) -> std::result::Result<TcpStream, tungstenite::Error> {
+async fn connect_tcp_target(
+    upstream_url: &Url,
+) -> std::result::Result<TcpStream, tungstenite::Error> {
     let host = upstream_url
         .host_str()
         .ok_or_else(|| tungstenite::Error::Url(tungstenite::error::UrlError::NoHostName))?;
@@ -1661,12 +1781,13 @@ async fn connect_http_forward_proxy(
         .with_root_certificates(root_store)
         .with_no_client_auth();
     let connector = TlsConnector::from(Arc::new(config));
-    let server_name = rustls_pki_types::ServerName::try_from(proxy_host.to_string()).map_err(|err| {
-        tungstenite::Error::Io(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("invalid HTTPS forward proxy host for TLS SNI: {err}"),
-        ))
-    })?;
+    let server_name =
+        rustls_pki_types::ServerName::try_from(proxy_host.to_string()).map_err(|err| {
+            tungstenite::Error::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid HTTPS forward proxy host for TLS SNI: {err}"),
+            ))
+        })?;
     let stream = connector
         .connect(server_name, stream)
         .await
@@ -1911,7 +2032,7 @@ mod websocket_tests {
             bound_proxy_keys: Vec::new(),
             forward_proxy_scope: ForwardProxyRouteScope::Automatic,
             single_account_rotation_enabled: false,
-    upstream_429_retry_enabled: false,
+            upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
             fast_mode_rewrite_mode: TagFastModeRewriteMode::default(),
             upstream_base_url,
@@ -1932,7 +2053,7 @@ mod websocket_tests {
             bound_proxy_keys: Vec::new(),
             forward_proxy_scope: ForwardProxyRouteScope::Automatic,
             single_account_rotation_enabled: false,
-    upstream_429_retry_enabled: false,
+            upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
             fast_mode_rewrite_mode: TagFastModeRewriteMode::default(),
             upstream_base_url,
@@ -1951,7 +2072,9 @@ mod websocket_tests {
     #[test]
     fn websocket_upstream_url_maps_https_to_wss_and_preserves_base_path_query() {
         let base = Url::parse("https://api.example.test/gateway/").expect("valid base");
-        let uri = "/v1/responses?model=gpt-5.5".parse::<Uri>().expect("valid uri");
+        let uri = "/v1/responses?model=gpt-5.5"
+            .parse::<Uri>()
+            .expect("valid uri");
 
         let target = build_websocket_upstream_url(&base, &uri).expect("ws url");
 
@@ -1985,7 +2108,9 @@ mod websocket_tests {
 
     #[test]
     fn websocket_requested_model_extraction_ignores_blank_values() {
-        let uri = "/v1/realtime?model=%20%20".parse::<Uri>().expect("valid uri");
+        let uri = "/v1/realtime?model=%20%20"
+            .parse::<Uri>()
+            .expect("valid uri");
 
         assert_eq!(extract_requested_model_from_websocket_uri(&uri), None);
     }
@@ -1998,7 +2123,10 @@ mod websocket_tests {
             header::AUTHORIZATION,
             HeaderValue::from_static("Bearer downstream-pool-key"),
         );
-        headers.insert(header::CONNECTION, HeaderValue::from_static("upgrade, x-drop-me"));
+        headers.insert(
+            header::CONNECTION,
+            HeaderValue::from_static("upgrade, x-drop-me"),
+        );
         headers.insert(header::UPGRADE, HeaderValue::from_static("websocket"));
         headers.insert(
             HeaderName::from_static("openai-beta"),
@@ -2084,9 +2212,8 @@ mod websocket_tests {
 
     #[test]
     fn forward_proxy_credentials_are_percent_decoded() {
-        let proxy_url =
-            Url::parse("http://user%2Bname:p%40ss%3Aword@proxy.example.test:8080")
-                .expect("valid proxy url");
+        let proxy_url = Url::parse("http://user%2Bname:p%40ss%3Aword@proxy.example.test:8080")
+            .expect("valid proxy url");
 
         assert_eq!(
             forward_proxy_basic_auth_credential(&proxy_url).as_deref(),
@@ -2097,10 +2224,7 @@ mod websocket_tests {
     #[tokio::test]
     async fn prefixed_io_replays_buffered_connect_bytes() {
         let (mut client, server) = tokio::io::duplex(64);
-        client
-            .write_all(b"inner")
-            .await
-            .expect("write inner bytes");
+        client.write_all(b"inner").await.expect("write inner bytes");
         drop(client);
         let mut stream = PrefixedIo::new(b"prefix-".to_vec(), Box::new(server));
         let mut bytes = Vec::new();
@@ -2241,6 +2365,17 @@ mod websocket_tests {
     }
 
     #[test]
+    fn websocket_request_payload_extracts_prompt_cache_key() {
+        let inspection = inspect_ws_request_payload(
+            br#"{"type":"conversation.item.create","metadata":{"promptCacheKey":"pck-ws"},"item":{"type":"message"}}"#,
+        )
+        .expect("payload inspection");
+
+        assert_eq!(inspection.prompt_cache_key.as_deref(), Some("pck-ws"));
+        assert!(!inspection.contains_encrypted_content);
+    }
+
+    #[test]
     fn websocket_usage_payload_marks_transport() {
         let payload = mark_websocket_payload_transport(
             r#"{"endpoint":"/v1/responses","model":"gpt-5.5"}"#.to_string(),
@@ -2264,10 +2399,12 @@ mod websocket_tests {
             r#"{"type":"response.in_progress","response":{"usage":{"input_tokens":7,"output_tokens":3}}}"#
         )
         .is_none());
-        assert!(parse_ws_usage_event(
-            r#"{"type":"response.completed","response":{"usage":{"input_tokens":7}}}"#
-        )
-        .is_none());
+        assert!(
+            parse_ws_usage_event(
+                r#"{"type":"response.completed","response":{"usage":{"input_tokens":7}}}"#
+            )
+            .is_none()
+        );
         assert!(parse_ws_usage_event(
             r#"{"type":"response.completed","response":{"usage":{"input_tokens":"bad","output_tokens":3}}}"#
         )
