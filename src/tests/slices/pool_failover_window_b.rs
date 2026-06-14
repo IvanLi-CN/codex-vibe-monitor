@@ -1687,6 +1687,133 @@ async fn websocket_payload_owner_guard_blocks_mismatched_payload_owner() {
 }
 
 #[tokio::test]
+async fn websocket_prepare_does_not_treat_sticky_key_as_prompt_cache_key() {
+    let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.openai_proxy_websocket_enabled = true;
+    config.openai_proxy_upstream_websocket_default_enabled = true;
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(80),
+            poll_interval: Duration::from_millis(10),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.websocket_enabled = true;
+        settings.upstream_websocket_default_enabled = true;
+    }
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let owner_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Encrypted Owner",
+        "upstream-owner",
+        None,
+        None,
+        None,
+    )
+    .await;
+    let sticky_only_failover_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Secondary",
+        "upstream-secondary",
+        None,
+        None,
+        None,
+    )
+    .await;
+    set_test_account_status(&state.pool, owner_account_id, "needs_reauth").await;
+    let sticky_only_key = "sticky-only-websocket-key";
+    upsert_prompt_cache_encrypted_session_owner(&state.pool, sticky_only_key, owner_account_id)
+        .await
+        .expect("persist sticky-only named encrypted owner row");
+
+    let headers = HeaderMap::from_iter([
+        (
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        ),
+        (
+            HeaderName::from_static("x-sticky-key"),
+            HeaderValue::from_static(sticky_only_key),
+        ),
+    ]);
+    let (sticky_key, prompt_cache_key) = websocket_routing_keys_from_headers(&headers);
+    assert_eq!(sticky_key.as_deref(), Some(sticky_only_key));
+    assert_eq!(prompt_cache_key, None);
+    let trace_sticky_key = sticky_key.clone();
+
+    let (binding_constraint, owner_auto_guard_active) = load_via_pool_effective_routing_constraint(
+        state.as_ref(),
+        websocket_effective_prompt_cache_key(prompt_cache_key.as_deref()),
+        false,
+    )
+    .await
+    .expect("load websocket effective routing constraint without prompt cache key");
+    assert!(binding_constraint.is_none());
+    assert!(!owner_auto_guard_active);
+
+    let err = prepare_upstream_websocket(
+        state.clone(),
+        5353,
+        &"/v1/realtime?model=gpt-5-realtime"
+            .parse()
+            .expect("valid uri"),
+        &headers,
+        &resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts"),
+        sticky_key.as_deref(),
+        Some("gpt-5-realtime"),
+        websocket_effective_prompt_cache_key(prompt_cache_key.as_deref()),
+        binding_constraint,
+        owner_auto_guard_active,
+        &PoolUpstreamAttemptTraceContext {
+            invoke_id: "pool-ws-5353".to_string(),
+            occurred_at: shanghai_now_string(),
+            endpoint: "/v1/realtime".to_string(),
+            sticky_key: trace_sticky_key,
+            requester_ip: None,
+        },
+    )
+    .await;
+    let Err(err) = err else {
+        panic!("websocket upstream should fail at the fake HTTP upstream, not owner guard");
+    };
+
+    assert_eq!(err.status, StatusCode::BAD_GATEWAY);
+    assert!(
+        err.message.contains("failed to contact websocket upstream"),
+        "expected upstream handshake failure, got: {}",
+        err.message
+    );
+
+    let last_attempt = sqlx::query_as::<_, (Option<i64>, Option<String>)>(
+        r#"
+        SELECT upstream_account_id, failure_kind
+        FROM pool_upstream_request_attempts
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load websocket sticky-only terminal attempt");
+    assert_eq!(last_attempt.0, Some(sticky_only_failover_account_id));
+    assert_ne!(
+        last_attempt.1.as_deref(),
+        Some(PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE)
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_header_sticky_stream_prefers_body_timeout_before_pool_wait() {
     let mut config = test_config();
     config.openai_upstream_base_url =

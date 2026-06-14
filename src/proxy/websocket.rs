@@ -70,6 +70,21 @@ pub(crate) fn is_websocket_upgrade_request(headers: &HeaderMap) -> bool {
         .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
 }
 
+pub(crate) fn websocket_routing_keys_from_headers(
+    headers: &HeaderMap,
+) -> (Option<String>, Option<String>) {
+    (
+        extract_sticky_key_from_headers(headers),
+        extract_prompt_cache_key_from_headers(headers),
+    )
+}
+
+pub(crate) fn websocket_effective_prompt_cache_key(prompt_cache_key: Option<&str>) -> Option<&str> {
+    prompt_cache_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
 fn extract_requested_model_from_websocket_uri(original_uri: &Uri) -> Option<String> {
     let raw_query = original_uri.query()?;
     url::form_urlencoded::parse(raw_query.as_bytes()).find_map(|(key, value)| {
@@ -148,9 +163,7 @@ pub(crate) async fn proxy_openai_v1_ws_common(
     )
     .await;
 
-    let sticky_key = extract_sticky_key_from_headers(&headers);
-    let prompt_cache_key =
-        extract_prompt_cache_key_from_headers(&headers).or_else(|| sticky_key.clone());
+    let (sticky_key, prompt_cache_key) = websocket_routing_keys_from_headers(&headers);
     let requested_model = extract_requested_model_from_websocket_uri(&original_uri);
     let requester_ip = extract_requester_ip(&headers, peer_ip);
     let trace = PoolUpstreamAttemptTraceContext {
@@ -929,10 +942,9 @@ async fn proxy_websocket_tunnel(
                             match inspect_ws_request_payload_guard(
                                 state.as_ref(),
                                 &usage_tracker.account,
-                                usage_tracker
-                                    .prompt_cache_key
-                                    .as_deref()
-                                    .or(usage_tracker.trace.sticky_key.as_deref()),
+                                websocket_effective_prompt_cache_key(
+                                    usage_tracker.prompt_cache_key.as_deref(),
+                                ),
                                 payload_bytes,
                             )
                             .await
@@ -1373,10 +1385,11 @@ async fn persist_ws_usage_event(
         upstream_scope: INVOCATION_UPSTREAM_SCOPE_INTERNAL,
         route_mode: INVOCATION_ROUTE_MODE_POOL,
         sticky_key: trace.sticky_key.as_deref(),
-        prompt_cache_key: prompt_cache_key.or(trace.sticky_key.as_deref()),
-        prompt_cache_key_attribution_source: prompt_cache_key
+        prompt_cache_key: websocket_effective_prompt_cache_key(prompt_cache_key),
+        prompt_cache_key_attribution_source: websocket_effective_prompt_cache_key(prompt_cache_key)
             .map(|_| "websocket_trace")
-            .or_else(|| trace.sticky_key.as_ref().map(|_| "websocket_trace")),
+            .map(str::to_string)
+            .as_deref(),
         client_fingerprint: None,
         client_header_fingerprints: None,
         upstream_account_id: Some(account.account_id),
@@ -1414,7 +1427,7 @@ async fn persist_ws_usage_event(
     let is_failed_terminal_event = !is_completed_terminal_event;
     let failure_kind = ws_terminal_event_failure_kind(&event);
     if is_completed_terminal_event
-        && let Some(prompt_cache_key) = prompt_cache_key.or(trace.sticky_key.as_deref())
+        && let Some(prompt_cache_key) = websocket_effective_prompt_cache_key(prompt_cache_key)
         && (request_contains_encrypted_content || event.contains_encrypted_content)
     {
         if confirm_prompt_cache_encrypted_session_owner_success(
@@ -2116,6 +2129,19 @@ mod websocket_tests {
     }
 
     #[test]
+    fn websocket_header_prompt_cache_key_does_not_fallback_to_sticky_key() {
+        let headers = HeaderMap::from_iter([(
+            HeaderName::from_static("x-sticky-key"),
+            HeaderValue::from_static("sticky-only-key"),
+        )]);
+
+        let (sticky_key, prompt_cache_key) = websocket_routing_keys_from_headers(&headers);
+
+        assert_eq!(sticky_key.as_deref(), Some("sticky-only-key"));
+        assert_eq!(prompt_cache_key, None);
+    }
+
+    #[test]
     fn upstream_ws_request_replaces_auth_and_drops_upgrade_hop_headers() {
         let account = api_key_account(Url::parse("https://api.example.test").expect("valid base"));
         let mut headers = HeaderMap::new();
@@ -2373,6 +2399,27 @@ mod websocket_tests {
 
         assert_eq!(inspection.prompt_cache_key.as_deref(), Some("pck-ws"));
         assert!(!inspection.contains_encrypted_content);
+    }
+
+    #[test]
+    fn websocket_effective_prompt_cache_key_ignores_sticky_only_context() {
+        let trace = PoolUpstreamAttemptTraceContext {
+            invoke_id: "pool-ws-sticky-only".to_string(),
+            occurred_at: shanghai_now_string(),
+            endpoint: "/v1/realtime".to_string(),
+            sticky_key: Some("sticky-only-key".to_string()),
+            requester_ip: None,
+        };
+        let usage_tracker = WsUsageTracker::new(
+            api_key_account(Url::parse("https://api.example.test").expect("valid base")),
+            trace,
+            None,
+        );
+
+        assert_eq!(
+            websocket_effective_prompt_cache_key(usage_tracker.prompt_cache_key.as_deref()),
+            None
+        );
     }
 
     #[test]
