@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.70.2",
+  "base_stable_version": "1.70.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-06-14T18:03:09Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.70.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "208983705695ed65c91a0b386deef2987c75d8b0",
+  "pr_number": 450,
+  "pr_title": "fix(prompt-cache): lock encrypted session owners",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.70.2",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.70.2",
+  "target_sha": "e132306489c0fe4908f41ff7a4102c615991ad17",
+  "type_label": "type:patch"
+}
