@@ -2788,15 +2788,22 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         })?;
 
                         let upstream_status = upstream_response.status();
-                        let upstream_request_id = upstream_response
-                            .headers()
-                            .get("x-request-id")
-                            .and_then(|value| value.to_str().ok())
-                            .map(str::trim)
-                            .filter(|value| !value.is_empty())
-                            .map(|value| value.to_string());
-                        let upstream_connection_scoped =
-                            connection_scoped_header_names(upstream_response.headers());
+	                        let upstream_request_id = upstream_response
+	                            .headers()
+	                            .get("x-request-id")
+	                            .and_then(|value| value.to_str().ok())
+	                            .map(str::trim)
+	                            .filter(|value| !value.is_empty())
+	                            .map(|value| value.to_string());
+	                        let upstream_content_encoding = upstream_response
+	                            .headers()
+	                            .get(header::CONTENT_ENCODING)
+	                            .and_then(|value| value.to_str().ok())
+	                            .map(str::trim)
+	                            .filter(|value| !value.is_empty())
+	                            .map(|value| value.to_string());
+	                        let upstream_connection_scoped =
+	                            connection_scoped_header_names(upstream_response.headers());
                         let mut response_builder = Response::builder().status(upstream_status);
                         for (name, value) in upstream_response.headers() {
                             if should_forward_proxy_header(name, &upstream_connection_scoped) {
@@ -2907,8 +2914,8 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             upstream_attempt_started_at_utc;
                         let request_contains_encrypted_content_for_task =
                             live_request_contains_encrypted_content;
+                        let upstream_content_encoding_for_task = upstream_content_encoding.clone();
                         let proxy_request_permit_for_task = proxy_request_permit;
-                        let replay_status_rx_for_task = replay_status_rx.clone();
                         tokio::spawn(async move {
                             let mut deferred_pool_early_phase_cleanup_guard_for_task =
                                 deferred_pool_early_phase_cleanup_guard;
@@ -2919,10 +2926,13 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             let stream_started_at = Instant::now();
                             let mut stream_error_message: Option<String> = None;
                             let mut downstream_closed = false;
+                            let mut response_parse_buffer =
+                                BoundedResponseParseBuffer::new(RAW_RESPONSE_PREVIEW_LIMIT);
                             let mut proxy_request_permit_for_task =
                                 Some(proxy_request_permit_for_task);
 
                             if let Some(chunk) = first_chunk {
+                                response_parse_buffer.append(&chunk);
                                 forwarded_chunks = forwarded_chunks.saturating_add(1);
                                 forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
                                 if tx.send(Ok(chunk)).await.is_err() {
@@ -2940,6 +2950,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                 };
                                 match next_chunk {
                                     Ok(chunk) => {
+                                        response_parse_buffer.append(&chunk);
                                         forwarded_chunks =
                                             forwarded_chunks.saturating_add(1);
                                         forwarded_bytes =
@@ -2992,19 +3003,16 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                 {
                                     warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
                                 }
-                                let replay_status_for_task =
-                                    { replay_status_rx_for_task.borrow().clone() };
-                                let replay_contains_encrypted_content = match replay_status_for_task
-                                {
-                                    PoolReplayBodyStatus::Complete(snapshot) => {
-                                        replay_snapshot_contains_encrypted_content(&snapshot).await
-                                    }
-                                    _ => false,
-                                };
+                                let response_contains_encrypted_content = response_parse_buffer
+                                    .into_response_info(
+                                        ProxyCaptureTarget::Responses,
+                                        upstream_content_encoding_for_task.as_deref(),
+                                    )
+                                    .contains_encrypted_content;
                                 if let Some(prompt_cache_key) =
                                     prompt_cache_key_for_record.as_deref()
                                     && (request_contains_encrypted_content_for_task
-                                        || replay_contains_encrypted_content)
+                                        || response_contains_encrypted_content)
                                 {
                                     match confirm_prompt_cache_encrypted_session_owner_success(
                                         &state_for_record.pool,
@@ -3327,6 +3335,13 @@ pub(crate) async fn proxy_openai_v1_via_pool(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| value.to_string());
+    let upstream_content_encoding = upstream_response
+        .headers()
+        .get(header::CONTENT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     let upstream_connection_scoped = connection_scoped_header_names(upstream_response.headers());
     let mut response_builder = Response::builder().status(upstream_status);
     for (name, value) in upstream_response.headers() {
@@ -3466,6 +3481,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
     let upstream_request_id_for_task = upstream_request_id;
     let upstream_attempt_started_at_utc_for_record = upstream_attempt_started_at_utc;
     let request_contains_encrypted_content_for_task = request_contains_encrypted_content;
+    let upstream_content_encoding_for_task = upstream_content_encoding.clone();
     let proxy_request_permit_for_task = proxy_request_permit;
     tokio::spawn(async move {
         let mut deferred_pool_early_phase_cleanup_guard_for_task =
@@ -3476,9 +3492,11 @@ pub(crate) async fn proxy_openai_v1_via_pool(
         let stream_started_at = Instant::now();
         let mut stream_error_message: Option<String> = None;
         let mut downstream_closed = false;
+        let mut response_parse_buffer = BoundedResponseParseBuffer::new(RAW_RESPONSE_PREVIEW_LIMIT);
         let mut proxy_request_permit_for_task = Some(proxy_request_permit_for_task);
 
         if let Some(chunk) = first_chunk {
+            response_parse_buffer.append(&chunk);
             forwarded_chunks = forwarded_chunks.saturating_add(1);
             forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
             if tx.send(Ok(chunk)).await.is_err() {
@@ -3496,6 +3514,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             };
             match next_chunk {
                 Ok(chunk) => {
+                    response_parse_buffer.append(&chunk);
                     forwarded_chunks = forwarded_chunks.saturating_add(1);
                     forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
                     if tx.send(Ok(chunk)).await.is_err() {
@@ -3546,8 +3565,15 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             {
                 warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
             }
+            let response_contains_encrypted_content = response_parse_buffer
+                .into_response_info(
+                    ProxyCaptureTarget::Responses,
+                    upstream_content_encoding_for_task.as_deref(),
+                )
+                .contains_encrypted_content;
             if let Some(prompt_cache_key) = prompt_cache_key_for_record.as_deref()
-                && request_contains_encrypted_content_for_task
+                && (request_contains_encrypted_content_for_task
+                    || response_contains_encrypted_content)
             {
                 match confirm_prompt_cache_encrypted_session_owner_success(
                     &state_for_record.pool,

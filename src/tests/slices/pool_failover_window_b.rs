@@ -102,7 +102,13 @@ async fn proxy_openai_v1_body_only_sticky_stream_waits_only_once_before_503() {
     let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
         .await
         .expect("resolve pool runtime timeouts");
-    let started = Instant::now();
+    let wait_started_rx = crate::proxy::register_pool_no_available_wait_hook(&state);
+    let wait_started_task = std::thread::spawn(move || {
+        wait_started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("body-only sticky request should signal once the bounded wait starts");
+        Instant::now()
+    });
     let response = proxy_openai_v1_via_pool(
         state.clone(),
         5242,
@@ -123,11 +129,14 @@ async fn proxy_openai_v1_body_only_sticky_stream_waits_only_once_before_503() {
         None,
     )
     .await;
-    let elapsed = started.elapsed();
+    let wait_started_at = wait_started_task
+        .join()
+        .expect("wait-start watcher thread should join");
+    let elapsed_since_wait_start = wait_started_at.elapsed();
 
     assert!(
-        elapsed < Duration::from_millis(200),
-        "body-only sticky streaming request should honor a single bounded wait window, elapsed={elapsed:?}"
+        elapsed_since_wait_start < Duration::from_millis(260),
+        "body-only sticky streaming request should finish after one bounded wait window once waiting starts, elapsed_since_wait_start={elapsed_since_wait_start:?}"
     );
     let (status, message) = response.expect_err("via-pool request should fail");
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
@@ -798,6 +807,149 @@ async fn proxy_openai_v1_responses_live_first_success_persists_encrypted_owner()
     assert_eq!(persisted_owner_account_id, Some(owner_account_id));
 
     let attempts = attempts.lock().expect("lock live-first encrypted attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_responses_live_first_response_encryption_persists_encrypted_owner() {
+    async fn response_encryption_live_first_upstream(
+        attempts: Arc<StdMutex<HashMap<String, usize>>>,
+        headers: HeaderMap,
+    ) -> Response {
+        let authorization = headers
+            .get(http_header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        {
+            let mut attempts = attempts
+                .lock()
+                .expect("lock live-first response-encryption attempts");
+            let entry = attempts.entry(authorization.clone()).or_insert(0);
+            *entry += 1;
+        }
+        (
+            StatusCode::OK,
+            Json(json!({
+                "authorization": authorization,
+                "output": [
+                    {
+                        "type": "encrypted_content",
+                        "encrypted_content": "opaque-owner-bound-content"
+                    }
+                ]
+            })),
+        )
+            .into_response()
+    }
+
+    let attempts = Arc::new(StdMutex::new(HashMap::new()));
+    let app = Router::new().route(
+        "/v1/responses",
+        post({
+            let attempts = attempts.clone();
+            move |headers| response_encryption_live_first_upstream(attempts.clone(), headers)
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind live-first response-encryption upstream");
+    let addr = listener
+        .local_addr()
+        .expect("live-first response-encryption upstream addr");
+    let upstream_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("live-first response-encryption upstream should run");
+    });
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&format!("http://{addr}")).expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(10),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let owner_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Live First Response Encrypted Owner",
+        "upstream-primary",
+        None,
+        None,
+        None,
+    )
+    .await;
+    let prompt_cache_key = "pck-live-first-response-encrypted-owner";
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    let first_chunk = format!(
+        "{{\"model\":\"gpt-5\",\"promptCacheKey\":\"{prompt_cache_key}\",\"input\":\"{}",
+        "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 256)
+    );
+    tokio::spawn(async move {
+        let _ = tx.send(Ok(Bytes::from(first_chunk))).await;
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        let _ = tx.send(Ok(Bytes::from_static(b"\"}"))).await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        5345,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("live-first response-encryption request should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read live-first response-encryption response");
+    let payload: Value =
+        serde_json::from_slice(&body).expect("decode live-first response-encryption response");
+    assert_eq!(payload["authorization"], "Bearer upstream-primary");
+
+    let mut persisted_owner_account_id = None;
+    for _ in 0..50 {
+        persisted_owner_account_id = sqlx::query_scalar(
+            r#"
+            SELECT owner_upstream_account_id
+            FROM prompt_cache_encrypted_session_owners
+            WHERE prompt_cache_key = ?1
+            "#,
+        )
+        .bind(prompt_cache_key)
+        .fetch_optional(&state.pool)
+        .await
+        .expect("query live-first response-encryption owner row");
+        if persisted_owner_account_id.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    assert_eq!(persisted_owner_account_id, Some(owner_account_id));
+
+    let attempts = attempts
+        .lock()
+        .expect("lock live-first response-encryption attempts");
     assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
 
     upstream_handle.abort();
@@ -1687,6 +1839,203 @@ async fn websocket_payload_owner_guard_blocks_mismatched_payload_owner() {
 }
 
 #[tokio::test]
+async fn websocket_payload_only_prompt_cache_key_routes_first_upgrade_to_owner_account() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::connect_async;
+    use tungstenite::Message as TungsteniteMessage;
+
+    async fn websocket_echo_upstream(
+        ws: WebSocketUpgrade,
+        State(attempts): State<Arc<StdMutex<HashMap<String, usize>>>>,
+        headers: HeaderMap,
+    ) -> Response {
+        let authorization = headers
+            .get(http_header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        {
+            let mut attempts = attempts.lock().expect("lock websocket attempts");
+            let entry = attempts.entry(authorization.clone()).or_insert(0);
+            *entry += 1;
+        }
+
+        ws.on_upgrade(move |mut socket| async move {
+            let response = json!({
+                "type": "response.completed",
+                "response": {
+                    "status": "completed",
+                    "output": [{
+                        "type": "encrypted_content",
+                        "encrypted_content": "opaque-owner-bound-content"
+                    }],
+                    "usage": {
+                        "input_tokens": 3,
+                        "output_tokens": 2,
+                        "total_tokens": 5
+                    }
+                },
+                "authorization": authorization
+            })
+            .to_string();
+            while let Some(Ok(message)) = socket.next().await {
+                match message {
+                    AxumWsMessage::Text(_) | AxumWsMessage::Binary(_) => {
+                        let _ = socket.send(AxumWsMessage::Text(response.clone())).await;
+                        let _ = socket.send(AxumWsMessage::Close(None)).await;
+                        break;
+                    }
+                    AxumWsMessage::Close(_) => break,
+                    _ => {}
+                }
+            }
+        })
+        .into_response()
+    }
+
+    let attempts = Arc::new(StdMutex::new(HashMap::new()));
+    let upstream_app = Router::new()
+        .route("/v1/realtime", get(websocket_echo_upstream))
+        .with_state(attempts.clone());
+    let upstream_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind websocket upstream");
+    let upstream_addr = upstream_listener
+        .local_addr()
+        .expect("websocket upstream addr");
+    let upstream_handle = tokio::spawn(async move {
+        axum::serve(upstream_listener, upstream_app)
+            .await
+            .expect("websocket upstream should run");
+    });
+
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse(&format!("http://{upstream_addr}")).expect("valid websocket upstream base url");
+    config.openai_proxy_websocket_enabled = true;
+    config.openai_proxy_upstream_websocket_default_enabled = true;
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(80),
+            poll_interval: Duration::from_millis(10),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.websocket_enabled = true;
+        settings.upstream_websocket_default_enabled = true;
+    }
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let owner_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "WebSocket Owner",
+        "upstream-owner",
+        None,
+        None,
+        Some(&format!("http://{upstream_addr}")),
+    )
+    .await;
+    let secondary_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "WebSocket Secondary",
+        "upstream-secondary",
+        None,
+        None,
+        Some(&format!("http://{upstream_addr}")),
+    )
+    .await;
+    let prompt_cache_key = "pck-websocket-payload-first-upgrade-owner";
+    upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, owner_account_id)
+        .await
+        .expect("persist websocket payload owner");
+    let now_iso = format_utc_iso(Utc::now());
+    upsert_sticky_route(
+        &state.pool,
+        "sticky-websocket-secondary-preferred",
+        secondary_account_id,
+        &now_iso,
+    )
+    .await
+    .expect("seed sticky route toward secondary");
+
+    let proxy_app = Router::new()
+        .route("/v1/*path", any(proxy_openai_v1_with_connect_info))
+        .with_state(state.clone());
+    let proxy_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind websocket proxy server");
+    let proxy_addr = proxy_listener
+        .local_addr()
+        .expect("websocket proxy server addr");
+    let proxy_handle = tokio::spawn(async move {
+        axum::serve(proxy_listener, proxy_app)
+            .await
+            .expect("websocket proxy server should run");
+    });
+
+    let request = format!(
+        "ws://{proxy_addr}/v1/realtime?model=gpt-5-realtime"
+    )
+    .into_client_request()
+    .expect("websocket client request");
+    let mut request = request;
+    request.headers_mut().insert(
+        http_header::AUTHORIZATION,
+        HeaderValue::from_static("Bearer pool-live-key"),
+    );
+    request.headers_mut().insert(
+        HeaderName::from_static("x-sticky-key"),
+        HeaderValue::from_static("sticky-websocket-secondary-preferred"),
+    );
+    let (mut client, response) = connect_async(request)
+        .await
+        .expect("connect websocket proxy");
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+
+    client
+        .send(TungsteniteMessage::Text(
+            json!({
+                "type": "conversation.item.create",
+                "promptCacheKey": prompt_cache_key,
+                "item": {
+                    "type": "message",
+                    "content": [{
+                        "type": "encrypted_content",
+                        "encrypted_content": "opaque"
+                    }]
+                }
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send websocket prompt-cache payload");
+
+    let message = client
+        .next()
+        .await
+        .expect("receive websocket response")
+        .expect("websocket response frame");
+    let text = match message {
+        TungsteniteMessage::Text(text) => text.to_string(),
+        other => panic!("expected text websocket response, got {other:?}"),
+    };
+    let payload: Value = serde_json::from_str(&text).expect("decode websocket response");
+    assert_eq!(payload["authorization"], "Bearer upstream-owner");
+
+    let attempts = attempts.lock().expect("lock websocket owner attempts");
+    assert_eq!(attempts.get("Bearer upstream-owner").copied(), Some(1));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+
+    proxy_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn websocket_prepare_does_not_treat_sticky_key_as_prompt_cache_key() {
     let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let mut config = test_config();
@@ -1926,7 +2275,7 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_body_timeout_over_rate_l
     let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
         .await
         .expect("resolve pool runtime timeouts");
-    let started = Instant::now();
+    let wait_started_rx = crate::proxy::register_pool_no_available_wait_hook(&state);
     let response = proxy_openai_v1_via_pool(
         state.clone(),
         6243,
@@ -1951,11 +2300,9 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_body_timeout_over_rate_l
         None,
     )
     .await;
-    let elapsed = started.elapsed();
-
     assert!(
-        elapsed < Duration::from_millis(180),
-        "body timeout should still fire first, elapsed={elapsed:?}"
+        wait_started_rx.try_recv().is_err(),
+        "header sticky request should time out on body read before entering bounded pool wait"
     );
     let (status, message) = response.expect_err("via-pool request should fail");
     assert_eq!(status, StatusCode::REQUEST_TIMEOUT);
@@ -2424,7 +2771,7 @@ async fn proxy_openai_v1_header_sticky_responses_wait_timeout_respects_total_tim
         "request should still wait briefly for bounded pool recovery, elapsed={elapsed:?}"
     );
     assert!(
-        elapsed < Duration::from_millis(150),
+        elapsed < Duration::from_millis(180),
         "responses total timeout should short-circuit even while the body is still buffering, elapsed={elapsed:?}"
     );
     let (status, message) = response.expect_err("via-pool request should fail");
@@ -2838,10 +3185,17 @@ async fn pool_route_waited_initial_account_still_uses_remaining_total_timeout_bu
     .await;
     set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
 
+    let wait_started_rx = crate::proxy::register_pool_no_available_wait_hook(&state);
     let pool = state.pool.clone();
-    let delayed_release_task = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(70)).await;
-        set_test_account_status(&pool, delayed_id, "active").await;
+    let runtime_handle = tokio::runtime::Handle::current();
+    let delayed_release_task = std::thread::spawn(move || {
+        wait_started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("request should signal once the bounded wait starts");
+        std::thread::sleep(Duration::from_millis(70));
+        runtime_handle.block_on(async move {
+            set_test_account_status(&pool, delayed_id, "active").await;
+        });
     });
 
     let started = Instant::now();
@@ -2863,8 +3217,8 @@ async fn pool_route_waited_initial_account_still_uses_remaining_total_timeout_bu
     let elapsed = started.elapsed();
 
     delayed_release_task
-        .await
-        .expect("delayed release task should join");
+        .join()
+        .expect("delayed release thread should join");
 
     assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
     assert!(

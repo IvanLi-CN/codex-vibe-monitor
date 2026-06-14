@@ -2410,7 +2410,7 @@ pub(crate) struct RawResponsePreviewBuffer {
 }
 
 impl RawResponsePreviewBuffer {
-    fn append(&mut self, chunk: &[u8]) {
+    pub(crate) fn append(&mut self, chunk: &[u8]) {
         let remaining = RAW_RESPONSE_PREVIEW_LIMIT.saturating_sub(self.bytes.len());
         if remaining == 0 || chunk.is_empty() {
             return;
@@ -2419,7 +2419,7 @@ impl RawResponsePreviewBuffer {
             .extend_from_slice(&chunk[..chunk.len().min(remaining)]);
     }
 
-    fn as_slice(&self) -> &[u8] {
+    pub(crate) fn as_slice(&self) -> &[u8] {
         &self.bytes
     }
 
@@ -2435,7 +2435,7 @@ pub(crate) struct BoundedResponseParseBuffer {
 }
 
 impl BoundedResponseParseBuffer {
-    fn new(limit: usize) -> Self {
+    pub(crate) fn new(limit: usize) -> Self {
         Self {
             bytes: Vec::new(),
             limit,
@@ -2443,7 +2443,7 @@ impl BoundedResponseParseBuffer {
         }
     }
 
-    fn append(&mut self, chunk: &[u8]) {
+    pub(crate) fn append(&mut self, chunk: &[u8]) {
         if self.exceeded_limit || chunk.is_empty() {
             return;
         }
@@ -2458,7 +2458,7 @@ impl BoundedResponseParseBuffer {
         }
     }
 
-    fn into_response_info(
+    pub(crate) fn into_response_info(
         self,
         target: ProxyCaptureTarget,
         content_encoding: Option<&str>,

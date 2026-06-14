@@ -79,6 +79,16 @@ pub(crate) fn websocket_routing_keys_from_headers(
     )
 }
 
+fn requested_websocket_subprotocol(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(HeaderName::from_static("sec-websocket-protocol"))
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
 pub(crate) fn websocket_effective_prompt_cache_key(prompt_cache_key: Option<&str>) -> Option<&str> {
     prompt_cache_key
         .map(str::trim)
@@ -173,6 +183,27 @@ pub(crate) async fn proxy_openai_v1_ws_common(
         sticky_key: sticky_key.clone(),
         requester_ip,
     };
+    if prompt_cache_key.is_none() {
+        let ws = match requested_websocket_subprotocol(&headers) {
+            Some(protocol) => ws.protocols([protocol]),
+            None => ws,
+        };
+        return ws.on_upgrade(move |downstream| async move {
+            proxy_websocket_tunnel_deferred_prepare(
+                state,
+                downstream,
+                proxy_request_id,
+                original_uri,
+                headers,
+                runtime_timeouts,
+                sticky_key,
+                requested_model,
+                trace,
+                proxy_request_permit,
+            )
+            .await;
+        });
+    }
     let (prompt_cache_binding_constraint, owner_auto_guard_active) =
         match load_via_pool_effective_routing_constraint(
             state.as_ref(),
@@ -241,7 +272,7 @@ pub(crate) async fn proxy_openai_v1_ws_common(
         None => ws,
     };
     ws.on_upgrade(move |downstream| async move {
-        proxy_websocket_tunnel(state, downstream, prepared, proxy_request_permit).await;
+        proxy_websocket_tunnel(state, downstream, prepared, proxy_request_permit, None).await;
     })
 }
 
@@ -902,6 +933,7 @@ async fn proxy_websocket_tunnel(
     downstream: WebSocket,
     prepared: PreparedUpstreamWebSocket,
     _proxy_request_permit: ProxyRequestConcurrencyPermit,
+    initial_downstream_message: Option<AxumWsMessage>,
 ) {
     let PreparedUpstreamWebSocket {
         upstream,
@@ -923,8 +955,77 @@ async fn proxy_websocket_tunnel(
     let mut usage_tracker = WsUsageTracker::new(account, trace, prompt_cache_key);
     let mut saw_downstream_request = false;
     let mut saw_terminal_upstream_event = false;
+    let mut pending_first_downstream_message = initial_downstream_message;
 
     loop {
+        if let Some(message) = pending_first_downstream_message.take() {
+            let close_seen = matches!(message, AxumWsMessage::Close(_));
+            if matches!(message, AxumWsMessage::Text(_) | AxumWsMessage::Binary(_)) {
+                saw_downstream_request = true;
+            }
+            let request_payload_bytes = match &message {
+                AxumWsMessage::Text(text) => Some(text.as_bytes()),
+                AxumWsMessage::Binary(bytes) => Some(bytes.as_ref()),
+                _ => None,
+            };
+            if let Some(payload_bytes) = request_payload_bytes {
+                match inspect_ws_request_payload_guard(
+                    state.as_ref(),
+                    &usage_tracker.account,
+                    websocket_effective_prompt_cache_key(usage_tracker.prompt_cache_key.as_deref()),
+                    payload_bytes,
+                )
+                .await
+                {
+                    Ok(outcome) => {
+                        if let Some(prompt_cache_key) = outcome.prompt_cache_key {
+                            usage_tracker.prompt_cache_key = Some(prompt_cache_key);
+                        }
+                        if outcome.contains_encrypted_content {
+                            usage_tracker.request_contains_encrypted_content = true;
+                        }
+                        if outcome.owner_guard_blocked {
+                            failure_kind_override =
+                                Some(PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE);
+                            failure =
+                                Some(ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE.to_string());
+                            let _ = downstream_tx
+                                .send(AxumWsMessage::Close(Some(
+                                    axum::extract::ws::CloseFrame {
+                                        code: axum::extract::ws::close_code::AGAIN,
+                                        reason:
+                                            "encrypted_session_owner_unavailable; retry".into(),
+                                    },
+                                )))
+                                .await;
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        failure = Some(format!(
+                            "failed to inspect websocket payload routing constraint: {err}"
+                        ));
+                        break;
+                    }
+                }
+            }
+            match axum_to_tungstenite_message(message) {
+                Some(message) => {
+                    if let Err(err) = upstream_tx.send(message).await {
+                        let message =
+                            format!("failed to forward downstream websocket frame upstream: {err}");
+                        upstream_route_failure = Some(message.clone());
+                        failure = Some(message);
+                        break;
+                    }
+                }
+                None => {}
+            }
+            if close_seen {
+                break;
+            }
+            continue;
+        }
         tokio::select! {
             downstream_msg = downstream_rx.next() => {
                 match downstream_msg {
@@ -1119,6 +1220,109 @@ async fn proxy_websocket_tunnel(
     }
     complete_deferred_pool_early_phase_cleanup_guard(&mut deferred_cleanup_guard);
     reservation_guard.release();
+}
+
+async fn proxy_websocket_tunnel_deferred_prepare(
+    state: Arc<AppState>,
+    mut downstream: WebSocket,
+    proxy_request_id: u64,
+    original_uri: Uri,
+    headers: HeaderMap,
+    runtime_timeouts: PoolRoutingTimeoutSettingsResolved,
+    sticky_key: Option<String>,
+    requested_model: Option<String>,
+    trace: PoolUpstreamAttemptTraceContext,
+    proxy_request_permit: ProxyRequestConcurrencyPermit,
+) {
+    let Some(first_downstream_message) = downstream.next().await else {
+        return;
+    };
+    let first_downstream_message = match first_downstream_message {
+        Ok(message) => message,
+        Err(err) => {
+            warn!(
+                proxy_request_id,
+                error = %err,
+                "downstream websocket closed before deferred upstream prepare"
+            );
+            return;
+        }
+    };
+    if matches!(first_downstream_message, AxumWsMessage::Close(_)) {
+        return;
+    }
+
+    let request_payload_bytes = match &first_downstream_message {
+        AxumWsMessage::Text(text) => Some(text.as_bytes()),
+        AxumWsMessage::Binary(bytes) => Some(bytes.as_ref()),
+        _ => None,
+    };
+    let payload_inspection = request_payload_bytes.and_then(inspect_ws_request_payload);
+    let prompt_cache_key = payload_inspection
+        .as_ref()
+        .and_then(|value| value.prompt_cache_key.clone());
+    let request_contains_encrypted_content = payload_inspection
+        .as_ref()
+        .is_some_and(|value| value.contains_encrypted_content);
+    let (binding_constraint, owner_auto_guard_active) =
+        match load_via_pool_effective_routing_constraint(
+            state.as_ref(),
+            prompt_cache_key.as_deref(),
+            request_contains_encrypted_content,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err((_status, message)) => {
+                let _ = downstream
+                    .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                        code: axum::extract::ws::close_code::ERROR,
+                        reason: message.into(),
+                    })))
+                    .await;
+                return;
+            }
+        };
+    let prepared = match prepare_upstream_websocket(
+        state.clone(),
+        proxy_request_id,
+        &original_uri,
+        &headers,
+        &runtime_timeouts,
+        sticky_key.as_deref(),
+        requested_model.as_deref(),
+        prompt_cache_key.as_deref(),
+        binding_constraint,
+        owner_auto_guard_active,
+        &trace,
+    )
+    .await
+    {
+        Ok(prepared) => prepared,
+        Err(err) => {
+            let close_frame = if err.message == ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE {
+                axum::extract::ws::CloseFrame {
+                    code: axum::extract::ws::close_code::AGAIN,
+                    reason: "encrypted_session_owner_unavailable; retry".into(),
+                }
+            } else {
+                axum::extract::ws::CloseFrame {
+                    code: axum::extract::ws::close_code::AGAIN,
+                    reason: "upstream_unavailable; retry".into(),
+                }
+            };
+            let _ = downstream.send(AxumWsMessage::Close(Some(close_frame))).await;
+            return;
+        }
+    };
+    proxy_websocket_tunnel(
+        state,
+        downstream,
+        prepared,
+        proxy_request_permit,
+        Some(first_downstream_message),
+    )
+    .await;
 }
 
 struct WsUsageTracker {
