@@ -148,6 +148,30 @@ pub(crate) async fn extract_model_from_replay_snapshot(
     }
 }
 
+pub(crate) async fn replay_snapshot_contains_encrypted_content(
+    snapshot: &PoolReplayBodySnapshot,
+) -> bool {
+    match snapshot {
+        PoolReplayBodySnapshot::Empty => false,
+        PoolReplayBodySnapshot::Memory(bytes) => serde_json::from_slice::<Value>(bytes.as_ref())
+            .ok()
+            .is_some_and(|value| value_contains_encrypted_content(&value)),
+        PoolReplayBodySnapshot::File { temp_file, .. } => {
+            let path = temp_file.path.clone();
+            tokio::task::spawn_blocking(move || {
+                let file = std::fs::File::open(path).ok()?;
+                serde_json::from_reader::<_, Value>(std::io::BufReader::new(file))
+                    .ok()
+                    .map(|value| value_contains_encrypted_content(&value))
+            })
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(false)
+        }
+    }
+}
+
 async fn load_via_pool_prompt_cache_binding_constraint(
     state: &AppState,
     prompt_cache_key: Option<&str>,
@@ -1352,7 +1376,9 @@ pub(crate) async fn continue_or_retry_pool_live_request(
     initial_account: PoolResolvedAccount,
     sticky_key: Option<String>,
     requested_model: Option<String>,
+    prompt_cache_key: Option<String>,
     prompt_cache_binding_constraint: Option<PromptCacheConversationBindingConstraint>,
+    owner_auto_guard_active: bool,
     responses_total_timeout_started_at: Option<Instant>,
     no_available_wait_deadline: Option<Instant>,
     replay_status_rx: &watch::Receiver<PoolReplayBodyStatus>,
@@ -1504,6 +1530,11 @@ pub(crate) async fn continue_or_retry_pool_live_request(
             let replay_requested_model = extract_model_from_replay_snapshot(&snapshot)
                 .await
                 .or(requested_model);
+            let replay_prompt_cache_key = extract_prompt_cache_key_from_replay_snapshot(&snapshot)
+                .await
+                .or(prompt_cache_key);
+            let replay_contains_encrypted_content =
+                replay_snapshot_contains_encrypted_content(&snapshot).await;
             let uses_timeout_route_failover =
                 pool_uses_responses_timeout_failover_policy(original_uri, &method);
             let first_error_is_timeout_shaped = uses_timeout_route_failover
@@ -1604,9 +1635,11 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                     capture_target: ProxyCaptureTarget::Responses,
                     request_info: RequestCaptureInfo {
                         model: replay_requested_model,
+                        contains_encrypted_content: replay_contains_encrypted_content,
                         ..RequestCaptureInfo::default()
                     },
-                    prompt_cache_key: None,
+                    prompt_cache_key: replay_prompt_cache_key,
+                    owner_auto_guard_active,
                     t_req_read_ms: 0.0,
                     t_req_parse_ms: 0.0,
                 }),
@@ -1782,7 +1815,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             let request_contains_encrypted_content = parsed_request_body
                 .as_ref()
                 .is_some_and(value_contains_encrypted_content);
-            let (prompt_cache_binding_constraint, _owner_auto_guard_active) =
+            let (prompt_cache_binding_constraint, owner_auto_guard_active) =
                 load_via_pool_effective_routing_constraint(
                     state.as_ref(),
                     body_prompt_cache_key
@@ -1816,6 +1849,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         prompt_cache_key: body_prompt_cache_key
                             .clone()
                             .or(header_prompt_cache_key.clone()),
+                        owner_auto_guard_active,
                         t_req_read_ms: 0.0,
                         t_req_parse_ms: 0.0,
                     }),
@@ -1840,6 +1874,10 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 initial_account,
                 no_available_wait_deadline,
                 prompt_cache_binding_constraint,
+                body_prompt_cache_key,
+                request_body_model,
+                request_contains_encrypted_content,
+                owner_auto_guard_active,
             ) = if let Some(sticky_key) = header_sticky_key.clone() {
                 let initial_header_sticky_resolution = resolve_pool_account_for_request(
                     state.as_ref(),
@@ -2106,12 +2144,13 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                 && let Some(terminal_error) =
                                     pending_header_sticky_terminal_error.clone()
                             {
-                                let prompt_cache_binding_constraint =
-                                    load_via_pool_prompt_cache_binding_constraint(
+                                let (prompt_cache_binding_constraint, _owner_auto_guard_active) =
+                                    load_via_pool_effective_routing_constraint(
                                         state.as_ref(),
                                         observed_body_prompt_cache_key
                                             .as_deref()
                                             .or(header_prompt_cache_key.as_deref()),
+                                        false,
                                     )
                                     .await?;
                                 if prompt_cache_binding_constraint.is_none() {
@@ -2190,12 +2229,13 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                 && let Some(terminal_error) =
                                     pending_header_sticky_terminal_error.clone()
                             {
-                                let prompt_cache_binding_constraint =
-                                    load_via_pool_prompt_cache_binding_constraint(
+                                let (prompt_cache_binding_constraint, _owner_auto_guard_active) =
+                                    load_via_pool_effective_routing_constraint(
                                         state.as_ref(),
                                         observed_body_prompt_cache_key
                                             .as_deref()
                                             .or(header_prompt_cache_key.as_deref()),
+                                        false,
                                     )
                                     .await?;
                                 if prompt_cache_binding_constraint.is_none() {
@@ -2290,13 +2330,17 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         }
                     }
                 }
-                let prompt_cache_binding_constraint =
-                    load_via_pool_prompt_cache_binding_constraint(
+                let body_prompt_cache_key =
+                    extract_prompt_cache_key_from_replay_snapshot(&request_body_snapshot).await;
+                let request_contains_encrypted_content =
+                    replay_snapshot_contains_encrypted_content(&request_body_snapshot).await;
+                let (prompt_cache_binding_constraint, owner_auto_guard_active) =
+                    load_via_pool_effective_routing_constraint(
                         state.as_ref(),
-                        extract_prompt_cache_key_from_replay_snapshot(&request_body_snapshot)
-                            .await
+                        body_prompt_cache_key
                             .as_deref()
                             .or(header_prompt_cache_key.as_deref()),
+                        request_contains_encrypted_content,
                     )
                     .await?;
                 let requested_model =
@@ -2454,6 +2498,10 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     initial_account,
                     no_available_wait_deadline,
                     prompt_cache_binding_constraint,
+                    body_prompt_cache_key,
+                    requested_model,
+                    request_contains_encrypted_content,
+                    owner_auto_guard_active,
                 )
             } else {
                 let mut no_available_wait_deadline = None;
@@ -2491,7 +2539,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 let live_requested_model = live_body_key_probe.model;
                 let live_responses_total_timeout_started_at =
                     responses_total_timeout_started_at_from_request;
-                let (prompt_cache_binding_constraint, _owner_auto_guard_active) =
+                let (prompt_cache_binding_constraint, owner_auto_guard_active) =
                     load_via_pool_effective_routing_constraint(
                         state.as_ref(),
                         live_prompt_cache_key.as_deref(),
@@ -2578,7 +2626,9 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                 initial_account,
                                 live_body_sticky_key.clone(),
                                 live_requested_model.clone(),
+                                live_prompt_cache_key.clone(),
                                 prompt_cache_binding_constraint.clone(),
+                                owner_auto_guard_active,
                                 live_responses_total_timeout_started_at,
                                 no_available_wait_deadline,
                                 &replay_status_rx,
@@ -2915,28 +2965,9 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 let requested_model = extract_model_from_replay_snapshot(&request_body_snapshot)
                     .await
                     .or(live_requested_model);
-                let request_contains_encrypted_content = match &request_body_snapshot {
-                    PoolReplayBodySnapshot::Empty => false,
-                    PoolReplayBodySnapshot::Memory(bytes) => serde_json::from_slice::<Value>(
-                        bytes.as_ref(),
-                    )
-                    .ok()
-                    .is_some_and(|value| value_contains_encrypted_content(&value)),
-                    PoolReplayBodySnapshot::File { temp_file, .. } => {
-                        let path = temp_file.path.clone();
-                        tokio::task::spawn_blocking(move || {
-                            let file = std::fs::File::open(path).ok()?;
-                            serde_json::from_reader::<_, Value>(std::io::BufReader::new(file))
-                                .ok()
-                                .map(|value| value_contains_encrypted_content(&value))
-                        })
-                        .await
-                        .ok()
-                        .flatten()
-                        .unwrap_or(false)
-                    }
-                };
-                let (prompt_cache_binding_constraint, _owner_auto_guard_active) =
+                let request_contains_encrypted_content =
+                    replay_snapshot_contains_encrypted_content(&request_body_snapshot).await;
+                let (prompt_cache_binding_constraint, owner_auto_guard_active) =
                     load_via_pool_effective_routing_constraint(
                         state.as_ref(),
                         body_prompt_cache_key
@@ -2972,12 +3003,18 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         responses_total_timeout,
                     )
                     .await?;
+                let request_body_model =
+                    extract_model_from_replay_snapshot(&request_body_snapshot).await;
                 (
                     request_body_snapshot,
                     body_sticky_key,
                     initial_account,
                     no_available_wait_deadline,
                     prompt_cache_binding_constraint,
+                    body_prompt_cache_key,
+                    request_body_model,
+                    request_contains_encrypted_content,
+                    owner_auto_guard_active,
                 )
             };
             (
@@ -2994,7 +3031,20 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         original_uri.path(),
                         body_sticky_key.clone(),
                     )),
-                    None,
+                    Some(PoolAttemptRuntimeSnapshotContext {
+                        capture_target: capture_target.unwrap_or(ProxyCaptureTarget::Responses),
+                        request_info: RequestCaptureInfo {
+                            model: request_body_model,
+                            contains_encrypted_content: request_contains_encrypted_content,
+                            ..RequestCaptureInfo::default()
+                        },
+                        prompt_cache_key: body_prompt_cache_key
+                            .clone()
+                            .or(header_prompt_cache_key.clone()),
+                        owner_auto_guard_active,
+                        t_req_read_ms: 0.0,
+                        t_req_parse_ms: 0.0,
+                    }),
                     body_sticky_key.as_deref(),
                     prompt_cache_binding_constraint,
                     Some(initial_account),
@@ -3017,12 +3067,16 @@ pub(crate) async fn proxy_openai_v1_via_pool(
         } else {
             POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS
         };
-        let prompt_cache_binding_constraint =
-            load_via_pool_prompt_cache_binding_constraint(
+        let (prompt_cache_binding_constraint, owner_auto_guard_active) =
+            load_via_pool_effective_routing_constraint(
                 state.as_ref(),
                 header_prompt_cache_key.as_deref(),
+                false,
             )
             .await?;
+        let header_capture_target =
+            capture_target_for_request(original_uri.path(), &method)
+                .unwrap_or(ProxyCaptureTarget::Responses);
         (
             send_pool_request_with_failover_and_binding_constraint(
                 state.clone(),
@@ -3037,7 +3091,14 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     original_uri.path(),
                     header_sticky_key.clone(),
                 )),
-                None,
+                Some(PoolAttemptRuntimeSnapshotContext {
+                    capture_target: header_capture_target,
+                    request_info: RequestCaptureInfo::default(),
+                    prompt_cache_key: header_prompt_cache_key.clone(),
+                    owner_auto_guard_active,
+                    t_req_read_ms: 0.0,
+                    t_req_parse_ms: 0.0,
+                }),
                 header_sticky_key.as_deref(),
                 prompt_cache_binding_constraint,
                 None,

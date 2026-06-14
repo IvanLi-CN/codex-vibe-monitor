@@ -378,7 +378,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             Instant::now(),
         );
     }
-    let (prompt_cache_binding_constraint, _encrypted_owner_auto_guard_active) =
+    let (prompt_cache_binding_constraint, encrypted_owner_auto_guard_active) =
         if pool_route_active {
             match resolve_prompt_cache_effective_routing_constraint(
                 &state.pool,
@@ -454,6 +454,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             capture_target,
             request_info: request_info.clone(),
             prompt_cache_key: prompt_cache_key.clone(),
+            owner_auto_guard_active: encrypted_owner_auto_guard_active,
             t_req_read_ms,
             t_req_parse_ms,
         });

@@ -313,28 +313,9 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
         .as_ref()
         .and_then(|ctx| ctx.request_info.model.as_deref())
         .map(str::to_string);
-    let encrypted_session_owner_guard_active = if let Some(prompt_cache_key) =
-        runtime_snapshot_context
-            .as_ref()
-            .and_then(|ctx| ctx.prompt_cache_key.as_deref())
-    {
-        let request_contains_encrypted_content = runtime_snapshot_context
-            .as_ref()
-            .is_some_and(|ctx| ctx.request_info.contains_encrypted_content);
-        resolve_prompt_cache_encrypted_session_routing_context(
-            &state.pool,
-            Some(prompt_cache_key),
-            request_contains_encrypted_content,
-        )
-        .await
-        .ok()
-        .flatten()
-        .is_some_and(|context| {
-            context.owner.owner_upstream_account_id > 0 && !context.manual_override_active
-        })
-    } else {
-        false
-    };
+    let encrypted_session_owner_guard_active = runtime_snapshot_context
+        .as_ref()
+        .is_some_and(|ctx| ctx.owner_auto_guard_active);
 
     'account_loop: loop {
         let mut distinct_account_count = attempted_account_ids.len();

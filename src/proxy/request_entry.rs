@@ -921,6 +921,7 @@ pub(crate) struct PoolAttemptRuntimeSnapshotContext {
     pub(crate) capture_target: ProxyCaptureTarget,
     pub(crate) request_info: RequestCaptureInfo,
     pub(crate) prompt_cache_key: Option<String>,
+    pub(crate) owner_auto_guard_active: bool,
     pub(crate) t_req_read_ms: f64,
     pub(crate) t_req_parse_ms: f64,
 }

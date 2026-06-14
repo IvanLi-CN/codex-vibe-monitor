@@ -789,6 +789,94 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_preserves_group_bindin
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_bodyless_header_prompt_cache_key_preserves_encrypted_owner_lock() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(10),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let owner_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Encrypted Owner",
+        "upstream-owner",
+        None,
+        None,
+        None,
+    )
+    .await;
+    let _secondary_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Secondary",
+        "upstream-secondary",
+        None,
+        None,
+        None,
+    )
+    .await;
+    set_test_account_status(&state.pool, owner_account_id, "needs_reauth").await;
+    let prompt_cache_key = "pck-bodyless-header-encrypted-owner-lock";
+    upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, owner_account_id)
+        .await
+        .expect("persist encrypted owner lock");
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        5347,
+        &"/v1/models".parse().expect("valid uri"),
+        Method::GET,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-prompt-cache-key"),
+                HeaderValue::from_static(prompt_cache_key),
+            ),
+        ]),
+        Body::empty(),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect_err("bodyless encrypted owner lock should not reroute to another account");
+
+    assert_eq!(response.0, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.1, ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE);
+
+    let attempts = attempts
+        .lock()
+        .expect("lock bodyless encrypted owner lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-owner").copied(), None);
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+
+    let last_attempt = sqlx::query_as::<_, (Option<i64>, Option<String>)>(
+        r#"
+        SELECT upstream_account_id, failure_kind
+        FROM pool_upstream_request_attempts
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load encrypted owner terminal attempt");
+    assert_eq!(last_attempt.0, None);
+    assert_eq!(
+        last_attempt.1.as_deref(),
+        Some(PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE)
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_header_sticky_stream_prefers_body_timeout_before_pool_wait() {
     let mut config = test_config();
     config.openai_upstream_base_url =
