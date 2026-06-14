@@ -130,10 +130,13 @@ fn apply_owner_to_none_response(
     response
 }
 
-pub(crate) async fn load_prompt_cache_conversation_binding_row(
-    pool: &Pool<Sqlite>,
+async fn load_prompt_cache_conversation_binding_row_executor<'e, E>(
+    executor: E,
     prompt_cache_key: &str,
-) -> Result<Option<PromptCacheConversationBindingRow>> {
+) -> Result<Option<PromptCacheConversationBindingRow>>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     sqlx::query_as::<_, PromptCacheConversationBindingRow>(
         r#"
         SELECT
@@ -151,15 +154,25 @@ pub(crate) async fn load_prompt_cache_conversation_binding_row(
         "#,
     )
     .bind(prompt_cache_key)
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await
     .map_err(Into::into)
 }
 
-pub(crate) async fn load_prompt_cache_encrypted_session_owner_row(
+pub(crate) async fn load_prompt_cache_conversation_binding_row(
     pool: &Pool<Sqlite>,
     prompt_cache_key: &str,
-) -> Result<Option<PromptCacheEncryptedSessionOwnerRow>> {
+) -> Result<Option<PromptCacheConversationBindingRow>> {
+    load_prompt_cache_conversation_binding_row_executor(pool, prompt_cache_key).await
+}
+
+async fn load_prompt_cache_encrypted_session_owner_row_executor<'e, E>(
+    executor: E,
+    prompt_cache_key: &str,
+) -> Result<Option<PromptCacheEncryptedSessionOwnerRow>>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     sqlx::query_as::<_, PromptCacheEncryptedSessionOwnerRow>(
         r#"
         SELECT
@@ -178,9 +191,16 @@ pub(crate) async fn load_prompt_cache_encrypted_session_owner_row(
         "#,
     )
     .bind(prompt_cache_key)
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await
     .map_err(Into::into)
+}
+
+pub(crate) async fn load_prompt_cache_encrypted_session_owner_row(
+    pool: &Pool<Sqlite>,
+    prompt_cache_key: &str,
+) -> Result<Option<PromptCacheEncryptedSessionOwnerRow>> {
+    load_prompt_cache_encrypted_session_owner_row_executor(pool, prompt_cache_key).await
 }
 
 pub(crate) async fn load_prompt_cache_encrypted_session_owner_account_id(
@@ -270,11 +290,14 @@ pub(crate) async fn resolve_prompt_cache_encrypted_session_routing_context(
     }
 }
 
-pub(crate) async fn upsert_prompt_cache_encrypted_session_owner(
-    pool: &Pool<Sqlite>,
+async fn upsert_prompt_cache_encrypted_session_owner_executor<'e, E>(
+    executor: E,
     prompt_cache_key: &str,
     owner_upstream_account_id: i64,
-) -> Result<()> {
+) -> Result<()>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     sqlx::query(
         r#"
         INSERT INTO prompt_cache_encrypted_session_owners (
@@ -293,9 +316,116 @@ pub(crate) async fn upsert_prompt_cache_encrypted_session_owner(
     )
     .bind(prompt_cache_key)
     .bind(owner_upstream_account_id)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(())
+}
+
+pub(crate) async fn upsert_prompt_cache_encrypted_session_owner(
+    pool: &Pool<Sqlite>,
+    prompt_cache_key: &str,
+    owner_upstream_account_id: i64,
+) -> Result<()> {
+    upsert_prompt_cache_encrypted_session_owner_executor(
+        pool,
+        prompt_cache_key,
+        owner_upstream_account_id,
+    )
+    .await
+}
+
+pub(crate) async fn confirm_prompt_cache_encrypted_session_owner_success(
+    pool: &Pool<Sqlite>,
+    prompt_cache_key: &str,
+    owner_upstream_account_id: i64,
+) -> Result<bool> {
+    let prompt_cache_key = prompt_cache_key.trim();
+    if prompt_cache_key.is_empty() {
+        return Ok(false);
+    }
+
+    let mut conn = pool.acquire().await?;
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(conn.as_mut())
+        .await
+        .context("failed to acquire encrypted session owner write lock")?;
+
+    let outcome: Result<bool> = async {
+        let owner_row =
+            load_prompt_cache_encrypted_session_owner_row_executor(conn.as_mut(), prompt_cache_key)
+                .await?;
+        let binding_row =
+            load_prompt_cache_conversation_binding_row_executor(conn.as_mut(), prompt_cache_key)
+                .await?;
+
+        let should_update = match owner_row.as_ref() {
+            None => true,
+            Some(owner) if owner.owner_upstream_account_id == owner_upstream_account_id => true,
+            Some(owner) => {
+                let override_constraint = binding_row.as_ref().and_then(|row| {
+                    manual_binding_override_is_newer_than_owner(row, owner).then_some(row)
+                });
+                match override_constraint {
+                    Some(row) => match row.binding_kind.as_str() {
+                        PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT => {
+                            row.upstream_account_id == Some(owner_upstream_account_id)
+                        }
+                        PROMPT_CACHE_BINDING_KIND_GROUP => {
+                            let account_group_name: Option<String> = sqlx::query_scalar(
+                                r#"
+                                SELECT group_name
+                                FROM pool_upstream_accounts
+                                WHERE id = ?1
+                                LIMIT 1
+                                "#,
+                            )
+                            .bind(owner_upstream_account_id)
+                            .fetch_optional(conn.as_mut())
+                            .await?
+                            .flatten();
+                            row.group_name
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|value| !value.is_empty())
+                                == account_group_name
+                                    .as_deref()
+                                    .map(str::trim)
+                                    .filter(|value| !value.is_empty())
+                        }
+                        _ => false,
+                    },
+                    None => false,
+                }
+            }
+        };
+
+        if !should_update {
+            return Ok(false);
+        }
+
+        upsert_prompt_cache_encrypted_session_owner_executor(
+            conn.as_mut(),
+            prompt_cache_key,
+            owner_upstream_account_id,
+        )
+        .await?;
+        Ok(true)
+    }
+    .await;
+
+    match outcome {
+        Ok(should_update) => {
+            sqlx::query("COMMIT")
+                .execute(conn.as_mut())
+                .await
+                .context("failed to commit encrypted session owner update")?;
+            Ok(should_update)
+        }
+        Err(err) => {
+            let _ = sqlx::query("ROLLBACK").execute(conn.as_mut()).await;
+            Err(err)
+        }
+    }
 }
 
 pub(crate) async fn promote_prompt_cache_group_binding_to_upstream_account(

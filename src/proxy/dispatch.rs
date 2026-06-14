@@ -1677,34 +1677,40 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             && (request_info_for_task.contains_encrypted_content
                 || response_info.contains_encrypted_content)
         {
-            if let Err(err) = upsert_prompt_cache_encrypted_session_owner(
+            match confirm_prompt_cache_encrypted_session_owner_success(
                 &state_for_task.pool,
                 prompt_cache_key,
                 account.account_id,
             )
             .await
             {
-                warn!(
-                    invoke_id = %invoke_id_for_task,
-                    prompt_cache_key,
-                    account_id = account.account_id,
-                    error = %err,
-                    "failed to persist encrypted session owner"
-                );
-            } else if let Err(err) = promote_prompt_cache_group_binding_to_upstream_account(
-                &state_for_task.pool,
-                prompt_cache_key,
-                account.account_id,
-            )
-            .await
-            {
-                warn!(
-                    invoke_id = %invoke_id_for_task,
-                    prompt_cache_key,
-                    account_id = account.account_id,
-                    error = %err,
-                    "failed to promote prompt cache group binding after encrypted session success"
-                );
+                Ok(true) => {
+                    if let Err(err) = promote_prompt_cache_group_binding_to_upstream_account(
+                        &state_for_task.pool,
+                        prompt_cache_key,
+                        account.account_id,
+                    )
+                    .await
+                    {
+                        warn!(
+                            invoke_id = %invoke_id_for_task,
+                            prompt_cache_key,
+                            account_id = account.account_id,
+                            error = %err,
+                            "failed to promote prompt cache group binding after encrypted session success"
+                        );
+                    }
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    warn!(
+                        invoke_id = %invoke_id_for_task,
+                        prompt_cache_key,
+                        account_id = account.account_id,
+                        error = %err,
+                        "failed to persist encrypted session owner"
+                    );
+                }
             }
         }
         let (billing_service_tier, pricing_mode) =

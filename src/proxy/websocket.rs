@@ -146,6 +146,8 @@ pub(crate) async fn proxy_openai_v1_ws_common(
     .await;
 
     let sticky_key = extract_sticky_key_from_headers(&headers);
+    let prompt_cache_key = extract_prompt_cache_key_from_headers(&headers).or_else(|| sticky_key.clone());
+    let requested_model = extract_requested_model_from_websocket_uri(&original_uri);
     let requester_ip = extract_requester_ip(&headers, peer_ip);
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: format!("pool-ws-{proxy_request_id}"),
@@ -154,6 +156,28 @@ pub(crate) async fn proxy_openai_v1_ws_common(
         sticky_key: sticky_key.clone(),
         requester_ip,
     };
+    let (prompt_cache_binding_constraint, owner_auto_guard_active) =
+        match load_via_pool_effective_routing_constraint(
+            state.as_ref(),
+            prompt_cache_key.as_deref(),
+            false,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err((status, message)) => {
+                drop(proxy_request_permit);
+                return build_proxy_error_response(
+                    ProxyErrorResponse {
+                        status,
+                        message,
+                        cvm_id: Some(invoke_id.clone()),
+                        retry_after_secs: None,
+                    },
+                    &invoke_id,
+                );
+            }
+        };
 
     let prepared = match prepare_upstream_websocket(
         state.clone(),
@@ -162,6 +186,10 @@ pub(crate) async fn proxy_openai_v1_ws_common(
         &headers,
         &runtime_timeouts,
         sticky_key.as_deref(),
+        requested_model.as_deref(),
+        prompt_cache_key.as_deref(),
+        prompt_cache_binding_constraint,
+        owner_auto_guard_active,
         &trace,
     )
     .await
@@ -200,13 +228,14 @@ pub(crate) async fn proxy_openai_v1_ws_common(
     })
 }
 
-struct PreparedUpstreamWebSocket {
+pub(crate) struct PreparedUpstreamWebSocket {
     upstream: UpstreamWsStream,
     pending_attempt_record: Option<PendingPoolAttemptRecord>,
     deferred_cleanup_guard: Option<PoolEarlyPhaseOrphanCleanupGuard>,
     reservation_guard: PoolRoutingReservationGuard,
     account: PoolResolvedAccount,
     trace: PoolUpstreamAttemptTraceContext,
+    prompt_cache_key: Option<String>,
     selected_subprotocol: Option<String>,
     connect_latency_ms: f64,
 }
@@ -242,9 +271,9 @@ impl Drop for PoolRoutingReservationGuard {
 }
 
 #[derive(Debug)]
-struct WsPrepareError {
-    status: StatusCode,
-    message: String,
+pub(crate) struct WsPrepareError {
+    pub(crate) status: StatusCode,
+    pub(crate) message: String,
 }
 
 struct WsAttemptFailure {
@@ -255,20 +284,23 @@ struct WsAttemptFailure {
     upstream_route_key: Option<String>,
 }
 
-async fn prepare_upstream_websocket(
+pub(crate) async fn prepare_upstream_websocket(
     state: Arc<AppState>,
     proxy_request_id: u64,
     original_uri: &Uri,
     headers: &HeaderMap,
     runtime_timeouts: &PoolRoutingTimeoutSettingsResolved,
     sticky_key: Option<&str>,
+    requested_model: Option<&str>,
+    prompt_cache_key: Option<&str>,
+    binding_constraint: Option<PromptCacheConversationBindingConstraint>,
+    owner_auto_guard_active: bool,
     trace: &PoolUpstreamAttemptTraceContext,
 ) -> Result<PreparedUpstreamWebSocket, WsPrepareError> {
     let mut excluded_account_ids = Vec::new();
     let mut excluded_upstream_route_keys = HashSet::new();
     let mut ws_retry_account_ids = HashSet::new();
     let mut last_failure: Option<WsAttemptFailure> = None;
-    let requested_model = extract_requested_model_from_websocket_uri(original_uri);
 
     let upstream_websocket_default_enabled = state
         .proxy_model_settings
@@ -285,7 +317,8 @@ async fn prepare_upstream_websocket(
     }
 
     loop {
-        if ws_retry_account_ids.len() >= POOL_UPSTREAM_MAX_DISTINCT_ACCOUNTS {
+        let distinct_account_count = ws_retry_account_ids.len();
+        if distinct_account_count >= POOL_UPSTREAM_MAX_DISTINCT_ACCOUNTS {
             return Err(WsPrepareError {
                 status: last_failure
                     .as_ref()
@@ -297,17 +330,44 @@ async fn prepare_upstream_websocket(
             });
         }
 
-        let account = match resolve_pool_account_for_request(
+        let mut no_available_wait_deadline = None;
+        let account = match resolve_pool_account_for_request_with_wait_and_binding_constraint(
             state.as_ref(),
             sticky_key,
-            requested_model.as_deref(),
+            requested_model,
             &excluded_account_ids,
             &excluded_upstream_route_keys,
+            None,
+            binding_constraint.as_ref(),
+            false,
+            &mut no_available_wait_deadline,
+            None,
         )
         .await
         {
-            Ok(PoolAccountResolution::Resolved(account)) => account,
-            Ok(PoolAccountResolution::Unavailable | PoolAccountResolution::NoCandidate) => {
+            Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Resolved(account))) => account,
+            Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Unavailable))
+            | Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::NoCandidate)) => {
+                if owner_auto_guard_active {
+                    let err = build_encrypted_session_owner_unavailable_error(
+                        None,
+                        ws_retry_account_ids.len(),
+                        distinct_account_count,
+                    );
+                    let _ = insert_and_broadcast_pool_upstream_terminal_attempt(
+                        state.as_ref(),
+                        trace,
+                        &err,
+                        (ws_retry_account_ids.len() + 1) as i64,
+                        distinct_account_count as i64,
+                        PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE,
+                    )
+                    .await;
+                    return Err(WsPrepareError {
+                        status: err.status,
+                        message: err.message,
+                    });
+                }
                 return Err(WsPrepareError {
                     status: last_failure
                         .as_ref()
@@ -318,19 +378,81 @@ async fn prepare_upstream_websocket(
                         .unwrap_or_else(|| POOL_NO_AVAILABLE_ACCOUNT_MESSAGE.to_string()),
                 });
             }
-            Ok(PoolAccountResolution::RateLimited) => {
+            Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::RateLimited)) => {
+                if owner_auto_guard_active {
+                    let err = build_encrypted_session_owner_unavailable_error(
+                        None,
+                        ws_retry_account_ids.len(),
+                        distinct_account_count,
+                    );
+                    let _ = insert_and_broadcast_pool_upstream_terminal_attempt(
+                        state.as_ref(),
+                        trace,
+                        &err,
+                        (ws_retry_account_ids.len() + 1) as i64,
+                        distinct_account_count as i64,
+                        PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE,
+                    )
+                    .await;
+                    return Err(WsPrepareError {
+                        status: err.status,
+                        message: err.message,
+                    });
+                }
                 return Err(WsPrepareError {
                     status: StatusCode::TOO_MANY_REQUESTS,
                     message: POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
                 });
             }
-            Ok(PoolAccountResolution::DegradedOnly) => {
+            Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::DegradedOnly)) => {
+                if owner_auto_guard_active {
+                    let err = build_encrypted_session_owner_unavailable_error(
+                        None,
+                        ws_retry_account_ids.len(),
+                        distinct_account_count,
+                    );
+                    let _ = insert_and_broadcast_pool_upstream_terminal_attempt(
+                        state.as_ref(),
+                        trace,
+                        &err,
+                        (ws_retry_account_ids.len() + 1) as i64,
+                        distinct_account_count as i64,
+                        PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE,
+                    )
+                    .await;
+                    return Err(WsPrepareError {
+                        status: err.status,
+                        message: err.message,
+                    });
+                }
                 return Err(WsPrepareError {
                     status: StatusCode::SERVICE_UNAVAILABLE,
                     message: POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
                 });
             }
-            Ok(PoolAccountResolution::AssignedBlocked(blocked)) => {
+            Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::AssignedBlocked(
+                blocked,
+            ))) => {
+                if owner_auto_guard_active {
+                    let err = build_encrypted_session_owner_unavailable_error(
+                        None,
+                        ws_retry_account_ids.len(),
+                        distinct_account_count,
+                    );
+                    let _ = insert_and_broadcast_pool_upstream_terminal_attempt(
+                        state.as_ref(),
+                        trace,
+                        &err,
+                        (ws_retry_account_ids.len() + 1) as i64,
+                        distinct_account_count as i64,
+                        PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE,
+                    )
+                    .await;
+                    return Err(WsPrepareError {
+                        status: err.status,
+                        message: err.message,
+                    });
+                }
                 let terminal = ViaPoolResolutionTerminalError::assigned_blocked(blocked);
                 terminal.persist_if_needed(state.as_ref(), Some(trace)).await;
                 return Err(WsPrepareError {
@@ -338,10 +460,38 @@ async fn prepare_upstream_websocket(
                     message: terminal.message,
                 });
             }
-            Ok(PoolAccountResolution::BlockedByPolicy(message)) => {
+            Ok(PoolAccountResolutionWithWait::Resolution(
+                PoolAccountResolution::BlockedByPolicy(message),
+            )) => {
+                if owner_auto_guard_active {
+                    let err = build_encrypted_session_owner_unavailable_error(
+                        None,
+                        ws_retry_account_ids.len(),
+                        distinct_account_count,
+                    );
+                    let _ = insert_and_broadcast_pool_upstream_terminal_attempt(
+                        state.as_ref(),
+                        trace,
+                        &err,
+                        (ws_retry_account_ids.len() + 1) as i64,
+                        distinct_account_count as i64,
+                        PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE,
+                    )
+                    .await;
+                    return Err(WsPrepareError {
+                        status: err.status,
+                        message: err.message,
+                    });
+                }
                 return Err(WsPrepareError {
                     status: StatusCode::SERVICE_UNAVAILABLE,
                     message,
+                });
+            }
+            Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired) => {
+                return Err(WsPrepareError {
+                    status: StatusCode::GATEWAY_TIMEOUT,
+                    message: "pool websocket account selection timed out".to_string(),
                 });
             }
             Err(err) => {
@@ -380,6 +530,7 @@ async fn prepare_upstream_websocket(
             headers,
             runtime_timeouts,
             trace,
+            prompt_cache_key,
             account,
             ws_retry_account_ids.len() + 1,
         )
@@ -447,6 +598,7 @@ async fn prepare_single_upstream_websocket_attempt(
     headers: &HeaderMap,
     runtime_timeouts: &PoolRoutingTimeoutSettingsResolved,
     trace: &PoolUpstreamAttemptTraceContext,
+    prompt_cache_key: Option<&str>,
     account: PoolResolvedAccount,
     attempt_index: usize,
 ) -> Result<PreparedUpstreamWebSocket, WsAttemptFailure> {
@@ -716,6 +868,7 @@ async fn prepare_single_upstream_websocket_attempt(
         reservation_guard,
         account,
         trace: trace.clone(),
+        prompt_cache_key: prompt_cache_key.map(str::to_string),
         selected_subprotocol,
         connect_latency_ms: elapsed_ms(connect_started),
     })
@@ -734,6 +887,7 @@ async fn proxy_websocket_tunnel(
         mut reservation_guard,
         account,
         trace,
+        prompt_cache_key,
         connect_latency_ms,
         selected_subprotocol: _,
     } = prepared;
@@ -742,7 +896,7 @@ async fn proxy_websocket_tunnel(
     let (mut upstream_tx, mut upstream_rx) = upstream.split();
     let mut failure: Option<String> = None;
     let mut upstream_route_failure: Option<String> = None;
-    let mut usage_tracker = WsUsageTracker::new(account, trace);
+    let mut usage_tracker = WsUsageTracker::new(account, trace, prompt_cache_key);
     let mut saw_downstream_request = false;
     let mut saw_terminal_upstream_event = false;
 
@@ -754,6 +908,19 @@ async fn proxy_websocket_tunnel(
                         let close_seen = matches!(message, AxumWsMessage::Close(_));
                         if matches!(message, AxumWsMessage::Text(_) | AxumWsMessage::Binary(_)) {
                             saw_downstream_request = true;
+                        }
+                        match &message {
+                            AxumWsMessage::Text(text) => {
+                                if ws_request_payload_contains_encrypted_content(text.as_bytes()) {
+                                    usage_tracker.request_contains_encrypted_content = true;
+                                }
+                            }
+                            AxumWsMessage::Binary(bytes) => {
+                                if ws_request_payload_contains_encrypted_content(bytes.as_ref()) {
+                                    usage_tracker.request_contains_encrypted_content = true;
+                                }
+                            }
+                            _ => {}
                         }
                         match axum_to_tungstenite_message(message) {
                             Some(message) => {
@@ -895,15 +1062,23 @@ async fn proxy_websocket_tunnel(
 struct WsUsageTracker {
     account: PoolResolvedAccount,
     trace: PoolUpstreamAttemptTraceContext,
+    prompt_cache_key: Option<String>,
     ordinal: u64,
+    request_contains_encrypted_content: bool,
 }
 
 impl WsUsageTracker {
-    fn new(account: PoolResolvedAccount, trace: PoolUpstreamAttemptTraceContext) -> Self {
+    fn new(
+        account: PoolResolvedAccount,
+        trace: PoolUpstreamAttemptTraceContext,
+        prompt_cache_key: Option<String>,
+    ) -> Self {
         Self {
             account,
             trace,
+            prompt_cache_key,
             ordinal: 0,
+            request_contains_encrypted_content: false,
         }
     }
 
@@ -916,8 +1091,10 @@ impl WsUsageTracker {
             state,
             &self.account,
             &self.trace,
+            self.prompt_cache_key.as_deref(),
             self.ordinal,
             event,
+            self.request_contains_encrypted_content,
             text,
         )
         .await
@@ -935,9 +1112,11 @@ impl WsUsageTracker {
 struct WsUsageEvent {
     event_type: String,
     response_id: Option<String>,
+    response_status: Option<String>,
     model: Option<String>,
     service_tier: Option<String>,
     usage: ParsedUsage,
+    contains_encrypted_content: bool,
 }
 
 fn parse_ws_usage_event(text: &str) -> Option<WsUsageEvent> {
@@ -968,8 +1147,16 @@ fn parse_ws_usage_event(text: &str) -> Option<WsUsageEvent> {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string),
+        response_status: value
+            .pointer("/response/status")
+            .or_else(|| value.get("status"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
         service_tier: extract_service_tier_from_payload(&value),
         usage,
+        contains_encrypted_content: value_contains_encrypted_content(&value),
     })
 }
 
@@ -1011,12 +1198,31 @@ fn ws_upstream_close_requires_retry(
     saw_downstream_request && !saw_terminal_upstream_event
 }
 
+fn ws_request_payload_contains_encrypted_content(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(bytes)
+        .ok()
+        .is_some_and(|value| value_contains_encrypted_content(&value))
+}
+
+fn ws_usage_event_is_completed_success(event: &WsUsageEvent) -> bool {
+    match event.event_type.as_str() {
+        "response.completed" => true,
+        "response.done" => event
+            .response_status
+            .as_deref()
+            .is_some_and(|status| status.eq_ignore_ascii_case("completed")),
+        _ => false,
+    }
+}
+
 async fn persist_ws_usage_event(
     state: &AppState,
     account: &PoolResolvedAccount,
     trace: &PoolUpstreamAttemptTraceContext,
+    prompt_cache_key: Option<&str>,
     ordinal: u64,
     event: WsUsageEvent,
+    request_contains_encrypted_content: bool,
     raw_event: &str,
 ) -> Result<()> {
     let model = event.model.as_deref();
@@ -1044,8 +1250,8 @@ async fn persist_ws_usage_event(
         target: ProxyCaptureTarget::Responses,
         status: StatusCode::OK,
         is_stream: true,
-        request_contains_encrypted_content: false,
-        response_contains_encrypted_content: false,
+        request_contains_encrypted_content,
+        response_contains_encrypted_content: event.contains_encrypted_content,
         request_model: None,
         requested_service_tier: None,
         billing_service_tier: billing_service_tier.as_deref(),
@@ -1058,8 +1264,10 @@ async fn persist_ws_usage_event(
         upstream_scope: INVOCATION_UPSTREAM_SCOPE_INTERNAL,
         route_mode: INVOCATION_ROUTE_MODE_POOL,
         sticky_key: trace.sticky_key.as_deref(),
-        prompt_cache_key: trace.sticky_key.as_deref(),
-        prompt_cache_key_attribution_source: trace.sticky_key.as_ref().map(|_| "websocket_trace"),
+        prompt_cache_key: prompt_cache_key.or(trace.sticky_key.as_deref()),
+        prompt_cache_key_attribution_source: prompt_cache_key
+            .map(|_| "websocket_trace")
+            .or_else(|| trace.sticky_key.as_ref().map(|_| "websocket_trace")),
         client_fingerprint: None,
         client_header_fingerprints: None,
         upstream_account_id: Some(account.account_id),
@@ -1093,8 +1301,28 @@ async fn persist_ws_usage_event(
         pool_attempt_terminal_reason: None,
     });
     let payload = mark_websocket_payload_transport(payload)?;
-    let is_failed_terminal_event = event.event_type == "response.failed";
-    let failure_kind = ws_terminal_event_failure_kind(&event.event_type);
+    let is_completed_terminal_event = ws_usage_event_is_completed_success(&event);
+    let is_failed_terminal_event = !is_completed_terminal_event;
+    let failure_kind = ws_terminal_event_failure_kind(&event);
+    if is_completed_terminal_event
+        && let Some(prompt_cache_key) = prompt_cache_key.or(trace.sticky_key.as_deref())
+        && (request_contains_encrypted_content || event.contains_encrypted_content)
+    {
+        if confirm_prompt_cache_encrypted_session_owner_success(
+            &state.pool,
+            prompt_cache_key,
+            account.account_id,
+        )
+        .await?
+        {
+            promote_prompt_cache_group_binding_to_upstream_account(
+                &state.pool,
+                prompt_cache_key,
+                account.account_id,
+            )
+            .await?;
+        }
+    }
     persist_and_broadcast_proxy_capture_runtime_snapshot(
         state,
         ProxyCaptureRecord {
@@ -1110,7 +1338,14 @@ async fn persist_ws_usage_event(
             } else {
                 "success".to_string()
             },
-            error_message: failure_kind.map(|value| format!("[{value}] response.failed")),
+            error_message: failure_kind
+                .map(|value| format!("[{value}] response.failed"))
+                .or_else(|| {
+                    is_failed_terminal_event.then(|| {
+                        let status = event.response_status.as_deref().unwrap_or("unknown");
+                        format!("websocket response terminal status was {status}")
+                    })
+                }),
             failure_kind: failure_kind.map(str::to_string),
             payload: Some(payload),
             raw_response: raw_event.to_string(),
@@ -1143,8 +1378,8 @@ fn mark_websocket_payload_transport(payload: String) -> Result<String> {
     serde_json::to_string(&value).context("failed to serialize websocket proxy payload summary")
 }
 
-fn ws_terminal_event_failure_kind(event_type: &str) -> Option<&'static str> {
-    if event_type == "response.failed" {
+fn ws_terminal_event_failure_kind(event: &WsUsageEvent) -> Option<&'static str> {
+    if event.event_type == "response.failed" {
         Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
     } else {
         None
@@ -1967,6 +2202,42 @@ mod websocket_tests {
         assert_eq!(event.usage.output_tokens, Some(3));
         assert_eq!(event.usage.cache_input_tokens, Some(2));
         assert_eq!(event.usage.total_tokens, Some(10));
+        assert!(!event.contains_encrypted_content);
+    }
+
+    #[test]
+    fn websocket_usage_event_detects_encrypted_content() {
+        let event = parse_ws_usage_event(
+            r#"{
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_2",
+                    "model": "gpt-5.5",
+                    "output": [{
+                        "type": "encrypted_content",
+                        "encrypted_content": "opaque"
+                    }],
+                    "usage": {
+                        "input_tokens": 5,
+                        "output_tokens": 2,
+                        "total_tokens": 7
+                    }
+                }
+            }"#,
+        )
+        .expect("usage event");
+
+        assert!(event.contains_encrypted_content);
+    }
+
+    #[test]
+    fn websocket_request_payload_detects_only_structured_encrypted_content() {
+        assert!(ws_request_payload_contains_encrypted_content(
+            br#"{"type":"message","content":[{"type":"encrypted_content","encrypted_content":"opaque"}]}"#
+        ));
+        assert!(!ws_request_payload_contains_encrypted_content(
+            br#"{"type":"message","text":"literal encrypted_content token in plain text"}"#
+        ));
     }
 
     #[test]
@@ -2004,12 +2275,46 @@ mod websocket_tests {
     }
 
     #[test]
+    fn websocket_usage_event_requires_completed_done_before_success() {
+        let completed = parse_ws_usage_event(
+            r#"{"type":"response.done","response":{"status":"completed","usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10}}}"#,
+        )
+        .expect("completed response.done should parse");
+        assert!(ws_usage_event_is_completed_success(&completed));
+
+        let incomplete = parse_ws_usage_event(
+            r#"{"type":"response.done","response":{"status":"incomplete","usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10}}}"#,
+        )
+        .expect("incomplete response.done should parse");
+        assert!(!ws_usage_event_is_completed_success(&incomplete));
+    }
+
+    #[test]
     fn websocket_terminal_failure_kind_marks_response_failed() {
         assert_eq!(
-            ws_terminal_event_failure_kind("response.failed"),
+            ws_terminal_event_failure_kind(&WsUsageEvent {
+                event_type: "response.failed".to_string(),
+                response_id: None,
+                response_status: Some("failed".to_string()),
+                model: None,
+                service_tier: None,
+                usage: ParsedUsage::default(),
+                contains_encrypted_content: false,
+            }),
             Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
         );
-        assert_eq!(ws_terminal_event_failure_kind("response.completed"), None);
+        assert_eq!(
+            ws_terminal_event_failure_kind(&WsUsageEvent {
+                event_type: "response.completed".to_string(),
+                response_id: None,
+                response_status: Some("completed".to_string()),
+                model: None,
+                service_tier: None,
+                usage: ParsedUsage::default(),
+                contains_encrypted_content: false,
+            }),
+            None
+        );
     }
 
     #[test]

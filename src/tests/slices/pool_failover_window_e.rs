@@ -3646,3 +3646,77 @@ async fn prompt_cache_group_promotion_ignores_stale_group_after_operator_rebind(
     assert_eq!(promoted_binding.binding_kind, "upstreamAccount");
     assert_eq!(promoted_binding.upstream_account_id, Some(rebound_account_id));
 }
+
+#[tokio::test]
+async fn prompt_cache_stale_success_cannot_reclaim_owner_after_override_migration() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let original_group = "prompt-cache-owner-original-group";
+    let target_group = "prompt-cache-owner-target-group";
+    ensure_test_group_binding(&state.pool, original_group, None).await;
+    ensure_test_group_binding(&state.pool, target_group, None).await;
+
+    let original_owner_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Original Owner",
+        "sk-prompt-cache-original-owner",
+        Some(original_group),
+        None,
+        None,
+    )
+    .await;
+    let target_owner_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Target Owner",
+        "sk-prompt-cache-target-owner",
+        Some(target_group),
+        None,
+        None,
+    )
+    .await;
+    let prompt_cache_key = "prompt-cache-owner-migration-guard-key";
+
+    upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, original_owner_account_id)
+        .await
+        .expect("seed original encrypted owner");
+
+    let target_group_payload: UpdatePromptCacheConversationBindingRequest =
+        serde_json::from_value(json!({
+            "bindingKind": "group",
+            "groupName": target_group,
+        }))
+        .expect("deserialize target group payload");
+    let _ = patch_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        Json(target_group_payload),
+    )
+    .await
+    .expect("operator rebinds encrypted conversation to target group");
+
+    let migrated = confirm_prompt_cache_encrypted_session_owner_success(
+        &state.pool,
+        prompt_cache_key,
+        target_owner_account_id,
+    )
+    .await
+    .expect("target owner confirmation should succeed");
+    assert!(migrated);
+
+    let stale_reclaim = confirm_prompt_cache_encrypted_session_owner_success(
+        &state.pool,
+        prompt_cache_key,
+        original_owner_account_id,
+    )
+    .await
+    .expect("stale original owner confirmation should be evaluated");
+    assert!(!stale_reclaim);
+
+    let owner_row = load_prompt_cache_encrypted_session_owner_row(&state.pool, prompt_cache_key)
+        .await
+        .expect("load encrypted owner row after stale reclaim attempt")
+        .expect("encrypted owner row should exist");
+    assert_eq!(owner_row.owner_upstream_account_id, target_owner_account_id);
+}

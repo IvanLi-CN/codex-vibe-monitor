@@ -213,10 +213,9 @@ function nextBindingWouldOverrideEncryptedOwner(
   nextBindingKind: ConversationBindingDraftKind,
   nextBindingGroupName: string,
   nextBindingAccountId: string,
-  bindingAccounts: UpstreamAccountSummary[],
 ) {
   if (!binding?.hasEncryptedSessionOwner) return false;
-  if (nextBindingKind === "none") return true;
+  if (nextBindingKind === "none") return false;
   if (nextBindingKind === "upstreamAccount") {
     const nextId = Number(nextBindingAccountId);
     return (
@@ -224,20 +223,7 @@ function nextBindingWouldOverrideEncryptedOwner(
     );
   }
   if (nextBindingKind === "group") {
-    const targetGroup = nextBindingGroupName.trim();
-    const ownerGroup = binding.encryptedOwnerGroupName?.trim() ?? "";
-    if (targetGroup && ownerGroup && targetGroup === ownerGroup) return false;
-    if (
-      binding.encryptedOwnerAccountId != null &&
-      bindingAccounts.some(
-        (account) =>
-          account.id === binding.encryptedOwnerAccountId &&
-          (account.groupName?.trim() ?? "") === targetGroup,
-      )
-    ) {
-      return false;
-    }
-    return true;
+    return nextBindingGroupName.trim().length > 0;
   }
   return false;
 }
@@ -2377,7 +2363,6 @@ export function PromptCacheConversationHistoryDrawer({
         bindingKind,
         bindingGroupName,
         bindingAccountId,
-        bindingAccounts,
       )
     ) {
       const ownerLabel = encryptedOwnerLabel(binding) ?? "unknown owner";

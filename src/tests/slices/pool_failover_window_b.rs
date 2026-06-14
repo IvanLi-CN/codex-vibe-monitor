@@ -155,6 +155,11 @@ async fn proxy_openai_v1_chunked_json_without_header_sticky_uses_live_first_atte
         },
     )
     .await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.websocket_enabled = true;
+        settings.upstream_websocket_default_enabled = true;
+    }
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
 
@@ -398,6 +403,11 @@ async fn proxy_openai_v1_live_first_unsupported_model_bad_request_fails_over() {
         },
     )
     .await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.websocket_enabled = true;
+        settings.upstream_websocket_default_enabled = true;
+    }
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let primary_id =
         insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
@@ -596,6 +606,112 @@ async fn proxy_openai_v1_responses_live_first_failover_preserves_prompt_cache_gr
         Some(count) if count > 0
     ));
     assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_responses_live_first_replay_reloads_encrypted_owner_guard() {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_retry_upstream(&[("Bearer upstream-primary", 99)]).await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(10),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Primary",
+        "upstream-primary",
+        None,
+        None,
+        None,
+    )
+    .await;
+    let owner_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Encrypted Owner",
+        "upstream-owner",
+        None,
+        None,
+        None,
+    )
+    .await;
+    set_test_account_status(&state.pool, owner_account_id, "needs_reauth").await;
+    let prompt_cache_key = "pck-live-first-replay-owner-guard";
+    upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, owner_account_id)
+        .await
+        .expect("persist encrypted owner lock");
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    let first_chunk = format!(
+        "{{\"model\":\"gpt-5\",\"input\":\"{}",
+        "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 256)
+    );
+    let second_chunk = format!(
+        "\",\"promptCacheKey\":\"{prompt_cache_key}\",\"encrypted_content\":{{\"ciphertext\":\"abc\"}}}}"
+    );
+    tokio::spawn(async move {
+        let _ = tx.send(Ok(Bytes::from(first_chunk))).await;
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        let _ = tx.send(Ok(Bytes::from(second_chunk))).await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        5344,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect_err("live-first replay should stop at encrypted owner guard");
+
+    assert_eq!(response.0, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.1, ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE);
+
+    let attempts = attempts
+        .lock()
+        .expect("lock live-first replay owner guard attempts");
+    assert!(matches!(
+        attempts.get("Bearer upstream-primary").copied(),
+        Some(count) if count > 0
+    ));
+    assert_eq!(attempts.get("Bearer upstream-owner").copied(), None);
+
+    let last_attempt = sqlx::query_as::<_, (Option<i64>, Option<String>)>(
+        r#"
+        SELECT upstream_account_id, failure_kind
+        FROM pool_upstream_request_attempts
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load live-first replay owner-guard terminal attempt");
+    assert_eq!(last_attempt.0, None);
+    assert_eq!(
+        last_attempt.1.as_deref(),
+        Some(PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE)
+    );
 
     upstream_handle.abort();
 }
@@ -867,6 +983,352 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_preserves_encrypted_ow
     .fetch_one(&state.pool)
     .await
     .expect("load encrypted owner terminal attempt");
+    assert_eq!(last_attempt.0, None);
+    assert_eq!(
+        last_attempt.1.as_deref(),
+        Some(PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE)
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_bodyless_header_prompt_cache_key_rate_limited_owner_returns_owner_unavailable()
+{
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(10),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let owner_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Encrypted Owner",
+        "upstream-owner",
+        None,
+        None,
+        None,
+    )
+    .await;
+    let _secondary_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Secondary",
+        "upstream-secondary",
+        None,
+        None,
+        None,
+    )
+    .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET policy_concurrency_limit = 1 WHERE id = ?1")
+        .bind(owner_account_id)
+        .execute(&state.pool)
+        .await
+        .expect("set encrypted owner account concurrency limit");
+    let now_iso = format_utc_iso(Utc::now());
+    insert_test_pool_limit_sample(&state, owner_account_id, Some(20.0), Some(20.0)).await;
+    upsert_sticky_route(
+        &state.pool,
+        "pck-bodyless-header-encrypted-owner-rate-limited-active",
+        owner_account_id,
+        &now_iso,
+    )
+    .await
+    .expect("seed active sticky route for rate-limited owner");
+    let prompt_cache_key = "pck-bodyless-header-encrypted-owner-rate-limited";
+    upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, owner_account_id)
+        .await
+        .expect("persist encrypted owner lock");
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        5348,
+        &"/v1/models".parse().expect("valid uri"),
+        Method::GET,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-prompt-cache-key"),
+                HeaderValue::from_static(prompt_cache_key),
+            ),
+        ]),
+        Body::empty(),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect_err("rate-limited encrypted owner lock should not reroute to another account");
+
+    assert_eq!(response.0, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.1, ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE);
+
+    let attempts = attempts
+        .lock()
+        .expect("lock bodyless encrypted owner rate-limited attempts");
+    assert_eq!(attempts.get("Bearer upstream-owner").copied(), None);
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+
+    let last_attempt = sqlx::query_as::<_, (Option<i64>, Option<String>)>(
+        r#"
+        SELECT upstream_account_id, failure_kind
+        FROM pool_upstream_request_attempts
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load encrypted owner rate-limited terminal attempt");
+    assert_eq!(last_attempt.0, None);
+    assert_eq!(
+        last_attempt.1.as_deref(),
+        Some(PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE)
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_prepare_preserves_encrypted_owner_lock() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse(&upstream_base).expect("valid upstream base url");
+    config.openai_proxy_websocket_enabled = true;
+    config.openai_proxy_upstream_websocket_default_enabled = true;
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(80),
+            poll_interval: Duration::from_millis(10),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.websocket_enabled = true;
+        settings.upstream_websocket_default_enabled = true;
+    }
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let owner_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Encrypted Owner",
+        "upstream-owner",
+        None,
+        None,
+        None,
+    )
+    .await;
+    let _secondary_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Secondary",
+        "upstream-secondary",
+        None,
+        None,
+        None,
+    )
+    .await;
+    set_test_account_status(&state.pool, owner_account_id, "needs_reauth").await;
+    let prompt_cache_key = "pck-websocket-encrypted-owner-lock";
+    upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, owner_account_id)
+        .await
+        .expect("persist encrypted owner lock");
+    let (binding_constraint, owner_auto_guard_active) =
+        load_via_pool_effective_routing_constraint(
+            state.as_ref(),
+            Some(prompt_cache_key),
+            false,
+        )
+        .await
+        .expect("load websocket effective routing constraint");
+
+    let err = prepare_upstream_websocket(
+        state.clone(),
+        5351,
+        &"/v1/realtime?model=gpt-5-realtime".parse().expect("valid uri"),
+        &HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-prompt-cache-key"),
+                HeaderValue::from_static(prompt_cache_key),
+            ),
+        ]),
+        &resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts"),
+        Some(prompt_cache_key),
+        Some("gpt-5-realtime"),
+        Some(prompt_cache_key),
+        binding_constraint,
+        owner_auto_guard_active,
+        &PoolUpstreamAttemptTraceContext {
+            invoke_id: "pool-ws-5351".to_string(),
+            occurred_at: shanghai_now_string(),
+            endpoint: "/v1/realtime".to_string(),
+            sticky_key: Some(prompt_cache_key.to_string()),
+            requester_ip: None,
+        },
+    )
+    .await;
+    let Err(err) = err else {
+        panic!("websocket encrypted owner lock should not reroute");
+    };
+    assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(err.message, ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE);
+
+    let attempts = attempts
+        .lock()
+        .expect("lock websocket encrypted owner lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-owner").copied(), None);
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+
+    let last_attempt = sqlx::query_as::<_, (Option<i64>, Option<String>)>(
+        r#"
+        SELECT upstream_account_id, failure_kind
+        FROM pool_upstream_request_attempts
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load websocket encrypted owner terminal attempt");
+    assert_eq!(last_attempt.0, None);
+    assert_eq!(
+        last_attempt.1.as_deref(),
+        Some(PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE)
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_prepare_rate_limited_owner_returns_owner_unavailable() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse(&upstream_base).expect("valid upstream base url");
+    config.openai_proxy_websocket_enabled = true;
+    config.openai_proxy_upstream_websocket_default_enabled = true;
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(80),
+            poll_interval: Duration::from_millis(10),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.websocket_enabled = true;
+        settings.upstream_websocket_default_enabled = true;
+    }
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let owner_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Encrypted Owner",
+        "upstream-owner",
+        None,
+        None,
+        None,
+    )
+    .await;
+    let _secondary_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Secondary",
+        "upstream-secondary",
+        None,
+        None,
+        None,
+    )
+    .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET policy_concurrency_limit = 1 WHERE id = ?1")
+        .bind(owner_account_id)
+        .execute(&state.pool)
+        .await
+        .expect("set websocket encrypted owner account concurrency limit");
+    insert_test_pool_limit_sample(&state, owner_account_id, Some(20.0), Some(20.0)).await;
+    let prompt_cache_key = "pck-websocket-encrypted-owner-rate-limited";
+    upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, owner_account_id)
+        .await
+        .expect("persist encrypted owner lock");
+    let (binding_constraint, owner_auto_guard_active) =
+        load_via_pool_effective_routing_constraint(
+            state.as_ref(),
+            Some(prompt_cache_key),
+            false,
+        )
+        .await
+        .expect("load websocket effective routing constraint");
+
+    let err = prepare_upstream_websocket(
+        state.clone(),
+        5352,
+        &"/v1/realtime?model=gpt-5-realtime".parse().expect("valid uri"),
+        &HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-prompt-cache-key"),
+                HeaderValue::from_static(prompt_cache_key),
+            ),
+        ]),
+        &resolve_proxy_request_timeouts(state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts"),
+        Some(prompt_cache_key),
+        Some("gpt-5-realtime"),
+        Some(prompt_cache_key),
+        binding_constraint,
+        owner_auto_guard_active,
+        &PoolUpstreamAttemptTraceContext {
+            invoke_id: "pool-ws-5352".to_string(),
+            occurred_at: shanghai_now_string(),
+            endpoint: "/v1/realtime".to_string(),
+            sticky_key: Some(prompt_cache_key.to_string()),
+            requester_ip: None,
+        },
+    )
+    .await;
+    let Err(err) = err else {
+        panic!("websocket encrypted owner rate limit should not reroute");
+    };
+    assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(err.message, ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE);
+
+    let attempts = attempts
+        .lock()
+        .expect("lock websocket encrypted owner rate-limited attempts");
+    assert_eq!(attempts.get("Bearer upstream-owner").copied(), None);
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+
+    let last_attempt = sqlx::query_as::<_, (Option<i64>, Option<String>)>(
+        r#"
+        SELECT upstream_account_id, failure_kind
+        FROM pool_upstream_request_attempts
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load websocket encrypted owner rate-limited terminal attempt");
     assert_eq!(last_attempt.0, None);
     assert_eq!(
         last_attempt.1.as_deref(),

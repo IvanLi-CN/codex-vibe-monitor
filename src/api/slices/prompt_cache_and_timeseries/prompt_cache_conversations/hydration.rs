@@ -114,6 +114,17 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
         snapshot,
     )
     .await?;
+    let encrypted_owner_rows = if let Some(snapshot) = snapshot {
+        query_prompt_cache_conversation_encrypted_owner_summaries_at_snapshot(
+            &state.pool,
+            source_scope,
+            &selected_keys,
+            snapshot,
+        )
+        .await?
+    } else {
+        query_prompt_cache_conversation_encrypted_owner_summaries(&state.pool, &selected_keys).await?
+    };
 
     let mut grouped_events: HashMap<String, Vec<PromptCacheConversationRequestPointResponse>> =
         HashMap::new();
@@ -318,15 +329,13 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
         accounts.truncate(PROMPT_CACHE_CONVERSATION_UPSTREAM_ACCOUNT_LIMIT);
     }
 
-    let mut encrypted_owner_rows_by_key: HashMap<String, PromptCacheEncryptedSessionOwnerRow> =
-        HashMap::new();
-    for prompt_cache_key in &selected_keys {
-        if let Some(owner) =
-            load_prompt_cache_encrypted_session_owner_row(&state.pool, prompt_cache_key).await?
-        {
-            encrypted_owner_rows_by_key.insert(prompt_cache_key.clone(), owner);
-        }
-    }
+    let mut encrypted_owner_rows_by_key: HashMap<
+        String,
+        PromptCacheConversationEncryptedOwnerSummaryRow,
+    > = encrypted_owner_rows
+        .into_iter()
+        .map(|row| (row.prompt_cache_key.clone(), row))
+        .collect();
 
     Ok(aggregates
         .into_iter()

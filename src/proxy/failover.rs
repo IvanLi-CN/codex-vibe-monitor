@@ -536,6 +536,25 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::RateLimited,
                 )) => {
+                    if encrypted_session_owner_guard_active {
+                        let err = build_encrypted_session_owner_unavailable_error(
+                            None,
+                            attempt_count,
+                            distinct_account_count,
+                        );
+                        if let Some(trace) = trace_context.as_ref() {
+                            let _ = insert_and_broadcast_pool_upstream_terminal_attempt(
+                                state.as_ref(),
+                                trace,
+                                &err,
+                                (attempt_count + 1) as i64,
+                                distinct_account_count as i64,
+                                PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE,
+                            )
+                            .await;
+                        }
+                        return Err(err);
+                    }
                     if let Some(err) = take_and_record_sticky_owner_terminal_error(
                         state.as_ref(),
                         trace_context.as_ref(),
@@ -557,6 +576,25 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::DegradedOnly,
                 )) => {
+                    if encrypted_session_owner_guard_active {
+                        let err = build_encrypted_session_owner_unavailable_error(
+                            None,
+                            attempt_count,
+                            distinct_account_count,
+                        );
+                        if let Some(trace) = trace_context.as_ref() {
+                            let _ = insert_and_broadcast_pool_upstream_terminal_attempt(
+                                state.as_ref(),
+                                trace,
+                                &err,
+                                (attempt_count + 1) as i64,
+                                distinct_account_count as i64,
+                                PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE,
+                            )
+                            .await;
+                        }
+                        return Err(err);
+                    }
                     if let Some(err) = take_and_record_sticky_owner_terminal_error(
                         state.as_ref(),
                         trace_context.as_ref(),
@@ -797,6 +835,25 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::AssignedBlocked(blocked),
                 )) => {
+                    if encrypted_session_owner_guard_active {
+                        let err = build_encrypted_session_owner_unavailable_error(
+                            None,
+                            attempt_count,
+                            distinct_account_count,
+                        );
+                        if let Some(trace) = trace_context.as_ref() {
+                            let _ = insert_and_broadcast_pool_upstream_terminal_attempt(
+                                state.as_ref(),
+                                trace,
+                                &err,
+                                (attempt_count + 1) as i64,
+                                distinct_account_count as i64,
+                                PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE,
+                            )
+                            .await;
+                        }
+                        return Err(err);
+                    }
                     if let Some(err) = take_and_record_sticky_owner_terminal_error(
                         state.as_ref(),
                         trace_context.as_ref(),
@@ -840,6 +897,25 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                 Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::BlockedByPolicy(message),
                 )) => {
+                    if encrypted_session_owner_guard_active {
+                        let err = build_encrypted_session_owner_unavailable_error(
+                            None,
+                            attempt_count,
+                            distinct_account_count,
+                        );
+                        if let Some(trace) = trace_context.as_ref() {
+                            let _ = insert_and_broadcast_pool_upstream_terminal_attempt(
+                                state.as_ref(),
+                                trace,
+                                &err,
+                                (attempt_count + 1) as i64,
+                                distinct_account_count as i64,
+                                PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE,
+                            )
+                            .await;
+                        }
+                        return Err(err);
+                    }
                     if let Some(err) = take_and_record_sticky_owner_terminal_error(
                         state.as_ref(),
                         trace_context.as_ref(),

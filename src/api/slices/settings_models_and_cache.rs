@@ -1134,6 +1134,14 @@ pub(crate) struct PromptCacheConversationUpstreamAccountSummaryRow {
     pub(crate) last_activity_at: String,
 }
 
+#[derive(Debug, Clone, FromRow)]
+pub(crate) struct PromptCacheConversationEncryptedOwnerSummaryRow {
+    pub(crate) prompt_cache_key: String,
+    pub(crate) owner_upstream_account_id: i64,
+    pub(crate) owner_upstream_account_name: Option<String>,
+    pub(crate) owner_group_name: Option<String>,
+}
+
 #[derive(Debug, FromRow)]
 pub(crate) struct ParallelWorkExactInvocationRow {
     pub(crate) occurred_at: String,

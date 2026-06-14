@@ -187,7 +187,7 @@ async fn load_via_pool_prompt_cache_binding_constraint(
         })
 }
 
-async fn load_via_pool_effective_routing_constraint(
+pub(crate) async fn load_via_pool_effective_routing_constraint(
     state: &AppState,
     prompt_cache_key: Option<&str>,
     request_contains_encrypted_content: bool,
@@ -314,12 +314,49 @@ impl ViaPoolResolutionTerminalError {
     }
 }
 
+async fn maybe_persist_encrypted_session_owner_guard_terminal_error(
+    state: &AppState,
+    trace_context: Option<&PoolUpstreamAttemptTraceContext>,
+    owner_auto_guard_active: bool,
+    attempt_count: usize,
+    distinct_account_count: usize,
+) -> Option<(StatusCode, String)> {
+    if !owner_auto_guard_active {
+        return None;
+    }
+    let err = build_encrypted_session_owner_unavailable_error(
+        None,
+        attempt_count,
+        distinct_account_count,
+    );
+    if let Some(trace_context) = trace_context {
+        if let Err(record_err) = insert_and_broadcast_pool_upstream_terminal_attempt(
+            state,
+            trace_context,
+            &err,
+            attempt_count as i64,
+            distinct_account_count as i64,
+            PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE,
+        )
+        .await
+        {
+            warn!(
+                invoke_id = trace_context.invoke_id,
+                error = %record_err,
+                "failed to persist via-pool encrypted-owner terminal attempt"
+            );
+        }
+    }
+    Some((err.status, err.message))
+}
+
 async fn unwrap_via_pool_initial_account(
     state: &AppState,
     trace_context: Option<&PoolUpstreamAttemptTraceContext>,
     resolution: Result<PoolAccountResolutionWithWait>,
     no_available_wait_deadline: Option<Instant>,
     responses_total_timeout: Option<Duration>,
+    owner_auto_guard_active: bool,
 ) -> Result<(PoolResolvedAccount, Option<Instant>), (StatusCode, String)> {
     let initial_account = match resolution {
         Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Resolved(account))) => {
@@ -335,18 +372,51 @@ async fn unwrap_via_pool_initial_account(
         }
         Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Unavailable))
         | Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::NoCandidate)) => {
+            if let Some(err) = maybe_persist_encrypted_session_owner_guard_terminal_error(
+                state,
+                trace_context,
+                owner_auto_guard_active,
+                1,
+                1,
+            )
+            .await
+            {
+                return Err(err);
+            }
             return Err((
                 StatusCode::SERVICE_UNAVAILABLE,
                 POOL_NO_AVAILABLE_ACCOUNT_MESSAGE.to_string(),
             ));
         }
         Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::RateLimited)) => {
+            if let Some(err) = maybe_persist_encrypted_session_owner_guard_terminal_error(
+                state,
+                trace_context,
+                owner_auto_guard_active,
+                1,
+                1,
+            )
+            .await
+            {
+                return Err(err);
+            }
             return Err((
                 StatusCode::TOO_MANY_REQUESTS,
                 POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
             ));
         }
         Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::DegradedOnly)) => {
+            if let Some(err) = maybe_persist_encrypted_session_owner_guard_terminal_error(
+                state,
+                trace_context,
+                owner_auto_guard_active,
+                1,
+                1,
+            )
+            .await
+            {
+                return Err(err);
+            }
             return Err((
                 StatusCode::SERVICE_UNAVAILABLE,
                 POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
@@ -355,6 +425,17 @@ async fn unwrap_via_pool_initial_account(
         Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::AssignedBlocked(
             blocked,
         ))) => {
+            if let Some(err) = maybe_persist_encrypted_session_owner_guard_terminal_error(
+                state,
+                trace_context,
+                owner_auto_guard_active,
+                1,
+                1,
+            )
+            .await
+            {
+                return Err(err);
+            }
             let terminal_error = ViaPoolResolutionTerminalError::assigned_blocked(blocked);
             terminal_error.persist_if_needed(state, trace_context).await;
             return Err((terminal_error.status, terminal_error.message));
@@ -362,6 +443,17 @@ async fn unwrap_via_pool_initial_account(
         Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::BlockedByPolicy(
             message,
         ))) => {
+            if let Some(err) = maybe_persist_encrypted_session_owner_guard_terminal_error(
+                state,
+                trace_context,
+                owner_auto_guard_active,
+                1,
+                1,
+            )
+            .await
+            {
+                return Err(err);
+            }
             return Err((StatusCode::SERVICE_UNAVAILABLE, message));
         }
         Err(err) => {
@@ -1377,8 +1469,8 @@ pub(crate) async fn continue_or_retry_pool_live_request(
     sticky_key: Option<String>,
     requested_model: Option<String>,
     prompt_cache_key: Option<String>,
-    prompt_cache_binding_constraint: Option<PromptCacheConversationBindingConstraint>,
-    owner_auto_guard_active: bool,
+    _prompt_cache_binding_constraint: Option<PromptCacheConversationBindingConstraint>,
+    _owner_auto_guard_active: bool,
     responses_total_timeout_started_at: Option<Instant>,
     no_available_wait_deadline: Option<Instant>,
     replay_status_rx: &watch::Receiver<PoolReplayBodyStatus>,
@@ -1535,6 +1627,30 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                 .or(prompt_cache_key);
             let replay_contains_encrypted_content =
                 replay_snapshot_contains_encrypted_content(&snapshot).await;
+            let (replay_prompt_cache_binding_constraint, replay_owner_auto_guard_active) =
+                load_via_pool_effective_routing_constraint(
+                    state.as_ref(),
+                    replay_prompt_cache_key.as_deref(),
+                    replay_contains_encrypted_content,
+                )
+                .await
+                .map_err(|(status, message)| PoolUpstreamError {
+                    account: Some(initial_account.clone()),
+                    status,
+                    message,
+                    canonical_error_message: None,
+                    failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                    connect_latency_ms: first_error.connect_latency_ms,
+                    upstream_error_code: None,
+                    upstream_error_message: None,
+                    downstream_error_message: None,
+                    upstream_request_id: None,
+                    proxy_binding_key_snapshot: None,
+                    oauth_responses_debug: first_error.oauth_responses_debug.clone(),
+                    attempt_summary: first_error.attempt_summary.clone(),
+                    requested_service_tier: first_error.requested_service_tier.clone(),
+                    request_body_for_capture: first_error.request_body_for_capture.clone(),
+                })?;
             let uses_timeout_route_failover =
                 pool_uses_responses_timeout_failover_policy(original_uri, &method);
             let first_error_is_timeout_shaped = uses_timeout_route_failover
@@ -1639,12 +1755,12 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                         ..RequestCaptureInfo::default()
                     },
                     prompt_cache_key: replay_prompt_cache_key,
-                    owner_auto_guard_active,
+                    owner_auto_guard_active: replay_owner_auto_guard_active,
                     t_req_read_ms: 0.0,
                     t_req_parse_ms: 0.0,
                 }),
                 replay_sticky_key.as_deref(),
-                prompt_cache_binding_constraint,
+                replay_prompt_cache_binding_constraint,
                 preferred_account,
                 failover_progress,
                 same_account_attempts,
@@ -2388,6 +2504,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             resolution,
                             no_available_wait_deadline,
                             responses_total_timeout,
+                            owner_auto_guard_active,
                         )
                         .await?;
                     no_available_wait_deadline = updated_no_available_wait_deadline;
@@ -2426,6 +2543,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                     resolution,
                                     no_available_wait_deadline,
                                     responses_total_timeout,
+                                    owner_auto_guard_active,
                                 )
                                 .await?;
                             no_available_wait_deadline = updated_no_available_wait_deadline;
@@ -2455,6 +2573,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                 resolution,
                                 no_available_wait_deadline,
                                 responses_total_timeout,
+                                owner_auto_guard_active,
                             )
                             .await?;
                         no_available_wait_deadline = updated_no_available_wait_deadline;
@@ -2484,6 +2603,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             resolution,
                             no_available_wait_deadline,
                             responses_total_timeout,
+                            owner_auto_guard_active,
                         )
                         .await?;
                     no_available_wait_deadline = updated_no_available_wait_deadline;
@@ -2588,6 +2708,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             resolution,
                             no_available_wait_deadline,
                             responses_total_timeout,
+                            owner_auto_guard_active,
                         )
                         .await?;
                     let pool_attempt_trace_context = build_via_pool_attempt_trace_context(
@@ -3001,6 +3122,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         resolution,
                         no_available_wait_deadline,
                         responses_total_timeout,
+                        owner_auto_guard_active,
                     )
                     .await?;
                 let request_body_model =
