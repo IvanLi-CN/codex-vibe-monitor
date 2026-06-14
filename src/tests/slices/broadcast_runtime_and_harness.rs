@@ -2230,7 +2230,20 @@ async fn forward_proxy_timeseries_preserves_materialized_history_when_same_month
     .fetch_one(&state.pool)
     .await
     .expect("count remaining archived pool upstream request attempt batches after second pass");
-    assert_eq!(remaining_after_second, 0);
+    assert_eq!(
+        remaining_after_second, 1,
+        "same-month retention appends should keep the reused monthly archive batch available"
+    );
+
+    let pending_cache_batches = pending_pool_upstream_node_health_archive_batches(&state.pool)
+        .await
+        .expect("count pending cached pool node health archives after append");
+    let pending_hourly_batches =
+        pending_pool_upstream_node_health_hourly_archive_batches(&state.pool)
+            .await
+            .expect("count pending hourly pool node health archives after append");
+    assert_eq!(pending_cache_batches, 0);
+    assert_eq!(pending_hourly_batches, 0);
 
     let Json(response) = fetch_forward_proxy_timeseries(
         State(state),

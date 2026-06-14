@@ -114,6 +114,17 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
         snapshot,
     )
     .await?;
+    let encrypted_owner_rows = if let Some(snapshot) = snapshot {
+        query_prompt_cache_conversation_encrypted_owner_summaries_at_snapshot(
+            &state.pool,
+            source_scope,
+            &selected_keys,
+            snapshot,
+        )
+        .await?
+    } else {
+        query_prompt_cache_conversation_encrypted_owner_summaries(&state.pool, &selected_keys).await?
+    };
 
     let mut grouped_events: HashMap<String, Vec<PromptCacheConversationRequestPointResponse>> =
         HashMap::new();
@@ -318,27 +329,48 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
         accounts.truncate(PROMPT_CACHE_CONVERSATION_UPSTREAM_ACCOUNT_LIMIT);
     }
 
+    let mut encrypted_owner_rows_by_key: HashMap<
+        String,
+        PromptCacheConversationEncryptedOwnerSummaryRow,
+    > = encrypted_owner_rows
+        .into_iter()
+        .map(|row| (row.prompt_cache_key.clone(), row))
+        .collect();
+
     Ok(aggregates
         .into_iter()
-        .map(|row| PromptCacheConversationResponse {
-            prompt_cache_key: row.prompt_cache_key.clone(),
-            request_count: row.request_count,
-            total_tokens: row.total_tokens,
-            total_cost: row.total_cost,
-            created_at: row.created_at,
-            last_activity_at: row.last_activity_at,
-            last_terminal_at: row.last_terminal_at,
-            last_in_flight_at: row.last_in_flight_at,
-            cursor: None,
-            upstream_accounts: grouped_upstream_accounts
-                .remove(&row.prompt_cache_key)
-                .unwrap_or_default(),
-            recent_invocations: grouped_recent_invocations
-                .remove(&row.prompt_cache_key)
-                .unwrap_or_default(),
-            last24h_requests: grouped_events
-                .remove(&row.prompt_cache_key)
-                .unwrap_or_default(),
+        .map(|row| {
+            let owner = encrypted_owner_rows_by_key.remove(&row.prompt_cache_key);
+            PromptCacheConversationResponse {
+                prompt_cache_key: row.prompt_cache_key.clone(),
+                request_count: row.request_count,
+                total_tokens: row.total_tokens,
+                total_cost: row.total_cost,
+                created_at: row.created_at,
+                last_activity_at: row.last_activity_at,
+                last_terminal_at: row.last_terminal_at,
+                last_in_flight_at: row.last_in_flight_at,
+                cursor: None,
+                has_encrypted_session_owner: owner.is_some(),
+                encrypted_owner_account_id: owner
+                    .as_ref()
+                    .map(|value| value.owner_upstream_account_id),
+                encrypted_owner_account_name: owner
+                    .as_ref()
+                    .and_then(|value| value.owner_upstream_account_name.clone()),
+                encrypted_owner_group_name: owner
+                    .as_ref()
+                    .and_then(|value| value.owner_group_name.clone()),
+                upstream_accounts: grouped_upstream_accounts
+                    .remove(&row.prompt_cache_key)
+                    .unwrap_or_default(),
+                recent_invocations: grouped_recent_invocations
+                    .remove(&row.prompt_cache_key)
+                    .unwrap_or_default(),
+                last24h_requests: grouped_events
+                    .remove(&row.prompt_cache_key)
+                    .unwrap_or_default(),
+            }
         })
         .collect::<Vec<_>>())
 }

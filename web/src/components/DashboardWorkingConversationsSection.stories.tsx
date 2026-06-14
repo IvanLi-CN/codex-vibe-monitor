@@ -146,6 +146,10 @@ function createConversation(
   );
   return {
     promptCacheKey,
+    hasEncryptedSessionOwner: overrides.hasEncryptedSessionOwner ?? false,
+    encryptedOwnerAccountId: overrides.encryptedOwnerAccountId ?? null,
+    encryptedOwnerAccountName: overrides.encryptedOwnerAccountName ?? null,
+    encryptedOwnerGroupName: overrides.encryptedOwnerGroupName ?? null,
     requestCount: overrides.requestCount ?? recentInvocations.length,
     totalTokens:
       overrides.totalTokens ??

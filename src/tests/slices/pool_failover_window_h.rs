@@ -153,8 +153,9 @@ async fn seed_invocation_archive_batch_with_details(
         .first()
         .map(|row| row.occurred_at[..7].to_string())
         .expect("archive batch rows should not be empty");
-    let archive_path = archive_batch_file_path(config, "codex_invocations", &month_key)
-        .expect("resolve invocation archive batch path");
+    let archive_path = config.archive_dir.join(format!(
+        "codex_invocations-{batch_name}-{month_key}.sqlite.gz"
+    ));
     fs::create_dir_all(
         archive_path
             .parent()

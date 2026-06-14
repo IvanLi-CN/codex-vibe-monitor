@@ -1514,6 +1514,204 @@ describe("PromptCacheConversationTable", () => {
     expect(document.body.textContent).toContain("Proxy West");
   });
 
+  it("confirms before saving a group binding when an encrypted owner exists in the same group", async () => {
+    apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
+      promptCacheKey: "pck-binding",
+      bindingKind: "none",
+      groupName: null,
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      hasEncryptedSessionOwner: true,
+      encryptedOwnerAccountId: 42,
+      encryptedOwnerAccountName: "Pool Alpha",
+      encryptedOwnerGroupName: "prod",
+      updatedAt: "2026-03-02T12:00:00Z",
+    });
+    apiMocks.fetchUpstreamAccounts.mockResolvedValue({
+      writesEnabled: true,
+      items: [
+        createUpstreamAccountSummary(42, "Pool Alpha", "prod"),
+        createUpstreamAccountSummary(77, "Pool Beta", "prod"),
+      ],
+      groups: [{ groupName: "prod", accountCount: 2 }],
+      forwardProxyNodes: [],
+      hasUngroupedAccounts: false,
+      total: 2,
+      page: 1,
+      pageSize: 500,
+      metrics: { total: 2, oauth: 0, apiKey: 2, attention: 0 },
+      routing: null,
+    });
+    apiMocks.fetchInvocationRecords.mockResolvedValue({
+      snapshotId: 1,
+      total: 0,
+      page: 1,
+      pageSize: 200,
+      records: [],
+    });
+
+    const confirmSpy = vi
+      .spyOn(window, "confirm")
+      .mockImplementation(() => false);
+
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-binding",
+          requestCount: 1,
+          totalTokens: 100,
+          totalCost: 0.01,
+          createdAt: "2026-03-02T10:00:00Z",
+          lastActivityAt: "2026-03-02T12:30:00Z",
+          last24hRequests: [],
+        }),
+      ],
+    });
+
+    const historyButton = findButtonByAriaLabel("打开全部调用记录");
+    await act(async () => {
+      historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const kindSelect = document.querySelector(
+      '[role="combobox"][aria-label="绑定类型"]',
+    ) as HTMLElement | null;
+    await user.click(kindSelect!);
+    await user.click(findSelectOption("分组")!);
+    await flushInteractive();
+
+    const groupSelect = document.querySelector(
+      '[role="combobox"][aria-label="分组绑定目标"]',
+    ) as HTMLElement | null;
+    await user.click(groupSelect!);
+    await user.click(findSelectOption("prod")!);
+
+    const saveButton = findButtonByAriaLabel("保存");
+    await act(async () => {
+      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+
+    expect(confirmSpy).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "encrypted session owner Pool Alpha · prod",
+      ),
+    );
+    expect(apiMocks.updatePromptCacheConversationBinding).not.toHaveBeenCalled();
+
+    confirmSpy.mockRestore();
+  });
+
+  it("does not confirm when clearing a manual override back to the encrypted owner lock", async () => {
+    apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
+      promptCacheKey: "pck-binding-clear",
+      bindingKind: "group",
+      groupName: "prod",
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      hasEncryptedSessionOwner: true,
+      encryptedOwnerAccountId: 42,
+      encryptedOwnerAccountName: "Pool Alpha",
+      encryptedOwnerGroupName: "prod",
+      updatedAt: "2026-03-02T12:00:00Z",
+    });
+    apiMocks.fetchUpstreamAccounts.mockResolvedValue({
+      writesEnabled: true,
+      items: [
+        createUpstreamAccountSummary(42, "Pool Alpha", "prod"),
+        createUpstreamAccountSummary(77, "Pool Beta", "prod"),
+      ],
+      groups: [{ groupName: "prod", accountCount: 2 }],
+      forwardProxyNodes: [],
+      hasUngroupedAccounts: false,
+      total: 2,
+      page: 1,
+      pageSize: 500,
+      metrics: { total: 2, oauth: 0, apiKey: 2, attention: 0 },
+      routing: null,
+    });
+    apiMocks.fetchInvocationRecords.mockResolvedValue({
+      snapshotId: 1,
+      total: 0,
+      page: 1,
+      pageSize: 200,
+      records: [],
+    });
+    apiMocks.updatePromptCacheConversationBinding.mockResolvedValue({
+      promptCacheKey: "pck-binding-clear",
+      bindingKind: "none",
+      groupName: null,
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      hasEncryptedSessionOwner: true,
+      encryptedOwnerAccountId: 42,
+      encryptedOwnerAccountName: "Pool Alpha",
+      encryptedOwnerGroupName: "prod",
+      updatedAt: "2026-03-02T12:05:00Z",
+    });
+
+    const confirmSpy = vi
+      .spyOn(window, "confirm")
+      .mockImplementation(() => true);
+
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-binding-clear",
+          requestCount: 1,
+          totalTokens: 100,
+          totalCost: 0.01,
+          createdAt: "2026-03-02T10:00:00Z",
+          lastActivityAt: "2026-03-02T12:30:00Z",
+          last24hRequests: [],
+        }),
+      ],
+    });
+
+    const historyButton = findButtonByAriaLabel("打开全部调用记录");
+    await act(async () => {
+      historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const kindSelect = document.querySelector(
+      '[role="combobox"][aria-label="绑定类型"]',
+    ) as HTMLElement | null;
+    expect(kindSelect?.textContent).toContain("分组");
+    await user.click(kindSelect!);
+    await user.click(findSelectOption("清空")!);
+    await flushInteractive();
+
+    const saveButton = findButtonByAriaLabel("保存");
+    await act(async () => {
+      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushInteractive();
+
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledWith(
+      "pck-binding-clear",
+      { bindingKind: "none" },
+    );
+
+    confirmSpy.mockRestore();
+  });
+
   it("uses the first and latest same-day invocation timestamps as the history chart range", async () => {
     apiMocks.fetchInvocationRecordsSummary.mockResolvedValueOnce({
       snapshotId: 900,

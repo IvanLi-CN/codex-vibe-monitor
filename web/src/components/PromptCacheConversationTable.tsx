@@ -194,6 +194,40 @@ function currentBindingLabel(
   return t("live.conversations.drawer.binding.currentNone");
 }
 
+function encryptedOwnerLabel(
+  binding: PromptCacheConversationBindingResponse | null,
+) {
+  if (!binding?.hasEncryptedSessionOwner) return null;
+  const accountLabel =
+    binding.encryptedOwnerAccountName?.trim() ||
+    (binding.encryptedOwnerAccountId != null
+      ? `#${binding.encryptedOwnerAccountId}`
+      : null);
+  if (!accountLabel) return null;
+  const groupLabel = binding.encryptedOwnerGroupName?.trim();
+  return groupLabel ? `${accountLabel} · ${groupLabel}` : accountLabel;
+}
+
+function nextBindingWouldOverrideEncryptedOwner(
+  binding: PromptCacheConversationBindingResponse | null,
+  nextBindingKind: ConversationBindingDraftKind,
+  nextBindingGroupName: string,
+  nextBindingAccountId: string,
+) {
+  if (!binding?.hasEncryptedSessionOwner) return false;
+  if (nextBindingKind === "none") return false;
+  if (nextBindingKind === "upstreamAccount") {
+    const nextId = Number(nextBindingAccountId);
+    return (
+      Number.isFinite(nextId) && nextId !== binding.encryptedOwnerAccountId
+    );
+  }
+  if (nextBindingKind === "group") {
+    return nextBindingGroupName.trim().length > 0;
+  }
+  return false;
+}
+
 function resolveUpstreamAccountLabel(
   account: PromptCacheConversationUpstreamAccount,
   fallbackAccountLabel: (id: number) => string,
@@ -2304,6 +2338,7 @@ export function PromptCacheConversationHistoryDrawer({
     (bindingKind === "group" && !bindingGroupName) ||
     (bindingKind === "upstreamAccount" && !bindingAccountId);
   const bindingStatusLabel = currentBindingLabel(binding, t);
+  const encryptedOwnerStatusLabel = encryptedOwnerLabel(binding);
   const bindingKindOptions = [
     {
       value: "none",
@@ -2322,6 +2357,20 @@ export function PromptCacheConversationHistoryDrawer({
   ];
   const saveBinding = useCallback(async () => {
     if (!conversationKey || bindingSubmitDisabled) return;
+    if (
+      nextBindingWouldOverrideEncryptedOwner(
+        binding,
+        bindingKind,
+        bindingGroupName,
+        bindingAccountId,
+      )
+    ) {
+      const ownerLabel = encryptedOwnerLabel(binding) ?? "unknown owner";
+      const confirmed = window.confirm(
+        `This conversation already has encrypted session owner ${ownerLabel}. Changing the binding may make future requests fail with invalid_encrypted_content. Continue?`,
+      );
+      if (!confirmed) return;
+    }
     setBindingSaving(true);
     setBindingError(null);
     try {
@@ -2352,6 +2401,7 @@ export function PromptCacheConversationHistoryDrawer({
       setBindingSaving(false);
     }
   }, [
+    binding,
     bindingAccountId,
     bindingAccounts,
     bindingGroupName,
@@ -2416,6 +2466,18 @@ export function PromptCacheConversationHistoryDrawer({
             <p className="mt-2 text-xs text-base-content/70">
               {bindingStatusLabel}
             </p>
+            {encryptedOwnerStatusLabel ? (
+              <p className="mt-1 text-xs text-warning">
+                {t("live.conversations.drawer.binding.encryptedOwner", {
+                  owner: encryptedOwnerStatusLabel,
+                })}
+              </p>
+            ) : null}
+            {binding?.hasEncryptedSessionOwner && binding.bindingKind === "none" ? (
+              <p className="mt-1 text-xs text-base-content/60">
+                {t("live.conversations.drawer.binding.encryptedOwnerHint")}
+              </p>
+            ) : null}
             <div className="mt-3 grid gap-2 sm:grid-cols-[8.5rem_minmax(0,1fr)_auto]">
               <SelectField
                 value={bindingKind}

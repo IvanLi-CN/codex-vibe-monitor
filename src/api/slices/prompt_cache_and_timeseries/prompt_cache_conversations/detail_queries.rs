@@ -353,3 +353,127 @@ pub(crate) async fn query_prompt_cache_conversation_upstream_account_summaries(
         .await
         .map_err(Into::into)
 }
+
+pub(crate) async fn query_prompt_cache_conversation_encrypted_owner_summaries(
+    pool: &Pool<Sqlite>,
+    selected_keys: &[String],
+) -> Result<Vec<PromptCacheConversationEncryptedOwnerSummaryRow>> {
+    if selected_keys.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT owner.prompt_cache_key, \
+             owner.owner_upstream_account_id, \
+             account.display_name AS owner_upstream_account_name, \
+             account.group_name AS owner_group_name \
+         FROM prompt_cache_encrypted_session_owners AS owner \
+         LEFT JOIN pool_upstream_accounts AS account \
+           ON account.id = owner.owner_upstream_account_id \
+         WHERE owner.prompt_cache_key IN (",
+    );
+
+    {
+        let mut separated = query.separated(", ");
+        for key in selected_keys {
+            separated.push_bind(key);
+        }
+    }
+
+    query.push(")");
+
+    query
+        .build_query_as::<PromptCacheConversationEncryptedOwnerSummaryRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
+pub(crate) async fn query_prompt_cache_conversation_encrypted_owner_summaries_at_snapshot(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    selected_keys: &[String],
+    snapshot: &PromptCacheConversationHydrationSnapshot<'_>,
+) -> Result<Vec<PromptCacheConversationEncryptedOwnerSummaryRow>> {
+    if selected_keys.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    const KEY_EXPR: &str =
+        "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
+    let success_like_sql =
+        "(LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed') OR (LOWER(TRIM(COALESCE(status, ''))) = 'http_200' AND TRIM(COALESCE(error_message, '')) = ''))";
+    let mut query = QueryBuilder::<Sqlite>::new("WITH ranked AS (SELECT ");
+    query
+        .push(KEY_EXPR)
+        .push(" AS prompt_cache_key, ")
+        .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+        .push(" AS owner_upstream_account_id, ")
+        .push(INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL)
+        .push(
+            " AS owner_upstream_account_name, \
+             ROW_NUMBER() OVER (PARTITION BY ",
+        )
+        .push(KEY_EXPR)
+        .push(" ORDER BY occurred_at DESC, id DESC) AS row_number \
+            FROM codex_invocations \
+            WHERE ")
+        .push(KEY_EXPR)
+        .push(" IN (");
+
+    {
+        let mut separated = query.separated(", ");
+        for key in selected_keys {
+            separated.push_bind(key);
+        }
+    }
+
+    query.push(") AND ");
+    let snapshot_filter = PromptCacheConversationSnapshotFilter {
+        snapshot_upper_bound: snapshot.snapshot_upper_bound.to_string(),
+        snapshot_boundary_row_id_ceiling: snapshot.snapshot_boundary_row_id_ceiling,
+    };
+    push_snapshot_invocation_visibility_clause(
+        &mut query,
+        "occurred_at",
+        "id",
+        Some(&snapshot_filter),
+    );
+    query
+        .push(" AND ")
+        .push(KEY_EXPR)
+        .push(" IS NOT NULL AND ")
+        .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+        .push(" IS NOT NULL AND ")
+        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(" = 'none' AND ")
+        .push(success_like_sql)
+        .push(
+            " AND (\
+                (json_valid(payload) AND json_extract(payload, '$.requestContainsEncryptedContent') = 1) \
+                OR (json_valid(payload) AND json_extract(payload, '$.responseContainsEncryptedContent') = 1)\
+            )",
+        );
+
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+
+    query.push(
+        ") SELECT ranked.prompt_cache_key, \
+             ranked.owner_upstream_account_id, \
+             COALESCE(account.display_name, ranked.owner_upstream_account_name) AS owner_upstream_account_name, \
+             account.group_name AS owner_group_name \
+          FROM ranked \
+          LEFT JOIN pool_upstream_accounts AS account \
+            ON account.id = ranked.owner_upstream_account_id \
+         WHERE ranked.row_number = 1 \
+         ORDER BY ranked.prompt_cache_key ASC",
+    );
+
+    query
+        .build_query_as::<PromptCacheConversationEncryptedOwnerSummaryRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}

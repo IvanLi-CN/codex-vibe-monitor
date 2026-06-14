@@ -148,18 +148,62 @@ pub(crate) async fn extract_model_from_replay_snapshot(
     }
 }
 
+pub(crate) async fn replay_snapshot_contains_encrypted_content(
+    snapshot: &PoolReplayBodySnapshot,
+) -> bool {
+    match snapshot {
+        PoolReplayBodySnapshot::Empty => false,
+        PoolReplayBodySnapshot::Memory(bytes) => serde_json::from_slice::<Value>(bytes.as_ref())
+            .ok()
+            .is_some_and(|value| value_contains_encrypted_content(&value)),
+        PoolReplayBodySnapshot::File { temp_file, .. } => {
+            let path = temp_file.path.clone();
+            tokio::task::spawn_blocking(move || {
+                let file = std::fs::File::open(path).ok()?;
+                serde_json::from_reader::<_, Value>(std::io::BufReader::new(file))
+                    .ok()
+                    .map(|value| value_contains_encrypted_content(&value))
+            })
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(false)
+        }
+    }
+}
+
 async fn load_via_pool_prompt_cache_binding_constraint(
     state: &AppState,
     prompt_cache_key: Option<&str>,
 ) -> Result<Option<PromptCacheConversationBindingConstraint>, (StatusCode, String)> {
-    load_prompt_cache_conversation_binding_constraint(&state.pool, prompt_cache_key)
+    resolve_prompt_cache_effective_routing_constraint(&state.pool, prompt_cache_key, false)
         .await
+        .map(|(constraint, _owner_auto_guard_active)| constraint)
         .map_err(|err| {
             (
                 StatusCode::BAD_GATEWAY,
                 format!("failed to resolve prompt cache conversation binding: {err}"),
             )
         })
+}
+
+pub(crate) async fn load_via_pool_effective_routing_constraint(
+    state: &AppState,
+    prompt_cache_key: Option<&str>,
+    request_contains_encrypted_content: bool,
+) -> Result<(Option<PromptCacheConversationBindingConstraint>, bool), (StatusCode, String)> {
+    resolve_prompt_cache_effective_routing_constraint(
+        &state.pool,
+        prompt_cache_key,
+        request_contains_encrypted_content,
+    )
+    .await
+    .map_err(|err| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("failed to resolve prompt cache conversation binding: {err}"),
+        )
+    })
 }
 
 pub(crate) fn pool_account_supports_live_request_body(
@@ -270,12 +314,49 @@ impl ViaPoolResolutionTerminalError {
     }
 }
 
+async fn maybe_persist_encrypted_session_owner_guard_terminal_error(
+    state: &AppState,
+    trace_context: Option<&PoolUpstreamAttemptTraceContext>,
+    owner_auto_guard_active: bool,
+    attempt_count: usize,
+    distinct_account_count: usize,
+) -> Option<(StatusCode, String)> {
+    if !owner_auto_guard_active {
+        return None;
+    }
+    let err = build_encrypted_session_owner_unavailable_error(
+        None,
+        attempt_count,
+        distinct_account_count,
+    );
+    if let Some(trace_context) = trace_context {
+        if let Err(record_err) = insert_and_broadcast_pool_upstream_terminal_attempt(
+            state,
+            trace_context,
+            &err,
+            attempt_count as i64,
+            distinct_account_count as i64,
+            PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE,
+        )
+        .await
+        {
+            warn!(
+                invoke_id = trace_context.invoke_id,
+                error = %record_err,
+                "failed to persist via-pool encrypted-owner terminal attempt"
+            );
+        }
+    }
+    Some((err.status, err.message))
+}
+
 async fn unwrap_via_pool_initial_account(
     state: &AppState,
     trace_context: Option<&PoolUpstreamAttemptTraceContext>,
     resolution: Result<PoolAccountResolutionWithWait>,
     no_available_wait_deadline: Option<Instant>,
     responses_total_timeout: Option<Duration>,
+    owner_auto_guard_active: bool,
 ) -> Result<(PoolResolvedAccount, Option<Instant>), (StatusCode, String)> {
     let initial_account = match resolution {
         Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Resolved(account))) => {
@@ -291,18 +372,51 @@ async fn unwrap_via_pool_initial_account(
         }
         Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Unavailable))
         | Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::NoCandidate)) => {
+            if let Some(err) = maybe_persist_encrypted_session_owner_guard_terminal_error(
+                state,
+                trace_context,
+                owner_auto_guard_active,
+                1,
+                1,
+            )
+            .await
+            {
+                return Err(err);
+            }
             return Err((
                 StatusCode::SERVICE_UNAVAILABLE,
                 POOL_NO_AVAILABLE_ACCOUNT_MESSAGE.to_string(),
             ));
         }
         Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::RateLimited)) => {
+            if let Some(err) = maybe_persist_encrypted_session_owner_guard_terminal_error(
+                state,
+                trace_context,
+                owner_auto_guard_active,
+                1,
+                1,
+            )
+            .await
+            {
+                return Err(err);
+            }
             return Err((
                 StatusCode::TOO_MANY_REQUESTS,
                 POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
             ));
         }
         Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::DegradedOnly)) => {
+            if let Some(err) = maybe_persist_encrypted_session_owner_guard_terminal_error(
+                state,
+                trace_context,
+                owner_auto_guard_active,
+                1,
+                1,
+            )
+            .await
+            {
+                return Err(err);
+            }
             return Err((
                 StatusCode::SERVICE_UNAVAILABLE,
                 POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
@@ -311,6 +425,17 @@ async fn unwrap_via_pool_initial_account(
         Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::AssignedBlocked(
             blocked,
         ))) => {
+            if let Some(err) = maybe_persist_encrypted_session_owner_guard_terminal_error(
+                state,
+                trace_context,
+                owner_auto_guard_active,
+                1,
+                1,
+            )
+            .await
+            {
+                return Err(err);
+            }
             let terminal_error = ViaPoolResolutionTerminalError::assigned_blocked(blocked);
             terminal_error.persist_if_needed(state, trace_context).await;
             return Err((terminal_error.status, terminal_error.message));
@@ -318,6 +443,17 @@ async fn unwrap_via_pool_initial_account(
         Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::BlockedByPolicy(
             message,
         ))) => {
+            if let Some(err) = maybe_persist_encrypted_session_owner_guard_terminal_error(
+                state,
+                trace_context,
+                owner_auto_guard_active,
+                1,
+                1,
+            )
+            .await
+            {
+                return Err(err);
+            }
             return Err((StatusCode::SERVICE_UNAVAILABLE, message));
         }
         Err(err) => {
@@ -1332,7 +1468,9 @@ pub(crate) async fn continue_or_retry_pool_live_request(
     initial_account: PoolResolvedAccount,
     sticky_key: Option<String>,
     requested_model: Option<String>,
-    prompt_cache_binding_constraint: Option<PromptCacheConversationBindingConstraint>,
+    prompt_cache_key: Option<String>,
+    _prompt_cache_binding_constraint: Option<PromptCacheConversationBindingConstraint>,
+    _owner_auto_guard_active: bool,
     responses_total_timeout_started_at: Option<Instant>,
     no_available_wait_deadline: Option<Instant>,
     replay_status_rx: &watch::Receiver<PoolReplayBodyStatus>,
@@ -1484,6 +1622,35 @@ pub(crate) async fn continue_or_retry_pool_live_request(
             let replay_requested_model = extract_model_from_replay_snapshot(&snapshot)
                 .await
                 .or(requested_model);
+            let replay_prompt_cache_key = extract_prompt_cache_key_from_replay_snapshot(&snapshot)
+                .await
+                .or(prompt_cache_key);
+            let replay_contains_encrypted_content =
+                replay_snapshot_contains_encrypted_content(&snapshot).await;
+            let (replay_prompt_cache_binding_constraint, replay_owner_auto_guard_active) =
+                load_via_pool_effective_routing_constraint(
+                    state.as_ref(),
+                    replay_prompt_cache_key.as_deref(),
+                    replay_contains_encrypted_content,
+                )
+                .await
+                .map_err(|(status, message)| PoolUpstreamError {
+                    account: Some(initial_account.clone()),
+                    status,
+                    message,
+                    canonical_error_message: None,
+                    failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                    connect_latency_ms: first_error.connect_latency_ms,
+                    upstream_error_code: None,
+                    upstream_error_message: None,
+                    downstream_error_message: None,
+                    upstream_request_id: None,
+                    proxy_binding_key_snapshot: None,
+                    oauth_responses_debug: first_error.oauth_responses_debug.clone(),
+                    attempt_summary: first_error.attempt_summary.clone(),
+                    requested_service_tier: first_error.requested_service_tier.clone(),
+                    request_body_for_capture: first_error.request_body_for_capture.clone(),
+                })?;
             let uses_timeout_route_failover =
                 pool_uses_responses_timeout_failover_policy(original_uri, &method);
             let first_error_is_timeout_shaped = uses_timeout_route_failover
@@ -1584,14 +1751,16 @@ pub(crate) async fn continue_or_retry_pool_live_request(
                     capture_target: ProxyCaptureTarget::Responses,
                     request_info: RequestCaptureInfo {
                         model: replay_requested_model,
+                        contains_encrypted_content: replay_contains_encrypted_content,
                         ..RequestCaptureInfo::default()
                     },
-                    prompt_cache_key: None,
+                    prompt_cache_key: replay_prompt_cache_key,
+                    owner_auto_guard_active: replay_owner_auto_guard_active,
                     t_req_read_ms: 0.0,
                     t_req_parse_ms: 0.0,
                 }),
                 replay_sticky_key.as_deref(),
-                prompt_cache_binding_constraint,
+                replay_prompt_cache_binding_constraint,
                 preferred_account,
                 failover_progress,
                 same_account_attempts,
@@ -1723,7 +1892,8 @@ pub(crate) async fn proxy_openai_v1_via_pool(
         .size_hint()
         .exact()
         .and_then(|value| usize::try_from(value).ok());
-    let (upstream, sticky_key) = if request_may_have_body(&method, &headers) {
+    let (upstream, sticky_key, prompt_cache_key, request_contains_encrypted_content) =
+        if request_may_have_body(&method, &headers) {
         let should_prebuffer_for_body_sticky = should_prebuffer_for_body_sticky_probe(
             header_sticky_key.is_some(),
             headers
@@ -1759,12 +1929,16 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             let body_prompt_cache_key = parsed_request_body
                 .as_ref()
                 .and_then(extract_prompt_cache_key_from_request_body);
-            let prompt_cache_binding_constraint =
-                load_via_pool_prompt_cache_binding_constraint(
+            let request_contains_encrypted_content = parsed_request_body
+                .as_ref()
+                .is_some_and(value_contains_encrypted_content);
+            let effective_prompt_cache_key =
+                body_prompt_cache_key.clone().or(header_prompt_cache_key.clone());
+            let (prompt_cache_binding_constraint, owner_auto_guard_active) =
+                load_via_pool_effective_routing_constraint(
                     state.as_ref(),
-                    body_prompt_cache_key
-                        .as_deref()
-                        .or(header_prompt_cache_key.as_deref()),
+                    effective_prompt_cache_key.as_deref(),
+                    request_contains_encrypted_content,
                 )
                 .await?;
             let pool_attempt_trace_context = build_via_pool_attempt_trace_context(
@@ -1786,11 +1960,11 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         capture_target: ProxyCaptureTarget::Responses,
                         request_info: RequestCaptureInfo {
                             model: requested_model,
+                            contains_encrypted_content: request_contains_encrypted_content,
                             ..RequestCaptureInfo::default()
                         },
-                        prompt_cache_key: body_prompt_cache_key
-                            .clone()
-                            .or(header_prompt_cache_key.clone()),
+                        prompt_cache_key: effective_prompt_cache_key.clone(),
+                        owner_auto_guard_active,
                         t_req_read_ms: 0.0,
                         t_req_parse_ms: 0.0,
                     }),
@@ -1807,6 +1981,8 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 .await
                 .map_err(|err| (err.status, err.message))?,
                 body_sticky_key,
+                effective_prompt_cache_key,
+                request_contains_encrypted_content,
             )
         } else {
             let (
@@ -1815,6 +1991,10 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 initial_account,
                 no_available_wait_deadline,
                 prompt_cache_binding_constraint,
+                body_prompt_cache_key,
+                request_body_model,
+                request_contains_encrypted_content,
+                owner_auto_guard_active,
             ) = if let Some(sticky_key) = header_sticky_key.clone() {
                 let initial_header_sticky_resolution = resolve_pool_account_for_request(
                     state.as_ref(),
@@ -2081,12 +2261,13 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                 && let Some(terminal_error) =
                                     pending_header_sticky_terminal_error.clone()
                             {
-                                let prompt_cache_binding_constraint =
-                                    load_via_pool_prompt_cache_binding_constraint(
+                                let (prompt_cache_binding_constraint, _owner_auto_guard_active) =
+                                    load_via_pool_effective_routing_constraint(
                                         state.as_ref(),
                                         observed_body_prompt_cache_key
                                             .as_deref()
                                             .or(header_prompt_cache_key.as_deref()),
+                                        false,
                                     )
                                     .await?;
                                 if prompt_cache_binding_constraint.is_none() {
@@ -2165,12 +2346,13 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                 && let Some(terminal_error) =
                                     pending_header_sticky_terminal_error.clone()
                             {
-                                let prompt_cache_binding_constraint =
-                                    load_via_pool_prompt_cache_binding_constraint(
+                                let (prompt_cache_binding_constraint, _owner_auto_guard_active) =
+                                    load_via_pool_effective_routing_constraint(
                                         state.as_ref(),
                                         observed_body_prompt_cache_key
                                             .as_deref()
                                             .or(header_prompt_cache_key.as_deref()),
+                                        false,
                                     )
                                     .await?;
                                 if prompt_cache_binding_constraint.is_none() {
@@ -2265,13 +2447,17 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         }
                     }
                 }
-                let prompt_cache_binding_constraint =
-                    load_via_pool_prompt_cache_binding_constraint(
+                let body_prompt_cache_key =
+                    extract_prompt_cache_key_from_replay_snapshot(&request_body_snapshot).await;
+                let request_contains_encrypted_content =
+                    replay_snapshot_contains_encrypted_content(&request_body_snapshot).await;
+                let (prompt_cache_binding_constraint, owner_auto_guard_active) =
+                    load_via_pool_effective_routing_constraint(
                         state.as_ref(),
-                        extract_prompt_cache_key_from_replay_snapshot(&request_body_snapshot)
-                            .await
+                        body_prompt_cache_key
                             .as_deref()
                             .or(header_prompt_cache_key.as_deref()),
+                        request_contains_encrypted_content,
                     )
                     .await?;
                 let requested_model =
@@ -2319,6 +2505,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             resolution,
                             no_available_wait_deadline,
                             responses_total_timeout,
+                            owner_auto_guard_active,
                         )
                         .await?;
                     no_available_wait_deadline = updated_no_available_wait_deadline;
@@ -2357,6 +2544,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                     resolution,
                                     no_available_wait_deadline,
                                     responses_total_timeout,
+                                    owner_auto_guard_active,
                                 )
                                 .await?;
                             no_available_wait_deadline = updated_no_available_wait_deadline;
@@ -2386,6 +2574,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                 resolution,
                                 no_available_wait_deadline,
                                 responses_total_timeout,
+                                owner_auto_guard_active,
                             )
                             .await?;
                         no_available_wait_deadline = updated_no_available_wait_deadline;
@@ -2415,6 +2604,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             resolution,
                             no_available_wait_deadline,
                             responses_total_timeout,
+                            owner_auto_guard_active,
                         )
                         .await?;
                     no_available_wait_deadline = updated_no_available_wait_deadline;
@@ -2429,6 +2619,10 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     initial_account,
                     no_available_wait_deadline,
                     prompt_cache_binding_constraint,
+                    body_prompt_cache_key,
+                    requested_model,
+                    request_contains_encrypted_content,
+                    owner_auto_guard_active,
                 )
             } else {
                 let mut no_available_wait_deadline = None;
@@ -2464,13 +2658,17 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     .prompt_cache_key
                     .or_else(|| header_prompt_cache_key.clone());
                 let live_requested_model = live_body_key_probe.model;
+                let live_request_contains_encrypted_content =
+                    live_body_key_probe.contains_encrypted_content;
                 let live_responses_total_timeout_started_at =
                     responses_total_timeout_started_at_from_request;
-                let prompt_cache_binding_constraint = load_via_pool_prompt_cache_binding_constraint(
-                    state.as_ref(),
-                    live_prompt_cache_key.as_deref(),
-                )
-                .await?;
+                let (prompt_cache_binding_constraint, owner_auto_guard_active) =
+                    load_via_pool_effective_routing_constraint(
+                        state.as_ref(),
+                        live_prompt_cache_key.as_deref(),
+                        live_request_contains_encrypted_content,
+                    )
+                    .await?;
                 // Live-first routing only remains safe when we already know the requested model
                 // or an explicit binding is allowed to bypass model filtering.
                 if live_requested_model.is_some() || prompt_cache_binding_constraint.is_some() {
@@ -2513,6 +2711,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             resolution,
                             no_available_wait_deadline,
                             responses_total_timeout,
+                            owner_auto_guard_active,
                         )
                         .await?;
                     let pool_attempt_trace_context = build_via_pool_attempt_trace_context(
@@ -2551,7 +2750,9 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                 initial_account,
                                 live_body_sticky_key.clone(),
                                 live_requested_model.clone(),
+                                live_prompt_cache_key.clone(),
                                 prompt_cache_binding_constraint.clone(),
+                                owner_auto_guard_active,
                                 live_responses_total_timeout_started_at,
                                 no_available_wait_deadline,
                                 &replay_status_rx,
@@ -2587,15 +2788,22 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         })?;
 
                         let upstream_status = upstream_response.status();
-                        let upstream_request_id = upstream_response
-                            .headers()
-                            .get("x-request-id")
-                            .and_then(|value| value.to_str().ok())
-                            .map(str::trim)
-                            .filter(|value| !value.is_empty())
-                            .map(|value| value.to_string());
-                        let upstream_connection_scoped =
-                            connection_scoped_header_names(upstream_response.headers());
+	                        let upstream_request_id = upstream_response
+	                            .headers()
+	                            .get("x-request-id")
+	                            .and_then(|value| value.to_str().ok())
+	                            .map(str::trim)
+	                            .filter(|value| !value.is_empty())
+	                            .map(|value| value.to_string());
+	                        let upstream_content_encoding = upstream_response
+	                            .headers()
+	                            .get(header::CONTENT_ENCODING)
+	                            .and_then(|value| value.to_str().ok())
+	                            .map(str::trim)
+	                            .filter(|value| !value.is_empty())
+	                            .map(|value| value.to_string());
+	                        let upstream_connection_scoped =
+	                            connection_scoped_header_names(upstream_response.headers());
                         let mut response_builder = Response::builder().status(upstream_status);
                         for (name, value) in upstream_response.headers() {
                             if should_forward_proxy_header(name, &upstream_connection_scoped) {
@@ -2698,11 +2906,15 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         let state_for_record = state.clone();
                         let reservation_key_for_record = pool_routing_reservation_key.clone();
                         let sticky_key_for_record = live_body_sticky_key.clone();
+                        let prompt_cache_key_for_record = live_prompt_cache_key.clone();
                         let invoke_id_for_record = upstream_invoke_id.clone();
                         let pending_pool_attempt_record_for_task = pending_pool_attempt_record;
                         let upstream_request_id_for_task = upstream_request_id;
                         let upstream_attempt_started_at_utc_for_record =
                             upstream_attempt_started_at_utc;
+                        let request_contains_encrypted_content_for_task =
+                            live_request_contains_encrypted_content;
+                        let upstream_content_encoding_for_task = upstream_content_encoding.clone();
                         let proxy_request_permit_for_task = proxy_request_permit;
                         tokio::spawn(async move {
                             let mut deferred_pool_early_phase_cleanup_guard_for_task =
@@ -2714,10 +2926,13 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             let stream_started_at = Instant::now();
                             let mut stream_error_message: Option<String> = None;
                             let mut downstream_closed = false;
+                            let mut response_parse_buffer =
+                                BoundedResponseParseBuffer::new(RAW_RESPONSE_PREVIEW_LIMIT);
                             let mut proxy_request_permit_for_task =
                                 Some(proxy_request_permit_for_task);
 
                             if let Some(chunk) = first_chunk {
+                                response_parse_buffer.append(&chunk);
                                 forwarded_chunks = forwarded_chunks.saturating_add(1);
                                 forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
                                 if tx.send(Ok(chunk)).await.is_err() {
@@ -2735,6 +2950,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                 };
                                 match next_chunk {
                                     Ok(chunk) => {
+                                        response_parse_buffer.append(&chunk);
                                         forwarded_chunks =
                                             forwarded_chunks.saturating_add(1);
                                         forwarded_bytes =
@@ -2786,6 +3002,52 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                 .await
                                 {
                                     warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
+                                }
+                                let response_contains_encrypted_content = response_parse_buffer
+                                    .into_response_info(
+                                        ProxyCaptureTarget::Responses,
+                                        upstream_content_encoding_for_task.as_deref(),
+                                    )
+                                    .contains_encrypted_content;
+                                if let Some(prompt_cache_key) =
+                                    prompt_cache_key_for_record.as_deref()
+                                    && (request_contains_encrypted_content_for_task
+                                        || response_contains_encrypted_content)
+                                {
+                                    match confirm_prompt_cache_encrypted_session_owner_success(
+                                        &state_for_record.pool,
+                                        prompt_cache_key,
+                                        account.account_id,
+                                    )
+                                    .await
+                                    {
+                                        Ok(true) => {
+                                            if let Err(err) =
+                                                promote_prompt_cache_group_binding_to_upstream_account(
+                                                    &state_for_record.pool,
+                                                    prompt_cache_key,
+                                                    account.account_id,
+                                                )
+                                                .await
+                                            {
+                                                warn!(
+                                                    prompt_cache_key,
+                                                    account_id = account.account_id,
+                                                    error = %err,
+                                                    "failed to promote prompt cache group binding after live-first encrypted session success"
+                                                );
+                                            }
+                                        }
+                                        Ok(false) => {}
+                                        Err(err) => {
+                                            warn!(
+                                                prompt_cache_key,
+                                                account_id = account.account_id,
+                                                error = %err,
+                                                "failed to persist live-first encrypted session owner"
+                                            );
+                                        }
+                                    }
                                 }
                             } else {
                                 let route_http_failure_message =
@@ -2888,12 +3150,15 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 let requested_model = extract_model_from_replay_snapshot(&request_body_snapshot)
                     .await
                     .or(live_requested_model);
-                let prompt_cache_binding_constraint =
-                    load_via_pool_prompt_cache_binding_constraint(
+                let request_contains_encrypted_content =
+                    replay_snapshot_contains_encrypted_content(&request_body_snapshot).await;
+                let (prompt_cache_binding_constraint, owner_auto_guard_active) =
+                    load_via_pool_effective_routing_constraint(
                         state.as_ref(),
                         body_prompt_cache_key
                             .as_deref()
                             .or(header_prompt_cache_key.as_deref()),
+                        request_contains_encrypted_content,
                     )
                     .await?;
                 let mut no_available_wait_deadline = None;
@@ -2921,14 +3186,23 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         resolution,
                         no_available_wait_deadline,
                         responses_total_timeout,
+                        owner_auto_guard_active,
                     )
                     .await?;
+                let request_body_model =
+                    extract_model_from_replay_snapshot(&request_body_snapshot).await;
+                let effective_prompt_cache_key =
+                    body_prompt_cache_key.clone().or(header_prompt_cache_key.clone());
                 (
                     request_body_snapshot,
                     body_sticky_key,
                     initial_account,
                     no_available_wait_deadline,
                     prompt_cache_binding_constraint,
+                    effective_prompt_cache_key,
+                    request_body_model,
+                    request_contains_encrypted_content,
+                    owner_auto_guard_active,
                 )
             };
             (
@@ -2945,7 +3219,18 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         original_uri.path(),
                         body_sticky_key.clone(),
                     )),
-                    None,
+                    Some(PoolAttemptRuntimeSnapshotContext {
+                        capture_target: capture_target.unwrap_or(ProxyCaptureTarget::Responses),
+                        request_info: RequestCaptureInfo {
+                            model: request_body_model,
+                            contains_encrypted_content: request_contains_encrypted_content,
+                            ..RequestCaptureInfo::default()
+                        },
+                        prompt_cache_key: body_prompt_cache_key.clone(),
+                        owner_auto_guard_active,
+                        t_req_read_ms: 0.0,
+                        t_req_parse_ms: 0.0,
+                    }),
                     body_sticky_key.as_deref(),
                     prompt_cache_binding_constraint,
                     Some(initial_account),
@@ -2960,6 +3245,8 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 .await
                 .map_err(|err| (err.status, err.message))?,
                 body_sticky_key,
+                body_prompt_cache_key,
+                request_contains_encrypted_content,
             )
         }
     } else {
@@ -2968,12 +3255,16 @@ pub(crate) async fn proxy_openai_v1_via_pool(
         } else {
             POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS
         };
-        let prompt_cache_binding_constraint =
-            load_via_pool_prompt_cache_binding_constraint(
+        let (prompt_cache_binding_constraint, owner_auto_guard_active) =
+            load_via_pool_effective_routing_constraint(
                 state.as_ref(),
                 header_prompt_cache_key.as_deref(),
+                false,
             )
             .await?;
+        let header_capture_target =
+            capture_target_for_request(original_uri.path(), &method)
+                .unwrap_or(ProxyCaptureTarget::Responses);
         (
             send_pool_request_with_failover_and_binding_constraint(
                 state.clone(),
@@ -2988,7 +3279,14 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     original_uri.path(),
                     header_sticky_key.clone(),
                 )),
-                None,
+                Some(PoolAttemptRuntimeSnapshotContext {
+                    capture_target: header_capture_target,
+                    request_info: RequestCaptureInfo::default(),
+                    prompt_cache_key: header_prompt_cache_key.clone(),
+                    owner_auto_guard_active,
+                    t_req_read_ms: 0.0,
+                    t_req_parse_ms: 0.0,
+                }),
                 header_sticky_key.as_deref(),
                 prompt_cache_binding_constraint,
                 None,
@@ -3001,6 +3299,8 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             .await
             .map_err(|err| (err.status, err.message))?,
             header_sticky_key,
+            header_prompt_cache_key.clone(),
+            false,
         )
     };
 
@@ -3035,6 +3335,13 @@ pub(crate) async fn proxy_openai_v1_via_pool(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| value.to_string());
+    let upstream_content_encoding = upstream_response
+        .headers()
+        .get(header::CONTENT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     let upstream_connection_scoped = connection_scoped_header_names(upstream_response.headers());
     let mut response_builder = Response::builder().status(upstream_status);
     for (name, value) in upstream_response.headers() {
@@ -3099,6 +3406,43 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             {
                 warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
             }
+            if let Some(prompt_cache_key) = prompt_cache_key.as_deref()
+                && request_contains_encrypted_content
+            {
+                match confirm_prompt_cache_encrypted_session_owner_success(
+                    &state.pool,
+                    prompt_cache_key,
+                    account.account_id,
+                )
+                .await
+                {
+                    Ok(true) => {
+                        if let Err(err) = promote_prompt_cache_group_binding_to_upstream_account(
+                            &state.pool,
+                            prompt_cache_key,
+                            account.account_id,
+                        )
+                        .await
+                        {
+                            warn!(
+                                prompt_cache_key,
+                                account_id = account.account_id,
+                                error = %err,
+                                "failed to promote prompt cache group binding after via-pool encrypted session success"
+                            );
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(err) => {
+                        warn!(
+                            prompt_cache_key,
+                            account_id = account.account_id,
+                            error = %err,
+                            "failed to persist via-pool encrypted session owner"
+                        );
+                    }
+                }
+            }
         } else {
             release_pool_routing_reservation(state.as_ref(), &pool_routing_reservation_key);
             if let Err(route_err) = record_pool_route_http_failure(
@@ -3131,10 +3475,13 @@ pub(crate) async fn proxy_openai_v1_via_pool(
     let state_for_record = state.clone();
     let reservation_key_for_record = pool_routing_reservation_key.clone();
     let sticky_key_for_record = sticky_key.clone();
+    let prompt_cache_key_for_record = prompt_cache_key.clone();
     let invoke_id_for_record = upstream_invoke_id.clone();
     let pending_pool_attempt_record_for_task = pending_pool_attempt_record;
     let upstream_request_id_for_task = upstream_request_id;
     let upstream_attempt_started_at_utc_for_record = upstream_attempt_started_at_utc;
+    let request_contains_encrypted_content_for_task = request_contains_encrypted_content;
+    let upstream_content_encoding_for_task = upstream_content_encoding.clone();
     let proxy_request_permit_for_task = proxy_request_permit;
     tokio::spawn(async move {
         let mut deferred_pool_early_phase_cleanup_guard_for_task =
@@ -3145,9 +3492,11 @@ pub(crate) async fn proxy_openai_v1_via_pool(
         let stream_started_at = Instant::now();
         let mut stream_error_message: Option<String> = None;
         let mut downstream_closed = false;
+        let mut response_parse_buffer = BoundedResponseParseBuffer::new(RAW_RESPONSE_PREVIEW_LIMIT);
         let mut proxy_request_permit_for_task = Some(proxy_request_permit_for_task);
 
         if let Some(chunk) = first_chunk {
+            response_parse_buffer.append(&chunk);
             forwarded_chunks = forwarded_chunks.saturating_add(1);
             forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
             if tx.send(Ok(chunk)).await.is_err() {
@@ -3165,6 +3514,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             };
             match next_chunk {
                 Ok(chunk) => {
+                    response_parse_buffer.append(&chunk);
                     forwarded_chunks = forwarded_chunks.saturating_add(1);
                     forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
                     if tx.send(Ok(chunk)).await.is_err() {
@@ -3214,6 +3564,50 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             .await
             {
                 warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
+            }
+            let response_contains_encrypted_content = response_parse_buffer
+                .into_response_info(
+                    ProxyCaptureTarget::Responses,
+                    upstream_content_encoding_for_task.as_deref(),
+                )
+                .contains_encrypted_content;
+            if let Some(prompt_cache_key) = prompt_cache_key_for_record.as_deref()
+                && (request_contains_encrypted_content_for_task
+                    || response_contains_encrypted_content)
+            {
+                match confirm_prompt_cache_encrypted_session_owner_success(
+                    &state_for_record.pool,
+                    prompt_cache_key,
+                    account.account_id,
+                )
+                .await
+                {
+                    Ok(true) => {
+                        if let Err(err) = promote_prompt_cache_group_binding_to_upstream_account(
+                            &state_for_record.pool,
+                            prompt_cache_key,
+                            account.account_id,
+                        )
+                        .await
+                        {
+                            warn!(
+                                prompt_cache_key,
+                                account_id = account.account_id,
+                                error = %err,
+                                "failed to promote prompt cache group binding after via-pool encrypted session success"
+                            );
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(err) => {
+                        warn!(
+                            prompt_cache_key,
+                            account_id = account.account_id,
+                            error = %err,
+                            "failed to persist via-pool encrypted session owner"
+                        );
+                    }
+                }
             }
         } else {
             let route_http_failure_message =

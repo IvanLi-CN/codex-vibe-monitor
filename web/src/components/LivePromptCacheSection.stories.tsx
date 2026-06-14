@@ -302,7 +302,11 @@ function buildDenseConversation(seed: number, variant: "count" | "window") {
     (variant === "count" ? 12000 : 4800);
 
   return {
-        promptCacheKey: buildPromptCacheKey(seed + (variant === "count" ? 20 : 40), variant),
+    promptCacheKey: buildPromptCacheKey(seed + (variant === "count" ? 20 : 40), variant),
+    hasEncryptedSessionOwner: false,
+    encryptedOwnerAccountId: null,
+    encryptedOwnerAccountName: null,
+    encryptedOwnerGroupName: null,
     requestCount: pointCount * 3 + 4 + seed,
     totalTokens,
     totalCost: Number((totalTokens / 42000).toFixed(4)),
@@ -388,6 +392,10 @@ function buildActivityWindowStats(hours: number): PromptCacheConversationsRespon
 
       return {
         promptCacheKey: buildPromptCacheKey(index + 7, "window"),
+        hasEncryptedSessionOwner: false,
+        encryptedOwnerAccountId: null,
+        encryptedOwnerAccountName: null,
+        encryptedOwnerGroupName: null,
         requestCount: pointCount * 4 + 3 + index,
         totalTokens,
         totalCost: Number((totalTokens / 42000).toFixed(4)),

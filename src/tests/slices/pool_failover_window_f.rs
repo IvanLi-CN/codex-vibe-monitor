@@ -3511,6 +3511,228 @@ async fn prompt_cache_conversation_timestamps_serialize_as_utc_iso() {
 }
 
 #[tokio::test]
+async fn prompt_cache_conversations_live_response_includes_encrypted_owner_metadata() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let group_name = "prompt-cache-live-owner-group";
+    let owner_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Live Owner",
+        "sk-prompt-cache-live-owner",
+        Some(group_name),
+        None,
+        None,
+    )
+    .await;
+    let occurred_at = Utc::now() - ChronoDuration::minutes(10);
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind("prompt-cache-live-owner")
+    .bind(format_naive(
+        occurred_at.with_timezone(&Shanghai).naive_local(),
+    ))
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(42)
+    .bind(0.42)
+    .bind(json!({ "promptCacheKey": "prompt-cache-live-owner" }).to_string())
+    .bind("{}")
+    .bind(format_utc_iso_millis(occurred_at))
+    .execute(&state.pool)
+    .await
+    .expect("insert prompt cache invocation row");
+
+    upsert_prompt_cache_encrypted_session_owner(
+        &state.pool,
+        "prompt-cache-live-owner",
+        owner_account_id,
+    )
+    .await
+    .expect("persist live owner");
+
+    materialize_prompt_cache_hourly_rollups(&state.pool).await;
+
+    let Json(response) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+            activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
+        }),
+    )
+    .await
+    .expect("prompt cache conversations should succeed");
+
+    let conversation = response
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "prompt-cache-live-owner")
+        .expect("live owner conversation should exist");
+    assert!(conversation.has_encrypted_session_owner);
+    assert_eq!(
+        conversation.encrypted_owner_account_id,
+        Some(owner_account_id)
+    );
+    assert_eq!(
+        conversation.encrypted_owner_account_name.as_deref(),
+        Some("Prompt Cache Live Owner")
+    );
+    assert_eq!(
+        conversation.encrypted_owner_group_name.as_deref(),
+        Some(group_name)
+    );
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_snapshot_excludes_future_encrypted_owner_lock() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let group_name = "prompt-cache-snapshot-owner-group";
+    let owner_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Snapshot Owner",
+        "sk-prompt-cache-snapshot-owner",
+        Some(group_name),
+        None,
+        None,
+    )
+    .await;
+    let key = "prompt-cache-snapshot-owner";
+    let first_at = Utc::now() - ChronoDuration::minutes(4);
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind("prompt-cache-snapshot-owner-initial")
+    .bind(format_naive(first_at.with_timezone(&Shanghai).naive_local()))
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(11)
+    .bind(0.11)
+    .bind(json!({ "promptCacheKey": key }).to_string())
+    .bind("{}")
+    .bind(format_utc_iso_millis(first_at))
+    .execute(&state.pool)
+    .await
+    .expect("insert initial invocation row");
+
+    materialize_prompt_cache_hourly_rollups(&state.pool).await;
+
+    let snapshot_at = format_utc_iso_precise(first_at + ChronoDuration::minutes(1));
+
+    let second_at = Utc::now() - ChronoDuration::minutes(1);
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind("prompt-cache-snapshot-owner-encrypted")
+    .bind(format_naive(second_at.with_timezone(&Shanghai).naive_local()))
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(17)
+    .bind(0.17)
+    .bind(
+        json!({
+            "promptCacheKey": key,
+            "upstreamAccountId": owner_account_id,
+            "upstreamAccountName": "Prompt Cache Snapshot Owner",
+            "responseContainsEncryptedContent": true
+        })
+        .to_string(),
+    )
+    .bind("{}")
+    .bind(format_utc_iso_millis(second_at))
+    .execute(&state.pool)
+    .await
+    .expect("insert later encrypted invocation row");
+    upsert_prompt_cache_encrypted_session_owner(&state.pool, key, owner_account_id)
+        .await
+        .expect("persist current owner after encrypted success");
+
+    materialize_prompt_cache_hourly_rollups(&state.pool).await;
+
+    let Json(snapshot_page) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(20),
+            cursor: None,
+            snapshot_at: Some(snapshot_at),
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("historical snapshot page should succeed");
+
+    let historical = snapshot_page
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == key)
+        .expect("historical conversation should exist");
+    assert!(!historical.has_encrypted_session_owner);
+    assert_eq!(historical.encrypted_owner_account_id, None);
+    assert_eq!(historical.encrypted_owner_account_name, None);
+    assert_eq!(historical.encrypted_owner_group_name, None);
+
+    let Json(current_page) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(20),
+            cursor: None,
+            snapshot_at: None,
+            detail: Some("compact".to_string()),
+        }),
+    )
+    .await
+    .expect("current page should succeed");
+
+    let current = current_page
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == key)
+        .expect("current conversation should exist");
+    assert!(current.has_encrypted_session_owner);
+    assert_eq!(current.encrypted_owner_account_id, Some(owner_account_id));
+    assert_eq!(
+        current.encrypted_owner_account_name.as_deref(),
+        Some("Prompt Cache Snapshot Owner")
+    );
+    assert_eq!(
+        current.encrypted_owner_group_name.as_deref(),
+        Some(group_name)
+    );
+}
+
+#[tokio::test]
 async fn prompt_cache_conversations_cache_reuses_recent_result_within_ttl() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

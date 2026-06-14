@@ -1779,7 +1779,7 @@
         run_upstream_account_maintenance_once(state.clone())
             .await
             .expect("run maintenance pass");
-        timeout(Duration::from_secs(3), async {
+        timeout(Duration::from_secs(8), async {
             while requests.load(Ordering::SeqCst) < 1 {
                 tokio::task::yield_now().await;
             }

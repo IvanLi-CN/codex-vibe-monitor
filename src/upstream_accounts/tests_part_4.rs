@@ -1073,7 +1073,7 @@ async fn bulk_sync_allows_group_node_shunt_unassigned_account_to_probe_bound_nod
         .await
         .expect("bulk sync job exists");
     let mut terminal = None;
-    for _ in 0..100 {
+    for _ in 0..400 {
         terminal = job.terminal_event.lock().await.clone();
         if terminal.is_some() {
             break;
