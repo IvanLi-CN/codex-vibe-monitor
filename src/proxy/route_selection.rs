@@ -1892,7 +1892,8 @@ pub(crate) async fn proxy_openai_v1_via_pool(
         .size_hint()
         .exact()
         .and_then(|value| usize::try_from(value).ok());
-    let (upstream, sticky_key) = if request_may_have_body(&method, &headers) {
+    let (upstream, sticky_key, prompt_cache_key, request_contains_encrypted_content) =
+        if request_may_have_body(&method, &headers) {
         let should_prebuffer_for_body_sticky = should_prebuffer_for_body_sticky_probe(
             header_sticky_key.is_some(),
             headers
@@ -1931,12 +1932,12 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             let request_contains_encrypted_content = parsed_request_body
                 .as_ref()
                 .is_some_and(value_contains_encrypted_content);
+            let effective_prompt_cache_key =
+                body_prompt_cache_key.clone().or(header_prompt_cache_key.clone());
             let (prompt_cache_binding_constraint, owner_auto_guard_active) =
                 load_via_pool_effective_routing_constraint(
                     state.as_ref(),
-                    body_prompt_cache_key
-                        .as_deref()
-                        .or(header_prompt_cache_key.as_deref()),
+                    effective_prompt_cache_key.as_deref(),
                     request_contains_encrypted_content,
                 )
                 .await?;
@@ -1962,9 +1963,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             contains_encrypted_content: request_contains_encrypted_content,
                             ..RequestCaptureInfo::default()
                         },
-                        prompt_cache_key: body_prompt_cache_key
-                            .clone()
-                            .or(header_prompt_cache_key.clone()),
+                        prompt_cache_key: effective_prompt_cache_key.clone(),
                         owner_auto_guard_active,
                         t_req_read_ms: 0.0,
                         t_req_parse_ms: 0.0,
@@ -1982,6 +1981,8 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 .await
                 .map_err(|err| (err.status, err.message))?,
                 body_sticky_key,
+                effective_prompt_cache_key,
+                request_contains_encrypted_content,
             )
         } else {
             let (
@@ -3182,13 +3183,15 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     .await?;
                 let request_body_model =
                     extract_model_from_replay_snapshot(&request_body_snapshot).await;
+                let effective_prompt_cache_key =
+                    body_prompt_cache_key.clone().or(header_prompt_cache_key.clone());
                 (
                     request_body_snapshot,
                     body_sticky_key,
                     initial_account,
                     no_available_wait_deadline,
                     prompt_cache_binding_constraint,
-                    body_prompt_cache_key,
+                    effective_prompt_cache_key,
                     request_body_model,
                     request_contains_encrypted_content,
                     owner_auto_guard_active,
@@ -3215,9 +3218,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             contains_encrypted_content: request_contains_encrypted_content,
                             ..RequestCaptureInfo::default()
                         },
-                        prompt_cache_key: body_prompt_cache_key
-                            .clone()
-                            .or(header_prompt_cache_key.clone()),
+                        prompt_cache_key: body_prompt_cache_key.clone(),
                         owner_auto_guard_active,
                         t_req_read_ms: 0.0,
                         t_req_parse_ms: 0.0,
@@ -3236,6 +3237,8 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 .await
                 .map_err(|err| (err.status, err.message))?,
                 body_sticky_key,
+                body_prompt_cache_key,
+                request_contains_encrypted_content,
             )
         }
     } else {
@@ -3288,6 +3291,8 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             .await
             .map_err(|err| (err.status, err.message))?,
             header_sticky_key,
+            header_prompt_cache_key.clone(),
+            false,
         )
     };
 
@@ -3386,6 +3391,43 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             {
                 warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
             }
+            if let Some(prompt_cache_key) = prompt_cache_key.as_deref()
+                && request_contains_encrypted_content
+            {
+                match confirm_prompt_cache_encrypted_session_owner_success(
+                    &state.pool,
+                    prompt_cache_key,
+                    account.account_id,
+                )
+                .await
+                {
+                    Ok(true) => {
+                        if let Err(err) = promote_prompt_cache_group_binding_to_upstream_account(
+                            &state.pool,
+                            prompt_cache_key,
+                            account.account_id,
+                        )
+                        .await
+                        {
+                            warn!(
+                                prompt_cache_key,
+                                account_id = account.account_id,
+                                error = %err,
+                                "failed to promote prompt cache group binding after via-pool encrypted session success"
+                            );
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(err) => {
+                        warn!(
+                            prompt_cache_key,
+                            account_id = account.account_id,
+                            error = %err,
+                            "failed to persist via-pool encrypted session owner"
+                        );
+                    }
+                }
+            }
         } else {
             release_pool_routing_reservation(state.as_ref(), &pool_routing_reservation_key);
             if let Err(route_err) = record_pool_route_http_failure(
@@ -3418,10 +3460,12 @@ pub(crate) async fn proxy_openai_v1_via_pool(
     let state_for_record = state.clone();
     let reservation_key_for_record = pool_routing_reservation_key.clone();
     let sticky_key_for_record = sticky_key.clone();
+    let prompt_cache_key_for_record = prompt_cache_key.clone();
     let invoke_id_for_record = upstream_invoke_id.clone();
     let pending_pool_attempt_record_for_task = pending_pool_attempt_record;
     let upstream_request_id_for_task = upstream_request_id;
     let upstream_attempt_started_at_utc_for_record = upstream_attempt_started_at_utc;
+    let request_contains_encrypted_content_for_task = request_contains_encrypted_content;
     let proxy_request_permit_for_task = proxy_request_permit;
     tokio::spawn(async move {
         let mut deferred_pool_early_phase_cleanup_guard_for_task =
@@ -3501,6 +3545,43 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             .await
             {
                 warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
+            }
+            if let Some(prompt_cache_key) = prompt_cache_key_for_record.as_deref()
+                && request_contains_encrypted_content_for_task
+            {
+                match confirm_prompt_cache_encrypted_session_owner_success(
+                    &state_for_record.pool,
+                    prompt_cache_key,
+                    account.account_id,
+                )
+                .await
+                {
+                    Ok(true) => {
+                        if let Err(err) = promote_prompt_cache_group_binding_to_upstream_account(
+                            &state_for_record.pool,
+                            prompt_cache_key,
+                            account.account_id,
+                        )
+                        .await
+                        {
+                            warn!(
+                                prompt_cache_key,
+                                account_id = account.account_id,
+                                error = %err,
+                                "failed to promote prompt cache group binding after via-pool encrypted session success"
+                            );
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(err) => {
+                        warn!(
+                            prompt_cache_key,
+                            account_id = account.account_id,
+                            error = %err,
+                            "failed to persist via-pool encrypted session owner"
+                        );
+                    }
+                }
             }
         } else {
             let route_http_failure_message =

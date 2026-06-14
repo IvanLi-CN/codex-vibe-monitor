@@ -809,6 +809,92 @@ async fn proxy_openai_v1_responses_live_first_success_persists_encrypted_owner()
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_responses_prebuffered_success_persists_encrypted_owner() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(10),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let owner_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prebuffered Encrypted Owner",
+        "upstream-primary",
+        None,
+        None,
+        None,
+    )
+    .await;
+    let prompt_cache_key = "pck-prebuffered-success-owner";
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        5346,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(
+            format!(
+                "{{\"model\":\"gpt-5\",\"promptCacheKey\":\"{prompt_cache_key}\",\"input\":[{{\"type\":\"encrypted_content\",\"encrypted_content\":\"opaque-owner-bound-content\"}}]}}"
+            )
+            .into_bytes(),
+        ),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("prebuffered encrypted request should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read prebuffered encrypted response");
+    let payload: Value =
+        serde_json::from_slice(&body).expect("decode prebuffered encrypted response");
+    assert_eq!(payload["authorization"], "Bearer upstream-primary");
+
+    let mut persisted_owner_account_id = None;
+    for _ in 0..50 {
+        persisted_owner_account_id = sqlx::query_scalar(
+            r#"
+            SELECT owner_upstream_account_id
+            FROM prompt_cache_encrypted_session_owners
+            WHERE prompt_cache_key = ?1
+            "#,
+        )
+        .bind(prompt_cache_key)
+        .fetch_optional(&state.pool)
+        .await
+        .expect("query prebuffered encrypted owner row");
+        if persisted_owner_account_id.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    assert_eq!(persisted_owner_account_id, Some(owner_account_id));
+
+    let attempts = attempts.lock().expect("lock prebuffered encrypted attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_responses_header_prompt_cache_key_preserves_group_binding() {
     let (upstream_base, attempts, upstream_handle) =
         spawn_pool_retry_upstream(&[("Bearer upstream-primary", 99)]).await;
