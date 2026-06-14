@@ -202,7 +202,17 @@ fn manual_binding_override_is_newer_than_owner(
     binding_row: &PromptCacheConversationBindingRow,
     owner: &PromptCacheEncryptedSessionOwnerRow,
 ) -> bool {
-    binding_row.updated_at.as_str() > owner.updated_at.as_str()
+    match binding_row.updated_at.as_str().cmp(owner.updated_at.as_str()) {
+        std::cmp::Ordering::Greater => true,
+        std::cmp::Ordering::Less => false,
+        std::cmp::Ordering::Equal => match binding_row.binding_kind.as_str() {
+            PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT => {
+                binding_row.upstream_account_id != Some(owner.owner_upstream_account_id)
+            }
+            PROMPT_CACHE_BINDING_KIND_GROUP => true,
+            _ => true,
+        },
+    }
 }
 
 pub(crate) fn binding_constraint_accepts_upstream_account_id(
@@ -301,6 +311,43 @@ pub(crate) async fn promote_prompt_cache_group_binding_to_upstream_account(
     if current_binding.binding_kind != PROMPT_CACHE_BINDING_KIND_GROUP {
         return Ok(());
     }
+    let Some(bound_group_name) = current_binding
+        .group_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(());
+    };
+
+    #[derive(Debug, FromRow)]
+    struct PromotionTargetRow {
+        group_name: Option<String>,
+    }
+
+    let Some(target_row) = sqlx::query_as::<_, PromotionTargetRow>(
+        r#"
+        SELECT group_name
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(upstream_account_id)
+    .fetch_optional(pool)
+    .await?
+    else {
+        return Ok(());
+    };
+
+    let target_group_name = target_row
+        .group_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if target_group_name != Some(bound_group_name) {
+        return Ok(());
+    }
 
     sqlx::query(
         r#"
@@ -311,12 +358,14 @@ pub(crate) async fn promote_prompt_cache_group_binding_to_upstream_account(
             updated_at = datetime('now')
         WHERE prompt_cache_key = ?1
           AND binding_kind = ?4
+          AND group_name = ?5
         "#,
     )
     .bind(prompt_cache_key)
     .bind(PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT)
     .bind(upstream_account_id)
     .bind(PROMPT_CACHE_BINDING_KIND_GROUP)
+    .bind(bound_group_name)
     .execute(pool)
     .await?;
 

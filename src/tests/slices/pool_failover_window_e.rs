@@ -3467,3 +3467,182 @@ async fn prompt_cache_group_binding_promotes_to_account_after_encrypted_owner_lo
         other => panic!("expected promoted account binding constraint, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn prompt_cache_manual_override_wins_when_binding_and_owner_share_same_second() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let group_name = "prompt-cache-manual-override-same-second-group";
+    ensure_test_group_binding(&state.pool, group_name, None).await;
+    let owner_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Owner Same Second",
+        "sk-prompt-cache-owner-same-second",
+        Some("prompt-cache-other-group"),
+        None,
+        None,
+    )
+    .await;
+    let override_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Override Same Second",
+        "sk-prompt-cache-override-same-second",
+        Some(group_name),
+        None,
+        None,
+    )
+    .await;
+    let prompt_cache_key = "prompt-cache-manual-override-same-second-key";
+
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_encrypted_session_owners (
+            prompt_cache_key,
+            owner_upstream_account_id,
+            first_locked_at,
+            last_confirmed_at,
+            updated_at
+        )
+        VALUES (?1, ?2, '2026-06-14 12:00:00', '2026-06-14 12:00:00', '2026-06-14 12:00:00')
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .bind(owner_account_id)
+    .execute(&state.pool)
+    .await
+    .expect("seed encrypted owner with fixed-second timestamp");
+
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversation_bindings (
+            prompt_cache_key,
+            binding_kind,
+            group_name,
+            upstream_account_id,
+            created_at,
+            updated_at
+        )
+        VALUES (?1, 'upstream_account', NULL, ?2, '2026-06-14 12:00:00', '2026-06-14 12:00:00')
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .bind(override_account_id)
+    .execute(&state.pool)
+    .await
+    .expect("seed manual override in the same second");
+
+    let (constraint, owner_auto_guard_active) = resolve_prompt_cache_effective_routing_constraint(
+        &state.pool,
+        Some(prompt_cache_key),
+        true,
+    )
+    .await
+    .expect("resolve same-second manual override");
+
+    assert!(!owner_auto_guard_active);
+    match constraint {
+        Some(PromptCacheConversationBindingConstraint::UpstreamAccount(bound_id)) => {
+            assert_eq!(bound_id, override_account_id);
+        }
+        other => panic!("expected explicit upstream account override, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn prompt_cache_group_promotion_ignores_stale_group_after_operator_rebind() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let original_group = "prompt-cache-promotion-original-group";
+    let rebound_group = "prompt-cache-promotion-rebound-group";
+    ensure_test_group_binding(&state.pool, original_group, None).await;
+    ensure_test_group_binding(&state.pool, rebound_group, None).await;
+
+    let stale_success_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Stale Promote Account",
+        "sk-prompt-cache-stale-promote",
+        Some(original_group),
+        None,
+        None,
+    )
+    .await;
+    let rebound_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Prompt Cache Rebound Group Account",
+        "sk-prompt-cache-rebound-group",
+        Some(rebound_group),
+        None,
+        None,
+    )
+    .await;
+    let prompt_cache_key = "prompt-cache-stale-group-promotion-key";
+
+    let original_group_payload: UpdatePromptCacheConversationBindingRequest =
+        serde_json::from_value(json!({
+            "bindingKind": "group",
+            "groupName": original_group,
+        }))
+        .expect("deserialize original group payload");
+    let _ = patch_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        Json(original_group_payload),
+    )
+    .await
+    .expect("seed original group binding");
+
+    let rebound_group_payload: UpdatePromptCacheConversationBindingRequest =
+        serde_json::from_value(json!({
+            "bindingKind": "group",
+            "groupName": rebound_group,
+        }))
+        .expect("deserialize rebound group payload");
+    let Json(rebound_response) = patch_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+        Json(rebound_group_payload),
+    )
+    .await
+    .expect("operator rebinds to new group");
+    assert_eq!(rebound_response.binding_kind, "group");
+    assert_eq!(rebound_response.group_name.as_deref(), Some(rebound_group));
+
+    promote_prompt_cache_group_binding_to_upstream_account(
+        &state.pool,
+        prompt_cache_key,
+        stale_success_account_id,
+    )
+    .await
+    .expect("stale success should not overwrite newer group binding");
+
+    let Json(current_binding) = get_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+    )
+    .await
+    .expect("load binding after stale promotion attempt");
+    assert_eq!(current_binding.binding_kind, "group");
+    assert_eq!(current_binding.group_name.as_deref(), Some(rebound_group));
+    assert_eq!(current_binding.upstream_account_id, None);
+
+    promote_prompt_cache_group_binding_to_upstream_account(
+        &state.pool,
+        prompt_cache_key,
+        rebound_account_id,
+    )
+    .await
+    .expect("matching rebound group success should still promote");
+
+    let Json(promoted_binding) = get_prompt_cache_conversation_binding(
+        State(state.clone()),
+        AxumPath(prompt_cache_key.to_string()),
+    )
+    .await
+    .expect("load binding after valid rebound promotion");
+    assert_eq!(promoted_binding.binding_kind, "upstreamAccount");
+    assert_eq!(promoted_binding.upstream_account_id, Some(rebound_account_id));
+}
