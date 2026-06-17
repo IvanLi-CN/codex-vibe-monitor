@@ -2208,6 +2208,126 @@ async fn archived_range_reads_skip_archive_fallback_rows_already_counted_in_live
 }
 
 #[tokio::test]
+async fn previous7d_summary_matches_daily_timeseries_when_window_spans_archived_and_live_days() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let today = Utc::now().with_timezone(&Shanghai).date_naive();
+    let archived_day = today - ChronoDuration::days(6);
+    let live_day = today - ChronoDuration::days(1);
+    let archived_at = format_naive(
+        archived_day
+            .and_hms_opt(10, 0, 0)
+            .expect("valid archived previous7d invocation"),
+    );
+    let live_at = format_naive(
+        live_day
+            .and_hms_opt(10, 0, 0)
+            .expect("valid live previous7d invocation"),
+    );
+
+    seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "previous7d-mixed-window",
+        &[(
+            1_i64,
+            "previous7d-archived",
+            archived_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            100_i64,
+            1.25_f64,
+            Some(90.0),
+        )],
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id,
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            total_tokens,
+            cost,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(2_i64)
+    .bind("previous7d-live")
+    .bind(&live_at)
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(200_i64)
+    .bind(2.5_f64)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert live previous7d invocation");
+
+    let Json(summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("previous7d".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("fetch previous7d summary with mixed archive/live days");
+
+    let Json(timeseries) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "7d".to_string(),
+            bucket: Some("1d".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("fetch 7d daily timeseries with mixed archive/live days");
+
+    let summed_cost = timeseries
+        .points
+        .iter()
+        .take(7)
+        .map(|point| point.total_cost)
+        .sum::<f64>();
+    let summed_count = timeseries
+        .points
+        .iter()
+        .take(7)
+        .map(|point| point.total_count)
+        .sum::<i64>();
+    let summed_tokens = timeseries
+        .points
+        .iter()
+        .take(7)
+        .map(|point| point.total_tokens)
+        .sum::<i64>();
+
+    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.success_count, 2);
+    assert_eq!(summary.failure_count, 0);
+    assert_eq!(summary.total_tokens, 300);
+    assert_f64_close(summary.total_cost, 3.75);
+    assert_eq!(summary.total_count, summed_count);
+    assert_eq!(summary.total_tokens, summed_tokens);
+    assert_f64_close(summary.total_cost, summed_cost);
+}
+
+#[tokio::test]
 async fn all_time_summary_fallback_skips_already_materialized_archive_buckets() {
     let mut config = test_config();
     config.openai_upstream_base_url =
