@@ -551,10 +551,17 @@ async fn pool_route_waits_for_recovered_alternate_after_upstream_429() {
         insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
     set_test_account_status(&state.pool, secondary_id, "needs_reauth").await;
 
+    let wait_started_rx = crate::proxy::register_pool_no_available_wait_hook(&state);
     let pool = state.pool.clone();
-    let release_task = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(40)).await;
-        set_test_account_status(&pool, secondary_id, "active").await;
+    let runtime_handle = tokio::runtime::Handle::current();
+    let release_task = std::thread::spawn(move || {
+        wait_started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("request should signal once the bounded wait starts");
+        std::thread::sleep(Duration::from_millis(40));
+        runtime_handle.block_on(async move {
+            set_test_account_status(&pool, secondary_id, "active").await;
+        });
     });
 
     let started = Instant::now();
@@ -576,8 +583,8 @@ async fn pool_route_waits_for_recovered_alternate_after_upstream_429() {
     let elapsed = started.elapsed();
 
     release_task
-        .await
-        .expect("alternate release task should join");
+        .join()
+        .expect("alternate release thread should join");
 
     assert_eq!(response.status(), StatusCode::OK);
     assert!(

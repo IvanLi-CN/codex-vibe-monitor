@@ -617,6 +617,10 @@ function buildOptimisticConversation(
 
   return {
     promptCacheKey,
+    hasEncryptedSessionOwner: false,
+    encryptedOwnerAccountId: null,
+    encryptedOwnerAccountName: null,
+    encryptedOwnerGroupName: null,
     requestCount: uniqueRecords.length,
     totalTokens: uniqueRecords.reduce((sum, record) => {
       const totalTokens =

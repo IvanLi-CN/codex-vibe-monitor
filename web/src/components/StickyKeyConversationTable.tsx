@@ -46,6 +46,10 @@ function adaptStickyConversation(
 ): PromptCacheConversation {
   return {
     promptCacheKey: conversation.stickyKey,
+    hasEncryptedSessionOwner: false,
+    encryptedOwnerAccountId: null,
+    encryptedOwnerAccountName: null,
+    encryptedOwnerGroupName: null,
     requestCount: conversation.requestCount,
     totalTokens: conversation.totalTokens,
     totalCost: conversation.totalCost,

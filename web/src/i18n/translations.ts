@@ -1838,11 +1838,15 @@ const baseTranslations = {
     "live.conversations.drawer.binding.save": "Save",
     "live.conversations.drawer.binding.saving": "Saving…",
     "live.conversations.drawer.binding.currentNone":
-      "Current: default account-pool routing",
+      "Current: no manual binding",
     "live.conversations.drawer.binding.currentGroup":
       "Current: group {{group}}",
     "live.conversations.drawer.binding.currentAccount":
       "Current: account {{account}}",
+    "live.conversations.drawer.binding.encryptedOwner":
+      "Encrypted session owner: {{owner}}",
+    "live.conversations.drawer.binding.encryptedOwnerHint":
+      "Clearing the manual binding does not clear the encrypted-session owner lock.",
     "live.conversations.activity.title": "Conversation activity overview",
     "live.conversations.activity.metricRequests": "Calls",
     "live.conversations.activity.metricSuccess": "Success",
@@ -3938,10 +3942,14 @@ const baseTranslations = {
     "live.conversations.drawer.binding.account": "账号绑定目标",
     "live.conversations.drawer.binding.save": "保存",
     "live.conversations.drawer.binding.saving": "保存中…",
-    "live.conversations.drawer.binding.currentNone": "当前：默认号池选路",
+    "live.conversations.drawer.binding.currentNone": "当前：无手工绑定",
     "live.conversations.drawer.binding.currentGroup": "当前：分组 {{group}}",
     "live.conversations.drawer.binding.currentAccount":
       "当前：账号 {{account}}",
+    "live.conversations.drawer.binding.encryptedOwner":
+      "加密会话 owner：{{owner}}",
+    "live.conversations.drawer.binding.encryptedOwnerHint":
+      "清空手工绑定不会清除加密会话 owner 锁。",
     "live.conversations.activity.title": "对话调用总览",
     "live.conversations.activity.metricRequests": "调用数",
     "live.conversations.activity.metricSuccess": "成功",

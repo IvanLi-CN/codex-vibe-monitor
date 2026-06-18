@@ -1607,6 +1607,8 @@ pub(crate) struct ProxyPayloadSummary<'a> {
     target: ProxyCaptureTarget,
     status: StatusCode,
     is_stream: bool,
+    request_contains_encrypted_content: bool,
+    response_contains_encrypted_content: bool,
     request_model: Option<&'a str>,
     requested_service_tier: Option<&'a str>,
     billing_service_tier: Option<&'a str>,
@@ -1659,6 +1661,8 @@ pub(crate) fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> S
         target,
         status,
         is_stream,
+        request_contains_encrypted_content,
+        response_contains_encrypted_content,
         request_model,
         requested_service_tier,
         billing_service_tier,
@@ -1709,6 +1713,8 @@ pub(crate) fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> S
         "endpoint": target.endpoint(),
         "statusCode": status.as_u16(),
         "isStream": is_stream,
+        "requestContainsEncryptedContent": request_contains_encrypted_content,
+        "responseContainsEncryptedContent": response_contains_encrypted_content,
         "requestModel": request_model,
         "requestedServiceTier": requested_service_tier,
         "billingServiceTier": billing_service_tier,
@@ -2309,6 +2315,8 @@ pub(crate) fn build_running_proxy_capture_record(
             target,
             status: StatusCode::OK,
             is_stream: request_info.is_stream,
+            request_contains_encrypted_content: request_info.contains_encrypted_content,
+            response_contains_encrypted_content: false,
             request_model: request_info.model.as_deref(),
             requested_service_tier: request_info.requested_service_tier.as_deref(),
             billing_service_tier: None,
@@ -2402,7 +2410,7 @@ pub(crate) struct RawResponsePreviewBuffer {
 }
 
 impl RawResponsePreviewBuffer {
-    fn append(&mut self, chunk: &[u8]) {
+    pub(crate) fn append(&mut self, chunk: &[u8]) {
         let remaining = RAW_RESPONSE_PREVIEW_LIMIT.saturating_sub(self.bytes.len());
         if remaining == 0 || chunk.is_empty() {
             return;
@@ -2411,7 +2419,7 @@ impl RawResponsePreviewBuffer {
             .extend_from_slice(&chunk[..chunk.len().min(remaining)]);
     }
 
-    fn as_slice(&self) -> &[u8] {
+    pub(crate) fn as_slice(&self) -> &[u8] {
         &self.bytes
     }
 
@@ -2427,7 +2435,7 @@ pub(crate) struct BoundedResponseParseBuffer {
 }
 
 impl BoundedResponseParseBuffer {
-    fn new(limit: usize) -> Self {
+    pub(crate) fn new(limit: usize) -> Self {
         Self {
             bytes: Vec::new(),
             limit,
@@ -2435,7 +2443,7 @@ impl BoundedResponseParseBuffer {
         }
     }
 
-    fn append(&mut self, chunk: &[u8]) {
+    pub(crate) fn append(&mut self, chunk: &[u8]) {
         if self.exceeded_limit || chunk.is_empty() {
             return;
         }
@@ -2450,7 +2458,7 @@ impl BoundedResponseParseBuffer {
         }
     }
 
-    fn into_response_info(
+    pub(crate) fn into_response_info(
         self,
         target: ProxyCaptureTarget,
         content_encoding: Option<&str>,

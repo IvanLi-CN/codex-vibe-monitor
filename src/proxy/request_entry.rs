@@ -670,6 +670,39 @@ pub(crate) fn build_pool_no_available_account_error(
     }
 }
 
+pub(crate) const PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE: &str =
+    "encrypted_session_owner_unavailable";
+pub(crate) const ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE: &str =
+    "encrypted session owner unavailable; automatic routing cannot move this encrypted conversation";
+
+pub(crate) fn build_encrypted_session_owner_unavailable_error(
+    account: Option<PoolResolvedAccount>,
+    attempt_count: usize,
+    distinct_account_count: usize,
+) -> PoolUpstreamError {
+    PoolUpstreamError {
+        account,
+        status: StatusCode::SERVICE_UNAVAILABLE,
+        message: ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE.to_string(),
+        canonical_error_message: None,
+        failure_kind: PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE,
+        connect_latency_ms: 0.0,
+        upstream_error_code: Some(PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE.to_string()),
+        upstream_error_message: Some(ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE.to_string()),
+        downstream_error_message: None,
+        upstream_request_id: None,
+        proxy_binding_key_snapshot: None,
+        oauth_responses_debug: None,
+        attempt_summary: pool_attempt_summary(
+            attempt_count,
+            distinct_account_count,
+            Some(PROXY_FAILURE_ENCRYPTED_SESSION_OWNER_UNAVAILABLE.to_string()),
+        ),
+        requested_service_tier: None,
+        request_body_for_capture: None,
+    }
+}
+
 pub(crate) fn build_pool_assigned_account_blocked_error(
     account: PoolResolvedAccount,
     message: String,
@@ -707,7 +740,9 @@ pub(crate) fn retry_after_secs_for_proxy_error(
     if status != StatusCode::SERVICE_UNAVAILABLE {
         return None;
     }
-    if message == POOL_NO_AVAILABLE_ACCOUNT_MESSAGE {
+    if message == POOL_NO_AVAILABLE_ACCOUNT_MESSAGE
+        || message == ENCRYPTED_SESSION_OWNER_UNAVAILABLE_MESSAGE
+    {
         return Some(DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS);
     }
     None
@@ -886,6 +921,7 @@ pub(crate) struct PoolAttemptRuntimeSnapshotContext {
     pub(crate) capture_target: ProxyCaptureTarget,
     pub(crate) request_info: RequestCaptureInfo,
     pub(crate) prompt_cache_key: Option<String>,
+    pub(crate) owner_auto_guard_active: bool,
     pub(crate) t_req_read_ms: f64,
     pub(crate) t_req_parse_ms: f64,
 }
@@ -1199,6 +1235,7 @@ pub(crate) struct PoolReplayBodyKeyProbe {
     pub(crate) sticky_key: Option<String>,
     pub(crate) prompt_cache_key: Option<String>,
     pub(crate) model: Option<String>,
+    pub(crate) contains_encrypted_content: bool,
 }
 
 pub(crate) struct PoolReplayBodyBuffer {
@@ -2026,7 +2063,7 @@ pub(crate) fn spawn_pool_replayable_request_body(
 
             let Some(chunk) = next_chunk else {
                 if !sticky_key_probe_ready {
-                    let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
+                        let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
                         PoolReplayBodyKeyProbe {
                             sticky_key: best_effort_extract_sticky_key_from_request_body_prefix(
                                 &sticky_key_probe,
@@ -2038,6 +2075,10 @@ pub(crate) fn spawn_pool_replayable_request_body(
                             model: best_effort_extract_model_from_request_body_prefix(
                                 &sticky_key_probe,
                             ),
+                            contains_encrypted_content:
+                                best_effort_extract_encrypted_content_from_request_body_prefix(
+                                    &sticky_key_probe,
+                                ),
                         },
                     ));
                 }
@@ -2118,9 +2159,14 @@ pub(crate) fn spawn_pool_replayable_request_body(
                         &sticky_key_probe,
                     ),
                     model: best_effort_extract_model_from_request_body_prefix(&sticky_key_probe),
+                    contains_encrypted_content:
+                        best_effort_extract_encrypted_content_from_request_body_prefix(
+                            &sticky_key_probe,
+                        ),
                 };
                 if key_probe.sticky_key.is_some()
                     || key_probe.prompt_cache_key.is_some()
+                    || key_probe.contains_encrypted_content
                     || sticky_key_probe.len() >= HEADER_STICKY_EARLY_STICKY_SCAN_BYTES
                 {
                     sticky_key_probe_ready = true;

@@ -313,6 +313,10 @@ function createConversation(
 ): PromptCacheConversation {
   return {
     promptCacheKey,
+    hasEncryptedSessionOwner: false,
+    encryptedOwnerAccountId: null,
+    encryptedOwnerAccountName: null,
+    encryptedOwnerGroupName: null,
     requestCount: recentInvocations.length,
     totalTokens: recentInvocations.reduce((sum, invocation) => sum + invocation.totalTokens, 0),
     totalCost: Number(

@@ -1666,6 +1666,31 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure index idx_prompt_cache_conversation_bindings_account")?;
 
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS prompt_cache_encrypted_session_owners (
+            prompt_cache_key TEXT PRIMARY KEY,
+            owner_upstream_account_id INTEGER NOT NULL,
+            first_locked_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_confirmed_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure prompt_cache_encrypted_session_owners table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_prompt_cache_encrypted_session_owners_account
+        ON prompt_cache_encrypted_session_owners (owner_upstream_account_id)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_prompt_cache_encrypted_session_owners_account")?;
+
     let existing_pool_attempt_columns =
         load_sqlite_table_columns(pool, "pool_upstream_request_attempts").await?;
     for (column, ty) in [
