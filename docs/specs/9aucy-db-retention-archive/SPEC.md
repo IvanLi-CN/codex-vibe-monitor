@@ -83,6 +83,7 @@
 
 - `/api/invocations`、`/api/stats/errors`、`/api/stats/failures/summary`、`/api/stats/prompt-cache-conversations`、`/api/stats/forward-proxy` 只查询在线 retention window，不接 archived 明细。
 - 初始 rollout 中，`/api/stats` 与 `/api/stats/summary?window=all` 读取“主库在线明细 + invocation_rollup_daily”，归档前后总请求数、成功/失败数、tokens、cost 必须一致；当前实现已由 `#h9r2m` 升级为“hourly rollups + live tail”。
+- 任何基于自然日或历史窗口的 summary / usage 读取，只要目标区间可能覆盖已 materialize 的 historical hour，就必须与对应 timeseries 共用同一条“hourly rollup + full-hour live tail replay + uncovered archive fallback”读路径；不能仅因为 `window.start >= 当前 retention cutoff` 就退回 live-only 聚合。retention 配置可能先缩短再放宽，此时名义仍在当前 retention 窗口内的旧自然日也可能已经只剩 rollup / archive。
 - `build_raw_response_preview` 的 16KiB 上限保持不变；`raw_response` 明确只承载 preview，完整代理响应原文继续以 `response_raw_path` 为准。长期减压由分层保留与离线归档承担，而不是缩短 preview。
 
 ### 运维配置
@@ -117,6 +118,7 @@
 - 成功调用超过 30 天后，主库在线记录仍可用于结构化排障，但 `detailLevel` 变为 `structured_only`，并明确标出精简时间与原因。
 - 超过 90 天的调用明细、超过 30 天的代理尝试与统计快照，在归档文件与 `archive_batches` 清单成功生成后，才能从主库删除。
 - `summary?window=all` 与总量统计在归档前后完全一致；长期 totals 依赖 `invocation_rollup_daily` 与 `stats_source_deltas`，而不是 archived 明细在线回查。
+- 给定 `previous7d`、`昨天前 7 天`、账号 usage 等跨自然日 summary 窗口，若其中一部分自然日已在更早的 retention 配置下 materialize 到 hourly rollup / archive，而另一部分仍保留在 live DB，读取结果仍必须与对应日粒度 timeseries totals 一致，不能因为当前 retention cutoff 已覆盖 `window.start` 就漏掉较早那几天。
 - 最近 30 天的 `codex_quota_snapshots` 逐条保留，更老日期只保留每天最后一条在线记录。
 - 前端旧 payload 缺失新字段时仍能稳定渲染，并在展开详情中默认按 `Full` 展示。
 
