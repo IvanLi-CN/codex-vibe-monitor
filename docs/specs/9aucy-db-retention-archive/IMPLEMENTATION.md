@@ -11,6 +11,13 @@
 
 - Status: 已完成
 - Note: 本 spec 保留 retention/archive 基线；在线长期统计主来源与 archive 在线读取边界后续已由 `#h9r2m` 接管。
+- Note: 2026-06-18 继续收口 mixed archive/live summary 边界；summary 读取不再因为 `window.start` 落在“当前 retention cutoff 之后”就退回 live-only，而是固定与 hourly timeseries 共用 rollup-backed 读路径，避免 `previous7d` 这类自然日窗口漏掉先前已 materialize 的历史天数。
+
+## Verification
+
+- `cargo test previous7d_summary_matches_daily_timeseries_when_window_spans_archived_and_live_days -- --nocapture`
+- `cargo test archived_range_reads_skip_archive_fallback_rows_already_counted_in_live_tail -- --nocapture`
+- `cargo fmt`
 
 ## Migrated Task-Ticket Sections
 

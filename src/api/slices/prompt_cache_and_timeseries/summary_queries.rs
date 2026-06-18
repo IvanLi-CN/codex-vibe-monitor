@@ -31,12 +31,11 @@ pub(crate) async fn query_hourly_backed_summary_range_with_config(
     }
 
     let retention_cutoff = shanghai_retention_cutoff(invocation_max_days);
-    if start >= retention_cutoff {
-        return query_combined_totals(pool, relay, StatsFilter::Range(start, end), source_scope)
-            .await
-            .map_err(Into::into);
-    }
-
+    // Even when the requested range sits inside the current retention window,
+    // live rows alone are not a reliable source of truth: older days may have
+    // already been materialized into hourly rollups / archives by an earlier,
+    // shorter retention setting. Keep summary reads on the same rollup-backed
+    // path as hourly timeseries so mixed archive/live windows stay consistent.
     let mut totals = StatsTotals::default();
     let range_plan = build_hourly_rollup_exact_range_plan(start, end, retention_cutoff)?;
     if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
@@ -134,18 +133,6 @@ pub(crate) async fn query_hourly_backed_summary_range_for_account_with_config(
     }
 
     let retention_cutoff = shanghai_retention_cutoff(invocation_max_days);
-    if start >= retention_cutoff {
-        return crate::stats::query_upstream_account_stats_row(
-            pool,
-            StatsFilter::Range(start, end),
-            source_scope,
-            upstream_account_id,
-        )
-        .await
-        .map(StatsTotals::from)
-        .map_err(Into::into);
-    }
-
     let mut totals = StatsTotals::default();
     let range_plan = build_hourly_rollup_exact_range_plan(start, end, retention_cutoff)?;
     if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {

@@ -1794,6 +1794,20 @@ async fn archive_timestamped_dataset(
                 .iter()
                 .map(|candidate| candidate.id)
                 .collect::<Vec<_>>();
+            let recreated_pool_upstream_month_archive =
+                if spec.dataset == "pool_upstream_request_attempts" {
+                    let archive_file_path =
+                        archive_batch_file_path(config, spec.dataset, &month_key)?
+                            .to_string_lossy()
+                            .to_string();
+                    pool_upstream_month_archive_reappeared_after_cleanup(
+                        pool,
+                        &archive_file_path,
+                    )
+                    .await?
+                } else {
+                    false
+                };
             let materialized_forward_proxy_rows = if spec.dataset == "forward_proxy_attempts" {
                 group
                     .iter()
@@ -1818,6 +1832,16 @@ async fn archive_timestamped_dataset(
                         .map(|candidate| candidate.timestamp_value.as_str()),
                     Some(config.pool_upstream_request_attempts_archive_ttl_days),
                 )?;
+                if recreated_pool_upstream_month_archive
+                    && archive_outcome.row_count == ids.len() as i64
+                {
+                    archive_outcome.archive_expires_at = Some(
+                        shanghai_archive_expiry_from_reference_timestamp(
+                            &format_utc_iso(Utc::now()),
+                            config.pool_upstream_request_attempts_archive_ttl_days,
+                        )?,
+                    );
+                }
             } else {
                 set_archive_batch_coverage_from_utc_rows(
                     &mut archive_outcome,
@@ -1977,6 +2001,39 @@ fn set_archive_batch_coverage_from_local_rows<'a>(
         _ => None,
     };
     Ok(())
+}
+
+async fn pool_upstream_month_archive_reappeared_after_cleanup(
+    pool: &Pool<Sqlite>,
+    archive_file_path: &str,
+) -> Result<bool> {
+    let existing_manifest_rows: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM archive_batches
+        WHERE dataset = 'pool_upstream_request_attempts'
+          AND file_path = ?1
+        "#,
+    )
+    .bind(archive_file_path)
+    .fetch_one(pool)
+    .await?;
+    if existing_manifest_rows > 0 {
+        return Ok(false);
+    }
+
+    let existing_hourly_rows: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM pool_upstream_node_health_hourly_archive
+        WHERE archive_file_path = ?1
+        "#,
+    )
+    .bind(archive_file_path)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(existing_hourly_rows > 0)
 }
 
 fn set_archive_batch_coverage_from_utc_rows<'a>(
