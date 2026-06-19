@@ -108,10 +108,12 @@
 
 - 详情抽屉记录页加载态（mock Storybook，记录页 tab 已选中，活动总览保持 skeleton / placeholder，未先展示近似值）
 
+PR: include
 ![账号详情记录页加载态](./assets/detail-drawer-records-loading-raw.png)
 
 - 详情抽屉记录页稳定态（mock Storybook，活动总览与记录表已收敛到准确值）
 
+PR: include
 ![账号详情记录页稳定态](./assets/detail-drawer-records-settled-final-raw.png)
 
 ## 参考
