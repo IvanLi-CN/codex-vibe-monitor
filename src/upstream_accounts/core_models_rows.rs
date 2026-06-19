@@ -605,6 +605,10 @@ struct AccountWindowUsagePlan {
 struct AccountWindowUsageRange {
     start_at: String,
     end_at: String,
+    start_at_epoch: i64,
+    end_at_epoch: i64,
+    full_minute_start_epoch: Option<i64>,
+    full_minute_end_epoch: Option<i64>,
     full_hour_start_epoch: Option<i64>,
     full_hour_end_epoch: Option<i64>,
 }
@@ -619,6 +623,12 @@ impl AccountWindowUsageRangeBounds {
     fn into_range(self) -> AccountWindowUsageRange {
         let start_epoch = self.start_at.timestamp();
         let end_epoch = self.end_at.timestamp();
+        let full_minute_start_epoch = if start_epoch.rem_euclid(60) == 0 {
+            start_epoch
+        } else {
+            align_bucket_epoch(start_epoch.saturating_add(59), 60, 0)
+        };
+        let full_minute_end_epoch = align_bucket_epoch(end_epoch, 60, 0);
         let full_hour_start_epoch = if start_epoch.rem_euclid(3_600) == 0 {
             start_epoch
         } else {
@@ -628,6 +638,12 @@ impl AccountWindowUsageRangeBounds {
         AccountWindowUsageRange {
             start_at: format_naive(self.start_at.with_timezone(&Shanghai).naive_local()),
             end_at: format_naive(self.end_at.with_timezone(&Shanghai).naive_local()),
+            start_at_epoch: start_epoch,
+            end_at_epoch: end_epoch,
+            full_minute_start_epoch: (full_minute_start_epoch < full_minute_end_epoch)
+                .then_some(full_minute_start_epoch),
+            full_minute_end_epoch: (full_minute_start_epoch < full_minute_end_epoch)
+                .then_some(full_minute_end_epoch),
             full_hour_start_epoch: (full_hour_start_epoch < full_hour_end_epoch)
                 .then_some(full_hour_start_epoch),
             full_hour_end_epoch: (full_hour_start_epoch < full_hour_end_epoch)
