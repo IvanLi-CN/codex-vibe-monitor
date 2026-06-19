@@ -318,7 +318,13 @@ function createListResponse(
   };
 }
 
-function Probe({ query }: { query?: FetchUpstreamAccountsQuery | null }) {
+function Probe({
+  query,
+  options,
+}: {
+  query?: FetchUpstreamAccountsQuery | null;
+  options?: Parameters<typeof useUpstreamAccounts>[1];
+}) {
   const {
     items,
     selectedId,
@@ -339,7 +345,7 @@ function Probe({ query }: { query?: FetchUpstreamAccountsQuery | null }) {
     removeAccount,
     saveGroupNote,
   } =
-    useUpstreamAccounts(query);
+    useUpstreamAccounts(query, options);
 
   return (
     <div>
@@ -504,6 +510,31 @@ describe("useUpstreamAccounts", () => {
 
     expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledWith([2]);
     expect(text("first-item-primary-requests")).toBe("10");
+  });
+
+  it("auto-hydrates visible roster rows when the query opts out of default selection", async () => {
+    apiMocks.fetchUpstreamAccounts.mockResolvedValueOnce(
+      createListResponse({
+        items: [createWindowedSummary(1, "Alpha"), createWindowedSummary(2, "Beta")],
+      }),
+    );
+    apiMocks.fetchUpstreamAccountWindowUsage.mockResolvedValueOnce(
+      createWindowUsageResponse([1, 2]),
+    );
+
+    render(
+      <Probe
+        query={{ includeAll: true }}
+        options={{ fallbackToFirstItem: false }}
+      />,
+    );
+    await flushAsync();
+
+    expect(text("selected-id")).toBe("");
+    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledWith([1, 2]);
+    expect(text("window-usage-pending")).toBe("false");
+    expect(text("first-item-primary-requests")).toBe("10");
+    expect(text("first-item-secondary-requests")).toBe("30");
   });
 
   it("drops stale selected-account window-usage responses after the roster query changes", async () => {

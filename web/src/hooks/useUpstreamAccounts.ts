@@ -644,19 +644,25 @@ export function useUpstreamAccounts(
   }, [])
 
   useEffect(() => {
-    if (
-      query == null ||
-      listDataQueryKey !== currentListQueryKey ||
-      selectedId == null
-    ) {
+    if (query == null || listDataQueryKey !== currentListQueryKey) {
       return
     }
-    void hydrateWindowUsage([selectedId])
+    const hydrationAccountIds =
+      selectedId != null
+        ? [selectedId]
+        : rosterItems
+            .filter((item) => item.primaryWindow != null || item.secondaryWindow != null)
+            .map((item) => item.id)
+    if (hydrationAccountIds.length === 0) {
+      return
+    }
+    void hydrateWindowUsage(hydrationAccountIds)
   }, [
     currentListQueryKey,
     hydrateWindowUsage,
     listDataQueryKey,
     query,
+    rosterItems,
     selectedId,
   ])
 
