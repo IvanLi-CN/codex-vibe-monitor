@@ -522,12 +522,31 @@ pub(crate) async fn query_invocation_exact_records_for_account(
     Ok(records)
 }
 
+pub(crate) async fn query_invocation_exact_records_for_account_tx(
+    tx: &mut SqliteConnection,
+    range_plan: &HourlyRollupExactRangePlan,
+    source_scope: InvocationSourceScope,
+    snapshot_id: i64,
+    upstream_account_id: i64,
+) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
+    query_invocation_exact_records_tx_for_account(
+        tx,
+        range_plan,
+        source_scope,
+        snapshot_id,
+        upstream_account_id,
+        0,
+    )
+    .await
+}
+
 pub(crate) async fn query_invocation_exact_records_tx_for_account(
     tx: &mut SqliteConnection,
     range_plan: &HourlyRollupExactRangePlan,
     source_scope: InvocationSourceScope,
     snapshot_id: i64,
     upstream_account_id: i64,
+    start_after_id: i64,
 ) -> Result<Vec<InvocationAggregateRecord>, ApiError> {
     let mut records = Vec::new();
     let mut seen_ids = HashSet::new();
@@ -540,7 +559,7 @@ pub(crate) async fn query_invocation_exact_records_tx_for_account(
                 &mut *tx,
                 *range,
                 source_scope,
-                None,
+                (start_after_id > 0).then_some(start_after_id),
                 Some(snapshot_id),
                 upstream_account_id,
             )
@@ -751,6 +770,57 @@ pub(crate) async fn query_upstream_account_usage_hourly_rollup_range_tx(
     .bind(range_end_epoch)
     .bind(upstream_account_id)
     .fetch_all(&mut *tx)
+        .await
+        .map_err(Into::into)
+}
+
+pub(crate) async fn query_upstream_account_stats_rollup_range_tx(
+    tx: &mut SqliteConnection,
+    table_name: &str,
+    range_start_epoch: i64,
+    range_end_epoch: i64,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: i64,
+) -> Result<Vec<UpstreamAccountStatsRollupRecord>, ApiError> {
+    let mut query = QueryBuilder::<Sqlite>::new(format!(
+        r#"
+        SELECT
+            bucket_start_epoch,
+            total_count,
+            success_count,
+            failure_count,
+            in_flight_count,
+            total_tokens,
+            input_tokens,
+            output_tokens,
+            cache_input_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram,
+            first_response_byte_total_sample_count,
+            first_response_byte_total_sum_ms,
+            first_response_byte_total_max_ms,
+            first_response_byte_total_histogram
+        FROM {table_name}
+        WHERE bucket_start_epoch >=
+        "#,
+    ));
+    query.push_bind(range_start_epoch);
+    query
+        .push(" AND bucket_start_epoch < ")
+        .push_bind(range_end_epoch)
+        .push(" AND upstream_account_id = ")
+        .push_bind(upstream_account_id);
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" ORDER BY bucket_start_epoch ASC");
+
+    query
+        .build_query_as::<UpstreamAccountStatsRollupRecord>()
+        .fetch_all(&mut *tx)
         .await
         .map_err(Into::into)
 }

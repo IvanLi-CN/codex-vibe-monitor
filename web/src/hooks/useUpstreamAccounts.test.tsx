@@ -318,7 +318,13 @@ function createListResponse(
   };
 }
 
-function Probe({ query }: { query?: FetchUpstreamAccountsQuery | null }) {
+function Probe({
+  query,
+  options,
+}: {
+  query?: FetchUpstreamAccountsQuery | null;
+  options?: Parameters<typeof useUpstreamAccounts>[1];
+}) {
   const {
     items,
     selectedId,
@@ -339,7 +345,7 @@ function Probe({ query }: { query?: FetchUpstreamAccountsQuery | null }) {
     removeAccount,
     saveGroupNote,
   } =
-    useUpstreamAccounts(query);
+    useUpstreamAccounts(query, options);
 
   return (
     <div>
@@ -455,7 +461,7 @@ describe("useUpstreamAccounts", () => {
     });
   });
 
-  it("auto-hydrates window usage for the current flat roster page", async () => {
+  it("auto-hydrates window usage only for the selected account", async () => {
     const hydration = deferred<UpstreamAccountWindowUsageResponse>();
     apiMocks.fetchUpstreamAccounts.mockResolvedValueOnce(
       createListResponse({
@@ -471,9 +477,9 @@ describe("useUpstreamAccounts", () => {
 
     expect(text("window-usage-pending")).toBe("true");
     expect(text("first-item-primary-requests")).toBe("");
-    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledWith([1, 2]);
+    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledWith([1]);
 
-    hydration.resolve(createWindowUsageResponse([1, 2]));
+    hydration.resolve(createWindowUsageResponse([1]));
     await flushAsync();
 
     expect(text("window-usage-pending")).toBe("false");
@@ -481,7 +487,7 @@ describe("useUpstreamAccounts", () => {
     expect(text("first-item-secondary-requests")).toBe("30");
   });
 
-  it("does not auto-hydrate includeAll roster queries until the page requests visible accounts", async () => {
+  it("hydrates only the selected account for includeAll roster queries", async () => {
     apiMocks.fetchUpstreamAccounts.mockResolvedValueOnce(
       createListResponse({
         items: [createWindowedSummary(1, "Alpha"), createWindowedSummary(2, "Beta")],
@@ -494,19 +500,44 @@ describe("useUpstreamAccounts", () => {
     render(<Probe query={{ includeAll: true }} />);
     await flushAsync();
 
-    expect(apiMocks.fetchUpstreamAccountWindowUsage).not.toHaveBeenCalled();
+    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledWith([1]);
     expect(text("window-usage-pending")).toBe("false");
-    expect(text("first-item-primary-requests")).toBe("");
+    expect(text("first-item-primary-requests")).toBe("10");
 
     click("hydrate-visible");
     await flushAsync();
     await flushAsync();
 
-    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledWith([1, 2]);
+    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledWith([2]);
     expect(text("first-item-primary-requests")).toBe("10");
   });
 
-  it("drops stale window-usage responses after the roster query changes", async () => {
+  it("auto-hydrates visible roster rows when the query opts out of default selection", async () => {
+    apiMocks.fetchUpstreamAccounts.mockResolvedValueOnce(
+      createListResponse({
+        items: [createWindowedSummary(1, "Alpha"), createWindowedSummary(2, "Beta")],
+      }),
+    );
+    apiMocks.fetchUpstreamAccountWindowUsage.mockResolvedValueOnce(
+      createWindowUsageResponse([1, 2]),
+    );
+
+    render(
+      <Probe
+        query={{ includeAll: true }}
+        options={{ fallbackToFirstItem: false }}
+      />,
+    );
+    await flushAsync();
+
+    expect(text("selected-id")).toBe("");
+    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledWith([1, 2]);
+    expect(text("window-usage-pending")).toBe("false");
+    expect(text("first-item-primary-requests")).toBe("10");
+    expect(text("first-item-secondary-requests")).toBe("30");
+  });
+
+  it("drops stale selected-account window-usage responses after the roster query changes", async () => {
     const firstHydration = deferred<UpstreamAccountWindowUsageResponse>();
     apiMocks.fetchUpstreamAccounts
       .mockResolvedValueOnce(
@@ -529,7 +560,7 @@ describe("useUpstreamAccounts", () => {
     render(<Probe query={{ page: 1, pageSize: 20 }} />);
     await flushAsync();
 
-    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledWith([1, 2]);
+    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenCalledWith([1]);
     expect(text("window-usage-pending")).toBe("true");
 
     rerender(<Probe query={{ includeAll: true }} />);
@@ -539,7 +570,7 @@ describe("useUpstreamAccounts", () => {
     expect(text("window-usage-pending")).toBe("false");
     expect(text("first-item-primary-requests")).toBe("");
 
-    firstHydration.resolve(createWindowUsageResponse([1, 2]));
+    firstHydration.resolve(createWindowUsageResponse([1]));
     await flushAsync();
 
     expect(text("first-item-id")).toBe("3");
@@ -547,7 +578,7 @@ describe("useUpstreamAccounts", () => {
     expect(text("first-item-secondary-requests")).toBe("");
   });
 
-  it("keeps window-usage pending while a refreshed hydration supersedes an older request", async () => {
+  it("keeps selected-account window-usage pending while a manual rehydrate supersedes an older request", async () => {
     const firstHydration = deferred<UpstreamAccountWindowUsageResponse>();
     const secondHydration = deferred<UpstreamAccountWindowUsageResponse>();
     apiMocks.fetchUpstreamAccounts
@@ -563,27 +594,28 @@ describe("useUpstreamAccounts", () => {
       );
     apiMocks.fetchUpstreamAccountWindowUsage
       .mockImplementationOnce(async () => firstHydration.promise)
-      .mockImplementationOnce(async () => secondHydration.promise);
+      .mockImplementationOnce(async () => secondHydration.promise)
+      .mockResolvedValueOnce(createWindowUsageResponse([2]));
 
     render(<Probe query={{ page: 1, pageSize: 20 }} />);
     await flushAsync();
 
-    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenNthCalledWith(1, [1, 2]);
+    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenNthCalledWith(1, [1]);
     expect(text("window-usage-pending")).toBe("true");
 
-    click("refresh");
+    click("hydrate-visible");
     await flushAsync();
 
-    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenNthCalledWith(2, [1, 2]);
+    expect(apiMocks.fetchUpstreamAccountWindowUsage).toHaveBeenNthCalledWith(2, [2]);
     expect(text("window-usage-pending")).toBe("true");
 
-    firstHydration.resolve(createWindowUsageResponse([1, 2]));
+    firstHydration.resolve(createWindowUsageResponse([1]));
     await flushAsync();
 
     expect(text("window-usage-pending")).toBe("true");
-    expect(text("first-item-primary-requests")).toBe("");
+    expect(text("first-item-primary-requests")).toBe("10");
 
-    secondHydration.resolve(createWindowUsageResponse([1, 2]));
+    secondHydration.resolve(createWindowUsageResponse([2]));
     await flushAsync();
 
     expect(text("window-usage-pending")).toBe("false");

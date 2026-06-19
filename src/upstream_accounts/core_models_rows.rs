@@ -502,6 +502,7 @@ struct AccountLastActivityRow {
 
 #[derive(Debug, Clone, FromRow)]
 struct AccountWindowUsageRow {
+    id: i64,
     occurred_at: String,
     upstream_account_id: i64,
     input_tokens: Option<i64>,
@@ -513,6 +514,18 @@ struct AccountWindowUsageRow {
 
 #[derive(Debug, Clone, FromRow)]
 struct AccountWindowUsageHourlyRow {
+    bucket_start_epoch: i64,
+    upstream_account_id: i64,
+    request_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_input_tokens: i64,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct AccountWindowUsageMinuteRow {
     bucket_start_epoch: i64,
     upstream_account_id: i64,
     request_count: i64,
@@ -561,6 +574,15 @@ impl AccountWindowUsageAccumulator {
         self.cache_input_tokens += row.cache_input_tokens.max(0);
     }
 
+    fn add_minute_row(&mut self, row: &AccountWindowUsageMinuteRow) {
+        self.request_count += row.request_count.max(0);
+        self.total_tokens += row.total_tokens.max(0);
+        self.total_cost += row.total_cost.max(0.0);
+        self.input_tokens += row.input_tokens.max(0);
+        self.output_tokens += row.output_tokens.max(0);
+        self.cache_input_tokens += row.cache_input_tokens.max(0);
+    }
+
     fn into_snapshot(self) -> RateWindowActualUsage {
         RateWindowActualUsage {
             request_count: self.request_count,
@@ -583,6 +605,10 @@ struct AccountWindowUsagePlan {
 struct AccountWindowUsageRange {
     start_at: String,
     end_at: String,
+    start_at_epoch: i64,
+    end_at_epoch: i64,
+    full_minute_start_epoch: Option<i64>,
+    full_minute_end_epoch: Option<i64>,
     full_hour_start_epoch: Option<i64>,
     full_hour_end_epoch: Option<i64>,
 }
@@ -597,6 +623,12 @@ impl AccountWindowUsageRangeBounds {
     fn into_range(self) -> AccountWindowUsageRange {
         let start_epoch = self.start_at.timestamp();
         let end_epoch = self.end_at.timestamp();
+        let full_minute_start_epoch = if start_epoch.rem_euclid(60) == 0 {
+            start_epoch
+        } else {
+            align_bucket_epoch(start_epoch.saturating_add(59), 60, 0)
+        };
+        let full_minute_end_epoch = align_bucket_epoch(end_epoch, 60, 0);
         let full_hour_start_epoch = if start_epoch.rem_euclid(3_600) == 0 {
             start_epoch
         } else {
@@ -606,6 +638,12 @@ impl AccountWindowUsageRangeBounds {
         AccountWindowUsageRange {
             start_at: format_naive(self.start_at.with_timezone(&Shanghai).naive_local()),
             end_at: format_naive(self.end_at.with_timezone(&Shanghai).naive_local()),
+            start_at_epoch: start_epoch,
+            end_at_epoch: end_epoch,
+            full_minute_start_epoch: (full_minute_start_epoch < full_minute_end_epoch)
+                .then_some(full_minute_start_epoch),
+            full_minute_end_epoch: (full_minute_start_epoch < full_minute_end_epoch)
+                .then_some(full_minute_end_epoch),
             full_hour_start_epoch: (full_hour_start_epoch < full_hour_end_epoch)
                 .then_some(full_hour_start_epoch),
             full_hour_end_epoch: (full_hour_start_epoch < full_hour_end_epoch)

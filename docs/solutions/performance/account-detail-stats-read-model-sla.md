@@ -1,0 +1,50 @@
+---
+title: Account detail stats must resolve from account read-models within 3 seconds
+module: account-pool
+problem_type: performance
+component: account detail stats
+tags:
+  - upstream-accounts
+  - read-model
+  - summary
+  - timeseries
+  - window-usage
+status: active
+related_specs:
+  - docs/specs/t6d9r-account-detail-stats-read-model/SPEC.md
+  - docs/specs/9aucy-db-retention-archive/SPEC.md
+---
+
+# Account detail stats read-model SLA
+
+## Context
+
+账号详情抽屉同时消费 `window-usage`、账号 summary、账号 timeseries 与记录页顶部 summary。旧实现把这些读取叠在 live rows、archive overlap 与 hourly rollup 之上，导致详情打开时出现十秒级等待。
+
+## Symptoms
+
+- 打开账号详情抽屉后，统计卡片和趋势图长时间空白。
+- `/api/pool/upstream-accounts/window-usage` 在多账号列表刷新时批量触发，生产日志出现单次十秒级响应。
+- 账号 summary / timeseries 在 mixed archive/live 窗口上需要重复扫描 raw invocations。
+
+## Resolution
+
+- 为账号详情统计建立 minute/hourly 两层 read-model，并通过 invocation 写入、archive replay 与 startup bootstrap 统一维护。
+- summary / timeseries 只读账号 read-model；raw invocations 只用于 boundary 精确补齐和 cursor 之后的有界 live tail。
+- `window-usage` 优先读 minute read-model，再合并缺失 hourly rows 与 live tail，不再按账号窗口常态化在线重算。
+- 前端只为当前选中账号 hydrate `window-usage`，避免 roster / SSE / 列表刷新批量打后端。
+
+## Guardrails / Reuse Notes
+
+- 任何账号详情统计面一旦触发加载，首次展示的数据必须是准确值，不能先展示 stale 或 approximate 值。
+- 新增账号维度统计字段时，先确认 minute/hourly read-model 都能承载，再接入详情页；不要把缺失字段临时塞回 raw 在线聚合。
+- 如果 schema ensure 需要在旧库上 rebuild 账号统计，必须先确保 `hourly_rollup_live_progress` 已存在，否则 rebuild 后无法保存 cursor。
+- 前端详情页的重型统计 hydrate 必须绑定“当前选中账号 + 当前 query key”；列表刷新不能把整个当前页账号重新拉一遍。
+
+## References
+
+- `docs/specs/t6d9r-account-detail-stats-read-model/SPEC.md`
+- `src/api/slices/prompt_cache_and_timeseries/summary_queries.rs`
+- `src/api/slices/prompt_cache_and_timeseries/timeseries.rs`
+- `src/upstream_accounts/sync_account_imports_tags.rs`
+- `web/src/hooks/useUpstreamAccounts.ts`

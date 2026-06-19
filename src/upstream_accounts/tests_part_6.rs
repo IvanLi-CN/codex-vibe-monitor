@@ -3911,6 +3911,137 @@
     }
 
     #[tokio::test]
+    async fn get_upstream_account_window_usage_keeps_pre_cursor_partial_minute_exact() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        ensure_window_actual_usage_test_tables(&state.pool).await;
+
+        let account_id = insert_oauth_account(&state.pool, "Hydrate Usage Partial Minute").await;
+        let now = (Utc::now() - ChronoDuration::minutes(1))
+            .with_second(30)
+            .and_then(|value| value.with_nanosecond(0))
+            .expect("align fixed now");
+        let snapshot = NormalizedUsageSnapshot {
+            plan_type: Some("team".to_string()),
+            limit_id: "codex".to_string(),
+            limit_name: Some("Codex".to_string()),
+            primary: Some(NormalizedUsageWindow {
+                used_percent: 18.0,
+                window_duration_mins: 300,
+                resets_at: Some(now.to_rfc3339()),
+            }),
+            secondary: Some(NormalizedUsageWindow {
+                used_percent: 9.0,
+                window_duration_mins: 60 * 24 * 7,
+                resets_at: Some(now.to_rfc3339()),
+            }),
+            credits: None,
+        };
+        persist_usage_snapshot(&state.pool, account_id, Some("team"), &snapshot, 30)
+            .await
+            .expect("persist hydrate usage snapshot");
+
+        let boundary_row_at = shanghai_local_iso(now - ChronoDuration::hours(5) + ChronoDuration::seconds(15));
+        let full_minute_row_at = shanghai_local_iso(now - ChronoDuration::hours(4));
+        insert_window_actual_usage_invocation(
+            &state.pool,
+            account_id,
+            &boundary_row_at,
+            Some(1000),
+            Some(500),
+            Some(100),
+            Some(1600),
+            Some(0.016),
+        )
+        .await;
+        insert_window_actual_usage_invocation(
+            &state.pool,
+            account_id,
+            &full_minute_row_at,
+            Some(1500),
+            Some(700),
+            Some(200),
+            Some(2400),
+            Some(0.024),
+        )
+        .await;
+
+        sqlx::query(
+            r#"
+            INSERT INTO upstream_account_stats_minute (
+                bucket_start_epoch,
+                source,
+                upstream_account_id,
+                total_count,
+                success_count,
+                failure_count,
+                in_flight_count,
+                total_tokens,
+                input_tokens,
+                output_tokens,
+                cache_input_tokens,
+                total_cost,
+                updated_at
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, 0, 0, ?6, ?7, ?8, ?9, ?10, datetime('now')
+            )
+            "#,
+        )
+        .bind(invocation_bucket_start_epoch_for_seconds(&full_minute_row_at, 60).expect("minute bucket"))
+        .bind(SOURCE_PROXY)
+        .bind(account_id)
+        .bind(1_i64)
+        .bind(1_i64)
+        .bind(2400_i64)
+        .bind(1500_i64)
+        .bind(700_i64)
+        .bind(200_i64)
+        .bind(0.024_f64)
+        .execute(&state.pool)
+        .await
+        .expect("insert minute rollup row");
+
+        let cursor_id = sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
+            .fetch_one(&state.pool)
+            .await
+            .expect("load invocation cursor");
+        sqlx::query(
+            r#"
+            INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)
+            VALUES (?1, ?2, datetime('now'))
+            ON CONFLICT(dataset) DO UPDATE SET
+                cursor_id = excluded.cursor_id,
+                updated_at = datetime('now')
+            "#,
+        )
+        .bind("codex_invocations")
+        .bind(cursor_id)
+        .execute(&state.pool)
+        .await
+        .expect("mark live rollup cursor");
+
+        let Json(response) = get_upstream_account_window_usage(
+            State(state),
+            Json(UpstreamAccountWindowUsageRequest {
+                account_ids: vec![account_id],
+            }),
+        )
+        .await
+        .expect("load batch actual usage with partial minute boundary");
+        let payload = serde_json::to_value(&response).expect("serialize batch usage response");
+        let item = payload["items"]
+            .as_array()
+            .and_then(|items| items.first())
+            .cloned()
+            .expect("batch usage item");
+
+        assert_eq!(item["primaryActualUsage"]["requestCount"], 2);
+        assert_eq!(item["primaryActualUsage"]["totalTokens"], 4000);
+        assert_eq!(item["primaryActualUsage"]["inputTokens"], 2500);
+        assert_eq!(item["primaryActualUsage"]["outputTokens"], 1200);
+        assert_eq!(item["primaryActualUsage"]["cacheInputTokens"], 300);
+    }
+
+    #[tokio::test]
     async fn get_upstream_account_window_usage_includes_archived_partial_bucket_before_retention_cutoff(
     ) {
         let mut config =

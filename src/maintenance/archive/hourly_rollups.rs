@@ -746,6 +746,10 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
         targets.contains(&HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS);
     let upsert_upstream_account_usage =
         targets.contains(&HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE);
+    let upsert_upstream_account_stats_hourly =
+        targets.contains(&HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY);
+    let upsert_upstream_account_stats_minute =
+        targets.contains(&HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE);
     let upsert_sticky_keys = targets.contains(&HOURLY_ROLLUP_TARGET_STICKY_KEYS);
 
     let mut overall: BTreeMap<(i64, String), InvocationHourlyRollupDelta> = BTreeMap::new();
@@ -758,6 +762,10 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
         KeyedConversationHourlyDelta,
     > = BTreeMap::new();
     let mut upstream_account_usage: BTreeMap<(i64, i64), UpstreamAccountUsageHourlyDelta> =
+        BTreeMap::new();
+    let mut upstream_account_stats_hourly: BTreeMap<(i64, String, i64), UpstreamAccountStatsDelta> =
+        BTreeMap::new();
+    let mut upstream_account_stats_minute: BTreeMap<(i64, String, i64), UpstreamAccountStatsDelta> =
         BTreeMap::new();
     let mut sticky_keys: BTreeMap<(i64, i64, String), KeyedConversationHourlyDelta> =
         BTreeMap::new();
@@ -945,6 +953,39 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
             entry.input_tokens += row.input_tokens.unwrap_or_default();
             entry.output_tokens += row.output_tokens.unwrap_or_default();
             entry.cache_input_tokens += row.cache_input_tokens.unwrap_or_default();
+        }
+
+        if (upsert_upstream_account_stats_hourly || upsert_upstream_account_stats_minute)
+            && let Some(upstream_account_id) =
+                upstream_account_id_from_payload(row.payload.as_deref())
+        {
+            if upsert_upstream_account_stats_hourly {
+                let entry = upstream_account_stats_hourly
+                    .entry((bucket_start_epoch, row.source.clone(), upstream_account_id))
+                    .or_insert_with(|| UpstreamAccountStatsDelta {
+                        first_byte_histogram: empty_approx_histogram(),
+                        first_response_byte_total_histogram: empty_approx_histogram(),
+                        ..UpstreamAccountStatsDelta::default()
+                    });
+                accumulate_upstream_account_stats_delta(entry, row);
+            }
+
+            if upsert_upstream_account_stats_minute {
+                let minute_bucket_start_epoch =
+                    invocation_bucket_start_epoch_for_seconds(&row.occurred_at, 60)?;
+                let entry = upstream_account_stats_minute
+                    .entry((
+                        minute_bucket_start_epoch,
+                        row.source.clone(),
+                        upstream_account_id,
+                    ))
+                    .or_insert_with(|| UpstreamAccountStatsDelta {
+                        first_byte_histogram: empty_approx_histogram(),
+                        first_response_byte_total_histogram: empty_approx_histogram(),
+                        ..UpstreamAccountStatsDelta::default()
+                    });
+                accumulate_upstream_account_stats_delta(entry, row);
+            }
         }
 
         if upsert_sticky_keys
@@ -1316,6 +1357,230 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
         }
     }
 
+    if upsert_upstream_account_stats_hourly {
+        #[derive(sqlx::FromRow)]
+        struct AccountStatsHistogramRow {
+            first_byte_histogram: String,
+            first_response_byte_total_histogram: String,
+        }
+
+        for ((bucket_start_epoch, source, upstream_account_id), delta) in upstream_account_stats_hourly {
+            let current_histograms = sqlx::query_as::<_, AccountStatsHistogramRow>(
+                r#"
+                SELECT
+                    first_byte_histogram,
+                    first_response_byte_total_histogram
+                FROM upstream_account_stats_hourly
+                WHERE bucket_start_epoch = ?1 AND source = ?2 AND upstream_account_id = ?3
+                "#,
+            )
+            .bind(bucket_start_epoch)
+            .bind(&source)
+            .bind(upstream_account_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let mut merged_first_byte_histogram = current_histograms
+                .as_ref()
+                .map(|row| decode_approx_histogram(&row.first_byte_histogram))
+                .unwrap_or_else(empty_approx_histogram);
+            merge_approx_histogram_into(
+                &mut merged_first_byte_histogram,
+                &delta.first_byte_histogram,
+            )?;
+            let mut merged_first_response_byte_total_histogram = current_histograms
+                .as_ref()
+                .map(|row| decode_approx_histogram(&row.first_response_byte_total_histogram))
+                .unwrap_or_else(empty_approx_histogram);
+            merge_approx_histogram_into(
+                &mut merged_first_response_byte_total_histogram,
+                &delta.first_response_byte_total_histogram,
+            )?;
+            sqlx::query(
+                r#"
+                INSERT INTO upstream_account_stats_hourly (
+                    bucket_start_epoch,
+                    source,
+                    upstream_account_id,
+                    total_count,
+                    success_count,
+                    failure_count,
+                    in_flight_count,
+                    total_tokens,
+                    input_tokens,
+                    output_tokens,
+                    cache_input_tokens,
+                    total_cost,
+                    first_byte_sample_count,
+                    first_byte_sum_ms,
+                    first_byte_max_ms,
+                    first_byte_histogram,
+                    first_response_byte_total_sample_count,
+                    first_response_byte_total_sum_ms,
+                    first_response_byte_total_max_ms,
+                    first_response_byte_total_histogram,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, datetime('now'))
+                ON CONFLICT(bucket_start_epoch, source, upstream_account_id) DO UPDATE SET
+                    total_count = upstream_account_stats_hourly.total_count + excluded.total_count,
+                    success_count = upstream_account_stats_hourly.success_count + excluded.success_count,
+                    failure_count = upstream_account_stats_hourly.failure_count + excluded.failure_count,
+                    in_flight_count = upstream_account_stats_hourly.in_flight_count + excluded.in_flight_count,
+                    total_tokens = upstream_account_stats_hourly.total_tokens + excluded.total_tokens,
+                    input_tokens = upstream_account_stats_hourly.input_tokens + excluded.input_tokens,
+                    output_tokens = upstream_account_stats_hourly.output_tokens + excluded.output_tokens,
+                    cache_input_tokens = upstream_account_stats_hourly.cache_input_tokens + excluded.cache_input_tokens,
+                    total_cost = upstream_account_stats_hourly.total_cost + excluded.total_cost,
+                    first_byte_sample_count = upstream_account_stats_hourly.first_byte_sample_count + excluded.first_byte_sample_count,
+                    first_byte_sum_ms = upstream_account_stats_hourly.first_byte_sum_ms + excluded.first_byte_sum_ms,
+                    first_byte_max_ms = MAX(upstream_account_stats_hourly.first_byte_max_ms, excluded.first_byte_max_ms),
+                    first_byte_histogram = excluded.first_byte_histogram,
+                    first_response_byte_total_sample_count = upstream_account_stats_hourly.first_response_byte_total_sample_count + excluded.first_response_byte_total_sample_count,
+                    first_response_byte_total_sum_ms = upstream_account_stats_hourly.first_response_byte_total_sum_ms + excluded.first_response_byte_total_sum_ms,
+                    first_response_byte_total_max_ms = MAX(upstream_account_stats_hourly.first_response_byte_total_max_ms, excluded.first_response_byte_total_max_ms),
+                    first_response_byte_total_histogram = excluded.first_response_byte_total_histogram,
+                    updated_at = datetime('now')
+                "#,
+            )
+            .bind(bucket_start_epoch)
+            .bind(&source)
+            .bind(upstream_account_id)
+            .bind(delta.total_count)
+            .bind(delta.success_count)
+            .bind(delta.failure_count)
+            .bind(delta.in_flight_count)
+            .bind(delta.total_tokens)
+            .bind(delta.input_tokens)
+            .bind(delta.output_tokens)
+            .bind(delta.cache_input_tokens)
+            .bind(delta.total_cost)
+            .bind(delta.first_byte_sample_count)
+            .bind(delta.first_byte_sum_ms)
+            .bind(delta.first_byte_max_ms)
+            .bind(encode_approx_histogram(&merged_first_byte_histogram)?)
+            .bind(delta.first_response_byte_total_sample_count)
+            .bind(delta.first_response_byte_total_sum_ms)
+            .bind(delta.first_response_byte_total_max_ms)
+            .bind(encode_approx_histogram(
+                &merged_first_response_byte_total_histogram,
+            )?)
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
+
+    if upsert_upstream_account_stats_minute {
+        #[derive(sqlx::FromRow)]
+        struct AccountMinuteStatsHistogramRow {
+            first_byte_histogram: String,
+            first_response_byte_total_histogram: String,
+        }
+
+        for ((bucket_start_epoch, source, upstream_account_id), delta) in upstream_account_stats_minute {
+            let current_histograms = sqlx::query_as::<_, AccountMinuteStatsHistogramRow>(
+                r#"
+                SELECT
+                    first_byte_histogram,
+                    first_response_byte_total_histogram
+                FROM upstream_account_stats_minute
+                WHERE bucket_start_epoch = ?1 AND source = ?2 AND upstream_account_id = ?3
+                "#,
+            )
+            .bind(bucket_start_epoch)
+            .bind(&source)
+            .bind(upstream_account_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let mut merged_first_byte_histogram = current_histograms
+                .as_ref()
+                .map(|row| decode_approx_histogram(&row.first_byte_histogram))
+                .unwrap_or_else(empty_approx_histogram);
+            merge_approx_histogram_into(
+                &mut merged_first_byte_histogram,
+                &delta.first_byte_histogram,
+            )?;
+            let mut merged_first_response_byte_total_histogram = current_histograms
+                .as_ref()
+                .map(|row| decode_approx_histogram(&row.first_response_byte_total_histogram))
+                .unwrap_or_else(empty_approx_histogram);
+            merge_approx_histogram_into(
+                &mut merged_first_response_byte_total_histogram,
+                &delta.first_response_byte_total_histogram,
+            )?;
+            sqlx::query(
+                r#"
+                INSERT INTO upstream_account_stats_minute (
+                    bucket_start_epoch,
+                    source,
+                    upstream_account_id,
+                    total_count,
+                    success_count,
+                    failure_count,
+                    in_flight_count,
+                    total_tokens,
+                    input_tokens,
+                    output_tokens,
+                    cache_input_tokens,
+                    total_cost,
+                    first_byte_sample_count,
+                    first_byte_sum_ms,
+                    first_byte_max_ms,
+                    first_byte_histogram,
+                    first_response_byte_total_sample_count,
+                    first_response_byte_total_sum_ms,
+                    first_response_byte_total_max_ms,
+                    first_response_byte_total_histogram,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, datetime('now'))
+                ON CONFLICT(bucket_start_epoch, source, upstream_account_id) DO UPDATE SET
+                    total_count = upstream_account_stats_minute.total_count + excluded.total_count,
+                    success_count = upstream_account_stats_minute.success_count + excluded.success_count,
+                    failure_count = upstream_account_stats_minute.failure_count + excluded.failure_count,
+                    in_flight_count = upstream_account_stats_minute.in_flight_count + excluded.in_flight_count,
+                    total_tokens = upstream_account_stats_minute.total_tokens + excluded.total_tokens,
+                    input_tokens = upstream_account_stats_minute.input_tokens + excluded.input_tokens,
+                    output_tokens = upstream_account_stats_minute.output_tokens + excluded.output_tokens,
+                    cache_input_tokens = upstream_account_stats_minute.cache_input_tokens + excluded.cache_input_tokens,
+                    total_cost = upstream_account_stats_minute.total_cost + excluded.total_cost,
+                    first_byte_sample_count = upstream_account_stats_minute.first_byte_sample_count + excluded.first_byte_sample_count,
+                    first_byte_sum_ms = upstream_account_stats_minute.first_byte_sum_ms + excluded.first_byte_sum_ms,
+                    first_byte_max_ms = MAX(upstream_account_stats_minute.first_byte_max_ms, excluded.first_byte_max_ms),
+                    first_byte_histogram = excluded.first_byte_histogram,
+                    first_response_byte_total_sample_count = upstream_account_stats_minute.first_response_byte_total_sample_count + excluded.first_response_byte_total_sample_count,
+                    first_response_byte_total_sum_ms = upstream_account_stats_minute.first_response_byte_total_sum_ms + excluded.first_response_byte_total_sum_ms,
+                    first_response_byte_total_max_ms = MAX(upstream_account_stats_minute.first_response_byte_total_max_ms, excluded.first_response_byte_total_max_ms),
+                    first_response_byte_total_histogram = excluded.first_response_byte_total_histogram,
+                    updated_at = datetime('now')
+                "#,
+            )
+            .bind(bucket_start_epoch)
+            .bind(&source)
+            .bind(upstream_account_id)
+            .bind(delta.total_count)
+            .bind(delta.success_count)
+            .bind(delta.failure_count)
+            .bind(delta.in_flight_count)
+            .bind(delta.total_tokens)
+            .bind(delta.input_tokens)
+            .bind(delta.output_tokens)
+            .bind(delta.cache_input_tokens)
+            .bind(delta.total_cost)
+            .bind(delta.first_byte_sample_count)
+            .bind(delta.first_byte_sum_ms)
+            .bind(delta.first_byte_max_ms)
+            .bind(encode_approx_histogram(&merged_first_byte_histogram)?)
+            .bind(delta.first_response_byte_total_sample_count)
+            .bind(delta.first_response_byte_total_sum_ms)
+            .bind(delta.first_response_byte_total_max_ms)
+            .bind(encode_approx_histogram(
+                &merged_first_response_byte_total_histogram,
+            )?)
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
+
     if upsert_sticky_keys {
         for ((bucket_start_epoch, upstream_account_id, sticky_key), delta) in sticky_keys {
             sqlx::query(
@@ -1464,6 +1729,34 @@ pub(crate) async fn delete_hourly_rollup_rows_for_bucket_epochs_tx(
     Ok(())
 }
 
+pub(crate) async fn delete_rollup_rows_for_bucket_epochs_with_size_tx(
+    tx: &mut SqliteConnection,
+    table: &str,
+    bucket_epochs: &[i64],
+    bucket_seconds: i64,
+) -> Result<()> {
+    if bucket_epochs.is_empty() {
+        return Ok(());
+    }
+    let normalized = if bucket_seconds == 3_600 {
+        bucket_epochs.to_vec()
+    } else {
+        let mut values = Vec::new();
+        for hour_epoch in bucket_epochs {
+            let mut cursor = *hour_epoch;
+            let hour_end = hour_epoch.saturating_add(3_600);
+            while cursor < hour_end {
+                values.push(cursor);
+                cursor = cursor.saturating_add(bucket_seconds);
+            }
+        }
+        values.sort_unstable();
+        values.dedup();
+        values
+    };
+    delete_hourly_rollup_rows_for_bucket_epochs_tx(tx, table, &normalized).await
+}
+
 pub(crate) async fn load_live_invocation_hourly_rows_for_bucket_epochs_tx(
     tx: &mut SqliteConnection,
     bucket_epochs: &[i64],
@@ -1577,10 +1870,18 @@ pub(crate) async fn recompute_invocation_hourly_rollups_for_ids_tx(
         HOURLY_ROLLUP_TARGET_PROMPT_CACHE,
         HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS,
         HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
         HOURLY_ROLLUP_TARGET_STICKY_KEYS,
     ] {
         delete_hourly_rollup_rows_for_bucket_epochs_tx(tx, table, &bucket_epochs).await?;
     }
+    delete_rollup_rows_for_bucket_epochs_with_size_tx(
+        tx,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE,
+        &bucket_epochs,
+        60,
+    )
+    .await?;
 
     let rows = load_live_invocation_hourly_rows_for_bucket_epochs_tx(tx, &bucket_epochs).await?;
     upsert_invocation_hourly_rollups_tx(tx, &rows, &INVOCATION_HOURLY_ROLLUP_TARGETS).await?;
@@ -1947,4 +2248,155 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(pool: &Pool<S
     tx.commit().await?;
 
     Ok(overall.len())
+}
+
+pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
+    pool: &Pool<Sqlite>,
+) -> Result<(usize, usize)> {
+    let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
+        r#"
+        SELECT id, file_path, coverage_start_at, coverage_end_at
+        FROM archive_batches
+        WHERE dataset = 'codex_invocations'
+          AND status = ?1
+        ORDER BY month_key ASC, created_at ASC, id ASC
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .fetch_all(pool)
+    .await?;
+    let mut seen_ids = HashSet::new();
+    let mut source_rows = Vec::<InvocationHourlySourceRecord>::new();
+
+    for archive_file in archive_files {
+        let archive_path = PathBuf::from(&archive_file.file_path);
+        if !archive_path.exists() {
+            warn!(
+                dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                file_path = archive_file.file_path,
+                "skipping missing archive batch during upstream account stats rollup rebuild"
+            );
+            continue;
+        }
+
+        let temp_path = PathBuf::from(format!(
+            "{}.{}.sqlite",
+            archive_path.display(),
+            retention_temp_suffix()
+        ));
+        if temp_path.exists() {
+            let _ = fs::remove_file(&temp_path);
+        }
+        let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+        inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
+        let archive_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&sqlite_url_for_path(&temp_path))
+            .await
+            .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
+        let archive_columns = load_archive_table_columns(&archive_pool, "codex_invocations").await?;
+        let archive_query_sql = build_legacy_compatible_invocation_archive_query(&archive_columns);
+        let mut archive_cursor_id = 0_i64;
+        loop {
+            let mut archive_rows =
+                sqlx::query_as::<_, InvocationHourlySourceRecord>(&archive_query_sql)
+                    .bind(archive_cursor_id)
+                    .bind(BACKFILL_BATCH_SIZE)
+                    .fetch_all(&archive_pool)
+                    .await?;
+            if archive_rows.is_empty() {
+                break;
+            }
+            archive_cursor_id = archive_rows
+                .last()
+                .map(|row| row.id)
+                .unwrap_or(archive_cursor_id);
+            archive_rows.retain(|row| seen_ids.insert(row.id));
+            source_rows.extend(archive_rows);
+        }
+        archive_pool.close().await;
+        drop(temp_cleanup);
+    }
+
+    let mut cursor_id = 0_i64;
+    loop {
+        let mut live_rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(
+            r#"
+            SELECT
+                id,
+                occurred_at,
+                source,
+                status,
+                detail_level,
+                input_tokens,
+                output_tokens,
+                cache_input_tokens,
+                total_tokens,
+                cost,
+                error_message,
+                failure_kind,
+                failure_class,
+                is_actionable,
+                payload,
+                t_total_ms,
+                t_req_read_ms,
+                t_req_parse_ms,
+                t_upstream_connect_ms,
+                t_upstream_ttfb_ms,
+                t_upstream_stream_ms,
+                t_resp_parse_ms,
+                t_persist_ms
+            FROM codex_invocations
+            WHERE id > ?1
+            ORDER BY id ASC
+            LIMIT ?2
+            "#,
+        )
+        .bind(cursor_id)
+        .bind(BACKFILL_BATCH_SIZE)
+        .fetch_all(pool)
+        .await?;
+        if live_rows.is_empty() {
+            break;
+        }
+        cursor_id = live_rows.last().map(|row| row.id).unwrap_or(cursor_id);
+        live_rows.retain(|row| seen_ids.insert(row.id));
+        source_rows.extend(live_rows);
+    }
+
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM upstream_account_stats_hourly")
+        .execute(tx.as_mut())
+        .await?;
+    sqlx::query("DELETE FROM upstream_account_stats_minute")
+        .execute(tx.as_mut())
+        .await?;
+    if !source_rows.is_empty() {
+        upsert_invocation_hourly_rollups_tx(
+            tx.as_mut(),
+            &source_rows,
+            &[
+                HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+                HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE,
+            ],
+        )
+        .await?;
+    }
+    if cursor_id > 0 {
+        save_hourly_rollup_live_progress_tx(
+            tx.as_mut(),
+            HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            cursor_id,
+        )
+        .await?;
+    }
+    tx.commit().await?;
+
+    let hourly_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM upstream_account_stats_hourly")
+        .fetch_one(pool)
+        .await?;
+    let minute_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM upstream_account_stats_minute")
+        .fetch_one(pool)
+        .await?;
+    Ok((hourly_count.max(0) as usize, minute_count.max(0) as usize))
 }

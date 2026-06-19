@@ -131,29 +131,30 @@ pub(crate) async fn query_hourly_backed_summary_range_for_account_with_config(
     if start >= end {
         return Ok(StatsTotals::default());
     }
-
     let retention_cutoff = shanghai_retention_cutoff(invocation_max_days);
-    let mut totals = StatsTotals::default();
     let range_plan = build_hourly_rollup_exact_range_plan(start, end, retention_cutoff)?;
-    if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
-        let mut tx = pool.begin().await?;
-        let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
-        let rollup_live_cursor = load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
-        let rows = query_upstream_account_usage_hourly_rollup_range_tx(
+    let mut tx = pool.begin().await?;
+    let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
+    let rollup_live_cursor = load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
+    let mut totals = StatsTotals::default();
+    let archive_overlap_ids = if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
+        let rows = query_upstream_account_stats_rollup_range_tx(
             tx.as_mut(),
+            "upstream_account_stats_hourly",
             range_start_epoch,
             range_end_epoch,
+            source_scope,
             upstream_account_id,
         )
         .await?;
         for row in rows {
-            totals.total_count += row.request_count;
+            totals.total_count += row.total_count;
             totals.success_count += row.success_count;
             totals.failure_count += row.failure_count;
             totals.total_tokens += row.total_tokens;
             totals.total_cost += row.total_cost;
         }
-        let mut exact_records = query_invocation_exact_records_tx_for_account(
+        let mut exact_records = query_invocation_exact_records_for_account_tx(
             tx.as_mut(),
             &range_plan,
             source_scope,
@@ -170,22 +171,36 @@ pub(crate) async fn query_hourly_backed_summary_range_for_account_with_config(
             upstream_account_id,
         )
         .await?;
-        let archive_overlap_ids = tail_records
-            .iter()
-            .map(|record| record.id)
-            .collect::<HashSet<_>>();
+        let archive_overlap_ids = tail_records.iter().map(|record| record.id).collect::<HashSet<_>>();
         exact_records.extend(tail_records);
         for record in &exact_records {
             add_invocation_record_to_summary_totals(&mut totals, record);
         }
+        archive_overlap_ids
+    } else {
+        let exact_records = query_invocation_exact_records_for_account_tx(
+            tx.as_mut(),
+            &range_plan,
+            source_scope,
+            snapshot_id,
+            upstream_account_id,
+        )
+        .await?;
+        for record in &exact_records {
+            add_invocation_record_to_summary_totals(&mut totals, record);
+        }
+        HashSet::new()
+    };
+
+    if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
         let archived_start = Utc
             .timestamp_opt(range_start_epoch, 0)
             .single()
-            .ok_or_else(|| ApiError::from(anyhow!("invalid archived account summary range start epoch")))?;
+            .ok_or_else(|| ApiError::from(anyhow!("invalid account archived summary range start epoch")))?;
         let archived_end = Utc
             .timestamp_opt(range_end_epoch, 0)
             .single()
-            .ok_or_else(|| ApiError::from(anyhow!("invalid archived account summary range end epoch")))?;
+            .ok_or_else(|| ApiError::from(anyhow!("invalid account archived summary range end epoch")))?;
         totals = totals.add(
             crate::stats::query_unmaterialized_upstream_account_archive_totals(
                 pool,
@@ -196,17 +211,22 @@ pub(crate) async fn query_hourly_backed_summary_range_for_account_with_config(
             )
             .await?,
         );
-    } else {
-        let snapshot_id = resolve_invocation_snapshot_id(pool, source_scope).await?;
-        let exact_records = query_invocation_exact_records_for_account(
-            pool,
-            &range_plan,
+    }
+    if range_plan.full_hour_range.is_none() && rollup_live_cursor < snapshot_id {
+        let tail_range_plan = HourlyRollupExactRangePlan {
+            full_hour_range: None,
+            live_exact_ranges: exact_utc_range(start, end)?.into_iter().collect(),
+        };
+        let tail_records = query_invocation_exact_records_tx_for_account(
+            tx.as_mut(),
+            &tail_range_plan,
             source_scope,
             snapshot_id,
             upstream_account_id,
+            rollup_live_cursor,
         )
         .await?;
-        for record in &exact_records {
+        for record in &tail_records {
             add_invocation_record_to_summary_totals(&mut totals, record);
         }
     }

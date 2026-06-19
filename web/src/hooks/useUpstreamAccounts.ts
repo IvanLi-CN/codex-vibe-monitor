@@ -592,6 +592,9 @@ export function useUpstreamAccounts(
       ) {
         return
       }
+      if (!response || !Array.isArray(response.items)) {
+        return
+      }
 
       const usageEntries = Object.fromEntries(
         response.items.map((item) => [
@@ -641,22 +644,26 @@ export function useUpstreamAccounts(
   }, [])
 
   useEffect(() => {
-    if (
-      query == null ||
-      effectiveQuery.includeAll === true ||
-      listDataQueryKey !== currentListQueryKey ||
-      rosterItems.length === 0
-    ) {
+    if (query == null || listDataQueryKey !== currentListQueryKey) {
       return
     }
-    void hydrateWindowUsage(rosterItems.map((item) => item.id))
+    const hydrationAccountIds =
+      selectedId != null
+        ? [selectedId]
+        : rosterItems
+            .filter((item) => item.primaryWindow != null || item.secondaryWindow != null)
+            .map((item) => item.id)
+    if (hydrationAccountIds.length === 0) {
+      return
+    }
+    void hydrateWindowUsage(hydrationAccountIds)
   }, [
     currentListQueryKey,
-    effectiveQuery.includeAll,
     hydrateWindowUsage,
     listDataQueryKey,
     query,
     rosterItems,
+    selectedId,
   ])
 
   const refreshCurrentSelectedDetail = useCallback(

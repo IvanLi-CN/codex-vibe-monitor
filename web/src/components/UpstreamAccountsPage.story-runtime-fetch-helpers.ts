@@ -74,6 +74,18 @@ export function getWindowUsageResponseDelay(storyId: string | null) {
   return 0
 }
 
+export function getAccountActivityResponseDelay(storyId: string | null) {
+  if (storyId?.endsWith('--detail-drawer-records-loading') === true) {
+    return 0
+  }
+
+  return 0
+}
+
+export function shouldKeepAccountActivityPending(storyId: string | null) {
+  return storyId?.endsWith('--detail-drawer-records-loading') === true
+}
+
 export function noContent() {
   return Promise.resolve(new Response(null, { status: 204 }))
 }

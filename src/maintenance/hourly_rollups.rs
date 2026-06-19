@@ -636,6 +636,8 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
             HOURLY_ROLLUP_TARGET_PROMPT_CACHE,
             HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS,
             HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE,
             HOURLY_ROLLUP_TARGET_STICKY_KEYS,
         ] {
             if !hourly_rollup_archive_replayed_tx(
@@ -649,7 +651,12 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
                 pending_targets.push(target);
             }
         }
-        if pending_targets.as_slice() == [HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE] {
+        if pending_targets.as_slice() == [
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE,
+        ] || pending_targets.as_slice() == [HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE]
+        {
             mark_archive_batch_historical_rollups_materialized_tx(
                 tx,
                 HOURLY_ROLLUP_DATASET_INVOCATIONS,
@@ -802,6 +809,7 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
             .await?;
             summary.materialized_batches += 1;
         } else {
+            summary.blocked_batches += 1;
             warn!(
                 dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
                 file_path = archive_file.file_path,
@@ -1278,6 +1286,17 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx(
 
 async fn bootstrap_hourly_rollups(pool: &Pool<Sqlite>) -> Result<()> {
     sync_hourly_rollups_from_live_tables(pool).await?;
+    let account_stats_hourly_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM upstream_account_stats_hourly")
+            .fetch_one(pool)
+            .await?;
+    let account_stats_minute_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM upstream_account_stats_minute")
+            .fetch_one(pool)
+            .await?;
+    if account_stats_hourly_count == 0 || account_stats_minute_count == 0 {
+        rebuild_upstream_account_stats_rollups_from_sources(pool).await?;
+    }
     Ok(())
 }
 
