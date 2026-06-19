@@ -651,7 +651,12 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
                 pending_targets.push(target);
             }
         }
-        if pending_targets.as_slice() == [HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE] {
+        if pending_targets.as_slice() == [
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE,
+        ] || pending_targets.as_slice() == [HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE]
+        {
             mark_archive_batch_historical_rollups_materialized_tx(
                 tx,
                 HOURLY_ROLLUP_DATASET_INVOCATIONS,
@@ -804,6 +809,7 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
             .await?;
             summary.materialized_batches += 1;
         } else {
+            summary.blocked_batches += 1;
             warn!(
                 dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
                 file_path = archive_file.file_path,

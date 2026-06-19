@@ -131,17 +131,16 @@ pub(crate) async fn query_hourly_backed_summary_range_for_account_with_config(
     if start >= end {
         return Ok(StatsTotals::default());
     }
-    let _ = invocation_max_days;
-    let range_start_epoch = align_bucket_epoch(start.timestamp(), 60, 0);
-    let range_end_epoch = align_bucket_epoch(end.timestamp(), 60, 0);
+    let retention_cutoff = shanghai_retention_cutoff(invocation_max_days);
+    let range_plan = build_hourly_rollup_exact_range_plan(start, end, retention_cutoff)?;
     let mut tx = pool.begin().await?;
     let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
     let rollup_live_cursor = load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
     let mut totals = StatsTotals::default();
-    if range_start_epoch < range_end_epoch {
+    let archive_overlap_ids = if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
         let rows = query_upstream_account_stats_rollup_range_tx(
             tx.as_mut(),
-            "upstream_account_stats_minute",
+            "upstream_account_stats_hourly",
             range_start_epoch,
             range_end_epoch,
             source_scope,
@@ -155,47 +154,72 @@ pub(crate) async fn query_hourly_backed_summary_range_for_account_with_config(
             totals.total_tokens += row.total_tokens;
             totals.total_cost += row.total_cost;
         }
-    }
-
-    let mut live_exact_ranges = Vec::new();
-    let first_full_minute_start = Utc
-        .timestamp_opt(range_start_epoch.saturating_add(60), 0)
-        .single()
-        .ok_or_else(|| ApiError::from(anyhow!("invalid first full minute start epoch")))?;
-    let last_full_minute_end = Utc
-        .timestamp_opt(range_end_epoch, 0)
-        .single()
-        .ok_or_else(|| ApiError::from(anyhow!("invalid last full minute end epoch")))?;
-    push_exact_range(&mut live_exact_ranges, start, end.min(first_full_minute_start))?;
-    push_exact_range(&mut live_exact_ranges, start.max(last_full_minute_end), end)?;
-
-    let boundary_snapshot_id = rollup_live_cursor.min(snapshot_id);
-    if !live_exact_ranges.is_empty() && boundary_snapshot_id > 0 {
-        let range_plan = HourlyRollupExactRangePlan {
-            full_hour_range: None,
-            live_exact_ranges,
-        };
+        let mut exact_records = query_invocation_exact_records_for_account_tx(
+            tx.as_mut(),
+            &range_plan,
+            source_scope,
+            snapshot_id,
+            upstream_account_id,
+        )
+        .await?;
+        let tail_records = query_invocation_full_hour_tail_records_tx_for_account(
+            tx.as_mut(),
+            &range_plan,
+            source_scope,
+            rollup_live_cursor,
+            snapshot_id,
+            upstream_account_id,
+        )
+        .await?;
+        let archive_overlap_ids = tail_records.iter().map(|record| record.id).collect::<HashSet<_>>();
+        exact_records.extend(tail_records);
+        for record in &exact_records {
+            add_invocation_record_to_summary_totals(&mut totals, record);
+        }
+        archive_overlap_ids
+    } else {
         let exact_records = query_invocation_exact_records_for_account_tx(
             tx.as_mut(),
             &range_plan,
             source_scope,
-            boundary_snapshot_id,
+            snapshot_id,
             upstream_account_id,
         )
         .await?;
         for record in &exact_records {
             add_invocation_record_to_summary_totals(&mut totals, record);
         }
-    }
+        HashSet::new()
+    };
 
-    if rollup_live_cursor < snapshot_id {
-        let range_plan = HourlyRollupExactRangePlan {
+    if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
+        let archived_start = Utc
+            .timestamp_opt(range_start_epoch, 0)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid account archived summary range start epoch")))?;
+        let archived_end = Utc
+            .timestamp_opt(range_end_epoch, 0)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid account archived summary range end epoch")))?;
+        totals = totals.add(
+            crate::stats::query_unmaterialized_upstream_account_archive_totals(
+                pool,
+                source_scope,
+                Some((archived_start, archived_end)),
+                Some(&archive_overlap_ids),
+                upstream_account_id,
+            )
+            .await?,
+        );
+    }
+    if range_plan.full_hour_range.is_none() && rollup_live_cursor < snapshot_id {
+        let tail_range_plan = HourlyRollupExactRangePlan {
             full_hour_range: None,
             live_exact_ranges: exact_utc_range(start, end)?.into_iter().collect(),
         };
         let tail_records = query_invocation_exact_records_tx_for_account(
             tx.as_mut(),
-            &range_plan,
+            &tail_range_plan,
             source_scope,
             snapshot_id,
             upstream_account_id,
