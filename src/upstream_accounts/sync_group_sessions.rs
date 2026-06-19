@@ -85,6 +85,7 @@ async fn load_window_actual_usage_rows_from_pool(
     let mut query = QueryBuilder::<Sqlite>::new(
         r#"
         SELECT
+            id,
             occurred_at,
         "#,
     );
@@ -151,6 +152,7 @@ async fn load_window_actual_usage_rows_for_bucket_epochs_from_pool(
     let mut query = QueryBuilder::<Sqlite>::new(
         r#"
         SELECT
+            id,
             occurred_at,
         "#,
     );
@@ -254,6 +256,51 @@ async fn load_window_actual_usage_hourly_rows_from_pool(
 
     query
         .build_query_as::<AccountWindowUsageHourlyRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
+async fn load_window_actual_usage_minute_rows_from_pool(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+    start_bucket_epoch: i64,
+    end_bucket_epoch_exclusive: i64,
+) -> Result<Vec<AccountWindowUsageMinuteRow>> {
+    if account_ids.is_empty() || start_bucket_epoch >= end_bucket_epoch_exclusive {
+        return Ok(Vec::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            bucket_start_epoch,
+            upstream_account_id,
+            total_count AS request_count,
+            total_tokens,
+            total_cost,
+            input_tokens,
+            output_tokens,
+            cache_input_tokens
+        FROM upstream_account_stats_minute
+        WHERE bucket_start_epoch >=
+        "#,
+    );
+    query
+        .push_bind(start_bucket_epoch)
+        .push(" AND bucket_start_epoch < ")
+        .push_bind(end_bucket_epoch_exclusive)
+        .push(" AND upstream_account_id IN (");
+    {
+        let mut separated = query.separated(", ");
+        for account_id in account_ids {
+            separated.push_bind(account_id);
+        }
+    }
+    query.push(") ORDER BY bucket_start_epoch ASC");
+
+    query
+        .build_query_as::<AccountWindowUsageMinuteRow>()
         .fetch_all(pool)
         .await
         .map_err(Into::into)
@@ -485,6 +532,38 @@ fn fold_account_window_usage_hourly_rows(
     }
 }
 
+fn fold_account_window_usage_minute_rows(
+    usage: &mut HashMap<i64, AccountWindowUsageSummary>,
+    rows: &[AccountWindowUsageMinuteRow],
+    plans: &HashMap<i64, AccountWindowUsagePlan>,
+) {
+    for row in rows {
+        let Some(plan) = plans.get(&row.upstream_account_id) else {
+            continue;
+        };
+        let row_start_at = Utc
+            .timestamp_opt(row.bucket_start_epoch, 0)
+            .single()
+            .map(|value| format_naive(value.with_timezone(&Shanghai).naive_local()));
+        let Some(row_start_at) = row_start_at else {
+            continue;
+        };
+        let entry = usage.entry(row.upstream_account_id).or_default();
+        if plan.primary.as_ref().is_some_and(|range| {
+            row_start_at.as_str() >= range.start_at.as_str()
+                && row_start_at.as_str() < range.end_at.as_str()
+        }) {
+            entry.primary.add_minute_row(row);
+        }
+        if plan.secondary.as_ref().is_some_and(|range| {
+            row_start_at.as_str() >= range.start_at.as_str()
+                && row_start_at.as_str() < range.end_at.as_str()
+        }) {
+            entry.secondary.add_minute_row(row);
+        }
+    }
+}
+
 fn collect_account_window_hourly_coverage_keys(
     rows: &[AccountWindowUsageHourlyRow],
 ) -> HashSet<(i64, i64)> {
@@ -498,6 +577,7 @@ fn filter_account_window_usage_rows_for_uncovered_buckets(
     partial_bucket_epochs: &HashSet<i64>,
     missing_full_hour_bucket_epochs: &HashSet<i64>,
     covered_hourly_keys: &HashSet<(i64, i64)>,
+    min_tail_id_inclusive: Option<i64>,
 ) -> Result<Vec<AccountWindowUsageRow>> {
     if rows.is_empty() {
         return Ok(Vec::new());
@@ -510,6 +590,7 @@ fn filter_account_window_usage_rows_for_uncovered_buckets(
             true
         } else if missing_full_hour_bucket_epochs.contains(&bucket_epoch) {
             !covered_hourly_keys.contains(&(row.upstream_account_id, bucket_epoch))
+                || min_tail_id_inclusive.is_some_and(|min_id| row.id >= min_id)
         } else {
             false
         };

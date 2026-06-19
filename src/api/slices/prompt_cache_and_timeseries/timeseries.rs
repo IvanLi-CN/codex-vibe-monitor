@@ -211,150 +211,101 @@ async fn fetch_timeseries_for_account(
         bucket_cursor = next_reporting_bucket_epoch(bucket_cursor, bucket_seconds, reporting_tz)?;
     }
 
-    let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
-    let needs_historical_rollups = start_dt < retention_cutoff;
-
-    if bucket_seconds >= 3_600 && needs_historical_rollups {
-        if !reporting_tz_has_whole_hour_offsets(reporting_tz, &range_window) {
-            return Err(ApiError::bad_request(anyhow!(
-                "unsupported timeZone for historical hourly timeseries: {reporting_tz}; historical hourly buckets require whole-hour UTC offsets"
-            )));
-        }
-        let range_plan = build_hourly_rollup_exact_range_plan(
-            start_dt,
-            end_dt,
-            retention_cutoff,
+    let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
+    let table_name = if bucket_seconds >= 3_600 {
+        "upstream_account_stats_hourly"
+    } else {
+        "upstream_account_stats_minute"
+    };
+    let rollup_bucket_seconds = if bucket_seconds >= 3_600 { 3_600 } else { 60 };
+    let range_start_epoch = if start_dt.timestamp().rem_euclid(rollup_bucket_seconds) == 0 {
+        start_dt.timestamp()
+    } else {
+        align_bucket_epoch(
+            start_dt
+                .timestamp()
+                .saturating_add(rollup_bucket_seconds.saturating_sub(1)),
+            rollup_bucket_seconds,
+            0,
+        )
+    };
+    let range_end_epoch = align_bucket_epoch(end_dt.timestamp(), rollup_bucket_seconds, 0);
+    let mut tx = state.pool.begin().await?;
+    let rollup_live_cursor = load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
+    if range_start_epoch < range_end_epoch {
+        let rows = query_upstream_account_stats_rollup_range_tx(
+            tx.as_mut(),
+            table_name,
+            range_start_epoch,
+            range_end_epoch,
+            source_scope,
+            upstream_account_id,
+        )
+        .await?;
+        add_rollup_rows_to_timeseries_aggregates(
+            &mut aggregates,
+            rows,
+            bucket_seconds,
+            reporting_tz,
         )?;
-        let (snapshot_id, exact_records, archive_overlap_ids) = if range_plan.full_hour_range.is_some() {
-            let mut tx = state.pool.begin().await?;
-            let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
-            let rollup_live_cursor = load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
-            let (hourly_cursor, hourly_end_epoch) = range_plan
-                .full_hour_range
-                .expect("full_hour_range is present when hourly rollups are enabled");
-            let hourly_rows = query_upstream_account_usage_hourly_rollup_range_tx(
-                tx.as_mut(),
-                hourly_cursor,
-                hourly_end_epoch,
-                upstream_account_id,
-            )
-            .await?;
-            for row in hourly_rows {
-                let bucket_epoch =
-                    align_reporting_bucket_epoch(row.bucket_start_epoch, bucket_seconds, reporting_tz)?;
-                if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
-                    entry.total_count += row.request_count;
-                    entry.success_count += row.success_count;
-                    entry.failure_count += row.failure_count;
-                    entry.total_tokens += row.total_tokens;
-                    entry.cache_input_tokens += row.cache_input_tokens;
-                    entry.total_cost += row.total_cost;
-                }
-            }
-            let mut exact_records = query_invocation_exact_records_tx_for_account(
-                tx.as_mut(),
-                &range_plan,
-                source_scope,
-                snapshot_id,
-                upstream_account_id,
-            )
-            .await?;
-            let tail_records = query_invocation_full_hour_tail_records_tx_for_account(
-                tx.as_mut(),
-                &range_plan,
-                source_scope,
-                rollup_live_cursor,
-                snapshot_id,
-                upstream_account_id,
-            )
-            .await?;
-            let archive_overlap_ids = tail_records
-                .iter()
-                .map(|record| record.id)
-                .collect::<HashSet<_>>();
-            exact_records.extend(tail_records);
-            (snapshot_id, exact_records, archive_overlap_ids)
-        } else {
-            let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
-            let exact_records = query_invocation_exact_records_for_account(
-                &state.pool,
-                &range_plan,
-                source_scope,
-                snapshot_id,
-                upstream_account_id,
-            )
-            .await?;
-            (snapshot_id, exact_records, HashSet::new())
+    }
+
+    let mut live_exact_ranges = Vec::new();
+    let first_full_bucket_start = Utc
+        .timestamp_opt(range_start_epoch, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid first full bucket start epoch"))?;
+    let last_full_bucket_end = Utc
+        .timestamp_opt(range_end_epoch, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid last full bucket end epoch"))?;
+    push_exact_range(&mut live_exact_ranges, start_dt, end_dt.min(first_full_bucket_start))?;
+    push_exact_range(&mut live_exact_ranges, start_dt.max(last_full_bucket_end), end_dt)?;
+
+    let boundary_snapshot_id = rollup_live_cursor.min(snapshot_id);
+    if !live_exact_ranges.is_empty() && boundary_snapshot_id > 0 {
+        let range_plan = HourlyRollupExactRangePlan {
+            full_hour_range: None,
+            live_exact_ranges,
         };
-        if let Some((range_start_epoch, range_end_epoch)) = range_plan.full_hour_range {
-            let archived_start = Utc
-                .timestamp_opt(range_start_epoch, 0)
-                .single()
-                .ok_or_else(|| ApiError::from(anyhow!("invalid archived account timeseries start epoch")))?;
-            let archived_end = Utc
-                .timestamp_opt(range_end_epoch, 0)
-                .single()
-                .ok_or_else(|| ApiError::from(anyhow!("invalid archived account timeseries end epoch")))?;
-            let archived_rows =
-                crate::stats::query_unmaterialized_upstream_account_archive_hourly_rollup_deltas(
-                    &state.pool,
-                    source_scope,
-                    Some((archived_start, archived_end)),
-                    Some(&archive_overlap_ids),
-                    upstream_account_id,
-                )
-                .await?;
-            for row in archived_rows {
-                let bucket_epoch =
-                    align_reporting_bucket_epoch(row.bucket_start_epoch, bucket_seconds, reporting_tz)?;
-                if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
-                    entry.total_count += row.request_count;
-                    entry.success_count += row.success_count;
-                    entry.failure_count += row.failure_count;
-                    entry.total_tokens += row.total_tokens;
-                    entry.cache_input_tokens += row.cache_input_tokens;
-                    entry.total_cost += row.total_cost;
-                }
-            }
-        }
+        let exact_records = query_invocation_exact_records_for_account_tx(
+            tx.as_mut(),
+            &range_plan,
+            source_scope,
+            boundary_snapshot_id,
+            upstream_account_id,
+        )
+        .await?;
         add_exact_records_to_timeseries_aggregates(
             &mut aggregates,
             exact_records,
             bucket_seconds,
             reporting_tz,
         )?;
-        return build_timeseries_response(
-            start_dt,
-            end_dt,
-            bucket_seconds,
-            snapshot_id,
-            bucket_selection,
-            aggregates,
-            fill_start_epoch,
-            fill_end_epoch,
-            reporting_tz,
-        );
     }
 
-    let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
-    let records = query_invocation_aggregate_records_from_live_range_for_account(
-        &state.pool,
-        ExactUtcRange {
-            start: start_dt,
-            end: end_dt,
-        },
-        source_scope,
-        None,
-        Some(snapshot_id),
-        upstream_account_id,
-    )
-    .await?;
-    add_exact_records_to_timeseries_aggregates(
-        &mut aggregates,
-        records,
-        bucket_seconds,
-        reporting_tz,
-    )?;
+    if rollup_live_cursor < snapshot_id {
+        let range_plan = HourlyRollupExactRangePlan {
+            full_hour_range: None,
+            live_exact_ranges: exact_utc_range(start_dt, end_dt)?.into_iter().collect(),
+        };
+        let tail_records = query_invocation_exact_records_tx_for_account(
+            tx.as_mut(),
+            &range_plan,
+            source_scope,
+            snapshot_id,
+            upstream_account_id,
+            rollup_live_cursor,
+        )
+        .await?;
+        add_exact_records_to_timeseries_aggregates(
+            &mut aggregates,
+            tail_records,
+            bucket_seconds,
+            reporting_tz,
+        )?;
+    }
+    drop(tx);
     build_timeseries_response(
         start_dt,
         end_dt,
@@ -366,6 +317,53 @@ async fn fetch_timeseries_for_account(
         fill_end_epoch,
         reporting_tz,
     )
+}
+
+fn add_rollup_rows_to_timeseries_aggregates(
+    aggregates: &mut BTreeMap<i64, BucketAggregate>,
+    rows: Vec<UpstreamAccountStatsRollupRecord>,
+    bucket_seconds: i64,
+    reporting_tz: Tz,
+) -> Result<(), ApiError> {
+    for row in rows {
+        let bucket_epoch =
+            align_reporting_bucket_epoch(row.bucket_start_epoch, bucket_seconds, reporting_tz)?;
+        if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
+            entry.total_count += row.total_count;
+            entry.success_count += row.success_count;
+            entry.failure_count += row.failure_count;
+            entry.in_flight_count += row.in_flight_count;
+            entry.total_tokens += row.total_tokens;
+            entry.cache_input_tokens += row.cache_input_tokens;
+            entry.total_cost += row.total_cost;
+            entry.first_byte_sample_count += row.first_byte_sample_count;
+            entry.first_byte_ttfb_sum_ms += row.first_byte_sum_ms;
+            entry.first_byte_histogram = if entry.first_byte_histogram.is_empty() {
+                decode_approx_histogram(&row.first_byte_histogram)
+            } else {
+                let mut merged = entry.first_byte_histogram.clone();
+                merge_approx_histogram_into(
+                    &mut merged,
+                    &decode_approx_histogram(&row.first_byte_histogram),
+                )?;
+                merged
+            };
+            entry.first_response_byte_total_sample_count += row.first_response_byte_total_sample_count;
+            entry.first_response_byte_total_sum_ms += row.first_response_byte_total_sum_ms;
+            entry.first_response_byte_total_histogram =
+                if entry.first_response_byte_total_histogram.is_empty() {
+                    decode_approx_histogram(&row.first_response_byte_total_histogram)
+                } else {
+                    let mut merged = entry.first_response_byte_total_histogram.clone();
+                    merge_approx_histogram_into(
+                        &mut merged,
+                        &decode_approx_histogram(&row.first_response_byte_total_histogram),
+                    )?;
+                    merged
+                };
+        }
+    }
+    Ok(())
 }
 
 fn add_exact_records_to_timeseries_aggregates(

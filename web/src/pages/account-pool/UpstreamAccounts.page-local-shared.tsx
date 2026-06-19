@@ -253,6 +253,7 @@ type SharedUpstreamAccountDetailDrawerCloseOptions = {
 type SharedUpstreamAccountDetailDrawerProps = {
   open: boolean;
   accountId: number | null;
+  initialTab?: AccountDetailTab;
   initialDeleteConfirmOpen?: boolean;
   onInitialDeleteConfirmHandled?: () => void;
   onClose: (options?: SharedUpstreamAccountDetailDrawerCloseOptions) => void;
@@ -814,6 +815,7 @@ export function SharedUpstreamAccountDetailDrawer(
 function SharedUpstreamAccountDetailDrawerInner({
   open,
   accountId,
+  initialTab = "overview",
   initialDeleteConfirmOpen = false,
   onInitialDeleteConfirmHandled,
   onClose,
@@ -896,7 +898,7 @@ function SharedUpstreamAccountDetailDrawerInner({
     useState<Record<string, number>>({});
   const [detailDrawerPortalContainer, setDetailDrawerPortalContainer] =
     useState<HTMLElement | null>(null);
-  const [detailTab, setDetailTab] = useState<AccountDetailTab>("overview");
+  const [detailTab, setDetailTab] = useState<AccountDetailTab>(initialTab);
   const validTagIds = useMemo(
     () => new Set(tagItems.map((tag) => tag.id)),
     [tagItems],
@@ -982,6 +984,11 @@ function SharedUpstreamAccountDetailDrawerInner({
     if (missingDetailAccountId !== accountId) return;
     onClose({ replace: true });
   }, [accountId, missingDetailAccountId, onClose, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    setDetailTab(initialTab);
+  }, [initialTab, open, selectedId]);
 
   useEffect(() => {
     const nextBaseline = removeAccountDraftTagIds(

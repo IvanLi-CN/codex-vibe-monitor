@@ -592,6 +592,9 @@ export function useUpstreamAccounts(
       ) {
         return
       }
+      if (!response || !Array.isArray(response.items)) {
+        return
+      }
 
       const usageEntries = Object.fromEntries(
         response.items.map((item) => [
@@ -643,20 +646,18 @@ export function useUpstreamAccounts(
   useEffect(() => {
     if (
       query == null ||
-      effectiveQuery.includeAll === true ||
       listDataQueryKey !== currentListQueryKey ||
-      rosterItems.length === 0
+      selectedId == null
     ) {
       return
     }
-    void hydrateWindowUsage(rosterItems.map((item) => item.id))
+    void hydrateWindowUsage([selectedId])
   }, [
     currentListQueryKey,
-    effectiveQuery.includeAll,
     hydrateWindowUsage,
     listDataQueryKey,
     query,
-    rosterItems,
+    selectedId,
   ])
 
   const refreshCurrentSelectedDetail = useCallback(

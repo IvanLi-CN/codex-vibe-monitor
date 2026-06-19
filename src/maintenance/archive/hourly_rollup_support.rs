@@ -61,6 +61,27 @@ pub(crate) struct UpstreamAccountUsageHourlyDelta {
 }
 
 #[derive(Debug, Default)]
+pub(crate) struct UpstreamAccountStatsDelta {
+    pub(crate) total_count: i64,
+    pub(crate) success_count: i64,
+    pub(crate) failure_count: i64,
+    pub(crate) in_flight_count: i64,
+    pub(crate) total_tokens: i64,
+    pub(crate) input_tokens: i64,
+    pub(crate) output_tokens: i64,
+    pub(crate) cache_input_tokens: i64,
+    pub(crate) total_cost: f64,
+    pub(crate) first_byte_sample_count: i64,
+    pub(crate) first_byte_sum_ms: f64,
+    pub(crate) first_byte_max_ms: f64,
+    pub(crate) first_byte_histogram: ApproxHistogramCounts,
+    pub(crate) first_response_byte_total_sample_count: i64,
+    pub(crate) first_response_byte_total_sum_ms: f64,
+    pub(crate) first_response_byte_total_max_ms: f64,
+    pub(crate) first_response_byte_total_histogram: ApproxHistogramCounts,
+}
+
+#[derive(Debug, Default)]
 pub(crate) struct ForwardProxyAttemptHourlyDelta {
     pub(crate) attempts: i64,
     pub(crate) success_count: i64,
@@ -74,6 +95,19 @@ pub(crate) fn invocation_bucket_start_epoch(occurred_at: &str) -> Result<i64> {
     let occurred_at_utc = parse_to_utc_datetime(occurred_at)
         .ok_or_else(|| anyhow!("failed to parse invocation occurred_at: {occurred_at}"))?;
     Ok(align_bucket_epoch(occurred_at_utc.timestamp(), 3600, 0))
+}
+
+pub(crate) fn invocation_bucket_start_epoch_for_seconds(
+    occurred_at: &str,
+    bucket_seconds: i64,
+) -> Result<i64> {
+    let occurred_at_utc = parse_to_utc_datetime(occurred_at)
+        .ok_or_else(|| anyhow!("failed to parse invocation occurred_at: {occurred_at}"))?;
+    Ok(align_bucket_epoch(
+        occurred_at_utc.timestamp(),
+        bucket_seconds,
+        0,
+    ))
 }
 
 pub(crate) fn forward_proxy_attempt_bucket_start_epoch(occurred_at: &str) -> Result<i64> {
@@ -215,4 +249,69 @@ pub(crate) fn invocation_archive_has_pruned_success_details(
             )
             && classification.failure_class == FailureClass::None
     })
+}
+
+pub(crate) fn accumulate_upstream_account_stats_delta(
+    entry: &mut UpstreamAccountStatsDelta,
+    row: &InvocationHourlySourceRecord,
+) {
+    let classification = resolve_failure_classification(
+        row.status.as_deref(),
+        row.error_message.as_deref(),
+        row.failure_kind.as_deref(),
+        row.failure_class.as_deref(),
+        row.is_actionable,
+    );
+    let has_terminal_status = invocation_status_counts_toward_terminal_totals(row.status.as_deref());
+    let is_success_like = invocation_status_is_success_like(
+        row.status.as_deref(),
+        row.error_message.as_deref(),
+    ) && classification.failure_class == FailureClass::None;
+
+    entry.total_count += 1;
+    if is_success_like {
+        entry.success_count += 1;
+    } else if has_terminal_status && classification.failure_class != FailureClass::None {
+        entry.failure_count += 1;
+    } else {
+        entry.in_flight_count += 1;
+    }
+    entry.total_tokens += row.total_tokens.unwrap_or_default();
+    entry.input_tokens += row.input_tokens.unwrap_or_default();
+    entry.output_tokens += row.output_tokens.unwrap_or_default();
+    entry.cache_input_tokens += row.cache_input_tokens.unwrap_or_default();
+    entry.total_cost += row.cost.unwrap_or_default();
+
+    if is_success_like
+        && let Some(ttfb_ms) = row.t_upstream_ttfb_ms
+        && ttfb_ms.is_finite()
+        && ttfb_ms > 0.0
+    {
+        if entry.first_byte_histogram.is_empty() {
+            entry.first_byte_histogram = empty_approx_histogram();
+        }
+        entry.first_byte_sample_count += 1;
+        entry.first_byte_sum_ms += ttfb_ms;
+        entry.first_byte_max_ms = entry.first_byte_max_ms.max(ttfb_ms);
+        add_approx_histogram_sample(&mut entry.first_byte_histogram, ttfb_ms);
+    }
+    if let Some(first_response_byte_total_ms) = resolve_first_response_byte_total_ms(
+        row.t_req_read_ms,
+        row.t_req_parse_ms,
+        row.t_upstream_connect_ms,
+        row.t_upstream_ttfb_ms,
+    ) {
+        if entry.first_response_byte_total_histogram.is_empty() {
+            entry.first_response_byte_total_histogram = empty_approx_histogram();
+        }
+        entry.first_response_byte_total_sample_count += 1;
+        entry.first_response_byte_total_sum_ms += first_response_byte_total_ms;
+        entry.first_response_byte_total_max_ms = entry
+            .first_response_byte_total_max_ms
+            .max(first_response_byte_total_ms);
+        add_approx_histogram_sample(
+            &mut entry.first_response_byte_total_histogram,
+            first_response_byte_total_ms,
+        );
+    }
 }

@@ -1,8 +1,11 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { userEvent, within, expect, waitFor } from 'storybook/test'
+import { MemoryRouter } from 'react-router-dom'
 import { I18nProvider } from '../i18n'
 import { UPSTREAM_ACCOUNTS_CHANGED_EVENT } from '../lib/upstreamAccountsEvents'
-import UpstreamAccountsPage from '../pages/account-pool/UpstreamAccounts'
+import UpstreamAccountsPage, {
+  SharedUpstreamAccountDetailDrawer,
+} from '../pages/account-pool/UpstreamAccounts'
 import {
   AccountPoolStoryRouter,
   StorybookUpstreamAccountsMock,
@@ -127,6 +130,58 @@ export const DetailDrawerRecordsEmpty: Story = {
     await userEvent.click(within(dialog).getByRole('tab', { name: /调用记录|records/i }))
     await expect(within(dialog).getByText(/账号活动总览|account activity overview/i)).toBeInTheDocument()
     await expect(within(dialog).getByText(/这个上游账号暂时还没有保留的调用记录|No retained call records/i)).toBeInTheDocument()
+  },
+}
+
+function DetailDrawerStorySurface({
+  initialTab,
+}: {
+  initialTab: 'records'
+}) {
+  return (
+    <MemoryRouter initialEntries={['/account-pool/upstream-accounts?upstreamAccountId=101']}>
+      <div className="min-h-screen bg-base-200 p-6 text-base-content">
+        <I18nProvider>
+          <SystemNotificationProvider>
+            <StorybookUpstreamAccountsMock>
+              <SharedUpstreamAccountDetailDrawer
+                open
+                accountId={101}
+                initialTab={initialTab}
+                onClose={() => {}}
+              />
+            </StorybookUpstreamAccountsMock>
+          </SystemNotificationProvider>
+        </I18nProvider>
+      </div>
+    </MemoryRouter>
+  )
+}
+
+export const DetailDrawerRecordsLoading: Story = {
+  render: () => <DetailDrawerStorySurface initialTab="records" />,
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const dialog = await documentScope.findByRole('dialog', {
+      name: /Codex Pro - Tokyo/i,
+    })
+    await expect(within(dialog).getByRole('tab', { name: /调用记录|records/i })).toHaveAttribute('aria-selected', 'true')
+    await expect(within(dialog).getByText(/账号活动总览|account activity overview/i)).toBeInTheDocument()
+    await expect(within(dialog).getAllByLabelText(/loading detailed|加载详细图表/i).length).toBeGreaterThan(0)
+  },
+}
+
+export const DetailDrawerRecordsSettled: Story = {
+  render: () => <DetailDrawerStorySurface initialTab="records" />,
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const dialog = await documentScope.findByRole('dialog', {
+      name: /Codex Pro - Tokyo/i,
+    })
+    await expect(within(dialog).getByRole('tab', { name: /调用记录|records/i })).toHaveAttribute('aria-selected', 'true')
+    await expect(within(dialog).getByText(/账号活动总览|account activity overview/i)).toBeInTheDocument()
+    await expect(within(dialog).getByTestId('upstream-account-records-activity-overview')).toBeInTheDocument()
+    await expect(within(dialog).getByText(/gpt-5\.4/i)).toBeInTheDocument()
   },
 }
 

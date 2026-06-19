@@ -61,6 +61,7 @@ import {
 } from './UpstreamAccountsPage.story-runtime-sticky'
 import {
   buildStoryImportedOauthValidationResponse,
+  getAccountActivityResponseDelay,
   getRosterResponseDelay,
   getRosterResponseFailure,
   getWindowUsageResponseDelay,
@@ -68,6 +69,7 @@ import {
   MockStoryBulkSyncEventSource,
   noContent,
   parseBody,
+  shouldKeepAccountActivityPending,
   wait,
 } from './UpstreamAccountsPage.story-runtime-fetch-helpers'
 
@@ -198,11 +200,25 @@ export function StorybookUpstreamAccountsMock({
 
       if (path === '/api/stats/summary' && method === 'GET') {
         const accountId = Number(parsedUrl.searchParams.get('upstreamAccountId') || 0)
+        if (shouldKeepAccountActivityPending(storyId)) {
+          return new Promise<Response>(() => {})
+        }
+        const delayMs = getAccountActivityResponseDelay(storyId)
+        if (delayMs > 0) {
+          await wait(delayMs)
+        }
         return jsonResponse(buildStoryAccountActivitySummary(accountId, storyId))
       }
 
       if (path === '/api/stats/timeseries' && method === 'GET') {
         const accountId = Number(parsedUrl.searchParams.get('upstreamAccountId') || 0)
+        if (shouldKeepAccountActivityPending(storyId)) {
+          return new Promise<Response>(() => {})
+        }
+        const delayMs = getAccountActivityResponseDelay(storyId)
+        if (delayMs > 0) {
+          await wait(delayMs)
+        }
         return jsonResponse(buildStoryAccountActivityTimeseries(accountId, parsedUrl, storyId))
       }
 

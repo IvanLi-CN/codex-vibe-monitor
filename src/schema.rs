@@ -216,6 +216,57 @@ async fn backfill_upstream_account_usage_hourly_status_counts(pool: &Pool<Sqlite
     Ok(())
 }
 
+async fn reopen_upstream_account_stats_rollup_archives(pool: &Pool<Sqlite>) -> Result<()> {
+    for target in [
+        "upstream_account_stats_hourly",
+        "upstream_account_stats_minute",
+    ] {
+        sqlx::query(
+            r#"
+            UPDATE archive_batches
+            SET historical_rollups_materialized_at = NULL
+            WHERE dataset = 'codex_invocations'
+              AND status = 'completed'
+              AND EXISTS (
+                  SELECT 1
+                  FROM hourly_rollup_archive_replay AS replay
+                  WHERE replay.dataset = archive_batches.dataset
+                    AND replay.file_path = archive_batches.file_path
+                    AND replay.target = ?1
+              )
+            "#,
+        )
+        .bind(target)
+        .execute(pool)
+        .await
+        .with_context(|| format!("failed to reopen archive materialization for {target}"))?;
+
+        sqlx::query(
+            r#"
+            DELETE FROM hourly_rollup_archive_replay
+            WHERE dataset = 'codex_invocations'
+              AND target = ?1
+            "#,
+        )
+        .bind(target)
+        .execute(pool)
+        .await
+        .with_context(|| format!("failed to clear stale archive replay markers for {target}"))?;
+    }
+
+    sqlx::query(
+        r#"
+        DELETE FROM hourly_rollup_archive_progress
+        WHERE dataset = 'codex_invocations'
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to clear stale invocation archive progress while reopening upstream account stats rollups")?;
+
+    Ok(())
+}
+
 async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     let create_sql = codex_invocations_create_sql("codex_invocations");
     sqlx::query(&create_sql)
@@ -1107,6 +1158,120 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS upstream_account_stats_hourly (
+            bucket_start_epoch INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            upstream_account_id INTEGER NOT NULL,
+            total_count INTEGER NOT NULL DEFAULT 0,
+            success_count INTEGER NOT NULL DEFAULT 0,
+            failure_count INTEGER NOT NULL DEFAULT 0,
+            in_flight_count INTEGER NOT NULL DEFAULT 0,
+            total_tokens INTEGER NOT NULL DEFAULT 0,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_input_tokens INTEGER NOT NULL DEFAULT 0,
+            total_cost REAL NOT NULL DEFAULT 0,
+            first_byte_sample_count INTEGER NOT NULL DEFAULT 0,
+            first_byte_sum_ms REAL NOT NULL DEFAULT 0,
+            first_byte_max_ms REAL NOT NULL DEFAULT 0,
+            first_byte_histogram TEXT NOT NULL DEFAULT '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]',
+            first_response_byte_total_sample_count INTEGER NOT NULL DEFAULT 0,
+            first_response_byte_total_sum_ms REAL NOT NULL DEFAULT 0,
+            first_response_byte_total_max_ms REAL NOT NULL DEFAULT 0,
+            first_response_byte_total_histogram TEXT NOT NULL DEFAULT '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (bucket_start_epoch, source, upstream_account_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure upstream_account_stats_hourly table existence")?;
+    let upstream_account_stats_hourly_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM upstream_account_stats_hourly")
+            .fetch_one(pool)
+            .await
+            .context("failed to count upstream_account_stats_hourly rows")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_upstream_account_stats_hourly_account_bucket
+        ON upstream_account_stats_hourly (upstream_account_id, bucket_start_epoch)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_upstream_account_stats_hourly_account_bucket")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_upstream_account_stats_hourly_source_account_bucket
+        ON upstream_account_stats_hourly (source, upstream_account_id, bucket_start_epoch)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_upstream_account_stats_hourly_source_account_bucket")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS upstream_account_stats_minute (
+            bucket_start_epoch INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            upstream_account_id INTEGER NOT NULL,
+            total_count INTEGER NOT NULL DEFAULT 0,
+            success_count INTEGER NOT NULL DEFAULT 0,
+            failure_count INTEGER NOT NULL DEFAULT 0,
+            in_flight_count INTEGER NOT NULL DEFAULT 0,
+            total_tokens INTEGER NOT NULL DEFAULT 0,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_input_tokens INTEGER NOT NULL DEFAULT 0,
+            total_cost REAL NOT NULL DEFAULT 0,
+            first_byte_sample_count INTEGER NOT NULL DEFAULT 0,
+            first_byte_sum_ms REAL NOT NULL DEFAULT 0,
+            first_byte_max_ms REAL NOT NULL DEFAULT 0,
+            first_byte_histogram TEXT NOT NULL DEFAULT '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]',
+            first_response_byte_total_sample_count INTEGER NOT NULL DEFAULT 0,
+            first_response_byte_total_sum_ms REAL NOT NULL DEFAULT 0,
+            first_response_byte_total_max_ms REAL NOT NULL DEFAULT 0,
+            first_response_byte_total_histogram TEXT NOT NULL DEFAULT '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (bucket_start_epoch, source, upstream_account_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure upstream_account_stats_minute table existence")?;
+    let upstream_account_stats_minute_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM upstream_account_stats_minute")
+            .fetch_one(pool)
+            .await
+            .context("failed to count upstream_account_stats_minute rows")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_upstream_account_stats_minute_account_bucket
+        ON upstream_account_stats_minute (upstream_account_id, bucket_start_epoch)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_upstream_account_stats_minute_account_bucket")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_upstream_account_stats_minute_source_account_bucket
+        ON upstream_account_stats_minute (source, upstream_account_id, bucket_start_epoch)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_upstream_account_stats_minute_source_account_bucket")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS upstream_sticky_key_hourly (
             bucket_start_epoch INTEGER NOT NULL,
             upstream_account_id INTEGER NOT NULL,
@@ -1284,10 +1449,6 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure hourly_rollup_archive_progress table existence")?;
 
-    if upstream_account_usage_hourly_needs_status_backfill {
-        backfill_upstream_account_usage_hourly_status_counts(pool).await?;
-    }
-
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS hourly_rollup_live_progress (
@@ -1300,6 +1461,16 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure hourly_rollup_live_progress table existence")?;
+
+    if upstream_account_usage_hourly_needs_status_backfill {
+        backfill_upstream_account_usage_hourly_status_counts(pool).await?;
+    }
+    if upstream_account_stats_hourly_count == 0 || upstream_account_stats_minute_count == 0 {
+        reopen_upstream_account_stats_rollup_archives(pool).await?;
+        rebuild_upstream_account_stats_rollups_from_sources(pool)
+            .await
+            .context("failed to rebuild upstream account stats rollups from sources")?;
+    }
 
     sqlx::query(
         r#"

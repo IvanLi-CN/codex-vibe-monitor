@@ -4196,6 +4196,119 @@ async fn ensure_schema_backfills_account_usage_status_counts_and_reopens_archive
 }
 
 #[tokio::test]
+async fn ensure_schema_rebuilds_account_stats_when_live_progress_table_is_missing() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("open schema migration pool");
+    ensure_schema(&pool).await.expect("seed current schema");
+
+    sqlx::query("DROP TABLE upstream_account_stats_hourly")
+        .execute(&pool)
+        .await
+        .expect("drop current account stats hourly table");
+    sqlx::query("DROP TABLE upstream_account_stats_minute")
+        .execute(&pool)
+        .await
+        .expect("drop current account stats minute table");
+    sqlx::query("DROP TABLE hourly_rollup_live_progress")
+        .execute(&pool)
+        .await
+        .expect("drop hourly rollup live progress table");
+
+    let account_id = 64_i64;
+    let occurred_at = Utc::now()
+        .with_timezone(&Shanghai)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id, invoke_id, occurred_at, source, model, input_tokens, output_tokens,
+            total_tokens, cost, status, error_message, failure_kind, payload, raw_response, created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+        "#,
+    )
+    .bind(1_i64)
+    .bind("legacy-account-stats-rebuild")
+    .bind(&occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind("gpt-5")
+    .bind(120_i64)
+    .bind(45_i64)
+    .bind(165_i64)
+    .bind(0.42_f64)
+    .bind("success")
+    .bind("")
+    .bind(Option::<&str>::None)
+    .bind(json!({ "upstreamAccountId": account_id }).to_string())
+    .bind("{}")
+    .bind(&occurred_at)
+    .execute(&pool)
+    .await
+    .expect("insert live invocation for account stats rebuild");
+
+    sqlx::query(
+        r#"
+        UPDATE codex_invocations
+        SET t_req_read_ms = ?1,
+            t_req_parse_ms = ?2,
+            t_upstream_connect_ms = ?3,
+            t_upstream_ttfb_ms = ?4
+        WHERE invoke_id = ?5
+        "#,
+    )
+    .bind(120.0_f64)
+    .bind(80.0_f64)
+    .bind(43_000.0_f64)
+    .bind(690.0_f64)
+    .bind("legacy-account-stats-rebuild")
+    .execute(&pool)
+    .await
+    .expect("seed latency fields for account stats rebuild");
+
+    ensure_schema(&pool)
+        .await
+        .expect("rebuild account stats should recreate live progress table first");
+
+    let hourly_counts = sqlx::query_as::<_, (i64, i64, i64)>(
+        r#"
+        SELECT total_count, success_count, first_response_byte_total_sample_count
+        FROM upstream_account_stats_hourly
+        WHERE upstream_account_id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&pool)
+    .await
+    .expect("load rebuilt account stats hourly row");
+    let minute_counts = sqlx::query_as::<_, (i64, i64, i64)>(
+        r#"
+        SELECT total_count, success_count, first_response_byte_total_sample_count
+        FROM upstream_account_stats_minute
+        WHERE upstream_account_id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&pool)
+    .await
+    .expect("load rebuilt account stats minute row");
+    let live_cursor: i64 = sqlx::query_scalar(
+        "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .fetch_one(&pool)
+    .await
+    .expect("load recreated live progress cursor");
+
+    assert_eq!(hourly_counts, (1, 1, 1));
+    assert_eq!(minute_counts, (1, 1, 1));
+    assert_eq!(live_cursor, 1);
+}
+
+#[tokio::test]
 async fn ensure_schema_backfill_deduplicates_detail_prune_archives() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("legacy-rollup-detail-prune-dedup").await;

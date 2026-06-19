@@ -303,6 +303,28 @@ pub(crate) struct UpstreamAccountUsageHourlyRollupRecord {
     pub(crate) total_cost: f64,
 }
 
+#[derive(Debug, FromRow)]
+pub(crate) struct UpstreamAccountStatsRollupRecord {
+    pub(crate) bucket_start_epoch: i64,
+    pub(crate) total_count: i64,
+    pub(crate) success_count: i64,
+    pub(crate) failure_count: i64,
+    pub(crate) in_flight_count: i64,
+    pub(crate) total_tokens: i64,
+    pub(crate) input_tokens: i64,
+    pub(crate) output_tokens: i64,
+    pub(crate) cache_input_tokens: i64,
+    pub(crate) total_cost: f64,
+    pub(crate) first_byte_sample_count: i64,
+    pub(crate) first_byte_sum_ms: f64,
+    pub(crate) first_byte_max_ms: f64,
+    pub(crate) first_byte_histogram: String,
+    pub(crate) first_response_byte_total_sample_count: i64,
+    pub(crate) first_response_byte_total_sum_ms: f64,
+    pub(crate) first_response_byte_total_max_ms: f64,
+    pub(crate) first_response_byte_total_histogram: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct QuotaSnapshotResponse {

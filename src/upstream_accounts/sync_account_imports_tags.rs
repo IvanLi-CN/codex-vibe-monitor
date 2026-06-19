@@ -3315,9 +3315,11 @@ async fn enrich_window_actual_usage_for_summaries(
     }
 
     let has_live_invocations = sqlite_table_exists(&state.pool, "codex_invocations").await?;
+    let has_minute_stats_rollups =
+        sqlite_table_exists(&state.pool, "upstream_account_stats_minute").await?;
     let has_hourly_usage_rollups =
         sqlite_table_exists(&state.pool, "upstream_account_usage_hourly").await?;
-    if !has_live_invocations && !has_hourly_usage_rollups {
+    if !has_live_invocations && !has_minute_stats_rollups && !has_hourly_usage_rollups {
         return Ok(());
     }
 
@@ -3329,8 +3331,33 @@ async fn enrich_window_actual_usage_for_summaries(
         .copied()
         .map(|account_id| (account_id, AccountWindowUsageSummary::default()))
         .collect::<HashMap<_, _>>();
-    let mut covered_hourly_keys = HashSet::new();
-
+    let minute_start_epoch = align_bucket_epoch(query_start.timestamp(), 60, 0);
+    let minute_end_epoch_exclusive =
+        align_bucket_epoch(query_end.timestamp().saturating_add(59), 60, 0);
+    let minute_rows = if has_minute_stats_rollups && minute_start_epoch < minute_end_epoch_exclusive {
+        load_window_actual_usage_minute_rows_from_pool(
+            &state.pool,
+            &account_ids,
+            minute_start_epoch,
+            minute_end_epoch_exclusive,
+        )
+        .await?
+    } else {
+        Vec::new()
+    };
+    if !minute_rows.is_empty() {
+        fold_account_window_usage_minute_rows(&mut usage, &minute_rows, &plans);
+    }
+    let minute_covered_hourly_keys = minute_rows
+        .iter()
+        .map(|row| {
+            (
+                row.upstream_account_id,
+                align_bucket_epoch(row.bucket_start_epoch, 3_600, 0),
+            )
+        })
+        .collect::<HashSet<_>>();
+    let mut covered_hourly_keys = minute_covered_hourly_keys.clone();
     if has_hourly_usage_rollups
         && let Some((full_hour_start_epoch, full_hour_end_epoch)) =
             collect_account_window_full_hour_bounds(&plans)
@@ -3342,94 +3369,118 @@ async fn enrich_window_actual_usage_for_summaries(
             full_hour_end_epoch,
         )
         .await?;
-        covered_hourly_keys = collect_account_window_hourly_coverage_keys(&hourly_rows);
+        let hourly_rows = hourly_rows
+            .into_iter()
+            .filter(|row| !minute_covered_hourly_keys.contains(&(row.upstream_account_id, row.bucket_start_epoch)))
+            .collect::<Vec<_>>();
+        covered_hourly_keys.extend(collect_account_window_hourly_coverage_keys(&hourly_rows));
         fold_account_window_usage_hourly_rows(&mut usage, &hourly_rows, &plans);
     }
 
     if has_live_invocations {
-        let partial_bucket_epochs = collect_account_window_partial_bucket_epochs(&plans)?;
-        let missing_full_hour_bucket_epochs =
-            collect_account_window_missing_full_hour_bucket_epochs(&plans, &covered_hourly_keys);
-
-        let archived_partial_bucket_epochs = partial_bucket_epochs
-            .iter()
-            .copied()
-            .filter(|bucket_epoch| {
-                Utc.timestamp_opt(*bucket_epoch, 0)
-                    .single()
-                    .map(|bucket_start_at| bucket_start_at < retention_cutoff)
-                    .unwrap_or(false)
-            })
-            .collect::<HashSet<_>>();
-        let archived_missing_full_hour_bucket_epochs = missing_full_hour_bucket_epochs
-            .iter()
-            .copied()
-            .filter(|bucket_epoch| *bucket_epoch < retention_cutoff_epoch)
-            .collect::<HashSet<_>>();
-        if query_start < retention_cutoff
-            && (!archived_partial_bucket_epochs.is_empty()
-                || !archived_missing_full_hour_bucket_epochs.is_empty())
-        {
-            let archive_end = query_end.min(retention_cutoff - ChronoDuration::seconds(1));
-            if query_start <= archive_end {
-                let archive_end_at = format_naive(archive_end.with_timezone(&Shanghai).naive_local());
-                let archived_rows = load_window_actual_usage_rows_from_archives(
-                    &state.pool,
-                    &account_ids,
-                    &query_start_at,
-                    &archive_end_at,
-                    &state.config.archive_dir,
-                )
-                .await?;
-                let archived_rows = filter_account_window_usage_rows_for_uncovered_buckets(
-                    archived_rows,
-                    &archived_partial_bucket_epochs,
-                    &archived_missing_full_hour_bucket_epochs,
-                    &covered_hourly_keys,
-                )?;
-                for (account_id, summary) in fold_account_window_usage_rows(archived_rows, &plans) {
-                    usage.entry(account_id).or_default().merge(summary);
-                }
-            }
-        }
-
-        let live_bucket_epochs = partial_bucket_epochs
-            .iter()
-            .copied()
-            .filter(|bucket_epoch| *bucket_epoch >= retention_cutoff_epoch)
-            .chain(
-                missing_full_hour_bucket_epochs
-                    .iter()
-                    .copied()
-                    .filter(|bucket_epoch| *bucket_epoch >= retention_cutoff_epoch),
-            )
-            .collect::<HashSet<_>>();
-        if !live_bucket_epochs.is_empty() {
-            let live_rows = load_window_actual_usage_rows_for_bucket_epochs_from_pool(
+        let live_rollup_cursor =
+            load_hourly_rollup_live_progress(&state.pool, HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
+        if !minute_rows.is_empty() {
+            let query_end_at = format_naive(query_end.with_timezone(&Shanghai).naive_local());
+            let live_rows = load_window_actual_usage_rows_from_pool(
                 &state.pool,
                 &account_ids,
-                &live_bucket_epochs,
+                &query_start_at,
+                &query_end_at,
                 None,
+                Some(live_rollup_cursor),
             )
             .await?;
-            let live_partial_bucket_epochs = partial_bucket_epochs
-                .iter()
-                .copied()
-                .filter(|bucket_epoch| *bucket_epoch >= retention_cutoff_epoch)
-                .collect::<HashSet<_>>();
-            let live_missing_full_hour_bucket_epochs = missing_full_hour_bucket_epochs
-                .iter()
-                .copied()
-                .filter(|bucket_epoch| *bucket_epoch >= retention_cutoff_epoch)
-                .collect::<HashSet<_>>();
-            let live_rows = filter_account_window_usage_rows_for_uncovered_buckets(
-                live_rows,
-                &live_partial_bucket_epochs,
-                &live_missing_full_hour_bucket_epochs,
-                &covered_hourly_keys,
-            )?;
             for (account_id, summary) in fold_account_window_usage_rows(live_rows, &plans) {
                 usage.entry(account_id).or_default().merge(summary);
+            }
+        } else {
+            let partial_bucket_epochs = collect_account_window_partial_bucket_epochs(&plans)?;
+            let missing_full_hour_bucket_epochs =
+                collect_account_window_missing_full_hour_bucket_epochs(&plans, &covered_hourly_keys);
+            let archived_partial_bucket_epochs = partial_bucket_epochs
+                .iter()
+                .copied()
+                .filter(|bucket_epoch| {
+                    Utc.timestamp_opt(*bucket_epoch, 0)
+                        .single()
+                        .map(|bucket_start_at| bucket_start_at < retention_cutoff)
+                        .unwrap_or(false)
+                })
+                .collect::<HashSet<_>>();
+            let archived_missing_full_hour_bucket_epochs = missing_full_hour_bucket_epochs
+                .iter()
+                .copied()
+                .filter(|bucket_epoch| *bucket_epoch < retention_cutoff_epoch)
+                .collect::<HashSet<_>>();
+            if query_start < retention_cutoff
+                && (!archived_partial_bucket_epochs.is_empty()
+                    || !archived_missing_full_hour_bucket_epochs.is_empty())
+            {
+                let archive_end = query_end.min(retention_cutoff - ChronoDuration::seconds(1));
+                if query_start <= archive_end {
+                    let archive_end_at =
+                        format_naive(archive_end.with_timezone(&Shanghai).naive_local());
+                    let archived_rows = load_window_actual_usage_rows_from_archives(
+                        &state.pool,
+                        &account_ids,
+                        &query_start_at,
+                        &archive_end_at,
+                        &state.config.archive_dir,
+                    )
+                    .await?;
+                    let archived_rows = filter_account_window_usage_rows_for_uncovered_buckets(
+                        archived_rows,
+                        &archived_partial_bucket_epochs,
+                        &archived_missing_full_hour_bucket_epochs,
+                        &covered_hourly_keys,
+                        None,
+                    )?;
+                    for (account_id, summary) in fold_account_window_usage_rows(archived_rows, &plans) {
+                        usage.entry(account_id).or_default().merge(summary);
+                    }
+                }
+            }
+
+            let live_bucket_epochs = partial_bucket_epochs
+                .iter()
+                .copied()
+                .filter(|bucket_epoch| *bucket_epoch >= retention_cutoff_epoch)
+                .chain(
+                    missing_full_hour_bucket_epochs
+                        .iter()
+                        .copied()
+                        .filter(|bucket_epoch| *bucket_epoch >= retention_cutoff_epoch),
+                )
+                .collect::<HashSet<_>>();
+            if !live_bucket_epochs.is_empty() {
+                let live_rows = load_window_actual_usage_rows_for_bucket_epochs_from_pool(
+                    &state.pool,
+                    &account_ids,
+                    &live_bucket_epochs,
+                    None,
+                )
+                .await?;
+                let live_partial_bucket_epochs = partial_bucket_epochs
+                    .iter()
+                    .copied()
+                    .filter(|bucket_epoch| *bucket_epoch >= retention_cutoff_epoch)
+                    .collect::<HashSet<_>>();
+                let live_missing_full_hour_bucket_epochs = missing_full_hour_bucket_epochs
+                    .iter()
+                    .copied()
+                    .filter(|bucket_epoch| *bucket_epoch >= retention_cutoff_epoch)
+                    .collect::<HashSet<_>>();
+                let live_rows = filter_account_window_usage_rows_for_uncovered_buckets(
+                    live_rows,
+                    &live_partial_bucket_epochs,
+                    &live_missing_full_hour_bucket_epochs,
+                    &covered_hourly_keys,
+                    None,
+                )?;
+                for (account_id, summary) in fold_account_window_usage_rows(live_rows, &plans) {
+                    usage.entry(account_id).or_default().merge(summary);
+                }
             }
         }
     }
