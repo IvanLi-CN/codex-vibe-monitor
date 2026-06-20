@@ -115,6 +115,10 @@ function storyAccountActivityIsEmpty(storyId: string | null) {
   return storyId?.endsWith('--detail-drawer-records-empty') === true
 }
 
+function storyAccountActivityUsesOverflowFixture(storyId: string | null) {
+  return storyId?.endsWith('--detail-drawer-records-overflow-dark-narrow') === true
+}
+
 function buildStoryAccountActivitySummary(
   accountId: number,
   storyId: string | null,
@@ -126,6 +130,15 @@ function buildStoryAccountActivitySummary(
       failureCount: 0,
       totalCost: 0,
       totalTokens: 0,
+    }
+  }
+  if (storyAccountActivityUsesOverflowFixture(storyId)) {
+    return {
+      totalCount: 2210,
+      successCount: 1836,
+      failureCount: 374,
+      totalCost: 173.3,
+      totalTokens: 281_110_000,
     }
   }
   const scale = accountId === 101 ? 1 : 0.35
@@ -149,6 +162,62 @@ function buildStoryAccountActivityTimeseries(
   const bucket = parsedUrl.searchParams.get('bucket') || '1m'
   const bucketSeconds = bucket === '1h' ? 3_600 : bucket === '1d' ? 86_400 : 60
   const rangeStart = '2026-03-13T00:00:00.000Z'
+  if (storyAccountActivityUsesOverflowFixture(storyId) && range === 'today') {
+    const overflowPoints = Array.from({ length: 12 }, (_, index) => {
+      const bucketStart = new Date(Date.parse(rangeStart) + index * bucketSeconds * 1_000)
+      const totalCount = [3, 6, 12, 4, 0, 8, 13, 7, 2, 11, 5, 9][index] ?? 0
+      const failureCount = [0, 1, 3, 0, 0, 1, 4, 2, 0, 3, 1, 2][index] ?? 0
+      const successCount = Math.max(totalCount - failureCount, 0)
+      const totalTokens = [
+        810_000,
+        1_640_000,
+        2_940_000,
+        1_120_000,
+        0,
+        1_980_000,
+        3_220_000,
+        1_760_000,
+        620_000,
+        2_880_000,
+        1_410_000,
+        2_340_000,
+      ][index] ?? 0
+      const totalCost = [
+        0.48,
+        0.96,
+        1.72,
+        0.61,
+        0,
+        1.11,
+        1.94,
+        1.03,
+        0.34,
+        1.76,
+        0.82,
+        1.39,
+      ][index] ?? 0
+      return {
+        bucketStart: bucketStart.toISOString(),
+        bucketEnd: new Date(bucketStart.getTime() + bucketSeconds * 1_000).toISOString(),
+        totalCount,
+        successCount,
+        failureCount,
+        inFlightCount: 0,
+        totalTokens,
+        totalCost,
+      }
+    })
+    return {
+      rangeStart,
+      rangeEnd: new Date(Date.parse(rangeStart) + overflowPoints.length * bucketSeconds * 1_000).toISOString(),
+      bucketSeconds,
+      snapshotId: 1,
+      effectiveBucket: bucket,
+      availableBuckets: ['1m', '10m', '1h', '1d'],
+      bucketLimitedToDaily: false,
+      points: overflowPoints,
+    }
+  }
   const points = storyAccountActivityIsEmpty(storyId)
     ? []
     : Array.from({ length: range === '7d' ? 14 : 12 }, (_, index) => {

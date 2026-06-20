@@ -10,20 +10,28 @@ import {
 type SummaryKey = 'today' | 'yesterday' | 'previous7d' | '1d' | '7d'
 type TimeseriesKey = 'today:1m' | 'yesterday:1m' | '1d:1m' | '7d:1h' | '6mo:1d'
 type PersistedRange = 'today' | 'yesterday' | '1d' | '7d' | 'usage' | null
+type SummaryFixture = ReturnType<typeof createSummary>
+type TimeseriesFixture =
+  | ReturnType<typeof buildTodayMinutePoints>
+  | ReturnType<typeof build24HourPoints>
+  | ReturnType<typeof buildHourlyPoints>
+  | ReturnType<typeof buildDailyPoints>
 type WindowWithDashboardFetchLog = Window & {
   __dashboardOverviewFetchLog__?: string[]
 }
 type DashboardOverviewParameters = {
   persistedRange?: PersistedRange
   failTodayTimeseries?: boolean
+  summaryOverrides?: Partial<Record<SummaryKey, SummaryFixture>>
+  timeseriesOverrides?: Partial<Record<TimeseriesKey, TimeseriesFixture>>
+  delaySummaryWindows?: SummaryKey[]
+  responseDelayMs?: number
 }
 
-function StorySurface({ children }: { children: ReactNode }) {
-  return (
-    <div className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
-      <div className="mx-auto w-full max-w-[1660px]">{children}</div>
-    </div>
-  )
+type AccountActivityOverviewProps = {
+  title: string
+  upstreamAccountId: number
+  testId: string
 }
 
 function jsonResponse(body: unknown) {
@@ -312,9 +320,17 @@ function distributeInteger(total: number, weights: number[]) {
 function DashboardOverviewMockApi({
   children,
   failTodayTimeseries = false,
+  summaryOverrides = {},
+  timeseriesOverrides = {},
+  delaySummaryWindows = [],
+  responseDelayMs = 0,
 }: {
   children: ReactNode
   failTodayTimeseries?: boolean
+  summaryOverrides?: Partial<Record<SummaryKey, SummaryFixture>>
+  timeseriesOverrides?: Partial<Record<TimeseriesKey, TimeseriesFixture>>
+  delaySummaryWindows?: SummaryKey[]
+  responseDelayMs?: number
 }) {
   const originalFetchRef = useRef<typeof window.fetch | null>(null)
   const originalEventSourceRef = useRef<typeof window.EventSource | null>(null)
@@ -333,7 +349,10 @@ function DashboardOverviewMockApi({
       if (url.pathname === '/api/stats/summary') {
         const windowKey = url.searchParams.get('window') as SummaryKey | null
         if (windowKey && windowKey in SUMMARY_FIXTURES) {
-          return jsonResponse(SUMMARY_FIXTURES[windowKey])
+          if (delaySummaryWindows.includes(windowKey) && responseDelayMs > 0) {
+            await new Promise((resolve) => window.setTimeout(resolve, responseDelayMs))
+          }
+          return jsonResponse(summaryOverrides[windowKey] ?? SUMMARY_FIXTURES[windowKey])
         }
       }
 
@@ -348,7 +367,7 @@ function DashboardOverviewMockApi({
           })
         }
         if (key in TIMESERIES_FIXTURES) {
-          return jsonResponse(TIMESERIES_FIXTURES[key])
+          return jsonResponse(timeseriesOverrides[key] ?? TIMESERIES_FIXTURES[key])
         }
       }
 
@@ -372,9 +391,54 @@ function DashboardOverviewMockApi({
       })
       delete windowWithFetchLog.__dashboardOverviewFetchLog__
     }
-  }, [failTodayTimeseries])
+  }, [delaySummaryWindows, failTodayTimeseries, responseDelayMs, summaryOverrides, timeseriesOverrides])
 
   return <>{children}</>
+}
+
+function DashboardOverviewStoryEnvironment({
+  children,
+  parameters,
+  maxWidth = '1660px',
+}: {
+  children: ReactNode
+  parameters: DashboardOverviewParameters
+  maxWidth?: string
+}) {
+  return (
+    <I18nProvider>
+      <DashboardOverviewMockApi
+        failTodayTimeseries={parameters.failTodayTimeseries === true}
+        summaryOverrides={(parameters.summaryOverrides ?? {}) as Partial<Record<SummaryKey, SummaryFixture>>}
+        timeseriesOverrides={(parameters.timeseriesOverrides ?? {}) as Partial<Record<TimeseriesKey, TimeseriesFixture>>}
+        delaySummaryWindows={(parameters.delaySummaryWindows ?? []) as SummaryKey[]}
+        responseDelayMs={(parameters.responseDelayMs ?? 0) as number}
+      >
+        <div className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
+          <div className="mx-auto w-full" style={{ maxWidth }}>
+            <RangeStorageHarness persistedRange={(parameters.persistedRange ?? null) as PersistedRange}>
+              {children}
+            </RangeStorageHarness>
+          </div>
+        </div>
+      </DashboardOverviewMockApi>
+    </I18nProvider>
+  )
+}
+
+function EmbeddedAccountActivityOverview({
+  title = '账号活动总览',
+  upstreamAccountId = 42,
+  testId = 'upstream-account-records-activity-overview',
+}: Partial<AccountActivityOverviewProps>) {
+  return (
+    <DashboardActivityOverview
+      title={title}
+      upstreamAccountId={upstreamAccountId}
+      testId={testId}
+      storageKey={`storybook.dashboard.account-activity.${upstreamAccountId}`}
+    />
+  )
 }
 
 function RangeStorageHarness({
@@ -420,15 +484,11 @@ const meta = {
   },
   decorators: [
     (Story, context) => (
-      <I18nProvider>
-        <DashboardOverviewMockApi failTodayTimeseries={(context.parameters as DashboardOverviewParameters).failTodayTimeseries === true}>
-          <StorySurface>
-            <RangeStorageHarness persistedRange={((context.parameters as DashboardOverviewParameters).persistedRange ?? null) as PersistedRange}>
-              <Story />
-            </RangeStorageHarness>
-          </StorySurface>
-        </DashboardOverviewMockApi>
-      </I18nProvider>
+      <DashboardOverviewStoryEnvironment
+        parameters={context.parameters as DashboardOverviewParameters}
+      >
+        <Story />
+      </DashboardOverviewStoryEnvironment>
     ),
   ],
 } satisfies Meta<typeof DashboardActivityOverview>
@@ -455,17 +515,12 @@ export const TodayViewNarrowDesktop: Story = {
   },
   decorators: [
     (Story, context) => (
-      <I18nProvider>
-        <DashboardOverviewMockApi failTodayTimeseries={(context.parameters as DashboardOverviewParameters).failTodayTimeseries === true}>
-          <div className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
-            <div className="mx-auto w-full max-w-[1280px]">
-              <RangeStorageHarness persistedRange={((context.parameters as DashboardOverviewParameters).persistedRange ?? null) as PersistedRange}>
-                <Story />
-              </RangeStorageHarness>
-            </div>
-          </div>
-        </DashboardOverviewMockApi>
-      </I18nProvider>
+      <DashboardOverviewStoryEnvironment
+        parameters={context.parameters as DashboardOverviewParameters}
+        maxWidth="1280px"
+      >
+        <Story />
+      </DashboardOverviewStoryEnvironment>
     ),
   ],
   play: async ({ canvasElement }) => {
@@ -475,6 +530,140 @@ export const TodayViewNarrowDesktop: Story = {
       expect(canvas.getByTestId('today-stats-value-total-tokens')).toHaveAttribute('data-compact', 'true')
       expect(canvas.getByTestId('today-stats-value-total-tokens')).toHaveAttribute('data-compact-precision', '0')
       expect(canvas.getByTestId('today-stats-value-total-tokens').textContent ?? '').toContain('18M')
+    })
+  },
+}
+
+const NARROW_OVERFLOW_TODAY_SUMMARY = createSummary(3428, 3296, 132, 173.3, 281110000)
+
+export const TodayViewNarrowDesktopOverflow: Story = {
+  parameters: {
+    viewport: { defaultViewport: 'desktop1280' },
+    summaryOverrides: {
+      today: NARROW_OVERFLOW_TODAY_SUMMARY,
+    },
+    timeseriesOverrides: {
+      'today:1m': buildTodayMinutePoints(NARROW_OVERFLOW_TODAY_SUMMARY),
+    },
+  },
+  decorators: [
+    (Story, context) => (
+      <DashboardOverviewStoryEnvironment
+        parameters={context.parameters as DashboardOverviewParameters}
+        maxWidth="1280px"
+      >
+        <Story />
+      </DashboardOverviewStoryEnvironment>
+    ),
+  ],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await waitFor(() => {
+      expect(canvas.getByRole('tab', { name: /今日|today/i })).toHaveAttribute('aria-selected', 'true')
+      expect(canvas.getByTestId('today-stats-value-total-tokens')).toHaveAttribute('data-compact', 'true')
+      expect(canvas.getByTestId('today-stats-value-total-tokens')).toHaveAttribute('data-compact-precision', '0')
+      expect(canvas.getByTestId('today-stats-value-total-tokens').textContent ?? '').toContain('281M')
+      expect(canvas.getByTestId('dashboard-today-activity-chart')).toBeVisible()
+    })
+  },
+}
+
+export const TodayViewNarrowDesktopLoading: Story = {
+  parameters: {
+    viewport: { defaultViewport: 'desktop1280' },
+    delaySummaryWindows: ['today'],
+    responseDelayMs: 15000,
+  },
+  decorators: [
+    (Story, context) => (
+      <DashboardOverviewStoryEnvironment
+        parameters={context.parameters as DashboardOverviewParameters}
+        maxWidth="1280px"
+      >
+        <Story />
+      </DashboardOverviewStoryEnvironment>
+    ),
+  ],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await waitFor(() => {
+      expect(canvas.getByRole('tab', { name: /今日|today/i })).toHaveAttribute('aria-selected', 'true')
+      expect(canvas.getByTestId('today-stats-value-tpm-loading')).toBeVisible()
+      expect(canvas.getByTestId('today-stats-value-total-tokens-loading')).toBeVisible()
+      expect(canvas.getByTestId('dashboard-today-activity-chart')).toBeVisible()
+    })
+  },
+}
+
+export const AccountTodayNarrowDesktopOverflowDark: Story = {
+  globals: {
+    themeMode: 'dark',
+  },
+  parameters: {
+    viewport: { defaultViewport: 'desktop1280' },
+    summaryOverrides: {
+      today: NARROW_OVERFLOW_TODAY_SUMMARY,
+    },
+    timeseriesOverrides: {
+      'today:1m': buildTodayMinutePoints(NARROW_OVERFLOW_TODAY_SUMMARY),
+    },
+  },
+  render: () => <EmbeddedAccountActivityOverview />,
+  decorators: [
+    (Story, context) => (
+      <DashboardOverviewStoryEnvironment
+        parameters={context.parameters as DashboardOverviewParameters}
+        maxWidth="1280px"
+      >
+        <Story />
+      </DashboardOverviewStoryEnvironment>
+    ),
+  ],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await waitFor(() => {
+      expect(canvas.getByTestId('upstream-account-records-activity-overview')).toBeVisible()
+      expect(canvas.getByRole('heading', { name: '账号活动总览' })).toBeVisible()
+      expect(canvas.getByRole('tab', { name: /今日|today/i })).toHaveAttribute('aria-selected', 'true')
+      expect(canvas.getByTestId('today-stats-value-total-tokens')).toHaveAttribute('data-compact', 'true')
+      expect(canvas.getByTestId('today-stats-value-total-tokens')).toHaveAttribute('data-compact-precision', '0')
+      expect(canvas.getByTestId('today-stats-value-total-tokens').textContent ?? '').toContain('281M')
+      expect(canvas.queryByText(/并行对话|parallel/i)).toBeNull()
+      expect(canvas.getByTestId('dashboard-today-activity-chart')).toBeVisible()
+    })
+  },
+}
+
+export const AccountTodayNarrowDesktopLoadingDark: Story = {
+  globals: {
+    themeMode: 'dark',
+  },
+  parameters: {
+    viewport: { defaultViewport: 'desktop1280' },
+    delaySummaryWindows: ['today'],
+    responseDelayMs: 15000,
+  },
+  render: () => <EmbeddedAccountActivityOverview />,
+  decorators: [
+    (Story, context) => (
+      <DashboardOverviewStoryEnvironment
+        parameters={context.parameters as DashboardOverviewParameters}
+        maxWidth="1280px"
+      >
+        <Story />
+      </DashboardOverviewStoryEnvironment>
+    ),
+  ],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await waitFor(() => {
+      expect(canvas.getByTestId('upstream-account-records-activity-overview')).toBeVisible()
+      expect(canvas.getByRole('heading', { name: '账号活动总览' })).toBeVisible()
+      expect(canvas.getByRole('tab', { name: /今日|today/i })).toHaveAttribute('aria-selected', 'true')
+      expect(canvas.getByTestId('today-stats-value-tpm-loading')).toBeVisible()
+      expect(canvas.getByTestId('today-stats-value-total-tokens-loading')).toBeVisible()
+      expect(canvas.queryByText(/并行对话|parallel/i)).toBeNull()
+      expect(canvas.getByTestId('dashboard-today-activity-chart')).toBeVisible()
     })
   },
 }

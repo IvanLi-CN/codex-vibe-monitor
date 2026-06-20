@@ -75,7 +75,10 @@ export function getWindowUsageResponseDelay(storyId: string | null) {
 }
 
 export function getAccountActivityResponseDelay(storyId: string | null) {
-  if (storyId?.endsWith('--detail-drawer-records-loading') === true) {
+  if (
+    storyId?.endsWith('--detail-drawer-records-loading') === true ||
+    storyId?.endsWith('--detail-drawer-records-loading-dark-narrow') === true
+  ) {
     return 0
   }
 
@@ -83,7 +86,10 @@ export function getAccountActivityResponseDelay(storyId: string | null) {
 }
 
 export function shouldKeepAccountActivityPending(storyId: string | null) {
-  return storyId?.endsWith('--detail-drawer-records-loading') === true
+  return (
+    storyId?.endsWith('--detail-drawer-records-loading') === true ||
+    storyId?.endsWith('--detail-drawer-records-loading-dark-narrow') === true
+  )
 }
 
 export function noContent() {

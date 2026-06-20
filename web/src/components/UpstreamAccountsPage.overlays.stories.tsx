@@ -148,8 +148,10 @@ export const DetailDrawerRecordsEmpty: Story = {
 
 function DetailDrawerStorySurface({
   initialTab,
+  maxWidth = 'none',
 }: {
   initialTab: 'records'
+  maxWidth?: string
 }) {
   return (
     <MemoryRouter initialEntries={['/account-pool/upstream-accounts?upstreamAccountId=101']}>
@@ -157,12 +159,14 @@ function DetailDrawerStorySurface({
         <I18nProvider>
           <SystemNotificationProvider>
             <StorybookUpstreamAccountsMock>
-              <SharedUpstreamAccountDetailDrawer
-                open
-                accountId={101}
-                initialTab={initialTab}
-                onClose={() => {}}
-              />
+              <div style={maxWidth === 'none' ? undefined : { maxWidth }} className="mx-auto w-full">
+                <SharedUpstreamAccountDetailDrawer
+                  open
+                  accountId={101}
+                  initialTab={initialTab}
+                  onClose={() => {}}
+                />
+              </div>
             </StorybookUpstreamAccountsMock>
           </SystemNotificationProvider>
         </I18nProvider>
@@ -195,6 +199,50 @@ export const DetailDrawerRecordsSettled: Story = {
     await expect(within(dialog).getByText(/账号活动总览|account activity overview/i)).toBeInTheDocument()
     await expect(within(dialog).getByTestId('upstream-account-records-activity-overview')).toBeInTheDocument()
     await expect(within(dialog).getByText(/gpt-5\.4/i)).toBeInTheDocument()
+  },
+}
+
+export const DetailDrawerRecordsOverflowDarkNarrow: Story = {
+  globals: {
+    themeMode: 'dark',
+  },
+  parameters: {
+    viewport: { defaultViewport: 'desktop1280' },
+  },
+  render: () => <DetailDrawerStorySurface initialTab="records" maxWidth="1280px" />,
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const dialog = await documentScope.findByRole('dialog', {
+      name: /Codex Pro - Tokyo/i,
+    })
+    await expect(within(dialog).getByRole('tab', { name: /调用记录|records/i })).toHaveAttribute('aria-selected', 'true')
+    await expect(within(dialog).getByText(/账号活动总览|account activity overview/i)).toBeInTheDocument()
+    const totalTokens = within(dialog).getByTestId('today-stats-value-total-tokens')
+    await expect(totalTokens).toHaveAttribute('data-compact', 'true')
+    await expect(totalTokens).toHaveAttribute('data-compact-precision', '0')
+    await expect(totalTokens).toHaveTextContent(/281M/i)
+    await expect(within(dialog).queryByText(/并行对话|parallel/i)).not.toBeInTheDocument()
+  },
+}
+
+export const DetailDrawerRecordsLoadingDarkNarrow: Story = {
+  globals: {
+    themeMode: 'dark',
+  },
+  parameters: {
+    viewport: { defaultViewport: 'desktop1280' },
+  },
+  render: () => <DetailDrawerStorySurface initialTab="records" maxWidth="1280px" />,
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const dialog = await documentScope.findByRole('dialog', {
+      name: /Codex Pro - Tokyo/i,
+    })
+    await expect(within(dialog).getByRole('tab', { name: /调用记录|records/i })).toHaveAttribute('aria-selected', 'true')
+    await expect(within(dialog).getByText(/账号活动总览|account activity overview/i)).toBeInTheDocument()
+    await expect(within(dialog).getByTestId('today-stats-value-tpm-loading')).toBeInTheDocument()
+    await expect(within(dialog).getByTestId('today-stats-value-total-tokens-loading')).toBeInTheDocument()
+    await expect(within(dialog).queryByText(/并行对话|parallel/i)).not.toBeInTheDocument()
   },
 }
 
