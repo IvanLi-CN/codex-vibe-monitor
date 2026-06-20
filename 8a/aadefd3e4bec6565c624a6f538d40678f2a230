@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.70.6",
+  "base_stable_version": "1.70.5",
+  "channel_label": "channel:stable",
+  "created_at": "2026-06-20T08:47:47Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.70.6",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "8e913577c8878eba5d26d73eb551e04b26551fbc",
+  "pr_number": 454,
+  "pr_title": "fix(web): preserve compact metric suffixes in narrow dashboard tiles",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.70.6",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.70.6",
+  "target_sha": "8aaadefd3e4bec6565c624a6f538d40678f2a230",
+  "type_label": "type:patch"
+}
