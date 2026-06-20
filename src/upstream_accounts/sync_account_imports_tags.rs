@@ -2361,7 +2361,8 @@ struct LatestUpstreamAccountSampleByAccountRow {
     captured_at: String,
     limit_id: Option<String>,
     limit_name: Option<String>,
-    plan_type: Option<String>,
+    account_plan_type: Option<String>,
+    account_plan_type_observed_at: Option<String>,
     primary_used_percent: Option<f64>,
     primary_window_minutes: Option<i64>,
     primary_resets_at: Option<String>,
@@ -2373,6 +2374,13 @@ struct LatestUpstreamAccountSampleByAccountRow {
     credits_balance: Option<String>,
 }
 
+#[derive(Debug, Clone, FromRow)]
+struct LatestUpstreamAccountPlanTypeRow {
+    account_id: i64,
+    captured_at: String,
+    plan_type: Option<String>,
+}
+
 async fn load_latest_usage_sample_map(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
@@ -2381,101 +2389,131 @@ async fn load_latest_usage_sample_map(
         return Ok(HashMap::new());
     }
 
-    let mut query = QueryBuilder::<Sqlite>::new(
+    let mut latest_sample_query = QueryBuilder::<Sqlite>::new(
         r#"
-        WITH ranked_samples AS (
-            SELECT
-                sample.account_id,
-                sample.captured_at,
-                sample.limit_id,
-                sample.limit_name,
-                COALESCE(
-                    CASE
-                        WHEN NULLIF(TRIM(account.plan_type), '') IS NOT NULL
-                             AND account.plan_type_observed_at IS NOT NULL
-                             AND julianday(account.plan_type_observed_at) >= julianday((
-                                SELECT previous_sample.captured_at
-                                FROM pool_upstream_account_limit_samples previous_sample
-                                WHERE previous_sample.account_id = sample.account_id
-                                  AND previous_sample.plan_type IS NOT NULL
-                                  AND TRIM(previous_sample.plan_type) <> ''
-                                ORDER BY previous_sample.captured_at DESC
-                                LIMIT 1
-                             ))
-                            THEN NULLIF(TRIM(account.plan_type), '')
-                        ELSE (
-                            SELECT NULLIF(TRIM(previous_sample.plan_type), '')
-                            FROM pool_upstream_account_limit_samples previous_sample
-                            WHERE previous_sample.account_id = sample.account_id
-                              AND previous_sample.plan_type IS NOT NULL
-                              AND TRIM(previous_sample.plan_type) <> ''
-                            ORDER BY previous_sample.captured_at DESC
-                            LIMIT 1
-                        )
-                    END,
-                    NULLIF(TRIM(account.plan_type), '')
-                ) AS plan_type,
-                sample.primary_used_percent,
-                sample.primary_window_minutes,
-                sample.primary_resets_at,
-                sample.secondary_used_percent,
-                sample.secondary_window_minutes,
-                sample.secondary_resets_at,
-                sample.credits_has_credits,
-                sample.credits_unlimited,
-                sample.credits_balance,
-                ROW_NUMBER() OVER (
-                    PARTITION BY sample.account_id
-                    ORDER BY sample.captured_at DESC
-                ) AS row_number
-            FROM pool_upstream_account_limit_samples sample
-            INNER JOIN pool_upstream_accounts account ON account.id = sample.account_id
-            WHERE sample.account_id IN (
+        SELECT
+            sample.account_id,
+            sample.captured_at,
+            sample.limit_id,
+            sample.limit_name,
+            NULLIF(TRIM(account.plan_type), '') AS account_plan_type,
+            account.plan_type_observed_at AS account_plan_type_observed_at,
+            sample.primary_used_percent,
+            sample.primary_window_minutes,
+            sample.primary_resets_at,
+            sample.secondary_used_percent,
+            sample.secondary_window_minutes,
+            sample.secondary_resets_at,
+            sample.credits_has_credits,
+            sample.credits_unlimited,
+            sample.credits_balance
+        FROM pool_upstream_account_limit_samples sample
+        INNER JOIN (
+            SELECT account_id, MAX(captured_at) AS captured_at
+            FROM pool_upstream_account_limit_samples
+            WHERE account_id IN (
         "#,
     );
     {
-        let mut separated = query.separated(", ");
+        let mut separated = latest_sample_query.separated(", ");
         for account_id in account_ids {
             separated.push_bind(account_id);
         }
     }
-    query.push(
+    latest_sample_query.push(
         r#"
             )
-        )
-        SELECT
-            account_id,
-            captured_at,
-            limit_id,
-            limit_name,
-            plan_type,
-            primary_used_percent,
-            primary_window_minutes,
-            primary_resets_at,
-            secondary_used_percent,
-            secondary_window_minutes,
-            secondary_resets_at,
-            credits_has_credits,
-            credits_unlimited,
-            credits_balance
-        FROM ranked_samples
-        WHERE row_number = 1
+            GROUP BY account_id
+        ) latest
+            ON latest.account_id = sample.account_id
+           AND latest.captured_at = sample.captured_at
+        INNER JOIN pool_upstream_accounts account ON account.id = sample.account_id
+        ORDER BY sample.account_id ASC, sample.id DESC
         "#,
     );
-    let rows = query
+    let rows = latest_sample_query
         .build_query_as::<LatestUpstreamAccountSampleByAccountRow>()
         .fetch_all(pool)
         .await?;
-    Ok(rows
-        .into_iter()
-        .map(|row| {
+    let mut latest_rows = rows.into_iter().fold(
+        HashMap::<i64, LatestUpstreamAccountSampleByAccountRow>::new(),
+        |mut acc, row| {
+            acc.entry(row.account_id).or_insert(row);
+            acc
+        },
+    );
+
+    let mut latest_plan_type_query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            sample.account_id,
+            sample.captured_at,
+            NULLIF(TRIM(sample.plan_type), '') AS plan_type
+        FROM pool_upstream_account_limit_samples sample
+        INNER JOIN (
+            SELECT account_id, MAX(captured_at) AS captured_at
+            FROM pool_upstream_account_limit_samples
+            WHERE account_id IN (
+        "#,
+    );
+    {
+        let mut separated = latest_plan_type_query.separated(", ");
+        for account_id in account_ids {
+            separated.push_bind(account_id);
+        }
+    }
+    latest_plan_type_query.push(
+        r#"
+            )
+              AND plan_type IS NOT NULL
+              AND TRIM(plan_type) <> ''
+            GROUP BY account_id
+        ) latest
+            ON latest.account_id = sample.account_id
+           AND latest.captured_at = sample.captured_at
+        WHERE sample.plan_type IS NOT NULL
+          AND TRIM(sample.plan_type) <> ''
+        ORDER BY sample.account_id ASC, sample.id DESC
+        "#,
+    );
+    let latest_plan_type_rows = latest_plan_type_query
+        .build_query_as::<LatestUpstreamAccountPlanTypeRow>()
+        .fetch_all(pool)
+        .await?;
+    let latest_plan_type_map = latest_plan_type_rows.into_iter().fold(
+        HashMap::<i64, LatestUpstreamAccountPlanTypeRow>::new(),
+        |mut acc, row| {
+            acc.entry(row.account_id).or_insert(row);
+            acc
+        },
+    );
+
+    Ok(latest_rows
+        .drain()
+        .map(|(account_id, row)| {
+            let account_plan_type = normalize_plan_type(row.account_plan_type.as_deref());
+            let sample_plan_type_row = latest_plan_type_map.get(&account_id);
+            let sample_plan_type = sample_plan_type_row
+                .and_then(|value| normalize_plan_type(value.plan_type.as_deref()));
+            let account_plan_is_current =
+                account_plan_type.is_some()
+                    && parse_rfc3339_utc(sample_plan_type_row.map(|value| value.captured_at.as_str()).unwrap_or_default())
+                        .zip(row.account_plan_type_observed_at.as_deref().and_then(parse_rfc3339_utc))
+                        .is_some_and(|(sample_captured_at, account_observed_at)| {
+                            account_observed_at >= sample_captured_at
+                        });
+            let effective_plan_type = if account_plan_is_current {
+                account_plan_type.clone().or(sample_plan_type.clone())
+            } else {
+                sample_plan_type.clone().or(account_plan_type.clone())
+            };
             (
-                row.account_id,
+                account_id,
                 UpstreamAccountSampleRow {
                     captured_at: row.captured_at,
                     limit_id: row.limit_id,
                     limit_name: row.limit_name,
-                    plan_type: row.plan_type,
+                    plan_type: effective_plan_type,
                     primary_used_percent: row.primary_used_percent,
                     primary_window_minutes: row.primary_window_minutes,
                     primary_resets_at: row.primary_resets_at,

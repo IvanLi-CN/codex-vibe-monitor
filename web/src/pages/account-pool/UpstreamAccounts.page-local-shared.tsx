@@ -246,6 +246,11 @@ type AccountDetailTab =
   | "routing"
   | "healthEvents";
 
+const ACCOUNT_DETAIL_TABS_REQUIRING_ROSTER_CONTEXT = new Set<AccountDetailTab>([
+  "edit",
+  "routing",
+]);
+
 type SharedUpstreamAccountDetailDrawerCloseOptions = {
   replace?: boolean;
 };
@@ -823,6 +828,9 @@ function SharedUpstreamAccountDetailDrawerInner({
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { openUpstreamAccount } = useUpstreamAccountDetailRoute();
+  const [detailTab, setDetailTab] = useState<AccountDetailTab>(initialTab);
+  const needsRosterContext =
+    open && ACCOUNT_DETAIL_TABS_REQUIRING_ROSTER_CONTEXT.has(detailTab);
   const {
     items,
     groups = [],
@@ -840,7 +848,7 @@ function SharedUpstreamAccountDetailDrawerInner({
     saveGroupNote,
     deleteGroupNote,
     missingDetailAccountId,
-  } = useUpstreamAccounts(undefined, {
+  } = useUpstreamAccounts(needsRosterContext ? undefined : null, {
     allowSelectionOutsideList: true,
     fallbackToFirstItem: false,
   });
@@ -898,7 +906,6 @@ function SharedUpstreamAccountDetailDrawerInner({
     useState<Record<string, number>>({});
   const [detailDrawerPortalContainer, setDetailDrawerPortalContainer] =
     useState<HTMLElement | null>(null);
-  const [detailTab, setDetailTab] = useState<AccountDetailTab>(initialTab);
   const validTagIds = useMemo(
     () => new Set(tagItems.map((tag) => tag.id)),
     [tagItems],
@@ -1648,7 +1655,7 @@ function SharedUpstreamAccountDetailDrawerInner({
   } = useUpstreamStickyConversations(
     selectedId,
     stickyConversationSelection,
-    Boolean(open && selectedId),
+    Boolean(open && selectedId && detailTab === "routing"),
   );
   const visibleStickyKeys = useMemo(
     () =>

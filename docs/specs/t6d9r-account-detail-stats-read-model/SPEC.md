@@ -106,15 +106,15 @@
 
 ## Visual Evidence
 
-- 详情抽屉记录页加载态（mock Storybook，记录页 tab 已选中，活动总览保持 skeleton / placeholder，未先展示近似值）
+- 详情抽屉记录页默认态（mock Storybook，记录页 tab 已选中；右上角请求日志证明此时只读取详情与账号 stats，不再额外预取 roster `/api/pool/upstream-accounts` 或 sticky `/sticky-keys`）
 
 PR: include
-![账号详情记录页加载态](./assets/detail-drawer-records-loading-raw.png)
+![账号详情记录页请求收口](./assets/detail-drawer-records-request-gating.png)
 
-- 详情抽屉记录页稳定态（mock Storybook，活动总览与记录表已收敛到准确值）
+- 详情抽屉路由页按需加载（mock Storybook，从记录页切到路由页后才触发 roster、sticky keys 与 window usage 的受控请求）
 
 PR: include
-![账号详情记录页稳定态](./assets/detail-drawer-records-settled-final-raw.png)
+![账号详情路由页按需加载](./assets/detail-drawer-routing-request-gating.png)
 
 ## 参考
 

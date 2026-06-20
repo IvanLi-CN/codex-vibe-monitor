@@ -82,7 +82,15 @@ export const DetailDrawer: Story = {
   ),
   play: async ({ canvasElement }) => {
     const documentScope = within(canvasElement.ownerDocument.body)
+    window.__storybookUpstreamAccountsController__?.clearRequestLog()
     const dialog = await findTokyoDetailDialog(documentScope)
+    const initialRequestLog =
+      window.__storybookUpstreamAccountsController__?.getRequestLog() ?? []
+    await expect(initialRequestLog.some((entry) => entry.includes('/sticky-keys'))).toBe(false)
+    await expect(
+      initialRequestLog.filter((entry) => entry.startsWith('GET /api/pool/upstream-accounts?'))
+        .length,
+    ).toBe(0)
     await expect(within(dialog).getByRole('tab', { name: /概览|overview/i })).toHaveAttribute('aria-selected', 'true')
     await expect(within(dialog).getByText(/最近成功同步|last successful sync/i)).toBeInTheDocument()
     await expect(within(dialog).getByText(/5 小时窗口|5h window/i)).toBeInTheDocument()
@@ -90,6 +98,11 @@ export const DetailDrawer: Story = {
     await expect(within(dialog).getByText(/查看这个上游账号最近保留的调用记录|latest retained invocations routed to this upstream account/i)).toBeInTheDocument()
     await expect(within(dialog).getByText(/gpt-5\.4/i)).toBeInTheDocument()
     await userEvent.click(within(dialog).getByRole('tab', { name: /路由|routing/i }))
+    await waitFor(() => {
+      const requestLog =
+        window.__storybookUpstreamAccountsController__?.getRequestLog() ?? []
+      expect(requestLog.some((entry) => entry.includes('/sticky-keys'))).toBe(true)
+    })
     await expect(within(dialog).getByText(/最终生效规则|effective routing rule/i)).toBeInTheDocument()
     await expect(within(dialog).getByText(/sticky-pool/i)).toBeInTheDocument()
     await userEvent.click(within(dialog).getByRole('tab', { name: /健康与事件|health & events/i }))

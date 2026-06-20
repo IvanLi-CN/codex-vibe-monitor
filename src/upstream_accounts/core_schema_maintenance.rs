@@ -971,6 +971,17 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
 
     sqlx::query(
         r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_limit_samples_account_plan_type_desc
+        ON pool_upstream_account_limit_samples (account_id, captured_at DESC, id DESC)
+        WHERE plan_type IS NOT NULL AND TRIM(plan_type) <> ''
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure idx_pool_limit_samples_account_plan_type_desc")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS pool_sticky_routes (
             sticky_key TEXT PRIMARY KEY,
             account_id INTEGER NOT NULL,

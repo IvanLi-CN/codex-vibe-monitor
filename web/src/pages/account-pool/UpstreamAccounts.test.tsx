@@ -1980,4 +1980,81 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
       },
     )
   })
+
+  it('keeps detail-drawer roster hydration disabled until a roster-dependent tab opens', async () => {
+    mockRosterFreshnessPage()
+    host = document.createElement("div")
+    document.body.appendChild(host)
+    root = createRoot(host)
+    act(() => {
+      root?.render(
+        <I18nProvider>
+          <SystemNotificationProvider>
+            <MemoryRouter>
+              <SharedUpstreamAccountDetailDrawer
+                open
+                accountId={5}
+                onClose={vi.fn()}
+              />
+            </MemoryRouter>
+          </SystemNotificationProvider>
+        </I18nProvider>,
+      )
+    })
+
+    await flushAsync()
+    await flushAsync()
+
+    expect(hookMocks.useUpstreamAccounts.mock.calls[0]?.[0]).toBeNull()
+    expect(hookMocks.useUpstreamStickyConversations.mock.calls.at(-1)?.[1]).toEqual({
+      mode: 'count',
+      limit: 50,
+    })
+    expect(hookMocks.useUpstreamStickyConversations.mock.calls.at(-1)?.[2]).toBe(false)
+
+    act(() => {
+      root?.render(
+        <I18nProvider>
+          <SystemNotificationProvider>
+            <MemoryRouter>
+              <SharedUpstreamAccountDetailDrawer
+                open={false}
+                accountId={5}
+                initialTab="routing"
+                onClose={vi.fn()}
+              />
+            </MemoryRouter>
+          </SystemNotificationProvider>
+        </I18nProvider>,
+      )
+    })
+    await flushAsync()
+    hookMocks.useUpstreamAccounts.mockClear()
+    hookMocks.useUpstreamStickyConversations.mockClear()
+    act(() => {
+      root?.render(
+        <I18nProvider>
+          <SystemNotificationProvider>
+            <MemoryRouter>
+              <SharedUpstreamAccountDetailDrawer
+                open
+                accountId={5}
+                initialTab="routing"
+                onClose={vi.fn()}
+              />
+            </MemoryRouter>
+          </SystemNotificationProvider>
+        </I18nProvider>,
+      )
+    })
+    await flushAsync()
+
+    expect(hookMocks.useUpstreamAccounts.mock.calls).toContainEqual([
+      undefined,
+      {
+        allowSelectionOutsideList: true,
+        fallbackToFirstItem: false,
+      },
+    ])
+  })
 })

@@ -33,6 +33,8 @@ related_specs:
 - summary / timeseries 只读账号 read-model；raw invocations 只用于 boundary 精确补齐和 cursor 之后的有界 live tail。
 - `window-usage` 优先读 minute read-model，再合并缺失 hourly rows 与 live tail，不再按账号窗口常态化在线重算。
 - 前端只为当前选中账号 hydrate `window-usage`，避免 roster / SSE / 列表刷新批量打后端。
+- 详情抽屉只在真正需要时才启用重统计上下文：`routing` 才加载 sticky conversation 统计，`edit` / `routing` 才补拉 roster 上下文，避免 `overview` / `records` 首开把无关重查询叠上去。
+- 上游账号 roster 的最新 usage 样本读取已从 `ROW_NUMBER()` 窗口排序改为索引友好的“最新样本 + 最新非空 plan type”读取，去掉 `pool_upstream_account_limit_samples` 上最重的在线窗口查询。
 
 ## Guardrails / Reuse Notes
 
@@ -40,6 +42,7 @@ related_specs:
 - 新增账号维度统计字段时，先确认 minute/hourly read-model 都能承载，再接入详情页；不要把缺失字段临时塞回 raw 在线聚合。
 - 如果 schema ensure 需要在旧库上 rebuild 账号统计，必须先确保 `hourly_rollup_live_progress` 已存在，否则 rebuild 后无法保存 cursor。
 - 前端详情页的重型统计 hydrate 必须绑定“当前选中账号 + 当前 query key”；列表刷新不能把整个当前页账号重新拉一遍。
+- 若 roster 仍需展示最新 usage/plan 快照，优先复用主表或按账号索引直取最新样本；不要再回到 `pool_upstream_account_limit_samples` 的窗口函数全表排名路径。
 
 ## References
 
