@@ -6,6 +6,16 @@ export type AdaptiveMetricValueKind = 'number' | 'integer' | 'currency'
 const ADAPTIVE_METRIC_COMPACT_GUTTER_PX = 12
 const COMPACT_SUFFIX_LOCALE = 'en-US'
 
+interface MetricFormatterOptions {
+  compact: boolean
+  maximumFractionDigits?: number
+}
+
+interface CompactCandidate {
+  value: string
+  precision: number
+}
+
 interface AdaptiveMetricValueProps {
   value: number
   localeTag: string
@@ -17,7 +27,7 @@ interface AdaptiveMetricValueProps {
 function createMetricFormatter(
   localeTag: string,
   kind: AdaptiveMetricValueKind,
-  compact: boolean,
+  { compact, maximumFractionDigits }: MetricFormatterOptions,
 ) {
   // Product choice: zh dashboards use short-scale suffixes like `1.31B`
   // for overflow fallback because they are materially shorter than localized compact units.
@@ -31,14 +41,36 @@ function createMetricFormatter(
       style: 'currency',
       currency: 'USD',
       notation: compact ? 'compact' : 'standard',
-      maximumFractionDigits: 2,
+      maximumFractionDigits: maximumFractionDigits ?? 2,
     })
   }
 
   return new Intl.NumberFormat(compactLocale, {
     notation: compact ? 'compact' : 'standard',
-    maximumFractionDigits: kind === 'integer' ? 0 : 2,
+    maximumFractionDigits: maximumFractionDigits ?? (kind === 'integer' ? 0 : 2),
   })
+}
+
+function buildCompactCandidates(
+  value: number,
+  localeTag: string,
+  kind: AdaptiveMetricValueKind,
+): CompactCandidate[] {
+  const precisionCandidates = kind === 'integer' ? [0] : [2, 1, 0]
+  const uniqueValues = new Set<string>()
+  const candidates: CompactCandidate[] = []
+
+  for (const precision of precisionCandidates) {
+    const compactValue = createMetricFormatter(localeTag, kind, {
+      compact: true,
+      maximumFractionDigits: precision,
+    }).format(value)
+    if (uniqueValues.has(compactValue)) continue
+    uniqueValues.add(compactValue)
+    candidates.push({ value: compactValue, precision })
+  }
+
+  return candidates
 }
 
 export function AdaptiveMetricValue({
@@ -49,33 +81,52 @@ export function AdaptiveMetricValue({
   'data-testid': dataTestId,
 }: AdaptiveMetricValueProps) {
   const containerRef = useRef<HTMLSpanElement | null>(null)
-  const measureRef = useRef<HTMLSpanElement | null>(null)
-  const [useCompactValue, setUseCompactValue] = useState(false)
+  const measureRefs = useRef<Array<HTMLSpanElement | null>>([])
+  const [compactPrecision, setCompactPrecision] = useState<number | null>(null)
 
   const fullValue = useMemo(
-    () => createMetricFormatter(localeTag, kind, false).format(value),
+    () => createMetricFormatter(localeTag, kind, { compact: false }).format(value),
     [kind, localeTag, value],
   )
-  const compactValue = useMemo(
-    () => createMetricFormatter(localeTag, kind, true).format(value),
+  const compactCandidates = useMemo(
+    () => buildCompactCandidates(value, localeTag, kind),
     [kind, localeTag, value],
   )
 
   const evaluateOverflow = useCallback(() => {
     const container = containerRef.current
-    const measure = measureRef.current
-    if (!container || !measure) return
+    if (!container) return
 
     const availableWidth = container.clientWidth
-    const requiredWidth = measure.scrollWidth
-    if (availableWidth <= 0 || requiredWidth <= 0) return
+    if (availableWidth <= 0) return
 
-    const nextUseCompactValue =
-      requiredWidth + ADAPTIVE_METRIC_COMPACT_GUTTER_PX > availableWidth
-    setUseCompactValue((current) =>
-      current === nextUseCompactValue ? current : nextUseCompactValue,
+    const measures = measureRefs.current
+    const fullMeasure = measures[0]
+    const fullRequiredWidth = fullMeasure?.scrollWidth ?? 0
+    if (fullRequiredWidth <= 0) return
+
+    if (fullRequiredWidth + ADAPTIVE_METRIC_COMPACT_GUTTER_PX <= availableWidth) {
+      setCompactPrecision((current) => (current === null ? current : null))
+      return
+    }
+
+    let nextCompactPrecision = compactCandidates.at(-1)?.precision ?? null
+
+    for (let index = 0; index < compactCandidates.length; index += 1) {
+      const candidate = compactCandidates[index]
+      const measure = measures[index + 1]
+      const requiredWidth = measure?.scrollWidth ?? 0
+      if (requiredWidth <= 0) continue
+      if (requiredWidth + ADAPTIVE_METRIC_COMPACT_GUTTER_PX <= availableWidth) {
+        nextCompactPrecision = candidate.precision
+        break
+      }
+    }
+
+    setCompactPrecision((current) =>
+      current === nextCompactPrecision ? current : nextCompactPrecision,
     )
-  }, [])
+  }, [compactCandidates])
 
   useLayoutEffect(() => {
     evaluateOverflow()
@@ -90,7 +141,6 @@ export function AdaptiveMetricValue({
 
   useLayoutEffect(() => {
     const container = containerRef.current
-    const measure = measureRef.current
     if (!container) return undefined
 
     window.addEventListener('resize', evaluateOverflow)
@@ -105,8 +155,8 @@ export function AdaptiveMetricValue({
       evaluateOverflow()
     })
     observer.observe(container)
-    if (measure) {
-      observer.observe(measure)
+    for (const measure of measureRefs.current) {
+      if (measure) observer.observe(measure)
     }
 
     return () => {
@@ -115,27 +165,41 @@ export function AdaptiveMetricValue({
     }
   }, [evaluateOverflow])
 
-  const visibleValue = useCompactValue ? compactValue : fullValue
-  const shouldAnimateDigits = (kind === 'number' || kind === 'integer') && !useCompactValue
+  const visibleValue =
+    compactPrecision == null
+      ? fullValue
+      : compactCandidates.find((candidate) => candidate.precision === compactPrecision)?.value ?? fullValue
+  const shouldAnimateDigits = (kind === 'number' || kind === 'integer') && compactPrecision == null
 
   return (
     <span
       ref={containerRef}
       data-adaptive-metric-container="true"
-      data-compact={useCompactValue ? 'true' : 'false'}
+      data-compact={compactPrecision == null ? 'false' : 'true'}
+      data-compact-precision={compactPrecision == null ? 'full' : String(compactPrecision)}
       data-testid={dataTestId}
-      title={useCompactValue ? fullValue : undefined}
+      title={compactPrecision == null ? undefined : fullValue}
       className={`relative block min-w-0 max-w-full overflow-hidden whitespace-nowrap tabular-nums ${className ?? ''}`}
     >
+      {[fullValue, ...compactCandidates.map((candidate) => candidate.value)].map((candidateValue, index) => (
+        <span
+          key={`${index}-${candidateValue}`}
+          ref={(node) => {
+            measureRefs.current[index] = node
+          }}
+          aria-hidden
+          data-adaptive-metric-measure="true"
+          data-adaptive-metric-measure-kind={index === 0 ? 'full' : 'compact'}
+          data-adaptive-metric-measure-index={String(index)}
+          className="pointer-events-none invisible absolute left-0 top-0 whitespace-nowrap tabular-nums"
+        >
+          {candidateValue}
+        </span>
+      ))}
       <span
-        ref={measureRef}
-        aria-hidden
-        data-adaptive-metric-measure="true"
-        className="pointer-events-none invisible absolute left-0 top-0 whitespace-nowrap tabular-nums"
+        data-adaptive-metric-visible="true"
+        className="block max-w-full overflow-hidden whitespace-nowrap"
       >
-        {fullValue}
-      </span>
-      <span className="block max-w-full overflow-hidden whitespace-nowrap">
         {shouldAnimateDigits ? <AnimatedDigits value={visibleValue} /> : visibleValue}
       </span>
     </span>

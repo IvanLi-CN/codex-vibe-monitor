@@ -13,7 +13,7 @@ vi.mock('./AnimatedDigits', () => ({
 let host: HTMLDivElement | null = null
 let root: Root | null = null
 let metricContainerWidth = 320
-let metricMeasureWidth = 120
+let metricMeasureWidths = new Map<string, number>()
 
 class MockResizeObserver {
   static instances = new Set<MockResizeObserver>()
@@ -82,7 +82,11 @@ beforeAll(() => {
     configurable: true,
     get() {
       if ((this as HTMLElement).dataset.adaptiveMetricMeasure === 'true') {
-        return metricMeasureWidth
+        const key =
+          (this as HTMLElement).dataset.adaptiveMetricMeasureIndex ??
+          (this as HTMLElement).textContent ??
+          '0'
+        return metricMeasureWidths.get(key) ?? 0
       }
       return 0
     },
@@ -97,7 +101,12 @@ afterEach(() => {
   host = null
   root = null
   metricContainerWidth = 320
-  metricMeasureWidth = 120
+  metricMeasureWidths = new Map([
+    ['0', 120],
+    ['1', 88],
+    ['2', 80],
+    ['3', 72],
+  ])
   MockResizeObserver.instances.clear()
 })
 
@@ -118,6 +127,14 @@ function getMetric() {
   return metric
 }
 
+function getVisibleMetricText() {
+  const visible = host?.querySelector('[data-adaptive-metric-visible="true"]')
+  if (!(visible instanceof HTMLElement)) {
+    throw new Error('Missing visible metric element')
+  }
+  return visible.textContent ?? ''
+}
+
 function getMeasure() {
   const measure = host?.querySelector('[data-adaptive-metric-measure="true"]')
   if (!(measure instanceof HTMLElement)) {
@@ -128,6 +145,13 @@ function getMeasure() {
 
 describe('AdaptiveMetricValue', () => {
   it('switches to compact notation when the measured text widens without a container resize', () => {
+    metricMeasureWidths = new Map([
+      ['0', 120],
+      ['1', 96],
+      ['2', 88],
+      ['3', 72],
+    ])
+
     render(
       <AdaptiveMetricValue
         value={1314275579}
@@ -138,18 +162,26 @@ describe('AdaptiveMetricValue', () => {
 
     expect(getMetric().dataset.compact).toBe('false')
 
-    metricMeasureWidth = 400
+    metricMeasureWidths.set('0', 400)
     act(() => {
       MockResizeObserver.notify(getMeasure())
     })
 
     expect(getMetric().dataset.compact).toBe('true')
-    expect(getMetric().textContent).toContain('1.31B')
+    expect(getVisibleMetricText()).toContain('1.31B')
+    expect(getMetric().dataset.compactPrecision).toBe('2')
     expect(getMetric().getAttribute('title')).toBe('1,314,275,579')
     expect(host?.querySelector('[data-testid="animated-digits"]')).toBeNull()
   })
 
   it('re-evaluates overflow on window resize even when ResizeObserver is available', () => {
+    metricMeasureWidths = new Map([
+      ['0', 120],
+      ['1', 96],
+      ['2', 88],
+      ['3', 72],
+    ])
+
     render(
       <AdaptiveMetricValue
         value={1314275579}
@@ -170,7 +202,12 @@ describe('AdaptiveMetricValue', () => {
 
   it('keeps the short-scale compact suffix for zh overflow fallback', () => {
     metricContainerWidth = 100
-    metricMeasureWidth = 400
+    metricMeasureWidths = new Map([
+      ['0', 400],
+      ['1', 96],
+      ['2', 88],
+      ['3', 72],
+    ])
 
     render(
       <AdaptiveMetricValue
@@ -181,10 +218,18 @@ describe('AdaptiveMetricValue', () => {
     )
 
     expect(getMetric().dataset.compact).toBe('true')
-    expect(getMetric().textContent).toContain('1.31B')
+    expect(getVisibleMetricText()).toContain('1.3B')
+    expect(getVisibleMetricText()).toContain('B')
   })
 
   it('keeps AnimatedDigits only for non-compact number rendering', () => {
+    metricMeasureWidths = new Map([
+      ['0', 120],
+      ['1', 96],
+      ['2', 88],
+      ['3', 72],
+    ])
+
     render(
       <AdaptiveMetricValue
         value={12345}
@@ -196,12 +241,36 @@ describe('AdaptiveMetricValue', () => {
     expect(host?.querySelector('[data-testid="animated-digits"]')?.textContent).toBe('12,345')
 
     metricContainerWidth = 80
-    metricMeasureWidth = 240
+    metricMeasureWidths.set('0', 240)
     act(() => {
       MockResizeObserver.notify(getMeasure())
     })
 
     expect(getMetric().dataset.compact).toBe('true')
     expect(host?.querySelector('[data-testid="animated-digits"]')).toBeNull()
+  })
+
+  it('drops compact decimal precision to preserve the magnitude suffix when width is very tight', () => {
+    metricContainerWidth = 76
+    metricMeasureWidths = new Map([
+      ['0', 220],
+      ['1', 98],
+      ['2', 86],
+      ['3', 58],
+    ])
+
+    render(
+      <AdaptiveMetricValue
+        value={281_110_000}
+        localeTag="en-US"
+        data-testid="adaptive-metric"
+      />,
+    )
+
+    expect(getMetric().dataset.compact).toBe('true')
+    expect(getMetric().dataset.compactPrecision).toBe('0')
+    expect(getVisibleMetricText()).toContain('281M')
+    expect(getVisibleMetricText()).not.toContain('281.11M')
+    expect(getMetric().getAttribute('title')).toBe('281,110,000')
   })
 })
