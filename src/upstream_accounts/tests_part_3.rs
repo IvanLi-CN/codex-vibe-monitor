@@ -76,6 +76,74 @@
     }
 
     #[tokio::test]
+    async fn latest_usage_sample_map_keeps_latest_non_empty_sample_plan_type() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Plan Type Sample Account",
+            "plan-sample@example.com",
+            "org_plan_sample",
+            "user_plan_sample",
+        )
+        .await;
+
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET plan_type = 'pro',
+                plan_type_observed_at = '2026-03-14T00:00:00Z'
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .execute(&state.pool)
+        .await
+        .expect("seed account plan type");
+
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_account_limit_samples (
+                account_id, captured_at, limit_id, limit_name, plan_type,
+                primary_used_percent, primary_window_minutes, primary_resets_at,
+                secondary_used_percent, secondary_window_minutes, secondary_resets_at,
+                credits_has_credits, credits_unlimited, credits_balance
+            ) VALUES (
+                ?1, '2026-03-15T00:00:00Z', NULL, NULL, 'team',
+                24.0, 300, '2026-03-15T05:00:00Z',
+                18.0, 10080, '2026-03-22T00:00:00Z',
+                1, 0, '4.20'
+            ), (
+                ?1, '2026-03-16T00:00:00Z', NULL, NULL, NULL,
+                32.0, 300, '2026-03-16T05:00:00Z',
+                27.0, 10080, '2026-03-23T00:00:00Z',
+                1, 0, '3.80'
+            )
+            "#,
+        )
+        .bind(account_id)
+        .execute(&state.pool)
+        .await
+        .expect("insert usage samples");
+
+        let sample = load_latest_usage_sample(&state.pool, account_id)
+            .await
+            .expect("load latest sample")
+            .expect("sample exists");
+
+        assert_eq!(sample.captured_at, "2026-03-16T00:00:00Z");
+        assert_eq!(sample.plan_type.as_deref(), Some("team"));
+        assert_eq!(sample.primary_used_percent, Some(32.0));
+        assert_eq!(sample.secondary_used_percent, Some(27.0));
+        assert_eq!(sample.credits_balance.as_deref(), Some("3.80"));
+    }
+
+    #[tokio::test]
     async fn node_shunt_assignments_preserve_slots_for_accounts_with_in_flight_reservations() {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
         let secondary_proxy_key = {

@@ -75,6 +75,15 @@ import {
 
 export type { StoryInitialEntry } from './UpstreamAccountsPage.story-runtime-core'
 
+declare global {
+  interface Window {
+    __storybookUpstreamAccountsController__?: {
+      getRequestLog: () => string[]
+      clearRequestLog: () => void
+    }
+  }
+}
+
 function stripActualUsageFromRosterWindow<T extends { actualUsage?: unknown } | null | undefined>(
   window: T,
 ): T {
@@ -182,6 +191,12 @@ export function StorybookUpstreamAccountsMock({
     installedRef.current = true
     originalFetchRef.current = window.fetch.bind(window)
     originalEventSourceRef.current = window.EventSource
+    window.__storybookUpstreamAccountsController__ = {
+      getRequestLog: () => [...storeRef.current.requestLog],
+      clearRequestLog: () => {
+        storeRef.current.requestLog = []
+      },
+    }
 
     const mockedFetch: typeof window.fetch = async (input, init) => {
       const method = (
@@ -197,6 +212,7 @@ export function StorybookUpstreamAccountsMock({
       const path = parsedUrl.pathname
       const storyId = currentStoryId()
       const store = storeRef.current
+      store.requestLog.push(`${method} ${path}${parsedUrl.search}`)
 
       if (path === '/api/stats/summary' && method === 'GET') {
         const accountId = Number(parsedUrl.searchParams.get('upstreamAccountId') || 0)
@@ -1141,6 +1157,9 @@ export function StorybookUpstreamAccountsMock({
 
   useEffect(() => {
     return () => {
+      if (typeof window !== 'undefined') {
+        delete window.__storybookUpstreamAccountsController__
+      }
       if (typeof window !== 'undefined' && originalFetchRef.current) {
         window.fetch = originalFetchRef.current
         originalFetchRef.current = null

@@ -24,6 +24,7 @@ export type StoryStore = {
   details: Record<number, UpstreamAccountDetail>
   maintenanceEvents: UpstreamAccountActionEvent[]
   rosterFetchCount: number
+  requestLog: string[]
   groupNotes: Record<string, string>
   groupBoundProxyKeys: Record<string, string[]>
   forwardProxyNodes: ForwardProxyBindingNode[]
@@ -2591,6 +2592,7 @@ export function createStore(): StoryStore {
     details,
     maintenanceEvents: defaultMaintenanceEvents,
     rosterFetchCount: 0,
+    requestLog: [],
     nextId: Math.max(...Object.keys(details).map((value) => Number(value))) + 1,
     sessions: {},
     mailboxStatuses: {},

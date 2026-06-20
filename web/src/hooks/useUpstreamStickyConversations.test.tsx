@@ -203,4 +203,41 @@ describe("useUpstreamStickyConversations sync guards", () => {
     expect(text("sticky-key")).toBe("sticky-b");
     expect(text("error")).toBe("");
   });
+
+  it("does not load until enabled and then hydrates the current account", async () => {
+    apiMocks.fetchUpstreamStickyConversations.mockResolvedValue(
+      createResponse("sticky-routing"),
+    );
+
+    render(
+      <Probe
+        accountId={101}
+        selection={{ mode: "count", limit: 20 }}
+        enabled={false}
+      />,
+    );
+    await flushAsync();
+
+    expect(apiMocks.fetchUpstreamStickyConversations).not.toHaveBeenCalled();
+    expect(text("loading")).toBe("false");
+    expect(text("sticky-key")).toBe("");
+
+    rerender(
+      <Probe
+        accountId={101}
+        selection={{ mode: "count", limit: 20 }}
+        enabled
+      />,
+    );
+    await flushAsync();
+
+    expect(apiMocks.fetchUpstreamStickyConversations).toHaveBeenCalledTimes(1);
+    expect(apiMocks.fetchUpstreamStickyConversations).toHaveBeenCalledWith(
+      101,
+      { mode: "count", limit: 20 },
+      expect.any(AbortSignal),
+    );
+    expect(text("sticky-key")).toBe("sticky-routing");
+    expect(text("loading")).toBe("false");
+  });
 });
