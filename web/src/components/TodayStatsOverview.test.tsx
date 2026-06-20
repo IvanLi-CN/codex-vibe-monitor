@@ -461,6 +461,54 @@ describe('TodayStatsOverview', () => {
     expect(totalTokensValue?.getAttribute('title')).toBe('1,314,275,579')
   })
 
+  it('drops compact decimals before truncating the magnitude suffix in narrow tiles', () => {
+    metricContainerWidth = 76
+
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 12474,
+          successCount: 9949,
+          failureCount: 2525,
+          totalCost: 539.42,
+          totalTokens: 281110000,
+        }}
+        rate={{
+          tokensPerMinute: 1000,
+          spendRate: 0.1,
+          windowMinutes: 5,
+          available: true,
+        }}
+        loading={false}
+        error={null}
+      />,
+    )
+
+    const totalTokensValue = host?.querySelector('[data-testid="today-stats-value-total-tokens"]')
+    const totalTokensVisible = totalTokensValue?.querySelector('[data-adaptive-metric-visible="true"]')
+    expect(totalTokensValue?.getAttribute('data-compact')).toBe('true')
+    expect(totalTokensValue?.getAttribute('data-compact-precision')).toBe('0')
+    expect(totalTokensVisible?.textContent).toContain('281M')
+    expect(totalTokensVisible?.textContent).not.toContain('281.11M')
+  })
+
+  it('uses a width-capped loading placeholder instead of a fixed narrow-tile width', () => {
+    render(
+      <TodayStatsOverview
+        stats={null}
+        rate={null}
+        loading
+        error={null}
+      />,
+    )
+
+    const tpmLoading = host?.querySelector('[data-testid="today-stats-value-tpm-loading"]')
+    expect(tpmLoading).toBeInstanceOf(HTMLElement)
+    expect((tpmLoading as HTMLElement | null)?.className).toContain('w-full')
+    expect((tpmLoading as HTMLElement | null)?.className).toContain('max-w-[7.5rem]')
+    expect((tpmLoading as HTMLElement | null)?.className).not.toContain('w-28')
+  })
+
   it('renders the response-time card with recent-window and day-average latency values', () => {
     const timeseries = buildTimeseriesWithLatency()
     const comparisonTimeseries = {

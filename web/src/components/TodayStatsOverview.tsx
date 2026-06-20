@@ -106,12 +106,15 @@ function MetricTile({
         </span>
       </Tooltip>
       {loading ? (
-        <div className="mt-2 h-8 w-28 animate-pulse rounded bg-base-300/65" />
+        <div
+          data-testid={valueTestId ? `${valueTestId}-loading` : undefined}
+          className="mt-2 h-8 w-full max-w-[7.5rem] animate-pulse rounded bg-base-300/65"
+        />
       ) : displayText != null ? (
         <div
           data-testid={valueTestId}
           className={cn(
-            'mt-2 min-w-0 overflow-hidden whitespace-nowrap text-2xl font-semibold leading-tight lg:text-[1.85rem]',
+            'mt-2 min-w-0 max-w-full overflow-hidden whitespace-nowrap text-2xl font-semibold leading-tight lg:text-[1.85rem]',
             subdued ? 'text-base-content/55' : 'text-base-content',
             toneClass,
           )}
@@ -121,7 +124,7 @@ function MetricTile({
       ) : (
         <div
           className={cn(
-            'mt-2 min-w-0 overflow-hidden text-2xl font-semibold leading-tight text-base-content lg:text-[1.85rem]',
+            'mt-2 min-w-0 max-w-full overflow-hidden text-2xl font-semibold leading-tight text-base-content lg:text-[1.85rem]',
             toneClass,
           )}
         >

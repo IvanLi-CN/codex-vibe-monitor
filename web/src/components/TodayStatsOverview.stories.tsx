@@ -314,12 +314,83 @@ export const OverflowFallback: Story = {
   },
 }
 
+export const NarrowDesktopOverflowFallback: Story = {
+  args: {
+    stats: {
+      totalCount: 12474,
+      successCount: 9949,
+      failureCount: 2525,
+      totalCost: 539.42,
+      totalTokens: 281110000,
+    },
+    rate: sampleRate,
+    loading: false,
+    error: null,
+    showSurface: false,
+    showHeader: false,
+    showDayBadge: false,
+  },
+  parameters: {
+    viewport: {
+      defaultViewport: 'desktop1280',
+    },
+  },
+  decorators: [
+    (Story) => (
+      <div className="mx-auto w-full max-w-[1180px]">
+        <Story />
+      </div>
+    ),
+  ],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await waitFor(() => {
+      const totalTokensValue = canvas.getByTestId('today-stats-value-total-tokens')
+      expect(totalTokensValue).toHaveAttribute('data-compact', 'true')
+      expect(totalTokensValue).toHaveAttribute('data-compact-precision', '0')
+      expect(totalTokensValue.textContent ?? '').toContain('281M')
+    })
+  },
+}
+
 export const Loading: Story = {
   args: {
     stats: null,
     rate: null,
     loading: true,
     error: null,
+  },
+}
+
+export const NarrowDesktopLoading: Story = {
+  args: {
+    stats: null,
+    rate: null,
+    loading: true,
+    error: null,
+    showSurface: false,
+    showHeader: false,
+    showDayBadge: false,
+  },
+  parameters: {
+    viewport: {
+      defaultViewport: 'desktop1280',
+    },
+  },
+  decorators: [
+    (Story) => (
+      <div className="mx-auto w-full max-w-[1180px]">
+        <Story />
+      </div>
+    ),
+  ],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await waitFor(() => {
+      const loadingTile = canvas.getByTestId('today-stats-value-tpm-loading')
+      expect(loadingTile.className).toContain('w-full')
+      expect(loadingTile.className).toContain('max-w-[7.5rem]')
+    })
   },
 }
 

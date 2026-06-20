@@ -449,6 +449,36 @@ export const TodayView: Story = {
   },
 }
 
+export const TodayViewNarrowDesktop: Story = {
+  parameters: {
+    viewport: { defaultViewport: 'desktop1280' },
+  },
+  decorators: [
+    (Story, context) => (
+      <I18nProvider>
+        <DashboardOverviewMockApi failTodayTimeseries={(context.parameters as DashboardOverviewParameters).failTodayTimeseries === true}>
+          <div className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
+            <div className="mx-auto w-full max-w-[1280px]">
+              <RangeStorageHarness persistedRange={((context.parameters as DashboardOverviewParameters).persistedRange ?? null) as PersistedRange}>
+                <Story />
+              </RangeStorageHarness>
+            </div>
+          </div>
+        </DashboardOverviewMockApi>
+      </I18nProvider>
+    ),
+  ],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await waitFor(() => {
+      expect(canvas.getByRole('tab', { name: /今日|today/i })).toHaveAttribute('aria-selected', 'true')
+      expect(canvas.getByTestId('today-stats-value-total-tokens')).toHaveAttribute('data-compact', 'true')
+      expect(canvas.getByTestId('today-stats-value-total-tokens')).toHaveAttribute('data-compact-precision', '0')
+      expect(canvas.getByTestId('today-stats-value-total-tokens').textContent ?? '').toContain('18M')
+    })
+  },
+}
+
 export const TodayRateUnavailable: Story = {
   parameters: {
     failTodayTimeseries: true,
