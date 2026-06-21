@@ -524,7 +524,7 @@ describe('DashboardActivityOverview', () => {
       enabled: false,
     })
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain(
-      'showInProgress:false',
+      'parallelAvg:null;parallelError:null;showInProgress:true',
     )
 
     clickTab('7 Days')

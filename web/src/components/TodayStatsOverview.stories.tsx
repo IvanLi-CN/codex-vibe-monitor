@@ -241,11 +241,10 @@ export const ScopedAccountEmbedded: Story = {
     stats: sampleStats,
     rate: sampleRate,
     ...comparisonArgs,
-    parallelWorkStats: sampleParallelWorkStats,
-    comparisonParallelWorkStats,
+    parallelWorkStats: null,
+    comparisonParallelWorkStats: null,
     loading: false,
     error: null,
-    showInProgressConversations: false,
     showSurface: false,
     showHeader: false,
     showDayBadge: false,
@@ -259,10 +258,11 @@ export const ScopedAccountEmbedded: Story = {
     const canvas = within(canvasElement)
     const grid = canvas.getByTestId('today-stats-metrics-grid')
     const tiles = canvas.getAllByTestId('today-stats-metric-tile')
-    await expect(grid).toHaveClass(/lg:grid-cols-6/)
-    await expect(grid).not.toHaveClass(/lg:grid-cols-7/)
-    await expect(tiles).toHaveLength(6)
-    await expect(canvas.queryByText(/in-progress conversations|进行中对话/i)).not.toBeInTheDocument()
+    await expect(grid).toHaveClass(/lg:grid-cols-7/)
+    await expect(tiles).toHaveLength(7)
+    await expect(canvas.getByText(/in-progress conversations|进行中对话/i)).toBeInTheDocument()
+    await expect(canvas.getByTestId('today-stats-secondary-in-progress-delta')).toHaveTextContent('—')
+    await expect(canvas.getByTestId('today-stats-secondary-in-progress-day-average')).toHaveTextContent('—')
     await expect(canvas.getByText(/response time|响应时间/i)).toBeInTheDocument()
   },
 }

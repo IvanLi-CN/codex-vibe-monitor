@@ -128,3 +128,16 @@
 
 PR: include
 ![Dashboard 进行中对话 Storybook 证据](./assets/dashboard-in-progress-conversations-storybook.png)
+
+- source_type=storybook_canvas
+- target_program=mock-only
+- capture_scope=element
+- requested_viewport=desktop1440
+- viewport_strategy=storybook-viewport
+- sensitive_exclusion=N/A
+- submission_gate=pending-owner-approval
+- story_id_or_title=dashboard-todaystatsoverview--scoped-account-embedded
+- state=account scoped embedded
+- evidence_note=验证 account-scoped 场景仍保留 7 张总览卡片；“进行中对话”卡片主值显示 summary 的进行中对话数，缺少 parallel-work bucket 对比时底部两个次级位显示占位而不是隐藏元素。
+
+![Dashboard account-scoped 进行中对话 Storybook 证据](./assets/dashboard-in-progress-conversations-account-scoped-storybook.png)

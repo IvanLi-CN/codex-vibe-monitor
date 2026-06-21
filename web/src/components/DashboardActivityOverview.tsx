@@ -281,7 +281,7 @@ function DashboardNaturalDayTodaySummaryOverview({
       previous7dStats={previous7dSummary}
       parallelWorkStats={parallelEnabled ? parallelWorkStats : null}
       comparisonParallelWorkStats={parallelEnabled ? comparisonParallelWorkStats : null}
-      showInProgressConversations={parallelEnabled}
+      showInProgressConversations
       dayKind="today"
       showSurface={false}
       showHeader={false}
@@ -353,7 +353,7 @@ function DashboardNaturalDayYesterdaySummaryOverview({
       previous7dStats={previous7dSummary}
       parallelWorkStats={parallelEnabled ? parallelWorkStats : null}
       comparisonParallelWorkStats={null}
-      showInProgressConversations={parallelEnabled}
+      showInProgressConversations
       dayKind="yesterday"
       showSurface={false}
       showHeader={false}

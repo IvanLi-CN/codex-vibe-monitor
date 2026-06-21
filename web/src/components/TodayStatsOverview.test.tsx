@@ -270,6 +270,39 @@ describe('TodayStatsOverview', () => {
     expect(host?.textContent).toContain('Today tokens')
   })
 
+  it('keeps the in-progress tile secondary slots visible when bucket comparisons are unavailable', () => {
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 12474,
+          successCount: 9949,
+          failureCount: 2525,
+          totalCost: 539.42,
+          totalTokens: 1314275579,
+          inProgressConversationCount: 11,
+        }}
+        rate={{
+          tokensPerMinute: 1000,
+          spendRate: 0.1,
+          windowMinutes: 5,
+          available: true,
+        }}
+        timeseries={buildTimeseriesWithLatency()}
+        parallelWorkStats={null}
+        comparisonParallelWorkStats={null}
+        loading={false}
+        error={null}
+      />,
+    )
+
+    const grid = host?.querySelector('[data-testid="today-stats-metrics-grid"]')
+    expect(grid?.className).toContain('lg:grid-cols-7')
+    expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(7)
+    expect(host?.querySelector('[data-testid="today-stats-value-in-progress-conversations"]')?.textContent).toContain('11')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-delta"]')?.textContent).toContain('—')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-day-average"]')?.textContent).toContain('—')
+  })
+
   it('supports embedded mode without rendering the outer surface panel', () => {
     render(
       <TodayStatsOverview
