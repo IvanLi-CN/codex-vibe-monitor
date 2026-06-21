@@ -292,11 +292,21 @@ export function mergeInvocationWindowRecords(
     limit: number;
   },
 ) {
-  const matchedIncoming = incoming.filter((record) =>
-    matchesInvocationLiveFilters(record, options.filters),
+  const currentByKey = new Map(
+    mergeInvocationRecordCollections(current).map((record) => [
+      invocationStableKey(record),
+      record,
+    ]),
   );
-  const merged = mergeInvocationRecordCollections(current, matchedIncoming);
-  return [...merged]
+
+  for (const record of incoming) {
+    const key = invocationStableKey(record);
+    const currentRecord = currentByKey.get(key);
+    currentByKey.set(key, currentRecord ? { ...currentRecord, ...record } : record);
+  }
+
+  return Array.from(currentByKey.values())
+    .filter((record) => matchesInvocationLiveFilters(record, options.filters))
     .sort((left, right) =>
       compareInvocationRecordsForWindow(left, right, options.sortBy, options.sortOrder),
     )

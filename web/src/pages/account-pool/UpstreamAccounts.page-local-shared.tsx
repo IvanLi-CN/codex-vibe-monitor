@@ -1757,6 +1757,13 @@ function SharedUpstreamAccountDetailDrawerInner({
       previous.accountId != null &&
       accountId != null &&
       previous.accountId !== accountId;
+    const enteredRecordsTab =
+      open &&
+      accountId != null &&
+      detailTab === "records" &&
+      previous?.open &&
+      previous.accountId === accountId &&
+      previous.detailTab !== "records";
     const changedLimitWithinRecords =
       open &&
       accountId != null &&
@@ -1766,7 +1773,12 @@ function SharedUpstreamAccountDetailDrawerInner({
       previous.detailTab === "records" &&
       previous.accountRecordLimit !== accountRecordLimit;
 
-    if (leftRecordsSurface || switchedAccounts || changedLimitWithinRecords) {
+    if (
+      leftRecordsSurface ||
+      switchedAccounts ||
+      enteredRecordsTab ||
+      changedLimitWithinRecords
+    ) {
       setAccountRecords([]);
       setAccountRecordsError(null);
       setAccountRecordsLoading(false);

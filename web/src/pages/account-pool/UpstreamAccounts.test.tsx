@@ -2414,4 +2414,109 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
     },
     30000,
   );
+
+  it("clears stale rows when entering the records tab from another tab", async () => {
+    const secondFetch = deferred<{
+      snapshotId: number;
+      total: number;
+      page: number;
+      pageSize: number;
+      records: Array<Record<string, unknown>>;
+    }>();
+
+    mockAccountsPage();
+    apiMocks.fetchInvocationRecords
+      .mockResolvedValueOnce({
+        snapshotId: 42,
+        total: 1,
+        page: 1,
+        pageSize: 50,
+        records: [
+          {
+            id: 1,
+            invokeId: "invoke-old-tab",
+            occurredAt: "2026-03-16T02:05:00.000Z",
+            createdAt: "2026-03-16T02:05:00.000Z",
+            status: "success",
+            model: "gpt-5.4",
+            upstreamAccountId: 5,
+            upstreamAccountName: "Existing OAuth",
+            routeMode: "pool",
+          },
+        ],
+      })
+      .mockImplementationOnce(async () => secondFetch.promise as never);
+
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => {
+      root?.render(
+        <ThemeProvider>
+          <I18nProvider>
+            <SystemNotificationProvider>
+              <MemoryRouter>
+                <SharedUpstreamAccountDetailDrawer
+                  open
+                  accountId={5}
+                  initialTab="overview"
+                  onClose={vi.fn()}
+                />
+              </MemoryRouter>
+            </SystemNotificationProvider>
+          </I18nProvider>
+        </ThemeProvider>,
+      );
+    });
+
+    await waitForAssertion(() => {
+      expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(0);
+    });
+    clickTab(/调用记录|records/i);
+    await flushAsync();
+    await waitForAssertion(() => {
+      expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1);
+    });
+    expect(document.body.textContent).toContain("10:05:00");
+
+    clickTab(/概览|overview/i);
+    await flushAsync();
+    clickTab(/调用记录|records/i);
+    await flushAsync();
+
+    await waitForAssertion(() => {
+      expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2);
+    });
+    expect(document.body.textContent).not.toContain("10:05:00");
+    expect(
+      document.body.querySelector(
+        '[aria-label="正在加载记录"], [aria-label="Loading records"]',
+      ),
+    ).toBeTruthy();
+
+    act(() => {
+      secondFetch.resolve({
+        snapshotId: 84,
+        total: 1,
+        page: 1,
+        pageSize: 50,
+        records: [
+          {
+            id: 2,
+            invokeId: "invoke-new-tab",
+            occurredAt: "2026-03-16T02:06:00.000Z",
+            createdAt: "2026-03-16T02:06:00.000Z",
+            status: "success",
+            model: "gpt-5.4",
+            upstreamAccountId: 5,
+            upstreamAccountName: "Existing OAuth",
+            routeMode: "pool",
+          },
+        ],
+      } as never);
+    });
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("10:06:00");
+  });
 })

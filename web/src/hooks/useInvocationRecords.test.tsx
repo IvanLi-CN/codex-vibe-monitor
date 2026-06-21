@@ -221,6 +221,10 @@ function Probe() {
       <button data-testid="draft-model" type="button" onClick={() => state.updateDraft('model', 'next-model')}>
         draft
       </button>
+      <button data-testid="failed-status" type="button" onClick={() => state.updateDraft('status', 'failed')}>
+        failed
+      </button>
+      <div data-testid="applied-model">{state.records?.records.map((record) => record.model ?? '').join('|')}</div>
       <button data-testid="page-2" type="button" onClick={() => void state.setPage(2)}>
         page2
       </button>
@@ -687,6 +691,69 @@ describe('useInvocationRecords', () => {
 
     expect(text('model')).toBe('refined-model')
     expect(text('account-name')).toBe('New Account')
+  })
+
+  it('drops visible rows that no longer match the active filters after SSE updates', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-10T02:00:00Z'))
+
+    apiMocks.fetchInvocationRecords.mockImplementation(async (query) => {
+      if (query.status === 'failed') {
+        return createListResponse({
+          snapshotId: 42,
+          records: [
+            createRecord({
+              id: 1,
+              invokeId: 'invoke-filter-drop',
+              occurredAt: '2026-03-10T00:00:00Z',
+              createdAt: '2026-03-10T00:00:00Z',
+              status: 'failed',
+              errorMessage: 'boom',
+            }),
+          ],
+        })
+      }
+
+      return createListResponse({
+        snapshotId: 21,
+        records: [],
+      })
+    })
+    apiMocks.fetchInvocationRecordsSummary.mockResolvedValue(
+      createSummaryResponse({ snapshotId: 42, newRecordsCount: 0, failureCount: 1 }),
+    )
+    apiMocks.fetchInvocationRecordsNewCount.mockResolvedValue(
+      createNewCountResponse({ snapshotId: 42, newRecordsCount: 0 }),
+    )
+
+    render(<Probe />)
+    await flushAsync()
+
+    click('failed-status')
+    click('search')
+    await flushAsync()
+
+    expect(text('model')).toBe('baseline-model')
+
+    act(() => {
+      sseMocks.onMessage?.({
+        type: 'records',
+        records: [
+          createRecord({
+            id: 1,
+            invokeId: 'invoke-filter-drop',
+            occurredAt: '2026-03-10T00:00:00Z',
+            createdAt: '2026-03-10T00:00:00Z',
+            status: 'success',
+            errorMessage: '',
+            failureClass: 'none',
+          }),
+        ],
+      })
+    })
+    await flushAsync()
+
+    expect(text('applied-model')).toBe('')
   })
 
   it('ignores stale overlapping new-count polls for the same snapshot', async () => {
