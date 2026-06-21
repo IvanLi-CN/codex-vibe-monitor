@@ -32,10 +32,15 @@ import {
 } from "react-router-dom";
 import { SystemNotificationProvider } from "../../components/ui/system-notifications";
 import { I18nProvider } from "../../i18n";
+import { ThemeProvider } from "../../theme/context";
 import UpstreamAccountsPage, {
   SharedUpstreamAccountDetailDrawer,
 } from "./UpstreamAccounts";
-import type { EffectiveRoutingRule, TagSummary } from "../../lib/api";
+import type {
+  BroadcastPayload,
+  EffectiveRoutingRule,
+  TagSummary,
+} from "../../lib/api";
 
 type UpstreamAccountsHookValue = ReturnType<
   typeof import("../../hooks/useUpstreamAccounts").useUpstreamAccounts
@@ -60,6 +65,11 @@ const hookMocks = vi.hoisted(() => ({
 const apiMocks = vi.hoisted(() => ({
   createBulkUpstreamAccountSyncJobEventSource: vi.fn(),
   fetchUpstreamAccountActionEvents: vi.fn(),
+  fetchInvocationRecords: vi.fn(),
+}));
+const sseMocks = vi.hoisted(() => ({
+  onMessage: null as null | ((payload: BroadcastPayload) => void),
+  onOpen: null as null | (() => void),
 }));
 const virtualizerMocks = vi.hoisted(() => ({
   visibleIndexes: null as number[] | null,
@@ -101,10 +111,66 @@ vi.mock("../../lib/api", async () => {
     createBulkUpstreamAccountSyncJobEventSource:
       apiMocks.createBulkUpstreamAccountSyncJobEventSource,
     fetchUpstreamAccountActionEvents: apiMocks.fetchUpstreamAccountActionEvents,
+    fetchInvocationRecords: apiMocks.fetchInvocationRecords,
   };
 });
 
+vi.mock("../../lib/sse", () => ({
+  subscribeToSse: (handler: (payload: BroadcastPayload) => void) => {
+    sseMocks.onMessage = handler;
+    return () => {
+      sseMocks.onMessage = null;
+    };
+  },
+  subscribeToSseOpen: (handler: () => void) => {
+    sseMocks.onOpen = handler;
+    return () => {
+      sseMocks.onOpen = null;
+    };
+  },
+}));
+
 vi.mock("@tanstack/react-virtual", () => ({
+  useVirtualizer: ({
+    count,
+    estimateSize,
+    scrollMargin = 0,
+  }: {
+    count: number;
+    estimateSize: (index: number) => number;
+    scrollMargin?: number;
+  }) => {
+    const sizes = Array.from({ length: count }, (_, index) => estimateSize(index));
+    const indexes =
+      virtualizerMocks.visibleIndexes ??
+      Array.from({ length: Math.min(count, 4) }, (_, index) => index);
+    const items = indexes
+      .filter((index) => index >= 0 && index < count)
+      .map((index) => {
+        const size = sizes[index] ?? estimateSize(index);
+        return {
+          key: index,
+          index,
+          start:
+            scrollMargin +
+            sizes
+              .slice(0, index)
+              .reduce((sum, candidateSize) => sum + candidateSize, 0),
+          size,
+          end:
+            scrollMargin +
+            sizes
+              .slice(0, index + 1)
+              .reduce((sum, candidateSize) => sum + candidateSize, 0),
+        };
+      });
+    return {
+      measureElement: () => undefined,
+      measure: () => undefined,
+      getVirtualItems: () => items,
+      getTotalSize: () => sizes.reduce((sum, size) => sum + size, 0),
+    };
+  },
   useWindowVirtualizer: ({
     count,
     estimateSize,
@@ -297,6 +363,16 @@ beforeEach(() => {
     page: 1,
     pageSize: 20,
   });
+  apiMocks.fetchInvocationRecords.mockReset();
+  apiMocks.fetchInvocationRecords.mockResolvedValue({
+    snapshotId: 42,
+    total: 1,
+    page: 1,
+    pageSize: 50,
+    records: [],
+  });
+  sseMocks.onMessage = null;
+  sseMocks.onOpen = null;
   hookMocks.useUpstreamStickyConversations.mockReturnValue({
     stats: null,
     isLoading: false,
@@ -365,6 +441,8 @@ afterEach(() => {
   root = null;
   navigateMock.mockReset();
   vi.clearAllMocks();
+  sseMocks.onMessage = null;
+  sseMocks.onOpen = null;
 });
 
 function render(
@@ -471,6 +549,20 @@ async function flushAsync() {
     await Promise.resolve();
     await Promise.resolve();
   });
+}
+
+async function waitForAssertion(check: () => void, attempts = 20) {
+  let lastError: unknown = null;
+  for (let index = 0; index < attempts; index += 1) {
+    try {
+      check();
+      return;
+    } catch (error) {
+      lastError = error;
+      await flushAsync();
+    }
+  }
+  throw lastError;
 }
 
 async function flushTimers() {
@@ -659,6 +751,31 @@ function clickCommandItem(matcher: RegExp) {
     item.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
   return item;
+}
+
+function renderedInvocationAccountNames() {
+  return Array.from(
+    document.body.querySelectorAll('[data-testid="invocation-account-name"]'),
+  )
+    .map((candidate) => candidate.textContent?.trim() ?? "")
+    .filter((value) => value.length > 0);
+}
+
+function clickSelectOption(matcher: RegExp) {
+  const option = Array.from(
+    document.body.querySelectorAll('[role="option"]'),
+  ).find(
+    (candidate) =>
+      candidate instanceof HTMLElement &&
+      matcher.test(candidate.textContent || ""),
+  );
+  if (!(option instanceof HTMLElement)) {
+    throw new Error(`missing select option: ${matcher}`);
+  }
+  act(() => {
+    option.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  return option;
 }
 
 function pressButton(button: HTMLButtonElement) {
@@ -2057,4 +2174,431 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
       },
     ])
   })
+
+  it("subscribes the records tab fetch lifecycle to the selected upstream account and reconciles on SSE open", async () => {
+    mockAccountsPage();
+    apiMocks.fetchInvocationRecords
+      .mockResolvedValueOnce({
+        snapshotId: 42,
+        total: 1,
+        page: 1,
+        pageSize: 50,
+        records: [
+          {
+            id: 1,
+            invokeId: "invoke-live",
+            occurredAt: "2026-03-16T02:05:00.000Z",
+            createdAt: "2026-03-16T02:05:00.000Z",
+            status: "running",
+            model: "gpt-5.4",
+            upstreamAccountId: 5,
+            upstreamAccountName: "Existing OAuth",
+            routeMode: "pool",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        snapshotId: 84,
+        total: 2,
+        page: 1,
+        pageSize: 50,
+        records: [
+          {
+            id: 2,
+            invokeId: "invoke-new",
+            occurredAt: "2026-03-16T02:06:00.000Z",
+            createdAt: "2026-03-16T02:06:00.000Z",
+            status: "success",
+            model: "gpt-5.4",
+            upstreamAccountId: 5,
+            upstreamAccountName: "Existing OAuth",
+            routeMode: "pool",
+          },
+          {
+            id: 1,
+            invokeId: "invoke-live",
+            occurredAt: "2026-03-16T02:05:00.000Z",
+            createdAt: "2026-03-16T02:05:00.000Z",
+            status: "success",
+            model: "gpt-5.4",
+            totalTokens: 777,
+            upstreamAccountId: 5,
+            upstreamAccountName: "Existing OAuth",
+            routeMode: "pool",
+          },
+        ],
+      });
+
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => {
+      root?.render(
+        <ThemeProvider>
+          <I18nProvider>
+            <SystemNotificationProvider>
+              <MemoryRouter>
+                <SharedUpstreamAccountDetailDrawer
+                  open
+                  accountId={5}
+                  initialTab="records"
+                  onClose={vi.fn()}
+                />
+              </MemoryRouter>
+            </SystemNotificationProvider>
+          </I18nProvider>
+        </ThemeProvider>,
+      );
+    });
+
+    await waitForAssertion(() => {
+      expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1);
+    });
+    expect(apiMocks.fetchInvocationRecords.mock.calls[0]?.[0]).toMatchObject({
+      upstreamAccountId: 5,
+      page: 1,
+      pageSize: 50,
+      sortBy: "occurredAt",
+      sortOrder: "desc",
+    });
+
+    act(() => {
+      sseMocks.onMessage?.({
+        type: "records",
+        records: [
+          {
+            id: 99,
+            invokeId: "invoke-other-account",
+            occurredAt: "2026-03-16T02:07:00.000Z",
+            createdAt: "2026-03-16T02:07:00.000Z",
+            status: "success",
+            model: "gpt-5.4",
+            upstreamAccountId: 9,
+            upstreamAccountName: "Another OAuth",
+            routeMode: "pool",
+          },
+          {
+            id: 1,
+            invokeId: "invoke-live",
+            occurredAt: "2026-03-16T02:05:00.000Z",
+            createdAt: "2026-03-16T02:05:00.000Z",
+            status: "success",
+            model: "gpt-5.4",
+            totalTokens: 777,
+            upstreamAccountId: 5,
+            upstreamAccountName: "Existing OAuth",
+            routeMode: "pool",
+          },
+          {
+            id: 2,
+            invokeId: "invoke-new",
+            occurredAt: "2026-03-16T02:06:00.000Z",
+            createdAt: "2026-03-16T02:06:00.000Z",
+            status: "success",
+            model: "gpt-5.4",
+            upstreamAccountId: 5,
+            upstreamAccountName: "Existing OAuth",
+            routeMode: "pool",
+          },
+        ],
+      });
+    });
+
+    await flushAsync();
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      sseMocks.onOpen?.();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+  });
+
+  it("clears a stale records error after an SSE-open retry succeeds", async () => {
+    mockAccountsPage();
+    apiMocks.fetchInvocationRecords
+      .mockRejectedValueOnce(new Error("initial records fetch failed"))
+      .mockResolvedValueOnce({
+        snapshotId: 84,
+        total: 1,
+        page: 1,
+        pageSize: 50,
+        records: [
+          {
+            id: 2,
+            invokeId: "invoke-recovered",
+            occurredAt: "2026-03-16T02:06:00.000Z",
+            createdAt: "2026-03-16T02:06:00.000Z",
+            status: "success",
+            model: "gpt-5.4",
+            upstreamAccountId: 5,
+            upstreamAccountName: "Existing OAuth",
+            routeMode: "pool",
+          },
+        ],
+      });
+
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => {
+      root?.render(
+        <ThemeProvider>
+          <I18nProvider>
+            <SystemNotificationProvider>
+              <MemoryRouter>
+                <SharedUpstreamAccountDetailDrawer
+                  open
+                  accountId={5}
+                  initialTab="overview"
+                  onClose={vi.fn()}
+                />
+              </MemoryRouter>
+            </SystemNotificationProvider>
+          </I18nProvider>
+        </ThemeProvider>,
+      );
+    });
+
+    clickTab(/调用记录|records/i);
+    await flushAsync();
+    await waitForAssertion(() => {
+      expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1);
+    });
+    await waitForAssertion(() => {
+      expect(document.body.textContent).toContain("initial records fetch failed");
+    });
+
+    act(() => {
+      sseMocks.onOpen?.();
+    });
+    await flushAsync();
+
+    await waitForAssertion(() => {
+      expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2);
+    });
+    expect(document.body.textContent).not.toContain("initial records fetch failed");
+
+    await waitForAssertion(() => {
+      expect(renderedInvocationAccountNames()).toContain("Existing OAuth");
+    });
+    expect(document.body.textContent).not.toContain("initial records fetch failed");
+  });
+
+  it(
+    "clears stale rows before the records tab refetches for limit changes",
+    async () => {
+    const secondFetch = deferred<{
+      snapshotId: number;
+      total: number;
+      page: number;
+      pageSize: number;
+      records: Array<Record<string, unknown>>;
+    }>();
+
+    mockAccountsPage();
+    apiMocks.fetchInvocationRecords
+      .mockResolvedValueOnce({
+        snapshotId: 42,
+        total: 1,
+        page: 1,
+        pageSize: 50,
+        records: [
+          {
+            id: 1,
+            invokeId: "invoke-stable",
+            occurredAt: "2026-03-16T02:05:00.000Z",
+            createdAt: "2026-03-16T02:05:00.000Z",
+            status: "success",
+            model: "gpt-5.4",
+            upstreamAccountId: 5,
+            upstreamAccountName: "Existing OAuth",
+            routeMode: "pool",
+          },
+        ],
+      })
+      .mockImplementationOnce(async () => secondFetch.promise as never);
+
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => {
+      root?.render(
+        <ThemeProvider>
+          <I18nProvider>
+            <SystemNotificationProvider>
+              <MemoryRouter>
+                <SharedUpstreamAccountDetailDrawer
+                  open
+                  accountId={5}
+                  initialTab="overview"
+                  onClose={vi.fn()}
+                />
+              </MemoryRouter>
+            </SystemNotificationProvider>
+          </I18nProvider>
+        </ThemeProvider>,
+      );
+    });
+
+    clickTab(/调用记录|records/i);
+    await flushAsync();
+    await waitForAssertion(() => {
+      expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1);
+    });
+    await waitForAssertion(() => {
+      expect(document.body.textContent).toMatch(/记录数量|Rows/);
+    });
+    expect(renderedInvocationAccountNames()).toContain("Existing OAuth");
+
+    clickCombobox(/记录数量|rows/i);
+    clickSelectOption(/100/);
+
+    await waitForAssertion(() => {
+      expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2);
+    });
+    expect(renderedInvocationAccountNames()).toHaveLength(0);
+    expect(
+      document.body.querySelector(
+        '[aria-label="正在加载记录"], [aria-label="Loading records"]',
+      ),
+    ).toBeTruthy();
+
+    act(() => {
+      secondFetch.resolve({
+        snapshotId: 84,
+        total: 1,
+        page: 1,
+        pageSize: 100,
+        records: [
+          {
+            id: 1,
+            invokeId: "invoke-stable",
+            occurredAt: "2026-03-16T02:05:00.000Z",
+            createdAt: "2026-03-16T02:05:00.000Z",
+            status: "success",
+            model: "gpt-5.4",
+            upstreamAccountId: 5,
+            upstreamAccountName: "Existing OAuth",
+            routeMode: "pool",
+          },
+        ],
+      } as never);
+    });
+    await flushAsync();
+
+    await waitForAssertion(() => {
+      expect(renderedInvocationAccountNames()).toContain("Existing OAuth");
+    });
+    },
+    30000,
+  );
+
+  it("clears stale rows when entering the records tab from another tab", async () => {
+    const secondFetch = deferred<{
+      snapshotId: number;
+      total: number;
+      page: number;
+      pageSize: number;
+      records: Array<Record<string, unknown>>;
+    }>();
+
+    mockAccountsPage();
+    apiMocks.fetchInvocationRecords
+      .mockResolvedValueOnce({
+        snapshotId: 42,
+        total: 1,
+        page: 1,
+        pageSize: 50,
+        records: [
+          {
+            id: 1,
+            invokeId: "invoke-old-tab",
+            occurredAt: "2026-03-16T02:05:00.000Z",
+            createdAt: "2026-03-16T02:05:00.000Z",
+            status: "success",
+            model: "gpt-5.4",
+            upstreamAccountId: 5,
+            upstreamAccountName: "Existing OAuth",
+            routeMode: "pool",
+          },
+        ],
+      })
+      .mockImplementationOnce(async () => secondFetch.promise as never);
+
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => {
+      root?.render(
+        <ThemeProvider>
+          <I18nProvider>
+            <SystemNotificationProvider>
+              <MemoryRouter>
+                <SharedUpstreamAccountDetailDrawer
+                  open
+                  accountId={5}
+                  initialTab="overview"
+                  onClose={vi.fn()}
+                />
+              </MemoryRouter>
+            </SystemNotificationProvider>
+          </I18nProvider>
+        </ThemeProvider>,
+      );
+    });
+
+    await waitForAssertion(() => {
+      expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(0);
+    });
+    clickTab(/调用记录|records/i);
+    await flushAsync();
+    await waitForAssertion(() => {
+      expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1);
+    });
+    expect(renderedInvocationAccountNames()).toContain("Existing OAuth");
+
+    clickTab(/概览|overview/i);
+    await flushAsync();
+    clickTab(/调用记录|records/i);
+    await flushAsync();
+
+    await waitForAssertion(() => {
+      expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2);
+    });
+    expect(renderedInvocationAccountNames()).toHaveLength(0);
+    expect(
+      document.body.querySelector(
+        '[aria-label="正在加载记录"], [aria-label="Loading records"]',
+      ),
+    ).toBeTruthy();
+
+    act(() => {
+      secondFetch.resolve({
+        snapshotId: 84,
+        total: 1,
+        page: 1,
+        pageSize: 50,
+        records: [
+          {
+            id: 2,
+            invokeId: "invoke-new-tab",
+            occurredAt: "2026-03-16T02:06:00.000Z",
+            createdAt: "2026-03-16T02:06:00.000Z",
+            status: "success",
+            model: "gpt-5.4",
+            upstreamAccountId: 5,
+            upstreamAccountName: "Existing OAuth",
+            routeMode: "pool",
+          },
+        ],
+      } as never);
+    });
+    await flushAsync();
+
+    await waitForAssertion(() => {
+      expect(renderedInvocationAccountNames()).toContain("Existing OAuth");
+    });
+  });
 })

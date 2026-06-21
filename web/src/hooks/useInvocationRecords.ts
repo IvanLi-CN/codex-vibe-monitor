@@ -9,6 +9,9 @@ import type {
   InvocationSortOrder,
 } from '../lib/api'
 import { fetchInvocationRecords, fetchInvocationRecordsNewCount, fetchInvocationRecordsSummary } from '../lib/api'
+import { invocationStableKey } from '../lib/invocation'
+import { matchesInvocationLiveFilters } from '../lib/invocationRecordsLive'
+import { useInvocationRecordsRealtime } from './useInvocationRecordsRealtime'
 import {
   buildAppliedInvocationFilters,
   buildInvocationRecordsQuery,
@@ -56,6 +59,12 @@ interface SearchState {
   generation: number
 }
 
+interface LiveMergeState {
+  matchingVisibleInsertKeys: string[]
+  countedLiveInsertKeys: string[]
+  countedFilteredOutBaselineKeys: string[]
+}
+
 export function shouldPollRecordsSummary() {
   return typeof document === 'undefined' || document.visibilityState === 'visible'
 }
@@ -77,6 +86,11 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
   const [isSearching, setIsSearching] = useState(true)
   const [isRecordsLoading, setIsRecordsLoading] = useState(false)
   const [isSummaryLoading, setIsSummaryLoading] = useState(true)
+  const [liveMergeState, setLiveMergeState] = useState<LiveMergeState>({
+    matchingVisibleInsertKeys: [],
+    countedLiveInsertKeys: [],
+    countedFilteredOutBaselineKeys: [],
+  })
   const appliedRef = useRef<SearchState | null>(null)
   const searchSeqRef = useRef(0)
   const recordsSeqRef = useRef(0)
@@ -85,6 +99,9 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
   const pageSizeRef = useRef(pageSize)
   const sortByRef = useRef(sortBy)
   const sortOrderRef = useRef(sortOrder)
+  const recordsRef = useRef<InvocationRecordsResponse | null>(records)
+  const liveMergeStateRef = useRef(liveMergeState)
+  const authoritativeTotalRef = useRef(records?.total ?? 0)
 
   useEffect(() => {
     draftRef.current = draft
@@ -101,6 +118,14 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
   useEffect(() => {
     sortOrderRef.current = sortOrder
   }, [sortOrder])
+
+  useEffect(() => {
+    recordsRef.current = records
+  }, [records])
+
+  useEffect(() => {
+    liveMergeStateRef.current = liveMergeState
+  }, [liveMergeState])
 
   const loadRecordsPage = useCallback(
     async (nextPage: number, nextPageSize: number, nextSortBy: InvocationSortBy, nextSortOrder: InvocationSortOrder) => {
@@ -128,7 +153,13 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
           }),
         )
         if (!isCurrentRequest()) return
+        authoritativeTotalRef.current = response.total
         setRecords(response)
+        setLiveMergeState({
+          matchingVisibleInsertKeys: [],
+          countedLiveInsertKeys: [],
+          countedFilteredOutBaselineKeys: [],
+        })
         setPageState(response.page)
         setPageSizeState(response.pageSize)
         pageSizeRef.current = response.pageSize
@@ -181,7 +212,13 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
       if (!options?.preserveSummary) {
         setSummary(null)
       }
+      authoritativeTotalRef.current = listResponse.total
       setRecords(listResponse)
+      setLiveMergeState({
+        matchingVisibleInsertKeys: [],
+        countedLiveInsertKeys: [],
+        countedFilteredOutBaselineKeys: [],
+      })
       setPageState(listResponse.page)
       setPageSizeState(listResponse.pageSize)
       setRecordsError(null)
@@ -279,6 +316,144 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
     return () => window.clearInterval(timer)
   }, [isSearching, records?.snapshotId, summary, summarySnapshotId])
 
+  const reloadCurrentView = useCallback(() => {
+    const applied = appliedRef.current
+    const currentRecords = recordsRef.current
+    if (!applied || !currentRecords) return
+    const requestSeq = recordsSeqRef.current + 1
+    recordsSeqRef.current = requestSeq
+    const { filters, generation, snapshotId } = applied
+    let activeSnapshotId = snapshotId
+
+    const isCurrentRequest = () => {
+      if (requestSeq !== recordsSeqRef.current) return false
+      const latest = appliedRef.current
+      return !!latest && latest.generation === generation && latest.snapshotId === activeSnapshotId
+    }
+
+    void fetchInvocationRecords(
+      buildInvocationRecordsQuery(filters, {
+        page: currentRecords.page,
+        pageSize: currentRecords.pageSize,
+        sortBy: sortByRef.current,
+        sortOrder: sortOrderRef.current,
+      }),
+    )
+      .then(async (response) => {
+        if (!isCurrentRequest()) return
+        activeSnapshotId = response.snapshotId
+        appliedRef.current = { filters, snapshotId: response.snapshotId, generation }
+        authoritativeTotalRef.current = response.total
+        setRecords(response)
+        setPageState(response.page)
+        setPageSizeState(response.pageSize)
+        pageSizeRef.current = response.pageSize
+        setRecordsError(null)
+        setLiveMergeState({
+          matchingVisibleInsertKeys: [],
+          countedLiveInsertKeys: [],
+          countedFilteredOutBaselineKeys: [],
+        })
+        setSummaryError(null)
+        void fetchInvocationRecordsSummary({
+          ...filters,
+          snapshotId: response.snapshotId,
+        })
+          .then((summaryResponse) => {
+            if (!isCurrentRequest()) return
+            setSummary({ ...summaryResponse, newRecordsCount: 0 })
+            setSummaryError(null)
+          })
+          .catch((error) => {
+            if (!isCurrentRequest()) return
+            setSummaryError(error instanceof Error ? error.message : String(error))
+          })
+      })
+      .catch((error) => {
+        if (!isCurrentRequest()) return
+        setRecordsError(error instanceof Error ? error.message : String(error))
+      })
+  }, [])
+
+  useInvocationRecordsRealtime({
+    enabled: Boolean(appliedRef.current && records),
+    isHydrated: Boolean(appliedRef.current && records && !isSearching && !isRecordsLoading),
+    filters: appliedRef.current?.filters,
+    sortBy,
+    sortOrder,
+    limit: pageSize,
+    allowVisibleInsertions: page === 1,
+    getRecords: () => recordsRef.current?.records ?? [],
+    onRecordsChange: (next, meta) => {
+      const currentLiveMergeState = liveMergeStateRef.current
+      const currentRecordsResponse = recordsRef.current
+      const currentVisibleRecords = currentRecordsResponse?.records ?? []
+      const currentVisibleKeySet = new Set(
+        currentVisibleRecords.map((record) => invocationStableKey(record)),
+      )
+      const nextVisibleKeySet = new Set(next.map((record) => invocationStableKey(record)))
+      const matchingVisibleInsertKeys = currentLiveMergeState.matchingVisibleInsertKeys.filter((key) =>
+        nextVisibleKeySet.has(key),
+      )
+      const countedLiveInsertKeys = [...currentLiveMergeState.countedLiveInsertKeys]
+      const countedFilteredOutBaselineKeys = [
+        ...currentLiveMergeState.countedFilteredOutBaselineKeys,
+      ]
+      for (const key of meta.visibleInsertedKeys) {
+        if (!matchingVisibleInsertKeys.includes(key)) {
+          matchingVisibleInsertKeys.push(key)
+        }
+        if (!countedLiveInsertKeys.includes(key)) {
+          countedLiveInsertKeys.push(key)
+        }
+      }
+      for (const record of meta.payload.records) {
+        const key = invocationStableKey(record)
+        const stillMatches = matchesInvocationLiveFilters(record, appliedRef.current?.filters)
+        if (stillMatches) {
+          const removedIndex = countedFilteredOutBaselineKeys.indexOf(key)
+          if (removedIndex >= 0) {
+            countedFilteredOutBaselineKeys.splice(removedIndex, 1)
+          }
+          continue
+        }
+
+        const liveInsertIndex = countedLiveInsertKeys.indexOf(key)
+        if (liveInsertIndex >= 0) {
+          countedLiveInsertKeys.splice(liveInsertIndex, 1)
+          continue
+        }
+
+        if (
+          (currentVisibleKeySet.has(key) ||
+            countedFilteredOutBaselineKeys.includes(key)) &&
+          !countedFilteredOutBaselineKeys.includes(key)
+        ) {
+          countedFilteredOutBaselineKeys.push(key)
+        }
+      }
+      const total =
+        authoritativeTotalRef.current +
+        countedLiveInsertKeys.length -
+        countedFilteredOutBaselineKeys.length
+      setRecords((current) => {
+        if (!current) return current
+        return {
+          ...current,
+          total: Math.max(0, total),
+          records: next,
+        }
+      })
+      setLiveMergeState({
+        matchingVisibleInsertKeys,
+        countedLiveInsertKeys,
+        countedFilteredOutBaselineKeys,
+      })
+      setRecordsError(null)
+    },
+    onOpenResync: reloadCurrentView,
+  })
+
   const api = useMemo(
     () => ({
       draft,
@@ -288,7 +463,15 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
       sortBy,
       sortOrder,
       records,
-      summary,
+      summary: summary
+        ? {
+            ...summary,
+            newRecordsCount: Math.max(
+              0,
+              summary.newRecordsCount - liveMergeState.matchingVisibleInsertKeys.length,
+            ),
+          }
+        : null,
       recordsError,
       summaryError,
       isSearching,
@@ -304,7 +487,7 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
       setPageSize,
       setSort,
     }),
-    [draft, focus, isRecordsLoading, isSearching, isSummaryLoading, page, pageSize, records, recordsError, resetDraft, search, setPage, setPageSize, setSort, sortBy, sortOrder, summary, summaryError],
+    [draft, focus, isRecordsLoading, isSearching, isSummaryLoading, liveMergeState.matchingVisibleInsertKeys.length, page, pageSize, records, recordsError, resetDraft, search, setPage, setPageSize, setSort, sortBy, sortOrder, summary, summaryError],
   )
 
   return api

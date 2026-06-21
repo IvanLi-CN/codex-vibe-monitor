@@ -1,11 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchInvocations } from '../lib/api'
 import type { ApiInvocation, BroadcastPayload } from '../lib/api'
-import {
-  choosePreferredInvocationRecord,
-  sortInvocationRecords,
-} from '../lib/invocationLiveMerge'
 import { invocationStableKey } from '../lib/invocation'
+import { matchesInvocationLiveFilters, mergeInvocationWindowRecords } from '../lib/invocationRecordsLive'
 import { subscribeToSse, subscribeToSseOpen } from '../lib/sse'
 
 export interface InvocationFilters {
@@ -29,25 +26,6 @@ function recordsChanged(next: ApiInvocation[], current: ApiInvocation[]) {
   )
 }
 
-function matchesFailedStatus(record: ApiInvocation) {
-  const failureClass = record.failureClass?.trim().toLowerCase()
-  if (failureClass && failureClass !== 'none') return true
-
-  const normalizedStatus = record.status?.trim().toLowerCase() ?? ''
-  if (normalizedStatus === 'failed') return true
-  if (normalizedStatus === 'http_429' || normalizedStatus.startsWith('http_4') || normalizedStatus.startsWith('http_5')) return true
-
-  return Boolean(record.errorMessage?.trim())
-}
-
-function matchesFilters(record: ApiInvocation, filters?: InvocationFilters) {
-  if (!filters) return true
-  if (filters.model && record.model !== filters.model) return false
-  if (filters.status === 'failed') return matchesFailedStatus(record)
-  if (filters.status && record.status !== filters.status) return false
-  return true
-}
-
 function mergeRecords(
   incoming: ApiInvocation[],
   current: ApiInvocation[],
@@ -55,26 +33,17 @@ function mergeRecords(
   filters?: InvocationFilters,
   hiddenKeys?: Set<string>,
 ) {
-  const dedupe = new Map<string, ApiInvocation>()
   const currentKeys = new Set(current.map((record) => recordKey(record)))
   const nextHidden = new Set(hiddenKeys ?? [])
-
-  const pushRecord = (record: ApiInvocation) => {
-    if (!matchesFilters(record, filters)) return
+  const merged = mergeInvocationWindowRecords(current, incoming, {
+    filters,
+    sortBy: 'occurredAt',
+    sortOrder: 'desc',
+    limit: Math.max(limit, current.length + incoming.length),
+  }).filter((record) => {
     const key = recordKey(record)
-    if (nextHidden.has(key) && !currentKeys.has(key)) return
-    dedupe.set(key, choosePreferredInvocationRecord(dedupe.get(key), record))
-  }
-
-  for (const record of incoming) {
-    pushRecord(record)
-  }
-
-  for (const record of current) {
-    pushRecord(record)
-  }
-
-  const merged = sortInvocationRecords(Array.from(dedupe.values()))
+    return !nextHidden.has(key) || currentKeys.has(key)
+  })
   const visible = merged.slice(0, limit)
   for (const record of merged.slice(limit)) {
     nextHidden.add(recordKey(record))
@@ -127,7 +96,7 @@ export function useInvocationStream(
           hiddenKeysRef.current = new Set()
           const authoritative = mergeRecords(response.records, [], limit, filters, hiddenKeysRef.current)
           const concurrent = current.filter(
-            (record) => matchesFilters(record, filters) && !baselineKeys.has(recordKey(record)),
+            (record) => matchesInvocationLiveFilters(record, filters) && !baselineKeys.has(recordKey(record)),
           )
           const nextState = mergeRecords(authoritative.records, concurrent, limit, filters, authoritative.hiddenKeys)
           const next = nextState.records

@@ -62,6 +62,7 @@ import { UpstreamAccountUsageCard } from "../../components/UpstreamAccountUsageC
 import { StickyKeyConversationTable } from "../../components/StickyKeyConversationTable";
 import { usePoolTags } from "../../hooks/usePoolTags";
 import { useAvailableModelOptions } from "../../hooks/useAvailableModelOptions";
+import { useInvocationRecordsRealtime } from "../../hooks/useInvocationRecordsRealtime";
 import { useMotherSwitchNotifications } from "../../hooks/useMotherSwitchNotifications";
 import { useUpstreamAccountDetailRoute } from "../../hooks/useUpstreamAccountDetailRoute";
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
@@ -906,6 +907,12 @@ function SharedUpstreamAccountDetailDrawerInner({
     useState<Record<string, number>>({});
   const [detailDrawerPortalContainer, setDetailDrawerPortalContainer] =
     useState<HTMLElement | null>(null);
+  const previousAccountRecordsContextRef = useRef<{
+    open: boolean;
+    accountId: number | null;
+    detailTab: AccountDetailTab;
+    accountRecordLimit: number;
+  } | null>(null);
   const validTagIds = useMemo(
     () => new Set(tagItems.map((tag) => tag.id)),
     [tagItems],
@@ -918,6 +925,7 @@ function SharedUpstreamAccountDetailDrawerInner({
   const routeAccountIdRef = useRef<number | null>(accountId);
   const drawerOpenRef = useRef(open);
   const accountRecordsRequestSeqRef = useRef(0);
+  const accountRecordsRef = useRef<ApiInvocation[]>([]);
   const draftSessionKeyRef = useRef<string | null>(null);
   const activeDraftSessionKeyRef = useRef<string | null>(null);
   const draftBaselineRef = useRef<AccountDraft>(buildDraft(null));
@@ -970,6 +978,10 @@ function SharedUpstreamAccountDetailDrawerInner({
   routeAccountIdRef.current = accountId;
   drawerOpenRef.current = open;
   activeDraftSessionKeyRef.current = activeDraftSessionKey;
+
+  useEffect(() => {
+    accountRecordsRef.current = accountRecords;
+  }, [accountRecords]);
 
   useEffect(() => {
     if (open && accountId != null) {
@@ -1686,18 +1698,15 @@ function SharedUpstreamAccountDetailDrawerInner({
     });
   }, [stickyConversationStats]);
 
-  useEffect(() => {
+  const reloadAccountRecords = useCallback((): void => {
     const requestSeq = accountRecordsRequestSeqRef.current + 1;
     accountRecordsRequestSeqRef.current = requestSeq;
-    setAccountRecords([]);
-    setAccountRecordsError(null);
-    setAccountRecordsLoading(false);
-
     if (!open || accountId == null || detailTab !== "records") {
       return;
     }
 
     setAccountRecordsLoading(true);
+    setAccountRecordsError(null);
     void fetchInvocationRecords({
       upstreamAccountId: accountId,
       page: 1,
@@ -1721,6 +1730,84 @@ function SharedUpstreamAccountDetailDrawerInner({
         }
       });
   }, [accountId, accountRecordLimit, detailTab, open]);
+
+  useEffect(() => {
+    const requestSeq = accountRecordsRequestSeqRef.current + 1;
+    accountRecordsRequestSeqRef.current = requestSeq;
+
+    const previous = previousAccountRecordsContextRef.current;
+    const next = {
+      open,
+      accountId,
+      detailTab,
+      accountRecordLimit,
+    };
+    previousAccountRecordsContextRef.current = next;
+
+    const leftRecordsSurface =
+      previous != null &&
+      previous.open &&
+      previous.accountId != null &&
+      previous.detailTab === "records" &&
+      (!open || accountId == null || detailTab !== "records");
+    const switchedAccounts =
+      open &&
+      detailTab === "records" &&
+      previous?.open &&
+      previous.detailTab === "records" &&
+      previous.accountId != null &&
+      accountId != null &&
+      previous.accountId !== accountId;
+    const enteredRecordsTab =
+      open &&
+      accountId != null &&
+      detailTab === "records" &&
+      previous?.open &&
+      previous.accountId === accountId &&
+      previous.detailTab !== "records";
+    const changedLimitWithinRecords =
+      open &&
+      accountId != null &&
+      detailTab === "records" &&
+      previous?.open &&
+      previous.accountId === accountId &&
+      previous.detailTab === "records" &&
+      previous.accountRecordLimit !== accountRecordLimit;
+
+    if (
+      leftRecordsSurface ||
+      switchedAccounts ||
+      enteredRecordsTab ||
+      changedLimitWithinRecords
+    ) {
+      setAccountRecords([]);
+      setAccountRecordsError(null);
+      setAccountRecordsLoading(true);
+    }
+
+    if (!open || accountId == null || detailTab !== "records") {
+      return;
+    }
+
+    void reloadAccountRecords();
+  }, [accountId, accountRecordLimit, detailTab, open, reloadAccountRecords]);
+
+  useInvocationRecordsRealtime({
+    enabled: Boolean(open && accountId != null && detailTab === "records"),
+    isHydrated:
+      Boolean(open && accountId != null && detailTab === "records") &&
+      !accountRecordsLoading,
+    filters: accountId == null ? undefined : { upstreamAccountId: accountId },
+    sortBy: "occurredAt",
+    sortOrder: "desc",
+    limit: accountRecordLimit,
+    getRecords: () => accountRecordsRef.current,
+    onRecordsChange: (next) => {
+      setAccountRecords(next);
+      setAccountRecordsError(null);
+    },
+    onOpenResync: reloadAccountRecords,
+  });
 
   const selectedDetail = detail?.id === selectedId ? detail : null;
   const selected = selectedDetail ?? selectedSummary;

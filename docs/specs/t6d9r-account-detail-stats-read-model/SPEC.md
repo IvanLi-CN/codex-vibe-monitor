@@ -116,6 +116,11 @@ PR: include
 PR: include
 ![账号详情路由页按需加载](./assets/detail-drawer-routing-request-gating.png)
 
+- 详情抽屉 records tab 稳定态（mock Storybook；记录列表已进入 settled state，作为这次实时推送一致性修复后的 owner-facing 视觉证据）
+
+PR: include
+![账号详情记录页实时推送稳定态](./assets/detail-drawer-records-live-sync-stable.png)
+
 ## 参考
 
 - `docs/specs/9aucy-db-retention-archive/SPEC.md`

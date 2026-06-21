@@ -186,7 +186,7 @@ export function choosePreferredInvocationRecord(
   return current;
 }
 
-function mergeInvocationRecordDetails(
+export function mergeInvocationRecordDetails(
   preferred: ApiInvocation,
   fallback: ApiInvocation | undefined,
 ) {
