@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.70.8",
+  "base_stable_version": "1.70.7",
+  "channel_label": "channel:stable",
+  "created_at": "2026-06-21T18:03:24Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.70.8",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "20b96792af31e68b0b26a1b16a267ed91ce18698",
+  "pr_number": 456,
+  "pr_title": "fix(web): unify live invocation record streams",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.70.8",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.70.8",
+  "target_sha": "6c6f636f0e08027053b46292722e28b3f69d09bd",
+  "type_label": "type:patch"
+}
