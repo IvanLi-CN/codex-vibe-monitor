@@ -608,6 +608,18 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_proxy_usage_backfill_pending
+        ON codex_invocations (source, status, id)
+        WHERE total_tokens IS NULL
+          AND response_raw_path IS NOT NULL
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_proxy_usage_backfill_pending")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS codex_quota_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             captured_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -2012,6 +2024,21 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context(
         "failed to ensure index idx_pool_upstream_request_attempts_group_proxy_occurred_at",
+    )?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_request_attempts_pending_early_phase_started
+        ON pool_upstream_request_attempts (status, started_at, endpoint, invoke_id, occurred_at)
+        WHERE finished_at IS NULL
+          AND COALESCE(first_byte_latency_ms, 0) <= 0
+          AND LOWER(TRIM(COALESCE(phase, ''))) IN ('connecting', 'sending_request', 'waiting_first_byte')
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context(
+        "failed to ensure index idx_pool_upstream_request_attempts_pending_early_phase_started",
     )?;
 
     sqlx::query(

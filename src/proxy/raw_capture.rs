@@ -1145,20 +1145,15 @@ pub(crate) fn decode_proxy_raw_file_bytes(path: &Path, bytes: Vec<u8>) -> io::Re
     }
 }
 
-pub(crate) async fn current_proxy_usage_backfill_snapshot_max_id(pool: &Pool<Sqlite>) -> Result<i64> {
-    Ok(sqlx::query_scalar(
-        r#"
-        SELECT COALESCE(MAX(id), 0)
-        FROM codex_invocations
-        WHERE source = ?1
-          AND status = 'success'
-          AND total_tokens IS NULL
-          AND response_raw_path IS NOT NULL
-        "#,
-    )
-    .bind(SOURCE_PROXY)
-    .fetch_one(pool)
-    .await?)
+pub(crate) async fn current_proxy_usage_backfill_snapshot_max_id(
+    pool: &Pool<Sqlite>,
+) -> Result<i64> {
+    let shared_live_cursor =
+        load_hourly_rollup_live_progress(pool, HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
+    let max_live_id = sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
+        .fetch_one(pool)
+        .await?;
+    Ok(shared_live_cursor.max(max_live_id))
 }
 
 pub(crate) async fn backfill_proxy_usage_tokens_from_cursor(

@@ -319,6 +319,91 @@ async fn ensure_schema_migrates_codex_invocations_off_raw_expires_at_and_adds_re
     .expect("load upstream account invocation index");
     assert!(upstream_account_index_sql.contains("$.upstreamAccountId"));
     assert!(upstream_account_index_sql.contains("occurred_at"));
+
+    let proxy_usage_backfill_index_sql = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'index'
+          AND name = 'idx_codex_invocations_proxy_usage_backfill_pending'
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load proxy usage backfill index");
+    assert!(proxy_usage_backfill_index_sql.contains("source"));
+    assert!(proxy_usage_backfill_index_sql.contains("status"));
+    assert!(proxy_usage_backfill_index_sql.contains("id"));
+    assert!(proxy_usage_backfill_index_sql.contains("total_tokens IS NULL"));
+
+    let stale_attempt_index_sql = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'index'
+          AND name = 'idx_pool_upstream_request_attempts_pending_early_phase_started'
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load stale attempt recovery index");
+    assert!(stale_attempt_index_sql.contains("status"));
+    assert!(stale_attempt_index_sql.contains("started_at"));
+    assert!(stale_attempt_index_sql.contains("invoke_id"));
+    assert!(stale_attempt_index_sql.contains("finished_at IS NULL"));
+    assert!(stale_attempt_index_sql.contains("LOWER(TRIM(COALESCE(phase, '')))"));
+
+    let proxy_usage_backfill_plan = sqlx::query(
+        r#"
+        EXPLAIN QUERY PLAN
+        SELECT COALESCE(MAX(id), 0)
+        FROM codex_invocations
+        WHERE source = 'proxy'
+          AND status = 'success'
+          AND total_tokens IS NULL
+          AND response_raw_path IS NOT NULL
+        "#,
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("load proxy usage backfill explain plan")
+    .into_iter()
+    .map(|row| row.get::<String, _>("detail"))
+    .collect::<Vec<_>>()
+    .join(" | ");
+    assert!(
+        proxy_usage_backfill_plan.contains("idx_codex_invocations_proxy_usage_backfill_pending"),
+        "unexpected proxy usage backfill plan: {proxy_usage_backfill_plan}"
+    );
+
+    let stale_attempt_plan = sqlx::query(
+        r#"
+        EXPLAIN QUERY PLAN
+        SELECT id, invoke_id, occurred_at, sticky_key, upstream_account_id
+        FROM pool_upstream_request_attempts
+        WHERE status = 'pending'
+          AND finished_at IS NULL
+          AND LOWER(TRIM(COALESCE(phase, ''))) IN ('connecting', 'sending_request', 'waiting_first_byte')
+          AND COALESCE(first_byte_latency_ms, 0) <= 0
+          AND (
+                started_at IS NULL
+                OR (endpoint = '/v1/responses' AND started_at <= '2026-03-09 10:00:00')
+                OR (endpoint = '/v1/responses/compact' AND started_at <= '2026-03-09 10:00:00')
+                OR (COALESCE(endpoint, '') NOT IN ('/v1/responses', '/v1/responses/compact') AND started_at <= '2026-03-09 10:00:00')
+          )
+        "#,
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("load stale attempt explain plan")
+    .into_iter()
+    .map(|row| row.get::<String, _>("detail"))
+    .collect::<Vec<_>>()
+    .join(" | ");
+    assert!(
+        stale_attempt_plan.contains("idx_pool_upstream_request_attempts_pending_early_phase_started"),
+        "unexpected stale attempt plan: {stale_attempt_plan}"
+    );
 }
 
 #[tokio::test]

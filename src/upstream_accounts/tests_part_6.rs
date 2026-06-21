@@ -710,6 +710,85 @@
     }
 
     #[tokio::test]
+    async fn load_duplicate_info_for_account_matches_global_duplicate_result() {
+        let pool = test_pool().await;
+
+        let mut tx = pool.begin().await.expect("begin tx 1");
+        ensure_display_name_available(&mut *tx, "Scoped Duplicate One", None)
+            .await
+            .expect("first name available");
+        let first_id = upsert_oauth_account(
+            &mut tx,
+            OauthAccountUpsert {
+                account_id: None,
+                display_name: "Scoped Duplicate One",
+                chosen_email: None,
+                verified_email: None,
+                group_name: None,
+                is_mother: false,
+                note: None,
+                tag_ids: vec![],
+                requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
+                claims: &test_claims("scoped-1@example.com", Some("scoped_shared_org"), Some("scoped_user_1")),
+                encrypted_credentials: "encrypted-scoped-1".to_string(),
+                has_refresh_token: true,
+                token_expires_at: "2026-03-14T00:00:00Z",
+                external_identity: None,
+            },
+        )
+        .await
+        .expect("first oauth insert");
+        tx.commit().await.expect("commit tx 1");
+
+        let mut tx = pool.begin().await.expect("begin tx 2");
+        ensure_display_name_available(&mut *tx, "Scoped Duplicate Two", None)
+            .await
+            .expect("second name available");
+        let second_id = upsert_oauth_account(
+            &mut tx,
+            OauthAccountUpsert {
+                account_id: None,
+                display_name: "Scoped Duplicate Two",
+                chosen_email: None,
+                verified_email: None,
+                group_name: None,
+                is_mother: false,
+                note: None,
+                tag_ids: vec![],
+                requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
+                claims: &test_claims("scoped-2@example.com", Some("scoped_shared_org"), Some("scoped_user_2")),
+                encrypted_credentials: "encrypted-scoped-2".to_string(),
+                has_refresh_token: true,
+                token_expires_at: "2026-03-14T00:00:00Z",
+                external_identity: None,
+            },
+        )
+        .await
+        .expect("second oauth insert");
+        tx.commit().await.expect("commit tx 2");
+
+        let all_duplicates = load_duplicate_info_map(&pool)
+            .await
+            .expect("load all duplicate info");
+        let first_scoped = load_duplicate_info_for_account(&pool, first_id)
+            .await
+            .expect("load scoped duplicate for first");
+        let second_scoped = load_duplicate_info_for_account(&pool, second_id)
+            .await
+            .expect("load scoped duplicate for second");
+
+        let first_all = all_duplicates.get(&first_id).expect("first global duplicate");
+        let first_scoped = first_scoped.expect("first scoped duplicate");
+        assert_eq!(first_scoped.peer_account_ids, first_all.peer_account_ids);
+        assert_eq!(first_scoped.reasons, first_all.reasons);
+
+        let second_all = all_duplicates.get(&second_id).expect("second global duplicate");
+        let second_scoped = second_scoped.expect("second scoped duplicate");
+        assert_eq!(second_scoped.peer_account_ids, second_all.peer_account_ids);
+        assert_eq!(second_scoped.reasons, second_all.reasons);
+    }
+
+    #[tokio::test]
     async fn same_group_team_shared_org_accounts_are_not_flagged_as_duplicates() {
         let pool = test_pool().await;
 

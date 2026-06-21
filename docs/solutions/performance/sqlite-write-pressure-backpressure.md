@@ -35,6 +35,7 @@
 - session cleanup 类查询使用 `(status, expires_at)`。
 - event timeline 类查询同时考虑 account scoped 与 global time scoped 两种索引。
 - 维护候选查询要把固定过滤条件前置到复合索引。
+- 启动 backfill / orphan recovery 这类后台扫描必须优先使用 progress cursor 或 partial index；不要把“只在后台跑”当成允许全表扫的理由。
 
 ## 常见坑
 
@@ -43,6 +44,7 @@
 - 后台任务拿到唯一 background slot 后再判断是否 due，会把“未到期的空跑 tick”变成对其他维护任务的饥饿源。
 - skip 必须有日志和后续 ticker，否则会变成静默丢任务。
 - 为每个后台入口单独做局部退避，容易遗漏同一压力窗口内的其他维护任务；进程级 gate 更容易统一行为。
+- `SELECT MAX(id) ... WHERE <稀疏条件>`、`NOT EXISTS` + 低选择性 phase 过滤这类查询，即使最终只返回 1 行，也可能在 SQLite 上吃掉秒级读锁预算；若它们会与前台 HTTP 共享同一数据库，必须先压成 cursor 读取或用 partial index 固定扫描面。
 
 ## 何时升级方案
 

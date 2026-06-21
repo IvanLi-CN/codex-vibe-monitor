@@ -14,6 +14,85 @@ async fn sync_hourly_rollups_from_live_tables(pool: &Pool<Sqlite>) -> Result<()>
     Ok(())
 }
 
+async fn mark_materialized_upstream_account_archive_replayed_tx(
+    tx: &mut SqliteConnection,
+    file_path: &str,
+) -> Result<()> {
+    for target in [
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE,
+    ] {
+        mark_hourly_rollup_archive_replayed_tx(
+            tx,
+            target,
+            HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            file_path,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn load_materialized_invocation_archives_missing_upstream_account_markers_tx(
+    tx: &mut SqliteConnection,
+) -> Result<Vec<String>> {
+    sqlx::query_scalar(
+        r#"
+        SELECT batches.file_path
+        FROM archive_batches AS batches
+        WHERE batches.dataset = 'codex_invocations'
+          AND batches.status = ?1
+          AND batches.historical_rollups_materialized_at IS NOT NULL
+          AND (
+                NOT EXISTS (
+                    SELECT 1
+                    FROM hourly_rollup_archive_replay AS replay
+                    WHERE replay.target = ?2
+                      AND replay.dataset = batches.dataset
+                      AND replay.file_path = batches.file_path
+                )
+                OR NOT EXISTS (
+                    SELECT 1
+                    FROM hourly_rollup_archive_replay AS replay
+                    WHERE replay.target = ?3
+                      AND replay.dataset = batches.dataset
+                      AND replay.file_path = batches.file_path
+                )
+                OR NOT EXISTS (
+                    SELECT 1
+                    FROM hourly_rollup_archive_replay AS replay
+                    WHERE replay.target = ?4
+                      AND replay.dataset = batches.dataset
+                      AND replay.file_path = batches.file_path
+                )
+          )
+        ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(Into::into)
+}
+
+async fn repair_materialized_upstream_account_archive_markers(
+    pool: &Pool<Sqlite>,
+) -> Result<usize> {
+    let mut tx = pool.begin().await?;
+    let file_paths =
+        load_materialized_invocation_archives_missing_upstream_account_markers_tx(tx.as_mut())
+            .await?;
+    for file_path in &file_paths {
+        mark_materialized_upstream_account_archive_replayed_tx(tx.as_mut(), file_path).await?;
+    }
+    tx.commit().await?;
+    Ok(file_paths.len())
+}
+
 const HISTORICAL_ROLLUP_ARCHIVE_REPLAY_BATCH_SIZE: i64 = BACKFILL_BATCH_SIZE;
 #[cfg(test)]
 const HISTORICAL_ROLLUP_ARCHIVE_INFLATE_BUFFER_BYTES: usize = 64 * 1024;
@@ -657,6 +736,11 @@ async fn replay_invocation_archives_into_hourly_rollups_tx_with_limits(
             HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE,
         ] || pending_targets.as_slice() == [HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE]
         {
+            mark_materialized_upstream_account_archive_replayed_tx(
+                tx,
+                &archive_file.file_path,
+            )
+            .await?;
             mark_archive_batch_historical_rollups_materialized_tx(
                 tx,
                 HOURLY_ROLLUP_DATASET_INVOCATIONS,
@@ -1286,6 +1370,7 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx(
 
 async fn bootstrap_hourly_rollups(pool: &Pool<Sqlite>) -> Result<()> {
     sync_hourly_rollups_from_live_tables(pool).await?;
+    repair_materialized_upstream_account_archive_markers(pool).await?;
     let account_stats_hourly_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM upstream_account_stats_hourly")
             .fetch_one(pool)
@@ -1296,6 +1381,7 @@ async fn bootstrap_hourly_rollups(pool: &Pool<Sqlite>) -> Result<()> {
             .await?;
     if account_stats_hourly_count == 0 || account_stats_minute_count == 0 {
         rebuild_upstream_account_stats_rollups_from_sources(pool).await?;
+        repair_materialized_upstream_account_archive_markers(pool).await?;
     }
     Ok(())
 }

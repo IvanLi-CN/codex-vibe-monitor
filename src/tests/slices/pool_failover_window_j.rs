@@ -1896,6 +1896,172 @@ async fn materialize_historical_rollups_marks_replayed_batches_as_materialized()
 }
 
 #[tokio::test]
+async fn materialize_historical_rollups_marks_account_replay_targets_when_only_account_targets_are_pending()
+{
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("historical-rollup-account-target-markers").await;
+    let old_invocation = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 9, 0, 0);
+
+    insert_retention_invocation(
+        &pool,
+        "historical-rollup-account-target-markers",
+        &old_invocation,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"upstreamAccountId\":17,\"upstreamAccountName\":\"Replay\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("seed live hourly rollups before retention");
+    let retention = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("archive old rows before materialize");
+    assert_eq!(retention.invocation_rows_archived, 1);
+
+    sqlx::query("UPDATE archive_batches SET historical_rollups_materialized_at = NULL")
+        .execute(&pool)
+        .await
+        .expect("clear materialized markers to mimic pre-upgrade replay state");
+
+    let invocation_archive_path: String = sqlx::query_scalar(
+        "SELECT file_path FROM archive_batches WHERE dataset = 'codex_invocations' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load invocation archive path");
+    for target in [
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
+        HOURLY_ROLLUP_TARGET_PROXY_PERF,
+        HOURLY_ROLLUP_TARGET_PROMPT_CACHE,
+        HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS,
+        HOURLY_ROLLUP_TARGET_STICKY_KEYS,
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
+            VALUES (?1, ?2, ?3, datetime('now'))
+            "#,
+        )
+        .bind(target)
+        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+        .bind(&invocation_archive_path)
+        .execute(&pool)
+        .await
+        .expect("insert invocation replay marker");
+    }
+
+    let materialize = materialize_historical_rollups(&pool, &config, false)
+        .await
+        .expect("materialize should mark account replay targets too");
+    assert_eq!(materialize.materialized_invocation_batches, 0);
+
+    let account_target_markers: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM hourly_rollup_archive_replay
+        WHERE dataset = 'codex_invocations'
+          AND file_path = ?1
+          AND target IN (?2, ?3, ?4)
+        "#,
+    )
+    .bind(&invocation_archive_path)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE)
+    .fetch_one(&pool)
+    .await
+    .expect("count account replay markers");
+    assert_eq!(account_target_markers, 3);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn bootstrap_hourly_rollups_repairs_missing_materialized_account_replay_markers() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("bootstrap-repairs-account-markers").await;
+    let old_invocation = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 9, 0, 0);
+
+    insert_retention_invocation(
+        &pool,
+        "bootstrap-repairs-account-markers",
+        &old_invocation,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"upstreamAccountId\":17,\"upstreamAccountName\":\"Replay\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("seed live hourly rollups before retention");
+    let retention = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("archive old rows before bootstrap repair");
+    assert_eq!(retention.invocation_rows_archived, 1);
+
+    let invocation_archive_path: String = sqlx::query_scalar(
+        "SELECT file_path FROM archive_batches WHERE dataset = 'codex_invocations' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load invocation archive path");
+
+    sqlx::query(
+        r#"
+        DELETE FROM hourly_rollup_archive_replay
+        WHERE dataset = 'codex_invocations'
+          AND file_path = ?1
+          AND target IN (?2, ?3, ?4)
+        "#,
+    )
+    .bind(&invocation_archive_path)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE)
+    .execute(&pool)
+    .await
+    .expect("drop account replay markers to mimic old materialized state");
+
+    bootstrap_hourly_rollups(&pool)
+        .await
+        .expect("bootstrap should repair missing account replay markers");
+
+    let account_target_markers: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM hourly_rollup_archive_replay
+        WHERE dataset = 'codex_invocations'
+          AND file_path = ?1
+          AND target IN (?2, ?3, ?4)
+        "#,
+    )
+    .bind(&invocation_archive_path)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE)
+    .fetch_one(&pool)
+    .await
+    .expect("count repaired account replay markers");
+    assert_eq!(account_target_markers, 3);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn historical_rollup_backfill_stays_critical_until_legacy_invocations_materialized() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("historical-rollup-backfill-critical").await;
@@ -3758,7 +3924,7 @@ async fn bootstrap_hourly_rollups_keeps_retention_materialized_totals_unchanged(
             .fetch_one(&pool)
             .await
             .expect("count hourly rollup archive replay markers");
-    assert_eq!(replay_marker_count, 0);
+    assert_eq!(replay_marker_count, 3);
 
     cleanup_temp_test_dir(&temp_dir);
 }

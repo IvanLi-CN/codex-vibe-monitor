@@ -22,13 +22,23 @@
 - 账号详情抽屉内嵌 `useUpstreamAccounts(...)` 改为按 tab 懒启用：`overview` / `records` 首开不再重复拉 roster，上下文相关 tab 才补拉。
 - `useUpstreamStickyConversations(...)` 改为仅在 `routing` tab 启用，避免详情首开时误触发 `sticky-keys` 预览重查询。
 - upstream roster 最新 usage 样本读取已改为索引友好的“每账号最新样本 + 最新非空 plan type”组合查询，移除 `pool_upstream_account_limit_samples` 上按账号 `ROW_NUMBER()` 排序的热点慢 SQL。
+- summary repair 对已完成 marker 但落后的 repair cursor 改成“只追平 cursor”，避免旧库在 readiness 通过后继续带着陈旧 summary live cursor 读详情。
+- archive materialization / bootstrap 现在会修复账号 usage、账号 stats hourly、账号 stats minute 三类 replay marker；materialized archive 不再被账号 summary / timeseries 误判成未物化历史缺口。
+- startup proxy usage backfill snapshot 改为共享 invocation cursor + `MAX(id)`，并为 proxy usage backfill 与 stale attempt recovery 补齐 partial index，减少后台恢复任务对详情接口的 SQLite 争锁。
+- `DashboardActivityOverview` 在 account-scoped `yesterday` 视图不再额外请求 yesterday comparison summary / timeseries，消除一个重复请求源。
 
 ## Verification
 
 - `cargo test account_scoped_summary_and_timeseries_filter_by_payload_upstream_account_id -- --nocapture`
 - `cargo test get_upstream_account_window_usage -- --nocapture`
 - `cargo test ensure_schema_rebuilds_account_stats_when_live_progress_table_is_missing -- --nocapture`
+- `cargo test summary_rollup_repair_refreshes_stale_repair_live_cursor_from_shared_progress -- --nocapture`
+- `cargo test summary_yesterday_ignores_missing_non_overlapping_archive_batch -- --nocapture`
+- `cargo test account_summary_yesterday_ignores_materialized_archive_missing_account_usage_marker -- --nocapture`
+- `cargo test materialize_historical_rollups_marks_account_replay_targets_when_only_account_targets_are_pending -- --nocapture`
+- `cargo test bootstrap_hourly_rollups_repairs_missing_materialized_account_replay_markers -- --nocapture`
 - `cargo test latest_usage_sample_map_keeps_latest_non_empty_sample_plan_type -- --nocapture`
+- `cargo test ensure_schema_migrates_codex_invocations_off_raw_expires_at_and_adds_retention_tables -- --nocapture`
 - `cargo check`
 - `cd web && bun run test src/hooks/useUpstreamAccounts.test.tsx src/components/DashboardActivityOverview.test.tsx`
 - `cd web && bun run test -- UpstreamAccounts.test.tsx useUpstreamStickyConversations.test.tsx`

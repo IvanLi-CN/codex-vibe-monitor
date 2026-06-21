@@ -562,6 +562,41 @@ describe('DashboardActivityOverview', () => {
     })
   })
 
+  it('does not request duplicate yesterday comparison data for account-scoped yesterday view', () => {
+    installSummaryMocks()
+    const storageKey = `${ACCOUNT_ACTIVITY_RANGE_STORAGE_KEY_PREFIX}.42`
+    window.localStorage.setItem(storageKey, 'yesterday')
+
+    render(
+      <DashboardActivityOverview
+        title="Account activity"
+        storageKey={storageKey}
+        testId="account-activity-overview"
+        upstreamAccountId={42}
+      />,
+    )
+
+    const yesterdayCalls = hookMocks.useSummary.mock.calls.filter(
+      ([window, options]) =>
+        window === 'yesterday' &&
+        options != null &&
+        typeof options === 'object' &&
+        'upstreamAccountId' in options &&
+        options.upstreamAccountId === 42,
+    )
+    expect(yesterdayCalls).toHaveLength(1)
+
+    const yesterdayTimeseriesCalls = hookMocks.useTimeseries.mock.calls.filter(
+      ([window, options]) =>
+        window === 'yesterday' &&
+        options != null &&
+        typeof options === 'object' &&
+        'upstreamAccountId' in options &&
+        options.upstreamAccountId === 42,
+    )
+    expect(yesterdayTimeseriesCalls).toHaveLength(1)
+  })
+
   it('loads each summary only after its range is selected', () => {
     installSummaryMocks()
 
