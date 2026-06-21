@@ -3,6 +3,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type {
+  BroadcastPayload,
   InvocationRecordsNewCountResponse,
   InvocationRecordsQuery,
   InvocationRecordsResponse,
@@ -17,6 +18,11 @@ const apiMocks = vi.hoisted(() => ({
   fetchInvocationRecordsNewCount: vi.fn<(query: InvocationRecordsQuery) => Promise<InvocationRecordsNewCountResponse>>(),
 }))
 
+const sseMocks = vi.hoisted(() => ({
+  onMessage: null as null | ((payload: BroadcastPayload) => void),
+  onOpen: null as null | (() => void),
+}))
+
 vi.mock('../lib/api', async () => {
   const actual = await vi.importActual<typeof import('../lib/api')>('../lib/api')
   return {
@@ -26,6 +32,21 @@ vi.mock('../lib/api', async () => {
     fetchInvocationRecordsNewCount: apiMocks.fetchInvocationRecordsNewCount,
   }
 })
+
+vi.mock('../lib/sse', () => ({
+  subscribeToSse: (handler: (payload: BroadcastPayload) => void) => {
+    sseMocks.onMessage = handler
+    return () => {
+      sseMocks.onMessage = null
+    }
+  },
+  subscribeToSseOpen: (handler: () => void) => {
+    sseMocks.onOpen = handler
+    return () => {
+      sseMocks.onOpen = null
+    }
+  },
+}))
 
 let host: HTMLDivElement | null = null
 let root: Root | null = null
@@ -47,6 +68,8 @@ afterEach(() => {
   root = null
   vi.clearAllMocks()
   vi.useRealTimers()
+  sseMocks.onMessage = null
+  sseMocks.onOpen = null
 })
 
 function render(ui: React.ReactNode) {
@@ -83,6 +106,20 @@ async function flushAsync() {
     await Promise.resolve()
     await Promise.resolve()
   })
+}
+
+async function waitFor(check: () => void, attempts = 20) {
+  let lastError: unknown = null
+  for (let index = 0; index < attempts; index += 1) {
+    try {
+      check()
+      return
+    } catch (error) {
+      lastError = error
+      await flushAsync()
+    }
+  }
+  throw lastError
 }
 
 function createListResponse(overrides: Partial<InvocationRecordsResponse>): InvocationRecordsResponse {
@@ -142,6 +179,18 @@ function createNewCountResponse(overrides: Partial<InvocationRecordsNewCountResp
   return {
     snapshotId: 42,
     newRecordsCount: 0,
+    ...overrides,
+  }
+}
+
+function createRecord(overrides: Partial<InvocationRecordsResponse['records'][number]> = {}) {
+  return {
+    id: 1,
+    invokeId: 'invoke-1',
+    occurredAt: '2026-03-10T00:00:00Z',
+    createdAt: '2026-03-10T00:00:00Z',
+    model: 'baseline-model',
+    status: 'success',
     ...overrides,
   }
 }
@@ -475,8 +524,115 @@ describe('useInvocationRecords', () => {
     expect(text('summary-loading')).toBe('no')
   })
 
+  it('merges matching SSE records into the current window and reconciles on SSE open', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-10T02:00:00Z'))
+
+    apiMocks.fetchInvocationRecords
+      .mockResolvedValueOnce(
+        createListResponse({
+          snapshotId: 42,
+          records: [
+            createRecord({
+              id: 1,
+              invokeId: 'invoke-running',
+              occurredAt: '2026-03-10T00:00:00Z',
+              createdAt: '2026-03-10T00:00:00Z',
+              status: 'running',
+            }),
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        createListResponse({
+          snapshotId: 84,
+          records: [
+            createRecord({
+              id: 2,
+              invokeId: 'invoke-new',
+              occurredAt: '2026-03-10T00:01:00Z',
+              createdAt: '2026-03-10T00:01:00Z',
+              status: 'success',
+            }),
+            createRecord({
+              id: 1,
+              invokeId: 'invoke-running',
+              occurredAt: '2026-03-10T00:00:00Z',
+              createdAt: '2026-03-10T00:00:00Z',
+              status: 'success',
+              totalTokens: 777,
+            }),
+          ],
+        }),
+      )
+
+    apiMocks.fetchInvocationRecordsSummary
+      .mockResolvedValueOnce(createSummaryResponse({ snapshotId: 42, newRecordsCount: 0 }))
+      .mockResolvedValueOnce(createSummaryResponse({ snapshotId: 84, newRecordsCount: 0, totalCount: 2 }))
+    apiMocks.fetchInvocationRecordsNewCount.mockResolvedValue(
+      createNewCountResponse({ snapshotId: 42, newRecordsCount: 2 }),
+    )
+
+    render(<Probe />)
+    await flushAsync()
+
+    expect(text('snapshot')).toBe('42')
+    expect(text('model')).toBe('baseline-model')
+
+    act(() => {
+      sseMocks.onMessage?.({
+        type: 'records',
+        records: [
+          createRecord({
+            id: 1,
+            invokeId: 'invoke-running',
+            occurredAt: '2026-03-10T00:00:00Z',
+            createdAt: '2026-03-10T00:00:00Z',
+            status: 'success',
+            totalTokens: 777,
+          }),
+          createRecord({
+            id: 2,
+            invokeId: 'invoke-new',
+            occurredAt: '2026-03-10T00:01:00Z',
+            createdAt: '2026-03-10T00:01:00Z',
+            status: 'success',
+            model: 'new-model',
+          }),
+        ],
+      })
+    })
+
+    await flushAsync()
+
+    expect(text('snapshot')).toBe('42')
+    expect(text('model')).toBe('new-model')
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RECORDS_NEW_COUNT_POLL_INTERVAL_MS)
+    })
+    await flushAsync()
+
+    expect(text('new-count')).toBe('1')
+
+    act(() => {
+      sseMocks.onOpen?.()
+    })
+    await waitFor(() => {
+      expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2)
+      expect(apiMocks.fetchInvocationRecordsSummary).toHaveBeenCalledTimes(2)
+      expect(text('snapshot')).toBe('84')
+      expect(text('summary-snapshot')).toBe('84')
+      expect(text('new-count')).toBe('0')
+    })
+
+    const reconcileQuery = apiMocks.fetchInvocationRecords.mock.calls.at(-1)?.[0]
+    expect(reconcileQuery?.snapshotId).toBeUndefined()
+  })
+
   it('ignores stale overlapping new-count polls for the same snapshot', async () => {
     vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-10T02:00:00Z'))
 
     const pollResolvers: Array<(value: InvocationRecordsNewCountResponse) => void> = []
 

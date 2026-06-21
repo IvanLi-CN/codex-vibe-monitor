@@ -62,6 +62,7 @@ import { UpstreamAccountUsageCard } from "../../components/UpstreamAccountUsageC
 import { StickyKeyConversationTable } from "../../components/StickyKeyConversationTable";
 import { usePoolTags } from "../../hooks/usePoolTags";
 import { useAvailableModelOptions } from "../../hooks/useAvailableModelOptions";
+import { useInvocationRecordsRealtime } from "../../hooks/useInvocationRecordsRealtime";
 import { useMotherSwitchNotifications } from "../../hooks/useMotherSwitchNotifications";
 import { useUpstreamAccountDetailRoute } from "../../hooks/useUpstreamAccountDetailRoute";
 import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
@@ -918,6 +919,7 @@ function SharedUpstreamAccountDetailDrawerInner({
   const routeAccountIdRef = useRef<number | null>(accountId);
   const drawerOpenRef = useRef(open);
   const accountRecordsRequestSeqRef = useRef(0);
+  const accountRecordsRef = useRef<ApiInvocation[]>([]);
   const draftSessionKeyRef = useRef<string | null>(null);
   const activeDraftSessionKeyRef = useRef<string | null>(null);
   const draftBaselineRef = useRef<AccountDraft>(buildDraft(null));
@@ -970,6 +972,10 @@ function SharedUpstreamAccountDetailDrawerInner({
   routeAccountIdRef.current = accountId;
   drawerOpenRef.current = open;
   activeDraftSessionKeyRef.current = activeDraftSessionKey;
+
+  useEffect(() => {
+    accountRecordsRef.current = accountRecords;
+  }, [accountRecords]);
 
   useEffect(() => {
     if (open && accountId != null) {
@@ -1686,13 +1692,9 @@ function SharedUpstreamAccountDetailDrawerInner({
     });
   }, [stickyConversationStats]);
 
-  useEffect(() => {
+  const reloadAccountRecords = useCallback((): void => {
     const requestSeq = accountRecordsRequestSeqRef.current + 1;
     accountRecordsRequestSeqRef.current = requestSeq;
-    setAccountRecords([]);
-    setAccountRecordsError(null);
-    setAccountRecordsLoading(false);
-
     if (!open || accountId == null || detailTab !== "records") {
       return;
     }
@@ -1721,6 +1723,37 @@ function SharedUpstreamAccountDetailDrawerInner({
         }
       });
   }, [accountId, accountRecordLimit, detailTab, open]);
+
+  useEffect(() => {
+    const requestSeq = accountRecordsRequestSeqRef.current + 1;
+    accountRecordsRequestSeqRef.current = requestSeq;
+    setAccountRecords([]);
+    setAccountRecordsError(null);
+    setAccountRecordsLoading(false);
+
+    if (!open || accountId == null || detailTab !== "records") {
+      return;
+    }
+
+    void reloadAccountRecords();
+  }, [accountId, accountRecordLimit, detailTab, open, reloadAccountRecords]);
+
+  useInvocationRecordsRealtime({
+    enabled: Boolean(open && accountId != null && detailTab === "records"),
+    isHydrated:
+      Boolean(open && accountId != null && detailTab === "records") &&
+      !accountRecordsLoading,
+    filters: accountId == null ? undefined : { upstreamAccountId: accountId },
+    sortBy: "occurredAt",
+    sortOrder: "desc",
+    limit: accountRecordLimit,
+    getRecords: () => accountRecordsRef.current,
+    onRecordsChange: (next) => {
+      setAccountRecords(next);
+      setAccountRecordsError(null);
+    },
+    onOpenResync: reloadAccountRecords,
+  });
 
   const selectedDetail = detail?.id === selectedId ? detail : null;
   const selected = selectedDetail ?? selectedSummary;

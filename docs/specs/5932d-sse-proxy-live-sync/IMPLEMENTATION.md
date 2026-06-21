@@ -30,3 +30,15 @@
 - [x] M3: 前端 `useInvocationStream` 增加 SSE open 后静默回源补齐。
 - [x] M4: 完成验证、提交、PR、checks 与 review-loop 收敛（fast-track）。
 - [x] M5: Dashboard realtime consumers split visible patch, KPI, chart commit, head reconcile, and parallel-work conditional-fetch budgets.
+- [x] M6: 活动调用记录列表统一接入 `records` SSE：`Live`、`/records` 与账号详情抽屉 records tab 现在共用一套记录过滤、去重、终态优选与 SSE open 静默回源逻辑。
+
+## 2026-06-21 Follow-up
+
+- 新增 `web/src/lib/invocationRecordsLive.ts`，把活动记录窗口的过滤、排序、去重与“更完整终态记录优选”抽成共享工具，避免 `Live`、账号详情抽屉和 `/records` 页各维护一套实时合并语义。
+- 新增 `web/src/hooks/useInvocationRecordsRealtime.ts`，统一负责 `records` SSE 订阅、已命中窗口内的可见记录合并，以及 SSE `open` 后静默 reconcile。
+- 账号详情抽屉 records tab 不再只做一次性 `fetchInvocationRecords(...)`；它现在按 `upstreamAccountId + limit + tab/open lifecycle` 受控订阅 SSE，并在连接恢复后静默回源补齐。
+- `/records` 页保留原有筛选、分页、排序、`snapshotId` 与 `newRecordsCount` 语义，同时只把“命中当前窗口”的 SSE 记录合并进当前页；窗口外增量继续通过 `New data` 提示暴露，不静默污染当前结果集。
+
+## Verification
+
+- `cd web && bun run test -- --run src/hooks/useInvocations.test.tsx src/hooks/useInvocationRecords.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx`

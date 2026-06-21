@@ -13,3 +13,4 @@
 - 2026-06-21: summary repair 改为在 repair marker 已完成但 live cursor 落后时只刷新 cursor，避免详情 summary 继续绑定旧 repair cursor。
 - 2026-06-21: archive materialization 与 bootstrap 会补齐账号 usage / stats replay marker，修复旧库在 materialized archive 缺 marker 时把账号 summary / timeseries 误拉回 archive fallback 的问题。
 - 2026-06-21: account-scoped `yesterday` 活动总览拆掉重复 comparison fetch，避免详情抽屉在昨天视图额外触发一轮同账号 summary / timeseries。
+- 2026-06-21: 账号详情抽屉 records tab 不再停留在一次性快照；它改为与 `Live` / `/records` 共用活动记录实时合并层，保证同账号的新记录自动出现、终态字段自动收敛，并在 SSE 重连后静默回源补齐。

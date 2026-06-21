@@ -48,3 +48,10 @@
 
 - `assets/detail-drawer-records-loading-raw.png`
 - `assets/detail-drawer-records-settled-final-raw.png`
+- `assets/detail-drawer-records-live-sync-stable.png`
+
+## 2026-06-21 Records Live Follow-up
+
+- 账号详情抽屉 records tab 继续保留懒加载和旧请求丢弃约束，但列表本身改为消费共享 `records` SSE 实时 adapter，而不是一次性快照拉取后静止。
+- 当前账号命中的新调用现在会自动插入到 records tab；同一 `invokeId` 后续收到更完整终态记录时，会自动替换掉先前的 `running/pending` 可见行。
+- SSE 连接 `open` 后，records tab 会静默回源补齐重连窗口内可能漏掉的记录，同时不额外触发 overview / routing 这类重型统计面的重复 hydrate。

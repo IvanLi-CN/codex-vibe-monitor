@@ -9,6 +9,7 @@ import type {
   InvocationSortOrder,
 } from '../lib/api'
 import { fetchInvocationRecords, fetchInvocationRecordsNewCount, fetchInvocationRecordsSummary } from '../lib/api'
+import { useInvocationRecordsRealtime } from './useInvocationRecordsRealtime'
 import {
   buildAppliedInvocationFilters,
   buildInvocationRecordsQuery,
@@ -56,6 +57,10 @@ interface SearchState {
   generation: number
 }
 
+interface LiveMergeState {
+  matchingVisibleInsertCount: number
+}
+
 export function shouldPollRecordsSummary() {
   return typeof document === 'undefined' || document.visibilityState === 'visible'
 }
@@ -77,6 +82,7 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
   const [isSearching, setIsSearching] = useState(true)
   const [isRecordsLoading, setIsRecordsLoading] = useState(false)
   const [isSummaryLoading, setIsSummaryLoading] = useState(true)
+  const [liveMergeState, setLiveMergeState] = useState<LiveMergeState>({ matchingVisibleInsertCount: 0 })
   const appliedRef = useRef<SearchState | null>(null)
   const searchSeqRef = useRef(0)
   const recordsSeqRef = useRef(0)
@@ -85,6 +91,7 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
   const pageSizeRef = useRef(pageSize)
   const sortByRef = useRef(sortBy)
   const sortOrderRef = useRef(sortOrder)
+  const recordsRef = useRef<InvocationRecordsResponse | null>(records)
 
   useEffect(() => {
     draftRef.current = draft
@@ -101,6 +108,10 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
   useEffect(() => {
     sortOrderRef.current = sortOrder
   }, [sortOrder])
+
+  useEffect(() => {
+    recordsRef.current = records
+  }, [records])
 
   const loadRecordsPage = useCallback(
     async (nextPage: number, nextPageSize: number, nextSortBy: InvocationSortBy, nextSortOrder: InvocationSortOrder) => {
@@ -129,6 +140,7 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
         )
         if (!isCurrentRequest()) return
         setRecords(response)
+        setLiveMergeState({ matchingVisibleInsertCount: 0 })
         setPageState(response.page)
         setPageSizeState(response.pageSize)
         pageSizeRef.current = response.pageSize
@@ -182,6 +194,7 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
         setSummary(null)
       }
       setRecords(listResponse)
+      setLiveMergeState({ matchingVisibleInsertCount: 0 })
       setPageState(listResponse.page)
       setPageSizeState(listResponse.pageSize)
       setRecordsError(null)
@@ -279,6 +292,78 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
     return () => window.clearInterval(timer)
   }, [isSearching, records?.snapshotId, summary, summarySnapshotId])
 
+  const reloadCurrentView = useCallback(() => {
+    const applied = appliedRef.current
+    const currentRecords = recordsRef.current
+    if (!applied || !currentRecords) return
+    const requestSeq = recordsSeqRef.current + 1
+    recordsSeqRef.current = requestSeq
+    const { filters, generation, snapshotId } = applied
+    let activeSnapshotId = snapshotId
+
+    const isCurrentRequest = () => {
+      if (requestSeq !== recordsSeqRef.current) return false
+      const latest = appliedRef.current
+      return !!latest && latest.generation === generation && latest.snapshotId === activeSnapshotId
+    }
+
+    void fetchInvocationRecords(
+      buildInvocationRecordsQuery(filters, {
+        page: currentRecords.page,
+        pageSize: currentRecords.pageSize,
+        sortBy: sortByRef.current,
+        sortOrder: sortOrderRef.current,
+      }),
+    )
+      .then(async (response) => {
+        if (!isCurrentRequest()) return
+        activeSnapshotId = response.snapshotId
+        appliedRef.current = { filters, snapshotId: response.snapshotId, generation }
+        setRecords(response)
+        setPageState(response.page)
+        setPageSizeState(response.pageSize)
+        pageSizeRef.current = response.pageSize
+        setRecordsError(null)
+        setLiveMergeState({ matchingVisibleInsertCount: 0 })
+        const summaryResponse = await fetchInvocationRecordsSummary({
+          ...filters,
+          snapshotId: response.snapshotId,
+        })
+        if (!isCurrentRequest()) return
+        setSummary({ ...summaryResponse, newRecordsCount: 0 })
+        setSummaryError(null)
+      })
+      .catch((error) => {
+        if (!isCurrentRequest()) return
+        setRecordsError(error instanceof Error ? error.message : String(error))
+      })
+  }, [])
+
+  useInvocationRecordsRealtime({
+    enabled: Boolean(appliedRef.current && records),
+    isHydrated: Boolean(appliedRef.current && records && !isSearching && !isRecordsLoading),
+    filters: appliedRef.current?.filters,
+    sortBy,
+    sortOrder,
+    limit: pageSize,
+    allowVisibleInsertions: page === 1,
+    getRecords: () => recordsRef.current?.records ?? [],
+    onRecordsChange: (next, meta) => {
+      setRecords((current) => {
+        if (!current) return current
+        return { ...current, records: next }
+      })
+      if (meta.visibleInsertedKeys.length > 0) {
+        setLiveMergeState((current) => ({
+          matchingVisibleInsertCount:
+            current.matchingVisibleInsertCount + meta.visibleInsertedKeys.length,
+        }))
+      }
+      setRecordsError(null)
+    },
+    onOpenResync: reloadCurrentView,
+  })
+
   const api = useMemo(
     () => ({
       draft,
@@ -288,7 +373,15 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
       sortBy,
       sortOrder,
       records,
-      summary,
+      summary: summary
+        ? {
+            ...summary,
+            newRecordsCount: Math.max(
+              0,
+              summary.newRecordsCount - liveMergeState.matchingVisibleInsertCount,
+            ),
+          }
+        : null,
       recordsError,
       summaryError,
       isSearching,
@@ -304,7 +397,7 @@ export function useInvocationRecords(): UseInvocationRecordsResult {
       setPageSize,
       setSort,
     }),
-    [draft, focus, isRecordsLoading, isSearching, isSummaryLoading, page, pageSize, records, recordsError, resetDraft, search, setPage, setPageSize, setSort, sortBy, sortOrder, summary, summaryError],
+    [draft, focus, isRecordsLoading, isSearching, isSummaryLoading, liveMergeState.matchingVisibleInsertCount, page, pageSize, records, recordsError, resetDraft, search, setPage, setPageSize, setSort, sortBy, sortOrder, summary, summaryError],
   )
 
   return api
