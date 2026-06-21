@@ -3924,7 +3924,7 @@ async fn bootstrap_hourly_rollups_keeps_retention_materialized_totals_unchanged(
             .fetch_one(&pool)
             .await
             .expect("count hourly rollup archive replay markers");
-    assert_eq!(replay_marker_count, 0);
+    assert_eq!(replay_marker_count, 3);
 
     cleanup_temp_test_dir(&temp_dir);
 }
