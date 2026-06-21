@@ -255,12 +255,12 @@ export function compareInvocationRecordsForWindow(
     left,
     right,
     "occurredAt",
-    "desc",
+    sortOrder,
   );
   if (occurredAtComparison !== 0) {
     return occurredAtComparison;
   }
-  return right.id - left.id;
+  return sortOrder === "asc" ? left.id - right.id : right.id - left.id;
 }
 
 export function mergeInvocationWindowRecords(

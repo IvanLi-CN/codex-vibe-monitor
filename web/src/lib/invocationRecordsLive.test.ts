@@ -49,4 +49,32 @@ describe("invocationRecordsLive", () => {
       "invoke-null",
     ]);
   });
+
+  it("keeps ascending tie-breaks stable for non-occurredAt sorts", () => {
+    const current = [
+      createRecord({
+        id: 1,
+        invokeId: "invoke-earlier",
+        occurredAt: "2026-03-10T00:00:00Z",
+        totalTokens: 200,
+      }),
+      createRecord({
+        id: 2,
+        invokeId: "invoke-later",
+        occurredAt: "2026-03-10T00:01:00Z",
+        totalTokens: 200,
+      }),
+    ];
+
+    const merged = mergeInvocationWindowRecords(current, [], {
+      sortBy: "totalTokens",
+      sortOrder: "asc",
+      limit: 10,
+    });
+
+    expect(merged.map((record) => record.invokeId)).toEqual([
+      "invoke-earlier",
+      "invoke-later",
+    ]);
+  });
 });
