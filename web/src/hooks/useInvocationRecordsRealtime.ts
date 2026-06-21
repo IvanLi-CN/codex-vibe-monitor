@@ -53,16 +53,7 @@ function recordsChanged(next: ApiInvocation[], current: ApiInvocation[]) {
     next.length !== current.length ||
     next.some((record, index) => {
       const existing = current[index];
-      return (
-        !existing ||
-        existing.id !== record.id ||
-        existing.invokeId !== record.invokeId ||
-        existing.occurredAt !== record.occurredAt ||
-        existing.status !== record.status ||
-        existing.totalTokens !== record.totalTokens ||
-        existing.tTotalMs !== record.tTotalMs ||
-        existing.cost !== record.cost
-      );
+      return !existing || JSON.stringify(existing) !== JSON.stringify(record);
     })
   );
 }

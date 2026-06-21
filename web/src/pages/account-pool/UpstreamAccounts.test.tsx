@@ -753,6 +753,23 @@ function clickCommandItem(matcher: RegExp) {
   return item;
 }
 
+function clickSelectOption(matcher: RegExp) {
+  const option = Array.from(
+    document.body.querySelectorAll('[role="option"]'),
+  ).find(
+    (candidate) =>
+      candidate instanceof HTMLElement &&
+      matcher.test(candidate.textContent || ""),
+  );
+  if (!(option instanceof HTMLElement)) {
+    throw new Error(`missing select option: ${matcher}`);
+  }
+  act(() => {
+    option.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  return option;
+}
+
 function pressButton(button: HTMLButtonElement) {
   act(() => {
     if (typeof PointerEvent === "function") {
@@ -2288,5 +2305,104 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
     await act(async () => {
       await Promise.resolve();
     });
-  })
+  });
+
+  it("keeps the current records visible while the records tab refetches for limit changes", async () => {
+    const secondFetch = deferred<{
+      snapshotId: number;
+      total: number;
+      page: number;
+      pageSize: number;
+      records: Array<Record<string, unknown>>;
+    }>();
+
+    mockAccountsPage();
+    apiMocks.fetchInvocationRecords
+      .mockResolvedValueOnce({
+        snapshotId: 42,
+        total: 1,
+        page: 1,
+        pageSize: 50,
+        records: [
+          {
+            id: 1,
+            invokeId: "invoke-stable",
+            occurredAt: "2026-03-16T02:05:00.000Z",
+            createdAt: "2026-03-16T02:05:00.000Z",
+            status: "success",
+            model: "gpt-5.4",
+            upstreamAccountId: 5,
+            upstreamAccountName: "Existing OAuth",
+            routeMode: "pool",
+          },
+        ],
+      })
+      .mockImplementationOnce(async () => secondFetch.promise as never);
+
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => {
+      root?.render(
+        <ThemeProvider>
+          <I18nProvider>
+            <SystemNotificationProvider>
+              <MemoryRouter>
+                <SharedUpstreamAccountDetailDrawer
+                  open
+                  accountId={5}
+                  initialTab="overview"
+                  onClose={vi.fn()}
+                />
+              </MemoryRouter>
+            </SystemNotificationProvider>
+          </I18nProvider>
+        </ThemeProvider>,
+      );
+    });
+
+    clickTab(/调用记录|records/i);
+    await flushAsync();
+    await waitForAssertion(() => {
+      expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1);
+    });
+    await waitForAssertion(() => {
+      expect(document.body.textContent).toMatch(/记录数量|Rows/);
+    });
+    expect(document.body.textContent).toContain("Existing OAuth");
+
+    clickCombobox(/记录数量|rows/i);
+    clickSelectOption(/100/);
+
+    await waitForAssertion(() => {
+      expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2);
+    });
+    expect(document.body.textContent).toContain("Existing OAuth");
+    expect(document.body.textContent).not.toContain("正在加载记录");
+
+    act(() => {
+      secondFetch.resolve({
+        snapshotId: 84,
+        total: 1,
+        page: 1,
+        pageSize: 100,
+        records: [
+          {
+            id: 1,
+            invokeId: "invoke-stable",
+            occurredAt: "2026-03-16T02:05:00.000Z",
+            createdAt: "2026-03-16T02:05:00.000Z",
+            status: "success",
+            model: "gpt-5.4",
+            upstreamAccountId: 5,
+            upstreamAccountName: "Existing OAuth",
+            routeMode: "pool",
+          },
+        ],
+      } as never);
+    });
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Existing OAuth");
+  });
 })

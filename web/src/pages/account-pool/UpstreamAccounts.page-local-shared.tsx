@@ -907,6 +907,11 @@ function SharedUpstreamAccountDetailDrawerInner({
     useState<Record<string, number>>({});
   const [detailDrawerPortalContainer, setDetailDrawerPortalContainer] =
     useState<HTMLElement | null>(null);
+  const previousAccountRecordsContextRef = useRef<{
+    open: boolean;
+    accountId: number | null;
+    detailTab: AccountDetailTab;
+  } | null>(null);
   const validTagIds = useMemo(
     () => new Set(tagItems.map((tag) => tag.id)),
     [tagItems],
@@ -1727,9 +1732,35 @@ function SharedUpstreamAccountDetailDrawerInner({
   useEffect(() => {
     const requestSeq = accountRecordsRequestSeqRef.current + 1;
     accountRecordsRequestSeqRef.current = requestSeq;
-    setAccountRecords([]);
-    setAccountRecordsError(null);
-    setAccountRecordsLoading(false);
+
+    const previous = previousAccountRecordsContextRef.current;
+    const next = {
+      open,
+      accountId,
+      detailTab,
+    };
+    previousAccountRecordsContextRef.current = next;
+
+    const leftRecordsSurface =
+      previous != null &&
+      previous.open &&
+      previous.accountId != null &&
+      previous.detailTab === "records" &&
+      (!open || accountId == null || detailTab !== "records");
+    const switchedAccounts =
+      open &&
+      detailTab === "records" &&
+      previous?.open &&
+      previous.detailTab === "records" &&
+      previous.accountId != null &&
+      accountId != null &&
+      previous.accountId !== accountId;
+
+    if (leftRecordsSurface || switchedAccounts) {
+      setAccountRecords([]);
+      setAccountRecordsError(null);
+      setAccountRecordsLoading(false);
+    }
 
     if (!open || accountId == null || detailTab !== "records") {
       return;

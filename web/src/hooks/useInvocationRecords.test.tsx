@@ -60,6 +60,10 @@ beforeAll(() => {
 })
 
 afterEach(() => {
+  vi.useRealTimers()
+})
+
+afterEach(() => {
   act(() => {
     root?.unmount()
   })
@@ -67,7 +71,6 @@ afterEach(() => {
   host = null
   root = null
   vi.clearAllMocks()
-  vi.useRealTimers()
   sseMocks.onMessage = null
   sseMocks.onOpen = null
 })
@@ -205,6 +208,7 @@ function Probe() {
       <div data-testid="page-size">{state.pageSize}</div>
       <div data-testid="snapshot">{state.records?.snapshotId ?? 0}</div>
       <div data-testid="model">{state.records?.records[0]?.model ?? ''}</div>
+      <div data-testid="account-name">{state.records?.records[0]?.upstreamAccountName ?? ''}</div>
       <div data-testid="new-count">{state.summary?.newRecordsCount ?? 0}</div>
       <div data-testid="summary-snapshot">{state.summary?.snapshotId ?? 0}</div>
       <div data-testid="records-loading">{state.isRecordsLoading ? 'yes' : 'no'}</div>
@@ -628,6 +632,61 @@ describe('useInvocationRecords', () => {
 
     const reconcileQuery = apiMocks.fetchInvocationRecords.mock.calls.at(-1)?.[0]
     expect(reconcileQuery?.snapshotId).toBeUndefined()
+  })
+
+  it('applies visible SSE updates when only non-sort detail fields change', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-10T02:00:00Z'))
+
+    apiMocks.fetchInvocationRecords.mockResolvedValue(
+      createListResponse({
+        snapshotId: 42,
+        records: [
+          createRecord({
+            id: 1,
+            invokeId: 'invoke-detail-update',
+            occurredAt: '2026-03-10T00:00:00Z',
+            createdAt: '2026-03-10T00:00:00Z',
+            status: 'success',
+            model: 'baseline-model',
+            upstreamAccountName: 'Old Account',
+          }),
+        ],
+      }),
+    )
+    apiMocks.fetchInvocationRecordsSummary.mockResolvedValue(
+      createSummaryResponse({ snapshotId: 42, newRecordsCount: 0 }),
+    )
+    apiMocks.fetchInvocationRecordsNewCount.mockResolvedValue(
+      createNewCountResponse({ snapshotId: 42, newRecordsCount: 0 }),
+    )
+
+    render(<Probe />)
+    await flushAsync()
+
+    expect(text('model')).toBe('baseline-model')
+    expect(text('account-name')).toBe('Old Account')
+
+    act(() => {
+      sseMocks.onMessage?.({
+        type: 'records',
+        records: [
+          createRecord({
+            id: 1,
+            invokeId: 'invoke-detail-update',
+            occurredAt: '2026-03-10T00:00:00Z',
+            createdAt: '2026-03-10T00:00:00Z',
+            status: 'success',
+            model: 'refined-model',
+            upstreamAccountName: 'New Account',
+          }),
+        ],
+      })
+    })
+    await flushAsync()
+
+    expect(text('model')).toBe('refined-model')
+    expect(text('account-name')).toBe('New Account')
   })
 
   it('ignores stale overlapping new-count polls for the same snapshot', async () => {
