@@ -147,7 +147,7 @@ export function useInvocationRecordsRealtime({
   useEffect(() => {
     if (!enabled) return;
     const unsubscribe = subscribeToSseOpen(() => {
-      requestOpenResync(true);
+      requestOpenResync();
     });
     return unsubscribe;
   }, [enabled, requestOpenResync]);

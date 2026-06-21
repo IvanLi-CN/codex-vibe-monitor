@@ -642,6 +642,62 @@ describe('useInvocationRecords', () => {
     expect(reconcileQuery?.snapshotId).toBeUndefined()
   })
 
+  it('coalesces repeated SSE-open reconciles within the cooldown window', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-10T02:00:00Z'))
+
+    apiMocks.fetchInvocationRecords.mockResolvedValue(
+      createListResponse({
+        snapshotId: 42,
+        records: [
+          createRecord({
+            id: 1,
+            invokeId: 'invoke-stable',
+            occurredAt: '2026-03-10T00:00:00Z',
+            createdAt: '2026-03-10T00:00:00Z',
+            status: 'success',
+          }),
+        ],
+      }),
+    )
+    apiMocks.fetchInvocationRecordsSummary.mockResolvedValue(
+      createSummaryResponse({ snapshotId: 42, newRecordsCount: 0, totalCount: 1 }),
+    )
+    apiMocks.fetchInvocationRecordsNewCount.mockResolvedValue(
+      createNewCountResponse({ snapshotId: 42, newRecordsCount: 0 }),
+    )
+
+    render(<Probe />)
+    await flushAsync()
+
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      sseMocks.onOpen?.()
+    })
+    await waitFor(() => {
+      expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2)
+    })
+
+    act(() => {
+      sseMocks.onOpen?.()
+    })
+    await flushAsync()
+
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3001)
+    })
+
+    act(() => {
+      sseMocks.onOpen?.()
+    })
+    await waitFor(() => {
+      expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(3)
+    })
+  })
+
   it('increments the visible total when page-one SSE inserts add matching rows', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-03-10T02:00:00Z'))

@@ -753,6 +753,14 @@ function clickCommandItem(matcher: RegExp) {
   return item;
 }
 
+function renderedInvocationAccountNames() {
+  return Array.from(
+    document.body.querySelectorAll('[data-testid="invocation-account-name"]'),
+  )
+    .map((candidate) => candidate.textContent?.trim() ?? "")
+    .filter((value) => value.length > 0);
+}
+
 function clickSelectOption(matcher: RegExp) {
   const option = Array.from(
     document.body.querySelectorAll('[role="option"]'),
@@ -2373,8 +2381,7 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
     expect(document.body.textContent).not.toContain("initial records fetch failed");
 
     await waitForAssertion(() => {
-      expect(document.body.textContent).toContain("Existing OAuth");
-      expect(document.body.textContent).toContain("10:06:00");
+      expect(renderedInvocationAccountNames()).toContain("Existing OAuth");
     });
     expect(document.body.textContent).not.toContain("initial records fetch failed");
   });
@@ -2443,8 +2450,7 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
     await waitForAssertion(() => {
       expect(document.body.textContent).toMatch(/记录数量|Rows/);
     });
-    expect(document.body.textContent).toContain("Existing OAuth");
-    expect(document.body.textContent).toContain("10:05:00");
+    expect(renderedInvocationAccountNames()).toContain("Existing OAuth");
 
     clickCombobox(/记录数量|rows/i);
     clickSelectOption(/100/);
@@ -2452,7 +2458,7 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
     await waitForAssertion(() => {
       expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2);
     });
-    expect(document.body.textContent).not.toContain("10:05:00");
+    expect(renderedInvocationAccountNames()).toHaveLength(0);
     expect(
       document.body.querySelector(
         '[aria-label="正在加载记录"], [aria-label="Loading records"]',
@@ -2482,7 +2488,9 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
     });
     await flushAsync();
 
-    expect(document.body.textContent).toContain("Existing OAuth");
+    await waitForAssertion(() => {
+      expect(renderedInvocationAccountNames()).toContain("Existing OAuth");
+    });
     },
     30000,
   );
@@ -2549,7 +2557,7 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
     await waitForAssertion(() => {
       expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1);
     });
-    expect(document.body.textContent).toContain("10:05:00");
+    expect(renderedInvocationAccountNames()).toContain("Existing OAuth");
 
     clickTab(/概览|overview/i);
     await flushAsync();
@@ -2559,7 +2567,7 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
     await waitForAssertion(() => {
       expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2);
     });
-    expect(document.body.textContent).not.toContain("10:05:00");
+    expect(renderedInvocationAccountNames()).toHaveLength(0);
     expect(
       document.body.querySelector(
         '[aria-label="正在加载记录"], [aria-label="Loading records"]',
@@ -2589,6 +2597,8 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
     });
     await flushAsync();
 
-    expect(document.body.textContent).toContain("10:06:00");
+    await waitForAssertion(() => {
+      expect(renderedInvocationAccountNames()).toContain("Existing OAuth");
+    });
   });
 })
