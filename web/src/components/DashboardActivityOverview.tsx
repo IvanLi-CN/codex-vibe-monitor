@@ -232,20 +232,19 @@ function DashboardNaturalDayTodaySummaryOverview({
     'yesterday',
     upstreamAccountId == null ? { bucket: '1m' } : { bucket: '1m', upstreamAccountId },
   )
-  const parallelEnabled = upstreamAccountId == null
   const {
     data: parallelWorkStats,
   } = useParallelWorkStats({
     range: 'today',
     bucket: '1m',
-    enabled: parallelEnabled,
+    upstreamAccountId,
   })
   const {
     data: comparisonParallelWorkStats,
   } = useParallelWorkStats({
     range: 'yesterday',
     bucket: '1m',
-    enabled: parallelEnabled,
+    upstreamAccountId,
   })
   const [rateNow, setRateNow] = useState(() => new Date())
 
@@ -279,8 +278,8 @@ function DashboardNaturalDayTodaySummaryOverview({
       comparisonStats={comparisonSummary}
       comparisonTimeseries={comparisonTimeseries}
       previous7dStats={previous7dSummary}
-      parallelWorkStats={parallelEnabled ? parallelWorkStats : null}
-      comparisonParallelWorkStats={parallelEnabled ? comparisonParallelWorkStats : null}
+      parallelWorkStats={parallelWorkStats}
+      comparisonParallelWorkStats={comparisonParallelWorkStats}
       showInProgressConversations
       dayKind="today"
       showSurface={false}
@@ -311,13 +310,12 @@ function DashboardNaturalDayYesterdaySummaryOverview({
   const {
     summary: previous7dSummary,
   } = useScopedSummary('previous7d', upstreamAccountId)
-  const parallelEnabled = upstreamAccountId == null
   const {
     data: parallelWorkStats,
   } = useParallelWorkStats({
     range: 'yesterday',
     bucket: '1m',
-    enabled: parallelEnabled,
+    upstreamAccountId,
   })
   const [rateNow, setRateNow] = useState(() => new Date())
 
@@ -351,7 +349,7 @@ function DashboardNaturalDayYesterdaySummaryOverview({
       comparisonStats={null}
       comparisonTimeseries={null}
       previous7dStats={previous7dSummary}
-      parallelWorkStats={parallelEnabled ? parallelWorkStats : null}
+      parallelWorkStats={parallelWorkStats}
       comparisonParallelWorkStats={null}
       showInProgressConversations
       dayKind="yesterday"

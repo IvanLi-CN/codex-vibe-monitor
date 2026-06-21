@@ -1264,6 +1264,7 @@ pub(crate) struct ParallelWorkStatsQuery {
     pub(crate) range: String,
     pub(crate) bucket: Option<String>,
     pub(crate) time_zone: Option<String>,
+    pub(crate) upstream_account_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]

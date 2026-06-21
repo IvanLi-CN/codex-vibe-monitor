@@ -43,6 +43,58 @@ async fn insert_parallel_work_prompt_cache_rollup_hourly_row(
     .expect("insert prompt cache hourly rollup row");
 }
 
+async fn insert_parallel_work_prompt_cache_upstream_account_hourly_row(
+    pool: &SqlitePool,
+    bucket_start: DateTime<Utc>,
+    prompt_cache_key: &str,
+    upstream_account_id: i64,
+    request_count: i64,
+) {
+    let first_seen_at = format_naive(bucket_start.with_timezone(&Shanghai).naive_local());
+    let last_seen_at = format_naive(
+        (bucket_start + ChronoDuration::minutes(30))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_upstream_account_hourly (
+            bucket_start_epoch,
+            source,
+            prompt_cache_key,
+            upstream_account_key,
+            upstream_account_id,
+            upstream_account_name,
+            request_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_seen_at,
+            last_seen_at,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start.timestamp())
+    .bind(SOURCE_PROXY)
+    .bind(prompt_cache_key)
+    .bind(format!("account:{upstream_account_id}"))
+    .bind(upstream_account_id)
+    .bind(format!("Account {upstream_account_id}"))
+    .bind(request_count)
+    .bind(request_count)
+    .bind(0_i64)
+    .bind(request_count * 10)
+    .bind(request_count as f64 * 0.01)
+    .bind(first_seen_at)
+    .bind(last_seen_at)
+    .execute(pool)
+    .await
+    .expect("insert prompt cache upstream-account hourly row");
+}
+
 async fn seed_invocation_archive_batch(
     pool: &SqlitePool,
     config: &AppConfig,
@@ -292,6 +344,7 @@ async fn parallel_work_stats_counts_distinct_prompt_cache_keys_per_bucket() {
             range: "7d".to_string(),
             bucket: Some("1m".to_string()),
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -341,6 +394,7 @@ async fn parallel_work_stats_returns_not_modified_for_matching_etag() {
         range: "7d".to_string(),
         bucket: Some("1m".to_string()),
         time_zone: Some("Asia/Shanghai".to_string()),
+        upstream_account_id: None,
     };
     let first_response = fetch_parallel_work_stats_cached(
         State(state.clone()),
@@ -421,6 +475,7 @@ async fn parallel_work_stats_minute7d_supports_non_shanghai_reporting_timezones(
             range: "7d".to_string(),
             bucket: Some("1m".to_string()),
             time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -516,6 +571,7 @@ async fn parallel_work_stats_falls_back_historical_windows_for_sub_hour_timezone
             range: "30d".to_string(),
             bucket: Some("1h".to_string()),
             time_zone: Some("Asia/Kolkata".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -596,6 +652,7 @@ async fn parallel_work_stats_zero_fills_current_page_period() {
             range: "7d".to_string(),
             bucket: Some("1m".to_string()),
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -677,6 +734,7 @@ async fn parallel_work_stats_current_day_bucket_aggregates_distinct_keys() {
             range: "1mo".to_string(),
             bucket: Some("1d".to_string()),
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -701,6 +759,91 @@ async fn parallel_work_stats_current_day_bucket_aggregates_distinct_keys() {
 }
 
 #[tokio::test]
+async fn parallel_work_stats_account_scoped_day_bucket_aggregates_distinct_keys() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let current_day_start =
+        local_midnight_utc(Utc::now().with_timezone(&Shanghai).date_naive(), Shanghai);
+    let previous_day_start = current_day_start - ChronoDuration::days(1);
+
+    insert_parallel_work_prompt_cache_upstream_account_hourly_row(
+        &state.pool,
+        previous_day_start,
+        "pck-account-alpha",
+        42,
+        1,
+    )
+    .await;
+    insert_parallel_work_prompt_cache_upstream_account_hourly_row(
+        &state.pool,
+        previous_day_start + ChronoDuration::hours(5),
+        "pck-account-alpha",
+        42,
+        2,
+    )
+    .await;
+    insert_parallel_work_prompt_cache_upstream_account_hourly_row(
+        &state.pool,
+        previous_day_start + ChronoDuration::hours(8),
+        "pck-account-beta",
+        42,
+        1,
+    )
+    .await;
+    insert_parallel_work_prompt_cache_upstream_account_hourly_row(
+        &state.pool,
+        previous_day_start + ChronoDuration::hours(10),
+        "pck-other-account",
+        17,
+        5,
+    )
+    .await;
+    insert_parallel_work_prompt_cache_upstream_account_hourly_row(
+        &state.pool,
+        current_day_start,
+        "pck-account-current",
+        42,
+        1,
+    )
+    .await;
+
+    let Json(response) = fetch_parallel_work_stats(
+        State(state),
+        Query(ParallelWorkStatsQuery {
+            range: "1mo".to_string(),
+            bucket: Some("1d".to_string()),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: Some(42),
+        }),
+    )
+    .await
+    .expect("fetch account-scoped parallel-work stats");
+
+    let previous_day_point = response
+        .current
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(previous_day_start))
+        .expect("previous day point");
+    let current_day_point = response
+        .current
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(current_day_start))
+        .expect("current day point");
+    assert_eq!(previous_day_point.parallel_count, 2);
+    assert_eq!(current_day_point.parallel_count, 1);
+    assert_eq!(response.current.active_bucket_count, 2);
+    assert_eq!(response.current.max_count, Some(2));
+    assert_f64_close(
+        response.current.avg_count.expect("avg count should be present"),
+        3.0 / response.current.complete_bucket_count as f64,
+    );
+}
+
+#[tokio::test]
 async fn parallel_work_stats_current_day_bucket_includes_current_page_period() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -722,6 +865,7 @@ async fn parallel_work_stats_current_day_bucket_includes_current_page_period() {
             range: "1mo".to_string(),
             bucket: Some("1d".to_string()),
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await
@@ -774,6 +918,7 @@ async fn parallel_work_stats_hourly_rollups_include_aligned_leading_bucket() {
             range: "7d".to_string(),
             bucket: Some("1h".to_string()),
             time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
         }),
     )
     .await

@@ -521,10 +521,15 @@ describe('DashboardActivityOverview', () => {
     expect(hookMocks.useParallelWorkStats).toHaveBeenCalledWith({
       range: 'today',
       bucket: '1m',
-      enabled: false,
+      upstreamAccountId: 42,
+    })
+    expect(hookMocks.useParallelWorkStats).toHaveBeenCalledWith({
+      range: 'yesterday',
+      bucket: '1m',
+      upstreamAccountId: 42,
     })
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain(
-      'parallelAvg:null;parallelError:null;showInProgress:true',
+      'parallelAvg:2;parallelError:null;showInProgress:true',
     )
 
     clickTab('7 Days')

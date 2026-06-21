@@ -241,8 +241,8 @@ export const ScopedAccountEmbedded: Story = {
     stats: sampleStats,
     rate: sampleRate,
     ...comparisonArgs,
-    parallelWorkStats: null,
-    comparisonParallelWorkStats: null,
+    parallelWorkStats: sampleParallelWorkStats,
+    comparisonParallelWorkStats,
     loading: false,
     error: null,
     showSurface: false,
@@ -261,8 +261,8 @@ export const ScopedAccountEmbedded: Story = {
     await expect(grid).toHaveClass(/lg:grid-cols-7/)
     await expect(tiles).toHaveLength(7)
     await expect(canvas.getByText(/in-progress conversations|进行中对话/i)).toBeInTheDocument()
-    await expect(canvas.getByTestId('today-stats-secondary-in-progress-delta')).toHaveTextContent('—')
-    await expect(canvas.getByTestId('today-stats-secondary-in-progress-day-average')).toHaveTextContent('—')
+    await expect(canvas.getByTestId('today-stats-secondary-in-progress-delta')).toHaveTextContent('+37.5%')
+    await expect(canvas.getByTestId('today-stats-secondary-in-progress-day-average')).toHaveTextContent('9')
     await expect(canvas.getByText(/response time|响应时间/i)).toBeInTheDocument()
   },
 }

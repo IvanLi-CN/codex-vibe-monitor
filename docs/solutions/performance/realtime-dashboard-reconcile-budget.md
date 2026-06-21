@@ -39,6 +39,7 @@ Using one cadence for all three overfits the most urgent surface and overloads t
 
 - Let SSE summary payloads drive KPI-style counters directly when the payload already contains the authoritative window.
 - Keep lightweight live KPI semantics separate from heavy aggregate endpoint semantics. If the KPI means “strictly in progress now”, expose that directly on the summary path instead of reusing the latest point from a historical bucket series.
+- When a dashboard card combines a live main value with historical comparison rows, keep the semantic split explicit: the main value can come from a strict real-time read model, while comparison rows can continue to use a stable historical aggregate as long as they remain clearly secondary and do not overwrite the live truth source.
 - Batch visible local patches separately from head/snapshot reconcile. A 1 second visible patch batch is responsive enough for card updates while avoiding per-record rerenders.
 - Put expensive HTTP reconcile and dense chart data commits behind a separate 5 second budget.
 - For large aggregate endpoints that must keep their JSON shape, add conditional HTTP (`ETag` and `304 Not Modified`) instead of trimming fields.

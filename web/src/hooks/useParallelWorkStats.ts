@@ -19,6 +19,7 @@ interface PendingLoad {
 interface UseParallelWorkStatsOptions {
   range: string
   bucket?: string
+  upstreamAccountId?: number
   enabled?: boolean
 }
 
@@ -53,7 +54,12 @@ export function shouldTriggerParallelWorkOpenResync(
   return now - lastResyncAt >= PARALLEL_WORK_OPEN_RESYNC_COOLDOWN_MS
 }
 
-export function useParallelWorkStats({ range, bucket, enabled = true }: UseParallelWorkStatsOptions) {
+export function useParallelWorkStats({
+  range,
+  bucket,
+  upstreamAccountId,
+  enabled = true,
+}: UseParallelWorkStatsOptions) {
   const [data, setData] = useState<ParallelWorkStatsResponse | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -91,6 +97,7 @@ export function useParallelWorkStats({ range, bucket, enabled = true }: UseParal
       const response = await fetchParallelWorkStatsConditional({
         range,
         bucket,
+        upstreamAccountId,
         signal: controller.signal,
         etag: etagRef.current,
       })
@@ -140,7 +147,7 @@ export function useParallelWorkStats({ range, bucket, enabled = true }: UseParal
         void runLoad({ silent: pending.silent })
       }
     }
-  }, [bucket, range])
+  }, [bucket, range, upstreamAccountId])
 
   const load = useCallback(async ({ silent = false, force = false }: LoadOptions = {}) => {
     if (!enabled) {
