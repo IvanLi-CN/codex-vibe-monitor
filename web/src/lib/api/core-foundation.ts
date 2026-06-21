@@ -574,6 +574,7 @@ export interface StatsResponse {
   failureCount: number;
   totalCost: number;
   totalTokens: number;
+  inProgressConversationCount?: number | null;
   maintenance?: StatsMaintenanceResponse;
 }
 

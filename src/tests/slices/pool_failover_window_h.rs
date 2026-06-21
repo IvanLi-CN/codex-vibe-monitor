@@ -10832,6 +10832,7 @@ async fn account_scoped_summary_and_timeseries_filter_by_payload_upstream_accoun
     assert_eq!(summary.failure_count, 0);
     assert_eq!(summary.total_tokens, 120);
     assert_f64_close(summary.total_cost, 0.42);
+    assert_eq!(summary.in_progress_conversation_count, Some(0));
 
     let Json(timeseries) = fetch_timeseries(
         State(state.clone()),
@@ -10884,6 +10885,95 @@ async fn account_scoped_summary_and_timeseries_filter_by_payload_upstream_accoun
         .sum();
     assert_eq!(total_hourly_count, 2);
     assert_eq!(total_hourly_tokens, 180);
+}
+
+#[tokio::test]
+async fn summary_reports_distinct_in_progress_prompt_cache_conversations() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+
+    for (id, invoke_id, status, payload) in [
+        (
+            401_i64,
+            "in-progress-running-a",
+            "running",
+            Some(json!({ "promptCacheKey": "pck-live-a" }).to_string()),
+        ),
+        (
+            402_i64,
+            "in-progress-pending-a",
+            "pending",
+            Some(json!({ "promptCacheKey": "pck-live-a" }).to_string()),
+        ),
+        (
+            403_i64,
+            "in-progress-running-b",
+            "running",
+            Some(json!({ "promptCacheKey": "pck-live-b" }).to_string()),
+        ),
+        (
+            404_i64,
+            "in-progress-success-a",
+            "success",
+            Some(json!({ "promptCacheKey": "pck-live-a" }).to_string()),
+        ),
+        (
+            405_i64,
+            "in-progress-success-c",
+            "success",
+            Some(json!({ "promptCacheKey": "pck-finished-c" }).to_string()),
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id,
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                total_tokens,
+                cost,
+                payload,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(id)
+        .bind(invoke_id)
+        .bind(&occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(10_i64)
+        .bind(0.01_f64)
+        .bind(payload)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert in-progress summary row");
+    }
+
+    let Json(stats) = fetch_stats(State(state.clone()))
+        .await
+        .expect("fetch stats with in-progress conversations");
+    assert_eq!(stats.in_progress_conversation_count, Some(2));
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("today".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("fetch today summary with in-progress conversations");
+    assert_eq!(summary.in_progress_conversation_count, Some(2));
 }
 
 #[tokio::test]

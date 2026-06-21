@@ -85,8 +85,11 @@
 ## 接口契约（Interfaces & Contracts）
 
 - HTTP API: 无变更。
-- SSE schema: 保持现有 `records` / `summary` / `quota` / `version` 结构，不扩展字段与事件类型。
+- SSE schema: 保持现有 `records` / `summary` / `quota` / `version` 结构；`summary` 可扩展轻量 KPI 字段，但不得改写既有 totals 含义。
 - `/api/stats/parallel-work`: response body schema 不变；成功响应应带 `ETag`，匹配 `If-None-Match` 时可返回 `304` 且不带 body。
+- Dashboard 顶部 Today KPI 中的“进行中对话”必须以严格未终态 `running/pending` 的唯一 `promptCacheKey` 数量为真相源，不得复用 `/api/stats/parallel-work` 当前窗口最后一个 bucket 的 `parallelCount`。
+- Stats 页 `parallel-work` 继续表示 bucket 内发生过请求的 distinct `promptCacheKey` 数量，不承担严格瞬时进行中对话语义。
+- Dashboard 总览卡片若保留次级展示数据，允许继续复用 `parallel-work` 的 bucket 趋势统计作为参考项，但这些次级项不得反向决定主值，也不得改变 `/api/stats/parallel-work` 的既有接口语义。
 
 ## 验收标准（Acceptance Criteria）
 
@@ -109,3 +112,19 @@
 
 - 风险：summary/quota 查询在高频代理流量下增加读压；通过错误隔离和轻量查询控制影响。
 - 假设：`invoke_id + occurred_at` 仍然可用于去重语义，不需要新增唯一键策略。
+
+## Visual Evidence
+
+- source_type=storybook_canvas
+- target_program=mock-only
+- capture_scope=element
+- requested_viewport=desktop1440
+- viewport_strategy=storybook-viewport
+- sensitive_exclusion=N/A
+- submission_gate=pending-owner-approval
+- story_id_or_title=dashboard-todaystatsoverview--desktop-single-row
+- state=desktop single row
+- evidence_note=验证总览卡片已改为“进行中对话”语义，主值显示 11，次级统计仍保留，且保持 today KPI 的单行桌面布局。
+
+PR: include
+![Dashboard 进行中对话 Storybook 证据](./assets/dashboard-in-progress-conversations-storybook.png)

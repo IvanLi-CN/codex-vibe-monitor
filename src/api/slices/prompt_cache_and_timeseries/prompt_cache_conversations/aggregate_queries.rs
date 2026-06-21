@@ -140,6 +140,48 @@ pub(crate) async fn query_working_prompt_cache_conversation_count(
     Ok(count)
 }
 
+pub(crate) async fn query_in_progress_prompt_cache_conversation_count(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+) -> Result<i64> {
+    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT COUNT(DISTINCT prompt_cache_key) AS count \
+         FROM (\
+             SELECT ",
+    );
+    query.push(KEY_EXPR).push(
+        " AS prompt_cache_key \
+         FROM codex_invocations \
+         WHERE ",
+    );
+    query
+        .push(KEY_EXPR)
+        .push(" IS NOT NULL AND ")
+        .push(KEY_EXPR)
+        .push(" <> '' AND LOWER(TRIM(")
+        .push(invocation_display_status_sql())
+        .push(")) IN ('running', 'pending')");
+
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND ")
+            .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+            .push(" = ")
+            .push_bind(upstream_account_id);
+    }
+
+    query.push(")");
+
+    let (count,) = query.build_query_as::<(i64,)>().fetch_one(pool).await?;
+    Ok(count)
+}
+
 pub(crate) async fn query_working_prompt_cache_conversation_count_at_snapshot(
     pool: &Pool<Sqlite>,
     range_start_bound: &str,
@@ -590,4 +632,3 @@ pub(crate) async fn query_prompt_cache_working_conversation_aggregates_page(
         .await
         .map_err(Into::into)
 }
-

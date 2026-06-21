@@ -179,12 +179,22 @@ function latestParallelCount(window: ParallelWorkWindowResponse | null | undefin
 }
 
 export function buildParallelWorkKpiSnapshot(
-  current: ParallelWorkStatsResponse | null | undefined,
-  yesterday: ParallelWorkStatsResponse | null | undefined,
+  currentSummary: StatsResponse | null | undefined,
+  currentParallelWork: ParallelWorkStatsResponse | null | undefined,
+  yesterdayParallelWork: ParallelWorkStatsResponse | null | undefined,
+  options: {
+    preferSummaryCurrentCount?: boolean
+  } = {},
 ): ParallelWorkKpiSnapshot {
+  const preferSummaryCurrentCount = options.preferSummaryCurrentCount ?? false
+  const summaryCurrentCount = currentSummary?.inProgressConversationCount ?? null
+
   return {
-    currentCount: latestParallelCount(current?.current),
-    dayAverage: current?.current.avgCount ?? null,
-    yesterdayAverage: yesterday?.current.avgCount ?? null,
+    currentCount:
+      preferSummaryCurrentCount && summaryCurrentCount != null
+        ? summaryCurrentCount
+        : latestParallelCount(currentParallelWork?.current),
+    dayAverage: currentParallelWork?.current.avgCount ?? null,
+    yesterdayAverage: yesterdayParallelWork?.current.avgCount ?? null,
   }
 }

@@ -68,9 +68,9 @@ vi.mock('./TodayStatsOverview', () => ({
     rateError,
     parallelWorkStats,
     parallelWorkError,
-    showParallelWork,
+    showInProgressConversations,
   }: {
-    stats?: { totalCount?: number } | null
+    stats?: { totalCount?: number; inProgressConversationCount?: number } | null
     showSurface?: boolean
     showHeader?: boolean
     showDayBadge?: boolean
@@ -79,10 +79,10 @@ vi.mock('./TodayStatsOverview', () => ({
     rateError?: string | null
     parallelWorkStats?: { current?: { avgCount?: number | null } } | null
     parallelWorkError?: string | null
-    showParallelWork?: boolean
+    showInProgressConversations?: boolean
   }) => (
     <div data-testid="today-stats-overview-mock">
-      {`total:${stats?.totalCount ?? 'null'};surface:${String(showSurface)};header:${String(showHeader)};badge:${String(showDayBadge)};tpm:${rate?.tokensPerMinute ?? 'null'};spendRate:${rate?.spendRate ?? 'null'};rateLoading:${String(rateLoading)};rateError:${rateError ?? 'null'};parallelAvg:${parallelWorkStats?.current?.avgCount ?? 'null'};parallelError:${parallelWorkError ?? 'null'};showParallel:${String(showParallelWork)}`}
+      {`total:${stats?.totalCount ?? 'null'};inProgress:${stats?.inProgressConversationCount ?? 'null'};surface:${String(showSurface)};header:${String(showHeader)};badge:${String(showDayBadge)};tpm:${rate?.tokensPerMinute ?? 'null'};spendRate:${rate?.spendRate ?? 'null'};rateLoading:${String(rateLoading)};rateError:${rateError ?? 'null'};parallelAvg:${parallelWorkStats?.current?.avgCount ?? 'null'};parallelError:${parallelWorkError ?? 'null'};showInProgress:${String(showInProgressConversations)}`}
     </div>
   ),
 }))
@@ -280,19 +280,19 @@ function buildParallelWorkStatsFixture(avgCount = 2) {
 
 function installSummaryMocks() {
   summaryStore.set('today', {
-    summary: { totalCount: 12, successCount: 10, failureCount: 2, totalCost: 0.52, totalTokens: 2048 },
+    summary: { totalCount: 12, successCount: 10, failureCount: 2, totalCost: 0.52, totalTokens: 2048, inProgressConversationCount: 11 },
     isLoading: false,
     error: null,
   })
   summaryStore.set('yesterday', {
-    summary: { totalCount: 8, successCount: 7, failureCount: 1, totalCost: 0.21, totalTokens: 1024 },
+    summary: { totalCount: 8, successCount: 7, failureCount: 1, totalCost: 0.21, totalTokens: 1024, inProgressConversationCount: 4 },
     isLoading: false,
     error: null,
   })
-  summaryStore.set('1d', { summary: { totalCount: 100 }, isLoading: false, error: null })
-  summaryStore.set('7d', { summary: { totalCount: 700 }, isLoading: false, error: null })
+  summaryStore.set('1d', { summary: { totalCount: 100, inProgressConversationCount: 6 }, isLoading: false, error: null })
+  summaryStore.set('7d', { summary: { totalCount: 700, inProgressConversationCount: 7 }, isLoading: false, error: null })
   summaryStore.set('previous7d', {
-    summary: { totalCount: 70, successCount: 66, failureCount: 4, totalCost: 1.4, totalTokens: 7000 },
+    summary: { totalCount: 70, successCount: 66, failureCount: 4, totalCost: 1.4, totalTokens: 7000, inProgressConversationCount: 5 },
     isLoading: false,
     error: null,
   })
@@ -399,7 +399,7 @@ describe('DashboardActivityOverview', () => {
     expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')).toBeNull()
     expect(host?.querySelector('[data-testid="dashboard-activity-range-usage"]')).toBeNull()
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toBe(
-      'total:12;surface:false;header:false;badge:false;tpm:1000;spendRate:0.1;rateLoading:false;rateError:null;parallelAvg:2;parallelError:null;showParallel:true',
+      'total:12;inProgress:11;surface:false;header:false;badge:false;tpm:1000;spendRate:0.1;rateLoading:false;rateError:null;parallelAvg:2;parallelError:null;showInProgress:true',
     )
     expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent).toBe(
       'metric:totalCount',
@@ -467,30 +467,6 @@ describe('DashboardActivityOverview', () => {
     expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toBe('metric:totalTokens;account:global')
   })
 
-  it('keeps the current parallel KPI visible when only the comparison request fails', () => {
-    installSummaryMocks()
-    hookMocks.useParallelWorkStats.mockImplementation(({ range }: { range: string }) => {
-      if (range === 'yesterday') {
-        return {
-          data: null,
-          isLoading: false,
-          error: 'comparison unavailable',
-        }
-      }
-      return {
-        data: buildParallelWorkStatsFixture(2),
-        isLoading: false,
-        error: null,
-      }
-    })
-
-    render(<DashboardActivityOverview />)
-
-    expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain(
-      'parallelAvg:2;parallelError:null',
-    )
-  })
-
   it('restores the last active range from localStorage and falls back to today on invalid values', () => {
     installSummaryMocks()
     window.localStorage.setItem(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY, 'usage')
@@ -548,7 +524,7 @@ describe('DashboardActivityOverview', () => {
       enabled: false,
     })
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain(
-      'showParallel:false',
+      'showInProgress:false',
     )
 
     clickTab('7 Days')
@@ -623,17 +599,43 @@ describe('DashboardActivityOverview', () => {
 
     expect(componentState.chartRenderCount).toBe(1)
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain('total:12')
+    expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain('inProgress:11')
 
     act(() => {
       summaryStore.set('today', {
-        summary: { totalCount: 18, successCount: 15, failureCount: 3, totalCost: 0.66, totalTokens: 2600 },
+        summary: { totalCount: 18, successCount: 15, failureCount: 3, totalCost: 0.66, totalTokens: 2600, inProgressConversationCount: 9 },
         isLoading: false,
         error: null,
       })
     })
 
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain('total:18')
+    expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain('inProgress:9')
     expect(componentState.chartRenderCount).toBe(1)
     expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.getAttribute('data-render-count')).toBe('1')
+  })
+
+  it('keeps trend comparison data visible when the comparison parallel request fails', () => {
+    installSummaryMocks()
+    hookMocks.useParallelWorkStats.mockImplementation(({ range }: { range: string }) => {
+      if (range === 'yesterday') {
+        return {
+          data: null,
+          isLoading: false,
+          error: 'comparison unavailable',
+        }
+      }
+      return {
+        data: buildParallelWorkStatsFixture(2),
+        isLoading: false,
+        error: null,
+      }
+    })
+
+    render(<DashboardActivityOverview />)
+
+    expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain(
+      'parallelAvg:2;parallelError:null',
+    )
   })
 })

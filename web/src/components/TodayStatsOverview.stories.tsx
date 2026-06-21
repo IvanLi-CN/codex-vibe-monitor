@@ -12,6 +12,7 @@ const sampleStats: StatsResponse = {
   failureCount: 35,
   totalCost: 12.47,
   totalTokens: 842190,
+  inProgressConversationCount: 11,
 }
 
 const sampleRate: DashboardTodayRateSnapshot = {
@@ -27,6 +28,7 @@ const comparisonStats: StatsResponse = {
   failureCount: 56,
   totalCost: 10.12,
   totalTokens: 640000,
+  inProgressConversationCount: 7,
 }
 
 const previous7dStats: StatsResponse = {
@@ -35,6 +37,7 @@ const previous7dStats: StatsResponse = {
   failureCount: 419,
   totalCost: 72.1,
   totalTokens: 4380000,
+  inProgressConversationCount: 5,
 }
 
 const sampleTimeseries: TimeseriesResponse = {
@@ -70,47 +73,79 @@ const comparisonTimeseries: TimeseriesResponse = {
   })),
 }
 
-const sampleParallelWorkStats: ParallelWorkStatsResponse = {
-  current: {
-    rangeStart: '2026-04-10T00:00:00.000Z',
-    rangeEnd: '2026-04-10T00:08:00.000Z',
-    bucketSeconds: 60,
-    completeBucketCount: 8,
-    activeBucketCount: 7,
-    minCount: 0,
-    maxCount: 6,
-    avgCount: 3.38,
-    points: [1, 2, 4, 3, 5, 6, 4, 5].map((parallelCount, index) => ({
-      bucketStart: new Date(Date.parse('2026-04-10T00:00:00.000Z') + index * 60_000).toISOString(),
-      bucketEnd: new Date(Date.parse('2026-04-10T00:01:00.000Z') + index * 60_000).toISOString(),
-      parallelCount,
-    })),
-  },
-  minute7d: {} as never,
-  hour30d: {} as never,
-  dayAll: {} as never,
-}
-
-const comparisonParallelWorkStats: ParallelWorkStatsResponse = {
-  ...sampleParallelWorkStats,
-  current: {
-    ...sampleParallelWorkStats.current,
-    avgCount: 2.62,
-    points: [1, 2, 2, 3, 3, 4, 3].map((parallelCount, index) => ({
-      bucketStart: new Date(Date.parse('2026-04-09T00:00:00.000Z') + index * 60_000).toISOString(),
-      bucketEnd: new Date(Date.parse('2026-04-09T00:01:00.000Z') + index * 60_000).toISOString(),
-      parallelCount,
-    })),
-  },
-}
-
 const comparisonArgs = {
   timeseries: sampleTimeseries,
   comparisonStats,
   comparisonTimeseries,
   previous7dStats,
-  parallelWorkStats: sampleParallelWorkStats,
-  comparisonParallelWorkStats,
+}
+
+function buildParallelWorkWindow(
+  counts: number[],
+  {
+    rangeStart,
+    bucketSeconds = 60,
+  }: {
+    rangeStart: string
+    bucketSeconds?: number
+  },
+): ParallelWorkStatsResponse['current'] {
+  const startMs = Date.parse(rangeStart)
+  const lastBucketStart = startMs + Math.max(counts.length - 1, 0) * bucketSeconds * 1000
+  const rangeEnd = new Date(lastBucketStart + bucketSeconds * 1000).toISOString()
+
+  return {
+    rangeStart,
+    rangeEnd,
+    bucketSeconds,
+    completeBucketCount: counts.length,
+    activeBucketCount: counts.length,
+    minCount: counts.length > 0 ? Math.min(...counts) : null,
+    maxCount: counts.length > 0 ? Math.max(...counts) : null,
+    avgCount:
+      counts.length > 0
+        ? Number((counts.reduce((sum, value) => sum + value, 0) / counts.length).toFixed(2))
+        : null,
+    points: counts.map((parallelCount, index) => ({
+      bucketStart: new Date(startMs + index * bucketSeconds * 1000).toISOString(),
+      bucketEnd: new Date(startMs + (index + 1) * bucketSeconds * 1000).toISOString(),
+      parallelCount,
+    })),
+  }
+}
+
+const sampleParallelWorkStats: ParallelWorkStatsResponse = {
+  current: buildParallelWorkWindow([8, 10, 9], {
+    rangeStart: '2026-04-10T00:00:00.000Z',
+  }),
+  minute7d: buildParallelWorkWindow([6, 7, 8, 9], {
+    rangeStart: '2026-04-03T00:00:00.000Z',
+  }),
+  hour30d: buildParallelWorkWindow([5, 6, 7], {
+    rangeStart: '2026-03-11T00:00:00.000Z',
+    bucketSeconds: 3600,
+  }),
+  dayAll: buildParallelWorkWindow([7], {
+    rangeStart: '2026-04-09T00:00:00.000Z',
+    bucketSeconds: 86400,
+  }),
+}
+
+const comparisonParallelWorkStats: ParallelWorkStatsResponse = {
+  current: buildParallelWorkWindow([7, 8, 9], {
+    rangeStart: '2026-04-09T00:00:00.000Z',
+  }),
+  minute7d: buildParallelWorkWindow([5, 6, 7, 8], {
+    rangeStart: '2026-04-02T00:00:00.000Z',
+  }),
+  hour30d: buildParallelWorkWindow([4, 5, 6], {
+    rangeStart: '2026-03-10T00:00:00.000Z',
+    bucketSeconds: 3600,
+  }),
+  dayAll: buildParallelWorkWindow([8], {
+    rangeStart: '2026-04-08T00:00:00.000Z',
+    bucketSeconds: 86400,
+  }),
 }
 
 const meta = {
@@ -142,6 +177,8 @@ export const Populated: Story = {
     stats: sampleStats,
     rate: sampleRate,
     ...comparisonArgs,
+    parallelWorkStats: sampleParallelWorkStats,
+    comparisonParallelWorkStats,
     loading: false,
     error: null,
   },
@@ -159,6 +196,8 @@ export const DesktopSingleRow: Story = {
     stats: sampleStats,
     rate: sampleRate,
     ...comparisonArgs,
+    parallelWorkStats: sampleParallelWorkStats,
+    comparisonParallelWorkStats,
     loading: false,
     error: null,
   },
@@ -172,7 +211,7 @@ export const DesktopSingleRow: Story = {
     const tiles = canvas.getAllByTestId('today-stats-metric-tile')
     await expect(tiles).toHaveLength(7)
     const labels = tiles.map((tile) => tile.textContent ?? '')
-    expect(labels[3]).toMatch(/parallel conversations|并行对话/i)
+    expect(labels[3]).toMatch(/in-progress conversations|进行中对话/i)
     expect(labels[4]).toMatch(/response time|响应时间/i)
   },
 }
@@ -182,6 +221,8 @@ export const EmbeddedTodayTab: Story = {
     stats: sampleStats,
     rate: sampleRate,
     ...comparisonArgs,
+    parallelWorkStats: sampleParallelWorkStats,
+    comparisonParallelWorkStats,
     loading: false,
     error: null,
     showSurface: false,
@@ -200,9 +241,11 @@ export const ScopedAccountEmbedded: Story = {
     stats: sampleStats,
     rate: sampleRate,
     ...comparisonArgs,
+    parallelWorkStats: sampleParallelWorkStats,
+    comparisonParallelWorkStats,
     loading: false,
     error: null,
-    showParallelWork: false,
+    showInProgressConversations: false,
     showSurface: false,
     showHeader: false,
     showDayBadge: false,
@@ -219,7 +262,7 @@ export const ScopedAccountEmbedded: Story = {
     await expect(grid).toHaveClass(/lg:grid-cols-6/)
     await expect(grid).not.toHaveClass(/lg:grid-cols-7/)
     await expect(tiles).toHaveLength(6)
-    await expect(canvas.queryByText(/parallel conversations|并行对话/i)).not.toBeInTheDocument()
+    await expect(canvas.queryByText(/in-progress conversations|进行中对话/i)).not.toBeInTheDocument()
     await expect(canvas.getByText(/response time|响应时间/i)).toBeInTheDocument()
   },
 }
@@ -230,6 +273,8 @@ export const RateLoading: Story = {
     rate: null,
     loading: false,
     rateLoading: true,
+    parallelWorkStats: sampleParallelWorkStats,
+    comparisonParallelWorkStats,
     error: null,
     showSurface: false,
     showHeader: false,
@@ -249,6 +294,8 @@ export const RateUnavailable: Story = {
     loading: false,
     rateLoading: false,
     rateError: 'timeseries failed',
+    parallelWorkStats: sampleParallelWorkStats,
+    comparisonParallelWorkStats,
     error: null,
     showSurface: false,
     showHeader: false,
@@ -270,6 +317,8 @@ export const ZeroRate: Story = {
       windowMinutes: 0,
       available: true,
     },
+    parallelWorkStats: sampleParallelWorkStats,
+    comparisonParallelWorkStats,
     loading: false,
     error: null,
     showSurface: false,
@@ -291,8 +340,11 @@ export const OverflowFallback: Story = {
       failureCount: 2525,
       totalCost: 539.42,
       totalTokens: 1314275579,
+      inProgressConversationCount: 11,
     },
     rate: sampleRate,
+    parallelWorkStats: sampleParallelWorkStats,
+    comparisonParallelWorkStats,
     loading: false,
     error: null,
     showSurface: false,
@@ -322,8 +374,11 @@ export const NarrowDesktopOverflowFallback: Story = {
       failureCount: 2525,
       totalCost: 539.42,
       totalTokens: 281110000,
+      inProgressConversationCount: 11,
     },
     rate: sampleRate,
+    parallelWorkStats: sampleParallelWorkStats,
+    comparisonParallelWorkStats,
     loading: false,
     error: null,
     showSurface: false,
@@ -403,6 +458,8 @@ export const Empty: Story = {
       windowMinutes: 0,
       available: true,
     },
+    parallelWorkStats: sampleParallelWorkStats,
+    comparisonParallelWorkStats,
     loading: false,
     error: null,
   },
@@ -430,6 +487,7 @@ function buildAnimatedStats(step: number): StatsResponse {
     failureCount,
     totalCost,
     totalTokens,
+    inProgressConversationCount: (sampleStats.inProgressConversationCount ?? 0) + (step % 4),
   }
 }
 
@@ -481,6 +539,8 @@ function LiveTickerPreview() {
         rate={ready ? rate : null}
         timeseries={ready ? sampleTimeseries : null}
         comparisonTimeseries={ready ? comparisonTimeseries : null}
+        parallelWorkStats={sampleParallelWorkStats}
+        comparisonParallelWorkStats={comparisonParallelWorkStats}
         loading={!ready}
         error={null}
       />
@@ -514,6 +574,8 @@ function StateGalleryPreview() {
             stats={sampleStats}
             rate={sampleRate}
             {...comparisonArgs}
+            parallelWorkStats={sampleParallelWorkStats}
+            comparisonParallelWorkStats={comparisonParallelWorkStats}
             loading={false}
             error={null}
           />
@@ -524,6 +586,8 @@ function StateGalleryPreview() {
             stats={sampleStats}
             rate={null}
             {...comparisonArgs}
+            parallelWorkStats={sampleParallelWorkStats}
+            comparisonParallelWorkStats={comparisonParallelWorkStats}
             loading={false}
             rateLoading
             error={null}
@@ -535,6 +599,8 @@ function StateGalleryPreview() {
             stats={sampleStats}
             rate={null}
             {...comparisonArgs}
+            parallelWorkStats={sampleParallelWorkStats}
+            comparisonParallelWorkStats={comparisonParallelWorkStats}
             loading={false}
             rateError="timeseries failed"
             error={null}

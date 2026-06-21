@@ -203,6 +203,14 @@ describe('dashboard KPI comparison helpers', () => {
 
     const snapshot = buildParallelWorkKpiSnapshot(
       {
+        totalCount: 2,
+        successCount: 2,
+        failureCount: 0,
+        totalCost: 0.02,
+        totalTokens: 200,
+        inProgressConversationCount: 4,
+      },
+      {
         current: {
           rangeStart: 'today',
           rangeEnd: 'today',
@@ -237,6 +245,7 @@ describe('dashboard KPI comparison helpers', () => {
         hour30d: {} as never,
         dayAll: {} as never,
       },
+      { preferSummaryCurrentCount: true },
     )
 
     expect(snapshot.currentCount).toBe(4)

@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { useSummary } from '../hooks/useStats'
-import { useTimeseries } from '../hooks/useTimeseries'
 import { useParallelWorkStats } from '../hooks/useParallelWorkStats'
+import { useTimeseries } from '../hooks/useTimeseries'
 import { useTranslation } from '../i18n'
 import { metricAccent } from '../lib/chartTheme'
 import { recordTodayChartDataCommit } from '../lib/dashboardPerformanceDiagnostics'
@@ -235,8 +235,6 @@ function DashboardNaturalDayTodaySummaryOverview({
   const parallelEnabled = upstreamAccountId == null
   const {
     data: parallelWorkStats,
-    isLoading: parallelWorkLoading,
-    error: parallelWorkError,
   } = useParallelWorkStats({
     range: 'today',
     bucket: '1m',
@@ -283,11 +281,7 @@ function DashboardNaturalDayTodaySummaryOverview({
       previous7dStats={previous7dSummary}
       parallelWorkStats={parallelEnabled ? parallelWorkStats : null}
       comparisonParallelWorkStats={parallelEnabled ? comparisonParallelWorkStats : null}
-      parallelWorkLoading={parallelEnabled && parallelWorkLoading}
-      parallelWorkError={
-        parallelEnabled ? parallelWorkError : null
-      }
-      showParallelWork={parallelEnabled}
+      showInProgressConversations={parallelEnabled}
       dayKind="today"
       showSurface={false}
       showHeader={false}
@@ -320,8 +314,6 @@ function DashboardNaturalDayYesterdaySummaryOverview({
   const parallelEnabled = upstreamAccountId == null
   const {
     data: parallelWorkStats,
-    isLoading: parallelWorkLoading,
-    error: parallelWorkError,
   } = useParallelWorkStats({
     range: 'yesterday',
     bucket: '1m',
@@ -361,11 +353,7 @@ function DashboardNaturalDayYesterdaySummaryOverview({
       previous7dStats={previous7dSummary}
       parallelWorkStats={parallelEnabled ? parallelWorkStats : null}
       comparisonParallelWorkStats={null}
-      parallelWorkLoading={parallelEnabled && parallelWorkLoading}
-      parallelWorkError={
-        parallelEnabled ? parallelWorkError : null
-      }
-      showParallelWork={parallelEnabled}
+      showInProgressConversations={parallelEnabled}
       dayKind="yesterday"
       showSurface={false}
       showHeader={false}

@@ -64,6 +64,8 @@ pub(crate) struct StatsResponse {
     pub(crate) total_cost: f64,
     pub(crate) total_tokens: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) in_progress_conversation_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) maintenance: Option<StatsMaintenanceResponse>,
 }
 
@@ -142,6 +144,7 @@ impl StatsTotals {
             failure_count: self.failure_count,
             total_cost: self.total_cost,
             total_tokens: self.total_tokens,
+            in_progress_conversation_count: None,
             maintenance: None,
         }
     }

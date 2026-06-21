@@ -1671,6 +1671,9 @@ pub(crate) async fn fetch_stats(
     )
     .await?;
     let mut response = totals.into_response();
+    response.in_progress_conversation_count = Some(
+        query_in_progress_prompt_cache_conversation_count(&state.pool, source_scope, None).await?,
+    );
     response.maintenance = Some(load_stats_maintenance_response(state.as_ref()).await?);
     Ok(Json(response))
 }
@@ -1755,6 +1758,7 @@ pub(crate) async fn fetch_summary(
                     failure_count: 0,
                     total_cost: 0.0,
                     total_tokens: 0,
+                    in_progress_conversation_count: Some(0),
                     maintenance: Some(load_stats_maintenance_response(state.as_ref()).await?),
                 }));
             }
@@ -1802,6 +1806,14 @@ pub(crate) async fn fetch_summary(
     };
 
     let mut response = totals.into_response();
+    response.in_progress_conversation_count = Some(
+        query_in_progress_prompt_cache_conversation_count(
+            &state.pool,
+            source_scope,
+            upstream_account_id,
+        )
+        .await?,
+    );
     response.maintenance = Some(load_stats_maintenance_response(state.as_ref()).await?);
     Ok(Json(response))
 }

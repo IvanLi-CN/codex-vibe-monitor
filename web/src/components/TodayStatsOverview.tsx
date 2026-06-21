@@ -36,9 +36,7 @@ export interface TodayStatsOverviewProps {
   previous7dStats?: StatsResponse | null
   parallelWorkStats?: ParallelWorkStatsResponse | null
   comparisonParallelWorkStats?: ParallelWorkStatsResponse | null
-  parallelWorkLoading?: boolean
-  parallelWorkError?: string | null
-  showParallelWork?: boolean
+  showInProgressConversations?: boolean
   dayKind?: 'today' | 'yesterday'
   showSurface?: boolean
   showHeader?: boolean
@@ -230,9 +228,7 @@ export function TodayStatsOverview({
   previous7dStats,
   parallelWorkStats,
   comparisonParallelWorkStats,
-  parallelWorkLoading = false,
-  parallelWorkError = null,
-  showParallelWork = true,
+  showInProgressConversations = true,
   dayKind = 'today',
   showSurface = true,
   showHeader = true,
@@ -277,7 +273,12 @@ export function TodayStatsOverview({
   )
   const terminalFailureRate = failureRate(successCount, failureCount)
   const tokenCacheHitRate = cacheHitRate(sumCacheInputTokens(timeseries), totalTokens)
-  const parallelSnapshot = buildParallelWorkKpiSnapshot(parallelWorkStats, comparisonParallelWorkStats)
+  const parallelSnapshot = buildParallelWorkKpiSnapshot(
+    stats,
+    parallelWorkStats,
+    comparisonParallelWorkStats,
+    { preferSummaryCurrentCount: true },
+  )
   const parallelDelta = percentDelta(parallelSnapshot.currentCount, parallelSnapshot.yesterdayAverage)
 
   const rateUnavailable = !loading && !rateLoading && rateError != null
@@ -313,7 +314,7 @@ export function TodayStatsOverview({
           data-testid="today-stats-metrics-grid"
           className={cn(
             'grid grid-cols-1 gap-3 sm:grid-cols-2',
-            showParallelWork ? 'lg:grid-cols-7' : 'lg:grid-cols-6',
+            showInProgressConversations ? 'lg:grid-cols-7' : 'lg:grid-cols-6',
           )}
         >
           <MetricTile
@@ -388,29 +389,27 @@ export function TodayStatsOverview({
               },
             ]}
           />
-          {showParallelWork ? (
+          {showInProgressConversations ? (
             <MetricTile
-              label={t('dashboard.today.parallelConversations')}
-              description={t('dashboard.today.parallelConversationsDescription')}
+              label={t('dashboard.today.inProgressConversations')}
+              description={t('dashboard.today.inProgressConversationsDescription')}
               value={parallelSnapshot.currentCount ?? 0}
               localeTag={localeTag}
-              loading={parallelWorkLoading}
+              loading={loading}
               kind="integer"
               toneClass="text-info"
-              valueTestId="today-stats-value-parallel-conversations"
-              displayText={parallelWorkError ? RATE_UNAVAILABLE_PLACEHOLDER : undefined}
-              subdued={parallelWorkError != null}
+              valueTestId="today-stats-value-in-progress-conversations"
               secondaryItems={[
                 {
                   label: comparisonLabel,
                   value: formatPercentValue(parallelDelta, localeTag),
                   toneClass: comparisonTone(parallelDelta),
-                  valueTestId: 'today-stats-secondary-parallel-delta',
+                  valueTestId: 'today-stats-secondary-in-progress-delta',
                 },
                 {
                   label: t('dashboard.today.secondary.dayAverage'),
                   value: formatNumberValue(parallelSnapshot.dayAverage, localeTag, 2),
-                  valueTestId: 'today-stats-secondary-parallel-day-average',
+                  valueTestId: 'today-stats-secondary-in-progress-day-average',
                 },
               ]}
             />
