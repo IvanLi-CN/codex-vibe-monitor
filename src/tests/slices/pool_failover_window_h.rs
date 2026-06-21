@@ -8292,6 +8292,100 @@ async fn all_time_summary_repair_does_not_advance_shared_live_cursor_without_hou
 }
 
 #[tokio::test]
+async fn summary_rollup_repair_refreshes_stale_repair_live_cursor_from_shared_progress() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(430))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let archived_success_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("archived success time"),
+    );
+
+    seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-repair-stale-live-cursor",
+        &[(
+            1_i64,
+            "summary-repair-stale-live-cursor-archived-success",
+            archived_success_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)
+        VALUES (?1, ?2, datetime('now'))
+        ON CONFLICT(dataset) DO UPDATE SET
+            cursor_id = excluded.cursor_id,
+            updated_at = datetime('now')
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(25_i64)
+    .execute(&state.pool)
+    .await
+    .expect("seed shared invocation hourly rollup cursor");
+
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)
+        VALUES (?1, ?2, datetime('now'))
+        ON CONFLICT(dataset) DO UPDATE SET
+            cursor_id = excluded.cursor_id,
+            updated_at = datetime('now')
+        "#,
+    )
+    .bind("codex_invocations_summary_rollup_v2")
+    .bind(1_i64)
+    .execute(&state.pool)
+    .await
+    .expect("seed summary repair completion marker");
+
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)
+        VALUES (?1, ?2, datetime('now'))
+        ON CONFLICT(dataset) DO UPDATE SET
+            cursor_id = excluded.cursor_id,
+            updated_at = datetime('now')
+        "#,
+    )
+    .bind("codex_invocations_summary_rollup_v2_live_cursor")
+    .bind(10_i64)
+    .execute(&state.pool)
+    .await
+    .expect("seed stale summary repair live cursor");
+
+    crate::stats::ensure_invocation_summary_rollups_ready(&state.pool)
+        .await
+        .expect("refresh stale summary repair live cursor");
+
+    let repair_live_cursor: i64 = sqlx::query_scalar(
+        "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
+    )
+    .bind("codex_invocations_summary_rollup_v2_live_cursor")
+    .fetch_one(&state.pool)
+    .await
+    .expect("load repaired summary live cursor");
+    assert_eq!(repair_live_cursor, 25);
+}
+
+#[tokio::test]
 async fn all_time_summary_rollup_repair_counts_mixed_case_success_status() {
     let mut config = test_config();
     config.openai_upstream_base_url =
@@ -9249,6 +9343,187 @@ async fn timeseries_hourly_backed_ignores_missing_exact_archive_batch() {
     assert!(response.points.iter().all(|point| point.total_count == 0));
 
     cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn summary_yesterday_ignores_missing_non_overlapping_archive_batch() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 0;
+    let state = test_state_from_config(config, true).await;
+    let temp_dir = make_temp_test_dir("summary-yesterday-missing-non-overlap-archive");
+    let missing_archive = temp_dir.join("missing-codex-invocations.sqlite.gz");
+
+    let old_day_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(40))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid old local day");
+    let old_month_key = old_day_local.format("%Y-%m").to_string();
+    let coverage_start_at = format_naive(old_day_local);
+    let coverage_end_at = format_naive(
+        old_day_local
+            .checked_add_signed(ChronoDuration::hours(1))
+            .expect("valid archive coverage end"),
+    );
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))
+        "#,
+    )
+    .bind("codex_invocations")
+    .bind(&old_month_key)
+    .bind(missing_archive.to_string_lossy().to_string())
+    .bind("deadbeef")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&coverage_start_at)
+    .bind(&coverage_end_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert missing non-overlapping archive manifest");
+
+    let yesterday_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(1))
+    .and_hms_opt(9, 0, 0)
+    .expect("valid yesterday local day");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            total_tokens,
+            cost,
+            status,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind("yesterday-account-summary")
+    .bind(format_naive(yesterday_local))
+    .bind(SOURCE_PROXY)
+    .bind(33_i64)
+    .bind(0.33_f64)
+    .bind("success")
+    .bind(r#"{"upstreamAccountId":2890}"#)
+    .bind(r#"{"range":"yesterday"}"#)
+    .execute(&state.pool)
+    .await
+    .expect("insert yesterday invocation");
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("yesterday".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: Some(2890),
+        }),
+    )
+    .await
+    .expect("fetch yesterday account summary");
+    assert_eq!(summary.total_count, 1);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 0);
+    assert_eq!(summary.total_tokens, 33);
+    assert_f64_close(summary.total_cost, 0.33);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn account_summary_yesterday_ignores_materialized_archive_missing_account_usage_marker() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 0;
+    let state = test_state_from_config(config, true).await;
+    let account_id = 2890_i64;
+
+    let yesterday_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(1))
+    .and_hms_opt(9, 0, 0)
+    .expect("valid yesterday local day");
+    let occurred_at = format_naive(
+        yesterday_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("valid occurred_at"),
+    );
+    let archive_path = seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "account-summary-materialized-missing-usage-marker",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1_i64,
+            invoke_id: "account-summary-materialized-missing-usage-marker",
+            occurred_at: occurred_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 33_i64,
+            cost: 0.33_f64,
+            ttfb_ms: Some(120.0),
+            payload: Some(r#"{"upstreamAccountId":2890}"#),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0_i64),
+        }],
+    )
+    .await;
+
+    materialize_historical_rollups(&state.pool, &state.config, false)
+        .await
+        .expect("materialize historical rollups");
+
+    sqlx::query(
+        r#"
+        DELETE FROM hourly_rollup_archive_replay
+        WHERE dataset = 'codex_invocations'
+          AND file_path = ?1
+          AND target = ?2
+        "#,
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
+    .execute(&state.pool)
+    .await
+    .expect("drop upstream account usage replay marker");
+
+    fs::write(&archive_path, b"not-a-gzip-archive")
+        .expect("corrupt materialized archive after rollups exist");
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("yesterday".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: Some(account_id),
+        }),
+    )
+    .await
+    .expect("fetch yesterday account summary from materialized rollups");
+    assert_eq!(summary.total_count, 1);
+    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.failure_count, 0);
+    assert_eq!(summary.total_tokens, 33);
+    assert_f64_close(summary.total_cost, 0.33);
 }
 
 #[tokio::test]

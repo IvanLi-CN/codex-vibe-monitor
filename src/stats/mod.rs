@@ -1043,8 +1043,9 @@ async fn load_completed_invocation_archive_paths(
 async fn load_invocation_archives_missing_rollup_target(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     target: &str,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
 ) -> Result<Vec<ArchiveBatchPathRow>> {
-    sqlx::query_as::<_, ArchiveBatchPathRow>(
+    let mut query = QueryBuilder::<Sqlite>::new(
         r#"
         SELECT
             batches.file_path,
@@ -1056,22 +1057,83 @@ async fn load_invocation_archives_missing_rollup_target(
             NULL AS needs_failures
         FROM archive_batches AS batches
         WHERE batches.dataset = 'codex_invocations'
-          AND batches.status = ?1
+          AND batches.status =
+        "#,
+    );
+    query.push_bind(ARCHIVE_STATUS_COMPLETED);
+    query.push(
+        r#"
           AND NOT EXISTS(
             SELECT 1
             FROM hourly_rollup_archive_replay AS replay
-            WHERE replay.target = ?2
+            WHERE replay.target =
+        "#,
+    );
+    query.push_bind(target);
+    query.push(
+        r#"
               AND replay.dataset = 'codex_invocations'
               AND replay.file_path = batches.file_path
           )
-        ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC
         "#,
+    );
+
+    if let Some((start, end)) = range {
+        let start_bound = db_occurred_at_upper_bound(start);
+        let end_bound = db_occurred_at_lower_bound(end);
+        query.push(
+            r#"
+            AND (
+                batches.coverage_start_at IS NULL
+                OR batches.coverage_end_at IS NULL
+                OR (
+                    batches.coverage_end_at >=
+            "#,
+        );
+        query.push_bind(start_bound).push(
+            r#"
+                    AND batches.coverage_start_at <
+            "#,
+        );
+        query.push_bind(end_bound).push(
+            r#"
+                )
+            )
+            "#,
+        );
+    }
+
+    query.push(" ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC");
+    query
+        .build_query_as::<ArchiveBatchPathRow>()
+        .fetch_all(executor)
+        .await
+        .map_err(Into::into)
+}
+
+fn account_archive_target_treats_materialized_batch_as_replayed(target: &str) -> bool {
+    matches!(
+        target,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE
+            | HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY
+            | HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE
     )
-    .bind(ARCHIVE_STATUS_COMPLETED)
-    .bind(target)
-    .fetch_all(executor)
-    .await
-    .map_err(Into::into)
+}
+
+async fn load_invocation_archives_missing_effective_rollup_target(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    target: &str,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+) -> Result<Vec<ArchiveBatchPathRow>> {
+    let archive_rows =
+        load_invocation_archives_missing_rollup_target(executor, target, range).await?;
+    if !account_archive_target_treats_materialized_batch_as_replayed(target) {
+        return Ok(archive_rows);
+    }
+    Ok(archive_rows
+        .into_iter()
+        .filter(|archive_row| archive_row.historical_rollups_materialized_at.is_none())
+        .collect())
 }
 
 async fn load_invocation_archives_missing_summary_rollup_markers(
@@ -1998,9 +2060,12 @@ async fn load_pending_invocation_archive_hourly_rollup_deltas(
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
     exclude_invocation_ids: Option<&HashSet<i64>>,
 ) -> Result<PendingInvocationArchiveOverallState> {
-    let archive_rows =
-        load_invocation_archives_missing_rollup_target(pool, HOURLY_ROLLUP_TARGET_INVOCATIONS)
-            .await?;
+    let archive_rows = load_invocation_archives_missing_rollup_target(
+        pool,
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        range,
+    )
+    .await?;
     let mut pending_state = PendingInvocationArchiveOverallState::default();
 
     for archive_row in archive_rows {
@@ -2278,9 +2343,12 @@ async fn load_proxy_perf_stage_rollups_by_materialization_state(
     end: DateTime<Utc>,
     exclude_invocation_ids: Option<&HashSet<i64>>,
 ) -> Result<PendingProxyPerfArchiveState> {
-    let archive_rows =
-        load_invocation_archives_missing_rollup_target(pool, HOURLY_ROLLUP_TARGET_PROXY_PERF)
-            .await?;
+    let archive_rows = load_invocation_archives_missing_rollup_target(
+        pool,
+        HOURLY_ROLLUP_TARGET_PROXY_PERF,
+        Some((start, end)),
+    )
+    .await?;
     let mut pending_state = PendingProxyPerfArchiveState::default();
 
     for archive_row in archive_rows {
@@ -2560,16 +2628,15 @@ fn add_account_invocation_row_to_usage_delta(
 
 pub(crate) async fn query_unmaterialized_upstream_account_archive_hourly_rollup_deltas(
     pool: &Pool<Sqlite>,
+    rollup_target: &str,
     source_scope: InvocationSourceScope,
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
     exclude_invocation_ids: Option<&HashSet<i64>>,
     upstream_account_id: i64,
 ) -> Result<Vec<UpstreamAccountUsageHourlyRollupRecord>> {
-    let archive_rows = load_invocation_archives_missing_rollup_target(
-        pool,
-        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
-    )
-    .await?;
+    let archive_rows =
+        load_invocation_archives_missing_effective_rollup_target(pool, rollup_target, range)
+            .await?;
     let mut archive_deltas = BTreeMap::<i64, UpstreamAccountUsageHourlyDelta>::new();
 
     for archive_row in archive_rows {
@@ -2634,6 +2701,7 @@ pub(crate) async fn query_unmaterialized_upstream_account_archive_hourly_rollup_
 
 pub(crate) async fn query_unmaterialized_upstream_account_archive_totals(
     pool: &Pool<Sqlite>,
+    rollup_target: &str,
     source_scope: InvocationSourceScope,
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
     exclude_invocation_ids: Option<&HashSet<i64>>,
@@ -2642,6 +2710,7 @@ pub(crate) async fn query_unmaterialized_upstream_account_archive_totals(
     let mut totals = StatsTotals::default();
     for row in query_unmaterialized_upstream_account_archive_hourly_rollup_deltas(
         pool,
+        rollup_target,
         source_scope,
         range,
         exclude_invocation_ids,
@@ -2692,6 +2761,7 @@ pub(crate) async fn load_unmaterialized_invocation_archive_failure_rows(
     let archive_rows = load_invocation_archives_missing_rollup_target(
         pool,
         HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
+        Some((start, end)),
     )
     .await?;
     let mut pending_state = PendingInvocationArchiveFailureState::default();
@@ -3126,33 +3196,90 @@ async fn hourly_rollup_progress_exists(
     .is_some())
 }
 
-async fn repair_invocation_summary_rollups(pool: &Pool<Sqlite>) -> Result<()> {
-    if load_hourly_rollup_live_progress(pool, INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DATASET)
-        .await?
-        >= INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DONE
-        && hourly_rollup_progress_exists(
+async fn invocation_summary_repair_live_cursor_state(
+    pool: &Pool<Sqlite>,
+) -> Result<(bool, bool, i64, i64)> {
+    let repair_marker_done =
+        load_hourly_rollup_live_progress(pool, INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DATASET)
+            .await?
+            >= INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DONE;
+    let repair_live_cursor_exists = hourly_rollup_progress_exists(
+        pool,
+        INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET,
+    )
+    .await?;
+    let shared_live_cursor =
+        load_hourly_rollup_live_progress(pool, HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
+    let repair_live_cursor = if repair_live_cursor_exists {
+        load_hourly_rollup_live_progress(
             pool,
             INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET,
         )
         .await?
-    {
+    } else {
+        0
+    };
+    Ok((
+        repair_marker_done,
+        repair_live_cursor_exists,
+        shared_live_cursor,
+        repair_live_cursor,
+    ))
+}
+
+async fn invocation_summary_repair_live_cursor_state_tx(
+    tx: &mut SqliteConnection,
+) -> Result<(bool, bool, i64, i64)> {
+    let repair_marker_done =
+        load_hourly_rollup_live_progress_tx(tx, INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DATASET)
+            .await?
+            >= INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DONE;
+    let repair_live_cursor_exists = hourly_rollup_progress_exists(
+        &mut *tx,
+        INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET,
+    )
+    .await?;
+    let shared_live_cursor =
+        load_hourly_rollup_live_progress_tx(tx, HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
+    let repair_live_cursor = if repair_live_cursor_exists {
+        load_hourly_rollup_live_progress_tx(
+            tx,
+            INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET,
+        )
+        .await?
+    } else {
+        0
+    };
+    Ok((
+        repair_marker_done,
+        repair_live_cursor_exists,
+        shared_live_cursor,
+        repair_live_cursor,
+    ))
+}
+
+async fn repair_invocation_summary_rollups(pool: &Pool<Sqlite>) -> Result<()> {
+    let (repair_marker_done, repair_live_cursor_exists, shared_live_cursor, repair_live_cursor) =
+        invocation_summary_repair_live_cursor_state(pool).await?;
+    if repair_marker_done && repair_live_cursor_exists && repair_live_cursor >= shared_live_cursor {
         return Ok(());
     }
 
     let mut tx = pool.begin().await?;
-    if load_hourly_rollup_live_progress_tx(
-        tx.as_mut(),
-        INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DATASET,
-    )
-    .await?
-        >= INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DONE
-        && hourly_rollup_progress_exists(
+    let (repair_marker_done, repair_live_cursor_exists, shared_live_cursor, repair_live_cursor) =
+        invocation_summary_repair_live_cursor_state_tx(tx.as_mut()).await?;
+    if repair_marker_done && repair_live_cursor_exists && repair_live_cursor >= shared_live_cursor {
+        tx.rollback().await?;
+        return Ok(());
+    }
+    if repair_marker_done && repair_live_cursor_exists && repair_live_cursor < shared_live_cursor {
+        save_hourly_rollup_live_progress_tx(
             tx.as_mut(),
             INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET,
+            shared_live_cursor,
         )
-        .await?
-    {
-        tx.rollback().await?;
+        .await?;
+        tx.commit().await?;
         return Ok(());
     }
 

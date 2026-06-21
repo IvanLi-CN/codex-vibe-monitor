@@ -204,6 +204,7 @@ pub(crate) async fn query_hourly_backed_summary_range_for_account_with_config(
         totals = totals.add(
             crate::stats::query_unmaterialized_upstream_account_archive_totals(
                 pool,
+                HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
                 source_scope,
                 Some((archived_start, archived_end)),
                 Some(&archive_overlap_ids),

@@ -339,6 +339,7 @@ async fn fetch_timeseries_for_account(
             .ok_or_else(|| ApiError::from(anyhow!("invalid account archived timeseries end epoch")))?;
         let archived_rows = crate::stats::query_unmaterialized_upstream_account_archive_hourly_rollup_deltas(
             &state.pool,
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
             source_scope,
             Some((archived_start, archived_end)),
             Some(&archive_overlap_ids),

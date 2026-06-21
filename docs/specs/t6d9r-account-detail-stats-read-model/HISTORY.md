@@ -9,3 +9,7 @@
 - 2026-06-19: schema ensure 顺序修正为先建 `hourly_rollup_live_progress` 再 rebuild 账号统计，避免旧库冷启动时 cursor 落盘失败。
 - 2026-06-20: 生产复盘确认 `window-usage` 已降到毫秒级后，剩余体感慢点来自详情抽屉自身的重复请求编排；抽屉默认 roster 预取与非 routing tab 的 `sticky-keys` 预取已被移除。
 - 2026-06-20: 生产复盘同时确认 roster `load_summaries_ms` 仍被 `pool_upstream_account_limit_samples` 的 `ranked_samples` 窗口查询拖慢；最新 usage 样本读取已切成索引友好的“最新样本 + 最新非空 plan type”组合查询。
+- 2026-06-21: 继续线上追查后确认，账号详情接口 steady-state 已降到毫秒级，但后台 proxy usage startup backfill 与 stale attempt recovery 仍会制造 SQLite 争锁，把详情抽屉体感重新拖到 10 秒级；对应热点已改成 cursor / partial-index 驱动。
+- 2026-06-21: summary repair 改为在 repair marker 已完成但 live cursor 落后时只刷新 cursor，避免详情 summary 继续绑定旧 repair cursor。
+- 2026-06-21: archive materialization 与 bootstrap 会补齐账号 usage / stats replay marker，修复旧库在 materialized archive 缺 marker 时把账号 summary / timeseries 误拉回 archive fallback 的问题。
+- 2026-06-21: account-scoped `yesterday` 活动总览拆掉重复 comparison fetch，避免详情抽屉在昨天视图额外触发一轮同账号 summary / timeseries。

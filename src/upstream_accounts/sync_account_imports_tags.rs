@@ -1742,6 +1742,208 @@ async fn load_duplicate_info_map(
     Ok(duplicate_info)
 }
 
+async fn load_duplicate_info_for_account(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+) -> Result<Option<DuplicateInfo>> {
+    let current_row = sqlx::query_as::<_, UpstreamAccountIdentityRow>(
+        r#"
+        SELECT
+            account.id,
+            account.chatgpt_account_id,
+            account.chatgpt_user_id,
+            account.group_name,
+            COALESCE(
+                CASE
+                    WHEN NULLIF(TRIM(account.plan_type), '') IS NOT NULL
+                         AND account.plan_type_observed_at IS NOT NULL
+                         AND julianday(account.plan_type_observed_at) >= julianday((
+                            SELECT previous_sample.captured_at
+                            FROM pool_upstream_account_limit_samples previous_sample
+                            WHERE previous_sample.account_id = account.id
+                              AND previous_sample.plan_type IS NOT NULL
+                              AND TRIM(previous_sample.plan_type) <> ''
+                            ORDER BY previous_sample.captured_at DESC
+                            LIMIT 1
+                         ))
+                        THEN NULLIF(TRIM(account.plan_type), '')
+                    ELSE (
+                        SELECT NULLIF(TRIM(previous_sample.plan_type), '')
+                        FROM pool_upstream_account_limit_samples previous_sample
+                        WHERE previous_sample.account_id = account.id
+                          AND previous_sample.plan_type IS NOT NULL
+                          AND TRIM(previous_sample.plan_type) <> ''
+                        ORDER BY previous_sample.captured_at DESC
+                        LIMIT 1
+                    )
+                END,
+                NULLIF(TRIM(account.plan_type), '')
+            ) AS plan_type
+        FROM pool_upstream_accounts account
+        WHERE account.kind = ?1
+          AND account.id = ?2
+        LIMIT 1
+        "#,
+    )
+    .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
+    .bind(account_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some(current_row) = current_row else {
+        return Ok(None);
+    };
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            account.id,
+            account.chatgpt_account_id,
+            account.chatgpt_user_id,
+            account.group_name,
+            COALESCE(
+                CASE
+                    WHEN NULLIF(TRIM(account.plan_type), '') IS NOT NULL
+                         AND account.plan_type_observed_at IS NOT NULL
+                         AND julianday(account.plan_type_observed_at) >= julianday((
+                            SELECT previous_sample.captured_at
+                            FROM pool_upstream_account_limit_samples previous_sample
+                            WHERE previous_sample.account_id = account.id
+                              AND previous_sample.plan_type IS NOT NULL
+                              AND TRIM(previous_sample.plan_type) <> ''
+                            ORDER BY previous_sample.captured_at DESC
+                            LIMIT 1
+                         ))
+                        THEN NULLIF(TRIM(account.plan_type), '')
+                    ELSE (
+                        SELECT NULLIF(TRIM(previous_sample.plan_type), '')
+                        FROM pool_upstream_account_limit_samples previous_sample
+                        WHERE previous_sample.account_id = account.id
+                          AND previous_sample.plan_type IS NOT NULL
+                          AND TRIM(previous_sample.plan_type) <> ''
+                        ORDER BY previous_sample.captured_at DESC
+                        LIMIT 1
+                    )
+                END,
+                NULLIF(TRIM(account.plan_type), '')
+            ) AS plan_type
+        FROM pool_upstream_accounts account
+        WHERE account.kind = 
+        "#,
+    );
+    query
+        .push_bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
+        .push(" AND account.id <> ")
+        .push_bind(account_id)
+        .push(" AND (");
+    let mut has_identity_filter = false;
+    if let Some(chatgpt_account_id) = current_row.chatgpt_account_id.as_ref() {
+        query
+            .push("account.chatgpt_account_id = ")
+            .push_bind(chatgpt_account_id);
+        has_identity_filter = true;
+    }
+    if let Some(chatgpt_user_id) = current_row.chatgpt_user_id.as_ref() {
+        if has_identity_filter {
+            query.push(" OR ");
+        }
+        query
+            .push("account.chatgpt_user_id = ")
+            .push_bind(chatgpt_user_id);
+        has_identity_filter = true;
+    }
+    if !has_identity_filter {
+        return Ok(None);
+    }
+    query.push(")");
+
+    let peer_rows = query
+        .build_query_as::<UpstreamAccountIdentityRow>()
+        .fetch_all(pool)
+        .await?;
+    if peer_rows.is_empty() {
+        return Ok(None);
+    }
+
+    let current_member = UpstreamAccountIdentityClusterMember {
+        id: current_row.id,
+        chatgpt_user_id: normalize_optional_text(current_row.chatgpt_user_id.clone()),
+        group_name: normalize_legacy_ungrouped_group_name(current_row.group_name.clone()),
+        plan_type: normalize_plan_type(current_row.plan_type.as_deref()),
+    };
+    let mut peer_ids = std::collections::BTreeSet::new();
+    let mut reasons = Vec::new();
+
+    if let Some(chatgpt_account_id) = current_row.chatgpt_account_id.as_ref() {
+        let matching_peers = peer_rows
+            .iter()
+            .filter(|row| row.chatgpt_account_id.as_ref() == Some(chatgpt_account_id))
+            .collect::<Vec<_>>();
+        if matching_peers.iter().any(|row| {
+            let peer = UpstreamAccountIdentityClusterMember {
+                id: row.id,
+                chatgpt_user_id: normalize_optional_text(row.chatgpt_user_id.clone()),
+                group_name: normalize_legacy_ungrouped_group_name(row.group_name.clone()),
+                plan_type: normalize_plan_type(row.plan_type.as_deref()),
+            };
+            !is_team_shared_org_peer_pair(&current_member, &peer)
+                && should_flag_duplicate_identity_pair(
+                    current_member.plan_type.as_deref(),
+                    peer.plan_type.as_deref(),
+                )
+        }) {
+            reasons.push(DuplicateReason::SharedChatgptAccountId);
+        }
+        for row in matching_peers {
+            let peer = UpstreamAccountIdentityClusterMember {
+                id: row.id,
+                chatgpt_user_id: normalize_optional_text(row.chatgpt_user_id.clone()),
+                group_name: normalize_legacy_ungrouped_group_name(row.group_name.clone()),
+                plan_type: normalize_plan_type(row.plan_type.as_deref()),
+            };
+            if !is_team_shared_org_peer_pair(&current_member, &peer)
+                && should_flag_duplicate_identity_pair(
+                    current_member.plan_type.as_deref(),
+                    peer.plan_type.as_deref(),
+                )
+            {
+                peer_ids.insert(row.id);
+            }
+        }
+    }
+
+    if let Some(chatgpt_user_id) = current_row.chatgpt_user_id.as_ref() {
+        let matching_peers = peer_rows
+            .iter()
+            .filter(|row| row.chatgpt_user_id.as_ref() == Some(chatgpt_user_id))
+            .collect::<Vec<_>>();
+        if matching_peers.iter().any(|row| {
+            should_flag_duplicate_identity_pair(
+                current_member.plan_type.as_deref(),
+                normalize_plan_type(row.plan_type.as_deref()).as_deref(),
+            )
+        }) {
+            reasons.push(DuplicateReason::SharedChatgptUserId);
+        }
+        for row in matching_peers {
+            if should_flag_duplicate_identity_pair(
+                current_member.plan_type.as_deref(),
+                normalize_plan_type(row.plan_type.as_deref()).as_deref(),
+            ) {
+                peer_ids.insert(row.id);
+            }
+        }
+    }
+
+    if peer_ids.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(DuplicateInfo {
+        peer_account_ids: peer_ids.into_iter().collect(),
+        reasons,
+    }))
+}
+
 async fn load_account_tag_map(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
@@ -2818,7 +3020,7 @@ async fn load_upstream_account_detail(
     .fetch_all(pool)
     .await?;
 
-    let duplicate_info_map = load_duplicate_info_map(pool).await?;
+    let duplicate_info = load_duplicate_info_for_account(pool, row.id).await?;
     let now = Utc::now();
     let active_conversation_count =
         load_account_active_conversation_count_map(pool, &[row.id], now.clone())
@@ -2831,7 +3033,7 @@ async fn load_upstream_account_detail(
         latest.as_ref(),
         row.last_activity_at.clone(),
         tags,
-        duplicate_info_map.get(&row.id).cloned(),
+        duplicate_info,
         active_conversation_count,
         now,
     );
@@ -2858,7 +3060,6 @@ async fn load_upstream_account_detail_with_actual_usage(
         Some(detail) => detail,
         None => return Ok(None),
     };
-    let groups = load_canonicalized_upstream_account_groups(state).await?;
     enrich_window_actual_usage_for_summaries(state, std::slice::from_mut(&mut detail.summary))
         .await?;
     apply_effective_routing_rules_to_summaries(
@@ -2866,14 +3067,29 @@ async fn load_upstream_account_detail_with_actual_usage(
         std::slice::from_mut(&mut detail.summary),
     )
     .await?;
-    enrich_node_shunt_routing_block_reasons(state, std::slice::from_mut(&mut detail.summary))
-        .await?;
-    enrich_current_forward_proxy_for_summaries(
+    let group = load_canonicalized_upstream_account_group(
         state,
-        &groups,
-        std::slice::from_mut(&mut detail.summary),
+        detail.summary.group_name.as_deref(),
     )
     .await?;
+    if group.as_ref().is_some_and(|value| value.node_shunt_enabled) {
+        let groups = group.into_iter().collect::<Vec<_>>();
+        enrich_node_shunt_routing_block_reasons(state, std::slice::from_mut(&mut detail.summary))
+            .await?;
+        enrich_current_forward_proxy_for_summaries(
+            state,
+            &groups,
+            std::slice::from_mut(&mut detail.summary),
+        )
+        .await?;
+    } else {
+        enrich_current_forward_proxy_for_non_node_shunt_detail(
+            state,
+            group.as_ref(),
+            &mut detail.summary,
+        )
+        .await?;
+    }
     Ok(Some(detail))
 }
 
@@ -3169,6 +3385,55 @@ async fn load_canonicalized_upstream_account_groups(
     Ok(groups)
 }
 
+async fn load_canonicalized_upstream_account_group(
+    state: &AppState,
+    group_name: Option<&str>,
+) -> Result<Option<UpstreamAccountGroupSummary>> {
+    let normalized_group_name = group_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let Some(group_name) = normalized_group_name else {
+        return Ok(None);
+    };
+    let metadata = load_group_metadata(&state.pool, Some(group_name)).await?;
+    let routing_rule = group_routing_rule_from_group_metadata(&metadata);
+    Ok(Some(UpstreamAccountGroupSummary {
+        group_name: group_name.to_string(),
+        account_count: sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM pool_upstream_accounts
+            WHERE TRIM(COALESCE(group_name, '')) = ?1
+            "#,
+        )
+        .bind(group_name)
+        .fetch_one(&state.pool)
+        .await?,
+        note: metadata.note.clone(),
+        bound_proxy_keys: canonicalize_forward_proxy_bound_keys(state, &metadata.bound_proxy_keys).await?,
+        node_shunt_enabled: metadata.node_shunt_enabled,
+        single_account_rotation_enabled: metadata.single_account_rotation_enabled,
+        upstream_429_retry_enabled: metadata.upstream_429_retry_enabled,
+        upstream_429_max_retries: metadata.upstream_429_max_retries,
+        concurrency_limit: metadata.concurrency_limit,
+        routing_rule,
+    }))
+}
+
+fn group_routing_rule_from_group_metadata(metadata: &UpstreamAccountGroupMetadata) -> TagRoutingRule {
+    TagRoutingRule {
+        block_new_conversations: false,
+        allow_cut_out: true,
+        allow_cut_in: true,
+        priority_tier: TagPriorityTier::Normal,
+        fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+        concurrency_limit: metadata.concurrency_limit,
+        upstream_429_retry_enabled: metadata.upstream_429_retry_enabled,
+        upstream_429_max_retries: metadata.upstream_429_max_retries,
+        available_models: Vec::new(),
+    }
+}
+
 fn assign_current_forward_proxy(
     item: &mut UpstreamAccountSummary,
     state: &'static str,
@@ -3310,6 +3575,58 @@ async fn enrich_current_forward_proxy_for_summaries(
         );
     }
 
+    Ok(())
+}
+
+async fn enrich_current_forward_proxy_for_non_node_shunt_detail(
+    state: &AppState,
+    group: Option<&UpstreamAccountGroupSummary>,
+    item: &mut UpstreamAccountSummary,
+) -> Result<()> {
+    assign_current_forward_proxy(
+        item,
+        UPSTREAM_ACCOUNT_FORWARD_PROXY_STATE_UNCONFIGURED,
+        None,
+        None,
+    );
+    let Some(group) = group else {
+        return Ok(());
+    };
+    if group.node_shunt_enabled {
+        return Ok(());
+    }
+    let binding_key = {
+        let manager = state.forward_proxy.lock().await;
+        manager.current_bound_group_binding_key(&group.group_name, &group.bound_proxy_keys)
+    };
+    let Some(binding_key) = binding_key else {
+        return Ok(());
+    };
+    let metadata_map = crate::forward_proxy::load_forward_proxy_metadata_history(
+        &state.pool,
+        std::slice::from_ref(&binding_key),
+    )
+    .await?;
+    let binding_display_name = {
+        let manager = state.forward_proxy.lock().await;
+        let binding_display_names = manager
+            .binding_nodes()
+            .into_iter()
+            .map(|node| (node.key, node.display_name))
+            .collect::<HashMap<_, _>>();
+        resolve_current_forward_proxy_display_name(
+            &manager,
+            &binding_display_names,
+            &metadata_map,
+            &binding_key,
+        )
+    };
+    assign_current_forward_proxy(
+        item,
+        UPSTREAM_ACCOUNT_FORWARD_PROXY_STATE_ASSIGNED,
+        Some(binding_key),
+        binding_display_name,
+    );
     Ok(())
 }
 

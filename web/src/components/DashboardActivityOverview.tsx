@@ -174,14 +174,23 @@ function DashboardNaturalDayRangePanel({
       data-testid={testId}
       data-active="true"
     >
-      <DashboardNaturalDaySummaryOverview
-        summaryWindow={summaryWindow}
-        response={data}
-        loading={isLoading}
-        error={error}
-        closedNaturalDay={timeseriesRange === 'yesterday'}
-        upstreamAccountId={upstreamAccountId}
-      />
+      {summaryWindow === 'today' ? (
+        <DashboardNaturalDayTodaySummaryOverview
+          response={data}
+          loading={isLoading}
+          error={error}
+          closedNaturalDay={timeseriesRange === 'yesterday'}
+          upstreamAccountId={upstreamAccountId}
+        />
+      ) : (
+        <DashboardNaturalDayYesterdaySummaryOverview
+          response={data}
+          loading={isLoading}
+          error={error}
+          closedNaturalDay={timeseriesRange === 'yesterday'}
+          upstreamAccountId={upstreamAccountId}
+        />
+      )}
       <DashboardNaturalDayChartSection
         response={chartResponse}
         loading={isLoading && chartResponse == null}
@@ -193,15 +202,13 @@ function DashboardNaturalDayRangePanel({
   )
 }
 
-function DashboardNaturalDaySummaryOverview({
-  summaryWindow,
+function DashboardNaturalDayTodaySummaryOverview({
   response,
   loading,
   error,
   closedNaturalDay,
   upstreamAccountId,
 }: {
-  summaryWindow: 'today' | 'yesterday'
   response: ReturnType<typeof useTimeseries>['data']
   loading: boolean
   error: ReturnType<typeof useTimeseries>['error']
@@ -212,7 +219,7 @@ function DashboardNaturalDaySummaryOverview({
     summary,
     isLoading: summaryLoading,
     error: summaryError,
-  } = useScopedSummary(summaryWindow, upstreamAccountId)
+  } = useScopedSummary('today', upstreamAccountId)
   const {
     summary: comparisonSummary,
   } = useScopedSummary('yesterday', upstreamAccountId)
@@ -231,7 +238,7 @@ function DashboardNaturalDaySummaryOverview({
     isLoading: parallelWorkLoading,
     error: parallelWorkError,
   } = useParallelWorkStats({
-    range: summaryWindow,
+    range: 'today',
     bucket: '1m',
     enabled: parallelEnabled,
   })
@@ -271,19 +278,95 @@ function DashboardNaturalDaySummaryOverview({
       rateError={error}
       now={rateNow}
       timeseries={response}
-      comparisonStats={summaryWindow === 'today' ? comparisonSummary : null}
-      comparisonTimeseries={summaryWindow === 'today' ? comparisonTimeseries : null}
+      comparisonStats={comparisonSummary}
+      comparisonTimeseries={comparisonTimeseries}
       previous7dStats={previous7dSummary}
       parallelWorkStats={parallelEnabled ? parallelWorkStats : null}
-      comparisonParallelWorkStats={
-        parallelEnabled && summaryWindow === 'today' ? comparisonParallelWorkStats : null
-      }
+      comparisonParallelWorkStats={parallelEnabled ? comparisonParallelWorkStats : null}
       parallelWorkLoading={parallelEnabled && parallelWorkLoading}
       parallelWorkError={
         parallelEnabled ? parallelWorkError : null
       }
       showParallelWork={parallelEnabled}
-      dayKind={summaryWindow}
+      dayKind="today"
+      showSurface={false}
+      showHeader={false}
+      showDayBadge={false}
+    />
+  )
+}
+
+function DashboardNaturalDayYesterdaySummaryOverview({
+  response,
+  loading,
+  error,
+  closedNaturalDay,
+  upstreamAccountId,
+}: {
+  response: ReturnType<typeof useTimeseries>['data']
+  loading: boolean
+  error: ReturnType<typeof useTimeseries>['error']
+  closedNaturalDay: boolean
+  upstreamAccountId?: number
+}) {
+  const {
+    summary,
+    isLoading: summaryLoading,
+    error: summaryError,
+  } = useScopedSummary('yesterday', upstreamAccountId)
+  const {
+    summary: previous7dSummary,
+  } = useScopedSummary('previous7d', upstreamAccountId)
+  const parallelEnabled = upstreamAccountId == null
+  const {
+    data: parallelWorkStats,
+    isLoading: parallelWorkLoading,
+    error: parallelWorkError,
+  } = useParallelWorkStats({
+    range: 'yesterday',
+    bucket: '1m',
+    enabled: parallelEnabled,
+  })
+  const [rateNow, setRateNow] = useState(() => new Date())
+
+  useEffect(() => {
+    if (closedNaturalDay) return
+    setRateNow(new Date())
+    const timer = window.setInterval(() => {
+      setRateNow(new Date())
+    }, LIVE_RATE_REFRESH_MS)
+    return () => window.clearInterval(timer)
+  }, [closedNaturalDay])
+
+  const rate = useMemo(
+    () => buildDashboardTodayRateSnapshot(response, {
+      closedNaturalDay,
+      now: rateNow,
+    }),
+    [closedNaturalDay, rateNow, response],
+  )
+
+  return (
+    <TodayStatsOverview
+      stats={summary}
+      loading={summaryLoading}
+      error={summaryError}
+      rate={rate}
+      rateLoading={loading}
+      rateError={error}
+      now={rateNow}
+      timeseries={response}
+      comparisonStats={null}
+      comparisonTimeseries={null}
+      previous7dStats={previous7dSummary}
+      parallelWorkStats={parallelEnabled ? parallelWorkStats : null}
+      comparisonParallelWorkStats={null}
+      parallelWorkLoading={parallelEnabled && parallelWorkLoading}
+      parallelWorkError={
+        parallelEnabled ? parallelWorkError : null
+      }
+      showParallelWork={parallelEnabled}
+      dayKind="yesterday"
       showSurface={false}
       showHeader={false}
       showDayBadge={false}
