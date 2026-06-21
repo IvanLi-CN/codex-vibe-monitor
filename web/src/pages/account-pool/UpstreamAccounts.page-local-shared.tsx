@@ -1706,6 +1706,7 @@ function SharedUpstreamAccountDetailDrawerInner({
     }
 
     setAccountRecordsLoading(true);
+    setAccountRecordsError(null);
     void fetchInvocationRecords({
       upstreamAccountId: accountId,
       page: 1,

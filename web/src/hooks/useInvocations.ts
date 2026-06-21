@@ -35,21 +35,16 @@ function mergeRecords(
 ) {
   const currentKeys = new Set(current.map((record) => recordKey(record)))
   const nextHidden = new Set(hiddenKeys ?? [])
-  const visible = mergeInvocationWindowRecords(current, incoming, {
-    filters,
-    sortBy: 'occurredAt',
-    sortOrder: 'desc',
-    limit,
-  }).filter((record) => {
-    const key = recordKey(record)
-    return !nextHidden.has(key) || currentKeys.has(key)
-  })
-  const merged = mergeInvocationWindowRecords([], [...incoming, ...current], {
+  const merged = mergeInvocationWindowRecords(current, incoming, {
     filters,
     sortBy: 'occurredAt',
     sortOrder: 'desc',
     limit: Math.max(limit, current.length + incoming.length),
+  }).filter((record) => {
+    const key = recordKey(record)
+    return !nextHidden.has(key) || currentKeys.has(key)
   })
+  const visible = merged.slice(0, limit)
   for (const record of merged.slice(limit)) {
     nextHidden.add(recordKey(record))
   }

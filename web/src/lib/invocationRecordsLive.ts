@@ -4,7 +4,10 @@ import type {
   InvocationSortBy,
   InvocationSortOrder,
 } from "./api";
-import { mergeInvocationRecordCollections } from "./invocationLiveMerge";
+import {
+  mergeInvocationRecordCollections,
+  mergeInvocationRecordDetails,
+} from "./invocationLiveMerge";
 import { resolveInvocationDisplayStatus } from "./invocationStatus";
 import { invocationStableKey } from "./invocation";
 
@@ -22,8 +25,13 @@ function normalizeStatusFilter(value: string | null | undefined) {
   return normalized;
 }
 
+function resolveStickyFilterValue(record: ApiInvocation) {
+  return normalizeText(record.stickyKey) ?? normalizeText(record.promptCacheKey);
+}
+
 function matchesFailedStatus(record: ApiInvocation) {
   const failureClass = normalizeText(record.failureClass);
+  if (failureClass === "none") return false;
   if (failureClass && failureClass !== "none") return true;
 
   const normalizedStatus = normalizeText(record.status) ?? "";
@@ -72,6 +80,43 @@ function compareNullableText(left: string | null, right: string | null) {
   if (left == null) return 1;
   if (right == null) return -1;
   return left.localeCompare(right);
+}
+
+function compareNullableWithDirection(
+  comparison: number,
+  leftIsNull: boolean,
+  rightIsNull: boolean,
+  direction: number,
+) {
+  if (leftIsNull || rightIsNull) {
+    return comparison;
+  }
+  return comparison * direction;
+}
+
+function isInFlightStatus(record: ApiInvocation) {
+  const status = normalizeText(record.status);
+  return status === "running" || status === "pending";
+}
+
+function mergeIncomingWindowRecord(
+  current: ApiInvocation | undefined,
+  incoming: ApiInvocation,
+) {
+  if (!current) return incoming;
+
+  const currentInFlight = isInFlightStatus(current);
+  const incomingInFlight = isInFlightStatus(incoming);
+
+  if (currentInFlight !== incomingInFlight) {
+    return mergeInvocationRecordCollections([current], [incoming])[0] ?? current;
+  }
+
+  if (!incomingInFlight) {
+    return mergeInvocationRecordDetails(incoming, current);
+  }
+
+  return mergeInvocationRecordCollections([current], [incoming])[0] ?? current;
 }
 
 export function matchesInvocationLiveFilters(
@@ -144,7 +189,10 @@ export function matchesInvocationLiveFilters(
   ) {
     return false;
   }
-  if (filters.stickyKey && normalizeText(record.stickyKey) !== normalizeText(filters.stickyKey)) {
+  if (
+    filters.stickyKey &&
+    resolveStickyFilterValue(record) !== normalizeText(filters.stickyKey)
+  ) {
     return false;
   }
   if (
@@ -202,46 +250,83 @@ export function compareInvocationRecordsForWindow(
 
   switch (sortBy) {
     case "totalTokens":
-      comparison = compareNullableNumber(
-        normalizeNumber(left.totalTokens),
-        normalizeNumber(right.totalTokens),
-      );
+      {
+        const leftValue = normalizeNumber(left.totalTokens);
+        const rightValue = normalizeNumber(right.totalTokens);
+        comparison = compareNullableWithDirection(
+          compareNullableNumber(leftValue, rightValue),
+          leftValue == null,
+          rightValue == null,
+          direction,
+        );
+      }
       break;
     case "cost":
-      comparison = compareNullableNumber(normalizeNumber(left.cost), normalizeNumber(right.cost));
+      {
+        const leftValue = normalizeNumber(left.cost);
+        const rightValue = normalizeNumber(right.cost);
+        comparison = compareNullableWithDirection(
+          compareNullableNumber(leftValue, rightValue),
+          leftValue == null,
+          rightValue == null,
+          direction,
+        );
+      }
       break;
     case "tTotalMs":
-      comparison = compareNullableNumber(
-        normalizeNumber(left.tTotalMs),
-        normalizeNumber(right.tTotalMs),
-      );
+      {
+        const leftValue = normalizeNumber(left.tTotalMs);
+        const rightValue = normalizeNumber(right.tTotalMs);
+        comparison = compareNullableWithDirection(
+          compareNullableNumber(leftValue, rightValue),
+          leftValue == null,
+          rightValue == null,
+          direction,
+        );
+      }
       break;
     case "tUpstreamTtfbMs":
-      comparison = compareNullableNumber(
-        normalizeNumber(left.tUpstreamTtfbMs),
-        normalizeNumber(right.tUpstreamTtfbMs),
-      );
+      {
+        const leftValue = normalizeNumber(left.tUpstreamTtfbMs);
+        const rightValue = normalizeNumber(right.tUpstreamTtfbMs);
+        comparison = compareNullableWithDirection(
+          compareNullableNumber(leftValue, rightValue),
+          leftValue == null,
+          rightValue == null,
+          direction,
+        );
+      }
       break;
     case "status":
-      comparison = compareNullableText(
-        resolveDisplayStatusForSort(left),
-        resolveDisplayStatusForSort(right),
-      );
+      {
+        const leftValue = resolveDisplayStatusForSort(left);
+        const rightValue = resolveDisplayStatusForSort(right);
+        comparison = compareNullableWithDirection(
+          compareNullableText(leftValue, rightValue),
+          leftValue == null,
+          rightValue == null,
+          direction,
+        );
+      }
       break;
     case "occurredAt":
     default: {
       const leftMs = Date.parse(left.occurredAt);
       const rightMs = Date.parse(right.occurredAt);
-      comparison = compareNullableNumber(
-        Number.isFinite(leftMs) ? leftMs : null,
-        Number.isFinite(rightMs) ? rightMs : null,
+      const leftValue = Number.isFinite(leftMs) ? leftMs : null;
+      const rightValue = Number.isFinite(rightMs) ? rightMs : null;
+      comparison = compareNullableWithDirection(
+        compareNullableNumber(leftValue, rightValue),
+        leftValue == null,
+        rightValue == null,
+        direction,
       );
       break;
     }
   }
 
   if (comparison !== 0) {
-    return comparison * direction;
+    return comparison;
   }
 
   if (sortBy === "occurredAt") {
@@ -255,7 +340,7 @@ export function compareInvocationRecordsForWindow(
     left,
     right,
     "occurredAt",
-    sortOrder,
+    "desc",
   );
   if (occurredAtComparison !== 0) {
     return occurredAtComparison;
@@ -301,8 +386,7 @@ export function mergeInvocationWindowRecords(
 
   for (const record of incoming) {
     const key = invocationStableKey(record);
-    const currentRecord = currentByKey.get(key);
-    currentByKey.set(key, currentRecord ? { ...currentRecord, ...record } : record);
+    currentByKey.set(key, mergeIncomingWindowRecord(currentByKey.get(key), record));
   }
 
   return Array.from(currentByKey.values())

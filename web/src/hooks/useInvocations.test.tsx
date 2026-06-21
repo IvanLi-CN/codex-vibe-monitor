@@ -282,6 +282,66 @@ describe("useInvocationStream", () => {
     expect(text("keys")).toBe("invocation-c:running|invocation-a:success");
   });
 
+  it("keeps the Live window filled when a hidden overflow record reappears ahead of the cutoff", async () => {
+    apiMocks.fetchInvocations.mockResolvedValue({
+      records: [
+        {
+          id: 10,
+          invokeId: "invocation-a",
+          occurredAt: "2026-03-10T00:02:00Z",
+          createdAt: "2026-03-10T00:02:00Z",
+          status: "success",
+        },
+        {
+          id: 11,
+          invokeId: "invocation-b",
+          occurredAt: "2026-03-10T00:01:00Z",
+          createdAt: "2026-03-10T00:01:00Z",
+          status: "success",
+        },
+      ],
+    });
+
+    render(<StreamProbe limit={2} />);
+    await flushAsync();
+
+    act(() => {
+      sseMocks.onMessage?.({
+        type: "records",
+        records: [
+          {
+            id: -1,
+            invokeId: "invocation-c",
+            occurredAt: "2026-03-10T00:03:00Z",
+            createdAt: "2026-03-10T00:03:00Z",
+            status: "running",
+          },
+        ],
+      });
+    });
+
+    expect(text("keys")).toBe("invocation-c:running|invocation-a:success");
+    expect(text("count")).toBe("2");
+
+    act(() => {
+      sseMocks.onMessage?.({
+        type: "records",
+        records: [
+          {
+            id: -2,
+            invokeId: "invocation-b",
+            occurredAt: "2026-03-10T00:04:00Z",
+            createdAt: "2026-03-10T00:04:00Z",
+            status: "running",
+          },
+        ],
+      });
+    });
+
+    expect(text("keys")).toBe("invocation-b:running|invocation-c:running");
+    expect(text("count")).toBe("2");
+  });
+
   it("keeps the terminal record when a stale running snapshot arrives later", async () => {
     apiMocks.fetchInvocations.mockResolvedValue({ records: [] });
 

@@ -207,6 +207,7 @@ function Probe() {
       <div data-testid="page">{state.page}</div>
       <div data-testid="page-size">{state.pageSize}</div>
       <div data-testid="snapshot">{state.records?.snapshotId ?? 0}</div>
+      <div data-testid="total">{state.records?.total ?? 0}</div>
       <div data-testid="model">{state.records?.records[0]?.model ?? ''}</div>
       <div data-testid="account-name">{state.records?.records[0]?.upstreamAccountName ?? ''}</div>
       <div data-testid="new-count">{state.summary?.newRecordsCount ?? 0}</div>
@@ -585,6 +586,7 @@ describe('useInvocationRecords', () => {
     await flushAsync()
 
     expect(text('snapshot')).toBe('42')
+    expect(text('total')).toBe('2')
     expect(text('model')).toBe('baseline-model')
 
     act(() => {
@@ -614,6 +616,7 @@ describe('useInvocationRecords', () => {
     await flushAsync()
 
     expect(text('snapshot')).toBe('42')
+    expect(text('total')).toBe('3')
     expect(text('model')).toBe('new-model')
 
     await act(async () => {
@@ -630,12 +633,71 @@ describe('useInvocationRecords', () => {
       expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2)
       expect(apiMocks.fetchInvocationRecordsSummary).toHaveBeenCalledTimes(2)
       expect(text('snapshot')).toBe('84')
+      expect(text('total')).toBe('2')
       expect(text('summary-snapshot')).toBe('84')
       expect(text('new-count')).toBe('0')
     })
 
     const reconcileQuery = apiMocks.fetchInvocationRecords.mock.calls.at(-1)?.[0]
     expect(reconcileQuery?.snapshotId).toBeUndefined()
+  })
+
+  it('increments the visible total when page-one SSE inserts add matching rows', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-10T02:00:00Z'))
+
+    apiMocks.fetchInvocationRecords.mockResolvedValue(
+      createListResponse({
+        snapshotId: 42,
+        total: 2,
+        records: [
+          createRecord({
+            id: 1,
+            invokeId: 'invoke-existing-a',
+            occurredAt: '2026-03-10T00:00:00Z',
+            createdAt: '2026-03-10T00:00:00Z',
+            status: 'success',
+          }),
+          createRecord({
+            id: 2,
+            invokeId: 'invoke-existing-b',
+            occurredAt: '2026-03-09T23:59:00Z',
+            createdAt: '2026-03-09T23:59:00Z',
+            status: 'success',
+          }),
+        ],
+      }),
+    )
+    apiMocks.fetchInvocationRecordsSummary.mockResolvedValue(
+      createSummaryResponse({ snapshotId: 42, newRecordsCount: 0, totalCount: 2 }),
+    )
+    apiMocks.fetchInvocationRecordsNewCount.mockResolvedValue(
+      createNewCountResponse({ snapshotId: 42, newRecordsCount: 0 }),
+    )
+
+    render(<Probe />)
+    await flushAsync()
+
+    expect(text('total')).toBe('2')
+
+    act(() => {
+      sseMocks.onMessage?.({
+        type: 'records',
+        records: [
+          createRecord({
+            id: 3,
+            invokeId: 'invoke-live-added',
+            occurredAt: '2026-03-10T00:01:00Z',
+            createdAt: '2026-03-10T00:01:00Z',
+            status: 'success',
+          }),
+        ],
+      })
+    })
+    await flushAsync()
+
+    expect(text('model')).toBe('baseline-model')
+    expect(text('total')).toBe('3')
   })
 
   it('applies visible SSE updates when only non-sort detail fields change', async () => {
@@ -734,6 +796,7 @@ describe('useInvocationRecords', () => {
     await flushAsync()
 
     expect(text('model')).toBe('baseline-model')
+    expect(text('total')).toBe('2')
 
     act(() => {
       sseMocks.onMessage?.({
@@ -754,6 +817,106 @@ describe('useInvocationRecords', () => {
     await flushAsync()
 
     expect(text('applied-model')).toBe('')
+    expect(text('total')).toBe('1')
+  })
+
+  it('restores the new-data count when a live-inserted row later falls out of the visible window', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-10T02:00:00Z'))
+
+    apiMocks.fetchInvocationRecords.mockImplementation(async (query) => {
+      if (query.status === 'failed') {
+        return createListResponse({
+          snapshotId: 42,
+          total: 2,
+          page: 1,
+          pageSize: query.pageSize ?? 20,
+          records: [
+            createRecord({
+              id: 1,
+              invokeId: 'invoke-failed-baseline-a',
+              occurredAt: '2026-03-10T00:00:00Z',
+              createdAt: '2026-03-10T00:00:00Z',
+              status: 'failed',
+              model: 'baseline-failed-a',
+              errorMessage: 'boom-a',
+            }),
+            createRecord({
+              id: 2,
+              invokeId: 'invoke-failed-baseline-b',
+              occurredAt: '2026-03-09T23:59:00Z',
+              createdAt: '2026-03-09T23:59:00Z',
+              status: 'failed',
+              model: 'baseline-failed-b',
+              errorMessage: 'boom-b',
+            }),
+          ],
+        })
+      }
+
+      return createListResponse({ snapshotId: 21, records: [] })
+    })
+    apiMocks.fetchInvocationRecordsSummary.mockResolvedValue(
+      createSummaryResponse({ snapshotId: 42, newRecordsCount: 0 }),
+    )
+    apiMocks.fetchInvocationRecordsNewCount.mockResolvedValue(
+      createNewCountResponse({ snapshotId: 42, newRecordsCount: 2 }),
+    )
+
+    render(<Probe />)
+    await flushAsync()
+
+    click('failed-status')
+    click('search')
+    await flushAsync()
+
+    act(() => {
+      sseMocks.onMessage?.({
+        type: 'records',
+        records: [
+          createRecord({
+            id: 3,
+            invokeId: 'invoke-live-failed',
+            occurredAt: '2026-03-10T00:01:00Z',
+            createdAt: '2026-03-10T00:01:00Z',
+            status: 'failed',
+            model: 'live-failed',
+            errorMessage: 'boom-live',
+          }),
+        ],
+      })
+    })
+    await flushAsync()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RECORDS_NEW_COUNT_POLL_INTERVAL_MS)
+    })
+    await flushAsync()
+
+    expect(text('model')).toBe('live-failed')
+    expect(text('new-count')).toBe('1')
+
+    act(() => {
+      sseMocks.onMessage?.({
+        type: 'records',
+          records: [
+            createRecord({
+              id: 3,
+              invokeId: 'invoke-live-failed',
+              occurredAt: '2026-03-10T00:01:00Z',
+              createdAt: '2026-03-10T00:01:00Z',
+              status: 'success',
+              model: 'live-failed-recovered',
+              errorMessage: '',
+              failureClass: 'none',
+            }),
+          ],
+      })
+    })
+    await flushAsync()
+
+    expect(text('model')).toBe('baseline-failed-a')
+    expect(text('new-count')).toBe('2')
   })
 
   it('ignores stale overlapping new-count polls for the same snapshot', async () => {
@@ -990,6 +1153,68 @@ describe('useInvocationRecords', () => {
     expect(apiMocks.fetchInvocationRecordsNewCount).toHaveBeenCalledTimes(1)
     expect(text('summary-snapshot')).toBe('42')
     expect(text('new-count')).toBe('9')
+  })
+
+  it('keeps records visible when an SSE-open summary refresh fails', async () => {
+    vi.useFakeTimers()
+
+    apiMocks.fetchInvocationRecords
+      .mockResolvedValueOnce(
+        createListResponse({
+          snapshotId: 42,
+          records: [
+            createRecord({
+              id: 1,
+              invokeId: 'invoke-baseline',
+              model: 'baseline-model',
+            }),
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        createListResponse({
+          snapshotId: 84,
+          records: [
+            createRecord({
+              id: 84,
+              invokeId: 'invoke-refreshed',
+              occurredAt: '2026-03-10T02:00:00Z',
+              createdAt: '2026-03-10T02:00:00Z',
+              model: 'baseline-refreshed',
+              status: 'success',
+            }),
+          ],
+        }),
+      )
+    apiMocks.fetchInvocationRecordsSummary
+      .mockResolvedValueOnce(createSummaryResponse({ snapshotId: 42, newRecordsCount: 0 }))
+      .mockRejectedValueOnce(new Error('summary refresh failed'))
+    apiMocks.fetchInvocationRecordsNewCount.mockResolvedValue(
+      createNewCountResponse({ snapshotId: 42, newRecordsCount: 0 }),
+    )
+
+    render(<Probe />)
+    await flushAsync()
+
+    expect(text('snapshot')).toBe('42')
+    expect(text('summary-snapshot')).toBe('42')
+    expect(text('records-error')).toBe('')
+    expect(text('summary-error')).toBe('')
+
+    act(() => {
+      sseMocks.onOpen?.()
+    })
+    await flushAsync()
+
+    await waitFor(() => {
+      expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2)
+    })
+
+    expect(text('snapshot')).toBe('84')
+    expect(text('model')).toBe('baseline-refreshed')
+    expect(text('records-error')).toBe('')
+    expect(text('summary-snapshot')).toBe('42')
+    expect(text('summary-error')).toContain('summary refresh failed')
   })
 
   it('keeps the previous page size when a page-size request fails before search', async () => {

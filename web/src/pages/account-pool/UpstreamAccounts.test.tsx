@@ -2307,6 +2307,78 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
     });
   });
 
+  it("clears a stale records error after an SSE-open retry succeeds", async () => {
+    mockAccountsPage();
+    apiMocks.fetchInvocationRecords
+      .mockRejectedValueOnce(new Error("initial records fetch failed"))
+      .mockResolvedValueOnce({
+        snapshotId: 84,
+        total: 1,
+        page: 1,
+        pageSize: 50,
+        records: [
+          {
+            id: 2,
+            invokeId: "invoke-recovered",
+            occurredAt: "2026-03-16T02:06:00.000Z",
+            createdAt: "2026-03-16T02:06:00.000Z",
+            status: "success",
+            model: "gpt-5.4",
+            upstreamAccountId: 5,
+            upstreamAccountName: "Existing OAuth",
+            routeMode: "pool",
+          },
+        ],
+      });
+
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => {
+      root?.render(
+        <ThemeProvider>
+          <I18nProvider>
+            <SystemNotificationProvider>
+              <MemoryRouter>
+                <SharedUpstreamAccountDetailDrawer
+                  open
+                  accountId={5}
+                  initialTab="overview"
+                  onClose={vi.fn()}
+                />
+              </MemoryRouter>
+            </SystemNotificationProvider>
+          </I18nProvider>
+        </ThemeProvider>,
+      );
+    });
+
+    clickTab(/调用记录|records/i);
+    await flushAsync();
+    await waitForAssertion(() => {
+      expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1);
+    });
+    await waitForAssertion(() => {
+      expect(document.body.textContent).toContain("initial records fetch failed");
+    });
+
+    act(() => {
+      sseMocks.onOpen?.();
+    });
+    await flushAsync();
+
+    await waitForAssertion(() => {
+      expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2);
+    });
+    expect(document.body.textContent).not.toContain("initial records fetch failed");
+
+    await waitForAssertion(() => {
+      expect(document.body.textContent).toContain("Existing OAuth");
+      expect(document.body.textContent).toContain("10:06:00");
+    });
+    expect(document.body.textContent).not.toContain("initial records fetch failed");
+  });
+
   it(
     "clears stale rows before the records tab refetches for limit changes",
     async () => {
