@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.70.7",
+  "base_stable_version": "1.70.6",
+  "channel_label": "channel:stable",
+  "created_at": "2026-06-21T03:29:27Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.70.7",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "b27728d42f4bad7579b3da08b2332970db07b6ac",
+  "pr_number": 455,
+  "pr_title": "fix(account-stats): harden detail stats hot path",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.70.7",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.70.7",
+  "target_sha": "a64a96cb27e791814471f37be22256a31a2c69bb",
+  "type_label": "type:patch"
+}
