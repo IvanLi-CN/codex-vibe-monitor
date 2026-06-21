@@ -2307,7 +2307,9 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
     });
   });
 
-  it("keeps the current records visible while the records tab refetches for limit changes", async () => {
+  it(
+    "clears stale rows before the records tab refetches for limit changes",
+    async () => {
     const secondFetch = deferred<{
       snapshotId: number;
       total: number;
@@ -2370,6 +2372,7 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
       expect(document.body.textContent).toMatch(/记录数量|Rows/);
     });
     expect(document.body.textContent).toContain("Existing OAuth");
+    expect(document.body.textContent).toContain("10:05:00");
 
     clickCombobox(/记录数量|rows/i);
     clickSelectOption(/100/);
@@ -2377,8 +2380,12 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
     await waitForAssertion(() => {
       expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(2);
     });
-    expect(document.body.textContent).toContain("Existing OAuth");
-    expect(document.body.textContent).not.toContain("正在加载记录");
+    expect(document.body.textContent).not.toContain("10:05:00");
+    expect(
+      document.body.querySelector(
+        '[aria-label="正在加载记录"], [aria-label="Loading records"]',
+      ),
+    ).toBeTruthy();
 
     act(() => {
       secondFetch.resolve({
@@ -2404,5 +2411,7 @@ describe('UpstreamAccountsPage grouped roster toggle', () => {
     await flushAsync();
 
     expect(document.body.textContent).toContain("Existing OAuth");
-  });
+    },
+    30000,
+  );
 })

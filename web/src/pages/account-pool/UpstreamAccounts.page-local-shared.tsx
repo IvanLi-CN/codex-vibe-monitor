@@ -911,6 +911,7 @@ function SharedUpstreamAccountDetailDrawerInner({
     open: boolean;
     accountId: number | null;
     detailTab: AccountDetailTab;
+    accountRecordLimit: number;
   } | null>(null);
   const validTagIds = useMemo(
     () => new Set(tagItems.map((tag) => tag.id)),
@@ -1738,6 +1739,7 @@ function SharedUpstreamAccountDetailDrawerInner({
       open,
       accountId,
       detailTab,
+      accountRecordLimit,
     };
     previousAccountRecordsContextRef.current = next;
 
@@ -1755,8 +1757,16 @@ function SharedUpstreamAccountDetailDrawerInner({
       previous.accountId != null &&
       accountId != null &&
       previous.accountId !== accountId;
+    const changedLimitWithinRecords =
+      open &&
+      accountId != null &&
+      detailTab === "records" &&
+      previous?.open &&
+      previous.accountId === accountId &&
+      previous.detailTab === "records" &&
+      previous.accountRecordLimit !== accountRecordLimit;
 
-    if (leftRecordsSurface || switchedAccounts) {
+    if (leftRecordsSurface || switchedAccounts || changedLimitWithinRecords) {
       setAccountRecords([]);
       setAccountRecordsError(null);
       setAccountRecordsLoading(false);
