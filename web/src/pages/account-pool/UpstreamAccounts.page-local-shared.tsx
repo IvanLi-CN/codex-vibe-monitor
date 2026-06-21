@@ -1781,7 +1781,7 @@ function SharedUpstreamAccountDetailDrawerInner({
     ) {
       setAccountRecords([]);
       setAccountRecordsError(null);
-      setAccountRecordsLoading(false);
+      setAccountRecordsLoading(true);
     }
 
     if (!open || accountId == null || detailTab !== "records") {
