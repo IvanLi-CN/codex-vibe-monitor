@@ -61,16 +61,16 @@ function resolveKeywordHaystack(record: ApiInvocation) {
 
 function compareNullableNumber(left: number | null, right: number | null) {
   if (left == null && right == null) return 0;
-  if (left == null) return -1;
-  if (right == null) return 1;
+  if (left == null) return 1;
+  if (right == null) return -1;
   if (left === right) return 0;
   return left > right ? 1 : -1;
 }
 
 function compareNullableText(left: string | null, right: string | null) {
   if (left == null && right == null) return 0;
-  if (left == null) return -1;
-  if (right == null) return 1;
+  if (left == null) return 1;
+  if (right == null) return -1;
   return left.localeCompare(right);
 }
 
