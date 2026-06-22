@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.70.9",
+  "base_stable_version": "1.70.8",
+  "channel_label": "channel:stable",
+  "created_at": "2026-06-22T03:44:16Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.70.9",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "7cf839eadc8875398add7d048e739e434d8d3be2",
+  "pr_number": 457,
+  "pr_title": "fix(dashboard): restore scoped in-progress conversation comparisons",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.70.9",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.70.9",
+  "target_sha": "0da93e657bd4a9a004d87ed08dcace3cefea9f74",
+  "type_label": "type:patch"
+}
