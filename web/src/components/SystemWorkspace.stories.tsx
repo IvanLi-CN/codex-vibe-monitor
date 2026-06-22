@@ -20,7 +20,9 @@ const STORYBOOK_SYSTEM_STATUS: SystemStatusResponse = {
   successCount: 124_882,
   nonSuccessCount: 3_194,
   archivedBodies: { count: 118_420, bytes: 8_441_053_184 },
-  unarchivedBodies: { count: 246, bytes: 48_221_184 },
+  rawBodies: { count: 1_482, bytes: 84_221_184_000 },
+  requestRawBodies: { count: 812, bytes: 76_221_184_000 },
+  responseRawBodies: { count: 670, bytes: 8_000_000_000 },
   databaseBytes: 618_659_840,
   otherFilesBytes: 142_344_192,
   refreshedAt: '2026-06-22T09:28:00Z',
@@ -308,6 +310,7 @@ export const Status: Story = {
     await expect(canvas.getByRole('heading', { name: '系统状态' })).toBeVisible()
     await expect(canvas.getByTestId('system-status-grid')).toBeVisible()
     await expect(canvas.getByRole('link', { name: '状态' })).toHaveAttribute('aria-current', 'page')
+    await expect(canvas.getByText('raw payload 体积')).toBeVisible()
   },
 }
 

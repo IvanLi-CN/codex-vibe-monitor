@@ -11,6 +11,7 @@
 - 顶层导航由 `设置` 改为 `系统`，旧 `#/settings` 改为兼容跳转。
 - 新增系统状态接口与系统后台任务记录接口。
 - 原 settings 页按职责拆分为通用设置页与 forward-proxy 页，同时继续复用现有设置数据模型与写接口。
+- 系统状态页 raw 统计已切换为真实磁盘文件口径，并拆分为 `raw / request / response` 三组指标。
 
 ## Quality Gates
 

@@ -52,8 +52,14 @@ async fn system_status_aggregates_counts_and_file_sizes() {
 
     let raw_dir = state.config.resolved_proxy_raw_dir();
     fs::create_dir_all(&raw_dir).expect("create raw dir");
-    let raw_file = raw_dir.join("response-1.bin");
-    fs::write(&raw_file, vec![b'r'; 5]).expect("write raw payload");
+    let request_only_file = raw_dir.join("request-only.bin");
+    fs::write(&request_only_file, vec![b'r'; 7]).expect("write request raw payload");
+    let response_only_file = raw_dir.join("response-only.bin.gz");
+    fs::write(&response_only_file, vec![b's'; 11]).expect("write response raw payload");
+    let request_both_file = raw_dir.join("request-both.bin");
+    fs::write(&request_both_file, vec![b't'; 13]).expect("write shared request raw payload");
+    let response_both_file = raw_dir.join("response-both.bin.gz");
+    fs::write(&response_both_file, vec![b'u'; 17]).expect("write shared response raw payload");
 
     let xray_runtime_dir = &state.config.xray_runtime_dir;
     let runtime_state_dir = xray_runtime_dir.join("state");
@@ -65,72 +71,75 @@ async fn system_status_aggregates_counts_and_file_sizes() {
     let unrelated_file = temp_dir.join("notes.txt");
     fs::write(&unrelated_file, vec![b'n'; 19]).expect("write unrelated file");
 
-    sqlx::query(
-        r#"
-        INSERT INTO codex_invocations (
-            invoke_id,
-            occurred_at,
-            source,
-            status,
-            raw_response,
-            response_raw_path,
-            response_raw_size
+    for (invoke_id, occurred_at, status, request_raw_path, response_raw_path) in [
+        (
+            "sys-request-1",
+            "2026-06-22 12:00:00",
+            "success",
+            Some("proxy-raw/request-only.bin"),
+            None,
+        ),
+        (
+            "sys-request-dup",
+            "2026-06-22 12:01:00",
+            "failed",
+            Some("proxy-raw/request-only.bin"),
+            None,
+        ),
+        (
+            "sys-response-1",
+            "2026-06-22 12:02:00",
+            "success",
+            None,
+            Some("proxy-raw/response-only.bin.gz"),
+        ),
+        (
+            "sys-response-dup",
+            "2026-06-22 12:03:00",
+            "failed",
+            None,
+            Some("proxy-raw/response-only.bin.gz"),
+        ),
+        (
+            "sys-both",
+            "2026-06-22 12:04:00",
+            "success",
+            Some("proxy-raw/request-both.bin"),
+            Some("proxy-raw/response-both.bin.gz"),
+        ),
+        (
+            "sys-missing",
+            "2026-06-22 12:05:00",
+            "running",
+            Some("proxy-raw/missing.bin"),
+            None,
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                raw_response,
+                request_raw_path,
+                response_raw_path
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "#,
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-        "#,
-    )
-    .bind("sys-success")
-    .bind("2026-06-22 12:00:00")
-    .bind(SOURCE_PROXY)
-    .bind("success")
-    .bind("{}")
-    .bind(raw_file.to_string_lossy().to_string())
-    .bind(5_i64)
-    .execute(&state.pool)
-    .await
-    .expect("insert success invocation");
-
-    sqlx::query(
-        r#"
-        INSERT INTO codex_invocations (
-            invoke_id,
-            occurred_at,
-            source,
-            status,
-            raw_response
-        )
-        VALUES (?1, ?2, ?3, ?4, ?5)
-        "#,
-    )
-    .bind("sys-failure")
-    .bind("2026-06-22 12:05:00")
-    .bind(SOURCE_PROXY)
-    .bind("failed")
-    .bind("{}")
-    .execute(&state.pool)
-    .await
-    .expect("insert failed invocation");
-
-    sqlx::query(
-        r#"
-        INSERT INTO codex_invocations (
-            invoke_id,
-            occurred_at,
-            source,
-            status,
-            raw_response
-        )
-        VALUES (?1, ?2, ?3, ?4, ?5)
-        "#,
-    )
-    .bind("sys-running")
-    .bind("2026-06-22 12:06:00")
-    .bind(SOURCE_PROXY)
-    .bind("running")
-    .bind("{}")
-    .execute(&state.pool)
-    .await
-    .expect("insert running invocation");
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind("{}")
+        .bind(request_raw_path)
+        .bind(response_raw_path)
+        .execute(&state.pool)
+        .await
+        .expect("insert raw invocation");
+    }
 
     sqlx::query(
         r#"
@@ -216,12 +225,16 @@ async fn system_status_aggregates_counts_and_file_sizes() {
         .await
         .expect("load cached system status");
 
-    assert_eq!(response.success_count, 1);
-    assert_eq!(response.non_success_count, 2);
+    assert_eq!(response.success_count, 3);
+    assert_eq!(response.non_success_count, 3);
     assert_eq!(response.archived_bodies.count, 4);
     assert_eq!(response.archived_bodies.bytes, 17);
-    assert_eq!(response.unarchived_bodies.count, 1);
-    assert_eq!(response.unarchived_bodies.bytes, 5);
+    assert_eq!(response.raw_bodies.count, 4);
+    assert_eq!(response.raw_bodies.bytes, 48);
+    assert_eq!(response.request_raw_bodies.count, 2);
+    assert_eq!(response.request_raw_bodies.bytes, 20);
+    assert_eq!(response.response_raw_bodies.count, 2);
+    assert_eq!(response.response_raw_bodies.bytes, 28);
     assert!(
         response.database_bytes > 0,
         "database bytes should include sqlite files"
