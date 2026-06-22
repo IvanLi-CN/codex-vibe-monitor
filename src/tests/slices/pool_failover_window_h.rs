@@ -11122,6 +11122,86 @@ async fn summary_reports_distinct_in_progress_prompt_cache_conversations() {
 }
 
 #[tokio::test]
+async fn empty_summary_response_keeps_live_in_progress_conversation_count() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+
+    for (id, invoke_id, status, payload) in [
+        (
+            451_i64,
+            "empty-summary-running-a",
+            "running",
+            Some(json!({ "promptCacheKey": "pck-empty-live-a" }).to_string()),
+        ),
+        (
+            452_i64,
+            "empty-summary-pending-a",
+            "pending",
+            Some(json!({ "promptCacheKey": "pck-empty-live-a" }).to_string()),
+        ),
+        (
+            453_i64,
+            "empty-summary-running-b",
+            "running",
+            Some(json!({ "promptCacheKey": "pck-empty-live-b" }).to_string()),
+        ),
+        (
+            454_i64,
+            "empty-summary-success-c",
+            "success",
+            Some(json!({ "promptCacheKey": "pck-empty-finished-c" }).to_string()),
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id,
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                total_tokens,
+                cost,
+                payload,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(id)
+        .bind(invoke_id)
+        .bind(&occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(10_i64)
+        .bind(0.01_f64)
+        .bind(payload)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert empty summary in-progress row");
+    }
+
+    let source_scope = resolve_default_source_scope(&state.pool)
+        .await
+        .expect("resolve source scope");
+    let response = build_empty_summary_response(state.as_ref(), source_scope, None)
+        .await
+        .expect("build empty summary response");
+
+    assert_eq!(response.total_count, 0);
+    assert_eq!(response.success_count, 0);
+    assert_eq!(response.failure_count, 0);
+    assert_eq!(response.total_tokens, 0);
+    assert_f64_close(response.total_cost, 0.0);
+    assert_eq!(response.in_progress_conversation_count, Some(2));
+    assert!(response.maintenance.is_some());
+}
+
+#[tokio::test]
 async fn account_scoped_historical_stats_include_unmaterialized_archived_hours() {
     let mut config = test_config();
     config.openai_upstream_base_url =
