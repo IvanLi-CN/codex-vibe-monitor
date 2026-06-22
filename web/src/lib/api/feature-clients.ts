@@ -8,6 +8,8 @@ export {
   fetchInvocationRecordDetail,
   fetchInvocationResponseBody,
   fetchStats,
+  fetchSystemStatus,
+  fetchSystemTaskRuns,
   fetchVersion,
   fetchSettings,
   fetchExternalApiKeys,

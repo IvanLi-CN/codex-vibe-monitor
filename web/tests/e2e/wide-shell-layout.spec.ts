@@ -69,10 +69,10 @@ const ROUTES: RouteCase[] = [
     },
   },
   {
-    path: '/#/settings',
-    label: 'settings',
+    path: '/#/system/status',
+    label: 'system',
     waitFor: async (page) => {
-      await expect(page.getByRole('heading', { name: /设置|Settings/ }).first()).toBeVisible()
+      await expect(page.getByRole('heading', { name: /系统状态|System status/ }).first()).toBeVisible()
     },
   },
 ]

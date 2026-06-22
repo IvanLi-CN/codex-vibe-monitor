@@ -6,6 +6,11 @@ import RecordsPage from './pages/Records'
 import SettingsPage from './pages/Settings'
 import StatsPage from './pages/Stats'
 import AccountPoolLayout from './pages/account-pool/AccountPoolLayout'
+import SystemLayout from './pages/system/SystemLayout'
+import SystemProxyPage from './pages/system/SystemProxyPage'
+import SystemSettingsPage from './pages/system/SystemSettingsPage'
+import SystemStatusPage from './pages/system/SystemStatusPage'
+import SystemTasksPage from './pages/system/SystemTasksPage'
 import GroupsPage from './pages/account-pool/Groups'
 import MaintenanceRecordsPage from './pages/account-pool/MaintenanceRecords'
 import UpstreamAccountsPage from './pages/account-pool/UpstreamAccounts'
@@ -29,7 +34,15 @@ function App() {
           <Route path="groups" element={<GroupsPage />} />
           <Route path="tags" element={<TagsPage />} />
         </Route>
-        <Route path="settings" element={<SettingsPage />} />
+        <Route path="system" element={<SystemLayout />}>
+          <Route index element={<Navigate to="/system/status" replace />} />
+          <Route path="status" element={<SystemStatusPage />} />
+          <Route path="tasks" element={<SystemTasksPage />} />
+          <Route path="settings" element={<SystemSettingsPage />} />
+          <Route path="proxy" element={<SystemProxyPage />} />
+        </Route>
+        <Route path="settings" element={<Navigate to="/system/settings" replace />} />
+        <Route path="settings/legacy" element={<SettingsPage mode="all" />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Route>
     </Routes>

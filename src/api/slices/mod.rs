@@ -6,6 +6,7 @@ mod internal {
     include!("invocations_and_summary.rs");
     include!("error_distribution_and_sse.rs");
     include!("settings_models_and_cache.rs");
+    include!("system_routes_and_tasks.rs");
     include!("prompt_cache_and_timeseries/mod.rs");
 }
 

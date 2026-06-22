@@ -189,6 +189,7 @@
                 },
             )),
             maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
+            system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
             pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
             pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),

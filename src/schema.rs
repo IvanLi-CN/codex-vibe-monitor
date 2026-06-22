@@ -2096,6 +2096,46 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure startup_backfill_progress table existence")?;
 
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS system_task_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_kind TEXT NOT NULL,
+            trigger_kind TEXT NOT NULL,
+            status TEXT NOT NULL,
+            summary TEXT,
+            detail TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            duration_ms INTEGER,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure system_task_runs table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_system_task_runs_task_time
+        ON system_task_runs (task_kind, started_at DESC, id DESC)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_system_task_runs_task_time")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_system_task_runs_status_time
+        ON system_task_runs (status, started_at DESC, id DESC)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_system_task_runs_status_time")?;
+
     seed_default_pricing_catalog(pool).await?;
     ensure_upstream_accounts_schema(pool).await?;
 

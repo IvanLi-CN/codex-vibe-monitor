@@ -1546,6 +1546,14 @@ async fn schedule_poll(
         .saturating_sub(state.semaphore.available_permits());
     let force_new_connection = in_flight > state.config.shared_connection_parallelism;
     let state_clone = state.clone();
+    let system_task_run = begin_system_task_run(
+        &state.pool,
+        SystemTaskKind::SchedulerPoll,
+        "interval",
+        Some(summarize_scheduler_poll_outcome(state.as_ref(), force_new_connection)),
+    )
+    .await
+    .ok();
 
     let handle = tokio::spawn(async move {
         let collect_broadcast_state = state_clone.broadcaster.receiver_count() > 0;
@@ -1600,11 +1608,48 @@ async fn schedule_poll(
                 {
                     warn!(?err, "failed to broadcast quota snapshot");
                 }
+
+                if let Some(run) = system_task_run.as_ref() {
+                    finish_system_task_run(
+                        &state_clone.pool,
+                        run,
+                        SystemTaskStatus::Success,
+                        Some(summarize_scheduler_poll_outcome(
+                            state_clone.as_ref(),
+                            force_new_connection,
+                        )),
+                        None,
+                    )
+                    .await;
+                }
             }
             Ok(Err(err)) => {
+                if let Some(run) = system_task_run.as_ref() {
+                    finish_system_task_run(
+                        &state_clone.pool,
+                        run,
+                        SystemTaskStatus::Failed,
+                        Some("scheduler poll failed".to_string()),
+                        Some(err.to_string()),
+                    )
+                    .await;
+                }
                 warn!(?err, "poll execution failed");
             }
             Err(_) => {
+                if let Some(run) = system_task_run.as_ref() {
+                    finish_system_task_run(
+                        &state_clone.pool,
+                        run,
+                        SystemTaskStatus::Failed,
+                        Some("scheduler poll timed out".to_string()),
+                        Some(format!(
+                            "timeout_secs={}",
+                            state_clone.config.request_timeout.as_secs()
+                        )),
+                    )
+                    .await;
+                }
                 warn!("scheduler fetch timed out");
             }
         }
@@ -1720,6 +1765,12 @@ fn build_stats_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
             get(get_prompt_cache_conversation_binding).patch(patch_prompt_cache_conversation_binding),
         )
         .route("/api/quota/latest", get(latest_quota_snapshot))
+}
+
+fn build_system_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
+    router
+        .route("/api/system/status", get(fetch_system_status))
+        .route("/api/system/tasks", get(list_system_task_runs))
 }
 
 fn build_pool_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
@@ -1867,8 +1918,8 @@ fn build_proxy_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
 
 pub(crate) fn build_app_router(state: Arc<AppState>) -> Router {
     build_proxy_routes(build_event_routes(build_external_routes(
-        build_pool_routes(build_stats_routes(build_invocation_routes(build_settings_routes(
-            build_health_routes(Router::new()),
+        build_pool_routes(build_system_routes(build_stats_routes(build_invocation_routes(
+            build_settings_routes(build_health_routes(Router::new())),
         )))),
     )))
     .with_state(state)

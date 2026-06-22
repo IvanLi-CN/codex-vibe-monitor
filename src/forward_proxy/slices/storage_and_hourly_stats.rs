@@ -2335,10 +2335,28 @@ pub(crate) async fn post_forward_proxy_refresh_subscriptions(
             .map(|endpoint| endpoint.key)
             .collect::<HashSet<_>>()
     };
+    let task_run = begin_system_task_run(
+        &state.pool,
+        SystemTaskKind::ForwardProxySubscriptionRefresh,
+        "manual",
+        Some("forward proxy manual refresh started".to_string()),
+    )
+    .await
+    .ok();
 
-    refresh_forward_proxy_subscriptions(state.clone(), true, None)
-        .await
-        .map_err(|err| (StatusCode::BAD_GATEWAY, err.to_string()))?;
+    if let Err(err) = refresh_forward_proxy_subscriptions(state.clone(), true, None).await {
+        if let Some(run) = task_run.as_ref() {
+            finish_system_task_run(
+                &state.pool,
+                run,
+                SystemTaskStatus::Failed,
+                Some("forward proxy manual refresh failed".to_string()),
+                Some(err.to_string()),
+            )
+            .await;
+        }
+        return Err((StatusCode::BAD_GATEWAY, err.to_string()));
+    }
 
     let after_subscription_keys = {
         let manager = state.forward_proxy.lock().await;
@@ -2354,6 +2372,20 @@ pub(crate) async fn post_forward_proxy_refresh_subscriptions(
     let forward_proxy = build_forward_proxy_settings_response(state.as_ref())
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    if let Some(run) = task_run.as_ref() {
+        finish_system_task_run(
+            &state.pool,
+            run,
+            SystemTaskStatus::Success,
+            Some(format!(
+                "forward proxy manual refresh completed: subscriptions={} added_nodes={}",
+                forward_proxy.subscription_urls.len(),
+                added_node_count
+            )),
+            None,
+        )
+        .await;
+    }
     Ok(Json(ForwardProxyRefreshSubscriptionsResponse {
         subscription_count: forward_proxy.subscription_urls.len(),
         forward_proxy,

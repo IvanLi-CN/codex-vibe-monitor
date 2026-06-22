@@ -1,21 +1,21 @@
 #[derive(Debug, Default)]
-struct RetentionRunSummary {
-    dry_run: bool,
-    raw_files_compression_candidates: usize,
-    raw_files_compressed: usize,
-    raw_bytes_before: u64,
-    raw_bytes_after: u64,
-    raw_bytes_after_estimated: u64,
-    invocation_details_pruned: usize,
-    invocation_rows_archived: usize,
-    forward_proxy_attempt_rows_archived: usize,
-    pool_upstream_request_attempt_rows_archived: usize,
-    stats_source_snapshot_rows_archived: usize,
-    quota_snapshot_rows_archived: usize,
-    archive_batches_touched: usize,
-    archive_batches_deleted: usize,
-    raw_files_removed: usize,
-    orphan_raw_files_removed: usize,
+pub(crate) struct RetentionRunSummary {
+    pub(crate) dry_run: bool,
+    pub(crate) raw_files_compression_candidates: usize,
+    pub(crate) raw_files_compressed: usize,
+    pub(crate) raw_bytes_before: u64,
+    pub(crate) raw_bytes_after: u64,
+    pub(crate) raw_bytes_after_estimated: u64,
+    pub(crate) invocation_details_pruned: usize,
+    pub(crate) invocation_rows_archived: usize,
+    pub(crate) forward_proxy_attempt_rows_archived: usize,
+    pub(crate) pool_upstream_request_attempt_rows_archived: usize,
+    pub(crate) stats_source_snapshot_rows_archived: usize,
+    pub(crate) quota_snapshot_rows_archived: usize,
+    pub(crate) archive_batches_touched: usize,
+    pub(crate) archive_batches_deleted: usize,
+    pub(crate) raw_files_removed: usize,
+    pub(crate) orphan_raw_files_removed: usize,
 }
 
 impl RetentionRunSummary {
@@ -683,11 +683,29 @@ async fn run_data_retention_maintenance_best_effort(
     rollup_refresh_reason: &'static str,
     trigger: &'static str,
 ) -> bool {
+    let task_run = begin_system_task_run(
+        &state.pool,
+        SystemTaskKind::RetentionArchive,
+        trigger,
+        Some("retention maintenance started".to_string()),
+    )
+    .await
+    .ok();
     let gate = crate::db_pressure::global_db_pressure_gate();
     let maintenance_succeeded = {
         let _permit = match gate.try_begin_background("data_retention_maintenance") {
             Ok(permit) => permit,
             Err(reason) => {
+                if let Some(handle) = task_run.as_ref() {
+                    finish_system_task_run(
+                        &state.pool,
+                        handle,
+                        SystemTaskStatus::Skipped,
+                        Some("retention skipped by db pressure gate".to_string()),
+                        Some(reason.to_string()),
+                    )
+                    .await;
+                }
                 warn!(
                     trigger,
                     reason = %reason,
@@ -698,9 +716,33 @@ async fn run_data_retention_maintenance_best_effort(
         };
 
         match run_data_retention_maintenance(&state.pool, &state.config, None, Some(cancel)).await {
-            Ok(_) => true,
+            Ok(summary) => {
+                if let Some(handle) = task_run.as_ref() {
+                    let (brief, detail) = summarize_retention_run_for_system_task(&summary);
+                    finish_system_task_run(
+                        &state.pool,
+                        handle,
+                        SystemTaskStatus::Success,
+                        Some(brief),
+                        Some(detail),
+                    )
+                    .await;
+                }
+                invalidate_system_status_cache(state.as_ref()).await;
+                true
+            }
             Err(err) => {
                 let pressure_error = gate.record_error("data_retention_maintenance", &err);
+                if let Some(handle) = task_run.as_ref() {
+                    finish_system_task_run(
+                        &state.pool,
+                        handle,
+                        SystemTaskStatus::Failed,
+                        Some("retention maintenance failed".to_string()),
+                        Some(err.to_string()),
+                    )
+                    .await;
+                }
                 warn!(trigger, error = %err, retry_soon = pressure_error, "failed to run retention maintenance");
                 return !pressure_error;
             }

@@ -1265,6 +1265,40 @@ export interface SettingsPayload {
   pricing: PricingSettings;
 }
 
+export interface SystemStatusMetric {
+  count: number;
+  bytes: number;
+}
+
+export interface SystemStatusResponse {
+  successCount: number;
+  nonSuccessCount: number;
+  archivedBodies: SystemStatusMetric;
+  unarchivedBodies: SystemStatusMetric;
+  databaseBytes: number;
+  otherFilesBytes: number;
+  refreshedAt: string;
+}
+
+export interface SystemTaskRun {
+  id: number;
+  taskKind: string;
+  triggerKind: string;
+  status: string;
+  summary?: string;
+  detail?: string;
+  startedAt: string;
+  finishedAt?: string;
+  durationMs?: number;
+}
+
+export interface SystemTaskRunsResponse {
+  items: SystemTaskRun[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
 export interface ExternalApiKeySummary {
   id: number;
   name: string;
@@ -2341,6 +2375,63 @@ function normalizeSettingsPayload(raw: unknown): SettingsPayload {
   };
 }
 
+function normalizeSystemStatusMetric(raw: unknown): SystemStatusMetric {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  return {
+    count: normalizeFiniteNumber(payload.count) ?? 0,
+    bytes: normalizeFiniteNumber(payload.bytes) ?? 0,
+  };
+}
+
+function normalizeSystemStatusResponse(raw: unknown): SystemStatusResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  return {
+    successCount: normalizeFiniteNumber(payload.successCount) ?? 0,
+    nonSuccessCount: normalizeFiniteNumber(payload.nonSuccessCount) ?? 0,
+    archivedBodies: normalizeSystemStatusMetric(payload.archivedBodies),
+    unarchivedBodies: normalizeSystemStatusMetric(payload.unarchivedBodies),
+    databaseBytes: normalizeFiniteNumber(payload.databaseBytes) ?? 0,
+    otherFilesBytes: normalizeFiniteNumber(payload.otherFilesBytes) ?? 0,
+    refreshedAt: typeof payload.refreshedAt === "string" ? payload.refreshedAt : "",
+  };
+}
+
+function normalizeSystemTaskRun(raw: unknown): SystemTaskRun | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const id = normalizeFiniteNumber(payload.id);
+  const taskKind = typeof payload.taskKind === "string" ? payload.taskKind : "";
+  const triggerKind = typeof payload.triggerKind === "string" ? payload.triggerKind : "";
+  const status = typeof payload.status === "string" ? payload.status : "";
+  const startedAt = typeof payload.startedAt === "string" ? payload.startedAt : "";
+  if (id == null || !taskKind || !triggerKind || !status || !startedAt) {
+    return null;
+  }
+  return {
+    id,
+    taskKind,
+    triggerKind,
+    status,
+    summary: typeof payload.summary === "string" ? payload.summary : undefined,
+    detail: typeof payload.detail === "string" ? payload.detail : undefined,
+    startedAt,
+    finishedAt: typeof payload.finishedAt === "string" ? payload.finishedAt : undefined,
+    durationMs: normalizeFiniteNumber(payload.durationMs),
+  };
+}
+
+function normalizeSystemTaskRunsResponse(raw: unknown): SystemTaskRunsResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const itemsRaw = Array.isArray(payload.items) ? payload.items : [];
+  return {
+    items: itemsRaw
+      .map(normalizeSystemTaskRun)
+      .filter((item): item is SystemTaskRun => item != null),
+    total: normalizeFiniteNumber(payload.total) ?? 0,
+    page: normalizeFiniteNumber(payload.page) ?? 1,
+    pageSize: normalizeFiniteNumber(payload.pageSize) ?? 20,
+  };
+}
+
 function normalizeExternalApiKeySummary(
   raw: unknown,
 ): ExternalApiKeySummary | null {
@@ -2420,6 +2511,33 @@ export async function fetchVersion(): Promise<VersionResponse> {
 export async function fetchSettings(): Promise<SettingsPayload> {
   const response = await fetchJson<unknown>("/api/settings");
   return normalizeSettingsPayload(response);
+}
+
+export async function fetchSystemStatus(): Promise<SystemStatusResponse> {
+  const response = await fetchJson<unknown>("/api/system/status");
+  return normalizeSystemStatusResponse(response);
+}
+
+export async function fetchSystemTaskRuns(params?: {
+  taskKind?: string;
+  status?: string;
+  startedAtFrom?: string;
+  startedAtTo?: string;
+  limit?: number;
+  page?: number;
+  pageSize?: number;
+}): Promise<SystemTaskRunsResponse> {
+  const query = new URLSearchParams();
+  if (params?.taskKind) query.set("taskKind", params.taskKind);
+  if (params?.status) query.set("status", params.status);
+  if (params?.startedAtFrom) query.set("startedAtFrom", params.startedAtFrom);
+  if (params?.startedAtTo) query.set("startedAtTo", params.startedAtTo);
+  if (params?.limit != null) query.set("limit", String(params.limit));
+  if (params?.page != null) query.set("page", String(params.page));
+  if (params?.pageSize != null) query.set("pageSize", String(params.pageSize));
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  const response = await fetchJson<unknown>(`/api/system/tasks${suffix}`);
+  return normalizeSystemTaskRunsResponse(response);
 }
 
 export async function fetchExternalApiKeys(): Promise<ExternalApiKeyListResponse> {

@@ -371,6 +371,15 @@ async fn save_startup_backfill_progress(
 }
 
 async fn run_startup_backfill_maintenance_pass(state: Arc<AppState>, cancel: &CancellationToken) {
+    let task_run = begin_system_task_run(
+        &state.pool,
+        SystemTaskKind::StartupBackfill,
+        "pass",
+        Some("startup backfill maintenance pass started".to_string()),
+    )
+    .await
+    .ok();
+    let mut had_failure = false;
     for task in StartupBackfillTask::ordered_tasks() {
         if cancel.is_cancelled() {
             info!(
@@ -388,6 +397,7 @@ async fn run_startup_backfill_maintenance_pass(state: Arc<AppState>, cancel: &Ca
             continue;
         }
         if let Err(err) = run_startup_backfill_task_if_due(&state, *task).await {
+            had_failure = true;
             crate::db_pressure::global_db_pressure_gate().record_error("startup_backfill", &err);
             warn!(task = task.log_label(), error = %err, "startup backfill supervisor pass failed");
         }
@@ -399,6 +409,25 @@ async fn run_startup_backfill_maintenance_pass(state: Arc<AppState>, cancel: &Ca
         "startup backfill maintenance pass",
     )
     .await;
+
+    if let Some(run) = task_run.as_ref() {
+        finish_system_task_run(
+            &state.pool,
+            run,
+            if had_failure {
+                SystemTaskStatus::Failed
+            } else {
+                SystemTaskStatus::Success
+            },
+            Some(if had_failure {
+                "startup backfill maintenance pass completed with failures".to_string()
+            } else {
+                "startup backfill maintenance pass completed".to_string()
+            }),
+            None,
+        )
+        .await;
+    }
 }
 
 fn startup_backfill_task_enabled(state: &AppState, task: StartupBackfillTask) -> bool {

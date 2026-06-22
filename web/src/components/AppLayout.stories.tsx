@@ -90,7 +90,7 @@ function MockPage({ title, description }: { title: string; description: string }
           <div className="rounded-2xl border border-base-300 bg-base-100/90 p-4">
             <p className="text-sm font-medium text-base-content">Navigation</p>
             <p className="mt-2 text-3xl font-semibold text-primary">5 tabs</p>
-            <p className="mt-1 text-sm text-base-content/70">Dashboard, stats, live, account pool, settings.</p>
+            <p className="mt-1 text-sm text-base-content/70">Dashboard, stats, live, records, account pool, and system now share one shell.</p>
           </div>
         </div>
       </div>
@@ -183,11 +183,11 @@ const meta = {
                   />
                 </Route>
                 <Route
-                  path="settings"
+                  path="system"
                   element={
                     <MockPage
-                      title="Settings panel"
-                      description="Global controls and feature toggles remain framed by the same app shell."
+                      title="System workspace"
+                      description="The top-level system workspace hosts status, tasks, shared settings, and forward proxy operations."
                     />
                   }
                 />
