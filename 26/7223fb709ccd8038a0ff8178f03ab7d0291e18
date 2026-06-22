@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.71.0",
+  "base_stable_version": "1.70.9",
+  "channel_label": "channel:stable",
+  "created_at": "2026-06-22T07:31:38Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.71.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "e7e0c284efabe9bf0c0c9000f74564dbcef66556",
+  "pr_number": 458,
+  "pr_title": "feat(system): add system workspace",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.71.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.71.0",
+  "target_sha": "267223fb709ccd8038a0ff8178f03ab7d0291e18",
+  "type_label": "type:minor"
+}
