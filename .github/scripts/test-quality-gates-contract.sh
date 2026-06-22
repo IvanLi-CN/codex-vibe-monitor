@@ -200,7 +200,7 @@ import sys
 repo = Path(sys.argv[1])
 path = repo / ".github/workflows/release.yml"
 text = path.read_text()
-needle = "        run: ./.github/scripts/build-smoke-image-with-retry.sh\n"
+needle = "        run: ../workflow-helpers/.github/scripts/build-smoke-image-with-retry.sh\n"
 replacement = "        run: docker buildx build --platform \"$BUILD_PLATFORM\" .\n"
 if needle not in text:
     raise SystemExit("failed to rewrite arm64 retry helper step")

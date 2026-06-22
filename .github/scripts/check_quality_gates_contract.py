@@ -844,8 +844,13 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     docker_arm = named_job_config(workflow, "docker-arm64", expected_jobs, "release.yml")
     arm_checkout = checkout_step(docker_arm, "Checkout code", "release.yml.jobs.docker-arm64")
     require(arm_checkout.get("ref") == "${{ needs.release-meta.outputs.target_sha }}", "release.yml.jobs.docker-arm64 checkout ref drifted")
+    require(arm_checkout.get("path") == "target", "release.yml.jobs.docker-arm64 checkout path drifted")
+    arm_helper_checkout = checkout_step(docker_arm, "Checkout workflow helpers", "release.yml.jobs.docker-arm64")
+    require(arm_helper_checkout.get("ref") == "${{ github.sha }}", "release.yml.jobs.docker-arm64 helper checkout ref drifted")
+    require(arm_helper_checkout.get("path") == "workflow-helpers", "release.yml.jobs.docker-arm64 helper checkout path drifted")
     arm_build_step = step_config(docker_arm, "Build smoke image (linux/arm64, load)", "release.yml.jobs.docker-arm64")
     require(arm_build_step.get("shell") == "bash", "release.yml.jobs.docker-arm64: arm64 smoke build must run in bash")
+    require(arm_build_step.get("working-directory") == "target", "release.yml.jobs.docker-arm64: arm64 smoke build must run from target checkout")
     arm_build_env = require_mapping(arm_build_step.get("env"), "release.yml.jobs.docker-arm64.steps['Build smoke image (linux/arm64, load)'].env")
     require(
         arm_build_env.get("BUILD_PLATFORM") == "${{ env.PLATFORM_ARM64 }}",
@@ -865,10 +870,11 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     )
     arm_build_run = str(arm_build_step.get("run", ""))
     require(
-        "./.github/scripts/build-smoke-image-with-retry.sh" in arm_build_run,
+        "../workflow-helpers/.github/scripts/build-smoke-image-with-retry.sh" in arm_build_run,
         "release.yml.jobs.docker-arm64: arm64 smoke build must use the retry helper",
     )
     arm_smoke_step = step_config(docker_arm, "Smoke test image (linux/arm64)", "release.yml.jobs.docker-arm64")
+    require(arm_smoke_step.get("working-directory") == "target", "release.yml.jobs.docker-arm64: arm64 smoke test must run from target checkout")
     arm_smoke_env = require_mapping(arm_smoke_step.get("env"), "release.yml.jobs.docker-arm64.steps['Smoke test image (linux/arm64)'].env")
     require(
         arm_smoke_env.get("SMOKE_TAG") == "${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ needs.release-meta.outputs.candidate_suffix }}-arm64",
