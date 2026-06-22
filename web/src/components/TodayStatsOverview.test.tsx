@@ -18,6 +18,7 @@ vi.mock('../i18n', () => ({
         'dashboard.today.responseTime': 'Response time',
         'dashboard.today.responseTimeDescription': 'Response time uses the latest 5-minute active tail.',
         'dashboard.today.inProgressConversations': 'In-progress conversations',
+        'dashboard.today.parallelConversations': 'Parallel conversations',
         'dashboard.today.todayCost': 'Today cost',
         'dashboard.today.yesterdayCost': 'Yesterday cost',
         'dashboard.today.todayTokens': 'Today tokens',
@@ -25,6 +26,7 @@ vi.mock('../i18n', () => ({
         'dashboard.today.tokensPerMinuteDescription': 'TPM uses the active tail inside the latest 5-minute window.',
         'dashboard.today.spendRateDescription': 'Spend rate uses the active tail inside the latest 5-minute window.',
         'dashboard.today.inProgressConversationsDescription': 'Current running or pending prompt-cache conversations.',
+        'dashboard.today.parallelConversationsDescription': 'Distinct prompt-cache conversations counted in the latest minute bucket.',
         'dashboard.today.successDescription': 'Successful calls in the selected day.',
         'dashboard.today.failuresDescription': 'Failed calls in the selected day.',
         'dashboard.today.totalCostDescription': 'Total cost in the selected day.',
@@ -301,6 +303,39 @@ describe('TodayStatsOverview', () => {
     expect(host?.querySelector('[data-testid="today-stats-value-in-progress-conversations"]')?.textContent).toContain('11')
     expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-delta"]')?.textContent).toContain('—')
     expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-day-average"]')?.textContent).toContain('—')
+  })
+
+  it('uses historical parallel semantics for the yesterday view while keeping the tile visible', () => {
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 12474,
+          successCount: 9949,
+          failureCount: 2525,
+          totalCost: 539.42,
+          totalTokens: 1314275579,
+          inProgressConversationCount: 11,
+        }}
+        rate={{
+          tokensPerMinute: 1000,
+          spendRate: 0.1,
+          windowMinutes: 5,
+          available: true,
+        }}
+        timeseries={buildTimeseriesWithLatency()}
+        parallelWorkStats={buildParallelWorkStats([1, 3], 2, 4)}
+        comparisonParallelWorkStats={null}
+        loading={false}
+        error={null}
+        dayKind="yesterday"
+      />,
+    )
+
+    expect(host?.textContent).toContain('Parallel conversations')
+    expect(host?.textContent).not.toContain('In-progress conversations')
+    expect(host?.querySelector('[data-testid="today-stats-value-in-progress-conversations"]')?.textContent).toContain('3')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-day-average"]')?.textContent).toContain('2')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-delta"]')?.textContent).toContain('—')
   })
 
   it('supports embedded mode without rendering the outer surface panel', () => {

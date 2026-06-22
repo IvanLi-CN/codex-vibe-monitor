@@ -277,9 +277,15 @@ export function TodayStatsOverview({
     stats,
     parallelWorkStats,
     comparisonParallelWorkStats,
-    { preferSummaryCurrentCount: true },
+    { preferSummaryCurrentCount: isToday },
   )
   const parallelDelta = percentDelta(parallelSnapshot.currentCount, parallelSnapshot.yesterdayAverage)
+  const parallelLabel = isToday
+    ? t('dashboard.today.inProgressConversations')
+    : t('dashboard.today.parallelConversations')
+  const parallelDescription = isToday
+    ? t('dashboard.today.inProgressConversationsDescription')
+    : t('dashboard.today.parallelConversationsDescription')
 
   const rateUnavailable = !loading && !rateLoading && rateError != null
   const responseTimeCurrentUnavailable = rateUnavailable || responseTimeSnapshot?.responseTimeMs == null
@@ -391,8 +397,8 @@ export function TodayStatsOverview({
           />
           {showInProgressConversations ? (
             <MetricTile
-              label={t('dashboard.today.inProgressConversations')}
-              description={t('dashboard.today.inProgressConversationsDescription')}
+              label={parallelLabel}
+              description={parallelDescription}
               value={parallelSnapshot.currentCount ?? 0}
               localeTag={localeTag}
               loading={loading}

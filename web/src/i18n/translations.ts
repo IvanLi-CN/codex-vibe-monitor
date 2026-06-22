@@ -1672,6 +1672,7 @@ const baseTranslations = {
     "dashboard.today.spendRate": "Spend rate",
     "dashboard.today.responseTime": "Response time",
     "dashboard.today.inProgressConversations": "In-progress conversations",
+    "dashboard.today.parallelConversations": "Parallel conversations",
     "dashboard.today.todayCost": "Today cost",
     "dashboard.today.yesterdayCost": "Yesterday cost",
     "dashboard.today.todayTokens": "Today tokens",
@@ -1684,6 +1685,8 @@ const baseTranslations = {
       "Average first-response-byte total from the active tail inside the latest 5-minute window.",
     "dashboard.today.inProgressConversationsDescription":
       "Current number of unique prompt-cache conversations with a running or pending invocation.",
+    "dashboard.today.parallelConversationsDescription":
+      "Distinct prompt-cache conversations counted in the latest minute bucket of the selected window.",
     "dashboard.today.successDescription":
       "Successful invocations accumulated in the selected natural-day window.",
     "dashboard.today.failuresDescription":
@@ -3780,6 +3783,7 @@ const baseTranslations = {
     "dashboard.today.spendRate": "消费速率",
     "dashboard.today.responseTime": "响应时间",
     "dashboard.today.inProgressConversations": "进行中对话",
+    "dashboard.today.parallelConversations": "并行对话",
     "dashboard.today.todayCost": "今日成本",
     "dashboard.today.yesterdayCost": "昨日成本",
     "dashboard.today.todayTokens": "今日 Tokens",
@@ -3792,6 +3796,8 @@ const baseTranslations = {
       "首字总耗时均值，按最近 5 分钟窗口内的活跃尾段计算；无完整样本时显示为空。",
     "dashboard.today.inProgressConversationsDescription":
       "当前仍存在 running 或 pending 调用的唯一 prompt-cache 对话数量。",
+    "dashboard.today.parallelConversationsDescription":
+      "所选窗口最后一分钟切片内统计到的唯一 prompt-cache 对话数量。",
     "dashboard.today.successDescription":
       "所选自然日窗口内累计成功的调用数。",
     "dashboard.today.failuresDescription":
