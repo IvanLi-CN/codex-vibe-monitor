@@ -2521,6 +2521,8 @@ export async function fetchSystemStatus(): Promise<SystemStatusResponse> {
 export async function fetchSystemTaskRuns(params?: {
   taskKind?: string;
   status?: string;
+  startedAtFrom?: string;
+  startedAtTo?: string;
   limit?: number;
   page?: number;
   pageSize?: number;
@@ -2528,6 +2530,8 @@ export async function fetchSystemTaskRuns(params?: {
   const query = new URLSearchParams();
   if (params?.taskKind) query.set("taskKind", params.taskKind);
   if (params?.status) query.set("status", params.status);
+  if (params?.startedAtFrom) query.set("startedAtFrom", params.startedAtFrom);
+  if (params?.startedAtTo) query.set("startedAtTo", params.startedAtTo);
   if (params?.limit != null) query.set("limit", String(params.limit));
   if (params?.page != null) query.set("page", String(params.page));
   if (params?.pageSize != null) query.set("pageSize", String(params.pageSize));

@@ -85,6 +85,8 @@ describe('SystemTasksPage', () => {
     expect(apiMocks.fetchSystemTaskRuns).toHaveBeenNthCalledWith(1, {
       taskKind: undefined,
       status: undefined,
+      startedAtFrom: undefined,
+      startedAtTo: undefined,
       page: 1,
       pageSize: 20,
     })
@@ -103,6 +105,8 @@ describe('SystemTasksPage', () => {
     expect(apiMocks.fetchSystemTaskRuns).toHaveBeenNthCalledWith(2, {
       taskKind: undefined,
       status: undefined,
+      startedAtFrom: undefined,
+      startedAtTo: undefined,
       page: 2,
       pageSize: 20,
     })
@@ -139,6 +143,50 @@ describe('SystemTasksPage', () => {
     expect(apiMocks.fetchSystemTaskRuns).toHaveBeenLastCalledWith({
       taskKind: 'scheduler',
       status: undefined,
+      startedAtFrom: undefined,
+      startedAtTo: undefined,
+      page: 1,
+      pageSize: 20,
+    })
+  })
+
+  it('passes the started-at range filters to the API', async () => {
+    renderPage()
+    await flushEffects()
+
+    const inputs = Array.from(host?.querySelectorAll('input[type="datetime-local"]') ?? []) as HTMLInputElement[]
+    expect(inputs).toHaveLength(2)
+
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+      valueSetter?.call(inputs[0], '2026-06-22T09:00')
+      inputs[0].dispatchEvent(new Event('change', { bubbles: true }))
+      inputs[0].dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await flushEffects()
+
+    expect(apiMocks.fetchSystemTaskRuns).toHaveBeenLastCalledWith({
+      taskKind: undefined,
+      status: undefined,
+      startedAtFrom: '2026-06-22T01:00:00.000Z',
+      startedAtTo: undefined,
+      page: 1,
+      pageSize: 20,
+    })
+
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+      valueSetter?.call(inputs[1], '2026-06-22T10:30')
+      inputs[1].dispatchEvent(new Event('change', { bubbles: true }))
+      inputs[1].dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await flushEffects()
+
+    expect(apiMocks.fetchSystemTaskRuns).toHaveBeenLastCalledWith({
+      taskKind: undefined,
+      status: undefined,
+      startedAtFrom: '2026-06-22T01:00:00.000Z',
+      startedAtTo: '2026-06-22T02:31:00.000Z',
       page: 1,
       pageSize: 20,
     })

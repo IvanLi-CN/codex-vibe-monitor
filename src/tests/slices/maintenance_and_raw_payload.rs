@@ -266,6 +266,15 @@ async fn system_task_runs_filter_and_routes_serve_json() {
         None,
     )
     .await;
+    sqlx::query(
+        "UPDATE system_task_runs SET started_at = ?1, finished_at = ?2 WHERE id = ?3",
+    )
+    .bind("2026-06-22 08:45:00")
+    .bind("2026-06-22 08:45:01")
+    .bind(scheduler_handle.id)
+    .execute(&state.pool)
+    .await
+    .expect("pin scheduler task timestamps");
 
     let retention_handle = begin_system_task_run(
         &state.pool,
@@ -283,12 +292,23 @@ async fn system_task_runs_filter_and_routes_serve_json() {
         Some("disk full".to_string()),
     )
     .await;
+    sqlx::query(
+        "UPDATE system_task_runs SET started_at = ?1, finished_at = ?2 WHERE id = ?3",
+    )
+    .bind("2026-06-22 09:15:00")
+    .bind("2026-06-22 09:15:02")
+    .bind(retention_handle.id)
+    .execute(&state.pool)
+    .await
+    .expect("pin retention task timestamps");
 
     let filtered = list_system_task_runs(
         State(state.clone()),
         Query(SystemTaskRunsQuery {
             task_kind: Some(SystemTaskKind::RetentionArchive.as_str().to_string()),
             status: Some(SystemTaskStatus::Failed.as_str().to_string()),
+            started_at_from: None,
+            started_at_to: None,
             limit: Some(10),
             page: None,
             page_size: None,
@@ -316,6 +336,8 @@ async fn system_task_runs_filter_and_routes_serve_json() {
         Query(SystemTaskRunsQuery {
             task_kind: None,
             status: None,
+            started_at_from: None,
+            started_at_to: None,
             limit: Some(10),
             page: None,
             page_size: None,
@@ -337,6 +359,8 @@ async fn system_task_runs_filter_and_routes_serve_json() {
         Query(SystemTaskRunsQuery {
             task_kind: None,
             status: None,
+            started_at_from: None,
+            started_at_to: None,
             limit: None,
             page: Some(2),
             page_size: Some(1),
@@ -352,11 +376,32 @@ async fn system_task_runs_filter_and_routes_serve_json() {
     assert_eq!(paged.items.len(), 1);
     assert_eq!(paged.items[0].task_kind, "scheduler_poll");
 
+    let ranged = list_system_task_runs(
+        State(state.clone()),
+        Query(SystemTaskRunsQuery {
+            task_kind: None,
+            status: None,
+            started_at_from: Some("2026-06-22T09:00:00Z".to_string()),
+            started_at_to: Some("2026-06-22T09:30:00Z".to_string()),
+            limit: Some(10),
+            page: None,
+            page_size: None,
+        }),
+    )
+    .await
+    .expect("list ranged system tasks")
+    .0;
+
+    assert_eq!(ranged.total, 1);
+    assert_eq!(ranged.items.len(), 1);
+    assert_eq!(ranged.items[0].task_kind, "retention_archive");
+
     let app = build_app_router(state.clone());
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/system/tasks?taskKind=retention_archive&status=failed&page=1&pageSize=1")
+                .uri("/api/system/tasks?taskKind=retention_archive&status=failed&startedAtFrom=2026-06-22T09:00:00Z&startedAtTo=2026-06-22T09:30:00Z&page=1&pageSize=1")
                 .body(Body::empty())
                 .expect("build request"),
         )
@@ -374,6 +419,18 @@ async fn system_task_runs_filter_and_routes_serve_json() {
         payload["items"][0]["taskKind"].as_str(),
         Some("retention_archive")
     );
+
+    let invalid_range_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/system/tasks?startedAtFrom=not-a-date")
+                .body(Body::empty())
+                .expect("build invalid request"),
+        )
+        .await
+        .expect("serve invalid system tasks route");
+    assert_eq!(invalid_range_response.status(), StatusCode::BAD_REQUEST);
 
     let app = build_app_router(state);
     let response = app

@@ -57,6 +57,8 @@ pub(crate) struct SystemTaskRunsListResponse {
 pub(crate) struct SystemTaskRunsQuery {
     pub(crate) task_kind: Option<String>,
     pub(crate) status: Option<String>,
+    pub(crate) started_at_from: Option<String>,
+    pub(crate) started_at_to: Option<String>,
     pub(crate) limit: Option<u32>,
     pub(crate) page: Option<u32>,
     pub(crate) page_size: Option<u32>,
@@ -114,6 +116,17 @@ impl From<SystemTaskRunRow> for SystemTaskRunResponse {
             duration_ms: value.duration_ms,
         }
     }
+}
+
+fn parse_system_task_run_bound(raw: Option<&str>, field_name: &str) -> Result<Option<String>, ApiError> {
+    let Some(raw_value) = normalize_query_text(raw) else {
+        return Ok(None);
+    };
+    let parsed = DateTime::parse_from_rfc3339(&raw_value)
+        .with_context(|| format!("invalid {field_name}: {raw_value}"))
+        .map_err(ApiError::bad_request)?
+        .with_timezone(&Utc);
+    Ok(Some(format_utc_iso(parsed)))
 }
 
 fn count_file_size(path: &Path) -> u64 {
@@ -370,6 +383,9 @@ pub(crate) async fn list_system_task_runs(
     State(state): State<Arc<AppState>>,
     Query(query): Query<SystemTaskRunsQuery>,
 ) -> Result<Json<SystemTaskRunsListResponse>, ApiError> {
+    let started_at_from =
+        parse_system_task_run_bound(query.started_at_from.as_deref(), "startedAtFrom")?;
+    let started_at_to = parse_system_task_run_bound(query.started_at_to.as_deref(), "startedAtTo")?;
     let page_size = query
         .page_size
         .unwrap_or(query.limit.unwrap_or(20))
@@ -395,6 +411,18 @@ pub(crate) async fn list_system_task_runs(
         .filter(|value| !value.is_empty())
     {
         builder.push(" AND status = ").push_bind(status);
+    }
+    if let Some(started_at_from) = started_at_from.as_deref() {
+        builder
+            .push(" AND datetime(started_at) >= datetime(")
+            .push_bind(started_at_from)
+            .push(")");
+    }
+    if let Some(started_at_to) = started_at_to.as_deref() {
+        builder
+            .push(" AND datetime(started_at) <= datetime(")
+            .push_bind(started_at_to)
+            .push(")");
     }
     builder
         .push(" ORDER BY started_at DESC, id DESC LIMIT ")
@@ -423,6 +451,18 @@ pub(crate) async fn list_system_task_runs(
         .filter(|value| !value.is_empty())
     {
         count_builder.push(" AND status = ").push_bind(status);
+    }
+    if let Some(started_at_from) = started_at_from.as_deref() {
+        count_builder
+            .push(" AND datetime(started_at) >= datetime(")
+            .push_bind(started_at_from)
+            .push(")");
+    }
+    if let Some(started_at_to) = started_at_to.as_deref() {
+        count_builder
+            .push(" AND datetime(started_at) <= datetime(")
+            .push_bind(started_at_to)
+            .push(")");
     }
     let total = count_builder
         .build_query_scalar::<i64>()

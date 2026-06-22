@@ -12,6 +12,17 @@ const TASK_PAGE_SIZE_OPTIONS = [10, 20, 50, 100].map((value) => ({
   label: String(value),
 }))
 
+function toIsoStringOrUndefined(value: string, upperBound = false): string | undefined {
+  const normalized = value.trim()
+  if (!normalized) return undefined
+  const parsed = new Date(normalized)
+  if (Number.isNaN(parsed.getTime())) return undefined
+  if (upperBound && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(normalized)) {
+    parsed.setMinutes(parsed.getMinutes() + 1)
+  }
+  return parsed.toISOString()
+}
+
 function statusTone(status: string): string {
   switch (status) {
     case 'success':
@@ -33,8 +44,13 @@ export default function SystemTasksPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [taskKind, setTaskKind] = useState('')
   const [status, setStatus] = useState('')
+  const [startedAtFrom, setStartedAtFrom] = useState('')
+  const [startedAtTo, setStartedAtTo] = useState('')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
+
+  const startedAtFromIso = useMemo(() => toIsoStringOrUndefined(startedAtFrom), [startedAtFrom])
+  const startedAtToIso = useMemo(() => toIsoStringOrUndefined(startedAtTo, true), [startedAtTo])
 
   useEffect(() => {
     let active = true
@@ -42,6 +58,8 @@ export default function SystemTasksPage() {
     fetchSystemTaskRuns({
       taskKind: taskKind || undefined,
       status: status || undefined,
+      startedAtFrom: startedAtFromIso,
+      startedAtTo: startedAtToIso,
       page,
       pageSize,
     })
@@ -65,7 +83,7 @@ export default function SystemTasksPage() {
     return () => {
       active = false
     }
-  }, [page, pageSize, status, taskKind])
+  }, [page, pageSize, startedAtFromIso, startedAtToIso, status, taskKind])
 
   const filteredCount = useMemo(() => total.toLocaleString(), [total])
   const pageCount = useMemo(() => Math.max(1, Math.ceil(total / pageSize)), [pageSize, total])
@@ -78,7 +96,7 @@ export default function SystemTasksPage() {
             <h2 className="section-title text-2xl">{t('system.tasks.title')}</h2>
             <p className="section-description max-w-3xl">{t('system.tasks.description')}</p>
           </div>
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
             <Input
               value={taskKind}
               onChange={(event) => {
@@ -101,6 +119,32 @@ export default function SystemTasksPage() {
                 { value: 'running', label: 'running' },
               ]}
             />
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-base-content/65">
+                {t('system.tasks.filters.startedAtFrom')}
+              </span>
+              <Input
+                type="datetime-local"
+                value={startedAtFrom}
+                onChange={(event) => {
+                  setStartedAtFrom(event.target.value)
+                  setPage(1)
+                }}
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-base-content/65">
+                {t('system.tasks.filters.startedAtTo')}
+              </span>
+              <Input
+                type="datetime-local"
+                value={startedAtTo}
+                onChange={(event) => {
+                  setStartedAtTo(event.target.value)
+                  setPage(1)
+                }}
+              />
+            </label>
             <div className="flex items-center rounded-xl border border-base-300/75 bg-base-100/72 px-3 text-sm text-base-content/70">
               {t('system.tasks.filters.count', { count: filteredCount })}
             </div>

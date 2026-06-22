@@ -88,15 +88,31 @@ for (let index = 0; index < 21; index += 1) {
   })
 }
 
-function buildStorybookSystemTasks(page: number, pageSize: number): SystemTaskRunsResponse {
+function filterStorybookSystemTasks(url: URL): SystemTaskRunsResponse {
+  const taskKind = url.searchParams.get('taskKind')?.trim()
+  const status = url.searchParams.get('status')?.trim()
+  const startedAtFrom = url.searchParams.get('startedAtFrom')?.trim()
+  const startedAtTo = url.searchParams.get('startedAtTo')?.trim()
+  const startedAtFromMs = startedAtFrom ? Date.parse(startedAtFrom) : Number.NaN
+  const startedAtToMs = startedAtTo ? Date.parse(startedAtTo) : Number.NaN
+  const page = Number(url.searchParams.get('page') ?? '1')
+  const pageSize = Number(url.searchParams.get('pageSize') ?? url.searchParams.get('limit') ?? '20')
+  const filtered = STORYBOOK_SYSTEM_TASK_ITEMS.filter((item) => {
+    const startedAtMs = Date.parse(item.startedAt)
+    if (taskKind && item.taskKind !== taskKind) return false
+    if (status && item.status !== status) return false
+    if (startedAtFrom && Number.isFinite(startedAtFromMs) && startedAtMs < startedAtFromMs) return false
+    if (startedAtTo && Number.isFinite(startedAtToMs) && startedAtMs > startedAtToMs) return false
+    return true
+  })
   const safePage = Math.max(1, page)
   const safePageSize = Math.min(100, Math.max(1, pageSize))
   const start = (safePage - 1) * safePageSize
   return {
-    total: STORYBOOK_SYSTEM_TASK_ITEMS.length,
+    total: filtered.length,
     page: safePage,
     pageSize: safePageSize,
-    items: STORYBOOK_SYSTEM_TASK_ITEMS.slice(start, start + safePageSize),
+    items: filtered.slice(start, start + safePageSize),
   }
 }
 
@@ -202,9 +218,7 @@ function buildSystemWorkspaceRequestHandler(): StorybookRequestHandler {
     }
 
     if (url.pathname === '/api/system/tasks' && method === 'GET') {
-      const page = Number(url.searchParams.get('page') ?? '1')
-      const pageSize = Number(url.searchParams.get('pageSize') ?? url.searchParams.get('limit') ?? '20')
-      return jsonResponse(clone(buildStorybookSystemTasks(page, pageSize)))
+      return jsonResponse(clone(filterStorybookSystemTasks(url)))
     }
 
     if (url.pathname === '/api/settings' && method === 'GET') {

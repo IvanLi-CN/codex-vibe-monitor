@@ -154,8 +154,8 @@
   viewport_strategy: storybook-viewport
   sensitive_exclusion: N/A
   submission_gate: owner-approved
-  evidence_note: 验证系统任务页的列表、筛选器、分页摘要与上一页/下一页控件布局。
-  snapshot_path: `/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__2e728e5d/2026/06/22/20260622T051604Z-system-tasks-pagination-trimmed-3bf3d193.png`
+  evidence_note: 验证系统任务页的列表、状态/类型筛选、开始时间范围筛选，以及分页摘要与上一页/下一页控件布局。
+  snapshot_path: `docs/specs/s7m3q-system-workspace/assets/system-tasks-time-range.png`
 - source_type: storybook_canvas
   story_id_or_title: System/SystemWorkspace/Settings
   target_program: mock-only
