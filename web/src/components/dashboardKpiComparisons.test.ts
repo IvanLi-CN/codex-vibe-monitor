@@ -4,8 +4,10 @@ import {
   buildParallelWorkKpiSnapshot,
   buildSameProgressUsageSnapshot,
   cacheHitRate,
+  dividePerConversation,
   failureRate,
   percentDelta,
+  ratioOfCurrentToBaseline,
   sumCacheInputTokens,
 } from './dashboardKpiComparisons'
 
@@ -98,6 +100,7 @@ describe('dashboard KPI comparison helpers', () => {
 
     expect(snapshot.totalCost).toBe(6)
     expect(snapshot.totalTokens).toBe(600)
+    expect(snapshot.successCount).toBe(3)
   })
 
   it('uses local clock progress instead of UTC elapsed time across DST changes', () => {
@@ -168,6 +171,17 @@ describe('dashboard KPI comparison helpers', () => {
 
     expect(snapshot.totalCost).toBe(3)
     expect(snapshot.totalTokens).toBe(300)
+  })
+
+  it('derives per-conversation values and success ratios defensively', () => {
+    expect(dividePerConversation(1200, 6)).toBe(200)
+    expect(dividePerConversation(1200, 0)).toBeNull()
+    expect(dividePerConversation(null, 6)).toBeNull()
+
+    expect(ratioOfCurrentToBaseline(90, 60)).toBe(1.5)
+    expect(ratioOfCurrentToBaseline(0, 60)).toBe(0)
+    expect(ratioOfCurrentToBaseline(90, 0)).toBeNull()
+    expect(ratioOfCurrentToBaseline(null, 60)).toBeNull()
   })
 
   it('sums cache tokens and resolves real-time parallel work against yesterday average', () => {

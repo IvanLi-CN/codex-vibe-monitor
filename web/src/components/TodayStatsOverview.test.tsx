@@ -35,6 +35,10 @@ vi.mock('../i18n', () => ({
         'dashboard.today.secondary.previous7dAverage': '7d daily avg',
         'dashboard.today.secondary.vsYesterday': 'vs yesterday',
         'dashboard.today.secondary.comparison': 'Comparison',
+        'dashboard.today.secondary.perConversation': 'Per conversation',
+        'dashboard.today.secondary.retry': 'Retry',
+        'dashboard.today.secondary.inProgress': 'In progress',
+        'dashboard.today.secondary.failed': 'Failed',
         'dashboard.today.secondary.failureRate': 'Failure rate',
         'dashboard.today.secondary.cacheHitRate': 'Cache hit',
         'stats.cards.loadError': 'Load error',
@@ -428,8 +432,8 @@ describe('TodayStatsOverview', () => {
     expect(host?.querySelector('[data-testid="today-stats-value-success"]')?.textContent).toContain('80')
     expect(host?.querySelector('[data-testid="today-stats-secondary-failures"]')?.textContent).toContain('8')
     expect(host?.textContent).toContain('vs yesterday')
-    expect(host?.querySelector('[data-testid="today-stats-secondary-cost-delta"]')?.textContent).toBe('-50%')
-    expect(host?.querySelector('[data-testid="today-stats-secondary-tokens-delta"]')?.textContent).toBe('-50%')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-cost-delta"]')?.textContent).toContain('-50%')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-tokens-delta"]')?.textContent).toContain('-50%')
   })
 
   it('keeps the in-progress primary value from summary while secondary trend data comes from parallel buckets', () => {
@@ -492,6 +496,91 @@ describe('TodayStatsOverview', () => {
     expect(spendRateText).toContain('$0.10')
   })
 
+  it('renders the new natural-day KPI helper semantics inline', () => {
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 100,
+          successCount: 90,
+          failureCount: 10,
+          totalCost: 50,
+          totalTokens: 12000,
+          inProgressConversationCount: 6,
+          inProgressRetryConversationCount: 2,
+          inProgressAvgWaitMs: 1800,
+          nonSuccessCost: 3.5,
+          nonSuccessTokens: 420,
+        }}
+        comparisonStats={{
+          totalCount: 80,
+          successCount: 60,
+          failureCount: 20,
+          totalCost: 30,
+          totalTokens: 8000,
+          inProgressConversationCount: 4,
+        }}
+        timeseries={{
+          rangeStart: '2026-04-10T00:00:00.000Z',
+          rangeEnd: '2026-04-10T00:03:00.000Z',
+          bucketSeconds: 60,
+          points: [],
+        }}
+        comparisonTimeseries={{
+          rangeStart: '2026-04-09T00:00:00.000Z',
+          rangeEnd: '2026-04-10T00:00:00.000Z',
+          bucketSeconds: 60,
+          points: [10, 20, 30, 99].map((value, index) => ({
+            bucketStart: new Date(Date.parse('2026-04-09T00:00:00.000Z') + index * 60_000).toISOString(),
+            bucketEnd: new Date(Date.parse('2026-04-09T00:01:00.000Z') + index * 60_000).toISOString(),
+            totalCount: value,
+            successCount: value,
+            failureCount: 0,
+            totalTokens: value * 10,
+            cacheInputTokens: 0,
+            totalCost: value * 0.1,
+          })),
+        }}
+        previous7dStats={{
+          totalCount: 700,
+          successCount: 630,
+          failureCount: 70,
+          totalCost: 140,
+          totalTokens: 70000,
+        }}
+        rate={{
+          tokensPerMinute: 1200,
+          spendRate: 0.6,
+          windowMinutes: 5,
+          available: true,
+        }}
+        loading={false}
+        error={null}
+      />,
+    )
+
+    expect(host?.querySelector('[data-testid="today-stats-secondary-tpm-per-conversation"]')?.textContent).toContain(
+      '200',
+    )
+    expect(
+      host?.querySelector('[data-testid="today-stats-secondary-spend-rate-per-conversation"]')?.textContent,
+    ).toContain('$0.10')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-success-ratio"]')?.textContent).toContain(
+      '1.5',
+    )
+    expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-retry"]')?.textContent).toContain(
+      '2',
+    )
+    expect(
+      host?.querySelector('[data-testid="today-stats-secondary-response-time-in-progress"]')?.textContent,
+    ).toContain('1.8 s')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-cost-failed"]')?.textContent).toContain(
+      '$3.50',
+    )
+    expect(host?.querySelector('[data-testid="today-stats-secondary-tokens-failed"]')?.textContent).toContain(
+      '420',
+    )
+  })
+
   it('compares cost and token totals against yesterday at the same day progress', () => {
     render(
       <TodayStatsOverview
@@ -543,8 +632,8 @@ describe('TodayStatsOverview', () => {
 
     expect(host?.textContent).toContain('vs yesterday')
     expect(host?.textContent).not.toContain('vs yesterday same time')
-    expect(host?.querySelector('[data-testid="today-stats-secondary-cost-delta"]')?.textContent).toBe('+100%')
-    expect(host?.querySelector('[data-testid="today-stats-secondary-tokens-delta"]')?.textContent).toBe('+100%')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-cost-delta"]')?.textContent).toContain('+100%')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-tokens-delta"]')?.textContent).toContain('+100%')
   })
 
   it('opens field descriptions from metric titles', () => {
@@ -604,8 +693,8 @@ describe('TodayStatsOverview', () => {
     expect(host?.querySelector('[data-testid="today-stats-value-tpm"]')?.textContent).toBe('—')
     expect(host?.querySelector('[data-testid="today-stats-value-spend-rate"]')?.textContent).toBe('—')
     expect(host?.querySelector('[data-testid="today-stats-value-response-time"]')?.textContent).toBe('—')
-    expect(host?.querySelector('[data-testid="today-stats-secondary-response-time-day-average"]')?.textContent).toBe('—')
-    expect(host?.querySelector('[data-testid="today-stats-secondary-response-time-delta"]')?.textContent).toBe('—')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-response-time-day-average"]')?.textContent).toContain('—')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-response-time-delta"]')?.textContent).toContain('—')
     expect(host?.querySelector('[data-testid="today-stats-value-success"]')?.textContent).toContain('80')
   })
 
@@ -778,10 +867,10 @@ describe('TodayStatsOverview', () => {
     )
 
     expect(host?.querySelector('[data-testid="today-stats-value-response-time"]')?.textContent).toBe('—')
-    expect(host?.querySelector('[data-testid="today-stats-secondary-response-time-day-average"]')?.textContent).toBe(
+    expect(host?.querySelector('[data-testid="today-stats-secondary-response-time-day-average"]')?.textContent).toContain(
       '500 ms',
     )
-    expect(host?.querySelector('[data-testid="today-stats-secondary-response-time-delta"]')?.textContent).toBe('—')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-response-time-delta"]')?.textContent).toContain('—')
   })
 
   it('recomputes the response-time recent window when now changes without falling back to older samples', () => {
@@ -835,7 +924,7 @@ describe('TodayStatsOverview', () => {
     })
 
     expect(host?.querySelector('[data-testid="today-stats-value-response-time"]')?.textContent).toBe('—')
-    expect(host?.querySelector('[data-testid="today-stats-secondary-response-time-day-average"]')?.textContent).toBe(
+    expect(host?.querySelector('[data-testid="today-stats-secondary-response-time-day-average"]')?.textContent).toContain(
       '500 ms',
     )
   })

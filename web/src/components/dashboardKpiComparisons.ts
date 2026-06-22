@@ -20,6 +20,7 @@ export interface ParallelWorkKpiSnapshot {
 export interface SameProgressUsageSnapshot {
   totalCost: number | null
   totalTokens: number | null
+  successCount: number | null
 }
 
 export interface SameProgressUsageOptions {
@@ -105,6 +106,7 @@ export function buildSameProgressUsageSnapshot(
     return {
       totalCost: null,
       totalTokens: null,
+      successCount: null,
     }
   }
 
@@ -142,11 +144,13 @@ export function buildSameProgressUsageSnapshot(
       return {
         totalCost: (snapshot.totalCost ?? 0) + point.totalCost,
         totalTokens: (snapshot.totalTokens ?? 0) + point.totalTokens,
+        successCount: (snapshot.successCount ?? 0) + (point.successCount ?? 0),
       }
     },
     {
       totalCost: 0,
       totalTokens: 0,
+      successCount: 0,
     },
   )
 }
@@ -197,4 +201,35 @@ export function buildParallelWorkKpiSnapshot(
     dayAverage: currentParallelWork?.current.avgCount ?? null,
     yesterdayAverage: yesterdayParallelWork?.current.avgCount ?? null,
   }
+}
+
+export function dividePerConversation(
+  numerator: number | null | undefined,
+  inProgressConversationCount: number | null | undefined,
+) {
+  if (
+    numerator == null ||
+    !Number.isFinite(numerator) ||
+    inProgressConversationCount == null ||
+    inProgressConversationCount <= 0
+  ) {
+    return null
+  }
+  return numerator / inProgressConversationCount
+}
+
+export function ratioOfCurrentToBaseline(
+  current: number | null | undefined,
+  baseline: number | null | undefined,
+) {
+  if (
+    current == null ||
+    !Number.isFinite(current) ||
+    baseline == null ||
+    !Number.isFinite(baseline) ||
+    baseline <= 0
+  ) {
+    return null
+  }
+  return current / baseline
 }
