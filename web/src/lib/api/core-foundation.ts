@@ -1276,7 +1276,9 @@ export interface SystemStatusResponse {
   successCount: number;
   nonSuccessCount: number;
   archivedBodies: SystemStatusMetric;
-  unarchivedBodies: SystemStatusMetric;
+  rawBodies: SystemStatusMetric;
+  requestRawBodies: SystemStatusMetric;
+  responseRawBodies: SystemStatusMetric;
   databaseBytes: number;
   otherFilesBytes: number;
   refreshedAt: string;
@@ -2393,7 +2395,9 @@ function normalizeSystemStatusResponse(raw: unknown): SystemStatusResponse {
     successCount: normalizeFiniteNumber(payload.successCount) ?? 0,
     nonSuccessCount: normalizeFiniteNumber(payload.nonSuccessCount) ?? 0,
     archivedBodies: normalizeSystemStatusMetric(payload.archivedBodies),
-    unarchivedBodies: normalizeSystemStatusMetric(payload.unarchivedBodies),
+    rawBodies: normalizeSystemStatusMetric(payload.rawBodies),
+    requestRawBodies: normalizeSystemStatusMetric(payload.requestRawBodies),
+    responseRawBodies: normalizeSystemStatusMetric(payload.responseRawBodies),
     databaseBytes: normalizeFiniteNumber(payload.databaseBytes) ?? 0,
     otherFilesBytes: normalizeFiniteNumber(payload.otherFilesBytes) ?? 0,
     refreshedAt: typeof payload.refreshedAt === "string" ? payload.refreshedAt : "",

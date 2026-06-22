@@ -1,8 +1,13 @@
-use std::sync::atomic::Ordering;
+use std::{
+    collections::HashSet,
+    fs,
+    path::{Path, PathBuf},
+    sync::atomic::Ordering,
+};
 
 const SYSTEM_STATUS_CACHE_TTL_SECS: u64 = 10;
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SystemStatusMetric {
     pub(crate) count: u64,
@@ -15,7 +20,9 @@ pub(crate) struct SystemStatusResponse {
     pub(crate) success_count: u64,
     pub(crate) non_success_count: u64,
     pub(crate) archived_bodies: SystemStatusMetric,
-    pub(crate) unarchived_bodies: SystemStatusMetric,
+    pub(crate) raw_bodies: SystemStatusMetric,
+    pub(crate) request_raw_bodies: SystemStatusMetric,
+    pub(crate) response_raw_bodies: SystemStatusMetric,
     pub(crate) database_bytes: u64,
     pub(crate) other_files_bytes: u64,
     pub(crate) refreshed_at: String,
@@ -97,9 +104,9 @@ struct SystemArchiveAggRow {
 }
 
 #[derive(Debug, Default, FromRow)]
-struct SystemUnarchivedBodyAggRow {
-    body_count: Option<i64>,
-    body_bytes: Option<i64>,
+struct SystemRawBodyPathRow {
+    request_raw_path: Option<String>,
+    response_raw_path: Option<String>,
 }
 
 impl From<SystemTaskRunRow> for SystemTaskRunResponse {
@@ -131,6 +138,70 @@ fn parse_system_task_run_bound(raw: Option<&str>, field_name: &str) -> Result<Op
 
 fn count_file_size(path: &Path) -> u64 {
     fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
+}
+
+fn add_existing_raw_payload_bytes(
+    raw_path: &str,
+    fallback_root: Option<&Path>,
+    seen_paths: &mut HashSet<PathBuf>,
+    metric: &mut SystemStatusMetric,
+) {
+    let Some(candidate) = resolved_raw_path_read_candidates(raw_path, fallback_root)
+        .into_iter()
+        .find(|candidate| candidate.exists())
+    else {
+        return;
+    };
+    if !seen_paths.insert(candidate.clone()) {
+        return;
+    }
+    metric.count = metric.count.saturating_add(1);
+    metric.bytes = metric.bytes.saturating_add(count_file_size(&candidate));
+}
+
+fn collect_existing_raw_payload_metrics(
+    rows: &[SystemRawBodyPathRow],
+    fallback_root: Option<&Path>,
+) -> (SystemStatusMetric, SystemStatusMetric, SystemStatusMetric) {
+    let mut total_seen_paths = HashSet::new();
+    let mut request_seen_paths = HashSet::new();
+    let mut response_seen_paths = HashSet::new();
+    let mut total = SystemStatusMetric::default();
+    let mut request = SystemStatusMetric::default();
+    let mut response = SystemStatusMetric::default();
+
+    for row in rows {
+        if let Some(raw_path) = row.request_raw_path.as_deref() {
+            add_existing_raw_payload_bytes(
+                raw_path,
+                fallback_root,
+                &mut request_seen_paths,
+                &mut request,
+            );
+            add_existing_raw_payload_bytes(
+                raw_path,
+                fallback_root,
+                &mut total_seen_paths,
+                &mut total,
+            );
+        }
+        if let Some(raw_path) = row.response_raw_path.as_deref() {
+            add_existing_raw_payload_bytes(
+                raw_path,
+                fallback_root,
+                &mut response_seen_paths,
+                &mut response,
+            );
+            add_existing_raw_payload_bytes(
+                raw_path,
+                fallback_root,
+                &mut total_seen_paths,
+                &mut total,
+            );
+        }
+    }
+
+    (total, request, response)
 }
 
 fn count_database_bytes(db_path: &Path) -> u64 {
@@ -219,20 +290,24 @@ async fn load_system_status_uncached(state: &AppState) -> Result<SystemStatusRes
     .fetch_one(&state.pool)
     .await?;
 
-    let unarchived = sqlx::query_as::<_, SystemUnarchivedBodyAggRow>(
+    let raw_rows = sqlx::query_as::<_, SystemRawBodyPathRow>(
         r#"
         SELECT
-            COUNT(*) AS body_count,
-            COALESCE(SUM(response_raw_size), 0) AS body_bytes
+            request_raw_path,
+            response_raw_path
         FROM codex_invocations
-        WHERE response_raw_path IS NOT NULL
+        WHERE request_raw_path IS NOT NULL
+           OR response_raw_path IS NOT NULL
         "#,
     )
-    .fetch_one(&state.pool)
+    .fetch_all(&state.pool)
     .await?;
 
     let archive_dir = resolved_archive_dir(&state.config);
     let raw_dir = state.config.resolved_proxy_raw_dir();
+    let raw_path_fallback_root = state.config.database_path.parent();
+    let (raw_bodies, request_raw_bodies, response_raw_bodies) =
+        collect_existing_raw_payload_metrics(&raw_rows, raw_path_fallback_root);
     let archived_paths = sqlx::query_scalar::<_, String>(
         r#"
         SELECT file_path
@@ -260,10 +335,9 @@ async fn load_system_status_uncached(state: &AppState) -> Result<SystemStatusRes
             count: archived.archived_count.unwrap_or(0).max(0) as u64,
             bytes: archive_bytes,
         },
-        unarchived_bodies: SystemStatusMetric {
-            count: unarchived.body_count.unwrap_or(0).max(0) as u64,
-            bytes: unarchived.body_bytes.unwrap_or(0).max(0) as u64,
-        },
+        raw_bodies,
+        request_raw_bodies,
+        response_raw_bodies,
         database_bytes,
         other_files_bytes,
         refreshed_at: format_utc_iso(Utc::now()),

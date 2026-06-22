@@ -37,11 +37,14 @@ function renderPage() {
 describe('SystemStatusPage', () => {
   beforeEach(() => {
     vi.useFakeTimers()
+    window.localStorage.setItem('codex-vibe-monitor.locale', 'zh')
     apiMocks.fetchSystemStatus.mockResolvedValue({
-      successCount: 128,
-      nonSuccessCount: 17,
+      successCount: 3,
+      nonSuccessCount: 3,
       archivedBodies: { count: 9, bytes: 4_096 },
-      unarchivedBodies: { count: 3, bytes: 1_024 },
+      rawBodies: { count: 5, bytes: 6_144 },
+      requestRawBodies: { count: 2, bytes: 4_096 },
+      responseRawBodies: { count: 3, bytes: 2_048 },
       databaseBytes: 2_048,
       otherFilesBytes: 8_192,
       refreshedAt: '2026-06-22T08:00:00Z',
@@ -56,6 +59,7 @@ describe('SystemStatusPage', () => {
     host = null
     root = null
     apiMocks.fetchSystemStatus.mockReset()
+    window.localStorage.removeItem('codex-vibe-monitor.locale')
     vi.useRealTimers()
   })
 
@@ -69,7 +73,10 @@ describe('SystemStatusPage', () => {
     expect(apiMocks.fetchSystemStatus).toHaveBeenCalledTimes(1)
     expect(host?.querySelector('[data-testid="system-status-grid"]')).not.toBeNull()
     expect(host?.textContent ?? '').toContain('调用成功数')
-    expect(host?.textContent ?? '').toContain('128')
+    expect(host?.textContent ?? '').toContain('raw payload 体积')
+    expect(host?.textContent ?? '').toContain('raw payload 数量')
+    expect(host?.textContent ?? '').toContain('request raw payload 数量')
+    expect(host?.textContent ?? '').toContain('response raw payload 数量')
 
     await act(async () => {
       vi.advanceTimersByTime(60_000)
