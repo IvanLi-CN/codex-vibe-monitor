@@ -55,11 +55,15 @@ async fn system_status_aggregates_counts_and_file_sizes() {
     let raw_file = raw_dir.join("response-1.bin");
     fs::write(&raw_file, vec![b'r'; 5]).expect("write raw payload");
 
-    let sidecar_file = temp_dir.join("notes.txt");
-    fs::write(&sidecar_file, vec![b'n'; 11]).expect("write sidecar file");
-    let sidecar_dir = temp_dir.join("misc");
-    fs::create_dir_all(&sidecar_dir).expect("create sidecar dir");
-    fs::write(sidecar_dir.join("report.log"), vec![b'm'; 13]).expect("write nested sidecar");
+    let xray_runtime_dir = &state.config.xray_runtime_dir;
+    let runtime_state_dir = xray_runtime_dir.join("state");
+    fs::create_dir_all(&runtime_state_dir).expect("create runtime state dir");
+    fs::write(xray_runtime_dir.join("config.json"), vec![b'x'; 11]).expect("write runtime file");
+    fs::write(runtime_state_dir.join("access.log"), vec![b'y'; 13])
+        .expect("write nested runtime file");
+
+    let unrelated_file = temp_dir.join("notes.txt");
+    fs::write(&unrelated_file, vec![b'n'; 19]).expect("write unrelated file");
 
     sqlx::query(
         r#"

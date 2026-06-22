@@ -150,38 +150,36 @@ fn sum_directory_bytes(root: &Path) -> u64 {
     total
 }
 
+fn sum_path_bytes(path: &Path) -> u64 {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => metadata.len(),
+        Ok(metadata) if metadata.is_dir() => sum_directory_bytes(path),
+        _ => 0,
+    }
+}
+
 fn compute_other_files_bytes(config: &AppConfig, archive_dir: &Path, raw_dir: &Path) -> u64 {
-    let Some(root) = config.database_path.parent() else {
-        return 0;
-    };
     let db_path = &config.database_path;
     let db_wal_path = PathBuf::from(format!("{}-wal", db_path.display()));
     let db_shm_path = PathBuf::from(format!("{}-shm", db_path.display()));
-    let mut total = 0_u64;
-    let Ok(entries) = fs::read_dir(root) else {
-        return 0;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path == *db_path
-            || path == db_wal_path
-            || path == db_shm_path
-            || path == archive_dir
-            || path == raw_dir
-        {
-            continue;
-        }
-        match entry.file_type() {
-            Ok(kind) if kind.is_file() => {
-                total = total.saturating_add(entry.metadata().map(|meta| meta.len()).unwrap_or(0));
-            }
-            Ok(kind) if kind.is_dir() => {
-                total = total.saturating_add(sum_directory_bytes(&path));
-            }
-            _ => {}
-        }
-    }
-    total
+    let mut seen = HashSet::new();
+
+    // Keep "other files" scoped to runtime-owned storage that does not already
+    // have a dedicated metric on the system status page.
+    [config.xray_runtime_dir.clone()]
+        .into_iter()
+        .filter(|path| !path.as_os_str().is_empty())
+        .filter(|path| seen.insert(path.clone()))
+        .filter(|path| {
+            let candidate = path.as_path();
+            candidate != db_path
+                && candidate != db_wal_path.as_path()
+                && candidate != db_shm_path.as_path()
+                && candidate != archive_dir
+                && candidate != raw_dir
+        })
+        .map(|path| sum_path_bytes(&path))
+        .sum()
 }
 
 async fn load_system_status_uncached(state: &AppState) -> Result<SystemStatusResponse> {
