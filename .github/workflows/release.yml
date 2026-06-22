@@ -338,20 +338,14 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build smoke image (linux/arm64, load)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          platforms: ${{ env.PLATFORM_ARM64 }}
-          push: false
-          load: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ needs.release-meta.outputs.candidate_suffix }}-arm64
-            ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:candidate-${{ needs.release-meta.outputs.candidate_suffix }}-arm64
-          build-args: |
-            APP_EFFECTIVE_VERSION=${{ needs.release-meta.outputs.app_effective_version }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:buildcache-arm64
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:buildcache-arm64,mode=max
+        shell: bash
+        env:
+          BUILD_PLATFORM: ${{ env.PLATFORM_ARM64 }}
+          SMOKE_TAG: ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ needs.release-meta.outputs.candidate_suffix }}-arm64
+          CANDIDATE_TAG: ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:candidate-${{ needs.release-meta.outputs.candidate_suffix }}-arm64
+          APP_EFFECTIVE_VERSION: ${{ needs.release-meta.outputs.app_effective_version }}
+          CACHE_REF: ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:buildcache-arm64
+        run: ./.github/scripts/build-smoke-image-with-retry.sh
 
       - name: Smoke test image (linux/arm64)
         shell: bash

@@ -81,6 +81,7 @@ jobs:
             .github/scripts/check_quality_gates_contract.py \
             .github/scripts/release_snapshot.py \
             .github/scripts/verify_manifest_platforms.py
+          bash -n .github/scripts/build-smoke-image-with-retry.sh
 
       - name: Resolve trusted quality-gates sources
         id: trusted-quality-gates
@@ -131,6 +132,7 @@ jobs:
       - name: Quality gates self-tests
         run: |
           bash .github/scripts/test-quality-gates-contract.sh
+          bash .github/scripts/test-build-smoke-image-with-retry.sh
           bash .github/scripts/test-release-snapshot.sh
           bash .github/scripts/test-live-quality-gates.sh
 

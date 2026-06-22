@@ -192,6 +192,28 @@ fi
 
 grep -q "release.yml.jobs.ci-main-gate.if must stay" "$tmp_dir/release-ci-gate.log"
 
+release_arm_retry_repo="$tmp_dir/release-arm-retry-repo"
+copy_repo_snapshot "$baseline_repo" "$release_arm_retry_repo"
+python3 - <<'PY' "$release_arm_retry_repo"
+from pathlib import Path
+import sys
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/release.yml"
+text = path.read_text()
+needle = "        run: ./.github/scripts/build-smoke-image-with-retry.sh\n"
+replacement = "        run: docker buildx build --platform \"$BUILD_PLATFORM\" .\n"
+if needle not in text:
+    raise SystemExit("failed to rewrite arm64 retry helper step")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$release_arm_retry_repo" --profile final >/dev/null 2>"$tmp_dir/release-arm-retry.log"; then
+  echo "expected arm64 retry helper fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "arm64 smoke build must use the retry helper" "$tmp_dir/release-arm-retry.log"
+
 ci_main_repo="$tmp_dir/ci-main-repo"
 copy_repo_snapshot "$baseline_repo" "$ci_main_repo"
 python3 - <<'PY' "$ci_main_repo"
