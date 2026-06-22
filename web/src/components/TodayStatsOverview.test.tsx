@@ -2,7 +2,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import type { TimeseriesResponse } from '../lib/api'
+import type { ParallelWorkStatsResponse, TimeseriesResponse } from '../lib/api'
 import { TodayStatsOverview } from './TodayStatsOverview'
 
 vi.mock('../i18n', () => ({
@@ -17,6 +17,7 @@ vi.mock('../i18n', () => ({
         'dashboard.today.spendRate': 'Spend rate',
         'dashboard.today.responseTime': 'Response time',
         'dashboard.today.responseTimeDescription': 'Response time uses the latest 5-minute active tail.',
+        'dashboard.today.inProgressConversations': 'In-progress conversations',
         'dashboard.today.parallelConversations': 'Parallel conversations',
         'dashboard.today.todayCost': 'Today cost',
         'dashboard.today.yesterdayCost': 'Yesterday cost',
@@ -24,7 +25,8 @@ vi.mock('../i18n', () => ({
         'dashboard.today.yesterdayTokens': 'Yesterday tokens',
         'dashboard.today.tokensPerMinuteDescription': 'TPM uses the active tail inside the latest 5-minute window.',
         'dashboard.today.spendRateDescription': 'Spend rate uses the active tail inside the latest 5-minute window.',
-        'dashboard.today.parallelConversationsDescription': 'Current parallel conversations.',
+        'dashboard.today.inProgressConversationsDescription': 'Current running or pending prompt-cache conversations.',
+        'dashboard.today.parallelConversationsDescription': 'Distinct prompt-cache conversations counted in the latest minute bucket.',
         'dashboard.today.successDescription': 'Successful calls in the selected day.',
         'dashboard.today.failuresDescription': 'Failed calls in the selected day.',
         'dashboard.today.totalCostDescription': 'Total cost in the selected day.',
@@ -76,6 +78,74 @@ function buildTimeseriesWithLatency(): TimeseriesResponse {
     rangeEnd: '2026-04-10T00:08:00.000Z',
     bucketSeconds: 60,
     points,
+  }
+}
+
+function buildParallelWorkStats(
+  currentCounts: number[] = [1, 3],
+  currentAverage = 2,
+  yesterdayAverage = 4,
+): {
+  current: ParallelWorkStatsResponse['current']
+  minute7d: ParallelWorkStatsResponse['minute7d']
+  hour30d: ParallelWorkStatsResponse['hour30d']
+  dayAll: ParallelWorkStatsResponse['dayAll']
+} {
+  return {
+    current: {
+      rangeStart: '2026-04-10T00:00:00.000Z',
+      rangeEnd: '2026-04-10T00:02:00.000Z',
+      bucketSeconds: 60,
+      completeBucketCount: currentCounts.length,
+      activeBucketCount: currentCounts.length,
+      minCount: Math.min(...currentCounts),
+      maxCount: Math.max(...currentCounts),
+      avgCount: currentAverage,
+      points: currentCounts.map((parallelCount, index) => ({
+        bucketStart: new Date(Date.parse('2026-04-10T00:00:00.000Z') + index * 60_000).toISOString(),
+        bucketEnd: new Date(Date.parse('2026-04-10T00:01:00.000Z') + index * 60_000).toISOString(),
+        parallelCount,
+      })),
+    },
+    minute7d: {
+      rangeStart: '2026-04-03T00:00:00.000Z',
+      rangeEnd: '2026-04-10T00:00:00.000Z',
+      bucketSeconds: 60,
+      completeBucketCount: 0,
+      activeBucketCount: 0,
+      minCount: null,
+      maxCount: null,
+      avgCount: null,
+      points: [],
+    },
+    hour30d: {
+      rangeStart: '2026-03-11T00:00:00.000Z',
+      rangeEnd: '2026-04-10T00:00:00.000Z',
+      bucketSeconds: 3600,
+      completeBucketCount: 0,
+      activeBucketCount: 0,
+      minCount: null,
+      maxCount: null,
+      avgCount: null,
+      points: [],
+    },
+    dayAll: {
+      rangeStart: '2026-01-01T00:00:00.000Z',
+      rangeEnd: '2026-04-10T00:00:00.000Z',
+      bucketSeconds: 86400,
+      completeBucketCount: 1,
+      activeBucketCount: 1,
+      minCount: yesterdayAverage,
+      maxCount: yesterdayAverage,
+      avgCount: yesterdayAverage,
+      points: [
+        {
+          bucketStart: '2026-04-09T00:00:00.000Z',
+          bucketEnd: '2026-04-10T00:00:00.000Z',
+          parallelCount: yesterdayAverage,
+        },
+      ],
+    },
   }
 }
 
@@ -136,6 +206,7 @@ describe('TodayStatsOverview', () => {
           failureCount: 2525,
           totalCost: 539.42,
           totalTokens: 1314275579,
+          inProgressConversationCount: 11,
         }}
         rate={{
           tokensPerMinute: 1000,
@@ -144,6 +215,8 @@ describe('TodayStatsOverview', () => {
           available: true,
         }}
         timeseries={buildTimeseriesWithLatency()}
+        parallelWorkStats={buildParallelWorkStats()}
+        comparisonParallelWorkStats={buildParallelWorkStats([4], 4, 4)}
         loading={false}
         error={null}
       />,
@@ -156,9 +229,12 @@ describe('TodayStatsOverview', () => {
     expect(host?.textContent).toContain('TPM')
     expect(host?.textContent).toContain('Spend rate')
     expect(host?.textContent).toContain('Response time')
-    expect(host?.textContent).toContain('Parallel conversations')
+    expect(host?.textContent).toContain('In-progress conversations')
     expect(host?.textContent).toContain('Today cost')
     expect(host?.textContent).toContain('Today tokens')
+    expect(host?.querySelector('[data-testid="today-stats-value-in-progress-conversations"]')?.textContent).toContain('11')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-day-average"]')?.textContent).toContain('2')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-delta"]')?.textContent).toContain('+175%')
   })
 
   it('uses a six-tile desktop grid when parallel conversations are hidden', () => {
@@ -170,6 +246,7 @@ describe('TodayStatsOverview', () => {
           failureCount: 2525,
           totalCost: 539.42,
           totalTokens: 1314275579,
+          inProgressConversationCount: 11,
         }}
         rate={{
           tokensPerMinute: 1000,
@@ -178,9 +255,10 @@ describe('TodayStatsOverview', () => {
           available: true,
         }}
         timeseries={buildTimeseriesWithLatency()}
+        parallelWorkStats={buildParallelWorkStats()}
         loading={false}
         error={null}
-        showParallelWork={false}
+        showInProgressConversations={false}
       />,
     )
 
@@ -188,10 +266,76 @@ describe('TodayStatsOverview', () => {
     expect(grid?.className).toContain('lg:grid-cols-6')
     expect(grid?.className).not.toContain('lg:grid-cols-7')
     expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(6)
-    expect(host?.textContent).not.toContain('Parallel conversations')
+    expect(host?.textContent).not.toContain('In-progress conversations')
     expect(host?.textContent).toContain('Response time')
     expect(host?.textContent).toContain('Today cost')
     expect(host?.textContent).toContain('Today tokens')
+  })
+
+  it('keeps the in-progress tile secondary slots visible when bucket comparisons are unavailable', () => {
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 12474,
+          successCount: 9949,
+          failureCount: 2525,
+          totalCost: 539.42,
+          totalTokens: 1314275579,
+          inProgressConversationCount: 11,
+        }}
+        rate={{
+          tokensPerMinute: 1000,
+          spendRate: 0.1,
+          windowMinutes: 5,
+          available: true,
+        }}
+        timeseries={buildTimeseriesWithLatency()}
+        parallelWorkStats={null}
+        comparisonParallelWorkStats={null}
+        loading={false}
+        error={null}
+      />,
+    )
+
+    const grid = host?.querySelector('[data-testid="today-stats-metrics-grid"]')
+    expect(grid?.className).toContain('lg:grid-cols-7')
+    expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(7)
+    expect(host?.querySelector('[data-testid="today-stats-value-in-progress-conversations"]')?.textContent).toContain('11')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-delta"]')?.textContent).toContain('—')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-day-average"]')?.textContent).toContain('—')
+  })
+
+  it('uses historical parallel semantics for the yesterday view while keeping the tile visible', () => {
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 12474,
+          successCount: 9949,
+          failureCount: 2525,
+          totalCost: 539.42,
+          totalTokens: 1314275579,
+          inProgressConversationCount: 11,
+        }}
+        rate={{
+          tokensPerMinute: 1000,
+          spendRate: 0.1,
+          windowMinutes: 5,
+          available: true,
+        }}
+        timeseries={buildTimeseriesWithLatency()}
+        parallelWorkStats={buildParallelWorkStats([1, 3], 2, 4)}
+        comparisonParallelWorkStats={null}
+        loading={false}
+        error={null}
+        dayKind="yesterday"
+      />,
+    )
+
+    expect(host?.textContent).toContain('Parallel conversations')
+    expect(host?.textContent).not.toContain('In-progress conversations')
+    expect(host?.querySelector('[data-testid="today-stats-value-in-progress-conversations"]')?.textContent).toContain('3')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-day-average"]')?.textContent).toContain('2')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-delta"]')?.textContent).toContain('—')
   })
 
   it('supports embedded mode without rendering the outer surface panel', () => {
@@ -203,6 +347,7 @@ describe('TodayStatsOverview', () => {
           failureCount: 2,
           totalCost: 1.28,
           totalTokens: 4096,
+          inProgressConversationCount: 3,
         }}
         rate={{
           tokensPerMinute: 320,
@@ -231,6 +376,7 @@ describe('TodayStatsOverview', () => {
           failureCount: 2,
           totalCost: 0.52,
           totalTokens: 2080,
+          inProgressConversationCount: 2,
         }}
         rate={{
           tokensPerMinute: 416,
@@ -272,6 +418,7 @@ describe('TodayStatsOverview', () => {
         rate={null}
         loading={false}
         rateLoading
+        parallelWorkStats={buildParallelWorkStats()}
         error={null}
       />,
     )
@@ -283,6 +430,36 @@ describe('TodayStatsOverview', () => {
     expect(host?.textContent).toContain('vs yesterday')
     expect(host?.querySelector('[data-testid="today-stats-secondary-cost-delta"]')?.textContent).toBe('-50%')
     expect(host?.querySelector('[data-testid="today-stats-secondary-tokens-delta"]')?.textContent).toBe('-50%')
+  })
+
+  it('keeps the in-progress primary value from summary while secondary trend data comes from parallel buckets', () => {
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 42,
+          successCount: 40,
+          failureCount: 2,
+          totalCost: 1.48,
+          totalTokens: 9000,
+          inProgressConversationCount: 11,
+        }}
+        rate={{
+          tokensPerMinute: 1000.6,
+          spendRate: 0.104,
+          windowMinutes: 5,
+          available: true,
+        }}
+        timeseries={buildTimeseriesWithLatency()}
+        parallelWorkStats={buildParallelWorkStats([1, 3], 2, 4)}
+        comparisonParallelWorkStats={buildParallelWorkStats([4], 4, 4)}
+        loading={false}
+        error={null}
+      />,
+    )
+
+    expect(host?.querySelector('[data-testid="today-stats-value-in-progress-conversations"]')?.textContent).toContain('11')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-day-average"]')?.textContent).toContain('2')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-delta"]')?.textContent).toContain('+175%')
   })
 
   it('renders TPM as a whole number even when the averaged rate is fractional', () => {

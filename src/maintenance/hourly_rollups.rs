@@ -2053,9 +2053,11 @@ async fn collect_summary_snapshots(
     let mut cached_all: Option<StatsResponse> = None;
     let now = Utc::now();
     let source_scope = resolve_default_source_scope(pool).await?;
+    let in_progress_conversation_count =
+        query_in_progress_prompt_cache_conversation_count(pool, source_scope, None).await?;
 
     for spec in summary_broadcast_specs() {
-        let summary = match spec.duration {
+        let mut summary = match spec.duration {
             None => {
                 if let Some(existing) = &cached_all {
                     existing.clone()
@@ -2081,6 +2083,7 @@ async fn collect_summary_snapshots(
                 .into_response()
             }
         };
+        summary.in_progress_conversation_count = Some(in_progress_conversation_count);
 
         summaries.push(SummaryPublish {
             window: spec.window.to_string(),

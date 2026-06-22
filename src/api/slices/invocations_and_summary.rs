@@ -1671,8 +1671,41 @@ pub(crate) async fn fetch_stats(
     )
     .await?;
     let mut response = totals.into_response();
+    response.in_progress_conversation_count =
+        Some(load_in_progress_conversation_count(state.as_ref(), source_scope, None).await?);
     response.maintenance = Some(load_stats_maintenance_response(state.as_ref()).await?);
     Ok(Json(response))
+}
+
+async fn load_in_progress_conversation_count(
+    state: &AppState,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+) -> Result<i64, ApiError> {
+    Ok(query_in_progress_prompt_cache_conversation_count(
+        &state.pool,
+        source_scope,
+        upstream_account_id,
+    )
+    .await?)
+}
+
+pub(crate) async fn build_empty_summary_response(
+    state: &AppState,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+) -> Result<StatsResponse, ApiError> {
+    Ok(StatsResponse {
+        total_count: 0,
+        success_count: 0,
+        failure_count: 0,
+        total_cost: 0.0,
+        total_tokens: 0,
+        in_progress_conversation_count: Some(
+            load_in_progress_conversation_count(state, source_scope, upstream_account_id).await?,
+        ),
+        maintenance: Some(load_stats_maintenance_response(state).await?),
+    })
 }
 
 pub(crate) async fn fetch_summary(
@@ -1749,14 +1782,14 @@ pub(crate) async fn fetch_summary(
         SummaryWindow::Calendar(spec) => {
             let range_window = resolve_range_window(spec.as_str(), reporting_tz).map_err(ApiError::from)?;
             if range_window.start >= range_window.end {
-                return Ok(Json(StatsResponse {
-                    total_count: 0,
-                    success_count: 0,
-                    failure_count: 0,
-                    total_cost: 0.0,
-                    total_tokens: 0,
-                    maintenance: Some(load_stats_maintenance_response(state.as_ref()).await?),
-                }));
+                return Ok(Json(
+                    build_empty_summary_response(
+                        state.as_ref(),
+                        source_scope,
+                        upstream_account_id,
+                    )
+                    .await?,
+                ));
             }
             if let Some(upstream_account_id) = upstream_account_id {
                 query_hourly_backed_summary_range_for_account(
@@ -1802,6 +1835,10 @@ pub(crate) async fn fetch_summary(
     };
 
     let mut response = totals.into_response();
+    response.in_progress_conversation_count = Some(
+        load_in_progress_conversation_count(state.as_ref(), source_scope, upstream_account_id)
+            .await?,
+    );
     response.maintenance = Some(load_stats_maintenance_response(state.as_ref()).await?);
     Ok(Json(response))
 }

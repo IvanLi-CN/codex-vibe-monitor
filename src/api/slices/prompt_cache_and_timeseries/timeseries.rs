@@ -615,13 +615,14 @@ async fn load_parallel_work_stats_response(
 ) -> Result<ParallelWorkStatsResponse, ApiError> {
     let requested_reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
+    let upstream_account_id = params.upstream_account_id;
     let requested_range_window = resolve_range_window(&params.range, requested_reporting_tz)?;
     let bucket_params = TimeseriesQuery {
         range: params.range.clone(),
         bucket: params.bucket.clone(),
         settlement_hour: None,
         time_zone: params.time_zone.clone(),
-        upstream_account_id: None,
+        upstream_account_id,
     };
     let bucket_selection = resolve_timeseries_bucket_selection(
         &bucket_params,
@@ -672,6 +673,7 @@ async fn load_parallel_work_stats_response(
             bucket_seconds,
             reporting_tz,
             source_scope,
+            upstream_account_id,
         )
         .await?;
         let mut tx = state.pool.begin().await?;
@@ -687,6 +689,7 @@ async fn load_parallel_work_stats_response(
                 bucket_seconds,
                 reporting_tz,
                 source_scope,
+                upstream_account_id,
                 None,
                 Some(snapshot_id),
             )
@@ -702,6 +705,7 @@ async fn load_parallel_work_stats_response(
             bucket_seconds,
             reporting_tz,
             source_scope,
+            upstream_account_id,
             Some(rollup_live_cursor),
             Some(snapshot_id),
         )
@@ -719,6 +723,7 @@ async fn load_parallel_work_stats_response(
                 bucket_seconds,
                 reporting_tz,
                 source_scope,
+                upstream_account_id,
                 None,
                 None,
             )
@@ -733,6 +738,7 @@ async fn load_parallel_work_stats_response(
             bucket_seconds,
             reporting_tz,
             source_scope,
+            upstream_account_id,
         )
         .await?
     } else {
@@ -765,6 +771,7 @@ async fn query_parallel_work_conversation_spans(
     bucket_seconds: i64,
     reporting_tz: Tz,
     source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
 ) -> Result<Vec<ParallelWorkConversation>> {
     let mut query = QueryBuilder::new("SELECT ");
     query
@@ -780,6 +787,13 @@ async fn query_parallel_work_conversation_spans(
         .push(" != ''");
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND ")
+            .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+            .push(" = ")
+            .push_bind(upstream_account_id);
     }
     query
         .push(" GROUP BY ")

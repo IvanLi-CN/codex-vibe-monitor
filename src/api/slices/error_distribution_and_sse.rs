@@ -198,6 +198,7 @@ async fn query_parallel_work_exact_key_sets(
     bucket_seconds: i64,
     reporting_tz: Tz,
     source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
     start_after_id: Option<i64>,
     snapshot_id: Option<i64>,
 ) -> Result<BTreeMap<i64, HashSet<String>>> {
@@ -221,6 +222,13 @@ async fn query_parallel_work_exact_key_sets(
     }
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND ")
+            .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+            .push(" = ")
+            .push_bind(upstream_account_id);
     }
     query.push(" ORDER BY occurred_at ASC, id ASC, prompt_cache_key ASC");
 
@@ -250,11 +258,19 @@ async fn query_parallel_work_bucket_key_sets_from_hourly_rollups(
     bucket_seconds: i64,
     reporting_tz: Tz,
     source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
 ) -> Result<BTreeMap<i64, HashSet<String>>> {
-    let mut query = QueryBuilder::new(
-        "SELECT bucket_start_epoch, prompt_cache_key FROM prompt_cache_rollup_hourly \
-         WHERE bucket_start_epoch >= ",
-    );
+    let mut query = if upstream_account_id.is_some() {
+        QueryBuilder::new(
+            "SELECT bucket_start_epoch, prompt_cache_key FROM prompt_cache_upstream_account_hourly \
+             WHERE bucket_start_epoch >= ",
+        )
+    } else {
+        QueryBuilder::new(
+            "SELECT bucket_start_epoch, prompt_cache_key FROM prompt_cache_rollup_hourly \
+             WHERE bucket_start_epoch >= ",
+        )
+    };
     query
         .push_bind(range_start.timestamp())
         .push(" AND bucket_start_epoch < ")
@@ -262,6 +278,11 @@ async fn query_parallel_work_bucket_key_sets_from_hourly_rollups(
         .push(" AND prompt_cache_key != ''");
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND upstream_account_id = ")
+            .push_bind(upstream_account_id);
     }
     query.push(" ORDER BY bucket_start_epoch ASC, prompt_cache_key ASC");
 

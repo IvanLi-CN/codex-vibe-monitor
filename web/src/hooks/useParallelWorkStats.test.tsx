@@ -18,7 +18,7 @@ import {
 
 const apiMocks = vi.hoisted(() => ({
   fetchParallelWorkStatsConditional: vi.fn<
-    (options?: { range?: string; bucket?: string; timeZone?: string; signal?: AbortSignal; etag?: string | null }) => Promise<{
+    (options?: { range?: string; bucket?: string; timeZone?: string; upstreamAccountId?: number; signal?: AbortSignal; etag?: string | null }) => Promise<{
       data: ParallelWorkStatsResponse | null
       etag: string | null
       notModified: boolean
@@ -167,6 +167,11 @@ function Probe() {
   )
 }
 
+function AccountProbe() {
+  const { data } = useParallelWorkStats({ range: 'today', bucket: '1m', upstreamAccountId: 42 })
+  return <div data-testid="account-current-count">{String(data?.current.points[0]?.parallelCount ?? 0)}</div>
+}
+
 describe('useParallelWorkStats helpers', () => {
   it('computes refresh delay from the last records refresh', () => {
     expect(getParallelWorkRecordsResyncDelay(10_000, 20_000)).toBe(
@@ -227,6 +232,24 @@ describe('useParallelWorkStats', () => {
     await vi.advanceTimersByTimeAsync(1)
     await flushAsync()
     expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(3)
+  })
+
+  it('passes upstreamAccountId through to the conditional fetch', async () => {
+    apiMocks.fetchParallelWorkStatsConditional.mockResolvedValue(fullStatsResponse())
+
+    render(<AccountProbe />)
+    await flushAsync()
+
+    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledTimes(1)
+    expect(apiMocks.fetchParallelWorkStatsConditional).toHaveBeenCalledWith(
+      expect.objectContaining({
+        range: 'today',
+        bucket: '1m',
+        upstreamAccountId: 42,
+        etag: null,
+      }),
+    )
+    expect(host?.querySelector('[data-testid="account-current-count"]')?.textContent).toBe('1')
   })
 
   it('respects the SSE-open cooldown before queueing another refresh', async () => {

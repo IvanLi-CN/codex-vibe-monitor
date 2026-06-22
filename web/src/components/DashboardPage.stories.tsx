@@ -4,6 +4,7 @@ import { expect, userEvent, waitFor, within } from 'storybook/test'
 import { MemoryRouter } from 'react-router-dom'
 import { I18nProvider } from '../i18n'
 import type {
+  ParallelWorkStatsResponse,
   PromptCacheConversation,
   PromptCacheConversationInvocationPreview,
   PromptCacheConversationsResponse,
@@ -11,6 +12,7 @@ import type {
   TimeseriesPoint,
   TimeseriesResponse,
 } from '../lib/api'
+import App from '../App'
 import DashboardPage from '../pages/Dashboard'
 import { DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY } from './DashboardActivityOverview'
 import { DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY } from '../lib/dashboardPerformanceDiagnostics'
@@ -144,7 +146,10 @@ function buildTimeseriesPoints({
       successCount,
       failureCount,
       totalTokens: totalCount * 3200,
+      cacheInputTokens: totalCount * 720,
       totalCost: Number((totalCount * 0.018).toFixed(4)),
+      firstResponseByteTotalSampleCount: totalCount,
+      firstResponseByteTotalAvgMs: totalCount > 0 ? 760 + ((index * 19) % 280) : null,
     } satisfies TimeseriesPoint
   })
 }
@@ -189,7 +194,11 @@ function buildTodayTimeseriesPoints({
       successCount,
       failureCount,
       totalTokens: tokenTotals[index] ?? 0,
+      cacheInputTokens: Math.round((tokenTotals[index] ?? 0) * 0.23),
       totalCost: Number(((costCents[index] ?? 0) / 100).toFixed(2)),
+      firstResponseByteTotalSampleCount: successCount + failureCount,
+      firstResponseByteTotalAvgMs:
+        successCount + failureCount > 0 ? 820 + ((index * 37) % 340) : null,
     } satisfies TimeseriesPoint
   })
 }
@@ -260,6 +269,50 @@ function buildTimeseriesResponse(options: {
     bucketLimitedToDaily: false,
     points: options.points,
   }
+}
+
+function buildParallelWorkWindow(
+  counts: number[],
+  {
+    rangeStart,
+    bucketSeconds,
+  }: {
+    rangeStart: string
+    bucketSeconds: number
+  },
+): ParallelWorkStatsResponse['current'] {
+  const startMs = Date.parse(rangeStart)
+  const rangeEnd = new Date(startMs + counts.length * bucketSeconds * 1000).toISOString()
+  return {
+    rangeStart,
+    rangeEnd,
+    bucketSeconds,
+    completeBucketCount: counts.length,
+    activeBucketCount: counts.filter((count) => count > 0).length,
+    minCount: counts.length > 0 ? Math.min(...counts) : null,
+    maxCount: counts.length > 0 ? Math.max(...counts) : null,
+    avgCount:
+      counts.length > 0
+        ? Number((counts.reduce((sum, count) => sum + count, 0) / counts.length).toFixed(2))
+        : null,
+    effectiveTimeZone: 'Asia/Shanghai',
+    timeZoneFallback: false,
+    points: counts.map((parallelCount, index) => ({
+      bucketStart: new Date(startMs + index * bucketSeconds * 1000).toISOString(),
+      bucketEnd: new Date(startMs + (index + 1) * bucketSeconds * 1000).toISOString(),
+      parallelCount,
+    })),
+    conversations: [],
+  }
+}
+
+function buildParallelWorkResponse(windows: {
+  current: ParallelWorkStatsResponse['current']
+  minute7d: ParallelWorkStatsResponse['current']
+  hour30d: ParallelWorkStatsResponse['current']
+  dayAll: ParallelWorkStatsResponse['current']
+}): ParallelWorkStatsResponse {
+  return windows
 }
 
 function createPreview(
@@ -917,6 +970,7 @@ function createDashboardRequestHandler(scenario: DashboardScenario = 'default') 
     failureCount: 2525,
     totalCost: 539.42,
     totalTokens: 1314275579,
+    inProgressConversationCount: 11,
   })
   const yesterdaySummary = buildSummary({
     totalCount: 10864,
@@ -924,6 +978,7 @@ function createDashboardRequestHandler(scenario: DashboardScenario = 'default') 
     failureCount: 1332,
     totalCost: 418.76,
     totalTokens: 1092456123,
+    inProgressConversationCount: 8,
   })
 
   const responses = {
@@ -991,6 +1046,42 @@ function createDashboardRequestHandler(scenario: DashboardScenario = 'default') 
       availableBuckets: ['1d'],
       points: buildTimeseriesPoints({ count: 180, bucketSeconds: 86400, startMs: range6moStart, valueOffset: 11 }),
     }),
+    parallelWorkToday: buildParallelWorkResponse({
+      current: buildParallelWorkWindow([8, 10, 9], {
+        rangeStart: '2026-04-09T00:00:00.000Z',
+        bucketSeconds: 60,
+      }),
+      minute7d: buildParallelWorkWindow([6, 7, 8, 9], {
+        rangeStart: '2026-04-03T00:00:00.000Z',
+        bucketSeconds: 60,
+      }),
+      hour30d: buildParallelWorkWindow([5, 6, 7], {
+        rangeStart: '2026-03-11T00:00:00.000Z',
+        bucketSeconds: 3600,
+      }),
+      dayAll: buildParallelWorkWindow([7], {
+        rangeStart: '2026-04-08T00:00:00.000Z',
+        bucketSeconds: 86400,
+      }),
+    }),
+    parallelWorkYesterday: buildParallelWorkResponse({
+      current: buildParallelWorkWindow([7, 8, 9], {
+        rangeStart: '2026-04-08T00:00:00.000Z',
+        bucketSeconds: 60,
+      }),
+      minute7d: buildParallelWorkWindow([5, 6, 7, 8], {
+        rangeStart: '2026-04-02T00:00:00.000Z',
+        bucketSeconds: 60,
+      }),
+      hour30d: buildParallelWorkWindow([4, 5, 6], {
+        rangeStart: '2026-03-10T00:00:00.000Z',
+        bucketSeconds: 3600,
+      }),
+      dayAll: buildParallelWorkWindow([8], {
+        rangeStart: '2026-04-07T00:00:00.000Z',
+        bucketSeconds: 86400,
+      }),
+    }),
   }
 
   return ({ url }: { url: URL }) => {
@@ -1011,11 +1102,21 @@ function createDashboardRequestHandler(scenario: DashboardScenario = 'default') 
       if (range === '6mo') return jsonResponse(responses.timeseries6mo)
     }
 
+    if (url.pathname === '/api/stats/parallel-work') {
+      const range = url.searchParams.get('range') ?? 'today'
+      if (range === 'yesterday') return jsonResponse(responses.parallelWorkYesterday)
+      return jsonResponse(responses.parallelWorkToday)
+    }
+
     if (url.pathname === '/api/stats/prompt-cache-conversations') {
       if (scenario === 'readmeDense') {
         return jsonResponse(buildReadmeDenseWorkingConversationsResponse())
       }
       return jsonResponse(buildWorkingConversationsResponse(scenario === 'degraded'))
+    }
+
+    if (url.pathname === '/api/version') {
+      return jsonResponse({ backend: 'v0.2.0' })
     }
 
     return undefined
@@ -1213,5 +1314,19 @@ export const ReadmeDense: Story = {
         ),
       ).not.toBeNull()
     })
+  },
+}
+
+export const FullPageDesktop: Story = {
+  render: () => <App />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByTestId('app-header-inner')).toBeVisible()
+    await expect(canvas.getByTestId('dashboard-activity-overview')).toBeVisible()
+    await expect(canvas.getByTestId('dashboard-working-conversations')).toBeVisible()
+    await expect(canvas.getByTestId('app-footer-inner')).toBeVisible()
+    await expect(canvas.getByTestId('today-stats-secondary-in-progress-day-average')).toHaveTextContent('9')
+    await expect(canvas.getByTestId('today-stats-secondary-in-progress-delta')).toHaveTextContent('+37.5%')
+    await expect(canvas.getByTestId('today-stats-value-response-time')).not.toHaveTextContent('—')
   },
 }

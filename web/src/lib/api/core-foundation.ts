@@ -574,6 +574,7 @@ export interface StatsResponse {
   failureCount: number;
   totalCost: number;
   totalTokens: number;
+  inProgressConversationCount?: number | null;
   maintenance?: StatsMaintenanceResponse;
 }
 
@@ -2771,6 +2772,7 @@ export async function fetchParallelWorkStats(params?: {
   range?: string;
   bucket?: string;
   timeZone?: string;
+  upstreamAccountId?: number;
   signal?: AbortSignal;
 }) {
   const response = await fetchParallelWorkStatsConditional(params);
@@ -2784,6 +2786,7 @@ export async function fetchParallelWorkStatsConditional(params?: {
   range?: string;
   bucket?: string;
   timeZone?: string;
+  upstreamAccountId?: number;
   signal?: AbortSignal;
   etag?: string | null;
 }): Promise<{
@@ -2794,6 +2797,9 @@ export async function fetchParallelWorkStatsConditional(params?: {
   const search = new URLSearchParams();
   if (params?.range) search.set("range", params.range);
   if (params?.bucket) search.set("bucket", params.bucket);
+  if (params?.upstreamAccountId !== undefined) {
+    search.set("upstreamAccountId", String(params.upstreamAccountId));
+  }
   search.set("timeZone", params?.timeZone ?? getBrowserTimeZone());
   const headers: HeadersInit = {
     "Content-Type": "application/json",

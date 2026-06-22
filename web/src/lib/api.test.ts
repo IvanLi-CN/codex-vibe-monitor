@@ -670,6 +670,78 @@ describe("fetchParallelWorkStats", () => {
     );
   });
 
+  it("adds upstreamAccountId to parallel-work query parameters", async () => {
+    const fetchMock = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          current: {
+            rangeStart: "2026-03-01T00:00:00Z",
+            rangeEnd: "2026-03-08T00:00:00Z",
+            bucketSeconds: 60,
+            completeBucketCount: 0,
+            activeBucketCount: 0,
+            minCount: null,
+            maxCount: null,
+            avgCount: null,
+            points: [],
+          },
+          minute7d: {
+            rangeStart: "2026-03-01T00:00:00Z",
+            rangeEnd: "2026-03-08T00:00:00Z",
+            bucketSeconds: 60,
+            completeBucketCount: 0,
+            activeBucketCount: 0,
+            minCount: null,
+            maxCount: null,
+            avgCount: null,
+            points: [],
+          },
+          hour30d: {
+            rangeStart: "2026-03-01T00:00:00Z",
+            rangeEnd: "2026-03-08T00:00:00Z",
+            bucketSeconds: 3600,
+            completeBucketCount: 0,
+            activeBucketCount: 0,
+            minCount: null,
+            maxCount: null,
+            avgCount: null,
+            points: [],
+          },
+          dayAll: {
+            rangeStart: "2026-03-01T00:00:00Z",
+            rangeEnd: "2026-03-08T00:00:00Z",
+            bucketSeconds: 86400,
+            completeBucketCount: 0,
+            activeBucketCount: 0,
+            minCount: null,
+            maxCount: null,
+            avgCount: null,
+            points: [],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    await fetchParallelWorkStats({
+      range: "today",
+      bucket: "1m",
+      timeZone: "UTC",
+      upstreamAccountId: 42,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const firstArg = fetchMock.mock.calls.at(0)?.at(0) as
+      | RequestInfo
+      | URL
+      | undefined;
+    expect(firstArg).toBeDefined();
+    expect(String(firstArg)).toBe(
+      "/api/stats/parallel-work?range=today&bucket=1m&upstreamAccountId=42&timeZone=UTC",
+    );
+  });
+
   it("sends If-None-Match and exposes 304 responses for cached parallel-work payloads", async () => {
     const fetchMock = vi.fn(async () => {
       return new Response(null, {
