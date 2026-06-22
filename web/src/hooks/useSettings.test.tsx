@@ -20,6 +20,8 @@ const apiMocks = vi.hoisted(() => ({
     upstream429MaxRetries: number;
     websocketEnabled: boolean;
     upstreamWebsocketDefaultEnabled: boolean;
+    requestBodyLoggingEnabled: boolean;
+    responseBodyLoggingEnabled: boolean;
     enabledModels: string[];
   }) => Promise<ProxySettings>>(),
   updateForwardProxySettings: vi.fn<
@@ -69,6 +71,8 @@ function createSettingsPayload(
       upstream429MaxRetries: 3,
       websocketEnabled: false,
       upstreamWebsocketDefaultEnabled: false,
+      requestBodyLoggingEnabled: true,
+      responseBodyLoggingEnabled: true,
       defaultHijackEnabled: false,
       models: ["gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
       enabledModels: ["gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
@@ -126,6 +130,11 @@ function Probe() {
       <div data-testid="proxy-enabled-models">
         {settings?.proxy.enabledModels.join(",") ?? ""}
       </div>
+      <div data-testid="proxy-body-logging">
+        {settings
+          ? `${settings.proxy.requestBodyLoggingEnabled}/${settings.proxy.responseBodyLoggingEnabled}`
+          : ""}
+      </div>
       <div data-testid="proxy-urls">
         {settings?.forwardProxy.proxyUrls.join(",") ?? ""}
       </div>
@@ -138,6 +147,8 @@ function Probe() {
             ...settings.proxy,
             hijackEnabled: true,
             mergeUpstreamEnabled: true,
+            requestBodyLoggingEnabled: false,
+            responseBodyLoggingEnabled: false,
             enabledModels: ["gpt-5.5", "gpt-5.5-pro"],
           });
         }}
@@ -177,6 +188,8 @@ beforeEach(() => {
     upstream429MaxRetries: payload.upstream429MaxRetries,
     websocketEnabled: payload.websocketEnabled,
     upstreamWebsocketDefaultEnabled: payload.upstreamWebsocketDefaultEnabled,
+    requestBodyLoggingEnabled: payload.requestBodyLoggingEnabled,
+    responseBodyLoggingEnabled: payload.responseBodyLoggingEnabled,
     defaultHijackEnabled: false,
     models: ["gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
     enabledModels: payload.enabledModels,
@@ -216,6 +229,7 @@ describe("useSettings", () => {
     expect(apiMocks.updateProxySettings).toHaveBeenCalledTimes(1);
     expect(text("proxy-enabled-models")).toContain("gpt-5.5");
     expect(text("proxy-enabled-models")).toContain("gpt-5.5-pro");
+    expect(text("proxy-body-logging")).toBe("false/false");
     expect(text("error")).toBe("");
 
     apiMocks.updateProxySettings.mockRejectedValueOnce(new Error("proxy save failed"));

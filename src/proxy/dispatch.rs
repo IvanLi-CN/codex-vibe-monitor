@@ -188,6 +188,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let header_sticky_key = extract_sticky_key_from_headers(&headers);
     let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
     let client_attribution_context = client_prompt_cache_attribution_context_from_headers(&headers);
+    let proxy_settings = state.proxy_model_settings.read().await.clone();
 
     let req_read_started = Instant::now();
     let request_body_bytes = match read_request_body_with_limit(
@@ -208,6 +209,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 &invoke_id,
                 "request",
                 Bytes::from(read_err.partial_body),
+                proxy_settings.request_body_logging_enabled,
             )
             .finish()
             .await;
@@ -313,6 +315,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     pool_attempt_terminal_reason: None,
                 })),
                 raw_response: "{}".to_string(),
+                response_body_preview_enabled: false,
                 req_raw,
                 resp_raw: RawPayloadMeta::default(),
                 timings: StageTimings {
@@ -336,7 +339,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     };
     let t_req_read_ms = elapsed_ms(req_read_started);
 
-    let proxy_settings = state.proxy_model_settings.read().await.clone();
     let req_parse_started = Instant::now();
     let (upstream_body, mut request_info, body_rewritten) = prepare_target_request_body(
         capture_target,
@@ -541,6 +543,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     &invoke_id,
                     "request",
                     request_body_for_capture,
+                    proxy_settings.request_body_logging_enabled,
                 )
                 .finish()
                 .await;
@@ -683,6 +686,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             .as_deref(),
                     })),
                     raw_response: "{}".to_string(),
+                    response_body_preview_enabled: false,
                     req_raw,
                     resp_raw: RawPayloadMeta::default(),
                     timings: StageTimings {
@@ -750,6 +754,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     &invoke_id,
                     "request",
                     base_request_bytes_for_capture.clone(),
+                    proxy_settings.request_body_logging_enabled,
                 )
                 .finish()
                 .await;
@@ -854,6 +859,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         pool_attempt_terminal_reason: None,
                     })),
                     raw_response: "{}".to_string(),
+                    response_body_preview_enabled: false,
                     req_raw,
                     resp_raw: RawPayloadMeta::default(),
                     timings: StageTimings {
@@ -887,6 +893,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         final_request_body_for_capture
             .clone()
             .unwrap_or_else(|| base_request_bytes_for_capture.clone()),
+        proxy_settings.request_body_logging_enabled,
     ));
 
     let upstream_status = upstream_response.status();
@@ -1036,6 +1043,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     pool_attempt_terminal_reason: None,
                 })),
                 raw_response: "{}".to_string(),
+                response_body_preview_enabled: false,
                 req_raw,
                 resp_raw: RawPayloadMeta::default(),
                 timings: StageTimings {
@@ -1181,7 +1189,12 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         let mut stream_started_at: Option<Instant> = None;
         let mut response_preview = RawResponsePreviewBuffer::default();
         let mut response_raw_writer =
-            AsyncStreamingRawPayloadWriter::new(state_for_task.as_ref(), &invoke_id_for_task, "response");
+            AsyncStreamingRawPayloadWriter::new(
+                state_for_task.as_ref(),
+                &invoke_id_for_task,
+                "response",
+                proxy_settings.response_body_logging_enabled,
+            );
         let mut stream_response_parser = StreamResponsePayloadChunkParser::default();
         let mut nonstream_parse_buffer = (!response_is_event_stream_for_task).then(|| {
             BoundedResponseParseBuffer::new(BOUNDED_NON_STREAM_RESPONSE_PARSE_LIMIT_BYTES)
@@ -1854,6 +1867,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             failure_kind: failure_kind.map(|kind| kind.to_string()),
             payload: Some(payload),
             raw_response: raw_response_preview,
+            response_body_preview_enabled: proxy_settings.response_body_logging_enabled,
             req_raw: req_raw_for_task,
             resp_raw,
             timings: StageTimings {

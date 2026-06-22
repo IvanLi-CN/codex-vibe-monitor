@@ -810,6 +810,16 @@ pub(crate) async fn persist_proxy_capture_record(
     capture_started: Instant,
     mut record: ProxyCaptureRecord,
 ) -> Result<Option<ApiInvocation>> {
+    let raw_response = if record.response_body_preview_enabled {
+        record.raw_response.clone()
+    } else {
+        String::new()
+    };
+    let resp_raw = if record.response_body_preview_enabled {
+        record.resp_raw.clone()
+    } else {
+        RawPayloadMeta::default()
+    };
     let failure = resolve_failure_classification(
         Some(record.status.as_str()),
         record.error_message.as_deref(),
@@ -889,17 +899,17 @@ pub(crate) async fn persist_proxy_capture_record(
     .bind(failure.failure_class.as_str())
     .bind(failure.is_actionable as i64)
     .bind(record.payload.as_deref())
-    .bind(&record.raw_response)
+    .bind(&raw_response)
     .bind(record.req_raw.path.as_deref())
     .bind(raw_payload_meta_codec(&record.req_raw))
     .bind(record.req_raw.path.as_ref().map(|_| record.req_raw.size_bytes))
     .bind(record.req_raw.truncated as i64)
     .bind(record.req_raw.truncated_reason.as_deref())
-    .bind(record.resp_raw.path.as_deref())
-    .bind(raw_payload_meta_codec(&record.resp_raw))
-    .bind(record.resp_raw.path.as_ref().map(|_| record.resp_raw.size_bytes))
-    .bind(record.resp_raw.truncated as i64)
-    .bind(record.resp_raw.truncated_reason.as_deref())
+    .bind(resp_raw.path.as_deref())
+    .bind(raw_payload_meta_codec(&resp_raw))
+    .bind(resp_raw.path.as_ref().map(|_| resp_raw.size_bytes))
+    .bind(resp_raw.truncated as i64)
+    .bind(resp_raw.truncated_reason.as_deref())
     .bind(None::<f64>)
     .bind(record.timings.t_req_read_ms)
     .bind(record.timings.t_req_parse_ms)
@@ -1000,17 +1010,17 @@ pub(crate) async fn persist_proxy_capture_record(
         .bind(failure.failure_class.as_str())
         .bind(failure.is_actionable as i64)
         .bind(record.payload.as_deref())
-        .bind(&record.raw_response)
+        .bind(&raw_response)
         .bind(record.req_raw.path.as_deref())
         .bind(raw_payload_meta_codec(&record.req_raw))
         .bind(record.req_raw.path.as_ref().map(|_| record.req_raw.size_bytes))
         .bind(record.req_raw.truncated as i64)
         .bind(record.req_raw.truncated_reason.as_deref())
-        .bind(record.resp_raw.path.as_deref())
-        .bind(raw_payload_meta_codec(&record.resp_raw))
-        .bind(record.resp_raw.path.as_ref().map(|_| record.resp_raw.size_bytes))
-        .bind(record.resp_raw.truncated as i64)
-        .bind(record.resp_raw.truncated_reason.as_deref())
+        .bind(resp_raw.path.as_deref())
+        .bind(raw_payload_meta_codec(&resp_raw))
+        .bind(resp_raw.path.as_ref().map(|_| resp_raw.size_bytes))
+        .bind(resp_raw.truncated as i64)
+        .bind(resp_raw.truncated_reason.as_deref())
         .bind(None::<f64>)
         .bind(record.timings.t_req_read_ms)
         .bind(record.timings.t_req_parse_ms)

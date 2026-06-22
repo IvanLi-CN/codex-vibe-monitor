@@ -30,6 +30,8 @@ function createSettingsPayload(): SettingsPayload {
       upstream429MaxRetries: 3,
       websocketEnabled: false,
       upstreamWebsocketDefaultEnabled: false,
+      requestBodyLoggingEnabled: true,
+      responseBodyLoggingEnabled: true,
       defaultHijackEnabled: false,
       models: ['gpt-5.5'],
       enabledModels: ['gpt-5.5'],
@@ -153,5 +155,12 @@ describe('Settings forward proxy table', () => {
       '11.0%',
       '101 ms',
     ])
+  })
+
+  it('renders independent request/response body logging switches', () => {
+    renderSettingsPage()
+
+    expect(host?.textContent).toContain('记录请求 body')
+    expect(host?.textContent).toContain('记录响应 body')
   })
 })

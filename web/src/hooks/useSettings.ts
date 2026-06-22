@@ -84,6 +84,8 @@ export function useSettings() {
         ),
         websocketEnabled: nextProxy.websocketEnabled,
         upstreamWebsocketDefaultEnabled: nextProxy.upstreamWebsocketDefaultEnabled,
+        requestBodyLoggingEnabled: nextProxy.requestBodyLoggingEnabled,
+        responseBodyLoggingEnabled: nextProxy.responseBodyLoggingEnabled,
         defaultHijackEnabled: nextProxy.defaultHijackEnabled,
         models: nextProxy.models,
         enabledModels: nextProxy.models.filter((candidate) =>
@@ -107,6 +109,8 @@ export function useSettings() {
           upstream429MaxRetries: normalizedProxy.upstream429MaxRetries,
           websocketEnabled: normalizedProxy.websocketEnabled,
           upstreamWebsocketDefaultEnabled: normalizedProxy.upstreamWebsocketDefaultEnabled,
+          requestBodyLoggingEnabled: normalizedProxy.requestBodyLoggingEnabled,
+          responseBodyLoggingEnabled: normalizedProxy.responseBodyLoggingEnabled,
           enabledModels: normalizedProxy.enabledModels,
         })
         const confirmedSnapshot: SettingsPayload | null = serverSnapshotRef.current

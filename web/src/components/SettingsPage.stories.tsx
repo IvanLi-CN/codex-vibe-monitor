@@ -51,6 +51,8 @@ const DEFAULT_PROXY_SETTINGS: ProxySettings = {
   upstream429MaxRetries: 3,
   websocketEnabled: true,
   upstreamWebsocketDefaultEnabled: true,
+  requestBodyLoggingEnabled: true,
+  responseBodyLoggingEnabled: true,
   defaultHijackEnabled: false,
   models: [
     'gpt-5.5',
@@ -419,6 +421,8 @@ function StorybookSettingsMock({
           upstream429MaxRetries: number
           websocketEnabled: boolean
           upstreamWebsocketDefaultEnabled: boolean
+          requestBodyLoggingEnabled: boolean
+          responseBodyLoggingEnabled: boolean
           enabledModels: string[]
         }>({
           hijackEnabled: settingsRef.current.proxy.hijackEnabled,
@@ -427,6 +431,8 @@ function StorybookSettingsMock({
           upstream429MaxRetries: settingsRef.current.proxy.upstream429MaxRetries,
           websocketEnabled: settingsRef.current.proxy.websocketEnabled,
           upstreamWebsocketDefaultEnabled: settingsRef.current.proxy.upstreamWebsocketDefaultEnabled,
+          requestBodyLoggingEnabled: settingsRef.current.proxy.requestBodyLoggingEnabled,
+          responseBodyLoggingEnabled: settingsRef.current.proxy.responseBodyLoggingEnabled,
           enabledModels: settingsRef.current.proxy.enabledModels,
         })
 
@@ -439,6 +445,8 @@ function StorybookSettingsMock({
           upstream429MaxRetries: Math.max(0, Math.min(5, Math.trunc(body.upstream429MaxRetries || 0))),
           websocketEnabled: body.websocketEnabled === true,
           upstreamWebsocketDefaultEnabled: body.upstreamWebsocketDefaultEnabled === true,
+          requestBodyLoggingEnabled: body.requestBodyLoggingEnabled !== false,
+          responseBodyLoggingEnabled: body.responseBodyLoggingEnabled !== false,
           enabledModels: settingsRef.current.proxy.models.filter((model) => enabledSet.has(model)),
         }
         settingsRef.current.proxy = nextProxy

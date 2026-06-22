@@ -1987,6 +1987,16 @@ pub(crate) async fn persist_proxy_capture_runtime_record(
     pool: &Pool<Sqlite>,
     record: ProxyCaptureRecord,
 ) -> Result<Option<ApiInvocation>> {
+    let raw_response = if record.response_body_preview_enabled {
+        record.raw_response.clone()
+    } else {
+        String::new()
+    };
+    let resp_raw = if record.response_body_preview_enabled {
+        record.resp_raw.clone()
+    } else {
+        RawPayloadMeta::default()
+    };
     let failure = resolve_failure_classification(
         Some(record.status.as_str()),
         record.error_message.as_deref(),
@@ -2068,17 +2078,17 @@ pub(crate) async fn persist_proxy_capture_runtime_record(
     .bind(failure.failure_class.as_str())
     .bind(failure.is_actionable as i64)
     .bind(record.payload.as_deref())
-    .bind(&record.raw_response)
+    .bind(&raw_response)
     .bind(record.req_raw.path.as_deref())
     .bind(raw_payload_meta_codec(&record.req_raw))
     .bind(record.req_raw.path.as_ref().map(|_| record.req_raw.size_bytes))
     .bind(record.req_raw.truncated as i64)
     .bind(record.req_raw.truncated_reason.as_deref())
-    .bind(record.resp_raw.path.as_deref())
-    .bind(raw_payload_meta_codec(&record.resp_raw))
-    .bind(record.resp_raw.path.as_ref().map(|_| record.resp_raw.size_bytes))
-    .bind(record.resp_raw.truncated as i64)
-    .bind(record.resp_raw.truncated_reason.as_deref())
+    .bind(resp_raw.path.as_deref())
+    .bind(raw_payload_meta_codec(&resp_raw))
+    .bind(resp_raw.path.as_ref().map(|_| resp_raw.size_bytes))
+    .bind(resp_raw.truncated as i64)
+    .bind(resp_raw.truncated_reason.as_deref())
     .bind(None::<f64>)
     .bind(t_req_read_ms)
     .bind(t_req_parse_ms)
@@ -2222,17 +2232,17 @@ pub(crate) async fn persist_proxy_capture_runtime_record(
         .bind(failure.failure_class.as_str())
         .bind(failure.is_actionable as i64)
         .bind(record.payload.as_deref())
-        .bind(&record.raw_response)
+        .bind(&raw_response)
         .bind(record.req_raw.path.as_deref())
         .bind(raw_payload_meta_codec(&record.req_raw))
         .bind(record.req_raw.path.as_ref().map(|_| record.req_raw.size_bytes))
         .bind(record.req_raw.truncated as i64)
         .bind(record.req_raw.truncated_reason.as_deref())
-        .bind(record.resp_raw.path.as_deref())
-        .bind(raw_payload_meta_codec(&record.resp_raw))
-        .bind(record.resp_raw.path.as_ref().map(|_| record.resp_raw.size_bytes))
-        .bind(record.resp_raw.truncated as i64)
-        .bind(record.resp_raw.truncated_reason.as_deref())
+        .bind(resp_raw.path.as_deref())
+        .bind(raw_payload_meta_codec(&resp_raw))
+        .bind(resp_raw.path.as_ref().map(|_| resp_raw.size_bytes))
+        .bind(resp_raw.truncated as i64)
+        .bind(resp_raw.truncated_reason.as_deref())
         .bind(None::<f64>)
         .bind(t_req_read_ms)
         .bind(t_req_parse_ms)
@@ -2374,6 +2384,7 @@ pub(crate) fn build_running_proxy_capture_record(
             pool_attempt_terminal_reason,
         })),
         raw_response: "{}".to_string(),
+        response_body_preview_enabled: false,
         req_raw: RawPayloadMeta::default(),
         resp_raw: RawPayloadMeta::default(),
         timings: StageTimings {
@@ -2512,8 +2523,9 @@ pub(crate) fn spawn_raw_payload_file_write(
     invoke_id: &str,
     kind: &'static str,
     bytes: Bytes,
+    enabled: bool,
 ) -> PendingRawPayloadWrite {
-    if bytes.is_empty() {
+    if !enabled || bytes.is_empty() {
         return PendingRawPayloadWrite::Ready(RawPayloadMeta::default());
     }
 
@@ -2627,7 +2639,22 @@ pub(crate) struct AsyncStreamingRawPayloadWriter {
 }
 
 impl AsyncStreamingRawPayloadWriter {
-    pub(crate) fn new(state: &AppState, invoke_id: &str, kind: &'static str) -> Self {
+    pub(crate) fn new(
+        state: &AppState,
+        invoke_id: &str,
+        kind: &'static str,
+        enabled: bool,
+    ) -> Self {
+        if !enabled {
+            return Self {
+                tx: None,
+                meta_rx: None,
+                observed_size_bytes: 0,
+                local_truncated_reason: None,
+                local_truncated: false,
+            };
+        }
+
         let Ok(permit) = state.proxy_raw_async_semaphore.clone().try_acquire_owned() else {
             return Self {
                 tx: None,

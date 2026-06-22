@@ -1521,6 +1521,17 @@ const baseTranslations = {
     "settings.proxy.websocketEnabled": "Enabled",
     "settings.proxy.websocketDisabled": "Disabled",
     "settings.proxy.websocketEnvLabel": "Global",
+    "settings.proxy.bodyLoggingTitle": "Invocation body retention",
+    "settings.proxy.bodyLoggingHint":
+      "Control whether new proxy invocations keep request or response body content.",
+    "settings.proxy.requestBodyLoggingLabel": "Record request body",
+    "settings.proxy.requestBodyLoggingHint":
+      "Structured metadata stays available; only new raw request body retention stops.",
+    "settings.proxy.responseBodyLoggingLabel": "Record response body",
+    "settings.proxy.responseBodyLoggingHint":
+      "Disables both full response raw retention and inline response preview for new records.",
+    "settings.proxy.bodyLoggingRetentionHint":
+      "Turning either switch off only affects new records. Existing retained bodies continue through normal retention cleanup.",
     "settings.forwardProxy.title": "Forward proxy routing",
     "settings.forwardProxy.description":
       "Configure upstream forwarding proxies, automatic routing inventory, subscription refresh interval, and live health metrics.",
@@ -3698,6 +3709,14 @@ const baseTranslations = {
     "settings.proxy.websocketEnabled": "已开启",
     "settings.proxy.websocketDisabled": "已关闭",
     "settings.proxy.websocketEnvLabel": "全局设置",
+    "settings.proxy.bodyLoggingTitle": "调用 body 留存",
+    "settings.proxy.bodyLoggingHint": "控制新的代理调用是否继续保留请求或响应 body 内容。",
+    "settings.proxy.requestBodyLoggingLabel": "记录请求 body",
+    "settings.proxy.requestBodyLoggingHint": "结构化元数据仍会保留；仅停止新的原始请求 body 留存。",
+    "settings.proxy.responseBodyLoggingLabel": "记录响应 body",
+    "settings.proxy.responseBodyLoggingHint": "会同时关闭新的完整响应 raw 留存与详情页 inline preview。",
+    "settings.proxy.bodyLoggingRetentionHint":
+      "关闭后只影响新记录；历史已留存的 body 仍按现有 retention 流程自动回收。",
     "settings.forwardProxy.title": "正向代理路由",
     "settings.forwardProxy.description":
       "配置上游请求代理、自动路由节点池、订阅自动刷新周期与运行期健康指标。",

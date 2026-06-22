@@ -124,6 +124,8 @@ const STORYBOOK_SETTINGS: SettingsPayload = {
     upstream429MaxRetries: 3,
     websocketEnabled: true,
     upstreamWebsocketDefaultEnabled: true,
+    requestBodyLoggingEnabled: true,
+    responseBodyLoggingEnabled: true,
     defaultHijackEnabled: false,
     models: ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4'],
     enabledModels: ['gpt-5.5', 'gpt-5.5-pro'],

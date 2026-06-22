@@ -258,6 +258,7 @@ fn test_proxy_capture_record(invoke_id: &str, occurred_at: &str) -> ProxyCapture
                 .to_string(),
         ),
         raw_response: "{}".to_string(),
+        response_body_preview_enabled: true,
         req_raw: RawPayloadMeta::default(),
         resp_raw: RawPayloadMeta::default(),
         timings: test_stage_timings(),

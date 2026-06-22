@@ -1,4 +1,4 @@
-# 请求日志可观测性增强（IP / Cache Tokens / 分阶段耗时 / Prompt Cache Key）（#z9h7v）
+# 请求日志可观测性增强（IP / Cache Tokens / 分阶段耗时 / Prompt Cache Key / Body Logging Toggles）（#z9h7v）
 
 ## 背景 / 问题陈述
 
@@ -15,12 +15,15 @@
 - Live 与 Dashboard 共用表格统一升级，主表保持简洁，详情区保留完整诊断信息。
 - 请求详情不再展示 `source`，也不把 `source` 当作代理名兜底；代理字段仅展示 payload 中已确认的 `proxyDisplayName`。
 - 号池尝试明细展示每次尝试实际落库的 `proxy_binding_key_snapshot`，用于失败链路诊断。
+- `GET /api/settings` 与 `PUT /api/settings/proxy` 暴露两个独立布尔开关：`requestBodyLoggingEnabled`、`responseBodyLoggingEnabled`，默认都为 `true`。
+- 关闭 body 记录时，仅停止新的 request/response 原文 body 落盘与响应 preview 持久化；结构化 payload、tokens、timing、routing/account、prompt cache key、reasoning/service tier 等字段继续写入。
 
 ### Non-goals
 
 - 不新增独立请求详情页。
 - 不改现有统计聚合口径与时序聚合逻辑。
-- 不新增数据库列或迁移脚本。
+- 不新增“总日志开关”。
+- 不对历史 `.gz` / raw 文件做立即删除、迁移或重压缩。
 
 ## 范围（Scope）
 
@@ -31,6 +34,8 @@
 - `web/src/lib/api.ts` 类型对齐后端返回。
 - `web/src/components/InvocationTable.tsx` 新增 cache/latency 列与通用详情展开区。
 - `web/src/i18n/translations.ts` 新增中英文文案键。
+- `proxy_model_settings` 单例新增 request/response body logging 持久化字段与 settings 页面双开关 UI。
+- request raw / response raw / response preview 按设置开关 fail-soft 退化，详情页与历史回填接受“新记录没有 raw body”为正常状态。
 
 ### Out of scope
 
@@ -50,6 +55,9 @@
 - 调用详情的“代理”字段只使用 `proxyDisplayName`；缺失时显示 `—`，即使 `source` 为 `xy`、`crs` 或其他来源也不参与展示。
 - 号池尝试明细每条尝试展示“代理/Proxy”：`proxyBindingKeySnapshot` 缺失时显示 `—`，值为 `__direct__` 时显示 `Direct`，其他值通过绑定节点解析为代理显示名；解析失败时显示紧凑 key，完整 key 仅保留在 hover title。
 - 启动回填会将历史记录中的 `payload.codexSessionId` 移除，并写入 `payload.promptCacheKey`。
+- `requestBodyLoggingEnabled=false` 时，新请求不再写入 `request_raw_path` / request raw 文件；相关 size/truncation 字段维持空值或零值语义，不把该情况视为损坏。
+- `responseBodyLoggingEnabled=false` 时，新响应不再写入 `response_raw_path` / response raw 文件，同时 `raw_response` inline preview 也不再持久化。
+- `responseBodyLoggingEnabled=false` 时，调用详情读取响应 body、异常 drawer 与历史回填链路必须返回既有 unavailable/fallback 语义，而不是 500 或“缺文件即损坏”语义。
 
 ### SHOULD
 
@@ -71,6 +79,8 @@
 - `/api/invocations/{invoke_id}/pool-attempts` 读取 `pool_upstream_request_attempts.proxy_binding_key_snapshot` 并作为 `proxyBindingKeySnapshot` 返回。
 - 号池详情中，真实上游尝试与合成终态记录分开展示。`budget_exhausted_final` 或 `sameAccountRetryIndex <= 0` 仅作为号池终态说明，不作为普通尝试卡片展示，不显示同账号重试序号或阶段耗时。
 - 启动阶段执行历史回填：读取 `request_raw_path` 指向的原始请求 JSON，提取 `prompt_cache_key` 后写回 payload。
+- Settings 页面在现有 proxy card 内新增两个独立开关，文案明确区分“请求 body 记录”与“响应 body 记录”，并说明关闭仅影响新记录，旧记录继续走 retention。
+- 关闭 request body logging 时，请求原文不会进入新的异步 raw writer；关闭 response body logging 时，响应原文异步 writer 与详情页 inline preview 同时关闭。
 
 ### Edge cases / errors
 
@@ -78,6 +88,7 @@
 - 若 prompt cache key 候选键全部未命中，返回 `null` 并在前端显示 `—`。
 - 若阶段耗时缺失（旧记录），前端逐项显示 `—`。
 - 若号池达到不同账号尝试上限，前端应明确说明终态记录未发起新的上游请求，并可保留上一失败账号与上一错误状态作为诊断上下文。
+- 当 body logging 开关关闭导致新记录没有 raw 路径或 preview 时，详情页、回填与异常查看都要把它当作“未保留 body”，不是“raw 文件丢失”。
 
 ## 接口契约（Interfaces & Contracts）
 
@@ -91,6 +102,11 @@
 ### `GET /api/invocations/{invokeId}/pool-attempts` 尝试对象
 
 - `proxyBindingKeySnapshot?: string | null`
+
+### `GET /api/settings` / `PUT /api/settings/proxy` 新增字段
+
+- `requestBodyLoggingEnabled: boolean`
+- `responseBodyLoggingEnabled: boolean`
 
 ### `GET /api/invocations` 记录对象（已存在并沿用）
 
@@ -107,12 +123,22 @@
 - Given 号池失败尝试存在 `proxyBindingKeySnapshot=fpb_...` 但绑定节点不可解析，When 用户展开号池尝试明细，Then 该尝试显示紧凑 key，完整 key 仅保留在 hover title。
 - Given 号池尝试 `proxyBindingKeySnapshot=__direct__`，When 用户展开号池尝试明细，Then 该尝试显示 `Direct`。
 - Given 历史 proxy 记录存在 `request_raw_path` 且 payload 缺 `promptCacheKey`，When 服务启动完成，Then 字段被自动回填且不会重复更新已完成记录。
+- Given `requestBodyLoggingEnabled=false` 且 `responseBodyLoggingEnabled=true`，When 新代理调用完成，Then invocation 记录保留结构化 payload / stats / timing，但 `request_raw_path` 与新 request raw 文件都不存在。
+- Given `requestBodyLoggingEnabled=true` 且 `responseBodyLoggingEnabled=false`，When 新代理调用完成，Then invocation 记录保留结构化 payload / stats / timing，但 `response_raw_path` 为空，且 `raw_response` preview 为空字符串。
+- Given 两个开关都关闭，When 新代理调用完成并打开详情，Then Settings 页面保存成功、调用记录仍可查询，且 body 读取接口返回既有 unavailable/fallback 语义而非 500。
 
 ### Manual verification
 
 - 启动 backend/frontend 后打开 `/dashboard` 与 `/#/live`，验证新增列与详情展开可用。
 
 ## Visual Evidence
+
+- source_type: storybook_canvas
+  story_id_or_title: Settings/SettingsPage/Default
+  state: proxy body logging toggles
+  evidence_note: verifies the Settings page adds independent request body logging and response body logging switches with retention helper copy in the existing proxy settings card.
+  image:
+  ![Settings body logging toggles](./assets/settings-body-logging-toggles.png)
 
 - source_type: storybook_canvas
   story_id_or_title: Monitoring/InvocationTable/PoolAttemptDetailLifecycle
