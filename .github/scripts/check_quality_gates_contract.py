@@ -848,6 +848,11 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     arm_helper_checkout = checkout_step(docker_arm, "Checkout workflow helpers", "release.yml.jobs.docker-arm64")
     require(arm_helper_checkout.get("ref") == "${{ github.sha }}", "release.yml.jobs.docker-arm64 helper checkout ref drifted")
     require(arm_helper_checkout.get("path") == "workflow-helpers", "release.yml.jobs.docker-arm64 helper checkout path drifted")
+    helper_install_step = step_config(docker_arm, "Install workflow helper scripts", "release.yml.jobs.docker-arm64")
+    require(helper_install_step.get("shell") == "bash", "release.yml.jobs.docker-arm64: helper install must run in bash")
+    require(helper_install_step.get("working-directory") == "target", "release.yml.jobs.docker-arm64: helper install must run from target checkout")
+    helper_install_run = str(helper_install_step.get("run", ""))
+    require("install -m 755 ../workflow-helpers/.github/scripts/build-smoke-image-with-retry.sh" in helper_install_run, "release.yml.jobs.docker-arm64: helper install step must copy retry helper into target checkout")
     arm_build_step = step_config(docker_arm, "Build smoke image (linux/arm64, load)", "release.yml.jobs.docker-arm64")
     require(arm_build_step.get("shell") == "bash", "release.yml.jobs.docker-arm64: arm64 smoke build must run in bash")
     require(arm_build_step.get("working-directory") == "target", "release.yml.jobs.docker-arm64: arm64 smoke build must run from target checkout")
@@ -870,7 +875,7 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     )
     arm_build_run = str(arm_build_step.get("run", ""))
     require(
-        "../workflow-helpers/.github/scripts/build-smoke-image-with-retry.sh" in arm_build_run,
+        "./.github/scripts/build-smoke-image-with-retry.sh" in arm_build_run,
         "release.yml.jobs.docker-arm64: arm64 smoke build must use the retry helper",
     )
     arm_smoke_step = step_config(docker_arm, "Smoke test image (linux/arm64)", "release.yml.jobs.docker-arm64")
