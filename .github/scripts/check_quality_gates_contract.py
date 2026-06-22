@@ -489,7 +489,19 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
 
     self_tests = step_config(lint_job, "Quality gates self-tests", "ci-pr.yml.jobs.lint")
     self_tests_run = str(self_tests.get("run", ""))
-    require("test-quality-gates-contract.sh" in self_tests_run and "test-live-quality-gates.sh" in self_tests_run, "ci-pr.yml.jobs.lint: self-tests step drifted")
+    require(
+        "test-quality-gates-contract.sh" in self_tests_run
+        and "test-build-smoke-image-with-retry.sh" in self_tests_run
+        and "test-live-quality-gates.sh" in self_tests_run,
+        "ci-pr.yml.jobs.lint: self-tests step drifted",
+    )
+
+    scripts_step = step_config(lint_job, "Check quality-gates scripts", "ci-pr.yml.jobs.lint")
+    scripts_run = str(scripts_step.get("run", ""))
+    require(
+        "bash -n .github/scripts/build-smoke-image-with-retry.sh" in scripts_run,
+        "ci-pr.yml.jobs.lint: build smoke retry helper syntax check drifted",
+    )
 
     build_job = named_job_config(workflow, "build", expected_jobs, "ci-pr.yml")
     require_exact_if(build_job, "github.event_name == 'pull_request'", "ci-pr.yml.jobs.build")
@@ -520,11 +532,26 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
     lint_job = named_job_config(workflow, "lint", expected_jobs, "ci-main.yml")
     require_no_if(lint_job, "ci-main.yml.jobs.lint")
     require_fail_closed(lint_job, "ci-main.yml.jobs.lint")
+    scripts_step = step_config(lint_job, "Check quality-gates scripts", "ci-main.yml.jobs.lint")
+    scripts_run = str(scripts_step.get("run", ""))
+    require(
+        "bash -n .github/scripts/build-smoke-image-with-retry.sh" in scripts_run,
+        "ci-main.yml.jobs.lint: build smoke retry helper syntax check drifted",
+    )
     trusted_step = step_config(lint_job, "Resolve trusted quality-gates sources", "ci-main.yml.jobs.lint")
     trusted_run = str(trusted_step.get("run", ""))
     require('source_ref="HEAD"' in trusted_run, "ci-main.yml.jobs.lint: trusted-source ref drifted")
     require('source_kind="current-branch"' in trusted_run, "ci-main.yml.jobs.lint: trusted-source kind drifted")
     require("cp \"$path\" \"$trusted_root/$path\"" in trusted_run, "ci-main.yml.jobs.lint: trusted-source copy drifted")
+
+    self_tests = step_config(lint_job, "Quality gates self-tests", "ci-main.yml.jobs.lint")
+    self_tests_run = str(self_tests.get("run", ""))
+    require(
+        "test-quality-gates-contract.sh" in self_tests_run
+        and "test-build-smoke-image-with-retry.sh" in self_tests_run
+        and "test-live-quality-gates.sh" in self_tests_run,
+        "ci-main.yml.jobs.lint: self-tests step drifted",
+    )
 
     release_snapshot = named_job_config(workflow, "release-snapshot", expected_jobs, "ci-main.yml")
     require(
@@ -817,6 +844,30 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     docker_arm = named_job_config(workflow, "docker-arm64", expected_jobs, "release.yml")
     arm_checkout = checkout_step(docker_arm, "Checkout code", "release.yml.jobs.docker-arm64")
     require(arm_checkout.get("ref") == "${{ needs.release-meta.outputs.target_sha }}", "release.yml.jobs.docker-arm64 checkout ref drifted")
+    arm_build_step = step_config(docker_arm, "Build smoke image (linux/arm64, load)", "release.yml.jobs.docker-arm64")
+    require(arm_build_step.get("shell") == "bash", "release.yml.jobs.docker-arm64: arm64 smoke build must run in bash")
+    arm_build_env = require_mapping(arm_build_step.get("env"), "release.yml.jobs.docker-arm64.steps['Build smoke image (linux/arm64, load)'].env")
+    require(
+        arm_build_env.get("BUILD_PLATFORM") == "${{ env.PLATFORM_ARM64 }}",
+        "release.yml.jobs.docker-arm64: arm64 smoke build must consume PLATFORM_ARM64",
+    )
+    require(
+        arm_build_env.get("SMOKE_TAG") == "${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ needs.release-meta.outputs.candidate_suffix }}-arm64",
+        "release.yml.jobs.docker-arm64: arm64 smoke build smoke tag drifted",
+    )
+    require(
+        arm_build_env.get("CANDIDATE_TAG") == "${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:candidate-${{ needs.release-meta.outputs.candidate_suffix }}-arm64",
+        "release.yml.jobs.docker-arm64: arm64 smoke build candidate tag drifted",
+    )
+    require(
+        arm_build_env.get("CACHE_REF") == "${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:buildcache-arm64",
+        "release.yml.jobs.docker-arm64: arm64 smoke build cache ref drifted",
+    )
+    arm_build_run = str(arm_build_step.get("run", ""))
+    require(
+        "./.github/scripts/build-smoke-image-with-retry.sh" in arm_build_run,
+        "release.yml.jobs.docker-arm64: arm64 smoke build must use the retry helper",
+    )
     arm_smoke_step = step_config(docker_arm, "Smoke test image (linux/arm64)", "release.yml.jobs.docker-arm64")
     arm_smoke_env = require_mapping(arm_smoke_step.get("env"), "release.yml.jobs.docker-arm64.steps['Smoke test image (linux/arm64)'].env")
     require(
