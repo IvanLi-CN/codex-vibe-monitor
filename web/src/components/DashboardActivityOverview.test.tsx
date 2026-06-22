@@ -70,7 +70,14 @@ vi.mock('./TodayStatsOverview', () => ({
     parallelWorkError,
     showInProgressConversations,
   }: {
-    stats?: { totalCount?: number; inProgressConversationCount?: number } | null
+    stats?: {
+      totalCount?: number
+      inProgressConversationCount?: number
+      inProgressRetryConversationCount?: number
+      inProgressAvgWaitMs?: number
+      nonSuccessCost?: number
+      nonSuccessTokens?: number
+    } | null
     showSurface?: boolean
     showHeader?: boolean
     showDayBadge?: boolean
@@ -82,7 +89,7 @@ vi.mock('./TodayStatsOverview', () => ({
     showInProgressConversations?: boolean
   }) => (
     <div data-testid="today-stats-overview-mock">
-      {`total:${stats?.totalCount ?? 'null'};inProgress:${stats?.inProgressConversationCount ?? 'null'};surface:${String(showSurface)};header:${String(showHeader)};badge:${String(showDayBadge)};tpm:${rate?.tokensPerMinute ?? 'null'};spendRate:${rate?.spendRate ?? 'null'};rateLoading:${String(rateLoading)};rateError:${rateError ?? 'null'};parallelAvg:${parallelWorkStats?.current?.avgCount ?? 'null'};parallelError:${parallelWorkError ?? 'null'};showInProgress:${String(showInProgressConversations)}`}
+      {`total:${stats?.totalCount ?? 'null'};inProgress:${stats?.inProgressConversationCount ?? 'null'};retry:${stats?.inProgressRetryConversationCount ?? 'null'};wait:${stats?.inProgressAvgWaitMs ?? 'null'};nonSuccessCost:${stats?.nonSuccessCost ?? 'null'};nonSuccessTokens:${stats?.nonSuccessTokens ?? 'null'};surface:${String(showSurface)};header:${String(showHeader)};badge:${String(showDayBadge)};tpm:${rate?.tokensPerMinute ?? 'null'};spendRate:${rate?.spendRate ?? 'null'};rateLoading:${String(rateLoading)};rateError:${rateError ?? 'null'};parallelAvg:${parallelWorkStats?.current?.avgCount ?? 'null'};parallelError:${parallelWorkError ?? 'null'};showInProgress:${String(showInProgressConversations)}`}
     </div>
   ),
 }))
@@ -280,12 +287,34 @@ function buildParallelWorkStatsFixture(avgCount = 2) {
 
 function installSummaryMocks() {
   summaryStore.set('today', {
-    summary: { totalCount: 12, successCount: 10, failureCount: 2, totalCost: 0.52, totalTokens: 2048, inProgressConversationCount: 11 },
+    summary: {
+      totalCount: 12,
+      successCount: 10,
+      failureCount: 2,
+      totalCost: 0.52,
+      totalTokens: 2048,
+      inProgressConversationCount: 11,
+      inProgressRetryConversationCount: 3,
+      inProgressAvgWaitMs: 1700,
+      nonSuccessCost: 0.12,
+      nonSuccessTokens: 256,
+    },
     isLoading: false,
     error: null,
   })
   summaryStore.set('yesterday', {
-    summary: { totalCount: 8, successCount: 7, failureCount: 1, totalCost: 0.21, totalTokens: 1024, inProgressConversationCount: 4 },
+    summary: {
+      totalCount: 8,
+      successCount: 7,
+      failureCount: 1,
+      totalCost: 0.21,
+      totalTokens: 1024,
+      inProgressConversationCount: 4,
+      inProgressRetryConversationCount: 1,
+      inProgressAvgWaitMs: 900,
+      nonSuccessCost: 0.05,
+      nonSuccessTokens: 96,
+    },
     isLoading: false,
     error: null,
   })
@@ -399,7 +428,7 @@ describe('DashboardActivityOverview', () => {
     expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')).toBeNull()
     expect(host?.querySelector('[data-testid="dashboard-activity-range-usage"]')).toBeNull()
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toBe(
-      'total:12;inProgress:11;surface:false;header:false;badge:false;tpm:1000;spendRate:0.1;rateLoading:false;rateError:null;parallelAvg:2;parallelError:null;showInProgress:true',
+      'total:12;inProgress:11;retry:3;wait:1700;nonSuccessCost:0.12;nonSuccessTokens:256;surface:false;header:false;badge:false;tpm:1000;spendRate:0.1;rateLoading:false;rateError:null;parallelAvg:2;parallelError:null;showInProgress:true',
     )
     expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent).toBe(
       'metric:totalCount',
@@ -529,6 +558,9 @@ describe('DashboardActivityOverview', () => {
       upstreamAccountId: 42,
     })
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain(
+      'retry:3;wait:1700;nonSuccessCost:0.12;nonSuccessTokens:256;',
+    )
+    expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain(
       'parallelAvg:2;parallelError:null;showInProgress:true',
     )
 
@@ -605,10 +637,23 @@ describe('DashboardActivityOverview', () => {
     expect(componentState.chartRenderCount).toBe(1)
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain('total:12')
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain('inProgress:11')
+    expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain('retry:3')
+    expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain('wait:1700')
 
     act(() => {
       summaryStore.set('today', {
-        summary: { totalCount: 18, successCount: 15, failureCount: 3, totalCost: 0.66, totalTokens: 2600, inProgressConversationCount: 9 },
+        summary: {
+          totalCount: 18,
+          successCount: 15,
+          failureCount: 3,
+          totalCost: 0.66,
+          totalTokens: 2600,
+          inProgressConversationCount: 9,
+          inProgressRetryConversationCount: 4,
+          inProgressAvgWaitMs: 2200,
+          nonSuccessCost: 0.2,
+          nonSuccessTokens: 512,
+        },
         isLoading: false,
         error: null,
       })
@@ -616,6 +661,8 @@ describe('DashboardActivityOverview', () => {
 
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain('total:18')
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain('inProgress:9')
+    expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain('retry:4')
+    expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toContain('wait:2200')
     expect(componentState.chartRenderCount).toBe(1)
     expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.getAttribute('data-render-count')).toBe('1')
   })

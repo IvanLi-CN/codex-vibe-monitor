@@ -575,6 +575,10 @@ export interface StatsResponse {
   totalCost: number;
   totalTokens: number;
   inProgressConversationCount?: number | null;
+  inProgressRetryConversationCount?: number | null;
+  inProgressAvgWaitMs?: number | null;
+  nonSuccessCost?: number | null;
+  nonSuccessTokens?: number | null;
   maintenance?: StatsMaintenanceResponse;
 }
 

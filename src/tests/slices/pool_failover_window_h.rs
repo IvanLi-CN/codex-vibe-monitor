@@ -2095,6 +2095,13 @@ async fn archived_range_reads_include_unmaterialized_batches_without_inline_repa
     assert_eq!(summary.failure_count, 1);
     assert_eq!(summary.total_tokens, 30);
     assert!((summary.total_cost - 0.30).abs() < 1e-9);
+    assert_f64_close(
+        summary
+            .non_success_cost
+            .expect("historical non-success cost should include archived failures"),
+        0.20,
+    );
+    assert_eq!(summary.non_success_tokens, Some(20));
 
     let Json(failure_summary) = fetch_failure_summary(
         State(state.clone()),
@@ -11198,7 +11205,291 @@ async fn empty_summary_response_keeps_live_in_progress_conversation_count() {
     assert_eq!(response.total_tokens, 0);
     assert_f64_close(response.total_cost, 0.0);
     assert_eq!(response.in_progress_conversation_count, Some(2));
+    assert_eq!(response.in_progress_retry_conversation_count, Some(0));
+    assert_eq!(response.in_progress_avg_wait_ms, None);
+    assert_eq!(response.non_success_cost, None);
+    assert_eq!(response.non_success_tokens, None);
     assert!(response.maintenance.is_some());
+}
+
+#[tokio::test]
+async fn natural_day_summary_reports_retry_wait_and_non_success_usage() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now_local = Utc::now().with_timezone(&Shanghai).naive_local();
+    let occurred_at = format_naive(now_local);
+    let earlier_today = format_naive(
+        now_local
+            .checked_sub_signed(ChronoDuration::minutes(2))
+            .expect("valid earlier local time"),
+    );
+
+    for (
+        id,
+        invoke_id,
+        status,
+        total_tokens,
+        cost,
+        error_message,
+        failure_kind,
+        ttfb_ms,
+        payload,
+    ) in [
+        (
+            501_i64,
+            "summary-retry-terminal",
+            "failed",
+            120_i64,
+            0.12_f64,
+            Some("upstream response failed"),
+            Some("upstream_response_failed"),
+            Some(910.0_f64),
+            Some(json!({ "promptCacheKey": "pck-retry-a" }).to_string()),
+        ),
+        (
+            502_i64,
+            "summary-retry-pending",
+            "pending",
+            5_i64,
+            0.005_f64,
+            None,
+            None,
+            None,
+            Some(json!({ "promptCacheKey": "pck-retry-a" }).to_string()),
+        ),
+        (
+            503_i64,
+            "summary-retry-running",
+            "running",
+            30_i64,
+            0.03_f64,
+            None,
+            None,
+            Some(2400.0_f64),
+            Some(json!({ "promptCacheKey": "pck-retry-a" }).to_string()),
+        ),
+        (
+            504_i64,
+            "summary-interrupted-terminal",
+            "interrupted",
+            70_i64,
+            0.07_f64,
+            Some("downstream closed while streaming upstream response"),
+            Some("downstream_closed"),
+            Some(600.0_f64),
+            Some(json!({ "promptCacheKey": "pck-interrupted-b" }).to_string()),
+        ),
+        (
+            505_i64,
+            "summary-interrupted-pending",
+            "pending",
+            20_i64,
+            0.02_f64,
+            None,
+            None,
+            Some(1800.0_f64),
+            Some(json!({ "promptCacheKey": "pck-interrupted-b" }).to_string()),
+        ),
+        (
+            506_i64,
+            "summary-success-terminal",
+            "success",
+            90_i64,
+            0.09_f64,
+            None,
+            None,
+            Some(500.0_f64),
+            Some(json!({ "promptCacheKey": "pck-success-c" }).to_string()),
+        ),
+        (
+            507_i64,
+            "summary-success-running",
+            "running",
+            10_i64,
+            0.01_f64,
+            None,
+            None,
+            Some(1200.0_f64),
+            Some(json!({ "promptCacheKey": "pck-success-c" }).to_string()),
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id,
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                total_tokens,
+                cost,
+                error_message,
+                failure_kind,
+                t_upstream_ttfb_ms,
+                payload,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            "#,
+        )
+        .bind(id)
+        .bind(invoke_id)
+        .bind(if id == 501 { &earlier_today } else { &occurred_at })
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(error_message)
+        .bind(failure_kind)
+        .bind(ttfb_ms)
+        .bind(payload)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert natural-day summary augmentation row");
+    }
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("today".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("fetch today summary with augmentation fields");
+
+    assert_eq!(summary.in_progress_conversation_count, Some(3));
+    assert_eq!(summary.in_progress_retry_conversation_count, Some(1));
+    assert_f64_close(
+        summary
+            .in_progress_avg_wait_ms
+            .expect("in-progress wait average should exist"),
+        (2400.0 + 1800.0 + 1200.0) / 3.0,
+    );
+    assert_f64_close(
+        summary
+            .non_success_cost
+            .expect("non-success cost should exist"),
+        0.19,
+    );
+    assert_eq!(summary.non_success_tokens, Some(190));
+}
+
+#[tokio::test]
+async fn account_scoped_natural_day_summary_keeps_augmentation_fields_scoped() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+
+    for (id, invoke_id, account_id, status, total_tokens, cost, ttfb_ms, payload) in [
+        (
+            551_i64,
+            "account-scope-failed-terminal",
+            42_i64,
+            "failed",
+            200_i64,
+            0.22_f64,
+            Some(900.0_f64),
+            json!({ "promptCacheKey": "pck-account-a", "upstreamAccountId": 42 }).to_string(),
+        ),
+        (
+            552_i64,
+            "account-scope-running",
+            42_i64,
+            "running",
+            50_i64,
+            0.05_f64,
+            Some(1700.0_f64),
+            json!({ "promptCacheKey": "pck-account-a", "upstreamAccountId": 42 }).to_string(),
+        ),
+        (
+            553_i64,
+            "other-account-interrupted",
+            17_i64,
+            "interrupted",
+            999_i64,
+            9.99_f64,
+            Some(600.0_f64),
+            json!({ "promptCacheKey": "pck-other-b", "upstreamAccountId": 17 }).to_string(),
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id,
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                total_tokens,
+                cost,
+                error_message,
+                failure_kind,
+                t_upstream_ttfb_ms,
+                payload,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            "#,
+        )
+        .bind(id)
+        .bind(invoke_id)
+        .bind(&occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(if status == "failed" { Some("account scoped failure") } else { None })
+        .bind(if status == "failed" {
+            Some("upstream_response_failed")
+        } else if status == "interrupted" {
+            Some("downstream_closed")
+        } else {
+            None
+        })
+        .bind(ttfb_ms)
+        .bind(payload)
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert account scoped summary augmentation row");
+        assert!(account_id > 0);
+    }
+
+    let Json(summary) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("today".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: Some(42),
+        }),
+    )
+    .await
+    .expect("fetch account-scoped summary with augmentation fields");
+
+    assert_eq!(summary.in_progress_conversation_count, Some(1));
+    assert_eq!(summary.in_progress_retry_conversation_count, Some(1));
+    assert_eq!(summary.non_success_tokens, Some(200));
+    assert_f64_close(
+        summary
+            .non_success_cost
+            .expect("account-scoped non-success cost should exist"),
+        0.22,
+    );
+    assert_f64_close(
+        summary
+            .in_progress_avg_wait_ms
+            .expect("account-scoped in-progress wait should exist"),
+        1700.0,
+    );
 }
 
 #[tokio::test]
@@ -11323,6 +11614,13 @@ async fn account_scoped_historical_stats_include_unmaterialized_archived_hours()
     assert_eq!(summary.failure_count, 1);
     assert_eq!(summary.total_tokens, 30);
     assert_f64_close(summary.total_cost, 0.30);
+    assert_f64_close(
+        summary
+            .non_success_cost
+            .expect("account historical non-success cost should include archived failures"),
+        0.20,
+    );
+    assert_eq!(summary.non_success_tokens, Some(20));
 
     let Json(timeseries) = fetch_timeseries(
         State(state.clone()),

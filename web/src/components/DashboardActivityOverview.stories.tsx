@@ -42,7 +42,18 @@ function jsonResponse(body: unknown) {
 }
 
 function createSummary(totalCount: number, successCount: number, failureCount: number, totalCost: number, totalTokens: number) {
-  return { totalCount, successCount, failureCount, totalCost, totalTokens }
+  return {
+    totalCount,
+    successCount,
+    failureCount,
+    totalCost,
+    totalTokens,
+    inProgressConversationCount: Math.max(1, Math.round(successCount / 330)),
+    inProgressRetryConversationCount: Math.max(0, Math.round(failureCount / 44)),
+    inProgressAvgWaitMs: 1400 + Math.round(failureCount * 3.5),
+    nonSuccessCost: Number((totalCost * 0.031).toFixed(2)),
+    nonSuccessTokens: Math.max(0, Math.round(totalTokens * 0.024)),
+  }
 }
 
 const TODAY_SUMMARY_FIXTURE = createSummary(3428, 3296, 132, 42.86, 18764200)
@@ -505,6 +516,12 @@ export const TodayView: Story = {
       expect(canvas.getByTestId('today-stats-value-tpm')).toBeVisible()
       expect(canvas.getByTestId('today-stats-value-spend-rate')).toBeVisible()
       expect(canvas.getByTestId('today-stats-value-total-tokens')).toHaveAttribute('data-compact', 'true')
+      expect(canvas.getByTestId('today-stats-secondary-success-ratio')).not.toHaveTextContent('—')
+      expect(canvas.getByTestId('today-stats-secondary-tpm-per-conversation')).not.toHaveTextContent('—')
+      expect(canvas.getByTestId('today-stats-secondary-in-progress-retry')).not.toHaveTextContent('—')
+      expect(canvas.getByTestId('today-stats-secondary-response-time-in-progress')).not.toHaveTextContent('—')
+      expect(canvas.getByTestId('today-stats-secondary-cost-failed')).not.toHaveTextContent('—')
+      expect(canvas.getByTestId('today-stats-secondary-tokens-failed')).not.toHaveTextContent('—')
     })
   },
 }
@@ -628,6 +645,8 @@ export const AccountTodayNarrowDesktopOverflowDark: Story = {
       expect(canvas.getByTestId('today-stats-value-total-tokens')).toHaveAttribute('data-compact', 'true')
       expect(canvas.getByTestId('today-stats-value-total-tokens')).toHaveAttribute('data-compact-precision', '0')
       expect(canvas.getByTestId('today-stats-value-total-tokens').textContent ?? '').toContain('281M')
+      expect(canvas.getByTestId('today-stats-secondary-tokens-failed')).not.toHaveTextContent('—')
+      expect(canvas.getByTestId('today-stats-secondary-cost-failed')).not.toHaveTextContent('—')
       expect(canvas.queryByText(/并行对话|parallel/i)).toBeNull()
       expect(canvas.getByTestId('dashboard-today-activity-chart')).toBeVisible()
     })

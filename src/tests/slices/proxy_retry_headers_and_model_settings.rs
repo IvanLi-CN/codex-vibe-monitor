@@ -1297,6 +1297,10 @@ async fn broadcast_summary_if_changed_skips_duplicate_payloads() {
         total_cost: 0.5,
         total_tokens: 42,
         in_progress_conversation_count: Some(3),
+        in_progress_retry_conversation_count: Some(0),
+        in_progress_avg_wait_ms: None,
+        non_success_cost: None,
+        non_success_tokens: None,
         maintenance: None,
     };
 

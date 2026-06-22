@@ -13,6 +13,10 @@ const sampleStats: StatsResponse = {
   totalCost: 12.47,
   totalTokens: 842190,
   inProgressConversationCount: 11,
+  inProgressRetryConversationCount: 4,
+  inProgressAvgWaitMs: 1850,
+  nonSuccessCost: 0.83,
+  nonSuccessTokens: 12640,
 }
 
 const sampleRate: DashboardTodayRateSnapshot = {
@@ -29,6 +33,10 @@ const comparisonStats: StatsResponse = {
   totalCost: 10.12,
   totalTokens: 640000,
   inProgressConversationCount: 7,
+  inProgressRetryConversationCount: 2,
+  inProgressAvgWaitMs: 1320,
+  nonSuccessCost: 0.96,
+  nonSuccessTokens: 14020,
 }
 
 const previous7dStats: StatsResponse = {
@@ -38,6 +46,10 @@ const previous7dStats: StatsResponse = {
   totalCost: 72.1,
   totalTokens: 4380000,
   inProgressConversationCount: 5,
+  inProgressRetryConversationCount: 1,
+  inProgressAvgWaitMs: 1100,
+  nonSuccessCost: 5.6,
+  nonSuccessTokens: 88310,
 }
 
 const sampleTimeseries: TimeseriesResponse = {
@@ -263,6 +275,12 @@ export const ScopedAccountEmbedded: Story = {
     await expect(canvas.getByText(/in-progress conversations|进行中对话/i)).toBeInTheDocument()
     await expect(canvas.getByTestId('today-stats-secondary-in-progress-delta')).toHaveTextContent('+37.5%')
     await expect(canvas.getByTestId('today-stats-secondary-in-progress-day-average')).toHaveTextContent('9')
+    await expect(canvas.getByTestId('today-stats-secondary-in-progress-retry')).toBeVisible()
+    await expect(canvas.getByTestId('today-stats-secondary-tpm-per-conversation')).not.toHaveTextContent('—')
+    await expect(canvas.getByTestId('today-stats-secondary-success-ratio')).not.toHaveTextContent('—')
+    await expect(canvas.getByTestId('today-stats-secondary-response-time-in-progress')).not.toHaveTextContent('—')
+    await expect(canvas.getByTestId('today-stats-secondary-cost-failed')).not.toHaveTextContent('—')
+    await expect(canvas.getByTestId('today-stats-secondary-tokens-failed')).not.toHaveTextContent('—')
     await expect(canvas.getByText(/response time|响应时间/i)).toBeInTheDocument()
   },
 }
@@ -341,6 +359,10 @@ export const OverflowFallback: Story = {
       totalCost: 539.42,
       totalTokens: 1314275579,
       inProgressConversationCount: 11,
+      inProgressRetryConversationCount: 4,
+      inProgressAvgWaitMs: 1850,
+      nonSuccessCost: 14.72,
+      nonSuccessTokens: 56210,
     },
     rate: sampleRate,
     parallelWorkStats: sampleParallelWorkStats,
@@ -375,6 +397,10 @@ export const NarrowDesktopOverflowFallback: Story = {
       totalCost: 539.42,
       totalTokens: 281110000,
       inProgressConversationCount: 11,
+      inProgressRetryConversationCount: 4,
+      inProgressAvgWaitMs: 1850,
+      nonSuccessCost: 14.72,
+      nonSuccessTokens: 56210,
     },
     rate: sampleRate,
     parallelWorkStats: sampleParallelWorkStats,
@@ -488,6 +514,10 @@ function buildAnimatedStats(step: number): StatsResponse {
     totalCost,
     totalTokens,
     inProgressConversationCount: (sampleStats.inProgressConversationCount ?? 0) + (step % 4),
+    inProgressRetryConversationCount: 2 + (step % 3),
+    inProgressAvgWaitMs: 1400 + step * 60,
+    nonSuccessCost: Number((0.45 + step * 0.04).toFixed(2)),
+    nonSuccessTokens: 8400 + step * 220,
   }
 }
 
