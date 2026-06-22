@@ -21,7 +21,7 @@ const navItems = [
   { to: '/live', labelKey: 'app.nav.live' },
   { to: '/records', labelKey: 'app.nav.records' },
   { to: '/account-pool', labelKey: 'app.nav.accountPool' },
-  { to: '/settings', labelKey: 'app.nav.settings' },
+  { to: '/system', labelKey: 'app.nav.system' },
 ] as const
 
 const repositoryUrl = 'https://github.com/IvanLi-CN/codex-vibe-monitor'

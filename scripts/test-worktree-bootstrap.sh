@@ -88,6 +88,7 @@ assert_file_contains <(printf '%s' "$install_output") 'installed shared hooks'
 
 hooks_dir="$(git -C "$fixture_repo" rev-parse --absolute-git-dir)/hooks"
 assert_file_contains "$hooks_dir/pre-commit" '# managed by codex-vibe-monitor hooks:install'
+assert_file_contains "$hooks_dir/prepare-commit-msg" '# managed by codex-vibe-monitor hooks:install'
 assert_file_contains "$hooks_dir/commit-msg" '# managed by codex-vibe-monitor hooks:install'
 assert_file_contains "$hooks_dir/post-checkout" '# managed by codex-vibe-monitor hooks:install'
 

@@ -65,8 +65,8 @@ vi.mock('../i18n', () => ({
           return '记录'
         case 'app.nav.accountPool':
           return '号池'
-        case 'app.nav.settings':
-          return '设置'
+        case 'app.nav.system':
+          return '系统'
         case 'app.brand':
           return 'Codex Vibe Monitor'
         case 'app.logoAlt':
@@ -166,7 +166,7 @@ function render(initialEntry = '/dashboard') {
             <Route path="live" element={<div>live page</div>} />
             <Route path="records" element={<div>records page</div>} />
             <Route path="account-pool" element={<div>account pool page</div>} />
-            <Route path="settings" element={<div>settings page</div>} />
+            <Route path="system/*" element={<div>system page</div>} />
           </Route>
         </Routes>
       </MemoryRouter>,
@@ -199,12 +199,12 @@ describe('AppLayout', () => {
 
     const navGroup = host?.querySelector('nav .segmented-control')
     const dashboardLink = host?.querySelector('a[href="/dashboard"]')
-    const settingsLink = host?.querySelector('a[href="/settings"]')
+    const systemLink = host?.querySelector('a[href="/system"]')
 
     expect(navGroup).not.toBeNull()
     expect(dashboardLink?.className).toContain('segmented-control-item')
     expect(dashboardLink?.className).toContain('segmented-control-item--active')
-    expect(settingsLink?.className).toContain('segmented-control-item')
-    expect(settingsLink?.className).not.toContain('segmented-control-item--active')
+    expect(systemLink?.className).toContain('segmented-control-item')
+    expect(systemLink?.className).not.toContain('segmented-control-item--active')
   })
 })

@@ -332,7 +332,13 @@ const forwardProxyWindowColumns = [
   },
 ] as const
 
-export default function SettingsPage() {
+type SettingsPageMode = 'all' | 'general' | 'proxy'
+
+type SettingsPageProps = {
+  mode?: SettingsPageMode
+}
+
+export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
   const { t } = useTranslation()
   const {
     settings,
@@ -371,6 +377,20 @@ export default function SettingsPage() {
   const forwardProxyBatchValidationRunRef = useRef(0)
   const lastSyncedPricingKeyRef = useRef<string | null>(null)
   const lastHandledRollbackVersionRef = useRef(pricingRollbackVersion)
+  const showGeneralSettings = mode !== 'proxy'
+  const showForwardProxySettings = mode !== 'general'
+  const pageTitleKey =
+    mode === 'general'
+      ? 'system.settings.title'
+      : mode === 'proxy'
+        ? 'system.proxy.title'
+        : 'settings.title'
+  const pageDescriptionKey =
+    mode === 'general'
+      ? 'system.settings.description'
+      : mode === 'proxy'
+        ? 'system.proxy.description'
+        : 'settings.description'
 
   const applyForwardProxyUrls = useCallback((nextUrls: string[]) => {
     forwardProxyUrlsRef.current = nextUrls
@@ -1363,7 +1383,7 @@ export default function SettingsPage() {
   if (isLoading) {
     return (
       <section className="mx-auto max-w-full space-y-4">
-        <h1 className="text-2xl font-semibold">{t('settings.title')}</h1>
+        <h1 className="text-2xl font-semibold">{t(pageTitleKey)}</h1>
         <p className="text-sm text-base-content/70">{t('settings.loading')}</p>
       </section>
     )
@@ -1372,7 +1392,7 @@ export default function SettingsPage() {
   if (!settings || !currentProxy || !currentForwardProxy) {
     return (
       <section className="mx-auto max-w-full space-y-4">
-        <h1 className="text-2xl font-semibold">{t('settings.title')}</h1>
+        <h1 className="text-2xl font-semibold">{t(pageTitleKey)}</h1>
         <p className="text-sm text-error">{t('settings.loadError', { error: error ?? 'unknown' })}</p>
       </section>
     )
@@ -1381,7 +1401,7 @@ export default function SettingsPage() {
   if (!pricingDraft) {
     return (
       <section className="mx-auto max-w-full space-y-4">
-        <h1 className="text-2xl font-semibold">{t('settings.title')}</h1>
+        <h1 className="text-2xl font-semibold">{t(pageTitleKey)}</h1>
         <p className="text-sm text-base-content/70">{t('settings.loading')}</p>
       </section>
     )
@@ -1390,17 +1410,18 @@ export default function SettingsPage() {
   return (
     <section className="settings-page mx-auto max-w-full space-y-6 pb-2">
       <div>
-        <h1 className="text-2xl font-semibold">{t('settings.title')}</h1>
-        <p className="mt-1 text-sm text-base-content/70">{t('settings.description')}</p>
+        <h1 className="text-2xl font-semibold">{t(pageTitleKey)}</h1>
+        <p className="mt-1 text-sm text-base-content/70">{t(pageDescriptionKey)}</p>
       </div>
 
-      <div className="grid items-start gap-6 lg:grid-cols-2">
-        <div className="space-y-6">
-          <Card className="overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
-            <CardHeader className="gap-2 border-b border-base-300/70 pb-4">
-              <CardTitle>{t('settings.proxy.title')}</CardTitle>
-              <CardDescription>{t('settings.proxy.description')}</CardDescription>
-            </CardHeader>
+      {showGeneralSettings ? (
+        <div className="grid items-start gap-6 lg:grid-cols-2">
+          <div className="space-y-6">
+            <Card className="overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
+              <CardHeader className="gap-2 border-b border-base-300/70 pb-4">
+                <CardTitle>{t('settings.proxy.title')}</CardTitle>
+                <CardDescription>{t('settings.proxy.description')}</CardDescription>
+              </CardHeader>
 
             <CardContent className="space-y-4 pt-4">
               <div className="grid gap-4 xl:grid-cols-2">
@@ -1673,18 +1694,20 @@ export default function SettingsPage() {
                 {pricingErrorKey && <span className="text-error">{t(pricingErrorKey)}</span>}
               </div>
             </CardContent>
-          </Card>
+            </Card>
+          </div>
+
+          <ExternalApiKeysSettingsCard />
         </div>
+      ) : null}
 
-        <ExternalApiKeysSettingsCard />
-      </div>
-
-      <Card className="overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
-        <CardHeader className="gap-2 border-b border-base-300/70 pb-4">
-          <CardTitle>{t('settings.forwardProxy.title')}</CardTitle>
-          <CardDescription>{t('settings.forwardProxy.description')}</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-5 pt-4">
+      {showForwardProxySettings ? (
+        <Card className="overflow-hidden border-base-300/75 bg-base-100/92 shadow-sm">
+          <CardHeader className="gap-2 border-b border-base-300/70 pb-4">
+            <CardTitle>{t('settings.forwardProxy.title')}</CardTitle>
+            <CardDescription>{t('settings.forwardProxy.description')}</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-5 pt-4">
           <div className="flex flex-wrap items-center gap-3 rounded-xl border border-base-300/80 bg-base-100/72 px-3.5 py-3">
             <Button
               type="button"
@@ -2302,8 +2325,9 @@ export default function SettingsPage() {
             </div>,
               document.body,
             )}
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      ) : null}
 
       {error && <Alert variant="error" className="text-sm">{t('settings.loadError', { error })}</Alert>}
     </section>

@@ -58,6 +58,7 @@ EOF_HOOK
 }
 
 write_wrapper pre-commit
+write_wrapper prepare-commit-msg
 write_wrapper commit-msg
 write_wrapper post-checkout
 

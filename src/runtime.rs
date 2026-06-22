@@ -144,6 +144,7 @@ pub(crate) async fn run() -> Result<()> {
             PromptCacheConversationsCacheState::default(),
         )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
+        system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
         pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
@@ -911,6 +912,14 @@ fn spawn_forward_proxy_maintenance(
             info!("forward proxy maintenance skipped because shutdown is already in progress");
             return;
         }
+        let startup_run = begin_system_task_run(
+            &state.pool,
+            SystemTaskKind::ForwardProxySubscriptionRefresh,
+            "startup",
+            Some("forward proxy subscription refresh started".to_string()),
+        )
+        .await
+        .ok();
         if let Err(err) = refresh_forward_proxy_subscriptions(
             state.clone(),
             true,
@@ -918,7 +927,26 @@ fn spawn_forward_proxy_maintenance(
         )
         .await
         {
+            if let Some(run) = startup_run.as_ref() {
+                finish_system_task_run(
+                    &state.pool,
+                    run,
+                    SystemTaskStatus::Failed,
+                    Some("forward proxy startup refresh failed".to_string()),
+                    Some(err.to_string()),
+                )
+                .await;
+            }
             warn!(error = %err, "failed to refresh forward proxy subscriptions at startup");
+        } else if let Some(run) = startup_run.as_ref() {
+            finish_system_task_run(
+                &state.pool,
+                run,
+                SystemTaskStatus::Success,
+                Some("forward proxy startup refresh completed".to_string()),
+                None,
+            )
+            .await;
         }
 
         let mut ticker = interval(Duration::from_secs(60));
@@ -930,8 +958,35 @@ fn spawn_forward_proxy_maintenance(
                     break;
                 }
                 _ = ticker.tick() => {
+                    let task_run = begin_system_task_run(
+                        &state.pool,
+                        SystemTaskKind::ForwardProxySubscriptionRefresh,
+                        "interval",
+                        Some("forward proxy interval refresh started".to_string()),
+                    )
+                    .await
+                    .ok();
                     if let Err(err) = refresh_forward_proxy_subscriptions(state.clone(), false, None).await {
+                        if let Some(run) = task_run.as_ref() {
+                            finish_system_task_run(
+                                &state.pool,
+                                run,
+                                SystemTaskStatus::Failed,
+                                Some("forward proxy interval refresh failed".to_string()),
+                                Some(err.to_string()),
+                            )
+                            .await;
+                        }
                         warn!(error = %err, "failed to refresh forward proxy subscriptions");
+                    } else if let Some(run) = task_run.as_ref() {
+                        finish_system_task_run(
+                            &state.pool,
+                            run,
+                            SystemTaskStatus::Success,
+                            Some("forward proxy interval refresh completed".to_string()),
+                            None,
+                        )
+                        .await;
                     }
                 }
             }

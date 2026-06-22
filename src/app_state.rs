@@ -31,6 +31,7 @@ struct AppState {
     pricing_catalog: Arc<RwLock<PricingCatalog>>,
     prompt_cache_conversation_cache: Arc<Mutex<PromptCacheConversationsCacheState>>,
     maintenance_stats_cache: Arc<Mutex<StatsMaintenanceCacheState>>,
+    system_status_cache: Arc<Mutex<SystemStatusCacheState>>,
     pool_routing_reservations: Arc<std::sync::Mutex<HashMap<String, PoolRoutingReservation>>>,
     pool_routing_runtime_cache: Arc<Mutex<Option<PoolRoutingRuntimeCache>>>,
     pool_live_attempt_ids: Arc<std::sync::Mutex<HashSet<i64>>>,
@@ -323,6 +324,57 @@ struct SettingsResponse {
     proxy: ProxyModelSettingsResponse,
     forward_proxy: ForwardProxySettingsResponse,
     pricing: PricingSettingsResponse,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SystemTaskKind {
+    SchedulerPoll,
+    RetentionArchive,
+    StartupBackfill,
+    ForwardProxySubscriptionRefresh,
+}
+
+impl SystemTaskKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SchedulerPoll => "scheduler_poll",
+            Self::RetentionArchive => "retention_archive",
+            Self::StartupBackfill => "startup_backfill",
+            Self::ForwardProxySubscriptionRefresh => "forward_proxy_subscription_refresh",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SystemTaskStatus {
+    Running,
+    Success,
+    Failed,
+    Skipped,
+}
+
+impl SystemTaskStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Success => "success",
+            Self::Failed => "failed",
+            Self::Skipped => "skipped",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SystemStatusCacheEntry {
+    cached_at: Instant,
+    response: SystemStatusResponse,
+}
+
+#[derive(Debug, Default)]
+struct SystemStatusCacheState {
+    latest: Option<SystemStatusCacheEntry>,
 }
 
 fn default_enabled_preset_models() -> Vec<String> {

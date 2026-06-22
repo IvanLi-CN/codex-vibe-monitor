@@ -27,6 +27,339 @@ fn write_backfill_response_payload_with_service_tier(path: &Path, service_tier: 
     fs::write(path, compressed).expect("write response payload");
 }
 
+#[tokio::test]
+async fn system_status_aggregates_counts_and_file_sizes() {
+    use std::time::Duration as StdDuration;
+
+    let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
+        "system-status-aggregation",
+        StdDuration::from_millis(100),
+    )
+    .await;
+
+    let archive_root = resolved_archive_dir(&state.config)
+        .join("codex_invocations")
+        .join("2026");
+    fs::create_dir_all(&archive_root).expect("create archive tree");
+    let archive_file = archive_root.join("codex_invocations-2026-06.sqlite.gz");
+    fs::write(&archive_file, vec![b'a'; 17]).expect("write archive payload");
+
+    let raw_dir = state.config.resolved_proxy_raw_dir();
+    fs::create_dir_all(&raw_dir).expect("create raw dir");
+    let raw_file = raw_dir.join("response-1.bin");
+    fs::write(&raw_file, vec![b'r'; 5]).expect("write raw payload");
+
+    let sidecar_file = temp_dir.join("notes.txt");
+    fs::write(&sidecar_file, vec![b'n'; 11]).expect("write sidecar file");
+    let sidecar_dir = temp_dir.join("misc");
+    fs::create_dir_all(&sidecar_dir).expect("create sidecar dir");
+    fs::write(sidecar_dir.join("report.log"), vec![b'm'; 13]).expect("write nested sidecar");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            raw_response,
+            response_raw_path,
+            response_raw_size
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+    )
+    .bind("sys-success")
+    .bind("2026-06-22 12:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind("{}")
+    .bind(raw_file.to_string_lossy().to_string())
+    .bind(5_i64)
+    .execute(&state.pool)
+    .await
+    .expect("insert success invocation");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind("sys-failure")
+    .bind("2026-06-22 12:05:00")
+    .bind(SOURCE_PROXY)
+    .bind("failed")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert failed invocation");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind("sys-running")
+    .bind("2026-06-22 12:06:00")
+    .bind(SOURCE_PROXY)
+    .bind("running")
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert running invocation");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+    )
+    .bind("codex_invocations")
+    .bind("2026-06")
+    .bind(archive_file.to_string_lossy().to_string())
+    .bind("sha-success")
+    .bind(4_i64)
+    .bind("completed")
+    .bind("2026-06-22 12:10:00")
+    .execute(&state.pool)
+    .await
+    .expect("insert completed archive batch");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+    )
+    .bind("codex_invocations")
+    .bind("2026-06")
+    .bind(
+        archive_root
+            .join("pending.sqlite.gz")
+            .to_string_lossy()
+            .to_string(),
+    )
+    .bind("sha-pending")
+    .bind(99_i64)
+    .bind("pending")
+    .bind("2026-06-22 12:11:00")
+    .execute(&state.pool)
+    .await
+    .expect("insert pending archive batch");
+
+    let response = load_system_status_cached(state.as_ref())
+        .await
+        .expect("load cached system status");
+
+    assert_eq!(response.success_count, 1);
+    assert_eq!(response.non_success_count, 2);
+    assert_eq!(response.archived_bodies.count, 4);
+    assert_eq!(response.archived_bodies.bytes, 17);
+    assert_eq!(response.unarchived_bodies.count, 1);
+    assert_eq!(response.unarchived_bodies.bytes, 5);
+    assert!(
+        response.database_bytes > 0,
+        "database bytes should include sqlite files"
+    );
+    assert_eq!(response.other_files_bytes, 24);
+    assert!(
+        parse_to_utc_datetime(&response.refreshed_at).is_some(),
+        "refreshedAt should be an ISO UTC timestamp"
+    );
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn system_task_runs_filter_and_routes_serve_json() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use serde_json::Value;
+    use tower::ServiceExt;
+
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let scheduler_handle = begin_system_task_run(
+        &state.pool,
+        SystemTaskKind::SchedulerPoll,
+        "interval",
+        Some("scheduler cycle".to_string()),
+    )
+    .await
+    .expect("insert scheduler task");
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    finish_system_task_run(
+        &state.pool,
+        &scheduler_handle,
+        SystemTaskStatus::Success,
+        Some("scheduler ok".to_string()),
+        None,
+    )
+    .await;
+
+    let retention_handle = begin_system_task_run(
+        &state.pool,
+        SystemTaskKind::RetentionArchive,
+        "manual",
+        Some("retention cycle".to_string()),
+    )
+    .await
+    .expect("insert retention task");
+    finish_system_task_run(
+        &state.pool,
+        &retention_handle,
+        SystemTaskStatus::Failed,
+        Some("retention failed".to_string()),
+        Some("disk full".to_string()),
+    )
+    .await;
+
+    let filtered = list_system_task_runs(
+        State(state.clone()),
+        Query(SystemTaskRunsQuery {
+            task_kind: Some(SystemTaskKind::RetentionArchive.as_str().to_string()),
+            status: Some(SystemTaskStatus::Failed.as_str().to_string()),
+            limit: Some(10),
+            page: None,
+            page_size: None,
+        }),
+    )
+    .await
+    .expect("list filtered system tasks")
+    .0;
+
+    assert_eq!(filtered.total, 1);
+    assert_eq!(filtered.page, 1);
+    assert_eq!(filtered.page_size, 10);
+    assert_eq!(filtered.items.len(), 1);
+    assert_eq!(filtered.items[0].task_kind, "retention_archive");
+    assert_eq!(filtered.items[0].status, "failed");
+    assert_eq!(
+        filtered.items[0].summary.as_deref(),
+        Some("retention failed")
+    );
+    assert_eq!(filtered.items[0].detail.as_deref(), Some("disk full"));
+    assert!(filtered.items[0].duration_ms.unwrap_or_default() >= 0);
+
+    let all = list_system_task_runs(
+        State(state.clone()),
+        Query(SystemTaskRunsQuery {
+            task_kind: None,
+            status: None,
+            limit: Some(10),
+            page: None,
+            page_size: None,
+        }),
+    )
+    .await
+    .expect("list all system tasks")
+    .0;
+
+    assert_eq!(all.total, 2);
+    assert_eq!(all.page, 1);
+    assert_eq!(all.page_size, 10);
+    assert_eq!(all.items.len(), 2);
+    assert_eq!(all.items[0].task_kind, "retention_archive");
+    assert_eq!(all.items[1].task_kind, "scheduler_poll");
+
+    let paged = list_system_task_runs(
+        State(state.clone()),
+        Query(SystemTaskRunsQuery {
+            task_kind: None,
+            status: None,
+            limit: None,
+            page: Some(2),
+            page_size: Some(1),
+        }),
+    )
+    .await
+    .expect("list paged system tasks")
+    .0;
+
+    assert_eq!(paged.total, 2);
+    assert_eq!(paged.page, 2);
+    assert_eq!(paged.page_size, 1);
+    assert_eq!(paged.items.len(), 1);
+    assert_eq!(paged.items[0].task_kind, "scheduler_poll");
+
+    let app = build_app_router(state.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/system/tasks?taskKind=retention_archive&status=failed&page=1&pageSize=1")
+                .body(Body::empty())
+                .expect("build request"),
+        )
+        .await
+        .expect("serve system tasks route");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode tasks payload");
+    assert_eq!(payload["total"].as_u64(), Some(1));
+    assert_eq!(payload["page"].as_u64(), Some(1));
+    assert_eq!(payload["pageSize"].as_u64(), Some(1));
+    assert_eq!(
+        payload["items"][0]["taskKind"].as_str(),
+        Some("retention_archive")
+    );
+
+    let app = build_app_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/system/status")
+                .body(Body::empty())
+                .expect("build request"),
+        )
+        .await
+        .expect("serve system status route");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read status body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode status payload");
+    assert!(payload.get("successCount").is_some());
+    assert!(payload.get("databaseBytes").is_some());
+    assert!(payload.get("refreshedAt").is_some());
+}
+
 fn write_backfill_response_payload_with_terminal_service_tier(
     path: &Path,
     initial_service_tier: Option<&str>,
@@ -329,11 +662,8 @@ fn isolate_default_test_runtime_path(path: &Path, default_root: &str, db_id: u64
 fn isolate_stateful_test_config_runtime_paths(mut config: AppConfig, db_id: u64) -> AppConfig {
     config.archive_dir =
         isolate_default_test_runtime_path(&config.archive_dir, "target/archive-tests", db_id);
-    config.proxy_raw_dir = isolate_default_test_runtime_path(
-        &config.proxy_raw_dir,
-        "target/proxy-raw-tests",
-        db_id,
-    );
+    config.proxy_raw_dir =
+        isolate_default_test_runtime_path(&config.proxy_raw_dir, "target/proxy-raw-tests", db_id);
     config.xray_runtime_dir = isolate_default_test_runtime_path(
         &config.xray_runtime_dir,
         "target/xray-forward-tests",
@@ -397,6 +727,7 @@ async fn test_state_from_config_with_pool_no_available_wait(
             PromptCacheConversationsCacheState::default(),
         )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
+        system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
@@ -439,6 +770,7 @@ fn clone_state_with_upstream_accounts(
         pricing_catalog: state.pricing_catalog.clone(),
         prompt_cache_conversation_cache: state.prompt_cache_conversation_cache.clone(),
         maintenance_stats_cache: state.maintenance_stats_cache.clone(),
+        system_status_cache: state.system_status_cache.clone(),
         pool_routing_reservations: state.pool_routing_reservations.clone(),
         pool_routing_runtime_cache: state.pool_routing_runtime_cache.clone(),
         pool_live_attempt_ids: state.pool_live_attempt_ids.clone(),
@@ -480,6 +812,7 @@ fn clone_state_with_pool_group_429_retry_delay_override(
         pricing_catalog: state.pricing_catalog.clone(),
         prompt_cache_conversation_cache: state.prompt_cache_conversation_cache.clone(),
         maintenance_stats_cache: state.maintenance_stats_cache.clone(),
+        system_status_cache: state.system_status_cache.clone(),
         pool_routing_reservations: state.pool_routing_reservations.clone(),
         pool_routing_runtime_cache: state.pool_routing_runtime_cache.clone(),
         pool_live_attempt_ids: state.pool_live_attempt_ids.clone(),
@@ -538,6 +871,7 @@ async fn test_state_from_existing_pool(
             PromptCacheConversationsCacheState::default(),
         )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
+        system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
@@ -789,7 +1123,7 @@ async fn reserve_test_pool_routing_account(
             test_required_group_bound_proxy_keys(),
         ),
         single_account_rotation_enabled: false,
-    upstream_429_retry_enabled: false,
+        upstream_429_retry_enabled: false,
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
     };
@@ -1384,7 +1718,10 @@ async fn upstream_account_schema_normalizes_blank_group_names_to_default_group()
             .fetch_one(&state.pool)
             .await
             .expect("load normalized group");
-    assert_eq!(group_name.as_deref(), Some(DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME));
+    assert_eq!(
+        group_name.as_deref(),
+        Some(DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME)
+    );
 
     let Json(ungrouped_filtered) = list_upstream_accounts(
         State(state),
@@ -1404,8 +1741,8 @@ async fn upstream_account_schema_normalizes_blank_group_names_to_default_group()
     )
     .await
     .expect("list legacy ungrouped compatibility after normalization");
-    let ungrouped_filtered_json = serde_json::to_value(ungrouped_filtered)
-        .expect("serialize normalized ungrouped roster");
+    let ungrouped_filtered_json =
+        serde_json::to_value(ungrouped_filtered).expect("serialize normalized ungrouped roster");
     let ungrouped_filtered_names = ungrouped_filtered_json["items"]
         .as_array()
         .expect("normalized ungrouped items array")
