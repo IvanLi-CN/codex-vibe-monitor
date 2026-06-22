@@ -41,6 +41,14 @@ function buildResponse(page: number, pageSize: number) {
   }
 }
 
+function expectedIsoForLocalValue(value: string, upperBound = false) {
+  const parsed = new Date(value)
+  if (upperBound) {
+    parsed.setSeconds(59, 999)
+  }
+  return parsed.toISOString()
+}
+
 function renderPage() {
   host = document.createElement('div')
   document.body.appendChild(host)
@@ -168,7 +176,7 @@ describe('SystemTasksPage', () => {
     expect(apiMocks.fetchSystemTaskRuns).toHaveBeenLastCalledWith({
       taskKind: undefined,
       status: undefined,
-      startedAtFrom: '2026-06-22T01:00:00.000Z',
+      startedAtFrom: expectedIsoForLocalValue('2026-06-22T09:00'),
       startedAtTo: undefined,
       page: 1,
       pageSize: 20,
@@ -185,8 +193,8 @@ describe('SystemTasksPage', () => {
     expect(apiMocks.fetchSystemTaskRuns).toHaveBeenLastCalledWith({
       taskKind: undefined,
       status: undefined,
-      startedAtFrom: '2026-06-22T01:00:00.000Z',
-      startedAtTo: '2026-06-22T02:31:00.000Z',
+      startedAtFrom: expectedIsoForLocalValue('2026-06-22T09:00'),
+      startedAtTo: expectedIsoForLocalValue('2026-06-22T10:30', true),
       page: 1,
       pageSize: 20,
     })

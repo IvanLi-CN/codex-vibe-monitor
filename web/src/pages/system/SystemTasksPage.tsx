@@ -18,7 +18,7 @@ function toIsoStringOrUndefined(value: string, upperBound = false): string | und
   const parsed = new Date(normalized)
   if (Number.isNaN(parsed.getTime())) return undefined
   if (upperBound && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(normalized)) {
-    parsed.setMinutes(parsed.getMinutes() + 1)
+    parsed.setSeconds(59, 999)
   }
   return parsed.toISOString()
 }
