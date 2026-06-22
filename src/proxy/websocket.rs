@@ -1550,6 +1550,7 @@ async fn persist_ws_usage_event(
     request_contains_encrypted_content: bool,
     raw_event: &str,
 ) -> Result<()> {
+    let proxy_settings = state.proxy_model_settings.read().await.clone();
     let model = event.model.as_deref();
     let (billing_service_tier, pricing_mode) =
         resolve_proxy_billing_service_tier_and_pricing_mode_for_account(
@@ -1671,10 +1672,11 @@ async fn persist_ws_usage_event(
                         let status = event.response_status.as_deref().unwrap_or("unknown");
                         format!("websocket response terminal status was {status}")
                     })
-                }),
+            }),
             failure_kind: failure_kind.map(str::to_string),
             payload: Some(payload),
             raw_response: raw_event.to_string(),
+            response_body_preview_enabled: proxy_settings.response_body_logging_enabled,
             req_raw: RawPayloadMeta::default(),
             resp_raw: RawPayloadMeta::default(),
             timings: StageTimings {

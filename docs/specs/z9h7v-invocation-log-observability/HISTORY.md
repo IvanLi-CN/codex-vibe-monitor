@@ -1,4 +1,4 @@
-# 请求日志可观测性增强（IP / Cache Tokens / 分阶段耗时 / Prompt Cache Key） - History
+# 请求日志可观测性增强（IP / Cache Tokens / 分阶段耗时 / Prompt Cache Key / Body Logging Toggles） - History
 
 ## Migration
 
@@ -21,3 +21,6 @@
 - 2026-05-11: 修正代理诊断展示口径：调用详情隐藏 `source` 且不再作为代理名 fallback，号池尝试明细展示实际落库的 `proxyBindingKeySnapshot`。
 - 2026-05-11: 将号池 `budget_exhausted_final` 合成终态从真实重试明细中拆出，明确展示未发起新的上游请求，避免误读为同账号 429 后再次重试。
 - 2026-05-12: 修正号池尝试代理字段可读性：前端使用 `proxyBindingKeySnapshot` 查询绑定节点并展示代理显示名，未解析时才显示紧凑 key。
+- 2026-06-22: 扩展 proxy settings 合同与 SQLite 单例，新增 `requestBodyLoggingEnabled` / `responseBodyLoggingEnabled` 双开关，默认值均为 `true`。
+- 2026-06-22: raw capture 链路按新开关裁剪 request raw、response raw 与 `raw_response` preview；关闭后仅停止新的 body 留存，保留结构化 payload、usage、timing 与路由元数据。
+- 2026-06-22: Settings 页面新增请求/响应 body 记录开关，并补充前后端回归测试与 Storybook 视觉证据。

@@ -1798,6 +1798,8 @@ pub(crate) async fn put_proxy_settings(
         upstream_429_max_retries,
         websocket_enabled,
         upstream_websocket_default_enabled,
+        request_body_logging_enabled,
+        response_body_logging_enabled,
         enabled_models,
     } = payload;
 
@@ -1811,6 +1813,10 @@ pub(crate) async fn put_proxy_settings(
         websocket_enabled: websocket_enabled.unwrap_or(current.websocket_enabled),
         upstream_websocket_default_enabled: upstream_websocket_default_enabled
             .unwrap_or(current.upstream_websocket_default_enabled),
+        request_body_logging_enabled: request_body_logging_enabled
+            .unwrap_or(current.request_body_logging_enabled),
+        response_body_logging_enabled: response_body_logging_enabled
+            .unwrap_or(current.response_body_logging_enabled),
         enabled_preset_models: enabled_models,
     }
     .normalized();

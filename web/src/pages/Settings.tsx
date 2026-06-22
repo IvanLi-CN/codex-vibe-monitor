@@ -614,6 +614,22 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
     })
   }, [currentProxy, persistProxy])
 
+  const handleToggleRequestBodyLogging = useCallback(() => {
+    if (!currentProxy) return
+    persistProxy({
+      ...currentProxy,
+      requestBodyLoggingEnabled: !currentProxy.requestBodyLoggingEnabled,
+    })
+  }, [currentProxy, persistProxy])
+
+  const handleToggleResponseBodyLogging = useCallback(() => {
+    if (!currentProxy) return
+    persistProxy({
+      ...currentProxy,
+      responseBodyLoggingEnabled: !currentProxy.responseBodyLoggingEnabled,
+    })
+  }, [currentProxy, persistProxy])
+
   const handleTogglePresetModel = useCallback(
     (modelId: string) => {
       if (!currentProxy) return
@@ -1517,6 +1533,68 @@ export default function SettingsPage({ mode = 'all' }: SettingsPageProps) {
                     </div>
                   </div>
                 </div>
+              </div>
+
+              <div className="space-y-3 rounded-xl border border-base-300/75 bg-base-200/28 p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="space-y-1">
+                    <div className="font-medium leading-snug">{t('settings.proxy.bodyLoggingTitle')}</div>
+                    <div className="text-sm leading-snug text-base-content/70">{t('settings.proxy.bodyLoggingHint')}</div>
+                  </div>
+                  <Badge variant="secondary" className="shrink-0">
+                    {t('settings.autoSaved')}
+                  </Badge>
+                </div>
+
+                <div className="grid gap-3 xl:grid-cols-2">
+                  <div className="rounded-lg border border-base-300/75 bg-base-100/68 p-3.5">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 space-y-1">
+                        <div className="font-medium leading-snug">{t('settings.proxy.requestBodyLoggingLabel')}</div>
+                        <div className="text-sm leading-snug text-base-content/70">{t('settings.proxy.requestBodyLoggingHint')}</div>
+                      </div>
+                      <div className="flex shrink-0 flex-col items-end gap-2">
+                        <Switch
+                          checked={currentProxy.requestBodyLoggingEnabled}
+                          disabled={isProxySaving}
+                          aria-label={t('settings.proxy.requestBodyLoggingLabel')}
+                          onCheckedChange={() => handleToggleRequestBodyLogging()}
+                        />
+                        <Badge variant={currentProxy.requestBodyLoggingEnabled ? 'success' : 'secondary'}>
+                          {currentProxy.requestBodyLoggingEnabled
+                            ? t('settings.proxy.websocketEnabled')
+                            : t('settings.proxy.websocketDisabled')}
+                        </Badge>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-base-300/75 bg-base-100/68 p-3.5">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 space-y-1">
+                        <div className="font-medium leading-snug">{t('settings.proxy.responseBodyLoggingLabel')}</div>
+                        <div className="text-sm leading-snug text-base-content/70">{t('settings.proxy.responseBodyLoggingHint')}</div>
+                      </div>
+                      <div className="flex shrink-0 flex-col items-end gap-2">
+                        <Switch
+                          checked={currentProxy.responseBodyLoggingEnabled}
+                          disabled={isProxySaving}
+                          aria-label={t('settings.proxy.responseBodyLoggingLabel')}
+                          onCheckedChange={() => handleToggleResponseBodyLogging()}
+                        />
+                        <Badge variant={currentProxy.responseBodyLoggingEnabled ? 'success' : 'secondary'}>
+                          {currentProxy.responseBodyLoggingEnabled
+                            ? t('settings.proxy.websocketEnabled')
+                            : t('settings.proxy.websocketDisabled')}
+                        </Badge>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <p className="text-xs leading-snug text-base-content/60">
+                  {t('settings.proxy.bodyLoggingRetentionHint')}
+                </p>
               </div>
 
               <div className="space-y-3 rounded-xl border border-base-300/75 bg-base-200/28 p-4">

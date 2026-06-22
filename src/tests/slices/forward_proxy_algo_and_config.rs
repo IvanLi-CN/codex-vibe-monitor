@@ -240,7 +240,7 @@ async fn async_streaming_raw_payload_writer_respects_global_backpressure_semapho
     assert_eq!(state.proxy_raw_async_semaphore.available_permits(), 0);
 
     let mut writer =
-        AsyncStreamingRawPayloadWriter::new(state.as_ref(), "invoke-backpressure", "response");
+        AsyncStreamingRawPayloadWriter::new(state.as_ref(), "invoke-backpressure", "response", true);
     writer.append(b"hello");
     let meta = writer.finish().await;
 
@@ -253,6 +253,29 @@ async fn async_streaming_raw_payload_writer_respects_global_backpressure_semapho
     );
 
     drop(permits);
+}
+
+#[tokio::test]
+async fn spawn_raw_payload_file_write_skips_new_request_raw_files_when_disabled() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let meta = spawn_raw_payload_file_write(
+        state.as_ref(),
+        "invoke-request-body-disabled",
+        "request",
+        Bytes::from_static(b"{\"request\":true}"),
+        false,
+    )
+    .finish()
+    .await;
+
+    assert!(meta.path.is_none());
+    assert_eq!(meta.size_bytes, 0);
+    assert!(!meta.truncated);
+    assert!(meta.truncated_reason.is_none());
 }
 
 #[test]
@@ -688,6 +711,7 @@ async fn persist_proxy_capture_runtime_record_preserves_downstream_closed_as_cli
             failure_kind: Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED.to_string()),
             payload: None,
             raw_response: "{}".to_string(),
+            response_body_preview_enabled: true,
             req_raw: RawPayloadMeta::default(),
             resp_raw: RawPayloadMeta::default(),
             timings: StageTimings {
@@ -761,6 +785,7 @@ async fn persist_proxy_capture_record_preserves_downstream_closed_as_client_abor
             failure_kind: Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED.to_string()),
             payload: None,
             raw_response: "{}".to_string(),
+            response_body_preview_enabled: true,
             req_raw: RawPayloadMeta::default(),
             resp_raw: RawPayloadMeta::default(),
             timings: StageTimings {
@@ -801,6 +826,79 @@ async fn persist_proxy_capture_record_preserves_downstream_closed_as_client_abor
     );
     assert_eq!(row.failure_class.as_deref(), Some("client_abort"));
     assert_eq!(row.is_actionable, Some(0));
+}
+
+#[tokio::test]
+async fn persist_proxy_capture_record_omits_response_preview_and_raw_path_when_disabled() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct InvocationRow {
+        raw_response: String,
+        response_raw_path: Option<String>,
+        response_raw_size: Option<i64>,
+    }
+
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    ensure_schema(&pool).await.expect("ensure schema");
+
+    let persisted = persist_proxy_capture_record(
+        &pool,
+        Instant::now(),
+        ProxyCaptureRecord {
+            invoke_id: "proxy-test-response-body-disabled".to_string(),
+            occurred_at: "2026-04-10 00:00:00".to_string(),
+            model: Some("gpt-5.4".to_string()),
+            usage: ParsedUsage::default(),
+            cost: None,
+            cost_estimated: false,
+            price_version: None,
+            status: "success".to_string(),
+            error_message: None,
+            failure_kind: None,
+            payload: Some("{\"endpoint\":\"/v1/responses\"}".to_string()),
+            raw_response: "{\"ok\":true}".to_string(),
+            response_body_preview_enabled: false,
+            req_raw: RawPayloadMeta::default(),
+            resp_raw: RawPayloadMeta {
+                path: Some("proxy_raw_payloads/disabled-response.bin".to_string()),
+                size_bytes: 17,
+                truncated: false,
+                truncated_reason: None,
+            },
+            timings: StageTimings {
+                t_total_ms: 0.0,
+                t_req_read_ms: 0.0,
+                t_req_parse_ms: 0.0,
+                t_upstream_connect_ms: 0.0,
+                t_upstream_ttfb_ms: 0.0,
+                t_upstream_stream_ms: 0.0,
+                t_resp_parse_ms: 0.0,
+                t_persist_ms: 0.0,
+            },
+        },
+    )
+    .await
+    .expect("persist terminal record")
+    .expect("persisted invocation should be returned");
+
+    assert_eq!(persisted.response_raw_path, None);
+    assert_eq!(persisted.response_raw_size, None);
+    let row = sqlx::query_as::<_, InvocationRow>(
+        r#"
+        SELECT raw_response, response_raw_path, response_raw_size
+        FROM codex_invocations
+        WHERE invoke_id = ?1
+        "#,
+    )
+    .bind("proxy-test-response-body-disabled")
+    .fetch_one(&pool)
+    .await
+    .expect("load persisted invocation");
+
+    assert_eq!(row.raw_response, "");
+    assert!(row.response_raw_path.is_none());
+    assert!(row.response_raw_size.is_none());
 }
 
 #[test]
@@ -1954,6 +2052,7 @@ async fn spawn_raw_payload_file_write_drops_when_async_writer_pool_is_saturated(
         "proxy-test",
         "request",
         Bytes::from_static(br#"{"ok":true}"#),
+        true,
     )
     .finish()
     .await;

@@ -1097,6 +1097,8 @@ describe("settings normalization", () => {
               upstream429MaxRetries: 5,
               websocketEnabled: true,
               upstreamWebsocketDefaultEnabled: false,
+              requestBodyLoggingEnabled: true,
+              responseBodyLoggingEnabled: true,
               defaultHijackEnabled: false,
               models: ["gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
               enabledModels: ["gpt-5.5", "gpt-5.5-pro", "missing-model"],
@@ -1156,6 +1158,8 @@ describe("settings normalization", () => {
             upstream429MaxRetries: 9,
             websocketEnabled: true,
             upstreamWebsocketDefaultEnabled: true,
+            requestBodyLoggingEnabled: false,
+            responseBodyLoggingEnabled: false,
             defaultHijackEnabled: false,
             models: ["gpt-5.4", "gpt-5.5", "gpt-5.5-pro"],
             enabledModels: ["gpt-5.5", "gpt-5.5-pro", "missing-model"],
@@ -1172,6 +1176,8 @@ describe("settings normalization", () => {
       upstream429MaxRetries: 5,
       websocketEnabled: true,
       upstreamWebsocketDefaultEnabled: true,
+      requestBodyLoggingEnabled: false,
+      responseBodyLoggingEnabled: false,
       enabledModels: ["gpt-5.5", "gpt-5.5-pro"],
     });
 
@@ -1180,6 +1186,8 @@ describe("settings normalization", () => {
     expect(response.upstream429MaxRetries).toBe(5);
     expect(response.websocketEnabled).toBe(true);
     expect(response.upstreamWebsocketDefaultEnabled).toBe(true);
+    expect(response.requestBodyLoggingEnabled).toBe(false);
+    expect(response.responseBodyLoggingEnabled).toBe(false);
     expect(response.enabledModels).toEqual(["gpt-5.5", "gpt-5.5-pro"]);
   });
 

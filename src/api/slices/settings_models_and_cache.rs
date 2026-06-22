@@ -871,6 +871,7 @@ pub(crate) struct ProxyCaptureRecord {
     pub(crate) failure_kind: Option<String>,
     pub(crate) payload: Option<String>,
     pub(crate) raw_response: String,
+    pub(crate) response_body_preview_enabled: bool,
     pub(crate) req_raw: RawPayloadMeta,
     pub(crate) resp_raw: RawPayloadMeta,
     pub(crate) timings: StageTimings,

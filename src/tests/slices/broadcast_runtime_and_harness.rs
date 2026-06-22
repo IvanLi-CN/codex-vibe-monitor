@@ -847,6 +847,8 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
             upstream_429_max_retries: Some(5),
             websocket_enabled: Some(true),
             upstream_websocket_default_enabled: Some(true),
+            request_body_logging_enabled: Some(false),
+            response_body_logging_enabled: Some(false),
             enabled_models: vec!["gpt-5.2-codex".to_string(), "unknown-model".to_string()],
         }),
     )
@@ -858,6 +860,8 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
     assert_eq!(updated.upstream_429_max_retries, 5);
     assert!(updated.websocket_enabled);
     assert!(updated.upstream_websocket_default_enabled);
+    assert!(!updated.request_body_logging_enabled);
+    assert!(!updated.response_body_logging_enabled);
     assert_eq!(updated.enabled_models, vec!["gpt-5.2-codex".to_string()]);
 
     let persisted = load_proxy_model_settings(&state.pool)
@@ -868,6 +872,8 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
     assert_eq!(persisted.upstream_429_max_retries, 5);
     assert!(persisted.websocket_enabled);
     assert!(persisted.upstream_websocket_default_enabled);
+    assert!(!persisted.request_body_logging_enabled);
+    assert!(!persisted.response_body_logging_enabled);
     assert_eq!(
         persisted.enabled_preset_models,
         vec!["gpt-5.2-codex".to_string()]
@@ -883,6 +889,8 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
             upstream_429_max_retries: Some(9),
             websocket_enabled: Some(false),
             upstream_websocket_default_enabled: Some(false),
+            request_body_logging_enabled: Some(true),
+            response_body_logging_enabled: Some(true),
             enabled_models: Vec::new(),
         }),
     )
@@ -896,6 +904,8 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
     );
     assert!(!normalized.websocket_enabled);
     assert!(!normalized.upstream_websocket_default_enabled);
+    assert!(normalized.request_body_logging_enabled);
+    assert!(normalized.response_body_logging_enabled);
     assert!(normalized.enabled_models.is_empty());
 }
 
@@ -916,12 +926,16 @@ async fn proxy_model_settings_api_preserves_upstream_429_max_retries_when_field_
             upstream_429_max_retries: Some(5),
             websocket_enabled: Some(true),
             upstream_websocket_default_enabled: Some(true),
+            request_body_logging_enabled: Some(false),
+            response_body_logging_enabled: Some(false),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
     )
     .await
     .expect("put settings should succeed");
     assert_eq!(updated.upstream_429_max_retries, 5);
+    assert!(!updated.request_body_logging_enabled);
+    assert!(!updated.response_body_logging_enabled);
 
     let legacy_payload = serde_json::from_value::<ProxyModelSettingsUpdateRequest>(json!({
         "hijackEnabled": true,
@@ -938,6 +952,8 @@ async fn proxy_model_settings_api_preserves_upstream_429_max_retries_when_field_
     assert_eq!(updated.upstream_429_max_retries, 5);
     assert!(updated.websocket_enabled);
     assert!(updated.upstream_websocket_default_enabled);
+    assert!(!updated.request_body_logging_enabled);
+    assert!(!updated.response_body_logging_enabled);
 
     let persisted = load_proxy_model_settings(&state.pool)
         .await
@@ -945,6 +961,8 @@ async fn proxy_model_settings_api_preserves_upstream_429_max_retries_when_field_
     assert_eq!(persisted.upstream_429_max_retries, 5);
     assert!(persisted.websocket_enabled);
     assert!(persisted.upstream_websocket_default_enabled);
+    assert!(!persisted.request_body_logging_enabled);
+    assert!(!persisted.response_body_logging_enabled);
 }
 
 #[tokio::test]
@@ -985,6 +1003,8 @@ async fn proxy_websocket_settings_initialize_from_env_once_then_persist() {
         .expect("reload proxy model settings");
     assert!(!settings.websocket_enabled);
     assert!(!settings.upstream_websocket_default_enabled);
+    assert!(settings.request_body_logging_enabled);
+    assert!(settings.response_body_logging_enabled);
 }
 
 #[tokio::test]
@@ -1070,6 +1090,18 @@ async fn ensure_schema_keeps_legacy_fast_mode_rewrite_mode_column_inert() {
             .iter()
             .any(|column| column == "openai_proxy_upstream_websocket_default_enabled"),
         "websocket upstream setting column should exist",
+    );
+    assert!(
+        columns
+            .iter()
+            .any(|column| column == "request_body_logging_enabled"),
+        "request body logging setting column should exist",
+    );
+    assert!(
+        columns
+            .iter()
+            .any(|column| column == "response_body_logging_enabled"),
+        "response body logging setting column should exist",
     );
 }
 
@@ -1393,6 +1425,8 @@ async fn proxy_model_settings_api_rejects_cross_origin_writes() {
             upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             websocket_enabled: None,
             upstream_websocket_default_enabled: None,
+            request_body_logging_enabled: None,
+            response_body_logging_enabled: None,
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
     )
@@ -1433,6 +1467,8 @@ async fn proxy_model_settings_api_rejects_cross_site_request() {
             upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             websocket_enabled: None,
             upstream_websocket_default_enabled: None,
+            request_body_logging_enabled: None,
+            response_body_logging_enabled: None,
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
     )
@@ -1469,6 +1505,8 @@ async fn proxy_model_settings_api_allows_loopback_proxy_origin_mismatch() {
             upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             websocket_enabled: None,
             upstream_websocket_default_enabled: None,
+            request_body_logging_enabled: None,
+            response_body_logging_enabled: None,
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
     )
@@ -1519,6 +1557,8 @@ async fn proxy_model_settings_api_allows_forwarded_host_origin_match() {
             upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             websocket_enabled: None,
             upstream_websocket_default_enabled: None,
+            request_body_logging_enabled: None,
+            response_body_logging_enabled: None,
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
     )
@@ -1573,6 +1613,8 @@ async fn proxy_model_settings_api_allows_forwarded_port_non_default_origin_port(
             upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             websocket_enabled: None,
             upstream_websocket_default_enabled: None,
+            request_body_logging_enabled: None,
+            response_body_logging_enabled: None,
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
     )
@@ -1611,6 +1653,8 @@ async fn proxy_model_settings_api_allows_matching_origin_without_explicit_host_p
             upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             websocket_enabled: None,
             upstream_websocket_default_enabled: None,
+            request_body_logging_enabled: None,
+            response_body_logging_enabled: None,
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
     )

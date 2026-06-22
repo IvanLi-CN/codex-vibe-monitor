@@ -11,6 +11,8 @@ function createSettingsPayload(overrides: Partial<SettingsPayload> = {}): Settin
       upstream429MaxRetries: 3,
       websocketEnabled: false,
       upstreamWebsocketDefaultEnabled: false,
+      requestBodyLoggingEnabled: true,
+      responseBodyLoggingEnabled: true,
       defaultHijackEnabled: false,
       models: ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-pro'],
       enabledModels: ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-pro'],

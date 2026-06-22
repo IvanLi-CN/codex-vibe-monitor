@@ -904,6 +904,8 @@ export interface ProxySettings {
   upstream429MaxRetries: number;
   websocketEnabled: boolean;
   upstreamWebsocketDefaultEnabled: boolean;
+  requestBodyLoggingEnabled: boolean;
+  responseBodyLoggingEnabled: boolean;
   defaultHijackEnabled: boolean;
   models: string[];
   enabledModels: string[];
@@ -1554,6 +1556,8 @@ function normalizeProxySettings(raw: unknown): ProxySettings {
     ),
     websocketEnabled: payload.websocketEnabled === true,
     upstreamWebsocketDefaultEnabled: payload.upstreamWebsocketDefaultEnabled === true,
+    requestBodyLoggingEnabled: payload.requestBodyLoggingEnabled !== false,
+    responseBodyLoggingEnabled: payload.responseBodyLoggingEnabled !== false,
     defaultHijackEnabled: payload.defaultHijackEnabled === true,
     models,
     enabledModels: models.filter((model) => enabledModelSet.has(model)),
@@ -2596,6 +2600,8 @@ export async function updateProxySettings(payload: {
   upstream429MaxRetries: number;
   websocketEnabled: boolean;
   upstreamWebsocketDefaultEnabled: boolean;
+  requestBodyLoggingEnabled: boolean;
+  responseBodyLoggingEnabled: boolean;
   enabledModels: string[];
 }): Promise<ProxySettings> {
   const response = await fetchJson<unknown>("/api/settings/proxy", {
