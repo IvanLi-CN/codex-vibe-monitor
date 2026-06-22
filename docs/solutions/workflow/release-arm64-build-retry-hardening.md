@@ -42,6 +42,7 @@ Move the arm64 smoke build behind a repo-owned retry helper and validate that co
 - Run the arm64 smoke build through `.github/scripts/build-smoke-image-with-retry.sh`.
 - Retry only known transient registry/network failures such as `DeadlineExceeded`, `context deadline exceeded`, TLS handshake timeouts, connection resets, unexpected EOF, and rate-limit style fetch failures.
 - Keep non-transient build failures fail-closed on the first attempt so real Dockerfile or packaging regressions stay loud.
+- When the release queue can backfill older pending commits, stage workflow-owned helpers into the target checkout before the arm64 build so historical targets do not fail just because the helper file was introduced later.
 - Add a dedicated script regression test that proves both paths:
   - transient registry failures retry and eventually succeed;
   - permanent image-resolution failures stop immediately without looping.
@@ -51,6 +52,7 @@ Move the arm64 smoke build behind a repo-owned retry helper and validate that co
 
 - Keep retry classification small and explicit. A helper that retries everything will hide real build breakages.
 - Put retry policy in a repo-owned script instead of duplicating shell loops inline in workflow YAML; this keeps release, tests, and contract fixtures aligned.
+- If the workflow needs to run against older release targets, keep any helper files outside the target checkout or source them from the workflow revision so the queued backfill stays compatible.
 - When a release job fails in only one architecture lane, inspect whether the error happens before the real Dockerfile steps begin. If yes, suspect registry flakiness before suspecting app code.
 - For workflow-level resilience changes, update both live workflows and `quality-gates-contract` fixtures in the same patch. Otherwise CI may accept topology drift or reject the intended contract.
 
