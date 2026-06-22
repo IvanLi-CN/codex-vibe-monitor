@@ -727,6 +727,7 @@ describe("fetchParallelWorkStats", () => {
     await fetchParallelWorkStats({
       range: "today",
       bucket: "1m",
+      timeZone: "UTC",
       upstreamAccountId: 42,
     });
 
@@ -737,7 +738,7 @@ describe("fetchParallelWorkStats", () => {
       | undefined;
     expect(firstArg).toBeDefined();
     expect(String(firstArg)).toBe(
-      "/api/stats/parallel-work?range=today&bucket=1m&upstreamAccountId=42&timeZone=Asia%2FShanghai",
+      "/api/stats/parallel-work?range=today&bucket=1m&upstreamAccountId=42&timeZone=UTC",
     );
   });
 
