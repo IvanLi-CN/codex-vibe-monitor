@@ -117,33 +117,6 @@
 
 - source_type=storybook_canvas
 - target_program=mock-only
-- capture_scope=element
-- requested_viewport=desktop1440
-- viewport_strategy=storybook-viewport
-- sensitive_exclusion=N/A
-- submission_gate=owner-approved
-- story_id_or_title=dashboard-todaystatsoverview--desktop-single-row
-- state=desktop single row
-- evidence_note=验证总览卡片已改为“进行中对话”语义，主值显示 11，次级统计仍保留，且保持 today KPI 的单行桌面布局。
-
-PR: include
-![Dashboard 进行中对话 Storybook 证据](./assets/dashboard-in-progress-conversations-storybook.png)
-
-- source_type=storybook_canvas
-- target_program=mock-only
-- capture_scope=element
-- requested_viewport=desktop1440
-- viewport_strategy=storybook-viewport
-- sensitive_exclusion=N/A
-- submission_gate=owner-approved
-- story_id_or_title=dashboard-todaystatsoverview--scoped-account-embedded
-- state=account scoped embedded
-- evidence_note=验证 account-scoped 场景仍保留 7 张总览卡片；“进行中对话”卡片主值显示 summary 的进行中对话数，底部“较昨日 / 日均”继续使用 parallel-work bucket 统计并显示真实值。
-
-![Dashboard account-scoped 进行中对话 Storybook 证据](./assets/dashboard-in-progress-conversations-account-scoped-storybook.png)
-
-- source_type=storybook_canvas
-- target_program=mock-only
 - capture_scope=browser-viewport
 - requested_viewport=1660x960
 - viewport_strategy=devtools-emulate
@@ -153,4 +126,5 @@ PR: include
 - state=desktop full page
 - evidence_note=验证完整桌面端总览页面在保留原布局与全部总览数据项的前提下，“进行中对话”主值取严格进行中的对话数，底部“较昨日 / 日均”仍显示 parallel-work 历史统计，且页面 shell、图表与 working conversations 区块数据完整。
 
+PR: include
 ![Dashboard 完整桌面页 Storybook 证据](./assets/dashboard-page-full-desktop1660-storybook.png)
