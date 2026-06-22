@@ -92,7 +92,6 @@ struct SystemInvocationStatusAggRow {
 #[derive(Debug, Default, FromRow)]
 struct SystemArchiveAggRow {
     archived_count: Option<i64>,
-    archived_bytes: Option<i64>,
 }
 
 #[derive(Debug, Default, FromRow)]
@@ -200,8 +199,7 @@ async fn load_system_status_uncached(state: &AppState) -> Result<SystemStatusRes
     let archived = sqlx::query_as::<_, SystemArchiveAggRow>(
         r#"
         SELECT
-            COALESCE(SUM(row_count), 0) AS archived_count,
-            0 AS archived_bytes
+            COALESCE(SUM(row_count), 0) AS archived_count
         FROM archive_batches
         WHERE dataset = 'codex_invocations'
           AND status = 'completed'
@@ -224,11 +222,23 @@ async fn load_system_status_uncached(state: &AppState) -> Result<SystemStatusRes
 
     let archive_dir = resolved_archive_dir(&state.config);
     let raw_dir = state.config.resolved_proxy_raw_dir();
-    let archive_bytes = if archive_dir.exists() {
-        sum_directory_bytes(&archive_dir)
-    } else {
-        0
-    };
+    let archived_paths = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT file_path
+        FROM archive_batches
+        WHERE dataset = 'codex_invocations'
+          AND status = 'completed'
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    let mut seen_paths = std::collections::HashSet::new();
+    let archive_bytes = archived_paths
+        .into_iter()
+        .filter(|path| seen_paths.insert(path.clone()))
+        .map(PathBuf::from)
+        .map(|path| count_file_size(&path))
+        .sum();
     let database_bytes = count_database_bytes(&state.config.database_path);
     let other_files_bytes = compute_other_files_bytes(&state.config, &archive_dir, &raw_dir);
 

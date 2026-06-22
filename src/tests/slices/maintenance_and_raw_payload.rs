@@ -43,6 +43,12 @@ async fn system_status_aggregates_counts_and_file_sizes() {
     fs::create_dir_all(&archive_root).expect("create archive tree");
     let archive_file = archive_root.join("codex_invocations-2026-06.sqlite.gz");
     fs::write(&archive_file, vec![b'a'; 17]).expect("write archive payload");
+    let other_archive_root = resolved_archive_dir(&state.config)
+        .join("pool_upstream_request_attempts")
+        .join("2026");
+    fs::create_dir_all(&other_archive_root).expect("create non-invocation archive tree");
+    let other_archive_file = other_archive_root.join("pool-upstream-request-attempts-2026-06.sqlite.gz");
+    fs::write(&other_archive_file, vec![b'o'; 23]).expect("write non-invocation archive payload");
 
     let raw_dir = state.config.resolved_proxy_raw_dir();
     fs::create_dir_all(&raw_dir).expect("create raw dir");
@@ -176,6 +182,31 @@ async fn system_status_aggregates_counts_and_file_sizes() {
     .execute(&state.pool)
     .await
     .expect("insert pending archive batch");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+    )
+    .bind("pool_upstream_request_attempts")
+    .bind("2026-06")
+    .bind(other_archive_file.to_string_lossy().to_string())
+    .bind("sha-other")
+    .bind(8_i64)
+    .bind("completed")
+    .bind("2026-06-22 12:12:00")
+    .execute(&state.pool)
+    .await
+    .expect("insert non-invocation completed archive batch");
 
     let response = load_system_status_cached(state.as_ref())
         .await
