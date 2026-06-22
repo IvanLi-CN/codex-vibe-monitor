@@ -66,6 +66,14 @@ pub(crate) struct StatsResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) in_progress_conversation_count: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) in_progress_retry_conversation_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) in_progress_avg_wait_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) non_success_cost: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) non_success_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) maintenance: Option<StatsMaintenanceResponse>,
 }
 
@@ -145,6 +153,10 @@ impl StatsTotals {
             total_cost: self.total_cost,
             total_tokens: self.total_tokens,
             in_progress_conversation_count: None,
+            in_progress_retry_conversation_count: None,
+            in_progress_avg_wait_ms: None,
+            non_success_cost: None,
+            non_success_tokens: None,
             maintenance: None,
         }
     }

@@ -1671,8 +1671,9 @@ pub(crate) async fn fetch_stats(
     )
     .await?;
     let mut response = totals.into_response();
-    response.in_progress_conversation_count =
-        Some(load_in_progress_conversation_count(state.as_ref(), source_scope, None).await?);
+    let augmentation =
+        load_summary_live_augmentation(state.as_ref(), source_scope, None, None).await?;
+    apply_summary_live_augmentation(&mut response, augmentation);
     response.maintenance = Some(load_stats_maintenance_response(state.as_ref()).await?);
     Ok(Json(response))
 }
@@ -1690,22 +1691,338 @@ async fn load_in_progress_conversation_count(
     .await?)
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct SummaryLiveAugmentation {
+    in_progress_conversation_count: Option<i64>,
+    in_progress_retry_conversation_count: Option<i64>,
+    in_progress_avg_wait_ms: Option<f64>,
+    non_success_cost: Option<f64>,
+    non_success_tokens: Option<i64>,
+}
+
+fn summary_window_range(
+    window: &SummaryWindow,
+    reporting_tz: Tz,
+    now: DateTime<Utc>,
+) -> Result<Option<(DateTime<Utc>, DateTime<Utc>)>, ApiError> {
+    match window {
+        SummaryWindow::All | SummaryWindow::Current(_) => Ok(None),
+        SummaryWindow::Duration(duration) => Ok(Some((now - *duration, now))),
+        SummaryWindow::Calendar(spec) => {
+            let range = resolve_range_window(spec.as_str(), reporting_tz).map_err(ApiError::from)?;
+            Ok(Some((range.start, range.end)))
+        }
+        SummaryWindow::PreviousFullDays(day_count) => {
+            let (start, end) = previous_full_days_range_bounds(*day_count, now, reporting_tz)
+                .ok_or_else(|| ApiError::bad_request(anyhow!("invalid previous full days window")))?;
+            Ok(Some((start, end)))
+        }
+    }
+}
+
+async fn load_summary_live_augmentation(
+    state: &AppState,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+) -> Result<SummaryLiveAugmentation, ApiError> {
+    let in_progress = load_in_progress_summary_snapshot(
+        &state.pool,
+        source_scope,
+        upstream_account_id,
+    )
+    .await?;
+    let non_success = if let Some((start, end)) = range {
+        load_non_success_usage_snapshot(
+            &state.pool,
+            source_scope,
+            upstream_account_id,
+            start,
+            end,
+        )
+        .await?
+    } else {
+        (None, None)
+    };
+
+    Ok(SummaryLiveAugmentation {
+        in_progress_conversation_count: Some(in_progress.0),
+        in_progress_retry_conversation_count: Some(in_progress.1),
+        in_progress_avg_wait_ms: in_progress.2,
+        non_success_cost: non_success.0,
+        non_success_tokens: non_success.1,
+    })
+}
+
+fn apply_summary_live_augmentation(
+    response: &mut StatsResponse,
+    augmentation: SummaryLiveAugmentation,
+) {
+    response.in_progress_conversation_count = augmentation.in_progress_conversation_count;
+    response.in_progress_retry_conversation_count =
+        augmentation.in_progress_retry_conversation_count;
+    response.in_progress_avg_wait_ms = augmentation.in_progress_avg_wait_ms;
+    response.non_success_cost = augmentation.non_success_cost;
+    response.non_success_tokens = augmentation.non_success_tokens;
+}
+
+async fn load_in_progress_summary_snapshot(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+) -> Result<(i64, i64, Option<f64>), ApiError> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "WITH in_flight AS (\
+            SELECT id, occurred_at, ",
+    );
+    query
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(
+            " AS prompt_cache_key, \
+             ",
+        )
+        .push(INVOCATION_STATUS_NORMALIZED_SQL)
+        .push(
+            " AS normalized_status, \
+             ",
+        )
+        .push(INVOCATION_DOWNSTREAM_ERROR_MESSAGE_SQL)
+        .push(
+            " AS downstream_error_message, \
+             ",
+        )
+        .push(INVOCATION_FAILURE_KIND_SQL)
+        .push(
+            " AS failure_kind, \
+             t_upstream_ttfb_ms \
+             FROM codex_invocations \
+             WHERE ",
+        )
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(" IS NOT NULL AND ")
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(" <> '' AND LOWER(TRIM(")
+        .push(invocation_display_status_sql())
+        .push(")) IN ('running', 'pending')");
+
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND ")
+            .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+            .push(" = ")
+            .push_bind(upstream_account_id);
+    }
+
+    query.push(
+        " ), latest_in_flight AS (\
+            SELECT prompt_cache_key, MAX(id) AS latest_in_flight_id \
+            FROM in_flight \
+            GROUP BY prompt_cache_key\
+         ), previous_terminal AS (\
+            SELECT current.prompt_cache_key AS prompt_cache_key, \
+                   previous.id AS previous_id, \
+                   previous.display_status AS previous_display_status \
+            FROM latest_in_flight current \
+            LEFT JOIN (\
+                SELECT id, source, ",
+    );
+    query
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(
+            " AS prompt_cache_key, \
+             ",
+        )
+        .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+        .push(
+            " AS upstream_account_id, \
+             LOWER(TRIM(",
+        )
+        .push(invocation_display_status_sql())
+        .push(
+            ")) AS display_status \
+             FROM codex_invocations\
+            ) previous \
+              ON previous.id = (\
+                    SELECT previous_inner.id \
+                    FROM (\
+                        SELECT id, source, ",
+        )
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(
+            " AS prompt_cache_key, \
+             ",
+        )
+        .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+        .push(
+            " AS upstream_account_id, \
+             LOWER(TRIM(",
+        )
+        .push(invocation_display_status_sql())
+        .push(
+            ")) AS display_status \
+                         FROM codex_invocations\
+                    ) previous_inner \
+                    WHERE previous_inner.prompt_cache_key = current.prompt_cache_key",
+        );
+
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND previous_inner.source = ").push_bind(SOURCE_PROXY);
+    }
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND previous_inner.upstream_account_id = ")
+            .push_bind(upstream_account_id);
+    }
+
+    query.push(
+        " AND previous_inner.id < current.latest_in_flight_id \
+                    AND previous_inner.display_status NOT IN ('running', 'pending') \
+                    ORDER BY previous_inner.id DESC \
+                    LIMIT 1\
+              )\
+         ) \
+         SELECT \
+            COALESCE(COUNT(DISTINCT latest_in_flight.prompt_cache_key), 0) AS in_progress_count, \
+            COALESCE(SUM(CASE WHEN previous_terminal.previous_display_status = 'failed' THEN 1 ELSE 0 END), 0) AS retry_count, \
+            AVG(CASE WHEN in_flight.t_upstream_ttfb_ms IS NOT NULL AND in_flight.t_upstream_ttfb_ms >= 0 THEN in_flight.t_upstream_ttfb_ms END) AS avg_wait_ms \
+         FROM latest_in_flight \
+         INNER JOIN in_flight ON in_flight.id = latest_in_flight.latest_in_flight_id \
+         LEFT JOIN previous_terminal ON previous_terminal.prompt_cache_key = latest_in_flight.prompt_cache_key",
+    );
+
+    let (in_progress_count, retry_count, avg_wait_ms) = query
+        .build_query_as::<(i64, i64, Option<f64>)>()
+        .fetch_one(pool)
+        .await?;
+    Ok((in_progress_count, retry_count, avg_wait_ms))
+}
+
+async fn load_live_invocation_ids_in_range(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> Result<std::collections::HashSet<i64>, ApiError> {
+    #[derive(Debug, FromRow)]
+    struct IdRow {
+        id: i64,
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT id FROM codex_invocations WHERE occurred_at >= ");
+    query
+        .push_bind(db_occurred_at_lower_bound(start))
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_upper_bound(end));
+
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND ")
+            .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+            .push(" = ")
+            .push_bind(upstream_account_id);
+    }
+
+    Ok(query
+        .build_query_as::<IdRow>()
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| row.id)
+        .collect())
+}
+
+async fn load_non_success_usage_snapshot(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> Result<(Option<f64>, Option<i64>), ApiError> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT \
+            COALESCE(SUM(COALESCE(cost, 0.0)), 0.0) AS non_success_cost, \
+            COALESCE(SUM(COALESCE(total_tokens, 0)), 0) AS non_success_tokens \
+         FROM codex_invocations \
+         WHERE occurred_at >= ",
+    );
+    query
+        .push_bind(db_occurred_at_lower_bound(start))
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_upper_bound(end))
+        .push(" AND LOWER(TRIM(")
+        .push(invocation_display_status_sql())
+        .push(")) IN ('failed', 'interrupted')");
+
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND ")
+            .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+            .push(" = ")
+            .push_bind(upstream_account_id);
+    }
+
+    let (non_success_cost, non_success_tokens) = query
+        .build_query_as::<(f64, i64)>()
+        .fetch_one(pool)
+        .await?;
+    let live_invocation_ids =
+        load_live_invocation_ids_in_range(pool, source_scope, upstream_account_id, start, end).await?;
+    let (archived_cost, archived_tokens) = if let Some(upstream_account_id) = upstream_account_id {
+        crate::stats::query_completed_upstream_account_archive_non_success_usage(
+            pool,
+            source_scope,
+            Some((start, end)),
+            Some(&live_invocation_ids),
+            upstream_account_id,
+        )
+        .await?
+    } else {
+        crate::stats::query_completed_invocation_archive_non_success_usage(
+            pool,
+            source_scope,
+            Some((start, end)),
+            Some(&live_invocation_ids),
+        )
+        .await?
+    };
+    Ok((
+        Some(non_success_cost + archived_cost),
+        Some(non_success_tokens + archived_tokens),
+    ))
+}
+
 pub(crate) async fn build_empty_summary_response(
     state: &AppState,
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
 ) -> Result<StatsResponse, ApiError> {
-    Ok(StatsResponse {
+    let mut response = StatsResponse {
         total_count: 0,
         success_count: 0,
         failure_count: 0,
         total_cost: 0.0,
         total_tokens: 0,
-        in_progress_conversation_count: Some(
-            load_in_progress_conversation_count(state, source_scope, upstream_account_id).await?,
-        ),
+        in_progress_conversation_count: None,
+        in_progress_retry_conversation_count: None,
+        in_progress_avg_wait_ms: None,
+        non_success_cost: None,
+        non_success_tokens: None,
         maintenance: Some(load_stats_maintenance_response(state).await?),
-    })
+    };
+    let augmentation =
+        load_summary_live_augmentation(state, source_scope, upstream_account_id, None).await?;
+    apply_summary_live_augmentation(&mut response, augmentation);
+    Ok(response)
 }
 
 pub(crate) async fn fetch_summary(
@@ -1717,6 +2034,7 @@ pub(crate) async fn fetch_summary(
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let upstream_account_id = params.upstream_account_id;
+    let now = Utc::now();
 
     let totals = match window {
         SummaryWindow::All => {
@@ -1765,12 +2083,12 @@ pub(crate) async fn fetch_summary(
             }
         }
         SummaryWindow::Duration(duration) => {
-            let start = Utc::now() - duration;
+            let start = now - duration;
             if let Some(upstream_account_id) = upstream_account_id {
                 query_hourly_backed_summary_range_for_account(
                     state.as_ref(),
                     start,
-                    Utc::now(),
+                    now,
                     source_scope,
                     upstream_account_id,
                 )
@@ -1779,7 +2097,7 @@ pub(crate) async fn fetch_summary(
                 query_hourly_backed_summary_since(state.as_ref(), start, source_scope).await?
             }
         }
-        SummaryWindow::Calendar(spec) => {
+        SummaryWindow::Calendar(ref spec) => {
             let range_window = resolve_range_window(spec.as_str(), reporting_tz).map_err(ApiError::from)?;
             if range_window.start >= range_window.end {
                 return Ok(Json(
@@ -1811,7 +2129,7 @@ pub(crate) async fn fetch_summary(
             }
         }
         SummaryWindow::PreviousFullDays(day_count) => {
-            let (start, end) = previous_full_days_range_bounds(day_count, Utc::now(), reporting_tz)
+            let (start, end) = previous_full_days_range_bounds(day_count, now, reporting_tz)
                 .ok_or_else(|| ApiError::bad_request(anyhow!("invalid previous full days window")))?;
             if let Some(upstream_account_id) = upstream_account_id {
                 query_hourly_backed_summary_range_for_account(
@@ -1835,10 +2153,15 @@ pub(crate) async fn fetch_summary(
     };
 
     let mut response = totals.into_response();
-    response.in_progress_conversation_count = Some(
-        load_in_progress_conversation_count(state.as_ref(), source_scope, upstream_account_id)
-            .await?,
-    );
+    let range = summary_window_range(&window, reporting_tz, now)?;
+    let augmentation = load_summary_live_augmentation(
+        state.as_ref(),
+        source_scope,
+        upstream_account_id,
+        range,
+    )
+    .await?;
+    apply_summary_live_augmentation(&mut response, augmentation);
     response.maintenance = Some(load_stats_maintenance_response(state.as_ref()).await?);
     Ok(Json(response))
 }

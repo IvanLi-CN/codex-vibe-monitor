@@ -1120,6 +1120,60 @@ fn account_archive_target_treats_materialized_batch_as_replayed(target: &str) ->
     )
 }
 
+async fn load_completed_invocation_archive_paths_in_range(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+) -> Result<Vec<ArchiveBatchPathRow>> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            file_path,
+            month_key,
+            coverage_start_at,
+            coverage_end_at,
+            historical_rollups_materialized_at,
+            NULL AS needs_overall,
+            NULL AS needs_failures
+        FROM archive_batches
+        WHERE dataset = 'codex_invocations'
+          AND status =
+        "#,
+    );
+    query.push_bind(ARCHIVE_STATUS_COMPLETED);
+
+    if let Some((start, end)) = range {
+        let start_bound = db_occurred_at_upper_bound(start);
+        let end_bound = db_occurred_at_lower_bound(end);
+        query.push(
+            r#"
+            AND (
+                coverage_start_at IS NULL
+                OR coverage_end_at IS NULL
+                OR (
+                    coverage_end_at >=
+            "#,
+        );
+        query.push_bind(start_bound).push(
+            r#"
+                    AND coverage_start_at <
+            "#,
+        );
+        query.push_bind(end_bound).push(
+            r#"
+                )
+            )
+            "#,
+        );
+    }
+
+    query.push(" ORDER BY month_key ASC, created_at ASC, id ASC");
+    query
+        .build_query_as::<ArchiveBatchPathRow>()
+        .fetch_all(executor)
+        .await
+        .map_err(Into::into)
+}
+
 async fn load_invocation_archives_missing_effective_rollup_target(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     target: &str,
@@ -2598,6 +2652,151 @@ pub(crate) async fn query_unmaterialized_invocation_archive_totals(
     Ok(totals)
 }
 
+fn invocation_row_counts_toward_non_success_usage(
+    status: Option<&str>,
+    error_message: Option<&str>,
+    failure_kind: Option<&str>,
+    failure_class: Option<&str>,
+    is_actionable: Option<i64>,
+) -> bool {
+    if status
+        .map(str::trim)
+        .is_some_and(|value| value.eq_ignore_ascii_case("interrupted"))
+    {
+        return true;
+    }
+    let classification = resolve_failure_classification(
+        status,
+        error_message,
+        failure_kind,
+        failure_class,
+        is_actionable,
+    );
+    invocation_status_counts_toward_terminal_totals(status)
+        && classification.failure_class != FailureClass::None
+}
+
+pub(crate) async fn query_unmaterialized_invocation_archive_non_success_usage(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    exclude_invocation_ids: Option<&HashSet<i64>>,
+) -> Result<(f64, i64)> {
+    let archive_rows = load_invocation_archives_missing_rollup_target(
+        pool,
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        range,
+    )
+    .await?;
+    let mut total_cost = 0.0_f64;
+    let mut total_tokens = 0_i64;
+
+    for archive_row in archive_rows {
+        let Some((archive_pool, temp_cleanup)) =
+            open_invocation_archive_batch_pool(&archive_row, "stats-summary").await?
+        else {
+            continue;
+        };
+        let mut cursor_id = 0_i64;
+        loop {
+            let rows = load_invocation_hourly_source_rows_after_id(
+                &archive_pool,
+                cursor_id,
+                source_scope,
+                BACKFILL_BATCH_SIZE,
+            )
+            .await?;
+            if rows.is_empty() {
+                break;
+            }
+            cursor_id = rows.last().map(|row| row.id).unwrap_or(cursor_id);
+            for row in rows {
+                if exclude_invocation_ids.is_some_and(|excluded_ids| excluded_ids.contains(&row.id))
+                {
+                    continue;
+                }
+                if !invocation_hourly_source_record_matches_range(&row, range) {
+                    continue;
+                }
+                if !invocation_row_counts_toward_non_success_usage(
+                    row.status.as_deref(),
+                    row.error_message.as_deref(),
+                    row.failure_kind.as_deref(),
+                    row.failure_class.as_deref(),
+                    row.is_actionable,
+                ) {
+                    continue;
+                }
+                total_cost += row.cost.unwrap_or_default();
+                total_tokens += row.total_tokens.unwrap_or_default();
+            }
+        }
+
+        archive_pool.close().await;
+        drop(temp_cleanup);
+    }
+
+    Ok((total_cost, total_tokens))
+}
+
+pub(crate) async fn query_completed_invocation_archive_non_success_usage(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    exclude_invocation_ids: Option<&HashSet<i64>>,
+) -> Result<(f64, i64)> {
+    let archive_rows = load_completed_invocation_archive_paths_in_range(pool, range).await?;
+    let mut total_cost = 0.0_f64;
+    let mut total_tokens = 0_i64;
+
+    for archive_row in archive_rows {
+        let Some((archive_pool, temp_cleanup)) =
+            open_invocation_archive_batch_pool(&archive_row, "stats-summary").await?
+        else {
+            continue;
+        };
+        let mut cursor_id = 0_i64;
+        loop {
+            let rows = load_invocation_hourly_source_rows_after_id(
+                &archive_pool,
+                cursor_id,
+                source_scope,
+                BACKFILL_BATCH_SIZE,
+            )
+            .await?;
+            if rows.is_empty() {
+                break;
+            }
+            cursor_id = rows.last().map(|row| row.id).unwrap_or(cursor_id);
+            for row in rows {
+                if exclude_invocation_ids.is_some_and(|excluded_ids| excluded_ids.contains(&row.id))
+                {
+                    continue;
+                }
+                if !invocation_hourly_source_record_matches_range(&row, range) {
+                    continue;
+                }
+                if !invocation_row_counts_toward_non_success_usage(
+                    row.status.as_deref(),
+                    row.error_message.as_deref(),
+                    row.failure_kind.as_deref(),
+                    row.failure_class.as_deref(),
+                    row.is_actionable,
+                ) {
+                    continue;
+                }
+                total_cost += row.cost.unwrap_or_default();
+                total_tokens += row.total_tokens.unwrap_or_default();
+            }
+        }
+
+        archive_pool.close().await;
+        drop(temp_cleanup);
+    }
+
+    Ok((total_cost, total_tokens))
+}
+
 fn add_account_invocation_row_to_usage_delta(
     entry: &mut UpstreamAccountUsageHourlyDelta,
     row: &InvocationHourlySourceRecord,
@@ -2726,6 +2925,137 @@ pub(crate) async fn query_unmaterialized_upstream_account_archive_totals(
     }
 
     Ok(totals)
+}
+
+pub(crate) async fn query_unmaterialized_upstream_account_archive_non_success_usage(
+    pool: &Pool<Sqlite>,
+    rollup_target: &str,
+    source_scope: InvocationSourceScope,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    exclude_invocation_ids: Option<&HashSet<i64>>,
+    upstream_account_id: i64,
+) -> Result<(f64, i64)> {
+    let archive_rows =
+        load_invocation_archives_missing_effective_rollup_target(pool, rollup_target, range)
+            .await?;
+    let mut total_cost = 0.0_f64;
+    let mut total_tokens = 0_i64;
+
+    for archive_row in archive_rows {
+        let Some((archive_pool, temp_cleanup)) =
+            open_invocation_archive_batch_pool(&archive_row, "account-stats").await?
+        else {
+            continue;
+        };
+        let mut cursor_id = 0_i64;
+        loop {
+            let rows = load_invocation_hourly_source_rows_after_id(
+                &archive_pool,
+                cursor_id,
+                source_scope,
+                BACKFILL_BATCH_SIZE,
+            )
+            .await?;
+            if rows.is_empty() {
+                break;
+            }
+            cursor_id = rows.last().map(|row| row.id).unwrap_or(cursor_id);
+            for row in rows {
+                if exclude_invocation_ids.is_some_and(|excluded_ids| excluded_ids.contains(&row.id))
+                {
+                    continue;
+                }
+                if !invocation_hourly_source_record_matches_range(&row, range) {
+                    continue;
+                }
+                if upstream_account_id_from_payload(row.payload.as_deref())
+                    != Some(upstream_account_id)
+                {
+                    continue;
+                }
+                if !invocation_row_counts_toward_non_success_usage(
+                    row.status.as_deref(),
+                    row.error_message.as_deref(),
+                    row.failure_kind.as_deref(),
+                    row.failure_class.as_deref(),
+                    row.is_actionable,
+                ) {
+                    continue;
+                }
+                total_cost += row.cost.unwrap_or_default();
+                total_tokens += row.total_tokens.unwrap_or_default();
+            }
+        }
+
+        archive_pool.close().await;
+        drop(temp_cleanup);
+    }
+
+    Ok((total_cost, total_tokens))
+}
+
+pub(crate) async fn query_completed_upstream_account_archive_non_success_usage(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    exclude_invocation_ids: Option<&HashSet<i64>>,
+    upstream_account_id: i64,
+) -> Result<(f64, i64)> {
+    let archive_rows = load_completed_invocation_archive_paths_in_range(pool, range).await?;
+    let mut total_cost = 0.0_f64;
+    let mut total_tokens = 0_i64;
+
+    for archive_row in archive_rows {
+        let Some((archive_pool, temp_cleanup)) =
+            open_invocation_archive_batch_pool(&archive_row, "account-stats").await?
+        else {
+            continue;
+        };
+        let mut cursor_id = 0_i64;
+        loop {
+            let rows = load_invocation_hourly_source_rows_after_id(
+                &archive_pool,
+                cursor_id,
+                source_scope,
+                BACKFILL_BATCH_SIZE,
+            )
+            .await?;
+            if rows.is_empty() {
+                break;
+            }
+            cursor_id = rows.last().map(|row| row.id).unwrap_or(cursor_id);
+            for row in rows {
+                if exclude_invocation_ids.is_some_and(|excluded_ids| excluded_ids.contains(&row.id))
+                {
+                    continue;
+                }
+                if !invocation_hourly_source_record_matches_range(&row, range) {
+                    continue;
+                }
+                if upstream_account_id_from_payload(row.payload.as_deref())
+                    != Some(upstream_account_id)
+                {
+                    continue;
+                }
+                if !invocation_row_counts_toward_non_success_usage(
+                    row.status.as_deref(),
+                    row.error_message.as_deref(),
+                    row.failure_kind.as_deref(),
+                    row.failure_class.as_deref(),
+                    row.is_actionable,
+                ) {
+                    continue;
+                }
+                total_cost += row.cost.unwrap_or_default();
+                total_tokens += row.total_tokens.unwrap_or_default();
+            }
+        }
+
+        archive_pool.close().await;
+        drop(temp_cleanup);
+    }
+
+    Ok((total_cost, total_tokens))
 }
 
 async fn load_failure_rows_from_archive_pool(

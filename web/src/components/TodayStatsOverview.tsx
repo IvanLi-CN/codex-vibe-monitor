@@ -14,8 +14,10 @@ import {
   buildParallelWorkKpiSnapshot,
   buildSameProgressUsageSnapshot,
   cacheHitRate,
+  dividePerConversation,
   failureRate,
   percentDelta,
+  ratioOfCurrentToBaseline,
   sumCacheInputTokens,
 } from './dashboardKpiComparisons'
 
@@ -50,6 +52,13 @@ interface MetricTileSecondaryItem {
   valueTestId?: string
 }
 
+interface MetricTileMetaItem {
+  label: string
+  value: string
+  toneClass?: string
+  valueTestId?: string
+}
+
 interface MetricTileProps {
   label: string
   description: string
@@ -61,6 +70,7 @@ interface MetricTileProps {
   valueTestId?: string
   displayText?: string
   subdued?: boolean
+  topRightItem?: MetricTileMetaItem | null
   secondaryItems?: MetricTileSecondaryItem[]
 }
 
@@ -75,6 +85,7 @@ function MetricTile({
   valueTestId,
   displayText,
   subdued = false,
+  topRightItem,
   secondaryItems = [],
 }: MetricTileProps) {
   const handleLabelKeyDown = (event: KeyboardEvent<HTMLSpanElement>) => {
@@ -88,21 +99,34 @@ function MetricTile({
       data-testid="today-stats-metric-tile"
       className="min-w-0 rounded-xl border border-base-300/75 bg-base-200/60 p-4"
     >
-      <Tooltip
-        content={description}
-        clickToOpen
-        side="bottom"
-        sideOffset={8}
-        triggerProps={{
-          role: 'button',
-          tabIndex: 0,
-          onKeyDown: handleLabelKeyDown,
-        }}
-      >
-        <span className="inline-flex cursor-help text-left text-xs font-semibold uppercase tracking-[0.14em] text-base-content/65 underline decoration-dotted underline-offset-4 transition-colors hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
-          {label}
-        </span>
-      </Tooltip>
+      <div className="flex min-w-0 items-start justify-between gap-3">
+        <Tooltip
+          content={description}
+          clickToOpen
+          side="bottom"
+          sideOffset={8}
+          triggerProps={{
+            role: 'button',
+            tabIndex: 0,
+            onKeyDown: handleLabelKeyDown,
+          }}
+        >
+          <span className="inline-flex cursor-help text-left text-xs font-semibold uppercase tracking-[0.14em] text-base-content/65 underline decoration-dotted underline-offset-4 transition-colors hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+            {label}
+          </span>
+        </Tooltip>
+        {topRightItem ? (
+          <div className="min-w-0 shrink-0 text-right text-[11px] leading-5">
+            <span className="text-base-content/52">{topRightItem.label}</span>{' '}
+            <span
+              data-testid={topRightItem.valueTestId}
+              className={cn('font-semibold tabular-nums text-base-content/82', topRightItem.toneClass)}
+            >
+              {topRightItem.value}
+            </span>
+          </div>
+        ) : null}
+      </div>
       {loading ? (
         <div
           data-testid={valueTestId ? `${valueTestId}-loading` : undefined}
@@ -135,18 +159,25 @@ function MetricTile({
         </div>
       )}
       {secondaryItems.length > 0 ? (
-        <div className="mt-3 grid min-h-[2.75rem] grid-cols-2 gap-2 text-xs leading-5">
+        <div className="mt-3 grid min-h-[2.75rem] grid-cols-2 gap-x-4 gap-y-2 text-xs leading-5">
           {secondaryItems.map((item, index) => (
-            <div key={`${item.label}-${index}`} className="min-w-0">
-              <div className="truncate text-base-content/52">{item.label}</div>
+            <div
+              key={`${item.label}-${index}`}
+              className={cn('min-w-0', index % 2 === 1 ? 'justify-self-end text-right' : undefined)}
+            >
               <div
                 data-testid={item.valueTestId}
-                className={cn(
-                  'truncate font-semibold tabular-nums text-base-content/82',
-                  item.toneClass,
-                )}
+                className="truncate"
               >
-                {item.value}
+                <span className="text-base-content/52">{item.label}</span>{' '}
+                <span
+                  className={cn(
+                    'font-semibold tabular-nums text-base-content/82',
+                    item.toneClass,
+                  )}
+                >
+                  {item.value}
+                </span>
               </div>
             </div>
           ))}
@@ -170,6 +201,13 @@ function formatRatioValue(value: number | null, localeTag: string) {
   return new Intl.NumberFormat(localeTag, {
     style: 'percent',
     maximumFractionDigits: 1,
+  }).format(value)
+}
+
+function formatBaselineRatioValue(value: number | null, localeTag: string) {
+  if (value == null || !Number.isFinite(value)) return '—'
+  return new Intl.NumberFormat(localeTag, {
+    maximumFractionDigits: value >= 10 ? 0 : value >= 1 ? 2 : 3,
   }).format(value)
 }
 
@@ -291,11 +329,16 @@ export function TodayStatsOverview({
   const responseTimeCurrentUnavailable = rateUnavailable || responseTimeSnapshot?.responseTimeMs == null
   const tokensPerMinute = rate?.tokensPerMinute ?? 0
   const spendRate = rate?.spendRate ?? 0
+  const perConversationTpm = dividePerConversation(tokensPerMinute, stats?.inProgressConversationCount)
+  const perConversationSpendRate = dividePerConversation(spendRate, stats?.inProgressConversationCount)
   const costLabel = isToday ? t('dashboard.today.todayCost') : t('dashboard.today.yesterdayCost')
   const tokensLabel = isToday ? t('dashboard.today.todayTokens') : t('dashboard.today.yesterdayTokens')
   const comparisonLabel = isToday
     ? t('dashboard.today.secondary.vsYesterday')
     : t('dashboard.today.secondary.comparison')
+  const successComparisonRatio = isToday
+    ? ratioOfCurrentToBaseline(successCount, sameProgressUsage.successCount ?? comparisonStats?.successCount)
+    : null
 
   const content = (
     <>
@@ -334,6 +377,12 @@ export function TodayStatsOverview({
             valueTestId="today-stats-value-tpm"
             displayText={rateUnavailable ? RATE_UNAVAILABLE_PLACEHOLDER : undefined}
             subdued={rateUnavailable}
+            topRightItem={{
+              label: comparisonLabel,
+              value: formatPercentValue(tpmDailyDelta, localeTag),
+              toneClass: comparisonTone(tpmDailyDelta),
+              valueTestId: 'today-stats-secondary-tpm-delta',
+            }}
             secondaryItems={[
               {
                 label: t('dashboard.today.secondary.dayAverage'),
@@ -341,10 +390,9 @@ export function TodayStatsOverview({
                 valueTestId: 'today-stats-secondary-tpm-day-average',
               },
               {
-                label: comparisonLabel,
-                value: formatPercentValue(tpmDailyDelta, localeTag),
-                toneClass: comparisonTone(tpmDailyDelta),
-                valueTestId: 'today-stats-secondary-tpm-delta',
+                label: t('dashboard.today.secondary.perConversation'),
+                value: formatNumberValue(perConversationTpm, localeTag, 0),
+                valueTestId: 'today-stats-secondary-tpm-per-conversation',
               },
             ]}
           />
@@ -358,6 +406,12 @@ export function TodayStatsOverview({
             valueTestId="today-stats-value-spend-rate"
             displayText={rateUnavailable ? RATE_UNAVAILABLE_PLACEHOLDER : undefined}
             subdued={rateUnavailable}
+            topRightItem={{
+              label: comparisonLabel,
+              value: formatPercentValue(spendRateDailyDelta, localeTag),
+              toneClass: comparisonTone(spendRateDailyDelta),
+              valueTestId: 'today-stats-secondary-spend-rate-delta',
+            }}
             secondaryItems={[
               {
                 label: t('dashboard.today.secondary.dayAverage'),
@@ -365,10 +419,9 @@ export function TodayStatsOverview({
                 valueTestId: 'today-stats-secondary-spend-rate-day-average',
               },
               {
-                label: comparisonLabel,
-                value: formatPercentValue(spendRateDailyDelta, localeTag),
-                toneClass: comparisonTone(spendRateDailyDelta),
-                valueTestId: 'today-stats-secondary-spend-rate-delta',
+                label: t('dashboard.today.secondary.perConversation'),
+                value: formatCurrencyValue(perConversationSpendRate, localeTag),
+                valueTestId: 'today-stats-secondary-spend-rate-per-conversation',
               },
             ]}
           />
@@ -380,6 +433,14 @@ export function TodayStatsOverview({
             loading={loading}
             toneClass="text-success"
             valueTestId="today-stats-value-success"
+            topRightItem={{
+              label: comparisonLabel,
+              value: formatBaselineRatioValue(successComparisonRatio, localeTag),
+              toneClass: comparisonTone(
+                successComparisonRatio == null ? null : successComparisonRatio - 1,
+              ),
+              valueTestId: 'today-stats-secondary-success-ratio',
+            }}
             secondaryItems={[
               {
                 label: t('stats.cards.failures'),
@@ -405,17 +466,26 @@ export function TodayStatsOverview({
               kind="integer"
               toneClass="text-info"
               valueTestId="today-stats-value-in-progress-conversations"
+              topRightItem={{
+                label: comparisonLabel,
+                value: formatPercentValue(parallelDelta, localeTag),
+                toneClass: comparisonTone(parallelDelta),
+                valueTestId: 'today-stats-secondary-in-progress-delta',
+              }}
               secondaryItems={[
-                {
-                  label: comparisonLabel,
-                  value: formatPercentValue(parallelDelta, localeTag),
-                  toneClass: comparisonTone(parallelDelta),
-                  valueTestId: 'today-stats-secondary-in-progress-delta',
-                },
                 {
                   label: t('dashboard.today.secondary.dayAverage'),
                   value: formatNumberValue(parallelSnapshot.dayAverage, localeTag, 2),
                   valueTestId: 'today-stats-secondary-in-progress-day-average',
+                },
+                {
+                  label: t('dashboard.today.secondary.retry'),
+                  value: formatNumberValue(
+                    stats?.inProgressRetryConversationCount ?? null,
+                    localeTag,
+                    0,
+                  ),
+                  valueTestId: 'today-stats-secondary-in-progress-retry',
                 },
               ]}
             />
@@ -431,6 +501,12 @@ export function TodayStatsOverview({
               localeTag,
             )}
             subdued={responseTimeCurrentUnavailable}
+            topRightItem={{
+              label: comparisonLabel,
+              value: formatPercentValue(rateUnavailable ? null : responseTimeDailyDelta, localeTag),
+              toneClass: latencyComparisonTone(rateUnavailable ? null : responseTimeDailyDelta),
+              valueTestId: 'today-stats-secondary-response-time-delta',
+            }}
             secondaryItems={[
               {
                 label: t('dashboard.today.secondary.dayAverage'),
@@ -441,10 +517,9 @@ export function TodayStatsOverview({
                 valueTestId: 'today-stats-secondary-response-time-day-average',
               },
               {
-                label: comparisonLabel,
-                value: formatPercentValue(rateUnavailable ? null : responseTimeDailyDelta, localeTag),
-                toneClass: latencyComparisonTone(rateUnavailable ? null : responseTimeDailyDelta),
-                valueTestId: 'today-stats-secondary-response-time-delta',
+                label: t('dashboard.today.secondary.inProgress'),
+                value: formatLatencyValue(stats?.inProgressAvgWaitMs ?? null, localeTag),
+                valueTestId: 'today-stats-secondary-response-time-in-progress',
               },
             ]}
           />
@@ -456,6 +531,12 @@ export function TodayStatsOverview({
             loading={loading}
             kind="currency"
             valueTestId="today-stats-value-total-cost"
+            topRightItem={{
+              label: comparisonLabel,
+              value: formatPercentValue(totalCostDelta, localeTag),
+              toneClass: comparisonTone(totalCostDelta),
+              valueTestId: 'today-stats-secondary-cost-delta',
+            }}
             secondaryItems={[
               {
                 label: t('dashboard.today.secondary.previous7dAverage'),
@@ -463,10 +544,9 @@ export function TodayStatsOverview({
                 valueTestId: 'today-stats-secondary-cost-previous7d-average',
               },
               {
-                label: comparisonLabel,
-                value: formatPercentValue(totalCostDelta, localeTag),
-                toneClass: comparisonTone(totalCostDelta),
-                valueTestId: 'today-stats-secondary-cost-delta',
+                label: t('dashboard.today.secondary.failed'),
+                value: formatCurrencyValue(stats?.nonSuccessCost ?? null, localeTag),
+                valueTestId: 'today-stats-secondary-cost-failed',
               },
             ]}
           />
@@ -477,6 +557,12 @@ export function TodayStatsOverview({
             localeTag={localeTag}
             loading={loading}
             valueTestId="today-stats-value-total-tokens"
+            topRightItem={{
+              label: comparisonLabel,
+              value: formatPercentValue(totalTokensDelta, localeTag),
+              toneClass: comparisonTone(totalTokensDelta),
+              valueTestId: 'today-stats-secondary-tokens-delta',
+            }}
             secondaryItems={[
               {
                 label: t('dashboard.today.secondary.cacheHitRate'),
@@ -484,10 +570,9 @@ export function TodayStatsOverview({
                 valueTestId: 'today-stats-secondary-cache-hit-rate',
               },
               {
-                label: comparisonLabel,
-                value: formatPercentValue(totalTokensDelta, localeTag),
-                toneClass: comparisonTone(totalTokensDelta),
-                valueTestId: 'today-stats-secondary-tokens-delta',
+                label: t('dashboard.today.secondary.failed'),
+                value: formatNumberValue(stats?.nonSuccessTokens ?? null, localeTag, 0),
+                valueTestId: 'today-stats-secondary-tokens-failed',
               },
             ]}
           />
