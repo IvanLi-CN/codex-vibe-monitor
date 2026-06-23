@@ -467,6 +467,8 @@ pub(crate) struct PoolResolvedAccount {
     pub(crate) upstream_429_retry_enabled: bool,
     pub(crate) upstream_429_max_retries: u8,
     pub(crate) fast_mode_rewrite_mode: TagFastModeRewriteMode,
+    pub(crate) image_tool_rewrite_mode: ImageToolRewriteMode,
+    pub(crate) image_tool_capability: ImageToolCapability,
     pub(crate) upstream_base_url: Url,
     pub(crate) routing_source: PoolRoutingSelectionSource,
 }

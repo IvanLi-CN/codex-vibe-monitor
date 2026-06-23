@@ -26,6 +26,10 @@ interface EffectiveRoutingRuleCardProps {
     fastModeFillMissing: string
     fastModeForceAdd: string
     fastModeForceRemove: string
+    imageToolKeepOriginal: string
+    imageToolFillMissing: string
+    imageToolForceAdd: string
+    imageToolForceRemove: string
     upstream429Retry?: string
     upstream429RetryOff?: string
     availableModelsInherited?: string
@@ -41,6 +45,7 @@ interface EffectiveRoutingRuleCardProps {
     fieldAllowCutIn?: string
     fieldPriority?: string
     fieldFastMode?: string
+    fieldImageToolRewriteMode?: string
     fieldConcurrency?: string
     fieldUpstream429?: string
     fieldAvailableModels?: string
@@ -60,6 +65,7 @@ export function EffectiveRoutingRuleCard({ rule, labels }: EffectiveRoutingRuleC
     allowCutIn: true,
     priorityTier: 'normal',
     fastModeRewriteMode: 'keep_original',
+    imageToolRewriteMode: 'keep_original',
     sourceTagIds: [],
     sourceTagNames: [],
     concurrencyLimit: 0,
@@ -71,6 +77,7 @@ export function EffectiveRoutingRuleCard({ rule, labels }: EffectiveRoutingRuleC
       allowCutIn: 'root',
       priorityTier: 'root',
       fastModeRewriteMode: 'root',
+      imageToolRewriteMode: 'root',
       concurrencyLimit: 'root',
       upstream429Retry: 'root',
     },
@@ -79,11 +86,12 @@ export function EffectiveRoutingRuleCard({ rule, labels }: EffectiveRoutingRuleC
     blockNewConversations: 'root',
     allowCutOut: 'root',
     allowCutIn: 'root',
-    priorityTier: 'root',
-    fastModeRewriteMode: 'root',
-    concurrencyLimit: 'root',
-    upstream429Retry: 'root',
-  }
+      priorityTier: 'root',
+      fastModeRewriteMode: 'root',
+      imageToolRewriteMode: 'root',
+      concurrencyLimit: 'root',
+      upstream429Retry: 'root',
+    }
   const sourceLabel = (source: string): string => {
     switch (source) {
       case 'root':
@@ -125,6 +133,18 @@ export function EffectiveRoutingRuleCard({ rule, labels }: EffectiveRoutingRuleC
       label: labels.fieldFastMode ?? 'FAST mode',
       value: fastModeRewriteBadgeLabel(resolvedRule.fastModeRewriteMode, labels),
       source: fieldSources.fastModeRewriteMode,
+    },
+    {
+      label: labels.fieldImageToolRewriteMode ?? 'Image tools',
+      value:
+        resolvedRule.imageToolRewriteMode === 'fill_missing'
+          ? labels.imageToolFillMissing
+          : resolvedRule.imageToolRewriteMode === 'force_add'
+            ? labels.imageToolForceAdd
+            : resolvedRule.imageToolRewriteMode === 'force_remove'
+              ? labels.imageToolForceRemove
+              : labels.imageToolKeepOriginal,
+      source: fieldSources.imageToolRewriteMode ?? 'root',
     },
     {
       label: labels.fieldConcurrency ?? 'Concurrency',

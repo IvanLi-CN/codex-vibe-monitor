@@ -2254,6 +2254,8 @@ mod websocket_tests {
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
             fast_mode_rewrite_mode: TagFastModeRewriteMode::default(),
+            image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+            image_tool_capability: ImageToolCapability::Unknown,
             upstream_base_url,
             routing_source: PoolRoutingSelectionSource::FreshAssignment,
         }
@@ -2275,6 +2277,8 @@ mod websocket_tests {
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
             fast_mode_rewrite_mode: TagFastModeRewriteMode::default(),
+            image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+            image_tool_capability: ImageToolCapability::Unknown,
             upstream_base_url,
             routing_source: PoolRoutingSelectionSource::FreshAssignment,
         }

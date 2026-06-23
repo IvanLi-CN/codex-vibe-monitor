@@ -1198,6 +1198,7 @@ async fn save_group_metadata_record_conn(
             policy_allow_cut_in = pool_upstream_account_group_notes.policy_allow_cut_in,
             policy_priority_tier = pool_upstream_account_group_notes.policy_priority_tier,
             policy_fast_mode_rewrite_mode = pool_upstream_account_group_notes.policy_fast_mode_rewrite_mode,
+            policy_image_tool_rewrite_mode = pool_upstream_account_group_notes.policy_image_tool_rewrite_mode,
             policy_concurrency_limit = pool_upstream_account_group_notes.policy_concurrency_limit,
             policy_upstream_429_retry_enabled = pool_upstream_account_group_notes.policy_upstream_429_retry_enabled,
             policy_upstream_429_max_retries = pool_upstream_account_group_notes.policy_upstream_429_max_retries,

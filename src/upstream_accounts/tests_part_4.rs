@@ -312,6 +312,128 @@ async fn record_pool_route_success_does_not_clear_newer_route_failure_state() {
 }
 
 #[tokio::test]
+async fn image_intent_route_success_learns_supported_capability() {
+    let pool = test_pool().await;
+    let account_id = insert_oauth_account(&pool, "Image Success Learns Supported").await;
+
+    record_pool_route_success_with_image_intent(
+        &pool,
+        account_id,
+        Utc::now(),
+        Some("sticky-image-supported"),
+        Some("invk_image_supported"),
+        ImageIntent::Yes,
+    )
+    .await
+    .expect("record image route success");
+
+    let row = load_upstream_account_row(&pool, account_id)
+        .await
+        .expect("load row after image success")
+        .expect("row exists after image success");
+    assert_eq!(row.image_tool_capability.as_deref(), Some("supported"));
+
+    let direct_account_id =
+        insert_oauth_account(&pool, "Direct Image Success Learns Supported").await;
+    record_pool_route_success_with_image_intent(
+        &pool,
+        direct_account_id,
+        Utc::now(),
+        Some("sticky-direct-image-supported"),
+        Some("invk_direct_image_supported"),
+        ImageIntent::DirectImage,
+    )
+    .await
+    .expect("record direct image route success");
+
+    let direct_row = load_upstream_account_row(&pool, direct_account_id)
+        .await
+        .expect("load row after direct image success")
+        .expect("row exists after direct image success");
+    assert_eq!(
+        direct_row.image_tool_capability.as_deref(),
+        Some("supported")
+    );
+}
+
+#[tokio::test]
+async fn image_intent_explicit_unsupported_failure_learns_unsupported_capability() {
+    let pool = test_pool().await;
+    let account_id = insert_oauth_account(&pool, "Image Failure Learns Unsupported").await;
+
+    record_pool_route_http_failure_with_image_intent(
+        &pool,
+        account_id,
+        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+        false,
+        Some("sticky-image-unsupported"),
+        StatusCode::BAD_REQUEST,
+        "pool upstream responded with 400: image_generation is not supported for this account",
+        Some("invk_image_unsupported"),
+        ImageIntent::Yes,
+    )
+    .await
+    .expect("record explicit unsupported image failure");
+
+    let row = load_upstream_account_row(&pool, account_id)
+        .await
+        .expect("load row after unsupported image failure")
+        .expect("row exists after unsupported image failure");
+    assert_eq!(row.image_tool_capability.as_deref(), Some("unsupported"));
+
+    let direct_account_id =
+        insert_oauth_account(&pool, "Direct Image Failure Learns Unsupported").await;
+    record_pool_route_http_failure_with_image_intent(
+        &pool,
+        direct_account_id,
+        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+        false,
+        Some("sticky-direct-image-unsupported"),
+        StatusCode::BAD_REQUEST,
+        "pool upstream responded with 400: image_generation is not supported for this account",
+        Some("invk_direct_image_unsupported"),
+        ImageIntent::DirectImage,
+    )
+    .await
+    .expect("record explicit unsupported direct image failure");
+
+    let direct_row = load_upstream_account_row(&pool, direct_account_id)
+        .await
+        .expect("load row after unsupported direct image failure")
+        .expect("row exists after unsupported direct image failure");
+    assert_eq!(
+        direct_row.image_tool_capability.as_deref(),
+        Some("unsupported")
+    );
+}
+
+#[tokio::test]
+async fn image_intent_validation_failure_does_not_learn_unsupported_capability() {
+    let pool = test_pool().await;
+    let account_id = insert_oauth_account(&pool, "Image Validation Failure Keeps Unknown").await;
+
+    record_pool_route_http_failure_with_image_intent(
+        &pool,
+        account_id,
+        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+        false,
+        Some("sticky-image-invalid-payload"),
+        StatusCode::BAD_REQUEST,
+        "pool upstream responded with 400: invalid image size: width must be divisible by 64",
+        Some("invk_image_invalid_payload"),
+        ImageIntent::Yes,
+    )
+    .await
+    .expect("record image validation failure");
+
+    let row = load_upstream_account_row(&pool, account_id)
+        .await
+        .expect("load row after image validation failure")
+        .expect("row exists after image validation failure");
+    assert_eq!(row.image_tool_capability.as_deref(), Some("unknown"));
+}
+
+#[tokio::test]
 async fn mark_account_sync_success_preserves_route_cooldown_state() {
     let pool = test_pool().await;
     let account_id = insert_oauth_account(&pool, "Cooldown OAuth").await;

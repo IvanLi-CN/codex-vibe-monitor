@@ -1036,6 +1036,92 @@ impl TagFastModeRewriteMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ImageToolRewriteMode {
+    ForceRemove,
+    #[default]
+    KeepOriginal,
+    FillMissing,
+    ForceAdd,
+}
+
+impl ImageToolRewriteMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::ForceRemove => "force_remove",
+            Self::KeepOriginal => "keep_original",
+            Self::FillMissing => "fill_missing",
+            Self::ForceAdd => "force_add",
+        }
+    }
+
+    pub(crate) fn from_str(value: &str) -> Self {
+        match value.trim() {
+            "force_remove" => Self::ForceRemove,
+            "fill_missing" => Self::FillMissing,
+            "force_add" => Self::ForceAdd,
+            _ => Self::KeepOriginal,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ImageToolCapability {
+    Supported,
+    Unsupported,
+    #[default]
+    Unknown,
+}
+
+impl ImageToolCapability {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Supported => "supported",
+            Self::Unsupported => "unsupported",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub(crate) fn from_str(value: &str) -> Self {
+        match value.trim() {
+            "supported" => Self::Supported,
+            "unsupported" => Self::Unsupported,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum ImageIntent {
+    Yes,
+    DirectImage,
+    No,
+    #[default]
+    Unknown,
+}
+
+impl ImageIntent {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Yes => "yes",
+            Self::DirectImage => "direct_image",
+            Self::No => "no",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub(crate) fn from_str(value: &str) -> Self {
+        match value.trim() {
+            "yes" => Self::Yes,
+            "direct_image" => Self::DirectImage,
+            "no" => Self::No,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DuplicateInfo {
@@ -1061,6 +1147,7 @@ pub(crate) struct EffectiveRoutingRuleFieldSources {
     allow_cut_in: String,
     priority_tier: String,
     fast_mode_rewrite_mode: String,
+    image_tool_rewrite_mode: String,
     concurrency_limit: String,
     upstream_429_retry: String,
     available_models: String,
@@ -1075,6 +1162,7 @@ pub(crate) struct EffectiveRoutingRule {
     allow_cut_in: bool,
     priority_tier: TagPriorityTier,
     pub(crate) fast_mode_rewrite_mode: TagFastModeRewriteMode,
+    pub(crate) image_tool_rewrite_mode: ImageToolRewriteMode,
     concurrency_limit: i64,
     upstream_429_retry_enabled: bool,
     upstream_429_max_retries: u8,
@@ -1095,6 +1183,22 @@ pub(crate) struct TagRoutingRule {
     allow_cut_in: bool,
     priority_tier: TagPriorityTier,
     fast_mode_rewrite_mode: TagFastModeRewriteMode,
+    concurrency_limit: i64,
+    upstream_429_retry_enabled: bool,
+    upstream_429_max_retries: u8,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    available_models: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GroupAccountRoutingRule {
+    block_new_conversations: bool,
+    allow_cut_out: bool,
+    allow_cut_in: bool,
+    priority_tier: TagPriorityTier,
+    fast_mode_rewrite_mode: TagFastModeRewriteMode,
+    image_tool_rewrite_mode: ImageToolRewriteMode,
     concurrency_limit: i64,
     upstream_429_retry_enabled: bool,
     upstream_429_max_retries: u8,
@@ -1141,7 +1245,7 @@ pub(crate) struct UpstreamAccountGroupSummary {
     upstream_429_retry_enabled: bool,
     upstream_429_max_retries: u8,
     concurrency_limit: i64,
-    routing_rule: TagRoutingRule,
+    routing_rule: GroupAccountRoutingRule,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1235,6 +1339,7 @@ pub(crate) struct UpstreamAccountSummary {
     duplicate_info: Option<DuplicateInfo>,
     tags: Vec<AccountTagSummary>,
     effective_routing_rule: EffectiveRoutingRule,
+    image_tool_capability: ImageToolCapability,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2073,7 +2178,7 @@ pub(crate) struct UpdateUpstreamAccountRequest {
     local_secondary_limit: Option<f64>,
     local_limit_unit: Option<String>,
     tag_ids: Option<Vec<i64>>,
-    routing_rule: Option<UpdateTagRequest>,
+    routing_rule: Option<UpdateGroupAccountRoutingRuleRequest>,
 }
 
 #[derive(Debug, Clone)]
@@ -2164,6 +2269,22 @@ pub(crate) struct UpdateTagRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct UpdateGroupAccountRoutingRuleRequest {
+    block_new_conversations: Option<bool>,
+    allow_cut_out: Option<bool>,
+    allow_cut_in: Option<bool>,
+    priority_tier: Option<String>,
+    fast_mode_rewrite_mode: Option<String>,
+    image_tool_rewrite_mode: Option<String>,
+    concurrency_limit: Option<i64>,
+    upstream_429_retry_enabled: Option<bool>,
+    upstream_429_max_retries: Option<u8>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    available_models: OptionalField<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct ListTagsQuery {
     search: Option<String>,
     has_accounts: Option<bool>,
@@ -2194,7 +2315,7 @@ pub(crate) struct UpdateUpstreamAccountGroupRequest {
     #[serde(default)]
     upstream_429_max_retries: Option<u8>,
     concurrency_limit: Option<i64>,
-    routing_rule: Option<UpdateTagRequest>,
+    routing_rule: Option<UpdateGroupAccountRoutingRuleRequest>,
 }
 
 #[derive(Debug, Deserialize)]
