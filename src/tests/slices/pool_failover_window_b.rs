@@ -3806,6 +3806,103 @@ async fn proxy_openai_v1_direct_image_prebuffer_preserves_image_capture_target_w
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_responses_force_add_failure_learns_image_unsupported() {
+    async fn image_unsupported_upstream(body: Bytes) -> impl IntoResponse {
+        let request_body: Value = serde_json::from_slice(&body).expect("decode upstream body");
+        assert!(
+            request_body["tools"]
+                .as_array()
+                .expect("tools should be injected")
+                .iter()
+                .any(|tool| tool["type"].as_str() == Some("image_generation")),
+            "force_add should send an image tool upstream: {request_body:?}"
+        );
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "code": "unsupported_tool",
+                    "message": "image_generation is not supported for this account",
+                    "type": "invalid_request_error"
+                }
+            })),
+        )
+            .into_response()
+    }
+
+    let app = Router::new().route("/v1/responses", post(|body| image_unsupported_upstream(body)));
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind image unsupported upstream");
+    let upstream_base = format!("http://{}", listener.local_addr().expect("local addr"));
+    let upstream_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("image unsupported upstream server should run");
+    });
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(20),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Responses Force Add Unsupported",
+        "upstream-force-add-unsupported",
+        None,
+        None,
+        None,
+    )
+    .await;
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_image_tool_rewrite_mode = ?2 WHERE id = ?1",
+    )
+    .bind(account_id)
+    .bind("force_add")
+    .execute(&state.pool)
+    .await
+    .expect("mark responses account force_add");
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6344,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(r#"{"model":"gpt-5.1-codex","input":"hello"}"#),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("via-pool responses request should return a route failure");
+    assert!(response.status().is_server_error() || response.status().is_client_error());
+
+    let capability: String =
+        sqlx::query_scalar("SELECT image_tool_capability FROM pool_upstream_accounts WHERE id = ?")
+            .bind(account_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load image capability after force_add failure");
+    assert_eq!(capability, "unsupported");
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_responses_live_first_waits_for_image_intent_before_filtered_resolution() {
     assert_live_first_waits_for_image_intent_before_filtered_resolution("/v1/responses", 6341)
         .await;
