@@ -1983,7 +1983,12 @@ pub(crate) async fn prepare_pool_request_body_for_account(
         .is_some_and(|target| target.allows_fast_mode_rewrite())
         && fast_mode_rewrite_mode != TagFastModeRewriteMode::KeepOriginal;
     let image_tool_rewrite_required = capture_target
-        .is_some_and(|target| target.allows_fast_mode_rewrite())
+        .is_some_and(|target| {
+            matches!(
+                target,
+                ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact
+            )
+        })
         && image_tool_rewrite_mode != crate::ImageToolRewriteMode::KeepOriginal;
     let rewrite_required = fast_mode_rewrite_required || image_tool_rewrite_required;
 
@@ -2041,11 +2046,14 @@ pub(crate) async fn prepare_pool_request_body_for_account(
         false
     };
     let image_intent = infer_image_intent_from_request_body(target, &value);
-    let image_rewritten = rewrite_openai_responses_image_tools(
-        &mut value,
-        image_tool_rewrite_mode,
-        image_intent,
-    );
+    let image_rewritten = if matches!(
+        target,
+        ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact
+    ) {
+        rewrite_openai_responses_image_tools(&mut value, image_tool_rewrite_mode, image_intent)
+    } else {
+        false
+    };
     let requested_service_tier = extract_requested_service_tier_from_request_body(&value);
     if !rewritten && !image_rewritten {
         return Ok(PreparedPoolRequestBody {

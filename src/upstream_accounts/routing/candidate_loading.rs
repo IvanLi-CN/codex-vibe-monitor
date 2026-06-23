@@ -43,10 +43,7 @@ pub(crate) fn account_accepts_requested_image_intent(
     image_intent: ImageIntent,
     capability: ImageToolCapability,
 ) -> bool {
-    !matches!(
-        (image_intent, capability),
-        (ImageIntent::Yes, ImageToolCapability::Unsupported)
-    )
+    !matches!(image_intent, ImageIntent::Yes) || matches!(capability, ImageToolCapability::Supported)
 }
 
 pub(crate) async fn load_account_group_name_map(
