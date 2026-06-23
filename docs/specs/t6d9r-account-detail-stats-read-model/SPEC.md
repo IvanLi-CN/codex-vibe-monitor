@@ -91,6 +91,7 @@
 
 - 详情抽屉允许懒加载 skeleton，但任何统计面一旦触发加载，展示出来的第一份数据必须是准确值。
 - 首次打开详情时，统计面按需加载；不再因为 roster 首屏拉取、include-all、SSE 或列表刷新去 hydrate 当前页所有账号的 `window-usage`。
+- invocation `records` SSE 只用于 records/live surfaces 的实时补丁；不得再作为账号池 roster、详情或 `window-usage` 的通用刷新触发器。
 - 同账号重复请求必须去重。
 - 切换账号、关闭抽屉或 query key 失效时，旧请求必须被取消或结果丢弃。
 - SSE 与列表刷新最多触发一次受控详情刷新，不能叠加出重复重型请求。

@@ -58,11 +58,10 @@ import {
 import { upsertGroupSummary } from '../lib/upstreamAccountGroups'
 import { UPSTREAM_ACCOUNTS_CHANGED_EVENT, emitUpstreamAccountsChanged } from '../lib/upstreamAccountsEvents'
 import { isUpstreamAccountNotFoundError } from '../lib/upstreamAccountErrors'
-import { subscribeToSse, subscribeToSseOpen } from '../lib/sse'
+import { subscribeToSseOpen } from '../lib/sse'
 
 const LOAD_LIST_FAILED = Symbol('load-list-failed')
 const DEFAULT_FETCH_UPSTREAM_ACCOUNTS_QUERY: FetchUpstreamAccountsQuery = {}
-export const UPSTREAM_ACCOUNTS_SSE_REFRESH_THROTTLE_MS = 5_000
 export const UPSTREAM_ACCOUNTS_OPEN_RESYNC_COOLDOWN_MS = 3_000
 
 export type UpstreamAccountsListFreshness = 'fresh' | 'stale' | 'missing' | 'deferred'
@@ -178,10 +177,6 @@ export function buildUpstreamAccountsListQueryKey(query?: FetchUpstreamAccountsQ
   })
 }
 
-export function getUpstreamAccountsSseRefreshDelay(lastRefreshAt: number, now: number) {
-  return Math.max(0, UPSTREAM_ACCOUNTS_SSE_REFRESH_THROTTLE_MS - (now - lastRefreshAt))
-}
-
 export function shouldTriggerUpstreamAccountsOpenResync(lastResyncAt: number, now: number, force = false) {
   if (force) return true
   return now - lastResyncAt >= UPSTREAM_ACCOUNTS_OPEN_RESYNC_COOLDOWN_MS
@@ -245,7 +240,6 @@ export function useUpstreamAccounts(
   const windowUsageQueryKeyRef = useRef<string | null>(null)
   const hydratedWindowUsageIdsRef = useRef(new Set<number>())
   const pendingWindowUsageGenerationByIdRef = useRef(new Map<number, number>())
-  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastRefreshAtRef = useRef(0)
   const lastOpenResyncAtRef = useRef(0)
   const hasSeenSseOpenRef = useRef(false)
@@ -323,12 +317,6 @@ export function useUpstreamAccounts(
     setIsListPending(false)
     setIsLoading(false)
   }, [resetWindowUsageHydration])
-
-  const clearPendingRefreshTimer = useCallback(() => {
-    if (!refreshTimerRef.current) return
-    clearTimeout(refreshTimerRef.current)
-    refreshTimerRef.current = null
-  }, [])
 
   const loadList = useCallback(
     async (
@@ -705,29 +693,6 @@ export function useUpstreamAccounts(
     }
   }, [refresh])
 
-  const triggerSseRefresh = useCallback(() => {
-    if (
-      currentListQueryKeyRef.current == null ||
-      listDataQueryKeyRef.current !== currentListQueryKeyRef.current
-    ) {
-      return
-    }
-    const now = Date.now()
-    const delay = getUpstreamAccountsSseRefreshDelay(lastRefreshAtRef.current, now)
-    const run = () => {
-      refreshTimerRef.current = null
-      lastRefreshAtRef.current = Date.now()
-      void refresh({ silent: true })
-    }
-    if (delay === 0) {
-      clearPendingRefreshTimer()
-      run()
-      return
-    }
-    if (refreshTimerRef.current) return
-    refreshTimerRef.current = setTimeout(run, delay)
-  }, [clearPendingRefreshTimer, refresh])
-
   const triggerOpenResync = useCallback(
     (force = false) => {
       if (
@@ -747,14 +712,6 @@ export function useUpstreamAccounts(
     },
     [refresh],
   )
-
-  useEffect(() => {
-    const unsubscribe = subscribeToSse((payload) => {
-      if (payload.type !== 'records') return
-      triggerSseRefresh()
-    })
-    return unsubscribe
-  }, [triggerSseRefresh])
 
   useEffect(() => {
     const unsubscribe = subscribeToSseOpen(() => {
@@ -1063,9 +1020,8 @@ export function useUpstreamAccounts(
       pendingWindowUsageGenerationByIdRef.current = new Map()
       hasSeenSseOpenRef.current = false
       autoLoadQueryKeyRef.current = null
-      clearPendingRefreshTimer()
     },
-    [clearPendingRefreshTimer],
+    [],
   )
 
   const selectedDetailError = selectedId == null ? null : detailErrors[selectedId] ?? null
