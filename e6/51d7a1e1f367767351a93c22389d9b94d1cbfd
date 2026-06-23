@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.73.0",
+  "base_stable_version": "1.72.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-06-23T04:20:58Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.73.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "4847c2f2a38928858ee5117813cc4f99444f63e5",
+  "pr_number": 469,
+  "pr_title": "feat(dashboard): stack natural-day cost by outcome",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.73.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.73.0",
+  "target_sha": "e651d7a1e1f367767351a93c22389d9b94d1cbfd",
+  "type_label": "type:minor"
+}
