@@ -51,6 +51,74 @@ done
 python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$baseline_repo" --profile final
 bash "$repo_root/.github/scripts/test-inline-metadata-workflows.sh"
 
+upgraded_baseline_repo="$tmp_dir/upgraded-baseline-repo"
+copy_repo_snapshot "$baseline_repo" "$upgraded_baseline_repo"
+python3 - <<'PY' "$upgraded_baseline_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+for path in (repo / ".github/workflows").glob("*.yml"):
+    text = path.read_text()
+    path.write_text(text.replace("actions/checkout@v4", "actions/checkout@v7"))
+
+release_path = repo / ".github/workflows/release.yml"
+release_text = release_path.read_text()
+needle = "  ci-main-gate:\n    name: CI Main Gate\n    runs-on: ubuntu-latest\n"
+replacement = "  ci-main-gate:\n    name: CI Main Gate\n    runs-on: ubuntu-24.04\n"
+if needle not in release_text:
+    raise SystemExit("failed to rewrite release ci-main-gate runner")
+release_path.write_text(release_text.replace(needle, replacement, 1))
+PY
+
+python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$upgraded_baseline_repo" --profile final
+
+checkout_action_repo="$tmp_dir/checkout-action-repo"
+copy_repo_snapshot "$upgraded_baseline_repo" "$checkout_action_repo"
+python3 - <<'PY' "$checkout_action_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/label-gate.yml"
+text = path.read_text()
+needle = "uses: actions/checkout@v7"
+replacement = "uses: actions/checkout@v6"
+if needle not in text:
+    raise SystemExit("failed to rewrite label-gate checkout action")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$checkout_action_repo" --profile final >/dev/null 2>"$tmp_dir/checkout-action.log"; then
+  echo "expected unsupported checkout action fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "must stay one of ('actions/checkout@v4', 'actions/checkout@v7')" "$tmp_dir/checkout-action.log"
+
+ci_main_gate_runner_repo="$tmp_dir/ci-main-gate-runner-repo"
+copy_repo_snapshot "$upgraded_baseline_repo" "$ci_main_gate_runner_repo"
+python3 - <<'PY' "$ci_main_gate_runner_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/release.yml"
+text = path.read_text()
+needle = "  ci-main-gate:\n    name: CI Main Gate\n    runs-on: ubuntu-24.04\n"
+replacement = "  ci-main-gate:\n    name: CI Main Gate\n    runs-on: ubuntu-22.04\n"
+if needle not in text:
+    raise SystemExit("failed to rewrite release ci-main-gate runner")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$ci_main_gate_runner_repo" --profile final >/dev/null 2>"$tmp_dir/ci-main-gate-runner.log"; then
+  echo "expected unsupported ci-main-gate runner fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "must stay one of ('ubuntu-latest', 'ubuntu-24.04')" "$tmp_dir/ci-main-gate-runner.log"
+
 simplified_topology_repo="$tmp_dir/simplified-topology-repo"
 copy_repo_snapshot "$baseline_repo" "$simplified_topology_repo"
 for workflow in ci-main.yml release.yml release-snapshot-pr.yml label-gate.yml; do
