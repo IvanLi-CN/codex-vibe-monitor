@@ -1505,6 +1505,49 @@ fn parse_target_response_payload_detects_response_compaction_json_shape() {
 }
 
 #[test]
+fn compact_responses_keep_legacy_compaction_kind_even_with_compaction_payload_shape() {
+    let raw = json!({
+        "id": "resp_compact_test",
+        "object": "response.compaction",
+        "output": [
+            {
+                "id": "cmp_001",
+                "type": "compaction",
+                "encrypted_content": "encrypted-summary"
+            }
+        ],
+        "usage": {
+            "input_tokens": 139,
+            "output_tokens": 438,
+            "total_tokens": 577
+        }
+    });
+
+    let parsed = parse_target_response_payload(
+        ProxyCaptureTarget::ResponsesCompact,
+        serde_json::to_string(&raw)
+            .expect("serialize raw payload")
+            .as_bytes(),
+        false,
+        None,
+    );
+
+    assert_eq!(
+        parsed.compaction_response_kind.map(CompactionKind::as_payload_str),
+        Some("remote_v2")
+    );
+
+    assert_eq!(
+        resolve_compaction_response_kind_for_payload(
+            ProxyCaptureTarget::ResponsesCompact,
+            parsed.compaction_response_kind
+        )
+        .map(CompactionKind::as_payload_str),
+        Some("compact")
+    );
+}
+
+#[test]
 fn parse_target_response_payload_records_decode_failure_reason() {
     let raw = [
         "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"model\":\"gpt-5.3-codex\",\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":2,\"total_tokens\":12}}}",

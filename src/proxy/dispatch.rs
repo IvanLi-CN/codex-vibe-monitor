@@ -1764,10 +1764,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 .contains_encrypted_content,
             response_contains_encrypted_content: response_info.contains_encrypted_content,
             compaction_request_kind: request_info_for_task.compaction_request_kind,
-            compaction_response_kind: response_info.compaction_response_kind.or_else(|| {
-                (capture_target == ProxyCaptureTarget::ResponsesCompact)
-                    .then_some(CompactionKind::Compact)
-            }),
+            compaction_response_kind: resolve_compaction_response_kind_for_payload(
+                capture_target,
+                response_info.compaction_response_kind,
+            ),
             request_model: request_info_for_task.model.as_deref(),
             requested_service_tier: request_info_for_task.requested_service_tier.as_deref(),
             billing_service_tier: billing_service_tier.as_deref(),
@@ -2136,5 +2136,16 @@ pub(crate) async fn read_request_body_snapshot_with_limit(
                 failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                 partial_body: Vec::new(),
             })?;
+    }
+}
+
+pub(crate) fn resolve_compaction_response_kind_for_payload(
+    capture_target: ProxyCaptureTarget,
+    parsed_kind: Option<CompactionKind>,
+) -> Option<CompactionKind> {
+    if capture_target == ProxyCaptureTarget::ResponsesCompact {
+        Some(CompactionKind::Compact)
+    } else {
+        parsed_kind
     }
 }
