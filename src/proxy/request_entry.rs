@@ -2124,12 +2124,13 @@ pub(crate) async fn prepare_pool_request_body_for_account(
         false
     };
     let requested_service_tier = extract_requested_service_tier_from_request_body(&value);
+    let upstream_image_intent = infer_image_intent_from_request_body(target, &value);
     if !rewritten && !image_rewritten {
         return Ok(PreparedPoolRequestBody {
             snapshot: PoolReplayBodySnapshot::Memory(original_bytes.clone()),
             request_body_for_capture: Some(original_bytes),
             requested_service_tier,
-            requested_image_intent: original_image_intent,
+            requested_image_intent: upstream_image_intent,
         });
     }
 
@@ -2140,7 +2141,7 @@ pub(crate) async fn prepare_pool_request_body_for_account(
         snapshot: PoolReplayBodySnapshot::Memory(rewritten_bytes.clone()),
         request_body_for_capture: Some(rewritten_bytes.clone()),
         requested_service_tier,
-        requested_image_intent: original_image_intent,
+        requested_image_intent: upstream_image_intent,
     })
 }
 

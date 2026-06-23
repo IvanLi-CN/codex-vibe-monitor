@@ -461,7 +461,7 @@ async fn prepare_pool_request_body_for_account_skips_fast_mode_rewrite_for_compa
 }
 
 #[tokio::test]
-async fn prepare_pool_request_body_for_account_preserves_image_intent_after_force_remove() {
+async fn prepare_pool_request_body_for_account_reports_rewritten_image_intent_after_force_remove() {
     let body = Bytes::from(
         serde_json::to_vec(&json!({
             "model": "gpt-5.3-codex",
@@ -489,7 +489,7 @@ async fn prepare_pool_request_body_for_account_preserves_image_intent_after_forc
     .await
     .expect("prepare responses pool request body");
 
-    assert_eq!(prepared.requested_image_intent, crate::ImageIntent::Yes);
+    assert_eq!(prepared.requested_image_intent, crate::ImageIntent::No);
     let request_body = prepared
         .request_body_for_capture
         .expect("capture request body should be materialized");
