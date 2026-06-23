@@ -11768,6 +11768,7 @@ async fn account_scoped_historical_stats_include_unmaterialized_archived_hours()
     assert_eq!(archived_point.failure_count, 1);
     assert_eq!(archived_point.total_tokens, 30);
     assert_f64_close(archived_point.total_cost, 0.30);
+    assert_f64_close(archived_point.non_success_cost, 0.20);
 
     let account_usage_replay_markers: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE target = ?1",

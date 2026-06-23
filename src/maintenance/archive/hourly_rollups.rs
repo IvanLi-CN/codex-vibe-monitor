@@ -949,7 +949,17 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                 entry.failure_count += 1;
             }
             entry.total_tokens += row.total_tokens.unwrap_or_default();
-            entry.total_cost += row.cost.unwrap_or_default();
+            let cost = row.cost.unwrap_or_default();
+            entry.total_cost += cost;
+            if invocation_counts_toward_non_success_usage(
+                row.status.as_deref(),
+                row.error_message.as_deref(),
+                row.failure_kind.as_deref(),
+                row.failure_class.as_deref(),
+                row.is_actionable,
+            ) {
+                entry.non_success_cost += cost;
+            }
             entry.input_tokens += row.input_tokens.unwrap_or_default();
             entry.output_tokens += row.output_tokens.unwrap_or_default();
             entry.cache_input_tokens += row.cache_input_tokens.unwrap_or_default();
