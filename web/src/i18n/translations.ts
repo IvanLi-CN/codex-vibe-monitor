@@ -1753,8 +1753,8 @@ const baseTranslations = {
     "dashboard.today.parallelConversations": "Parallel conversations",
     "dashboard.today.todayCost": "Today cost",
     "dashboard.today.yesterdayCost": "Yesterday cost",
-    "dashboard.today.todayTokens": "Today tokens",
-    "dashboard.today.yesterdayTokens": "Yesterday tokens",
+    "dashboard.today.todayTokens": "Today Token",
+    "dashboard.today.yesterdayTokens": "Yesterday Token",
     "dashboard.today.tokensPerMinuteDescription":
       "Tokens per minute, calculated from the active tail inside the latest 5-minute window. Leading idle time is ignored.",
     "dashboard.today.spendRateDescription":
@@ -3937,8 +3937,8 @@ const baseTranslations = {
     "dashboard.today.parallelConversations": "并行对话",
     "dashboard.today.todayCost": "今日成本",
     "dashboard.today.yesterdayCost": "昨日成本",
-    "dashboard.today.todayTokens": "今日 Tokens",
-    "dashboard.today.yesterdayTokens": "昨日 Tokens",
+    "dashboard.today.todayTokens": "今日 Token",
+    "dashboard.today.yesterdayTokens": "昨日 Token",
     "dashboard.today.tokensPerMinuteDescription":
       "每分钟 Tokens，按最近 5 分钟窗口内的活跃尾段计算均值；前置空闲时间不参与分母。",
     "dashboard.today.spendRateDescription":

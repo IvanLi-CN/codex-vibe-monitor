@@ -2364,7 +2364,7 @@ function SharedUpstreamAccountDetailDrawerInner({
           onPortalContainerChange={setDetailDrawerPortalContainer}
           onBodyElementChange={setDetailDrawerBodyElement}
           onClose={handleDetailDrawerClose}
-          shellClassName="max-w-[60rem]"
+          shellClassName="max-w-[90rem]"
           header={
             <div className="space-y-4">
               <div className="space-y-3">
@@ -2822,7 +2822,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                       )}
                     />
                   </div>
-                  <div className="grid gap-4 xl:grid-cols-2">
+                  <div className="grid gap-4 lg:grid-cols-2">
                     <UpstreamAccountUsageCard
                       title={t(
                         "accountPool.upstreamAccounts.primaryWindowLabel",

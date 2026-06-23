@@ -70,6 +70,8 @@ interface MetricTileProps {
   valueTestId?: string
   displayText?: string
   subdued?: boolean
+  preserveLabelCase?: boolean
+  labelTestId?: string
   topRightItem?: MetricTileMetaItem | null
   secondaryItems?: MetricTileSecondaryItem[]
 }
@@ -85,6 +87,8 @@ function MetricTile({
   valueTestId,
   displayText,
   subdued = false,
+  preserveLabelCase = false,
+  labelTestId,
   topRightItem,
   secondaryItems = [],
 }: MetricTileProps) {
@@ -111,7 +115,13 @@ function MetricTile({
             onKeyDown: handleLabelKeyDown,
           }}
         >
-          <span className="inline-flex cursor-help text-left text-xs font-semibold uppercase tracking-[0.14em] text-base-content/65 underline decoration-dotted underline-offset-4 transition-colors hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+          <span
+            data-testid={labelTestId}
+            className={cn(
+              'inline-flex cursor-help whitespace-nowrap text-left text-xs font-semibold tracking-[0.14em] text-base-content/65 underline decoration-dotted underline-offset-4 transition-colors hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
+              preserveLabelCase ? 'normal-case' : 'uppercase',
+            )}
+          >
             {label}
           </span>
         </Tooltip>
@@ -556,6 +566,8 @@ export function TodayStatsOverview({
             value={totalTokens}
             localeTag={localeTag}
             loading={loading}
+            preserveLabelCase
+            labelTestId="today-stats-label-total-tokens"
             valueTestId="today-stats-value-total-tokens"
             topRightItem={{
               label: comparisonLabel,

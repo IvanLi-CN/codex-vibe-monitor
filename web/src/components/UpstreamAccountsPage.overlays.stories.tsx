@@ -202,6 +202,26 @@ export const DetailDrawerRecordsSettled: Story = {
   },
 }
 
+export const DetailDrawerRecordsSettledWide: Story = {
+  parameters: {
+    viewport: { defaultViewport: 'desktop1920' },
+  },
+  render: () => <DetailDrawerStorySurface initialTab="records" maxWidth="1920px" />,
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const dialog = await documentScope.findByRole('dialog', {
+      name: /Codex Pro - Tokyo/i,
+    })
+    await expect(within(dialog).getByRole('tab', { name: /调用记录|records/i })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    await expect(within(dialog).getByText(/账号活动总览|account activity overview/i)).toBeInTheDocument()
+    await expect(within(dialog).getByTestId('upstream-account-records-activity-overview')).toBeInTheDocument()
+    await expect(within(dialog).getByText(/gpt-5\.4/i)).toBeInTheDocument()
+  },
+}
+
 export const DetailDrawerRecordsOverflowDarkNarrow: Story = {
   globals: {
     themeMode: 'dark',
@@ -217,6 +237,7 @@ export const DetailDrawerRecordsOverflowDarkNarrow: Story = {
     })
     await expect(within(dialog).getByRole('tab', { name: /调用记录|records/i })).toHaveAttribute('aria-selected', 'true')
     await expect(within(dialog).getByText(/账号活动总览|account activity overview/i)).toBeInTheDocument()
+    await expect(within(dialog).getByText('今日 Token')).toBeInTheDocument()
     const totalTokens = within(dialog).getByTestId('today-stats-value-total-tokens')
     await expect(totalTokens).toHaveAttribute('data-compact', 'true')
     await expect(totalTokens).toHaveAttribute('data-compact-precision', '0')

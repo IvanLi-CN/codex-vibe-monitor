@@ -121,6 +121,16 @@ PR: include
 PR: include
 ![账号详情记录页实时推送稳定态](./assets/detail-drawer-records-live-sync-stable.png)
 
+- 详情抽屉 records tab 宽屏放宽态（mock Storybook；共享抽屉桌面宽度提升到 `90rem` 后，records 视图横向空间更充足，概览与记录容器不再被旧的 `60rem` 壳层过早压缩）
+
+PR: include
+![账号详情记录页宽屏放宽态](./assets/detail-drawer-records-settled-wide.png)
+
+- 详情抽屉 records tab 窄宽度 token 标签稳定态（mock Storybook；总 token 指标标题从 `今日 Tokens` 缩短为 `今日 Token`，并保持单行显示，不再在窄卡片里被拆成两行）
+
+PR: include
+![账号详情记录页 token 标签单行态](./assets/detail-drawer-records-token-label-nowrap.png)
+
 ## 参考
 
 - `docs/specs/9aucy-db-retention-archive/SPEC.md`
