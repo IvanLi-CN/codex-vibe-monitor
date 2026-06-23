@@ -58,6 +58,54 @@ pub(crate) async fn record_pool_route_success(
     Ok(())
 }
 
+pub(crate) async fn record_pool_route_success_with_image_intent(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    request_started_at_utc: DateTime<Utc>,
+    sticky_key: Option<&str>,
+    invoke_id: Option<&str>,
+    image_intent: ImageIntent,
+) -> Result<()> {
+    record_pool_route_success(
+        pool,
+        account_id,
+        request_started_at_utc,
+        sticky_key,
+        invoke_id,
+    )
+    .await?;
+    if matches!(image_intent, ImageIntent::Yes) {
+        record_image_tool_capability_observation(pool, account_id, ImageToolCapability::Supported)
+            .await?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn record_image_tool_capability_observation(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    capability: ImageToolCapability,
+) -> Result<()> {
+    if matches!(capability, ImageToolCapability::Unknown) {
+        return Ok(());
+    }
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET image_tool_capability = ?2,
+            updated_at = ?3
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .bind(capability.as_str())
+    .bind(now_iso)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub(crate) async fn record_pool_route_http_failure(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -68,6 +116,38 @@ pub(crate) async fn record_pool_route_http_failure(
     error_message: &str,
     invoke_id: Option<&str>,
 ) -> Result<()> {
+    record_pool_route_http_failure_with_image_intent(
+        pool,
+        account_id,
+        account_kind,
+        single_account_rotation_enabled,
+        sticky_key,
+        status,
+        error_message,
+        invoke_id,
+        ImageIntent::Unknown,
+    )
+    .await
+}
+
+pub(crate) async fn record_pool_route_http_failure_with_image_intent(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    account_kind: &str,
+    single_account_rotation_enabled: bool,
+    sticky_key: Option<&str>,
+    status: StatusCode,
+    error_message: &str,
+    invoke_id: Option<&str>,
+    image_intent: ImageIntent,
+) -> Result<()> {
+    if matches!(image_intent, ImageIntent::Yes)
+        && classify_image_tool_capability_observation(status, Some(error_message))
+            == ImageToolCapability::Unsupported
+    {
+        record_image_tool_capability_observation(pool, account_id, ImageToolCapability::Unsupported)
+            .await?;
+    }
     if route_http_failure_is_retryable_server_overloaded(status, error_message) {
         return record_pool_route_retryable_overload_failure(
             pool,

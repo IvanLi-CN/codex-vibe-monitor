@@ -1604,6 +1604,58 @@ pub(crate) fn classify_compact_support_observation(
     }
 }
 
+pub(crate) fn image_tool_capability_negative_signal(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    let has_support_failure_signal = [
+        "unsupported model",
+        "unsupported endpoint",
+        "unsupported path",
+        "unsupported route",
+        "unsupported tool",
+        "does not support",
+        "is not supported",
+        "not support",
+        "unknown model",
+        "model not found",
+        "no available channel for model",
+        "no channel",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle));
+    if !has_support_failure_signal {
+        return false;
+    }
+
+    normalized.contains("image_generation")
+        || normalized.contains("image generation")
+        || normalized.contains("gpt-image-")
+        || normalized.contains("/v1/images/")
+        || normalized.contains("images/generations")
+        || normalized.contains("images/edits")
+}
+
+pub(crate) fn classify_image_tool_capability_observation(
+    status: StatusCode,
+    message: Option<&str>,
+) -> ImageToolCapability {
+    if status.is_success() {
+        return ImageToolCapability::Supported;
+    }
+    let normalized_message = message
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if status == StatusCode::BAD_REQUEST
+        && normalized_message
+            .as_deref()
+            .is_some_and(image_tool_capability_negative_signal)
+    {
+        ImageToolCapability::Unsupported
+    } else {
+        ImageToolCapability::Unknown
+    }
+}
+
 pub(crate) fn fallback_proxy_429_retry_delay(retry_index: u32) -> Duration {
     let exponent = retry_index.saturating_sub(1).min(16);
     let multiplier = 1_u64 << exponent;
@@ -2533,6 +2585,42 @@ mod tests {
                 "unsupported_model: response_format is not supported for model gpt-4o",
             ),
             None
+        );
+    }
+
+    #[test]
+    fn classify_image_tool_capability_observation_learns_success_and_explicit_unsupported() {
+        assert_eq!(
+            classify_image_tool_capability_observation(StatusCode::OK, None),
+            ImageToolCapability::Supported
+        );
+        assert_eq!(
+            classify_image_tool_capability_observation(
+                StatusCode::BAD_REQUEST,
+                Some("unsupported tool: image_generation is not supported by this account"),
+            ),
+            ImageToolCapability::Unsupported
+        );
+        assert_eq!(
+            classify_image_tool_capability_observation(
+                StatusCode::BAD_REQUEST,
+                Some("request body is invalid"),
+            ),
+            ImageToolCapability::Unknown
+        );
+        assert_eq!(
+            classify_image_tool_capability_observation(
+                StatusCode::BAD_REQUEST,
+                Some("invalid image size: width must be divisible by 64"),
+            ),
+            ImageToolCapability::Unknown
+        );
+        assert_eq!(
+            classify_image_tool_capability_observation(
+                StatusCode::BAD_REQUEST,
+                Some("No available channel for model gpt-image-1 under group default"),
+            ),
+            ImageToolCapability::Unsupported
         );
     }
 }

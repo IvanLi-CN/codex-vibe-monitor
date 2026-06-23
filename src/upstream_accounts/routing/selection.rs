@@ -713,6 +713,10 @@ async fn resolve_pool_account_for_request_with_route_requirement_internal(
                             || account_accepts_requested_model(requested_model, rule)
                     }) && account_accepts_requested_image_intent(
                         image_intent,
+                        sticky_source_rule
+                            .as_ref()
+                            .map(|rule| rule.image_tool_rewrite_mode)
+                            .unwrap_or(ImageToolRewriteMode::KeepOriginal),
                         crate::ImageToolCapability::from_str(
                             row.image_tool_capability.as_deref().unwrap_or("unknown"),
                         ),
@@ -974,6 +978,7 @@ async fn resolve_pool_account_for_request_with_route_requirement_internal(
         }
         if !account_accepts_requested_image_intent(
             image_intent,
+            effective_rule.image_tool_rewrite_mode,
             crate::ImageToolCapability::from_str(
                 row.image_tool_capability.as_deref().unwrap_or("unknown"),
             ),

@@ -1548,17 +1548,21 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         had_stream_error,
                         had_logical_stream_failure,
                     );
+                let request_image_intent = request_info_for_task.image_intent.as_deref()
+                    .map(crate::ImageIntent::from_str)
+                    .unwrap_or(crate::ImageIntent::Unknown);
                 let route_result = if pool_route_success || pure_downstream_closed {
                     consume_pool_routing_reservation(
                         state_for_task.as_ref(),
                         &reservation_key_for_task,
                     );
-                    record_pool_route_success(
+                    record_pool_route_success_with_image_intent(
                         &state_for_task.pool,
                         account.account_id,
                         upstream_attempt_started_at_utc_for_task.unwrap_or_else(Utc::now),
                         sticky_key_for_task.as_deref(),
                         None,
+                        request_image_intent,
                     )
                     .await
                 } else if had_stream_error {
@@ -1600,7 +1604,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         )
                         .await
                     } else {
-                        record_pool_route_http_failure(
+                        record_pool_route_http_failure_with_image_intent(
                             &state_for_task.pool,
                             account.account_id,
                             &account.kind,
@@ -1609,6 +1613,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             upstream_status,
                             &route_message,
                             None,
+                            request_image_intent,
                         )
                         .await
                     }

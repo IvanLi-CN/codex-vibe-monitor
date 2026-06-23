@@ -2453,7 +2453,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                     )
                     .await
                 } else {
-                    record_pool_route_http_failure(
+                    record_pool_route_http_failure_with_image_intent(
                         &state.pool,
                         account.account_id,
                         &account.kind,
@@ -2462,6 +2462,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         status,
                         &route_error_message,
                         trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                        image_intent,
                     )
                     .await
                 };

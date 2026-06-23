@@ -87,14 +87,18 @@ The image-tool layer is separate from the inherited tag model:
 - `imageToolRewriteMode` exists on group and account routing rules only; tags do not carry it
 - account records persist a read-only `imageToolCapability`
 - `image intent` classification is tri-state: `yes`, `no`, or `unknown`
-- `yes` routes only to accounts whose image capability is `supported`
+- `yes` routes only to image-compatible accounts
 - `unknown` keeps ordinary routing semantics and does not force image filtering
-- `keep_original` consults account image capability
+- `keep_original` treats `supported` and `unknown` accounts as image-compatible, and excludes `unsupported`
+- `fill_missing` and `force_add` make the account image-compatible for routing
+- `force_remove` makes the account image-incompatible for routing
 - `fill_missing` only injects image tools when image intent is confirmed
 - `force_add` always injects image tools
 - `force_remove` always strips image tools
 - `/v1/responses` and `/v1/responses/compact` may rewrite request bodies to satisfy the final account's rewrite mode
 - `/v1/images/generations` and `/v1/images/edits` only filter by capability and do not rewrite the body
+- successful image-intent requests learn `imageToolCapability=supported`
+- explicit unsupported image responses learn `imageToolCapability=unsupported`
 
 ## Sticky Transfer Policy
 

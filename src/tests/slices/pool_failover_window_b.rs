@@ -3622,6 +3622,98 @@ async fn proxy_openai_v1_header_sticky_rechecks_model_before_reusing_header_reso
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_header_sticky_rechecks_image_intent_before_reusing_header_resolution() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(20),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let sticky_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Header Sticky Text Only",
+        "upstream-sticky-text-only",
+        None,
+        None,
+        None,
+    )
+    .await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Fallback Image Capable",
+        "upstream-image-fallback",
+        None,
+        None,
+        None,
+    )
+    .await;
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_image_tool_rewrite_mode = ?2 WHERE id = ?1",
+    )
+    .bind(sticky_account_id)
+    .bind("force_remove")
+    .execute(&state.pool)
+    .await
+    .expect("mark sticky account as image-incompatible");
+
+    let sticky_seen_at = format_utc_iso(Utc::now());
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "header-image-sensitive-sticky",
+        sticky_account_id,
+        &sticky_seen_at,
+    )
+    .await;
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6248,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-sticky-key"),
+                HeaderValue::from_static("header-image-sensitive-sticky"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(r#"{"model":"gpt-image-1","input":"draw a cat"}"#),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("via-pool image request should succeed");
+
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read via-pool image response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode via-pool image response");
+    assert_eq!(payload["authorization"], "Bearer upstream-image-fallback");
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-sticky-text-only").copied(), None);
+    assert_eq!(
+        attempts.get("Bearer upstream-image-fallback").copied(),
+        Some(1)
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_live_first_waits_for_full_model_before_filtered_resolution() {
     let mut config = test_config();
     config.openai_proxy_request_read_timeout = Duration::from_millis(260);

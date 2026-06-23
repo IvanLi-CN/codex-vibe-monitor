@@ -307,6 +307,45 @@
         }
     }
 
+    #[test]
+    fn image_intent_yes_routes_to_image_compatible_accounts() {
+        assert!(account_accepts_requested_image_intent(
+            ImageIntent::Yes,
+            ImageToolRewriteMode::KeepOriginal,
+            ImageToolCapability::Unknown,
+        ));
+        assert!(account_accepts_requested_image_intent(
+            ImageIntent::Yes,
+            ImageToolRewriteMode::KeepOriginal,
+            ImageToolCapability::Supported,
+        ));
+        assert!(!account_accepts_requested_image_intent(
+            ImageIntent::Yes,
+            ImageToolRewriteMode::KeepOriginal,
+            ImageToolCapability::Unsupported,
+        ));
+        assert!(account_accepts_requested_image_intent(
+            ImageIntent::Yes,
+            ImageToolRewriteMode::FillMissing,
+            ImageToolCapability::Unsupported,
+        ));
+        assert!(account_accepts_requested_image_intent(
+            ImageIntent::Yes,
+            ImageToolRewriteMode::ForceAdd,
+            ImageToolCapability::Unsupported,
+        ));
+        assert!(!account_accepts_requested_image_intent(
+            ImageIntent::Yes,
+            ImageToolRewriteMode::ForceRemove,
+            ImageToolCapability::Supported,
+        ));
+        assert!(account_accepts_requested_image_intent(
+            ImageIntent::Unknown,
+            ImageToolRewriteMode::ForceRemove,
+            ImageToolCapability::Unsupported,
+        ));
+    }
+
     async fn insert_test_oauth_mailbox_session(
         pool: &SqlitePool,
         session_id: &str,

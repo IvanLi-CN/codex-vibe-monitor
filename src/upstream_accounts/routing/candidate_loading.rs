@@ -39,11 +39,26 @@ pub(crate) fn account_accepts_requested_model(
         .any(|candidate| requested_model_matches_constraint(requested_model, candidate))
 }
 
-pub(crate) fn account_accepts_requested_image_intent(
-    image_intent: ImageIntent,
+pub(crate) fn account_is_image_compatible(
+    rewrite_mode: ImageToolRewriteMode,
     capability: ImageToolCapability,
 ) -> bool {
-    !matches!(image_intent, ImageIntent::Yes) || matches!(capability, ImageToolCapability::Supported)
+    match rewrite_mode {
+        ImageToolRewriteMode::ForceAdd | ImageToolRewriteMode::FillMissing => true,
+        ImageToolRewriteMode::ForceRemove => false,
+        ImageToolRewriteMode::KeepOriginal => {
+            !matches!(capability, ImageToolCapability::Unsupported)
+        }
+    }
+}
+
+pub(crate) fn account_accepts_requested_image_intent(
+    image_intent: ImageIntent,
+    rewrite_mode: ImageToolRewriteMode,
+    capability: ImageToolCapability,
+) -> bool {
+    !matches!(image_intent, ImageIntent::Yes)
+        || account_is_image_compatible(rewrite_mode, capability)
 }
 
 pub(crate) async fn load_account_group_name_map(
