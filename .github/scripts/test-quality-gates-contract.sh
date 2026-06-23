@@ -66,9 +66,10 @@ release_path = repo / ".github/workflows/release.yml"
 release_text = release_path.read_text()
 needle = "  ci-main-gate:\n    name: CI Main Gate\n    runs-on: ubuntu-latest\n"
 replacement = "  ci-main-gate:\n    name: CI Main Gate\n    runs-on: ubuntu-24.04\n"
-if needle not in release_text:
-    raise SystemExit("failed to rewrite release ci-main-gate runner")
-release_path.write_text(release_text.replace(needle, replacement, 1))
+if needle in release_text:
+    release_path.write_text(release_text.replace(needle, replacement, 1))
+elif replacement not in release_text:
+    raise SystemExit("failed to align release ci-main-gate runner")
 PY
 
 python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$upgraded_baseline_repo" --profile final
@@ -94,7 +95,7 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-r
   exit 1
 fi
 
-grep -q "must stay one of ('actions/checkout@v4', 'actions/checkout@v7')" "$tmp_dir/checkout-action.log"
+grep -q "must stay 'actions/checkout@v7'" "$tmp_dir/checkout-action.log"
 
 ci_main_gate_runner_repo="$tmp_dir/ci-main-gate-runner-repo"
 copy_repo_snapshot "$upgraded_baseline_repo" "$ci_main_gate_runner_repo"
@@ -117,7 +118,7 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-r
   exit 1
 fi
 
-grep -q "must stay one of ('ubuntu-latest', 'ubuntu-24.04')" "$tmp_dir/ci-main-gate-runner.log"
+grep -q "release.yml.jobs.ci-main-gate.runs-on drifted" "$tmp_dir/ci-main-gate-runner.log"
 
 simplified_topology_repo="$tmp_dir/simplified-topology-repo"
 copy_repo_snapshot "$baseline_repo" "$simplified_topology_repo"
