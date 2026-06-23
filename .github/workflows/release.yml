@@ -326,6 +326,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.release-meta.outputs.target_sha }}
+          path: target
+
+      - name: Checkout workflow helpers
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: workflow-helpers
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -337,8 +344,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install workflow helper scripts
+        shell: bash
+        working-directory: target
+        run: |
+          set -euo pipefail
+          install -m 755 ../workflow-helpers/.github/scripts/build-smoke-image-with-retry.sh \
+            ./.github/scripts/build-smoke-image-with-retry.sh
+
       - name: Build smoke image (linux/arm64, load)
         shell: bash
+        working-directory: target
         env:
           BUILD_PLATFORM: ${{ env.PLATFORM_ARM64 }}
           SMOKE_TAG: ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ needs.release-meta.outputs.candidate_suffix }}-arm64
@@ -349,6 +365,7 @@ jobs:
 
       - name: Smoke test image (linux/arm64)
         shell: bash
+        working-directory: target
         env:
           SMOKE_TAG: ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ needs.release-meta.outputs.candidate_suffix }}-arm64
           SMOKE_CONTAINER_NAME: smoke-codex-vibe-monitor-arm64-${{ needs.release-meta.outputs.candidate_suffix }}
