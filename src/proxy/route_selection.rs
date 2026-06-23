@@ -1866,6 +1866,16 @@ fn infer_request_image_intent(
     }
 }
 
+fn live_first_image_intent_known(
+    capture_target: Option<ProxyCaptureTarget>,
+    image_intent: crate::ImageIntent,
+) -> bool {
+    match capture_target {
+        Some(ProxyCaptureTarget::Responses) => !matches!(image_intent, crate::ImageIntent::Unknown),
+        _ => true,
+    }
+}
+
 pub(crate) async fn proxy_openai_v1_via_pool(
     state: Arc<AppState>,
     proxy_request_id: u64,
@@ -2706,9 +2716,11 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         live_request_contains_encrypted_content,
                     )
                     .await?;
-                // Live-first routing only remains safe when we already know the requested model
-                // or an explicit binding is allowed to bypass model filtering.
-                if live_requested_model.is_some() || prompt_cache_binding_constraint.is_some() {
+                let live_first_requirements_known =
+                    live_first_image_intent_known(capture_target, request_image_intent)
+                        && (live_requested_model.is_some()
+                            || prompt_cache_binding_constraint.is_some());
+                if live_first_requirements_known {
                     let resolution = if prompt_cache_binding_constraint.is_some() {
                         resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent(
                             state.as_ref(),
@@ -3194,6 +3206,13 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     .or(live_requested_model);
                 let request_contains_encrypted_content =
                     replay_snapshot_contains_encrypted_content(&request_body_snapshot).await;
+                let request_image_intent = match request_body_snapshot.to_bytes().await {
+                    Ok(request_body_bytes) => serde_json::from_slice::<Value>(&request_body_bytes)
+                        .ok()
+                        .map(|value| infer_request_image_intent(capture_target, Some(&value)))
+                        .unwrap_or_else(|| infer_request_image_intent(capture_target, None)),
+                    Err(_) => infer_request_image_intent(capture_target, None),
+                };
                 let (prompt_cache_binding_constraint, owner_auto_guard_active) =
                     load_via_pool_effective_routing_constraint(
                         state.as_ref(),

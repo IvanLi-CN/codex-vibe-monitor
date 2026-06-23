@@ -3714,6 +3714,112 @@ async fn proxy_openai_v1_header_sticky_rechecks_image_intent_before_reusing_head
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_responses_live_first_waits_for_image_intent_before_filtered_resolution() {
+    let mut config = test_config();
+    config.openai_proxy_request_read_timeout = Duration::from_millis(260);
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(120),
+            poll_interval: Duration::from_millis(10),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Primary Text Only",
+        "upstream-primary",
+        None,
+        None,
+        None,
+    )
+    .await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Fallback Image Capable",
+        "upstream-fallback",
+        None,
+        None,
+        None,
+    )
+    .await;
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_image_tool_rewrite_mode = ?2 WHERE id = ?1",
+    )
+    .bind(primary_id)
+    .bind("force_remove")
+    .execute(&state.pool)
+    .await
+    .expect("mark primary account as image-incompatible");
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    let first_chunk = format!(
+        "{{\"model\":\"gpt-5.5\",\"input\":\"{}",
+        "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 256)
+    );
+    tokio::spawn(async move {
+        let _ = tx.send(Ok(Bytes::from(first_chunk))).await;
+        tokio::time::sleep(Duration::from_millis(130)).await;
+        let _ = tx
+            .send(Ok(Bytes::from_static(
+                b"\",\"tools\":[{\"type\":\"image_generation\"}]}",
+            )))
+            .await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let started = Instant::now();
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6341,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("via-pool request should wait for delayed image intent");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed >= Duration::from_millis(100),
+        "image-sensitive request should wait for delayed image intent, elapsed={elapsed:?}"
+    );
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read via-pool response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
+    assert_eq!(payload["authorization"], "Bearer upstream-fallback");
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), None);
+    assert_eq!(attempts.get("Bearer upstream-fallback").copied(), Some(1));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_live_first_waits_for_full_model_before_filtered_resolution() {
     let mut config = test_config();
     config.openai_proxy_request_read_timeout = Duration::from_millis(260);
