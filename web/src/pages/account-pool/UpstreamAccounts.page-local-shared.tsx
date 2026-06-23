@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import { AppIcon } from "../../components/AppIcon";
 import { AccountDetailDrawerShell } from "../../components/AccountDetailDrawerShell";
@@ -51,7 +52,7 @@ import { Spinner } from "../../components/ui/spinner";
 import { Switch } from "../../components/ui/switch";
 import { AccountTagField } from "../../components/AccountTagField";
 import { EffectiveRoutingRuleCard } from "../../components/EffectiveRoutingRuleCard";
-import { TagRuleDialog } from "../../components/TagRuleDialog";
+import { GroupAccountRoutingRuleDialog } from "../../components/GroupAccountRoutingRuleDialog";
 import { InvocationTable } from "../../components/InvocationTable";
 import {
   ACCOUNT_ACTIVITY_RANGE_STORAGE_KEY_PREFIX,
@@ -71,8 +72,7 @@ import { useUpstreamStickyConversations } from "../../hooks/useUpstreamStickyCon
 import type {
   ApiInvocation,
   StickyKeyConversationSelection,
-  TagRoutingRule,
-  UpdateTagPayload,
+  UpdateGroupAccountRoutingRulePayload,
   UpstreamAccountDetail,
   UpstreamAccountDuplicateInfo,
   UpstreamAccountSummary,
@@ -506,13 +506,17 @@ function AccountDetailSkeleton() {
   );
 }
 
-function DetailField({ label, value }: { label: string; value: string }) {
+function DetailField({
+  label,
+  value,
+}: {
+  label: string;
+  value: ReactNode;
+}) {
   return (
     <div className="metric-cell">
       <p className="metric-label">{label}</p>
-      <p className="mt-2 break-all text-sm text-base-content/80">
-        {value || "—"}
-      </p>
+      <div className="mt-2 text-sm text-base-content/80">{value ?? "—"}</div>
     </div>
   );
 }
@@ -2194,7 +2198,10 @@ function SharedUpstreamAccountDetailDrawerInner({
     ],
   );
   const handleSaveAccountPolicy = useCallback(
-    async (source: UpstreamAccountDetail, payload: UpdateTagPayload) => {
+    async (
+      source: UpstreamAccountDetail,
+      payload: UpdateGroupAccountRoutingRulePayload,
+    ) => {
       if (hasBusyAccountAction(busyAction, source.id)) return;
       setActionError((current) => {
         const nextMessages = { ...current.accountMessages };
@@ -2778,6 +2785,36 @@ function SharedUpstreamAccountDetailDrawerInner({
                     <DetailField
                       label={t("accountPool.upstreamAccounts.fields.groupName")}
                       value={selectedDetail.groupName ?? ""}
+                    />
+                    <DetailField
+                      label={t(
+                        "accountPool.upstreamAccounts.fields.imageToolCapability",
+                      )}
+                      value={
+                        <div className="flex flex-col gap-1">
+                          <Badge
+                            variant={
+                              (selectedDetail.imageToolCapability ?? "unknown") ===
+                              "supported"
+                                ? "success"
+                                : (selectedDetail.imageToolCapability ?? "unknown") ===
+                                    "unsupported"
+                                  ? "warning"
+                                  : "secondary"
+                            }
+                            className="w-fit"
+                          >
+                            {t(
+                              `accountPool.upstreamAccounts.imageToolCapability.${selectedDetail.imageToolCapability ?? "unknown"}`,
+                            )}
+                          </Badge>
+                          <span className="text-xs leading-5 text-base-content/60">
+                            {t(
+                              `accountPool.upstreamAccounts.imageToolCapabilityHint.${selectedDetail.imageToolCapability ?? "unknown"}`,
+                            )}
+                          </span>
+                        </div>
+                      }
                     />
                     <DetailField
                       label={t(
@@ -3412,6 +3449,21 @@ function SharedUpstreamAccountDetailDrawerInner({
                       fastModeForceRemove: t(
                         "accountPool.upstreamAccounts.effectiveRule.fastModeForceRemove",
                       ),
+                      imageToolKeepOriginal: t(
+                        "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolKeepOriginal",
+                      ),
+                      imageToolFillMissing: t(
+                        "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolFillMissing",
+                      ),
+                      imageToolForceAdd: t(
+                        "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceAdd",
+                      ),
+                      imageToolForceRemove: t(
+                        "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceRemove",
+                      ),
+                      fieldImageToolRewriteMode: t(
+                        "accountPool.upstreamAccounts.effectiveRule.fieldImageToolRewriteMode",
+                      ),
                     }}
                   />
 
@@ -3768,10 +3820,8 @@ function SharedUpstreamAccountDetailDrawerInner({
       ) : null}
 
       {groupNoteDialog}
-      <TagRuleDialog
+      <GroupAccountRoutingRuleDialog
         open={accountPolicyEditorOpen && selectedDetail != null}
-        mode="edit"
-        policyOnly
         changedFieldsOnly
         availableModelOptions={availableModelOptions}
         title={t("accountPool.upstreamAccounts.policyDialog.accountTitle")}
@@ -3779,19 +3829,7 @@ function SharedUpstreamAccountDetailDrawerInner({
           "accountPool.upstreamAccounts.policyDialog.accountDescription",
         )}
         submitLabel={t("accountPool.upstreamAccounts.policyDialog.save")}
-        tag={
-          selectedDetail
-            ? {
-                id: selectedDetail.id,
-                name: selectedDetail.displayName,
-                routingRule:
-                  selectedDetail.effectiveRoutingRule as TagRoutingRule,
-                accountCount: 1,
-                groupCount: 1,
-                updatedAt: "",
-              }
-            : null
-        }
+        rule={selectedDetail?.effectiveRoutingRule ?? null}
         busy={
           selectedDetail
             ? hasBusyAccountAction(busyAction, selectedDetail.id)
@@ -3805,14 +3843,9 @@ function SharedUpstreamAccountDetailDrawerInner({
         onClose={() => setAccountPolicyEditorOpen(false)}
         onSubmit={(payload) => {
           if (!selectedDetail) return;
-          void handleSaveAccountPolicy(selectedDetail, payload as UpdateTagPayload);
+          void handleSaveAccountPolicy(selectedDetail, payload);
         }}
         labels={{
-          createTitle: t("accountPool.tags.dialog.createTitle"),
-          editTitle: t("accountPool.tags.dialog.editTitle"),
-          description: t("accountPool.tags.dialog.description"),
-          name: t("accountPool.tags.dialog.name"),
-          namePlaceholder: t("accountPool.tags.dialog.namePlaceholder"),
           blockNewConversations: t("accountPool.tags.dialog.blockNewConversations"),
           forbidNewConversation: t("accountPool.tags.dialog.forbidNewConversation"),
           allowCutOut: t("accountPool.tags.dialog.allowCutOut"),
@@ -3828,6 +3861,43 @@ function SharedUpstreamAccountDetailDrawerInner({
           fastModeFillMissing: t("accountPool.tags.dialog.fastModeFillMissing"),
           fastModeForceAdd: t("accountPool.tags.dialog.fastModeForceAdd"),
           fastModeForceRemove: t("accountPool.tags.dialog.fastModeForceRemove"),
+          imageToolRewriteMode: t(
+            "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteMode",
+          ),
+          imageToolKeepOriginal: t(
+            "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolKeepOriginal",
+          ),
+          imageToolFillMissing: t(
+            "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolFillMissing",
+          ),
+          imageToolForceAdd: t(
+            "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceAdd",
+          ),
+          imageToolForceRemove: t(
+            "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceRemove",
+          ),
+          imageToolRewriteHint: t(
+            "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteHint",
+          ),
+          upstream429Retry: t(
+            "accountPool.upstreamAccounts.groupNotes.upstream429.label",
+          ),
+          upstream429RetryHint: t(
+            "accountPool.upstreamAccounts.groupNotes.upstream429.hint",
+          ),
+          upstream429RetryToggle: t(
+            "accountPool.upstreamAccounts.groupNotes.upstream429.toggle",
+          ),
+          upstream429RetryCount: t(
+            "accountPool.upstreamAccounts.groupNotes.upstream429.countLabel",
+          ),
+          upstream429RetryCountOnce: t(
+            "accountPool.upstreamAccounts.groupNotes.upstream429.countOnce",
+          ),
+          upstream429RetryCountMany: (count) =>
+            t("accountPool.upstreamAccounts.groupNotes.upstream429.countMany", {
+              count,
+            }),
           concurrencyLimit: t("accountPool.tags.dialog.concurrencyLimit"),
           concurrencyHint: t("accountPool.tags.dialog.concurrencyHint"),
           currentValue: t("accountPool.tags.dialog.currentValue"),
@@ -3843,8 +3913,6 @@ function SharedUpstreamAccountDetailDrawerInner({
           availableModelsInherited: t("accountPool.tags.dialog.availableModelsInherited"),
           availableModelsRemove: t("accountPool.tags.dialog.availableModelsRemove"),
           cancel: t("accountPool.tags.dialog.cancel"),
-          save: t("accountPool.tags.dialog.save"),
-          create: t("accountPool.tags.dialog.createAction"),
           validation: t("accountPool.tags.dialog.validation"),
         }}
       />

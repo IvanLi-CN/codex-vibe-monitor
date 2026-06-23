@@ -2378,9 +2378,11 @@ async fn insert_pool_upstream_terminal_attempt_preserves_scope_snapshots() {
                 bound_proxy_keys: vec![FORWARD_PROXY_DIRECT_KEY.to_string()],
                 forward_proxy_scope: ForwardProxyRouteScope::pinned(FORWARD_PROXY_DIRECT_KEY),
                 single_account_rotation_enabled: false,
-    upstream_429_retry_enabled: false,
+                upstream_429_retry_enabled: false,
                 upstream_429_max_retries: 0,
                 fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+                image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+                image_tool_capability: ImageToolCapability::Unknown,
                 upstream_base_url: Url::parse("https://api.openai.com/")
                     .expect("valid upstream base"),
                 routing_source: PoolRoutingSelectionSource::FreshAssignment,
@@ -4637,6 +4639,8 @@ async fn send_pool_request_with_failover_defers_armed_guard_when_pending_attempt
     upstream_429_retry_enabled: false,
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+        image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+        image_tool_capability: ImageToolCapability::Unknown,
     };
 
     let mut upstream = send_pool_request_with_failover(
@@ -4749,6 +4753,8 @@ async fn send_pool_request_with_failover_disarms_guard_after_streaming_phase_is_
     upstream_429_retry_enabled: false,
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+        image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+        image_tool_capability: ImageToolCapability::Unknown,
     };
 
     let upstream = send_pool_request_with_failover(
@@ -4874,6 +4880,8 @@ async fn send_pool_request_with_failover_keeps_early_phase_guard_armed_when_stre
     upstream_429_retry_enabled: false,
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+        image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+        image_tool_capability: ImageToolCapability::Unknown,
     };
 
     let upstream = send_pool_request_with_failover(

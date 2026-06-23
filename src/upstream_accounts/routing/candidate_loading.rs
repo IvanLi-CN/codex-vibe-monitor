@@ -39,6 +39,16 @@ pub(crate) fn account_accepts_requested_model(
         .any(|candidate| requested_model_matches_constraint(requested_model, candidate))
 }
 
+pub(crate) fn account_accepts_requested_image_intent(
+    image_intent: ImageIntent,
+    capability: ImageToolCapability,
+) -> bool {
+    !matches!(
+        (image_intent, capability),
+        (ImageIntent::Yes, ImageToolCapability::Unsupported)
+    )
+}
+
 pub(crate) async fn load_account_group_name_map(
     pool: &Pool<Sqlite>,
     account_ids: &[i64],
@@ -272,6 +282,8 @@ fn build_pool_resolved_account(
         upstream_429_retry_enabled: effective_rule.upstream_429_retry_enabled,
         upstream_429_max_retries: effective_rule.upstream_429_max_retries,
         fast_mode_rewrite_mode: effective_rule.fast_mode_rewrite_mode,
+        image_tool_rewrite_mode: effective_rule.image_tool_rewrite_mode,
+        image_tool_capability: decode_image_tool_capability(row.image_tool_capability.as_deref()),
         upstream_base_url,
         routing_source,
     }

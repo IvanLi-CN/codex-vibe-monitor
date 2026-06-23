@@ -446,6 +446,7 @@ async fn prepare_pool_request_body_for_account_skips_fast_mode_rewrite_for_compa
         &"/v1/responses/compact".parse().expect("valid compact uri"),
         &Method::POST,
         TagFastModeRewriteMode::ForceAdd,
+        crate::ImageToolRewriteMode::KeepOriginal,
     )
     .await
     .expect("prepare compact pool request body");

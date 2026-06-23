@@ -1,0 +1,29 @@
+# ADR 0001: Separate image rewrite from image capability
+
+## Status
+
+Accepted
+
+## Context
+
+The routing system needs two different image-related concerns:
+
+- request-local rewrite policy for group/account routing
+- persisted, observed capability on the upstream account itself
+
+These concerns change at different times and come from different sources of truth. A single enum would couple operator intent, request mutation, and capability discovery into one field and make `keep_original` ambiguous.
+
+## Decision
+
+- Keep `imageToolRewriteMode` on the group/account routing rule path only.
+- Persist `imageToolCapability` on the account as read-only discovered state.
+- Treat `keep_original` as "follow account capability".
+- Treat `fill_missing`, `force_add`, and `force_remove` as request rewrite modes, not capability flags.
+- Keep direct image endpoints on capability-based routing only; rewrite stays in the Responses family.
+
+## Consequences
+
+- Group and account policy can express different image-tool behavior without adding a separate image pool.
+- Capability learning can evolve independently from operator policy.
+- Tag policy stays unchanged.
+- The UI can show a stable capability badge without turning it into an operator toggle.

@@ -146,6 +146,8 @@ pub(crate) fn capture_target_for_request(path: &str, method: &Method) -> Option<
         "/v1/chat/completions" => Some(ProxyCaptureTarget::ChatCompletions),
         "/v1/responses" => Some(ProxyCaptureTarget::Responses),
         "/v1/responses/compact" => Some(ProxyCaptureTarget::ResponsesCompact),
+        "/v1/images/generations" => Some(ProxyCaptureTarget::ImageGenerations),
+        "/v1/images/edits" => Some(ProxyCaptureTarget::ImageEdits),
         _ => None,
     }
 }

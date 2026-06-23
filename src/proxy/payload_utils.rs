@@ -535,6 +535,70 @@ pub(crate) fn infer_proxy_capture_target_from_payload(value: &Value) -> ProxyCap
     }
 }
 
+pub(crate) fn infer_image_intent_from_request_body(
+    target: ProxyCaptureTarget,
+    value: &Value,
+) -> ImageIntent {
+    match target {
+        ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits => ImageIntent::Yes,
+        ProxyCaptureTarget::ChatCompletions => ImageIntent::Unknown,
+        ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact => {
+            if value
+                .get("model")
+                .and_then(|entry| entry.as_str())
+                .is_some_and(is_openai_image_generation_model)
+                || openai_json_tools_contain_image_generation(value.get("tools"))
+                || openai_json_tool_choice_selects_image_generation(value.get("tool_choice"))
+            {
+                ImageIntent::Yes
+            } else {
+                ImageIntent::No
+            }
+        }
+    }
+}
+
+fn is_openai_image_generation_model(model: &str) -> bool {
+    model.trim().to_ascii_lowercase().starts_with("gpt-image-")
+}
+
+fn openai_json_tools_contain_image_generation(tools: Option<&Value>) -> bool {
+    let Some(Value::Array(items)) = tools else {
+        return false;
+    };
+    items.iter().any(|item| {
+        item.get("type")
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| value.trim() == "image_generation")
+    })
+}
+
+fn openai_json_tool_choice_selects_image_generation(choice: Option<&Value>) -> bool {
+    let Some(choice) = choice else {
+        return false;
+    };
+    if let Some(value) = choice.as_str() {
+        return value.trim() == "image_generation";
+    }
+    if !choice.is_object() {
+        return false;
+    }
+    choice
+        .get("type")
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| value.trim() == "image_generation")
+        || choice
+            .get("tool")
+            .and_then(|tool| tool.get("type"))
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| value.trim() == "image_generation")
+        || choice
+            .get("function")
+            .and_then(|function| function.get("name"))
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| value.trim() == "image_generation")
+}
+
 #[derive(Debug, FromRow)]
 pub(crate) struct InvocationServiceTierBackfillCandidate {
     id: i64,

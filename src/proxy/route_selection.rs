@@ -1846,6 +1846,21 @@ pub(crate) async fn maybe_backfill_oauth_request_debug_from_replay_status(
     );
 }
 
+fn infer_request_image_intent(
+    capture_target: Option<ProxyCaptureTarget>,
+    parsed_request_body: Option<&Value>,
+) -> crate::ImageIntent {
+    match capture_target {
+        Some(ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits) => {
+            crate::ImageIntent::Yes
+        }
+        Some(target) => parsed_request_body
+            .map(|value| infer_image_intent_from_request_body(target, value))
+            .unwrap_or(crate::ImageIntent::Unknown),
+        None => crate::ImageIntent::Unknown,
+    }
+}
+
 pub(crate) async fn proxy_openai_v1_via_pool(
     state: Arc<AppState>,
     proxy_request_id: u64,
@@ -1878,6 +1893,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             responses_total_timeout.expect("pre-attempt total-timeout requires responses timeout"),
         )
     };
+    let mut request_image_intent = infer_request_image_intent(capture_target, None);
     let header_sticky_key = extract_sticky_key_from_headers(&headers);
     let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
     let proxy_request_permit = take_or_acquire_proxy_request_concurrency_permit(
@@ -1923,6 +1939,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
             let requested_model = parsed_request_body
                 .as_ref()
                 .and_then(extract_model_from_payload);
+            request_image_intent = infer_request_image_intent(capture_target, parsed_request_body.as_ref());
             let body_sticky_key = parsed_request_body
                 .as_ref()
                 .and_then(extract_sticky_key_from_request_body);
@@ -1961,6 +1978,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         request_info: RequestCaptureInfo {
                             model: requested_model,
                             contains_encrypted_content: request_contains_encrypted_content,
+                            image_intent: Some(request_image_intent.as_str().to_string()),
                             ..RequestCaptureInfo::default()
                         },
                         prompt_cache_key: effective_prompt_cache_key.clone(),
@@ -1996,12 +2014,13 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 request_contains_encrypted_content,
                 owner_auto_guard_active,
             ) = if let Some(sticky_key) = header_sticky_key.clone() {
-                let initial_header_sticky_resolution = resolve_pool_account_for_request(
+                let initial_header_sticky_resolution = resolve_pool_account_for_request_with_image_intent(
                     state.as_ref(),
                     Some(sticky_key.as_str()),
                     None,
                     &[],
                     &HashSet::new(),
+                    request_image_intent,
                 )
                 .await;
                 let state_for_wait = state.clone();
@@ -2025,12 +2044,13 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                 no_available_wait_deadline,
                             );
                         }
-                        let resolution = resolve_pool_account_for_request(
+                        let resolution = resolve_pool_account_for_request_with_image_intent(
                             state_for_wait.as_ref(),
                             Some(wait_task_sticky_key.as_str()),
                             None,
                             &excluded_ids,
                             &excluded_upstream_route_keys,
+                            request_image_intent,
                         )
                         .await;
                         if matches!(
@@ -2451,6 +2471,13 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     extract_prompt_cache_key_from_replay_snapshot(&request_body_snapshot).await;
                 let request_contains_encrypted_content =
                     replay_snapshot_contains_encrypted_content(&request_body_snapshot).await;
+                let request_image_intent = match request_body_snapshot.to_bytes().await {
+                    Ok(request_body_bytes) => serde_json::from_slice::<Value>(&request_body_bytes)
+                        .ok()
+                        .map(|value| infer_request_image_intent(capture_target, Some(&value)))
+                        .unwrap_or_else(|| infer_request_image_intent(capture_target, None)),
+                    Err(_) => infer_request_image_intent(capture_target, None),
+                };
                 let (prompt_cache_binding_constraint, owner_auto_guard_active) =
                     load_via_pool_effective_routing_constraint(
                         state.as_ref(),
@@ -2481,7 +2508,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         .lock()
                         .expect("lock shared header wait deadline"));
                 let initial_account = if prompt_cache_binding_constraint.is_some() {
-                    let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint(
+                    let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent(
                         state.as_ref(),
                         body_sticky_key.as_deref(),
                         requested_model.as_deref(),
@@ -2492,6 +2519,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         true,
                         &mut no_available_wait_deadline,
                         pre_attempt_total_timeout_deadline,
+                        request_image_intent,
                     )
                     .await;
                     let (initial_account, updated_no_available_wait_deadline) =
@@ -2521,7 +2549,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         {
                             account
                         } else {
-                            let resolution = resolve_pool_account_for_request_with_wait(
+                            let resolution = resolve_pool_account_for_request_with_wait_and_image_intent(
                                 state.as_ref(),
                                 body_sticky_key.as_deref(),
                                 requested_model.as_deref(),
@@ -2531,6 +2559,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                 true,
                                 &mut no_available_wait_deadline,
                                 pre_attempt_total_timeout_deadline,
+                                request_image_intent,
                             )
                             .await;
                             let (initial_account, updated_no_available_wait_deadline) =
@@ -2551,7 +2580,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             initial_account
                         }
                     } else {
-                        let resolution = resolve_pool_account_for_request_with_wait(
+                        let resolution = resolve_pool_account_for_request_with_wait_and_image_intent(
                             state.as_ref(),
                             body_sticky_key.as_deref(),
                             requested_model.as_deref(),
@@ -2561,6 +2590,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             true,
                             &mut no_available_wait_deadline,
                             pre_attempt_total_timeout_deadline,
+                            request_image_intent,
                         )
                         .await;
                         let (initial_account, updated_no_available_wait_deadline) =
@@ -2581,7 +2611,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         initial_account
                     }
                 } else {
-                    let resolution = resolve_pool_account_for_request_with_wait(
+                    let resolution = resolve_pool_account_for_request_with_wait_and_image_intent(
                         state.as_ref(),
                         body_sticky_key.as_deref(),
                         requested_model.as_deref(),
@@ -2591,6 +2621,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         true,
                         &mut no_available_wait_deadline,
                         pre_attempt_total_timeout_deadline,
+                        request_image_intent,
                     )
                     .await;
                     let (initial_account, updated_no_available_wait_deadline) =
@@ -2673,7 +2704,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                 // or an explicit binding is allowed to bypass model filtering.
                 if live_requested_model.is_some() || prompt_cache_binding_constraint.is_some() {
                     let resolution = if prompt_cache_binding_constraint.is_some() {
-                        resolve_pool_account_for_request_with_wait_and_binding_constraint(
+                        resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent(
                             state.as_ref(),
                             live_body_sticky_key.as_deref(),
                             live_requested_model.as_deref(),
@@ -2684,10 +2715,11 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             true,
                             &mut no_available_wait_deadline,
                             pre_attempt_total_timeout_deadline,
+                            request_image_intent,
                         )
                         .await
                     } else {
-                        resolve_pool_account_for_request_with_wait(
+                        resolve_pool_account_for_request_with_wait_and_image_intent(
                             state.as_ref(),
                             live_body_sticky_key.as_deref(),
                             live_requested_model.as_deref(),
@@ -2697,6 +2729,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                             true,
                             &mut no_available_wait_deadline,
                             pre_attempt_total_timeout_deadline,
+                            request_image_intent,
                         )
                         .await
                     };
@@ -3162,7 +3195,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     )
                     .await?;
                 let mut no_available_wait_deadline = None;
-                let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint(
+                let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent(
                     state.as_ref(),
                     body_sticky_key.as_deref(),
                     requested_model.as_deref(),
@@ -3173,6 +3206,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     true,
                     &mut no_available_wait_deadline,
                     pre_attempt_total_timeout_deadline,
+                    request_image_intent,
                 )
                 .await;
                 let (initial_account, no_available_wait_deadline) =
@@ -3224,6 +3258,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                         request_info: RequestCaptureInfo {
                             model: request_body_model,
                             contains_encrypted_content: request_contains_encrypted_content,
+                            image_intent: Some(request_image_intent.as_str().to_string()),
                             ..RequestCaptureInfo::default()
                         },
                         prompt_cache_key: body_prompt_cache_key.clone(),

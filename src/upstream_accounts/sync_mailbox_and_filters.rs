@@ -1407,6 +1407,43 @@ fn normalize_tag_rule(
     })
 }
 
+fn normalize_group_account_routing_rule(
+    block_new_conversations: bool,
+    allow_cut_out: bool,
+    allow_cut_in: bool,
+    priority_tier: Option<&str>,
+    fast_mode_rewrite_mode: Option<&str>,
+    image_tool_rewrite_mode: Option<&str>,
+    concurrency_limit: Option<i64>,
+    upstream_429_retry_enabled: Option<bool>,
+    upstream_429_max_retries: Option<u8>,
+    available_models: Option<Vec<String>>,
+) -> Result<GroupAccountRoutingRule, (StatusCode, String)> {
+    let priority_tier = normalize_tag_priority_tier(priority_tier)?;
+    let fast_mode_rewrite_mode = normalize_tag_fast_mode_rewrite_mode(fast_mode_rewrite_mode)?;
+    let image_tool_rewrite_mode = normalize_image_tool_rewrite_mode(image_tool_rewrite_mode)?;
+    let concurrency_limit = normalize_concurrency_limit(concurrency_limit, "concurrencyLimit")?;
+    let upstream_429_retry_enabled = upstream_429_retry_enabled.unwrap_or(false);
+    let upstream_429_max_retries = normalize_group_upstream_429_retry_metadata(
+        upstream_429_retry_enabled,
+        upstream_429_max_retries
+            .map(normalize_group_upstream_429_max_retries)
+            .unwrap_or_default(),
+    );
+    Ok(GroupAccountRoutingRule {
+        block_new_conversations,
+        allow_cut_out,
+        allow_cut_in,
+        priority_tier,
+        fast_mode_rewrite_mode,
+        image_tool_rewrite_mode,
+        concurrency_limit,
+        upstream_429_retry_enabled,
+        upstream_429_max_retries,
+        available_models: normalize_available_models(available_models, "availableModels")?,
+    })
+}
+
 fn normalize_available_models(
     value: Option<Vec<String>>,
     field_name: &str,
@@ -1481,6 +1518,35 @@ fn decode_tag_fast_mode_rewrite_mode(value: &str) -> TagFastModeRewriteMode {
         "force_add" => TagFastModeRewriteMode::ForceAdd,
         _ => TagFastModeRewriteMode::KeepOriginal,
     }
+}
+
+fn normalize_image_tool_rewrite_mode(
+    value: Option<&str>,
+) -> Result<ImageToolRewriteMode, (StatusCode, String)> {
+    let normalized = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("keep_original");
+    match normalized {
+        "force_remove" => Ok(ImageToolRewriteMode::ForceRemove),
+        "keep_original" => Ok(ImageToolRewriteMode::KeepOriginal),
+        "fill_missing" => Ok(ImageToolRewriteMode::FillMissing),
+        "force_add" => Ok(ImageToolRewriteMode::ForceAdd),
+        _ => Err((
+            StatusCode::BAD_REQUEST,
+            "imageToolRewriteMode must be one of: force_remove, keep_original, fill_missing, force_add".to_string(),
+        )),
+    }
+}
+
+fn decode_image_tool_rewrite_mode(value: &str) -> ImageToolRewriteMode {
+    ImageToolRewriteMode::from_str(value)
+}
+
+fn decode_image_tool_capability(value: Option<&str>) -> ImageToolCapability {
+    value
+        .map(ImageToolCapability::from_str)
+        .unwrap_or(ImageToolCapability::Unknown)
 }
 
 fn normalize_concurrency_limit(
@@ -1589,22 +1655,26 @@ fn group_routing_rule_from_columns(
     policy_allow_cut_in: Option<i64>,
     policy_priority_tier: Option<&str>,
     policy_fast_mode_rewrite_mode: Option<&str>,
+    policy_image_tool_rewrite_mode: Option<&str>,
     policy_concurrency_limit: Option<i64>,
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
     policy_available_models_json: Option<&str>,
-) -> TagRoutingRule {
+) -> GroupAccountRoutingRule {
     let block_new_conversations = policy_block_new_conversations.is_some_and(|value| value != 0);
     let upstream_429_retry_enabled = policy_upstream_429_retry_enabled
         .map(|value| value != 0)
         .unwrap_or(legacy_upstream_429_retry_enabled);
-    TagRoutingRule {
+    GroupAccountRoutingRule {
         block_new_conversations,
         allow_cut_out: policy_allow_cut_out.map(|value| value != 0).unwrap_or(true),
         allow_cut_in: policy_allow_cut_in.map(|value| value != 0).unwrap_or(true),
         priority_tier: decode_tag_priority_tier(policy_priority_tier.unwrap_or("normal")),
         fast_mode_rewrite_mode: decode_tag_fast_mode_rewrite_mode(
             policy_fast_mode_rewrite_mode.unwrap_or("keep_original"),
+        ),
+        image_tool_rewrite_mode: decode_image_tool_rewrite_mode(
+            policy_image_tool_rewrite_mode.unwrap_or("keep_original"),
         ),
         concurrency_limit: policy_concurrency_limit.unwrap_or(legacy_concurrency_limit),
         upstream_429_retry_enabled,
@@ -1618,7 +1688,10 @@ fn group_routing_rule_from_columns(
     }
 }
 
-async fn load_group_routing_rule(pool: &Pool<Sqlite>, group_name: &str) -> Result<TagRoutingRule> {
+async fn load_group_routing_rule(
+    pool: &Pool<Sqlite>,
+    group_name: &str,
+) -> Result<GroupAccountRoutingRule> {
     let row = sqlx::query_as::<
         _,
         (
@@ -1628,6 +1701,7 @@ async fn load_group_routing_rule(pool: &Pool<Sqlite>, group_name: &str) -> Resul
             Option<i64>,
             Option<i64>,
             Option<i64>,
+            Option<String>,
             Option<String>,
             Option<String>,
             Option<i64>,
@@ -1646,6 +1720,7 @@ async fn load_group_routing_rule(pool: &Pool<Sqlite>, group_name: &str) -> Resul
             policy_allow_cut_in,
             policy_priority_tier,
             policy_fast_mode_rewrite_mode,
+            policy_image_tool_rewrite_mode,
             policy_concurrency_limit,
             policy_upstream_429_retry_enabled,
             policy_upstream_429_max_retries,
@@ -1664,17 +1739,18 @@ async fn load_group_routing_rule(pool: &Pool<Sqlite>, group_name: &str) -> Resul
             upstream_429_max_retries,
             policy_block_new_conversations,
             policy_allow_cut_out,
-        policy_allow_cut_in,
-        policy_priority_tier,
-        policy_fast_mode_rewrite_mode,
-        policy_concurrency_limit,
-        policy_upstream_429_retry_enabled,
-        policy_upstream_429_max_retries,
-        policy_available_models_json,
+            policy_allow_cut_in,
+            policy_priority_tier,
+            policy_fast_mode_rewrite_mode,
+            policy_image_tool_rewrite_mode,
+            policy_concurrency_limit,
+            policy_upstream_429_retry_enabled,
+            policy_upstream_429_max_retries,
+            policy_available_models_json,
     )) = row
     else {
         return Ok(group_routing_rule_from_columns(
-            0, false, 0, None, None, None, None, None, None, None, None, None,
+            0, false, 0, None, None, None, None, None, None, None, None, None, None,
         ));
     };
     let upstream_429_retry_enabled =
@@ -1692,6 +1768,7 @@ async fn load_group_routing_rule(pool: &Pool<Sqlite>, group_name: &str) -> Resul
         policy_allow_cut_in,
         policy_priority_tier.as_deref(),
         policy_fast_mode_rewrite_mode.as_deref(),
+        policy_image_tool_rewrite_mode.as_deref(),
         policy_concurrency_limit,
         policy_upstream_429_retry_enabled,
         policy_upstream_429_max_retries,

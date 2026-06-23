@@ -2421,9 +2421,11 @@ async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
             test_required_group_bound_proxy_keys(),
         ),
         single_account_rotation_enabled: false,
-    upstream_429_retry_enabled: false,
+        upstream_429_retry_enabled: false,
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+        image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+        image_tool_capability: ImageToolCapability::Unknown,
     };
 
     let upstream = send_pool_request_with_failover(
