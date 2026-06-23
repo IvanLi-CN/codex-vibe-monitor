@@ -2003,7 +2003,7 @@ async fn pool_openai_v1_responses_waits_for_first_chunk_beyond_request_timeout()
     let mut config = test_config();
     config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
     config.request_timeout = Duration::from_millis(100);
-    config.pool_upstream_responses_attempt_timeout = Duration::from_millis(400);
+    config.pool_upstream_responses_attempt_timeout = Duration::from_millis(600);
     let state = test_state_from_config(config, true).await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;

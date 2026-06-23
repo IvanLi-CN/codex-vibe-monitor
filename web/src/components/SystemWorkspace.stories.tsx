@@ -17,8 +17,10 @@ import SystemStatusPage from '../pages/system/SystemStatusPage'
 import SystemTasksPage from '../pages/system/SystemTasksPage'
 
 const STORYBOOK_SYSTEM_STATUS: SystemStatusResponse = {
+  liveInvocationsCount: 128_076,
   successCount: 124_882,
   nonSuccessCount: 3_194,
+  completedArchiveBatchesCount: 384,
   archivedBodies: { count: 118_420, bytes: 8_441_053_184 },
   rawBodies: { count: 1_482, bytes: 84_221_184_000 },
   requestRawBodies: { count: 812, bytes: 76_221_184_000 },
@@ -208,7 +210,9 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
 }
 
-function buildSystemWorkspaceRequestHandler(): StorybookRequestHandler {
+function buildSystemWorkspaceRequestHandler(
+  statusOverride?: SystemStatusResponse,
+): StorybookRequestHandler {
   return async ({ url, init }) => {
     const method = (init?.method ?? 'GET').toUpperCase()
     const jsonResponse = (payload: unknown, status = 200) =>
@@ -218,7 +222,7 @@ function buildSystemWorkspaceRequestHandler(): StorybookRequestHandler {
       })
 
     if (url.pathname === '/api/system/status' && method === 'GET') {
-      return jsonResponse(clone(STORYBOOK_SYSTEM_STATUS))
+      return jsonResponse(clone(statusOverride ?? STORYBOOK_SYSTEM_STATUS))
     }
 
     if (url.pathname === '/api/system/tasks' && method === 'GET') {
@@ -277,10 +281,14 @@ const meta = {
     viewport: { defaultViewport: 'desktop1660' },
   },
   decorators: [
-    (Story) => (
+    (Story, context) => (
       <I18nProvider>
         <StorybookSystemWorkspaceMock>
-          <StorybookPageEnvironment onRequest={buildSystemWorkspaceRequestHandler()}>
+          <StorybookPageEnvironment
+            onRequest={buildSystemWorkspaceRequestHandler(
+              context.parameters.systemStatusOverride as SystemStatusResponse | undefined,
+            )}
+          >
             <FullPageStorySurface>
               <Story />
             </FullPageStorySurface>
@@ -308,9 +316,44 @@ export const Status: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await expect(canvas.getByRole('heading', { name: '系统状态' })).toBeVisible()
-    await expect(canvas.getByTestId('system-status-grid')).toBeVisible()
+    await expect(canvas.getByTestId('system-status-overview')).toBeVisible()
     await expect(canvas.getByRole('link', { name: '状态' })).toHaveAttribute('aria-current', 'page')
-    await expect(canvas.getByText('raw payload 体积')).toBeVisible()
+    await expect(canvas.getByText('实际磁盘占用总览')).toBeVisible()
+    await expect(canvas.getByText('数据库记录概况')).toBeVisible()
+    await expect(canvas.getByText('当前项目磁盘占用 = raw payload 并集总量 + archive + 数据库 + 其他运行文件。')).toBeVisible()
+    await expect(canvas.getByTestId('system-status-request-raw-breakdown')).toBeVisible()
+    await expect(canvas.getByTestId('system-status-response-raw-breakdown')).toBeVisible()
+    await expect(canvas.getAllByText('侧向拆分')).toHaveLength(2)
+    await expect(canvas.getByTestId('system-status-request-raw-breakdown')).toHaveTextContent('数量')
+    await expect(canvas.getByTestId('system-status-response-raw-breakdown')).toHaveTextContent('数量')
+  },
+}
+
+export const StatusRequestHeavy: Story = {
+  render: () => renderWorkspace('/system/status'),
+  parameters: {
+    systemStatusOverride: {
+      ...STORYBOOK_SYSTEM_STATUS,
+      rawBodies: { count: 1_482, bytes: 69_000_000_000 },
+      requestRawBodies: { count: 812, bytes: 68_719_476_736 },
+      responseRawBodies: { count: 670, bytes: 5_905_580_032 },
+      archivedBodies: { count: 118_420, bytes: 649_117_696 },
+      databaseBytes: 5_261_484_032,
+      otherFilesBytes: 8_806,
+    } satisfies SystemStatusResponse,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByTestId('system-status-overview')).toBeVisible()
+    await expect(canvas.getByText('raw payload 总量')).toBeVisible()
+    await expect(canvas.getByText('request 侧 raw payload')).toBeVisible()
+    await expect(canvas.getByText('response 侧 raw payload')).toBeVisible()
+    await expect(canvas.getByText('并集总量')).toBeVisible()
+    await expect(canvas.getAllByText('侧向拆分')).toHaveLength(2)
+    await expect(canvas.getByTestId('system-status-request-raw-breakdown')).toHaveTextContent('812')
+    await expect(canvas.getByTestId('system-status-response-raw-breakdown')).toHaveTextContent('670')
+    await expect(canvas.getByText('64 GB')).toBeVisible()
+    await expect(canvas.getByText('5.5 GB')).toBeVisible()
   },
 }
 

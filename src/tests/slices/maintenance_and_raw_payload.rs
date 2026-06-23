@@ -225,8 +225,10 @@ async fn system_status_aggregates_counts_and_file_sizes() {
         .await
         .expect("load cached system status");
 
+    assert_eq!(response.live_invocations_count, 6);
     assert_eq!(response.success_count, 3);
     assert_eq!(response.non_success_count, 3);
+    assert_eq!(response.completed_archive_batches_count, 1);
     assert_eq!(response.archived_bodies.count, 4);
     assert_eq!(response.archived_bodies.bytes, 17);
     assert_eq!(response.raw_bodies.count, 4);
@@ -460,7 +462,9 @@ async fn system_task_runs_filter_and_routes_serve_json() {
         .await
         .expect("read status body");
     let payload: Value = serde_json::from_slice(&body).expect("decode status payload");
+    assert!(payload.get("liveInvocationsCount").is_some());
     assert!(payload.get("successCount").is_some());
+    assert!(payload.get("completedArchiveBatchesCount").is_some());
     assert!(payload.get("databaseBytes").is_some());
     assert!(payload.get("refreshedAt").is_some());
 }

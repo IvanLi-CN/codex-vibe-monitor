@@ -1282,8 +1282,10 @@ export interface SystemStatusMetric {
 }
 
 export interface SystemStatusResponse {
+  liveInvocationsCount: number;
   successCount: number;
   nonSuccessCount: number;
+  completedArchiveBatchesCount: number;
   archivedBodies: SystemStatusMetric;
   rawBodies: SystemStatusMetric;
   requestRawBodies: SystemStatusMetric;
@@ -2412,8 +2414,10 @@ function normalizeSystemStatusMetric(raw: unknown): SystemStatusMetric {
 function normalizeSystemStatusResponse(raw: unknown): SystemStatusResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
   return {
+    liveInvocationsCount: normalizeFiniteNumber(payload.liveInvocationsCount) ?? 0,
     successCount: normalizeFiniteNumber(payload.successCount) ?? 0,
     nonSuccessCount: normalizeFiniteNumber(payload.nonSuccessCount) ?? 0,
+    completedArchiveBatchesCount: normalizeFiniteNumber(payload.completedArchiveBatchesCount) ?? 0,
     archivedBodies: normalizeSystemStatusMetric(payload.archivedBodies),
     rawBodies: normalizeSystemStatusMetric(payload.rawBodies),
     requestRawBodies: normalizeSystemStatusMetric(payload.requestRawBodies),

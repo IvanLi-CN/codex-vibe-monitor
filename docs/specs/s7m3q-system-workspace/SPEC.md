@@ -61,23 +61,39 @@
 ### `系统/状态`
 
 - MUST 展示：
+  - live invocations
   - 调用成功数
   - 调用非成功数
+  - 已完成归档批次数
   - 已归档 body 数量
   - 已归档 body 体积
   - raw payload 数量
-  - raw payload 体积
+  - raw payload 总量
   - request raw payload 数量
-  - request raw payload 体积
+  - request 侧 raw payload
   - response raw payload 数量
-  - response raw payload 体积
+  - response 侧 raw payload
   - 数据库体积
   - 其他文件体积
+- MUST 采用“顶部总览 + 下方分组”信息架构，而不是把所有指标平铺成同权大卡片：
+  - 顶部全宽 `实际磁盘占用总览`
+  - 下方 `数据库记录概况`
+  - 下方 `归档与逻辑体量`
+- `实际磁盘占用总览` MUST 以 `archivedBodies.bytes + rawBodies.bytes + databaseBytes + otherFilesBytes` 作为主读数，并展示 `raw / archive / database / other` 四项 breakdown。
+- `实际磁盘占用总览` MUST 在主读数旁直接展示总量公式，明确 `当前项目磁盘占用 = raw payload 并集总量 + archive + 数据库 + 其他运行文件`。
+- `数据库记录概况` MUST 至少展示 `live invocations / 调用成功数 / 调用非成功数 / 已完成归档批次数`。
+- `归档与逻辑体量` MUST 至少展示 `已归档 body 数量 / 已归档 body 体积`，并明确 archive 体积已计入顶部项目磁盘总量。
 - MUST 每 60 秒自动刷新一次，并显示“上次刷新时间 / 刷新中”状态。
 - “非成功数”按 `status != success` 统计，包含失败与未完成状态；页面文案需明确这是系统口径。
 - “已归档 body” 在首版按 `archive_batches.dataset='codex_invocations' AND status='completed'` 的归档调用行数 / 归档文件实际大小统计。
 - “raw payload” 在首版按 live `codex_invocations.request_raw_path` 与 `codex_invocations.response_raw_path` 的实际文件路径统计，字节数按磁盘上实际文件大小汇总，数量按去重后的实际文件数统计。
 - `raw payload` 总量等于 request 与 response 两侧去重后的实际文件集合并集。
+- 页面 MUST 把 `raw payload` 总量显式标成“并集总量”，并把 request / response 显式标成“侧向拆分”。
+- 页面 MUST 明确说明 request / response 体积只用于解释分布，不能直接相加回 `raw payload` 总量。
+- `raw payload 聚焦` 区域 MUST 采用“总量卡 + request 行 + response 行”的稳定层级，不得在窄列内把 request / response 拆分再次并排压成四张等权小卡片。
+- `实际磁盘占用总览` MUST 先顺序展示主读数、四项 breakdown、再展示 `raw payload 聚焦`，不得让左右并排的上半区形成明显未承载信息的大面积留白。
+- `live invocations` 在首版按 `codex_invocations` 当前 live 行数统计。
+- `已完成归档批次数` 在首版按 `archive_batches.dataset='codex_invocations' AND status='completed'` 的批次数统计。
 - `body` 仅作为 UI 文案保留；长期术语以 `raw payload` 为准。
 
 ### `系统/任务`
@@ -120,7 +136,7 @@
 
 - Given 顶层导航渲染完成，When 用户点击 `系统`，Then 进入 `#/system/status`。
 - Given 用户访问 `#/settings`，When 路由解析，Then 重定向到 `#/system/settings`。
-- Given `系统/状态` 页面加载，When 数据返回，Then 页面展示十二项系统指标并包含刷新时间反馈。
+- Given `系统/状态` 页面加载，When 数据返回，Then 页面展示顶部项目磁盘总览、数据库记录概况、归档与逻辑体量三个结构，并包含刷新时间反馈。
 - Given `系统/任务` 页面加载，When 查询返回，Then 页面展示系统后台任务记录且不混入账号池维护事件。
 - Given 用户进入 `系统/设置`，When 调整原有常规设置，Then 保存行为与旧设置页一致。
 - Given 用户进入 `系统/代理`，When 操作 forward proxy，Then 现有校验、测速、刷新订阅能力保持可用。
@@ -150,8 +166,18 @@
   viewport_strategy: storybook-viewport
   sensitive_exclusion: N/A
   submission_gate: owner-approved
-- evidence_note: 验证系统工作区左右两栏结构、左侧子导航、状态页指标卡与刷新状态。
-  snapshot_path: `/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__2e728e5d/2026/06/22/20260622T043310Z-status-87ad6f12.png`
+- evidence_note: 验证状态页已改为“实际磁盘占用总览 + 数据库记录概况 + 归档与逻辑体量”三段结构，并把项目级磁盘总量公式直接贴在主读数旁。
+  snapshot_path: `docs/specs/s7m3q-system-workspace/assets/system-status-grouped-layout.png`
+- source_type: storybook_canvas
+  story_id_or_title: System/SystemWorkspace/StatusRequestHeavy
+  target_program: mock-only
+  capture_scope: browser-viewport
+  requested_viewport: 1440x1280
+  viewport_strategy: storybook-viewport
+  sensitive_exclusion: N/A
+  submission_gate: owner-approved
+  evidence_note: 验证 request 明显大于 response 的 raw payload 分布下，顶部 raw payload 聚焦区域会显式展示“并集总量 / 侧向拆分”，避免把 request / response 误读成可直接相加的总量。
+  snapshot_path: `docs/specs/s7m3q-system-workspace/assets/system-status-request-heavy.png`
 - source_type: storybook_canvas
   story_id_or_title: System/SystemWorkspace/Tasks
   target_program: mock-only
@@ -185,7 +211,7 @@
 
 ## 风险 / 开放问题 / 假设
 
-- 风险：`raw payload` 需要同时覆盖 request / response 两侧，并用去重后的真实磁盘文件口径解释总量，页面需明确口径。
+- 风险：`raw payload` 需要同时覆盖 request / response 两侧，并用去重后的真实磁盘文件口径解释总量；request / response 拆分与总量并非同一去重口径，页面必须明确说明。
 - 风险：后台任务已有多种内部子步骤，首版任务记录只保留可读摘要，不扩展成完整事件流。
 - 假设：状态页采用前端 60 秒轮询足以满足系统观察需求，不新增 SSE。
 

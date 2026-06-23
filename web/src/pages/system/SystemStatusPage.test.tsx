@@ -39,8 +39,10 @@ describe('SystemStatusPage', () => {
     vi.useFakeTimers()
     window.localStorage.setItem('codex-vibe-monitor.locale', 'zh')
     apiMocks.fetchSystemStatus.mockResolvedValue({
+      liveInvocationsCount: 6,
       successCount: 3,
       nonSuccessCount: 3,
+      completedArchiveBatchesCount: 2,
       archivedBodies: { count: 9, bytes: 4_096 },
       rawBodies: { count: 5, bytes: 6_144 },
       requestRawBodies: { count: 2, bytes: 4_096 },
@@ -71,12 +73,29 @@ describe('SystemStatusPage', () => {
     })
 
     expect(apiMocks.fetchSystemStatus).toHaveBeenCalledTimes(1)
-    expect(host?.querySelector('[data-testid="system-status-grid"]')).not.toBeNull()
-    expect(host?.textContent ?? '').toContain('调用成功数')
-    expect(host?.textContent ?? '').toContain('raw payload 体积')
-    expect(host?.textContent ?? '').toContain('raw payload 数量')
-    expect(host?.textContent ?? '').toContain('request raw payload 数量')
-    expect(host?.textContent ?? '').toContain('response raw payload 数量')
+    expect(host?.querySelector('[data-testid="system-status-layout"]')).not.toBeNull()
+    expect(host?.querySelector('[data-testid="system-status-overview"]')).not.toBeNull()
+    expect(host?.querySelector('[data-testid="system-status-records-section"]')).not.toBeNull()
+    expect(host?.querySelector('[data-testid="system-status-archive-section"]')).not.toBeNull()
+    expect(host?.textContent ?? '').toContain('实际磁盘占用总览')
+    expect(host?.textContent ?? '').toContain('数据库记录概况')
+    expect(host?.textContent ?? '').toContain('归档与逻辑体量')
+    expect(host?.textContent ?? '').toContain('当前项目磁盘占用')
+    expect(host?.textContent ?? '').toContain('当前项目磁盘占用 = raw payload 并集总量 + archive + 数据库 + 其他运行文件。')
+    expect(host?.textContent ?? '').toContain('并集总量')
+    expect(host?.textContent ?? '').toContain('侧向拆分')
+    expect(host?.textContent ?? '').toContain('live invocations')
+    expect(host?.textContent ?? '').toContain('已完成归档批次数')
+    expect(host?.querySelector('[data-testid="system-status-request-raw-breakdown"]')?.textContent ?? '').toContain('request 侧 raw payload')
+    expect(host?.querySelector('[data-testid="system-status-request-raw-breakdown"]')?.textContent ?? '').toContain('体积')
+    expect(host?.querySelector('[data-testid="system-status-request-raw-breakdown"]')?.textContent ?? '').toContain('数量')
+    expect(host?.querySelector('[data-testid="system-status-request-raw-breakdown"]')?.textContent ?? '').toContain('侧向拆分')
+    expect(host?.querySelector('[data-testid="system-status-request-raw-breakdown"]')?.textContent ?? '').toContain('4.0 KB')
+    expect(host?.querySelector('[data-testid="system-status-request-raw-breakdown"]')?.textContent ?? '').toContain('2')
+    expect(host?.querySelector('[data-testid="system-status-response-raw-breakdown"]')?.textContent ?? '').toContain('response 侧 raw payload')
+    expect(host?.querySelector('[data-testid="system-status-response-raw-breakdown"]')?.textContent ?? '').toContain('2.0 KB')
+    expect(host?.querySelector('[data-testid="system-status-response-raw-breakdown"]')?.textContent ?? '').toContain('3')
+    expect(host?.textContent ?? '').toContain('raw payload 总量按 request + response 去重文件并集统计；request / response 体积只用于解释侧向分布，不能直接相加回总量。')
 
     await act(async () => {
       vi.advanceTimersByTime(60_000)

@@ -17,8 +17,10 @@ pub(crate) struct SystemStatusMetric {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SystemStatusResponse {
+    pub(crate) live_invocations_count: u64,
     pub(crate) success_count: u64,
     pub(crate) non_success_count: u64,
+    pub(crate) completed_archive_batches_count: u64,
     pub(crate) archived_bodies: SystemStatusMetric,
     pub(crate) raw_bodies: SystemStatusMetric,
     pub(crate) request_raw_bodies: SystemStatusMetric,
@@ -94,12 +96,14 @@ struct SystemTaskRunRow {
 
 #[derive(Debug, Default, FromRow)]
 struct SystemInvocationStatusAggRow {
+    live_invocations_count: Option<i64>,
     success_count: Option<i64>,
     non_success_count: Option<i64>,
 }
 
 #[derive(Debug, Default, FromRow)]
 struct SystemArchiveAggRow {
+    completed_archive_batches_count: Option<i64>,
     archived_count: Option<i64>,
 }
 
@@ -270,6 +274,7 @@ async fn load_system_status_uncached(state: &AppState) -> Result<SystemStatusRes
     let invocation_status = sqlx::query_as::<_, SystemInvocationStatusAggRow>(
         r#"
         SELECT
+            COUNT(*) AS live_invocations_count,
             COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(status, ''))) = 'success' THEN 1 ELSE 0 END), 0) AS success_count,
             COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(status, ''))) != 'success' THEN 1 ELSE 0 END), 0) AS non_success_count
         FROM codex_invocations
@@ -281,6 +286,7 @@ async fn load_system_status_uncached(state: &AppState) -> Result<SystemStatusRes
     let archived = sqlx::query_as::<_, SystemArchiveAggRow>(
         r#"
         SELECT
+            COUNT(*) AS completed_archive_batches_count,
             COALESCE(SUM(row_count), 0) AS archived_count
         FROM archive_batches
         WHERE dataset = 'codex_invocations'
@@ -329,8 +335,16 @@ async fn load_system_status_uncached(state: &AppState) -> Result<SystemStatusRes
     let other_files_bytes = compute_other_files_bytes(&state.config, &archive_dir, &raw_dir);
 
     Ok(SystemStatusResponse {
+        live_invocations_count: invocation_status
+            .live_invocations_count
+            .unwrap_or(0)
+            .max(0) as u64,
         success_count: invocation_status.success_count.unwrap_or(0).max(0) as u64,
         non_success_count: invocation_status.non_success_count.unwrap_or(0).max(0) as u64,
+        completed_archive_batches_count: archived
+            .completed_archive_batches_count
+            .unwrap_or(0)
+            .max(0) as u64,
         archived_bodies: SystemStatusMetric {
             count: archived.archived_count.unwrap_or(0).max(0) as u64,
             bytes: archive_bytes,

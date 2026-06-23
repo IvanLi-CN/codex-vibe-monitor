@@ -2214,13 +2214,32 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     partial_body: Vec::new(),
                 };
                 let request_body_snapshot = loop {
-                    let remaining = request_body_deadline.saturating_duration_since(Instant::now());
+                    let now = Instant::now();
+                    let remaining = request_body_deadline.saturating_duration_since(now);
                     if remaining.is_zero() {
                         return Err((
                             request_body_timeout_error().status,
                             request_body_timeout_error().message,
                         ));
                     }
+                    let request_body_wait_budget = if let Some(total_timeout_deadline) =
+                        pre_attempt_total_timeout_deadline
+                    {
+                        let total_timeout_remaining =
+                            total_timeout_deadline.saturating_duration_since(now);
+                        if total_timeout_remaining.is_zero() {
+                            let total_timeout = responses_total_timeout.expect(
+                                "pre-attempt total-timeout expiry requires responses timeout",
+                            );
+                            return Err((
+                                StatusCode::GATEWAY_TIMEOUT,
+                                pool_total_timeout_exhausted_message(total_timeout),
+                            ));
+                        }
+                        remaining.min(total_timeout_remaining)
+                    } else {
+                        remaining
+                    };
                     tokio::select! {
                         resolution_result = &mut header_sticky_resolution, if !header_sticky_resolution_finished => {
                             header_sticky_resolution_finished = true;
@@ -2320,10 +2339,21 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                 }
                             }
                         }
-                        next_chunk = timeout(remaining, request_body_stream.next()) => {
+                        next_chunk = timeout(request_body_wait_budget, request_body_stream.next()) => {
                             let next_chunk = match next_chunk {
                                 Ok(chunk) => chunk,
                                 Err(_) => {
+                                    if pre_attempt_total_timeout_deadline
+                                        .is_some_and(|deadline| Instant::now() >= deadline)
+                                    {
+                                        let total_timeout = responses_total_timeout.expect(
+                                            "pre-attempt total-timeout expiry requires responses timeout",
+                                        );
+                                        return Err((
+                                            StatusCode::GATEWAY_TIMEOUT,
+                                            pool_total_timeout_exhausted_message(total_timeout),
+                                        ));
+                                    }
                                     let err = request_body_timeout_error();
                                     return Err((err.status, err.message));
                                 }
