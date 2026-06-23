@@ -277,6 +277,7 @@ async fn persist_and_broadcast_proxy_capture_runtime_snapshot_emits_queryable_ru
         prompt_cache_key: Some("pck-running".to_string()),
         requested_service_tier: Some("priority".to_string()),
         reasoning_effort: Some("high".to_string()),
+        compaction_request_kind: Some(CompactionKind::RemoteV2),
         is_stream: true,
         ..RequestCaptureInfo::default()
     };
@@ -330,6 +331,11 @@ async fn persist_and_broadcast_proxy_capture_runtime_snapshot_emits_queryable_ru
     assert_eq!(broadcast_record.model.as_deref(), Some("gpt-5.4"));
     assert_eq!(broadcast_record.endpoint.as_deref(), Some("/v1/responses"));
     assert_eq!(
+        broadcast_record.compaction_request_kind.as_deref(),
+        Some("remote_v2")
+    );
+    assert_eq!(broadcast_record.compaction_response_kind, None);
+    assert_eq!(
         broadcast_record.proxy_display_name.as_deref(),
         Some("jp-relay-01")
     );
@@ -371,6 +377,11 @@ async fn persist_and_broadcast_proxy_capture_runtime_snapshot_emits_queryable_ru
     assert_eq!(response.records.len(), 1);
     assert_eq!(response.records[0].id, broadcast_record.id);
     assert_eq!(response.records[0].status.as_deref(), Some("running"));
+    assert_eq!(
+        response.records[0].compaction_request_kind.as_deref(),
+        Some("remote_v2")
+    );
+    assert_eq!(response.records[0].compaction_response_kind, None);
     assert_eq!(response.records[0].pool_attempt_count, Some(3));
     assert_eq!(response.records[0].pool_distinct_account_count, Some(2));
     assert_eq!(response.records[0].pool_attempt_terminal_reason, None);

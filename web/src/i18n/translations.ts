@@ -642,6 +642,18 @@ const baseTranslations = {
       "These settings override root defaults for accounts in this group. Tags and account policy can still override them later.",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.save":
       "Apply group policy",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteMode":
+      "Image tools",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteHint":
+      "Keep original follows the account's own image capability. Fill when missing only injects image tools when image intent is confirmed; force add always injects; force remove always strips it.",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolKeepOriginal":
+      "Keep original",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolFillMissing":
+      "Fill when missing",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceAdd":
+      "Force add",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceRemove":
+      "Force remove",
     "accountPool.upstreamAccounts.policyDialog.accountTitle":
       "Account routing policy",
     "accountPool.upstreamAccounts.policyDialog.accountDescription":
@@ -813,6 +825,8 @@ const baseTranslations = {
       "Block cut in",
     "accountPool.upstreamAccounts.effectiveRule.fieldPriority": "Priority",
     "accountPool.upstreamAccounts.effectiveRule.fieldFastMode": "FAST mode",
+    "accountPool.upstreamAccounts.effectiveRule.fieldImageToolRewriteMode":
+      "Image tools",
     "accountPool.upstreamAccounts.effectiveRule.fieldConcurrency":
       "Concurrency",
     "accountPool.upstreamAccounts.effectiveRule.fieldUpstream429":
@@ -1155,6 +1169,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.fields.verifiedEmail": "Verified email",
     "accountPool.upstreamAccounts.fields.accountId": "Account ID",
     "accountPool.upstreamAccounts.fields.userId": "User ID",
+    "accountPool.upstreamAccounts.fields.imageToolCapability":
+      "Image capability",
     "accountPool.upstreamAccounts.fields.primaryLimit": "5h local limit",
     "accountPool.upstreamAccounts.fields.secondaryLimit": "7d local limit",
     "accountPool.upstreamAccounts.fields.limitUnit": "Limit unit",
@@ -1173,6 +1189,17 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.fields.lastRefreshedAt": "Last refresh",
     "accountPool.upstreamAccounts.fields.tokenExpiresAt":
       "Access token expires",
+    "accountPool.upstreamAccounts.imageToolCapability.supported":
+      "Image-capable",
+    "accountPool.upstreamAccounts.imageToolCapability.unsupported":
+      "Not image-capable",
+    "accountPool.upstreamAccounts.imageToolCapability.unknown": "Unknown",
+    "accountPool.upstreamAccounts.imageToolCapabilityHint.supported":
+      "This account can be selected for image requests.",
+    "accountPool.upstreamAccounts.imageToolCapabilityHint.unsupported":
+      "This account is filtered out of image requests.",
+    "accountPool.upstreamAccounts.imageToolCapabilityHint.unknown":
+      "The system has not observed enough evidence yet.",
     "accountPool.upstreamAccounts.noRefreshToken.badge": "无 RT",
     "accountPool.upstreamAccounts.fields.lastSuccessSync":
       "Last successful sync",
@@ -2207,6 +2234,9 @@ const baseTranslations = {
     "table.endpoint.chatBadge": "Chat",
     "table.endpoint.compactBadge": "Compact",
     "table.endpoint.compactHint": "Codex remote compaction request",
+    "table.endpoint.remoteV2Badge": "Remote compaction V2",
+    "table.details.compactionRequest": "Compaction request",
+    "table.details.compactionResponse": "Compaction response",
     "table.details.requesterIp": "Requester IP",
     "table.details.promptCacheKey": "Prompt Cache Key",
     "table.details.totalLatency": "Elapsed time",
@@ -2942,6 +2972,18 @@ const baseTranslations = {
       "这些设置会覆盖根默认值，Tag 和账号策略仍可继续覆盖。",
     "accountPool.upstreamAccounts.groupNotes.routingPolicy.save":
       "应用分组策略",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteMode":
+      "图片工具",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteHint":
+      "保持原样会依据账号自身图片能力；缺少时补充只在已确认图片意图时注入图片工具；强制补充会无条件注入；强制去掉会无条件移除。",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolKeepOriginal":
+      "保持原样",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolFillMissing":
+      "缺少时补充",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceAdd":
+      "强制补充",
+    "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceRemove":
+      "强制去掉",
     "accountPool.upstreamAccounts.policyDialog.accountTitle": "账号路由策略",
     "accountPool.upstreamAccounts.policyDialog.accountDescription":
       "这些设置属于账号层，会覆盖分组和 Tag 策略。",
@@ -3092,6 +3134,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.fastModeForceAdd": "强制补充",
     "accountPool.upstreamAccounts.effectiveRule.fastModeForceRemove":
       "强制去掉",
+    "accountPool.upstreamAccounts.effectiveRule.fieldImageToolRewriteMode":
+      "图片工具",
     "accountPool.upstreamAccounts.effectiveRule.sourceTags": "规则来源 tag",
     "accountPool.upstreamAccounts.effectiveRule.sourceBreakdownTitle":
       "字段来源明细",
@@ -3420,6 +3464,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.fields.verifiedEmail": "可信邮箱",
     "accountPool.upstreamAccounts.fields.accountId": "账号 ID",
     "accountPool.upstreamAccounts.fields.userId": "用户 ID",
+    "accountPool.upstreamAccounts.fields.imageToolCapability": "图片能力",
     "accountPool.upstreamAccounts.fields.primaryLimit": "5 小时本地限额",
     "accountPool.upstreamAccounts.fields.secondaryLimit": "7 天本地限额",
     "accountPool.upstreamAccounts.fields.limitUnit": "限额单位",
@@ -3437,6 +3482,17 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.fields.lastSyncedAt": "最近同步",
     "accountPool.upstreamAccounts.fields.lastRefreshedAt": "最近刷新",
     "accountPool.upstreamAccounts.fields.tokenExpiresAt": "访问令牌过期时间",
+    "accountPool.upstreamAccounts.imageToolCapability.supported":
+      "支持图片工具",
+    "accountPool.upstreamAccounts.imageToolCapability.unsupported":
+      "不支持图片工具",
+    "accountPool.upstreamAccounts.imageToolCapability.unknown": "未知",
+    "accountPool.upstreamAccounts.imageToolCapabilityHint.supported":
+      "这个账号可以参与需要图片工具的请求。",
+    "accountPool.upstreamAccounts.imageToolCapabilityHint.unsupported":
+      "这个账号会被排除在图片请求之外。",
+    "accountPool.upstreamAccounts.imageToolCapabilityHint.unknown":
+      "系统还没有观测到足够信息。",
     "accountPool.upstreamAccounts.noRefreshToken.badge": "无 RT",
     "accountPool.upstreamAccounts.fields.lastSuccessSync": "最近成功同步",
     "accountPool.upstreamAccounts.fields.credits": "Credits",
@@ -4414,8 +4470,11 @@ const baseTranslations = {
     "table.details.endpoint": "端点",
     "table.endpoint.responsesBadge": "Responses",
     "table.endpoint.chatBadge": "Chat",
-    "table.endpoint.compactBadge": "远程压缩",
+    "table.endpoint.compactBadge": "Compact",
     "table.endpoint.compactHint": "Codex 远程压缩请求",
+    "table.endpoint.remoteV2Badge": "远程压缩V2",
+    "table.details.compactionRequest": "压缩请求",
+    "table.details.compactionResponse": "压缩响应",
     "table.details.requesterIp": "请求方 IP",
     "table.details.promptCacheKey": "Prompt Cache Key",
     "table.details.totalLatency": "用时",

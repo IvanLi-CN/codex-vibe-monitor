@@ -319,7 +319,9 @@ describe("service tier helpers", () => {
 
 describe("resolveInvocationEndpointDisplay", () => {
   it("maps the recognized invocation endpoints onto badge metadata", () => {
-    expect(resolveInvocationEndpointDisplay(" /v1/responses ")).toEqual({
+    expect(
+      resolveInvocationEndpointDisplay({ endpoint: " /v1/responses " }),
+    ).toEqual({
       kind: "responses",
       endpointValue: "/v1/responses",
       badgeVariant: "default",
@@ -336,6 +338,48 @@ describe("resolveInvocationEndpointDisplay", () => {
       endpointValue: "/v1/responses/compact",
       badgeVariant: "info",
       labelKey: "table.endpoint.compactBadge",
+    });
+  });
+
+  it("surfaces remote compaction v2 only while in flight or when response compaction fired", () => {
+    expect(
+      resolveInvocationEndpointDisplay({
+        endpoint: "/v1/responses",
+        status: "running",
+        compactionRequestKind: "remote_v2",
+      }),
+    ).toEqual({
+      kind: "remote_v2",
+      endpointValue: "/v1/responses",
+      badgeVariant: "info",
+      labelKey: "table.endpoint.remoteV2Badge",
+    });
+
+    expect(
+      resolveInvocationEndpointDisplay({
+        endpoint: "/v1/responses",
+        status: "success",
+        compactionRequestKind: "remote_v2",
+        compactionResponseKind: null,
+      }),
+    ).toEqual({
+      kind: "responses",
+      endpointValue: "/v1/responses",
+      badgeVariant: "default",
+      labelKey: "table.endpoint.responsesBadge",
+    });
+
+    expect(
+      resolveInvocationEndpointDisplay({
+        endpoint: "/v1/responses",
+        status: "success",
+        compactionResponseKind: "remote_v2",
+      }),
+    ).toEqual({
+      kind: "remote_v2",
+      endpointValue: "/v1/responses",
+      badgeVariant: "info",
+      labelKey: "table.endpoint.remoteV2Badge",
     });
   });
 
@@ -859,6 +903,38 @@ describe("InvocationTable", () => {
 
     expect(html).not.toContain("来源");
     expect(html).not.toContain("xy-custom-source");
+  });
+
+  it("shows raw endpoint plus compaction request and response semantics in request details", () => {
+    const record: ApiInvocation = {
+      id: 37,
+      invokeId: "invocation-remote-v2-detail",
+      occurredAt: "2026-03-24T06:51:52Z",
+      createdAt: "2026-03-24T06:51:52Z",
+      source: "proxy",
+      routeMode: "pool",
+      upstreamAccountId: 17,
+      upstreamAccountName: "API Keys Pool",
+      proxyDisplayName: "api-keys-gateway",
+      endpoint: "/v1/responses",
+      compactionRequestKind: "remote_v2",
+      compactionResponseKind: "remote_v2",
+      model: "gpt-5.4",
+      status: "success",
+      totalTokens: 4096,
+      cost: 0.1024,
+    };
+
+    const html = renderToStaticMarkup(
+      <I18nProvider>
+        <InvocationDetailProbe record={record} />
+      </I18nProvider>,
+    );
+
+    expect(html).toContain("/v1/responses");
+    expect(html).toMatch(/压缩请求|Compaction request/);
+    expect(html).toMatch(/压缩响应|Compaction response/);
+    expect(html).toMatch(/远程压缩V2|Remote compaction V2/);
   });
 
   it("keeps latency summary fields out of request details while preserving stage timings", async () => {

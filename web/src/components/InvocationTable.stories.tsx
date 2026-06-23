@@ -317,6 +317,37 @@ const endpointBadgeRecords: ApiInvocation[] = [
     tUpstreamTtfbMs: 132.8,
     tTotalMs: 744.6,
   },
+  {
+    id: 1505,
+    invokeId: 'inv_endpoint_badge_remote_v2_running',
+    occurredAt: '2026-02-25T10:40:00Z',
+    createdAt: '2026-02-25T10:40:00Z',
+    source: 'proxy',
+    proxyDisplayName: 'Endpoint-remote-v2',
+    endpoint: '/v1/responses',
+    compactionRequestKind: 'remote_v2',
+    model: 'gpt-5.4',
+    status: 'running',
+    totalTokens: 512,
+    requestedServiceTier: 'priority',
+  },
+  {
+    id: 1506,
+    invokeId: 'inv_endpoint_badge_remote_v2_completed',
+    occurredAt: '2026-02-25T10:41:00Z',
+    createdAt: '2026-02-25T10:41:00Z',
+    source: 'proxy',
+    proxyDisplayName: 'Endpoint-remote-v2-completed',
+    endpoint: '/v1/responses',
+    compactionRequestKind: 'remote_v2',
+    compactionResponseKind: 'remote_v2',
+    model: 'gpt-5.4',
+    status: 'success',
+    totalTokens: 598,
+    cost: 0.0019,
+    tUpstreamTtfbMs: 116.2,
+    tTotalMs: 684.9,
+  },
 ]
 
 const reasoningEffortRecords: ApiInvocation[] = [
@@ -1864,7 +1895,7 @@ export const EndpointBadgeStates: Story = {
     docs: {
       description: {
         story:
-          'Shows the endpoint-summary matrix: recognized `/v1/responses`, `/v1/chat/completions`, and `/v1/responses/compact` render as human-readable badges, while an unknown long endpoint stays on the raw monospace fallback path. Expanded details still retain the original endpoint text.',
+          'Shows the endpoint-summary matrix: recognized `/v1/responses`, `/v1/chat/completions`, and `/v1/responses/compact` render as human-readable badges, while an unknown long endpoint stays on the raw monospace fallback path. The matrix also includes both the running request-side and completed response-side remote compaction V2 cases. Expanded details still retain the original endpoint text.',
       },
     },
   },

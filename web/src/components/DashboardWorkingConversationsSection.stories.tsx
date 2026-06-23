@@ -104,6 +104,8 @@ function createPreview(
         ? (overrides.upstreamAccountPlanType ?? null)
         : undefined,
     endpoint: overrides.endpoint ?? "/v1/responses",
+    compactionRequestKind: overrides.compactionRequestKind ?? null,
+    compactionResponseKind: overrides.compactionResponseKind ?? null,
     transport: overrides.transport,
     source: overrides.source ?? "pool",
     inputTokens: overrides.inputTokens ?? 148,
@@ -212,6 +214,8 @@ function buildRecordFromPreview(
     upstreamAccountId: preview.upstreamAccountId ?? null,
     upstreamAccountName: preview.upstreamAccountName ?? undefined,
     endpoint: preview.endpoint ?? undefined,
+    compactionRequestKind: preview.compactionRequestKind ?? null,
+    compactionResponseKind: preview.compactionResponseKind ?? null,
     transport: preview.transport,
     model: preview.model ?? undefined,
     status: preview.status,

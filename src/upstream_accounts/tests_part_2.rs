@@ -283,6 +283,7 @@
             allow_cut_in: true,
             priority_tier: TagPriorityTier::Normal,
             fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+            image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
             concurrency_limit,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
@@ -297,12 +298,67 @@
                 allow_cut_in: "root".to_string(),
                 priority_tier: "root".to_string(),
                 fast_mode_rewrite_mode: "root".to_string(),
+                image_tool_rewrite_mode: "root".to_string(),
                 concurrency_limit: "root".to_string(),
                 upstream_429_retry: "root".to_string(),
                 available_models: "root".to_string(),
                 system_denied_models: "root".to_string(),
             },
         }
+    }
+
+    #[test]
+    fn image_intent_routes_to_image_compatible_accounts() {
+        assert!(account_accepts_requested_image_intent(
+            ImageIntent::Yes,
+            ImageToolRewriteMode::KeepOriginal,
+            ImageToolCapability::Unknown,
+        ));
+        assert!(account_accepts_requested_image_intent(
+            ImageIntent::Yes,
+            ImageToolRewriteMode::KeepOriginal,
+            ImageToolCapability::Supported,
+        ));
+        assert!(!account_accepts_requested_image_intent(
+            ImageIntent::Yes,
+            ImageToolRewriteMode::KeepOriginal,
+            ImageToolCapability::Unsupported,
+        ));
+        assert!(account_accepts_requested_image_intent(
+            ImageIntent::Yes,
+            ImageToolRewriteMode::FillMissing,
+            ImageToolCapability::Unsupported,
+        ));
+        assert!(account_accepts_requested_image_intent(
+            ImageIntent::Yes,
+            ImageToolRewriteMode::ForceAdd,
+            ImageToolCapability::Unsupported,
+        ));
+        assert!(!account_accepts_requested_image_intent(
+            ImageIntent::Yes,
+            ImageToolRewriteMode::ForceRemove,
+            ImageToolCapability::Supported,
+        ));
+        assert!(account_accepts_requested_image_intent(
+            ImageIntent::DirectImage,
+            ImageToolRewriteMode::ForceRemove,
+            ImageToolCapability::Supported,
+        ));
+        assert!(account_accepts_requested_image_intent(
+            ImageIntent::DirectImage,
+            ImageToolRewriteMode::ForceRemove,
+            ImageToolCapability::Unknown,
+        ));
+        assert!(!account_accepts_requested_image_intent(
+            ImageIntent::DirectImage,
+            ImageToolRewriteMode::ForceAdd,
+            ImageToolCapability::Unsupported,
+        ));
+        assert!(account_accepts_requested_image_intent(
+            ImageIntent::Unknown,
+            ImageToolRewriteMode::ForceRemove,
+            ImageToolCapability::Unsupported,
+        ));
     }
 
     async fn insert_test_oauth_mailbox_session(
@@ -3935,13 +3991,13 @@
                     local_secondary_limit: None,
                     local_limit_unit: None,
                     tag_ids: None,
-                    routing_rule: Some(UpdateTagRequest {
-                        name: None,
+                    routing_rule: Some(UpdateGroupAccountRoutingRuleRequest {
                         block_new_conversations: None,
                         allow_cut_out: None,
                         allow_cut_in: None,
                         priority_tier: Some("normal".to_string()),
                         fast_mode_rewrite_mode: Some("always_fast".to_string()),
+                        image_tool_rewrite_mode: None,
                         concurrency_limit: None,
                         upstream_429_retry_enabled: None,
                         upstream_429_max_retries: None,

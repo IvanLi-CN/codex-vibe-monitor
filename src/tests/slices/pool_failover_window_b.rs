@@ -621,7 +621,7 @@ async fn proxy_openai_v1_responses_live_first_failover_preserves_prompt_cache_gr
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_responses_live_first_replay_reloads_encrypted_owner_guard() {
+async fn proxy_openai_v1_responses_waits_for_body_before_encrypted_owner_guard() {
     let (upstream_base, attempts, upstream_handle) =
         spawn_pool_retry_upstream(&[("Bearer upstream-primary", 99)]).await;
     let state = test_state_with_openai_base_and_pool_no_available_wait(
@@ -700,10 +700,7 @@ async fn proxy_openai_v1_responses_live_first_replay_reloads_encrypted_owner_gua
     let attempts = attempts
         .lock()
         .expect("lock live-first replay owner guard attempts");
-    assert!(matches!(
-        attempts.get("Bearer upstream-primary").copied(),
-        Some(count) if count > 0
-    ));
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), None);
     assert_eq!(attempts.get("Bearer upstream-owner").copied(), None);
 
     let last_attempt = sqlx::query_as::<_, (Option<i64>, Option<String>)>(
@@ -1823,6 +1820,8 @@ async fn websocket_payload_owner_guard_blocks_mismatched_payload_owner() {
         upstream_429_retry_enabled: false,
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::default(),
+        image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+        image_tool_capability: ImageToolCapability::Unknown,
         upstream_base_url: Url::parse("https://api.example.test").expect("valid base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
     };
@@ -3616,6 +3615,414 @@ async fn proxy_openai_v1_header_sticky_rechecks_model_before_reusing_header_reso
 
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-sticky-only").copied(), None);
+    assert_eq!(attempts.get("Bearer upstream-fallback").copied(), Some(1));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_header_sticky_rechecks_image_intent_before_reusing_header_resolution() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(20),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let sticky_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Header Sticky Text Only",
+        "upstream-sticky-text-only",
+        None,
+        None,
+        None,
+    )
+    .await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Fallback Image Capable",
+        "upstream-image-fallback",
+        None,
+        None,
+        None,
+    )
+    .await;
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_image_tool_rewrite_mode = ?2 WHERE id = ?1",
+    )
+    .bind(sticky_account_id)
+    .bind("force_remove")
+    .execute(&state.pool)
+    .await
+    .expect("mark sticky account as image-incompatible");
+
+    let sticky_seen_at = format_utc_iso(Utc::now());
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "header-image-sensitive-sticky",
+        sticky_account_id,
+        &sticky_seen_at,
+    )
+    .await;
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6248,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-sticky-key"),
+                HeaderValue::from_static("header-image-sensitive-sticky"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(r#"{"model":"gpt-image-1","input":"draw a cat"}"#),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("via-pool image request should succeed");
+
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read via-pool image response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode via-pool image response");
+    assert_eq!(payload["authorization"], "Bearer upstream-image-fallback");
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-sticky-text-only").copied(), None);
+    assert_eq!(
+        attempts.get("Bearer upstream-image-fallback").copied(),
+        Some(1)
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_direct_image_prebuffer_preserves_image_capture_target_without_rewrite() {
+    async fn direct_image_echo_upstream(headers: HeaderMap, body: Bytes) -> Response {
+        let authorization = headers
+            .get(http_header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        let request_body: Value = serde_json::from_slice(&body).expect("decode upstream body");
+        (
+            StatusCode::OK,
+            Json(json!({
+                "authorization": authorization,
+                "requestBody": request_body,
+            })),
+        )
+            .into_response()
+    }
+
+    let app = Router::new().route(
+        "/v1/images/generations",
+        post(|headers, body| direct_image_echo_upstream(headers, body)),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind direct image upstream");
+    let upstream_base = format!("http://{}", listener.local_addr().expect("local addr"));
+    let upstream_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("direct image upstream server should run");
+    });
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(20),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Direct Image Force Add",
+        "upstream-direct-image",
+        None,
+        None,
+        None,
+    )
+    .await;
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_image_tool_rewrite_mode = ?2 WHERE id = ?1",
+    )
+    .bind(account_id)
+    .bind("force_add")
+    .execute(&state.pool)
+    .await
+    .expect("mark direct image account force_add");
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6343,
+        &"/v1/images/generations".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(r#"{"model":"gpt-image-1","prompt":"draw a cat"}"#),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("via-pool direct image request should succeed");
+
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read via-pool direct image response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode via-pool image response");
+    assert_eq!(payload["authorization"], "Bearer upstream-direct-image");
+    assert_eq!(payload["requestBody"]["model"], "gpt-image-1");
+    assert_eq!(payload["requestBody"]["prompt"], "draw a cat");
+    assert!(payload["requestBody"].get("tools").is_none());
+    assert!(payload["requestBody"].get("tool_choice").is_none());
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_responses_force_add_failure_learns_image_unsupported() {
+    async fn image_unsupported_upstream(body: Bytes) -> impl IntoResponse {
+        let request_body: Value = serde_json::from_slice(&body).expect("decode upstream body");
+        assert!(
+            request_body["tools"]
+                .as_array()
+                .expect("tools should be injected")
+                .iter()
+                .any(|tool| tool["type"].as_str() == Some("image_generation")),
+            "force_add should send an image tool upstream: {request_body:?}"
+        );
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "code": "unsupported_tool",
+                    "message": "image_generation is not supported for this account",
+                    "type": "invalid_request_error"
+                }
+            })),
+        )
+            .into_response()
+    }
+
+    let app = Router::new().route("/v1/responses", post(|body| image_unsupported_upstream(body)));
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind image unsupported upstream");
+    let upstream_base = format!("http://{}", listener.local_addr().expect("local addr"));
+    let upstream_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("image unsupported upstream server should run");
+    });
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(20),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Responses Force Add Unsupported",
+        "upstream-force-add-unsupported",
+        None,
+        None,
+        None,
+    )
+    .await;
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_image_tool_rewrite_mode = ?2 WHERE id = ?1",
+    )
+    .bind(account_id)
+    .bind("force_add")
+    .execute(&state.pool)
+    .await
+    .expect("mark responses account force_add");
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6344,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(r#"{"model":"gpt-5.1-codex","input":"hello"}"#),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("via-pool responses request should return a route failure");
+    assert!(response.status().is_server_error() || response.status().is_client_error());
+
+    let capability: String =
+        sqlx::query_scalar("SELECT image_tool_capability FROM pool_upstream_accounts WHERE id = ?")
+            .bind(account_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load image capability after force_add failure");
+    assert_eq!(capability, "unsupported");
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_responses_live_first_waits_for_image_intent_before_filtered_resolution() {
+    assert_live_first_waits_for_image_intent_before_filtered_resolution("/v1/responses", 6341)
+        .await;
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_responses_compact_live_first_waits_for_image_intent_before_filtered_resolution(
+) {
+    assert_live_first_waits_for_image_intent_before_filtered_resolution(
+        "/v1/responses/compact",
+        6342,
+    )
+    .await;
+}
+
+async fn assert_live_first_waits_for_image_intent_before_filtered_resolution(
+    path: &str,
+    proxy_request_id: u64,
+) {
+    let mut config = test_config();
+    config.openai_proxy_request_read_timeout = Duration::from_millis(260);
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(120),
+            poll_interval: Duration::from_millis(10),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Primary Text Only",
+        "upstream-primary",
+        None,
+        None,
+        None,
+    )
+    .await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Fallback Image Capable",
+        "upstream-fallback",
+        None,
+        None,
+        None,
+    )
+    .await;
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_image_tool_rewrite_mode = ?2 WHERE id = ?1",
+    )
+    .bind(primary_id)
+    .bind("force_remove")
+    .execute(&state.pool)
+    .await
+    .expect("mark primary account as image-incompatible");
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    let first_chunk = format!(
+        "{{\"model\":\"gpt-5.5\",\"input\":\"{}",
+        "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 256)
+    );
+    tokio::spawn(async move {
+        let _ = tx.send(Ok(Bytes::from(first_chunk))).await;
+        tokio::time::sleep(Duration::from_millis(130)).await;
+        let _ = tx
+            .send(Ok(Bytes::from_static(
+                b"\",\"tools\":[{\"type\":\"image_generation\"}]}",
+            )))
+            .await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let started = Instant::now();
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        proxy_request_id,
+        &path.parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("via-pool request should wait for delayed image intent");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed >= Duration::from_millis(100),
+        "image-sensitive request should wait for delayed image intent, elapsed={elapsed:?}"
+    );
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read via-pool response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
+    assert_eq!(payload["authorization"], "Bearer upstream-fallback");
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), None);
     assert_eq!(attempts.get("Bearer upstream-fallback").copied(), Some(1));
 
     upstream_handle.abort();

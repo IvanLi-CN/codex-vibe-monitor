@@ -1578,6 +1578,8 @@ async fn persist_ws_usage_event(
         is_stream: true,
         request_contains_encrypted_content,
         response_contains_encrypted_content: event.contains_encrypted_content,
+        compaction_request_kind: None,
+        compaction_response_kind: None,
         request_model: None,
         requested_service_tier: None,
         billing_service_tier: billing_service_tier.as_deref(),
@@ -2254,6 +2256,8 @@ mod websocket_tests {
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
             fast_mode_rewrite_mode: TagFastModeRewriteMode::default(),
+            image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+            image_tool_capability: ImageToolCapability::Unknown,
             upstream_base_url,
             routing_source: PoolRoutingSelectionSource::FreshAssignment,
         }
@@ -2275,6 +2279,8 @@ mod websocket_tests {
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
             fast_mode_rewrite_mode: TagFastModeRewriteMode::default(),
+            image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+            image_tool_capability: ImageToolCapability::Unknown,
             upstream_base_url,
             routing_source: PoolRoutingSelectionSource::FreshAssignment,
         }

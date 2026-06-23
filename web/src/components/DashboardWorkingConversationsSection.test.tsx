@@ -87,6 +87,8 @@ function createPreview(
         ? (overrides.upstreamAccountPlanType ?? null)
         : undefined,
     endpoint: overrides.endpoint ?? "/v1/responses",
+    compactionRequestKind: overrides.compactionRequestKind ?? null,
+    compactionResponseKind: overrides.compactionResponseKind ?? null,
     inputTokens: overrides.inputTokens ?? 120,
     outputTokens: overrides.outputTokens ?? 80,
     cacheInputTokens: overrides.cacheInputTokens ?? 30,
@@ -563,6 +565,32 @@ describe("DashboardWorkingConversationsSection", () => {
     ).not.toBe(0);
     expect(compactBadge.textContent).toMatch(/远程压缩|Compact/);
     expect(currentSlot.textContent).toContain("Team");
+  });
+
+  it("shows the remote compaction v2 badge for running responses previews", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-remote-v2", [
+          createPreview({
+            id: 11,
+            invokeId: "invoke-remote-v2",
+            occurredAt: "2026-04-04T10:06:00Z",
+            status: "running",
+            endpoint: "/v1/responses",
+            compactionRequestKind: "remote_v2",
+          }),
+        ]),
+      ]),
+    );
+
+    const badge = host?.querySelector(
+      '[data-testid="invocation-endpoint-badge"][data-endpoint-kind="remote_v2"]',
+    );
+    if (!(badge instanceof HTMLElement)) {
+      throw new Error("missing remote v2 badge");
+    }
+
+    expect(badge.textContent).toMatch(/远程压缩V2|Remote compaction V2/);
   });
 
   it("renders compact account plan badges and hides local or missing plans", () => {

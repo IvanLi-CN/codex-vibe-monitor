@@ -1947,6 +1947,10 @@ pub(crate) struct ApiInvocation {
     #[sqlx(default)]
     pub(crate) endpoint: Option<String>,
     #[sqlx(default)]
+    pub(crate) compaction_request_kind: Option<String>,
+    #[sqlx(default)]
+    pub(crate) compaction_response_kind: Option<String>,
+    #[sqlx(default)]
     pub(crate) requester_ip: Option<String>,
     #[sqlx(default)]
     pub(crate) prompt_cache_key: Option<String>,

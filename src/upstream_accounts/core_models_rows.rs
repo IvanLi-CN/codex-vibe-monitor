@@ -44,6 +44,8 @@ pub(crate) struct UpstreamAccountRow {
     compact_support_status: Option<String>,
     compact_support_observed_at: Option<String>,
     compact_support_reason: Option<String>,
+    #[sqlx(default)]
+    image_tool_capability: Option<String>,
     local_primary_limit: Option<f64>,
     local_secondary_limit: Option<f64>,
     local_limit_unit: Option<String>,
@@ -57,6 +59,8 @@ pub(crate) struct UpstreamAccountRow {
     policy_priority_tier: Option<String>,
     #[sqlx(default)]
     policy_fast_mode_rewrite_mode: Option<String>,
+    #[sqlx(default)]
+    policy_image_tool_rewrite_mode: Option<String>,
     #[sqlx(default)]
     policy_concurrency_limit: Option<i64>,
     #[sqlx(default)]
@@ -478,6 +482,8 @@ struct UpstreamAccountGroupListRow {
     policy_allow_cut_in: Option<i64>,
     policy_priority_tier: Option<String>,
     policy_fast_mode_rewrite_mode: Option<String>,
+    #[sqlx(default)]
+    policy_image_tool_rewrite_mode: Option<String>,
     policy_concurrency_limit: Option<i64>,
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
@@ -735,6 +741,8 @@ pub(crate) struct AccountStickyKeyInvocationPreviewRow {
     t_persist_ms: Option<f64>,
     t_total_ms: Option<f64>,
     endpoint: Option<String>,
+    compaction_request_kind: Option<String>,
+    compaction_response_kind: Option<String>,
 }
 
 #[allow(dead_code)]

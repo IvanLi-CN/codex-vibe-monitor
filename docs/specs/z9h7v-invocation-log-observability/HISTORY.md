@@ -24,3 +24,5 @@
 - 2026-06-22: 扩展 proxy settings 合同与 SQLite 单例，新增 `requestBodyLoggingEnabled` / `responseBodyLoggingEnabled` 双开关，默认值均为 `true`。
 - 2026-06-22: raw capture 链路按新开关裁剪 request raw、response raw 与 `raw_response` preview；关闭后仅停止新的 body 留存，保留结构化 payload、usage、timing 与路由元数据。
 - 2026-06-22: Settings 页面新增请求/响应 body 记录开关，并补充前后端回归测试与 Storybook 视觉证据。
+- 2026-06-23: 新增 `compactionRequestKind` / `compactionResponseKind` 语义层，稳定识别 `/v1/responses` 内的 remote compaction V2，并保持旧 `/v1/responses/compact` 继续显示为 `Compact`。
+- 2026-06-23: 调整 invocation 列表与详情展示规则：列表按运行态请求信号与终态响应信号区分 `Responses` / `远程压缩V2`，详情始终保留原始 endpoint 并单列展示“压缩请求 / 压缩响应”。

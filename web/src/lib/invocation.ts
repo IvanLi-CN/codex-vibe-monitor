@@ -6,16 +6,24 @@ const ROUTE_MODE_POOL = "pool";
 const RESPONSES_ENDPOINT = "/v1/responses";
 const CHAT_COMPLETIONS_ENDPOINT = "/v1/chat/completions";
 const COMPACT_ENDPOINT = "/v1/responses/compact";
+const RUNNING_STATUSES = new Set(["running", "pending"]);
 
 export type ProxyWeightDeltaDirection = "up" | "down" | "flat" | "missing";
 export type FastIndicatorState = "effective" | "requested_only" | "none";
-export type InvocationEndpointKind = "responses" | "chat" | "compact" | "raw";
+export type InvocationEndpointKind =
+  | "responses"
+  | "chat"
+  | "compact"
+  | "remote_v2"
+  | "raw";
+export type InvocationCompactionKind = "compact" | "remote_v2";
 
 type InvocationEndpointBadgeVariant = "default" | "secondary" | "info";
 type InvocationEndpointBadgeLabelKey =
   | "table.endpoint.responsesBadge"
   | "table.endpoint.chatBadge"
-  | "table.endpoint.compactBadge";
+  | "table.endpoint.compactBadge"
+  | "table.endpoint.remoteV2Badge";
 
 export interface ProxyWeightDeltaView {
   direction: ProxyWeightDeltaDirection;
@@ -27,6 +35,18 @@ export interface InvocationEndpointDisplay {
   endpointValue: string;
   badgeVariant: InvocationEndpointBadgeVariant | null;
   labelKey: InvocationEndpointBadgeLabelKey | null;
+}
+
+function normalizeCompactionKind(
+  value: string | null | undefined,
+): InvocationCompactionKind | null {
+  if (value === "compact" || value === "remote_v2") return value;
+  return null;
+}
+
+function normalizeInvocationStatus(value: string | null | undefined) {
+  if (typeof value !== "string") return "";
+  return value.trim().toLowerCase();
 }
 
 function normalizeInvocationTimingStage(
@@ -147,12 +167,51 @@ export function formatResponseContentEncoding(
 }
 
 export function resolveInvocationEndpointDisplay(
-  value: string | null | undefined,
+  record:
+    | Pick<
+        ApiInvocation,
+        | "endpoint"
+        | "status"
+        | "compactionRequestKind"
+        | "compactionResponseKind"
+      >
+    | string
+    | null
+    | undefined,
   fallback: string = DEFAULT_FALLBACK,
 ): InvocationEndpointDisplay {
-  const endpointValue = typeof value === "string" ? value.trim() : "";
+  const endpointValue =
+    typeof record === "string"
+      ? record.trim()
+      : typeof record?.endpoint === "string"
+        ? record.endpoint.trim()
+        : "";
+  const status =
+    typeof record === "string" || record == null
+      ? ""
+      : normalizeInvocationStatus(record.status);
+  const compactionRequestKind =
+    typeof record === "string" || record == null
+      ? null
+      : normalizeCompactionKind(record.compactionRequestKind);
+  const compactionResponseKind =
+    typeof record === "string" || record == null
+      ? null
+      : normalizeCompactionKind(record.compactionResponseKind);
+
   switch (endpointValue) {
     case RESPONSES_ENDPOINT:
+      if (
+        compactionResponseKind === "remote_v2" ||
+        (RUNNING_STATUSES.has(status) && compactionRequestKind === "remote_v2")
+      ) {
+        return {
+          kind: "remote_v2",
+          endpointValue,
+          badgeVariant: "info",
+          labelKey: "table.endpoint.remoteV2Badge",
+        };
+      }
       return {
         kind: "responses",
         endpointValue,

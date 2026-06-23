@@ -594,6 +594,16 @@ fn write_backfill_request_payload_with_fields(
             }
             payload
         }
+        ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits => {
+            let mut payload = json!({
+                "model": "gpt-image-1",
+                "prompt": "hello",
+            });
+            if let Some(service_tier) = requested_service_tier {
+                payload["service_tier"] = Value::String(service_tier.to_string());
+            }
+            payload
+        }
     };
     let encoded = serde_json::to_vec(&payload).expect("serialize request payload");
     fs::write(path, encoded).expect("write request payload");
@@ -1235,6 +1245,8 @@ async fn reserve_test_pool_routing_account(
         upstream_429_retry_enabled: false,
         upstream_429_max_retries: 0,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+        image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+        image_tool_capability: ImageToolCapability::Unknown,
     };
     reserve_pool_routing_account(state.as_ref(), reservation_key, &account);
 }

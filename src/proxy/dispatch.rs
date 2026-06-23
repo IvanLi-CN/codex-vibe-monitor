@@ -146,6 +146,8 @@ pub(crate) fn capture_target_for_request(path: &str, method: &Method) -> Option<
         "/v1/chat/completions" => Some(ProxyCaptureTarget::ChatCompletions),
         "/v1/responses" => Some(ProxyCaptureTarget::Responses),
         "/v1/responses/compact" => Some(ProxyCaptureTarget::ResponsesCompact),
+        "/v1/images/generations" => Some(ProxyCaptureTarget::ImageGenerations),
+        "/v1/images/edits" => Some(ProxyCaptureTarget::ImageEdits),
         _ => None,
     }
 }
@@ -255,6 +257,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     request_contains_encrypted_content:
                         request_info.contains_encrypted_content,
                     response_contains_encrypted_content: false,
+                    compaction_request_kind: request_info.compaction_request_kind,
+                    compaction_response_kind: None,
                     request_model: None,
                     requested_service_tier: request_info.requested_service_tier.as_deref(),
                     billing_service_tier: None,
@@ -588,6 +592,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         request_contains_encrypted_content:
                             request_info.contains_encrypted_content,
                         response_contains_encrypted_content: false,
+                        compaction_request_kind: request_info.compaction_request_kind,
+                        compaction_response_kind: None,
                         request_model: None,
                         requested_service_tier: request_info.requested_service_tier.as_deref(),
                         billing_service_tier: billing_service_tier.as_deref(),
@@ -807,6 +813,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         request_contains_encrypted_content:
                             request_info.contains_encrypted_content,
                         response_contains_encrypted_content: false,
+                        compaction_request_kind: request_info.compaction_request_kind,
+                        compaction_response_kind: None,
                         request_model: None,
                         requested_service_tier: request_info.requested_service_tier.as_deref(),
                         billing_service_tier: billing_service_tier.as_deref(),
@@ -963,6 +971,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     request_contains_encrypted_content:
                         request_info.contains_encrypted_content,
                     response_contains_encrypted_content: false,
+                    compaction_request_kind: request_info.compaction_request_kind,
+                    compaction_response_kind: None,
                     request_model: None,
                     requested_service_tier: request_info.requested_service_tier.as_deref(),
                     billing_service_tier: billing_service_tier.as_deref(),
@@ -1546,17 +1556,21 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         had_stream_error,
                         had_logical_stream_failure,
                     );
+                let request_image_intent = request_info_for_task.image_intent.as_deref()
+                    .map(crate::ImageIntent::from_str)
+                    .unwrap_or(crate::ImageIntent::Unknown);
                 let route_result = if pool_route_success || pure_downstream_closed {
                     consume_pool_routing_reservation(
                         state_for_task.as_ref(),
                         &reservation_key_for_task,
                     );
-                    record_pool_route_success(
+                    record_pool_route_success_with_image_intent(
                         &state_for_task.pool,
                         account.account_id,
                         upstream_attempt_started_at_utc_for_task.unwrap_or_else(Utc::now),
                         sticky_key_for_task.as_deref(),
                         None,
+                        request_image_intent,
                     )
                     .await
                 } else if had_stream_error {
@@ -1598,7 +1612,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         )
                         .await
                     } else {
-                        record_pool_route_http_failure(
+                        record_pool_route_http_failure_with_image_intent(
                             &state_for_task.pool,
                             account.account_id,
                             &account.kind,
@@ -1607,6 +1621,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             upstream_status,
                             &route_message,
                             None,
+                            request_image_intent,
                         )
                         .await
                     }
@@ -1748,6 +1763,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             request_contains_encrypted_content: request_info_for_task
                 .contains_encrypted_content,
             response_contains_encrypted_content: response_info.contains_encrypted_content,
+            compaction_request_kind: request_info_for_task.compaction_request_kind,
+            compaction_response_kind: resolve_compaction_response_kind_for_payload(
+                capture_target,
+                response_info.compaction_response_kind,
+            ),
             request_model: request_info_for_task.model.as_deref(),
             requested_service_tier: request_info_for_task.requested_service_tier.as_deref(),
             billing_service_tier: billing_service_tier.as_deref(),
@@ -2116,5 +2136,16 @@ pub(crate) async fn read_request_body_snapshot_with_limit(
                 failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                 partial_body: Vec::new(),
             })?;
+    }
+}
+
+pub(crate) fn resolve_compaction_response_kind_for_payload(
+    capture_target: ProxyCaptureTarget,
+    parsed_kind: Option<CompactionKind>,
+) -> Option<CompactionKind> {
+    if capture_target == ProxyCaptureTarget::ResponsesCompact {
+        Some(CompactionKind::Compact)
+    } else {
+        parsed_kind
     }
 }

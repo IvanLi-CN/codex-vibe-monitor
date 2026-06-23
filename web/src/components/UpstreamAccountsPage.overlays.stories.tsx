@@ -115,6 +115,22 @@ export const DetailDrawer: Story = {
   },
 }
 
+export const DetailDrawerOverview: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={detailRouteEntry(101)}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const dialog = await findTokyoDetailDialog(documentScope)
+    await expect(within(dialog).getByRole('tab', { name: /概览|overview/i })).toHaveAttribute('aria-selected', 'true')
+    await expect(
+      within(dialog).getByText(/图片能力|image capability/i),
+    ).toBeInTheDocument()
+  },
+}
+
 export const DetailDrawerRecordsPopulated: Story = {
   render: () => (
     <AccountPoolStoryRouter

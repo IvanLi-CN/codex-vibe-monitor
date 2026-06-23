@@ -5,6 +5,7 @@
 - 当前 `/api/invocations` 虽已包含 token 与成本，但缺少请求方来源信息（IP）、稳定请求标识（prompt cache key）与易读的阶段耗时展示。
 - Web 端表格仅突出错误详情，无法在单次请求维度快速定位“慢在何处”。
 - 代理链路已有 `payload` 与分阶段耗时字段落库能力，尚未系统化对外输出与前端展示。
+- 远程压缩的新流量已迁移到 `/v1/responses` 内的 server-side compaction；只看 endpoint 已无法区分“启用了远程压缩 V2”与“最终真的触发了压缩响应”。
 
 ## 目标 / 非目标
 
@@ -17,6 +18,7 @@
 - 号池尝试明细展示每次尝试实际落库的 `proxy_binding_key_snapshot`，用于失败链路诊断。
 - `GET /api/settings` 与 `PUT /api/settings/proxy` 暴露两个独立布尔开关：`requestBodyLoggingEnabled`、`responseBodyLoggingEnabled`，默认都为 `true`。
 - 关闭 body 记录时，仅停止新的 request/response 原文 body 落盘与响应 preview 持久化；结构化 payload、tokens、timing、routing/account、prompt cache key、reasoning/service tier 等字段继续写入。
+- `/api/invocations` 与 SSE `records` 在不改 schema 的前提下额外返回 `compactionRequestKind` / `compactionResponseKind`，把原始 endpoint 与压缩语义解耦。
 
 ### Non-goals
 
@@ -58,6 +60,9 @@
 - `requestBodyLoggingEnabled=false` 时，新请求不再写入 `request_raw_path` / request raw 文件；相关 size/truncation 字段维持空值或零值语义，不把该情况视为损坏。
 - `responseBodyLoggingEnabled=false` 时，新响应不再写入 `response_raw_path` / response raw 文件，同时 `raw_response` inline preview 也不再持久化。
 - `responseBodyLoggingEnabled=false` 时，调用详情读取响应 body、异常 drawer 与历史回填链路必须返回既有 unavailable/fallback 语义，而不是 500 或“缺文件即损坏”语义。
+- `/v1/responses/compact` 继续视为 `Compact`；不把它改名成 `V1`，也不把 `/v1/responses` 内的 V2 语义挤占到 endpoint 字段。
+- `/v1/responses` 请求体含 `context_management[type=compaction][compact_threshold]` 时，运行态记录必须写入 `compactionRequestKind="remote_v2"`，且不依赖 request body raw logging。
+- `/v1/responses` 终态只有在响应中实际检测到 compaction item 时才写入 `compactionResponseKind="remote_v2"`；“请求启用了 V2 但响应未触发”不得在终态列表误显示为 `远程压缩V2`。
 
 ### SHOULD
 
@@ -108,6 +113,11 @@
 - `requestBodyLoggingEnabled: boolean`
 - `responseBodyLoggingEnabled: boolean`
 
+### `GET /api/invocations` / SSE `records` 记录对象（新增可选字段）
+
+- `compactionRequestKind?: "compact" | "remote_v2" | null`
+- `compactionResponseKind?: "compact" | "remote_v2" | null`
+
 ### `GET /api/invocations` 记录对象（已存在并沿用）
 
 - `tReqReadMs?`、`tReqParseMs?`、`tUpstreamConnectMs?`、`tUpstreamTtfbMs?`、`tUpstreamStreamMs?`、`tRespParseMs?`、`tPersistMs?`、`tTotalMs?`
@@ -126,6 +136,9 @@
 - Given `requestBodyLoggingEnabled=false` 且 `responseBodyLoggingEnabled=true`，When 新代理调用完成，Then invocation 记录保留结构化 payload / stats / timing，但 `request_raw_path` 与新 request raw 文件都不存在。
 - Given `requestBodyLoggingEnabled=true` 且 `responseBodyLoggingEnabled=false`，When 新代理调用完成，Then invocation 记录保留结构化 payload / stats / timing，但 `response_raw_path` 为空，且 `raw_response` preview 为空字符串。
 - Given 两个开关都关闭，When 新代理调用完成并打开详情，Then Settings 页面保存成功、调用记录仍可查询，且 body 读取接口返回既有 unavailable/fallback 语义而非 500。
+- Given `/v1/responses` 请求启用了 remote compaction V2，When 记录处于 `running` 或 `pending`，Then 列表 badge 显示 `远程压缩V2`，详情同时显示原始 endpoint 与 `压缩请求=远程压缩V2`。
+- Given `/v1/responses` 请求启用了 remote compaction V2 但响应未触发 compaction，When 记录进入终态，Then 列表 badge 回退为 `Responses`，详情显示 `压缩请求=远程压缩V2`、`压缩响应=—`。
+- Given `/v1/responses` 响应出现 `response.output_item.added` 的 compaction item 或 `response.compaction` 负载，When 记录进入终态，Then 列表 badge 显示 `远程压缩V2`，详情显示 `压缩响应=远程压缩V2`。
 
 ### Manual verification
 
@@ -164,6 +177,14 @@
   evidence_note: verifies the retained-call activity chart uses the conversation's first and latest invocation timestamps instead of expanding the x-axis to the full local day.
   image:
   ![Short same-day conversation chart range](./assets/conversation-history-short-range.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: Monitoring/InvocationTable/EndpointBadgeStates
+  state: endpoint badge matrix with remote compaction V2 semantics
+  evidence_note: verifies `Compact` remains bound to `/v1/responses/compact`, while `/v1/responses` can surface `远程压缩V2` without overwriting the raw endpoint path.
+  image:
+  PR: include
+  ![Invocation endpoint badge states](./assets/invocation-endpoint-remote-v2-storybook.png)
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
