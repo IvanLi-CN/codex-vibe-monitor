@@ -217,6 +217,12 @@ pub(crate) async fn hydrate_prompt_cache_conversations(
                 ),
                 service_tier: normalize_trimmed_optional_string(row.service_tier),
                 billing_service_tier: normalize_trimmed_optional_string(row.billing_service_tier),
+                compaction_request_kind: normalize_trimmed_optional_string(
+                    row.compaction_request_kind,
+                ),
+                compaction_response_kind: normalize_trimmed_optional_string(
+                    row.compaction_response_kind,
+                ),
                 t_req_read_ms: row.t_req_read_ms,
                 t_req_parse_ms: row.t_req_parse_ms,
                 t_upstream_connect_ms: row.t_upstream_connect_ms,

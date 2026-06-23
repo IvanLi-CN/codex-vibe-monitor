@@ -255,6 +255,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     request_contains_encrypted_content:
                         request_info.contains_encrypted_content,
                     response_contains_encrypted_content: false,
+                    compaction_request_kind: request_info.compaction_request_kind,
+                    compaction_response_kind: None,
                     request_model: None,
                     requested_service_tier: request_info.requested_service_tier.as_deref(),
                     billing_service_tier: None,
@@ -588,6 +590,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         request_contains_encrypted_content:
                             request_info.contains_encrypted_content,
                         response_contains_encrypted_content: false,
+                        compaction_request_kind: request_info.compaction_request_kind,
+                        compaction_response_kind: None,
                         request_model: None,
                         requested_service_tier: request_info.requested_service_tier.as_deref(),
                         billing_service_tier: billing_service_tier.as_deref(),
@@ -807,6 +811,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         request_contains_encrypted_content:
                             request_info.contains_encrypted_content,
                         response_contains_encrypted_content: false,
+                        compaction_request_kind: request_info.compaction_request_kind,
+                        compaction_response_kind: None,
                         request_model: None,
                         requested_service_tier: request_info.requested_service_tier.as_deref(),
                         billing_service_tier: billing_service_tier.as_deref(),
@@ -963,6 +969,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     request_contains_encrypted_content:
                         request_info.contains_encrypted_content,
                     response_contains_encrypted_content: false,
+                    compaction_request_kind: request_info.compaction_request_kind,
+                    compaction_response_kind: None,
                     request_model: None,
                     requested_service_tier: request_info.requested_service_tier.as_deref(),
                     billing_service_tier: billing_service_tier.as_deref(),
@@ -1748,6 +1756,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             request_contains_encrypted_content: request_info_for_task
                 .contains_encrypted_content,
             response_contains_encrypted_content: response_info.contains_encrypted_content,
+            compaction_request_kind: request_info_for_task.compaction_request_kind,
+            compaction_response_kind: response_info.compaction_response_kind.or_else(|| {
+                (capture_target == ProxyCaptureTarget::ResponsesCompact)
+                    .then_some(CompactionKind::Compact)
+            }),
             request_model: request_info_for_task.model.as_deref(),
             requested_service_tier: request_info_for_task.requested_service_tier.as_deref(),
             billing_service_tier: billing_service_tier.as_deref(),

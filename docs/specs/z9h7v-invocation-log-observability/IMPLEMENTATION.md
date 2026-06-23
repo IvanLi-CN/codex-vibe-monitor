@@ -7,6 +7,8 @@
 - 号池尝试详情会将真实上游请求尝试与 `budget_exhausted_final` / `sameAccountRetryIndex <= 0` 合成终态记录分开展示；终态记录只展示未发起新请求的终态说明与上一失败账号上下文。
 - proxy settings 现在持久化 `request_body_logging_enabled` / `response_body_logging_enabled`；关闭后只阻止新的 raw body / response preview 留存，不影响结构化 payload、usage、timing、routing/account、prompt cache key 等字段。
 - response body logging 关闭时，运行态记录与终态持久化都会将 `raw_response` preview 置空，并跳过 `response_raw_path` 元数据。
+- invocation payload 现在额外携带 `compactionRequestKind` / `compactionResponseKind`，用于区分旧 `Compact` endpoint 与 `/v1/responses` 内的 remote compaction V2 语义。
+- 运行态 V2 识别来自 request body 的 `context_management[type=compaction][compact_threshold]`，终态识别来自响应内实际出现的 compaction item；两者独立写入 payload，不回填历史记录。
 
 ## Migrated Implementation Notes
 
@@ -23,6 +25,9 @@
 - `cargo test`
 - `cargo check`
 - `cargo check --tests`
+- `cargo test prepare_target_request_body_detects_remote_v2_compaction_requests`
+- `cargo test parse_target_response_payload_detects_remote_v2_compaction_stream_events`
+- `cargo test parse_target_response_payload_detects_response_compaction_json_shape`
 - `cd web && bun run test -- src/lib/api.test.ts src/hooks/useSettings.test.tsx src/pages/Settings.test.tsx src/hooks/useAvailableModelOptions.test.ts`
 - `cd web && bun run build`
 - `cd web && bun run build-storybook`
@@ -39,3 +44,4 @@
 - [x] M6: 调用详情移除 `source` 展示与代理名 fallback；号池尝试明细展示从 `proxyBindingKeySnapshot` 解析出的代理显示名，解析失败时使用紧凑 key fallback。
 - [x] M7: Settings 页面增加 request/response body logging 双开关，后端 settings 合同、SQLite 单例持久化与 raw capture 链路同步接入。
 - [x] M8: 关闭 response body logging 时同步关闭 `raw_response` preview，并让详情/回填链路接受“新记录无 raw body”为正常退化。
+- [x] M9: 为 invocation 记录新增 `compactionRequestKind` / `compactionResponseKind` 语义投影，列表与详情按 `Compact` / `远程压缩V2` 的双层合同收口。
