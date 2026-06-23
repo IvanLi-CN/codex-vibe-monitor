@@ -78,11 +78,13 @@ vi.mock("recharts", () => ({
     yAxisId,
     name,
     strokeWidth,
+    stackId,
   }: {
     dataKey?: string;
     yAxisId?: string;
     name?: string;
     strokeWidth?: number;
+    stackId?: string;
   }) => (
     <div
       data-testid="area-series"
@@ -90,6 +92,7 @@ vi.mock("recharts", () => ({
       data-y-axis-id={yAxisId ?? ""}
       data-name={name ?? ""}
       data-stroke-width={String(strokeWidth ?? "")}
+      data-stack-id={stackId ?? ""}
     />
   ),
   Line: ({
@@ -196,6 +199,7 @@ const response = {
       failureCount: 1,
       totalTokens: 120,
       totalCost: 0.5,
+      nonSuccessCost: 0.2,
     },
     {
       bucketStart: "2026-04-08 00:02:00",
@@ -205,6 +209,7 @@ const response = {
       failureCount: 0,
       totalTokens: 200,
       totalCost: 0.75,
+      nonSuccessCost: 0,
     },
   ],
 };
@@ -352,9 +357,15 @@ describe("DashboardTodayActivityChart", () => {
       chartInFlightCount: 0,
       chartFailureCountNegative: -1,
       totalCount: 3,
+      successCost: 0.3,
+      nonSuccessCost: 0.2,
       cumulativeCost: 0.5,
+      cumulativeSuccessCost: 0.3,
+      cumulativeNonSuccessCost: 0.2,
       cumulativeTokens: 120,
       chartCumulativeCost: 0.5,
+      chartCumulativeSuccessCost: 0.3,
+      chartCumulativeNonSuccessCost: 0.2,
       chartCumulativeTokens: 120,
     });
     expect(data[1]).toMatchObject({
@@ -362,12 +373,18 @@ describe("DashboardTodayActivityChart", () => {
       failureCount: 0,
       inFlightCount: 0,
       totalCount: 0,
+      successCost: 0,
+      nonSuccessCost: 0,
       cumulativeCost: 0.5,
+      cumulativeSuccessCost: 0.3,
+      cumulativeNonSuccessCost: 0.2,
       cumulativeTokens: 120,
       chartSuccessCount: 0,
       chartInFlightCount: 0,
       chartFailureCountNegative: 0,
       chartCumulativeCost: 0.5,
+      chartCumulativeSuccessCost: 0.3,
+      chartCumulativeNonSuccessCost: 0.2,
       chartCumulativeTokens: 120,
     });
     expect(data[2]).toMatchObject({
@@ -375,12 +392,18 @@ describe("DashboardTodayActivityChart", () => {
       failureCount: 0,
       inFlightCount: 0,
       totalCount: 4,
+      successCost: 0.75,
+      nonSuccessCost: 0,
       cumulativeCost: 1.25,
+      cumulativeSuccessCost: 1.05,
+      cumulativeNonSuccessCost: 0.2,
       cumulativeTokens: 320,
       chartSuccessCount: 4,
       chartInFlightCount: 0,
       chartFailureCountNegative: 0,
       chartCumulativeCost: 1.25,
+      chartCumulativeSuccessCost: 1.05,
+      chartCumulativeNonSuccessCost: 0.2,
       chartCumulativeTokens: 320,
     });
     expect(data[3]).toMatchObject({
@@ -388,12 +411,18 @@ describe("DashboardTodayActivityChart", () => {
       failureCount: 0,
       inFlightCount: 0,
       totalCount: 0,
+      successCost: 0,
+      nonSuccessCost: 0,
       cumulativeCost: 1.25,
+      cumulativeSuccessCost: 1.05,
+      cumulativeNonSuccessCost: 0.2,
       cumulativeTokens: 320,
       chartSuccessCount: 0,
       chartInFlightCount: 0,
       chartFailureCountNegative: 0,
       chartCumulativeCost: 1.25,
+      chartCumulativeSuccessCost: 1.05,
+      chartCumulativeNonSuccessCost: 0.2,
       chartCumulativeTokens: 320,
     });
     expect(data.at(-1)).toMatchObject({
@@ -402,9 +431,51 @@ describe("DashboardTodayActivityChart", () => {
       chartInFlightCount: null,
       chartFailureCountNegative: null,
       cumulativeCost: null,
+      cumulativeSuccessCost: null,
+      cumulativeNonSuccessCost: null,
       cumulativeTokens: null,
       chartCumulativeCost: null,
+      chartCumulativeSuccessCost: null,
+      chartCumulativeNonSuccessCost: null,
       chartCumulativeTokens: null,
+    });
+  });
+
+  it("keeps relay-only cost in the success-side remainder when non-success cost is absent", () => {
+    const data = buildTodayMinuteChartData(
+      {
+        rangeStart: "2026-04-08 00:00:00",
+        rangeEnd: "2026-04-08 00:01:22",
+        bucketSeconds: 60,
+        points: [
+          {
+            bucketStart: "2026-04-08 00:00:00",
+            bucketEnd: "2026-04-08 00:00:59",
+            totalCount: 4,
+            successCount: 4,
+            failureCount: 0,
+            totalTokens: 480,
+            totalCost: 1.2,
+            nonSuccessCost: 0,
+          },
+        ],
+      },
+      {
+        now: new Date(2026, 3, 8, 0, 1, 22),
+        localeTag: "en-US",
+      },
+    );
+
+    expect(data[0]).toMatchObject({
+      totalCost: 1.2,
+      successCost: 1.2,
+      nonSuccessCost: 0,
+      cumulativeCost: 1.2,
+      cumulativeSuccessCost: 1.2,
+      cumulativeNonSuccessCost: 0,
+      chartCumulativeCost: 1.2,
+      chartCumulativeSuccessCost: 1.2,
+      chartCumulativeNonSuccessCost: 0,
     });
   });
 
@@ -1240,8 +1311,14 @@ describe("DashboardTodayActivityChart", () => {
     expect(costHtml).toContain('data-chart-mode="cumulative-area"');
     expect(costHtml).toContain('data-testid="area-chart"');
     expect(costHtml).not.toContain('data-testid="composed-chart"');
+    expect(costHtml).toContain('data-data-key="chartCumulativeSuccessCost"');
+    expect(costHtml).toContain('data-data-key="chartCumulativeNonSuccessCost"');
+    expect(costHtml).toContain('data-stack-id="cost"');
+    expect(costHtml).toContain('data-name="stats.cards.success"');
+    expect(costHtml).toContain('data-name="chart.nonSuccess"');
     expect(tokenHtml).toContain('data-chart-mode="cumulative-area"');
     expect(tokenHtml).toContain('data-testid="area-chart"');
+    expect(tokenHtml).toContain('data-data-key="chartCumulativeTokens"');
   });
 
   it("renders trend mode as 10-minute TPM and spend-rate area charts", () => {

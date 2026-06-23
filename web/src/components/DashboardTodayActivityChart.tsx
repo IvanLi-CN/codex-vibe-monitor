@@ -462,6 +462,14 @@ function DashboardTodayActivityChartImpl({
   );
   const areaSeriesName =
     metric === "totalCost" ? t("chart.totalCost") : t("chart.totalTokens");
+  const costSeriesNames = useMemo(
+    () => ({
+      success: t("stats.cards.success"),
+      nonSuccess: t("chart.nonSuccess"),
+      total: t("chart.totalCost"),
+    }),
+    [t],
+  );
   const trendSeriesNames = useMemo(
     () => ({
       tokensPerMinute: t("chart.tokensPerMinute"),
@@ -817,11 +825,23 @@ function DashboardTodayActivityChartImpl({
         ];
   const renderAreaTooltip = (point: DashboardTodayMinuteDatum) => [
     ...(metric === "totalCost"
-      ? point.cumulativeCost == null
+      ? point.cumulativeCost == null ||
+        point.cumulativeSuccessCost == null ||
+        point.cumulativeNonSuccessCost == null
         ? []
         : [
             {
-              label: areaSeriesName,
+              label: costSeriesNames.success,
+              value: currencyFormatter.format(point.cumulativeSuccessCost),
+              color: chartColors.success,
+            },
+            {
+              label: costSeriesNames.nonSuccess,
+              value: currencyFormatter.format(point.cumulativeNonSuccessCost),
+              color: chartColors.failure,
+            },
+            {
+              label: costSeriesNames.total,
               value: currencyFormatter.format(point.cumulativeCost),
               color: chartColors.accent,
             },
@@ -1183,20 +1203,44 @@ function DashboardTodayActivityChartImpl({
                   />
                 )}
               />
-              <Area
-                type="monotone"
-                dataKey={
-                  metric === "totalCost"
-                    ? "chartCumulativeCost"
-                    : "chartCumulativeTokens"
-                }
-                name={areaSeriesName}
-                stroke={chartColors.accent}
-                fill={chartColors.accentFill}
-                fillOpacity={1}
-                strokeWidth={2}
-                isAnimationActive={animate}
-              />
+              {metric === "totalCost" ? (
+                <>
+                  <Legend wrapperStyle={{ color: chartColors.axisText }} />
+                  <Area
+                    type="monotone"
+                    dataKey="chartCumulativeSuccessCost"
+                    name={costSeriesNames.success}
+                    stackId="cost"
+                    stroke={chartColors.success}
+                    fill={chartColors.successFill}
+                    fillOpacity={1}
+                    strokeWidth={2}
+                    isAnimationActive={animate}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="chartCumulativeNonSuccessCost"
+                    name={costSeriesNames.nonSuccess}
+                    stackId="cost"
+                    stroke={chartColors.failure}
+                    fill={chartColors.failureFill}
+                    fillOpacity={1}
+                    strokeWidth={2}
+                    isAnimationActive={animate}
+                  />
+                </>
+              ) : (
+                <Area
+                  type="monotone"
+                  dataKey="chartCumulativeTokens"
+                  name={areaSeriesName}
+                  stroke={chartColors.accent}
+                  fill={chartColors.accentFill}
+                  fillOpacity={1}
+                  strokeWidth={2}
+                  isAnimationActive={animate}
+                />
+              )}
             </AreaChart>
           )}
           </ResponsiveContainer>

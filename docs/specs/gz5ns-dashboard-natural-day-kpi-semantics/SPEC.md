@@ -30,8 +30,9 @@
 
 - `web/src/components/TodayStatsOverview.tsx`：卡片结构、secondary/meta 排布与新 helper 接入。
 - `web/src/components/DashboardActivityOverview.tsx`：today/yesterday 两条自然日路径接入增强后的 summary 字段，并保持账号级 `upstreamAccountId` 复用。
+- `web/src/components/DashboardTodayActivityChart.tsx` 与 `web/src/components/dashboardTodayActivityChartData.ts`：自然日金额累计图改为 `Success + Non-success` 堆叠面积，并保持 Dashboard / 账号详情共用同一图表语义。
 - `web/src/components/dashboardKpiComparisons.ts` 与相关 helper：补齐成功同进度比值和每对话 / 失败 / 重试 / 进行中等待等前端派生。
-- `src/api/slices/invocations_and_summary.rs`、`src/api/slices/settings_models_and_cache.rs`、`web/src/lib/api/core-foundation.ts`：扩展 `StatsResponse` 与 summary/SSE 负载。
+- `src/api/slices/invocations_and_summary.rs`、`src/api/slices/settings_models_and_cache.rs`、`src/api/slices/prompt_cache_and_timeseries/timeseries.rs`、`web/src/lib/api/core-foundation.ts`：扩展 `StatsResponse`、natural-day timeseries 与 summary/SSE 负载。
 - 与 summary augmentation 直接相关的后端测试、前端测试和 Storybook 场景。
 
 ### Out of scope
@@ -53,6 +54,8 @@
 - `响应时间` 右下为 `进行中`，定义为当前进行中调用等待时间均值；缺样本显示 `—`，不回退到整日均值。
 - `今日成本` / `今日 Tokens` 右下都为 `失败`，聚合 `failed + interrupted` 调用的 cost / tokens。
 - 增强后的 summary 字段必须同时在全局 Dashboard 与 `upstreamAccountId` 账号作用域下可用。
+- 自然日金额图保留“累计金额”语义，但在 `metric=totalCost` 时必须改为两层堆叠面积：`累计成功金额` + `累计 Non-success 金额`。
+- 自然日金额图中的 `Non-success` 固定表示 `failed + interrupted` 成本；图例、tooltip 与 Storybook 证据必须统一使用这一领域术语，并按当前 locale 正确本地化，不再把 `interrupted` 隐含进“失败”一词。
 
 ### SHOULD
 
@@ -76,6 +79,8 @@
 - `响应时间` 主值沿用现有 active-tail 响应时间，左下展示整日日均，右上展示 `较昨日`，右下展示 `进行中` 当前等待均值。
 - `今日成本` 左下展示前 7 个完整自然日均值，右上展示与昨日同进度 delta，右下展示失败/中断成本。
 - `今日 Tokens` 左下展示缓存命中率，右上展示与昨日同进度 delta，右下展示失败/中断 tokens。
+- `今日` / `昨日` 自然日顶部金额图在切到 `金额` metric 时，展示随时间推进的累计堆叠面积：底层为 `Success`，上层为 `Non-success`，两层和始终等于累计总金额。
+- 账号详情页复用同一自然日金额图实现，不引入“主 Dashboard 用堆叠、账号详情保留单面积”的作用域分叉。
 
 ### Edge cases / errors
 
@@ -84,19 +89,24 @@
 - 当前没有昨日同进度成功数或基线为 `0` 时，`成功 -> 较昨日` 显示 `—`。
 - summary 主请求失败时，保留现有整体 alert 语义；不把增强字段单独兜底成局部 tile。
 - summary 成功但增强字段缺失时，只影响对应辅助位显示 `—`，不阻断主值展示。
+- 若某分钟 bucket 没有 `Non-success` 成本，则 `Non-success` 堆叠层保持 `0`，不得改变累计总高度。
+- 若某分钟 bucket 只有 `Non-success` 成本，则 `Success` 累计值保持不变，只由 `Non-success` 层把累计总额抬升到新的高度。
+- 未来分钟或 closed-natural-day 之后的无效点上，两条累计成本序列都必须保持 `null`，不向后错误延长。
 
 ## 接口契约（Interfaces & Contracts）
 
 ### 接口清单（Inventory）
 
-| 接口（Name）                                     | 类型（Kind）        | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers）                                         | 备注（Notes）                                       |
-| ------------------------------------------------ | ------------------- | ------------- | -------------- | ------------------------ | --------------- | ----------------------------------------------------------- | --------------------------------------------------- |
-| `StatsResponse.inProgressRetryConversationCount` | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail natural-day KPI   | strict in-progress retry 对话数                     |
-| `StatsResponse.inProgressAvgWaitMs`              | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail natural-day KPI   | 当前进行中调用等待时间均值                          |
-| `StatsResponse.nonSuccessCost`                   | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail natural-day KPI   | `failed + interrupted` cost                         |
-| `StatsResponse.nonSuccessTokens`                 | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail natural-day KPI   | `failed + interrupted` tokens                       |
-| `TodayStatsOverview` metric tile contract        | ui-component-prop   | internal      | Modify         | None                     | web/dashboard   | DashboardActivityOverview, account detail activity overview | 统一四区布局与 inline secondary                     |
-| same-progress success comparison helper          | ui-helper           | internal      | Add            | None                     | web/dashboard   | TodayStatsOverview                                          | `current success / yesterday same-progress success` |
+| 接口（Name）                                      | 类型（Kind）        | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers）                                         | 备注（Notes）                                       |
+| ------------------------------------------------- | ------------------- | ------------- | -------------- | ------------------------ | --------------- | ----------------------------------------------------------- | --------------------------------------------------- |
+| `StatsResponse.inProgressRetryConversationCount`  | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail natural-day KPI   | strict in-progress retry 对话数                     |
+| `StatsResponse.inProgressAvgWaitMs`               | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail natural-day KPI   | 当前进行中调用等待时间均值                          |
+| `StatsResponse.nonSuccessCost`                    | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail natural-day KPI   | `failed + interrupted` cost                         |
+| `StatsResponse.nonSuccessTokens`                  | http-response-field | external      | Modify         | None                     | backend/stats   | Dashboard natural-day KPI, account detail natural-day KPI   | `failed + interrupted` tokens                       |
+| `TimeseriesPoint.nonSuccessCost`                  | http-response-field | external      | Add            | None                     | backend/stats   | Dashboard natural-day cost chart, account detail cost chart | bucket-level `failed + interrupted` cost            |
+| `TodayStatsOverview` metric tile contract         | ui-component-prop   | internal      | Modify         | None                     | web/dashboard   | DashboardActivityOverview, account detail activity overview | 统一四区布局与 inline secondary                     |
+| `DashboardTodayActivityChart` total-cost contract | ui-component-prop   | internal      | Modify         | None                     | web/dashboard   | DashboardActivityOverview, account detail activity overview | `Success + Non-success` cumulative stacked area     |
+| same-progress success comparison helper           | ui-helper           | internal      | Add            | None                     | web/dashboard   | TodayStatsOverview                                          | `current success / yesterday same-progress success` |
 
 ### 契约文档（按 Kind 拆分）
 
@@ -110,6 +120,9 @@
 - Given 当前没有进行中调用等待样本，When 查看 `响应时间 -> 进行中`，Then 显示 `—`。
 - Given 今天存在 `failed`、`interrupted` 或二者混合调用，When 查看 `今日成本 -> 失败` 和 `今日 Tokens -> 失败`，Then 两者都包含这些 non-success 调用的累计金额与 Token。
 - Given 账号详情页传入 `upstreamAccountId`，When 查看自然日七卡，Then 增强字段与 Dashboard 全局视图一样生效，且作用域不泄露为全局数据。
+- Given 自然日金额图切到 `金额` metric，When 某个 bucket 同时包含成功与 `failed/interrupted` 成本，Then tooltip 同时显示累计 `Success`、累计 `Non-success` 与累计总金额，且前两者之和等于总金额。
+- Given 自然日金额图切到 `金额` metric，When 查看图例与面积层，Then 固定展示 `Success` 与 `Non-success` 两层堆叠，不再是单条 `累计总金额` 面积图。
+- Given 账号详情页传入 `upstreamAccountId`，When 查看自然日金额图，Then 堆叠面积与 tooltip 语义与主 Dashboard 一致，且数据仍严格受账号作用域约束。
 
 ## 验收清单（Acceptance checklist）
 
@@ -122,13 +135,13 @@
 
 ### Testing
 
-- Unit tests: `TodayStatsOverview.test.tsx`、`dashboardKpiComparisons.test.ts`。
-- Integration tests: `DashboardActivityOverview.test.tsx`、账号详情 activity overview 相关测试、summary aggregation 后端测试。
+- Unit tests: `TodayStatsOverview.test.tsx`、`dashboardKpiComparisons.test.ts`、`DashboardTodayActivityChart.test.tsx`。
+- Integration tests: `DashboardActivityOverview.test.tsx`、账号详情 activity overview 相关测试、summary aggregation / natural-day timeseries 后端测试。
 - E2E tests (if applicable): None。
 
 ### UI / Storybook (if applicable)
 
-- Stories to add/update: `web/src/components/TodayStatsOverview.stories.tsx`、`web/src/components/DashboardActivityOverview.stories.tsx`。
+- Stories to add/update: `web/src/components/TodayStatsOverview.stories.tsx`、`web/src/components/DashboardActivityOverview.stories.tsx`、`web/src/components/DashboardTodayActivityChart.stories.tsx`。
 - Docs pages / state galleries to add/update: `TodayStatsOverview` state gallery / autodocs。
 - `play` / interaction coverage to add/update: natural-day populated / account-scoped populated / zero-in-progress。
 - Visual regression baseline changes (if any): 以本 spec 的 `## Visual Evidence` 为准。
@@ -143,17 +156,12 @@
 
 ## Visual Evidence
 
-- SHA `267223fb`
+- SHA `753a5bdf`
 - source_type: `storybook_canvas`
-  story_id_or_title: `dashboard-dashboardactivityoverview--today-view`
-  scenario: `dashboard populated`
-  evidence_note: `验证 Dashboard 自然日七卡的新四区布局、右上较昨日迁移与右下每对话/重试/进行中/失败语义位。`
-  ![Dashboard populated](./assets/dashboard-populated.png)
-- source_type: `storybook_canvas`
-  story_id_or_title: `dashboard-dashboardactivityoverview--account-today-narrow-desktop-overflow-dark`
-  scenario: `account-scoped populated`
-  evidence_note: `验证账号详情 upstreamAccountId 作用域下，同一套七卡语义与窄桌面溢出处理同时生效。`
-  ![Account populated](./assets/account-populated.png)
+  story_id_or_title: `dashboard-dashboardactivityoverview--account-today-cost-cumulative`
+  scenario: `account activity overview`
+  evidence_note: `验证账号活动总览复用共享链路，卡片区与金额图在 account-scoped 场景下同时生效；当前截图为中文 locale。`
+  ![Account-scoped cumulative cost stacked area](./assets/account-today-cost-cumulative-storybook-1280.png)
 
 ## Related PRs
 
@@ -162,6 +170,7 @@
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
 - 风险：`nonSuccessCost/nonSuccessTokens` 仍是 summary augmentation 字段，如果未来被其他视图重用，可能需要进一步下沉到 rollup totals 契约。
+- 风险：natural-day timeseries 新增 `nonSuccessCost` 后，live / hourly-rollup / archive / upstream-account 需要保持同一聚合口径；任一路径遗漏都会让堆叠高度与 tooltip 总额不一致。
 - 风险：`进行中等待` 采用当前 in-flight `tUpstreamTtfbMs` 样本均值；若上游未来把等待定义改为别的阶段，需要同步刷新 tooltip 与 spec。
 - 假设：`每对话` 的分母固定使用 strict `inProgressConversationCount`，分母为 `0/null` 时显示 `—`。
 - 假设：`失败` 成本与 Token 的正式口径为 `failed + interrupted`。

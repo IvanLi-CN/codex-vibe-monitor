@@ -21,6 +21,8 @@ export interface DashboardTodayMinuteDatum {
   chartFailureCountNegative: number | null;
   totalCount: number;
   totalCost: number;
+  successCost: number;
+  nonSuccessCost: number;
   totalTokens: number;
   tokensPerMinute: number | null;
   spendRate: number | null;
@@ -30,8 +32,12 @@ export interface DashboardTodayMinuteDatum {
   chartSpendRate: number | null;
   chartFirstResponseByteTotalAvgMs: number | null;
   cumulativeCost: number | null;
+  cumulativeSuccessCost: number | null;
+  cumulativeNonSuccessCost: number | null;
   cumulativeTokens: number | null;
   chartCumulativeCost: number | null;
+  chartCumulativeSuccessCost: number | null;
+  chartCumulativeNonSuccessCost: number | null;
   chartCumulativeTokens: number | null;
 }
 
@@ -76,6 +82,7 @@ export function buildTodayMinuteChartData(
       inFlightCount: number;
       totalCount: number;
       totalCost: number;
+      nonSuccessCost: number;
       totalTokens: number;
       firstResponseByteTotalWeightedMs: number;
       firstResponseByteTotalSampleCount: number;
@@ -93,6 +100,7 @@ export function buildTodayMinuteChartData(
       inFlightCount: 0,
       totalCount: 0,
       totalCost: 0,
+      nonSuccessCost: 0,
       totalTokens: 0,
       firstResponseByteTotalWeightedMs: 0,
       firstResponseByteTotalSampleCount: 0,
@@ -102,6 +110,7 @@ export function buildTodayMinuteChartData(
     current.inFlightCount += Math.max(point.inFlightCount ?? 0, 0);
     current.totalCount += point.totalCount ?? 0;
     current.totalCost += point.totalCost ?? 0;
+    current.nonSuccessCost += point.nonSuccessCost ?? 0;
     current.totalTokens += point.totalTokens ?? 0;
     const firstResponseByteTotalAvgMs = point.firstResponseByteTotalAvgMs ?? null;
     const pointInFlightCount = Math.max(point.inFlightCount ?? 0, 0);
@@ -124,6 +133,8 @@ export function buildTodayMinuteChartData(
 
   const data: DashboardTodayMinuteDatum[] = [];
   let cumulativeCost = 0;
+  let cumulativeSuccessCost = 0;
+  let cumulativeNonSuccessCost = 0;
   let cumulativeTokens = 0;
 
   for (
@@ -141,6 +152,11 @@ export function buildTodayMinuteChartData(
       successCount + failureCount + inFlightCount,
     );
     const totalCost = point?.totalCost ?? 0;
+    const nonSuccessCost = Math.max(0, point?.nonSuccessCost ?? 0);
+    // Some sources (for example CRS relay deltas) only report total cost plus
+    // success/failure counts, so the success-side layer is the remaining
+    // cumulative cost after subtracting explicit non-success usage.
+    const successCost = Math.max(0, totalCost - nonSuccessCost);
     const totalTokens = point?.totalTokens ?? 0;
     const firstResponseByteTotalAvgMs =
       point == null || point.firstResponseByteTotalSampleCount <= 0
@@ -148,6 +164,8 @@ export function buildTodayMinuteChartData(
         : point.firstResponseByteTotalWeightedMs /
           point.firstResponseByteTotalSampleCount;
     cumulativeCost += totalCost;
+    cumulativeSuccessCost += successCost;
+    cumulativeNonSuccessCost += nonSuccessCost;
     cumulativeTokens += totalTokens;
 
     const currentDate = new Date(epochMs);
@@ -171,6 +189,8 @@ export function buildTodayMinuteChartData(
           : 0,
       totalCount,
       totalCost,
+      successCost,
+      nonSuccessCost,
       totalTokens,
       tokensPerMinute: isFuture ? null : totalTokens,
       spendRate: isFuture ? null : totalCost,
@@ -184,8 +204,12 @@ export function buildTodayMinuteChartData(
         ? null
         : firstResponseByteTotalAvgMs,
       cumulativeCost: isFuture ? null : cumulativeCost,
+      cumulativeSuccessCost: isFuture ? null : cumulativeSuccessCost,
+      cumulativeNonSuccessCost: isFuture ? null : cumulativeNonSuccessCost,
       cumulativeTokens: isFuture ? null : cumulativeTokens,
       chartCumulativeCost: isFuture ? null : cumulativeCost,
+      chartCumulativeSuccessCost: isFuture ? null : cumulativeSuccessCost,
+      chartCumulativeNonSuccessCost: isFuture ? null : cumulativeNonSuccessCost,
       chartCumulativeTokens: isFuture ? null : cumulativeTokens,
     });
   }

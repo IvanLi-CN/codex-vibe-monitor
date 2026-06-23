@@ -56,6 +56,14 @@ function createSummary(totalCount: number, successCount: number, failureCount: n
   }
 }
 
+function deriveNonSuccessCost(totalCost: number, failureCount: number, totalCount: number) {
+  if (totalCost <= 0 || failureCount <= 0 || totalCount <= 0) {
+    return 0
+  }
+
+  return Number(((totalCost * failureCount) / totalCount).toFixed(2))
+}
+
 const TODAY_SUMMARY_FIXTURE = createSummary(3428, 3296, 132, 42.86, 18764200)
 const YESTERDAY_SUMMARY_FIXTURE = createSummary(4876, 4718, 158, 61.72, 26918400)
 
@@ -97,6 +105,11 @@ function buildTodayMinutePoints(summary = TODAY_SUMMARY_FIXTURE) {
       totalTokens: totalTokens[minute] ?? 0,
       cacheInputTokens: Math.round((totalTokens[minute] ?? 0) * 0.24),
       totalCost: Number(((totalCostCents[minute] ?? 0) / 100).toFixed(2)),
+      nonSuccessCost: deriveNonSuccessCost(
+        Number(((totalCostCents[minute] ?? 0) / 100).toFixed(2)),
+        failureCount,
+        totalCount,
+      ),
       firstResponseByteTotalSampleCount: totalCount,
       firstResponseByteTotalAvgMs: totalCount > 0 ? buildLatencyMs(minute, totalCount, 0) : null,
     })
@@ -149,6 +162,11 @@ function buildYesterdayMinutePoints(summary = YESTERDAY_SUMMARY_FIXTURE) {
       totalTokens: totalTokens[minute] ?? 0,
       cacheInputTokens: Math.round((totalTokens[minute] ?? 0) * 0.19),
       totalCost: Number(((totalCostCents[minute] ?? 0) / 100).toFixed(2)),
+      nonSuccessCost: deriveNonSuccessCost(
+        Number(((totalCostCents[minute] ?? 0) / 100).toFixed(2)),
+        failureCount,
+        totalCount,
+      ),
       firstResponseByteTotalSampleCount: totalCount,
       firstResponseByteTotalAvgMs: totalCount > 0 ? buildLatencyMs(minute, totalCount, 36) : null,
     })
@@ -181,6 +199,11 @@ function build24HourPoints() {
       totalTokens: totalCount * 390,
       cacheInputTokens: totalCount * 64,
       totalCost: Number((totalCount * 0.017).toFixed(4)),
+      nonSuccessCost: deriveNonSuccessCost(
+        Number((totalCount * 0.017).toFixed(4)),
+        failureCount,
+        totalCount,
+      ),
       firstResponseByteTotalSampleCount: totalCount,
       firstResponseByteTotalAvgMs: totalCount > 0 ? 620 + ((index * 13) % 280) : null,
     })
@@ -212,6 +235,11 @@ function buildHourlyPoints() {
       totalTokens: density * 620,
       cacheInputTokens: density * 110,
       totalCost: Number((density * 0.23).toFixed(2)),
+      nonSuccessCost: deriveNonSuccessCost(
+        Number((density * 0.23).toFixed(2)),
+        density > 6 ? 1 : 0,
+        density,
+      ),
       firstResponseByteTotalSampleCount: density,
       firstResponseByteTotalAvgMs: density > 0 ? 700 + ((index * 23) % 300) : null,
     })
@@ -245,6 +273,7 @@ function buildDailyPoints() {
       totalTokens: amplitude * 840,
       cacheInputTokens: amplitude * 140,
       totalCost: Number((amplitude * 0.31).toFixed(2)),
+      nonSuccessCost: 0,
     })
   }
   return {
@@ -649,6 +678,34 @@ export const AccountTodayNarrowDesktopOverflowDark: Story = {
       expect(canvas.getByTestId('today-stats-secondary-cost-failed')).not.toHaveTextContent('—')
       expect(canvas.queryByText(/并行对话|parallel/i)).toBeNull()
       expect(canvas.getByTestId('dashboard-today-activity-chart')).toBeVisible()
+    })
+  },
+}
+
+export const AccountTodayCostCumulative: Story = {
+  parameters: {
+    viewport: { defaultViewport: 'desktop1280' },
+  },
+  render: () => <EmbeddedAccountActivityOverview />,
+  decorators: [
+    (Story, context) => (
+      <DashboardOverviewStoryEnvironment
+        parameters={context.parameters as DashboardOverviewParameters}
+        maxWidth="1280px"
+      >
+        <Story />
+      </DashboardOverviewStoryEnvironment>
+    ),
+  ],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await waitFor(() => {
+      expect(canvas.getByRole('tab', { name: /今日|today/i })).toHaveAttribute('aria-selected', 'true')
+    })
+    await userEvent.click(canvas.getByRole('tab', { name: /金额|cost/i }))
+    await waitFor(() => {
+      expect(canvas.getByTestId('dashboard-today-activity-chart')).toHaveAttribute('data-chart-mode', 'cumulative-area')
+      expect(canvas.getByTestId('upstream-account-records-activity-overview')).toBeVisible()
     })
   },
 }
