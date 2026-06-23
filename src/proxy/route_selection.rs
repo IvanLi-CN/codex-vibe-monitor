@@ -2914,12 +2914,13 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                                     state.as_ref(),
                                     &pool_routing_reservation_key,
                                 );
-                                if let Err(route_err) = record_pool_route_success(
+                                if let Err(route_err) = record_pool_route_success_with_image_intent(
                                     &state.pool,
                                     account.account_id,
                                     upstream_attempt_started_at_utc,
                                     live_body_sticky_key.as_deref(),
                                     upstream_invoke_id.as_deref(),
+                                    request_image_intent,
                                 )
                                 .await
                                 {
