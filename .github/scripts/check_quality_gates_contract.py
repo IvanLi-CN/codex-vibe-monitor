@@ -46,8 +46,9 @@ LABEL_GATE_PULL_REQUEST_TYPES = {
 }
 REVIEW_POLICY_PULL_REQUEST_TYPES = {"opened", "reopened", "synchronize", "ready_for_review", "edited"}
 REVIEW_POLICY_REVIEW_TYPES = {"submitted", "dismissed", "edited"}
-ALLOWED_X64_RUNNERS = ("ubuntu-latest", "ubuntu-24.04")
-ALLOWED_CHECKOUT_ACTIONS = ("actions/checkout@v4", "actions/checkout@v7")
+RUNNER_X64 = "ubuntu-24.04"
+RUNNER_ARM64 = "ubuntu-24.04-arm"
+ACTION_CHECKOUT = "actions/checkout@v7"
 
 
 def parse_args() -> argparse.Namespace:
@@ -275,12 +276,7 @@ def command_option_map(command: list[str], where: str) -> dict[str, str]:
 
 
 def checkout_step(job: dict[str, Any], step_name: str, where: str) -> dict[str, Any]:
-    step = step_config(job, step_name, where)
-    actual_uses = step.get("uses")
-    require(
-        actual_uses in ALLOWED_CHECKOUT_ACTIONS,
-        f"{where}.steps[{step_name!r}].uses must stay one of {ALLOWED_CHECKOUT_ACTIONS!r}",
-    )
+    step = uses_step_config(job, step_name, ACTION_CHECKOUT, where)
     return require_mapping(step.get("with"), f"{where}.steps[{step_name!r}].with")
 
 
@@ -750,10 +746,7 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     require(permissions.get("contents") == "read", "release.yml.permissions.contents must stay read")
 
     ci_main_gate = named_job_config(workflow, "ci-main-gate", expected_jobs, "release.yml")
-    require(
-        ci_main_gate.get("runs-on") in ALLOWED_X64_RUNNERS,
-        f"release.yml.jobs.ci-main-gate.runs-on must stay one of {ALLOWED_X64_RUNNERS!r}",
-    )
+    require(ci_main_gate.get("runs-on") == RUNNER_X64, "release.yml.jobs.ci-main-gate.runs-on drifted")
     require_exact_if(
         ci_main_gate,
         "${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success' }}",

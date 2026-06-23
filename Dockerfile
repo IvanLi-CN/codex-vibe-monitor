@@ -1,5 +1,5 @@
 # Stage 1: build the web assets
-FROM oven/bun:1.3.10-alpine AS web-builder
+FROM oven/bun:1.3.14-alpine AS web-builder
 ARG APP_EFFECTIVE_VERSION
 WORKDIR /app/web
 
@@ -13,7 +13,7 @@ RUN bun run build
 # Stage 2: build the Rust binary
 # IMPORTANT: runtime image is Debian bookworm (glibc 2.36). Pin the Rust build stage to bookworm too,
 # otherwise the rust:<version> default base may drift and produce a binary requiring newer GLIBC.
-FROM rust:1.91.0-bookworm AS rust-builder
+FROM rust:1.96.0-bookworm AS rust-builder
 ARG APP_EFFECTIVE_VERSION
 WORKDIR /app
 
