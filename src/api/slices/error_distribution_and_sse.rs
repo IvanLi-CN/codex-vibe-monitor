@@ -1606,6 +1606,10 @@ pub(crate) async fn broadcast_summary_if_changed(
     window: &str,
     summary: StatsResponse,
 ) -> Result<bool, broadcast::error::SendError<BroadcastPayload>> {
+    if broadcaster.receiver_count() == 0 {
+        return Ok(false);
+    }
+
     let mut cache = cache.lock().await;
     if cache
         .summaries
@@ -1615,12 +1619,17 @@ pub(crate) async fn broadcast_summary_if_changed(
         return Ok(false);
     }
 
-    broadcaster.send(BroadcastPayload::Summary {
+    match broadcaster.send(BroadcastPayload::Summary {
         window: window.to_string(),
         summary: summary.clone(),
-    })?;
-    cache.summaries.insert(window.to_string(), summary);
-    Ok(true)
+    }) {
+        Ok(_) => {
+            cache.summaries.insert(window.to_string(), summary);
+            Ok(true)
+        }
+        Err(_err) if broadcaster.receiver_count() == 0 => Ok(false),
+        Err(err) => Err(err),
+    }
 }
 
 pub(crate) async fn broadcast_quota_if_changed(
@@ -1628,6 +1637,10 @@ pub(crate) async fn broadcast_quota_if_changed(
     cache: &Mutex<BroadcastStateCache>,
     snapshot: QuotaSnapshotResponse,
 ) -> Result<bool, broadcast::error::SendError<BroadcastPayload>> {
+    if broadcaster.receiver_count() == 0 {
+        return Ok(false);
+    }
+
     let mut cache = cache.lock().await;
     if cache
         .quota
@@ -1637,11 +1650,16 @@ pub(crate) async fn broadcast_quota_if_changed(
         return Ok(false);
     }
 
-    broadcaster.send(BroadcastPayload::Quota {
+    match broadcaster.send(BroadcastPayload::Quota {
         snapshot: Box::new(snapshot.clone()),
-    })?;
-    cache.quota = Some(snapshot);
-    Ok(true)
+    }) {
+        Ok(_) => {
+            cache.quota = Some(snapshot);
+            Ok(true)
+        }
+        Err(_err) if broadcaster.receiver_count() == 0 => Ok(false),
+        Err(err) => Err(err),
+    }
 }
 
 pub(crate) async fn sse_stream(

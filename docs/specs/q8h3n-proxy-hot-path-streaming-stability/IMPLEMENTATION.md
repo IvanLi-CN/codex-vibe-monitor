@@ -4,6 +4,7 @@
 
 - Canonical spec: `docs/specs/q8h3n-proxy-hot-path-streaming-stability/SPEC.md`
 - Implementation summary: 已完成
+- 最新收口：`proxy capture follow-up` 已改成 subscriber-aware，`receiver_count()==0` 且非 shutdown flush 时不会再消耗 follow-up seq 或触发 summary/quota / rollup refresh；active subscriber 与 shutdown tail flush 语义已回归验证。
 
 ## Migrated Implementation Notes
 
@@ -12,6 +13,7 @@
 - Status: 已完成
 - Note: 已移除错误的 whole-proxy admission gate，`PROXY_REQUEST_CONCURRENCY_*` 已进入 deprecated/ignored 兼容态；共享测试机 `codex-testbox` 100 并行压测通过，确认 `/v1/*` 不再因本地 admission gate 返回 `503`。
 - Note: 号池候选评分会读取最近 5 分钟的 `pool_upstream_request_attempts`，对最新仍处于 timeout/transport failure 的 `upstream_route_key + proxy_binding_key_snapshot` 组合增加短期排序惩罚；后续成功尝试会清除该短期惩罚。
+- Note: `proxy capture follow-up` 的热路径门禁前移到 subscriber-aware 调度，避免无订阅者时每次代理收尾都触发重型 summary/quota 与 rollup 预算；对应回归测试与 `cargo check --tests` 已通过。
 
 ## 验证
 
@@ -24,6 +26,8 @@
 - `cargo test resolver_does_not_demote_successful_or_non_timeout_route_proxy_history -- --nocapture`
 - `cargo test candidates_sort -- --nocapture`
 - `scripts/shared-testbox-proxy-parallel-smoke`
+- `cargo test skips_follow_up_without_subscribers -- --nocapture`
+- `cargo test persist_and_broadcast_proxy_capture -- --nocapture`
 
 ## Migrated Task-Ticket Sections
 

@@ -2050,6 +2050,70 @@ async fn persist_and_broadcast_proxy_capture_skips_summary_worker_during_shutdow
 }
 
 #[tokio::test]
+async fn broadcast_recovered_proxy_invocations_skips_follow_up_without_subscribers() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    let invoke_id = "recovered-follow-up-no-subscribers";
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            error_message,
+            raw_response,
+            payload
+        )
+        VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6)
+        "#,
+    )
+    .bind(invoke_id)
+    .bind(&occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind(INVOCATION_STATUS_RUNNING)
+    .bind("{}")
+    .bind("{\"endpoint\":\"/v1/responses\"}")
+    .execute(&state.pool)
+    .await
+    .expect("insert running invocation for recovery broadcast");
+
+    let selectors = vec![InvocationRecoverySelector::new(invoke_id, occurred_at.clone())];
+    let recovered = recover_proxy_invocations_with_scope(
+        &state.pool,
+        ProxyInvocationRecoveryScope::Selectors(&selectors),
+    )
+    .await
+    .expect("recover invocation for runtime broadcast");
+    assert_eq!(recovered.len(), 1, "test setup should recover exactly one invocation");
+
+    broadcast_recovered_proxy_invocations(
+        state.as_ref(),
+        &recovered,
+    )
+    .await
+    .expect("broadcast recovered invocation without subscribers");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        state
+            .proxy_summary_quota_broadcast_seq
+            .load(Ordering::Acquire),
+        0,
+        "recovered no-subscriber path should not enqueue summary/quota follow-up work"
+    );
+    assert!(
+        !state
+            .proxy_summary_quota_broadcast_running
+            .load(Ordering::Acquire),
+        "recovered no-subscriber path should keep the summary/quota worker idle"
+    );
+}
+
+#[tokio::test]
 async fn finalize_pool_upstream_request_attempt_updates_pending_row_in_place() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
