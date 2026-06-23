@@ -1280,6 +1280,7 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
             };
             let attempted_requested_service_tier =
                 prepared_request_body.requested_service_tier.clone();
+            let attempted_requested_image_intent = prepared_request_body.requested_image_intent;
             let attempted_request_body_for_capture =
                 prepared_request_body.request_body_for_capture.clone();
             let (response, oauth_responses_debug, forward_proxy_selection) = match &account.auth {
@@ -1402,6 +1403,8 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         let mut ctx = ctx.clone();
                         ctx.request_info.requested_service_tier =
                             attempted_requested_service_tier.clone();
+                        ctx.request_info.image_intent =
+                            Some(attempted_requested_image_intent.as_str().to_string());
                         ctx
                     });
                     live_attempt_activity_lease = pending_attempt_record
@@ -1990,6 +1993,8 @@ pub(crate) async fn send_pool_request_with_failover_and_binding_constraint(
                         let mut ctx = ctx.clone();
                         ctx.request_info.requested_service_tier =
                             attempted_requested_service_tier.clone();
+                        ctx.request_info.image_intent =
+                            Some(attempted_requested_image_intent.as_str().to_string());
                         ctx
                     });
                     live_attempt_activity_lease = pending_attempt_record

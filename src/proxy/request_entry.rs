@@ -1888,6 +1888,7 @@ pub(crate) struct PreparedPoolRequestBody {
     pub(crate) snapshot: PoolReplayBodySnapshot,
     pub(crate) request_body_for_capture: Option<Bytes>,
     pub(crate) requested_service_tier: Option<String>,
+    pub(crate) requested_image_intent: ImageIntent,
 }
 
 pub(crate) fn pool_request_snapshot_preserves_content_length(snapshot: &PoolReplayBodySnapshot) -> bool {
@@ -2049,24 +2050,34 @@ pub(crate) async fn prepare_pool_request_body_for_account(
             snapshot: PoolReplayBodySnapshot::Empty,
             request_body_for_capture: Some(Bytes::new()),
             requested_service_tier: None,
+            requested_image_intent: ImageIntent::Unknown,
         });
     };
 
     if !rewrite_required {
-        let (request_body_for_capture, requested_service_tier) = match &snapshot {
-            PoolReplayBodySnapshot::Empty => (Some(Bytes::new()), None),
+        let (request_body_for_capture, requested_service_tier, requested_image_intent) = match &snapshot {
+            PoolReplayBodySnapshot::Empty => (Some(Bytes::new()), None, ImageIntent::Unknown),
             PoolReplayBodySnapshot::Memory(bytes) => {
-                let requested_service_tier = serde_json::from_slice::<Value>(bytes)
+                let (requested_service_tier, requested_image_intent) = serde_json::from_slice::<Value>(bytes)
                     .ok()
-                    .and_then(|value| extract_requested_service_tier_from_request_body(&value));
-                (Some(bytes.clone()), requested_service_tier)
+                    .map(|value| {
+                        (
+                            extract_requested_service_tier_from_request_body(&value),
+                            capture_target
+                                .map(|target| infer_image_intent_from_request_body(target, &value))
+                                .unwrap_or(ImageIntent::Unknown),
+                        )
+                    })
+                    .unwrap_or((None, ImageIntent::Unknown));
+                (Some(bytes.clone()), requested_service_tier, requested_image_intent)
             }
-            PoolReplayBodySnapshot::File { .. } => (None, None),
+            PoolReplayBodySnapshot::File { .. } => (None, None, ImageIntent::Unknown),
         };
         return Ok(PreparedPoolRequestBody {
             snapshot,
             request_body_for_capture,
             requested_service_tier,
+            requested_image_intent,
         });
     }
 
@@ -2079,6 +2090,7 @@ pub(crate) async fn prepare_pool_request_body_for_account(
             snapshot: PoolReplayBodySnapshot::Memory(original_bytes.clone()),
             request_body_for_capture: Some(original_bytes),
             requested_service_tier: None,
+            requested_image_intent: ImageIntent::Unknown,
         });
     };
     let mut value = match serde_json::from_slice::<Value>(&original_bytes) {
@@ -2088,6 +2100,7 @@ pub(crate) async fn prepare_pool_request_body_for_account(
                 snapshot: PoolReplayBodySnapshot::Memory(original_bytes.clone()),
                 request_body_for_capture: Some(original_bytes),
                 requested_service_tier: None,
+                requested_image_intent: ImageIntent::Unknown,
             });
         }
     };
@@ -2097,12 +2110,16 @@ pub(crate) async fn prepare_pool_request_body_for_account(
     } else {
         false
     };
-    let image_intent = infer_image_intent_from_request_body(target, &value);
+    let original_image_intent = infer_image_intent_from_request_body(target, &value);
     let image_rewritten = if matches!(
         target,
         ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact
     ) {
-        rewrite_openai_responses_image_tools(&mut value, image_tool_rewrite_mode, image_intent)
+        rewrite_openai_responses_image_tools(
+            &mut value,
+            image_tool_rewrite_mode,
+            original_image_intent,
+        )
     } else {
         false
     };
@@ -2112,6 +2129,7 @@ pub(crate) async fn prepare_pool_request_body_for_account(
             snapshot: PoolReplayBodySnapshot::Memory(original_bytes.clone()),
             request_body_for_capture: Some(original_bytes),
             requested_service_tier,
+            requested_image_intent: original_image_intent,
         });
     }
 
@@ -2122,6 +2140,7 @@ pub(crate) async fn prepare_pool_request_body_for_account(
         snapshot: PoolReplayBodySnapshot::Memory(rewritten_bytes.clone()),
         request_body_for_capture: Some(rewritten_bytes.clone()),
         requested_service_tier,
+        requested_image_intent: original_image_intent,
     })
 }
 

@@ -460,6 +460,50 @@ async fn prepare_pool_request_body_for_account_skips_fast_mode_rewrite_for_compa
     assert!(payload.get("service_tier").is_none());
 }
 
+#[tokio::test]
+async fn prepare_pool_request_body_for_account_preserves_image_intent_after_force_remove() {
+    let body = Bytes::from(
+        serde_json::to_vec(&json!({
+            "model": "gpt-5.3-codex",
+            "input": "draw a cat",
+            "tools": [
+                {
+                    "type": "image_generation",
+                    "output_format": "png"
+                }
+            ],
+            "tool_choice": {
+                "type": "image_generation"
+            }
+        }))
+        .expect("serialize responses request body"),
+    );
+
+    let prepared = prepare_pool_request_body_for_account(
+        Some(&PoolReplayBodySnapshot::Memory(body)),
+        &"/v1/responses".parse().expect("valid responses uri"),
+        &Method::POST,
+        TagFastModeRewriteMode::KeepOriginal,
+        crate::ImageToolRewriteMode::ForceRemove,
+    )
+    .await
+    .expect("prepare responses pool request body");
+
+    assert_eq!(prepared.requested_image_intent, crate::ImageIntent::Yes);
+    let request_body = prepared
+        .request_body_for_capture
+        .expect("capture request body should be materialized");
+    let payload: Value = serde_json::from_slice(&request_body).expect("decode body");
+    assert!(
+        !payload["tools"]
+            .as_array()
+            .expect("tools should remain an array")
+            .iter()
+            .any(|tool| tool["type"].as_str() == Some("image_generation"))
+    );
+    assert!(payload.get("tool_choice").is_none());
+}
+
 #[test]
 fn prepare_target_request_body_extracts_reasoning_effort_for_responses() {
     let body = serde_json::to_vec(&json!({
