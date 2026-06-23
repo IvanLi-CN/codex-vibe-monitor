@@ -3715,6 +3715,24 @@ async fn proxy_openai_v1_header_sticky_rechecks_image_intent_before_reusing_head
 
 #[tokio::test]
 async fn proxy_openai_v1_responses_live_first_waits_for_image_intent_before_filtered_resolution() {
+    assert_live_first_waits_for_image_intent_before_filtered_resolution("/v1/responses", 6341)
+        .await;
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_responses_compact_live_first_waits_for_image_intent_before_filtered_resolution(
+) {
+    assert_live_first_waits_for_image_intent_before_filtered_resolution(
+        "/v1/responses/compact",
+        6342,
+    )
+    .await;
+}
+
+async fn assert_live_first_waits_for_image_intent_before_filtered_resolution(
+    path: &str,
+    proxy_request_id: u64,
+) {
     let mut config = test_config();
     config.openai_proxy_request_read_timeout = Duration::from_millis(260);
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
@@ -3779,8 +3797,8 @@ async fn proxy_openai_v1_responses_live_first_waits_for_image_intent_before_filt
     let started = Instant::now();
     let response = proxy_openai_v1_via_pool(
         state.clone(),
-        6341,
-        &"/v1/responses".parse().expect("valid uri"),
+        proxy_request_id,
+        &path.parse().expect("valid uri"),
         Method::POST,
         HeaderMap::from_iter([
             (

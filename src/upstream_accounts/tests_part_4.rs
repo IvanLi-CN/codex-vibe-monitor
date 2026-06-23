@@ -332,6 +332,28 @@ async fn image_intent_route_success_learns_supported_capability() {
         .expect("load row after image success")
         .expect("row exists after image success");
     assert_eq!(row.image_tool_capability.as_deref(), Some("supported"));
+
+    let direct_account_id =
+        insert_oauth_account(&pool, "Direct Image Success Learns Supported").await;
+    record_pool_route_success_with_image_intent(
+        &pool,
+        direct_account_id,
+        Utc::now(),
+        Some("sticky-direct-image-supported"),
+        Some("invk_direct_image_supported"),
+        ImageIntent::DirectImage,
+    )
+    .await
+    .expect("record direct image route success");
+
+    let direct_row = load_upstream_account_row(&pool, direct_account_id)
+        .await
+        .expect("load row after direct image success")
+        .expect("row exists after direct image success");
+    assert_eq!(
+        direct_row.image_tool_capability.as_deref(),
+        Some("supported")
+    );
 }
 
 #[tokio::test]
@@ -358,6 +380,31 @@ async fn image_intent_explicit_unsupported_failure_learns_unsupported_capability
         .expect("load row after unsupported image failure")
         .expect("row exists after unsupported image failure");
     assert_eq!(row.image_tool_capability.as_deref(), Some("unsupported"));
+
+    let direct_account_id =
+        insert_oauth_account(&pool, "Direct Image Failure Learns Unsupported").await;
+    record_pool_route_http_failure_with_image_intent(
+        &pool,
+        direct_account_id,
+        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+        false,
+        Some("sticky-direct-image-unsupported"),
+        StatusCode::BAD_REQUEST,
+        "pool upstream responded with 400: image_generation is not supported for this account",
+        Some("invk_direct_image_unsupported"),
+        ImageIntent::DirectImage,
+    )
+    .await
+    .expect("record explicit unsupported direct image failure");
+
+    let direct_row = load_upstream_account_row(&pool, direct_account_id)
+        .await
+        .expect("load row after unsupported direct image failure")
+        .expect("row exists after unsupported direct image failure");
+    assert_eq!(
+        direct_row.image_tool_capability.as_deref(),
+        Some("unsupported")
+    );
 }
 
 #[tokio::test]

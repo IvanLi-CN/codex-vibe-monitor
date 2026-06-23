@@ -74,11 +74,15 @@ pub(crate) async fn record_pool_route_success_with_image_intent(
         invoke_id,
     )
     .await?;
-    if matches!(image_intent, ImageIntent::Yes) {
+    if image_intent_observes_capability(image_intent) {
         record_image_tool_capability_observation(pool, account_id, ImageToolCapability::Supported)
             .await?;
     }
     Ok(())
+}
+
+fn image_intent_observes_capability(image_intent: ImageIntent) -> bool {
+    matches!(image_intent, ImageIntent::Yes | ImageIntent::DirectImage)
 }
 
 pub(crate) async fn record_image_tool_capability_observation(
@@ -141,7 +145,7 @@ pub(crate) async fn record_pool_route_http_failure_with_image_intent(
     invoke_id: Option<&str>,
     image_intent: ImageIntent,
 ) -> Result<()> {
-    if matches!(image_intent, ImageIntent::Yes)
+    if image_intent_observes_capability(image_intent)
         && classify_image_tool_capability_observation(status, Some(error_message))
             == ImageToolCapability::Unsupported
     {

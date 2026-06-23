@@ -1871,7 +1871,9 @@ fn live_first_image_intent_known(
     image_intent: crate::ImageIntent,
 ) -> bool {
     match capture_target {
-        Some(ProxyCaptureTarget::Responses) => !matches!(image_intent, crate::ImageIntent::Unknown),
+        Some(ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact) => {
+            !matches!(image_intent, crate::ImageIntent::Unknown)
+        }
         _ => true,
     }
 }
