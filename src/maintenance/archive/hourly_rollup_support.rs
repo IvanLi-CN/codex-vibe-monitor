@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use crate::{
     ApproxHistogramCounts, DETAIL_LEVEL_FULL, FailureClass, InvocationHourlySourceRecord,
     add_approx_histogram_sample, align_bucket_epoch, empty_approx_histogram,
+    invocation_counts_toward_non_success_usage,
     invocation_status_counts_toward_terminal_totals, invocation_status_is_success_like,
     parse_to_utc_datetime, parse_utc_naive, resolve_failure_classification,
     resolve_first_response_byte_total_ms,
@@ -17,6 +18,7 @@ pub(crate) struct InvocationHourlyRollupDelta {
     pub(crate) total_tokens: i64,
     pub(crate) cache_input_tokens: i64,
     pub(crate) total_cost: f64,
+    pub(crate) non_success_cost: f64,
     pub(crate) first_byte_sample_count: i64,
     pub(crate) first_byte_sum_ms: f64,
     pub(crate) first_byte_max_ms: f64,
@@ -53,6 +55,7 @@ pub(crate) struct UpstreamAccountUsageHourlyDelta {
     pub(crate) failure_count: i64,
     pub(crate) total_tokens: i64,
     pub(crate) total_cost: f64,
+    pub(crate) non_success_cost: f64,
     pub(crate) input_tokens: i64,
     pub(crate) output_tokens: i64,
     pub(crate) cache_input_tokens: i64,
@@ -71,6 +74,7 @@ pub(crate) struct UpstreamAccountStatsDelta {
     pub(crate) output_tokens: i64,
     pub(crate) cache_input_tokens: i64,
     pub(crate) total_cost: f64,
+    pub(crate) non_success_cost: f64,
     pub(crate) first_byte_sample_count: i64,
     pub(crate) first_byte_sum_ms: f64,
     pub(crate) first_byte_max_ms: f64,
@@ -199,7 +203,17 @@ pub(crate) fn accumulate_invocation_hourly_overall_rollups(
         }
         overall_entry.total_tokens += row.total_tokens.unwrap_or_default();
         overall_entry.cache_input_tokens += row.cache_input_tokens.unwrap_or_default();
-        overall_entry.total_cost += row.cost.unwrap_or_default();
+        let cost = row.cost.unwrap_or_default();
+        overall_entry.total_cost += cost;
+        if invocation_counts_toward_non_success_usage(
+            row.status.as_deref(),
+            row.error_message.as_deref(),
+            row.failure_kind.as_deref(),
+            row.failure_class.as_deref(),
+            row.is_actionable,
+        ) {
+            overall_entry.non_success_cost += cost;
+        }
         if is_success_like
             && let Some(ttfb_ms) = row.t_upstream_ttfb_ms
             && ttfb_ms.is_finite()
@@ -280,7 +294,17 @@ pub(crate) fn accumulate_upstream_account_stats_delta(
     entry.input_tokens += row.input_tokens.unwrap_or_default();
     entry.output_tokens += row.output_tokens.unwrap_or_default();
     entry.cache_input_tokens += row.cache_input_tokens.unwrap_or_default();
-    entry.total_cost += row.cost.unwrap_or_default();
+    let cost = row.cost.unwrap_or_default();
+    entry.total_cost += cost;
+    if invocation_counts_toward_non_success_usage(
+        row.status.as_deref(),
+        row.error_message.as_deref(),
+        row.failure_kind.as_deref(),
+        row.failure_class.as_deref(),
+        row.is_actionable,
+    ) {
+        entry.non_success_cost += cost;
+    }
 
     if is_success_like
         && let Some(ttfb_ms) = row.t_upstream_ttfb_ms

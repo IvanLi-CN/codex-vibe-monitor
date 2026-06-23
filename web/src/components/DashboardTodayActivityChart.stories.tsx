@@ -73,6 +73,7 @@ function buildRealisticPoint(index: number, intensity = 1) {
     inFlightCount,
     totalTokens,
     totalCost: Number((totalTokens * 0.000018).toFixed(4)),
+    nonSuccessCost: Number((failureCount * avgTokens * 0.000018).toFixed(4)),
     firstResponseByteTotalSampleCount: completedCount,
     firstResponseByteTotalAvgMs:
       completedCount > 0
@@ -89,6 +90,24 @@ function buildFullNaturalDayResponse(intensity = 1): TimeseriesResponse {
     points: Array.from({ length: 1440 }, (_, index) =>
       buildRealisticPoint(index, intensity),
     ),
+  };
+}
+
+function buildZeroNonSuccessResponse(
+  response: TimeseriesResponse,
+): TimeseriesResponse {
+  return {
+    ...response,
+    points: response.points.map((point) => {
+      const completedCount =
+        Math.max(point.totalCount ?? 0, 0) - Math.max(point.inFlightCount ?? 0, 0);
+      return {
+        ...point,
+        successCount: completedCount,
+        failureCount: 0,
+        nonSuccessCost: 0,
+      };
+    }),
   };
 }
 
@@ -121,6 +140,7 @@ const latencyMinuteAlignmentResponse: TimeseriesResponse = {
         inFlightCount: 0,
         totalTokens: hasCalls ? 900 : 0,
         totalCost: hasCalls ? 0.0162 : 0,
+        nonSuccessCost: 0,
         firstResponseByteTotalSampleCount: hasCalls || hasInconsistentLatency ? 1 : 0,
         firstResponseByteTotalAvgMs: hasCalls
           ? 820 + (index - 731) * 42
@@ -157,6 +177,7 @@ const mixedOutcomeMinuteAlignmentResponse: TimeseriesResponse = {
       inFlightCount,
       totalTokens: completedCount * 920,
       totalCost: Number((completedCount * 0.0166).toFixed(4)),
+      nonSuccessCost: Number((failureCount * 0.0166).toFixed(4)),
       firstResponseByteTotalSampleCount: completedCount,
       firstResponseByteTotalAvgMs:
         completedCount > 0 ? 760 + (index - 42) * 18 : null,
@@ -203,6 +224,34 @@ export const CostCumulative: Story = {
     loading: false,
     error: null,
     metric: "totalCost",
+  },
+};
+
+export const CostCumulativeMixedOutcome: Story = {
+  args: {
+    response: mixedOutcomeMinuteAlignmentResponse,
+    loading: false,
+    error: null,
+    metric: "totalCost",
+  },
+  parameters: {
+    viewport: {
+      defaultViewport: "desktop1440",
+    },
+  },
+};
+
+export const CostCumulativeZeroNonSuccess: Story = {
+  args: {
+    response: buildZeroNonSuccessResponse(sampleResponse),
+    loading: false,
+    error: null,
+    metric: "totalCost",
+  },
+  parameters: {
+    viewport: {
+      defaultViewport: "desktop1440",
+    },
   },
 };
 

@@ -86,6 +86,7 @@ pub(crate) struct InvocationHourlyRollupRecord {
     pub(crate) total_tokens: i64,
     pub(crate) cache_input_tokens: i64,
     pub(crate) total_cost: f64,
+    pub(crate) non_success_cost: f64,
     pub(crate) first_byte_sample_count: i64,
     pub(crate) first_byte_sum_ms: f64,
     pub(crate) first_byte_max_ms: f64,
@@ -253,6 +254,7 @@ pub(crate) struct BucketAggregate {
     pub(crate) total_tokens: i64,
     pub(crate) cache_input_tokens: i64,
     pub(crate) total_cost: f64,
+    pub(crate) non_success_cost: f64,
     pub(crate) first_byte_ttfb_sum_ms: f64,
     pub(crate) first_byte_ttfb_values: Vec<f64>,
     pub(crate) first_byte_histogram: ApproxHistogramCounts,
@@ -1573,6 +1575,7 @@ fn merge_invocation_hourly_rollup_delta(
     target.failure_count += delta.failure_count;
     target.total_tokens += delta.total_tokens;
     target.total_cost += delta.total_cost;
+    target.non_success_cost += delta.non_success_cost;
     target.first_byte_sample_count += delta.first_byte_sample_count;
     target.first_byte_sum_ms += delta.first_byte_sum_ms;
     target.first_byte_max_ms = target.first_byte_max_ms.max(delta.first_byte_max_ms);
@@ -1771,6 +1774,12 @@ async fn load_materialized_invocation_rollup_record(
         } else {
             "0 AS cache_input_tokens"
         };
+    let non_success_cost_expr =
+        if sqlite_table_has_column(pool, "invocation_rollup_hourly", "non_success_cost").await? {
+            "COALESCE(non_success_cost, 0.0) AS non_success_cost"
+        } else {
+            "0.0 AS non_success_cost"
+        };
     let query = format!(
         r#"
         SELECT
@@ -1781,6 +1790,7 @@ async fn load_materialized_invocation_rollup_record(
             total_tokens,
             {cache_input_tokens_expr},
             total_cost,
+            {non_success_cost_expr},
             first_byte_sample_count,
             first_byte_sum_ms,
             first_byte_max_ms,
@@ -1842,6 +1852,12 @@ fn build_invocation_hourly_rollup_delta_record(
         archive_delta.total_cost,
         materialized_row.map(|row| row.total_cost).unwrap_or(0.0),
     );
+    let non_success_cost = subtract_nonnegative_f64(
+        archive_delta.non_success_cost,
+        materialized_row
+            .map(|row| row.non_success_cost)
+            .unwrap_or(0.0),
+    );
 
     let first_byte_histogram = subtract_approx_histogram_counts(
         &archive_delta.first_byte_histogram,
@@ -1878,6 +1894,7 @@ fn build_invocation_hourly_rollup_delta_record(
         && total_tokens <= 0
         && cache_input_tokens <= 0
         && total_cost <= 0.0
+        && non_success_cost <= 0.0
         && first_byte_sample_count <= 0
         && first_response_byte_total_sample_count <= 0
     {
@@ -1892,6 +1909,7 @@ fn build_invocation_hourly_rollup_delta_record(
         total_tokens,
         cache_input_tokens,
         total_cost,
+        non_success_cost,
         first_byte_sample_count,
         first_byte_sum_ms,
         first_byte_max_ms: if first_byte_sample_count > 0 {
@@ -1958,6 +1976,12 @@ fn build_materialized_pending_invocation_rollup_overlap_record(
             .map(|delta| delta.total_cost)
             .unwrap_or(0.0),
     );
+    let non_success_cost = subtract_nonnegative_f64(
+        materialized_row.non_success_cost,
+        completed_archive_delta
+            .map(|delta| delta.non_success_cost)
+            .unwrap_or(0.0),
+    );
 
     let materialized_first_byte_histogram =
         decode_approx_histogram(&materialized_row.first_byte_histogram);
@@ -2002,6 +2026,7 @@ fn build_materialized_pending_invocation_rollup_overlap_record(
         && total_tokens <= 0
         && cache_input_tokens <= 0
         && total_cost <= 0.0
+        && non_success_cost <= 0.0
         && first_byte_sample_count <= 0
         && first_response_byte_total_sample_count <= 0
     {
@@ -2016,6 +2041,7 @@ fn build_materialized_pending_invocation_rollup_overlap_record(
         total_tokens,
         cache_input_tokens,
         total_cost,
+        non_success_cost,
         first_byte_sample_count,
         first_byte_sum_ms,
         first_byte_max_ms: if first_byte_sample_count > 0 {
@@ -2676,6 +2702,22 @@ fn invocation_row_counts_toward_non_success_usage(
         && classification.failure_class != FailureClass::None
 }
 
+pub(crate) fn invocation_counts_toward_non_success_usage(
+    status: Option<&str>,
+    error_message: Option<&str>,
+    failure_kind: Option<&str>,
+    failure_class: Option<&str>,
+    is_actionable: Option<i64>,
+) -> bool {
+    invocation_row_counts_toward_non_success_usage(
+        status,
+        error_message,
+        failure_kind,
+        failure_class,
+        is_actionable,
+    )
+}
+
 pub(crate) async fn query_unmaterialized_invocation_archive_non_success_usage(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
@@ -2819,7 +2861,17 @@ fn add_account_invocation_row_to_usage_delta(
         entry.failure_count += 1;
     }
     entry.total_tokens += row.total_tokens.unwrap_or_default();
-    entry.total_cost += row.cost.unwrap_or_default();
+    let cost = row.cost.unwrap_or_default();
+    entry.total_cost += cost;
+    if invocation_row_counts_toward_non_success_usage(
+        row.status.as_deref(),
+        row.error_message.as_deref(),
+        row.failure_kind.as_deref(),
+        row.failure_class.as_deref(),
+        row.is_actionable,
+    ) {
+        entry.non_success_cost += cost;
+    }
     entry.input_tokens += row.input_tokens.unwrap_or_default();
     entry.output_tokens += row.output_tokens.unwrap_or_default();
     entry.cache_input_tokens += row.cache_input_tokens.unwrap_or_default();
@@ -2893,6 +2945,7 @@ pub(crate) async fn query_unmaterialized_upstream_account_archive_hourly_rollup_
                 total_tokens: delta.total_tokens,
                 cache_input_tokens: delta.cache_input_tokens,
                 total_cost: delta.total_cost,
+                non_success_cost: delta.non_success_cost,
             })
         })
         .collect())

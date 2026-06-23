@@ -693,6 +693,12 @@ pub(super) async fn query_invocation_hourly_rollup_range_tx(
         } else {
             "0 AS cache_input_tokens"
         };
+    let non_success_cost_expr =
+        if sqlite_table_has_column_tx(tx, "invocation_rollup_hourly", "non_success_cost").await? {
+            "COALESCE(non_success_cost, 0.0) AS non_success_cost"
+        } else {
+            "0.0 AS non_success_cost"
+        };
     let mut query = QueryBuilder::<Sqlite>::new(format!(
         r#"
         SELECT
@@ -703,6 +709,7 @@ pub(super) async fn query_invocation_hourly_rollup_range_tx(
             total_tokens,
             {cache_input_tokens_expr},
             total_cost,
+            {non_success_cost_expr},
             first_byte_sample_count,
             first_byte_sum_ms,
             first_byte_max_ms,
@@ -748,6 +755,17 @@ pub(crate) async fn query_upstream_account_usage_hourly_rollup_range_tx(
     } else {
         "0 AS cache_input_tokens"
     };
+    let non_success_cost_expr = if sqlite_table_has_column_tx(
+        tx,
+        "upstream_account_usage_hourly",
+        "non_success_cost",
+    )
+    .await?
+    {
+        "COALESCE(non_success_cost, 0.0) AS non_success_cost"
+    } else {
+        "0.0 AS non_success_cost"
+    };
     let query = format!(
         r#"
         SELECT
@@ -757,7 +775,8 @@ pub(crate) async fn query_upstream_account_usage_hourly_rollup_range_tx(
             COALESCE(failure_count, 0) AS failure_count,
             total_tokens,
             {cache_input_tokens_expr},
-            total_cost
+            total_cost,
+            {non_success_cost_expr}
         FROM upstream_account_usage_hourly
         WHERE bucket_start_epoch >= ?1
           AND bucket_start_epoch < ?2
@@ -782,6 +801,13 @@ pub(crate) async fn query_upstream_account_stats_rollup_range_tx(
     source_scope: InvocationSourceScope,
     upstream_account_id: i64,
 ) -> Result<Vec<UpstreamAccountStatsRollupRecord>, ApiError> {
+    let non_success_cost_expr = if sqlite_table_has_column_tx(tx, table_name, "non_success_cost")
+        .await?
+    {
+        "COALESCE(non_success_cost, 0.0) AS non_success_cost"
+    } else {
+        "0.0 AS non_success_cost"
+    };
     let mut query = QueryBuilder::<Sqlite>::new(format!(
         r#"
         SELECT
@@ -795,6 +821,7 @@ pub(crate) async fn query_upstream_account_stats_rollup_range_tx(
             output_tokens,
             cache_input_tokens,
             total_cost,
+            {non_success_cost_expr},
             first_byte_sample_count,
             first_byte_sum_ms,
             first_byte_max_ms,

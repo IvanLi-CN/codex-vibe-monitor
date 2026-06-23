@@ -116,7 +116,17 @@ pub(crate) async fn fetch_timeseries(
         );
         entry.total_tokens += record.total_tokens.unwrap_or(0);
         entry.cache_input_tokens += record.cache_input_tokens.unwrap_or(0);
-        entry.total_cost += record.cost.unwrap_or(0.0);
+        let cost = record.cost.unwrap_or(0.0);
+        entry.total_cost += cost;
+        if invocation_counts_toward_non_success_usage(
+            record.status.as_deref(),
+            record.error_message.as_deref(),
+            record.failure_kind.as_deref(),
+            record.failure_class.as_deref(),
+            record.is_actionable,
+        ) {
+            entry.non_success_cost += cost;
+        }
     }
 
     let relay_deltas = if source_scope == InvocationSourceScope::All
@@ -356,6 +366,7 @@ async fn fetch_timeseries_for_account(
                 entry.total_tokens += row.total_tokens;
                 entry.cache_input_tokens += row.cache_input_tokens;
                 entry.total_cost += row.total_cost;
+                entry.non_success_cost += row.non_success_cost;
             }
         }
     }
@@ -390,6 +401,7 @@ fn add_rollup_rows_to_timeseries_aggregates(
             entry.total_tokens += row.total_tokens;
             entry.cache_input_tokens += row.cache_input_tokens;
             entry.total_cost += row.total_cost;
+            entry.non_success_cost += row.non_success_cost;
             entry.first_byte_sample_count += row.first_byte_sample_count;
             entry.first_byte_ttfb_sum_ms += row.first_byte_sum_ms;
             entry.first_byte_histogram = if entry.first_byte_histogram.is_empty() {
@@ -468,7 +480,17 @@ fn add_exact_records_to_timeseries_aggregates(
             );
             entry.total_tokens += record.total_tokens.unwrap_or_default();
             entry.cache_input_tokens += record.cache_input_tokens.unwrap_or_default();
-            entry.total_cost += record.cost.unwrap_or_default();
+            let cost = record.cost.unwrap_or_default();
+            entry.total_cost += cost;
+            if invocation_counts_toward_non_success_usage(
+                record.status.as_deref(),
+                record.error_message.as_deref(),
+                record.failure_kind.as_deref(),
+                record.failure_class.as_deref(),
+                record.is_actionable,
+            ) {
+                entry.non_success_cost += cost;
+            }
         }
     }
     Ok(())
@@ -493,6 +515,7 @@ fn timeseries_point_from_aggregate(
         total_tokens: agg.total_tokens,
         cache_input_tokens: agg.cache_input_tokens,
         total_cost: agg.total_cost,
+        non_success_cost: agg.non_success_cost,
         first_byte_sample_count: if has_calls {
             agg.first_byte_sample_count
         } else {
@@ -933,6 +956,7 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
         entry.total_tokens += row.total_tokens;
         entry.cache_input_tokens += row.cache_input_tokens;
         entry.total_cost += row.total_cost;
+        entry.non_success_cost += row.non_success_cost;
         entry.first_byte_sample_count += row.first_byte_sample_count;
         entry.first_byte_ttfb_sum_ms += row.first_byte_sum_ms;
         entry.first_byte_histogram = if entry.first_byte_histogram.is_empty() {
@@ -1001,7 +1025,17 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
             );
             entry.total_tokens += record.total_tokens.unwrap_or_default();
             entry.cache_input_tokens += record.cache_input_tokens.unwrap_or_default();
-            entry.total_cost += record.cost.unwrap_or_default();
+            let cost = record.cost.unwrap_or_default();
+            entry.total_cost += cost;
+            if invocation_counts_toward_non_success_usage(
+                record.status.as_deref(),
+                record.error_message.as_deref(),
+                record.failure_kind.as_deref(),
+                record.failure_class.as_deref(),
+                record.is_actionable,
+            ) {
+                entry.non_success_cost += cost;
+            }
         }
     }
 

@@ -5838,6 +5838,7 @@ async fn historical_timeseries_includes_unmaterialized_archived_hours_without_in
     assert_eq!(archived_point.failure_count, 1);
     assert_eq!(archived_point.total_tokens, 30);
     assert_f64_close(archived_point.total_cost, 0.30);
+    assert_f64_close(archived_point.non_success_cost, 0.20);
 }
 
 #[tokio::test]
@@ -9448,6 +9449,118 @@ async fn timeseries_hourly_backed_includes_crs_deltas() {
             .sum::<f64>(),
         0.9,
     );
+    assert_f64_close(
+        response
+            .points
+            .iter()
+            .map(|point| point.non_success_cost)
+            .sum::<f64>(),
+        0.0,
+    );
+}
+
+#[tokio::test]
+async fn timeseries_minute_backed_keeps_crs_cost_out_of_non_success_cost() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.crs_stats = Some(CrsStatsConfig {
+        base_url: Url::parse("https://crs.example.com/").expect("valid crs base url"),
+        api_id: "test-api".to_string(),
+        period: "daily".to_string(),
+        poll_interval: Duration::from_secs(3600),
+    });
+    let state = test_state_from_config(config, true).await;
+    let captured_at = Utc::now() - ChronoDuration::minutes(30);
+    let stats_date = captured_at
+        .with_timezone(&Shanghai)
+        .date_naive()
+        .to_string();
+
+    sqlx::query(
+        r#"
+        INSERT INTO stats_source_deltas (
+            source,
+            period,
+            stats_date,
+            captured_at,
+            captured_at_epoch,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+    )
+    .bind(SOURCE_CRS)
+    .bind("daily")
+    .bind(&stats_date)
+    .bind(format_utc_iso(captured_at))
+    .bind(captured_at.timestamp())
+    .bind(4_i64)
+    .bind(4_i64)
+    .bind(0_i64)
+    .bind(480_i64)
+    .bind(1.2_f64)
+    .execute(&state.pool)
+    .await
+    .expect("insert crs delta");
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "1d".to_string(),
+            bucket: Some("1m".to_string()),
+            settlement_hour: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("fetch minute-backed timeseries with crs deltas");
+
+    assert_eq!(
+        response
+            .points
+            .iter()
+            .map(|point| point.total_count)
+            .sum::<i64>(),
+        4
+    );
+    assert_eq!(
+        response
+            .points
+            .iter()
+            .map(|point| point.success_count)
+            .sum::<i64>(),
+        4
+    );
+    assert_eq!(
+        response
+            .points
+            .iter()
+            .map(|point| point.failure_count)
+            .sum::<i64>(),
+        0
+    );
+    assert_f64_close(
+        response
+            .points
+            .iter()
+            .map(|point| point.total_cost)
+            .sum::<f64>(),
+        1.2,
+    );
+    assert_f64_close(
+        response
+            .points
+            .iter()
+            .map(|point| point.non_success_cost)
+            .sum::<f64>(),
+        0.0,
+    );
 }
 
 #[tokio::test]
@@ -10514,6 +10627,14 @@ async fn hourly_timeseries_trims_crs_deltas_to_effective_proxy_range() {
             .sum::<f64>(),
         0.4,
     );
+    assert_f64_close(
+        response
+            .points
+            .iter()
+            .map(|point| point.non_success_cost)
+            .sum::<f64>(),
+        0.0,
+    );
 }
 
 #[tokio::test]
@@ -11011,6 +11132,7 @@ async fn account_scoped_summary_and_timeseries_filter_by_payload_upstream_accoun
     assert_eq!(point.failure_count, 0);
     assert_eq!(point.total_tokens, 120);
     assert_f64_close(point.total_cost, 0.42);
+    assert_f64_close(point.non_success_cost, 0.0);
 
     let Json(hourly_timeseries) = fetch_timeseries(
         State(state),
