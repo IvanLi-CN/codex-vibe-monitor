@@ -21,8 +21,8 @@ vi.mock('../i18n', () => ({
         'dashboard.today.parallelConversations': 'Parallel conversations',
         'dashboard.today.todayCost': 'Today cost',
         'dashboard.today.yesterdayCost': 'Yesterday cost',
-        'dashboard.today.todayTokens': 'Today tokens',
-        'dashboard.today.yesterdayTokens': 'Yesterday tokens',
+        'dashboard.today.todayTokens': 'Today Token',
+        'dashboard.today.yesterdayTokens': 'Yesterday Token',
         'dashboard.today.tokensPerMinuteDescription': 'TPM uses the active tail inside the latest 5-minute window.',
         'dashboard.today.spendRateDescription': 'Spend rate uses the active tail inside the latest 5-minute window.',
         'dashboard.today.inProgressConversationsDescription': 'Current running or pending prompt-cache conversations.',
@@ -235,7 +235,7 @@ describe('TodayStatsOverview', () => {
     expect(host?.textContent).toContain('Response time')
     expect(host?.textContent).toContain('In-progress conversations')
     expect(host?.textContent).toContain('Today cost')
-    expect(host?.textContent).toContain('Today tokens')
+    expect(host?.textContent).toContain('Today Token')
     expect(host?.querySelector('[data-testid="today-stats-value-in-progress-conversations"]')?.textContent).toContain('11')
     expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-day-average"]')?.textContent).toContain('2')
     expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-delta"]')?.textContent).toContain('+175%')
@@ -273,7 +273,7 @@ describe('TodayStatsOverview', () => {
     expect(host?.textContent).not.toContain('In-progress conversations')
     expect(host?.textContent).toContain('Response time')
     expect(host?.textContent).toContain('Today cost')
-    expect(host?.textContent).toContain('Today tokens')
+    expect(host?.textContent).toContain('Today Token')
   })
 
   it('keeps the in-progress tile secondary slots visible when bucket comparisons are unavailable', () => {
@@ -756,6 +756,33 @@ describe('TodayStatsOverview', () => {
     expect(totalTokensValue?.getAttribute('data-compact-precision')).toBe('0')
     expect(totalTokensVisible?.textContent).toContain('281M')
     expect(totalTokensVisible?.textContent).not.toContain('281.11M')
+  })
+
+  it('keeps the total token label on one line and preserves mixed case', () => {
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 12474,
+          successCount: 9949,
+          failureCount: 2525,
+          totalCost: 539.42,
+          totalTokens: 1314275579,
+        }}
+        rate={{
+          tokensPerMinute: 1000,
+          spendRate: 0.1,
+          windowMinutes: 5,
+          available: true,
+        }}
+        loading={false}
+        error={null}
+      />,
+    )
+
+    const totalTokensLabel = host?.querySelector('[data-testid="today-stats-label-total-tokens"]')
+    expect(totalTokensLabel?.textContent).toBe('Today Token')
+    expect(totalTokensLabel?.className).toContain('whitespace-nowrap')
+    expect(totalTokensLabel?.className).toContain('normal-case')
   })
 
   it('uses a width-capped loading placeholder instead of a fixed narrow-tile width', () => {

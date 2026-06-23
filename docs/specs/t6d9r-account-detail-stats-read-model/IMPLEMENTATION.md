@@ -26,6 +26,8 @@
 - archive materialization / bootstrap 现在会修复账号 usage、账号 stats hourly、账号 stats minute 三类 replay marker；materialized archive 不再被账号 summary / timeseries 误判成未物化历史缺口。
 - startup proxy usage backfill snapshot 改为共享 invocation cursor + `MAX(id)`，并为 proxy usage backfill 与 stale attempt recovery 补齐 partial index，减少后台恢复任务对详情接口的 SQLite 争锁。
 - `DashboardActivityOverview` 在 account-scoped `yesterday` 视图不再额外请求 yesterday comparison summary / timeseries，消除一个重复请求源。
+- 共享账号详情抽屉桌面壳层从 `max-w-[60rem]` 放宽到 `max-w-[90rem]`；为了让新增横向空间真实转化为概览可读性，overview 下两张 usage card 提前到 `lg` 断点进入双列，而不是继续等到 `xl`。
+- records 视图总 token 指标标题改为 `Token` 单数文案，并在 `TodayStatsOverview` 中对该标签单独保留 mixed case + `whitespace-nowrap`，避免窄卡片里出现 `今日` / `TOKENS` 断成两行的问题。
 
 ## Verification
 
@@ -49,6 +51,8 @@
 - `assets/detail-drawer-records-loading-raw.png`
 - `assets/detail-drawer-records-settled-final-raw.png`
 - `assets/detail-drawer-records-live-sync-stable.png`
+- `assets/detail-drawer-records-settled-wide.png`
+- `assets/detail-drawer-records-token-label-nowrap.png`
 
 ## 2026-06-21 Records Live Follow-up
 
