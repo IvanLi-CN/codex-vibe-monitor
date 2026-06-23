@@ -120,6 +120,19 @@ async fn backfill_upstream_account_usage_hourly_status_counts(pool: &Pool<Sqlite
                   AND {upstream_account_id_sql} = upstream_account_usage_hourly.upstream_account_id
                   AND {terminal_status_sql}
                   AND {resolved_failure_sql} IN ('service_failure', 'client_failure', 'client_abort')
+            ),
+            non_success_cost = (
+                SELECT COALESCE(SUM(COALESCE(cost, 0.0)), 0.0)
+                FROM codex_invocations
+                WHERE {bucket_epoch_sql} = upstream_account_usage_hourly.bucket_start_epoch
+                  AND {upstream_account_id_sql} = upstream_account_usage_hourly.upstream_account_id
+                  AND (
+                    LOWER(TRIM(COALESCE(status, ''))) = 'interrupted'
+                    OR (
+                        {terminal_status_sql}
+                        AND {resolved_failure_sql} IN ('service_failure', 'client_failure', 'client_abort')
+                    )
+                  )
             )
         WHERE EXISTS (
             SELECT 1
@@ -922,6 +935,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             total_tokens INTEGER NOT NULL,
             cache_input_tokens INTEGER NOT NULL DEFAULT 0,
             total_cost REAL NOT NULL,
+            non_success_cost REAL NOT NULL DEFAULT 0,
             first_byte_sample_count INTEGER NOT NULL DEFAULT 0,
             first_byte_sum_ms REAL NOT NULL DEFAULT 0,
             first_byte_max_ms REAL NOT NULL DEFAULT 0,
@@ -944,6 +958,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     let mut added_invocation_rollup_rebuild_columns = false;
     for (column, ty) in [
         ("cache_input_tokens", "INTEGER NOT NULL DEFAULT 0"),
+        ("non_success_cost", "REAL NOT NULL DEFAULT 0"),
         (
             "first_response_byte_total_sample_count",
             "INTEGER NOT NULL DEFAULT 0",
@@ -1124,6 +1139,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             failure_count INTEGER NOT NULL DEFAULT 0,
             total_tokens INTEGER NOT NULL,
             total_cost REAL NOT NULL,
+            non_success_cost REAL NOT NULL DEFAULT 0,
             input_tokens INTEGER NOT NULL,
             output_tokens INTEGER NOT NULL,
             cache_input_tokens INTEGER NOT NULL,
@@ -1145,6 +1161,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("success_count", "INTEGER NOT NULL DEFAULT 0"),
         ("failure_count", "INTEGER NOT NULL DEFAULT 0"),
         ("cache_input_tokens", "INTEGER NOT NULL DEFAULT 0"),
+        ("non_success_cost", "REAL NOT NULL DEFAULT 0"),
     ] {
         if !upstream_account_usage_hourly_columns.contains(column) {
             upstream_account_usage_hourly_needs_status_backfill = true;
@@ -1183,6 +1200,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             output_tokens INTEGER NOT NULL DEFAULT 0,
             cache_input_tokens INTEGER NOT NULL DEFAULT 0,
             total_cost REAL NOT NULL DEFAULT 0,
+            non_success_cost REAL NOT NULL DEFAULT 0,
             first_byte_sample_count INTEGER NOT NULL DEFAULT 0,
             first_byte_sum_ms REAL NOT NULL DEFAULT 0,
             first_byte_max_ms REAL NOT NULL DEFAULT 0,
@@ -1199,6 +1217,22 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure upstream_account_stats_hourly table existence")?;
+    let upstream_account_stats_hourly_columns =
+        load_sqlite_table_columns(pool, "upstream_account_stats_hourly").await?;
+    let mut added_upstream_account_stats_columns = false;
+    for (column, ty) in [("non_success_cost", "REAL NOT NULL DEFAULT 0")] {
+        if !upstream_account_stats_hourly_columns.contains(column) {
+            added_upstream_account_stats_columns = true;
+            let statement =
+                format!("ALTER TABLE upstream_account_stats_hourly ADD COLUMN {column} {ty}");
+            sqlx::query(&statement)
+                .execute(pool)
+                .await
+                .with_context(|| {
+                    format!("failed to add upstream_account_stats_hourly column {column}")
+                })?;
+        }
+    }
     let upstream_account_stats_hourly_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM upstream_account_stats_hourly")
             .fetch_one(pool)
@@ -1240,6 +1274,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             output_tokens INTEGER NOT NULL DEFAULT 0,
             cache_input_tokens INTEGER NOT NULL DEFAULT 0,
             total_cost REAL NOT NULL DEFAULT 0,
+            non_success_cost REAL NOT NULL DEFAULT 0,
             first_byte_sample_count INTEGER NOT NULL DEFAULT 0,
             first_byte_sum_ms REAL NOT NULL DEFAULT 0,
             first_byte_max_ms REAL NOT NULL DEFAULT 0,
@@ -1256,6 +1291,21 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure upstream_account_stats_minute table existence")?;
+    let upstream_account_stats_minute_columns =
+        load_sqlite_table_columns(pool, "upstream_account_stats_minute").await?;
+    for (column, ty) in [("non_success_cost", "REAL NOT NULL DEFAULT 0")] {
+        if !upstream_account_stats_minute_columns.contains(column) {
+            added_upstream_account_stats_columns = true;
+            let statement =
+                format!("ALTER TABLE upstream_account_stats_minute ADD COLUMN {column} {ty}");
+            sqlx::query(&statement)
+                .execute(pool)
+                .await
+                .with_context(|| {
+                    format!("failed to add upstream_account_stats_minute column {column}")
+                })?;
+        }
+    }
     let upstream_account_stats_minute_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM upstream_account_stats_minute")
             .fetch_one(pool)
@@ -1477,7 +1527,10 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     if upstream_account_usage_hourly_needs_status_backfill {
         backfill_upstream_account_usage_hourly_status_counts(pool).await?;
     }
-    if upstream_account_stats_hourly_count == 0 || upstream_account_stats_minute_count == 0 {
+    if upstream_account_stats_hourly_count == 0
+        || upstream_account_stats_minute_count == 0
+        || added_upstream_account_stats_columns
+    {
         reopen_upstream_account_stats_rollup_archives(pool).await?;
         rebuild_upstream_account_stats_rollups_from_sources(pool)
             .await

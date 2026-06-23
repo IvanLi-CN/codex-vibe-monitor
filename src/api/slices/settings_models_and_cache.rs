@@ -299,6 +299,7 @@ pub(crate) struct TimeseriesPoint {
     pub(crate) total_tokens: i64,
     pub(crate) cache_input_tokens: i64,
     pub(crate) total_cost: f64,
+    pub(crate) non_success_cost: f64,
     pub(crate) first_byte_sample_count: i64,
     pub(crate) first_byte_avg_ms: Option<f64>,
     pub(crate) first_byte_p95_ms: Option<f64>,
@@ -316,6 +317,7 @@ pub(crate) struct UpstreamAccountUsageHourlyRollupRecord {
     pub(crate) total_tokens: i64,
     pub(crate) cache_input_tokens: i64,
     pub(crate) total_cost: f64,
+    pub(crate) non_success_cost: f64,
 }
 
 #[derive(Debug, FromRow)]
@@ -330,6 +332,7 @@ pub(crate) struct UpstreamAccountStatsRollupRecord {
     pub(crate) output_tokens: i64,
     pub(crate) cache_input_tokens: i64,
     pub(crate) total_cost: f64,
+    pub(crate) non_success_cost: f64,
     pub(crate) first_byte_sample_count: i64,
     pub(crate) first_byte_sum_ms: f64,
     pub(crate) first_byte_max_ms: f64,

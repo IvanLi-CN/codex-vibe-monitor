@@ -6,6 +6,9 @@
 
 - 2026-06-22：创建 active spec，冻结自然日七卡的四区布局、`较昨日` 统一右上、以及 Dashboard 与账号详情共用同一 KPI 语义的边界。
 - 2026-06-22：明确本轮继续走 `summary` / SSE `summary` 快路径，新增增强字段而不是前端独立 KPI 轮询。
+- 2026-06-23：将自然日金额图固定为“累计金额”而非“每分钟金额”语义，并把成本视图改为 `Success + Non-success` 堆叠累计面积；`Non-success` 文案显式承载 `failed + interrupted` 口径。
+- 2026-06-23：修正 CRS relay delta 不应污染 `nonSuccessCost` 的口径错误；该旁路只提供总成本与 success/failure 计数，无法安全拆出失败成本时，金额图失败层保持 0 而不是错误抬升。
+- 2026-06-23：补齐金额图 i18n，固定领域术语仍为 `Non-success = failed + interrupted`，但 owner-facing 图例与 tooltip 按 locale 正确显示，中文环境使用“非成功”。
 
 ## Key Reasons / Replacements
 
