@@ -14,7 +14,6 @@ import type {
 } from "../lib/api";
 import {
   UPSTREAM_ACCOUNTS_OPEN_RESYNC_COOLDOWN_MS,
-  UPSTREAM_ACCOUNTS_SSE_REFRESH_THROTTLE_MS,
   useUpstreamAccounts,
 } from "./useUpstreamAccounts";
 
@@ -1387,27 +1386,30 @@ describe("useUpstreamAccounts", () => {
     expect(text("detail-name")).toBe("Alpha Synced");
   });
 
-  it("silently refreshes the visible roster page after records SSE events", async () => {
+  it("does not refresh the roster after records SSE events", async () => {
     apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(createDetail(1, "Alpha"));
-
     render(<Probe />);
     await flushAsync();
 
     expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(1);
     expect(apiMocks.fetchUpstreamAccountDetail).toHaveBeenCalledTimes(1);
+    expect(apiMocks.fetchUpstreamAccountWindowUsage).not.toHaveBeenCalled();
     expect(text("detail-loading")).toBe("false");
+    expect(text("window-usage-pending")).toBe("false");
 
     vi.useFakeTimers();
     try {
       act(() => {
         emitRecordsEvent();
-        vi.advanceTimersByTime(UPSTREAM_ACCOUNTS_SSE_REFRESH_THROTTLE_MS);
+        vi.advanceTimersByTime(10_000);
       });
       await flushAsync();
 
-      expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(2);
-      expect(apiMocks.fetchUpstreamAccountDetail).toHaveBeenCalledTimes(2);
+      expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(1);
+      expect(apiMocks.fetchUpstreamAccountDetail).toHaveBeenCalledTimes(1);
+      expect(apiMocks.fetchUpstreamAccountWindowUsage).not.toHaveBeenCalled();
       expect(text("detail-loading")).toBe("false");
+      expect(text("window-usage-pending")).toBe("false");
     } finally {
       vi.useRealTimers();
     }
@@ -1455,7 +1457,7 @@ describe("useUpstreamAccounts", () => {
     try {
       act(() => {
         emitRecordsEvent();
-        vi.advanceTimersByTime(UPSTREAM_ACCOUNTS_SSE_REFRESH_THROTTLE_MS);
+        vi.advanceTimersByTime(10_000);
       });
       await flushAsync();
 
@@ -1473,23 +1475,20 @@ describe("useUpstreamAccounts", () => {
     }
   });
 
-  it("coalesces same-query SSE refreshes into one follow-up request while a refresh is already running", async () => {
-    const firstRefresh = deferred<UpstreamAccountListResponse>();
-    const queuedRefresh = deferred<UpstreamAccountListResponse>();
+  it("ignores same-query records SSE events even while a prior manual refresh is already running", async () => {
+    const manualRefresh = deferred<UpstreamAccountListResponse>();
     apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(createDetail(1, "Alpha"));
 
     render(<Probe />);
     await flushAsync();
 
     apiMocks.fetchUpstreamAccounts
-      .mockImplementationOnce(async () => firstRefresh.promise)
-      .mockImplementationOnce(async () => queuedRefresh.promise);
+      .mockImplementationOnce(async () => manualRefresh.promise);
 
     vi.useFakeTimers();
     try {
       act(() => {
-        emitRecordsEvent();
-        vi.advanceTimersByTime(UPSTREAM_ACCOUNTS_SSE_REFRESH_THROTTLE_MS);
+        click("refresh");
       });
       await flushAsync();
 
@@ -1498,28 +1497,20 @@ describe("useUpstreamAccounts", () => {
       act(() => {
         emitRecordsEvent();
         emitRecordsEvent();
-        vi.advanceTimersByTime(UPSTREAM_ACCOUNTS_SSE_REFRESH_THROTTLE_MS);
+        vi.advanceTimersByTime(10_000);
       });
       await flushAsync();
 
       expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(2);
 
-      firstRefresh.resolve(createListResponse({
+      manualRefresh.resolve(createListResponse({
         items: [createSummary(1, "Alpha Refresh 1"), createSummary(2, "Beta")],
       }));
       await flushAsync();
       await flushAsync();
 
-      expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(3);
-
-      queuedRefresh.resolve(createListResponse({
-        items: [createSummary(1, "Alpha Refresh 2"), createSummary(2, "Beta")],
-      }));
-      await flushAsync();
-      await flushAsync();
-
-      expect(text("selected-name")).toBe("Alpha Refresh 2");
-      expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(3);
+      expect(text("selected-name")).toBe("Alpha Refresh 1");
+      expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
     }
