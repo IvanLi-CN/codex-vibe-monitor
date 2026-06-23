@@ -1991,7 +1991,7 @@ pub(crate) async fn proxy_openai_v1_via_pool(
                     handshake_timeout,
                     Some(pool_attempt_trace_context),
                     Some(PoolAttemptRuntimeSnapshotContext {
-                        capture_target: ProxyCaptureTarget::Responses,
+                        capture_target: capture_target.unwrap_or(ProxyCaptureTarget::Responses),
                         request_info: RequestCaptureInfo {
                             model: requested_model,
                             contains_encrypted_content: request_contains_encrypted_content,
