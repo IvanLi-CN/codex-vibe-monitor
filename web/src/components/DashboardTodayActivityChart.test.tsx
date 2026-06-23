@@ -441,6 +441,44 @@ describe("DashboardTodayActivityChart", () => {
     });
   });
 
+  it("keeps relay-only cost in the success-side remainder when non-success cost is absent", () => {
+    const data = buildTodayMinuteChartData(
+      {
+        rangeStart: "2026-04-08 00:00:00",
+        rangeEnd: "2026-04-08 00:01:22",
+        bucketSeconds: 60,
+        points: [
+          {
+            bucketStart: "2026-04-08 00:00:00",
+            bucketEnd: "2026-04-08 00:00:59",
+            totalCount: 4,
+            successCount: 4,
+            failureCount: 0,
+            totalTokens: 480,
+            totalCost: 1.2,
+            nonSuccessCost: 0,
+          },
+        ],
+      },
+      {
+        now: new Date(2026, 3, 8, 0, 1, 22),
+        localeTag: "en-US",
+      },
+    );
+
+    expect(data[0]).toMatchObject({
+      totalCost: 1.2,
+      successCost: 1.2,
+      nonSuccessCost: 0,
+      cumulativeCost: 1.2,
+      cumulativeSuccessCost: 1.2,
+      cumulativeNonSuccessCost: 0,
+      chartCumulativeCost: 1.2,
+      chartCumulativeSuccessCost: 1.2,
+      chartCumulativeNonSuccessCost: 0,
+    });
+  });
+
   it("clamps a 24-hour response to the local today window and keeps the rest of today empty", () => {
     const data = buildTodayMinuteChartData(
       {

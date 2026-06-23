@@ -153,6 +153,9 @@ export function buildTodayMinuteChartData(
     );
     const totalCost = point?.totalCost ?? 0;
     const nonSuccessCost = Math.max(0, point?.nonSuccessCost ?? 0);
+    // Some sources (for example CRS relay deltas) only report total cost plus
+    // success/failure counts, so the success-side layer is the remaining
+    // cumulative cost after subtracting explicit non-success usage.
     const successCost = Math.max(0, totalCost - nonSuccessCost);
     const totalTokens = point?.totalTokens ?? 0;
     const firstResponseByteTotalAvgMs =
