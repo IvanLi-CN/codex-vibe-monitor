@@ -1259,6 +1259,40 @@ async fn proxy_capture_persist_and_broadcast_skips_duplicate_records() {
 }
 
 #[tokio::test]
+async fn proxy_capture_persist_and_broadcast_skips_follow_up_without_subscribers() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://example-upstream.invalid/").expect("valid upstream base url"),
+    )
+    .await;
+    let now_local = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    seed_quota_snapshot(&state.pool, &now_local).await;
+    let invoke_id = "proxy-sse-follow-up-no-subscribers";
+
+    persist_and_broadcast_proxy_capture(
+        state.as_ref(),
+        Instant::now(),
+        test_proxy_capture_record(invoke_id, &now_local),
+    )
+    .await
+    .expect("persist without subscribers should succeed");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        state
+            .proxy_summary_quota_broadcast_seq
+            .load(Ordering::Acquire),
+        0,
+        "no-subscriber path should not enqueue summary/quota follow-up work"
+    );
+    assert!(
+        !state
+            .proxy_summary_quota_broadcast_running
+            .load(Ordering::Acquire),
+        "no-subscriber path should keep the summary/quota worker idle"
+    );
+}
+
+#[tokio::test]
 async fn fetch_and_store_skips_summary_and_quota_collection_when_broadcast_state_disabled() {
     let state = test_state_with_openai_base(
         Url::parse("https://example-upstream.invalid/").expect("valid upstream base url"),

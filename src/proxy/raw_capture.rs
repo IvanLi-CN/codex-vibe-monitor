@@ -474,23 +474,25 @@ pub(crate) async fn store_raw_payload_file(
     meta
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProxyCaptureFollowUpBroadcastMode {
+    ActiveSubscribers,
+    ShutdownFlush,
+}
+
 pub(crate) async fn broadcast_proxy_capture_follow_up(
     pool: &Pool<Sqlite>,
-    hourly_rollup_sync_lock: &Mutex<()>,
+    _hourly_rollup_sync_lock: &Mutex<()>,
     broadcaster: &broadcast::Sender<BroadcastPayload>,
     broadcast_state_cache: &Mutex<BroadcastStateCache>,
     relay_config: Option<&CrsStatsConfig>,
     invocation_max_days: u64,
+    mode: ProxyCaptureFollowUpBroadcastMode,
     invoke_id: &str,
 ) {
-    refresh_hourly_rollups_for_read_surfaces_best_effort(
-        pool,
-        hourly_rollup_sync_lock,
-        "proxy capture follow-up",
-    )
-    .await;
-
-    if broadcaster.receiver_count() == 0 {
+    if matches!(mode, ProxyCaptureFollowUpBroadcastMode::ActiveSubscribers)
+        && broadcaster.receiver_count() == 0
+    {
         return;
     }
 
@@ -588,6 +590,7 @@ pub(crate) async fn finish_summary_quota_broadcast_idle(
             ctx.broadcast_state_cache,
             ctx.relay_config,
             ctx.invocation_max_days,
+            ProxyCaptureFollowUpBroadcastMode::ShutdownFlush,
             ctx.invoke_id,
         )
         .await;
@@ -615,9 +618,14 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
             state.broadcast_state_cache.as_ref(),
             state.config.crs_stats.as_ref(),
             state.config.invocation_max_days,
+            ProxyCaptureFollowUpBroadcastMode::ShutdownFlush,
             invoke_id,
         )
         .await;
+        return Ok(());
+    }
+
+    if state.broadcaster.receiver_count() == 0 {
         return Ok(());
     }
 
@@ -636,6 +644,7 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
             state.broadcast_state_cache.as_ref(),
             state.config.crs_stats.as_ref(),
             state.config.invocation_max_days,
+            ProxyCaptureFollowUpBroadcastMode::ShutdownFlush,
             invoke_id,
         )
         .await;
@@ -677,6 +686,7 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
                         broadcast_state_cache.as_ref(),
                         relay_config.as_ref(),
                         invocation_max_days,
+                        ProxyCaptureFollowUpBroadcastMode::ShutdownFlush,
                         &invoke_id,
                     )
                     .await;
@@ -722,6 +732,7 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
                         broadcast_state_cache.as_ref(),
                         relay_config.as_ref(),
                         invocation_max_days,
+                        ProxyCaptureFollowUpBroadcastMode::ShutdownFlush,
                         &invoke_id,
                     )
                     .await;
@@ -739,6 +750,7 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
                     broadcast_state_cache.as_ref(),
                     relay_config.as_ref(),
                     invocation_max_days,
+                    ProxyCaptureFollowUpBroadcastMode::ActiveSubscribers,
                     &invoke_id,
                 ) => {}
             };

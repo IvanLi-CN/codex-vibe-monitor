@@ -2033,10 +2033,9 @@ async fn runtime_snapshot_keeps_prompt_cache_rollups_inline_without_background_f
         .expect("terminal proxy capture should persist");
     let terminal_follow_up_handles = state.proxy_summary_quota_broadcast_handle.lock().await.len();
     assert!(
-        terminal_follow_up_handles > 0,
-        "terminal proxy captures should still schedule the summary/quota follow-up worker"
+        terminal_follow_up_handles == 0,
+        "terminal proxy captures without subscribers should not schedule the summary/quota follow-up worker"
     );
-    wait_for_summary_quota_workers(state.as_ref()).await;
 }
 
 #[tokio::test]

@@ -11,6 +11,7 @@
 - SQLite 单写者约束下，后台任务必须是可跳过、可退避、可重试的低优先级工作。
 - 前台关键路径不应该和 rollup/backfill/retention/maintenance 使用同等重试预算。
 - 连接池等待超时本身就是 pressure signal，应触发后台 cooldown，而不是继续并发重试。
+- `proxy capture follow-up` 也必须遵守这个分级：没有 SSE 订阅者时，不得再消耗 summary/quota 或 hourly rollup refresh 预算。
 
 ## 推荐模式
 
@@ -45,6 +46,7 @@
 - skip 必须有日志和后续 ticker，否则会变成静默丢任务。
 - 为每个后台入口单独做局部退避，容易遗漏同一压力窗口内的其他维护任务；进程级 gate 更容易统一行为。
 - `SELECT MAX(id) ... WHERE <稀疏条件>`、`NOT EXISTS` + 低选择性 phase 过滤这类查询，即使最终只返回 1 行，也可能在 SQLite 上吃掉秒级读锁预算；若它们会与前台 HTTP 共享同一数据库，必须先压成 cursor 读取或用 partial index 固定扫描面。
+- 对 proxy 收尾这类 SSE follow-up，`receiver_count()==0` 应该直接意味着“跳过 follow-up”，而不是继续排队 summary/quota 或 rollup refresh；否则会把没有任何订阅者的请求变成纯数据库放大器。
 
 ## 何时升级方案
 
