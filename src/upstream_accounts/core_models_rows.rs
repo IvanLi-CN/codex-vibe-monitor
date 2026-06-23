@@ -741,6 +741,8 @@ pub(crate) struct AccountStickyKeyInvocationPreviewRow {
     t_persist_ms: Option<f64>,
     t_total_ms: Option<f64>,
     endpoint: Option<String>,
+    compaction_request_kind: Option<String>,
+    compaction_response_kind: Option<String>,
 }
 
 #[allow(dead_code)]

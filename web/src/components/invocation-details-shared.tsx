@@ -22,6 +22,7 @@ import {
   resolveInvocationAccountLabel,
   resolveInvocationEndpointDisplay,
   type FastIndicatorState,
+  type InvocationCompactionKind,
   type InvocationEndpointDisplay,
 } from "../lib/invocation";
 import type { TranslationKey } from "../i18n";
@@ -473,6 +474,19 @@ function renderDetailEndpointValue(
   );
 }
 
+function renderCompactionKindValue(
+  value: InvocationCompactionKind | null | undefined,
+  t: Translator,
+) {
+  if (value === "compact") {
+    return <Badge variant="info">{t("table.endpoint.compactBadge")}</Badge>;
+  }
+  if (value === "remote_v2") {
+    return <Badge variant="info">{t("table.endpoint.remoteV2Badge")}</Badge>;
+  }
+  return FALLBACK_CELL;
+}
+
 export function buildInvocationDetailViewModel({
   record,
   normalizedStatus,
@@ -529,7 +543,7 @@ export function buildInvocationDetailViewModel({
   const responseContentEncodingValue = formatResponseContentEncoding(
     record.responseContentEncoding,
   );
-  const endpointDisplay = resolveInvocationEndpointDisplay(record.endpoint);
+  const endpointDisplay = resolveInvocationEndpointDisplay(record);
   const endpointValue = endpointDisplay.endpointValue;
   const errorMessage = record.errorMessage?.trim() ?? "";
   const collapsedErrorSummary = resolveInvocationCollapsedErrorSummary(record);
@@ -620,6 +634,16 @@ export function buildInvocationDetailViewModel({
       key: "endpoint",
       label: t("table.details.endpoint"),
       value: renderDetailEndpointValue(endpointDisplay, endpointValue, t),
+    },
+    {
+      key: "compactionRequest",
+      label: t("table.details.compactionRequest"),
+      value: renderCompactionKindValue(record.compactionRequestKind, t),
+    },
+    {
+      key: "compactionResponse",
+      label: t("table.details.compactionResponse"),
+      value: renderCompactionKindValue(record.compactionResponseKind, t),
     },
     {
       key: "requesterIp",

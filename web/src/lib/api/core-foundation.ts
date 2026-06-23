@@ -350,6 +350,8 @@ export interface ApiInvocation {
   failureClass?: "service_failure" | "client_failure" | "client_abort" | "none";
   isActionable?: boolean;
   endpoint?: string;
+  compactionRequestKind?: "compact" | "remote_v2" | null;
+  compactionResponseKind?: "compact" | "remote_v2" | null;
   requesterIp?: string;
   promptCacheKey?: string;
   stickyKey?: string | null;
@@ -1101,6 +1103,8 @@ export interface PromptCacheConversationInvocationPreview {
   upstreamAccountName: string | null;
   upstreamAccountPlanType?: string | null;
   endpoint: string | null;
+  compactionRequestKind?: ApiInvocation["compactionRequestKind"];
+  compactionResponseKind?: ApiInvocation["compactionResponseKind"];
   source?: ApiInvocation["source"];
   inputTokens?: ApiInvocation["inputTokens"];
   outputTokens?: ApiInvocation["outputTokens"];
@@ -1997,6 +2001,16 @@ function normalizePromptCacheConversationInvocationPreview(
     endpoint:
       typeof payload.endpoint === "string" && payload.endpoint.trim()
         ? payload.endpoint.trim()
+        : null,
+    compactionRequestKind:
+      payload.compactionRequestKind === "compact" ||
+      payload.compactionRequestKind === "remote_v2"
+        ? payload.compactionRequestKind
+        : null,
+    compactionResponseKind:
+      payload.compactionResponseKind === "compact" ||
+      payload.compactionResponseKind === "remote_v2"
+        ? payload.compactionResponseKind
         : null,
     source:
       typeof payload.source === "string" && payload.source.trim()

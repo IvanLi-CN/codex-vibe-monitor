@@ -1,5 +1,55 @@
 pub(crate) const HEADER_STICKY_EARLY_STICKY_SCAN_BYTES: usize = 64 * 1024;
 
+fn json_value_declares_remote_v2_compaction(value: &Value) -> bool {
+    fn entry_declares_remote_v2_compaction(entry: &Value) -> bool {
+        let Some(object) = entry.as_object() else {
+            return false;
+        };
+        object
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value == "compaction")
+            && object.contains_key("compact_threshold")
+    }
+
+    let Some(context_management) = value.get("context_management") else {
+        return false;
+    };
+    if let Some(entries) = context_management.as_array() {
+        return entries.iter().any(entry_declares_remote_v2_compaction);
+    }
+    entry_declares_remote_v2_compaction(context_management)
+}
+
+fn value_contains_compaction_output_item(value: &Value) -> bool {
+    value
+        .get("output")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                item.get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| kind == "compaction")
+            })
+        })
+}
+
+fn response_value_indicates_remote_v2_compaction(value: &Value) -> bool {
+    value
+        .get("object")
+        .and_then(Value::as_str)
+        .is_some_and(|object| object == "response.compaction")
+        || value_contains_compaction_output_item(value)
+        || value
+            .get("response")
+            .is_some_and(value_contains_compaction_output_item)
+        || value.get("item").is_some_and(|item| {
+            item.get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind == "compaction")
+        })
+}
+
 fn best_effort_extract_json_string_for_patterns(
     bytes: &[u8],
     patterns: &[&[u8]],
@@ -288,6 +338,7 @@ pub(crate) fn prepare_target_request_body(
         ),
         requested_service_tier: None,
         reasoning_effort: None,
+        compaction_request_kind: None,
         is_stream: false,
         parse_error: None,
     };
@@ -315,6 +366,13 @@ pub(crate) fn prepare_target_request_body(
     }
     info.reasoning_effort = extract_reasoning_effort_from_request_body(target, &value);
     info.contains_encrypted_content = value_contains_encrypted_content(&value);
+    info.compaction_request_kind = match target {
+        ProxyCaptureTarget::ResponsesCompact => Some(CompactionKind::Compact),
+        ProxyCaptureTarget::Responses if json_value_declares_remote_v2_compaction(&value) => {
+            Some(CompactionKind::RemoteV2)
+        }
+        _ => None,
+    };
     info.is_stream = value
         .get("stream")
         .and_then(|v| v.as_bool())
@@ -737,6 +795,7 @@ pub(crate) fn build_response_capture_info_from_bytes(
             usage_missing_reason: Some("empty_response".to_string()),
             contains_encrypted_content: false,
             service_tier: None,
+            compaction_response_kind: None,
             stream_terminal_event: None,
             upstream_error_code: None,
             upstream_error_message: None,
@@ -767,6 +826,8 @@ pub(crate) fn build_response_capture_info_from_bytes(
                     usage_missing_reason,
                     contains_encrypted_content: value_contains_encrypted_content(&value),
                     service_tier,
+                    compaction_response_kind: response_value_indicates_remote_v2_compaction(&value)
+                        .then_some(CompactionKind::RemoteV2),
                     stream_terminal_event: None,
                     upstream_error_code: extract_upstream_error_code(&value),
                     upstream_error_message: extract_upstream_error_message(&value),
@@ -792,6 +853,7 @@ pub(crate) fn build_response_capture_info_from_bytes(
                     usage_missing_reason: Some("response_not_json".to_string()),
                     contains_encrypted_content: best_effort_extract_encrypted_content_from_request_body_prefix(bytes),
                     service_tier,
+                    compaction_response_kind: None,
                     stream_terminal_event: None,
                     upstream_error_code,
                     upstream_error_message,
@@ -1005,6 +1067,7 @@ pub(crate) struct StreamResponsePayloadParser {
     service_tier: Option<String>,
     service_tier_rank: u8,
     contains_encrypted_content: bool,
+    compaction_response_kind: Option<CompactionKind>,
     stream_terminal_event: Option<String>,
     upstream_error_code: Option<String>,
     upstream_error_message: Option<String>,
@@ -1057,6 +1120,11 @@ impl StreamResponsePayloadParser {
                 if value_contains_encrypted_content(&value) {
                     self.contains_encrypted_content = true;
                 }
+                if self.compaction_response_kind.is_none()
+                    && response_value_indicates_remote_v2_compaction(&value)
+                {
+                    self.compaction_response_kind = Some(CompactionKind::RemoteV2);
+                }
                 if stream_payload_indicates_failure(event_name.as_deref(), &value) {
                     let candidate = event_name
                         .clone()
@@ -1100,6 +1168,7 @@ impl StreamResponsePayloadParser {
             usage_missing_reason,
             contains_encrypted_content: self.contains_encrypted_content,
             service_tier: self.service_tier,
+            compaction_response_kind: self.compaction_response_kind,
             stream_terminal_event: self.stream_terminal_event,
             upstream_error_code: self.upstream_error_code,
             upstream_error_message: self.upstream_error_message,
@@ -1422,6 +1491,7 @@ pub(crate) fn build_retryable_overload_gate_outcome(
         usage: ParsedUsage::default(),
         usage_missing_reason: Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED.to_string()),
         service_tier: None,
+        compaction_response_kind: None,
         stream_terminal_event: Some("response.failed".to_string()),
         upstream_error_code: upstream_error_code.clone(),
         upstream_error_message: upstream_error_message.clone(),

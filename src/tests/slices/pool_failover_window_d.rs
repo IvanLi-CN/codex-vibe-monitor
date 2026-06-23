@@ -522,6 +522,50 @@ fn prepare_target_request_body_extracts_reasoning_effort_for_responses() {
 }
 
 #[test]
+fn prepare_target_request_body_detects_remote_v2_compaction_requests() {
+    let body = serde_json::to_vec(&json!({
+        "model": "gpt-5.3-codex",
+        "stream": true,
+        "context_management": [
+            {
+                "type": "compaction",
+                "compact_threshold": 0.82
+            }
+        ]
+    }))
+    .expect("serialize request body");
+
+    let (_rewritten, info, _did_rewrite) =
+        prepare_target_request_body(ProxyCaptureTarget::Responses, body, true);
+
+    assert_eq!(
+        info.compaction_request_kind.map(CompactionKind::as_payload_str),
+        Some("remote_v2")
+    );
+}
+
+#[test]
+fn prepare_target_request_body_detects_remote_v2_compaction_request_object_shape() {
+    let body = serde_json::to_vec(&json!({
+        "model": "gpt-5.3-codex",
+        "stream": true,
+        "context_management": {
+            "type": "compaction",
+            "compact_threshold": 0.82
+        }
+    }))
+    .expect("serialize request body");
+
+    let (_rewritten, info, _did_rewrite) =
+        prepare_target_request_body(ProxyCaptureTarget::Responses, body, true);
+
+    assert_eq!(
+        info.compaction_request_kind.map(CompactionKind::as_payload_str),
+        Some("remote_v2")
+    );
+}
+
+#[test]
 fn prepare_target_request_body_extracts_reasoning_effort_for_chat_completions() {
     let body = serde_json::to_vec(&json!({
         "model": "gpt-5.3-codex",
@@ -1403,6 +1447,104 @@ fn parse_target_response_payload_reads_service_tier_from_response_object() {
     assert_eq!(parsed.model.as_deref(), Some("gpt-5.3-codex"));
     assert_eq!(parsed.service_tier.as_deref(), Some("priority"));
     assert_eq!(parsed.usage.total_tokens, Some(26));
+}
+
+#[test]
+fn parse_target_response_payload_detects_remote_v2_compaction_stream_events() {
+    let raw = [
+        "event: response.output_item.added",
+        r#"data: {"type":"response.output_item.added","item":{"id":"cmp_001","type":"compaction","encrypted_content":"enc"}} "#,
+        "",
+        "event: response.completed",
+        r#"data: {"type":"response.completed","response":{"model":"gpt-5.3-codex","usage":{"input_tokens":12,"output_tokens":3,"total_tokens":15}}}"#,
+        "",
+    ]
+    .join("\n");
+
+    let parsed =
+        parse_target_response_payload(ProxyCaptureTarget::Responses, raw.as_bytes(), true, None);
+
+    assert_eq!(
+        parsed.compaction_response_kind.map(CompactionKind::as_payload_str),
+        Some("remote_v2")
+    );
+}
+
+#[test]
+fn parse_target_response_payload_detects_response_compaction_json_shape() {
+    let raw = json!({
+        "id": "resp_compact_test",
+        "object": "response.compaction",
+        "output": [
+            {
+                "id": "cmp_001",
+                "type": "compaction",
+                "encrypted_content": "encrypted-summary"
+            }
+        ],
+        "usage": {
+            "input_tokens": 139,
+            "output_tokens": 438,
+            "total_tokens": 577
+        }
+    });
+
+    let parsed = parse_target_response_payload(
+        ProxyCaptureTarget::Responses,
+        serde_json::to_string(&raw)
+            .expect("serialize raw payload")
+            .as_bytes(),
+        false,
+        None,
+    );
+
+    assert_eq!(
+        parsed.compaction_response_kind.map(CompactionKind::as_payload_str),
+        Some("remote_v2")
+    );
+}
+
+#[test]
+fn compact_responses_keep_legacy_compaction_kind_even_with_compaction_payload_shape() {
+    let raw = json!({
+        "id": "resp_compact_test",
+        "object": "response.compaction",
+        "output": [
+            {
+                "id": "cmp_001",
+                "type": "compaction",
+                "encrypted_content": "encrypted-summary"
+            }
+        ],
+        "usage": {
+            "input_tokens": 139,
+            "output_tokens": 438,
+            "total_tokens": 577
+        }
+    });
+
+    let parsed = parse_target_response_payload(
+        ProxyCaptureTarget::ResponsesCompact,
+        serde_json::to_string(&raw)
+            .expect("serialize raw payload")
+            .as_bytes(),
+        false,
+        None,
+    );
+
+    assert_eq!(
+        parsed.compaction_response_kind.map(CompactionKind::as_payload_str),
+        Some("remote_v2")
+    );
+
+    assert_eq!(
+        resolve_compaction_response_kind_for_payload(
+            ProxyCaptureTarget::ResponsesCompact,
+            parsed.compaction_response_kind
+        )
+        .map(CompactionKind::as_payload_str),
+        Some("compact")
+    );
 }
 
 #[test]

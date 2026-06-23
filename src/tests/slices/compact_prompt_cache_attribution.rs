@@ -312,6 +312,8 @@ async fn prompt_cache_recent_invocations_include_attributed_compact_preview() {
     .bind("success")
     .bind(json!({
         "endpoint": "/v1/responses/compact",
+        "compactionRequestKind": "compact",
+        "compactionResponseKind": "compact",
         "promptCacheKey": "prompt-cache-attributed",
         "stickyKey": "sticky-attributed",
         "promptCacheKeyAttributionSource": "client_fingerprint_recent"
@@ -337,5 +339,7 @@ async fn prompt_cache_recent_invocations_include_attributed_compact_preview() {
         .find(|row| row.invoke_id == "compact-attribution-compact")
         .expect("attributed compact should appear in conversation previews");
     assert_eq!(compact.endpoint.as_deref(), Some("/v1/responses/compact"));
+    assert_eq!(compact.compaction_request_kind.as_deref(), Some("compact"));
+    assert_eq!(compact.compaction_response_kind.as_deref(), Some("compact"));
     assert_eq!(compact.prompt_cache_key, "prompt-cache-attributed");
 }

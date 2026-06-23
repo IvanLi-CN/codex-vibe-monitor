@@ -668,6 +668,8 @@ pub(crate) struct PromptCacheConversationInvocationPreviewResponse {
     pub(crate) upstream_account_name: Option<String>,
     pub(crate) upstream_account_plan_type: Option<String>,
     pub(crate) endpoint: Option<String>,
+    pub(crate) compaction_request_kind: Option<String>,
+    pub(crate) compaction_response_kind: Option<String>,
     pub(crate) source: Option<String>,
     pub(crate) input_tokens: Option<i64>,
     pub(crate) output_tokens: Option<i64>,
@@ -834,6 +836,21 @@ pub(crate) struct RawPayloadMeta {
     pub(crate) truncated_reason: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompactionKind {
+    Compact,
+    RemoteV2,
+}
+
+impl CompactionKind {
+    pub(crate) fn as_payload_str(self) -> &'static str {
+        match self {
+            Self::Compact => "compact",
+            Self::RemoteV2 => "remote_v2",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RequestCaptureInfo {
     pub(crate) model: Option<String>,
@@ -844,6 +861,7 @@ pub(crate) struct RequestCaptureInfo {
     pub(crate) image_intent: Option<String>,
     pub(crate) requested_service_tier: Option<String>,
     pub(crate) reasoning_effort: Option<String>,
+    pub(crate) compaction_request_kind: Option<CompactionKind>,
     pub(crate) is_stream: bool,
     pub(crate) parse_error: Option<String>,
 }
@@ -855,6 +873,7 @@ pub(crate) struct ResponseCaptureInfo {
     pub(crate) usage: ParsedUsage,
     pub(crate) usage_missing_reason: Option<String>,
     pub(crate) service_tier: Option<String>,
+    pub(crate) compaction_response_kind: Option<CompactionKind>,
     pub(crate) stream_terminal_event: Option<String>,
     pub(crate) upstream_error_code: Option<String>,
     pub(crate) upstream_error_message: Option<String>,
@@ -1169,6 +1188,8 @@ pub(crate) struct PromptCacheConversationInvocationPreviewRow {
     pub(crate) t_persist_ms: Option<f64>,
     pub(crate) t_total_ms: Option<f64>,
     pub(crate) endpoint: Option<String>,
+    pub(crate) compaction_request_kind: Option<String>,
+    pub(crate) compaction_response_kind: Option<String>,
 }
 
 #[derive(Debug, FromRow)]
