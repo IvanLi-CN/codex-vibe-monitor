@@ -26,7 +26,7 @@ EOF
 cat >"$tmp_dir/docker-permanent" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-echo "manifest for docker.io/library/rust:1.91.0-bookworm not found" >&2
+echo "manifest for docker.io/library/rust:1.96.0-bookworm not found" >&2
 exit 1
 EOF
 

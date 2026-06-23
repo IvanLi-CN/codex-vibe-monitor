@@ -27,18 +27,23 @@
 
 ### In scope
 
-- `/Users/ivan/.codex/worktrees/41dd/codex-vibe-monitor/.bun-version`
-- `/Users/ivan/.codex/worktrees/41dd/codex-vibe-monitor/package.json`
-- `/Users/ivan/.codex/worktrees/41dd/codex-vibe-monitor/web/package.json`
-- `/Users/ivan/.codex/worktrees/41dd/codex-vibe-monitor/bun.lock`
-- `/Users/ivan/.codex/worktrees/41dd/codex-vibe-monitor/web/bun.lock`
-- `/Users/ivan/.codex/worktrees/41dd/codex-vibe-monitor/README.md`
-- `/Users/ivan/.codex/worktrees/41dd/codex-vibe-monitor/AGENTS.md`
-- `/Users/ivan/.codex/worktrees/41dd/codex-vibe-monitor/lefthook.yml`
-- `/Users/ivan/.codex/worktrees/41dd/codex-vibe-monitor/Dockerfile`
-- `/Users/ivan/.codex/worktrees/41dd/codex-vibe-monitor/.github/workflows/ci.yml`
-- `/Users/ivan/.codex/worktrees/41dd/codex-vibe-monitor/.github/scripts/check-bun-first.sh`
-- `/Users/ivan/.codex/worktrees/41dd/codex-vibe-monitor/docs/specs/README.md`
+- `.bun-version`
+- `package.json`
+- `web/package.json`
+- `bun.lock`
+- `web/bun.lock`
+- `README.md`
+- `AGENTS.md`
+- `lefthook.yml`
+- `Dockerfile`
+- `.github/workflows/ci-pr.yml`
+- `.github/workflows/ci-main.yml`
+- `.github/workflows/release.yml`
+- `.github/workflows/docs-pages.yml`
+- `.github/scripts/check-bun-first.sh`
+- `.github/scripts/check_quality_gates_contract.py`
+- `.github/scripts/fixtures/quality-gates-contract/**`
+- `docs/specs/README.md`
 
 ### Out of scope
 
@@ -56,6 +61,12 @@
   - hooks 内可执行文件：`bun eslint`、`bun tsc`、`bun dprint`、`bun commitlint`
   - CI 安装器：`oven-sh/setup-bun@v2`
   - Docker web builder：官方 `oven/bun` 镜像 + `bun install --frozen-lockfile` + `bun run build`
+- 当前 workflow / build toolchain 基线固定为：
+  - Bun `1.3.14`（`.bun-version`、`oven/bun:1.3.14-alpine`、`oven-sh/setup-bun@v2`）
+  - Rust `1.96.0`（`rust-toolchain.toml`、`dtolnay/rust-toolchain@v1`、`rust:1.96.0-bookworm`）
+  - GitHub-hosted x64 runner：`ubuntu-24.04`
+  - Release arm64 runner：`ubuntu-24.04-arm`
+- 受控 GitHub Actions major refs 固定为 `actions/checkout@v7`、`actions/cache@v5`、`actions/github-script@v9`、`actions/upload-artifact@v7`、`actions/download-artifact@v8`、`actions/configure-pages@v6`、`actions/upload-pages-artifact@v5`、`actions/deploy-pages@v5`、`docker/setup-buildx-action@v4`、`docker/login-action@v4`、`docker/build-push-action@v7`；继续保留 `dtolnay/rust-toolchain@v1`、`oven-sh/setup-bun@v2` 与外部 reusable workflow `@main` 引用策略。
 - Bun-first guard 只检查运营面文件；允许以下残留：
   - `docs/specs/**/SPEC.md`
   - `docs/archive/specs/**`
@@ -78,4 +89,4 @@
 - 风险：Docker builder 从 Node 切到 Bun 后，若 lockfile / install 逻辑不一致，可能只在容器构建阶段暴露。
 - 风险：CI 切换到 Bun 后，若 required check 名称意外变化会影响分支保护，因此只能替换 step/命令，不能改 job name。
 - 开放问题：None。
-- 假设：Bun `1.3.10` 可兼容当前仓库的 React/Vite/Storybook/Playwright 依赖组合。
+- 假设：Bun `1.3.14` 可兼容当前仓库的 React/Vite/Storybook/Playwright 依赖组合。
