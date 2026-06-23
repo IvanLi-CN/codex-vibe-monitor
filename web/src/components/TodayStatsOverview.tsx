@@ -70,6 +70,7 @@ interface MetricTileProps {
   valueTestId?: string
   displayText?: string
   subdued?: boolean
+  labelNoWrap?: boolean
   preserveLabelCase?: boolean
   labelTestId?: string
   topRightItem?: MetricTileMetaItem | null
@@ -87,6 +88,7 @@ function MetricTile({
   valueTestId,
   displayText,
   subdued = false,
+  labelNoWrap = false,
   preserveLabelCase = false,
   labelTestId,
   topRightItem,
@@ -118,7 +120,8 @@ function MetricTile({
           <span
             data-testid={labelTestId}
             className={cn(
-              'inline-flex cursor-help whitespace-nowrap text-left text-xs font-semibold tracking-[0.14em] text-base-content/65 underline decoration-dotted underline-offset-4 transition-colors hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
+              'inline-flex cursor-help text-left text-xs font-semibold tracking-[0.14em] text-base-content/65 underline decoration-dotted underline-offset-4 transition-colors hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
+              labelNoWrap && 'whitespace-nowrap',
               preserveLabelCase ? 'normal-case' : 'uppercase',
             )}
           >
@@ -566,6 +569,7 @@ export function TodayStatsOverview({
             value={totalTokens}
             localeTag={localeTag}
             loading={loading}
+            labelNoWrap
             preserveLabelCase
             labelTestId="today-stats-label-total-tokens"
             valueTestId="today-stats-value-total-tokens"
