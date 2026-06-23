@@ -3998,6 +3998,12 @@ pub(crate) async fn query_invocation_hourly_rollup_range(
         } else {
             "0 AS cache_input_tokens"
         };
+    let non_success_cost_expr =
+        if sqlite_table_has_column(pool, "invocation_rollup_hourly", "non_success_cost").await? {
+            "COALESCE(non_success_cost, 0.0) AS non_success_cost"
+        } else {
+            "0.0 AS non_success_cost"
+        };
     let mut query = QueryBuilder::<Sqlite>::new(format!(
         r#"
         SELECT
@@ -4008,6 +4014,7 @@ pub(crate) async fn query_invocation_hourly_rollup_range(
             total_tokens,
             {cache_input_tokens_expr},
             total_cost,
+            {non_success_cost_expr},
             first_byte_sample_count,
             first_byte_sum_ms,
             first_byte_max_ms,
