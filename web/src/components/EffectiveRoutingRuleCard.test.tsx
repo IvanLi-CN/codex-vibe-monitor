@@ -53,6 +53,10 @@ const labels = {
   fastModeFillMissing: 'Fill when missing',
   fastModeForceAdd: 'Force add',
   fastModeForceRemove: 'Force remove',
+  imageToolKeepOriginal: 'Keep original',
+  imageToolFillMissing: 'Fill when missing',
+  imageToolForceAdd: 'Force add',
+  imageToolForceRemove: 'Force remove',
   upstream429Retry: '429 retry enabled',
   upstream429RetryOff: '429 retry off',
   availableModelsInherited: 'Inherited / unrestricted',
@@ -66,6 +70,7 @@ const labels = {
   fieldAllowCutIn: 'Cut in',
   fieldPriority: 'Priority',
   fieldFastMode: 'FAST mode',
+  fieldImageToolRewriteMode: 'Image tools',
   fieldConcurrency: 'Concurrency',
   fieldUpstream429: 'Upstream 429 retry',
   fieldAvailableModels: 'Available models',
@@ -84,6 +89,7 @@ function buildRule(overrides: Partial<EffectiveRoutingRule> = {}): EffectiveRout
     allowCutIn: true,
     priorityTier: 'normal',
     fastModeRewriteMode: 'keep_original',
+    imageToolRewriteMode: 'keep_original',
     concurrencyLimit: 0,
     upstream429RetryEnabled: false,
     upstream429MaxRetries: 0,
@@ -97,6 +103,7 @@ function buildRule(overrides: Partial<EffectiveRoutingRule> = {}): EffectiveRout
       allowCutIn: 'root',
       priorityTier: 'root',
       fastModeRewriteMode: 'root',
+      imageToolRewriteMode: 'root',
       concurrencyLimit: 'root',
       upstream429Retry: 'root',
       availableModels: 'root',
@@ -116,6 +123,7 @@ describe('EffectiveRoutingRuleCard', () => {
     )
 
     expect(document.body.textContent).toContain('Inherited / unrestricted')
+    expect(document.body.textContent).toContain('Image tools')
     expect(document.body.textContent).not.toContain('No models allowed')
   })
 

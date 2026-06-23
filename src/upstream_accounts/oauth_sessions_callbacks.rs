@@ -1493,6 +1493,14 @@ pub(crate) async fn update_upstream_account_inner(
             normalize_tag_fast_mode_rewrite_mode(Some(value)).map(|mode| mode.as_str().to_string())
         })
         .transpose()?;
+    let policy_image_tool_rewrite_mode = payload
+        .routing_rule
+        .as_ref()
+        .and_then(|rule| rule.image_tool_rewrite_mode.as_deref())
+        .map(|value| {
+            normalize_image_tool_rewrite_mode(Some(value)).map(|mode| mode.as_str().to_string())
+        })
+        .transpose()?;
     let tag_ids = match payload.tag_ids.as_ref() {
         Some(values) => Some(validate_tag_ids(&state.pool, values).await?),
         None => None,
@@ -1654,11 +1662,12 @@ pub(crate) async fn update_upstream_account_inner(
             policy_allow_cut_in = ?16,
             policy_priority_tier = ?17,
             policy_fast_mode_rewrite_mode = ?18,
-            policy_concurrency_limit = ?19,
-            policy_upstream_429_retry_enabled = ?20,
-            policy_upstream_429_max_retries = ?21,
-            policy_available_models_json = ?22,
-            updated_at = ?23
+            policy_image_tool_rewrite_mode = ?19,
+            policy_concurrency_limit = ?20,
+            policy_upstream_429_retry_enabled = ?21,
+            policy_upstream_429_max_retries = ?22,
+            policy_available_models_json = ?23,
+            updated_at = ?24
         WHERE id = ?1
         "#,
     )
@@ -1707,6 +1716,12 @@ pub(crate) async fn update_upstream_account_inner(
             .clone()
             .or(row.policy_fast_mode_rewrite_mode.clone()),
         None => row.policy_fast_mode_rewrite_mode.clone(),
+    })
+    .bind(match payload.routing_rule.as_ref() {
+        Some(_) => policy_image_tool_rewrite_mode
+            .clone()
+            .or(row.policy_image_tool_rewrite_mode.clone()),
+        None => row.policy_image_tool_rewrite_mode.clone(),
     })
     .bind(match payload.routing_rule.as_ref() {
         Some(rule) => match rule.concurrency_limit {

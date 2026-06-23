@@ -1604,6 +1604,58 @@ pub(crate) fn classify_compact_support_observation(
     }
 }
 
+pub(crate) fn image_tool_capability_negative_signal(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    let has_support_failure_signal = [
+        "unsupported model",
+        "unsupported endpoint",
+        "unsupported path",
+        "unsupported route",
+        "unsupported tool",
+        "does not support",
+        "is not supported",
+        "not support",
+        "unknown model",
+        "model not found",
+        "no available channel for model",
+        "no channel",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle));
+    if !has_support_failure_signal {
+        return false;
+    }
+
+    normalized.contains("image_generation")
+        || normalized.contains("image generation")
+        || normalized.contains("gpt-image-")
+        || normalized.contains("/v1/images/")
+        || normalized.contains("images/generations")
+        || normalized.contains("images/edits")
+}
+
+pub(crate) fn classify_image_tool_capability_observation(
+    status: StatusCode,
+    message: Option<&str>,
+) -> ImageToolCapability {
+    if status.is_success() {
+        return ImageToolCapability::Supported;
+    }
+    let normalized_message = message
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if status == StatusCode::BAD_REQUEST
+        && normalized_message
+            .as_deref()
+            .is_some_and(image_tool_capability_negative_signal)
+    {
+        ImageToolCapability::Unsupported
+    } else {
+        ImageToolCapability::Unknown
+    }
+}
+
 pub(crate) fn fallback_proxy_429_retry_delay(retry_index: u32) -> Duration {
     let exponent = retry_index.saturating_sub(1).min(16);
     let multiplier = 1_u64 << exponent;
@@ -1836,6 +1888,7 @@ pub(crate) struct PreparedPoolRequestBody {
     pub(crate) snapshot: PoolReplayBodySnapshot,
     pub(crate) request_body_for_capture: Option<Bytes>,
     pub(crate) requested_service_tier: Option<String>,
+    pub(crate) requested_image_intent: ImageIntent,
 }
 
 pub(crate) fn pool_request_snapshot_preserves_content_length(snapshot: &PoolReplayBodySnapshot) -> bool {
@@ -1858,39 +1911,173 @@ pub(crate) fn pool_request_snapshot_body_bytes(snapshot: &PoolReplayBodySnapshot
     }
 }
 
+fn request_entry_openai_json_tools_contain_image_generation(value: &Value) -> bool {
+    value
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| {
+            tools.iter().any(|tool| {
+                tool.get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|tool_type| tool_type.trim() == "image_generation")
+            })
+        })
+}
+
+fn request_entry_openai_json_tool_choice_selects_image_generation(value: &Value) -> bool {
+    let Some(tool_choice) = value.get("tool_choice") else {
+        return false;
+    };
+    match tool_choice {
+        Value::String(choice) => choice.trim() == "image_generation",
+        Value::Object(choice) => {
+            choice
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|tool_type| tool_type.trim() == "image_generation")
+                || choice
+                    .get("tool")
+                    .and_then(Value::as_object)
+                    .and_then(|tool| tool.get("type"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|tool_type| tool_type.trim() == "image_generation")
+                || choice
+                    .get("function")
+                    .and_then(Value::as_object)
+                    .and_then(|function| function.get("name"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| name.trim() == "image_generation")
+        }
+        _ => false,
+    }
+}
+
+fn rewrite_openai_responses_image_tools(
+    value: &mut Value,
+    rewrite_mode: crate::ImageToolRewriteMode,
+    image_intent: crate::ImageIntent,
+) -> bool {
+    use crate::ImageToolRewriteMode::*;
+
+    let has_image_tool = request_entry_openai_json_tools_contain_image_generation(value);
+    let tool_choice_selects_image_generation =
+        request_entry_openai_json_tool_choice_selects_image_generation(value);
+    let Some(obj) = value.as_object_mut() else {
+        return false;
+    };
+
+    match rewrite_mode {
+        KeepOriginal => false,
+        ForceRemove => {
+            let mut modified = false;
+            if let Some(tools) = obj.get_mut("tools").and_then(Value::as_array_mut) {
+                let original_len = tools.len();
+                tools.retain(|tool| {
+                    !tool
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|tool_type| tool_type.trim() == "image_generation")
+                });
+                modified |= tools.len() != original_len;
+            }
+            if tool_choice_selects_image_generation {
+                obj.remove("tool_choice");
+                modified = true;
+            }
+            modified
+        }
+        FillMissing | ForceAdd => {
+            if matches!(rewrite_mode, FillMissing)
+                && image_intent != crate::ImageIntent::Yes
+            {
+                return false;
+            }
+
+            let mut modified = false;
+            if !has_image_tool {
+                let tool = serde_json::json!({
+                    "type": "image_generation",
+                    "output_format": "png",
+                });
+                match obj.get_mut("tools") {
+                    Some(Value::Array(tools)) => {
+                        tools.push(tool);
+                    }
+                    Some(_) => {
+                        obj.insert("tools".to_string(), Value::Array(vec![tool]));
+                    }
+                    None => {
+                        obj.insert("tools".to_string(), Value::Array(vec![tool]));
+                    }
+                }
+                modified = true;
+            }
+            if !obj.contains_key("tool_choice") {
+                obj.insert(
+                    "tool_choice".to_string(),
+                    serde_json::json!({"type": "image_generation"}),
+                );
+                modified = true;
+            }
+            modified
+        }
+    }
+}
+
 pub(crate) async fn prepare_pool_request_body_for_account(
     body: Option<&PoolReplayBodySnapshot>,
     original_uri: &Uri,
     method: &Method,
     fast_mode_rewrite_mode: TagFastModeRewriteMode,
+    image_tool_rewrite_mode: crate::ImageToolRewriteMode,
 ) -> Result<PreparedPoolRequestBody, String> {
     let capture_target = capture_target_for_request(original_uri.path(), method);
-    let rewrite_required = capture_target.is_some_and(|target| target.allows_fast_mode_rewrite())
+    let fast_mode_rewrite_required = capture_target
+        .is_some_and(|target| target.allows_fast_mode_rewrite())
         && fast_mode_rewrite_mode != TagFastModeRewriteMode::KeepOriginal;
+    let image_tool_rewrite_required = capture_target
+        .is_some_and(|target| {
+            matches!(
+                target,
+                ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact
+            )
+        })
+        && image_tool_rewrite_mode != crate::ImageToolRewriteMode::KeepOriginal;
+    let rewrite_required = fast_mode_rewrite_required || image_tool_rewrite_required;
 
     let Some(snapshot) = body.cloned() else {
         return Ok(PreparedPoolRequestBody {
             snapshot: PoolReplayBodySnapshot::Empty,
             request_body_for_capture: Some(Bytes::new()),
             requested_service_tier: None,
+            requested_image_intent: ImageIntent::Unknown,
         });
     };
 
     if !rewrite_required {
-        let (request_body_for_capture, requested_service_tier) = match &snapshot {
-            PoolReplayBodySnapshot::Empty => (Some(Bytes::new()), None),
+        let (request_body_for_capture, requested_service_tier, requested_image_intent) = match &snapshot {
+            PoolReplayBodySnapshot::Empty => (Some(Bytes::new()), None, ImageIntent::Unknown),
             PoolReplayBodySnapshot::Memory(bytes) => {
-                let requested_service_tier = serde_json::from_slice::<Value>(bytes)
+                let (requested_service_tier, requested_image_intent) = serde_json::from_slice::<Value>(bytes)
                     .ok()
-                    .and_then(|value| extract_requested_service_tier_from_request_body(&value));
-                (Some(bytes.clone()), requested_service_tier)
+                    .map(|value| {
+                        (
+                            extract_requested_service_tier_from_request_body(&value),
+                            capture_target
+                                .map(|target| infer_image_intent_from_request_body(target, &value))
+                                .unwrap_or(ImageIntent::Unknown),
+                        )
+                    })
+                    .unwrap_or((None, ImageIntent::Unknown));
+                (Some(bytes.clone()), requested_service_tier, requested_image_intent)
             }
-            PoolReplayBodySnapshot::File { .. } => (None, None),
+            PoolReplayBodySnapshot::File { .. } => (None, None, ImageIntent::Unknown),
         };
         return Ok(PreparedPoolRequestBody {
             snapshot,
             request_body_for_capture,
             requested_service_tier,
+            requested_image_intent,
         });
     }
 
@@ -1903,6 +2090,7 @@ pub(crate) async fn prepare_pool_request_body_for_account(
             snapshot: PoolReplayBodySnapshot::Memory(original_bytes.clone()),
             request_body_for_capture: Some(original_bytes),
             requested_service_tier: None,
+            requested_image_intent: ImageIntent::Unknown,
         });
     };
     let mut value = match serde_json::from_slice::<Value>(&original_bytes) {
@@ -1912,6 +2100,7 @@ pub(crate) async fn prepare_pool_request_body_for_account(
                 snapshot: PoolReplayBodySnapshot::Memory(original_bytes.clone()),
                 request_body_for_capture: Some(original_bytes),
                 requested_service_tier: None,
+                requested_image_intent: ImageIntent::Unknown,
             });
         }
     };
@@ -1921,12 +2110,27 @@ pub(crate) async fn prepare_pool_request_body_for_account(
     } else {
         false
     };
+    let original_image_intent = infer_image_intent_from_request_body(target, &value);
+    let image_rewritten = if matches!(
+        target,
+        ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact
+    ) {
+        rewrite_openai_responses_image_tools(
+            &mut value,
+            image_tool_rewrite_mode,
+            original_image_intent,
+        )
+    } else {
+        false
+    };
     let requested_service_tier = extract_requested_service_tier_from_request_body(&value);
-    if !rewritten {
+    let upstream_image_intent = infer_image_intent_from_request_body(target, &value);
+    if !rewritten && !image_rewritten {
         return Ok(PreparedPoolRequestBody {
             snapshot: PoolReplayBodySnapshot::Memory(original_bytes.clone()),
             request_body_for_capture: Some(original_bytes),
             requested_service_tier,
+            requested_image_intent: upstream_image_intent,
         });
     }
 
@@ -1937,6 +2141,7 @@ pub(crate) async fn prepare_pool_request_body_for_account(
         snapshot: PoolReplayBodySnapshot::Memory(rewritten_bytes.clone()),
         request_body_for_capture: Some(rewritten_bytes.clone()),
         requested_service_tier,
+        requested_image_intent: upstream_image_intent,
     })
 }
 
@@ -2400,6 +2605,42 @@ mod tests {
                 "unsupported_model: response_format is not supported for model gpt-4o",
             ),
             None
+        );
+    }
+
+    #[test]
+    fn classify_image_tool_capability_observation_learns_success_and_explicit_unsupported() {
+        assert_eq!(
+            classify_image_tool_capability_observation(StatusCode::OK, None),
+            ImageToolCapability::Supported
+        );
+        assert_eq!(
+            classify_image_tool_capability_observation(
+                StatusCode::BAD_REQUEST,
+                Some("unsupported tool: image_generation is not supported by this account"),
+            ),
+            ImageToolCapability::Unsupported
+        );
+        assert_eq!(
+            classify_image_tool_capability_observation(
+                StatusCode::BAD_REQUEST,
+                Some("request body is invalid"),
+            ),
+            ImageToolCapability::Unknown
+        );
+        assert_eq!(
+            classify_image_tool_capability_observation(
+                StatusCode::BAD_REQUEST,
+                Some("invalid image size: width must be divisible by 64"),
+            ),
+            ImageToolCapability::Unknown
+        );
+        assert_eq!(
+            classify_image_tool_capability_observation(
+                StatusCode::BAD_REQUEST,
+                Some("No available channel for model gpt-image-1 under group default"),
+            ),
+            ImageToolCapability::Unsupported
         );
     }
 }

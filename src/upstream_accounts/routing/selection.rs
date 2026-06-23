@@ -470,7 +470,7 @@ pub(crate) async fn resolve_pool_account_for_request(
     excluded_ids: &[i64],
     excluded_upstream_route_keys: &HashSet<String>,
 ) -> Result<PoolAccountResolution> {
-    resolve_pool_account_for_request_with_route_requirement(
+    resolve_pool_account_for_request_with_route_requirement_internal(
         state,
         sticky_key,
         requested_model,
@@ -478,6 +478,28 @@ pub(crate) async fn resolve_pool_account_for_request(
         excluded_upstream_route_keys,
         None,
         None,
+        crate::ImageIntent::Unknown,
+    )
+    .await
+}
+
+pub(crate) async fn resolve_pool_account_for_request_with_image_intent(
+    state: &AppState,
+    sticky_key: Option<&str>,
+    requested_model: Option<&str>,
+    excluded_ids: &[i64],
+    excluded_upstream_route_keys: &HashSet<String>,
+    image_intent: crate::ImageIntent,
+) -> Result<PoolAccountResolution> {
+    resolve_pool_account_for_request_with_route_requirement_and_image_intent(
+        state,
+        sticky_key,
+        requested_model,
+        excluded_ids,
+        excluded_upstream_route_keys,
+        None,
+        None,
+        image_intent,
     )
     .await
 }
@@ -490,7 +512,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_binding_constraint(
     excluded_upstream_route_keys: &HashSet<String>,
     binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
 ) -> Result<PoolAccountResolution> {
-    resolve_pool_account_for_request_with_route_requirement(
+    resolve_pool_account_for_request_with_route_requirement_internal(
         state,
         sticky_key,
         requested_model,
@@ -498,6 +520,29 @@ pub(crate) async fn resolve_pool_account_for_request_with_binding_constraint(
         excluded_upstream_route_keys,
         None,
         binding_constraint,
+        crate::ImageIntent::Unknown,
+    )
+    .await
+}
+
+pub(crate) async fn resolve_pool_account_for_request_with_binding_constraint_and_image_intent(
+    state: &AppState,
+    sticky_key: Option<&str>,
+    requested_model: Option<&str>,
+    excluded_ids: &[i64],
+    excluded_upstream_route_keys: &HashSet<String>,
+    binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
+    image_intent: crate::ImageIntent,
+) -> Result<PoolAccountResolution> {
+    resolve_pool_account_for_request_with_route_requirement_and_image_intent(
+        state,
+        sticky_key,
+        requested_model,
+        excluded_ids,
+        excluded_upstream_route_keys,
+        None,
+        binding_constraint,
+        image_intent,
     )
     .await
 }
@@ -510,6 +555,52 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
     excluded_upstream_route_keys: &HashSet<String>,
     required_upstream_route_key: Option<&str>,
     binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
+) -> Result<PoolAccountResolution> {
+    resolve_pool_account_for_request_with_route_requirement_internal(
+        state,
+        sticky_key,
+        requested_model,
+        excluded_ids,
+        excluded_upstream_route_keys,
+        required_upstream_route_key,
+        binding_constraint,
+        crate::ImageIntent::Unknown,
+    )
+    .await
+}
+
+pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_and_image_intent(
+    state: &AppState,
+    sticky_key: Option<&str>,
+    requested_model: Option<&str>,
+    excluded_ids: &[i64],
+    excluded_upstream_route_keys: &HashSet<String>,
+    required_upstream_route_key: Option<&str>,
+    binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
+    image_intent: crate::ImageIntent,
+) -> Result<PoolAccountResolution> {
+    resolve_pool_account_for_request_with_route_requirement_internal(
+        state,
+        sticky_key,
+        requested_model,
+        excluded_ids,
+        excluded_upstream_route_keys,
+        required_upstream_route_key,
+        binding_constraint,
+        image_intent,
+    )
+    .await
+}
+
+async fn resolve_pool_account_for_request_with_route_requirement_internal(
+    state: &AppState,
+    sticky_key: Option<&str>,
+    requested_model: Option<&str>,
+    excluded_ids: &[i64],
+    excluded_upstream_route_keys: &HashSet<String>,
+    required_upstream_route_key: Option<&str>,
+    binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
+    image_intent: crate::ImageIntent,
 ) -> Result<PoolAccountResolution> {
     let now = Utc::now();
     let mut tried = excluded_ids.iter().copied().collect::<HashSet<_>>();
@@ -617,15 +708,22 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
                     saw_non_routing_candidate = true;
                 }
             } else if is_account_selectable_for_sticky_reuse(&row, sticky_snapshot_exhausted, now) {
-                if sticky_source_rule
-                    .as_ref()
-                    .is_none_or(|rule| {
+                    if sticky_source_rule.as_ref().is_none_or(|rule| {
                         bypass_requested_model_filter
                             || account_accepts_requested_model(requested_model, rule)
-                    })
-                {
-                    sticky_route_still_reusable = true;
-                    let mut sticky_route_was_excluded = false;
+                    }) && account_accepts_requested_image_intent(
+                        image_intent,
+                        sticky_source_rule
+                            .as_ref()
+                            .map(|rule| rule.image_tool_rewrite_mode)
+                            .unwrap_or(ImageToolRewriteMode::KeepOriginal),
+                        crate::ImageToolCapability::from_str(
+                            row.image_tool_capability.as_deref().unwrap_or("unknown"),
+                        ),
+                    )
+                    {
+                        sticky_route_still_reusable = true;
+                        let mut sticky_route_was_excluded = false;
                     match resolve_pool_account_group_proxy_routing_readiness(
                         state,
                         row.group_name.as_deref(),
@@ -875,6 +973,16 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
         if !bypass_requested_model_filter
             && !account_accepts_requested_model(requested_model, effective_rule)
         {
+            saw_other_non_rate_limited_routing_candidate = true;
+            continue;
+        }
+        if !account_accepts_requested_image_intent(
+            image_intent,
+            effective_rule.image_tool_rewrite_mode,
+            crate::ImageToolCapability::from_str(
+                row.image_tool_capability.as_deref().unwrap_or("unknown"),
+            ),
+        ) {
             saw_other_non_rate_limited_routing_candidate = true;
             continue;
         }

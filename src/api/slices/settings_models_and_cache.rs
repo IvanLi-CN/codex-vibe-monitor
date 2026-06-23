@@ -858,6 +858,7 @@ pub(crate) struct RequestCaptureInfo {
     pub(crate) prompt_cache_key: Option<String>,
     pub(crate) prompt_cache_key_attribution_source: Option<String>,
     pub(crate) contains_encrypted_content: bool,
+    pub(crate) image_intent: Option<String>,
     pub(crate) requested_service_tier: Option<String>,
     pub(crate) reasoning_effort: Option<String>,
     pub(crate) compaction_request_kind: Option<CompactionKind>,
@@ -924,6 +925,8 @@ pub(crate) enum ProxyCaptureTarget {
     ChatCompletions,
     Responses,
     ResponsesCompact,
+    ImageGenerations,
+    ImageEdits,
 }
 
 impl ProxyCaptureTarget {
@@ -932,6 +935,8 @@ impl ProxyCaptureTarget {
             Self::ChatCompletions => "/v1/chat/completions",
             Self::Responses => "/v1/responses",
             Self::ResponsesCompact => "/v1/responses/compact",
+            Self::ImageGenerations => "/v1/images/generations",
+            Self::ImageEdits => "/v1/images/edits",
         }
     }
 
@@ -948,6 +953,8 @@ impl ProxyCaptureTarget {
             "/v1/chat/completions" => Self::ChatCompletions,
             "/v1/responses/compact" => Self::ResponsesCompact,
             "/v1/responses" => Self::Responses,
+            "/v1/images/generations" => Self::ImageGenerations,
+            "/v1/images/edits" => Self::ImageEdits,
             _ => Self::Responses,
         }
     }

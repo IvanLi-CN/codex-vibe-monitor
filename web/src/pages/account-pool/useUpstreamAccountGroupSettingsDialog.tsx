@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import type {
-  TagRoutingRule,
+  GroupAccountRoutingRule,
   UpdateUpstreamAccountGroupPayload,
 } from "../../lib/api";
 import { apiConcurrencyLimitToSliderValue, sliderConcurrencyLimitToApiValue } from "../../lib/concurrencyLimit";
@@ -10,7 +10,7 @@ import { useTranslation } from "../../i18n";
 import { useForwardProxyBindingNodes } from "../../hooks/useForwardProxyBindingNodes";
 import { useAvailableModelOptions } from "../../hooks/useAvailableModelOptions";
 import { UpstreamAccountGroupNoteDialog } from "../../components/UpstreamAccountGroupNoteDialog";
-import { TagRuleDialog } from "../../components/TagRuleDialog";
+import { GroupAccountRoutingRuleDialog } from "../../components/GroupAccountRoutingRuleDialog";
 import { useGroupNoteCatalogAutoRefresh } from "./useGroupNoteCatalogAutoRefresh";
 
 type GroupSettingsEditorState = {
@@ -25,7 +25,7 @@ type GroupSettingsEditorState = {
   singleAccountRotationEnabled: boolean;
   upstream429RetryEnabled: boolean;
   upstream429MaxRetries: number;
-  routingRule: TagRoutingRule;
+  routingRule: GroupAccountRoutingRule;
   routingRuleDirty: boolean;
   policyEditorOpen: boolean;
   onSaved?: ((groupName: string) => void) | null;
@@ -43,15 +43,16 @@ export type UpstreamAccountGroupSettingsSnapshot = {
   singleAccountRotationEnabled?: boolean;
   upstream429RetryEnabled?: boolean;
   upstream429MaxRetries?: number;
-  routingRule?: TagRoutingRule;
+  routingRule?: GroupAccountRoutingRule;
 };
 
-const defaultRoutingRule: TagRoutingRule = {
+const defaultRoutingRule: GroupAccountRoutingRule = {
   blockNewConversations: false,
   allowCutOut: true,
   allowCutIn: true,
   priorityTier: "normal",
   fastModeRewriteMode: "keep_original",
+  imageToolRewriteMode: "keep_original",
   concurrencyLimit: 0,
   upstream429RetryEnabled: false,
   upstream429MaxRetries: 0,
@@ -408,30 +409,6 @@ export function useUpstreamAccountGroupSettingsDialog(
         singleAccountRotationToggleLabel={t(
           "accountPool.upstreamAccounts.groupNotes.singleAccountRotation.toggle",
         )}
-        upstream429RetryLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.upstream429.label",
-        )}
-        upstream429RetryHint={t(
-          "accountPool.upstreamAccounts.groupNotes.upstream429.hint",
-        )}
-        upstream429RetryToggleLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.upstream429.toggle",
-        )}
-        upstream429RetryCountLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.upstream429.countLabel",
-        )}
-        upstream429RetryCountOptions={[1, 2, 3, 4, 5].map((value) => ({
-          value,
-          label:
-            value === 1
-              ? t(
-                  "accountPool.upstreamAccounts.groupNotes.upstream429.countOnce",
-                )
-              : t(
-                  "accountPool.upstreamAccounts.groupNotes.upstream429.countMany",
-                  { count: value },
-                ),
-        }))}
         routingPolicyLabel={t(
           "accountPool.upstreamAccounts.groupNotes.routingPolicy.label",
         )}
@@ -479,26 +456,15 @@ export function useUpstreamAccountGroupSettingsDialog(
         proxyBindingsChartInteractionHint={t("live.chart.tooltip.instructions")}
         proxyBindingsChartLocaleTag={locale === "zh" ? "zh-CN" : "en-US"}
       />
-      <TagRuleDialog
+      <GroupAccountRoutingRuleDialog
         open={editor.open && editor.policyEditorOpen}
-        mode="edit"
-        policyOnly
         availableModelOptions={availableModelOptions}
         title={t("accountPool.upstreamAccounts.groupNotes.routingPolicy.title")}
         description={t(
           "accountPool.upstreamAccounts.groupNotes.routingPolicy.description",
         )}
-        submitLabel={t(
-          "accountPool.upstreamAccounts.groupNotes.routingPolicy.save",
-        )}
-        tag={{
-          id: 0,
-          name: editor.groupName,
-          routingRule: editor.routingRule,
-          accountCount: editor.accountCount,
-          groupCount: 1,
-          updatedAt: "",
-        }}
+        submitLabel={t("accountPool.upstreamAccounts.groupNotes.routingPolicy.save")}
+        rule={editor.routingRule}
         busy={busyAction != null}
         onClose={() =>
           setEditor((current) => ({ ...current, policyEditorOpen: false }))
@@ -509,26 +475,12 @@ export function useUpstreamAccountGroupSettingsDialog(
             policyEditorOpen: false,
             routingRuleDirty: true,
             routingRule: {
-              blockNewConversations: payload.blockNewConversations ?? false,
-              allowCutOut: payload.allowCutOut ?? true,
-              allowCutIn: payload.allowCutIn ?? true,
-              priorityTier: payload.priorityTier ?? "normal",
-              fastModeRewriteMode:
-                payload.fastModeRewriteMode ?? "keep_original",
-              concurrencyLimit: payload.concurrencyLimit ?? 0,
-              upstream429RetryEnabled:
-                payload.upstream429RetryEnabled === true,
-              upstream429MaxRetries: payload.upstream429MaxRetries ?? 0,
-              availableModels: payload.availableModels ?? [],
+              ...defaultRoutingRule,
+              ...payload,
             },
           }));
         }}
         labels={{
-          createTitle: t("accountPool.tags.dialog.createTitle"),
-          editTitle: t("accountPool.tags.dialog.editTitle"),
-          description: t("accountPool.tags.dialog.description"),
-          name: t("accountPool.tags.dialog.name"),
-          namePlaceholder: t("accountPool.tags.dialog.namePlaceholder"),
           blockNewConversations: t("accountPool.tags.dialog.blockNewConversations"),
           forbidNewConversation: t("accountPool.tags.dialog.forbidNewConversation"),
           allowCutOut: t("accountPool.tags.dialog.allowCutOut"),
@@ -544,6 +496,43 @@ export function useUpstreamAccountGroupSettingsDialog(
           fastModeFillMissing: t("accountPool.tags.dialog.fastModeFillMissing"),
           fastModeForceAdd: t("accountPool.tags.dialog.fastModeForceAdd"),
           fastModeForceRemove: t("accountPool.tags.dialog.fastModeForceRemove"),
+          imageToolRewriteMode: t(
+            "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteMode",
+          ),
+          imageToolKeepOriginal: t(
+            "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolKeepOriginal",
+          ),
+          imageToolFillMissing: t(
+            "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolFillMissing",
+          ),
+          imageToolForceAdd: t(
+            "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceAdd",
+          ),
+          imageToolForceRemove: t(
+            "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolForceRemove",
+          ),
+          imageToolRewriteHint: t(
+            "accountPool.upstreamAccounts.groupNotes.routingPolicy.imageToolRewriteHint",
+          ),
+          upstream429Retry: t(
+            "accountPool.upstreamAccounts.groupNotes.upstream429.label",
+          ),
+          upstream429RetryHint: t(
+            "accountPool.upstreamAccounts.groupNotes.upstream429.hint",
+          ),
+          upstream429RetryToggle: t(
+            "accountPool.upstreamAccounts.groupNotes.upstream429.toggle",
+          ),
+          upstream429RetryCount: t(
+            "accountPool.upstreamAccounts.groupNotes.upstream429.countLabel",
+          ),
+          upstream429RetryCountOnce: t(
+            "accountPool.upstreamAccounts.groupNotes.upstream429.countOnce",
+          ),
+          upstream429RetryCountMany: (count: number) =>
+            t("accountPool.upstreamAccounts.groupNotes.upstream429.countMany", {
+              count,
+            }),
           concurrencyLimit: t("accountPool.tags.dialog.concurrencyLimit"),
           concurrencyHint: t("accountPool.tags.dialog.concurrencyHint"),
           currentValue: t("accountPool.tags.dialog.currentValue"),
@@ -559,8 +548,6 @@ export function useUpstreamAccountGroupSettingsDialog(
           availableModelsInherited: t("accountPool.tags.dialog.availableModelsInherited"),
           availableModelsRemove: t("accountPool.tags.dialog.availableModelsRemove"),
           cancel: t("accountPool.tags.dialog.cancel"),
-          save: t("accountPool.tags.dialog.save"),
-          create: t("accountPool.tags.dialog.createAction"),
           validation: t("accountPool.tags.dialog.validation"),
         }}
       />

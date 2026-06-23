@@ -72,6 +72,13 @@ export type TagFastModeRewriteMode =
   | "keep_original"
   | "fill_missing"
   | "force_add";
+export type ImageToolRewriteMode =
+  | "keep_original"
+  | "fill_missing"
+  | "force_add"
+  | "force_remove";
+export type ImageToolCapability = "supported" | "unsupported" | "unknown";
+export type ImageIntent = "yes" | "no" | "unknown";
 
 export interface TagRoutingRule {
   blockNewConversations: boolean;
@@ -87,19 +94,24 @@ export interface TagRoutingRule {
 
 export type EffectiveRoutingRuleSource = "root" | "group" | "tag" | "account" | string;
 
+export interface GroupAccountRoutingRule extends TagRoutingRule {
+  imageToolRewriteMode?: ImageToolRewriteMode;
+}
+
 export interface EffectiveRoutingRuleFieldSources {
   blockNewConversations: EffectiveRoutingRuleSource;
   allowCutOut: EffectiveRoutingRuleSource;
   allowCutIn: EffectiveRoutingRuleSource;
   priorityTier: EffectiveRoutingRuleSource;
   fastModeRewriteMode: EffectiveRoutingRuleSource;
+  imageToolRewriteMode?: EffectiveRoutingRuleSource;
   concurrencyLimit: EffectiveRoutingRuleSource;
   upstream429Retry: EffectiveRoutingRuleSource;
   availableModels?: EffectiveRoutingRuleSource;
   systemDeniedModels?: EffectiveRoutingRuleSource;
 }
 
-export interface EffectiveRoutingRule extends TagRoutingRule {
+export interface EffectiveRoutingRule extends GroupAccountRoutingRule {
   systemDeniedModels?: string[];
   sourceTagIds: number[];
   sourceTagNames: string[];
@@ -203,6 +215,7 @@ export interface UpstreamAccountSummary {
   localLimits?: LocalLimitSnapshot | null;
   compactSupport?: CompactSupportState | null;
   duplicateInfo?: UpstreamAccountDuplicateInfo | null;
+  imageToolCapability?: ImageToolCapability;
   tags: AccountTagSummary[];
   effectiveRoutingRule: EffectiveRoutingRule;
 }
@@ -255,7 +268,7 @@ export interface UpstreamAccountGroupSummary {
   singleAccountRotationEnabled?: boolean;
   upstream429RetryEnabled?: boolean;
   upstream429MaxRetries?: number;
-  routingRule?: TagRoutingRule;
+  routingRule?: GroupAccountRoutingRule;
 }
 
 export interface PoolRoutingSettings {
@@ -597,7 +610,7 @@ export interface UpdateUpstreamAccountPayload {
   localSecondaryLimit?: number | null;
   localLimitUnit?: string | null;
   tagIds?: number[];
-  routingRule?: UpdateTagPayload;
+  routingRule?: UpdateGroupAccountRoutingRulePayload;
 }
 
 export interface ImportOauthCredentialFilePayload {
@@ -738,8 +751,10 @@ export interface UpdateUpstreamAccountGroupPayload {
   singleAccountRotationEnabled?: boolean;
   upstream429RetryEnabled?: boolean;
   upstream429MaxRetries?: number;
-  routingRule?: UpdateTagPayload;
+  routingRule?: UpdateGroupAccountRoutingRulePayload;
 }
+
+export type UpdateGroupAccountRoutingRulePayload = Partial<GroupAccountRoutingRule>;
 
 function normalizeRateWindowActualUsage(
   raw: unknown,
@@ -854,6 +869,35 @@ function normalizeTagRoutingRule(raw: unknown): TagRoutingRule {
   };
 }
 
+function normalizeImageToolRewriteMode(
+  raw: unknown,
+): ImageToolRewriteMode {
+  return raw === "fill_missing" ||
+    raw === "force_add" ||
+    raw === "force_remove"
+    ? raw
+    : "keep_original";
+}
+
+function normalizeImageToolCapability(
+  raw: unknown,
+): ImageToolCapability {
+  return raw === "supported" || raw === "unsupported" ? raw : "unknown";
+}
+
+function normalizeGroupAccountRoutingRule(
+  raw: unknown,
+): GroupAccountRoutingRule {
+  const payload = normalizeTagRoutingRule(raw);
+  const rawPayload = (raw ?? {}) as Record<string, unknown>;
+  return {
+    ...payload,
+    imageToolRewriteMode: normalizeImageToolRewriteMode(
+      rawPayload.imageToolRewriteMode,
+    ),
+  };
+}
+
 function normalizeAccountTagSummary(raw: unknown): AccountTagSummary | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const id = normalizeFiniteNumber(payload.id);
@@ -884,7 +928,7 @@ function normalizeEffectiveRoutingRule(raw: unknown): EffectiveRoutingRule {
       )
     : [];
   return {
-    ...normalizeTagRoutingRule(payload),
+    ...normalizeGroupAccountRoutingRule(payload),
     systemDeniedModels: normalizeStringArray(payload.systemDeniedModels)
       .map((value) => value.trim())
       .filter((value) => value.length > 0),
@@ -896,6 +940,7 @@ function normalizeEffectiveRoutingRule(raw: unknown): EffectiveRoutingRule {
       allowCutIn: normalizeSource(rawSources.allowCutIn),
       priorityTier: normalizeSource(rawSources.priorityTier),
       fastModeRewriteMode: normalizeSource(rawSources.fastModeRewriteMode),
+      imageToolRewriteMode: normalizeSource(rawSources.imageToolRewriteMode),
       concurrencyLimit: normalizeSource(rawSources.concurrencyLimit),
       upstream429Retry: normalizeSource(rawSources.upstream429Retry),
       availableModels: normalizeSource(rawSources.availableModels),
@@ -1073,6 +1118,9 @@ function normalizeUpstreamAccountSummary(
     localLimits: normalizeLocalLimitSnapshot(payload.localLimits),
     compactSupport: normalizeCompactSupportState(payload.compactSupport),
     duplicateInfo: normalizeUpstreamAccountDuplicateInfo(payload.duplicateInfo),
+    imageToolCapability: normalizeImageToolCapability(
+      payload.imageToolCapability,
+    ),
     tags: Array.isArray(payload.tags)
       ? payload.tags
           .map(normalizeAccountTagSummary)
@@ -1261,7 +1309,7 @@ function normalizeUpstreamAccountGroupSummary(
     upstream429MaxRetries: normalizeUpstreamAccountGroupMaxRetries(
       payload.upstream429MaxRetries,
     ),
-    routingRule: normalizeTagRoutingRule(payload.routingRule),
+    routingRule: normalizeGroupAccountRoutingRule(payload.routingRule),
   };
 }
 

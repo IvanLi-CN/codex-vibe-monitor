@@ -326,6 +326,16 @@ pub(crate) fn prepare_target_request_body(
         prompt_cache_key: None,
         prompt_cache_key_attribution_source: None,
         contains_encrypted_content: false,
+        image_intent: Some(
+            match target {
+                ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits => {
+                    ImageIntent::DirectImage
+                }
+                _ => ImageIntent::Unknown,
+            }
+            .as_str()
+            .to_string(),
+        ),
         requested_service_tier: None,
         reasoning_effort: None,
         compaction_request_kind: None,
@@ -367,6 +377,11 @@ pub(crate) fn prepare_target_request_body(
         .get("stream")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    info.image_intent = Some(
+        infer_image_intent_from_request_body(target, &value)
+            .as_str()
+            .to_string(),
+    );
 
     let mut rewritten = false;
     if target.should_auto_include_usage()
@@ -445,6 +460,7 @@ pub(crate) fn proxy_capture_target_stream_timeout(
         ProxyCaptureTarget::Responses => Some(timeouts.responses_stream_timeout),
         ProxyCaptureTarget::ResponsesCompact => Some(timeouts.compact_stream_timeout),
         ProxyCaptureTarget::ChatCompletions => None,
+        ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits => None,
     }
 }
 
@@ -756,6 +772,7 @@ pub(crate) fn extract_reasoning_effort_from_request_body(
         ProxyCaptureTarget::ChatCompletions => {
             value.get("reasoning_effort").and_then(|v| v.as_str())
         }
+        ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits => None,
     }?;
 
     let normalized = raw.trim();

@@ -13,11 +13,11 @@ const UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS: &str = r#"
     last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
     consecutive_route_failures, temporary_route_failure_streak_started_at,
     compact_support_status, compact_support_observed_at,
-    compact_support_reason, local_primary_limit, local_secondary_limit,
+    compact_support_reason, image_tool_capability, local_primary_limit, local_secondary_limit,
     local_limit_unit,
     policy_block_new_conversations,
     policy_allow_cut_out, policy_allow_cut_in, policy_priority_tier,
-    policy_fast_mode_rewrite_mode, policy_concurrency_limit,
+    policy_fast_mode_rewrite_mode, policy_image_tool_rewrite_mode, policy_concurrency_limit,
     policy_upstream_429_retry_enabled, policy_upstream_429_max_retries,
     policy_available_models_json,
     upstream_base_url, external_client_id, external_source_account_id,
@@ -2391,6 +2391,7 @@ async fn load_upstream_account_groups(
             notes.policy_allow_cut_in,
             notes.policy_priority_tier,
             notes.policy_fast_mode_rewrite_mode,
+            notes.policy_image_tool_rewrite_mode,
             notes.policy_concurrency_limit,
             notes.policy_upstream_429_retry_enabled,
             notes.policy_upstream_429_max_retries,
@@ -2445,6 +2446,7 @@ async fn load_upstream_account_groups(
                         row.policy_allow_cut_in,
                         row.policy_priority_tier.as_deref(),
                         row.policy_fast_mode_rewrite_mode.as_deref(),
+                        row.policy_image_tool_rewrite_mode.as_deref(),
                         row.policy_concurrency_limit,
                         row.policy_upstream_429_retry_enabled,
                         row.policy_upstream_429_max_retries,
@@ -3331,6 +3333,7 @@ fn build_summary_from_row(
         duplicate_info,
         tags,
         effective_routing_rule,
+        image_tool_capability: decode_image_tool_capability(row.image_tool_capability.as_deref()),
     }
 }
 
@@ -3420,13 +3423,16 @@ async fn load_canonicalized_upstream_account_group(
     }))
 }
 
-fn group_routing_rule_from_group_metadata(metadata: &UpstreamAccountGroupMetadata) -> TagRoutingRule {
-    TagRoutingRule {
+fn group_routing_rule_from_group_metadata(
+    metadata: &UpstreamAccountGroupMetadata,
+) -> GroupAccountRoutingRule {
+    GroupAccountRoutingRule {
         block_new_conversations: false,
         allow_cut_out: true,
         allow_cut_in: true,
         priority_tier: TagPriorityTier::Normal,
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+        image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
         concurrency_limit: metadata.concurrency_limit,
         upstream_429_retry_enabled: metadata.upstream_429_retry_enabled,
         upstream_429_max_retries: metadata.upstream_429_max_retries,

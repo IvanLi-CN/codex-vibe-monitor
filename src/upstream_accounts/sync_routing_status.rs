@@ -23,6 +23,7 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
         TagPriorityTier::Primary
     };
     let mut fast_mode_rewrite_mode = TagFastModeRewriteMode::KeepOriginal;
+    let image_tool_rewrite_mode = ImageToolRewriteMode::KeepOriginal;
     let mut concurrency_limit = 0;
     let mut upstream_429_retry_enabled = false;
     let mut upstream_429_max_retries = 0_u8;
@@ -88,6 +89,7 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
         allow_cut_in,
         priority_tier,
         fast_mode_rewrite_mode,
+        image_tool_rewrite_mode,
         concurrency_limit,
         upstream_429_retry_enabled,
         upstream_429_max_retries: normalize_group_upstream_429_retry_metadata(
@@ -105,6 +107,7 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
             allow_cut_in: field_source.clone(),
             priority_tier: field_source.clone(),
             fast_mode_rewrite_mode: field_source.clone(),
+            image_tool_rewrite_mode: "root".to_string(),
             concurrency_limit: field_source.clone(),
             upstream_429_retry: field_source.clone(),
             available_models: available_models_source,
@@ -121,6 +124,7 @@ struct RoutingPolicyOverrideRow {
     policy_allow_cut_in: Option<i64>,
     policy_priority_tier: Option<String>,
     policy_fast_mode_rewrite_mode: Option<String>,
+    policy_image_tool_rewrite_mode: Option<String>,
     policy_concurrency_limit: Option<i64>,
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
@@ -138,6 +142,7 @@ struct GroupRoutingPolicyOverrideRow {
     policy_allow_cut_in: Option<i64>,
     policy_priority_tier: Option<String>,
     policy_fast_mode_rewrite_mode: Option<String>,
+    policy_image_tool_rewrite_mode: Option<String>,
     policy_concurrency_limit: Option<i64>,
     policy_upstream_429_retry_enabled: Option<i64>,
     policy_upstream_429_max_retries: Option<i64>,
@@ -152,6 +157,7 @@ fn apply_routing_policy_override(
     allow_cut_in: Option<i64>,
     priority_tier: Option<&str>,
     fast_mode_rewrite_mode: Option<&str>,
+    image_tool_rewrite_mode: Option<&str>,
     concurrency_limit: Option<i64>,
     upstream_429_retry_enabled: Option<i64>,
     upstream_429_max_retries: Option<i64>,
@@ -183,6 +189,13 @@ fn apply_routing_policy_override(
     {
         rule.field_sources.fast_mode_rewrite_mode = source.to_string();
         rule.fast_mode_rewrite_mode = fast_mode_rewrite_mode;
+    }
+    if image_tool_rewrite_mode.is_some()
+        && let Ok(image_tool_rewrite_mode) =
+        normalize_image_tool_rewrite_mode(image_tool_rewrite_mode)
+    {
+        rule.field_sources.image_tool_rewrite_mode = source.to_string();
+        rule.image_tool_rewrite_mode = image_tool_rewrite_mode;
     }
     if let Some(concurrency_limit) = concurrency_limit {
         if let Ok(concurrency_limit) =
@@ -231,6 +244,7 @@ async fn load_group_routing_policy_override_map(
             policy_allow_cut_in,
             policy_priority_tier,
             policy_fast_mode_rewrite_mode,
+            policy_image_tool_rewrite_mode,
             policy_concurrency_limit,
             policy_upstream_429_retry_enabled,
             policy_upstream_429_max_retries,
@@ -272,6 +286,7 @@ async fn load_account_routing_policy_override_map(
             policy_allow_cut_in,
             policy_priority_tier,
             policy_fast_mode_rewrite_mode,
+            policy_image_tool_rewrite_mode,
             policy_concurrency_limit,
             policy_upstream_429_retry_enabled,
             policy_upstream_429_max_retries,
@@ -306,6 +321,7 @@ fn apply_group_routing_policy_override(
         row.policy_allow_cut_in,
         row.policy_priority_tier.as_deref(),
         row.policy_fast_mode_rewrite_mode.as_deref(),
+        row.policy_image_tool_rewrite_mode.as_deref(),
         row.policy_concurrency_limit,
         row.policy_upstream_429_retry_enabled,
         row.policy_upstream_429_max_retries,
@@ -330,6 +346,9 @@ fn apply_group_routing_policy_override(
 fn apply_tag_layer_routing_policy(rule: &mut EffectiveRoutingRule, tag_rule: &EffectiveRoutingRule) {
     let inherited_block_new_conversations = rule.block_new_conversations;
     let inherited_block_source = rule.field_sources.block_new_conversations.clone();
+    let inherited_image_tool_rewrite_mode = rule.image_tool_rewrite_mode;
+    let inherited_image_tool_rewrite_mode_source =
+        rule.field_sources.image_tool_rewrite_mode.clone();
     let inherited_available_models = rule.available_models.clone();
     let inherited_available_models_defined = rule.available_models_defined;
     let inherited_available_models_source = rule.field_sources.available_models.clone();
@@ -356,6 +375,8 @@ fn apply_tag_layer_routing_policy(rule: &mut EffectiveRoutingRule, tag_rule: &Ef
     rule.source_tag_ids = tag_rule.source_tag_ids.clone();
     rule.source_tag_names = tag_rule.source_tag_names.clone();
     rule.field_sources = tag_rule.field_sources.clone();
+    rule.image_tool_rewrite_mode = inherited_image_tool_rewrite_mode;
+    rule.field_sources.image_tool_rewrite_mode = inherited_image_tool_rewrite_mode_source;
     if inherited_block_new_conversations {
         rule.field_sources.block_new_conversations = inherited_block_source;
     }
@@ -380,6 +401,7 @@ fn apply_account_routing_policy_override(
         row.policy_allow_cut_in,
         row.policy_priority_tier.as_deref(),
         row.policy_fast_mode_rewrite_mode.as_deref(),
+        row.policy_image_tool_rewrite_mode.as_deref(),
         row.policy_concurrency_limit,
         row.policy_upstream_429_retry_enabled,
         row.policy_upstream_429_max_retries,

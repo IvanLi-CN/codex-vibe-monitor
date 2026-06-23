@@ -698,6 +698,11 @@ pub(crate) async fn update_upstream_account_group(
                 normalize_tag_fast_mode_rewrite_mode(Some(value)).map(|mode| mode.as_str())
             })
             .transpose()?;
+        let policy_image_tool_rewrite_mode = routing_rule
+            .image_tool_rewrite_mode
+            .as_deref()
+            .map(|value| normalize_image_tool_rewrite_mode(Some(value)).map(|mode| mode.as_str()))
+            .transpose()?;
         let preserve_available_models =
             matches!(&routing_rule.available_models, OptionalField::Missing);
         let available_models_json = match &routing_rule.available_models {
@@ -718,12 +723,13 @@ pub(crate) async fn update_upstream_account_group(
                 policy_allow_cut_in = COALESCE(?4, policy_allow_cut_in),
                 policy_priority_tier = COALESCE(?5, policy_priority_tier),
                 policy_fast_mode_rewrite_mode = COALESCE(?6, policy_fast_mode_rewrite_mode),
-                policy_concurrency_limit = COALESCE(?7, policy_concurrency_limit),
-                policy_upstream_429_retry_enabled = COALESCE(?8, policy_upstream_429_retry_enabled),
-                policy_upstream_429_max_retries = COALESCE(?9, policy_upstream_429_max_retries),
+                policy_image_tool_rewrite_mode = COALESCE(?7, policy_image_tool_rewrite_mode),
+                policy_concurrency_limit = COALESCE(?8, policy_concurrency_limit),
+                policy_upstream_429_retry_enabled = COALESCE(?9, policy_upstream_429_retry_enabled),
+                policy_upstream_429_max_retries = COALESCE(?10, policy_upstream_429_max_retries),
                 policy_available_models_json = CASE
-                    WHEN ?10 != 0 THEN policy_available_models_json
-                    ELSE ?11
+                    WHEN ?11 != 0 THEN policy_available_models_json
+                    ELSE ?12
                 END
             WHERE group_name = ?1
             "#,
@@ -746,6 +752,7 @@ pub(crate) async fn update_upstream_account_group(
         )
         .bind(policy_priority_tier)
         .bind(policy_fast_mode_rewrite_mode)
+        .bind(policy_image_tool_rewrite_mode)
         .bind(policy_concurrency_limit)
         .bind(
             routing_rule

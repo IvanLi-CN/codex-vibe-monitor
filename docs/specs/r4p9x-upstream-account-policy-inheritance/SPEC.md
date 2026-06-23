@@ -10,7 +10,7 @@ Upstream account routing policy is resolved through three layers:
 2. Tag policy
 3. Account policy
 
-Each layer can override inherited values for the account-pool routing surface. The final effective policy is used by account selection, sticky cut-in/cut-out, FAST mode rewriting, concurrency limiting, and upstream 429 retry.
+Each layer can override inherited values for the account-pool routing surface. The final effective policy is used by account selection, sticky cut-in/cut-out, FAST mode rewriting, image-tool rewriting, concurrency limiting, and upstream 429 retry.
 
 ## Policy Surface
 
@@ -18,6 +18,7 @@ The inherited policy covers:
 
 - priority tier
 - FAST mode rewrite mode
+- image tool rewrite mode
 - block new conversations
 - allow cut-out
 - allow cut-in
@@ -37,8 +38,15 @@ Root defaults preserve existing behavior:
 - concurrency limit: unlimited
 - upstream 429 retry: disabled
 - upstream 429 max retries: 0
+- image tool rewrite mode: keep original
 - available models: unrestricted
 - system denied models: none
+
+Accounts also track an observed image capability separately from the editable inherited policy surface:
+
+- supported
+- unsupported
+- unknown
 
 ## Resolution
 
@@ -72,6 +80,26 @@ System deny tags are merged into the same effective model policy but remain non-
 - `systemDeniedModels` always behave as a deny layer, regardless of group/tag/account allowlists
 - system-discovered deny state is shown in effective policy sources as `system`, but is not written back into editable `availableModels`
 
+## Image Tool Routing
+
+The image-tool layer is separate from the inherited tag model:
+
+- `imageToolRewriteMode` exists on group and account routing rules only; tags do not carry it
+- account records persist a read-only `imageToolCapability`
+- `image intent` classification is tri-state: `yes`, `no`, or `unknown`
+- `yes` routes only to image-compatible accounts
+- `unknown` keeps ordinary routing semantics and does not force image filtering
+- `keep_original` treats `supported` and `unknown` accounts as image-compatible, and excludes `unsupported`
+- `fill_missing` and `force_add` make the account image-compatible for routing
+- `force_remove` makes the account image-incompatible for routing
+- `fill_missing` only injects image tools when image intent is confirmed
+- `force_add` always injects image tools
+- `force_remove` always strips image tools
+- `/v1/responses` and `/v1/responses/compact` may rewrite request bodies to satisfy the final account's rewrite mode
+- `/v1/images/generations` and `/v1/images/edits` only filter by capability and do not rewrite the body
+- successful image-intent requests learn `imageToolCapability=supported`
+- explicit unsupported image responses learn `imageToolCapability=unsupported`
+
 ## Sticky Transfer Policy
 
 `allow cut-out` is an automatic-routing boundary for the sticky source account. When the effective source policy forbids cut-out, the resolver must keep the conversation assigned to that account and fail there rather than automatically selecting another account, even when the sticky account has a transport failure, first-byte timeout, temporary route-key exclusion, cooldown, or other failover pressure.
@@ -88,11 +116,13 @@ Legacy rolling guard fields (`guardEnabled`, `lookbackHours`, `maxConversations`
 
 Group summaries expose `routingRule`. Group update payloads accept `routingRule`.
 
-Tag create/update payloads accept the full policy surface.
+Tag create/update payloads accept the existing tag policy surface. Image tool rewrite stays group/account only.
+
+Account summaries and detail responses expose read-only `imageToolCapability`.
 
 Account update payloads accept `routingRule`. Missing `routingRule` preserves account-level overrides; present fields override the inherited effective policy for that account.
 
-Effective account responses expose field-level sources so the UI can show whether each final value came from the root default, group, merged tag layer, account override, or system deny.
+Effective account responses expose field-level sources so the UI can show whether each final value came from the root default, group, merged tag layer, account override, or system deny. `imageToolRewriteMode` is part of that source map.
 
 Automatic candidate selection and sticky reuse must filter by the final model policy before scoring candidates:
 
@@ -107,6 +137,10 @@ Legacy `unsupported_model:gpt-5.5` handling is treated as one instance of the ge
 
 - Proxy binding, node shunt, and notes are not part of inherited routing policy.
 - Tag explicit ordering is not introduced.
+- Image capability is not an editable account control.
+- There is no separate image-only pool or tag-level image-tool field.
+- `/v1/chat/completions` image intent detection is not covered.
+- Splitting text reasoning and image generation across two upstreams in the same Responses request is not introduced.
 - OAuth/API key credential behavior is unchanged.
 - Global reverse-proxy `/v1/*` settings are unchanged.
 
@@ -114,10 +148,22 @@ Legacy `unsupported_model:gpt-5.5` handling is treated as one instance of the ge
 
 Visual evidence is captured from stable Storybook scenarios for:
 
+- group routing policy editor showing the image-tool rewrite selector
+- account detail drawer overview showing the read-only image capability badge and hint
+- effective routing rule card showing image-tool field provenance
 - tag policy dialog with shared available-model editing and custom model chips
 - group routing policy editor reusing the same available-model editor
 - account routing policy editor reusing the same available-model editor
 - effective routing rule card showing available-model source and system deny state on desktop and narrow mobile widths
+
+PR: include
+![Group routing policy image tool selector](./assets/group-account-routing-rule-dialog-default.png)
+
+PR: include
+![Account detail image capability](./assets/upstream-account-detail-image-capability.png)
+
+PR: include
+![Effective routing rule image tool source](./assets/effective-routing-rule-card-default.png)
 
 PR: include
 ![Available models tag dialog](./assets/available-models-tag-dialog.png)
