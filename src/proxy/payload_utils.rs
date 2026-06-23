@@ -540,7 +540,9 @@ pub(crate) fn infer_image_intent_from_request_body(
     value: &Value,
 ) -> ImageIntent {
     match target {
-        ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits => ImageIntent::Yes,
+        ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits => {
+            ImageIntent::DirectImage
+        }
         ProxyCaptureTarget::ChatCompletions => ImageIntent::Unknown,
         ProxyCaptureTarget::Responses | ProxyCaptureTarget::ResponsesCompact => {
             if value

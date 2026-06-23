@@ -279,7 +279,7 @@ pub(crate) fn prepare_target_request_body(
         image_intent: Some(
             match target {
                 ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits => {
-                    ImageIntent::Yes
+                    ImageIntent::DirectImage
                 }
                 _ => ImageIntent::Unknown,
             }

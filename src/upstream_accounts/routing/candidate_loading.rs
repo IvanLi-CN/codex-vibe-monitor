@@ -57,8 +57,11 @@ pub(crate) fn account_accepts_requested_image_intent(
     rewrite_mode: ImageToolRewriteMode,
     capability: ImageToolCapability,
 ) -> bool {
-    !matches!(image_intent, ImageIntent::Yes)
-        || account_is_image_compatible(rewrite_mode, capability)
+    match image_intent {
+        ImageIntent::Yes => account_is_image_compatible(rewrite_mode, capability),
+        ImageIntent::DirectImage => !matches!(capability, ImageToolCapability::Unsupported),
+        ImageIntent::No | ImageIntent::Unknown => true,
+    }
 }
 
 pub(crate) async fn load_account_group_name_map(

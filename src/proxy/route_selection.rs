@@ -1857,7 +1857,7 @@ fn infer_request_image_intent(
 ) -> crate::ImageIntent {
     match capture_target {
         Some(ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits) => {
-            crate::ImageIntent::Yes
+            crate::ImageIntent::DirectImage
         }
         Some(target) => parsed_request_body
             .map(|value| infer_image_intent_from_request_body(target, value))

@@ -1096,6 +1096,7 @@ impl ImageToolCapability {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum ImageIntent {
     Yes,
+    DirectImage,
     No,
     #[default]
     Unknown,
@@ -1105,6 +1106,7 @@ impl ImageIntent {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Yes => "yes",
+            Self::DirectImage => "direct_image",
             Self::No => "no",
             Self::Unknown => "unknown",
         }
@@ -1113,6 +1115,7 @@ impl ImageIntent {
     pub(crate) fn from_str(value: &str) -> Self {
         match value.trim() {
             "yes" => Self::Yes,
+            "direct_image" => Self::DirectImage,
             "no" => Self::No,
             _ => Self::Unknown,
         }

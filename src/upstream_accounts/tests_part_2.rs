@@ -308,7 +308,7 @@
     }
 
     #[test]
-    fn image_intent_yes_routes_to_image_compatible_accounts() {
+    fn image_intent_routes_to_image_compatible_accounts() {
         assert!(account_accepts_requested_image_intent(
             ImageIntent::Yes,
             ImageToolRewriteMode::KeepOriginal,
@@ -338,6 +338,21 @@
             ImageIntent::Yes,
             ImageToolRewriteMode::ForceRemove,
             ImageToolCapability::Supported,
+        ));
+        assert!(account_accepts_requested_image_intent(
+            ImageIntent::DirectImage,
+            ImageToolRewriteMode::ForceRemove,
+            ImageToolCapability::Supported,
+        ));
+        assert!(account_accepts_requested_image_intent(
+            ImageIntent::DirectImage,
+            ImageToolRewriteMode::ForceRemove,
+            ImageToolCapability::Unknown,
+        ));
+        assert!(!account_accepts_requested_image_intent(
+            ImageIntent::DirectImage,
+            ImageToolRewriteMode::ForceAdd,
+            ImageToolCapability::Unsupported,
         ));
         assert!(account_accepts_requested_image_intent(
             ImageIntent::Unknown,
