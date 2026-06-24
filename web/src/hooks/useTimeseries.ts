@@ -456,7 +456,10 @@ function createLiveRecordDelta(
 ): LiveRecordDelta {
   const outcome = normalizeLiveRecordOutcome(record);
   const rawTotalLatencyMs = record.tTotalMs;
+  const isTerminalOutcome =
+    outcome === "success" || outcome === "failure";
   const hasTotalLatencySample =
+    isTerminalOutcome &&
     typeof rawTotalLatencyMs === "number" &&
     Number.isFinite(rawTotalLatencyMs) &&
     rawTotalLatencyMs >= 0;

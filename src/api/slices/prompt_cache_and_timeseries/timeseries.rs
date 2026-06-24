@@ -107,7 +107,9 @@ pub(crate) async fn fetch_timeseries(
         } else {
             record.status.as_deref()
         };
-        entry.record_total_latency_sample(record.t_total_ms);
+        if !prompt_shared::invocation_status_is_in_flight(record.status.as_deref()) {
+            entry.record_total_latency_sample(record.t_total_ms);
+        }
         entry.record_ttfb_sample(latency_status, record.t_upstream_ttfb_ms);
         entry.record_first_response_byte_total_sample(
             record.t_req_read_ms,
@@ -472,7 +474,9 @@ fn add_exact_records_to_timeseries_aggregates(
             } else {
                 record.status.as_deref()
             };
-            entry.record_total_latency_sample(record.t_total_ms);
+            if !prompt_shared::invocation_status_is_in_flight(record.status.as_deref()) {
+                entry.record_total_latency_sample(record.t_total_ms);
+            }
             entry.record_exact_ttfb_sample(latency_status, record.t_upstream_ttfb_ms);
             entry.record_exact_first_response_byte_total_sample(
                 record.t_req_read_ms,
