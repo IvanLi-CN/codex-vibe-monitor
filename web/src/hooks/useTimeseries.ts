@@ -514,6 +514,7 @@ function sanitizeTimeseriesPointLatency(point: TimeseriesPoint) {
     return;
   }
   point.avgTotalMs = null;
+  point.totalLatencySampleCount = 0;
   point.firstByteSampleCount = 0;
   point.firstByteAvgMs = null;
   point.firstByteP95Ms = null;
@@ -616,6 +617,7 @@ function reconcileCountsOnlyDelta(
     | "totalTokens"
     | "totalCost"
     | "avgTotalMs"
+    | "totalLatencySampleCount"
   > | null,
 ) {
   if (!previousDelta?.countsOnly || !nextDelta) {
@@ -647,10 +649,10 @@ function reconcileCountsOnlyDelta(
     totalLatencyMs:
       nextDelta.totalLatencyMs -
       ((currentPoint.avgTotalMs ?? 0) *
-        Math.max(currentPoint.successCount + currentPoint.failureCount, 0)),
+        Math.max(currentPoint.totalLatencySampleCount ?? 0, 0)),
     totalLatencySampleCount:
       nextDelta.totalLatencySampleCount -
-      Math.max(currentPoint.successCount + currentPoint.failureCount, 0),
+      Math.max(currentPoint.totalLatencySampleCount ?? 0, 0),
   };
 }
 
@@ -1061,7 +1063,7 @@ function adjustTimeseriesPoint(
   sign: 1 | -1,
 ) {
   const previousLatencySampleCount = Math.max(
-    point.successCount + point.failureCount,
+    point.totalLatencySampleCount ?? 0,
     0,
   );
   const previousLatencyTotal =
@@ -1086,6 +1088,7 @@ function adjustTimeseriesPoint(
     0,
   );
   const nextLatencyTotal = previousLatencyTotal + sign * delta.totalLatencyMs;
+  point.totalLatencySampleCount = nextLatencySampleCount;
   point.avgTotalMs =
     nextLatencySampleCount > 0 ? nextLatencyTotal / nextLatencySampleCount : null;
   sanitizeTimeseriesPointLatency(point);
@@ -1347,6 +1350,7 @@ export function upsertTimeseriesLiveRecord(
       totalTokens: 0,
       totalCost: 0,
       avgTotalMs: null,
+      totalLatencySampleCount: 0,
     };
     adjustTimeseriesPoint(point, delta, sign);
     const isEmpty =

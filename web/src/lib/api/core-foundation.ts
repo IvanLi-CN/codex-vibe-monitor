@@ -622,6 +622,7 @@ export interface TimeseriesPoint {
   totalCost: number;
   nonSuccessCost?: number;
   avgTotalMs?: number | null;
+  totalLatencySampleCount?: number | null;
   firstByteSampleCount?: number;
   firstByteAvgMs?: number | null;
   firstByteP95Ms?: number | null;
@@ -1376,6 +1377,12 @@ function normalizeTimeseriesPoint(raw: unknown): TimeseriesPoint | null {
     avgTotalMs: hasCalls
       ? (normalizeFiniteNumber(payload.avgTotalMs) ?? null)
       : null,
+    totalLatencySampleCount:
+      hasCalls &&
+      typeof payload.avgTotalMs === "number" &&
+      Number.isFinite(payload.avgTotalMs)
+        ? (normalizeFiniteNumber(payload.totalLatencySampleCount) ?? null)
+        : null,
     firstByteSampleCount: hasCalls
       ? (normalizeFiniteNumber(payload.firstByteSampleCount) ?? 0)
       : 0,

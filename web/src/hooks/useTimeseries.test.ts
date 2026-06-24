@@ -982,6 +982,55 @@ describe("useTimeseries natural-day range patching", () => {
     expect(result.next?.points[0]?.totalCost ?? 0).toBeCloseTo(0.18);
   });
 
+  it("keeps avgTotalMs weighted by latency samples instead of completed-call count", () => {
+    const current: TimeseriesResponse = {
+      rangeStart: "2026-03-08T00:00:00Z",
+      rangeEnd: "2026-03-08T00:03:00Z",
+      bucketSeconds: 60,
+      points: [
+        {
+          bucketStart: "2026-03-08T00:01:00Z",
+          bucketEnd: "2026-03-08T00:02:00Z",
+          totalCount: 3,
+          successCount: 2,
+          failureCount: 1,
+          inFlightCount: 0,
+          totalTokens: 100,
+          totalCost: 1,
+          avgTotalMs: 1_000,
+          totalLatencySampleCount: 1,
+        },
+      ],
+    };
+
+    const result = upsertTimeseriesLiveRecord(
+      current,
+      {
+        id: 79,
+        invokeId: "latency-sampled-settle",
+        occurredAt: "2026-03-08T00:01:15Z",
+        status: "success",
+        totalTokens: 22,
+        cost: 0.18,
+        tTotalMs: 400,
+        createdAt: "2026-03-08T00:01:15Z",
+      },
+      null,
+      {
+        range: "today",
+        bucketSeconds: 60,
+      },
+    );
+
+    expect(result.next?.points[0]).toMatchObject({
+      totalCount: 4,
+      successCount: 3,
+      failureCount: 1,
+      avgTotalMs: 700,
+      totalLatencySampleCount: 2,
+    });
+  });
+
   it("clears latency fields when live patching reduces a bucket to zero calls", () => {
     const current: TimeseriesResponse = {
       rangeStart: "2026-03-08T00:00:00Z",
@@ -997,6 +1046,8 @@ describe("useTimeseries natural-day range patching", () => {
           inFlightCount: 0,
           totalTokens: 50,
           totalCost: 0.2,
+          avgTotalMs: 900,
+          totalLatencySampleCount: 1,
           firstByteSampleCount: 1,
           firstByteAvgMs: 750,
           firstByteP95Ms: 750,
@@ -1040,6 +1091,8 @@ describe("useTimeseries natural-day range patching", () => {
       totalCount: 0,
       successCount: 0,
       failureCount: 0,
+      totalLatencySampleCount: 0,
+      avgTotalMs: null,
       firstByteSampleCount: 0,
       firstByteAvgMs: null,
       firstByteP95Ms: null,

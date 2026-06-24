@@ -519,6 +519,11 @@ fn timeseries_point_from_aggregate(
         total_cost: agg.total_cost,
         non_success_cost: agg.non_success_cost,
         avg_total_ms: has_calls.then(|| agg.total_latency_avg_ms()).flatten(),
+        total_latency_sample_count: if has_calls {
+            agg.total_latency_sample_count
+        } else {
+            0
+        },
         first_byte_sample_count: if has_calls {
             agg.first_byte_sample_count
         } else {
