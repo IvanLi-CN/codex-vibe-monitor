@@ -621,6 +621,7 @@ export interface TimeseriesPoint {
   cacheInputTokens?: number;
   totalCost: number;
   nonSuccessCost?: number;
+  avgTotalMs?: number | null;
   firstByteSampleCount?: number;
   firstByteAvgMs?: number | null;
   firstByteP95Ms?: number | null;
@@ -1372,6 +1373,9 @@ function normalizeTimeseriesPoint(raw: unknown): TimeseriesPoint | null {
     cacheInputTokens: normalizeFiniteNumber(payload.cacheInputTokens) ?? 0,
     totalCost: normalizeFiniteNumber(payload.totalCost) ?? 0,
     nonSuccessCost: normalizeFiniteNumber(payload.nonSuccessCost) ?? 0,
+    avgTotalMs: hasCalls
+      ? (normalizeFiniteNumber(payload.avgTotalMs) ?? null)
+      : null,
     firstByteSampleCount: hasCalls
       ? (normalizeFiniteNumber(payload.firstByteSampleCount) ?? 0)
       : 0,

@@ -65,8 +65,10 @@ const sampleTimeseries: TimeseriesResponse = {
     totalTokens: 78000 + index * 6100,
     cacheInputTokens: 18000 + index * 1200,
     totalCost: Number((1.1 + index * 0.08).toFixed(2)),
+    avgTotalMs: index % 3 === 0 ? null : Number((1260 + index * 132.5).toFixed(1)),
     firstResponseByteTotalSampleCount: index % 3 === 0 ? 0 : 2 + index,
     firstResponseByteTotalAvgMs: index % 3 === 0 ? null : Number((780 + index * 96.5).toFixed(1)),
+    firstResponseByteTotalP95Ms: index % 3 === 0 ? null : Number((960 + index * 118.5).toFixed(1)),
   })),
 }
 
@@ -198,7 +200,7 @@ export const Populated: Story = {
     const canvas = within(canvasElement)
     await userEvent.click(canvas.getByRole('button', { name: /tokens per minute|每分钟 tokens/i }))
     await expect(within(document.body).getByRole('tooltip')).toBeInTheDocument()
-    await userEvent.click(canvas.getByRole('button', { name: /response time|响应时间/i }))
+    await userEvent.click(canvas.getByRole('button', { name: /time to first byte|首字用时/i }))
     await expect(within(document.body).getByRole('tooltip')).toBeInTheDocument()
   },
 }
@@ -224,7 +226,7 @@ export const DesktopSingleRow: Story = {
     await expect(tiles).toHaveLength(7)
     const labels = tiles.map((tile) => tile.textContent ?? '')
     expect(labels[3]).toMatch(/in-progress conversations|进行中对话/i)
-    expect(labels[4]).toMatch(/response time|响应时间/i)
+    expect(labels[4]).toMatch(/time to first byte|首字用时/i)
   },
 }
 
@@ -278,10 +280,10 @@ export const ScopedAccountEmbedded: Story = {
     await expect(canvas.getByTestId('today-stats-secondary-in-progress-retry')).toBeVisible()
     await expect(canvas.getByTestId('today-stats-secondary-tpm-per-conversation')).not.toHaveTextContent('—')
     await expect(canvas.getByTestId('today-stats-secondary-success-ratio')).not.toHaveTextContent('—')
-    await expect(canvas.getByTestId('today-stats-secondary-response-time-in-progress')).not.toHaveTextContent('—')
+    await expect(canvas.getByTestId('today-stats-secondary-response-time-avg-total')).not.toHaveTextContent('—')
     await expect(canvas.getByTestId('today-stats-secondary-cost-failed')).not.toHaveTextContent('—')
     await expect(canvas.getByTestId('today-stats-secondary-tokens-failed')).not.toHaveTextContent('—')
-    await expect(canvas.getByText(/response time|响应时间/i)).toBeInTheDocument()
+    await expect(canvas.getByText(/time to first byte|首字用时/i)).toBeInTheDocument()
   },
 }
 

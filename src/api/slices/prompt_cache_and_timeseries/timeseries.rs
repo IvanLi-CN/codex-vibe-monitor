@@ -107,6 +107,7 @@ pub(crate) async fn fetch_timeseries(
         } else {
             record.status.as_deref()
         };
+        entry.record_total_latency_sample(record.t_total_ms);
         entry.record_ttfb_sample(latency_status, record.t_upstream_ttfb_ms);
         entry.record_first_response_byte_total_sample(
             record.t_req_read_ms,
@@ -471,6 +472,7 @@ fn add_exact_records_to_timeseries_aggregates(
             } else {
                 record.status.as_deref()
             };
+            entry.record_total_latency_sample(record.t_total_ms);
             entry.record_exact_ttfb_sample(latency_status, record.t_upstream_ttfb_ms);
             entry.record_exact_first_response_byte_total_sample(
                 record.t_req_read_ms,
@@ -516,6 +518,7 @@ fn timeseries_point_from_aggregate(
         cache_input_tokens: agg.cache_input_tokens,
         total_cost: agg.total_cost,
         non_success_cost: agg.non_success_cost,
+        avg_total_ms: has_calls.then(|| agg.total_latency_avg_ms()).flatten(),
         first_byte_sample_count: if has_calls {
             agg.first_byte_sample_count
         } else {
@@ -1110,6 +1113,8 @@ mod tests {
         aggregate
             .first_response_byte_total_values
             .push(18_225.02);
+        aggregate.total_latency_sample_count = 1;
+        aggregate.total_latency_sum_ms = 24_000.0;
 
         let point = timeseries_point_from_aggregate(
             Utc.timestamp_opt(1_775_608_200, 0)
@@ -1128,5 +1133,6 @@ mod tests {
         assert_eq!(point.first_response_byte_total_sample_count, 0);
         assert!(point.first_response_byte_total_avg_ms.is_none());
         assert!(point.first_response_byte_total_p95_ms.is_none());
+        assert!(point.avg_total_ms.is_none());
     }
 }

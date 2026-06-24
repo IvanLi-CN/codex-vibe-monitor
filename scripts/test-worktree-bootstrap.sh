@@ -108,6 +108,16 @@ rm -rf "$worktree_dir/node_modules"
 assert_file_contains "$worktree_dir/.lefthook-run.log" 'run pre-commit'
 assert_file_contains "$worktree_dir/.lefthook-run.log" '--no-auto-install'
 
+commit_editmsg_path="$(git -C "$worktree_dir" rev-parse --git-path COMMIT_EDITMSG)"
+mkdir -p "$(dirname "$commit_editmsg_path")"
+: > "$commit_editmsg_path"
+(
+  cd "$worktree_dir"
+  "$hooks_dir/commit-msg" .git/COMMIT_EDITMSG >/dev/null
+)
+assert_file_contains "$worktree_dir/.lefthook-run.log" 'run commit-msg'
+assert_file_contains "$worktree_dir/.lefthook-run.log" "$commit_editmsg_path"
+
 bash "$worktree_dir/scripts/worktree-bootstrap.sh" >/dev/null
 assert_file_contains "$worktree_dir/.env.local" 'TARGET_SECRET=keep-me'
 if [ -e "$worktree_dir/node_modules" ] || [ -e "$worktree_dir/web/node_modules" ] || [ -e "$worktree_dir/docs-site/node_modules" ]; then

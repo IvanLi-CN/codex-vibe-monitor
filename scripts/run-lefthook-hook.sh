@@ -19,6 +19,35 @@ if [ "$hook_name" = "post-checkout" ]; then
   exit 0
 fi
 
+normalize_git_hook_path() {
+  path="$1"
+  if [ -z "$path" ]; then
+    printf '%s\n' "$path"
+    return 0
+  fi
+
+  case "$path" in
+    .git/*)
+      git_path="${path#./}"
+      git_path="${git_path#.git/}"
+      git rev-parse --git-path "$git_path"
+      ;;
+    ./.git/*)
+      git_path="${path#./.git/}"
+      git rev-parse --git-path "$git_path"
+      ;;
+    *)
+      printf '%s\n' "$path"
+      ;;
+  esac
+}
+
+if [ "$hook_name" = "prepare-commit-msg" ] || [ "$hook_name" = "commit-msg" ]; then
+  if [ "$#" -gt 0 ]; then
+    set -- "$(normalize_git_hook_path "$1")" "${@:2}"
+  fi
+fi
+
 os_arch="$(uname | tr '[:upper:]' '[:lower:]')"
 cpu_arch="$(uname -m | sed 's/aarch64/arm64/;s/x86_64/x64/')"
 

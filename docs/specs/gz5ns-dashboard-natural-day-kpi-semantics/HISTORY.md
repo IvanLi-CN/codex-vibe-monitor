@@ -9,6 +9,9 @@
 - 2026-06-23：将自然日金额图固定为“累计金额”而非“每分钟金额”语义，并把成本视图改为 `Success + Non-success` 堆叠累计面积；`Non-success` 文案显式承载 `failed + interrupted` 口径。
 - 2026-06-23：修正 CRS relay delta 不应污染 `nonSuccessCost` 的口径错误；该旁路只提供总成本与 success/failure 计数，无法安全拆出失败成本时，金额图失败层保持 0 而不是错误抬升。
 - 2026-06-23：补齐金额图 i18n，固定领域术语仍为 `Non-success = failed + interrupted`，但 owner-facing 图例与 tooltip 按 locale 正确显示，中文环境使用“非成功”。
+- 2026-06-24：将第五张卡主语义固定为 `首字用时`，右下次指标固定为最近 5 分钟完整调用结束的 `t_total_ms` 均值 `响应时间`；不再把进行中等待均值留在 owner-facing 卡面中。
+- 2026-06-24：补齐 `avgTotalMs` 的后端 timeseries 聚合、前端归一化与本地 SSE patch，并同步修复 `DashboardActivityOverview` Storybook mock，让活动总览里的 `响应时间` 次指标始终有可验证样本。
+- 2026-06-24：统一微调七卡主值字号，并追加活动总览桌面态与单卡裁切的视觉证据，确保这次 follow-up 的 UI 结果可直接复核。
 
 ## Key Reasons / Replacements
 

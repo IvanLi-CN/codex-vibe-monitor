@@ -255,6 +255,8 @@ pub(crate) struct BucketAggregate {
     pub(crate) cache_input_tokens: i64,
     pub(crate) total_cost: f64,
     pub(crate) non_success_cost: f64,
+    pub(crate) total_latency_sum_ms: f64,
+    pub(crate) total_latency_sample_count: i64,
     pub(crate) first_byte_ttfb_sum_ms: f64,
     pub(crate) first_byte_ttfb_values: Vec<f64>,
     pub(crate) first_byte_histogram: ApproxHistogramCounts,
@@ -266,6 +268,29 @@ pub(crate) struct BucketAggregate {
 }
 
 impl BucketAggregate {
+    fn validated_total_latency_value(value: Option<f64>) -> Option<f64> {
+        let value = value?;
+        if !value.is_finite() || value < 0.0 {
+            return None;
+        }
+        Some(value)
+    }
+
+    pub(crate) fn record_total_latency_sample(&mut self, total_ms: Option<f64>) {
+        let Some(value) = Self::validated_total_latency_value(total_ms) else {
+            return;
+        };
+        self.total_latency_sample_count += 1;
+        self.total_latency_sum_ms += value;
+    }
+
+    pub(crate) fn total_latency_avg_ms(&self) -> Option<f64> {
+        if self.total_latency_sample_count <= 0 {
+            return None;
+        }
+        Some(self.total_latency_sum_ms / self.total_latency_sample_count as f64)
+    }
+
     fn validated_success_ttfb_value(status: Option<&str>, ttfb_ms: Option<f64>) -> Option<f64> {
         if status != Some("success") {
             return None;
