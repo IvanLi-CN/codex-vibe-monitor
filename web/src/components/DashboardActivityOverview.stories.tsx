@@ -96,6 +96,8 @@ function buildTodayMinutePoints(summary = TODAY_SUMMARY_FIXTURE) {
     const successCount = successCounts[minute] ?? 0
     const failureCount = failureCounts[minute] ?? 0
     const totalCount = successCount + failureCount
+    const firstResponseByteTotalAvgMs =
+      totalCount > 0 ? buildLatencyMs(minute, totalCount, 0) : null
     points.push({
       bucketStart: bucketStart.toISOString(),
       bucketEnd: bucketEnd.toISOString(),
@@ -111,7 +113,12 @@ function buildTodayMinutePoints(summary = TODAY_SUMMARY_FIXTURE) {
         totalCount,
       ),
       firstResponseByteTotalSampleCount: totalCount,
-      firstResponseByteTotalAvgMs: totalCount > 0 ? buildLatencyMs(minute, totalCount, 0) : null,
+      avgTotalMs:
+        firstResponseByteTotalAvgMs == null
+          ? null
+          : buildTotalLatencyMs(firstResponseByteTotalAvgMs, minute, 0),
+      totalLatencySampleCount: totalCount,
+      firstResponseByteTotalAvgMs,
     })
   }
 
@@ -153,6 +160,8 @@ function buildYesterdayMinutePoints(summary = YESTERDAY_SUMMARY_FIXTURE) {
     const successCount = successCounts[minute] ?? 0
     const failureCount = failureCounts[minute] ?? 0
     const totalCount = successCount + failureCount
+    const firstResponseByteTotalAvgMs =
+      totalCount > 0 ? buildLatencyMs(minute, totalCount, 36) : null
     points.push({
       bucketStart: bucketStart.toISOString(),
       bucketEnd: bucketEnd.toISOString(),
@@ -168,7 +177,12 @@ function buildYesterdayMinutePoints(summary = YESTERDAY_SUMMARY_FIXTURE) {
         totalCount,
       ),
       firstResponseByteTotalSampleCount: totalCount,
-      firstResponseByteTotalAvgMs: totalCount > 0 ? buildLatencyMs(minute, totalCount, 36) : null,
+      avgTotalMs:
+        firstResponseByteTotalAvgMs == null
+          ? null
+          : buildTotalLatencyMs(firstResponseByteTotalAvgMs, minute, 36),
+      totalLatencySampleCount: totalCount,
+      firstResponseByteTotalAvgMs,
     })
   }
 
@@ -190,6 +204,8 @@ function build24HourPoints() {
     const totalCount = index % 17 === 0 ? 0 : (index % 6)
     const failureCount = totalCount > 0 && index % 19 === 0 ? 1 : 0
     const successCount = Math.max(totalCount - failureCount, 0)
+    const firstResponseByteTotalAvgMs =
+      totalCount > 0 ? 620 + ((index * 13) % 280) : null
     points.push({
       bucketStart: bucketStart.toISOString(),
       bucketEnd: bucketEnd.toISOString(),
@@ -205,7 +221,12 @@ function build24HourPoints() {
         totalCount,
       ),
       firstResponseByteTotalSampleCount: totalCount,
-      firstResponseByteTotalAvgMs: totalCount > 0 ? 620 + ((index * 13) % 280) : null,
+      avgTotalMs:
+        firstResponseByteTotalAvgMs == null
+          ? null
+          : buildTotalLatencyMs(firstResponseByteTotalAvgMs, index, 9),
+      totalLatencySampleCount: totalCount,
+      firstResponseByteTotalAvgMs,
     })
   }
   return {
@@ -226,6 +247,8 @@ function buildHourlyPoints() {
     const hour = bucketStart.getHours()
     const day = bucketStart.getDay()
     const density = ((hour + 3) * (day + 2)) % 9
+    const firstResponseByteTotalAvgMs =
+      density > 0 ? 700 + ((index * 23) % 300) : null
     points.push({
       bucketStart: bucketStart.toISOString(),
       bucketEnd: bucketEnd.toISOString(),
@@ -241,7 +264,12 @@ function buildHourlyPoints() {
         density,
       ),
       firstResponseByteTotalSampleCount: density,
-      firstResponseByteTotalAvgMs: density > 0 ? 700 + ((index * 23) % 300) : null,
+      avgTotalMs:
+        firstResponseByteTotalAvgMs == null
+          ? null
+          : buildTotalLatencyMs(firstResponseByteTotalAvgMs, index, 21),
+      totalLatencySampleCount: density,
+      firstResponseByteTotalAvgMs,
     })
   }
   return {
@@ -324,6 +352,11 @@ function buildLatencyMs(index: number, totalCount: number, offset: number) {
   const loadPenalty = Math.min(180, totalCount * 11)
   const wave = ((index + offset) % 23) * 4
   return 380 + rushPenalty + loadPenalty + wave
+}
+
+function buildTotalLatencyMs(firstResponseByteTotalAvgMs: number, index: number, offset: number) {
+  const settleOverhead = 150 + (((index + offset) % 7) * 22)
+  return firstResponseByteTotalAvgMs + settleOverhead
 }
 
 function distributeInteger(total: number, weights: number[]) {
@@ -548,7 +581,7 @@ export const TodayView: Story = {
       expect(canvas.getByTestId('today-stats-secondary-success-ratio')).not.toHaveTextContent('—')
       expect(canvas.getByTestId('today-stats-secondary-tpm-per-conversation')).not.toHaveTextContent('—')
       expect(canvas.getByTestId('today-stats-secondary-in-progress-retry')).not.toHaveTextContent('—')
-      expect(canvas.getByTestId('today-stats-secondary-response-time-in-progress')).not.toHaveTextContent('—')
+      expect(canvas.getByTestId('today-stats-secondary-response-time-avg-total')).not.toHaveTextContent('—')
       expect(canvas.getByTestId('today-stats-secondary-cost-failed')).not.toHaveTextContent('—')
       expect(canvas.getByTestId('today-stats-secondary-tokens-failed')).not.toHaveTextContent('—')
     })

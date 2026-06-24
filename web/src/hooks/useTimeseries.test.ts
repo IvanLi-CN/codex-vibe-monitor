@@ -749,6 +749,43 @@ describe("useTimeseries natural-day range patching", () => {
     });
   });
 
+  it("does not count running SSE rows with provisional total latency as completed samples", () => {
+    const current: TimeseriesResponse = {
+      rangeStart: "2026-03-08T00:00:00Z",
+      rangeEnd: "2026-03-08T00:03:00Z",
+      bucketSeconds: 60,
+      points: [],
+    };
+
+    const result = upsertTimeseriesLiveRecord(
+      current,
+      {
+        id: 121,
+        invokeId: "live-running-latency",
+        occurredAt: "2026-03-08T00:01:30Z",
+        status: "running",
+        tTotalMs: 0,
+        totalTokens: 0,
+        cost: 0,
+        createdAt: "2026-03-08T00:01:30Z",
+      },
+      null,
+      {
+        range: "today",
+        bucketSeconds: 60,
+      },
+    );
+
+    expect(result.next?.points[0]).toMatchObject({
+      totalCount: 1,
+      successCount: 0,
+      failureCount: 0,
+      inFlightCount: 1,
+      avgTotalMs: null,
+      totalLatencySampleCount: 0,
+    });
+  });
+
   it("treats downstream-only live SSE rows as failures immediately", () => {
     const current: TimeseriesResponse = {
       rangeStart: new Date(2026, 3, 8, 0, 0, 0)
@@ -982,6 +1019,103 @@ describe("useTimeseries natural-day range patching", () => {
     expect(result.next?.points[0]?.totalCost ?? 0).toBeCloseTo(0.18);
   });
 
+  it("keeps avgTotalMs weighted by latency samples instead of completed-call count", () => {
+    const current: TimeseriesResponse = {
+      rangeStart: "2026-03-08T00:00:00Z",
+      rangeEnd: "2026-03-08T00:03:00Z",
+      bucketSeconds: 60,
+      points: [
+        {
+          bucketStart: "2026-03-08T00:01:00Z",
+          bucketEnd: "2026-03-08T00:02:00Z",
+          totalCount: 3,
+          successCount: 2,
+          failureCount: 1,
+          inFlightCount: 0,
+          totalTokens: 100,
+          totalCost: 1,
+          avgTotalMs: 1_000,
+          totalLatencySampleCount: 1,
+        },
+      ],
+    };
+
+    const result = upsertTimeseriesLiveRecord(
+      current,
+      {
+        id: 79,
+        invokeId: "latency-sampled-settle",
+        occurredAt: "2026-03-08T00:01:15Z",
+        status: "success",
+        totalTokens: 22,
+        cost: 0.18,
+        tTotalMs: 400,
+        createdAt: "2026-03-08T00:01:15Z",
+      },
+      null,
+      {
+        range: "today",
+        bucketSeconds: 60,
+      },
+    );
+
+    expect(result.next?.points[0]).toMatchObject({
+      totalCount: 4,
+      successCount: 3,
+      failureCount: 1,
+      avgTotalMs: 700,
+      totalLatencySampleCount: 2,
+    });
+  });
+
+  it("counts zero-ms total latency as a valid completed-call sample", () => {
+    const current: TimeseriesResponse = {
+      rangeStart: "2026-03-08T00:00:00Z",
+      rangeEnd: "2026-03-08T00:03:00Z",
+      bucketSeconds: 60,
+      points: [
+        {
+          bucketStart: "2026-03-08T00:01:00Z",
+          bucketEnd: "2026-03-08T00:02:00Z",
+          totalCount: 1,
+          successCount: 1,
+          failureCount: 0,
+          inFlightCount: 0,
+          totalTokens: 50,
+          totalCost: 0.2,
+          avgTotalMs: 400,
+          totalLatencySampleCount: 1,
+        },
+      ],
+    };
+
+    const result = upsertTimeseriesLiveRecord(
+      current,
+      {
+        id: 80,
+        invokeId: "zero-total-ms-settle",
+        occurredAt: "2026-03-08T00:01:20Z",
+        status: "success",
+        totalTokens: 12,
+        cost: 0.08,
+        tTotalMs: 0,
+        createdAt: "2026-03-08T00:01:20Z",
+      },
+      null,
+      {
+        range: "today",
+        bucketSeconds: 60,
+      },
+    );
+
+    expect(result.next?.points[0]).toMatchObject({
+      totalCount: 2,
+      successCount: 2,
+      avgTotalMs: 200,
+      totalLatencySampleCount: 2,
+    });
+  });
+
   it("clears latency fields when live patching reduces a bucket to zero calls", () => {
     const current: TimeseriesResponse = {
       rangeStart: "2026-03-08T00:00:00Z",
@@ -997,6 +1131,8 @@ describe("useTimeseries natural-day range patching", () => {
           inFlightCount: 0,
           totalTokens: 50,
           totalCost: 0.2,
+          avgTotalMs: 900,
+          totalLatencySampleCount: 1,
           firstByteSampleCount: 1,
           firstByteAvgMs: 750,
           firstByteP95Ms: 750,
@@ -1040,6 +1176,8 @@ describe("useTimeseries natural-day range patching", () => {
       totalCount: 0,
       successCount: 0,
       failureCount: 0,
+      totalLatencySampleCount: 0,
+      avgTotalMs: null,
       firstByteSampleCount: 0,
       firstByteAvgMs: null,
       firstByteP95Ms: null,

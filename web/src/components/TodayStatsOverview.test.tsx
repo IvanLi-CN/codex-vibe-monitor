@@ -16,6 +16,7 @@ vi.mock('../i18n', () => ({
         'dashboard.today.tokensPerMinute': 'TPM',
         'dashboard.today.spendRate': 'Spend rate',
         'dashboard.today.responseTime': 'Response time',
+        'dashboard.today.firstResponseTime': 'Time to first byte',
         'dashboard.today.responseTimeDescription': 'Response time uses the latest 5-minute active tail.',
         'dashboard.today.inProgressConversations': 'In-progress conversations',
         'dashboard.today.parallelConversations': 'Parallel conversations',
@@ -38,6 +39,7 @@ vi.mock('../i18n', () => ({
         'dashboard.today.secondary.perConversation': 'Per conversation',
         'dashboard.today.secondary.retry': 'Retry',
         'dashboard.today.secondary.inProgress': 'In progress',
+        'dashboard.today.secondary.p95': 'P95',
         'dashboard.today.secondary.failed': 'Failed',
         'dashboard.today.secondary.failureRate': 'Failure rate',
         'dashboard.today.secondary.cacheHitRate': 'Cache hit',
@@ -72,8 +74,11 @@ function buildTimeseriesWithLatency(): TimeseriesResponse {
       totalTokens: 78000 + index * 6100,
       cacheInputTokens: 18000 + index * 1200,
       totalCost: Number((1.1 + index * 0.08).toFixed(2)),
+      avgTotalMs: sampleCount > 0 ? Number((1260 + index * 73.5).toFixed(1)) : null,
+      totalLatencySampleCount: sampleCount,
       firstResponseByteTotalSampleCount: sampleCount,
       firstResponseByteTotalAvgMs: sampleCount > 0 ? Number((820 + index * 41.5).toFixed(1)) : null,
+      firstResponseByteTotalP95Ms: sampleCount > 0 ? Number((980 + index * 58.5).toFixed(1)) : null,
     }
   })
 
@@ -232,7 +237,7 @@ describe('TodayStatsOverview', () => {
     expect(host?.textContent).toContain('Today summary')
     expect(host?.textContent).toContain('TPM')
     expect(host?.textContent).toContain('Spend rate')
-    expect(host?.textContent).toContain('Response time')
+    expect(host?.textContent).toContain('Time to first byte')
     expect(host?.textContent).toContain('In-progress conversations')
     expect(host?.textContent).toContain('Today cost')
     expect(host?.textContent).toContain('Today Token')
@@ -271,7 +276,7 @@ describe('TodayStatsOverview', () => {
     expect(grid?.className).not.toContain('lg:grid-cols-7')
     expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(6)
     expect(host?.textContent).not.toContain('In-progress conversations')
-    expect(host?.textContent).toContain('Response time')
+    expect(host?.textContent).toContain('Time to first byte')
     expect(host?.textContent).toContain('Today cost')
     expect(host?.textContent).toContain('Today Token')
   })
@@ -523,7 +528,21 @@ describe('TodayStatsOverview', () => {
           rangeStart: '2026-04-10T00:00:00.000Z',
           rangeEnd: '2026-04-10T00:03:00.000Z',
           bucketSeconds: 60,
-          points: [],
+          points: [
+            {
+              bucketStart: '2026-04-10T00:00:00.000Z',
+              bucketEnd: '2026-04-10T00:01:00.000Z',
+              totalCount: 2,
+              successCount: 2,
+              failureCount: 0,
+              totalTokens: 1000,
+              totalCost: 0.5,
+              avgTotalMs: 1390,
+              totalLatencySampleCount: 2,
+              firstResponseByteTotalSampleCount: 2,
+              firstResponseByteTotalAvgMs: 500,
+            },
+          ],
         }}
         comparisonTimeseries={{
           rangeStart: '2026-04-09T00:00:00.000Z',
@@ -546,6 +565,7 @@ describe('TodayStatsOverview', () => {
           failureCount: 70,
           totalCost: 140,
           totalTokens: 70000,
+          inProgressAvgWaitMs: 1800,
         }}
         rate={{
           tokensPerMinute: 1200,
@@ -570,15 +590,148 @@ describe('TodayStatsOverview', () => {
     expect(host?.querySelector('[data-testid="today-stats-secondary-in-progress-retry"]')?.textContent).toContain(
       '2',
     )
-    expect(
-      host?.querySelector('[data-testid="today-stats-secondary-response-time-in-progress"]')?.textContent,
-    ).toContain('1.8 s')
+    expect(host?.querySelector('[data-testid="today-stats-secondary-response-time-avg-total"]')?.textContent).toContain(
+      '1.39 s',
+    )
     expect(host?.querySelector('[data-testid="today-stats-secondary-cost-failed"]')?.textContent).toContain(
       '$3.50',
     )
     expect(host?.querySelector('[data-testid="today-stats-secondary-tokens-failed"]')?.textContent).toContain(
       '420',
     )
+  })
+
+  it('averages overlapping response-time buckets within the recent window', () => {
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 6,
+          successCount: 6,
+          failureCount: 0,
+          totalCost: 1.2,
+          totalTokens: 3000,
+        }}
+        rate={{
+          tokensPerMinute: 0,
+          spendRate: 0,
+          windowMinutes: 5,
+          available: true,
+        }}
+        timeseries={{
+          rangeStart: '2026-04-10T00:00:00.000Z',
+          rangeEnd: '2026-04-10T00:06:00.000Z',
+          bucketSeconds: 60,
+          points: [
+            {
+              bucketStart: '2026-04-10T00:00:00.000Z',
+              bucketEnd: '2026-04-10T00:01:00.000Z',
+              totalCount: 1,
+              successCount: 1,
+              failureCount: 0,
+              totalTokens: 300,
+              totalCost: 0.1,
+              avgTotalMs: 100,
+              totalLatencySampleCount: 1,
+              firstResponseByteTotalSampleCount: 1,
+              firstResponseByteTotalAvgMs: 50,
+            },
+            {
+              bucketStart: '2026-04-10T00:04:00.000Z',
+              bucketEnd: '2026-04-10T00:05:00.000Z',
+              totalCount: 2,
+              successCount: 2,
+              failureCount: 0,
+              totalTokens: 900,
+              totalCost: 0.4,
+              avgTotalMs: 200,
+              totalLatencySampleCount: 2,
+              firstResponseByteTotalSampleCount: 2,
+              firstResponseByteTotalAvgMs: 90,
+            },
+            {
+              bucketStart: '2026-04-10T00:05:00.000Z',
+              bucketEnd: '2026-04-10T00:06:00.000Z',
+              totalCount: 3,
+              successCount: 3,
+              failureCount: 0,
+              totalTokens: 1800,
+              totalCost: 0.7,
+              avgTotalMs: 800,
+              totalLatencySampleCount: 1,
+              firstResponseByteTotalSampleCount: 1,
+              firstResponseByteTotalAvgMs: 140,
+            },
+          ],
+        }}
+        loading={false}
+        error={null}
+        now={new Date('2026-04-10T00:06:00.000Z')}
+      />,
+    )
+
+    expect(
+      host?.querySelector('[data-testid="today-stats-secondary-response-time-avg-total"]')?.textContent,
+    ).toContain('400 ms')
+  })
+
+  it('clips coarse response-time buckets to the recent window overlap', () => {
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 6,
+          successCount: 6,
+          failureCount: 0,
+          totalCost: 1.2,
+          totalTokens: 3000,
+        }}
+        rate={{
+          tokensPerMinute: 0,
+          spendRate: 0,
+          windowMinutes: 5,
+          available: true,
+        }}
+        timeseries={{
+          rangeStart: '2026-04-10T00:00:00.000Z',
+          rangeEnd: '2026-04-10T00:17:00.000Z',
+          bucketSeconds: 900,
+          points: [
+            {
+              bucketStart: '2026-04-10T00:00:00.000Z',
+              bucketEnd: '2026-04-10T00:15:00.000Z',
+              totalCount: 3,
+              successCount: 3,
+              failureCount: 0,
+              totalTokens: 1200,
+              totalCost: 0.5,
+              avgTotalMs: 100,
+              totalLatencySampleCount: 3,
+              firstResponseByteTotalSampleCount: 3,
+              firstResponseByteTotalAvgMs: 50,
+            },
+            {
+              bucketStart: '2026-04-10T00:15:00.000Z',
+              bucketEnd: '2026-04-10T00:30:00.000Z',
+              totalCount: 3,
+              successCount: 3,
+              failureCount: 0,
+              totalTokens: 1800,
+              totalCost: 0.7,
+              avgTotalMs: 700,
+              totalLatencySampleCount: 3,
+              firstResponseByteTotalSampleCount: 3,
+              firstResponseByteTotalAvgMs: 140,
+            },
+          ],
+        }}
+        loading={false}
+        error={null}
+        now={new Date('2026-04-10T00:17:00.000Z')}
+      />,
+    )
+
+    expect(
+      host?.querySelector('[data-testid="today-stats-secondary-response-time-avg-total"]')?.textContent,
+    ).toContain('340 ms')
   })
 
   it('compares cost and token totals against yesterday at the same day progress', () => {
@@ -844,14 +997,15 @@ describe('TodayStatsOverview', () => {
     const responseTimeValue = host?.querySelector('[data-testid="today-stats-value-response-time"]')?.textContent ?? ''
     const dayAverage = host?.querySelector('[data-testid="today-stats-secondary-response-time-day-average"]')?.textContent ?? ''
     const delta = host?.querySelector('[data-testid="today-stats-secondary-response-time-delta"]')?.textContent ?? ''
-
+    const avgTotal = host?.querySelector('[data-testid="today-stats-secondary-response-time-avg-total"]')?.textContent ?? ''
     expect(responseTimeValue).toMatch(/ms|s/)
     expect(dayAverage).toMatch(/ms|s/)
+    expect(avgTotal).toMatch(/ms|s/)
     expect(delta).toContain('%')
     expect(host?.querySelector('[data-testid="today-stats-secondary-response-time-delta"]')?.className).toContain(
       'text-error',
     )
-    expect(host?.textContent).toContain('Response time')
+    expect(host?.textContent).toContain('Time to first byte')
   })
 
   it('keeps response-time day average visible when the recent window is idle', () => {
@@ -898,6 +1052,43 @@ describe('TodayStatsOverview', () => {
       '500 ms',
     )
     expect(host?.querySelector('[data-testid="today-stats-secondary-response-time-delta"]')?.textContent).toContain('—')
+  })
+
+  it('falls back to an empty avg-total secondary metric when no completed-call total exists', () => {
+    const baseTimeseries = buildTimeseriesWithLatency()
+    const timeseriesWithoutAvgTotal: TimeseriesResponse = {
+      ...baseTimeseries,
+      points: baseTimeseries.points.map((point) => ({
+        ...point,
+        avgTotalMs: null,
+        totalLatencySampleCount: 0,
+      })),
+    }
+
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 32,
+          successCount: 28,
+          failureCount: 4,
+          totalCost: 1.2,
+          totalTokens: 3200,
+        }}
+        rate={{
+          tokensPerMinute: 416,
+          spendRate: 0.1,
+          windowMinutes: 5,
+          available: true,
+        }}
+        timeseries={timeseriesWithoutAvgTotal}
+        loading={false}
+        error={null}
+      />,
+    )
+
+    expect(
+      host?.querySelector('[data-testid="today-stats-secondary-response-time-avg-total"]')?.textContent,
+    ).toContain('—')
   })
 
   it('recomputes the response-time recent window when now changes without falling back to older samples', () => {

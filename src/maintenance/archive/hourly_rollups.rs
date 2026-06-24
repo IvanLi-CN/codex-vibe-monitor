@@ -1077,6 +1077,8 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     cache_input_tokens,
                     total_cost,
                     non_success_cost,
+                    total_latency_sample_count,
+                    total_latency_sum_ms,
                     first_byte_sample_count,
                     first_byte_sum_ms,
                     first_byte_max_ms,
@@ -1087,7 +1089,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     first_response_byte_total_histogram,
                     updated_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, datetime('now'))
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, datetime('now'))
                 ON CONFLICT(bucket_start_epoch, source) DO UPDATE SET
                     total_count = invocation_rollup_hourly.total_count + excluded.total_count,
                     success_count = invocation_rollup_hourly.success_count + excluded.success_count,
@@ -1096,6 +1098,8 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     cache_input_tokens = invocation_rollup_hourly.cache_input_tokens + excluded.cache_input_tokens,
                     total_cost = invocation_rollup_hourly.total_cost + excluded.total_cost,
                     non_success_cost = invocation_rollup_hourly.non_success_cost + excluded.non_success_cost,
+                    total_latency_sample_count = invocation_rollup_hourly.total_latency_sample_count + excluded.total_latency_sample_count,
+                    total_latency_sum_ms = invocation_rollup_hourly.total_latency_sum_ms + excluded.total_latency_sum_ms,
                     first_byte_sample_count = invocation_rollup_hourly.first_byte_sample_count + excluded.first_byte_sample_count,
                     first_byte_sum_ms = invocation_rollup_hourly.first_byte_sum_ms + excluded.first_byte_sum_ms,
                     first_byte_max_ms = MAX(invocation_rollup_hourly.first_byte_max_ms, excluded.first_byte_max_ms),
@@ -1116,6 +1120,8 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
             .bind(delta.cache_input_tokens)
             .bind(delta.total_cost)
             .bind(delta.non_success_cost)
+            .bind(delta.total_latency_sample_count)
+            .bind(delta.total_latency_sum_ms)
             .bind(delta.first_byte_sample_count)
             .bind(delta.first_byte_sum_ms)
             .bind(delta.first_byte_max_ms)
@@ -1427,6 +1433,8 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     cache_input_tokens,
                     total_cost,
                     non_success_cost,
+                    total_latency_sample_count,
+                    total_latency_sum_ms,
                     first_byte_sample_count,
                     first_byte_sum_ms,
                     first_byte_max_ms,
@@ -1437,7 +1445,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     first_response_byte_total_histogram,
                     updated_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, datetime('now'))
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, datetime('now'))
                 ON CONFLICT(bucket_start_epoch, source, upstream_account_id) DO UPDATE SET
                     total_count = upstream_account_stats_hourly.total_count + excluded.total_count,
                     success_count = upstream_account_stats_hourly.success_count + excluded.success_count,
@@ -1449,6 +1457,8 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     cache_input_tokens = upstream_account_stats_hourly.cache_input_tokens + excluded.cache_input_tokens,
                     total_cost = upstream_account_stats_hourly.total_cost + excluded.total_cost,
                     non_success_cost = upstream_account_stats_hourly.non_success_cost + excluded.non_success_cost,
+                    total_latency_sample_count = upstream_account_stats_hourly.total_latency_sample_count + excluded.total_latency_sample_count,
+                    total_latency_sum_ms = upstream_account_stats_hourly.total_latency_sum_ms + excluded.total_latency_sum_ms,
                     first_byte_sample_count = upstream_account_stats_hourly.first_byte_sample_count + excluded.first_byte_sample_count,
                     first_byte_sum_ms = upstream_account_stats_hourly.first_byte_sum_ms + excluded.first_byte_sum_ms,
                     first_byte_max_ms = MAX(upstream_account_stats_hourly.first_byte_max_ms, excluded.first_byte_max_ms),
@@ -1473,6 +1483,8 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
             .bind(delta.cache_input_tokens)
             .bind(delta.total_cost)
             .bind(delta.non_success_cost)
+            .bind(delta.total_latency_sample_count)
+            .bind(delta.total_latency_sum_ms)
             .bind(delta.first_byte_sample_count)
             .bind(delta.first_byte_sum_ms)
             .bind(delta.first_byte_max_ms)
@@ -1542,6 +1554,8 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     cache_input_tokens,
                     total_cost,
                     non_success_cost,
+                    total_latency_sample_count,
+                    total_latency_sum_ms,
                     first_byte_sample_count,
                     first_byte_sum_ms,
                     first_byte_max_ms,
@@ -1552,7 +1566,7 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     first_response_byte_total_histogram,
                     updated_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, datetime('now'))
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, datetime('now'))
                 ON CONFLICT(bucket_start_epoch, source, upstream_account_id) DO UPDATE SET
                     total_count = upstream_account_stats_minute.total_count + excluded.total_count,
                     success_count = upstream_account_stats_minute.success_count + excluded.success_count,
@@ -1564,6 +1578,8 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
                     cache_input_tokens = upstream_account_stats_minute.cache_input_tokens + excluded.cache_input_tokens,
                     total_cost = upstream_account_stats_minute.total_cost + excluded.total_cost,
                     non_success_cost = upstream_account_stats_minute.non_success_cost + excluded.non_success_cost,
+                    total_latency_sample_count = upstream_account_stats_minute.total_latency_sample_count + excluded.total_latency_sample_count,
+                    total_latency_sum_ms = upstream_account_stats_minute.total_latency_sum_ms + excluded.total_latency_sum_ms,
                     first_byte_sample_count = upstream_account_stats_minute.first_byte_sample_count + excluded.first_byte_sample_count,
                     first_byte_sum_ms = upstream_account_stats_minute.first_byte_sum_ms + excluded.first_byte_sum_ms,
                     first_byte_max_ms = MAX(upstream_account_stats_minute.first_byte_max_ms, excluded.first_byte_max_ms),
@@ -1588,6 +1604,8 @@ pub(crate) async fn upsert_invocation_hourly_rollups_tx(
             .bind(delta.cache_input_tokens)
             .bind(delta.total_cost)
             .bind(delta.non_success_cost)
+            .bind(delta.total_latency_sample_count)
+            .bind(delta.total_latency_sum_ms)
             .bind(delta.first_byte_sample_count)
             .bind(delta.first_byte_sum_ms)
             .bind(delta.first_byte_max_ms)
@@ -2218,6 +2236,8 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(pool: &Pool<S
                 cache_input_tokens,
                 total_cost,
                 non_success_cost,
+                total_latency_sample_count,
+                total_latency_sum_ms,
                 first_byte_sample_count,
                 first_byte_sum_ms,
                 first_byte_max_ms,
@@ -2228,7 +2248,7 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(pool: &Pool<S
                 first_response_byte_total_histogram,
                 updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, datetime('now'))
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, datetime('now'))
             ON CONFLICT(bucket_start_epoch, source) DO UPDATE SET
                 total_count = excluded.total_count,
                 success_count = excluded.success_count,
@@ -2237,6 +2257,8 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(pool: &Pool<S
                 cache_input_tokens = excluded.cache_input_tokens,
                 total_cost = excluded.total_cost,
                 non_success_cost = excluded.non_success_cost,
+                total_latency_sample_count = excluded.total_latency_sample_count,
+                total_latency_sum_ms = excluded.total_latency_sum_ms,
                 first_byte_sample_count = excluded.first_byte_sample_count,
                 first_byte_sum_ms = excluded.first_byte_sum_ms,
                 first_byte_max_ms = excluded.first_byte_max_ms,
@@ -2257,6 +2279,8 @@ pub(crate) async fn backfill_invocation_rollup_hourly_from_sources(pool: &Pool<S
         .bind(delta.cache_input_tokens)
         .bind(delta.total_cost)
         .bind(delta.non_success_cost)
+        .bind(delta.total_latency_sample_count)
+        .bind(delta.total_latency_sum_ms)
         .bind(delta.first_byte_sample_count)
         .bind(delta.first_byte_sum_ms)
         .bind(delta.first_byte_max_ms)

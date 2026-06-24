@@ -59,6 +59,8 @@ interface LiveRecordDelta {
   inFlightCount: number;
   totalTokens: number;
   totalCost: number;
+  totalLatencyMs: number;
+  totalLatencySampleCount: number;
   countsOnly?: boolean;
 }
 
@@ -453,6 +455,15 @@ function createLiveRecordDelta(
   bucketEndEpoch: number,
 ): LiveRecordDelta {
   const outcome = normalizeLiveRecordOutcome(record);
+  const rawTotalLatencyMs = record.tTotalMs;
+  const isTerminalOutcome =
+    outcome === "success" || outcome === "failure";
+  const hasTotalLatencySample =
+    isTerminalOutcome &&
+    typeof rawTotalLatencyMs === "number" &&
+    Number.isFinite(rawTotalLatencyMs) &&
+    rawTotalLatencyMs >= 0;
+  const totalLatencyMs = hasTotalLatencySample ? Number(rawTotalLatencyMs) : 0;
   return {
     recordId: record.id,
     bucketStart: formatEpochToIso(bucketStartEpoch),
@@ -465,6 +476,8 @@ function createLiveRecordDelta(
     inFlightCount: outcome === "in_flight" ? 1 : 0,
     totalTokens: record.totalTokens ?? 0,
     totalCost: record.cost ?? 0,
+    totalLatencyMs,
+    totalLatencySampleCount: hasTotalLatencySample ? 1 : 0,
   };
 }
 
@@ -503,6 +516,8 @@ function sanitizeTimeseriesPointLatency(point: TimeseriesPoint) {
   if (getTimeseriesPointCallCount(point) > 0) {
     return;
   }
+  point.avgTotalMs = null;
+  point.totalLatencySampleCount = 0;
   point.firstByteSampleCount = 0;
   point.firstByteAvgMs = null;
   point.firstByteP95Ms = null;
@@ -587,6 +602,8 @@ function createCountsOnlyLiveRecordDelta(
     ...delta,
     totalTokens: 0,
     totalCost: 0,
+    totalLatencyMs: 0,
+    totalLatencySampleCount: 0,
     countsOnly: true,
   };
 }
@@ -602,6 +619,8 @@ function reconcileCountsOnlyDelta(
     | "inFlightCount"
     | "totalTokens"
     | "totalCost"
+    | "avgTotalMs"
+    | "totalLatencySampleCount"
   > | null,
 ) {
   if (!previousDelta?.countsOnly || !nextDelta) {
@@ -630,6 +649,13 @@ function reconcileCountsOnlyDelta(
     ...nextDelta,
     totalTokens: nextDelta.totalTokens - currentPoint.totalTokens,
     totalCost: nextDelta.totalCost - currentPoint.totalCost,
+    totalLatencyMs:
+      nextDelta.totalLatencyMs -
+      ((currentPoint.avgTotalMs ?? 0) *
+        Math.max(currentPoint.totalLatencySampleCount ?? 0, 0)),
+    totalLatencySampleCount:
+      nextDelta.totalLatencySampleCount -
+      Math.max(currentPoint.totalLatencySampleCount ?? 0, 0),
   };
 }
 
@@ -780,6 +806,8 @@ function sameLiveRecordDelta(
     left.inFlightCount === right.inFlightCount &&
     left.totalTokens === right.totalTokens &&
     left.totalCost === right.totalCost &&
+    left.totalLatencyMs === right.totalLatencyMs &&
+    left.totalLatencySampleCount === right.totalLatencySampleCount &&
     (left.countsOnly ?? false) === (right.countsOnly ?? false)
   );
 }
@@ -1037,6 +1065,17 @@ function adjustTimeseriesPoint(
   delta: LiveRecordDelta,
   sign: 1 | -1,
 ) {
+  const previousLatencySampleCount = Math.max(
+    point.totalLatencySampleCount ?? 0,
+    0,
+  );
+  const previousLatencyTotal =
+    previousLatencySampleCount > 0 &&
+    typeof point.avgTotalMs === "number" &&
+    Number.isFinite(point.avgTotalMs)
+      ? point.avgTotalMs * previousLatencySampleCount
+      : 0;
+
   point.bucketEnd = delta.bucketEnd;
   point.totalCount += sign * delta.totalCount;
   point.successCount += sign * delta.successCount;
@@ -1047,6 +1086,14 @@ function adjustTimeseriesPoint(
   );
   point.totalTokens += sign * delta.totalTokens;
   point.totalCost += sign * delta.totalCost;
+  const nextLatencySampleCount = Math.max(
+    previousLatencySampleCount + sign * delta.totalLatencySampleCount,
+    0,
+  );
+  const nextLatencyTotal = previousLatencyTotal + sign * delta.totalLatencyMs;
+  point.totalLatencySampleCount = nextLatencySampleCount;
+  point.avgTotalMs =
+    nextLatencySampleCount > 0 ? nextLatencyTotal / nextLatencySampleCount : null;
   sanitizeTimeseriesPointLatency(point);
 }
 
@@ -1305,6 +1352,8 @@ export function upsertTimeseriesLiveRecord(
       inFlightCount: 0,
       totalTokens: 0,
       totalCost: 0,
+      avgTotalMs: null,
+      totalLatencySampleCount: 0,
     };
     adjustTimeseriesPoint(point, delta, sign);
     const isEmpty =

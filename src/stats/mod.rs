@@ -87,6 +87,8 @@ pub(crate) struct InvocationHourlyRollupRecord {
     pub(crate) cache_input_tokens: i64,
     pub(crate) total_cost: f64,
     pub(crate) non_success_cost: f64,
+    pub(crate) total_latency_sample_count: i64,
+    pub(crate) total_latency_sum_ms: f64,
     pub(crate) first_byte_sample_count: i64,
     pub(crate) first_byte_sum_ms: f64,
     pub(crate) first_byte_max_ms: f64,
@@ -255,6 +257,8 @@ pub(crate) struct BucketAggregate {
     pub(crate) cache_input_tokens: i64,
     pub(crate) total_cost: f64,
     pub(crate) non_success_cost: f64,
+    pub(crate) total_latency_sum_ms: f64,
+    pub(crate) total_latency_sample_count: i64,
     pub(crate) first_byte_ttfb_sum_ms: f64,
     pub(crate) first_byte_ttfb_values: Vec<f64>,
     pub(crate) first_byte_histogram: ApproxHistogramCounts,
@@ -266,6 +270,29 @@ pub(crate) struct BucketAggregate {
 }
 
 impl BucketAggregate {
+    fn validated_total_latency_value(value: Option<f64>) -> Option<f64> {
+        let value = value?;
+        if !value.is_finite() || value < 0.0 {
+            return None;
+        }
+        Some(value)
+    }
+
+    pub(crate) fn record_total_latency_sample(&mut self, total_ms: Option<f64>) {
+        let Some(value) = Self::validated_total_latency_value(total_ms) else {
+            return;
+        };
+        self.total_latency_sample_count += 1;
+        self.total_latency_sum_ms += value;
+    }
+
+    pub(crate) fn total_latency_avg_ms(&self) -> Option<f64> {
+        if self.total_latency_sample_count <= 0 {
+            return None;
+        }
+        Some(self.total_latency_sum_ms / self.total_latency_sample_count as f64)
+    }
+
     fn validated_success_ttfb_value(status: Option<&str>, ttfb_ms: Option<f64>) -> Option<f64> {
         if status != Some("success") {
             return None;
@@ -1576,6 +1603,8 @@ fn merge_invocation_hourly_rollup_delta(
     target.total_tokens += delta.total_tokens;
     target.total_cost += delta.total_cost;
     target.non_success_cost += delta.non_success_cost;
+    target.total_latency_sample_count += delta.total_latency_sample_count;
+    target.total_latency_sum_ms += delta.total_latency_sum_ms;
     target.first_byte_sample_count += delta.first_byte_sample_count;
     target.first_byte_sum_ms += delta.first_byte_sum_ms;
     target.first_byte_max_ms = target.first_byte_max_ms.max(delta.first_byte_max_ms);
@@ -1780,6 +1809,24 @@ async fn load_materialized_invocation_rollup_record(
         } else {
             "0.0 AS non_success_cost"
         };
+    let total_latency_sample_count_expr = if sqlite_table_has_column(
+        pool,
+        "invocation_rollup_hourly",
+        "total_latency_sample_count",
+    )
+    .await?
+    {
+        "COALESCE(total_latency_sample_count, 0) AS total_latency_sample_count"
+    } else {
+        "0 AS total_latency_sample_count"
+    };
+    let total_latency_sum_ms_expr =
+        if sqlite_table_has_column(pool, "invocation_rollup_hourly", "total_latency_sum_ms").await?
+        {
+            "COALESCE(total_latency_sum_ms, 0.0) AS total_latency_sum_ms"
+        } else {
+            "0.0 AS total_latency_sum_ms"
+        };
     let query = format!(
         r#"
         SELECT
@@ -1791,6 +1838,8 @@ async fn load_materialized_invocation_rollup_record(
             {cache_input_tokens_expr},
             total_cost,
             {non_success_cost_expr},
+            {total_latency_sample_count_expr},
+            {total_latency_sum_ms_expr},
             first_byte_sample_count,
             first_byte_sum_ms,
             first_byte_max_ms,
@@ -1858,6 +1907,18 @@ fn build_invocation_hourly_rollup_delta_record(
             .map(|row| row.non_success_cost)
             .unwrap_or(0.0),
     );
+    let total_latency_sample_count = subtract_nonnegative_i64(
+        archive_delta.total_latency_sample_count,
+        materialized_row
+            .map(|row| row.total_latency_sample_count.max(0))
+            .unwrap_or(0),
+    );
+    let total_latency_sum_ms = subtract_nonnegative_f64(
+        archive_delta.total_latency_sum_ms,
+        materialized_row
+            .map(|row| row.total_latency_sum_ms)
+            .unwrap_or(0.0),
+    );
 
     let first_byte_histogram = subtract_approx_histogram_counts(
         &archive_delta.first_byte_histogram,
@@ -1895,6 +1956,7 @@ fn build_invocation_hourly_rollup_delta_record(
         && cache_input_tokens <= 0
         && total_cost <= 0.0
         && non_success_cost <= 0.0
+        && total_latency_sample_count <= 0
         && first_byte_sample_count <= 0
         && first_response_byte_total_sample_count <= 0
     {
@@ -1910,6 +1972,8 @@ fn build_invocation_hourly_rollup_delta_record(
         cache_input_tokens,
         total_cost,
         non_success_cost,
+        total_latency_sample_count,
+        total_latency_sum_ms,
         first_byte_sample_count,
         first_byte_sum_ms,
         first_byte_max_ms: if first_byte_sample_count > 0 {
@@ -1982,6 +2046,18 @@ fn build_materialized_pending_invocation_rollup_overlap_record(
             .map(|delta| delta.non_success_cost)
             .unwrap_or(0.0),
     );
+    let total_latency_sample_count = subtract_nonnegative_i64(
+        materialized_row.total_latency_sample_count.max(0),
+        completed_archive_delta
+            .map(|delta| delta.total_latency_sample_count.max(0))
+            .unwrap_or(0),
+    );
+    let total_latency_sum_ms = subtract_nonnegative_f64(
+        materialized_row.total_latency_sum_ms,
+        completed_archive_delta
+            .map(|delta| delta.total_latency_sum_ms)
+            .unwrap_or(0.0),
+    );
 
     let materialized_first_byte_histogram =
         decode_approx_histogram(&materialized_row.first_byte_histogram);
@@ -2027,6 +2103,7 @@ fn build_materialized_pending_invocation_rollup_overlap_record(
         && cache_input_tokens <= 0
         && total_cost <= 0.0
         && non_success_cost <= 0.0
+        && total_latency_sample_count <= 0
         && first_byte_sample_count <= 0
         && first_response_byte_total_sample_count <= 0
     {
@@ -2042,6 +2119,8 @@ fn build_materialized_pending_invocation_rollup_overlap_record(
         cache_input_tokens,
         total_cost,
         non_success_cost,
+        total_latency_sample_count,
+        total_latency_sum_ms,
         first_byte_sample_count,
         first_byte_sum_ms,
         first_byte_max_ms: if first_byte_sample_count > 0 {
@@ -2839,42 +2918,11 @@ pub(crate) async fn query_completed_invocation_archive_non_success_usage(
     Ok((total_cost, total_tokens))
 }
 
-fn add_account_invocation_row_to_usage_delta(
-    entry: &mut UpstreamAccountUsageHourlyDelta,
+fn add_account_invocation_row_to_stats_delta(
+    entry: &mut UpstreamAccountStatsDelta,
     row: &InvocationHourlySourceRecord,
 ) {
-    entry.request_count += 1;
-    let classification = resolve_failure_classification(
-        row.status.as_deref(),
-        row.error_message.as_deref(),
-        row.failure_kind.as_deref(),
-        row.failure_class.as_deref(),
-        row.is_actionable,
-    );
-    if invocation_status_is_success_like(row.status.as_deref(), row.error_message.as_deref())
-        && classification.failure_class == FailureClass::None
-    {
-        entry.success_count += 1;
-    } else if invocation_status_counts_toward_terminal_totals(row.status.as_deref())
-        && classification.failure_class != FailureClass::None
-    {
-        entry.failure_count += 1;
-    }
-    entry.total_tokens += row.total_tokens.unwrap_or_default();
-    let cost = row.cost.unwrap_or_default();
-    entry.total_cost += cost;
-    if invocation_row_counts_toward_non_success_usage(
-        row.status.as_deref(),
-        row.error_message.as_deref(),
-        row.failure_kind.as_deref(),
-        row.failure_class.as_deref(),
-        row.is_actionable,
-    ) {
-        entry.non_success_cost += cost;
-    }
-    entry.input_tokens += row.input_tokens.unwrap_or_default();
-    entry.output_tokens += row.output_tokens.unwrap_or_default();
-    entry.cache_input_tokens += row.cache_input_tokens.unwrap_or_default();
+    accumulate_upstream_account_stats_delta(entry, row);
 }
 
 pub(crate) async fn query_unmaterialized_upstream_account_archive_hourly_rollup_deltas(
@@ -2884,11 +2932,11 @@ pub(crate) async fn query_unmaterialized_upstream_account_archive_hourly_rollup_
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
     exclude_invocation_ids: Option<&HashSet<i64>>,
     upstream_account_id: i64,
-) -> Result<Vec<UpstreamAccountUsageHourlyRollupRecord>> {
+) -> Result<Vec<UpstreamAccountStatsRollupRecord>> {
     let archive_rows =
         load_invocation_archives_missing_effective_rollup_target(pool, rollup_target, range)
             .await?;
-    let mut archive_deltas = BTreeMap::<i64, UpstreamAccountUsageHourlyDelta>::new();
+    let mut archive_deltas = BTreeMap::<i64, UpstreamAccountStatsDelta>::new();
 
     for archive_row in archive_rows {
         let Some((archive_pool, temp_cleanup)) =
@@ -2925,8 +2973,8 @@ pub(crate) async fn query_unmaterialized_upstream_account_archive_hourly_rollup_
                 let bucket_start_epoch = summary_rollup_bucket_start_epoch(&row.occurred_at)?;
                 let entry = archive_deltas
                     .entry(bucket_start_epoch)
-                    .or_insert_with(UpstreamAccountUsageHourlyDelta::default);
-                add_account_invocation_row_to_usage_delta(entry, &row);
+                    .or_insert_with(UpstreamAccountStatsDelta::default);
+                add_account_invocation_row_to_stats_delta(entry, &row);
             }
         }
 
@@ -2937,15 +2985,32 @@ pub(crate) async fn query_unmaterialized_upstream_account_archive_hourly_rollup_
     Ok(archive_deltas
         .into_iter()
         .filter_map(|(bucket_start_epoch, delta)| {
-            (delta.request_count > 0).then_some(UpstreamAccountUsageHourlyRollupRecord {
+            (delta.total_count > 0).then_some(UpstreamAccountStatsRollupRecord {
                 bucket_start_epoch,
-                request_count: delta.request_count,
+                total_count: delta.total_count,
                 success_count: delta.success_count,
                 failure_count: delta.failure_count,
+                in_flight_count: delta.in_flight_count,
                 total_tokens: delta.total_tokens,
+                input_tokens: delta.input_tokens,
+                output_tokens: delta.output_tokens,
                 cache_input_tokens: delta.cache_input_tokens,
                 total_cost: delta.total_cost,
                 non_success_cost: delta.non_success_cost,
+                total_latency_sample_count: delta.total_latency_sample_count,
+                total_latency_sum_ms: delta.total_latency_sum_ms,
+                first_byte_sample_count: delta.first_byte_sample_count,
+                first_byte_sum_ms: delta.first_byte_sum_ms,
+                first_byte_max_ms: delta.first_byte_max_ms,
+                first_byte_histogram: encode_approx_histogram(&delta.first_byte_histogram).ok()?,
+                first_response_byte_total_sample_count: delta
+                    .first_response_byte_total_sample_count,
+                first_response_byte_total_sum_ms: delta.first_response_byte_total_sum_ms,
+                first_response_byte_total_max_ms: delta.first_response_byte_total_max_ms,
+                first_response_byte_total_histogram: encode_approx_histogram(
+                    &delta.first_response_byte_total_histogram,
+                )
+                .ok()?,
             })
         })
         .collect())
@@ -2970,7 +3035,7 @@ pub(crate) async fn query_unmaterialized_upstream_account_archive_totals(
     )
     .await?
     {
-        totals.total_count += row.request_count;
+        totals.total_count += row.total_count;
         totals.success_count += row.success_count;
         totals.failure_count += row.failure_count;
         totals.total_tokens += row.total_tokens;
@@ -4004,6 +4069,24 @@ pub(crate) async fn query_invocation_hourly_rollup_range(
         } else {
             "0.0 AS non_success_cost"
         };
+    let total_latency_sample_count_expr = if sqlite_table_has_column(
+        pool,
+        "invocation_rollup_hourly",
+        "total_latency_sample_count",
+    )
+    .await?
+    {
+        "COALESCE(total_latency_sample_count, 0) AS total_latency_sample_count"
+    } else {
+        "0 AS total_latency_sample_count"
+    };
+    let total_latency_sum_ms_expr =
+        if sqlite_table_has_column(pool, "invocation_rollup_hourly", "total_latency_sum_ms").await?
+        {
+            "COALESCE(total_latency_sum_ms, 0.0) AS total_latency_sum_ms"
+        } else {
+            "0.0 AS total_latency_sum_ms"
+        };
     let mut query = QueryBuilder::<Sqlite>::new(format!(
         r#"
         SELECT
@@ -4015,6 +4098,8 @@ pub(crate) async fn query_invocation_hourly_rollup_range(
             {cache_input_tokens_expr},
             total_cost,
             {non_success_cost_expr},
+            {total_latency_sample_count_expr},
+            {total_latency_sum_ms_expr},
             first_byte_sample_count,
             first_byte_sum_ms,
             first_byte_max_ms,

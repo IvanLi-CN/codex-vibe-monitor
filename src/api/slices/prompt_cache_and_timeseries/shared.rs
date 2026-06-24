@@ -699,6 +699,28 @@ pub(super) async fn query_invocation_hourly_rollup_range_tx(
         } else {
             "0.0 AS non_success_cost"
         };
+    let total_latency_sample_count_expr = if sqlite_table_has_column_tx(
+        tx,
+        "invocation_rollup_hourly",
+        "total_latency_sample_count",
+    )
+    .await?
+    {
+        "COALESCE(total_latency_sample_count, 0) AS total_latency_sample_count"
+    } else {
+        "0 AS total_latency_sample_count"
+    };
+    let total_latency_sum_ms_expr = if sqlite_table_has_column_tx(
+        tx,
+        "invocation_rollup_hourly",
+        "total_latency_sum_ms",
+    )
+    .await?
+    {
+        "COALESCE(total_latency_sum_ms, 0.0) AS total_latency_sum_ms"
+    } else {
+        "0.0 AS total_latency_sum_ms"
+    };
     let mut query = QueryBuilder::<Sqlite>::new(format!(
         r#"
         SELECT
@@ -710,6 +732,8 @@ pub(super) async fn query_invocation_hourly_rollup_range_tx(
             {cache_input_tokens_expr},
             total_cost,
             {non_success_cost_expr},
+            {total_latency_sample_count_expr},
+            {total_latency_sum_ms_expr},
             first_byte_sample_count,
             first_byte_sum_ms,
             first_byte_max_ms,
@@ -808,6 +832,28 @@ pub(crate) async fn query_upstream_account_stats_rollup_range_tx(
     } else {
         "0.0 AS non_success_cost"
     };
+    let total_latency_sample_count_expr = if sqlite_table_has_column_tx(
+        tx,
+        table_name,
+        "total_latency_sample_count",
+    )
+    .await?
+    {
+        "COALESCE(total_latency_sample_count, 0) AS total_latency_sample_count"
+    } else {
+        "0 AS total_latency_sample_count"
+    };
+    let total_latency_sum_ms_expr = if sqlite_table_has_column_tx(
+        tx,
+        table_name,
+        "total_latency_sum_ms",
+    )
+    .await?
+    {
+        "COALESCE(total_latency_sum_ms, 0.0) AS total_latency_sum_ms"
+    } else {
+        "0.0 AS total_latency_sum_ms"
+    };
     let mut query = QueryBuilder::<Sqlite>::new(format!(
         r#"
         SELECT
@@ -822,6 +868,8 @@ pub(crate) async fn query_upstream_account_stats_rollup_range_tx(
             cache_input_tokens,
             total_cost,
             {non_success_cost_expr},
+            {total_latency_sample_count_expr},
+            {total_latency_sum_ms_expr},
             first_byte_sample_count,
             first_byte_sum_ms,
             first_byte_max_ms,

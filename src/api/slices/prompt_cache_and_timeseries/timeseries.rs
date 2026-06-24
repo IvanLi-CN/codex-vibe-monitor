@@ -107,6 +107,9 @@ pub(crate) async fn fetch_timeseries(
         } else {
             record.status.as_deref()
         };
+        if !prompt_shared::invocation_status_is_in_flight(record.status.as_deref()) {
+            entry.record_total_latency_sample(record.t_total_ms);
+        }
         entry.record_ttfb_sample(latency_status, record.t_upstream_ttfb_ms);
         entry.record_first_response_byte_total_sample(
             record.t_req_read_ms,
@@ -360,13 +363,41 @@ async fn fetch_timeseries_for_account(
             let bucket_epoch =
                 align_reporting_bucket_epoch(row.bucket_start_epoch, bucket_seconds, reporting_tz)?;
             if let Some(entry) = aggregates.get_mut(&bucket_epoch) {
-                entry.total_count += row.request_count;
+                entry.total_count += row.total_count;
                 entry.success_count += row.success_count;
                 entry.failure_count += row.failure_count;
+                entry.in_flight_count += row.in_flight_count;
                 entry.total_tokens += row.total_tokens;
                 entry.cache_input_tokens += row.cache_input_tokens;
                 entry.total_cost += row.total_cost;
                 entry.non_success_cost += row.non_success_cost;
+                entry.total_latency_sample_count += row.total_latency_sample_count;
+                entry.total_latency_sum_ms += row.total_latency_sum_ms;
+                entry.first_byte_sample_count += row.first_byte_sample_count;
+                entry.first_byte_ttfb_sum_ms += row.first_byte_sum_ms;
+                entry.first_byte_histogram = if entry.first_byte_histogram.is_empty() {
+                    decode_approx_histogram(&row.first_byte_histogram)
+                } else {
+                    let mut merged = entry.first_byte_histogram.clone();
+                    merge_approx_histogram_into(
+                        &mut merged,
+                        &decode_approx_histogram(&row.first_byte_histogram),
+                    )?;
+                    merged
+                };
+                entry.first_response_byte_total_sample_count += row.first_response_byte_total_sample_count;
+                entry.first_response_byte_total_sum_ms += row.first_response_byte_total_sum_ms;
+                entry.first_response_byte_total_histogram =
+                    if entry.first_response_byte_total_histogram.is_empty() {
+                        decode_approx_histogram(&row.first_response_byte_total_histogram)
+                    } else {
+                        let mut merged = entry.first_response_byte_total_histogram.clone();
+                        merge_approx_histogram_into(
+                            &mut merged,
+                            &decode_approx_histogram(&row.first_response_byte_total_histogram),
+                        )?;
+                        merged
+                    };
             }
         }
     }
@@ -402,6 +433,8 @@ fn add_rollup_rows_to_timeseries_aggregates(
             entry.cache_input_tokens += row.cache_input_tokens;
             entry.total_cost += row.total_cost;
             entry.non_success_cost += row.non_success_cost;
+            entry.total_latency_sample_count += row.total_latency_sample_count;
+            entry.total_latency_sum_ms += row.total_latency_sum_ms;
             entry.first_byte_sample_count += row.first_byte_sample_count;
             entry.first_byte_ttfb_sum_ms += row.first_byte_sum_ms;
             entry.first_byte_histogram = if entry.first_byte_histogram.is_empty() {
@@ -471,6 +504,9 @@ fn add_exact_records_to_timeseries_aggregates(
             } else {
                 record.status.as_deref()
             };
+            if !prompt_shared::invocation_status_is_in_flight(record.status.as_deref()) {
+                entry.record_total_latency_sample(record.t_total_ms);
+            }
             entry.record_exact_ttfb_sample(latency_status, record.t_upstream_ttfb_ms);
             entry.record_exact_first_response_byte_total_sample(
                 record.t_req_read_ms,
@@ -516,6 +552,12 @@ fn timeseries_point_from_aggregate(
         cache_input_tokens: agg.cache_input_tokens,
         total_cost: agg.total_cost,
         non_success_cost: agg.non_success_cost,
+        avg_total_ms: has_calls.then(|| agg.total_latency_avg_ms()).flatten(),
+        total_latency_sample_count: if has_calls {
+            agg.total_latency_sample_count
+        } else {
+            0
+        },
         first_byte_sample_count: if has_calls {
             agg.first_byte_sample_count
         } else {
@@ -957,6 +999,8 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
         entry.cache_input_tokens += row.cache_input_tokens;
         entry.total_cost += row.total_cost;
         entry.non_success_cost += row.non_success_cost;
+        entry.total_latency_sample_count += row.total_latency_sample_count;
+        entry.total_latency_sum_ms += row.total_latency_sum_ms;
         entry.first_byte_sample_count += row.first_byte_sample_count;
         entry.first_byte_ttfb_sum_ms += row.first_byte_sum_ms;
         entry.first_byte_histogram = if entry.first_byte_histogram.is_empty() {
@@ -1110,6 +1154,8 @@ mod tests {
         aggregate
             .first_response_byte_total_values
             .push(18_225.02);
+        aggregate.total_latency_sample_count = 1;
+        aggregate.total_latency_sum_ms = 24_000.0;
 
         let point = timeseries_point_from_aggregate(
             Utc.timestamp_opt(1_775_608_200, 0)
@@ -1128,5 +1174,74 @@ mod tests {
         assert_eq!(point.first_response_byte_total_sample_count, 0);
         assert!(point.first_response_byte_total_avg_ms.is_none());
         assert!(point.first_response_byte_total_p95_ms.is_none());
+        assert!(point.avg_total_ms.is_none());
+    }
+
+    #[test]
+    fn timeseries_point_keeps_rollup_backed_total_latency_average() {
+        let mut aggregate = BucketAggregate::default();
+        aggregate.total_count = 4;
+        aggregate.success_count = 3;
+        aggregate.failure_count = 1;
+        aggregate.total_latency_sample_count = 2;
+        aggregate.total_latency_sum_ms = 1_800.0;
+
+        let point = timeseries_point_from_aggregate(
+            Utc.timestamp_opt(1_775_608_200, 0)
+                .single()
+                .expect("valid start timestamp"),
+            Utc.timestamp_opt(1_775_608_260, 0)
+                .single()
+                .expect("valid end timestamp"),
+            &aggregate,
+        );
+
+        assert_eq!(point.total_latency_sample_count, 2);
+        assert_eq!(point.avg_total_ms, Some(900.0));
+    }
+
+    #[test]
+    fn add_rollup_rows_preserves_total_latency_metrics() {
+        let bucket_epoch = align_reporting_bucket_epoch(
+            1_775_608_200,
+            3_600,
+            chrono_tz::Asia::Shanghai,
+        )
+        .expect("aligned bucket");
+        let mut aggregates = BTreeMap::from([(bucket_epoch, BucketAggregate::default())]);
+        add_rollup_rows_to_timeseries_aggregates(
+            &mut aggregates,
+            vec![UpstreamAccountStatsRollupRecord {
+                bucket_start_epoch: 1_775_608_200,
+                total_count: 3,
+                success_count: 2,
+                failure_count: 1,
+                in_flight_count: 0,
+                total_tokens: 99,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_input_tokens: 7,
+                total_cost: 1.25,
+                non_success_cost: 0.3,
+                total_latency_sample_count: 2,
+                total_latency_sum_ms: 1_100.0,
+                first_byte_sample_count: 1,
+                first_byte_sum_ms: 450.0,
+                first_byte_max_ms: 450.0,
+                first_byte_histogram: encode_approx_histogram(&[0, 1]).expect("histogram"),
+                first_response_byte_total_sample_count: 1,
+                first_response_byte_total_sum_ms: 900.0,
+                first_response_byte_total_max_ms: 900.0,
+                first_response_byte_total_histogram: encode_approx_histogram(&[0, 1]).expect("histogram"),
+            }],
+            3_600,
+            chrono_tz::Asia::Shanghai,
+        )
+        .expect("rollup rows should aggregate");
+
+        let aggregate = aggregates.get(&bucket_epoch).expect("bucket");
+        assert_eq!(aggregate.total_count, 3);
+        assert_eq!(aggregate.total_latency_sample_count, 2);
+        assert_eq!(aggregate.total_latency_sum_ms, 1_100.0);
     }
 }
