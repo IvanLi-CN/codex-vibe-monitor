@@ -601,7 +601,7 @@ describe('TodayStatsOverview', () => {
     )
   })
 
-  it('aggregates the recent response-time window across all overlapping buckets', () => {
+  it('uses the latest overlapping response-time bucket within the recent window', () => {
     render(
       <TodayStatsOverview
         stats={{
@@ -671,10 +671,10 @@ describe('TodayStatsOverview', () => {
 
     expect(
       host?.querySelector('[data-testid="today-stats-secondary-response-time-avg-total"]')?.textContent,
-    ).toContain('400 ms')
+    ).toContain('800 ms')
   })
 
-  it('clips the recent response-time window to overlapping portions of coarse buckets', () => {
+  it('uses the latest overlapping coarse bucket for response-time secondary metric', () => {
     render(
       <TodayStatsOverview
         stats={{
@@ -731,7 +731,7 @@ describe('TodayStatsOverview', () => {
 
     expect(
       host?.querySelector('[data-testid="today-stats-secondary-response-time-avg-total"]')?.textContent,
-    ).toContain('340 ms')
+    ).toContain('700 ms')
   })
 
   it('compares cost and token totals against yesterday at the same day progress', () => {
