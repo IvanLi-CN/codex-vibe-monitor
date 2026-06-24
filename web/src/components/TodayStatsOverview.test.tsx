@@ -674,6 +674,66 @@ describe('TodayStatsOverview', () => {
     ).toContain('400 ms')
   })
 
+  it('clips the recent response-time window to overlapping portions of coarse buckets', () => {
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 6,
+          successCount: 6,
+          failureCount: 0,
+          totalCost: 1.2,
+          totalTokens: 3000,
+        }}
+        rate={{
+          tokensPerMinute: 0,
+          spendRate: 0,
+          windowMinutes: 5,
+          available: true,
+        }}
+        timeseries={{
+          rangeStart: '2026-04-10T00:00:00.000Z',
+          rangeEnd: '2026-04-10T00:17:00.000Z',
+          bucketSeconds: 900,
+          points: [
+            {
+              bucketStart: '2026-04-10T00:00:00.000Z',
+              bucketEnd: '2026-04-10T00:15:00.000Z',
+              totalCount: 3,
+              successCount: 3,
+              failureCount: 0,
+              totalTokens: 1200,
+              totalCost: 0.5,
+              avgTotalMs: 100,
+              totalLatencySampleCount: 3,
+              firstResponseByteTotalSampleCount: 3,
+              firstResponseByteTotalAvgMs: 50,
+            },
+            {
+              bucketStart: '2026-04-10T00:15:00.000Z',
+              bucketEnd: '2026-04-10T00:30:00.000Z',
+              totalCount: 3,
+              successCount: 3,
+              failureCount: 0,
+              totalTokens: 1800,
+              totalCost: 0.7,
+              avgTotalMs: 700,
+              totalLatencySampleCount: 3,
+              firstResponseByteTotalSampleCount: 3,
+              firstResponseByteTotalAvgMs: 140,
+            },
+          ],
+        }}
+        loading={false}
+        error={null}
+        now={new Date('2026-04-10T00:17:00.000Z')}
+      />,
+    )
+
+    expect(
+      host?.querySelector('[data-testid="today-stats-secondary-response-time-avg-total"]')?.textContent,
+    ).toContain('340 ms')
+  })
+
   it('compares cost and token totals against yesterday at the same day progress', () => {
     render(
       <TodayStatsOverview

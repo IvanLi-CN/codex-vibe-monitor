@@ -290,7 +290,7 @@ function latestRecentWindowAvgTotalMs(
   const anchorMs = anchor.getTime()
   const windowStartMs = Math.max(startMs, anchorMs - targetWindowMinutes * 60_000)
   let totalLatencyMs = 0
-  let totalLatencySampleCount = 0
+  let totalLatencySampleWeight = 0
 
   for (let index = response.points.length - 1; index >= 0; index -= 1) {
     const point = response.points[index]
@@ -310,15 +310,24 @@ function latestRecentWindowAvgTotalMs(
     ) {
       continue
     }
-    totalLatencyMs += value * sampleCount
-    totalLatencySampleCount += sampleCount
+    const bucketDurationMs = bucketEndMs - bucketStartMs
+    if (bucketDurationMs <= 0) continue
+    const overlapStartMs = Math.max(bucketStartMs, windowStartMs)
+    const overlapEndMs = Math.min(bucketEndMs, anchorMs)
+    const overlapDurationMs = overlapEndMs - overlapStartMs
+    if (overlapDurationMs <= 0) continue
+    const overlapRatio = overlapDurationMs / bucketDurationMs
+    if (!Number.isFinite(overlapRatio) || overlapRatio <= 0) continue
+    const weightedSampleCount = sampleCount * overlapRatio
+    totalLatencyMs += value * weightedSampleCount
+    totalLatencySampleWeight += weightedSampleCount
   }
 
-  if (totalLatencySampleCount <= 0) {
+  if (totalLatencySampleWeight <= 0) {
     return null
   }
 
-  return totalLatencyMs / totalLatencySampleCount
+  return totalLatencyMs / totalLatencySampleWeight
 }
 
 function startOfLocalDay(date: Date) {
