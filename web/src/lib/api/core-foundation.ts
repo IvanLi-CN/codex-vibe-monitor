@@ -1378,9 +1378,7 @@ function normalizeTimeseriesPoint(raw: unknown): TimeseriesPoint | null {
       ? (normalizeFiniteNumber(payload.avgTotalMs) ?? null)
       : null,
     totalLatencySampleCount:
-      hasCalls &&
-      typeof payload.avgTotalMs === "number" &&
-      Number.isFinite(payload.avgTotalMs)
+      hasCalls
         ? (normalizeFiniteNumber(payload.totalLatencySampleCount) ?? null)
         : null,
     firstByteSampleCount: hasCalls

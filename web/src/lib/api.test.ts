@@ -422,6 +422,41 @@ describe("fetchTimeseries", () => {
     expect(response.points[1].inFlightCount).toBe(0);
   });
 
+  it("preserves total-latency sample counts when avgTotalMs is absent", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            rangeStart: "2026-03-26T12:00:00Z",
+            rangeEnd: "2026-03-26T13:00:00Z",
+            bucketSeconds: 900,
+            points: [
+              {
+                bucketStart: "2026-03-26T12:00:00Z",
+                bucketEnd: "2026-03-26T12:15:00Z",
+                totalCount: 4,
+                successCount: 4,
+                failureCount: 0,
+                totalTokens: 1200,
+                totalCost: 0.2,
+                totalLatencySampleCount: 4,
+                avgTotalMs: null,
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch,
+    );
+
+    const response = await fetchTimeseries("1h");
+
+    expect(response.points).toHaveLength(1);
+    expect(response.points[0].avgTotalMs).toBeNull();
+    expect(response.points[0].totalLatencySampleCount).toBe(4);
+  });
+
   it("adds upstreamAccountId to timeseries query parameters", async () => {
     const fetchMock = vi.fn(async () => {
       return new Response(
